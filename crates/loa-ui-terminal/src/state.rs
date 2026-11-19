@@ -594,3 +594,6 @@ async fn write_loop(
     }
     writer.close().await
 }
+
+#[cfg(test)]
+mod tests;

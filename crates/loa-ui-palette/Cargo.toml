@@ -7,3 +7,7 @@ publish.workspace = true
 
 [dependencies]
 iced.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+iced_test = "0.14"

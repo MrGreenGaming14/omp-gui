@@ -5,8 +5,30 @@ version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
+[features]
+default = ["host"]
+# Everything but the wire protocol. The stub builds without it, so its
+# dependency tree stays std only.
+host = [
+    "dep:loa-core",
+    "dep:loa-adapter",
+    "dep:async-trait",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:thiserror",
+    "dep:tokio",
     "dep:tempfile",
+]
+
 [dependencies]
-loa-core.workspace = true
-loa-adapter.workspace = true
+loa-core = { workspace = true, optional = true }
+loa-adapter = { workspace = true, optional = true }
+async-trait = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+thiserror = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
 tempfile = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile.workspace = true
