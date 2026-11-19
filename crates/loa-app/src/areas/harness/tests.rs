@@ -408,9 +408,10 @@ fn live_omp_streams_into_the_journal_and_the_chat() {
     let journal = app.ctx.services.library.load(id.as_str()).unwrap();
     assert_eq!(turn_text(&journal, 0, "assistant"), reply);
     assert_eq!(turn_status(&journal, 0), Some(TurnStatus::Done));
-    // omp's TUI bookkeeping (status widgets, cost pings, command lists)
-    // leaves no rows in the chat.
-    assert!(!journal.iter().any(|node| node.kind == ElementKind::Ext), "{:?}", journal.iter().filter(|node| node.kind == ElementKind::Ext).map(|node| node.str_attr(attr::TYPE)).collect::<Vec<_>>());
+    // omp's TUI bookkeeping (status widgets, cost pings) leaves no rows; its
+    // command list is session data on the root, hidden from the chat.
+    let rows: Vec<_> = journal.iter().filter(|node| node.kind == ElementKind::Ext && node.str_attr(attr::TYPE) != Some(loa_ui_chat::COMMANDS_EXT)).map(|node| node.str_attr(attr::TYPE)).collect();
+    assert!(rows.is_empty(), "{rows:?}");
 }
 
 #[test]

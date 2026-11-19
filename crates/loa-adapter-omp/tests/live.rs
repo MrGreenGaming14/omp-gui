@@ -56,8 +56,10 @@ async fn a_real_turn_streams_an_assistant_reply_into_the_dom() {
     let turn = dom.iter().find(|n| n.kind == ElementKind::Turn).expect("a turn");
     assert_eq!(turn.str_attr(attr::STATUS), Some("done"));
     assert!(dom.iter().any(|n| n.kind == ElementKind::Message && n.str_attr(attr::ROLE) == Some("user") && n.text.contains("pong")));
-    // omp's TUI bookkeeping adds no rows; the call's usage is recorded.
-    assert!(!dom.iter().any(|n| matches!(n.kind, ElementKind::Ext | ElementKind::Call)), "{:?}", dom.iter().map(|n| n.kind).collect::<Vec<_>>());
+    // omp's TUI bookkeeping adds no rows (its command list is root session
+    // data, not a row); the call's usage is recorded.
+    let rows: Vec<_> = dom.iter().filter(|n| n.kind == ElementKind::Call || (n.kind == ElementKind::Ext && n.str_attr(attr::TYPE) != Some("available_commands_update"))).map(|n| n.kind).collect();
+    assert!(rows.is_empty(), "{rows:?}");
     assert!(dom.iter().any(|n| n.kind == ElementKind::Usage && n.attrs.contains_key(attr::COST)));
     session.shutdown().await.unwrap();
 }
