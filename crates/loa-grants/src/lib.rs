@@ -1,9 +1,9 @@
 //! Biscuit grants bound to node keys.
 //!
 //! A grant gives one peer (the holder) rights on this node's resources:
-//! sessions, single prompts, projects, every future session, SSH hosts and
-//! surfaces. It travels as a Biscuit token signed by the issuing node's
-//! ed25519 key.
+//! sessions, single prompts, projects, every future session, SSH hosts,
+//! surfaces, the sandbox and folders. It travels as a Biscuit token signed by
+//! the issuing node's ed25519 key.
 //!
 //! - [`Scope`], [`Resource`], [`Action`]: what a grant covers
 //! - [`GrantStore`]: SQLite tables of grants issued, grants received and
@@ -17,7 +17,8 @@
 //!
 //! The authority block, signed by the issuer, holds the rights as facts
 //! (`session_right`, `prompt_right`, `project_right`, `future_right`,
-//! `ssh_right`, `surface_right`) and an expiry check on `now_ms`. Every
+//! `ssh_right`, `surface_right`, `sandbox_right`, `folder_right`) and an
+//! expiry check on `now_ms`. Every
 //! re-share appends a third party block signed by the previous holder's key
 //! that holds only checks: the narrowed scopes and its own expiry. Facts in
 //! appended blocks are never trusted by the authorizer, so a re-share can
@@ -73,6 +74,8 @@ pub enum GrantError {
     Ttl(i64),
     #[error("node id {0} doesn't fit a grant")]
     NodeId(loa_core::NodeId),
+    #[error("a folder grant needs a normalized absolute path, got {0:?}")]
+    FolderPath(String),
     #[error("unknown grant {0}")]
     UnknownGrant(GrantId),
     #[error("grant {0} is revoked")]

@@ -20,12 +20,14 @@
 mod access;
 mod control;
 mod extra;
+mod folder;
 mod sessions;
 mod share;
 pub mod ui;
 
 pub use access::GrantAccess;
 pub use extra::{AddedProtocol, NodeSlot, PeerProtocol};
+pub use folder::{FolderEntry, MAX_FILE as MAX_FOLDER_FILE, SharedFolder};
 pub use loa_net::conn::Stream;
 pub use sessions::{BusSessions, LibrarySessions, LocalSession, LocalSessions, LocalTurn};
 pub use share::{DriveOutcome, RemoteView};
@@ -67,7 +69,9 @@ pub fn local_protocols() -> Vec<String> {
 }
 
 fn local_alpns() -> impl Iterator<Item = alpn::Alpn> {
-    [alpn::CONTROL, alpn::SESSION].into_iter().flat_map(|name| VERSIONS.iter().map(move |v| alpn::Alpn::new(name, *v)))
+    [alpn::CONTROL, alpn::SESSION, folder::PROTOCOL]
+        .into_iter()
+        .flat_map(|name| VERSIONS.iter().map(move |v| alpn::Alpn::new(name, *v)))
 }
 
 /// How long one probe or control request may take.
@@ -468,7 +472,8 @@ impl Node {
         // arrive); session requests are checked against grants per request.
         let mut router = Router::new(Arc::new(AllowAll))
             .handler(alpn::CONTROL, 1, Arc::new(control::Handler(weak.clone())))
-            .handler(alpn::SESSION, 1, Arc::new(share::Handler(weak.clone())));
+            .handler(alpn::SESSION, 1, Arc::new(share::Handler(weak.clone())))
+            .handler(folder::PROTOCOL, 1, Arc::new(folder::Handler(weak.clone())));
         for protocol in self.added_protocols() {
             let (name, version) = (protocol.name, protocol.version);
             router = router.handler(name, version, Arc::new(extra::Handler { inner: weak.clone(), protocol }));
@@ -1001,11 +1006,17 @@ impl Node {
     }
 
     /// What grants can name here, with labels: every future session, each
-    /// session and prompt this node owns, and the app's extra resources.
-    /// Future sessions carry `after_ms: 0`; issuing sets it to the issue time.
+    /// project, session and prompt this node owns, and the app's extra
+    /// resources. Future sessions carry `after_ms: 0`; issuing sets it to the
+    /// issue time.
     pub fn resources(&self) -> Vec<(Resource, String)> {
         let mut out = vec![(Resource::FutureSessions { after_ms: 0 }, "Every future session".to_owned())];
-        for session in self.inner.sessions.sessions() {
+        let sessions = self.inner.sessions.sessions();
+        let mut projects: Vec<&str> = sessions.iter().filter_map(|session| session.facts.project.as_deref()).collect();
+        projects.sort_unstable();
+        projects.dedup();
+        out.extend(projects.into_iter().map(|id| (Resource::Project { id: id.to_owned() }, format!("Project {id}"))));
+        for session in &sessions {
             let label = session.label();
             out.push((Resource::Session { id: session.facts.id.clone() }, label.clone()));
             for (index, turn) in session.turns.iter().enumerate() {
@@ -1019,6 +1030,23 @@ impl Node {
         if added.contains(&Resource::Sandbox) {
             out.push((Resource::Sandbox, SANDBOX_LABEL.to_owned()));
         }
+        // Folders already granted, to grant again; others are typed into the panel.
+        let mut folders: Vec<String> = self
+            .inner
+            .grants
+            .issued()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|record| record.revoked_ms.is_none())
+            .flat_map(|record| record.scopes.unwrap_or_default())
+            .filter_map(|scope| match scope.resource {
+                Resource::Folder { path } => Some(path),
+                _ => None,
+            })
+            .collect();
+        folders.sort_unstable();
+        folders.dedup();
+        out.extend(folders.into_iter().map(|path| (Resource::Folder { path: path.clone() }, format!("Folder {path}"))));
         out.extend(self.state().resources.iter().cloned());
         out
     }
@@ -1058,6 +1086,43 @@ impl Node {
             .map(|grant| grant.peer)
             .collect();
         self.peers().into_iter().filter(|peer| peer.online && granting.contains(&peer.key)).map(|peer| peer.key).collect()
+    }
+
+    /// Peers' folders this node's live grants reach, by peer and path.
+    pub fn shared_folders(&self) -> Vec<SharedFolder> {
+        let now = now_ms();
+        let mut out: Vec<SharedFolder> = Vec::new();
+        for grant in self.grants() {
+            if grant.direction != GrantDirection::Received || grant.ended || grant.expires_ms.is_some_and(|expires| expires <= now) {
+                continue;
+            }
+            for scope in grant.scopes {
+                let Resource::Folder { path } = scope.resource else { continue };
+                let can_write = scope.actions.contains(&Action::Write);
+                match out.iter_mut().find(|folder| folder.peer == grant.peer && folder.path == path) {
+                    Some(folder) => folder.can_write |= can_write,
+                    None => out.push(SharedFolder { peer: grant.peer, path, can_write }),
+                }
+            }
+        }
+        out.sort_by(|a, b| a.peer.to_string().cmp(&b.peer.to_string()).then_with(|| a.path.cmp(&b.path)));
+        out
+    }
+
+    /// The entries of `path` (relative, empty for the folder itself) in a
+    /// peer's shared `folder`.
+    pub async fn list_folder(&self, peer: &str, folder: &str, path: &str) -> Result<Vec<FolderEntry>> {
+        folder::list_remote(self, Self::parse_key(peer)?, folder, path).await
+    }
+
+    /// The bytes of file `path` in a peer's shared `folder` (up to [`MAX_FOLDER_FILE`]).
+    pub async fn read_folder_file(&self, peer: &str, folder: &str, path: &str) -> Result<Vec<u8>> {
+        folder::read_remote(self, Self::parse_key(peer)?, folder, path).await
+    }
+
+    /// Writes file `path` in a peer's shared `folder` (needs a write grant).
+    pub async fn write_folder_file(&self, peer: &str, folder: &str, path: &str, bytes: &[u8]) -> Result<()> {
+        folder::write_remote(self, Self::parse_key(peer)?, folder, path, bytes).await
     }
 
     /// Sessions of `peer` this node's grants reach, asked over the network.
