@@ -32,12 +32,14 @@ pub enum BrowserStatus {
 /// Makes the video decoder of each new pixel tab.
 pub type NewDecoder = Arc<dyn Fn() -> Box<dyn VideoDecoder> + Send + Sync>;
 
-/// Live video encoding, as the launcher shows it.
+/// Live video encoding for viewers across the network, as the launcher
+/// shows it. Tabs in this app always get the source frames.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct VideoStatus {
-    /// Live surfaces stream video.
+    /// Live surfaces stream video to network viewers that decode it.
     pub enabled: bool,
-    /// What tabs here get; `None` while the machine's encoders are tried.
+    /// What network viewers get; `None` while the machine's encoders are
+    /// tried.
     pub encoder: Option<StreamInfo>,
     /// Hardware encoders that work here, e.g. `h264_vaapi`.
     pub hardware: Vec<String>,
@@ -515,7 +517,8 @@ impl Panel {
         choice.into()
     }
 
-    /// Whether live surfaces stream video, and with which encoder.
+    /// Whether live surfaces stream video to network viewers, and with
+    /// which encoder.
     fn video_status(&self) -> Element<'_, Message> {
         let toggle = |label: &'static str, on: bool| {
             button(text(label).size(style::SMALL))
@@ -524,7 +527,7 @@ impl Panel {
                 .style(shell::row_for(self.video.enabled == on))
         };
         let choices = row![
-            text("Encode browser and VM frames as video").size(style::SMALL).style(shell::muted),
+            text("Encode browser and VM frames as video for peers").size(style::SMALL).style(shell::muted),
             space::horizontal(),
             toggle("On", true),
             toggle("Off", false),
@@ -532,7 +535,7 @@ impl Panel {
         .spacing(6)
         .align_y(Center);
         let encoder = match &self.video.encoder {
-            _ if !self.video.enabled => "Off: frames go as their source makes them (JPEG screencast, raw VNC rectangles)".to_owned(),
+            _ if !self.video.enabled => "Off: peers get frames as their source makes them (raw pixels, JPEG screencast)".to_owned(),
             None => "Trying this machine's encoders…".to_owned(),
             Some(stream) if stream.hardware => {
                 format!("{} with {}, hardware encoded", encoding_name(stream.encoding), stream.encoder)
@@ -543,7 +546,12 @@ impl Panel {
                 stream.encoder
             ),
         };
-        let mut status = column![choices, text(encoder).size(style::SMALL).style(shell::muted)].spacing(4);
+        let mut status = column![
+            choices,
+            text(encoder).size(style::SMALL).style(shell::muted),
+            text("Tabs here show the source frames: no encode or decode in the way").size(style::SMALL).style(shell::muted),
+        ]
+        .spacing(4);
         if self.video.hardware.len() > 1 {
             status = status.push(
                 text(format!("Hardware encoders: {}", self.video.hardware.join(", "))).size(style::SMALL).style(shell::muted),

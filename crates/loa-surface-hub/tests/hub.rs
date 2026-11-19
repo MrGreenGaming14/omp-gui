@@ -375,29 +375,37 @@ async fn frame_of(frames: &mut broadcast::Receiver<Arc<Frame>>, encoding: Encodi
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_vm_streams_h264_to_a_viewer_that_decodes_it_and_the_toggle_turns_it_off() {
+async fn a_vm_streams_h264_to_a_network_viewer_raw_frames_here_and_the_toggle_turns_video_off() {
     let dir = tempfile::tempdir().unwrap();
     let hub = SurfaceHub::new(config(dir.path(), false));
     assert!(hub.video());
     let (address, _received, send_update) = fake_rfb(8, 4, [0, 200, 0]).await;
     let opened = hub.open_vm(&address, None).await.unwrap();
     let mut frames = opened.surface.frames().unwrap();
-    // The server's picture is in before the stream switches to video.
     send_update.send(()).unwrap();
     assert_eq!(&updated_frame(&mut frames, Encoding::Rgba).await.data[..4], &[0, 200, 0, 255]);
 
-    let stream = opened.surface.negotiate(&[Encoding::H264, Encoding::Rgba]).await.unwrap().unwrap();
+    // A viewer across the network that decodes H.264 gets video...
+    let network = hub.network_surface(&opened.info.uri).await.unwrap();
+    let mut coded = network.frames().unwrap();
+    let stream = network.negotiate(&[Encoding::H264, Encoding::Rgba]).await.unwrap().unwrap();
     assert_eq!((stream.encoding, stream.encoder.as_str()), (Encoding::H264, "rusty_h264"));
-    let frame = frame_of(&mut frames, Encoding::H264).await;
+    let frame = frame_of(&mut coded, Encoding::H264).await;
     assert!(frame.keyframe);
     let mut picture = vec![0; 8 * 4 * 4];
     assert!(loa_surface_bench::video::VideoDecoder::new().decode(&frame, &mut picture).unwrap());
     let [r, g, b, _] = picture[..4] else { unreachable!() };
     assert!(r < 40 && g > 160 && b < 40, "decoded {:?}", &picture[..4]);
+    assert!(Arc::ptr_eq(&network, &hub.network_surface(&opened.info.uri).await.unwrap()), "one encoder per surface");
+
+    // ...while the viewer in this process keeps the source frames.
+    opened.surface.request_keyframe().await.unwrap();
+    let frame = next_frame(&mut frames).await;
+    assert_eq!((frame.encoding, &frame.data[..4]), (Encoding::Rgba, &[0, 200, 0, 255][..]));
 
     hub.set_video(false).await;
-    assert_eq!(opened.surface.stream().unwrap().encoder, loa_surface_bench::live::SOURCE);
-    let frame = frame_of(&mut frames, Encoding::Rgba).await;
+    assert_eq!(network.stream().unwrap().encoder, loa_surface_bench::live::SOURCE);
+    let frame = frame_of(&mut coded, Encoding::Rgba).await;
     assert_eq!(&frame.data[..4], &[0, 200, 0, 255]);
 }
 
@@ -439,4 +447,93 @@ async fn the_virtual_display_capture_is_refused_where_it_cant_run_and_tried_wher
     eprintln!("virtual display tab: {error}");
     assert!(hub.open_surfaces().is_empty());
     assert!(!hub.capture_pending().await);
+}
+
+/// Latency summary in milliseconds: median and 95th percentile.
+fn percentiles(mut samples: Vec<Duration>) -> (u128, u128) {
+    samples.sort();
+    let at = |q: f64| samples[((samples.len() - 1) as f64 * q).round() as usize].as_millis();
+    (at(0.5), at(0.95))
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "runs a real Xvfb (from PATH), headed Chromium and this machine's video encoders; prints the latency"]
+async fn live_a_network_viewer_gets_video_of_a_virtual_display_tab_and_resizes_without_a_stall() {
+    use loa_surface_bench::{canvas::Canvas, decode::FrameDecoder};
+    use loa_surface_proto::{Opened as Session, ViewerEvent, ViewerOptions, memory_pair, open, serve};
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = HubConfig::discover(dir.path());
+    config.fonts = Fonts::none();
+    if config.browser.is_none() {
+        eprintln!("SKIPPED: no Chrome or Chromium installed");
+        return;
+    }
+    if let Err(missing) = &config.virtual_display {
+        eprintln!("SKIPPED: {missing}");
+        return;
+    }
+    let hub = SurfaceHub::new(config);
+    hub.set_capture(CaptureMode::VirtualDisplay).unwrap();
+    hub.encoders().await;
+    // Each click flips the page between red and blue.
+    let page = "data:text/html,<body style='margin:0;height:100vh;background:rgb(255,0,0)' \
+        onmousedown=\"document.body.style.background=\
+        document.body.style.background=='rgb(255, 0, 0)'?'rgb(0,0,255)':'rgb(255,0,0)'\"></body>";
+    // The tab opens at 1280x720; the viewer resizes it to each size.
+    for (width, height) in [(480u32, 320u32), (1000, 700)] {
+        let opened = hub.open_browser(page).await.unwrap();
+        let uri = opened.info.uri.clone();
+        let network = hub.network_surface(&uri).await.unwrap();
+        let (server_end, viewer_end) = memory_pair(None);
+        tokio::spawn(serve(network, server_end));
+        let options = ViewerOptions::new(vec![Encoding::H264, Encoding::Jpeg, Encoding::Png, Encoding::Rgba]);
+        let Session::Pixel(mut viewer) = open(viewer_end, &uri, options).await.unwrap() else { panic!("a pixel surface") };
+        let stream = viewer.stream().cloned().unwrap();
+        assert_eq!(stream.encoding, Encoding::H264);
+        let input = viewer.input();
+        let (mut decoder, mut canvas) = (FrameDecoder::new(), Canvas::new(0, 0));
+        // Decodes frames until the picture is `size` with `rgb` in the
+        // middle, showing input `seq` or later.
+        let mut shown = async |size: (u32, u32), rgb: [u8; 3], seq: u64| loop {
+            let event = tokio::time::timeout(PATIENCE, viewer.next_event()).await.expect("a frame in time").unwrap();
+            let ViewerEvent::Frame(frame) = event else { continue };
+            decoder.apply(&frame, &mut canvas).unwrap();
+            if (canvas.width(), canvas.height()) != size || frame.input_seq < seq {
+                continue;
+            }
+            let at = ((size.1 / 2 * size.0 + size.0 / 2) * 4) as usize;
+            if canvas.rgba()[at..at + 3].iter().zip(rgb).all(|(&a, b)| a.abs_diff(b) < 60) {
+                return frame;
+            }
+        };
+        shown((1280, 720), [255, 0, 0], 0).await;
+        let resizing = std::time::Instant::now();
+        let seq = input.send(Input::Resize { width, height }).unwrap();
+        shown((width, height), [255, 0, 0], seq).await;
+        let resize = resizing.elapsed();
+        let mut samples = Vec::new();
+        for i in 0..20u32 {
+            let (x, y) = ((width / 2 + (i % 5) * 30 - 60) as f32, (height / 2 + (i % 3) * 30 - 30) as f32);
+            let sent = std::time::Instant::now();
+            let press = Input::MouseButton { x, y, button: MouseButton::Left, pressed: true, modifiers: Modifiers::default() };
+            let seq = input.send(press).unwrap();
+            input.send(Input::MouseButton { x, y, button: MouseButton::Left, pressed: false, modifiers: Modifiers::default() }).unwrap();
+            let rgb = if i % 2 == 0 { [0, 0, 255] } else { [255, 0, 0] };
+            let frame = shown((width, height), rgb, seq).await;
+            assert_eq!(frame.encoding, Encoding::H264);
+            samples.push(sent.elapsed());
+        }
+        let (median, p95) = percentiles(samples);
+        eprintln!(
+            "{width}x{height} network viewer, {} with {} ({}): {median} ms, p95 {p95} ms (20 clicks), resize to new picture {} ms",
+            match stream.encoding { Encoding::H264 => "H.264", _ => "other" },
+            stream.encoder,
+            if stream.hardware { "hardware" } else { "software" },
+            resize.as_millis()
+        );
+        viewer.close();
+        hub.close(&uri).await.unwrap();
+    }
+    hub.shutdown().await;
 }

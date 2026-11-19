@@ -3,8 +3,11 @@
 
 use loa_surface::{Encoding, Frame, Input, InputEvent, Modifiers, MouseButton, Surface};
 use loa_surface_bench::encode::ffmpeg::FfmpegConfig;
-use loa_surface_bench::encode::{Accel, Codec, EncoderInfo, ProbeResult, probe};
-use loa_surface_bench::live::{LiveVideo, SOURCE, VideoSurface};
+use loa_surface_bench::encode::software::SoftwareH264;
+use loa_surface_bench::encode::{
+    Accel, AccessUnit, Codec, EncoderInfo, EncoderSettings, LiveEncoder, ProbeResult, Strategy, VideoEncoder, probe,
+};
+use loa_surface_bench::live::{LiveVideo, Opener, SOURCE, VideoSurface};
 use loa_surface_bench::synthetic::{SyntheticConfig, SyntheticSurface};
 use loa_surface_bench::video::VideoDecoder;
 use std::sync::Arc;
@@ -223,4 +226,182 @@ async fn hardware_video_keeps_the_click_to_pixels_budget() {
     let report = loa_surface_bench::report::LatencyReport::from_result(&result, Duration::from_millis(50)).unwrap();
     println!("{}", report.table());
     assert!(report.passed, "p95 {} us", report.input_to_pixels.p95_us);
+}
+
+/// A pixel surface whose whole RGBA pictures the test sends, at any size.
+struct Feed {
+    frames: broadcast::Sender<Arc<Frame>>,
+    resized: std::sync::Mutex<Vec<(u32, u32)>>,
+}
+
+impl Feed {
+    fn send(&self, input_seq: u64, (width, height): (u32, u32), gray: u8) -> std::time::Instant {
+        let mut data = vec![gray; width as usize * height as usize * 4];
+        data.iter_mut().skip(3).step_by(4).for_each(|alpha| *alpha = 255);
+        let frame = Frame {
+            seq: input_seq,
+            captured_us: 0,
+            input_seq,
+            width,
+            height,
+            region: loa_surface::Rect { x: 0, y: 0, width, height },
+            encoding: Encoding::Rgba,
+            keyframe: true,
+            data: data.into(),
+        };
+        let sent = std::time::Instant::now();
+        self.frames.send(Arc::new(frame)).unwrap();
+        sent
+    }
+}
+
+#[async_trait::async_trait]
+impl Surface for Feed {
+    fn info(&self) -> loa_surface::SurfaceInfo {
+        loa_surface::SurfaceInfo {
+            uri: "surface://bench/feed".parse().unwrap(),
+            name: "Feed".into(),
+            width: 640,
+            height: 480,
+            mode: loa_surface::SurfaceMode::Pixel,
+            mime: None,
+        }
+    }
+
+    fn frames(&self) -> loa_surface::Result<broadcast::Receiver<Arc<Frame>>> {
+        Ok(self.frames.subscribe())
+    }
+
+    async fn request_keyframe(&self) -> loa_surface::Result<()> {
+        Ok(())
+    }
+
+    async fn input(&self, event: InputEvent) -> loa_surface::Result<()> {
+        if let Input::Resize { width, height } = event.input {
+            self.resized.lock().unwrap().push((width, height));
+        }
+        Ok(())
+    }
+
+    async fn document(&self) -> loa_surface::Result<loa_surface::Document> {
+        Err(loa_surface::SurfaceError::Backend("pixel surface".into()))
+    }
+
+    async fn screenshot(&self) -> loa_surface::Result<bytes::Bytes> {
+        Err(loa_surface::SurfaceError::Backend("no screenshots".into()))
+    }
+}
+
+/// A hardware encoder as the stream sees it, coding with the software one.
+struct FakeHardware(SoftwareH264);
+
+fn fake_hardware() -> EncoderInfo {
+    EncoderInfo { name: "ffmpeg h264_test".into(), codec: Codec::H264, accel: Accel::Vaapi }
+}
+
+impl VideoEncoder for FakeHardware {
+    fn info(&self) -> EncoderInfo {
+        fake_hardware()
+    }
+
+    fn encode(&mut self, rgba: &[u8], keyframe: bool) -> loa_surface_bench::Result<AccessUnit> {
+        self.0.encode(rgba, keyframe)
+    }
+}
+
+/// The coded frame of the picture sent as `input_seq`.
+async fn coded(frames: &mut broadcast::Receiver<Arc<Frame>>, input_seq: u64) -> Arc<Frame> {
+    loop {
+        let frame = next(frames).await;
+        if frame.input_seq == input_seq {
+            return frame;
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_resize_starts_one_encoder_and_no_picture_waits_for_it() {
+    // Each hardware encoder start is counted, then blocks until the test
+    // lets it finish: a picture that waited for one would never come.
+    let spawned = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (permit, permits) = std::sync::mpsc::channel::<()>();
+    let permits = Arc::new(std::sync::Mutex::new(permits));
+    let opener: Opener = {
+        let spawned = spawned.clone();
+        Arc::new(move |info: &EncoderInfo, width, height| {
+            let software = SoftwareH264::new(&EncoderSettings::new(width, height))?;
+            let encoder: Box<dyn VideoEncoder> = if info.accel.is_hardware() {
+                spawned.lock().unwrap().push((width, height));
+                permits.lock().unwrap().recv().unwrap();
+                Box::new(FakeHardware(software))
+            } else {
+                Box::new(software)
+            };
+            Ok(LiveEncoder::new(width, height, Strategy::Video(encoder)))
+        })
+    };
+    let mut probed = vec![ProbeResult { info: fake_hardware(), error: None }];
+    probed.extend(probe(None));
+    let feed = Arc::new(Feed { frames: broadcast::channel(16).0, resized: Default::default() });
+    let video = VideoSurface::new(feed.clone(), Arc::new(LiveVideo::with_opener(probed, opener)), true).unwrap();
+    let mut frames = video.frames().unwrap();
+    let negotiated = video.negotiate(&[Encoding::H264]).await.unwrap().unwrap();
+    assert_eq!((negotiated.encoder.as_str(), negotiated.hardware), ("h264_test", true));
+    let mut decoder = VideoDecoder::new();
+    let mut check = |frame: &Frame, gray: u8| {
+        assert_eq!(frame.encoding, Encoding::H264);
+        let mut picture = vec![0; frame.width as usize * frame.height as usize * 4];
+        assert!(decoder.decode(frame, &mut picture).unwrap());
+        let center = pixel(&picture, frame.width, frame.width / 2, frame.height / 2);
+        assert!(near(center, [gray; 3]), "decoded {center:?}, sent {gray}");
+    };
+    let mut seq = 0;
+    let mut send = |size, gray| {
+        seq += 1;
+        feed.send(seq, size, gray);
+        seq
+    };
+
+    // The hardware encoder is starting (and held): the first picture is
+    // coded in process instead of waiting.
+    let frame = coded(&mut frames, send((640, 480), 40)).await;
+    assert!(frame.keyframe);
+    check(&frame, 40);
+    assert_eq!(video.stream().unwrap().encoder, "rusty_h264");
+    // Once it is up, the hardware encoder takes over with a keyframe.
+    permit.send(()).unwrap();
+    let frame = loop {
+        let frame = coded(&mut frames, send((640, 480), 80)).await;
+        if video.stream().unwrap().encoder == "h264_test" {
+            break frame;
+        }
+        tokio::task::yield_now().await;
+    };
+    assert!(frame.keyframe);
+    check(&frame, 80);
+    assert_eq!(*spawned.lock().unwrap(), [(640, 480)]);
+
+    // The viewer resizes: its request starts the 1000x700 encoder, and
+    // pictures of that size go out while it is held.
+    let resize = Input::Resize { width: 1000, height: 700 };
+    video.input(InputEvent { seq: 0, sent_us: 0, input: resize }).await.unwrap();
+    assert_eq!(*feed.resized.lock().unwrap(), [(1000, 700)]);
+    for gray in [120, 130, 140] {
+        let frame = coded(&mut frames, send((1000, 700), gray)).await;
+        assert_eq!((frame.width, frame.height), (1000, 700));
+        check(&frame, gray);
+    }
+    assert_eq!(video.stream().unwrap().encoder, "rusty_h264");
+    permit.send(()).unwrap();
+    let frame = loop {
+        let frame = coded(&mut frames, send((1000, 700), 160)).await;
+        if video.stream().unwrap().encoder == "h264_test" {
+            break frame;
+        }
+        tokio::task::yield_now().await;
+    };
+    assert_eq!((frame.width, frame.height, frame.keyframe), (1000, 700, true));
+    check(&frame, 160);
+    // Exactly one encoder start for the resize, not one per picture.
+    assert_eq!(*spawned.lock().unwrap(), [(640, 480), (1000, 700)]);
 }

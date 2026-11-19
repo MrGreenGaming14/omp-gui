@@ -29,8 +29,8 @@ pub struct HubConfig {
     /// that only take text results.
     pub screenshot_dir: PathBuf,
     pub rfb: RfbOptions,
-    /// Live surfaces (browser tabs, VMs) stream video to viewers that decode
-    /// it.
+    /// Live surfaces (browser tabs, VMs) stream video to viewers across the
+    /// network that decode it (see [`SurfaceHub::network_surface`]).
     pub video: bool,
     /// The ffmpeg hardware encoders run through.
     pub ffmpeg: Option<FfmpegConfig>,
@@ -138,6 +138,9 @@ pub struct Opened {
     /// The surface as it was when opened.
     pub info: SurfaceInfo,
     pub origin: Origin,
+    /// The surface itself, for viewers and tools in this process: its
+    /// frames come as the source makes them (raw RGBA, JPEG screencast,
+    /// VNC rectangles), with no encoder in the way.
     pub surface: Arc<dyn Surface>,
 }
 
@@ -191,7 +194,7 @@ pub struct SurfaceHub {
     /// This machine's encoders, tried once.
     encoders: OnceCell<Arc<LiveVideo>>,
     video: AtomicBool,
-    /// Live surfaces coded as video, by uri.
+    /// Live surfaces coded as video for viewers across the network, by uri.
     videos: Mutex<Vec<(SurfaceUri, Arc<VideoSurface>)>>,
     capture: Mutex<CaptureMode>,
 }
@@ -245,8 +248,7 @@ impl SurfaceHub {
     pub async fn open_browser(&self, url: &str) -> Result<Opened> {
         let server = self.browser_server().await?;
         let tab = server.open_tab(&normalize_url(url)).await?;
-        let surface = self.live(tab).await?;
-        Ok(self.register(surface, Origin::Browser))
+        Ok(self.register(tab, Origin::Browser))
     }
 
     /// The encoders of this machine, tried on the first call (it starts
@@ -260,7 +262,7 @@ impl SurfaceHub {
         self.encoders.get_or_init(probe).await.clone()
     }
 
-    /// Whether live surfaces stream video to viewers that decode it.
+    /// Whether live surfaces stream video to network viewers that decode it.
     pub fn video(&self) -> bool {
         self.video.load(Ordering::Acquire)
     }
@@ -276,11 +278,30 @@ impl SurfaceHub {
         }
     }
 
-    /// `surface`, coded as video for the viewers that negotiate it.
-    async fn live(&self, surface: Arc<dyn Surface>) -> Result<Arc<dyn Surface>> {
+    /// The open surface `uri` for a viewer across the network (a peer over
+    /// `omp/surface/1`). Live surfaces (browser tabs, VMs) are coded as
+    /// video for viewers that negotiate it, which keeps them small on the
+    /// wire; documents and declared surfaces go as they are. Viewers in
+    /// this process use [`Opened::surface`] instead.
+    pub async fn network_surface(&self, uri: &SurfaceUri) -> Result<Arc<dyn Surface>> {
+        let opened = self.opened(uri).ok_or_else(|| HubError::NotFound(uri.clone()))?;
+        let live = matches!(opened.origin, Origin::Browser | Origin::Vm) && opened.info.mode == SurfaceMode::Pixel;
+        if !live {
+            return Ok(opened.surface);
+        }
+        let coded = |videos: &[(SurfaceUri, Arc<VideoSurface>)]| {
+            videos.iter().find(|(open, _)| open == uri).map(|(_, video)| video.clone() as Arc<dyn Surface>)
+        };
+        if let Some(video) = coded(&lock(&self.videos)) {
+            return Ok(video);
+        }
         let encoders = self.encoders().await;
-        let video = VideoSurface::new(surface, encoders, self.video())?;
-        lock(&self.videos).push((video.info().uri, video.clone()));
+        let mut videos = lock(&self.videos);
+        if let Some(video) = coded(&videos) {
+            return Ok(video);
+        }
+        let video = VideoSurface::new(opened.surface, encoders, self.video())?;
+        videos.push((uri.clone(), video.clone()));
         Ok(video)
     }
 
@@ -382,7 +403,6 @@ impl SurfaceHub {
             return Ok(opened);
         }
         let surface = self.vm.open_rfb(&uri).await?;
-        let surface = self.live(surface).await?;
         Ok(self.register(surface, Origin::Vm))
     }
 
@@ -396,7 +416,6 @@ impl SurfaceHub {
             && self.vm.list().await.unwrap_or_default().iter().any(|info| &info.uri == uri);
         if own_vm {
             let surface = self.vm.open_rfb(uri).await?;
-            let surface = self.live(surface).await?;
             return Ok(self.register(surface, Origin::Vm));
         }
         let declared = lock(&self.declared)
