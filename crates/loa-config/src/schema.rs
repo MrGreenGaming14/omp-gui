@@ -31,6 +31,9 @@ pub struct Config {
     /// The project whose folder is the active folder, restored at startup.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub active_project: Option<ActiveProject>,
+    /// Whether open projects show as tabs across the top.
+    #[serde(skip_serializing_if = "is_false")]
+    pub project_tabs: bool,
     pub harness: HarnessSettings,
     pub network: NetworkSettings,
     pub updater: UpdaterSettings,
@@ -55,6 +58,7 @@ impl Default for Config {
             pinned: BTreeSet::new(),
             pinned_projects: BTreeSet::new(),
             active_project: None,
+            project_tabs: false,
             harness: HarnessSettings::default(),
             network: NetworkSettings::default(),
             updater: UpdaterSettings::default(),
@@ -66,6 +70,10 @@ impl Default for Config {
             unknown: Vec::new(),
         }
     }
+}
+
+fn is_false(flag: &bool) -> bool {
+    !*flag
 }
 
 /// The project the user last selected and the folder it runs in.

@@ -4,7 +4,7 @@
 use iced::widget::text;
 use iced::{Color, Element, Settings, Size, Theme};
 use iced_test::{Simulator, selector};
-use loa_ui_shell::layout::{PANEL_ID, SIDEBAR_WIDTH};
+use loa_ui_shell::layout::{PANEL_ID, SIDEBAR_WIDTH, project_tab_close_id, project_tab_id};
 use loa_ui_shell::{Event, Message, NodeStatus, PanelPrefs, PanelTab, Preference, SessionSummary, State, sidebar, topbar};
 
 const WINDOW: Size = Size::new(1280.0, 800.0);
@@ -191,6 +191,43 @@ fn panel_toggle_hides_and_restores_the_panel_on_its_tab() {
     let mut ui = simulator(&state);
     assert!(ui.find(selector::id(PANEL_ID)).is_ok());
     assert!(ui.find("terminal body").is_ok(), "panel forgot its active tab");
+}
+
+fn with_project_tabs(enabled: bool) -> State {
+    let mut state = shell(false);
+    state.set_project_tabs(enabled);
+    state.set_open_projects(vec!["harness".into(), "docs".into()]);
+    state.set_active_project(Some("harness".into()));
+    state
+}
+
+#[test]
+fn project_tabs_open_their_project_and_close_without_opening() {
+    let mut state = with_project_tabs(true);
+    {
+        let mut ui = simulator(&state);
+        assert!(ui.find(selector::id(project_tab_id("harness"))).is_ok());
+        assert!(ui.find(selector::id(project_tab_id("docs"))).is_ok());
+    }
+
+    let mut ui = simulator(&state);
+    ui.click(selector::id(project_tab_id("docs"))).expect("docs tab");
+    let messages: Vec<Message> = ui.into_messages().collect();
+    assert_eq!(deliver(&mut state, messages), [Event::OpenProject("docs".into())]);
+
+    let mut ui = simulator(&state);
+    ui.click(selector::id(project_tab_close_id("docs"))).expect("docs close button");
+    let messages: Vec<Message> = ui.into_messages().collect();
+    assert_eq!(deliver(&mut state, messages), [Event::CloseProjectTab("docs".into())]);
+}
+
+#[test]
+fn project_tabs_off_draws_no_strip() {
+    let state = with_project_tabs(false);
+    let mut ui = simulator(&state);
+    assert!(ui.find(selector::id(project_tab_id("harness"))).is_err());
+    assert!(ui.find(selector::id(project_tab_close_id("harness"))).is_err());
+    assert!(ui.find(selector::id(project_tab_id("docs"))).is_err());
 }
 
 /// Renders the frame in `theme` and returns `(width, rgba)` of the snapshot.
