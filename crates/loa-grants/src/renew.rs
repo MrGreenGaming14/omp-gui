@@ -21,6 +21,7 @@ impl RenewFailure {
     pub fn from_issuer(error: &GrantError) -> Self {
         match error {
             GrantError::Revoked(_)
+            | GrantError::Expired(_)
             | GrantError::UnknownGrant(_)
             | GrantError::NotHolder(_)
             | GrantError::ReshareForbidden(_) => RenewFailure::Refused(error.to_string()),

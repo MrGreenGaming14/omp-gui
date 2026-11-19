@@ -133,6 +133,31 @@ impl PeerStore {
             params![key.to_string(), version],
         )? != 0)
     }
+
+    /// Sets the user's name for a peer. Returns whether the peer exists.
+    pub fn rename(&self, key: &NodeId, name: &str) -> Result<bool> {
+        Ok(self.db.execute("UPDATE net_peers SET name = ?2 WHERE key = ?1", params![key.to_string(), name])? != 0)
+    }
+
+    /// Names a peer after its own hello only while the user hasn't named it.
+    pub fn name_if_unset(&self, key: &NodeId, name: &str) -> Result<bool> {
+        Ok(self.db.execute(
+            "UPDATE net_peers SET name = ?2 WHERE key = ?1 AND (name IS NULL OR name = '')",
+            params![key.to_string(), name],
+        )? != 0)
+    }
+
+    /// Forgets a peer. Returns whether it existed.
+    pub fn remove(&self, key: &NodeId) -> Result<bool> {
+        Ok(self.db.execute("DELETE FROM net_peers WHERE key = ?1", params![key.to_string()])? != 0)
+    }
+
+    /// Replaces a known peer's address hints, keeping how it was found.
+    pub fn set_addresses(&self, key: &NodeId, addresses: &[SocketAddr]) -> Result<bool> {
+        let addresses = serde_json::to_string(addresses)
+            .map_err(|e| NetError::Protocol(format!("encoding peer addresses: {e}")))?;
+        Ok(self.db.execute("UPDATE net_peers SET addresses = ?2 WHERE key = ?1", params![key.to_string(), addresses])? != 0)
+    }
 }
 
 type PeerRow = (String, Option<String>, String, String, bool, Option<i64>, Option<String>);
@@ -164,6 +189,20 @@ mod tests {
 
     fn key() -> NodeId {
         iroh::SecretKey::from_bytes(&[7; 32]).public()
+    }
+
+    #[test]
+    fn rename_hello_name_and_remove() {
+        let store = PeerStore::in_memory().unwrap();
+        let id = key();
+        store.add_peer(&id.to_string(), None, &[], DiscoverySource::Manual).unwrap();
+        assert!(store.name_if_unset(&id, "laptop").unwrap());
+        assert!(store.rename(&id, "Alice's laptop").unwrap());
+        assert!(!store.name_if_unset(&id, "laptop").unwrap());
+        assert_eq!(store.lookup(&id).unwrap().unwrap().name.as_deref(), Some("Alice's laptop"));
+        assert!(store.remove(&id).unwrap());
+        assert!(!store.remove(&id).unwrap());
+        assert!(store.list().unwrap().is_empty());
     }
 
     #[test]

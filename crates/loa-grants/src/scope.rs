@@ -41,6 +41,13 @@ impl Action {
         }
     }
 
+    /// The action named `text` ([`Action::as_str`]).
+    pub fn parse(text: &str) -> Option<Self> {
+        [Action::View, Action::Suggest, Action::Drive, Action::Fork, Action::Read, Action::Write, Action::Exec]
+            .into_iter()
+            .find(|a| a.as_str() == text)
+    }
+
     /// Actions granted along with this one: drive includes suggest and view,
     /// suggest and fork include view, write includes read.
     const fn implied(self) -> &'static [Action] {
@@ -75,6 +82,8 @@ pub enum Resource {
     Ssh { host: String },
     /// One surface, by `surface://server/name` uri.
     Surface { uri: String },
+    /// Running sandbox tasks on the issuing node (its sandbox providers).
+    Sandbox,
 }
 
 impl Resource {
@@ -86,6 +95,7 @@ impl Resource {
             Resource::FutureSessions { .. } => "future sessions",
             Resource::Ssh { .. } => "ssh",
             Resource::Surface { .. } => "surface",
+            Resource::Sandbox => "sandbox",
         }
     }
 
@@ -98,6 +108,7 @@ impl Resource {
             | Resource::FutureSessions { .. } => matches!(action, A::View | A::Suggest | A::Drive | A::Fork),
             Resource::Ssh { .. } => matches!(action, A::Read | A::Write | A::Exec),
             Resource::Surface { .. } => matches!(action, A::View | A::Drive),
+            Resource::Sandbox => matches!(action, A::Exec),
         }
     }
 }
@@ -184,6 +195,8 @@ pub enum Target<'a> {
     Session { session: &'a SessionFacts, turn: Option<NodeId> },
     Ssh { host: &'a str },
     Surface { uri: &'a str },
+    /// The issuing node's sandbox.
+    Sandbox,
 }
 
 /// One thing a peer wants to do.
@@ -210,6 +223,11 @@ impl<'a> Request<'a> {
 
     pub fn surface(action: Action, uri: &'a str) -> Self {
         Self { action, target: Target::Surface { uri } }
+    }
+
+    /// `action` (`Exec`) on this node's sandbox.
+    pub fn sandbox(action: Action) -> Self {
+        Self { action, target: Target::Sandbox }
     }
 }
 

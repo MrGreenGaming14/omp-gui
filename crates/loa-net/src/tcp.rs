@@ -87,29 +87,63 @@ impl TcpNode {
     pub fn id(&self) -> NodeId { self.id }
     pub fn local_addr(&self) -> SocketAddr { self.addr }
 
+    /// Stops accepting connections. Open connections run until either side closes.
+    pub fn close(&self) { self.listener_task.abort(); }
+
     pub async fn dial(&self, peer: NodeId, addr: SocketAddr, protocol: &str, versions: &[u32]) -> Result<Connection> {
+        self.connect(Some(peer), addr, protocol, versions).await
+            .map_err(|reason| match reason {
+                Dialed::Failed(reason) => NetError::Connect { peer, reason },
+                Dialed::Error(e) => e,
+            })
+    }
+
+    /// Dials whatever node answers at `addr` and returns the key it proved in
+    /// the TLS handshake ([`PeerConnection::remote`]). For probing addresses
+    /// learned without a key (Tailscale names); the caller decides whether to
+    /// trust that node.
+    pub async fn dial_any(&self, addr: SocketAddr, protocol: &str, versions: &[u32]) -> Result<Connection> {
+        self.connect(None, addr, protocol, versions).await
+            .map_err(|reason| match reason {
+                Dialed::Failed(reason) => NetError::InvalidAddress(format!("{addr}: {reason}")),
+                Dialed::Error(e) => e,
+            })
+    }
+
+    async fn connect(&self, expected: Option<NodeId>, addr: SocketAddr, protocol: &str, versions: &[u32]) -> Result<Connection, Dialed> {
         let offers = alpn::offer(protocol, versions);
-        if offers.is_empty() { return Err(NetError::NoSharedVersion { peer, protocol: protocol.into() }); }
+        if offers.is_empty() { return Err(Dialed::Failed(format!("no version of {protocol} offered"))); }
         let mut config = ClientConfig::builder_with_provider(Arc::new(ring::default_provider()))
             .with_protocol_versions(&[&rustls::version::TLS13])
-            .map_err(|e| NetError::Tls(e.to_string()))?
-            .dangerous().with_custom_certificate_verifier(Arc::new(NodeVerifier { expected: Some(peer) }))
+            .map_err(|e| Dialed::Error(NetError::Tls(e.to_string())))?
+            .dangerous().with_custom_certificate_verifier(Arc::new(NodeVerifier { expected }))
             .with_client_auth_cert(vec![self.identity.0.clone()], PrivateKeyDer::Pkcs8(self.identity.1.clone_key()))
-            .map_err(|e| NetError::Tls(e.to_string()))?;
+            .map_err(|e| Dialed::Error(NetError::Tls(e.to_string())))?;
         config.alpn_protocols = offers;
-        let socket = TcpStream::connect(addr).await.map_err(|e| NetError::Connect { peer, reason: e.to_string() })?;
+        let socket = TcpStream::connect(addr).await.map_err(|e| Dialed::Failed(e.to_string()))?;
         let tls = TlsConnector::from(Arc::new(config))
             .connect(ServerName::try_from("localhost").expect("static DNS name"), socket)
-            .await.map_err(|e| NetError::Connect { peer, reason: e.to_string() })?;
-        let verified = certificate_id(tls.get_ref().1.peer_certificates().and_then(|c| c.first()).ok_or_else(|| NetError::Tls("server sent no certificate".into()))?)?;
-        if verified != peer { return Err(NetError::WrongPeer { expected: peer, actual: verified }); }
-        let selected = tls.get_ref().1.alpn_protocol().ok_or_else(|| NetError::NoSharedVersion { peer, protocol: protocol.into() })?;
-        let label = Alpn::parse(selected)?;
-        if label.protocol != protocol || !versions.contains(&label.version) {
-            return Err(NetError::NoSharedVersion { peer, protocol: protocol.into() });
+            .await.map_err(|e| Dialed::Failed(e.to_string()))?;
+        let cert = tls.get_ref().1.peer_certificates().and_then(|c| c.first())
+            .ok_or_else(|| Dialed::Error(NetError::Tls("server sent no certificate".into())))?;
+        let verified = certificate_id(cert).map_err(Dialed::Error)?;
+        if let Some(peer) = expected && verified != peer {
+            return Err(Dialed::Error(NetError::WrongPeer { expected: peer, actual: verified }));
         }
-        Ok(start_connection(tls, peer, label, Mode::Client))
+        let unshared = || Dialed::Error(NetError::NoSharedVersion { peer: verified, protocol: protocol.into() });
+        let selected = tls.get_ref().1.alpn_protocol().ok_or_else(unshared)?;
+        let label = Alpn::parse(selected).map_err(Dialed::Error)?;
+        if label.protocol != protocol || !versions.contains(&label.version) {
+            return Err(unshared());
+        }
+        Ok(start_connection(tls, verified, label, Mode::Client))
     }
+}
+
+/// Why a TCP dial failed: reaching the address, or anything after it.
+enum Dialed {
+    Failed(String),
+    Error(NetError),
 }
 
 async fn accept_one(socket: TcpStream, acceptor: TlsAcceptor, router: Router) -> Result<()> {

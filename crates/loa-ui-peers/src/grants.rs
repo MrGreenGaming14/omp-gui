@@ -4,7 +4,7 @@ use std::fmt;
 
 /// Resource category protected by a grant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GrantScope { Session, Prompt, Project, FutureSessions, SshHost, Surface }
+pub enum GrantScope { Session, Prompt, Project, FutureSessions, SshHost, Surface, Sandbox }
 
 /// A concrete resource in an app-supplied picker.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,9 +28,15 @@ pub struct GrantResource {
 pub enum Permission { View, Suggest, Drive, #[default] Fork }
 impl Permission {
     pub const ALL: [Self; 4] = [Self::View, Self::Suggest, Self::Drive, Self::Fork];
-    /// Surface streams only allow viewing or sending input.
+    /// Surface streams only allow viewing or sending input; an SSH host is
+    /// read (view) or used to run commands (drive); a sandbox only runs
+    /// tasks (drive).
     pub fn allowed_for(self, scope: &GrantScope) -> bool {
-        *scope != GrantScope::Surface || matches!(self, Self::View | Self::Drive)
+        match scope {
+            GrantScope::Sandbox => self == Self::Drive,
+            GrantScope::Surface | GrantScope::SshHost => matches!(self, Self::View | Self::Drive),
+            _ => true,
+        }
     }
 }
 impl fmt::Display for Permission {
@@ -56,10 +62,13 @@ pub struct Grant {
     pub direction: GrantDirection,
     pub resource: GrantResource,
     pub permission: Permission,
-    pub expires_at: u64,
+    /// When the grant ends; `None` renews until revoked.
+    pub expires_at: Option<u64>,
     /// Next planned automatic renewal, if known.
     pub renews_at: Option<u64>,
     pub reshare: bool,
+    /// Revoked by this node, or refused renewal by its issuer.
+    pub ended: bool,
 }
 
 /// Readable resource and permission summary shared by both grant directions.
@@ -78,8 +87,16 @@ pub fn grant_summary(grant: &Grant) -> String {
 impl Grant {
     /// Display expiry and time until the next renewal using the app's clock.
     pub fn expiry_text(&self, now: u64) -> String {
-        let expiry = if self.expires_at <= now { "expired".to_owned() } else {
-            format!("expires in {}", duration(self.expires_at - now))
+        if self.ended {
+            return match self.direction {
+                GrantDirection::Given => "revoked".to_owned(),
+                GrantDirection::Received => "revoked by its issuer".to_owned(),
+            };
+        }
+        let expiry = match self.expires_at {
+            None => "no end date".to_owned(),
+            Some(at) if at <= now => "expired".to_owned(),
+            Some(at) => format!("expires in {}", duration(at - now)),
         };
         match self.renews_at {
             Some(renewal) if renewal > now => format!("{expiry}; renews in {}", duration(renewal - now)),
@@ -141,7 +158,11 @@ impl GrantForm {
             self.ssh_confirmed = false;
             self.ssh_confirmation_pending = false;
             self.future_sessions = false;
-            self.permission = if resource.as_ref().is_some_and(|r| r.scope == GrantScope::Surface) { Permission::View } else { Permission::Fork };
+            self.permission = match resource.as_ref().map(|r| r.scope) {
+                Some(GrantScope::Surface | GrantScope::SshHost) => Permission::View,
+                Some(GrantScope::Sandbox) => Permission::Drive,
+                _ => Permission::Fork,
+            };
         }
         self.resource = resource;
     }
@@ -180,11 +201,11 @@ mod tests {
     fn grant(scope: GrantScope) -> Grant {
         Grant { id: "grant".into(), peer_key: "peer".into(), direction: GrantDirection::Given,
             resource: GrantResource { id: "resource".into(), label: "Prompt A".into(), scope, future_sessions: true },
-            permission: Permission::View, expires_at: 7200, renews_at: Some(3600), reshare: false }
+            permission: Permission::View, expires_at: Some(7200), renews_at: Some(3600), reshare: false, ended: false }
     }
     fn state() -> State {
         let mut state = State::default();
-        state.set_data(Data { peers: vec![Peer { key: "peer".into(), name: "Alice".into(), discovery: Discovery::Lan, presence: Presence::Online, last_seen: None, transport: Transport::Direct, app_version: "1.0.0".into(), shared_protocol: true }], grants: vec![grant(GrantScope::Prompt)], resources: vec![choice(GrantScope::Prompt), ResourceChoice { id: "ssh".into(), label: "Host".into(), scope: GrantScope::SshHost }], ..Data::default() });
+        state.set_data(Data { peers: vec![Peer { key: "peer".into(), name: "Alice".into(), discovery: Discovery::Lan, presence: Presence::Online, last_seen: None, transport: Transport::Direct, app_version: "1.0.0".into(), shared_protocol: Some(true) }], grants: vec![grant(GrantScope::Prompt)], resources: vec![choice(GrantScope::Prompt), ResourceChoice { id: "ssh".into(), label: "Host".into(), scope: GrantScope::SshHost }], ..Data::default() });
         state
     }
 
@@ -288,8 +309,8 @@ mod tests {
     fn nearby_nodes_obey_filter_and_sort_and_cannot_be_added_twice() {
         let mut state = state();
         state.data.nearby = vec![
-            Peer { key: "near-z".into(), name: "Zara".into(), discovery: Discovery::Lan, presence: Presence::Offline, last_seen: Some(1), transport: Transport::None, app_version: "1.0.0".into(), shared_protocol: true },
-            Peer { key: "near-a".into(), name: "Alice nearby".into(), discovery: Discovery::Tailscale, presence: Presence::Online, last_seen: Some(2), transport: Transport::Direct, app_version: "1.0.0".into(), shared_protocol: true },
+            Peer { key: "near-z".into(), name: "Zara".into(), discovery: Discovery::Lan, presence: Presence::Offline, last_seen: Some(1), transport: Transport::None, app_version: "1.0.0".into(), shared_protocol: Some(true) },
+            Peer { key: "near-a".into(), name: "Alice nearby".into(), discovery: Discovery::Tailscale, presence: Presence::Online, last_seen: Some(2), transport: Transport::Direct, app_version: "1.0.0".into(), shared_protocol: Some(true) },
             state.data.peers[0].clone(),
         ];
         state.sort = crate::PeerSort::OnlineFirst;
@@ -311,5 +332,40 @@ mod tests {
         state.set_data(snapshot);
         assert!(state.update(Message::ConfirmRevoke).1.is_none());
         assert!(state.update(Message::SubmitGrant).1.is_none());
+    }
+
+    #[test]
+    fn renew_open_fork_scan_and_copy_own_key_are_checked_against_the_snapshot() {
+        let mut state = state();
+        state.data.node = crate::NodeCard { key: "own".into(), tailscale_available: false, ..crate::NodeCard::default() };
+        state.data.remote_sessions = vec![crate::RemoteItem {
+            peer_key: "peer".into(), peer_name: "Alice".into(), session: "s1".into(), title: "Plan".into(),
+            harness: "omp".into(), access: "view".into(), can_drive: false, can_fork: false, online: true,
+        }];
+        assert_eq!(state.update(Message::RenewGrant("grant".into())).1, Some(Event::RenewGrant("grant".into())));
+        assert!(state.update(Message::RenewGrant("other".into())).1.is_none());
+        assert_eq!(state.update(Message::CopyKey("own".into())).1, Some(Event::CopyKey("own".into())));
+        assert!(state.update(Message::CopyKey("stranger".into())).1.is_none());
+        assert!(state.update(Message::ScanTailscale).1.is_none(), "no tailscale, no scan");
+        state.data.node.tailscale_available = true;
+        assert_eq!(state.update(Message::ScanTailscale).1, Some(Event::ScanTailscale));
+        let open = Message::OpenRemote { peer: "peer".into(), session: "s1".into() };
+        assert_eq!(state.update(open).1, Some(Event::OpenRemote { peer: "peer".into(), session: "s1".into() }));
+        assert!(state.update(Message::OpenRemote { peer: "peer".into(), session: "s2".into() }).1.is_none());
+        assert!(state.update(Message::ForkRemote { peer: "peer".into(), session: "s1".into() }).1.is_none(), "view only");
+        state.data.remote_sessions[0].can_fork = true;
+        assert_eq!(
+            state.update(Message::ForkRemote { peer: "peer".into(), session: "s1".into() }).1,
+            Some(Event::ForkRemote { peer: "peer".into(), session: "s1".into() })
+        );
+    }
+
+    #[test]
+    fn ssh_hosts_take_view_or_drive_and_default_to_view() {
+        let mut form = GrantForm::default();
+        form.select_resource(Some(ResourceChoice { id: "ssh".into(), label: "box".into(), scope: GrantScope::SshHost }));
+        assert_eq!(form.permission, Permission::View);
+        assert!(!Permission::Fork.allowed_for(&GrantScope::SshHost));
+        assert!(Permission::Drive.allowed_for(&GrantScope::SshHost));
     }
 }

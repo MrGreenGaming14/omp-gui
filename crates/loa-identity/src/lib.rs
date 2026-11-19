@@ -9,7 +9,9 @@ mod key;
 mod store;
 
 pub use key::{NodeIdentity, PublicKey, SECRET_KEY_LENGTH, Signature};
-pub use store::{KeyStore, MemoryKeyStore, OsKeychain, SecretBytes};
+pub use store::{
+    FileKeyStore, KeySource, KeyStore, MemoryKeyStore, OsKeychain, SecretBytes, load_app_identity, load_node_identity,
+};
 
 /// Everything that can go wrong loading, storing, parsing or verifying a node key.
 ///
@@ -19,6 +21,10 @@ pub enum IdentityError {
     /// The key store could not be read or written.
     #[error("key store: {0}")]
     Store(String),
+    /// The OS credential store can't be used at all (no Secret Service, locked
+    /// or missing platform store). Callers may fall back to a [`FileKeyStore`].
+    #[error("os keychain unavailable: {0}")]
+    Unavailable(String),
     /// The key store holds a value that is not a 32 byte ed25519 seed. It is left
     /// untouched so the user can recover it; a new key would change the node's address.
     #[error("stored node key has {found} bytes, expected {SECRET_KEY_LENGTH}")]

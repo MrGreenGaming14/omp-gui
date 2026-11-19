@@ -45,8 +45,8 @@ pub use keys::{Challenge, NodeKey, NodePublicKey, Proof, prove};
 pub use renew::{RenewFailure, RenewOutcome, RenewTransport, Renewer};
 pub use scope::{Action, Request, Resource, Scope, SessionFacts, Target, turn_of};
 pub use select::{REMOTE_SERVER, Tool, ToolAccess, ToolSource, Visibility};
-pub use store::{GrantSpec, GrantStore, IssuedGrant, Narrowing, ReceivedGrant};
-pub use token::{Denied, GrantId, Link, Presented, Revocations, VerifiedGrant, Verifier};
+pub use store::{GrantSpec, GrantStore, IssuedGrant, IssuedRecord, Narrowing, ReceivedGrant};
+pub use token::{Denied, GrantId, Link, Presented, Revocations, VerifiedGrant, Verifier, token_scopes};
 
 /// Default lifetime of a token. Grants renew well before this runs out.
 pub const DEFAULT_TTL_MS: i64 = 10 * 60_000;
@@ -77,6 +77,8 @@ pub enum GrantError {
     UnknownGrant(GrantId),
     #[error("grant {0} is revoked")]
     Revoked(GrantId),
+    #[error("grant {0} has ended")]
+    Expired(GrantId),
     #[error("the requester doesn't hold grant {0}")]
     NotHolder(GrantId),
     #[error("grant {0} may not be re-shared")]

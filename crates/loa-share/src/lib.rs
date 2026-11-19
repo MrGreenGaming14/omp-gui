@@ -8,7 +8,7 @@
 use loa_bus::{NodeKey, SessionId, SessionWriter};
 use loa_core::{attr, Dom, Draft, ElementKind, NodeId, Op, Patch, Value};
 use loa_grants::Action;
-use loa_journal::Journal;
+use loa_journal::{Journal, Store};
 use prost::Message;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -129,6 +129,67 @@ impl Projection {
     pub fn source_seq(&self) -> u64 { self.source.seq() }
     pub fn visible_dom(&self) -> &Dom { &self.visible }
 
+    /// The owner's id of the node the peer sees as `visible`. `None` when
+    /// the peer can't see it.
+    pub fn source_node(&self, visible: NodeId) -> Option<NodeId> {
+        self.ids.iter().find(|(_, v)| **v == visible).map(|(s, _)| *s)
+    }
+
+    /// Rewrites a draft the peer made against its visible DOM into the owner's
+    /// node ids. `None` when it names a node the peer can't see.
+    pub fn source_draft(&self, draft: Draft) -> Option<Draft> {
+        let source = |visible: NodeId| self.source_node(visible);
+        Some(match draft {
+            Draft::Insert { parent, index, kind, attrs, text } => {
+                let parent_source = source(parent)?;
+                // The peer counts only the children it sees; place the new
+                // node after the source child it would follow.
+                let index = match index {
+                    None => None,
+                    Some(0) => Some(0),
+                    Some(i) => {
+                        let visible_prev = *self.visible.get(parent)?.children.get(i as usize - 1)?;
+                        let source_prev = source(visible_prev)?;
+                        let position = self.source.get(parent_source)?.children.iter().position(|c| *c == source_prev)?;
+                        Some(u32::try_from(position + 1).ok()?)
+                    }
+                };
+                Draft::Insert { parent: parent_source, index, kind, attrs, text }
+            }
+            Draft::Set { node, name, value } => Draft::Set { node: source(node)?, name, value },
+            Draft::Append { node, text } => Draft::Append { node: source(node)?, text },
+            Draft::Remove { node } => Draft::Remove { node: source(node)? },
+        })
+    }
+
+    /// A projection that starts at the owner's current DOM instead of patch 1,
+    /// so the owner needs no journal history to serve a new subscriber. Returns
+    /// the projection and the patches that build the peer's visible DOM; feed
+    /// live patches after `source.seq()` to [`Projection::accept`].
+    pub fn seeded(peer: NodeKey, session: SessionId, source: &Dom, access: &dyn Access) -> Result<(Self, Vec<Patch>), Error> {
+        let mut projection = Self { peer, session, source: source.clone(), visible: Dom::new(), ids: HashMap::new() };
+        let whole = access.allows(peer, source, Action::View, None);
+        let mut patches = Vec::new();
+        let ts = source.root().and_then(|root| root.int_attr(attr::CREATED)).unwrap_or_default();
+        for node in source.iter() {
+            let draft = if node.kind == ElementKind::Session {
+                let attrs = node.attrs.iter()
+                    .filter(|(name, _)| root_attr_visible(name, whole))
+                    .map(|(name, value)| (name.clone(), value.clone()))
+                    .collect();
+                Draft::Insert { parent: NodeId::DOCUMENT, index: None, kind: node.kind, attrs, text: String::new() }
+            } else {
+                let Some(&parent) = projection.ids.get(&node.parent) else { continue };
+                if !access.allows(peer, source, Action::View, Some(node.id)) { continue; }
+                Draft::Insert { parent, index: None, kind: node.kind, attrs: node.attrs.clone(), text: node.text.clone() }
+            };
+            let patch = projection.visible.commit(draft, ts)?;
+            projection.ids.insert(node.id, patch.node);
+            patches.push(patch);
+        }
+        Ok((projection, patches))
+    }
+
     pub fn accept(&mut self, source_patch: &Patch, access: &dyn Access) -> Result<Update, Error> {
         let removed_ids = if matches!(source_patch.op, Op::Remove) {
             self.source.descendants(source_patch.node).map(|node| node.id).collect::<Vec<_>>()
@@ -146,10 +207,11 @@ impl Projection {
                 let (parent, index, attrs, text) = if *kind == ElementKind::Session {
                     // A turn-only grant must not reveal project paths, digest,
                     // pre-existing context, or arbitrary root extension data.
-                    let mut safe = loa_core::Attrs::new();
-                    for key in [attr::ID, attr::SCHEMA, attr::HARNESS, attr::NODE, attr::CREATED] {
-                        if let Some(value) = attrs.get(key) { safe.insert(key.to_owned(), value.clone()); }
-                    }
+                    let whole = access.allows(self.peer, &self.source, Action::View, None);
+                    let safe = attrs.iter()
+                        .filter(|(name, _)| root_attr_visible(name, whole))
+                        .map(|(name, value)| (name.clone(), value.clone()))
+                        .collect();
                     (NodeId::DOCUMENT, None, safe, String::new())
                 } else {
                     let Some(&visible_parent) = self.ids.get(parent) else {
@@ -165,7 +227,15 @@ impl Projection {
                 self.ids.insert(source_patch.node, patch.node);
                 Some(patch)
             }
-            Op::Set { name, value } if allowed && old_visible && source_patch.node != self.source.root().map_or(NodeId::DOCUMENT, |n| n.id) => {
+            Op::Set { name, value } if old_visible && self.source.root().is_some_and(|root| root.id == source_patch.node) => {
+                let whole = access.allows(self.peer, &self.source, Action::View, None);
+                if root_attr_visible(name, whole) {
+                    Some(self.visible.commit(Draft::Set { node: self.ids[&source_patch.node], name: name.clone(), value: value.clone() }, source_patch.ts)?)
+                } else {
+                    None
+                }
+            }
+            Op::Set { name, value } if allowed && old_visible => {
                 Some(self.visible.commit(Draft::Set { node: self.ids[&source_patch.node], name: name.clone(), value: value.clone() }, source_patch.ts)?)
             }
             Op::Append { text } if allowed && old_visible => {
@@ -194,10 +264,18 @@ impl Projection {
     }
 }
 
+/// Root attributes a peer sees: identity and provenance always; the title only
+/// with a grant on the whole session. Project paths and extension data stay
+/// with the owner.
+fn root_attr_visible(name: &str, whole_session: bool) -> bool {
+    matches!(name, attr::ID | attr::SCHEMA | attr::HARNESS | attr::NODE | attr::CREATED)
+        || (whole_session && name == attr::TITLE)
+}
+
 /// A mirror created with `SessionWriter` configured for the remote owner.
-/// `source_seq` is persisted by the caller alongside the mirror's journal
-/// checkpoint; on reconnect, resubscribe at source_seq + 1. Repeating a packet
-/// after an acknowledged checkpoint is rejected, not applied twice.
+/// It starts from the owner's [`Seed`] and then takes every [`Update`] in
+/// source order; a gap or a repeated packet is rejected, not applied. On
+/// reconnect the caller starts a fresh mirror from a new seed.
 pub struct Mirror {
     writer: Arc<SessionWriter>,
     source_seq: u64,
@@ -208,7 +286,22 @@ impl Mirror {
         if writer.is_writer() { return Err(Error::NotOwner); }
         Ok(Self { writer, source_seq })
     }
+
+    /// A mirror on an empty `writer` built from the owner's seed patches.
+    pub fn seeded(writer: Arc<SessionWriter>, source_seq: u64, patches: Vec<Patch>) -> Result<Self, Error> {
+        if writer.seq() != 0 {
+            return Err(Error::Sequence { last: writer.seq(), got: 0 });
+        }
+        let mirror = Self::new(writer, source_seq)?;
+        for patch in patches {
+            mirror.writer.replicate(patch)?;
+        }
+        Ok(mirror)
+    }
+
     pub fn source_seq(&self) -> u64 { self.source_seq }
+    pub fn writer(&self) -> &Arc<SessionWriter> { &self.writer }
+
     pub fn receive(&mut self, update: Update) -> Result<(), Error> {
         if update.source_seq != self.source_seq + 1 {
             return Err(Error::Sequence { last: self.source_seq, got: update.source_seq });
@@ -219,27 +312,65 @@ impl Mirror {
     }
 }
 
-/// The caller must first verify `Action::Fork` for this peer against the owner.
-/// Forks retain only the already authorized local projection. Ownership is
-/// changed *in the new journal*; its next sequence follows the copied source
-/// patches, with new IDs never reused. The app starts its harness on this new
-/// journal using the local node's credentials, never the remote credentials.
-pub fn fork_to_own_node(source: &Journal, at_seq: u64, new_id: &str, local_node: &str) -> Result<Journal, Error> {
-    let mut fork = source.fork(at_seq, new_id)?;
-    let mut dom = fork.load()?;
-    let root = dom.root().ok_or(Error::NoSession)?.id;
-    let patch = dom.commit(Draft::set(root, attr::NODE, Value::Str(local_node.to_owned())), loa_core::now_ms())?;
-    fork.append_applied(&patch, &dom)?;
-    fork.sync()?;
-    Ok(fork)
+/// Copies a peer's session, as this node mirrored it, into a new local
+/// journal in `store` that this node owns. `patches` are the mirror's own
+/// patches from seq 1 (what the peer's grant let this node see); the copy
+/// keeps those up to `at_seq` and then sets the root's `id`, `parent_session`,
+/// `forked_at` and `node`. The caller must first check `Action::Fork`. The app
+/// starts its harness on the new journal with this node's credentials, never
+/// the remote owner's.
+pub fn fork_mirror_to_own_node(store: &Store, patches: &[Patch], at_seq: u64, new_id: &str, local_node: &str) -> Result<Journal, Error> {
+    let built = (|| {
+        let mut journal = store.create(new_id)?;
+        let mut dom = Dom::new();
+        for patch in patches.iter().take_while(|patch| patch.seq <= at_seq) {
+            dom.apply(patch)?;
+            journal.append(patch)?;
+        }
+        if dom.seq() != at_seq {
+            return Err(Error::Sequence { last: dom.seq(), got: at_seq });
+        }
+        let root = dom.root().ok_or(Error::NoSession)?;
+        let (root, source) = (root.id, root.str_attr(attr::ID).unwrap_or_default().to_owned());
+        let ts = loa_core::now_ms();
+        let drafts = [
+            Draft::set(root, attr::ID, new_id),
+            Draft::set(root, attr::PARENT_SESSION, source.as_str()),
+            Draft::set(root, attr::FORKED_AT, Value::Int(i64::try_from(at_seq).unwrap_or(i64::MAX))),
+            Draft::set(root, attr::NODE, local_node),
+        ];
+        for draft in drafts {
+            let patch = dom.commit(draft, ts)?;
+            journal.append_applied(&patch, &dom)?;
+        }
+        journal.write_snapshot(&dom)?;
+        journal.sync()?;
+        Ok(journal)
+    })();
+    if built.is_err() {
+        // Leave no half made session behind; a store that refuses the id
+        // (already present, invalid) is left untouched by `create` itself.
+        if !matches!(built, Err(Error::Journal(loa_journal::Error::InvalidSessionId(_) | loa_journal::Error::Exists(_)))) {
+            let _ = store.delete(new_id);
+        }
+    }
+    built
 }
 
 /// Wire envelope for `omp/session/1`. Every message is a length-delimited
 /// protobuf frame; the authenticated transport supplies the peer key. This
 /// codec does not trust a node key supplied by the remote payload.
+///
+/// Each stream carries one request. The requester opens the stream with a
+/// request ([`ListSessions`], [`Subscribe`], [`Drive`], [`Prompt`] or
+/// [`Answer`]; the last three also travel on a subscription stream); the
+/// owner answers with a [`Challenge`]; the requester signs it over each grant
+/// token it holds from the owner ([`Present`]); the owner checks the grants
+/// and answers: [`SessionList`], a [`Seed`] followed by [`WireUpdate`]s,
+/// [`DriveResult`], or [`Ack`]. A refused request gets an [`Ack`] with an error.
 #[derive(Clone, PartialEq, Message)]
 pub struct Frame {
-    #[prost(oneof = "frame::Body", tags = "1, 2, 3")]
+    #[prost(oneof = "frame::Body", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12")]
     pub body: Option<frame::Body>,
 }
 
@@ -252,7 +383,156 @@ pub mod frame {
         Update(super::WireUpdate),
         #[prost(message, tag = "3")]
         Drive(super::Drive),
+        #[prost(message, tag = "4")]
+        Challenge(super::Challenge),
+        #[prost(message, tag = "5")]
+        Present(super::Present),
+        #[prost(message, tag = "6")]
+        ListSessions(super::ListSessions),
+        #[prost(message, tag = "7")]
+        SessionList(super::SessionList),
+        #[prost(message, tag = "8")]
+        Seed(super::Seed),
+        #[prost(message, tag = "9")]
+        DriveResult(super::DriveResult),
+        #[prost(message, tag = "10")]
+        Prompt(super::Prompt),
+        #[prost(message, tag = "11")]
+        Ack(super::Ack),
+        #[prost(message, tag = "12")]
+        Answer(super::Answer),
     }
+}
+
+impl From<frame::Body> for Frame {
+    fn from(body: frame::Body) -> Self {
+        Self { body: Some(body) }
+    }
+}
+
+/// A fresh nonce the requester signs to prove it holds its grants' keys.
+#[derive(Clone, PartialEq, Message)]
+pub struct Challenge {
+    #[prost(bytes = "vec", tag = "1")]
+    pub nonce: Vec<u8>,
+}
+
+/// One grant token and the holder's signature over the challenge and token.
+#[derive(Clone, PartialEq, Message)]
+pub struct PresentedGrant {
+    #[prost(bytes = "vec", tag = "1")]
+    pub token: Vec<u8>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub proof: Vec<u8>,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct Present {
+    #[prost(message, repeated, tag = "1")]
+    pub grants: Vec<PresentedGrant>,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct ListSessions {}
+
+/// A session the requester's grants reach, with what they allow on it.
+#[derive(Clone, PartialEq, Message)]
+pub struct SessionEntry {
+    #[prost(string, tag = "1")]
+    pub id: String,
+    /// Empty unless the grant covers the whole session.
+    #[prost(string, tag = "2")]
+    pub title: String,
+    #[prost(string, tag = "3")]
+    pub harness: String,
+    #[prost(int64, tag = "4")]
+    pub created_ms: i64,
+    /// Actions allowed on the whole session (`view`, `suggest`, `drive`, `fork`).
+    #[prost(string, repeated, tag = "5")]
+    pub actions: Vec<String>,
+    /// Some prompts are visible without the whole session.
+    #[prost(bool, tag = "6")]
+    pub partial: bool,
+    #[prost(uint64, tag = "7")]
+    pub last_seq: u64,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct SessionList {
+    #[prost(message, repeated, tag = "1")]
+    pub sessions: Vec<SessionEntry>,
+}
+
+/// The requester's visible DOM at the owner's `source_seq`, as patches from 1.
+#[derive(Clone, PartialEq, Message)]
+pub struct Seed {
+    #[prost(uint64, tag = "1")]
+    pub source_seq: u64,
+    #[prost(message, repeated, tag = "2")]
+    pub patches: Vec<loa_journal::proto::Patch>,
+    /// Actions the requester's grants allow on the whole session.
+    #[prost(string, repeated, tag = "3")]
+    pub actions: Vec<String>,
+}
+
+impl Seed {
+    pub fn new(source_seq: u64, patches: &[Patch], actions: &[Action]) -> Self {
+        Self {
+            source_seq,
+            patches: patches.iter().map(Into::into).collect(),
+            actions: actions.iter().map(|a| a.as_str().to_owned()).collect(),
+        }
+    }
+
+    pub fn patches(self) -> Result<Vec<Patch>, Error> {
+        self.patches.into_iter().map(TryInto::try_into).collect::<Result<_, loa_journal::proto::ProtoError>>()
+            .map_err(|e| Error::Wire(e.to_string()))
+    }
+}
+
+/// The owner's answer to a [`Drive`]: the committed patch, or why not.
+#[derive(Clone, PartialEq, Message)]
+pub struct DriveResult {
+    #[prost(message, optional, tag = "1")]
+    pub patch: Option<loa_journal::proto::Patch>,
+    /// The owner's sequence when the request's base was stale.
+    #[prost(uint64, optional, tag = "2")]
+    pub conflict_current: Option<u64>,
+    #[prost(string, tag = "3")]
+    pub error: String,
+}
+
+/// A prompt for the owner's harness, from a peer allowed to drive the session.
+#[derive(Clone, PartialEq, Message)]
+pub struct Prompt {
+    #[prost(string, tag = "1")]
+    pub session: String,
+    #[prost(string, tag = "2")]
+    pub text: String,
+}
+
+/// A peer's answer to a waiting decision, for the owner to hand to the
+/// harness that waits on it (needs drive on the decision).
+#[derive(Clone, PartialEq, Message)]
+pub struct Answer {
+    #[prost(string, tag = "1")]
+    pub session: String,
+    /// The decision's node id in the peer's view.
+    #[prost(uint64, tag = "2")]
+    pub decision: u64,
+    /// Picked options, typed text, or a constant from `loa_core::answer`.
+    #[prost(string, repeated, tag = "3")]
+    pub values: Vec<String>,
+    /// Deny reason, reject feedback, or the edited plan.
+    #[prost(string, optional, tag = "4")]
+    pub reason: Option<String>,
+}
+
+/// Accepted when `error` is empty.
+#[derive(Clone, PartialEq, Message)]
+pub struct Ack {
+    #[prost(string, tag = "1")]
+    pub error: String,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -357,5 +637,79 @@ mod tests {
         let patch = Patch { seq: 2, node: NodeId(1), ts: 0, op: Op::Remove };
         assert!(matches!(projection.accept(&patch, &TurnAccess(NodeId(1))), Err(Error::Apply(loa_core::ApplyError::Sequence { .. }))));
         assert_eq!(projection.source_seq(), 0);
+    }
+
+    struct WholeAccess;
+    impl Access for WholeAccess {
+        fn allows(&self, _: NodeKey, _: &Dom, action: Action, _: Option<NodeId>) -> bool { action == Action::View }
+    }
+
+    fn source_session() -> (Dom, Vec<Patch>, NodeId) {
+        let mut source = Dom::new();
+        let mut patches = Vec::new();
+        let root = source.commit(Draft::insert(NodeId::DOCUMENT, ElementKind::Session, [
+            (attr::ID, Value::from("session")), (attr::HARNESS, Value::from("omp")),
+            (attr::NODE, Value::from("owner")), (attr::CREATED, Value::Int(1)),
+            (attr::PROJECT, Value::from("private")),
+        ], ""), 1).unwrap();
+        patches.push(root.clone());
+        patches.push(source.commit(Draft::set(root.node, attr::TITLE, "Plan"), 2).unwrap());
+        let hidden = source.commit(Draft::insert(root.node, ElementKind::Turn, std::iter::empty::<(&str, Value)>(), ""), 3).unwrap();
+        let visible = source.commit(Draft::insert(root.node, ElementKind::Turn, std::iter::empty::<(&str, Value)>(), ""), 4).unwrap();
+        patches.extend([hidden.clone(), visible.clone()]);
+        let message = source.commit(Draft::insert(visible.node, ElementKind::Message, [(attr::ROLE, Value::from("user"))], "hel"), 5).unwrap();
+        patches.push(message.clone());
+        patches.push(source.commit(Draft::append(message.node, "lo"), 6).unwrap());
+        patches.push(source.commit(Draft::insert(hidden.node, ElementKind::Message, [(attr::ROLE, Value::from("user"))], "secret"), 7).unwrap());
+        (source, patches, visible.node)
+    }
+
+    /// Every node's kind, text and attributes, in document order.
+    type Shape = Vec<(ElementKind, String, Vec<(String, String)>)>;
+
+    fn shape(dom: &Dom) -> Shape {
+        dom.iter().map(|n| (n.kind, n.text.clone(), n.attrs.iter().map(|(k, v)| (k.clone(), format!("{v:?}"))).collect())).collect()
+    }
+
+    #[test]
+    fn seeded_projection_matches_replaying_every_patch() {
+        let (source, patches, visible) = source_session();
+        let peer = NodeKey([1; 32]);
+        for access in [&TurnAccess(visible) as &dyn Access, &WholeAccess] {
+            let mut replayed = Projection::new(peer, SessionId::from("session"));
+            for patch in &patches { replayed.accept(patch, access).unwrap(); }
+            let (seeded, seed) = Projection::seeded(peer, SessionId::from("session"), &source, access).unwrap();
+            assert_eq!(seeded.source_seq(), source.seq());
+            assert_eq!(shape(seeded.visible_dom()), shape(replayed.visible_dom()));
+            let mut mirror = Dom::new();
+            for patch in &seed { mirror.apply(patch).unwrap(); }
+            assert_eq!(shape(&mirror), shape(seeded.visible_dom()));
+        }
+        let (seeded, _) = Projection::seeded(peer, SessionId::from("session"), &source, &TurnAccess(visible)).unwrap();
+        let root = seeded.visible_dom().root().unwrap();
+        assert!(!root.attrs.contains_key(attr::PROJECT));
+        assert!(!root.attrs.contains_key(attr::TITLE), "a prompt grant does not reveal the session title");
+        let (whole, _) = Projection::seeded(peer, SessionId::from("session"), &source, &WholeAccess).unwrap();
+        assert_eq!(whole.visible_dom().root().unwrap().str_attr(attr::TITLE), Some("Plan"));
+        assert!(!whole.visible_dom().root().unwrap().attrs.contains_key(attr::PROJECT));
+    }
+
+    #[test]
+    fn mirror_fork_becomes_a_local_session_owned_by_this_node() {
+        let (source, _, _) = source_session();
+        let (_, seed) = Projection::seeded(NodeKey([1; 32]), SessionId::from("session"), &source, &WholeAccess).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path(), loa_journal::JournalOptions::default()).unwrap();
+        let journal = fork_mirror_to_own_node(&store, &seed, seed.len() as u64, "forked", "me").unwrap();
+        let dom = journal.load().unwrap();
+        let root = dom.root().unwrap();
+        assert_eq!(root.str_attr(attr::ID), Some("forked"));
+        assert_eq!(root.str_attr(attr::NODE), Some("me"));
+        assert_eq!(root.str_attr(attr::PARENT_SESSION), Some("session"));
+        assert_eq!(dom.iter().filter(|n| n.kind == ElementKind::Message).count(), 2);
+        drop(journal);
+        assert!(matches!(fork_mirror_to_own_node(&store, &seed, 99, "short", "me"), Err(Error::Sequence { .. })));
+        assert_eq!(store.list().unwrap().len(), 1, "a failed fork leaves nothing behind");
+        assert!(matches!(fork_mirror_to_own_node(&store, &seed, 1, "forked", "me"), Err(Error::Journal(loa_journal::Error::Exists(_)))));
     }
 }

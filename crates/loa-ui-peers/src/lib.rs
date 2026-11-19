@@ -16,13 +16,51 @@ use loa_ui_icons::{Icon, muted};
 
 const SMALL: f32 = 12.0;
 
+/// This node as the panel shows it.
+#[derive(Debug, Clone, Default)]
+pub struct NodeCard {
+    pub key: String,
+    pub name: String,
+    /// Where the node key lives, e.g. "OS keychain".
+    pub key_source: String,
+    /// The endpoint's state, e.g. "UDP 0.0.0.0:31415 · TCP 0.0.0.0:31415".
+    pub endpoint: String,
+    pub endpoint_ok: bool,
+    /// LAN (mDNS) discovery state.
+    pub lan: String,
+    pub lan_ok: bool,
+    /// Tailscale discovery state.
+    pub tailscale: String,
+    pub tailscale_ok: bool,
+    /// The tailnet can be scanned now.
+    pub tailscale_available: bool,
+}
+
+/// A peer's session this node's grants reach.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteItem {
+    pub peer_key: String,
+    pub peer_name: String,
+    pub session: String,
+    /// Title, or the session id when the grant hides it.
+    pub title: String,
+    pub harness: String,
+    /// What the grants allow, e.g. "view, drive".
+    pub access: String,
+    pub can_drive: bool,
+    pub can_fork: bool,
+    pub online: bool,
+}
+
 /// App-supplied snapshot consumed by the two screens.
 #[derive(Debug, Clone, Default)]
 pub struct Data {
+    pub node: NodeCard,
     pub peers: Vec<Peer>,
     pub nearby: Vec<Peer>,
     pub grants: Vec<Grant>,
     pub resources: Vec<ResourceChoice>,
+    pub remote_sessions: Vec<RemoteItem>,
     pub local_version: String,
     /// Current UTC instant in seconds; the app refreshes it to update countdowns.
     pub now: u64,
@@ -39,6 +77,15 @@ pub enum Event {
     RenamePeer { key: String, name: String },
     CreateGrant(GrantInput),
     RevokeGrant(String),
+    /// Extend a given grant by its original duration and resend it.
+    RenewGrant(String),
+    /// Probe every peer and refresh what they share.
+    Refresh,
+    ScanTailscale,
+    /// Open a peer's session in the center view.
+    OpenRemote { peer: String, session: String },
+    /// Copy a peer's session into a new session on this node.
+    ForkRemote { peer: String, session: String },
 }
 
 /// Input from the widgets; the app handles the resulting `Event`.
@@ -59,6 +106,7 @@ pub enum Message {
     CancelRename,
     SaveRename,
     SelectPeer(String),
+    ResourceFilterChanged(String),
     SelectResource(String),
     SelectPermission(Permission),
     TtlChanged(String),
@@ -71,7 +119,15 @@ pub enum Message {
     BeginRevoke(String),
     CancelRevoke,
     ConfirmRevoke,
+    RenewGrant(String),
+    Refresh,
+    ScanTailscale,
+    OpenRemote { peer: String, session: String },
+    ForkRemote { peer: String, session: String },
 }
+
+/// Resource choices shown at once; the filter narrows longer lists.
+const RESOURCE_ROWS: usize = 8;
 
 /// Local interaction state, independent of the network and grant store.
 #[derive(Debug, Default)]
@@ -84,6 +140,7 @@ pub struct State {
     /// Result of app-side public-key validation, tied to the exact text checked.
     pub key_validation: Option<(String, bool)>,
     pub selected_peer: Option<String>,
+    pub resource_filter: String,
     pub grant_form: GrantForm,
     pub pending_revoke: Option<String>,
     pub pending_remove: Option<String>,
@@ -155,7 +212,8 @@ impl State {
             }
             Message::AddDiscovered(key) => (self.data.nearby.iter().any(|p| p.key == key)
                 && !self.data.peers.iter().any(|p| p.key == key)).then_some(Event::AddDiscovered(key)),
-            Message::CopyKey(key) => self.data.peers.iter().chain(&self.data.nearby).any(|p| p.key == key).then_some(Event::CopyKey(key)),
+            Message::CopyKey(key) => (key == self.data.node.key || self.data.peers.iter().chain(&self.data.nearby).any(|p| p.key == key))
+                .then_some(Event::CopyKey(key)),
             Message::BeginRemove(key) => { self.pending_remove = self.data.peers.iter().any(|p| p.key == key).then_some(key); None }
             Message::CancelRemove => { self.pending_remove = None; None }
             Message::ConfirmRemove => self.pending_remove.take().map(Event::RemovePeer),
@@ -172,8 +230,10 @@ impl State {
             Message::SelectPeer(key) => {
                 self.selected_peer = self.data.peers.iter().any(|p| p.key == key).then_some(key);
                 self.grant_form = GrantForm::default();
+                self.resource_filter.clear();
                 None
             }
+            Message::ResourceFilterChanged(value) => { self.resource_filter = value; None }
             Message::SelectResource(id) => {
                 self.grant_form.select_resource(self.data.resources.iter().find(|r| r.id == id).cloned());
                 None
@@ -201,6 +261,17 @@ impl State {
             }
             Message::CancelRevoke => { self.pending_revoke = None; None }
             Message::ConfirmRevoke => self.pending_revoke.take().map(Event::RevokeGrant),
+            Message::RenewGrant(id) => self.data.grants.iter()
+                .any(|g| g.id == id && g.direction == GrantDirection::Given)
+                .then_some(Event::RenewGrant(id)),
+            Message::Refresh => Some(Event::Refresh),
+            Message::ScanTailscale => self.data.node.tailscale_available.then_some(Event::ScanTailscale),
+            Message::OpenRemote { peer, session } => self.data.remote_sessions.iter()
+                .any(|r| r.peer_key == peer && r.session == session)
+                .then_some(Event::OpenRemote { peer, session }),
+            Message::ForkRemote { peer, session } => self.data.remote_sessions.iter()
+                .any(|r| r.peer_key == peer && r.session == session && r.can_fork)
+                .then_some(Event::ForkRemote { peer, session }),
         };
         (Task::none(), event)
     }
@@ -221,8 +292,12 @@ impl State {
         for peer in self.visible_peers() {
             peers_list = peers_list.push(self.peer_row(peer, false));
         }
+        let visible_nearby = self.visible_nearby();
         let mut nearby = column![style::section_header("Discovered nearby")].spacing(8);
-        for peer in self.visible_nearby() {
+        if visible_nearby.is_empty() {
+            nearby = nearby.push(text("No other nodes seen on the LAN or tailnet yet").size(SMALL).style(style::muted));
+        }
+        for peer in visible_nearby {
             nearby = nearby.push(self.peer_row(peer, true));
         }
         let mut add = column![
@@ -240,11 +315,17 @@ impl State {
         }
         add = add.push(add_button);
         let content = column![
+            self.node_view(),
+            style::divider(),
             peers_list,
             nearby,
             add,
             style::divider(),
+            self.shared_view(),
+            style::divider(),
             self.grants_view(),
+            style::divider(),
+            self.received_view(),
         ]
         .spacing(12)
         .padding(12);
@@ -252,6 +333,107 @@ impl State {
             .direction(style::thin_scrollbar())
             .style(style::scrollbar)
             .into()
+    }
+
+    /// This node: name, key, where the key lives, the endpoint and discovery.
+    fn node_view(&self) -> Element<'_, Message> {
+        let node = &self.data.node;
+        let short: String = node.key.chars().take(12).collect();
+        let status = |label: &'static str, value: &str, tone: style::Tone| {
+            row![
+                container(space().width(6.0).height(6.0)).style(style::dot(tone)),
+                text(label).size(SMALL).style(style::muted).width(Length::Fixed(64.0)),
+                text(value.to_owned()).size(SMALL).width(Fill),
+            ]
+            .spacing(8)
+            .align_y(iced::Center)
+        };
+        let endpoint_tone = if node.endpoint_ok { style::Tone::Ok } else if node.endpoint.is_empty() { style::Tone::Off } else { style::Tone::Bad };
+        let lan_tone = if node.lan_ok { style::Tone::Ok } else { style::Tone::Off };
+        let tailscale_tone = if node.tailscale_ok { style::Tone::Ok } else { style::Tone::Off };
+        let mut actions = row![
+            flat(text("Copy key").size(SMALL)).on_press(Message::CopyKey(node.key.clone())),
+            flat(text("Refresh").size(SMALL)).on_press(Message::Refresh),
+        ]
+        .spacing(4);
+        if node.tailscale_available {
+            actions = actions.push(flat(text("Scan tailnet").size(SMALL)).on_press(Message::ScanTailscale));
+        }
+        column![
+            style::section_header("This node"),
+            row![text(node.name.as_str()).size(14), text(short).size(SMALL).style(style::muted)]
+                .spacing(8)
+                .align_y(iced::Center),
+            status("Key", &node.key_source, style::Tone::Ok),
+            status("Endpoint", if node.endpoint.is_empty() { "not started" } else { &node.endpoint }, endpoint_tone),
+            status("LAN", &node.lan, lan_tone),
+            status("Tailscale", &node.tailscale, tailscale_tone),
+            actions,
+        ]
+        .spacing(6)
+        .into()
+    }
+
+    /// Peers' sessions this node may open, drive or fork.
+    fn shared_view(&self) -> Element<'_, Message> {
+        let mut list = column![style::section_header("Shared with you")].spacing(8);
+        if self.data.remote_sessions.is_empty() {
+            return list
+                .push(text("No peer has shared a session with this node").size(SMALL).style(style::muted))
+                .into();
+        }
+        for item in &self.data.remote_sessions {
+            let mut actions = row![].spacing(4);
+            let open_label = if item.can_drive { "Open and drive" } else { "Open" };
+            let mut open = flat(text(open_label).size(SMALL));
+            if item.online {
+                open = open.on_press(Message::OpenRemote { peer: item.peer_key.clone(), session: item.session.clone() });
+            }
+            actions = actions.push(open);
+            if item.can_fork {
+                let mut fork = flat(text("Fork to this node").size(SMALL));
+                if item.online {
+                    fork = fork.on_press(Message::ForkRemote { peer: item.peer_key.clone(), session: item.session.clone() });
+                }
+                actions = actions.push(fork);
+            }
+            let tone = if item.online { style::Tone::Ok } else { style::Tone::Off };
+            list = list.push(list_item(
+                column![
+                    row![
+                        container(space().width(6.0).height(6.0)).style(style::dot(tone)),
+                        text(item.title.as_str()).size(14).width(Fill),
+                    ]
+                    .spacing(8)
+                    .align_y(iced::Center),
+                    text(format!("{} · {} · {}", item.peer_name, item.harness, item.access)).size(SMALL).style(style::muted),
+                    actions,
+                ]
+                .spacing(4),
+            ));
+        }
+        list.into()
+    }
+
+    /// Every grant this node holds, from any peer.
+    fn received_view(&self) -> Element<'_, Message> {
+        let mut list = column![style::section_header("Received grants")].spacing(8);
+        let received: Vec<&Grant> = self.data.grants.iter().filter(|g| g.direction == GrantDirection::Received).collect();
+        if received.is_empty() {
+            return list.push(text("No peer has granted this node anything").size(SMALL).style(style::muted)).into();
+        }
+        for grant in received {
+            let from = self.data.peers.iter().find(|p| p.key == grant.peer_key).map_or_else(
+                || grant.peer_key.chars().take(12).collect::<String>(),
+                |p| p.name.clone(),
+            );
+            list = list.push(
+                text(format!("From {from}: {} · {}", grant_summary(grant), grant.expiry_text(self.data.now)))
+                    .size(SMALL)
+                    .style(style::muted),
+            );
+        }
+        list.into()
     }
 
     fn peer_row<'a>(&'a self, peer: &'a Peer, discovered: bool) -> Element<'a, Message> {
@@ -288,10 +470,10 @@ impl State {
             ))
             .size(SMALL)
             .style(style::muted),
-            text(if peer.shared_protocol {
-                "Shared protocol available"
-            } else {
-                "No shared protocol"
+            text(match peer.shared_protocol {
+                Some(true) => "Shared protocol available",
+                Some(false) => "No shared protocol",
+                None => "Not contacted yet",
             })
             .size(SMALL)
             .style(style::muted),
@@ -329,7 +511,8 @@ impl State {
         let Some(key) = &self.selected_peer else {
             return text("Select a peer to manage grants").size(SMALL).style(style::muted).into();
         };
-        let mut list = column![style::section_header("Grants")].spacing(8);
+        let name = self.data.peers.iter().find(|p| &p.key == key).map_or("this peer", |p| p.name.as_str());
+        let mut list = column![style::section_header(format!("Grants with {name}"))].spacing(8);
         for grant in self.data.grants.iter().filter(|g| &g.peer_key == key) {
             let mut line = row![
                 text(format!(
@@ -346,11 +529,14 @@ impl State {
             .spacing(8)
             .align_y(iced::Center);
             if grant.direction == GrantDirection::Given {
-                line = line.push(
-                    flat(text("Revoke").size(SMALL))
-                        .style(style::danger_flat)
-                        .on_press(Message::BeginRevoke(grant.id.clone())),
-                );
+                line = line.push(flat(text("Renew").size(SMALL)).on_press(Message::RenewGrant(grant.id.clone())));
+                if !grant.ended {
+                    line = line.push(
+                        flat(text("Revoke").size(SMALL))
+                            .style(style::danger_flat)
+                            .on_press(Message::BeginRevoke(grant.id.clone())),
+                    );
+                }
             }
             list = list.push(line);
             if self.pending_revoke.as_deref() == Some(&grant.id) {
@@ -367,14 +553,38 @@ impl State {
                 );
             }
         }
-        let mut form = column![style::section_header("Create grant")].spacing(8);
-        for resource in &self.data.resources {
+        let mut form = column![
+            style::section_header("Create grant"),
+            text("Resource").size(SMALL).style(style::muted),
+        ]
+        .spacing(8);
+        let term = self.resource_filter.trim().to_lowercase();
+        let matching: Vec<&ResourceChoice> = self
+            .data
+            .resources
+            .iter()
+            .filter(|r| term.is_empty() || r.label.to_lowercase().contains(&term))
+            .collect();
+        if self.data.resources.len() > RESOURCE_ROWS {
+            form = form.push(search("Filter sessions, prompts, hosts", &self.resource_filter, Message::ResourceFilterChanged));
+        }
+        let chosen_hidden = self.grant_form.resource.as_ref()
+            .is_some_and(|chosen| !matching.iter().take(RESOURCE_ROWS).any(|r| r.id == chosen.id));
+        if let Some(chosen) = self.grant_form.resource.as_ref().filter(|_| chosen_hidden) {
+            form = form.push(choice(chosen.label.clone(), true, Message::SelectResource(chosen.id.clone())));
+        }
+        for resource in matching.iter().take(RESOURCE_ROWS) {
             let chosen = self.grant_form.resource.as_ref().is_some_and(|r| r.id == resource.id);
             form = form.push(choice(
                 resource.label.clone(),
                 chosen,
                 Message::SelectResource(resource.id.clone()),
             ));
+        }
+        if matching.len() > RESOURCE_ROWS {
+            form = form.push(
+                text(format!("{} more; filter to find them", matching.len() - RESOURCE_ROWS)).size(SMALL).style(style::muted),
+            );
         }
         if let Some(resource) = &self.grant_form.resource {
             if resource.scope == GrantScope::Prompt {
@@ -386,6 +596,7 @@ impl State {
                         .on_toggle(Message::FutureSessionsChanged),
                 );
             }
+            form = form.push(text("Permission").size(SMALL).style(style::muted));
             for permission in Permission::ALL {
                 if permission.allowed_for(&resource.scope) {
                     form = form.push(choice(
@@ -417,7 +628,14 @@ impl State {
                 }
             }
         }
-        form = form.push(field("TTL (hours)", &self.grant_form.ttl_hours, Message::TtlChanged));
+        form = form.push(
+            row![
+                text("Lasts (hours)").size(SMALL).style(style::muted),
+                field("hours", &self.grant_form.ttl_hours, Message::TtlChanged).width(Length::Fixed(80.0)),
+            ]
+            .spacing(8)
+            .align_y(iced::Center),
+        );
         form = form.push(
             iced::widget::checkbox(self.grant_form.reshare)
                 .label("Allow re-share")

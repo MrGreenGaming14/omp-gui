@@ -13,3 +13,6 @@ loa-grants = { path = "../loa-grants" }
 prost.workspace = true
 thiserror.workspace = true
 serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

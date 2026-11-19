@@ -54,10 +54,12 @@ pub fn card(theme: &Theme) -> container::Style {
 /// What a status dot says about its peer.
 #[derive(Clone, Copy)]
 pub enum Tone {
-    /// Online.
+    /// Online, running.
     Ok,
-    /// Offline.
+    /// Offline, off.
     Off,
+    /// Failed.
+    Bad,
 }
 
 fn tone_color(theme: &Theme, tone: Tone) -> Color {
@@ -65,6 +67,7 @@ fn tone_color(theme: &Theme, tone: Tone) -> Color {
     match tone {
         Tone::Ok => palette.success.base.color,
         Tone::Off => muted_color(theme),
+        Tone::Bad => palette.danger.base.color,
     }
 }
 

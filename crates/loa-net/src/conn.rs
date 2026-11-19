@@ -11,8 +11,10 @@ use tokio::io::{AsyncRead, AsyncWrite};
 /// Which transport carries a connection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Transport {
-    /// iroh QUIC over UDP, direct or relayed.
+    /// iroh QUIC over UDP on a direct path.
     Quic,
+    /// iroh QUIC carried by a relay server, when no direct path works.
+    Relay,
     /// TLS 1.3 over TCP with multiplexed streams, for networks that block UDP.
     Tcp,
 }

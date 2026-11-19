@@ -130,6 +130,7 @@ fn right_fact(scope: &Scope, action: Action) -> biscuit_auth::builder::Fact {
         Resource::FutureSessions { after_ms } => fact("future_right", &[int(*after_ms), a]),
         Resource::Ssh { host } => fact("ssh_right", &[string(host), a]),
         Resource::Surface { uri } => fact("surface_right", &[string(uri), a]),
+        Resource::Sandbox => fact("sandbox_right", &[string(SANDBOX), a]),
     }
 }
 
@@ -176,6 +177,55 @@ pub(crate) fn attenuate(
     Ok(token.to_vec()?)
 }
 
+/// The rights a token's issuer signed into its first block, as scopes. Later
+/// re-share blocks can only narrow these; they are not reflected here. For
+/// showing a holder what it was given; authorization goes through [`Verifier`].
+pub fn token_scopes(token: &[u8], root: &NodePublicKey) -> Result<Vec<Scope>> {
+    let biscuit = Biscuit::from(token, root.biscuit()?)?;
+    let mut authorizer = AuthorizerBuilder::new().build(&biscuit)?;
+    let mut scopes: Vec<Scope> = Vec::new();
+    let mut add = |resource: Resource, action: &str| -> Result<()> {
+        let action = Action::parse(action).ok_or_else(|| GrantError::Malformed(format!("unknown action {action:?}")))?;
+        match scopes.iter_mut().find(|s| s.resource == resource) {
+            Some(scope) => {
+                scope.actions.insert(action);
+            }
+            None => scopes.push(Scope { resource, actions: BTreeSet::from([action]) }),
+        }
+        Ok(())
+    };
+    let sessions: Vec<(String, String)> = authorizer.query("r($s, $a) <- session_right($s, $a)")?;
+    for (id, action) in sessions {
+        add(Resource::Session { id }, &action)?;
+    }
+    let prompts: Vec<(String, i64, String)> = authorizer.query("r($s, $t, $a) <- prompt_right($s, $t, $a)")?;
+    for (session, turn, action) in prompts {
+        let turn = loa_core::NodeId(u64::try_from(turn).map_err(|_| GrantError::Malformed(format!("turn {turn}")))?);
+        add(Resource::Prompt { session, turn }, &action)?;
+    }
+    let projects: Vec<(String, String)> = authorizer.query("r($p, $a) <- project_right($p, $a)")?;
+    for (id, action) in projects {
+        add(Resource::Project { id }, &action)?;
+    }
+    let future: Vec<(i64, String)> = authorizer.query("r($t, $a) <- future_right($t, $a)")?;
+    for (after_ms, action) in future {
+        add(Resource::FutureSessions { after_ms }, &action)?;
+    }
+    let ssh: Vec<(String, String)> = authorizer.query("r($h, $a) <- ssh_right($h, $a)")?;
+    for (host, action) in ssh {
+        add(Resource::Ssh { host }, &action)?;
+    }
+    let surfaces: Vec<(String, String)> = authorizer.query("r($u, $a) <- surface_right($u, $a)")?;
+    for (uri, action) in surfaces {
+        add(Resource::Surface { uri }, &action)?;
+    }
+    let sandboxes: Vec<(String, String)> = authorizer.query("r($n, $a) <- sandbox_right($n, $a)")?;
+    for (_, action) in sandboxes {
+        add(Resource::Sandbox, &action)?;
+    }
+    Ok(scopes)
+}
+
 const EXPIRY_CHECK: &str = "check if time_ms($t), $t < {expires};";
 
 fn expiry_param(expires_ms: i64) -> HashMap<String, Term> {
@@ -203,6 +253,7 @@ fn narrowing_check(scopes: &[Scope]) -> (String, HashMap<String, Term>) {
             Resource::FutureSessions { after_ms } => (format!("created($c), $c >= {{v{i}x0}}"), vec![int(*after_ms)]),
             Resource::Ssh { host } => (format!("ssh_host({{v{i}x0}})"), vec![string(host)]),
             Resource::Surface { uri } => (format!("surface({{v{i}x0}})"), vec![string(uri)]),
+            Resource::Sandbox => (format!("sandbox({{v{i}x0}})"), vec![string(SANDBOX)]),
         };
         for (j, value) in values.into_iter().enumerate() {
             params.insert(format!("v{i}x{j}"), value);
@@ -216,6 +267,9 @@ fn narrowing_check(scopes: &[Scope]) -> (String, HashMap<String, Term>) {
     (format!("check if {};", bodies.join(" or ")), params)
 }
 
+/// The one value the sandbox facts carry: the issuing node's sandbox.
+const SANDBOX: &str = "node";
+
 /// The verifier's rules: which request facts a right covers.
 const RULES: &str = r#"
 granted($a) <- session_right($s, $a), session($s);
@@ -224,6 +278,7 @@ granted($a) <- project_right($p, $a), project($p);
 granted($a) <- future_right($after, $a), created($c), $c >= $after;
 granted($a) <- ssh_right($h, $a), ssh_host($h);
 granted($a) <- surface_right($u, $a), surface($u);
+granted($a) <- sandbox_right($n, $a), sandbox($n);
 allow if action($a), granted($a);
 "#;
 
@@ -364,6 +419,7 @@ impl VerifiedGrant {
             Target::Session { .. } => "session",
             Target::Ssh { .. } => "ssh host",
             Target::Surface { .. } => "surface",
+            Target::Sandbox => "sandbox",
         };
         let engine = |e: BiscuitError| Denied::Engine(e.to_string());
         let mut builder = AuthorizerBuilder::new()
@@ -387,6 +443,7 @@ impl VerifiedGrant {
             }
             Target::Ssh { host } => facts.push(fact("ssh_host", &[string(host)])),
             Target::Surface { uri } => facts.push(fact("surface", &[string(uri)])),
+            Target::Sandbox => facts.push(fact("sandbox", &[string(SANDBOX)])),
         }
         for f in facts {
             builder = builder.fact(f).map_err(engine)?;

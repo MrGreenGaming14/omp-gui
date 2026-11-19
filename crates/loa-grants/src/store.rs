@@ -46,6 +46,21 @@ pub struct GrantSpec {
     pub ttl_ms: i64,
     /// Whether the holder may re-share a narrower grant.
     pub reshare: bool,
+    /// When the grant ends: no token outlives it and renewal stops. `None`
+    /// renews until revoked.
+    #[serde(default)]
+    pub until_ms: Option<i64>,
+}
+
+impl GrantSpec {
+    fn token_expiry(&self, id: &GrantId, now_ms: i64) -> Result<i64> {
+        let expires_ms = now_ms.saturating_add(self.ttl_ms);
+        match self.until_ms {
+            Some(until) if until <= now_ms => Err(GrantError::Expired(id.clone())),
+            Some(until) => Ok(expires_ms.min(until)),
+            None => Ok(expires_ms),
+        }
+    }
 }
 
 /// How a holder narrows a grant it re-shares. Rights are the intersection
@@ -93,6 +108,31 @@ pub struct ReceivedGrant {
     pub refused_ms: Option<i64>,
 }
 
+impl ReceivedGrant {
+    /// The rights its root signed into it; see [`crate::token_scopes`].
+    pub fn scopes(&self) -> Result<Vec<Scope>> {
+        crate::token::token_scopes(&self.token, &self.root)
+    }
+}
+
+/// A grant this node issued, as stored.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IssuedRecord {
+    pub id: GrantId,
+    pub holder: NodePublicKey,
+    /// The rights given; `None` for a re-share that keeps its parent's.
+    pub scopes: Option<Vec<Scope>>,
+    pub ttl_ms: i64,
+    pub reshare: bool,
+    /// When a root grant ends; `None` renews until revoked (and for re-shares,
+    /// which end with their parent).
+    pub until_ms: Option<i64>,
+    /// The received grant a re-share was cut from.
+    pub parent: Option<GrantId>,
+    pub created_ms: i64,
+    pub revoked_ms: Option<i64>,
+}
+
 /// One node's grant tables.
 pub struct GrantStore {
     db: Mutex<Connection>,
@@ -132,7 +172,7 @@ impl GrantStore {
         }
         check_ttl(spec.ttl_ms)?;
         let id = GrantId::random()?;
-        let expires_ms = now_ms.saturating_add(spec.ttl_ms);
+        let expires_ms = spec.token_expiry(&id, now_ms)?;
         let token = mint(issuer, &id, &holder, &spec.scopes, expires_ms, spec.reshare)?;
         let definition = serde_json::to_string(&Definition::Root(spec))?;
         self.db().execute(
@@ -169,7 +209,7 @@ impl GrantStore {
                 for scope in &spec.scopes {
                     scope.validate()?;
                 }
-                let expires_ms = now_ms.saturating_add(spec.ttl_ms);
+                let expires_ms = spec.token_expiry(id, now_ms)?;
                 let token = mint(issuer, id, &holder, &spec.scopes, expires_ms, spec.reshare)?;
                 Ok(IssuedGrant { id: id.clone(), holder, token, expires_ms })
             }
@@ -179,6 +219,38 @@ impl GrantStore {
             }
             (Definition::Reshare(_), None) => Err(GrantError::Malformed(format!("re-share {id} has no parent"))),
         }
+    }
+
+    /// Moves the end of a root grant this node issued to `until_ms` (`None`:
+    /// renews until revoked) and mints a token for its holder right away, so
+    /// the change reaches the holder without waiting for its next renewal.
+    pub fn extend(&self, issuer: &NodeKey, id: &GrantId, until_ms: Option<i64>, now_ms: i64) -> Result<IssuedGrant> {
+        let row = self
+            .db()
+            .query_row(
+                "SELECT holder, spec, parent, revoked_ms FROM grants_issued WHERE id = ?1",
+                params![id.0],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?, r.get::<_, Option<i64>>(3)?)),
+            )
+            .optional()?;
+        let Some((holder, definition, parent, revoked)) = row else {
+            return Err(GrantError::UnknownGrant(id.clone()));
+        };
+        if revoked.is_some() {
+            return Err(GrantError::Revoked(id.clone()));
+        }
+        let (Definition::Root(mut spec), None) = (serde_json::from_str(&definition)?, parent) else {
+            return Err(GrantError::Malformed(format!("only root grants can be extended, {id} is a re-share")));
+        };
+        spec.until_ms = until_ms;
+        let holder = NodePublicKey::from_hex(&holder)?;
+        let expires_ms = spec.token_expiry(id, now_ms)?;
+        let token = mint(issuer, id, &holder, &spec.scopes, expires_ms, spec.reshare)?;
+        self.db().execute(
+            "UPDATE grants_issued SET spec = ?2 WHERE id = ?1",
+            params![id.0, serde_json::to_string(&Definition::Root(spec))?],
+        )?;
+        Ok(IssuedGrant { id: id.clone(), holder, token, expires_ms })
     }
 
     /// Re-shares a grant this node holds to `new_holder`, narrowed. Works
@@ -268,15 +340,39 @@ impl GrantStore {
         Ok(())
     }
 
-    /// Ids of grants this node issued, with holder and whether revoked.
-    pub fn issued(&self) -> Result<Vec<(GrantId, NodePublicKey, bool)>> {
+    /// Every grant this node issued, oldest first.
+    pub fn issued(&self) -> Result<Vec<IssuedRecord>> {
         let db = self.db();
-        let mut statement = db.prepare("SELECT id, holder, revoked_ms IS NOT NULL FROM grants_issued ORDER BY created_ms, id")?;
-        let rows = statement.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, bool>(2)?)))?;
+        let mut statement =
+            db.prepare("SELECT id, holder, spec, parent, created_ms, revoked_ms FROM grants_issued ORDER BY created_ms, id")?;
+        let rows = statement.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, Option<String>>(3)?,
+                r.get::<_, i64>(4)?,
+                r.get::<_, Option<i64>>(5)?,
+            ))
+        })?;
         let mut out = Vec::new();
         for row in rows {
-            let (id, holder, revoked) = row?;
-            out.push((GrantId(id), NodePublicKey::from_hex(&holder)?, revoked));
+            let (id, holder, definition, parent, created_ms, revoked_ms) = row?;
+            let (scopes, ttl_ms, reshare, until_ms) = match serde_json::from_str(&definition)? {
+                Definition::Root(spec) => (Some(spec.scopes), spec.ttl_ms, spec.reshare, spec.until_ms),
+                Definition::Reshare(narrowing) => (narrowing.scopes, narrowing.ttl_ms, narrowing.reshare, None),
+            };
+            out.push(IssuedRecord {
+                id: GrantId(id),
+                holder: NodePublicKey::from_hex(&holder)?,
+                scopes,
+                ttl_ms,
+                reshare,
+                until_ms,
+                parent: parent.map(GrantId),
+                created_ms,
+                revoked_ms,
+            });
         }
         Ok(out)
     }

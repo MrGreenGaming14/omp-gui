@@ -30,6 +30,12 @@ impl Network {
     /// The local TCP listener; its address can be supplied as a peer hint.
     pub fn tcp(&self) -> &TcpNode { &self.tcp }
 
+    /// Stops accepting connections on both transports and closes QUIC connections.
+    pub async fn close(&self) {
+        self.quic.close().await;
+        self.tcp.close();
+    }
+
     /// Tries QUIC first, then TCP using the supplied direct address hints. The
     /// dialer's protocol versions are offered in descending order; the server
     /// selects its highest shared version.

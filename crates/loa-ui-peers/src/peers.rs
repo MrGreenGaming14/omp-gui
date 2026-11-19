@@ -5,10 +5,10 @@ use std::fmt;
 
 /// How the app found this node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Discovery { Lan, Tailscale, AddedByKey }
+pub enum Discovery { Lan, Tailscale, AddedByKey, Incoming }
 impl fmt::Display for Discovery {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self { Self::Lan => "LAN (mDNS)", Self::Tailscale => "Tailscale", Self::AddedByKey => "Added by key" })
+        f.write_str(match self { Self::Lan => "LAN (mDNS)", Self::Tailscale => "Tailscale", Self::AddedByKey => "Added by key", Self::Incoming => "Connected to this node" })
     }
 }
 
@@ -40,8 +40,9 @@ pub struct Peer {
     pub last_seen: Option<u64>,
     pub transport: Transport,
     pub app_version: String,
-    /// Whether at least one ALPN version is shared, as negotiated by the app.
-    pub shared_protocol: bool,
+    /// Whether at least one ALPN version is shared, as negotiated by the app;
+    /// `None` until the app has talked to the node.
+    pub shared_protocol: Option<bool>,
 }
 
 /// Relative app version; compatibility is reported separately.
@@ -128,7 +129,7 @@ mod tests {
     use super::*;
 
     fn peer(key: &str, name: &str, presence: Presence, last_seen: Option<u64>, version: &str) -> Peer {
-        Peer { key: key.into(), name: name.into(), discovery: Discovery::Lan, presence, last_seen, transport: Transport::None, app_version: version.into(), shared_protocol: true }
+        Peer { key: key.into(), name: name.into(), discovery: Discovery::Lan, presence, last_seen, transport: Transport::None, app_version: version.into(), shared_protocol: Some(true) }
     }
 
     #[test]
@@ -143,10 +144,10 @@ mod tests {
     #[test]
     fn app_version_marker_is_independent_of_protocol_compatibility() {
         let mut node = peer("a", "Alice", Presence::Online, None, "v1.2.3");
-        node.shared_protocol = false;
+        node.shared_protocol = Some(false);
         assert_eq!(node.version_relation("1.4.0"), VersionRelation::Behind);
         node.app_version = "1.5.0".into();
         assert_eq!(node.version_relation("1.4.0"), VersionRelation::Ahead);
-        assert!(!node.shared_protocol);
+        assert_eq!(node.shared_protocol, Some(false));
     }
 }

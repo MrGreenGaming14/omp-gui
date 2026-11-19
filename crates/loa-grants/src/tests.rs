@@ -17,9 +17,42 @@ fn verify(root: &NodeKey, store: &GrantStore, holder: &NodeKey, token: &[u8]) ->
     Verifier::new(root.public(), store).verify(Presented { token, proof: &proof }, &holder.public(), &challenge, NOW).unwrap()
 }
 fn issue(root: &NodeKey, store: &GrantStore, holder: &NodeKey, scopes: Vec<Scope>, reshare: bool) -> IssuedGrant {
-    store.issue(root, holder.public(), GrantSpec { scopes, ttl_ms: TTL, reshare }, NOW).unwrap()
+    store.issue(root, holder.public(), GrantSpec { scopes, ttl_ms: TTL, reshare, until_ms: None }, NOW).unwrap()
 }
 
+#[test]
+fn grant_end_caps_tokens_stops_renewal_and_extend_restarts_it() {
+    let root = key(40); let alice = key(41);
+    let store = GrantStore::with_connection(rusqlite::Connection::open_in_memory().unwrap()).unwrap();
+    let scopes = vec![scope(Resource::Session { id: "s".into() }, Action::Drive), scope(Resource::Ssh { host: "box".into() }, Action::Exec)];
+    let until = NOW + TTL / 2;
+    let issued = store.issue(&root, alice.public(), GrantSpec { scopes: scopes.clone(), ttl_ms: TTL, reshare: false, until_ms: Some(until) }, NOW).unwrap();
+    assert_eq!(issued.expires_ms, until);
+    assert!(matches!(store.renew(&root, &issued.id, &alice.public(), until), Err(GrantError::Expired(_))));
+    assert!(matches!(RenewFailure::from_issuer(&GrantError::Expired(issued.id.clone())), RenewFailure::Refused(_)));
+
+    let extended = store.extend(&root, &issued.id, Some(until + 10 * TTL), until).unwrap();
+    assert_eq!(extended.expires_ms, until + TTL);
+    assert!(store.renew(&root, &issued.id, &alice.public(), until + TTL).is_ok());
+
+    let records = store.issued().unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].holder, alice.public());
+    assert_eq!(records[0].until_ms, Some(until + 10 * TTL));
+    assert_eq!(records[0].scopes.as_deref(), Some(scopes.as_slice()));
+    store.revoke(&root.public(), &issued.id, until + TTL).unwrap();
+    assert!(store.issued().unwrap()[0].revoked_ms.is_some());
+    assert!(matches!(store.extend(&root, &issued.id, None, until + TTL), Err(GrantError::Revoked(_))));
+
+    // The holder reads its rights back out of the token.
+    let held = GrantStore::with_connection(rusqlite::Connection::open_in_memory().unwrap()).unwrap();
+    let received = held.receive(&alice.public(), &root.public(), &extended.token).unwrap();
+    let mut read = received.scopes().unwrap();
+    read.sort_by_key(|s| format!("{:?}", s.resource));
+    let mut expected = scopes;
+    expected.sort_by_key(|s| format!("{:?}", s.resource));
+    assert_eq!(read, expected);
+}
 #[test]
 fn token_requires_holder_private_key_and_fresh_challenge() {
     let root = key(1); let alice = key(2); let bob = key(3);
@@ -68,6 +101,22 @@ fn typed_scopes_authorize_resources_without_leaking_others() {
     assert!(grant.authorize(&Request::surface(Action::View, "surface://browser/other"), NOW).is_err());
     let available = [session("old", None, NOW - 1), future];
     assert_eq!(grant.visible_sessions(available.iter(), NOW).len(), 1);
+}
+
+#[test]
+fn sandbox_grants_cover_only_sandbox_exec() {
+    let root = key(6); let alice = key(7);
+    let store = GrantStore::with_connection(rusqlite::Connection::open_in_memory().unwrap()).unwrap();
+    let issued = issue(&root, &store, &alice, vec![scope(Resource::Sandbox, Action::Exec)], false);
+    let grant = verify(&root, &store, &alice, &issued.token);
+    assert!(grant.authorize(&Request::sandbox(Action::Exec), NOW).is_ok());
+    assert!(grant.authorize(&Request::ssh(Action::Exec, "any"), NOW).is_err());
+    assert!(grant.authorize(&Request::session(Action::View, &session("one", None, NOW - 1)), NOW).is_err());
+    assert_eq!(token_scopes(&issued.token, &root.public()).unwrap(), vec![scope(Resource::Sandbox, Action::Exec)]);
+    assert!(Scope::new(Resource::Sandbox, [Action::View]).is_err());
+
+    let other = issue(&root, &store, &alice, vec![scope(Resource::Ssh { host: "box".into() }, Action::Exec)], false);
+    assert!(verify(&root, &store, &alice, &other.token).authorize(&Request::sandbox(Action::Exec), NOW).is_err());
 }
 
 #[test]

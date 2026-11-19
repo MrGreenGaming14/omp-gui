@@ -142,7 +142,10 @@ impl QuicConnection {
 impl PeerConnection for QuicConnection {
     fn remote(&self) -> NodeId { self.conn.remote_id() }
     fn alpn(&self) -> &Alpn { &self.alpn }
-    fn transport(&self) -> Transport { Transport::Quic }
+    fn transport(&self) -> Transport {
+        let paths = self.conn.paths();
+        if paths.iter().any(|path| path.is_selected() && path.is_relay()) { Transport::Relay } else { Transport::Quic }
+    }
 
     async fn open_stream(&self) -> Result<Stream> {
         let (send, recv) = self.conn.open_bi().await.map_err(|err| NetError::Stream(err.to_string()))?;
