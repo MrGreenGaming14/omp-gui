@@ -25,6 +25,9 @@ pub struct Config {
     /// Ids of the sessions pinned in the sidebar.
     #[serde(skip_serializing_if = "BTreeSet::is_empty")]
     pub pinned: BTreeSet<String>,
+    /// The project whose folder is the active folder, restored at startup.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_project: Option<ActiveProject>,
     pub harness: HarnessSettings,
     pub network: NetworkSettings,
     pub updater: UpdaterSettings,
@@ -47,6 +50,7 @@ impl Default for Config {
             version: CURRENT_VERSION,
             theme: Theme::default(),
             pinned: BTreeSet::new(),
+            active_project: None,
             harness: HarnessSettings::default(),
             network: NetworkSettings::default(),
             updater: UpdaterSettings::default(),
@@ -58,6 +62,13 @@ impl Default for Config {
             unknown: Vec::new(),
         }
     }
+}
+
+/// The project the user last selected and the folder it runs in.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActiveProject {
+    pub name: String,
+    pub cwd: PathBuf,
 }
 
 /// UI color scheme.

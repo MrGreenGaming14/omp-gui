@@ -224,6 +224,11 @@ impl State {
         self.new_tab = shell;
     }
 
+    /// What the + button opens.
+    pub fn new_tab(&self) -> &LocalShell {
+        &self.new_tab
+    }
+
     /// Opens a terminal on `target` in a new sub tab and shows it.
     pub fn open(&mut self, target: Target) -> (TabId, Task<Message>) {
         let id = TabId(self.next_id);

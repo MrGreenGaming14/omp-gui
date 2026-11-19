@@ -142,6 +142,77 @@ fn chat_in(app: &mut App, project: &str, text: &str) -> String {
     id.to_string()
 }
 
+/// The folder session `id` runs in, as recorded in its journal.
+fn session_cwd(app: &App, id: &str) -> Option<String> {
+    let session = app.ctx.sessions.get(id).unwrap();
+    session.writer().with_dom(|dom| dom.root().and_then(|root| root.str_attr(attr::CWD)).map(str::to_owned))
+}
+
+fn open_from_sidebar(app: &mut App, project: &str) {
+    let open = shell::Message::Sidebar(shell::sidebar::Message::OpenProject(project.to_owned()));
+    update(app, AppMessage::Shell(open));
+}
+
+#[test]
+fn selecting_a_project_switches_the_active_folder_and_survives_a_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let (a, b) = (dir.path().join("a"), dir.path().join("b"));
+    std::fs::create_dir_all(&a).unwrap();
+    std::fs::create_dir_all(&b).unwrap();
+    let (mut app, configs) = project_app(dir.path());
+    // One running chat per project, each in its own folder.
+    app.ctx.services.set_active("alpha".into(), a.clone());
+    let in_a = chat_in(&mut app, "alpha", "work on a");
+    app.ctx.services.set_active("beta".into(), b.clone());
+    let in_b = chat_in(&mut app, "beta", "work on b");
+    assert_eq!(session_cwd(&app, &in_a), Some(a.display().to_string()));
+    assert_eq!(session_cwd(&app, &in_b), Some(b.display().to_string()));
+
+    open_from_sidebar(&mut app, "alpha");
+    assert_eq!(app.ctx.services.project, "alpha");
+    assert_eq!(app.ctx.services.cwd, a);
+    assert_eq!(app.files.root(), a);
+    assert_eq!(app.terminal.new_tab().cwd, a, "new terminals open in the active folder");
+    assert_eq!(app.ctx.screen(), Some(AreaId::Projects), "the project screen lists its chats");
+
+    open_from_sidebar(&mut app, "beta");
+    assert_eq!(app.ctx.services.project, "beta");
+    assert_eq!(app.ctx.services.cwd, b);
+    assert_eq!(app.files.root(), b);
+    assert_eq!(app.terminal.new_tab().cwd, b);
+    update(&mut app, AppMessage::NewSession);
+    {
+        let configs = configs.lock().unwrap();
+        let config = configs.last().unwrap();
+        assert_eq!(config.cwd, b, "a new chat starts in the active folder");
+        assert_eq!(config.project.as_deref(), Some("beta"));
+    }
+    assert_eq!(session_cwd(&app, &in_a), Some(a.display().to_string()), "a running session keeps its folder");
+
+    // The workspace project goes back to the launch folder.
+    open_from_sidebar(&mut app, "work");
+    assert_eq!(app.ctx.services.cwd, dir.path().join("work"));
+    open_from_sidebar(&mut app, "alpha");
+    drop(app);
+
+    let (restarted, _) = App::build(services(&dir.path().join("work"), Vec::new()));
+    assert_eq!(restarted.ctx.services.project, "alpha");
+    assert_eq!(restarted.ctx.services.cwd, a);
+    assert_eq!(restarted.files.root(), a);
+    assert_eq!(restarted.terminal.new_tab().cwd, a);
+}
+
+#[test]
+fn a_project_without_a_folder_only_opens_its_screen() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, _) = project_app(dir.path());
+    let cwd = app.ctx.services.cwd.clone();
+    open_from_sidebar(&mut app, "ghost");
+    assert_eq!(app.ctx.services.cwd, cwd);
+    assert_eq!(app.ctx.screen(), Some(AreaId::Projects));
+    assert_eq!(app.ctx.notice(), Some("ghost has no folder yet; start a chat in it first"));
+}
+
 #[test]
 fn project_screen_lists_sessions_saves_settings_and_excludes() {
     let dir = tempfile::tempdir().unwrap();

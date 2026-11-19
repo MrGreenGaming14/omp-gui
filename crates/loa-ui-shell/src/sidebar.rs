@@ -31,6 +31,9 @@ pub struct State {
     pins: BTreeSet<String>,
     query: String,
     active: Option<String>,
+    /// The project the user selected; highlighted instead of the active
+    /// session's project while set.
+    active_project: Option<String>,
     /// Updates waiting for the user; the Updates row shows while non-zero.
     updates: usize,
 }
@@ -158,6 +161,12 @@ impl State {
     /// Replaces the project list.
     pub fn set_projects(&mut self, projects: impl IntoIterator<Item = String>) {
         self.projects = projects.into_iter().collect();
+    }
+
+    /// Highlights a project row. While set it replaces the active session's
+    /// project as the highlighted one.
+    pub fn set_active_project(&mut self, project: Option<String>) {
+        self.active_project = project;
     }
 
     /// Replaces the node directory and refreshes node tags.
@@ -289,7 +298,10 @@ impl State {
         let mut lists = Column::new();
 
         let projects = self.projects();
-        let active_project = self.active.as_deref().and_then(|id| self.session(id)).and_then(|s| s.project.as_deref());
+        let active_project = self
+            .active_project
+            .as_deref()
+            .or_else(|| self.active.as_deref().and_then(|id| self.session(id)).and_then(|s| s.project.as_deref()));
         lists = lists.push(header("PROJECTS"));
         if projects.is_empty() {
             lists = lists.push(hint(if self.projects.is_empty() { "No projects yet" } else { "No match" }));

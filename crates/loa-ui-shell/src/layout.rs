@@ -243,6 +243,11 @@ impl State {
         self.sidebar.set_projects(projects);
     }
 
+    /// Highlights the project the user selected in the sidebar.
+    pub fn set_active_project(&mut self, project: Option<String>) {
+        self.sidebar.set_active_project(project);
+    }
+
     /// Replaces the node list.
     pub fn set_nodes(&mut self, nodes: Vec<NodeStatus>) {
         self.sidebar.set_nodes(Nodes::new(nodes));

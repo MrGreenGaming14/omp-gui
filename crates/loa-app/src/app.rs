@@ -143,9 +143,9 @@ pub struct App {
     pub(crate) areas: Areas,
     pub(crate) chat: chat::State,
     pub(crate) palette: palette::State,
-    files: files::State,
+    pub(crate) files: files::State,
     diff: diff::State,
-    terminal: terminal::state::State,
+    pub(crate) terminal: terminal::state::State,
 }
 
 impl App {
@@ -161,9 +161,14 @@ impl App {
 
     /// The app over `services`: Recents from the session store, every area
     /// registered.
-    pub fn build(services: Services) -> (Self, Task<Message>) {
-        // Sidebar pins and the theme are app data in the central config.
+    pub fn build(mut services: Services) -> (Self, Task<Message>) {
+        // Sidebar pins, the theme and the active project are app data in the central config.
         let saved = services.config.load().map(|loaded| loaded.config).unwrap_or_default();
+        // The project selected last run, while its folder still exists, is the active one from the start.
+        let restored = saved.active_project.filter(|active| active.cwd.is_dir());
+        if let Some(active) = &restored {
+            services.set_active(active.name.clone(), active.cwd.clone());
+        }
         let (shell, setup) =
             shell::State::new(preference(saved.theme), shell::PanelPrefs { open: true, ..Default::default() });
         let theme = shell.theme();
@@ -190,6 +195,7 @@ impl App {
             requests: Vec::new(),
             events: Vec::new(),
         };
+        ctx.shell.set_active_project(restored.map(|active| active.name));
         ctx.shell.set_pins(saved.pinned);
         ctx.shell.set_sessions(recents);
         let (areas, area_tasks) = Areas::new(&mut ctx);
@@ -538,12 +544,34 @@ impl App {
                     Request::OpenTab(id) => self.open_tab(&id),
                     Request::RevealTab(id) => self.reveal_tab(&id),
                     Request::Spawn(spawn) => self.spawn(spawn),
+                    Request::ActivateProject { project, cwd } => self.activate_project(project, cwd),
                     Request::Forward(message) => self.update(*message),
                 };
                 tasks.push(task);
             }
         }
         Task::batch(tasks)
+    }
+
+    /// Makes `project` and its folder `cwd` the active ones: new sessions,
+    /// new terminals, the Files and Diff tabs follow, every area is told and
+    /// the choice is saved. Running sessions and open terminals keep their
+    /// folder.
+    fn activate_project(&mut self, project: String, cwd: PathBuf) -> Task<Message> {
+        self.ctx.shell.set_active_project(Some(project.clone()));
+        let services = &mut self.ctx.services;
+        if services.project == project && services.cwd == cwd {
+            return Task::none();
+        }
+        services.set_active(project.clone(), cwd.clone());
+        self.files.set_root(cwd.clone());
+        self.terminal.set_new_tab(terminal::local::LocalShell::login_shell(cwd.clone()));
+        let saved = loa_config::ActiveProject { name: project.clone(), cwd: cwd.clone() };
+        self.save_ui(|config| config.active_project = Some(saved));
+        let tasks = with_areas!(each_area!(self.areas, mut |area, wrap| area
+            .project_activated(&project, &cwd, &mut self.ctx)
+            .map(wrap)));
+        Task::batch(tasks.into_iter().chain([working_diff(cwd), self.settle()]))
     }
 
     pub(crate) fn command(&mut self, id: &palette::CommandId) -> Task<Message> {
