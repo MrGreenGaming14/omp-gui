@@ -26,6 +26,7 @@ pub struct Config {
     pub network: NetworkSettings,
     pub updater: UpdaterSettings,
     pub unattended: UnattendedSettings,
+    pub surfaces: SurfaceSettings,
     /// MCP servers by name.
     pub mcp_servers: BTreeMap<String, McpServer>,
     /// SSH hosts the `remote` MCP server may reach, by name.
@@ -46,6 +47,7 @@ impl Default for Config {
             network: NetworkSettings::default(),
             updater: UpdaterSettings::default(),
             unattended: UnattendedSettings::default(),
+            surfaces: SurfaceSettings::default(),
             mcp_servers: BTreeMap::new(),
             remote_hosts: BTreeMap::new(),
             projects: BTreeMap::new(),
@@ -63,6 +65,34 @@ pub enum Theme {
     System,
     Dark,
     Light,
+}
+
+/// The Surfaces panel: how live surfaces stream.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SurfaceSettings {
+    /// Live surfaces (browser, VMs) stream H.264 or HEVC video, hardware
+    /// encoded when the machine can.
+    pub video: bool,
+    /// How browser surfaces are captured.
+    pub browser_capture: BrowserCapture,
+}
+
+impl Default for SurfaceSettings {
+    fn default() -> Self {
+        Self { video: true, browser_capture: BrowserCapture::Screencast }
+    }
+}
+
+/// Where browser surface frames come from.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum BrowserCapture {
+    /// Headless Chrome's own screencast.
+    #[default]
+    Screencast,
+    /// Headed Chrome on an Xvfb virtual display, captured raw.
+    VirtualDisplay,
 }
 
 /// Which harness new sessions use and where each harness's executable lives.
@@ -167,11 +197,17 @@ pub struct UpdaterSettings {
     /// Version pinned per component (`app`, `omp`, a harness name). A pinned
     /// component is never updated.
     pub pins: BTreeMap<String, String>,
+    /// GitHub token for release feed checks; raises the rate limit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub github_token: Option<String>,
+    /// Hex ed25519 public keys app releases must be signed with.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub trusted_keys: Vec<String>,
 }
 
 impl Default for UpdaterSettings {
     fn default() -> Self {
-        Self { check_interval_secs: 6 * 60 * 60, pins: BTreeMap::new() }
+        Self { check_interval_secs: 6 * 60 * 60, pins: BTreeMap::new(), github_token: None, trusted_keys: Vec::new() }
     }
 }
 

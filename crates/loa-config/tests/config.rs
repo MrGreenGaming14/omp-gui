@@ -350,3 +350,37 @@ fn native_view_gives_writers_enabled_servers_and_project_toggles() {
     );
     assert_eq!(written[1], (PathBuf::from("/work/other"), vec!["files".into(), "search".into()], vec![], vec![]));
 }
+
+#[test]
+fn updater_token_and_trusted_keys_round_trip_and_default_when_absent() {
+    let (_dir, store) = store_with(FULL);
+    let mut c = store.load().unwrap().config;
+    assert_eq!((c.updater.github_token.as_deref(), c.updater.trusted_keys.len()), (None, 0));
+    store.save(&c).unwrap();
+    let saved = fs::read_to_string(store.path()).unwrap();
+    assert!(!saved.contains("github_token") && !saved.contains("trusted_keys"));
+
+    c.updater.github_token = Some("ghp_test".into());
+    c.updater.trusted_keys = vec!["ab".repeat(32)];
+    store.save(&c).unwrap();
+    let loaded = store.load().unwrap().config;
+    assert_eq!(loaded.updater.github_token.as_deref(), Some("ghp_test"));
+    assert_eq!(loaded.updater.trusted_keys, vec!["ab".repeat(32)]);
+    assert_eq!(loaded, c);
+}
+
+#[test]
+fn surfaces_settings_round_trip_and_default_when_absent() {
+    let (_dir, store) = store_with(FULL);
+    let mut c = store.load().unwrap().config;
+    assert_eq!(c.surfaces, loa_config::SurfaceSettings::default());
+    assert!(c.surfaces.video);
+    assert_eq!(c.surfaces.browser_capture, loa_config::BrowserCapture::Screencast);
+
+    c.surfaces.video = false;
+    c.surfaces.browser_capture = loa_config::BrowserCapture::VirtualDisplay;
+    store.save(&c).unwrap();
+    let saved = fs::read_to_string(store.path()).unwrap();
+    assert!(saved.contains("[surfaces]") && saved.contains("browser_capture = \"virtual-display\""), "{saved}");
+    assert_eq!(store.load().unwrap().config, c);
+}

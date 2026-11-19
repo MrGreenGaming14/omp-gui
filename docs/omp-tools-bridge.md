@@ -41,7 +41,7 @@ harness ──MCP stdio──▶ loa-omp-bridge ──RPC JSONL──▶ omp --m
 2. `tools/list`: the configured tools with omp's schemas.
 3. `tools/call`: send `prompt` with a marker carrying the call id, tool name and arguments. The loopback endpoint sees the marker in the newest user message and streams back that one tool call. omp executes it and emits `tool_execution_end`. The endpoint answers the follow-up request with a short text, the turn ends with `prompt_result`, and the bridge returns the tool's content blocks and `isError`.
 
-Entry points: `OmpExecutor::start(OmpBridgeConfig)`, `serve_stdio(executor)`, or the `loa-omp-bridge` binary (`--state-dir DIR [--cwd DIR] [--omp PATH] [--tools a,b] [--config FILE]`). `ToolExecutor` is the port the MCP server uses, so the server shell is tested with an in-memory executor.
+Entry points: `OmpExecutor::start(OmpBridgeConfig)`, `serve_stdio(executor)`, `cli::run(args)` (the command line below, shared by the `loa-omp-bridge` binary and the app's `omp-bridge` subcommand), and `session::session_spec(program, prefix, config)`, the stdio MCP server spec (`omp`) a session of another harness is given. `list_omp_tools(config)` starts omp the same way without `--tools` and returns every default tool with its description and schema, for the Tools panel's built in list. Command line: `--state-dir DIR [--cwd DIR] [--omp PATH] [--tools a,b] [--config FILE]`. `ToolExecutor` is the port the MCP server uses, so the server shell is tested with an in-memory executor.
 
 Default tools: `read`, `edit`, `ast_grep`, `ast_edit`, `lsp`, `debug`. `read` is included because `edit` needs the tags it returns.
 

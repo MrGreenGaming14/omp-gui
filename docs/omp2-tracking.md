@@ -12,6 +12,10 @@ The published [omp collab reference](omp://collab.md) describes the *main-branch
 
 The app's `loa-core` DOM is also single-writer and patch-based, but its `Draft` vocabulary is `Insert`, `Remove`, `Set`, `Append`; there is no move (translate by removal/reinsert). App inserts carry a new `NodeId` assigned by the sink and a positional index, whereas omp2 `ins` mints a handle and positions *after a sibling*. The adapter keeps a bidirectional handle/`NodeId` table and records `x-omp2-handle` for recovery. App patches have sequence and timestamp assigned by its writer; omp2's `cause`, `prior`, and label identify journal causality, not app sequence. Stream appends map directly onto app text appends. omp2's `<meta>`, `<body>`, `<assistant>` and provider-specific tool tags do not correspond 1:1 to schema v1: containers flatten, assistant content blocks become assistant messages, custom tool tags become calls, and other elements become `<ext harness="omp2">`; unknown properties become `x-` attributes. The translation table lives in `map.rs`. Native session journals use a different format from app patch journals; import/export is not advertised.
 
+## Availability, models and effort
+
+`Omp2Adapter::availability` runs the executable's `--version`, then opens an RPC session and sends the subscription: an `omp` that refuses it (every published omp, e.g. v19.0.0 answers `Unknown command: set_dom_subscription`) is reported `Incompatible`, so the harness picker lists omp2 without letting it be picked. `models()` uses `get_available_models` (`{models: [{id, name, provider, reasoning}]}`, verified in `crates/app/src/rpc_mode.rs` `rpc_models`); reasoning models offer the levels of `cycle_thinking_level` (`off` … `xhigh`), set with `set_thinking_level`.
+
 ## Re-check on each omp2 release
 
 - Confirm the release/tag actually targets omp2 and whether `stencil-hq/omp` has become public; pin the tested commit.

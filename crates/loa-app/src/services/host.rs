@@ -1,7 +1,7 @@
-//! Facts about the machine the app runs on: its name, where app data lives and
-//! which executables are installed.
+//! Facts about the machine the app runs on: its name and where app data
+//! lives.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// Name of this machine: the kernel host name, else `HOSTNAME` or
 /// `COMPUTERNAME`, else "this device".
@@ -27,29 +27,4 @@ pub fn data_dir() -> PathBuf {
 
 fn env_dir(key: &str) -> Option<PathBuf> {
     std::env::var_os(key).map(PathBuf::from).filter(|path| path.is_absolute())
-}
-
-/// The first executable called `name` on `PATH`.
-pub fn which(name: &str) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path).flat_map(|dir| candidates(&dir, name)).find(|file| is_executable(file))
-}
-
-fn candidates(dir: &Path, name: &str) -> Vec<PathBuf> {
-    if cfg!(windows) {
-        ["exe", "cmd", "bat"].into_iter().map(|ext| dir.join(name).with_extension(ext)).collect()
-    } else {
-        vec![dir.join(name)]
-    }
-}
-
-#[cfg(unix)]
-fn is_executable(file: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    file.metadata().is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
-}
-
-#[cfg(not(unix))]
-fn is_executable(file: &Path) -> bool {
-    file.is_file()
 }

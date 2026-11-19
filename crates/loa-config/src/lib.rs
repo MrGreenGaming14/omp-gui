@@ -17,9 +17,9 @@ mod store;
 pub use migrate::{Migrator, Step, StepFn};
 pub use native::{NativeConfig, NativeConfigError, NativeConfigWriter};
 pub use schema::{
-    CURRENT_VERSION, Config, DEFAULT_PORT, DecisionDefault, Discovery, HarnessSettings, McpServer,
-    NetworkSettings, ProjectSettings, Relay, RemoteHost, Theme, UnattendedSettings,
-    UpdaterSettings,
+    BrowserCapture, CURRENT_VERSION, Config, DEFAULT_PORT, DecisionDefault, Discovery, HarnessSettings,
+    McpServer, NetworkSettings, ProjectSettings, Relay, RemoteHost, SurfaceSettings, Theme,
+    UnattendedSettings, UpdaterSettings,
 };
 pub use store::{CONFIG_FILE_NAME, ConfigStore, Loaded, config_path};
 

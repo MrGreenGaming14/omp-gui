@@ -13,7 +13,7 @@ Everything else builds on these three. Their existing public items change only w
 | Crate | Holds |
 | --- | --- |
 | `loa-core` | Element schema v1, `Dom`/`Node`/`NodeId`, `Patch`/`Op`/`Draft`, `PatchSink` (single writer), `MemorySink` |
-| `loa-adapter` | `Adapter`, `HarnessSession`, `Capabilities`, `SessionConfig`, `Registry` |
+| `loa-adapter` | `Adapter` (incl. `availability`), `HarnessSession` (incl. `models`, `set_effort`), `Capabilities`, `SessionConfig`, `Registry`, `Availability`, `HarnessModel` |
 | `loa-surface` | `SurfaceUri`, `SurfaceInfo`, `Frame`, `InputEvent`, `Surface`, `SurfaceServer` |
 
 ### Libraries
@@ -34,14 +34,16 @@ Everything else builds on these three. Their existing public items change only w
 | `loa-surface-proto` | surfaces | `omp/surface/1` framing, datagrams, MCP declaration |
 | `loa-surface-browser`, `-docs`, `-rfb` | surfaces | Built in surface servers |
 | `loa-surface-bench` | surfaces | Input to pixels benchmark, 50 ms gate, video encode |
+| `loa-surface-hub` | surfaces | The app's surface service: built-in servers, MCP declared surfaces, `surface_*` agent tools as host tools and a loopback MCP endpoint, `<surface>` drafts |
 | `loa-models` | models | Sign in, model listing and settings through omp and other harnesses |
-| `loa-projects` | projects | Digests, context ranking, `project_search`, `project_read`, project settings |
-| `loa-identity` | p2p | Node ed25519 key in the OS keychain |
+| `loa-projects` | projects | Digests, context ranking, `project_search`, `project_read`, project settings, `ProjectService` over the bus and journal |
+| `loa-identity` | p2p | Node ed25519 key in the OS keychain, a `0600` key file in the data directory when no keychain is usable |
 | `loa-grants` | p2p | Biscuit grants, scopes, renewal, narrowing |
 | `loa-net` | p2p | iroh endpoint on 31415, ALPNs, TCP fallback, relay, discovery |
 | `loa-share` | p2p | Session replication, view and drive, fork to own node |
+| `loa-node` | p2p | The app's peer service: identity, endpoint, mDNS and tailnet discovery, presence, grant issue/renew/revoke over `omp/control/1`, session sharing over `omp/session/1`, protocols other areas add (e.g. `loa-sandbox/1`, served only to peers proving a covering grant, registered through the app's `NodeSlot`), the Peers panel snapshot and its events |
 | `loa-sandbox`, `loa-sandbox-stub` | sandbox | `sandbox_task`, providers, exec stub |
-| `loa-updater` | updater | Release feeds, staging, gate checks, swap and rollback |
+| `loa-updater` | updater | Release feeds, staging, gate checks against the installed omp, swap and rollback; `Updater` service for the Updates screen |
 
 ### UI
 
@@ -55,9 +57,11 @@ Everything else builds on these three. Their existing public items change only w
 | `loa-ui-terminal` | Terminal tab, local and SSH |
 | `loa-ui-palette` | Command palette |
 | `loa-ui-tools` | Tools panel |
-| `loa-ui-surface` | Surface renderer |
+| `loa-ui-projects` | Project screen: shared instructions, pinned files, digest model, sessions with digests and exclude toggle |
+| `loa-ui-surface` | Surface renderer, Surfaces tab (open tabs, launcher for browser, documents, VNC and MCP surfaces), document pages through `loa-surface-docs` |
 | `loa-ui-models` | Sign in, model picker, model settings |
 | `loa-ui-peers` | Peers list, grant management |
+| `loa-ui-updates` | Updates screen: feeds, staged versions, gate reports with update anyway/pin/wait, swap, rollback, signatures, peers behind |
 | `loa-ui-icons` | Lucide line icons as theme-tinted SVG widgets, shared by every UI crate |
 | `loa-app` | The binary: wires every crate together |
 
@@ -66,7 +70,7 @@ Everything else builds on these three. Their existing public items change only w
 - Contracts depend on nothing in the workspace except `loa-core`
 - A library depends on contracts. When it needs something another library owns, it declares a trait for it (a port) and `loa-app` passes the implementation in. Example: `loa-projects` declares the access check it needs and `loa-app` backs it with `loa-grants`
 - A UI crate depends on contracts, `iced` and `loa-ui-icons`. It takes plain data in and gives events out. It never spawns a harness, opens a socket or reads the journal
-- Only `loa-app`, `loa-features` and `loa-share` depend on several libraries
+- Only `loa-app`, `loa-features`, `loa-share` and `loa-node` depend on several libraries
 
 ## Sessions
 
