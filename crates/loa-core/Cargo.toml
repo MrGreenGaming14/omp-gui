@@ -1,0 +1,10 @@
+[package]
+name = "loa-core"
+description = "Session DOM: element schema v1, typed tree, patches, single-writer sink contract"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true

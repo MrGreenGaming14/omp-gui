@@ -1,0 +1,17 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y xvfb libxkbcommon-dev libwayland-dev libvulkan1 mesa-vulkan-drivers
+      - run: cargo build --workspace --all-targets
+      - run: xvfb-run -a cargo test --workspace
