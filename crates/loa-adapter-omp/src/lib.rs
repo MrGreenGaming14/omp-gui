@@ -1,0 +1,1 @@
+//! omp adapter over RPC.

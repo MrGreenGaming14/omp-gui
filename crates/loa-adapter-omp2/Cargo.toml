@@ -1,0 +1,10 @@
+[package]
+name = "loa-adapter-omp2"
+description = "omp2 adapter mapping patch@1 onto the app DOM"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+loa-core.workspace = true
+loa-adapter.workspace = true

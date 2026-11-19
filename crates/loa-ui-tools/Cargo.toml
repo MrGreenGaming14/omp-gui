@@ -1,0 +1,9 @@
+[package]
+name = "loa-ui-tools"
+description = "Tools panel"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+iced.workspace = true

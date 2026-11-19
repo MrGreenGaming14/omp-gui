@@ -1,0 +1,10 @@
+[package]
+name = "loa-adapter-testkit"
+description = "Contract test suite for harness adapters with golden fixtures"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+loa-core.workspace = true
+loa-adapter.workspace = true

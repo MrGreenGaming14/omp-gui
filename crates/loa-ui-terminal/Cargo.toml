@@ -1,0 +1,9 @@
+[package]
+name = "loa-ui-terminal"
+description = "Terminal tab for local shells and SSH hosts"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+iced.workspace = true

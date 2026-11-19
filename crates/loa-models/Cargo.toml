@@ -1,0 +1,9 @@
+[package]
+name = "loa-models"
+description = "Sign in, model listing and model settings through omp and other harnesses"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde.workspace = true

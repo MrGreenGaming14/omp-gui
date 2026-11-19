@@ -1,0 +1,10 @@
+[package]
+name = "loa-ui-shell"
+description = "Sidebar, top bar, right panel frame and themes"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+loa-core.workspace = true
+iced.workspace = true

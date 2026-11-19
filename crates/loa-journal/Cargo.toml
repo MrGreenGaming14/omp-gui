@@ -1,0 +1,10 @@
+[package]
+name = "loa-journal"
+description = "Append only prost journal of patches, replay, snapshots and forks"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+loa-core.workspace = true
+prost.workspace = true

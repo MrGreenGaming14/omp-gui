@@ -20,7 +20,7 @@ Everything else builds on these three. Their existing public items change only w
 
 | Crate | Area | Holds |
 | --- | --- | --- |
-| `loa-core` (`xml`, `diff`) | core | XML debug export, DOM diff for rewind |
+| `loa-xml`, `loa-rewind` | core | XML debug export, DOM diff and rewind plans |
 | `loa-journal` | core | Append only prost journal, replay, snapshots, fork |
 | `loa-bus` | core | Session writer (`PatchSink` impl), publish subscribe with backpressure |
 | `loa-config` | core | Central config schema with version and migrations |
@@ -31,7 +31,7 @@ Everything else builds on these three. Their existing public items change only w
 | `loa-mcp` | tools | rmcp client, server registry, config import |
 | `loa-remote` | tools | `remote` MCP server: `remote_bash`, `remote_file` over russh |
 | `loa-omp-bridge` | tools | omp tools served to other harnesses as an MCP server |
-| `loa-surface` (`wire`, `stream`, `declare`) | surfaces | `omp/surface/1` framing, datagrams, MCP declaration |
+| `loa-surface-proto` | surfaces | `omp/surface/1` framing, datagrams, MCP declaration |
 | `loa-surface-browser`, `-docs`, `-rfb` | surfaces | Built in surface servers |
 | `loa-surface-bench` | surfaces | Input to pixels benchmark, 50 ms gate, video encode |
 | `loa-models` | models | Sign in, model listing and settings through omp and other harnesses |

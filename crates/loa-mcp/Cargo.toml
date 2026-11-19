@@ -1,0 +1,9 @@
+[package]
+name = "loa-mcp"
+description = "MCP client, server registry and config import"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde.workspace = true

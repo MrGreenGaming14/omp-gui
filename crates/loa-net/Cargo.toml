@@ -1,0 +1,8 @@
+[package]
+name = "loa-net"
+description = "iroh endpoint on 31415, ALPNs, TCP fallback, relay and discovery"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]

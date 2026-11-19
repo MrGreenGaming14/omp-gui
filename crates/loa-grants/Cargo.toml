@@ -1,0 +1,8 @@
+[package]
+name = "loa-grants"
+description = "Biscuit grants bound to node keys"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]

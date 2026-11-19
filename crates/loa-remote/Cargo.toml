@@ -1,0 +1,9 @@
+[package]
+name = "loa-remote"
+description = "App hosted remote MCP server: remote_bash and remote_file over SSH"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde.workspace = true

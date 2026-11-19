@@ -1,0 +1,9 @@
+[package]
+name = "loa-ui-composer"
+description = "Message composer and its controls"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+iced.workspace = true

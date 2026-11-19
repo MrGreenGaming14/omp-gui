@@ -1,0 +1,10 @@
+[package]
+name = "loa-adapter-omp"
+description = "omp adapter over RPC"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+loa-core.workspace = true
+loa-adapter.workspace = true

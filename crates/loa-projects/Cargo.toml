@@ -1,0 +1,9 @@
+[package]
+name = "loa-projects"
+description = "Session digests, project context, project_search and project_read"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+loa-core.workspace = true

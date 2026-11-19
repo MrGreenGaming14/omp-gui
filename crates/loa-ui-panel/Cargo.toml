@@ -1,0 +1,10 @@
+[package]
+name = "loa-ui-panel"
+description = "Right panel tabs: diff, files, session tree, agents"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+loa-core.workspace = true
+iced.workspace = true

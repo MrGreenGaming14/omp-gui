@@ -1,0 +1,10 @@
+[package]
+name = "loa-ui-decisions"
+description = "Decision prompt cards"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+loa-core.workspace = true
+iced.workspace = true

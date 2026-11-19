@@ -1,0 +1,8 @@
+[package]
+name = "loa-sandbox-stub"
+description = "Thin exec stub that runs inside a sandbox"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]

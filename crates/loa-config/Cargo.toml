@@ -1,0 +1,9 @@
+[package]
+name = "loa-config"
+description = "Central app config with a schema version and migrations"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde.workspace = true

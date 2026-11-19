@@ -1,0 +1,9 @@
+[package]
+name = "loa-bus"
+description = "Session writer and publish subscribe of patches with per subscriber backpressure"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+loa-core.workspace = true

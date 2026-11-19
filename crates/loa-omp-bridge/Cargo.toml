@@ -1,0 +1,9 @@
+[package]
+name = "loa-omp-bridge"
+description = "omp tools served to other harnesses as an MCP server"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde.workspace = true
