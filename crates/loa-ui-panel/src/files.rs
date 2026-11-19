@@ -19,6 +19,9 @@ use loa_ui_icons::Icon;
 
 use crate::style;
 
+/// Tallest the sidebar's compact file list grows before it scrolls.
+pub const COMPACT_MAX_HEIGHT: f32 = 240.0;
+
 /// Failure to list a directory.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -325,16 +328,28 @@ impl State {
     }
 
     pub fn view(&self) -> Element<'_, Message> {
-        let rows = self.rows.iter().map(|row| match *row {
-            Row::Node(index) => self.node_row(index),
-            Row::Error(index) => self.error_row(index),
-        });
-        scrollable(column(rows).width(Length::Fill).padding([0, 6]))
+        scrollable(column(self.row_elements()).width(Length::Fill).padding([0, 6]))
             .id(self.scroll_id.clone())
             .on_scroll(Message::Scrolled)
             .width(Length::Fill)
             .height(Length::Fill)
             .into()
+    }
+
+    /// The same rows and messages as [`State::view`], sized to its content up
+    /// to [`COMPACT_MAX_HEIGHT`], for embedding in a sidebar. Its scrollable
+    /// has no id and does not report scrolling, so it never disturbs the
+    /// keyboard reveal of the Files tab.
+    pub fn view_compact(&self) -> Element<'_, Message> {
+        let rows = column(self.row_elements()).width(Length::Fill).padding([0, 6]);
+        container(scrollable(rows).width(Length::Fill)).max_height(COMPACT_MAX_HEIGHT).width(Length::Fill).into()
+    }
+
+    fn row_elements(&self) -> impl Iterator<Item = Element<'_, Message>> {
+        self.rows.iter().map(|row| match *row {
+            Row::Node(index) => self.node_row(index),
+            Row::Error(index) => self.error_row(index),
+        })
     }
 
     fn node_row(&self, index: usize) -> Element<'_, Message> {
@@ -654,6 +669,15 @@ mod tests {
 
     fn mark(state: &State, rel: &str) -> Mark {
         state.nodes[index_of(state, rel)].mark
+    }
+
+    #[test]
+    fn view_compact_draws_the_visible_rows() {
+        let (mut state, _) = fixture();
+        assert_eq!(state.row_elements().count(), state.visible().count());
+        click(&mut state, "src");
+        assert_eq!(state.row_elements().count(), state.visible().count());
+        let _ = state.view_compact();
     }
 
     #[test]

@@ -312,23 +312,41 @@ impl State {
 
     /// Draws the sidebar.
     pub fn view(&self) -> Element<'_, Message> {
-        let new = button(
-            container(row![icon(Icon::Plus, 14.0), text("New session").size(14)].spacing(8).align_y(Alignment::Center))
+        self.view_with(|message| message, None)
+    }
+
+    /// Draws the sidebar in the app's message type. `project_files` is drawn
+    /// directly under the active project's row, which is the one set by
+    /// `set_active_project` or else the active session's project. The search
+    /// box does not filter it: it only narrows sessions and projects.
+    pub fn view_with<'a, M: 'a>(
+        &'a self,
+        map: impl Fn(Message) -> M + Clone + 'a,
+        mut project_files: Option<Element<'a, M>>,
+    ) -> Element<'a, M> {
+        let new = Element::from(
+            button(
+                container(
+                    row![icon(Icon::Plus, 14.0), text("New session").size(14)].spacing(8).align_y(Alignment::Center),
+                )
                 .center_x(Fill),
-        )
-        .on_press(Message::New)
-        .style(style::row)
-        .padding([7, 8])
-        .width(Fill);
+            )
+            .on_press(Message::New)
+            .style(style::row)
+            .padding([7, 8])
+            .width(Fill),
+        );
 
-        let search = text_input("Search sessions", &self.query)
-            .id(SEARCH_ID)
-            .on_input(Message::Search)
-            .size(14)
-            .style(style::input)
-            .padding([3, 8]);
-
+        let search = Element::from(
+            text_input("Search sessions", &self.query)
+                .id(SEARCH_ID)
+                .on_input(Message::Search)
+                .size(14)
+                .style(style::input)
+                .padding([3, 8]),
+        );
         let mut lists = Column::new();
+        let mut segments: Vec<Element<'a, M>> = Vec::new();
 
         let projects = self.projects();
         let active_project = self
@@ -340,9 +358,10 @@ impl State {
             lists = lists.push(hint(if self.projects.is_empty() { "No projects yet" } else { "No match" }));
         }
         for project in projects {
+            let is_active = active_project == Some(project);
             let body = button(row![icon(Icon::Folder, 14.0), text(project).size(14)].spacing(8).align_y(Alignment::Center))
                 .on_press(Message::OpenProject(project.to_owned()))
-                .style(style::row_for(active_project == Some(project)))
+                .style(style::row_for(is_active))
                 .padding([6, 8])
                 .width(Fill);
             let pin = button(text(if self.pinned_projects.contains(project) { "Unpin" } else { "Pin" }).size(12))
@@ -350,6 +369,10 @@ impl State {
                 .style(style::selected_row)
                 .padding([1, 6]);
             lists = lists.push(hover(body, container(pin).align_right(Fill).center_y(Fill).padding([0, 6])));
+            if is_active && let Some(files) = project_files.take() {
+                segments.push(Element::from(std::mem::replace(&mut lists, Column::new())).map(map.clone()));
+                segments.push(files);
+            }
         }
 
         lists = lists.push(header("PEERS"));
@@ -426,7 +449,9 @@ impl State {
             lists = lists.push(self.session_row(session));
         }
 
-        let content = column![new, search, scrollable(lists).height(Fill)].spacing(8).padding([6, 8]);
+        segments.push(Element::from(lists).map(map.clone()));
+        let list = scrollable(Column::with_children(segments)).height(Fill);
+        let content = column![new.map(map.clone()), search.map(map), list].spacing(8).padding([6, 8]);
 
         container(content).style(style::chrome).width(Fill).height(Fill).into()
     }

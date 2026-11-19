@@ -203,6 +203,31 @@ fn selecting_a_project_switches_the_active_folder_and_survives_a_restart() {
 }
 
 #[test]
+fn the_sidebar_file_list_follows_the_active_project() {
+    let dir = tempfile::tempdir().unwrap();
+    let (a, b) = (dir.path().join("a"), dir.path().join("b"));
+    std::fs::create_dir_all(&a).unwrap();
+    std::fs::create_dir_all(&b).unwrap();
+    std::fs::write(a.join("in_a.txt"), "a").unwrap();
+    std::fs::write(b.join("in_b.txt"), "b").unwrap();
+    let (mut app, _) = project_app(dir.path());
+    app.ctx.services.set_active("alpha".into(), a.clone());
+    chat_in(&mut app, "alpha", "work on a");
+    app.ctx.services.set_active("beta".into(), b.clone());
+    chat_in(&mut app, "beta", "work on b");
+
+    open_from_sidebar(&mut app, "alpha");
+    assert_eq!(app.files.root(), a);
+    assert!(app.files.visible().any(|path| path == Path::new("in_a.txt")));
+
+    open_from_sidebar(&mut app, "beta");
+    assert_eq!(app.files.root(), b, "the sidebar list is re-rooted at the opened project");
+    let listed: Vec<_> = app.files.visible().collect();
+    assert_eq!(listed, [Path::new("in_b.txt")]);
+    let _ = app.view();
+}
+
+#[test]
 fn a_project_without_a_folder_only_opens_its_screen() {
     let dir = tempfile::tempdir().unwrap();
     let (mut app, _) = project_app(dir.path());

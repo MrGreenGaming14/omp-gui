@@ -906,7 +906,12 @@ impl App {
             }
             None => center_content,
         };
-        let frame = ctx.shell.view(center_content, |tab| self.view_tab(tab), Message::Shell);
+        // The active project's top-level files sit under its sidebar row. A
+        // peer's project never lists them: its disk is only reached through
+        // the grant-checked folder path.
+        let project_files = (!areas::peers::is_remote(&ctx.services.project))
+            .then(|| self.files.view_compact().map(Message::Files));
+        let frame = ctx.shell.view(center_content, |tab| self.view_tab(tab), project_files, Message::Shell);
         if self.palette.is_open() { stack![frame, self.palette.view().map(Message::Palette)].into() } else { frame }
     }
 

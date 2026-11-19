@@ -37,7 +37,7 @@ fn shell(panel_open: bool) -> State {
 }
 
 fn view(state: &State) -> Element<'_, Message> {
-    state.view(text("Chat goes here"), |tab| text(format!("{tab} body")).into(), std::convert::identity)
+    state.view(text("Chat goes here"), |tab| text(format!("{tab} body")).into(), None, std::convert::identity)
 }
 
 fn simulator(state: &State) -> Simulator<'_, Message> {
@@ -70,6 +70,36 @@ fn nav_items_open_peers_tools_and_projects() {
         deliver(&mut state, messages),
         [Event::OpenPeers, Event::OpenTools, Event::OpenProject("harness".into())]
     );
+}
+
+fn with_project_files(state: &State) -> Element<'_, Message> {
+    state.view(
+        text("Chat goes here"),
+        |tab| text(format!("{tab} body")).into(),
+        Some(text("main.rs marker").into()),
+        std::convert::identity,
+    )
+}
+
+#[test]
+fn project_files_draw_under_the_active_project_only() {
+    let mut state = shell(false);
+    state.set_projects(["harness".to_owned(), "other".to_owned()]);
+
+    state.set_active_project(Some("harness".into()));
+    let mut ui = Simulator::with_size(Settings::default(), WINDOW, with_project_files(&state));
+    assert!(ui.find("main.rs marker").is_ok(), "the active project lacks its file list");
+    assert!(ui.find("other").is_ok());
+    drop(ui);
+
+    state.set_active_project(Some("elsewhere".into()));
+    let mut ui = Simulator::with_size(Settings::default(), WINDOW, with_project_files(&state));
+    assert!(ui.find("main.rs marker").is_err(), "a file list was drawn without an active project row");
+    drop(ui);
+
+    state.set_active_project(None);
+    let mut ui = Simulator::with_size(Settings::default(), WINDOW, with_project_files(&state));
+    assert!(ui.find("main.rs marker").is_err());
 }
 
 #[test]
