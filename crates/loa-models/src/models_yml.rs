@@ -198,13 +198,26 @@ impl Modality {
     }
 }
 
+/// What [`ModelsYml::set_custom_provider`] does with the provider's `apiKey`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum ApiKeyWrite {
+    /// Removes `apiKey`.
+    #[default]
+    Remove,
+    /// Leaves whatever `apiKey` holds, so an edit of other fields never needs
+    /// (or exposes) a secret command or inline key already in the file.
+    Keep,
+    /// Writes this reference.
+    Set(KeyReference),
+}
+
 /// The fields of a custom provider this editor writes. `None` removes the key.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct CustomProvider {
     pub id: String,
     pub base_url: Option<String>,
     pub api: Option<String>,
-    pub api_key: Option<KeyReference>,
+    pub api_key: ApiKeyWrite,
     pub auth: Option<AuthMode>,
     /// Send the resolved key as `Authorization: Bearer`.
     pub auth_header: Option<bool>,
@@ -593,8 +606,13 @@ impl ModelsYml {
 
     /// Asks `validator` (omp itself) to load the edited file, then saves.
     pub async fn save_validated(&mut self, validator: &dyn SettingsValidator) -> Result<()> {
-        validator.check_models(self.doc.text()).await?;
+        self.validate(validator).await?;
         self.save()
+    }
+
+    /// Asks `validator` (omp itself) to load the edited file. Writes nothing.
+    pub async fn validate(&self, validator: &dyn SettingsValidator) -> Result<()> {
+        validator.check_models(self.doc.text()).await
     }
 
     /// Every provider entry, in file order.
@@ -649,7 +667,11 @@ impl ModelsYml {
         };
         put("baseUrl", p.base_url.clone().map(ystr))?;
         put("api", p.api.clone().map(ystr))?;
-        put("apiKey", p.api_key.as_ref().map(KeyReference::yaml))?;
+        match &p.api_key {
+            ApiKeyWrite::Remove => put("apiKey", None)?,
+            ApiKeyWrite::Keep => {}
+            ApiKeyWrite::Set(key) => put("apiKey", Some(key.yaml()))?,
+        }
         put("auth", p.auth.map(|a| ystr(a.as_str())))?;
         put("authHeader", p.auth_header.map(Yaml::Boolean))?;
         put(
@@ -902,7 +924,7 @@ providers:
         assert!(m.set_custom_provider(&p).is_err());
         p.base_url = Some("https://gateway.example.com/v1".into());
         assert!(m.set_custom_provider(&p).is_err(), "no key and auth is not none");
-        p.api_key = Some(KeyReference::env_var("MY_GATEWAY_API_KEY").unwrap());
+        p.api_key = ApiKeyWrite::Set(KeyReference::env_var("MY_GATEWAY_API_KEY").unwrap());
         m.set_custom_provider(&p).unwrap();
         assert_eq!(
             m.text(),
@@ -918,7 +940,7 @@ providers:
         let p = CustomProvider {
             id: "openrouter".into(),
             base_url: Some("https://relay2.example.com/v1".into()),
-            api_key: Some(KeyReference::command("!op read op://dev/openrouter/key").unwrap()),
+            api_key: ApiKeyWrite::Set(KeyReference::command("!op read op://dev/openrouter/key").unwrap()),
             ..Default::default()
         };
         m.set_custom_provider(&p).unwrap();
@@ -938,7 +960,7 @@ providers:
             id: "team-proxy".into(),
             base_url: Some("https://models.example.com/v1".into()),
             discovery: Some("openai-models-list".into()),
-            api_key: Some(KeyReference::env_var("TEAM_PROXY_API_KEY").unwrap()),
+            api_key: ApiKeyWrite::Set(KeyReference::env_var("TEAM_PROXY_API_KEY").unwrap()),
             ..Default::default()
         };
         assert!(m.set_custom_provider(&p).is_err());

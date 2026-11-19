@@ -7,6 +7,7 @@ publish.workspace = true
 
 [dependencies]
 async-trait.workspace = true
+loa-omp-rpc = { path = "../loa-omp-rpc" }
 serde.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
@@ -16,4 +17,5 @@ toml_edit = "0.25"
 yaml-rust2 = "0.13"
 
 [dev-dependencies]
+loa-omp-rpc = { path = "../loa-omp-rpc", features = ["fake-omp"] }
 tokio = { workspace = true, features = ["full"] }

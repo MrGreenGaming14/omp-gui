@@ -22,7 +22,28 @@ pub struct ModelSettings {
     pub providers: Vec<ProviderToggle>,
     pub overrides: Vec<ModelOverride>,
     pub custom_providers: Vec<CustomProvider>,
+    /// The other harnesses' own default model settings.
+    pub harnesses: Vec<HarnessModel>,
 }
+
+/// The default model and effort another harness (Claude Code, Codex) keeps in
+/// its own config file. Empty values leave the choice to the harness.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HarnessModel {
+    /// Harness key, e.g. `claude`.
+    pub harness: String,
+    /// Display name, e.g. "Claude Code".
+    pub name: String,
+    /// The config file the values live in, for display.
+    pub config_path: String,
+    pub model: String,
+    pub effort: String,
+    /// Effort values the harness accepts in its config.
+    pub efforts: Vec<String>,
+}
+
+/// The effort pick list's entry for "no effort set".
+const HARNESS_DEFAULT: &str = "default";
 
 /// A model role and its ordered chain: `chain[0]` is the primary model
 /// (`modelRoles.<role>`), the rest are its fallbacks
@@ -265,6 +286,7 @@ struct Draft {
     providers: Vec<ProviderToggle>,
     overrides: Vec<OverrideDraft>,
     custom_providers: Vec<CustomProviderDraft>,
+    harnesses: Vec<HarnessModel>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -340,6 +362,7 @@ impl Draft {
                     models: p.models.join(", "),
                 })
                 .collect(),
+            harnesses: settings.harnesses.clone(),
         }
     }
 
@@ -406,6 +429,7 @@ impl Draft {
             providers: self.providers.clone(),
             overrides,
             custom_providers,
+            harnesses: self.harnesses.clone(),
         })
     }
 }
@@ -450,6 +474,9 @@ pub enum Message {
     AddCustomProvider,
     RemoveCustomProvider(usize),
     CustomProviderEdited(usize, ProviderEdit),
+    HarnessModelChanged(usize, String),
+    /// The effort chosen for a harness; [`HARNESS_DEFAULT`] clears it.
+    HarnessEffortChanged(usize, String),
     Save,
     Revert,
 }
@@ -681,6 +708,16 @@ impl State {
                     }
                 }
             }
+            Message::HarnessModelChanged(index, model) => {
+                if let Some(harness) = self.draft.harnesses.get_mut(index) {
+                    harness.model = model;
+                }
+            }
+            Message::HarnessEffortChanged(index, effort) => {
+                if let Some(harness) = self.draft.harnesses.get_mut(index) {
+                    harness.effort = if effort == HARNESS_DEFAULT { String::new() } else { effort };
+                }
+            }
             Message::Save => {
                 self.app_errors.clear();
                 match self.draft.to_settings() {
@@ -730,7 +767,8 @@ impl State {
             .push(section("Enabled models", self.view_models()))
             .push(section("Providers (order)", self.view_providers()))
             .push(section("Model overrides", self.view_overrides()))
-            .push(section("Custom providers", self.view_custom_providers()));
+            .push(section("Custom providers", self.view_custom_providers()))
+            .push(section("Other harnesses", self.view_harnesses()));
         scrollable(content)
             .width(Fill)
             .height(Fill)
@@ -948,6 +986,38 @@ impl State {
         list.push(style::icon_label_button(Icon::Plus, "Add custom provider").on_press(Message::AddCustomProvider))
             .into()
     }
+
+    fn view_harnesses(&self) -> Element<'_, Message> {
+        if self.draft.harnesses.is_empty() {
+            return text("No other harness settings found").size(NOTE).style(style::muted).into();
+        }
+        let mut list = column![].spacing(12);
+        for (i, harness) in self.draft.harnesses.iter().enumerate() {
+            let efforts: Vec<String> =
+                std::iter::once(HARNESS_DEFAULT.to_owned()).chain(harness.efforts.iter().cloned()).collect();
+            let effort = if harness.effort.is_empty() { HARNESS_DEFAULT.to_owned() } else { harness.effort.clone() };
+            let form = column![
+                row![
+                    text(&harness.name).size(BODY),
+                    text(&harness.config_path).size(SMALL).style(style::muted).font(iced::Font::MONOSPACE),
+                ]
+                .spacing(8)
+                .align_y(iced::Center),
+                labeled(
+                    "Model",
+                    style::field("harness default", &harness.model)
+                        .on_input(move |model| Message::HarnessModelChanged(i, model)),
+                ),
+                labeled(
+                    "Effort",
+                    pick(pick_list(efforts, Some(effort), move |effort| Message::HarnessEffortChanged(i, effort))),
+                ),
+            ]
+            .spacing(6);
+            list = list.push(container(form).style(style::card).padding(8).width(Fill));
+        }
+        list.into()
+    }
 }
 
 fn section<'a>(title: &'a str, body: Element<'a, Message>) -> Element<'a, Message> {
@@ -1010,6 +1080,14 @@ mod tests {
                 fields: vec![OverrideField { key: "contextWindow".into(), value: FieldValue::Int(400_000) }],
             }],
             custom_providers: Vec::new(),
+            harnesses: vec![HarnessModel {
+                harness: "codex".into(),
+                name: "Codex".into(),
+                config_path: "~/.codex/config.toml".into(),
+                model: String::new(),
+                effort: String::new(),
+                efforts: vec!["low".into(), "high".into()],
+            }],
         }
     }
 

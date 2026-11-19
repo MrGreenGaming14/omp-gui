@@ -9,6 +9,7 @@
 //! Model settings are edited in each harness's user config file in place,
 //! keeping every other key, comment and ordering.
 
+pub mod cli_login;
 pub mod claude;
 pub mod codex;
 mod jsonedit;

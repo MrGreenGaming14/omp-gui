@@ -40,6 +40,9 @@ pub enum Auth {
         /// Tells the user where to put the key.
         instructions: String,
     },
+    /// No sign in can be offered now: the harness is not installed, its
+    /// status could not be read, or it offers no login for the provider.
+    Unavailable { reason: String },
 }
 
 /// One provider row as the app reports it.
@@ -342,6 +345,19 @@ impl State {
                         .align_y(iced::Center),
                     )
                     .push(text(instructions).size(SMALL).style(style::muted));
+            }
+            Auth::Unavailable { reason } => {
+                body = body
+                    .push(
+                        row![
+                            container(space().width(6).height(6)).style(style::dot(false)),
+                            text(&entry.name).size(BODY),
+                            text("Unavailable").size(SMALL).style(style::muted),
+                        ]
+                        .spacing(8)
+                        .align_y(iced::Center),
+                    )
+                    .push(text(reason).size(SMALL).style(style::muted));
             }
         }
 

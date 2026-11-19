@@ -8,5 +8,15 @@ publish.workspace = true
 [dependencies]
 iced.workspace = true
 loa-core.workspace = true
+loa-models = { path = "../loa-models" }
 loa-ui-icons.workspace = true
 thiserror.workspace = true
+tokio = { workspace = true, features = ["sync", "macros", "rt"] }
+
+[dev-dependencies]
+async-trait.workspace = true
+loa-adapter.workspace = true
+loa-adapter-omp = { path = "../loa-adapter-omp" }
+serde_json.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["full"] }

@@ -6,6 +6,9 @@
 //! - [`rpc`] declares the [`rpc::OmpRpc`] port: the omp RPC commands this crate
 //!   needs (`get_login_providers`, `login`, `get_available_models`, `set_model`)
 //!   and the login UI frames omp sends while a login runs.
+//! - [`omp`] implements that port over a dedicated `omp --mode rpc --no-session`
+//!   process ([`omp::OmpService`]) and locates omp's settings files
+//!   ([`omp::OmpFiles`]); [`opener`] opens login URLs in the browser.
 //! - [`providers`] and [`login`] list providers with their signed in state and
 //!   drive the OAuth login flow, opening the browser through [`login::UrlOpener`].
 //! - [`keys`] reports where omp would read a provider's API key from, without ever
@@ -34,6 +37,8 @@ pub mod harness;
 pub mod keys;
 pub mod login;
 pub mod models_yml;
+pub mod omp;
+pub mod opener;
 pub mod process;
 pub mod providers;
 pub mod rpc;

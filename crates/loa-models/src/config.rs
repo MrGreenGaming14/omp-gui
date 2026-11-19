@@ -313,6 +313,13 @@ impl OmpConfig {
     /// Asks `validator` (omp itself) whether it reads the edited keys back as
     /// written, then saves.
     pub async fn save_validated(&mut self, validator: &dyn SettingsValidator) -> Result<()> {
+        self.validate(validator).await?;
+        self.save()
+    }
+
+    /// Asks `validator` (omp itself) whether it reads the keys edited since the
+    /// last save back as written. Writes nothing.
+    pub async fn validate(&self, validator: &dyn SettingsValidator) -> Result<()> {
         let expected: Vec<(String, serde_json::Value)> = self
             .touched
             .iter()
@@ -325,8 +332,12 @@ impl OmpConfig {
                 (path.join("."), value)
             })
             .collect();
-        validator.check_config(self.doc.text(), &expected).await?;
-        self.save()
+        validator.check_config(self.doc.text(), &expected).await
+    }
+
+    /// Whether keys were edited since the load or the last save.
+    pub fn is_edited(&self) -> bool {
+        !self.touched.is_empty()
     }
 
     fn set(&mut self, path: &[&str], value: Yaml) -> Result<()> {
