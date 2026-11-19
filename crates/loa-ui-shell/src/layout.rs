@@ -138,6 +138,13 @@ pub enum Event {
         /// New flag.
         pinned: bool,
     },
+    /// Persist the pinned flag of a project.
+    SetProjectPinned {
+        /// Project name.
+        project: String,
+        /// New flag.
+        pinned: bool,
+    },
     /// Delete this session and its journal.
     DeleteSession(String),
     /// The right panel opened or closed.
@@ -163,6 +170,7 @@ impl From<sidebar::Event> for Event {
             sidebar::Event::OpenTools => Event::OpenTools,
             sidebar::Event::OpenUpdates => Event::OpenUpdates,
             sidebar::Event::SetPinned { id, pinned } => Event::SetPinned { id, pinned },
+            sidebar::Event::SetProjectPinned { project, pinned } => Event::SetProjectPinned { project, pinned },
             sidebar::Event::DeleteSession(id) => Event::DeleteSession(id),
         }
     }
@@ -236,6 +244,11 @@ impl State {
     /// Replaces the pinned session ids, as saved by the app.
     pub fn set_pins(&mut self, pins: impl IntoIterator<Item = String>) {
         self.sidebar.set_pins(pins);
+    }
+
+    /// Replaces the pinned project names, as saved by the app.
+    pub fn set_pinned_projects(&mut self, pinned: impl IntoIterator<Item = String>) {
+        self.sidebar.set_pinned_projects(pinned);
     }
 
     /// Replaces the project list.

@@ -231,6 +231,7 @@ fn project_screen_lists_sessions_saves_settings_and_excludes() {
     assert_eq!(app.ctx.shell.sidebar().projects(), ["work", "alpha"], "listed from the session's project");
     let titles: Vec<String> = app.areas.projects.palette_commands(&app.ctx).into_iter().map(|c| c.title).collect();
     assert!(titles.contains(&"Open project: alpha".to_owned()), "{titles:?}");
+    assert!(titles.contains(&"Pin project: alpha".to_owned()), "{titles:?}");
     assert!(app.ctx.app_tools.iter().any(|tool| tool.name == PROJECT_SEARCH), "the Tools panel lists project_search");
 
     // The palette reopens the screen; the overview lists the session.

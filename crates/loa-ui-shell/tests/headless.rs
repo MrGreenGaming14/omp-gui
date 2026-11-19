@@ -73,6 +73,35 @@ fn nav_items_open_peers_tools_and_projects() {
 }
 
 #[test]
+fn pinning_a_project_moves_it_first_emits_the_save_event_and_search_still_filters() {
+    let mut state = shell(false);
+    state.set_projects(["alpha".to_owned(), "beta".to_owned(), "gamma".to_owned()]);
+    assert_eq!(state.sidebar().projects(), ["alpha", "beta", "gamma"]);
+    let events = deliver(&mut state, [Message::Sidebar(sidebar::Message::ToggleProjectPin("gamma".into()))]);
+    assert_eq!(events, [Event::SetProjectPinned { project: "gamma".into(), pinned: true }]);
+    assert_eq!(state.sidebar().projects(), ["gamma", "alpha", "beta"]);
+
+    let mut ui = simulator(&state);
+    assert!(ui.find("Unpin").is_ok(), "the pinned row offers Unpin");
+    drop(ui);
+
+    let _ = deliver(&mut state, [Message::Sidebar(sidebar::Message::Search("gam".into()))]);
+    assert_eq!(state.sidebar().projects(), ["gamma"]);
+    let _ = deliver(&mut state, [Message::Sidebar(sidebar::Message::Search("alp".into()))]);
+    assert_eq!(state.sidebar().projects(), ["alpha"]);
+    let _ = deliver(&mut state, [Message::Sidebar(sidebar::Message::Search(String::new()))]);
+
+    let events = deliver(&mut state, [Message::Sidebar(sidebar::Message::ToggleProjectPin("gamma".into()))]);
+    assert_eq!(events, [Event::SetProjectPinned { project: "gamma".into(), pinned: false }]);
+    assert_eq!(state.sidebar().projects(), ["alpha", "beta", "gamma"]);
+
+    // A pin on a project that is no longer listed stays saved but hidden.
+    state.set_pinned_projects(["gone".to_owned()]);
+    assert_eq!(state.sidebar().projects(), ["alpha", "beta", "gamma"]);
+    assert_eq!(state.sidebar().pinned_projects().len(), 1);
+}
+
+#[test]
 fn typing_in_search_filters_recents_live() {
     let mut state = shell(false);
     let mut ui = simulator(&state);

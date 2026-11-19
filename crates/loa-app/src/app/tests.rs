@@ -502,6 +502,20 @@ fn pins_and_the_theme_survive_new_turns_and_a_restart() {
 }
 
 #[test]
+fn a_project_pin_survives_a_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let mut app = fake_app(dir.path(), &["fake-a"]);
+        app.ctx.shell.set_projects(["alpha".to_owned(), "beta".to_owned()]);
+        update(&mut app, Message::Shell(shell::Message::Sidebar(shell::sidebar::Message::ToggleProjectPin("beta".into()))));
+        assert_eq!(app.ctx.shell.sidebar().projects(), ["beta", "alpha"]);
+    }
+    let mut app = fake_app(dir.path(), &["fake-a"]);
+    app.ctx.shell.set_projects(["alpha".to_owned(), "beta".to_owned()]);
+    assert_eq!(app.ctx.shell.sidebar().projects(), ["beta", "alpha"], "the project pin was saved");
+}
+
+#[test]
 fn tool_calls_collapse_into_one_row_that_expands_on_click() {
     use iced_test::Simulator;
     let dir = tempfile::tempdir().unwrap();

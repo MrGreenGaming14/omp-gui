@@ -25,6 +25,9 @@ pub struct Config {
     /// Ids of the sessions pinned in the sidebar.
     #[serde(skip_serializing_if = "BTreeSet::is_empty")]
     pub pinned: BTreeSet<String>,
+    /// Names of the projects pinned to the top of the sidebar project list.
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    pub pinned_projects: BTreeSet<String>,
     /// The project whose folder is the active folder, restored at startup.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub active_project: Option<ActiveProject>,
@@ -50,6 +53,7 @@ impl Default for Config {
             version: CURRENT_VERSION,
             theme: Theme::default(),
             pinned: BTreeSet::new(),
+            pinned_projects: BTreeSet::new(),
             active_project: None,
             harness: HarnessSettings::default(),
             network: NetworkSettings::default(),
