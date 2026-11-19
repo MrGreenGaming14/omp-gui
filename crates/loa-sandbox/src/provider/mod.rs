@@ -110,6 +110,9 @@ pub struct Channel {
 pub trait SandboxProvider: Send + Sync {
     fn kind(&self) -> SandboxKind;
 
+    /// What this sandbox is and which options it takes, for the agent.
+    fn describe(&self) -> String;
+
     async fn start(&self, spec: &SandboxSpec) -> Result<Box<dyn Sandbox>>;
 }
 
@@ -124,4 +127,9 @@ pub trait Sandbox: Send {
     /// Stops the sandbox and removes what the provider created for it.
     /// Dropping a sandbox without calling this cleans up on a best effort basis.
     async fn stop(self: Box<Self>) -> Result<()>;
+}
+
+/// Whether this process may use `/dev/kvm` (read and write access).
+pub fn kvm_available() -> bool {
+    std::fs::OpenOptions::new().read(true).write(true).open("/dev/kvm").is_ok()
 }

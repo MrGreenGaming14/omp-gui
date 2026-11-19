@@ -4,13 +4,10 @@ use super::{Channel, Sandbox, SandboxKind, SandboxProvider, SandboxSpec, Workspa
 use crate::{Result, SandboxError};
 use async_trait::async_trait;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 use tokio::process::Command;
-
-static NEXT_SOCKET: AtomicU64 = AtomicU64::new(0);
 
 pub struct FirecrackerProvider {
     pub firecracker: PathBuf,
@@ -48,11 +45,17 @@ async fn api(socket: &PathBuf, path: &str, body: &str) -> Result<()> {
 #[async_trait]
 impl SandboxProvider for FirecrackerProvider {
     fn kind(&self) -> SandboxKind { SandboxKind::Firecracker }
+    fn describe(&self) -> String { "a Firecracker microVM without network; the workspace is copied in and out".into() }
     async fn start(&self, spec: &SandboxSpec) -> Result<Box<dyn Sandbox>> {
         if spec.options.network.unwrap_or(self.network) {
             return Err(error("network access requires a configured guest TAP device"));
         }
-        let socket = std::env::temp_dir().join(format!("loa-fc-{}-{}.sock", std::process::id(), NEXT_SOCKET.fetch_add(1, Ordering::Relaxed)));
+        // The API socket and a private copy of the rootfs live here, so runs
+        // never change the configured image and leave nothing behind.
+        let run_dir = tempfile::Builder::new().prefix("loa-fc-").tempdir()?;
+        let socket = run_dir.path().join("api.sock");
+        let rootfs = run_dir.path().join("rootfs");
+        tokio::fs::copy(&self.rootfs, &rootfs).await.map_err(|e| error(format!("copying {}: {e}", self.rootfs.display())))?;
         let mut cmd = Command::new(&self.firecracker);
         cmd.arg("--api-sock").arg(&socket);
         let process = command_channel(cmd, WorkspaceMode::Copied)?;
@@ -71,25 +74,20 @@ impl SandboxProvider for FirecrackerProvider {
                 "boot_args": "console=ttyS0 reboot=k panic=1 pci=off",
             }).to_string()).await?;
             api(&socket, "/drives/rootfs", &serde_json::json!({
-                "drive_id": "rootfs", "path_on_host": self.rootfs,
+                "drive_id": "rootfs", "path_on_host": rootfs,
                 "is_root_device": true, "is_read_only": false,
             }).to_string()).await?;
             api(&socket, "/actions", &serde_json::json!({ "action_type": "InstanceStart" }).to_string()).await
         }.await;
         if let Err(e) = configured {
             let _ = Box::new(process).stop().await;
-            let _ = std::fs::remove_file(&socket);
             return Err(e);
         }
-        Ok(Box::new(FirecrackerSandbox { process: Some(process), socket }))
+        Ok(Box::new(FirecrackerSandbox { process: Some(process), _run_dir: run_dir }))
     }
 }
 
-struct FirecrackerSandbox { process: Option<ProcessSandbox>, socket: PathBuf }
-
-impl Drop for FirecrackerSandbox {
-    fn drop(&mut self) { let _ = std::fs::remove_file(&self.socket); }
-}
+struct FirecrackerSandbox { process: Option<ProcessSandbox>, _run_dir: tempfile::TempDir }
 
 #[async_trait]
 impl Sandbox for FirecrackerSandbox {

@@ -103,6 +103,13 @@ fn has_ovnfs() -> bool {
     })
 }
 
+/// The isolation `IsolatedCheckout::create` uses on this machine: `ovnfs`
+/// when it is installed, else a `git worktree` (a clone where worktrees
+/// can't be made).
+pub fn backend_name() -> &'static str {
+    if has_ovnfs() { "ovnfs" } else { "git worktree" }
+}
+
 enum Backend {
     Ovnfs(String),
     Worktree(PathBuf),
@@ -220,6 +227,60 @@ impl Drop for IsolatedCheckout {
     fn drop(&mut self) { let _ = self.remove(); }
 }
 
+/// Applies a patch from [`IsolatedCheckout::patch`] to the repository that
+/// holds `workspace`. Checks the whole patch first, so a patch that doesn't
+/// apply cleanly changes nothing.
+pub fn apply_patch(workspace: &Path, patch: &[u8]) -> Result<()> {
+    let root = git(&["rev-parse", "--show-toplevel"], workspace)?;
+    let root = PathBuf::from(String::from_utf8(root.stdout).map_err(|e| error(e.to_string()))?.trim_end());
+    for args in [&["apply", "--check", "--binary", "-"][..], &["apply", "--binary", "-"][..]] {
+        let mut child = Command::new("git").args(args).current_dir(&root)
+            .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped())
+            .spawn()?;
+        std::io::Write::write_all(&mut child.stdin.take().expect("piped stdin"), patch)?;
+        let output = child.wait_with_output()?;
+        if !output.status.success() {
+            return Err(error(format!("git {}: {}", args.join(" "), String::from_utf8_lossy(&output.stderr).trim())));
+        }
+    }
+    Ok(())
+}
+
+/// One file a patch touches.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PatchFile {
+    pub path: String,
+    pub added: usize,
+    pub removed: usize,
+    pub binary: bool,
+}
+
+/// The files of a unified Git patch with their added and removed line counts.
+pub fn patch_files(patch: &str) -> Vec<PatchFile> {
+    let mut files: Vec<PatchFile> = Vec::new();
+    let mut in_hunk = false;
+    for line in patch.lines() {
+        if let Some(header) = line.strip_prefix("diff --git ") {
+            // `a/<path> b/<path>`; the new name is what the change produces.
+            let path = header.rsplit_once(" b/").map_or(header, |(_, new)| new);
+            files.push(PatchFile { path: path.to_owned(), added: 0, removed: 0, binary: false });
+            in_hunk = false;
+            continue;
+        }
+        let Some(file) = files.last_mut() else { continue };
+        if line.starts_with("@@") {
+            in_hunk = true;
+        } else if line == "GIT binary patch" || (line.starts_with("Binary files ") && line.ends_with(" differ")) {
+            file.binary = true;
+        } else if in_hunk && line.starts_with('+') {
+            file.added += 1;
+        } else if in_hunk && line.starts_with('-') {
+            file.removed += 1;
+        }
+    }
+    files
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -245,5 +306,31 @@ mod tests {
         assert_eq!(fs::read_to_string(root.join("tracked")).unwrap(), "user edit\n");
         assert!(!root.join("new-untracked").exists());
         checkout.cleanup().unwrap();
+    }
+
+    #[test]
+    fn a_patch_applies_to_the_original_and_lists_its_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        git(&["init", "-q"], root).unwrap();
+        fs::write(root.join("tracked"), "one\ntwo\n").unwrap();
+        git(&["add", "tracked"], root).unwrap();
+        git(&["-c", "user.name=Test", "-c", "user.email=t@example.org", "commit", "-qm", "baseline"], root).unwrap();
+        let checkout = IsolatedCheckout::create(root).unwrap();
+        fs::write(checkout.path().join("tracked"), "one\nthree\nfour\n").unwrap();
+        fs::write(checkout.path().join("added"), "new\n").unwrap();
+        let patch = checkout.patch().unwrap();
+        checkout.cleanup().unwrap();
+        let files = patch_files(&String::from_utf8_lossy(&patch));
+        assert_eq!(files, [
+            PatchFile { path: "added".into(), added: 1, removed: 0, binary: false },
+            PatchFile { path: "tracked".into(), added: 2, removed: 1, binary: false },
+        ]);
+        apply_patch(root, &patch).unwrap();
+        assert_eq!(fs::read_to_string(root.join("tracked")).unwrap(), "one\nthree\nfour\n");
+        assert_eq!(fs::read_to_string(root.join("added")).unwrap(), "new\n");
+        // Applying it again fails the check and changes nothing.
+        assert!(apply_patch(root, &patch).is_err());
+        assert_eq!(fs::read_to_string(root.join("added")).unwrap(), "new\n");
     }
 }

@@ -13,9 +13,15 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::sync::broadcast;
 
 /// Name registered with an adapter; it does not replace omp's own `task`.
 pub const NAME: &str = "sandbox_task";
+
+/// Run numbers, unique in this process, so containers, remote directories
+/// and worker sessions of concurrent sessions never collide.
+static NEXT_RUN: AtomicU64 = AtomicU64::new(1);
 
 /// One sandbox task's arguments.
 #[derive(Debug, Deserialize)]
@@ -42,6 +48,29 @@ pub struct SandboxTaskResult {
     pub patch: Option<String>,
 }
 
+/// A `sandbox_task` call as it starts.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SandboxRun {
+    pub run: u64,
+    /// Session that called the tool.
+    pub parent: String,
+    /// The worker's session id.
+    pub worker: String,
+    pub kind: SandboxKind,
+    pub task: String,
+    pub isolated: bool,
+    /// The workspace the task works on (the original, not the checkout).
+    pub workspace: PathBuf,
+}
+
+/// What happens to `sandbox_task` calls, for the app to show.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SandboxEvent {
+    Started(SandboxRun),
+    Finished { run: u64, final_message: Option<String>, patch: Option<String> },
+    Failed { run: u64, error: String },
+}
+
 /// Host-owned tool service. The adapter, credentials and journal never enter `SandboxSpec`.
 pub struct SandboxTask {
     adapter: Arc<dyn Adapter>,
@@ -49,7 +78,7 @@ pub struct SandboxTask {
     journal: Arc<dyn WorkerJournal>,
     workspace: PathBuf,
     providers: BTreeMap<SandboxKind, Arc<dyn SandboxProvider>>,
-    next_id: AtomicU64,
+    events: Option<broadcast::Sender<SandboxEvent>>,
 }
 
 impl SandboxTask {
@@ -60,7 +89,7 @@ impl SandboxTask {
         journal: Arc<dyn WorkerJournal>,
         workspace: PathBuf,
     ) -> Self {
-        Self { adapter, template, journal, workspace, providers: BTreeMap::new(), next_id: AtomicU64::new(1) }
+        Self { adapter, template, journal, workspace, providers: BTreeMap::new(), events: None }
     }
 
     /// Installs one provider for its kind.
@@ -68,16 +97,39 @@ impl SandboxTask {
         self.providers.insert(provider.kind(), provider);
     }
 
-    /// JSON Schema and description to give to each harness adapter.
-    pub fn spec() -> HostToolSpec {
+    /// Reports every run to `events`.
+    pub fn with_events(mut self, events: broadcast::Sender<SandboxEvent>) -> Self {
+        self.events = Some(events);
+        self
+    }
+
+    /// The kinds with a registered provider.
+    pub fn kinds(&self) -> Vec<SandboxKind> {
+        self.providers.keys().copied().collect()
+    }
+
+    /// JSON Schema and description to give to each harness adapter. Only the
+    /// registered kinds are offered, each described by its provider.
+    pub fn spec(&self) -> HostToolSpec {
+        let kinds: Vec<&str> = self.providers.keys().map(|kind| kind.as_str()).collect();
+        let available = self.providers.iter()
+            .map(|(kind, provider)| format!("- {}: {}", kind.as_str(), provider.describe()))
+            .collect::<Vec<_>>()
+            .join("\n");
         HostToolSpec {
             name: NAME.into(),
-            description: "Run a worker on the host, routing its command and file tools to a sandbox. With isolation, return its final message and a patch without changing the original workspace.".into(),
+            description: format!(
+                "Run a task as a worker agent whose commands and file operations happen inside a sandbox; its model \
+                 calls stay on this host. Returns the worker's final message. With isolation (the workspace must be a \
+                 git repository) the worker works on an isolated checkout and the result carries `patch`, a unified \
+                 diff of its changes, while the workspace stays untouched. Without isolation the worker changes the \
+                 workspace itself.\nSandboxes available here:\n{available}"
+            ),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "task": {"type": "string", "minLength": 1},
-                    "kind": {"enum": ["docker", "firecracker", "vm", "ssh", "peer", "local"]},
+                    "task": {"type": "string", "minLength": 1, "description": "Complete instructions for the worker"},
+                    "kind": {"enum": kinds},
                     "options": {
                         "type": "object",
                         "properties": {
@@ -90,8 +142,8 @@ impl SandboxTask {
                         },
                         "additionalProperties": false
                     },
-                    "isolation": {"type": "boolean"},
-                    "agent": {"type": "string"},
+                    "isolation": {"type": "boolean", "description": "Work on an isolated checkout and return a patch"},
+                    "agent": {"type": "string", "description": "Instructions of the agent the worker plays"},
                     "model_role": {"type": "string"}
                 },
                 "required": ["task", "kind"],
@@ -100,30 +152,48 @@ impl SandboxTask {
         }
     }
 
+    fn emit(&self, event: SandboxEvent) {
+        if let Some(events) = &self.events {
+            // No receiver only means nobody is watching.
+            let _ = events.send(event);
+        }
+    }
+
     /// Runs the host worker and always stops its sandbox, including on worker errors.
     pub async fn execute(&self, args: SandboxTaskArgs) -> Result<SandboxTaskResult> {
         if args.task.trim().is_empty() {
             return Err(SandboxError::Args("task must not be empty".into()));
         }
-        match args.kind {
-            SandboxKind::Docker if args.options.image.as_deref().is_none_or(str::is_empty) => {
-                return Err(SandboxError::Args("docker requires options.image".into()));
-            }
-            SandboxKind::Ssh if args.options.host.as_deref().is_none_or(str::is_empty) => {
-                return Err(SandboxError::Args("ssh requires options.host".into()));
-            }
-            SandboxKind::Peer if args.options.peer.as_deref().is_none_or(str::is_empty) => {
-                return Err(SandboxError::Args("peer requires options.peer".into()));
-            }
-            _ => {}
+        let provider = Arc::clone(self.providers.get(&args.kind).ok_or_else(|| SandboxError::NoProvider(args.kind.as_str().into()))?);
+        let run = NEXT_RUN.fetch_add(1, Ordering::Relaxed);
+        // With the start time, ids stay unique across app restarts too, where
+        // run numbers start over but earlier worker journals remain.
+        let started = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |since| since.as_millis());
+        let worker = format!("{}-sandbox-{started:x}-{run}", self.template.session_id);
+        self.emit(SandboxEvent::Started(SandboxRun {
+            run,
+            parent: self.template.session_id.clone(),
+            worker: worker.clone(),
+            kind: args.kind,
+            task: args.task.clone(),
+            isolated: args.isolation,
+            workspace: self.workspace.clone(),
+        }));
+        let result = self.run(provider.as_ref(), run, started, worker, args).await;
+        match &result {
+            Ok(result) => self.emit(SandboxEvent::Finished { run, final_message: result.final_message.clone(), patch: result.patch.clone() }),
+            Err(error) => self.emit(SandboxEvent::Failed { run, error: error.to_string() }),
         }
-        let provider = self.providers.get(&args.kind).ok_or_else(|| SandboxError::NoProvider(args.kind.as_str().into()))?;
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let name = format!("sandbox-{id}");
+        result
+    }
+
+    async fn run(&self, provider: &dyn SandboxProvider, run: u64, started: u128, worker: String, args: SandboxTaskArgs) -> Result<SandboxTaskResult> {
         let checkout = if args.isolation { Some(IsolatedCheckout::create(&self.workspace)?) } else { None };
         let workspace = checkout.as_ref().map_or(self.workspace.as_path(), |checkout| checkout.path());
         let mut sandbox = provider.start(&SandboxSpec {
-            name: name.clone(),
+            // Names containers and remote directories: unique across
+            // processes and machines sharing a Docker daemon or SSH host.
+            name: format!("loa-sbx-{}-{started:x}-{run}", std::process::id()),
             workspace: workspace.to_path_buf(),
             // Never inherit the host adapter's env (which can contain API keys).
             env: Vec::new(),
@@ -144,7 +214,7 @@ impl SandboxTask {
                 self.journal.as_ref(),
                 Arc::new(SandboxTools::new(Arc::clone(&client), Vec::new())),
                 WorkerRequest {
-                    session_id: format!("{}-{name}", self.template.session_id),
+                    session_id: worker,
                     task: args.task,
                     agent: args.agent,
                     model_role: args.model_role,

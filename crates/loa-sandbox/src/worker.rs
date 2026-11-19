@@ -10,8 +10,11 @@ use crate::client::StubClient;
 use crate::proto::{Command, ExecRequest, FileKind};
 use crate::{Result, SandboxError};
 use async_trait::async_trait;
-use loa_adapter::{Adapter, HostToolSpec, HostTools, Prompt, SessionConfig};
-use loa_core::{CommitError, Dom, Draft, ElementKind, MemorySink, MessageKind, Patch, PatchSink, Role, attr};
+use loa_adapter::{Adapter, Answer, HostToolSpec, HostTools, Prompt, SessionConfig};
+use loa_core::{
+    CommitError, DecisionKind, DecisionStatus, Dom, Draft, ElementKind, MemorySink, MessageKind, NodeId, Op, Patch, PatchSink, Role,
+    answer, attr,
+};
 use serde::Deserialize;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -26,7 +29,7 @@ pub const SANDBOX_LIST: &str = "sandbox_list";
 /// for a worker so everything it does goes through the sandbox.
 pub const HOST_TOOLS_TO_DISABLE: &[&str] = &[
     "bash", "read", "write", "edit", "grep", "find", "glob", "ast_grep", "ast_edit", "eval", "lsp", "debug", "browser",
-    "computer", "task", "fetch", "notebook", "ssh",
+    "computer", "task", "fetch", "notebook", "ssh", "ask",
 ];
 
 /// Where a worker's session is journaled. A port: `loa-app` backs it with the
@@ -61,10 +64,14 @@ impl WorkerJournal for MemoryJournal {
 }
 
 /// Forwards commits to the journal sink and keeps a copy of the DOM, so the
-/// worker's final message can be read whatever the journal is.
+/// worker's final message can be read whatever the journal is. Approval
+/// requests the worker's harness raises are handed to `approvals`: nobody
+/// watches a worker, and its tools only reach the sandbox the user already
+/// approved with the `sandbox_task` call.
 struct Mirror {
     inner: Arc<dyn PatchSink>,
     dom: Mutex<Dom>,
+    approvals: tokio::sync::mpsc::UnboundedSender<NodeId>,
 }
 
 impl PatchSink for Mirror {
@@ -73,6 +80,20 @@ impl PatchSink for Mirror {
         let mut dom = self.dom.lock().unwrap_or_else(PoisonError::into_inner);
         let patch = self.inner.commit_at(draft, ts)?;
         dom.apply(&patch)?;
+        let touches_status = match &patch.op {
+            Op::Insert { kind, .. } => *kind == ElementKind::Decision,
+            Op::Set { name, .. } => name == attr::STATUS,
+            _ => false,
+        };
+        let waiting_approval = touches_status
+            && dom.get(patch.node).is_some_and(|n| {
+                n.kind == ElementKind::Decision
+                    && n.str_attr(attr::KIND) == Some(DecisionKind::Approval.as_str())
+                    && n.str_attr(attr::STATUS) == Some(DecisionStatus::Waiting.as_str())
+            });
+        if waiting_approval {
+            let _ = self.approvals.send(patch.node);
+        }
         Ok(patch)
     }
 }
@@ -329,14 +350,26 @@ pub async fn run_worker(
         }
     }
 
-    let mirror = Arc::new(Mirror { inner: journal.open(&session_id)?, dom: Mutex::new(Dom::new()) });
+    let (approvals, mut waiting) = tokio::sync::mpsc::unbounded_channel();
+    let mirror = Arc::new(Mirror { inner: journal.open(&session_id)?, dom: Mutex::new(Dom::new()), approvals });
     let session = adapter.start(config, Arc::clone(&mirror) as Arc<dyn PatchSink>).await?;
     let by = template.node.clone();
     let run = async {
-        session.send(Prompt { text: task, attachments: Vec::new(), by }).await?;
+        session.send(Prompt { text: task, attachments: Vec::new(), by: by.clone() }).await?;
         session.wait_idle().await
     };
-    let result = run.await;
+    // The mirror keeps the sender, so this only ends on a failed answer.
+    let allow = async {
+        while let Some(decision) = waiting.recv().await {
+            let allow = Answer { values: vec![answer::ALLOW_ONCE.to_owned()], reason: None, by: by.clone() };
+            session.answer(decision, allow).await?;
+        }
+        Ok(())
+    };
+    let result = tokio::select! {
+        result = run => result,
+        result = allow => result,
+    };
     let shutdown = session.shutdown().await;
     result?;
     shutdown?;

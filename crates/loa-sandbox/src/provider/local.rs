@@ -3,7 +3,7 @@ use super::serial::command_channel;
 use super::{Sandbox, SandboxKind, SandboxProvider, SandboxSpec, WorkspaceMode};
 use crate::Result;
 use async_trait::async_trait;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tokio::process::Command;
 
 pub struct LocalProvider {
@@ -15,12 +15,34 @@ impl LocalProvider {
 }
 
 impl Default for LocalProvider {
-    fn default() -> Self { Self::new("loa-sandbox-stub") }
+    fn default() -> Self { Self::new(STUB_NAME) }
+}
+
+/// File name of the stub binary.
+pub const STUB_NAME: &str = "loa-sandbox-stub";
+
+/// Finds the stub: `LOA_SANDBOX_STUB`, then next to the running executable
+/// or in one of the directories above it (cargo puts test executables up to
+/// four levels below the profile directory that holds the binaries), then
+/// `PATH`.
+pub fn find_stub() -> Option<PathBuf> {
+    const LEVELS: usize = 5;
+    let explicit = std::env::var_os("LOA_SANDBOX_STUB").map(PathBuf::from);
+    let exe = std::env::current_exe().ok();
+    let near = exe.iter().flat_map(|exe| exe.ancestors().skip(1).take(LEVELS).map(|dir| dir.join(STUB_NAME)));
+    let path = std::env::var_os("PATH").into_iter().flat_map(|paths| std::env::split_paths(&paths).map(|dir| dir.join(STUB_NAME)).collect::<Vec<_>>());
+    explicit.into_iter().chain(near).chain(path).find(|candidate| is_executable(candidate))
+}
+
+fn is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    path.metadata().is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
 }
 
 #[async_trait]
 impl SandboxProvider for LocalProvider {
     fn kind(&self) -> SandboxKind { SandboxKind::Local }
+    fn describe(&self) -> String { "this machine, in the workspace or its isolated checkout; no OS level isolation".into() }
     async fn start(&self, spec: &SandboxSpec) -> Result<Box<dyn Sandbox>> {
         let mut cmd = Command::new(&self.stub);
         cmd.arg(&spec.workspace).current_dir(&spec.workspace).env_clear().envs(spec.env.iter().cloned());

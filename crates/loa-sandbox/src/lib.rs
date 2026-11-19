@@ -10,7 +10,10 @@
 //! - [`isolation`]: isolated checkouts (ovnfs, git worktree, copy) and patch capture
 //! - [`sync`]: copying the workspace in and out of sandboxes that don't share it
 //! - [`worker`]: the worker session and the sandbox backed tools it gets
-//! - [`tool`]: the `sandbox_task` host tool
+//! - [`tool`]: the `sandbox_task` host tool and the events of its runs
+//! - [`service`]: what the app holds: settings, provider availability and the
+//!   host tool for each session
+//! - [`runs`]: the runs the app lists, built from the tool's events
 
 pub mod proto;
 
@@ -20,6 +23,10 @@ pub mod client;
 pub mod isolation;
 #[cfg(feature = "host")]
 pub mod provider;
+#[cfg(feature = "host")]
+pub mod runs;
+#[cfg(feature = "host")]
+pub mod service;
 #[cfg(feature = "host")]
 pub mod sync;
 #[cfg(feature = "host")]
@@ -31,6 +38,12 @@ pub mod worker;
 pub use client::{ExecOutput, StubClient};
 #[cfg(feature = "host")]
 pub use provider::{Channel, Sandbox, SandboxKind, SandboxOptions, SandboxProvider, SandboxSpec, WorkspaceMode};
+#[cfg(feature = "host")]
+pub use service::{Availability, ProviderStatus, SandboxConfig, SandboxService};
+#[cfg(feature = "host")]
+pub use runs::{RunEntry, RunLog, RunState};
+#[cfg(feature = "host")]
+pub use tool::{SandboxEvent, SandboxRun, SandboxTaskResult};
 
 /// Errors of the host side.
 #[cfg(feature = "host")]
@@ -61,3 +74,26 @@ pub enum SandboxError {
 
 #[cfg(feature = "host")]
 pub type Result<T, E = SandboxError> = std::result::Result<T, E>;
+
+#[cfg(all(test, feature = "host"))]
+mod tests {
+    use async_trait::async_trait;
+    use loa_adapter::{Adapter, AdapterError, Capabilities, HarnessSession, SessionConfig};
+    use loa_core::{Dom, PatchSink};
+    use std::sync::Arc;
+
+    /// An adapter for tests that never start a worker.
+    pub struct NoAdapter;
+
+    #[async_trait]
+    impl Adapter for NoAdapter {
+        fn harness(&self) -> &'static str { "none" }
+        fn capabilities(&self) -> Capabilities { Capabilities::default() }
+        async fn start(&self, _: SessionConfig, _: Arc<dyn PatchSink>) -> loa_adapter::Result<Box<dyn HarnessSession>> {
+            Err(AdapterError::Format("no harness in this test".into()))
+        }
+        async fn resume(&self, _: SessionConfig, _: &Dom, _: Arc<dyn PatchSink>) -> loa_adapter::Result<Box<dyn HarnessSession>> {
+            Err(AdapterError::Format("no harness in this test".into()))
+        }
+    }
+}

@@ -13,6 +13,7 @@ libc = "0.2"
 loa-sandbox = { path = "../loa-sandbox" }
 loa-core.workspace = true
 loa-adapter.workspace = true
+loa-adapter-omp = { path = "../loa-adapter-omp" }
 async-trait.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
