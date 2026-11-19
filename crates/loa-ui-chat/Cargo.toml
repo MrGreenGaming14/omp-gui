@@ -8,3 +8,6 @@ publish.workspace = true
 [dependencies]
 loa-core.workspace = true
 iced.workspace = true
+
+[dev-dependencies]
+iced_test = "0.14"

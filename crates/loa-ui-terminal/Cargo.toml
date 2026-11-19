@@ -6,4 +6,16 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+alacritty_terminal = "0.26"
+async-trait.workspace = true
+bytes.workspace = true
+futures.workspace = true
 iced.workspace = true
+portable-pty = "0.9"
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+iced_runtime = "0.14"
+iced_test = "0.14"
+tempfile.workspace = true

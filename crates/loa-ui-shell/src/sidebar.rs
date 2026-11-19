@@ -1,0 +1,452 @@
+//! The left sidebar: New, Search, Projects, Peers, Tools, Pinned and Recents.
+//!
+//! Recents hold sessions from every node, each tagged with the node's name.
+//! Sessions with an open decision carry a waiting badge.
+
+use crate::data::{Nodes, SessionSummary};
+use crate::theme::style;
+use iced::widget::{Column, button, column, container, hover, row, scrollable, space, text, text_input};
+use iced::{Alignment, Element, Fill, Task};
+
+/// Id of the search input, for focusing it from a shortcut.
+pub const SEARCH_ID: &str = "loa-sidebar-search";
+
+/// Container id of the waiting badge on a session row.
+pub fn waiting_badge_id(session: &str) -> String {
+    format!("loa-sidebar-waiting-{session}")
+}
+
+/// Sidebar state: the sessions, projects and nodes the app passed in, the
+/// search query and the highlighted session.
+#[derive(Debug, Clone, Default)]
+pub struct State {
+    sessions: Vec<Entry>,
+    projects: Vec<String>,
+    nodes: Nodes,
+    query: String,
+    active: Option<String>,
+}
+
+/// A session with its lowercase search text, rebuilt when sessions or node
+/// names change so typing in the search box does not allocate per row.
+#[derive(Debug, Clone)]
+struct Entry {
+    summary: SessionSummary,
+    haystack: String,
+}
+
+impl Entry {
+    fn new(summary: SessionSummary, nodes: &Nodes) -> Self {
+        let mut haystack = String::with_capacity(summary.title.len() + 32);
+        haystack.push_str(&summary.title.to_lowercase());
+        if let Some(project) = &summary.project {
+            haystack.push('\n');
+            haystack.push_str(&project.to_lowercase());
+        }
+        haystack.push('\n');
+        haystack.push_str(&nodes.name_of(&summary.node).to_lowercase());
+        Self { summary, haystack }
+    }
+}
+
+/// Internal messages.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Message {
+    /// The New session button.
+    New,
+    /// The search text changed.
+    Search(String),
+    /// A project row was clicked.
+    OpenProject(String),
+    /// The Peers item was clicked.
+    OpenPeers,
+    /// The Tools item was clicked.
+    OpenTools,
+    /// A session row was clicked.
+    OpenSession(String),
+    /// The pin button on a session row was clicked.
+    TogglePin(String),
+}
+
+/// What the app must act on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Event {
+    /// Start a new session.
+    NewSession,
+    /// Show this session.
+    OpenSession(String),
+    /// Show this project.
+    OpenProject(String),
+    /// Show the peers list.
+    OpenPeers,
+    /// Show the tools panel.
+    OpenTools,
+    /// Persist the pinned flag of a session.
+    SetPinned {
+        /// Session id.
+        id: String,
+        /// New flag.
+        pinned: bool,
+    },
+}
+
+impl State {
+    /// Replaces every session.
+    pub fn set_sessions(&mut self, sessions: impl IntoIterator<Item = SessionSummary>) {
+        self.sessions = sessions.into_iter().map(|summary| Entry::new(summary, &self.nodes)).collect();
+    }
+
+    /// Adds a session or replaces the one with the same id.
+    pub fn upsert_session(&mut self, summary: SessionSummary) {
+        let entry = Entry::new(summary, &self.nodes);
+        match self.sessions.iter_mut().find(|existing| existing.summary.id == entry.summary.id) {
+            Some(existing) => *existing = entry,
+            None => self.sessions.push(entry),
+        }
+    }
+
+    /// Drops a session.
+    pub fn remove_session(&mut self, id: &str) {
+        self.sessions.retain(|entry| entry.summary.id != id);
+    }
+
+    /// The session with this id.
+    pub fn session(&self, id: &str) -> Option<&SessionSummary> {
+        self.sessions.iter().map(|entry| &entry.summary).find(|summary| summary.id == id)
+    }
+
+    /// Replaces the project list.
+    pub fn set_projects(&mut self, projects: impl IntoIterator<Item = String>) {
+        self.projects = projects.into_iter().collect();
+    }
+
+    /// Replaces the node directory and refreshes node tags.
+    pub fn set_nodes(&mut self, nodes: Nodes) {
+        self.nodes = nodes;
+        let sessions = std::mem::take(&mut self.sessions);
+        self.sessions = sessions.into_iter().map(|entry| Entry::new(entry.summary, &self.nodes)).collect();
+    }
+
+    /// The node directory.
+    pub fn nodes(&self) -> &Nodes {
+        &self.nodes
+    }
+
+    /// Highlights a session row.
+    pub fn set_active(&mut self, id: Option<String>) {
+        self.active = id;
+    }
+
+    /// The highlighted session.
+    pub fn active(&self) -> Option<&str> {
+        self.active.as_deref()
+    }
+
+    /// The search text.
+    pub fn query(&self) -> &str {
+        &self.query
+    }
+
+    /// Pinned sessions that match the search, most recently updated first.
+    pub fn pinned(&self) -> Vec<&SessionSummary> {
+        self.section(true)
+    }
+
+    /// Unpinned sessions from every node that match the search, most recently
+    /// updated first.
+    pub fn recents(&self) -> Vec<&SessionSummary> {
+        self.section(false)
+    }
+
+    /// Projects whose name matches the search, in the order given.
+    pub fn projects(&self) -> Vec<&str> {
+        let query = self.query.to_lowercase();
+        self.projects
+            .iter()
+            .filter(|project| {
+                let name = project.to_lowercase();
+                query.split_whitespace().all(|term| name.contains(term))
+            })
+            .map(String::as_str)
+            .collect()
+    }
+
+    fn section(&self, pinned: bool) -> Vec<&SessionSummary> {
+        let query = self.query.to_lowercase();
+        let mut list: Vec<&SessionSummary> = self
+            .sessions
+            .iter()
+            .filter(|entry| entry.summary.pinned == pinned)
+            .filter(|entry| query.split_whitespace().all(|term| entry.haystack.contains(term)))
+            .map(|entry| &entry.summary)
+            .collect();
+        list.sort_by(|a, b| b.updated.cmp(&a.updated).then_with(|| a.id.cmp(&b.id)));
+        list
+    }
+
+    /// Handles a message.
+    pub fn update(&mut self, message: Message) -> (Task<Message>, Option<Event>) {
+        let event = match message {
+            Message::New => Some(Event::NewSession),
+            Message::Search(query) => {
+                self.query = query;
+                None
+            }
+            Message::OpenProject(project) => Some(Event::OpenProject(project)),
+            Message::OpenPeers => Some(Event::OpenPeers),
+            Message::OpenTools => Some(Event::OpenTools),
+            Message::OpenSession(id) => {
+                self.active = Some(id.clone());
+                Some(Event::OpenSession(id))
+            }
+            Message::TogglePin(id) => self
+                .sessions
+                .iter_mut()
+                .find(|entry| entry.summary.id == id)
+                .map(|entry| {
+                    entry.summary.pinned = !entry.summary.pinned;
+                    Event::SetPinned { id, pinned: entry.summary.pinned }
+                }),
+        };
+        (Task::none(), event)
+    }
+
+    /// Draws the sidebar.
+    pub fn view(&self) -> Element<'_, Message> {
+        let new = button(text("New session").width(Fill))
+            .on_press(Message::New)
+            .style(button::primary)
+            .padding([8, 12])
+            .width(Fill);
+
+        let search = text_input("Search sessions", &self.query)
+            .id(SEARCH_ID)
+            .on_input(Message::Search)
+            .padding([6, 10]);
+
+        let peers_online = self.nodes.online_peers();
+        let peers = nav_item("Peers", Some(format!("{peers_online} online")), Message::OpenPeers);
+        let tools = nav_item("Tools", None, Message::OpenTools);
+
+        let mut lists = Column::new().spacing(4);
+
+        let projects = self.projects();
+        lists = lists.push(header("Projects"));
+        if projects.is_empty() {
+            lists = lists.push(hint(if self.projects.is_empty() { "No projects yet" } else { "No match" }));
+        }
+        for project in projects {
+            lists = lists.push(
+                button(text(project).width(Fill))
+                    .on_press(Message::OpenProject(project.to_owned()))
+                    .style(style::row)
+                    .padding([4, 8])
+                    .width(Fill),
+            );
+        }
+
+        let pinned = self.pinned();
+        if !pinned.is_empty() {
+            lists = lists.push(header("Pinned"));
+            for session in pinned {
+                lists = lists.push(self.session_row(session));
+            }
+        }
+
+        let recents = self.recents();
+        lists = lists.push(header("Recents"));
+        if recents.is_empty() {
+            lists = lists.push(hint(if self.query.is_empty() { "No sessions yet" } else { "No match" }));
+        }
+        for session in recents {
+            lists = lists.push(self.session_row(session));
+        }
+
+        let content = column![
+            new,
+            search,
+            column![peers, tools].spacing(2),
+            scrollable(lists.padding([0, 4])).height(Fill),
+        ]
+        .spacing(10)
+        .padding(10);
+
+        container(content).style(style::chrome).width(Fill).height(Fill).into()
+    }
+
+    fn session_row<'a>(&'a self, session: &'a SessionSummary) -> Element<'a, Message> {
+        let selected = self.active.as_deref() == Some(session.id.as_str());
+        let online = self.nodes.is_online(&session.node);
+
+        let mut line = row![text(session.title.as_str()).width(Fill).wrapping(text::Wrapping::None)]
+            .spacing(6)
+            .align_y(Alignment::Center);
+        if session.waiting {
+            line = line.push(
+                container(text("waiting").size(11))
+                    .id(waiting_badge_id(&session.id))
+                    .style(style::waiting_badge)
+                    .padding([1, 6]),
+            );
+        }
+        let tag = text(self.nodes.name_of(&session.node)).size(11);
+        let tag = if online { tag } else { tag.style(style::muted) };
+        line = line.push(container(tag).style(style::badge).padding([1, 6]));
+
+        let body = button(line)
+            .on_press(Message::OpenSession(session.id.clone()))
+            .style(style::row_for(selected))
+            .padding([5, 8])
+            .width(Fill);
+
+        let pin = button(text(if session.pinned { "Unpin" } else { "Pin" }).size(11))
+            .on_press(Message::TogglePin(session.id.clone()))
+            .style(button::secondary)
+            .padding([1, 6]);
+
+        hover(body, container(pin).align_right(Fill).center_y(Fill).padding([0, 4]))
+    }
+}
+
+fn nav_item(label: &str, detail: Option<String>, message: Message) -> Element<'_, Message> {
+    let mut line = row![text(label).width(Fill)].align_y(Alignment::Center);
+    if let Some(detail) = detail {
+        line = line.push(text(detail).size(12).style(style::muted));
+    }
+    button(line).on_press(message).style(style::row).padding([6, 8]).width(Fill).into()
+}
+
+fn header(label: &str) -> Element<'_, Message> {
+    column![space().height(6), text(label).size(12).style(style::muted)].into()
+}
+
+fn hint(label: &str) -> Element<'_, Message> {
+    container(text(label).size(12).style(style::muted)).padding([2, 8]).into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::data::NodeStatus;
+
+    fn summary(id: &str, title: &str, node: &str, updated: i64) -> SessionSummary {
+        SessionSummary {
+            id: id.into(),
+            title: title.into(),
+            project: None,
+            node: node.into(),
+            pinned: false,
+            waiting: false,
+            updated,
+        }
+    }
+
+    fn nodes() -> Nodes {
+        Nodes::new(vec![
+            NodeStatus { key: "k-desk".into(), name: "desk".into(), online: true, local: true },
+            NodeStatus { key: "k-laptop".into(), name: "laptop".into(), online: false, local: false },
+        ])
+    }
+
+    fn ids(list: Vec<&SessionSummary>) -> Vec<&str> {
+        list.into_iter().map(|summary| summary.id.as_str()).collect()
+    }
+
+    #[test]
+    fn recents_merge_nodes_newest_first_and_skip_pinned() {
+        let mut state = State::default();
+        state.set_nodes(nodes());
+        let mut pinned_old = summary("p", "Pinned", "k-desk", 10);
+        pinned_old.pinned = true;
+        state.set_sessions([
+            summary("a", "Desk old", "k-desk", 100),
+            summary("b", "Laptop new", "k-laptop", 300),
+            summary("c", "Desk mid", "k-desk", 200),
+            pinned_old,
+        ]);
+        assert_eq!(ids(state.recents()), ["b", "c", "a"]);
+        assert_eq!(ids(state.pinned()), ["p"]);
+    }
+
+    #[test]
+    fn pinned_sorts_newest_first_and_pin_toggle_moves_between_sections() {
+        let mut state = State::default();
+        let mut x = summary("x", "X", "k-desk", 50);
+        x.pinned = true;
+        let mut y = summary("y", "Y", "k-desk", 80);
+        y.pinned = true;
+        state.set_sessions([x, y, summary("z", "Z", "k-desk", 10)]);
+        assert_eq!(ids(state.pinned()), ["y", "x"]);
+
+        let (_, event) = state.update(Message::TogglePin("z".into()));
+        assert_eq!(event, Some(Event::SetPinned { id: "z".into(), pinned: true }));
+        assert_eq!(ids(state.pinned()), ["y", "x", "z"]);
+        assert!(state.recents().is_empty());
+
+        let (_, event) = state.update(Message::TogglePin("y".into()));
+        assert_eq!(event, Some(Event::SetPinned { id: "y".into(), pinned: false }));
+        assert_eq!(ids(state.recents()), ["y"]);
+    }
+
+    #[test]
+    fn search_filters_by_title_project_and_node_name_case_insensitively() {
+        let mut state = State::default();
+        state.set_nodes(nodes());
+        let mut in_project = summary("p", "Refactor", "k-desk", 1);
+        in_project.project = Some("Harness".into());
+        state.set_sessions([summary("a", "Fix Deploy script", "k-desk", 3), summary("b", "Notes", "k-laptop", 2), in_project]);
+        state.set_projects(["Harness".to_owned(), "Website".to_owned()]);
+
+        search(&mut state, "deploy");
+        assert_eq!(ids(state.recents()), ["a"]);
+
+        search(&mut state, "LAPTOP");
+        assert_eq!(ids(state.recents()), ["b"]);
+
+        search(&mut state, "harness refac");
+        assert_eq!(ids(state.recents()), ["p"]);
+        assert_eq!(state.projects(), Vec::<&str>::new());
+
+        search(&mut state, "web");
+        assert_eq!(state.projects(), ["Website"]);
+
+        search(&mut state, "");
+        assert_eq!(state.recents().len(), 3);
+    }
+
+    fn search(state: &mut State, query: &str) {
+        let (_, event) = state.update(Message::Search(query.to_owned()));
+        assert_eq!(event, None);
+    }
+
+    #[test]
+    fn renaming_a_node_updates_search_tags() {
+        let mut state = State::default();
+        state.set_sessions([summary("a", "Thing", "k-new", 1)]);
+        search(&mut state, "studio");
+        assert!(state.recents().is_empty());
+
+        state.set_nodes(Nodes::new(vec![NodeStatus {
+            key: "k-new".into(),
+            name: "Studio".into(),
+            online: true,
+            local: false,
+        }]));
+        assert_eq!(ids(state.recents()), ["a"]);
+    }
+
+    #[test]
+    fn upsert_replaces_by_id_and_opening_highlights() {
+        let mut state = State::default();
+        state.set_sessions([summary("a", "Old title", "k", 1)]);
+        let mut waiting = summary("a", "New title", "k", 5);
+        waiting.waiting = true;
+        state.upsert_session(waiting);
+        assert_eq!(state.recents().len(), 1);
+        assert!(state.session("a").is_some_and(|s| s.waiting && s.title == "New title"));
+
+        let (_, event) = state.update(Message::OpenSession("a".into()));
+        assert_eq!(event, Some(Event::OpenSession("a".into())));
+        assert_eq!(state.active(), Some("a"));
+    }
+}

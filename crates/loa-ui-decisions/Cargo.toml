@@ -7,4 +7,11 @@ publish.workspace = true
 
 [dependencies]
 loa-core.workspace = true
+loa-adapter.workspace = true
 iced.workspace = true
+serde_json = { workspace = true, features = ["preserve_order"] }
+thiserror.workspace = true
+notify-rust = "4.19"
+
+[dev-dependencies]
+iced_test = "0.14"

@@ -8,3 +8,9 @@ publish.workspace = true
 [dependencies]
 loa-core.workspace = true
 iced.workspace = true
+similar = { version = "3.2", features = ["inline"] }
+ignore = "0.4.34"
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
