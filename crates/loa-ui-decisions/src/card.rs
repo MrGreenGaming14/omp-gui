@@ -52,6 +52,8 @@ pub enum FieldInput {
     Text(String),
     Bool(bool),
     Choice(usize),
+    /// Tick or untick option `n` of a multi field.
+    Toggle(usize),
 }
 
 pub(crate) struct Card {
@@ -231,14 +233,13 @@ impl Card {
 
     pub fn set_field(&mut self, index: usize, input: FieldInput) {
         if let Some(Ok(form)) = &mut self.form {
-            form.set(
-                index,
-                match input {
-                    FieldInput::Text(t) => FieldValue::Text(t),
-                    FieldInput::Bool(b) => FieldValue::Bool(b),
-                    FieldInput::Choice(i) => FieldValue::Choice(Some(i)),
-                },
-            );
+            let value = match input {
+                FieldInput::Text(t) => FieldValue::Text(t),
+                FieldInput::Bool(b) => FieldValue::Bool(b),
+                FieldInput::Choice(i) => FieldValue::Choice(Some(i)),
+                FieldInput::Toggle(option) => return form.toggle(index, option),
+            };
+            form.set(index, value);
         }
     }
 
@@ -277,6 +278,7 @@ impl Card {
         focused: bool,
         view_only: bool,
         markdown: markdown::Settings,
+        names: (&str, Option<&str>),
     ) -> Element<'a, Message> {
         let d = &self.decision;
         let id = d.id;
@@ -326,6 +328,7 @@ impl Card {
                         if d.multi {
                             checkbox(self.picked[i])
                                 .label(format!("{} {option}", i + 1))
+                                .text_size(13)
                                 .on_toggle_maybe(active.then_some(move |_| Message::Choose(id, i)))
                                 .into()
                         } else {
@@ -436,7 +439,7 @@ impl Card {
             }
         }
 
-        if let Some(footer) = self.footer(view_only) {
+        if let Some(footer) = self.footer(view_only, names) {
             body = body.push(footer);
         }
 
@@ -470,12 +473,12 @@ impl Card {
     }
 
     /// Status line: who answered, why it closed, or why it can't be clicked.
-    fn footer<'a>(&'a self, view_only: bool) -> Option<Element<'a, Message>> {
+    fn footer<'a>(&'a self, view_only: bool, (local, local_name): (&str, Option<&str>)) -> Option<Element<'a, Message>> {
         let d = &self.decision;
         let by = |prefix: &str| -> String {
             match d.by.as_deref() {
                 Some(TIMEOUT_BY) => format!("{prefix} by timeout (default answer)"),
-                Some(by) => format!("{prefix} by {by}"),
+                Some(by) => format!("{prefix} by {}", crate::node_name(by, local, local_name)),
                 None => prefix.to_owned(),
             }
         };
@@ -592,6 +595,7 @@ fn form_view<'a>(id: NodeId, form: &'a Form, active: bool) -> Element<'a, Messag
             let input: Element<'a, Message> = match value {
                 FieldValue::Bool(checked) => checkbox(*checked)
                     .label(field.label.as_str())
+                    .text_size(13)
                     .on_toggle_maybe(
                         active.then_some(move |b| Message::Field(id, i, FieldInput::Bool(b))),
                     )
@@ -608,12 +612,30 @@ fn form_view<'a>(id: NodeId, form: &'a Form, active: bool) -> Element<'a, Messag
                             let index = labels.iter().position(|l| *l == label).unwrap_or_default();
                             Message::Field(id, i, FieldInput::Choice(index))
                         })
+                        .placeholder("Choose…")
                         .text_size(13)
                         .style(style::select)
                         .into()
                     } else {
                         text(selected.map_or("", String::as_str)).into()
                     }
+                }
+                FieldValue::Picks(picks) => {
+                    let labels = match &field.ty {
+                        FieldType::Multi { labels, .. } => labels.as_slice(),
+                        _ => &[],
+                    };
+                    column(labels.iter().zip(picks).enumerate().map(|(n, (label, picked))| {
+                        checkbox(*picked)
+                            .label(label.as_str())
+                            .text_size(13)
+                            .on_toggle_maybe(active.then_some(move |_| {
+                                Message::Field(id, i, FieldInput::Toggle(n))
+                            }))
+                            .into()
+                    }))
+                    .spacing(6)
+                    .into()
                 }
                 FieldValue::Text(raw) => text_input(&field.name, raw)
                     .id(form_field_id(id, i))

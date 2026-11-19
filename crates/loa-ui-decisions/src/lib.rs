@@ -1,22 +1,24 @@
 //! Decision prompt cards: approval, question, plan review and form.
 //!
-//! [`State`] holds the cards of one session. The app calls
-//! [`State::sync`] with the session DOM after every patch, embeds
-//! [`State::view_card`] where the chat shows a `<decision>` (or uses
-//! [`State::view`]), and passes every [`Event::Answer`] to
-//! `HarnessSession::answer`. [`Tracker`] follows waiting decisions across
-//! sessions for badges, notifications and unattended timeouts.
+//! [`Desk`] is the app-facing component: the cards of every open session,
+//! waiting badges, system notifications and unattended timeouts. [`State`]
+//! holds the cards of one session; [`Tracker`] follows waiting decisions
+//! across sessions.
 
 mod card;
 pub mod decision;
+pub mod desk;
 pub mod diff;
 pub mod form;
 mod style;
 pub mod tracker;
+pub mod unattended;
 
 pub use card::{FieldInput, form_field_id, text_field_id};
 pub use decision::{ApprovalChoice, Decision, PlanChoice, answer_summary};
-pub use tracker::{DesktopNotifier, Expired, Notice, Notifier, NotifyError, TIMEOUT_BY, Tracker};
+pub use desk::Desk;
+pub use tracker::{DesktopNotifier, Expired, Notice, NotifyError, TIMEOUT_BY, Tracker};
+pub use unattended::Unattended;
 
 use card::{Card, Reply};
 use iced::keyboard::{self, key};
@@ -25,6 +27,17 @@ use iced::{Element, Subscription, Task, Theme};
 use loa_adapter::Answer;
 use loa_core::{Dom, NodeId};
 use std::collections::BTreeMap;
+
+/// How `by` (a node key, a user, or [`TIMEOUT_BY`]) reads on a card: the
+/// local node's own key shows as `local_name`, other node keys (long
+/// alphanumeric ids) as their first 8 characters, anything else as is.
+pub fn node_name<'a>(by: &'a str, local: &str, local_name: Option<&'a str>) -> &'a str {
+    if let Some(name) = local_name.filter(|name| !name.is_empty() && by == local) {
+        return name;
+    }
+    let is_key = by.len() >= 32 && by.bytes().all(|b| b.is_ascii_alphanumeric());
+    if is_key { &by[..8] } else { by }
+}
 
 /// Who is looking at the cards.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -101,6 +114,8 @@ pub struct State {
     markdown: markdown::Settings,
     /// By node id. Ids only go up, so the first open card is the oldest.
     cards: BTreeMap<NodeId, Card>,
+    /// The local node's human name, shown instead of its key on answers.
+    local_name: Option<String>,
 }
 
 impl State {
@@ -109,11 +124,22 @@ impl State {
             viewer,
             markdown: markdown::Settings::from(theme),
             cards: BTreeMap::new(),
+            local_name: None,
         }
     }
 
     pub fn set_viewer(&mut self, viewer: Viewer) {
         self.viewer = viewer;
+    }
+
+    /// The local node's human name (its host name), shown on answers it
+    /// gave instead of its key.
+    pub fn set_local_name(&mut self, name: Option<String>) {
+        self.local_name = name;
+    }
+
+    fn names(&self) -> (&str, Option<&str>) {
+        (&self.viewer.by, self.local_name.as_deref())
     }
 
     pub fn set_theme(&mut self, theme: &Theme) {
@@ -143,6 +169,15 @@ impl State {
     pub fn answer_failed(&mut self, decision: NodeId) {
         if let Some(card) = self.cards.get_mut(&decision) {
             card.pending = false;
+        }
+    }
+
+    /// Locks a card answered from elsewhere (an unattended timeout) until
+    /// the DOM records the answer or [`answer_failed`](Self::answer_failed)
+    /// reopens it.
+    pub fn answering(&mut self, decision: NodeId) {
+        if let Some(card) = self.cards.get_mut(&decision).filter(|c| c.open()) {
+            card.pending = true;
         }
     }
 
@@ -247,6 +282,7 @@ impl State {
                 focused == Some(c.decision.id),
                 self.viewer.view_only,
                 self.markdown,
+                self.names(),
             )
         }))
         .spacing(12)
@@ -260,6 +296,7 @@ impl State {
             self.focused() == Some(decision),
             self.viewer.view_only,
             self.markdown,
+            self.names(),
         ))
     }
 

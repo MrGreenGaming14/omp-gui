@@ -1,9 +1,10 @@
 //! Waiting decisions across every open session: badge counts, system
 //! notifications while the app is in the background, and unattended
-//! timeouts. Pure: time is passed in and notifications go through the
-//! [`Notifier`] port.
+//! timeouts. Pure: time is passed in, and notices are returned for the app
+//! to raise through [`DesktopNotifier`].
 
 use crate::decision::Decision;
+use crate::unattended::Unattended;
 use loa_adapter::Answer;
 use loa_core::{DecisionKind, Dom, NodeId, attr};
 use std::collections::{BTreeMap, HashMap};
@@ -38,18 +39,11 @@ impl Notice {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("system notification failed: {0}")]
 pub struct NotifyError(pub String);
 
-/// Raises system notifications. The app passes [`DesktopNotifier`]; tests
-/// pass a recorder.
-pub trait Notifier {
-    fn notify(&self, notice: &Notice) -> Result<(), NotifyError>;
-}
-
 /// Desktop notifications through `notify-rust` (D-Bus on Linux, pure Rust).
-/// Each call blocks for one round trip to the notification daemon.
 #[derive(Clone, Debug)]
 pub struct DesktopNotifier {
     app_name: String,
@@ -61,17 +55,25 @@ impl DesktopNotifier {
             app_name: app_name.into(),
         }
     }
-}
 
-impl Notifier for DesktopNotifier {
-    fn notify(&self, notice: &Notice) -> Result<(), NotifyError> {
-        notify_rust::Notification::new()
+    /// Raises `notice`. Resolves after one round trip to the notification
+    /// daemon, so the UI thread never waits on it.
+    pub fn notify(
+        &self,
+        notice: &Notice,
+    ) -> impl Future<Output = Result<(), NotifyError>> + Send + use<> {
+        let mut notification = notify_rust::Notification::new();
+        notification
             .appname(&self.app_name)
             .summary(&notice.heading())
-            .body(&notice.summary)
-            .show()
-            .map(drop)
-            .map_err(|e| NotifyError(e.to_string()))
+            .body(&notice.summary);
+        async move {
+            notification
+                .show_async()
+                .await
+                .map(drop)
+                .map_err(|e| NotifyError(e.to_string()))
+        }
     }
 }
 
@@ -86,9 +88,12 @@ pub struct Expired {
 
 #[derive(Debug)]
 struct Waiting {
-    /// Unix ms when the default answer applies.
-    deadline: Option<i64>,
-    default: Option<Answer>,
+    decision: Decision,
+    /// Unix ms the wait started: `created`, else when first seen.
+    since: i64,
+    /// The decision's own valid default with its deadline. Wins over the
+    /// unattended policy.
+    own: Option<(i64, Answer)>,
     fired: bool,
 }
 
@@ -98,70 +103,78 @@ struct Session {
 }
 
 /// Tracks the waiting decisions of every session the app has open.
-pub struct Tracker<N> {
-    notifier: N,
+#[derive(Debug, Default)]
+pub struct Tracker {
     background: bool,
+    policy: Unattended,
     sessions: HashMap<String, Session>,
 }
 
-impl<N: Notifier> Tracker<N> {
-    pub fn new(notifier: N) -> Self {
+impl Tracker {
+    pub fn new(policy: Unattended) -> Self {
         Self {
-            notifier,
-            background: false,
-            sessions: HashMap::new(),
+            policy,
+            ..Self::default()
         }
     }
 
-    /// Whether the app window is in the background. Notifications are only
-    /// raised while it is.
+    /// Whether the app window is in the background. Notices are only
+    /// returned while it is.
     pub fn set_background(&mut self, background: bool) {
         self.background = background;
     }
 
+    pub fn background(&self) -> bool {
+        self.background
+    }
+
+    pub fn policy(&self) -> &Unattended {
+        &self.policy
+    }
+
+    /// Replaces the unattended policy. Decisions already waiting follow the
+    /// new timeout, counted from when they started.
+    pub fn set_policy(&mut self, policy: Unattended) {
+        self.policy = policy;
+    }
+
     /// Reads the waiting decisions of the session in `dom` (keyed by
-    /// `<session id>`) at `now_ms`. Every decision seen waiting for the first
-    /// time while the app is in the background raises one notification.
-    /// The state is fully updated even when a notification fails; the first
-    /// failure is returned.
-    pub fn observe(&mut self, dom: &Dom, now_ms: i64) -> Result<(), NotifyError> {
+    /// `<session id>`) at `now_ms`. Returns one notice per decision seen
+    /// waiting for the first time while the app is in the background.
+    pub fn observe(&mut self, dom: &Dom, now_ms: i64) -> Vec<Notice> {
         let Some(root) = dom.root() else {
-            return Ok(());
+            return Vec::new();
         };
         let Some(session_id) = root.str_attr(attr::ID) else {
-            return Ok(());
+            return Vec::new();
         };
         let session_title = root.str_attr(attr::TITLE);
         let session = self.sessions.entry(session_id.to_owned()).or_default();
         let mut still = BTreeMap::new();
-        let mut result = Ok(());
+        let mut notices = Vec::new();
         for decision in Decision::all(dom).filter(Decision::is_waiting) {
             let id = decision.id;
             let waiting = match session.waiting.remove(&id) {
                 Some(known) => known,
                 None => {
                     if self.background {
-                        let notice = Notice {
+                        notices.push(Notice {
                             session: session_id.to_owned(),
                             session_title: session_title.map(str::to_owned),
                             decision: id,
                             kind: decision.kind,
                             summary: summary(&decision),
-                        };
-                        if let Err(e) = self.notifier.notify(&notice)
-                            && result.is_ok()
-                        {
-                            result = Err(e);
-                        }
+                        });
                     }
-                    let default = decision.default_answer(TIMEOUT_BY);
-                    let deadline = decision
+                    let since = decision.created.unwrap_or(now_ms);
+                    let own = decision
                         .timeout_ms
-                        .filter(|_| default.is_some())
-                        .map(|t| decision.created.unwrap_or(now_ms).saturating_add(t));
+                        .zip(decision.default_answer(TIMEOUT_BY))
+                        .map(|(t, answer)| (since.saturating_add(t), answer));
                     Waiting {
-                        deadline,
-                        default,
+                        decision,
+                        since,
+                        own,
                         fired: false,
                     }
                 }
@@ -169,7 +182,7 @@ impl<N: Notifier> Tracker<N> {
             still.insert(id, waiting);
         }
         session.waiting = still;
-        result
+        notices
     }
 
     /// Drops a closed session.
@@ -196,26 +209,53 @@ impl<N: Notifier> Tracker<N> {
         self.sessions.values().map(|s| s.waiting.len()).sum()
     }
 
+    fn deadline(&self, waiting: &Waiting) -> Option<i64> {
+        match &waiting.own {
+            Some((deadline, _)) => Some(*deadline),
+            None => self
+                .policy
+                .timeout_ms(waiting.decision.kind)
+                .map(|t| waiting.since.saturating_add(t)),
+        }
+    }
+
     /// Default answers whose timeout has passed at `now_ms`. Each decision
     /// is returned once.
     pub fn tick(&mut self, now_ms: i64) -> Vec<Expired> {
-        let mut expired = Vec::new();
-        for (session, state) in &mut self.sessions {
-            for (id, waiting) in &mut state.waiting {
-                if waiting.fired || waiting.deadline.is_none_or(|d| d > now_ms) {
-                    continue;
-                }
-                if let Some(answer) = waiting.default.clone() {
-                    waiting.fired = true;
-                    expired.push(Expired {
-                        session: session.clone(),
-                        decision: *id,
-                        answer,
-                    });
+        let mut due = Vec::new();
+        for (session, state) in &self.sessions {
+            for (id, waiting) in &state.waiting {
+                if !waiting.fired && self.deadline(waiting).is_some_and(|d| d <= now_ms) {
+                    due.push((session.clone(), *id));
                 }
             }
         }
-        expired.sort_by(|a, b| (&a.session, a.decision).cmp(&(&b.session, b.decision)));
+        due.sort();
+        let mut expired = Vec::with_capacity(due.len());
+        for (session, id) in due {
+            let Some(waiting) = self
+                .sessions
+                .get_mut(&session)
+                .and_then(|s| s.waiting.get_mut(&id))
+            else {
+                continue;
+            };
+            waiting.fired = true;
+            // A hand edited default that doesn't fit the decision leaves it
+            // waiting for someone.
+            let answer = match &waiting.own {
+                Some((_, answer)) => answer.clone(),
+                None => match self.policy.answer(&waiting.decision, TIMEOUT_BY) {
+                    Some(answer) => answer,
+                    None => continue,
+                },
+            };
+            expired.push(Expired {
+                session,
+                decision: id,
+                answer,
+            });
+        }
         expired
     }
 
@@ -226,7 +266,7 @@ impl<N: Notifier> Tracker<N> {
             .values()
             .flat_map(|s| s.waiting.values())
             .filter(|w| !w.fired)
-            .filter_map(|w| w.deadline)
+            .filter_map(|w| self.deadline(w))
             .min()
     }
 }
@@ -253,18 +293,8 @@ fn summary(decision: &Decision) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use loa_config::{DecisionDefault, UnattendedSettings};
     use loa_core::{Draft, ElementKind, Value, answer};
-    use std::cell::RefCell;
-
-    #[derive(Default)]
-    struct Recorder(RefCell<Vec<Notice>>);
-
-    impl Notifier for &Recorder {
-        fn notify(&self, notice: &Notice) -> Result<(), NotifyError> {
-            self.0.borrow_mut().push(notice.clone());
-            Ok(())
-        }
-    }
 
     fn session(id: &str) -> (Dom, NodeId) {
         let mut dom = Dom::new();
@@ -311,8 +341,7 @@ mod tests {
 
     #[test]
     fn badges_count_waiting_decisions_per_session() {
-        let recorder = Recorder::default();
-        let mut tracker = Tracker::new(&recorder);
+        let mut tracker = Tracker::default();
         let (mut a, turn_a) = session("a");
         let (mut b, turn_b) = session("b");
         let first = decision(
@@ -328,8 +357,8 @@ mod tests {
             "Which branch?",
         );
         decision(&mut b, turn_b, vec![(attr::KIND, "plan".into())], "# Plan");
-        tracker.observe(&a, 10).unwrap();
-        tracker.observe(&b, 10).unwrap();
+        tracker.observe(&a, 10);
+        tracker.observe(&b, 10);
         assert_eq!(
             (tracker.badge("a"), tracker.badge("b"), tracker.total()),
             (2, 1, 3)
@@ -337,7 +366,7 @@ mod tests {
 
         a.commit(Draft::set(first, attr::STATUS, "answered"), 20)
             .unwrap();
-        tracker.observe(&a, 20).unwrap();
+        tracker.observe(&a, 20);
         assert_eq!(tracker.badge("a"), 1);
         let mut badges: Vec<_> = tracker.badges().collect();
         badges.sort();
@@ -349,8 +378,7 @@ mod tests {
 
     #[test]
     fn notifies_once_per_new_decision_only_in_background() {
-        let recorder = Recorder::default();
-        let mut tracker = Tracker::new(&recorder);
+        let mut tracker = Tracker::default();
         let (mut dom, turn) = session("s");
         decision(
             &mut dom,
@@ -358,13 +386,11 @@ mod tests {
             vec![(attr::KIND, "question".into())],
             "Seen in the foreground?",
         );
-        tracker.observe(&dom, 0).unwrap();
-        assert!(recorder.0.borrow().is_empty());
+        assert!(tracker.observe(&dom, 0).is_empty());
 
         tracker.set_background(true);
-        tracker.observe(&dom, 1).unwrap();
         assert!(
-            recorder.0.borrow().is_empty(),
+            tracker.observe(&dom, 1).is_empty(),
             "an already known decision does not notify again"
         );
 
@@ -392,9 +418,8 @@ mod tests {
             )
             .unwrap()
             .node;
-        tracker.observe(&dom, 2).unwrap();
-        tracker.observe(&dom, 3).unwrap();
-        let notices = recorder.0.borrow();
+        let notices = tracker.observe(&dom, 2);
+        assert!(tracker.observe(&dom, 3).is_empty());
         assert_eq!(notices.len(), 1);
         assert_eq!(notices[0].decision, approval);
         assert_eq!(notices[0].summary, "bash: cargo publish");
@@ -403,8 +428,7 @@ mod tests {
 
     #[test]
     fn unattended_timeout_applies_the_default_once() {
-        let recorder = Recorder::default();
-        let mut tracker = Tracker::new(&recorder);
+        let mut tracker = Tracker::default();
         let (mut dom, turn) = session("s");
         let approval = decision(
             &mut dom,
@@ -429,7 +453,7 @@ mod tests {
             ],
             "Continue?",
         );
-        // A timeout without a default never fires.
+        // A timeout without a default never fires while the policy is off.
         decision(
             &mut dom,
             turn,
@@ -439,7 +463,7 @@ mod tests {
             ],
             "# Plan",
         );
-        tracker.observe(&dom, 4_000).unwrap();
+        tracker.observe(&dom, 4_000);
         assert_eq!(tracker.next_deadline(), Some(5_000));
         assert!(tracker.tick(4_999).is_empty());
 
@@ -470,9 +494,70 @@ mod tests {
     }
 
     #[test]
+    fn the_policy_answers_decisions_without_their_own_default() {
+        let after = |timeout_secs: u64, answer: &str| {
+            Some(DecisionDefault { timeout_secs, answer: answer.to_owned(), reason: None })
+        };
+        let mut tracker = Tracker::new(Unattended(UnattendedSettings {
+            approval: after(60, answer::ALLOW_ONCE),
+            question: after(60, "RED"),
+            ..UnattendedSettings::default()
+        }));
+        let (mut dom, turn) = session("s");
+        let approval = decision(
+            &mut dom,
+            turn,
+            vec![(attr::KIND, "approval".into())],
+            "ls",
+        );
+        let question = decision(
+            &mut dom,
+            turn,
+            vec![
+                (attr::KIND, "question".into()),
+                (attr::OPTIONS, list(&["red", "green"])),
+            ],
+            "Color?",
+        );
+        tracker.observe(&dom, 1_000);
+        assert_eq!(tracker.next_deadline(), Some(61_000));
+        assert!(tracker.tick(60_999).is_empty());
+        let fired = tracker.tick(61_000);
+        let answers: Vec<_> = fired
+            .iter()
+            .map(|e| (e.decision, e.answer.values.clone(), e.answer.by.as_str()))
+            .collect();
+        assert_eq!(
+            answers,
+            [
+                (approval, vec![answer::ALLOW_ONCE.to_owned()], TIMEOUT_BY),
+                (question, vec!["red".to_owned()], TIMEOUT_BY),
+            ]
+        );
+
+        // A plan default set later applies to decisions already waiting.
+        let late = decision(&mut dom, turn, vec![(attr::KIND, "plan".into())], "# P");
+        tracker.observe(&dom, 70_000);
+        tracker.set_policy(Unattended(UnattendedSettings {
+            plan: after(30, answer::REJECT),
+            ..UnattendedSettings::default()
+        }));
+        assert_eq!(tracker.next_deadline(), Some(100_000));
+        let fired = tracker.tick(100_000);
+        assert_eq!(fired.len(), 1);
+        assert_eq!(fired[0].decision, late);
+        assert_eq!(fired[0].answer.values, [answer::REJECT]);
+
+        tracker.set_policy(Unattended::default());
+        decision(&mut dom, turn, vec![(attr::KIND, "approval".into())], "pwd");
+        tracker.observe(&dom, 200_000);
+        assert_eq!(tracker.next_deadline(), None);
+        assert!(tracker.tick(i64::MAX).is_empty(), "policy off: nothing fires");
+    }
+
+    #[test]
     fn defaults_that_do_not_fit_the_kind_never_fire() {
-        let recorder = Recorder::default();
-        let mut tracker = Tracker::new(&recorder);
+        let mut tracker = Tracker::default();
         let (mut dom, turn) = session("s");
         let timeout = (attr::TIMEOUT_MS, Value::from(1i64));
         decision(
@@ -505,7 +590,7 @@ mod tests {
             ],
             "",
         );
-        tracker.observe(&dom, 0).unwrap();
+        tracker.observe(&dom, 0);
         assert!(tracker.tick(10).is_empty());
         assert_eq!(tracker.badge("s"), 3);
     }

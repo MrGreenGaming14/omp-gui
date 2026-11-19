@@ -27,6 +27,12 @@ pub enum FieldType {
         labels: Vec<String>,
         values: Vec<Json>,
     },
+    /// `"type": "array"` whose `items` is an enum: any number of the values,
+    /// answered as a JSON array in option order.
+    Multi {
+        labels: Vec<String>,
+        values: Vec<Json>,
+    },
 }
 
 /// One property of the schema.
@@ -48,6 +54,8 @@ pub enum FieldValue {
     Bool(bool),
     /// Index into the enum values.
     Choice(Option<usize>),
+    /// Multi fields: which values are ticked, one slot per value.
+    Picks(Vec<bool>),
 }
 
 /// Why a field was refused on submit.
@@ -131,6 +139,18 @@ impl Form {
         }
     }
 
+    /// Ticks or unticks value `option` of the multi field `index`. Clears
+    /// that field's error.
+    pub fn toggle(&mut self, index: usize, option: usize) {
+        if let (Some(FieldValue::Picks(picks)), Some(error)) =
+            (self.values.get_mut(index), self.errors.get_mut(index))
+            && let Some(pick) = picks.get_mut(option)
+        {
+            *pick = !*pick;
+            *error = None;
+        }
+    }
+
     /// Validates every field. On success returns the answer: one JSON object
     /// with typed values, leaving out optional fields left empty. On failure
     /// records an error per bad field and returns `None`.
@@ -155,15 +175,22 @@ impl Form {
 }
 
 fn field_type(name: &str, prop: &Json) -> Result<FieldType> {
-    if let Some(values) = prop.get("enum").and_then(Json::as_array) {
-        let labels = values
-            .iter()
-            .map(|v| v.as_str().map_or_else(|| v.to_string(), str::to_owned))
-            .collect();
-        return Ok(FieldType::Enum {
-            labels,
-            values: values.clone(),
-        });
+    let enumeration = |p: &Json| {
+        p.get("enum").and_then(Json::as_array).map(|values| {
+            let labels = values
+                .iter()
+                .map(|v| v.as_str().map_or_else(|| v.to_string(), str::to_owned))
+                .collect();
+            (labels, values.clone())
+        })
+    };
+    if let Some((labels, values)) = enumeration(prop) {
+        return Ok(FieldType::Enum { labels, values });
+    }
+    if prop.get("type").and_then(Json::as_str) == Some("array")
+        && let Some((labels, values)) = prop.get("items").and_then(enumeration)
+    {
+        return Ok(FieldType::Multi { labels, values });
     }
     // `"type": ["string", "null"]` is a nullable string.
     let ty = match prop.get("type") {
@@ -209,6 +236,15 @@ fn initial_value(ty: &FieldType, default: Option<&Json>) -> FieldValue {
         FieldType::Enum { values, .. } => {
             FieldValue::Choice(default.and_then(|d| values.iter().position(|v| v == d)))
         }
+        FieldType::Multi { values, .. } => {
+            let defaults = default.and_then(Json::as_array);
+            FieldValue::Picks(
+                values
+                    .iter()
+                    .map(|v| defaults.is_some_and(|d| d.contains(v)))
+                    .collect(),
+            )
+        }
         FieldType::String | FieldType::Number | FieldType::Integer => {
             FieldValue::Text(match default {
                 None | Some(Json::Null) => String::new(),
@@ -227,6 +263,19 @@ fn convert(field: &Field, value: &FieldValue) -> std::result::Result<Option<Json
                 Some(v) => Ok(Some(v.clone())),
                 None if field.required => Err(FieldError::Required),
                 None => Ok(None),
+            }
+        }
+        (FieldType::Multi { values, .. }, FieldValue::Picks(picks)) => {
+            let chosen: Vec<Json> = values
+                .iter()
+                .zip(picks)
+                .filter(|(_, picked)| **picked)
+                .map(|(v, _)| v.clone())
+                .collect();
+            match chosen.is_empty() {
+                false => Ok(Some(Json::Array(chosen))),
+                true if field.required => Err(FieldError::Required),
+                true => Ok(None),
             }
         }
         (ty, FieldValue::Text(raw)) => {
@@ -330,6 +379,29 @@ mod tests {
             r#"{"branch":"main","retries":5,"ratio":0.5,"force":true,"env":"prod"}"#
         );
         assert!(form.errors.iter().all(Option::is_none));
+    }
+
+    #[test]
+    fn array_of_enum_is_a_multi_select_answered_as_an_array() {
+        let mut form = Form::parse(
+            r#"{"properties":{"tags":{"type":"array","items":{"enum":["a","b","c"]},"default":["c"]}},"required":["tags"]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            form.fields[0].ty,
+            FieldType::Multi {
+                labels: vec!["a".into(), "b".into(), "c".into()],
+                values: vec!["a".into(), "b".into(), "c".into()],
+            }
+        );
+        assert_eq!(form.values[0], FieldValue::Picks(vec![false, false, true]));
+        form.toggle(0, 2);
+        assert_eq!(form.submit(), None);
+        assert_eq!(form.errors[0], Some(FieldError::Required));
+        form.toggle(0, 1);
+        form.toggle(0, 0);
+        form.toggle(0, 9);
+        assert_eq!(form.submit().as_deref(), Some(r#"{"tags":["a","b"]}"#));
     }
 
     #[test]

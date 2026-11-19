@@ -8,11 +8,16 @@ publish.workspace = true
 [dependencies]
 loa-core.workspace = true
 loa-adapter.workspace = true
+loa-config = { path = "../loa-config" }
 iced.workspace = true
 loa-ui-icons.workspace = true
+serde.workspace = true
 serde_json = { workspace = true, features = ["preserve_order"] }
 thiserror.workspace = true
 notify-rust = "4.19"
 
 [dev-dependencies]
 iced_test = "0.14"
+loa-adapter-omp = { path = "../loa-adapter-omp" }
+tempfile.workspace = true
+tokio.workspace = true

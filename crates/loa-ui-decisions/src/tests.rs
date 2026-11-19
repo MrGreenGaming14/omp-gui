@@ -389,6 +389,35 @@ fn form_is_validated_before_submit_and_answers_one_json_object() {
     );
 }
 
+/// The shape the omp adapter gives an `ask` with several questions.
+const ASK_FIELDS: &str = r#"{"type":"object","properties":{
+    "color":{"title":"Which color?","description":"Theme","type":"string","enum":["red","green"],"default":"green"},
+    "langs":{"title":"Which languages?","type":"array","items":{"type":"string","enum":["rust","go","zig"]}},
+    "note":{"title":"Anything else?","type":"string"}
+},"required":["color","langs","note"]}"#;
+
+#[test]
+fn multi_select_form_fields_tick_options_and_answer_arrays() {
+    let mut fx = Fixture::new();
+    let turn = fx.turn;
+    let f = fx.decision(turn, "form", vec![(attr::FIELDS, ASK_FIELDS.into())], "");
+    let mut state = fx.state(false);
+    {
+        let mut ui = simulator(state.view());
+        ui.find("Which languages? *").expect("multi field label");
+        ui.click("zig").expect("an option checkbox");
+    }
+    send(&mut state, Message::Field(f, 1, FieldInput::Toggle(2)));
+    send(&mut state, Message::Field(f, 1, FieldInput::Toggle(0)));
+    send(&mut state, Message::Field(f, 2, FieldInput::Text("no".into())));
+    send(&mut state, Message::Field(f, 1, FieldInput::Toggle(2)));
+    send(&mut state, Message::Field(f, 1, FieldInput::Toggle(2)));
+    assert_eq!(
+        answered(send(&mut state, Message::Submit(f))),
+        (f, vec![r#"{"color":"green","langs":["rust","zig"],"note":"no"}"#.into()], None)
+    );
+}
+
 // #70 Shortcuts
 
 #[test]
