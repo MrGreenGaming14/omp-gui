@@ -205,7 +205,9 @@ async fn child_job_plan_review_and_model_switch_are_visible() {
     let (permit, todo) = loa_features::enter_plan(harness.as_ref(), &dom, &sink, &Gate).await.unwrap();
     let decision = loa_features::submit_plan(&sink, dom.root().unwrap().id, todo, "Read files first").unwrap();
     assert_eq!(sink.dom().get(decision).unwrap().text, "Read files first");
-    loa_features::approve_plan(harness.as_ref(), &sink, dom.root().unwrap().id, decision, "user", permit).await.unwrap();
+    let outcome = loa_features::plan::answer_plan(harness.as_ref(), &sink.dom(), &sink, decision, "user",
+        loa_features::plan::Verdict::Approve, permit).await.unwrap();
+    assert!(matches!(outcome, loa_features::plan::Outcome::Execute { prompt } if prompt.contains("Read files first")));
     assert_eq!(sink.dom().get(decision).unwrap().str_attr(attr::STATUS), Some("answered"));
     loa_features::select_model(harness.as_ref(), &adapter.capabilities(), &sink,
         dom.root().unwrap().id, "smol", "small-model").await.unwrap();

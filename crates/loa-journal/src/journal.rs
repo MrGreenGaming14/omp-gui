@@ -510,14 +510,28 @@ pub(crate) fn validate_session_id(id: &str) -> Result<()> {
     if ok { Ok(()) } else { Err(Error::InvalidSessionId(id.to_owned())) }
 }
 
+/// How long [`lock`] keeps trying a held lock before reporting it locked.
+const LOCK_WAIT: std::time::Duration = std::time::Duration::from_millis(100);
+
 /// Takes the session's exclusive lock.
+///
+/// A process the app forks gets a copy of every open lock file until it
+/// execs, which closes them (they are close-on-exec). A lock found held is
+/// tried again for [`LOCK_WAIT`] so such a moment doesn't read as another
+/// writer; a lock really held by another writer stays held past it.
 pub(crate) fn lock(dir: &Path) -> Result<File> {
     let path = dir.join(LOCK_FILE);
     let file = OpenOptions::new().create(true).truncate(false).write(true).open(&path).at(&path)?;
-    match file.try_lock() {
-        Ok(()) => Ok(file),
-        Err(std::fs::TryLockError::WouldBlock) => Err(Error::Locked(dir.to_owned())),
-        Err(std::fs::TryLockError::Error(e)) => Err(Error::Io { path, source: e }),
+    let deadline = std::time::Instant::now() + LOCK_WAIT;
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(file),
+            Err(std::fs::TryLockError::WouldBlock) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            Err(std::fs::TryLockError::WouldBlock) => return Err(Error::Locked(dir.to_owned())),
+            Err(std::fs::TryLockError::Error(e)) => return Err(Error::Io { path, source: e }),
+        }
     }
 }
 

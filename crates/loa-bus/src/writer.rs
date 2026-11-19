@@ -15,6 +15,14 @@ pub trait Persist: Send {
     /// against the DOM and before it is applied or published. An error fails
     /// the commit and leaves the session unchanged.
     fn append(&mut self, patch: &Patch) -> Result<(), PersistError>;
+
+    /// Called with the DOM right after the patch [`Persist::append`] stored
+    /// was applied, still in sequence order and under the writer's lock.
+    /// Storage writes snapshots here. The patch is already durable, so this
+    /// can't fail the commit.
+    fn applied(&mut self, dom: &Dom) {
+        let _ = dom;
+    }
 }
 
 /// Why a peer's request was refused.
@@ -244,6 +252,8 @@ impl SessionWriter {
             Self::shut(inner);
             return Err(error.into());
         }
+        let Inner { dom, persist, .. } = inner;
+        persist.applied(dom);
         Ok(self.publish(inner, patch))
     }
 

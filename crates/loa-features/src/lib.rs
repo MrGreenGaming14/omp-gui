@@ -1,10 +1,22 @@
 //! App-provided session features. All changes to conversations go through their
 //! single-writer sinks. The app supplies journal-backed sinks and tool gates;
 //! this crate never talks to a model or an undocumented harness file.
+//!
+//! - [`library::Library`]: journal-backed live sessions and the [`SessionStore`] port
+//! - [`native`]: native harness sessions on this machine, for import
+//! - [`plan`]: the read-only tool gate and plan review of plan mode
+//! - [`hooks`]: rules and advisor run around each turn for harnesses without them
+//! - [`smol`]: the small-model port behind compaction summaries and advisor notes
+
+pub mod hooks;
+pub mod library;
+pub mod native;
+pub mod plan;
+pub mod smol;
 
 use async_trait::async_trait;
 use loa_adapter::{Adapter, AdapterError, Feature, HarnessSession, ModelSelection, ModelSwitch, Prompt, SessionConfig, SessionState};
-use loa_core::{attr, answer, Dom, Draft, ElementKind, NodeId, PatchSink, SessionMode, Value};
+use loa_core::{attr, Dom, Draft, ElementKind, NodeId, PatchSink, SessionMode, Value};
 use std::sync::Arc;
 
 #[derive(Debug, thiserror::Error)]
@@ -23,6 +35,10 @@ pub enum Error {
     ModelFixed,
     #[error("feature port failed: {0}")]
     Port(String),
+    #[error(transparent)]
+    Journal(#[from] loa_journal::Error),
+    #[error(transparent)]
+    Bus(#[from] loa_bus::BusError),
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
@@ -74,14 +90,19 @@ fn lineage(sink: &dyn PatchSink, root: NodeId, parent: &str, seq: u64) -> Result
     Ok(())
 }
 
+/// Labels a forked DOM as the new session. A journal fork already wrote
+/// these attributes; only what differs is committed.
 fn rename_fork(dom: &mut Dom, sink: &dyn PatchSink, new_id: &str, old_id: &str, seq: u64) -> Result<()> {
     let id = root(dom)?;
-    for draft in [
-        Draft::set(id, attr::ID, new_id),
-        Draft::set(id, attr::PARENT_SESSION, old_id),
-        Draft::set(id, attr::FORKED_AT, i64::try_from(seq).unwrap_or(i64::MAX)),
+    for (name, value) in [
+        (attr::ID, Value::from(new_id)),
+        (attr::PARENT_SESSION, Value::from(old_id)),
+        (attr::FORKED_AT, Value::Int(i64::try_from(seq).unwrap_or(i64::MAX))),
     ] {
-        let patch = sink.commit(draft)?;
+        if dom.get(id).and_then(|node| node.attr(name)) == Some(&value) {
+            continue;
+        }
+        let patch = sink.commit(Draft::set(id, name, value))?;
         dom.apply(&patch).map_err(loa_core::CommitError::from)?;
     }
     Ok(())
@@ -123,40 +144,62 @@ pub fn translated_history(dom: &Dom) -> Result<String> {
         }
         let Some(node) = dom.get(id) else { continue };
         if node.kind == ElementKind::Turn && !covered.contains(&id) {
-            for &child in &node.children {
-                let Some(item) = dom.get(child) else { continue };
-                match item.kind {
-                    ElementKind::Message => {
-                        history.push_str(item.str_attr(attr::ROLE).unwrap_or("message"));
-                        history.push_str(": ");
-                        history.push_str(&item.text);
-                        history.push('\n');
-                    }
-                    ElementKind::Call => {
-                        history.push_str("tool ");
-                        history.push_str(item.str_attr(attr::TOOL).unwrap_or("unknown"));
-                        history.push_str(":\n");
-                        for &part in &item.children {
-                            if let Some(part) = dom.get(part) {
-                                history.push_str(part.kind.as_str());
-                                history.push_str(": ");
-                                history.push_str(&part.text);
-                                history.push('\n');
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
+            push_turn(dom, node, &mut history);
             history.push('\n');
         }
     }
     Ok(history)
 }
 
+/// The visible text of one `<turn>`: its messages (thinking left out) and
+/// tool calls with their input and result.
+pub fn turn_transcript(dom: &Dom, turn: NodeId) -> String {
+    let mut out = String::new();
+    if let Some(node) = dom.get(turn) {
+        push_turn(dom, node, &mut out);
+    }
+    out
+}
+
+fn push_turn(dom: &Dom, turn: &loa_core::Node, out: &mut String) {
+    for &child in &turn.children {
+        let Some(item) = dom.get(child) else { continue };
+        match item.kind {
+            ElementKind::Message if item.str_attr(attr::KIND) != Some(loa_core::MessageKind::Thinking.as_str()) => {
+                out.push_str(item.str_attr(attr::BY).filter(|by| *by == hooks::ADVISOR).unwrap_or_else(|| {
+                    item.str_attr(attr::ROLE).unwrap_or("message")
+                }));
+                out.push_str(": ");
+                out.push_str(&item.text);
+                out.push('\n');
+            }
+            ElementKind::Call => {
+                out.push_str("tool ");
+                out.push_str(item.str_attr(attr::TOOL).unwrap_or("unknown"));
+                out.push_str(":\n");
+                for &part in &item.children {
+                    if let Some(part) = dom.get(part) {
+                        out.push_str(part.kind.as_str());
+                        out.push_str(": ");
+                        out.push_str(&part.text);
+                        out.push('\n');
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Heading of the history a fallback fork or rewind seeds its fresh session with.
+const HISTORY_HEADING: &str = "The conversation so far, continued from an earlier session. Treat it as your own \
+history and carry on from where it ends:";
+
 fn seed_context(config: &mut SessionConfig, history: &str) {
     let context = config.context.get_or_insert_with(String::new);
     if !context.is_empty() { context.push_str("\n\n"); }
+    context.push_str(HISTORY_HEADING);
+    context.push_str("\n\n");
     context.push_str(history);
 }
 
@@ -316,15 +359,12 @@ pub async fn enter_plan(
         // operative fallback. Other errors must not be hidden.
         if !matches!(error, AdapterError::Unsupported { .. }) { return Err(error.into()); }
     }
-    let session_node = root(dom)?;
-    sink.commit(Draft::set(session_node, attr::MODE, "plan"))?;
-    let todo = sink.commit(Draft::insert(session_node, ElementKind::Todo,
-        [(attr::STATE, Value::from("in_progress"))], "Write and review a plan"))?.node;
+    let todo = plan::begin(dom, sink)?;
     Ok((permit, todo))
 }
 
-/// Submit a plan for user review. The gate remains active until approval;
-/// callers must not drop the permit before `approve_plan`.
+/// Submit a plan for user review. The gate remains active until the user
+/// answers; callers keep the permit until [`plan::answer_plan`].
 pub fn submit_plan(sink: &dyn PatchSink, session: NodeId, todo: NodeId, plan: &str) -> Result<NodeId> {
     sink.commit(Draft::set(todo, attr::STATE, "done"))?;
     Ok(sink.commit(Draft::insert(session, ElementKind::Decision, [
@@ -332,22 +372,6 @@ pub fn submit_plan(sink: &dyn PatchSink, session: NodeId, todo: NodeId, plan: &s
         (attr::STATUS, Value::from("waiting")),
         (attr::CREATED, Value::Int(loa_core::now_ms())),
     ], plan))?.node)
-}
-
-pub async fn approve_plan(
-    session: &dyn HarnessSession, sink: &dyn PatchSink,
-    root: NodeId, decision: NodeId, by: &str, permit: Box<dyn PlanPermit>,
-) -> Result<()> {
-    session.set_mode(SessionMode::Normal).await.or_else(|e| {
-        if matches!(e, AdapterError::Unsupported { .. }) { Ok(()) } else { Err(e) }
-    })?;
-    sink.commit(Draft::set(decision, attr::ANSWER, vec![Value::from(answer::APPROVE)]))?;
-    sink.commit(Draft::set(decision, attr::BY, by))?;
-    sink.commit(Draft::set(decision, attr::STATUS, "answered"))?;
-    sink.commit(Draft::set(decision, attr::ENDED, loa_core::now_ms()))?;
-    sink.commit(Draft::set(root, attr::MODE, "normal"))?;
-    drop(permit);
-    Ok(())
 }
 
 /// Assigns a model to a role, switching immediately before the appropriate
@@ -365,4 +389,23 @@ pub async fn select_model(
     sink.commit(Draft::set(root, attr::MODEL, model))?;
     sink.commit(Draft::set(root, attr::MODEL_ROLE, role))?;
     Ok(())
+}
+
+/// Switches the session to `role`, trying its candidate models in order
+/// (omp's `modelRoles.<role>`: the first available wins). Returns the model
+/// picked. Model-switch errors of the harness move on to the next
+/// candidate; [`Error::ModelFixed`] and [`Error::Busy`] stop at once.
+pub async fn select_role(
+    session: &dyn HarnessSession, capabilities: &loa_adapter::Capabilities,
+    sink: &dyn PatchSink, root: NodeId, role: &str, candidates: &[String],
+) -> Result<String> {
+    let mut last = None;
+    for model in candidates {
+        match select_model(session, capabilities, sink, root, role, model).await {
+            Ok(()) => return Ok(model.clone()),
+            Err(error @ (Error::ModelFixed | Error::Busy)) => return Err(error),
+            Err(error) => last = Some(error),
+        }
+    }
+    Err(last.unwrap_or_else(|| Error::Port(format!("no model is assigned to the {role} role"))))
 }

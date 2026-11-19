@@ -42,6 +42,9 @@ pub enum Error {
     NotFound(String),
     #[error("session at {0} is open in another journal")]
     Locked(PathBuf),
+    /// The journal writer was closed and released its journal.
+    #[error("the session's journal was closed")]
+    Closed,
     #[error(transparent)]
     Proto(#[from] ProtoError),
 }

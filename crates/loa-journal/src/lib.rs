@@ -4,6 +4,7 @@
 //! - [`Journal`]: one session's journal file, its snapshots and forks
 //! - [`Store`]: every session under a root directory
 //! - [`JournalWriter`]: the journal port of a session writer, with batched fsync
+//! - [`JournalPersist`]: the [`loa_bus::Persist`] port of a live session
 
 mod error;
 mod journal;
@@ -18,4 +19,4 @@ pub use journal::{
     FORMAT_VERSION, JOURNAL_FILE, Journal, JournalOptions, Parent, Patches, SessionInfo, Truncation,
 };
 pub use store::{Listing, Store};
-pub use writer::{JournalWriter, SyncPolicy};
+pub use writer::{JournalPersist, JournalWriter, SyncPolicy};
