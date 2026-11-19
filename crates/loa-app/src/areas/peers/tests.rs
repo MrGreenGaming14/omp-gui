@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use iced::Task;
 use iced::futures::StreamExt;
 use iced_runtime::Action as RuntimeAction;
-use loa_core::{Dom, Draft, ElementKind, attr};
+use loa_core::{Dom, Draft, ElementKind, PatchSink as _, attr};
 use loa_identity::NodeIdentity;
 use loa_node::{DriveOutcome, Endpoint, GrantDirection, NodeEvent};
 use loa_ui_peers as panel;
@@ -269,6 +269,57 @@ fn two_apps_share_a_session_view_drive_and_fork_over_loopback() {
     rt.block_on(guest_node.stop());
 }
 
+#[test]
+fn a_project_grant_shares_its_sessions_and_peers_are_renamed_and_removed() {
+    let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(4).enable_all().build().unwrap();
+    let _runtime = rt.enter();
+    let (owner_dir, guest_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let mut owner = app(owner_dir.path(), "owner-box");
+    let mut guest = app(guest_dir.path(), "guest-box");
+    let owner_port = start(&rt, &mut owner);
+    let guest_port = start(&rt, &mut guest);
+    add_peer(&rt, &mut guest, &owner, owner_port);
+    add_peer(&rt, &mut owner, &guest, guest_port);
+    update(&rt, &mut owner, Message::NewSession);
+    prompt(&rt, &mut owner, "in the project");
+    let session = active(&owner).expect("owner session").to_owned();
+
+    // N3: the session's project is a grant resource; a view grant on it
+    // shares the project's sessions. Real adapters record the project on
+    // the session root; the fake one doesn't, so it is set here.
+    let project = owner.ctx.services.project.clone();
+    let writer = Arc::clone(owner.ctx.sessions.get(&session).unwrap().writer());
+    let root = writer.with_dom(|dom| dom.root().unwrap().id);
+    writer.commit(Draft::set(root, attr::PROJECT, project.as_str())).unwrap();
+    let owner_node = owner.areas.peers.node().unwrap().clone();
+    let resource = loa_grants::Resource::Project { id: project.clone() };
+    assert!(owner_node.resources().iter().any(|(listed, label)| *listed == resource && *label == format!("Project {project}")));
+    grant(&rt, &mut owner, &key(&guest), &format!("project:{project}"), panel::Permission::View);
+    let given: Vec<_> = owner_node.grants().into_iter().filter(|grant| grant.direction == GrantDirection::Given).collect();
+    assert!(given.iter().any(|grant| grant.scopes.iter().any(|scope| scope.resource == resource)), "{:?}", owner.ctx.notice());
+    let guest_node = guest.areas.peers.node().unwrap().clone();
+    eventually("the project grant at the guest", || {
+        guest_node.grants().iter().any(|grant| grant.direction == GrantDirection::Received)
+    });
+    panel(&rt, &mut guest, panel::Message::Refresh);
+    let recent = recent_id(&key(&owner), &session);
+    assert!(guest.ctx.shell.sidebar().session(&recent).is_some(), "the project's session is in the guest's Recents");
+
+    // N2: the guest renames and then removes the owner from the Peers tab.
+    let owner_key = key(&owner);
+    panel(&rt, &mut guest, panel::Message::BeginRename(owner_key.clone()));
+    panel(&rt, &mut guest, panel::Message::RenameChanged("build server".into()));
+    panel(&rt, &mut guest, panel::Message::SaveRename);
+    assert_eq!(guest.ctx.shell.sidebar().nodes().name_of(&owner_key), "build server");
+    assert_eq!(guest.ctx.peers[0].name.as_deref(), Some("build server"));
+    panel(&rt, &mut guest, panel::Message::BeginRemove(owner_key.clone()));
+    panel(&rt, &mut guest, panel::Message::ConfirmRemove);
+    assert!(guest.ctx.peers.is_empty(), "{:?}", guest.ctx.notice());
+
+    rt.block_on(owner_node.stop());
+    rt.block_on(guest_node.stop());
+}
+
 /// A protocol another area adds; never dialed here.
 struct Idle;
 
@@ -312,4 +363,128 @@ fn restart_command_listens_on_the_configured_port_and_keeps_added_protocols() {
     assert_eq!(node.added_protocols().iter().map(|added| added.name).collect::<Vec<_>>(), ["loa-sandbox"]);
     assert!(node.resources().iter().any(|(resource, _)| *resource == loa_grants::Resource::Sandbox));
     rt.block_on(node.stop());
+}
+
+/// The guest's browser messages.
+fn browse(rt: &Runtime, app: &mut App, message: super::FolderMessage) {
+    update(rt, app, Message::Peers(Peers::Folder(message)));
+}
+
+/// Grants `folder` to `holder` through the panel's folder field.
+fn grant_folder(rt: &Runtime, app: &mut App, holder: &str, folder: &str, permission: panel::Permission) {
+    update(rt, app, Message::Peers(Peers::Open));
+    panel(rt, app, panel::Message::SelectPeer(holder.to_owned()));
+    panel(rt, app, panel::Message::FolderPathChanged(folder.to_owned()));
+    panel(rt, app, panel::Message::UseFolder);
+    panel(rt, app, panel::Message::SelectPermission(permission));
+    panel(rt, app, panel::Message::SubmitGrant);
+}
+
+#[test]
+fn a_granted_folder_is_browsed_read_and_written_only_inside_and_only_with_drive() {
+    use iced::widget::text_editor::{Action, Edit};
+    use super::FolderMessage as F;
+    let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(4).enable_all().build().unwrap();
+    let _runtime = rt.enter();
+    let (owner_dir, guest_dir, files) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let mut owner = app(owner_dir.path(), "owner-box");
+    let mut guest = app(guest_dir.path(), "guest-box");
+    let owner_port = start(&rt, &mut owner);
+    let guest_port = start(&rt, &mut guest);
+    add_peer(&rt, &mut guest, &owner, owner_port);
+    add_peer(&rt, &mut owner, &guest, guest_port);
+
+    let base = std::fs::canonicalize(files.path()).unwrap();
+    let share = base.join("share");
+    std::fs::create_dir_all(share.join("docs")).unwrap();
+    std::fs::write(share.join("docs/plan.md"), "# Plan\nship it\n").unwrap();
+    std::fs::write(share.join("logo.bin"), [0u8, 159, 146, 150]).unwrap();
+    std::fs::write(base.join("secret.txt"), "outside").unwrap();
+    let folder = share.to_str().unwrap().to_owned();
+    let (owner_key, guest_key) = (key(&owner), key(&guest));
+
+    // N3: the owner types a folder of its own into the grant form and gives view.
+    grant_folder(&rt, &mut owner, &guest_key, &format!("{folder}/"), panel::Permission::View);
+    let owner_node = owner.areas.peers.node().unwrap().clone();
+    let resource = loa_grants::Resource::Folder { path: folder.clone() };
+    let given: Vec<_> = owner_node.grants().into_iter().filter(|g| g.direction == GrantDirection::Given).collect();
+    assert_eq!(given.len(), 1, "{:?}", owner.ctx.notice());
+    assert_eq!(given[0].scopes[0].resource, resource);
+    assert_eq!(given[0].scopes[0].actions, [loa_grants::Action::Read].into());
+    // A missing folder is refused with a notice.
+    grant_folder(&rt, &mut owner, &guest_key, "/no/such/folder", panel::Permission::View);
+    assert!(owner.ctx.notice().is_some_and(|notice| notice.contains("/no/such/folder")), "{:?}", owner.ctx.notice());
+    assert_eq!(owner_node.grants().len(), 1);
+
+    // The guest sees the folder under Shared folders and browses it in the center.
+    let guest_node = guest.areas.peers.node().unwrap().clone();
+    eventually("the folder grant at the guest", || !guest_node.shared_folders().is_empty());
+    update(&rt, &mut guest, Message::Peers(Peers::Open));
+    let shared = &guest.areas.peers.panel.data.shared_folders;
+    assert_eq!(shared.len(), 1);
+    assert_eq!((shared[0].path.as_str(), shared[0].can_write, shared[0].online), (folder.as_str(), false, true));
+    panel(&rt, &mut guest, panel::Message::BrowseFolder { peer: owner_key.clone(), folder: folder.clone() });
+    assert_eq!(guest.ctx.screen(), Some(crate::area::AreaId::Peers), "{:?}", guest.ctx.notice());
+    let names = |app: &App| app.areas.peers.folder().unwrap().entries.iter().map(|e| (e.name.clone(), e.dir)).collect::<Vec<_>>();
+    assert_eq!(names(&guest), [("docs".to_owned(), true), ("logo.bin".to_owned(), false)]);
+
+    // Into docs, open the plan: its text shows.
+    browse(&rt, &mut guest, F::Enter("docs".into()));
+    assert_eq!(guest.areas.peers.folder().unwrap().path, "docs");
+    assert_eq!(names(&guest), [("plan.md".to_owned(), false)]);
+    browse(&rt, &mut guest, F::Open("plan.md".into()));
+    let text = |app: &App| match &app.areas.peers.folder().unwrap().file.as_ref().expect("file open").preview {
+        super::folder::Preview::Text(content) => content.text(),
+        super::folder::Preview::Binary(_) => panic!("text expected"),
+    };
+    assert!(text(&guest).starts_with("# Plan\nship it"));
+
+    // Outside the folder: refused, nothing opens.
+    browse(&rt, &mut guest, F::CloseFile);
+    browse(&rt, &mut guest, F::Open("../../secret.txt".into()));
+    assert!(guest.areas.peers.folder().unwrap().file.is_none());
+    assert!(guest.ctx.notice().is_some_and(|n| n.contains("outside the shared folder")), "{:?}", guest.ctx.notice());
+    browse(&rt, &mut guest, F::Crumb(0));
+    assert_eq!(guest.areas.peers.folder().unwrap().path, "");
+    browse(&rt, &mut guest, F::Open("logo.bin".into()));
+    assert!(matches!(guest.areas.peers.folder().unwrap().file.as_ref().unwrap().preview, super::folder::Preview::Binary(4)));
+
+    // View only: edits don't apply, Save does nothing, and the node refuses writes.
+    browse(&rt, &mut guest, F::Enter("docs".into()));
+    browse(&rt, &mut guest, F::Open("plan.md".into()));
+    browse(&rt, &mut guest, F::Edit(Action::Edit(Edit::Insert('!'))));
+    browse(&rt, &mut guest, F::Save);
+    assert!(!guest.areas.peers.folder().unwrap().file.as_ref().unwrap().dirty);
+    let refused = rt.block_on(guest_node.write_folder_file(&owner_key, &folder, "docs/plan.md", b"overwritten"));
+    assert!(matches!(&refused, Err(loa_node::NodeError::Refused(_))), "{refused:?}");
+    assert_eq!(std::fs::read_to_string(share.join("docs/plan.md")).unwrap(), "# Plan\nship it\n");
+
+    // Drive: the guest edits the plan and saves it on the owner.
+    grant_folder(&rt, &mut owner, &guest_key, &folder, panel::Permission::Drive);
+    eventually("the drive grant at the guest", || guest_node.shared_folders().first().is_some_and(|f| f.can_write));
+    update(&rt, &mut guest, Message::Peers(Peers::Open));
+    panel(&rt, &mut guest, panel::Message::BrowseFolder { peer: owner_key.clone(), folder: folder.clone() });
+    assert!(guest.areas.peers.folder().unwrap().can_write);
+    browse(&rt, &mut guest, F::Enter("docs".into()));
+    browse(&rt, &mut guest, F::Open("plan.md".into()));
+    browse(&rt, &mut guest, F::Edit(Action::Edit(Edit::Insert('!'))));
+    assert!(guest.areas.peers.folder().unwrap().file.as_ref().unwrap().dirty);
+    browse(&rt, &mut guest, F::Save);
+    assert_eq!(std::fs::read_to_string(share.join("docs/plan.md")).unwrap(), "!# Plan\nship it\n", "{:?}", guest.ctx.notice());
+    assert!(!guest.areas.peers.folder().unwrap().file.as_ref().unwrap().dirty);
+
+    // Revoked: the folder leaves the guest's list and browsing is refused.
+    for grant in owner_node.grants().into_iter().filter(|g| g.direction == GrantDirection::Given && !g.ended) {
+        panel(&rt, &mut owner, panel::Message::BeginRevoke(grant.id.to_string()));
+        panel(&rt, &mut owner, panel::Message::ConfirmRevoke);
+    }
+    eventually("the revocations at the guest", || guest_node.shared_folders().is_empty());
+    browse(&rt, &mut guest, F::Refresh);
+    assert!(guest.ctx.notice().is_some_and(|n| n.contains("didn't list")), "{:?}", guest.ctx.notice());
+    browse(&rt, &mut guest, F::Close);
+    assert!(guest.areas.peers.folder().is_none());
+    assert_eq!(guest.ctx.screen(), None);
+
+    rt.block_on(owner_node.stop());
+    rt.block_on(guest_node.stop());
 }

@@ -18,7 +18,6 @@ use loa_updater::{
 use semver::Version;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -91,8 +90,7 @@ impl Feed2 {
 }
 
 fn script(path: &Path, body: &str) -> PathBuf {
-    std::fs::write(path, format!("#!/bin/sh\n{body}\n")).unwrap();
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    loa_test_exec::write_executable(path, format!("#!/bin/sh\n{body}\n")).unwrap();
     path.to_path_buf()
 }
 

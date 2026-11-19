@@ -144,8 +144,7 @@ mod tests {
     }
 
     fn script(path: &std::path::Path, body: &str) {
-        std::fs::write(path, body).unwrap();
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        loa_test_exec::write_executable(path, body).unwrap();
     }
 
     /// A fake `ssh` runs the remote command locally after `-- <host>`, and

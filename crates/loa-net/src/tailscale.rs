@@ -173,11 +173,9 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn fake_executable_supplies_status_without_tailnet() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let executable = dir.path().join("tailscale fake");
-        std::fs::write(&executable, "#!/bin/sh\n[ \"$1\" = status ] && [ \"$2\" = --json ] || exit 2\nprintf '%s' '{\"Peer\":{\"one\":{\"DNSName\":\"node.example.ts.net.\",\"Online\":true}}}'\n").unwrap();
-        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        loa_test_exec::write_executable(&executable, "#!/bin/sh\n[ \"$1\" = status ] && [ \"$2\" = --json ] || exit 2\nprintf '%s' '{\"Peer\":{\"one\":{\"DNSName\":\"node.example.ts.net.\",\"Online\":true}}}'\n").unwrap();
         assert_eq!(status(&executable).await.unwrap(), vec![TailnetPeer { name: "node.example.ts.net".into(), online: Some(true) }]);
         let probe = FakeProbe { seen: Mutex::new(Vec::new()), answer: None };
         assert!(discover_from_status(&executable, None, &probe).await.unwrap().is_empty());

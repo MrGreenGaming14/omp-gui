@@ -18,9 +18,14 @@ use loa_adapter::SessionConfig;
 use loa_bus::SessionId;
 use loa_core::{NodeId, PatchSink, TurnStatus, attr};
 use loa_surface::SurfaceUri;
-use loa_surface_hub::{HubConfig, HubEvent, Listed, McpEndpoint, Opened, SurfaceHub, SurfaceTools, dom};
+use loa_surface_hub::{
+    CaptureMode, HubConfig, HubEvent, Listed, LiveVideo, McpEndpoint, Opened, SurfaceHub, SurfaceTools, dom,
+};
 use loa_ui_palette as palette;
-use loa_ui_surface::{Available, BrowserStatus, DocsRenderers, Panel, PanelOptions, panel};
+use loa_ui_surface::{
+    Available, BrowserStatus, Capture, CaptureStatus, DocsRenderers, H264Decoder, Panel, PanelOptions, VideoStatus,
+    panel,
+};
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::area::{Area, AreaId, Ctx, HostToolSet, PanelTab, SessionEvent, Target};
@@ -62,6 +67,11 @@ pub enum Message {
     Declared(Vec<(String, String)>),
     /// The loopback MCP endpoint started.
     Endpoint(Result<Endpoint, String>),
+    /// The machine's video encoders were tried.
+    Encoders(Arc<LiveVideo>),
+    /// Whether the running browser keeps the other capture until its tabs
+    /// close.
+    CapturePending(bool),
 }
 
 pub struct State {
@@ -79,8 +89,18 @@ pub struct State {
 
 impl State {
     pub fn new(ctx: &mut Ctx) -> (Self, Task<Message>) {
-        let hub = SurfaceHub::new(HubConfig::discover(&ctx.services.dirs.data.join("surfaces")));
-        Self::with_hub(hub, ctx)
+        let mut config = HubConfig::discover(&ctx.services.dirs.data.join("surfaces"));
+        match ctx.services.config.load() {
+            Ok(loaded) => {
+                let settings = loaded.config.surfaces;
+                config.video = settings.video;
+                if settings.browser_capture == loa_config::BrowserCapture::VirtualDisplay && config.virtual_display.is_ok() {
+                    config.capture = CaptureMode::VirtualDisplay;
+                }
+            }
+            Err(error) => ctx.notify(format!("Can't read the surface settings: {error}")),
+        }
+        Self::with_hub(SurfaceHub::new(config), ctx)
     }
 
     /// The area over `hub`; starts the MCP endpoint and reads the surfaces
@@ -91,8 +111,11 @@ impl State {
             ctx.set_app_tool(loa_ui_tools::ToolInfo::from(&spec));
         }
         let documents = DocsRenderers::new(hub.config().fonts.clone());
-        let options = PanelOptions { documents: Some(Arc::new(documents)), ..PanelOptions::default() };
-        let panel = Panel::new(options, browser_status(&hub), ctx.services.cwd.clone());
+        let video: panel::NewDecoder = Arc::new(|| Box::new(H264Decoder::new()));
+        let options = PanelOptions { documents: Some(Arc::new(documents)), video: Some(video), ..PanelOptions::default() };
+        let mut panel = Panel::new(options, browser_status(&hub), ctx.services.cwd.clone());
+        panel.set_video(VideoStatus { enabled: hub.video(), encoder: None, hardware: Vec::new() });
+        panel.set_capture(capture_status(&hub, false));
         let state = Self {
             hub,
             endpoint: None,
@@ -106,7 +129,9 @@ impl State {
             async move { McpEndpoint::start(tools).await.map(|endpoint| Endpoint(Arc::new(endpoint))).map_err(|e| e.to_string()) },
             Message::Endpoint,
         );
-        let task = Task::batch([endpoint, state.refresh_declared(), state.list()]);
+        let probe = Arc::clone(&state.hub);
+        let encoders = Task::perform(async move { probe.encoders().await }, Message::Encoders);
+        let task = Task::batch([endpoint, state.refresh_declared(), state.list(), encoders]);
         (state, task)
     }
 
@@ -118,9 +143,39 @@ impl State {
         &self.panel
     }
 
+    /// The hub's surface list and whether the browser's capture is pending.
     fn list(&self) -> Task<Message> {
         let hub = Arc::clone(&self.hub);
-        Task::perform(async move { hub.list().await }, Message::Listed)
+        let pending = Arc::clone(&self.hub);
+        Task::batch([
+            Task::perform(async move { hub.list().await }, Message::Listed),
+            Task::perform(async move { pending.capture_pending().await }, Message::CapturePending),
+        ])
+    }
+
+    fn set_video(&mut self, enabled: bool, ctx: &mut Ctx) -> Task<Message> {
+        save(ctx, |settings| settings.video = enabled);
+        let hub = Arc::clone(&self.hub);
+        Task::future(async move { hub.set_video(enabled).await }).discard()
+    }
+
+    fn set_capture(&mut self, capture: Capture, ctx: &mut Ctx) -> Task<Message> {
+        let mode = match capture {
+            Capture::Screencast => CaptureMode::Screencast,
+            Capture::VirtualDisplay => CaptureMode::VirtualDisplay,
+        };
+        if let Err(error) = self.hub.set_capture(mode) {
+            ctx.notify(error.to_string());
+            self.panel.set_capture(capture_status(&self.hub, false));
+            return Task::none();
+        }
+        save(ctx, |settings| {
+            settings.browser_capture = match mode {
+                CaptureMode::Screencast => loa_config::BrowserCapture::Screencast,
+                CaptureMode::VirtualDisplay => loa_config::BrowserCapture::VirtualDisplay,
+            };
+        });
+        self.list()
     }
 
     fn refresh_declared(&self) -> Task<Message> {
@@ -147,6 +202,8 @@ impl State {
             panel::Event::Close(uri) => {
                 Task::perform(async move { hub.close(&uri).await.map_err(|e| e.to_string()) }, Message::Closed)
             }
+            panel::Event::SetVideo(enabled) => self.set_video(enabled, ctx),
+            panel::Event::SetCapture(capture) => self.set_capture(capture, ctx),
             panel::Event::EncodingUnsupported { uri, encoding, supported } => {
                 let supported: Vec<String> = supported.iter().map(|encoding| format!("{encoding:?}")).collect();
                 ctx.notify(format!(
@@ -217,6 +274,42 @@ fn browser_status(hub: &SurfaceHub) -> BrowserStatus {
     match hub.browser_executable() {
         Some(executable) => BrowserStatus::Ready { executable: executable.to_owned(), sandboxed: hub.browser_sandboxed() },
         None => BrowserStatus::Missing,
+    }
+}
+
+/// What the launcher says about the browser capture.
+fn capture_status(hub: &SurfaceHub, pending: bool) -> CaptureStatus {
+    CaptureStatus {
+        selected: match hub.capture() {
+            CaptureMode::Screencast => Capture::Screencast,
+            CaptureMode::VirtualDisplay => Capture::VirtualDisplay,
+        },
+        virtual_display_missing: hub.config().virtual_display.as_ref().err().cloned(),
+        pending,
+    }
+}
+
+/// What the launcher says about live video: the encoder the renderer here
+/// gets (it decodes H.264) and the hardware encoders that work.
+fn video_status(enabled: bool, encoders: &LiveVideo) -> VideoStatus {
+    let encoder = encoders.choose(&[loa_surface::Encoding::H264]).map(|info| loa_surface_bench::live::stream_info(&info));
+    let hardware = encoders
+        .encoders()
+        .iter()
+        .filter(|probe| probe.works() && probe.info.accel.is_hardware())
+        .map(|probe| probe.info.name.trim_start_matches("ffmpeg ").to_owned())
+        .collect();
+    VideoStatus { enabled, encoder, hardware }
+}
+
+/// Changes the `[surfaces]` table of the central config.
+fn save(ctx: &mut Ctx, change: impl FnOnce(&mut loa_config::SurfaceSettings)) {
+    let saved = ctx.services.config.load().and_then(|mut loaded| {
+        change(&mut loaded.config.surfaces);
+        ctx.services.config.save(&loaded.config)
+    });
+    if let Err(error) = saved {
+        ctx.notify(format!("Can't save the surface settings: {error}"));
     }
 }
 
@@ -293,6 +386,14 @@ impl Area for State {
             }
             Message::Endpoint(Err(error)) => {
                 ctx.notify(format!("The surface MCP servers didn't start: {error}"));
+                Task::none()
+            }
+            Message::Encoders(encoders) => {
+                self.panel.set_video(video_status(self.panel.video().enabled, &encoders));
+                Task::none()
+            }
+            Message::CapturePending(pending) => {
+                self.panel.set_capture(capture_status(&self.hub, pending));
                 Task::none()
             }
         }

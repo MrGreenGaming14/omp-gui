@@ -83,11 +83,10 @@ fn rollout_roundtrips_every_native_line_and_preserves_unknown_fields() {
 #[cfg(unix)]
 #[tokio::test]
 async fn fake_codex_process_drives_turn_and_receives_session_overrides() {
-    use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().expect("temp dir");
     let script = dir.path().join("codex");
     let trace = dir.path().join("arguments");
-    std::fs::write(&script, r#"#!/bin/sh
+    loa_test_exec::write_executable(&script, r#"#!/bin/sh
 printf '%s\n' "$@" > "$TRACE_FILE"
 rid() { printf '%s' "$1" | sed 's/^{"id":\([0-9]*\),.*/\1/'; }
 while IFS= read -r line; do
@@ -107,9 +106,6 @@ while IFS= read -r line; do
     esac
 done
 "#).expect("fake script");
-    let mut permissions = std::fs::metadata(&script).expect("script metadata").permissions();
-    permissions.set_mode(0o700);
-    std::fs::set_permissions(&script, permissions).expect("executable script");
     let mut cfg = config();
     cfg.cwd = dir.path().to_path_buf();
     cfg.env.insert("TRACE_FILE".into(), trace.to_string_lossy().into_owned());

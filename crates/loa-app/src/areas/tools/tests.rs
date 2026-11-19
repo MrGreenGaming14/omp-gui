@@ -696,6 +696,7 @@ fn remote_questions_raise_decision_cards_answered_in_the_chat_or_the_panel() {
     call.abort();
     rig.until("the card is cancelled", WAIT, |app| app.areas.tools.panel.prompts().is_empty());
     assert_eq!(rig.dom(&session).get(card).unwrap().str_attr(attr::STATUS), Some("cancelled"));
+    assert_eq!(rig.app.ctx.notice(), None, "no stale \"question waiting\" notice once none waits");
 }
 
 #[test]

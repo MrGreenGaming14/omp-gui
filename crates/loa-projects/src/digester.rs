@@ -524,41 +524,14 @@ mod tests {
     /// A fake `omp` that records its arguments, stdin and the overlay, then
     /// prints a fixed answer.
     fn fake_omp(dir: &std::path::Path, body: &str) -> PathBuf {
-        use std::os::unix::fs::PermissionsExt;
         let path = dir.join("omp");
         let script = format!(
             "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"{d}/args\"\ncat > \"{d}/stdin\"\n\
              while [ $# -gt 0 ]; do if [ \"$1\" = --config ]; then cp \"$2\" \"{d}/overlay\"; fi; shift; done\n{body}\n",
             d = dir.display()
         );
-        let staged = dir.join("omp.tmp");
-        std::fs::write(&staged, script).unwrap();
-        std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755)).unwrap();
-        std::fs::rename(staged, &path).unwrap();
+        loa_test_exec::write_executable(&path, script).unwrap();
         path
-    }
-
-    // Some temporary filesystems briefly report ETXTBSY after closing a new
-    // executable. Keep that host-specific race out of the summarizer assertions.
-    async fn run_fake(summarizer: &OmpSummarizer, prompt: &str, model: Option<&str>) -> Result<SummaryAnswer> {
-        for _ in 0..3 {
-            match summarizer.summarize(prompt, model).await {
-                Err(Error::Summarizer(message)) if message.contains("Text file busy") => {
-                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-                }
-                result => return result,
-            }
-        }
-        summarizer.summarize(prompt, model).await
-    }
-
-    struct RetriedFake(OmpSummarizer);
-
-    #[async_trait]
-    impl Summarizer for RetriedFake {
-        async fn summarize(&self, prompt: &str, model: Option<&str>) -> Result<SummaryAnswer> {
-            run_fake(&self.0, prompt, model).await
-        }
     }
 
     #[tokio::test]
@@ -566,7 +539,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let answer = r#"{"summary":"Did things.","decisions":[],"files":[],"open_items":[],"pointers":["T1"]}"#;
         let exe = fake_omp(dir.path(), &format!("printf '%s' '{answer}'"));
-        let summarizer = Arc::new(RetriedFake(OmpSummarizer::new(&exe, dir.path())));
+        let summarizer = Arc::new(OmpSummarizer::new(&exe, dir.path()));
         let b = Builder::new("s1", "p", 1);
         let turn = b.turn("build the thing", "done", 2);
         let digester = Digester::new(summarizer, PromptLimits::default());
@@ -598,7 +571,7 @@ mod tests {
     async fn omp_failure_is_reported_with_stderr() {
         let dir = tempfile::tempdir().unwrap();
         let exe = fake_omp(dir.path(), "echo 'no smol model configured' >&2; exit 2");
-        let err = run_fake(&OmpSummarizer::new(&exe, dir.path()), "hi", None).await.unwrap_err();
+        let err = OmpSummarizer::new(&exe, dir.path()).summarize("hi", None).await.unwrap_err();
         assert!(matches!(&err, Error::Summarizer(m) if m.contains("no smol model configured")), "{err}");
     }
 

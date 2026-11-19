@@ -216,20 +216,9 @@ pub(crate) mod testutil {
 
     /// Writes an executable `#!/bin/sh` script named `name` into `dir` with
     /// `body` after the shebang line and returns its absolute path.
-    ///
-    /// The file is written by a separate `sh` process so no descriptor open for
-    /// writing is ever inherited by a child another test thread forks, which
-    /// would make running the script fail with "text file busy".
     pub(crate) fn fake_program(dir: &Path, name: &str, body: &str) -> PathBuf {
         let path = dir.join(name);
-        let script = format!("#!/bin/sh\n{body}\n");
-        let status = std::process::Command::new("/bin/sh")
-            .args(["-c", "printf '%s' \"$1\" > \"$2\" && chmod 755 \"$2\"", "sh"])
-            .arg(&script)
-            .arg(&path)
-            .status()
-            .unwrap();
-        assert!(status.success());
+        loa_test_exec::write_executable(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
         path
     }
 }

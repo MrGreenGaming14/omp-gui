@@ -193,3 +193,22 @@ async fn a_disabled_tool_is_not_offered() {
     assert!(dom.iter().all(|n| n.kind != ElementKind::Call || n.str_attr(attr::TOOL) != Some("bash")));
     session.shutdown().await.unwrap();
 }
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "runs the installed omp with real model calls"]
+async fn an_at_mentioned_text_file_is_read_by_omp() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("code.txt"), "the code word is LANTERN\n").unwrap();
+    let (sink, session) = start(dir.path()).await;
+    // As the composer sends an `@` mention: the path stays in the text and
+    // rides along as an attachment without a MIME type.
+    let prompt = Prompt {
+        text: "What is the code word in @code.txt? Reply with just the word.".into(),
+        attachments: vec![loa_adapter::Attachment { path: "code.txt".into(), mime: None }],
+        by: "live-test".into(),
+    };
+    session.send(prompt).await.expect("a text file mention is accepted");
+    tokio::time::timeout(TURN_TIMEOUT, session.wait_idle()).await.expect("turn finished in time").expect("turn ended");
+    let reply = assistant_text(&sink.dom());
+    assert!(reply.contains("LANTERN"), "assistant said {reply:?}");
+    session.shutdown().await.unwrap();
+}

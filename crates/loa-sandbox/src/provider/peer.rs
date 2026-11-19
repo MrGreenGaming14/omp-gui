@@ -170,9 +170,7 @@ mod tests {
         // environment, then echoes what the host sends.
         let dir = tempfile::tempdir().unwrap();
         let fake = dir.path().join("stub");
-        std::fs::write(&fake, "#!/bin/sh\nls -A \"$1\"\nprintf '[%s]' \"${HOME-}\"\nexec cat\n").unwrap();
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        loa_test_exec::write_executable(&fake, "#!/bin/sh\nls -A \"$1\"\nprintf '[%s]' \"${HOME-}\"\nexec cat\n").unwrap();
         let (near, far) = tokio::io::duplex(1024);
         let (reader, writer) = tokio::io::split(far);
         let server = tokio::spawn(async move {

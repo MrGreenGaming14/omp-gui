@@ -4583,6 +4583,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "loa-core",
+ "loa-test-exec",
  "serde",
  "tempfile",
  "thiserror 2.0.21",
@@ -4596,6 +4597,7 @@ dependencies = [
  "async-trait",
  "loa-adapter",
  "loa-core",
+ "loa-test-exec",
  "serde",
  "serde_json",
  "tempfile",
@@ -4611,6 +4613,7 @@ dependencies = [
  "async-trait",
  "loa-adapter",
  "loa-core",
+ "loa-test-exec",
  "serde_json",
  "tempfile",
  "tokio",
@@ -4625,6 +4628,7 @@ dependencies = [
  "async-trait",
  "loa-adapter",
  "loa-core",
+ "loa-test-exec",
  "serde_json",
  "tempfile",
  "tokio",
@@ -4728,7 +4732,9 @@ dependencies = [
  "loa-remote",
  "loa-sandbox",
  "loa-surface",
+ "loa-surface-bench",
  "loa-surface-hub",
+ "loa-test-exec",
  "loa-ui-chat",
  "loa-ui-composer",
  "loa-ui-decisions",
@@ -4889,6 +4895,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "loa-omp-rpc",
+ "loa-test-exec",
  "serde",
  "serde_json",
  "tempfile",
@@ -4907,6 +4914,7 @@ dependencies = [
  "ed25519-dalek 2.2.0",
  "futures",
  "iroh",
+ "loa-test-exec",
  "mdns-sd",
  "prost 0.14.6",
  "rcgen",
@@ -4973,6 +4981,7 @@ dependencies = [
  "async-trait",
  "base64 0.23.1",
  "loa-omp-rpc",
+ "loa-test-exec",
  "serde",
  "serde_json",
  "tempfile",
@@ -4991,6 +5000,7 @@ dependencies = [
  "loa-bus",
  "loa-core",
  "loa-journal",
+ "loa-test-exec",
  "serde",
  "serde_json",
  "tempfile",
@@ -5048,6 +5058,7 @@ dependencies = [
  "async-trait",
  "loa-adapter",
  "loa-core",
+ "loa-test-exec",
  "serde",
  "serde_json",
  "tempfile",
@@ -5102,6 +5113,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "bytes",
+ "jpeg-decoder",
  "jpeg-encoder",
  "loa-surface",
  "png 0.18.1",
@@ -5112,8 +5124,6 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tracing",
- "zune-core 0.5.3",
- "zune-jpeg 0.5.15",
 ]
 
 [[package]]
@@ -5127,6 +5137,7 @@ dependencies = [
  "futures",
  "jpeg-decoder",
  "loa-surface",
+ "loa-test-exec",
  "serde",
  "serde_json",
  "tempfile",
@@ -5173,10 +5184,12 @@ dependencies = [
  "loa-core",
  "loa-mcp",
  "loa-surface",
+ "loa-surface-bench",
  "loa-surface-browser",
  "loa-surface-docs",
  "loa-surface-proto",
  "loa-surface-rfb",
+ "loa-test-exec",
  "rmcp",
  "serde",
  "serde_json",
@@ -5195,6 +5208,7 @@ dependencies = [
  "bytes",
  "crc32fast",
  "loa-surface",
+ "loa-surface-bench",
  "prost 0.14.6",
  "serde",
  "serde_json",
@@ -5214,6 +5228,13 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "loa-test-exec"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
 ]
 
 [[package]]
@@ -5273,6 +5294,7 @@ dependencies = [
  "loa-adapter-omp",
  "loa-core",
  "loa-models",
+ "loa-test-exec",
  "loa-ui-icons",
  "serde_json",
  "tempfile",
@@ -5347,6 +5369,7 @@ dependencies = [
  "image",
  "jpeg-decoder",
  "loa-surface",
+ "loa-surface-bench",
  "loa-surface-docs",
  "loa-surface-hub",
  "loa-ui-icons",
@@ -5408,6 +5431,7 @@ dependencies = [
  "flate2",
  "futures",
  "hex",
+ "loa-test-exec",
  "reqwest",
  "rustls",
  "semver",

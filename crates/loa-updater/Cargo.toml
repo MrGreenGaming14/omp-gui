@@ -27,4 +27,5 @@ webpki-roots = "1"
 zip = { version = "9.7", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
+loa-test-exec = { path = "../loa-test-exec" }
 axum = "0.8"

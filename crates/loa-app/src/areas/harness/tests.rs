@@ -181,12 +181,9 @@ fn the_picked_harness_is_saved_as_the_default_for_the_next_launch() {
 #[cfg(unix)]
 #[test]
 fn an_executable_set_in_the_tab_is_saved_registered_and_probed() {
-    use std::os::unix::fs::PermissionsExt;
-
     let dir = tempfile::tempdir().unwrap();
     let codex = dir.path().join("my-codex");
-    std::fs::write(&codex, "#!/bin/sh\necho 'codex-cli 0.99.1'\n").unwrap();
-    std::fs::set_permissions(&codex, std::fs::Permissions::from_mode(0o755)).unwrap();
+    loa_test_exec::write_executable(&codex, "#!/bin/sh\necho 'codex-cli 0.99.1'\n").unwrap();
     let this = node();
     let key = this.key.clone();
     let dirs = Dirs::new(dir.path().join("loa"));

@@ -154,14 +154,13 @@ impl App {
                 }
                 if let Some(n) = id.strip_prefix(ids::PANEL_TAB) {
                     let n = n.parse::<usize>().ok()?;
-                    match self.ctx.shell.tabs().get(n.wrapping_sub(1)).map(|tab| tab.id.clone()) {
-                        Some(tab) => {
-                            self.ctx.shell.set_panel_open(true);
-                            self.open_tab(&tab);
+                    return Some(match self.ctx.shell.tabs().get(n.wrapping_sub(1)).map(|tab| tab.id.clone()) {
+                        Some(tab) => self.open_tab(&tab),
+                        None => {
+                            self.ctx.notify(format!("There is no panel tab {n}"));
+                            Task::none()
                         }
-                        None => self.ctx.notify(format!("There is no panel tab {n}")),
-                    }
-                    return Some(Task::none());
+                    });
                 }
                 if let Some(mode) = id.strip_prefix(MODE) {
                     let mode = SessionMode::ALL.iter().copied().find(|known| known.as_str() == mode)?;

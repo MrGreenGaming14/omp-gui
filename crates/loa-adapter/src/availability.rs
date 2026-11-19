@@ -157,16 +157,14 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let script = dir.path().join("fake-harness");
-        std::fs::write(&script, "#!/bin/sh\necho \"fake-harness 4.5.6\"\n").unwrap();
-        std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        loa_test_exec::write_executable(&script, "#!/bin/sh\necho \"fake-harness 4.5.6\"\n").unwrap();
         let ready = probe_cli(&script, &["--version"]).await;
         assert!(ready.is_ready(), "{ready:?}");
         assert_eq!(ready.version.as_deref(), Some("4.5.6"));
         assert_eq!(ready.executable.as_deref(), Some(script.as_path()));
 
         let broken = dir.path().join("broken-harness");
-        std::fs::write(&broken, "#!/bin/sh\necho 'bad flag' >&2\nexit 3\n").unwrap();
-        std::fs::set_permissions(&broken, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        loa_test_exec::write_executable(&broken, "#!/bin/sh\necho 'bad flag' >&2\nexit 3\n").unwrap();
         let failed = probe_cli(&broken, &["--version"]).await;
         assert_eq!(failed.status, AvailabilityStatus::Failed);
         assert!(failed.detail.unwrap().contains("bad flag"));

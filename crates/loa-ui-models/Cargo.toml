@@ -14,6 +14,7 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["sync", "macros", "rt"] }
 
 [dev-dependencies]
+loa-test-exec = { path = "../loa-test-exec" }
 async-trait.workspace = true
 loa-adapter.workspace = true
 loa-adapter-omp = { path = "../loa-adapter-omp" }

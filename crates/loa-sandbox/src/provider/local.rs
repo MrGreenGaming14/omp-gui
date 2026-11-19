@@ -62,9 +62,7 @@ mod tests {
         let spec = SandboxSpec { name: "test".into(), workspace: dir.path().into(), env: vec![("SANDBOX_TEST".into(), "yes".into())], options: SandboxOptions::default() };
         // A script stands in for the stub and reports its environment and cwd.
         let fake = dir.path().join("stub");
-        std::fs::write(&fake, "#!/bin/sh\npwd\nprintf '%s' \"$SANDBOX_TEST\"\n").unwrap();
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        loa_test_exec::write_executable(&fake, "#!/bin/sh\npwd\nprintf '%s' \"$SANDBOX_TEST\"\n").unwrap();
         let provider = LocalProvider { stub: fake };
         let mut sandbox = provider.start(&spec).await.unwrap();
         assert_eq!(sandbox.workspace_mode(), WorkspaceMode::Shared);

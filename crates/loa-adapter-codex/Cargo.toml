@@ -14,5 +14,6 @@ tokio = { workspace = true, features = ["process", "io-util", "sync", "rt", "mac
 tracing.workspace = true
 
 [dev-dependencies]
+loa-test-exec = { path = "../loa-test-exec" }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["process", "io-util", "sync", "rt", "rt-multi-thread", "macros", "time"] }

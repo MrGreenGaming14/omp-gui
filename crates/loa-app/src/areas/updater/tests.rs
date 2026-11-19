@@ -5,7 +5,6 @@
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
@@ -71,8 +70,7 @@ struct Fixture {
 }
 
 fn script(path: &Path, body: &str) -> PathBuf {
-    std::fs::write(path, format!("#!/bin/sh\n{body}\n")).unwrap();
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    loa_test_exec::write_executable(path, format!("#!/bin/sh\n{body}\n")).unwrap();
     path.to_path_buf()
 }
 

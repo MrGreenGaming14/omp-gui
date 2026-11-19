@@ -170,6 +170,7 @@ fn project_screen_lists_sessions_saves_settings_and_excludes() {
     let rows = &app.areas.projects.screen().unwrap().overview().expect("loaded").sessions;
     assert_eq!(rows.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(), [session.as_str()]);
     assert_eq!(rows[0].turns, 1);
+    assert_eq!(rows[0].title.as_deref(), Some("set up iroh"), "titled like Recents: the first prompt");
 
     // Shared instructions and a pinned file, saved and delivered as context.
     let instructions = Edit::Paste(Arc::new("Always use port 31415.".to_owned()));

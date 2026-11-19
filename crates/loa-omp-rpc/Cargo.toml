@@ -8,7 +8,7 @@ publish.workspace = true
 [features]
 # Exposes `fake`, a scripted stand-in for the `omp` executable used by tests
 # of this crate and of crates built on it.
-fake-omp = []
+fake-omp = ["dep:loa-test-exec"]
 
 [dependencies]
 async-trait.workspace = true
@@ -18,8 +18,10 @@ serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+loa-test-exec = { path = "../loa-test-exec", optional = true }
 
 [dev-dependencies]
 # Turns on `fake-omp` for this crate's own integration tests.
 loa-omp-rpc = { path = ".", features = ["fake-omp"] }
 tempfile.workspace = true
+loa-test-exec = { path = "../loa-test-exec" }
