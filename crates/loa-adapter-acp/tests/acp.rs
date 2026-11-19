@@ -755,7 +755,7 @@ async fn agent_exit_mid_turn_fails_the_turn_and_closes_the_session() {
 async fn command_connector_runs_the_agent_process() {
     let dir = tempfile::tempdir().unwrap();
     let script = dir.path().join("agent.sh");
-    loa_test_exec::write_executable(
+    loa_exec::write_executable(
         &script,
         "#!/bin/sh\n\
          read line\n\

@@ -773,16 +773,21 @@ fn slash_commands_run_through_their_areas_and_the_harness_lists_its_own() {
 
     // The app's commands run in their areas, never reaching the harness.
     env.say("/model test/fast");
-    assert_eq!(root_attr(&env.active_dom(), attr::MODEL).as_deref(), Some("test/fast"));
+    assert_eq!(env.seen.lock().unwrap().models, ["test/fast"], "notice: {:?}", env.app.ctx.notice());
     env.say("/role smol");
     assert_eq!(root_attr(&env.active_dom(), attr::MODEL).as_deref(), Some("test/small"));
     assert_eq!(root_attr(&env.active_dom(), attr::MODEL_ROLE).as_deref(), Some("smol"));
     env.say("/role nope");
     assert_eq!(env.app.ctx.notice(), Some("omp has no model role nope; its roles: smol"));
+    // This harness can't be held to read-only tools; the area says so.
+    // (Plan mode itself is `plan_mode_blocks_changing_tools_and_raises_a_plan_review`.)
     env.say("/plan");
-    assert!(env.app.areas.sessions.plans.contains_key(first.as_str()), "in plan mode");
+    assert_eq!(
+        env.app.ctx.notice(),
+        Some("Can't enter plan mode on fake-s: feature port failed: this harness can't be limited to read-only tools")
+    );
     env.say("/normal");
-    assert!(!env.app.areas.sessions.plans.contains_key(first.as_str()), "out of plan mode");
+    assert!(!env.app.areas.sessions.plans.contains_key(first.as_str()), "in normal mode");
     env.say("/export-xml");
     let exported = env.dir.path().join(format!("loa/exports/{first}.xml"));
     assert!(exported.is_file(), "notice: {:?}", env.app.ctx.notice());
@@ -802,6 +807,19 @@ fn slash_commands_run_through_their_areas_and_the_harness_lists_its_own() {
         .any(|command| prompt.starts_with(command))), "{prompts:?}");
     assert!(!env.app.ctx.composer.is_busy(), "commands aren't turns");
     assert_eq!(slash_names(&env.app).iter().filter(|name| *name == "dirs").count(), 0, "a new session has no harness list yet");
+}
+
+#[test]
+fn slash_plan_and_normal_switch_the_mode() {
+    let mut env = Env::new("omp");
+    let id = env.start();
+    env.say("/plan");
+    assert!(env.app.areas.sessions.plans.contains_key(id.as_str()), "notice: {:?}", env.app.ctx.notice());
+    assert_eq!(root_attr(&env.active_dom(), attr::MODE).as_deref(), Some("plan"));
+    env.say("/normal");
+    assert!(!env.app.areas.sessions.plans.contains_key(id.as_str()));
+    assert_eq!(root_attr(&env.active_dom(), attr::MODE).as_deref(), Some("normal"));
+    assert!(env.seen.lock().unwrap().prompts.is_empty(), "not sent to the harness");
 }
 
 #[test]

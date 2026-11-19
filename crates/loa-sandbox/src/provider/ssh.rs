@@ -144,7 +144,7 @@ mod tests {
     }
 
     fn script(path: &std::path::Path, body: &str) {
-        loa_test_exec::write_executable(path, body).unwrap();
+        loa_exec::write_executable(path, body).unwrap();
     }
 
     /// A fake `ssh` runs the remote command locally after `-- <host>`, and

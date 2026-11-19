@@ -511,7 +511,8 @@ impl State {
             let underline = if selected { underline.style(style::tab_underline) } else { underline };
             bar.push(column![container(label).center_y(Fill), underline].width(Shrink).height(topbar::HEIGHT))
         });
-        let scrollbar = scrollable::Scrollbar::new().width(2).scroller_width(2);
+        // Embedded below the tabs, so it never covers the active underline.
+        let scrollbar = scrollable::Scrollbar::new().width(2).scroller_width(2).spacing(0);
         let tabs = scrollable(tabs)
             .id(PANEL_TABS_ID)
             .direction(scrollable::Direction::Horizontal(scrollbar))

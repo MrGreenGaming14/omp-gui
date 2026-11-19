@@ -91,7 +91,7 @@ done
 static FAKE_CLAUDE: LazyLock<(tempfile::TempDir, PathBuf)> = LazyLock::new(|| {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("claude");
-    loa_test_exec::write_executable(&path, FAKE).unwrap();
+    loa_exec::write_executable(&path, FAKE).unwrap();
     (dir, path)
 });
 

@@ -756,7 +756,7 @@ mod tests {
 
     fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
         let path = dir.join(name);
-        loa_test_exec::write_executable(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        loa_exec::write_executable(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
         path
     }
 

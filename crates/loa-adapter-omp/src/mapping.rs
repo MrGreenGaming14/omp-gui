@@ -249,10 +249,12 @@ impl Mapping {
                 self.commands = Some(commands);
                 vec![self.insert(self.session, K::Ext, vec![(attr::HARNESS, "omp".into()), (attr::TYPE, COMMANDS.into())], raw.to_string(), Pending::Other)]
             }
-            // A slash command omp ran itself answers in its turn.
+            // A slash command omp ran itself answers in its turn. The
+            // runtime may close that turn from the prompt's response before
+            // the output frame is read; it then joins the turn just closed.
             Event::Unknown { kind, raw } if kind == COMMAND_OUTPUT => {
                 let text = raw.get("text").and_then(Json::as_str).unwrap_or_default();
-                match self.turn {
+                match self.turn.or_else(|| self.turns.last().copied()) {
                     Some(turn) => vec![self.insert(turn, K::Message, vec![(attr::ROLE, "assistant".into()), (attr::KIND, MessageKind::Text.into()), (attr::STATUS, MessageStatus::Done.into())], text, Pending::Other)],
                     None => vec![self.ext(COMMAND_OUTPUT, raw)],
                 }

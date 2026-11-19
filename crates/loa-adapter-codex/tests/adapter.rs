@@ -86,7 +86,7 @@ async fn fake_codex_process_drives_turn_and_receives_session_overrides() {
     let dir = tempfile::tempdir().expect("temp dir");
     let script = dir.path().join("codex");
     let trace = dir.path().join("arguments");
-    loa_test_exec::write_executable(&script, r#"#!/bin/sh
+    loa_exec::write_executable(&script, r#"#!/bin/sh
 printf '%s\n' "$@" > "$TRACE_FILE"
 rid() { printf '%s' "$1" | sed 's/^{"id":\([0-9]*\),.*/\1/'; }
 while IFS= read -r line; do

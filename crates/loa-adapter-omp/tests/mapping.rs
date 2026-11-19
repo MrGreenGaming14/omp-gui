@@ -350,6 +350,24 @@ fn omps_command_list_is_recorded_on_the_root_and_a_command_it_runs_answers_in_it
 }
 
 #[test]
+fn command_output_read_after_the_response_closed_the_turn_joins_that_turn() {
+    let (sink, mut mapper) = fixture();
+    mapper.queue("p", &Prompt { text: "/dirs".into(), by: "owner".into(), ..Prompt::default() });
+    let drafts = mapper.event(&Event::PromptResult {
+        id: Some("p".into()), agent_invoked: false, status: PromptStatus::Completed, error: None, session_settled: true,
+    });
+    commit(&sink, &mut mapper, drafts);
+    let Frame::Event(output) = Frame::parse(br#"{"type":"command_output","text":"Workspace directories:\n  /tmp"}"#).unwrap() else { panic!() };
+    let drafts = mapper.event(&output);
+    commit(&sink, &mut mapper, drafts);
+    let dom = sink.dom();
+    let turn = dom.iter().find(|n| n.kind == K::Turn).unwrap();
+    let messages: Vec<_> = dom.children_of_kind(turn.id, K::Message).map(|m| (m.str_attr(attr::ROLE), m.text.as_str())).collect();
+    assert_eq!(messages, [(Some("user"), "/dirs"), (Some("assistant"), "Workspace directories:\n  /tmp")]);
+    assert!(!dom.iter().any(|n| n.kind == K::Ext));
+}
+
+#[test]
 fn fire_and_forget_ui_requests_map_to_their_meaning() {
     let (sink, mut mapper) = fixture();
     for frame in [
