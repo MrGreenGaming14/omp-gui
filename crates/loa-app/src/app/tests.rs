@@ -695,12 +695,50 @@ fn a_session_opens_in_its_own_window_without_becoming_active() {
 }
 
 #[test]
-fn composer_shows_the_session_folder_and_opens_it() {
+fn folder_bar_switches_folders_and_starts_a_session_there() {
+    use iced_test::Simulator;
     let dir = tempfile::tempdir().unwrap();
     let mut app = fake_app(dir.path(), &["fake-a"]);
     update(&mut app, Message::NewSession);
-    let folder = app.ctx.composer.workspace().expect("a folder chip").clone();
+    let before = active(&app).unwrap().to_owned();
+    let folder = app.ctx.composer.workspace().expect("a folder bar").clone();
     assert_eq!(folder.full, app.ctx.services.cwd.display().to_string());
+
+    // The bar sits above the editor and opens the folder menu.
     click_id(&mut app, composer::WORKSPACE_CHIP_ID);
-    assert_eq!(app.ctx.shell.active_tab(), Some("files"), "the chip opens the folder in Files");
+    {
+        let mut ui = Simulator::with_size(iced::Settings::default(), iced::Size::new(1600.0, 1000.0), app.view());
+        assert!(ui.find("Choose another folder…").is_ok());
+        assert!(ui.find("Show in Files").is_ok());
+    }
+
+    let other = tempfile::tempdir().unwrap();
+    let other_path = other.path().canonicalize().unwrap();
+    update(&mut app, Message::Composer(composer::Message::FolderPicked(other_path.display().to_string())));
+    assert_eq!(app.ctx.services.cwd, other_path);
+    assert_eq!(app.ctx.composer.workspace().unwrap().full, other_path.display().to_string());
+    assert_ne!(active(&app), Some(before.as_str()), "a fresh session starts in the new folder");
+
+    // The old folder stays in the menu.
+    click_id(&mut app, composer::WORKSPACE_CHIP_ID);
+    let mut ui = Simulator::with_size(iced::Settings::default(), iced::Size::new(1600.0, 1000.0), app.view());
+    assert!(ui.find(folder.path.as_str()).is_ok(), "recent folders are offered");
+}
+
+#[test]
+fn show_in_files_opens_the_files_tab() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = fake_app(dir.path(), &["fake-a"]);
+    update(&mut app, Message::NewSession);
+    click_id(&mut app, composer::WORKSPACE_CHIP_ID);
+    let messages: Vec<Message> = {
+        use iced_test::Simulator;
+        let mut ui = Simulator::with_size(iced::Settings::default(), iced::Size::new(1600.0, 1000.0), app.view());
+        ui.click("Show in Files").expect("Show in Files");
+        ui.into_messages().collect()
+    };
+    for message in messages {
+        let _ = app.update(message);
+    }
+    assert_eq!(app.ctx.shell.active_tab(), Some("files"));
 }

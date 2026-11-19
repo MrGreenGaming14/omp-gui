@@ -149,6 +149,8 @@ pub enum Message {
     Reattach(iced::window::Id),
     /// The transcript in a detached session's window.
     DetachedChat(String, chat::Message),
+    /// The folder dialog closed with this folder, or none when cancelled.
+    FolderChosen(Result<Option<PathBuf>, String>),
 }
 
 pub struct App {
@@ -167,6 +169,8 @@ pub struct App {
     detached: Vec<(iced::window::Id, detach::Detached)>,
     /// Transcripts of sessions shown in their own window, by session id.
     detached_chats: std::collections::HashMap<String, chat::State>,
+    /// Folders worked in this run, most recent first, for the folder menu.
+    recent_folders: Vec<PathBuf>,
 }
 
 impl App {
@@ -237,11 +241,14 @@ impl App {
             main_window: None,
             detached: Vec::new(),
             detached_chats: std::collections::HashMap::new(),
+            recent_folders: Vec::new(),
         };
         let shown = app.tabs().into_iter().filter(|tab| tab.shown).map(|tab| shell::PanelTab::new(tab.id, tab.title)).collect();
         app.ctx.shell.set_tabs(shown);
         let folder = workspace(&app.ctx.services.cwd);
         app.ctx.composer.set_workspace(Some(folder));
+        app.recent_folders.push(app.ctx.services.cwd.clone());
+        app.refresh_folders();
         app.refresh_commands();
         let settle = app.settle();
         let usage = app.usage.refresh().map(Message::Usage);
@@ -479,6 +486,36 @@ impl App {
         self.dispatch(SessionEvent::Activated(Some(id)))
     }
 
+    /// Works in `path` from now on: Files, Changes and new sessions follow,
+    /// and an open session is replaced by a fresh one there, since a
+    /// running harness can't move.
+    pub(crate) fn switch_folder(&mut self, path: PathBuf) -> Task<Message> {
+        let path = path.canonicalize().unwrap_or(path);
+        if !path.is_dir() {
+            self.ctx.notify(format!("{} isn't a folder", path.display()));
+            return Task::none();
+        }
+        if path == self.ctx.services.cwd {
+            return Task::none();
+        }
+        self.ctx.services.cwd = path.clone();
+        self.files = files::State::new(path.clone(), Box::new(files::LocalFs));
+        self.recent_folders.retain(|folder| *folder != path);
+        self.recent_folders.insert(0, path.clone());
+        self.recent_folders.truncate(8);
+        let folder = workspace(&path);
+        self.ctx.notify(format!("Working in {}", folder.path));
+        self.ctx.composer.set_workspace(Some(folder));
+        self.refresh_folders();
+        let start = if self.ctx.sessions.active().is_some() { self.start(None) } else { Task::none() };
+        Task::batch([working_diff(path), start])
+    }
+
+    fn refresh_folders(&mut self) {
+        let folders = self.recent_folders.iter().map(|folder| workspace(folder)).collect();
+        self.ctx.composer.set_folders(folders);
+    }
+
     /// Loads the active session's DOM into the chat and the frame.
     fn present(&mut self) {
         let Some(session) = self.ctx.sessions.active() else {
@@ -681,6 +718,8 @@ impl App {
                 Task::none()
             }
             Some(composer::Event::OpenWorkspace) => self.open_tab("files"),
+            Some(composer::Event::FolderPicked(path)) => self.switch_folder(PathBuf::from(path)),
+            Some(composer::Event::BrowseFolders) => Task::perform(choose_folder(self.ctx.services.cwd.clone()), Message::FolderChosen),
             Some(composer::Event::QueueChanged(_)) | None => Task::none(),
         }
     }
@@ -829,6 +868,12 @@ impl App {
             Message::Window(message) => self.window_update(message),
             Message::WindowClosed(id) => self.window_closed(id),
             Message::Reattach(id) => self.reattach(id),
+            Message::FolderChosen(Ok(Some(path))) => self.switch_folder(path),
+            Message::FolderChosen(Ok(None)) => Task::none(),
+            Message::FolderChosen(Err(error)) => {
+                self.ctx.notify(error);
+                Task::none()
+            }
             Message::DetachedChat(session, message) => {
                 let Some(chat) = self.detached_chats.get_mut(&session) else { return Task::none() };
                 let (task, event) = chat.update(message);
@@ -1039,6 +1084,29 @@ impl App {
             .chain(areas),
         )
     }
+}
+
+/// Asks for a folder with the desktop's folder dialog: zenity (GNOME), else
+/// kdialog (KDE). `Ok(None)` when the dialog was cancelled.
+async fn choose_folder(start: PathBuf) -> Result<Option<PathBuf>, String> {
+    let start = format!("{}/", start.display());
+    let dialogs: [(&str, Vec<&str>); 2] = [
+        ("zenity", vec!["--file-selection", "--directory", "--title=Choose a folder", "--filename", start.as_str()]),
+        ("kdialog", vec!["--getexistingdirectory", start.as_str(), "--title", "Choose a folder"]),
+    ];
+    for (program, args) in dialogs {
+        match tokio::process::Command::new(program).args(&args).output().await {
+            Ok(output) if output.status.success() => {
+                let chosen = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+                return Ok((!chosen.is_empty()).then(|| PathBuf::from(chosen)));
+            }
+            // Cancelled.
+            Ok(_) => return Ok(None),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(format!("The folder dialog failed: {error}")),
+        }
+    }
+    Err("No folder dialog found: install zenity or kdialog, or pick a recent folder".to_owned())
 }
 
 /// The composer's folder chip for `cwd`: home shortened to `~`, and the git

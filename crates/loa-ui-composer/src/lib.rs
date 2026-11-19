@@ -87,8 +87,12 @@ pub enum Event {
     /// The user pressed one of the [`State::set_model_actions`] rows. Holds
     /// its id.
     ModelAction(String),
-    /// The folder chip was pressed: show the session's folder.
+    /// "Show in Files" in the folder menu.
     OpenWorkspace,
+    /// A folder was picked from the folder menu. Holds its full path.
+    FolderPicked(String),
+    /// "Choose another folder…" in the folder menu: open a folder dialog.
+    BrowseFolders,
 }
 
 /// The folder a session works in, as the composer's folder chip shows it.
@@ -130,8 +134,12 @@ pub enum Message {
     PickerClosed,
     /// Whether an input method is composing text.
     Composing(bool),
-    /// The folder chip was pressed.
+    /// "Show in Files" in the folder menu.
     WorkspacePressed,
+    /// A folder in the folder menu.
+    FolderPicked(String),
+    /// "Choose another folder…" in the folder menu.
+    BrowseFolders,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -160,6 +168,8 @@ pub struct State {
     pickers: Pickers,
     author: String,
     workspace: Option<Workspace>,
+    /// Folders the folder menu offers, most recent first.
+    folders: Vec<Workspace>,
 }
 
 impl Default for State {
@@ -184,7 +194,13 @@ impl State {
             pickers: Pickers::default(),
             author: String::new(),
             workspace: None,
+            folders: Vec::new(),
         }
+    }
+
+    /// Sets the folders the folder menu offers besides the current one.
+    pub fn set_folders(&mut self, folders: Vec<Workspace>) {
+        self.folders = folders;
     }
 
     /// Sets the folder the session works in, shown left of the pickers.
@@ -361,7 +377,18 @@ impl State {
                 self.pickers.open = None;
                 None
             }
-            Message::WorkspacePressed => Some(Event::OpenWorkspace),
+            Message::WorkspacePressed => {
+                self.pickers.open = None;
+                Some(Event::OpenWorkspace)
+            }
+            Message::FolderPicked(path) => {
+                self.pickers.open = None;
+                Some(Event::FolderPicked(path))
+            }
+            Message::BrowseFolders => {
+                self.pickers.open = None;
+                Some(Event::BrowseFolders)
+            }
             Message::ModelPicked(model) => {
                 self.pickers.open = None;
                 (self.pickers.model.as_ref() != Some(&model)).then(|| {
@@ -435,9 +462,6 @@ impl State {
 
         let pickers = &self.pickers;
         let mut controls = row![].spacing(4).align_y(Center);
-        if let Some(workspace) = &self.workspace {
-            controls = controls.push(workspace_chip(workspace));
-        }
         if pickers.harnesses.len() > 1 {
             let label = self.harness().map_or("Harness", |h| h.label.as_str());
             controls = controls.push(self.picker(Picker::Harness, label));
@@ -463,7 +487,13 @@ impl State {
         if !self.queue.is_empty() {
             layout = layout.push(self.queue_view());
         }
-        if let Some(picker) = pickers.open {
+        if pickers.open == Some(Picker::Folder) {
+            layout = layout.push(self.folder_menu());
+        }
+        if let Some(workspace) = &self.workspace {
+            layout = layout.push(self.folder_bar(workspace));
+        }
+        if let Some(picker) = pickers.open.filter(|picker| *picker != Picker::Folder) {
             layout = layout.push(self.menu_view(picker));
         } else if let Some(popup) = self.visible_popup() {
             layout = layout.push(self.popup_view(popup));
@@ -526,8 +556,41 @@ impl State {
                 .iter()
                 .map(|&mode| menu_row(mode.as_str(), None, pickers.mode == mode, Some(Message::ModePicked(mode))))
                 .collect(),
+            Picker::Folder => Vec::new(),
         };
         container(column(rows).spacing(2)).padding(4).width(MENU_WIDTH).style(style::menu).into()
+    }
+
+    /// The bar above the editor: the session's folder and git branch. A
+    /// click opens the folder menu.
+    fn folder_bar<'a>(&'a self, workspace: &'a Workspace) -> Element<'a, Message> {
+        let open = self.pickers.open == Some(Picker::Folder);
+        let mut chip = row![muted(Icon::Folder, 14.0), text(workspace.path.as_str()).size(13)].spacing(6).align_y(Center);
+        if let Some(branch) = &workspace.branch {
+            chip = chip.push(muted(Icon::GitFork, 13.0)).push(text(branch.as_str()).size(13).style(style::muted));
+        }
+        chip = chip.push(muted(if open { Icon::ChevronUp } else { Icon::ChevronDown }, 13.0));
+        let chip = button(chip).padding([3, 8]).style(style::picker(open)).on_press(Message::PickerToggled(Picker::Folder));
+        let tip = container(text(workspace.full.as_str()).size(12)).padding([3, 8]).style(style::menu);
+        container(iced::widget::tooltip(chip, tip, iced::widget::tooltip::Position::Top)).id(WORKSPACE_CHIP_ID).into()
+    }
+
+    /// Recent folders, a folder dialog and Show in Files.
+    fn folder_menu(&self) -> Element<'_, Message> {
+        let current = self.workspace.as_ref().map(|w| w.full.as_str());
+        let mut rows: Vec<Element<'_, Message>> = Vec::new();
+        let mut listed: Vec<&str> = Vec::new();
+        for folder in self.workspace.iter().chain(self.folders.iter()) {
+            if listed.contains(&folder.full.as_str()) {
+                continue;
+            }
+            listed.push(folder.full.as_str());
+            let is_current = current == Some(folder.full.as_str());
+            rows.push(menu_row(&folder.path, folder.branch.clone(), is_current, Some(Message::FolderPicked(folder.full.clone()))));
+        }
+        rows.push(menu_row("Choose another folder…", None, false, Some(Message::BrowseFolders)));
+        rows.push(menu_row("Show in Files", None, false, Some(Message::WorkspacePressed)));
+        container(column(rows).spacing(2)).padding(4).width(MENU_WIDTH.max(360.0)).style(style::menu).into()
     }
 
     /// Tracks input method composition so Enter and Esc reach the IME, and
@@ -833,19 +896,6 @@ fn edit_kind(edit: &Edit) -> EditKind {
         Edit::Backspace | Edit::Delete => EditKind::Delete,
         Edit::Paste(_) | Edit::Enter | Edit::Indent | Edit::Unindent => EditKind::Other,
     }
-}
-
-/// The folder chip: the folder and git branch, the full path on hover.
-fn workspace_chip(workspace: &Workspace) -> Element<'_, Message> {
-    let mut chip = row![muted(Icon::Folder, 14.0), text(workspace.path.as_str()).size(13)].spacing(6).align_y(Center);
-    if let Some(branch) = &workspace.branch {
-        chip = chip.push(muted(Icon::GitFork, 13.0)).push(text(branch.as_str()).size(13));
-    }
-    let chip = button(chip).padding([3, 6]).style(style::picker(false)).on_press(Message::WorkspacePressed);
-    let tip = container(text(workspace.full.as_str()).size(12)).padding([3, 8]).style(style::menu);
-    container(iced::widget::tooltip(chip, tip, iced::widget::tooltip::Position::Top))
-        .id(WORKSPACE_CHIP_ID)
-        .into()
 }
 
 /// Container id of the folder chip.

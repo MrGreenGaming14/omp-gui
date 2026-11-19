@@ -56,6 +56,8 @@ pub enum Picker {
     Model,
     Effort,
     Mode,
+    /// The folder bar above the editor.
+    Folder,
 }
 
 /// Picker contents and the current choices.
