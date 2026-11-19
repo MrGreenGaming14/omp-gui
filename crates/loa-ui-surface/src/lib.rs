@@ -8,15 +8,21 @@
 //! stay local.
 
 pub mod decode;
+mod docs;
 pub mod document;
 pub mod framebuffer;
 pub mod geometry;
 pub mod input;
 pub mod latency;
+pub mod panel;
+pub mod picker;
 mod state;
+mod style;
 mod viewer;
 
 pub use decode::{DecodeError, VideoDecoder};
+pub use docs::DocsRenderers;
+pub use panel::{Available, BrowserStatus, Panel, PanelOptions};
 pub use document::{PageError, PageRenderer, PageRenderers, Pages, RgbaPage};
 pub use framebuffer::Framebuffer;
 pub use geometry::{Placement, fit};

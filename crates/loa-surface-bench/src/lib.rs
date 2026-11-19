@@ -8,15 +8,19 @@
 //! - [`encode`] turns RGBA pictures into frames: hardware or software H.264 and
 //!   HEVC for live content, changed regions only for mostly static content.
 //! - [`report`] summarises samples against the budget in `surfaces.md`.
+//! - [`live`] codes live surfaces as video for viewers that negotiate it;
+//!   [`video`] decodes it.
 
 pub mod bench;
 pub mod canvas;
 pub mod decode;
 pub mod encode;
+pub mod live;
 pub mod report;
 pub mod stats;
 pub mod synthetic;
 pub mod yuv;
+pub mod video;
 
 use loa_surface::Encoding;
 

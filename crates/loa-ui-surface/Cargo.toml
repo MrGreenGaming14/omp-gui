@@ -7,6 +7,9 @@ publish.workspace = true
 
 [dependencies]
 loa-surface.workspace = true
+loa-surface-docs = { path = "../loa-surface-docs" }
+loa-ui-icons.workspace = true
+loa-ui-shell = { path = "../loa-ui-shell" }
 iced.workspace = true
 bytes.workspace = true
 futures.workspace = true
@@ -22,4 +25,6 @@ async-trait.workspace = true
 iced_runtime = "0.14"
 iced_test = "0.14"
 tempfile.workspace = true
+rust_xlsxwriter = "0.103"
+loa-surface-hub = { path = "../loa-surface-hub" }
 image = { version = "0.25", default-features = false, features = ["jpeg"] }

@@ -163,14 +163,18 @@ show(); addEventListener('resize', show);
 #[tokio::test(flavor = "multi_thread")]
 async fn screencast_frames_show_the_page_and_carry_the_last_handled_input() {
     let Some(server) = server(320, 240).await else { return };
-    let page = "<title>c</title><style>html,body{margin:0;height:100%;background:rgb(255,0,0)}</style><script>
-addEventListener('mousedown', () => document.body.style.background = 'rgb(0,255,0)');
+    // Each press also bumps a counter, so every press repaints.
+    let page = "<title>c</title><style>html,body{margin:0;height:100%;background:rgb(255,0,0)}</style><b id=n></b><script>
+let n = 0;
+addEventListener('mousedown', () => { document.body.style.background = 'rgb(0,255,0)'; document.getElementById('n').textContent = ++n; });
 </script>";
     let tab = server.open_tab(&html(page)).await.unwrap();
     let mut frames = tab.frames().unwrap();
+    // Chrome may paint once at its window size before the viewport override
+    // lands; such frames are smaller and skipped here.
     let red = loop {
         let frame = next_frame(&mut frames).await;
-        if close_to(pixel(&decode(&frame), 160, 120), [255, 0, 0]) {
+        if (frame.width, frame.height) == (320, 240) && close_to(pixel(&decode(&frame), 160, 120), [255, 0, 0]) {
             break frame;
         }
     };
@@ -185,7 +189,7 @@ addEventListener('mousedown', () => document.body.style.background = 'rgb(0,255,
         let frame = next_frame(&mut frames).await;
         assert!(frame.seq > last_seq, "frame seqs count up");
         last_seq = frame.seq;
-        if close_to(pixel(&decode(&frame), 160, 120), [0, 255, 0]) {
+        if (frame.width, frame.height) == (320, 240) && close_to(pixel(&decode(&frame), 160, 120), [0, 255, 0]) {
             break frame;
         }
         assert!(frame.input_seq < pressed, "frame {} claims input {} but is still red", frame.seq, frame.input_seq);
@@ -193,12 +197,18 @@ addEventListener('mousedown', () => document.body.style.background = 'rgb(0,255,
     assert!(green.input_seq <= pressed);
     // A frame painted after the press was handled carries its seq. Chrome
     // may have painted the green frame just before the acknowledgement
-    // reached us; then the next repaint carries it.
+    // reached us; then the repaint of a later press carries it. A resent
+    // keyframe of the old picture never claims inputs it doesn't show.
     if green.input_seq < pressed {
-        driver.send(Input::MouseMove { x: 20.0, y: 20.0 }).await;
-        tab.request_keyframe().await.unwrap();
-        let next = next_frame(&mut frames).await;
-        assert!(next.input_seq >= pressed);
+        driver.button(10.0, 10.0, MouseButton::Left, false).await;
+        let again = driver.button(10.0, 10.0, MouseButton::Left, true).await;
+        loop {
+            let next = next_frame(&mut frames).await;
+            assert!(next.input_seq <= again);
+            if next.input_seq >= pressed {
+                break;
+            }
+        }
     }
     server.shutdown().await.unwrap();
 }

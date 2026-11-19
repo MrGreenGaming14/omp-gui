@@ -1,13 +1,12 @@
 //! Reconstructs the viewer picture from full and partial surface frames.
 
-use crate::{BenchError, Result, canvas::Canvas, yuv};
+use crate::{BenchError, Result, canvas::Canvas, encode::ffmpeg::FfmpegConfig, video::VideoDecoder};
 use loa_surface::{Encoding, Frame, Rect};
-use rusty_h264::Decoder;
 use zune_core::{bytestream::ZCursor, colorspace::ColorSpace, options::DecoderOptions};
 
-/// Stateful decoder: H.264 references persist between successive access units.
+/// Stateful decoder: video references persist between successive access units.
 pub struct FrameDecoder {
-    h264: Decoder,
+    video: VideoDecoder,
     scratch: Vec<u8>,
 }
 
@@ -18,8 +17,14 @@ impl Default for FrameDecoder {
 }
 
 impl FrameDecoder {
+    /// Stills and H.264.
     pub fn new() -> Self {
-        Self { h264: Decoder::new(), scratch: Vec::new() }
+        Self::with_ffmpeg(None)
+    }
+
+    /// Stills, H.264, and HEVC through `ffmpeg` when given.
+    pub fn with_ffmpeg(ffmpeg: Option<FfmpegConfig>) -> Self {
+        Self { video: VideoDecoder::new(ffmpeg), scratch: Vec::new() }
     }
 
     /// Applies a frame to the displayed canvas; rejects invalid regions or payloads.
@@ -92,20 +97,13 @@ impl FrameDecoder {
                     png::ColorType::Indexed => Err(decode_error(frame.encoding, "indexed PNG was not expanded")),
                 }
             }
-            Encoding::H264 => {
-                let decoded = self.h264.decode(&frame.data).map_err(|e| decode_error(frame.encoding, e))?
-                    .ok_or_else(|| decode_error(frame.encoding, "access unit contains no picture"))?;
-                if decoded.width != frame.width as usize || decoded.height != frame.height as usize {
-                    return Err(decode_error(frame.encoding, "H.264 dimensions do not match frame"));
+            Encoding::H264 | Encoding::Hevc => {
+                if self.video.decode(frame, canvas.rgba_mut())? {
+                    Ok(())
+                } else {
+                    Err(decode_error(frame.encoding, "access unit contains no picture"))
                 }
-                yuv::i420_to_rgba(yuv::I420 {
-                    width: decoded.width, height: decoded.height, y: &decoded.y, u: &decoded.u, v: &decoded.v,
-                    stride_y: decoded.width, stride_c: decoded.width / 2,
-                }, canvas.rgba_mut());
-                self.h264.recycle_frame(decoded);
-                Ok(())
             }
-            Encoding::Hevc => Err(BenchError::NoDecoder(Encoding::Hevc)),
         }
     }
 }

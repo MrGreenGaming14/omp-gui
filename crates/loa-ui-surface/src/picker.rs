@@ -1,0 +1,199 @@
+//! An in-panel file picker for document surfaces: browse folders and pick a
+//! PDF, Office or image file, or type a path.
+
+use crate::style;
+use iced::widget::{Column, button, column, container, row, scrollable, text, text_input};
+use iced::{Center, Element, Fill, Length};
+use loa_surface_docs::Format;
+use loa_ui_icons::{Icon, muted};
+use loa_ui_shell::theme::style as shell;
+use std::path::{Path, PathBuf};
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Entry {
+    pub name: String,
+    pub path: PathBuf,
+    pub is_dir: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Message {
+    Up,
+    Enter(PathBuf),
+    Choose(PathBuf),
+    PathChanged(String),
+    PathSubmitted,
+}
+
+/// Browses one folder at a time, listing subfolders and the files the
+/// document viewer opens.
+#[derive(Clone, Debug)]
+pub struct FilePicker {
+    dir: PathBuf,
+    path: String,
+    entries: Vec<Entry>,
+    error: Option<String>,
+}
+
+/// Whether the document viewer opens `path`, by its extension.
+pub fn supported(path: &Path) -> bool {
+    path.extension().and_then(|e| e.to_str()).and_then(Format::from_extension).is_some()
+}
+
+impl FilePicker {
+    pub fn new(dir: impl Into<PathBuf>) -> Self {
+        let mut picker = Self { dir: PathBuf::new(), path: String::new(), entries: Vec::new(), error: None };
+        picker.enter(dir.into());
+        picker
+    }
+
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
+    pub fn entries(&self) -> &[Entry] {
+        &self.entries
+    }
+
+    pub fn error(&self) -> Option<&str> {
+        self.error.as_deref()
+    }
+
+    fn enter(&mut self, dir: PathBuf) {
+        match read(&dir) {
+            Ok(entries) => {
+                self.path = dir.display().to_string();
+                self.dir = dir;
+                self.entries = entries;
+                self.error = None;
+            }
+            Err(e) => self.error = Some(format!("{}: {e}", dir.display())),
+        }
+    }
+
+    /// Returns the file the user picked.
+    pub fn update(&mut self, message: Message) -> Option<PathBuf> {
+        match message {
+            Message::Up => {
+                if let Some(parent) = self.dir.parent() {
+                    self.enter(parent.to_owned());
+                }
+            }
+            Message::Enter(dir) => self.enter(dir),
+            Message::Choose(file) => return Some(file),
+            Message::PathChanged(path) => self.path = path,
+            Message::PathSubmitted => {
+                let path = expand_home(self.path.trim());
+                if path.is_dir() {
+                    self.enter(path);
+                } else if path.is_file() && supported(&path) {
+                    return Some(path);
+                } else if path.is_file() {
+                    self.error = Some(format!("{} isn't a PDF, Office or image file", path.display()));
+                } else {
+                    self.error = Some(format!("{} doesn't exist", path.display()));
+                }
+            }
+        }
+        None
+    }
+
+    pub fn view(&self) -> Element<'_, Message> {
+        let up = button(muted(Icon::ChevronUp, 14.0))
+            .on_press_maybe(self.dir.parent().map(|_| Message::Up))
+            .padding(6)
+            .style(shell::row);
+        let path = text_input("Folder or file path", &self.path)
+            .on_input(Message::PathChanged)
+            .on_submit(Message::PathSubmitted)
+            .size(style::TEXT)
+            .padding([5, 8])
+            .style(shell::input);
+        let mut list = Column::new().spacing(1);
+        if self.entries.is_empty() {
+            list = list.push(container(text("No folders or documents here").size(style::TEXT).style(shell::muted)).padding([6, 8]));
+        }
+        for entry in &self.entries {
+            let (icon, message) = if entry.is_dir {
+                (Icon::Folder, Message::Enter(entry.path.clone()))
+            } else {
+                (Icon::FileText, Message::Choose(entry.path.clone()))
+            };
+            list = list.push(
+                button(row![muted(icon, 14.0), text(&entry.name).size(style::TEXT)].spacing(8).align_y(Center))
+                    .on_press(message)
+                    .width(Fill)
+                    .padding([4, 8])
+                    .style(shell::row),
+            );
+        }
+        let mut body = column![
+            row![up, path].spacing(6).align_y(Center),
+            container(scrollable(list).height(Length::Fixed(176.0)))
+                .padding(2)
+                .style(shell::card),
+        ]
+        .spacing(6);
+        if let Some(error) = &self.error {
+            body = body.push(text(error).size(style::SMALL).style(style::warning));
+        }
+        body.into()
+    }
+}
+
+fn expand_home(path: &str) -> PathBuf {
+    match path.strip_prefix("~/") {
+        Some(rest) => std::env::var_os("HOME").map_or_else(|| PathBuf::from(path), |home| PathBuf::from(home).join(rest)),
+        None => PathBuf::from(path),
+    }
+}
+
+/// Visible subfolders, then supported files, each sorted by name.
+fn read(dir: &Path) -> std::io::Result<Vec<Entry>> {
+    let mut entries: Vec<Entry> = std::fs::read_dir(dir)?
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if name.starts_with('.') {
+                return None;
+            }
+            let path = e.path();
+            let is_dir = path.is_dir();
+            (is_dir || supported(&path)).then_some(Entry { name, path, is_dir })
+        })
+        .collect();
+    entries.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())));
+    Ok(entries)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lists_folders_then_documents_and_picks_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("reports")).unwrap();
+        std::fs::create_dir(dir.path().join(".hidden")).unwrap();
+        std::fs::write(dir.path().join("b.PDF"), b"%PDF-").unwrap();
+        std::fs::write(dir.path().join("a.xlsx"), b"").unwrap();
+        std::fs::write(dir.path().join("notes.txt"), b"").unwrap();
+        std::fs::write(dir.path().join("reports/q1.docx"), b"").unwrap();
+
+        let mut picker = FilePicker::new(dir.path());
+        let names: Vec<&str> = picker.entries().iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, ["reports", "a.xlsx", "b.PDF"]);
+
+        picker.update(Message::Enter(dir.path().join("reports")));
+        assert_eq!(picker.dir(), dir.path().join("reports"));
+        assert_eq!(picker.update(Message::Choose(dir.path().join("reports/q1.docx"))), Some(dir.path().join("reports/q1.docx")));
+        picker.update(Message::Up);
+        assert_eq!(picker.dir(), dir.path());
+
+        picker.update(Message::PathChanged(dir.path().join("notes.txt").display().to_string()));
+        assert_eq!(picker.update(Message::PathSubmitted), None);
+        assert!(picker.error().is_some_and(|e| e.contains("isn't a PDF")));
+        picker.update(Message::PathChanged(dir.path().join("b.PDF").display().to_string()));
+        assert_eq!(picker.update(Message::PathSubmitted), Some(dir.path().join("b.PDF")));
+    }
+}

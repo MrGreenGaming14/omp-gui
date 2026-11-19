@@ -736,3 +736,39 @@ async fn server_lists_and_opens_endpoints() {
         (4, 2, "fake desk")
     );
 }
+
+#[tokio::test]
+async fn endpoints_added_at_runtime_are_listed_opened_and_removed() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap().to_string();
+    let server = Arc::new(RfbServer::new(
+        Vec::new(),
+        Arc::new(|_: &str| -> Option<String> { None }),
+        RfbOptions::default(),
+    ));
+    assert!(server.list().await.unwrap().is_empty());
+    let added = server
+        .add_endpoint(RfbEndpoint {
+            name: "desk".into(),
+            address,
+        })
+        .unwrap();
+    assert_eq!(added, uri());
+    assert_eq!(server.list().await.unwrap().len(), 1);
+
+    let opener = Arc::clone(&server);
+    let open = tokio::spawn(async move { opener.open_rfb(&uri()).await });
+    let mut fake = Fake::accept(&listener).await;
+    assert!(fake.handshake(Security::None, 4, 2).await);
+    fake.expect_setup(4, 2).await;
+    let surface = open.await.unwrap().unwrap();
+    assert_eq!((surface.info().width, surface.info().height), (4, 2));
+
+    assert!(server.remove_endpoint("desk"));
+    assert!(!server.remove_endpoint("desk"));
+    assert!(server.list().await.unwrap().is_empty());
+    assert!(matches!(
+        server.open(&uri()).await,
+        Err(SurfaceError::NotFound(_))
+    ));
+}

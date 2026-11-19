@@ -185,6 +185,17 @@ pub struct Document {
     pub data: Bytes,
 }
 
+/// What a pixel surface streams right now, for the viewer's header.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StreamInfo {
+    pub encoding: Encoding,
+    /// What codes the frames, e.g. `ffmpeg h264_vaapi`, `rusty_h264`, or
+    /// `screencast` for frames passed on as the source made them.
+    pub encoder: String,
+    /// Coded by a hardware encoder (VA-API, NVENC, Quick Sync, V4L2).
+    pub hardware: bool,
+}
+
 /// One open surface.
 #[async_trait]
 pub trait Surface: Send + Sync {
@@ -206,6 +217,20 @@ pub trait Surface: Send + Sync {
 
     /// The current picture as PNG, for `surface_screenshot`.
     async fn screenshot(&self) -> Result<Bytes>;
+
+    /// Pixel mode: the viewer decodes `accepted`, best first. A surface
+    /// that can code its pictures several ways switches to the best one it
+    /// can produce and returns what it streams from now on. The default
+    /// streams what it always streams and says nothing.
+    async fn negotiate(&self, accepted: &[Encoding]) -> Result<Option<StreamInfo>> {
+        let _ = accepted;
+        Ok(None)
+    }
+
+    /// What the frame stream carries right now, when the surface knows.
+    fn stream(&self) -> Option<StreamInfo> {
+        None
+    }
 }
 
 /// A source of surfaces: the browser, a document viewer, a VM.

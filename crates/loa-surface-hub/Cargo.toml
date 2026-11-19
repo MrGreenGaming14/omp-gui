@@ -1,0 +1,32 @@
+[package]
+name = "loa-surface-hub"
+description = "The app's surface service: built-in surface servers, MCP declared surfaces and the surface_* agent tools"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+loa-core.workspace = true
+loa-adapter.workspace = true
+loa-surface.workspace = true
+loa-surface-proto = { path = "../loa-surface-proto" }
+loa-surface-browser = { path = "../loa-surface-browser" }
+loa-surface-docs = { path = "../loa-surface-docs" }
+loa-surface-rfb = { path = "../loa-surface-rfb" }
+loa-mcp = { path = "../loa-mcp" }
+async-trait.workspace = true
+bytes.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
+base64 = "0.22"
+getrandom = "0.3"
+rmcp = { version = "3.11", default-features = false, features = ["server", "transport-streamable-http-server"] }
+
+[dev-dependencies]
+loa-adapter-omp = { path = "../loa-adapter-omp" }
+image = { version = "0.25", default-features = false, features = ["png"] }
+tempfile.workspace = true

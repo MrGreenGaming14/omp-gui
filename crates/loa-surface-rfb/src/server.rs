@@ -51,8 +51,10 @@ impl Default for RfbOptions {
 
 /// Serves each [`RfbEndpoint`] as the pixel surface `surface://vm/<name>`.
 /// Opening a surface that is already open returns the same connection.
+/// Endpoints can be added and removed while the server runs, e.g. when the
+/// user types a `host:port` to connect to.
 pub struct RfbServer {
-    endpoints: Vec<RfbEndpoint>,
+    endpoints: Mutex<Vec<RfbEndpoint>>,
     passwords: Arc<dyn PasswordSource>,
     options: RfbOptions,
     open: Mutex<HashMap<String, Weak<RfbSurface>>>,
@@ -65,7 +67,7 @@ impl RfbServer {
         options: RfbOptions,
     ) -> Self {
         Self {
-            endpoints,
+            endpoints: Mutex::new(endpoints),
             passwords,
             options,
             open: Mutex::new(HashMap::new()),
@@ -81,6 +83,43 @@ impl RfbServer {
             .and_then(Weak::upgrade)
     }
 
+    fn endpoints(&self) -> std::sync::MutexGuard<'_, Vec<RfbEndpoint>> {
+        self.endpoints.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Adds `endpoint`, replacing one with the same name, and returns its uri.
+    /// When the address changed, the next open connects to the new address;
+    /// surfaces already open keep their connection until dropped.
+    pub fn add_endpoint(&self, endpoint: RfbEndpoint) -> loa_surface::Result<SurfaceUri> {
+        let uri = SurfaceUri::new(SERVER_NAME, &endpoint.name)?;
+        let mut endpoints = self.endpoints();
+        match endpoints.iter_mut().find(|e| e.name == endpoint.name) {
+            Some(existing) if *existing == endpoint => {}
+            Some(existing) => {
+                *existing = endpoint;
+                self.open
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .remove(&existing.name);
+            }
+            None => endpoints.push(endpoint),
+        }
+        Ok(uri)
+    }
+
+    /// Removes the endpoint `name`. Open surfaces keep their connection until
+    /// dropped. `false` when there was none.
+    pub fn remove_endpoint(&self, name: &str) -> bool {
+        let mut endpoints = self.endpoints();
+        let before = endpoints.len();
+        endpoints.retain(|e| e.name != name);
+        self.open
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(name);
+        endpoints.len() != before
+    }
+
     /// Opens `uri` with the RFB specific API (cursor shape, connection state).
     pub async fn open_rfb(&self, uri: &SurfaceUri) -> loa_surface::Result<Arc<RfbSurface>> {
         let not_found = || SurfaceError::NotFound(uri.clone());
@@ -88,9 +127,10 @@ impl RfbServer {
             return Err(not_found());
         }
         let endpoint = self
-            .endpoints
+            .endpoints()
             .iter()
             .find(|e| e.name == uri.name())
+            .cloned()
             .ok_or_else(not_found)?;
         if let Some(surface) = self.live(&endpoint.name) {
             return Ok(surface);
@@ -123,7 +163,8 @@ impl SurfaceServer for RfbServer {
     /// Every configured endpoint. A surface that is not open reports a 0x0
     /// size, since the size is only known after connecting.
     async fn list(&self) -> loa_surface::Result<Vec<SurfaceInfo>> {
-        self.endpoints
+        let endpoints = self.endpoints().clone();
+        endpoints
             .iter()
             .map(|e| match self.live(&e.name) {
                 Some(surface) => Ok(surface.info()),

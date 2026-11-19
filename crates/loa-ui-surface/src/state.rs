@@ -8,7 +8,9 @@ use crate::framebuffer::Framebuffer;
 use crate::geometry::{Placement, fit};
 use crate::input::KeyInput;
 use crate::latency::{LatencyMeter, Reading};
+use crate::style;
 use crate::viewer::Viewer;
+use loa_ui_shell::theme::style as shell;
 use futures::Stream;
 use iced::widget::image::Handle;
 use iced::widget::{button, canvas, column, container, image, row, scrollable, space, text};
@@ -232,7 +234,12 @@ impl State {
             SurfaceMode::Pixel => {
                 let mut work = vec![Task::stream(deliver_input(surface.clone(), inputs))];
                 match surface.frames() {
-                    Ok(frames) => work.push(Task::stream(frame_stream(frames))),
+                    // A late viewer gets the current picture now instead of
+                    // waiting for the next change on screen.
+                    Ok(frames) => {
+                        work.push(Task::stream(frame_stream(frames)));
+                        work.push(request_keyframe(&surface));
+                    }
                     Err(e) => notice = Some(Notice::Error(e.to_string())),
                 }
                 let view = PixelView {
@@ -326,37 +333,49 @@ impl State {
     }
 
     pub fn view(&self) -> Element<'_, Message> {
-        let mut header = row![text(&self.info.name)]
-            .spacing(12)
-            .padding([4, 8])
+        let mut header = row![text(&self.info.name).size(style::TEXT)]
+            .spacing(8)
+            .padding([6, 10])
             .align_y(Center);
         if let Some(notice) = &self.notice {
-            header = header.push(text(notice.text()).style(text::warning));
+            header = header.push(
+                text(notice.text())
+                    .size(style::SMALL)
+                    .style(style::warning),
+            );
         }
         header = header.push(space::horizontal());
         let body: Element<'_, Message> = match &self.body {
             Body::Pixel(_) => {
                 let latency = self.meter.reading();
-                let style = if latency.is_some_and(|r| r.warning) {
-                    text::warning
-                } else {
-                    text::secondary
-                };
-                header = header.push(text(latency_label(latency)).style(style));
+                let warning = latency.is_some_and(|r| r.warning);
+                header = header.push(
+                    container(
+                        text(format!("Latency {}", latency_label(latency))).size(style::SMALL),
+                    )
+                    .padding([2, 6])
+                    .style(style::latency(warning)),
+                );
                 canvas(Viewer { state: self })
                     .width(Fill)
                     .height(Fill)
                     .into()
             }
             Body::Document(doc) => {
+                let zoom = |label: String, message: Message| {
+                    button(text(label).size(style::TEXT))
+                        .on_press(message)
+                        .padding([2, 8])
+                        .style(shell::row)
+                };
                 header = header.push(
                     row![
-                        button("-").on_press(Message::ZoomOut),
-                        button(text(format!("{:.0}%", doc.zoom * 100.0)))
-                            .on_press(Message::ZoomReset),
-                        button("+").on_press(Message::ZoomIn),
+                        zoom("−".into(), Message::ZoomOut),
+                        zoom(format!("{:.0}%", doc.zoom * 100.0), Message::ZoomReset),
+                        zoom("+".into(), Message::ZoomIn),
                     ]
-                    .spacing(4),
+                    .spacing(2)
+                    .align_y(Center),
                 );
                 document_body(doc)
             }

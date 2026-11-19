@@ -41,12 +41,27 @@ pub struct FfmpegConfig {
 
 impl FfmpegConfig {
     pub fn new(binary: impl Into<PathBuf>) -> Self { Self { binary: binary.into() } }
+
+    /// `ffmpeg` on the search path in `path_var` (a `$PATH` value).
+    pub fn find(path_var: Option<&std::ffi::OsStr>) -> Option<Self> {
+        use std::os::unix::fs::PermissionsExt;
+        std::env::split_paths(path_var?)
+            .map(|dir| dir.join("ffmpeg"))
+            .find(|path| std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0))
+            .map(Self::new)
+    }
+
+    /// `ffmpeg` on `$PATH`.
+    pub fn discover() -> Option<Self> {
+        Self::find(std::env::var_os("PATH").as_deref())
+    }
 }
 
 /// Tries two pictures, not just `ffmpeg -encoders`: drivers and devices may be
 /// absent even though the binary advertises the encoder.
 pub fn probe(config: &FfmpegConfig) -> Vec<ProbeResult> {
-    let settings = EncoderSettings::new(64, 64);
+    // HEVC hardware encoders refuse pictures under 128 pixels on a side.
+    let settings = EncoderSettings::new(256, 256);
     KNOWN.iter().map(|known| {
         let info = EncoderInfo { name: format!("{NAME_PREFIX}{}", known.name), codec: known.codec, accel: known.accel };
         let error = (|| -> Result<()> {
@@ -185,10 +200,26 @@ fn start(binary: &Path, known: KnownEncoder, settings: &EncoderSettings)
         let device = device.ok_or_else(|| BenchError::Encode("no VA-API render device in /dev/dri".into()))?;
         command.arg("-vaapi_device").arg(device)
             .args(["-vf", "format=nv12,hwupload"]);
+        // Default parallelism holds each picture back until the next one
+        // comes in: a frame of delay on a live surface.
+        command.args(["-async_depth", "1"]);
     } else if known.accel == Accel::Qsv {
-        command.args(["-vf", "format=nv12"]);
+        command.args(["-vf", "format=nv12", "-async_depth", "1"]);
+    } else if known.accel == Accel::Nvenc {
+        command.args(["-delay", "0", "-zerolatency", "1"]);
     } else if known.accel == Accel::V4l2M2m {
         command.args(["-vf", "format=yuv420p"]);
+    }
+    // Every picture goes out as it comes, never held to pace a frame rate.
+    command.args(["-fps_mode", "passthrough"]);
+    // The renderer decodes H.264 in process, which takes Constrained
+    // Baseline (CAVLC, no B-frames) only.
+    if known.codec == Codec::H264 {
+        match known.accel {
+            Accel::Vaapi => command.args(["-profile:v", "constrained_baseline"]),
+            Accel::Nvenc | Accel::Qsv => command.args(["-profile:v", "baseline"]),
+            Accel::V4l2M2m | Accel::Software => &mut command,
+        };
     }
     let bitstream_filter = if known.codec == Codec::H264 { "h264_metadata=aud=insert" } else { "hevc_metadata=aud=insert" };
     let format = if known.codec == Codec::H264 { "h264" } else { "hevc" };
