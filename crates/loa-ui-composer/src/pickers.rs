@@ -27,6 +27,15 @@ impl fmt::Display for ModelOption {
     }
 }
 
+/// A row under the model choices that opens something instead of picking a
+/// model, e.g. the full model list or the model settings.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PickerAction {
+    /// Id reported by [`Event::ModelAction`](crate::Event::ModelAction).
+    pub id: String,
+    pub label: String,
+}
+
 /// A harness prompts can be routed to, e.g. `omp` or `claude`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HarnessOption {
@@ -57,6 +66,8 @@ pub struct Pickers {
     pub harness: Option<String>,
     pub models: Vec<ModelOption>,
     pub model: Option<ModelOption>,
+    /// Rows listed after the models.
+    pub model_actions: Vec<PickerAction>,
     /// Effort levels the current model supports. Empty hides the picker.
     pub efforts: Vec<String>,
     pub effort: Option<String>,
@@ -72,6 +83,7 @@ impl Default for Pickers {
             harness: None,
             models: Vec::new(),
             model: None,
+            model_actions: Vec::new(),
             efforts: Vec::new(),
             effort: None,
             mode: SessionMode::Normal,

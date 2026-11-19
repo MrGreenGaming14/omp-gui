@@ -328,38 +328,53 @@ impl Keymap {
         }
     }
 
-    /// The default shortcuts the design names:
+    /// The default shortcuts. The design names Esc, the palette and Enter;
+    /// the rest follow desktop chat apps:
     ///
     /// - Esc interrupts streaming (global)
     /// - Ctrl/Cmd+K toggles the palette (global, and inside the palette)
+    /// - Ctrl/Cmd+/ opens the palette on the keyboard shortcuts
     /// - Ctrl/Cmd+B toggles the right panel (global)
+    /// - Ctrl/Cmd+N starts a new session
+    /// - Ctrl+Tab and Ctrl+Shift+Tab show the next and previous session;
+    ///   Ctrl/Cmd+1…9 the n-th one in the sidebar
+    /// - Ctrl/Cmd+Alt+1…9 show the n-th right panel tab
+    /// - Ctrl/Cmd+L focuses the composer, Ctrl/Cmd+Shift+F the session search
+    /// - Tab and Shift+Tab move the focus between text fields
     /// - Enter submits and Shift+Enter inserts a line break, in the composer only
     pub fn defaults(platform: Platform) -> Self {
         let primary = platform.primary();
         let none = Modifiers::empty();
-        Self {
-            platform,
-            bindings: vec![
-                Binding::new(
-                    Chord::named(Named::Escape, none),
-                    Scope::Global,
-                    ids::SESSION_INTERRUPT,
-                ),
-                Binding::new(Chord::char('k', primary), Scope::Global, ids::PALETTE_TOGGLE),
-                Binding::new(Chord::char('k', primary), Scope::Palette, ids::PALETTE_TOGGLE),
-                Binding::new(Chord::char('b', primary), Scope::Global, ids::PANEL_TOGGLE),
-                Binding::new(
-                    Chord::named(Named::Enter, none),
-                    Scope::Composer,
-                    ids::COMPOSER_SUBMIT,
-                ),
-                Binding::new(
-                    Chord::named(Named::Enter, Modifiers::SHIFT),
-                    Scope::Composer,
-                    ids::COMPOSER_NEWLINE,
-                ),
-            ],
+        let mut bindings = vec![
+            Binding::new(Chord::named(Named::Escape, none), Scope::Global, ids::SESSION_INTERRUPT),
+            Binding::new(Chord::char('k', primary), Scope::Global, ids::PALETTE_TOGGLE),
+            Binding::new(Chord::char('k', primary), Scope::Palette, ids::PALETTE_TOGGLE),
+            Binding::new(Chord::char('/', primary), Scope::Global, ids::KEYMAP_SHOW),
+            Binding::new(Chord::char('b', primary), Scope::Global, ids::PANEL_TOGGLE),
+            Binding::new(Chord::char('n', primary), Scope::Global, ids::SESSION_NEW),
+            Binding::new(Chord::named(Named::Tab, Modifiers::CTRL), Scope::Global, ids::SESSION_NEXT),
+            Binding::new(
+                Chord::named(Named::Tab, Modifiers::CTRL | Modifiers::SHIFT),
+                Scope::Global,
+                ids::SESSION_PREVIOUS,
+            ),
+            Binding::new(Chord::char('l', primary), Scope::Global, ids::COMPOSER_FOCUS),
+            Binding::new(Chord::char('f', primary | Modifiers::SHIFT), Scope::Global, ids::SEARCH_FOCUS),
+            Binding::new(Chord::named(Named::Tab, none), Scope::Global, ids::FOCUS_NEXT),
+            Binding::new(Chord::named(Named::Tab, Modifiers::SHIFT), Scope::Global, ids::FOCUS_PREVIOUS),
+            Binding::new(Chord::named(Named::Enter, none), Scope::Composer, ids::COMPOSER_SUBMIT),
+            Binding::new(Chord::named(Named::Enter, Modifiers::SHIFT), Scope::Composer, ids::COMPOSER_NEWLINE),
+        ];
+        for n in 1..=9 {
+            let digit = char::from_digit(n, 10).unwrap_or('1');
+            bindings.push(Binding::new(Chord::char(digit, primary), Scope::Global, ids::session_goto(n as usize)));
+            bindings.push(Binding::new(
+                Chord::char(digit, primary | Modifiers::ALT),
+                Scope::Global,
+                ids::panel_tab(n as usize),
+            ));
         }
+        Self { platform, bindings }
     }
 
     /// The platform the keymap labels and defaults follow.

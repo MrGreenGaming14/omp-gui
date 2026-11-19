@@ -447,3 +447,13 @@ fn picker_menus_toggle_and_close_on_a_choice() {
     assert_eq!(act(&mut state, Message::ModelPicked(model.clone())), Some(Event::ModelChanged(model)));
     assert_eq!(state.pickers.open, None);
 }
+
+#[test]
+fn model_actions_close_the_menu_and_report_their_id() {
+    let mut state = State::new();
+    state.set_model_actions(vec![PickerAction { id: "browse".into(), label: "All models…".into() }]);
+    act(&mut state, Message::PickerToggled(Picker::Model));
+    assert_eq!(state.pickers.open, Some(Picker::Model));
+    assert_eq!(act(&mut state, Message::ModelActionPicked("browse".into())), Some(Event::ModelAction("browse".into())));
+    assert_eq!(state.pickers.open, None);
+}

@@ -1,4 +1,6 @@
-//! Lucide line icons (ISC, see `LICENSE-lucide`) as iced SVG widgets.
+//! Lucide line icons (ISC, see `LICENSE-lucide`; each SVG under `icons/` is
+//! copied unchanged from `lucide-static` with its license header) as iced
+//! SVG widgets.
 //!
 //! Icons are tinted with a theme color, so they follow the dark and light
 //! themes like text does. Handles are built once and shared, so drawing an
@@ -22,6 +24,8 @@ pub enum Icon {
     Files,
     Folder,
     GitCompare,
+    Globe,
+    Monitor,
     PanelRight,
     PanelRightClose,
     Plus,
@@ -34,7 +38,7 @@ pub enum Icon {
     X,
 }
 
-const ALL: [(Icon, &[u8]); 21] = [
+const ALL: [(Icon, &[u8]); 23] = [
     (Icon::ArrowUp, include_bytes!("../icons/arrow-up.svg")),
     (Icon::Check, include_bytes!("../icons/check.svg")),
     (Icon::ChevronDown, include_bytes!("../icons/chevron-down.svg")),
@@ -46,6 +50,8 @@ const ALL: [(Icon, &[u8]); 21] = [
     (Icon::Files, include_bytes!("../icons/files.svg")),
     (Icon::Folder, include_bytes!("../icons/folder.svg")),
     (Icon::GitCompare, include_bytes!("../icons/git-compare.svg")),
+    (Icon::Globe, include_bytes!("../icons/globe.svg")),
+    (Icon::Monitor, include_bytes!("../icons/monitor.svg")),
     (Icon::PanelRight, include_bytes!("../icons/panel-right.svg")),
     (Icon::PanelRightClose, include_bytes!("../icons/panel-right-close.svg")),
     (Icon::Plus, include_bytes!("../icons/plus.svg")),

@@ -26,6 +26,8 @@ pub struct State {
     nodes: Nodes,
     query: String,
     active: Option<String>,
+    /// Updates waiting for the user; the Updates row shows while non-zero.
+    updates: usize,
 }
 
 /// A session with its lowercase search text, rebuilt when sessions or node
@@ -63,10 +65,14 @@ pub enum Message {
     OpenPeers,
     /// The Tools item was clicked.
     OpenTools,
+    /// The Updates item was clicked.
+    OpenUpdates,
     /// A session row was clicked.
     OpenSession(String),
     /// The pin button on a session row was clicked.
     TogglePin(String),
+    /// The delete button on a session row was clicked.
+    Delete(String),
 }
 
 /// What the app must act on.
@@ -82,6 +88,8 @@ pub enum Event {
     OpenPeers,
     /// Show the tools panel.
     OpenTools,
+    /// Show the updates screen.
+    OpenUpdates,
     /// Persist the pinned flag of a session.
     SetPinned {
         /// Session id.
@@ -89,6 +97,8 @@ pub enum Event {
         /// New flag.
         pinned: bool,
     },
+    /// Delete this session and its journal.
+    DeleteSession(String),
 }
 
 impl State {
@@ -141,6 +151,17 @@ impl State {
     /// The highlighted session.
     pub fn active(&self) -> Option<&str> {
         self.active.as_deref()
+    }
+
+    /// Sets how many updates wait for the user; the sidebar lists an
+    /// Updates row while it is non-zero.
+    pub fn set_updates(&mut self, count: usize) {
+        self.updates = count;
+    }
+
+    /// How many updates wait for the user.
+    pub fn updates(&self) -> usize {
+        self.updates
     }
 
     /// The search text.
@@ -196,6 +217,7 @@ impl State {
             Message::OpenProject(project) => Some(Event::OpenProject(project)),
             Message::OpenPeers => Some(Event::OpenPeers),
             Message::OpenTools => Some(Event::OpenTools),
+            Message::OpenUpdates => Some(Event::OpenUpdates),
             Message::OpenSession(id) => {
                 self.active = Some(id.clone());
                 Some(Event::OpenSession(id))
@@ -208,6 +230,7 @@ impl State {
                     entry.summary.pinned = !entry.summary.pinned;
                     Event::SetPinned { id, pinned: entry.summary.pinned }
                 }),
+            Message::Delete(id) => Some(Event::DeleteSession(id)),
         };
         (Task::none(), event)
     }
@@ -284,6 +307,26 @@ impl State {
             .padding([6, 8])
             .width(Fill),
         );
+        if self.updates > 0 {
+            lists = lists.push(
+                button(
+                    container(
+                        row![
+                            icon(Icon::ArrowUp, 13.0),
+                            text("Updates").size(14),
+                            container(text(self.updates).size(12)).style(style::badge).padding([1, 6]),
+                        ]
+                        .spacing(6)
+                        .align_y(Alignment::Center),
+                    )
+                    .center_x(Fill),
+                )
+                .on_press(Message::OpenUpdates)
+                .style(style::row)
+                .padding([6, 8])
+                .width(Fill),
+            );
+        }
 
         let pinned = self.pinned();
         if !pinned.is_empty() {
@@ -335,7 +378,12 @@ impl State {
             .style(style::selected_row)
             .padding([1, 6]);
 
-        hover(body, container(pin).align_right(Fill).center_y(Fill).padding([0, 6]))
+        let delete = button(text("Delete").size(12))
+            .on_press(Message::Delete(session.id.clone()))
+            .style(style::selected_row)
+            .padding([1, 6]);
+
+        hover(body, container(row![pin, delete].spacing(4)).align_right(Fill).center_y(Fill).padding([0, 6]))
     }
 }
 

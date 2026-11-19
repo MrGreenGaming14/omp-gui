@@ -39,6 +39,13 @@ pub(crate) fn bind(press: KeyPress, ctx: KeyContext) -> Option<Binding<Message>>
             Some('z') if modifiers.shift() => return Some(Binding::Custom(Message::Redo)),
             Some('z') => return Some(Binding::Custom(Message::Undo)),
             Some('y') => return Some(Binding::Custom(Message::Redo)),
+            // Clipboard and select all stay with the editor.
+            Some('c' | 'x' | 'v' | 'a') => {}
+            // Any other Ctrl/Cmd+character chord is an app shortcut (new
+            // session, palette, switch session…): leave it uncaptured so the
+            // app's keymap sees it. On Windows AltGr arrives as Ctrl+Alt and
+            // types characters, so those go to the editor.
+            Some(_) if !(cfg!(windows) && modifiers.alt()) => return None,
             _ => {}
         }
     }
@@ -119,5 +126,15 @@ mod tests {
         assert!(matches!(esc, Some(Binding::Custom(Message::Interrupt))));
         let idle = bind(press(Key::Named(Named::Escape), Modifiers::empty()), KeyContext::default());
         assert_eq!(idle, Some(Binding::Unfocus));
+    }
+
+    #[test]
+    fn app_shortcuts_pass_through_and_clipboard_stays() {
+        let ctx = KeyContext::default();
+        for c in ["n", "k", "l", "1", "/"] {
+            assert_eq!(bind(press(Key::Character(c.into()), Modifiers::COMMAND), ctx), None, "Ctrl/Cmd+{c}");
+        }
+        let copy = bind(press(Key::Character("c".into()), Modifiers::COMMAND), ctx);
+        assert_eq!(copy, Some(Binding::Copy));
     }
 }

@@ -31,7 +31,7 @@ use loa_ui_icons::{Icon, icon, muted};
 
 use history::{EditKind, History, Snapshot};
 use keys::KeyContext;
-pub use pickers::{HarnessOption, ModelOption, Picker};
+pub use pickers::{HarnessOption, ModelOption, Picker, PickerAction};
 use pickers::Pickers;
 pub use popup::PopupKind;
 use popup::{MAX_ITEMS, Popup, Trigger};
@@ -79,6 +79,9 @@ pub enum Event {
     ModeChanged(SessionMode),
     /// The user picked another harness. Holds its id.
     HarnessChanged(String),
+    /// The user pressed one of the [`State::set_model_actions`] rows. Holds
+    /// its id.
+    ModelAction(String),
 }
 
 /// Internal messages of the composer.
@@ -99,6 +102,7 @@ pub enum Message {
     QueueEdit(u64, String),
     QueueRemove(u64),
     ModelPicked(ModelOption),
+    ModelActionPicked(String),
     EffortPicked(String),
     ModePicked(SessionMode),
     HarnessPicked(String),
@@ -184,11 +188,27 @@ impl State {
         self.pickers.models = models;
     }
 
+    /// Rows listed under the models in the model picker, e.g. "All models…".
+    pub fn set_model_actions(&mut self, actions: Vec<PickerAction>) {
+        self.pickers.model_actions = actions;
+    }
+
     /// Effort levels of the current model and the current level. An empty
     /// list hides the effort picker.
     pub fn set_efforts(&mut self, efforts: Vec<String>, current: Option<String>) {
         self.pickers.efforts = efforts;
         self.pickers.effort = current;
+    }
+
+    /// The models offered by [`State::set_models`] and the current one.
+    pub fn models(&self) -> (&[ModelOption], Option<&ModelOption>) {
+        (&self.pickers.models, self.pickers.model.as_ref())
+    }
+
+    /// The effort levels offered by [`State::set_efforts`] and the current
+    /// one.
+    pub fn efforts(&self) -> (&[String], Option<&str>) {
+        (&self.pickers.efforts, self.pickers.effort.as_deref())
     }
 
     pub fn set_mode(&mut self, mode: SessionMode) {
@@ -311,6 +331,10 @@ impl State {
                     Event::ModelChanged(model)
                 })
             }
+            Message::ModelActionPicked(id) => {
+                self.pickers.open = None;
+                Some(Event::ModelAction(id))
+            }
             Message::EffortPicked(effort) => {
                 self.pickers.open = None;
                 (self.pickers.effort.as_ref() != Some(&effort)).then(|| {
@@ -374,7 +398,7 @@ impl State {
             let label = self.harness().map_or("Harness", |h| h.label.as_str());
             controls = controls.push(self.picker(Picker::Harness, label));
         }
-        if !pickers.models.is_empty() || pickers.model.is_some() {
+        if !pickers.models.is_empty() || pickers.model.is_some() || !pickers.model_actions.is_empty() {
             let label = pickers.model.as_ref().map_or("Model", |m| m.name.as_str());
             controls = controls.push(self.picker(Picker::Model, label));
         }
@@ -439,6 +463,12 @@ impl State {
                     let current = pickers.model.as_ref() == Some(m);
                     menu_row(&m.name, Some(detail), current, Some(Message::ModelPicked(m.clone())))
                 })
+                .chain(
+                    pickers
+                        .model_actions
+                        .iter()
+                        .map(|a| menu_row(&a.label, None, false, Some(Message::ModelActionPicked(a.id.clone())))),
+                )
                 .collect(),
             Picker::Effort => pickers
                 .efforts

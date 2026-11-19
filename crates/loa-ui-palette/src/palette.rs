@@ -33,6 +33,11 @@ pub const MAX_LIST_HEIGHT: f32 = 360.0;
 pub const WIDTH: f32 = 520.0;
 /// How many recently run commands are remembered for ranking.
 pub const MAX_RECENT: usize = 32;
+/// Widget id of the search field, for focus operations and (later)
+/// accessibility nodes.
+pub const INPUT_ID: &str = "loa-palette-search";
+/// Widget id of the result list.
+pub const LIST_ID: &str = "loa-palette-list";
 
 /// A command the app offers in the palette.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,6 +50,9 @@ pub struct Command {
     pub section: String,
     /// Shortcut shown as a hint, usually from [`crate::Keymap::chord_for`].
     pub shortcut: Option<Chord>,
+    /// Keys shown as the hint when they aren't one chord (e.g. `1–9`). Wins
+    /// over `shortcut`.
+    pub keys: Option<String>,
     /// Disabled commands are listed but cannot be selected or run.
     pub enabled: bool,
 }
@@ -57,6 +65,7 @@ impl Command {
             title: title.into(),
             section: section.into(),
             shortcut: None,
+            keys: None,
             enabled: true,
         }
     }
@@ -64,6 +73,12 @@ impl Command {
     /// Sets the shortcut hint.
     pub fn shortcut(mut self, chord: Option<Chord>) -> Self {
         self.shortcut = chord;
+        self
+    }
+
+    /// Sets a hint for keys that aren't one chord, such as `1–9` or `↑ ↓`.
+    pub fn keys(mut self, keys: impl Into<String>) -> Self {
+        self.keys = Some(keys.into());
         self
     }
 
@@ -93,6 +108,8 @@ pub struct State {
     recent: Vec<CommandId>,
     open: bool,
     query: String,
+    /// Opened on the keyboard shortcuts: only commands with a hint list.
+    shortcuts_only: bool,
     rows: Vec<Row>,
     selected: Option<usize>,
     scroll_offset: f32,
@@ -106,6 +123,9 @@ pub struct State {
 pub enum Message {
     /// Open with an empty query.
     Open,
+    /// Open listing only the commands that have a keyboard shortcut, i.e.
+    /// the keymap.
+    OpenShortcuts,
     /// Close without running anything.
     Close,
     /// Open when closed, close when open.
@@ -155,12 +175,13 @@ impl State {
             recent: Vec::new(),
             open: false,
             query: String::new(),
+            shortcuts_only: false,
             rows: Vec::new(),
             selected: None,
             scroll_offset: 0.0,
             matcher: Matcher::new(),
-            input_id: Id::unique(),
-            list_id: Id::unique(),
+            input_id: Id::new(INPUT_ID),
+            list_id: Id::new(LIST_ID),
         }
     }
 
@@ -240,16 +261,22 @@ impl State {
 
     /// The shortcut hint for a command on this platform.
     pub fn hint(&self, command: &Command) -> Option<String> {
-        command.shortcut.map(|c| c.label(self.platform))
+        command.keys.clone().or_else(|| command.shortcut.map(|c| c.label(self.platform)))
+    }
+
+    /// Whether the palette was opened on the keyboard shortcuts.
+    pub fn shortcuts_only(&self) -> bool {
+        self.shortcuts_only
     }
 
     /// Handles a message.
     pub fn update(&mut self, message: Message) -> (Task<Message>, Option<Event>) {
         match message {
-            Message::Open => (self.open(), None),
+            Message::Open => (self.open(false), None),
+            Message::OpenShortcuts => (self.open(true), None),
             Message::Close => self.close(),
             Message::Toggle if self.open => self.close(),
-            Message::Toggle => (self.open(), None),
+            Message::Toggle => (self.open(false), None),
             Message::QueryChanged(query) if self.open => {
                 self.query = query;
                 self.refilter();
@@ -310,7 +337,8 @@ impl State {
             return space().into();
         }
 
-        let input = text_input("Type a command", &self.query)
+        let placeholder = if self.shortcuts_only { "Search keyboard shortcuts" } else { "Type a command" };
+        let input = text_input(placeholder, &self.query)
             .id(self.input_id.clone())
             .on_input(Message::QueryChanged)
             .padding([7, 0])
@@ -386,12 +414,17 @@ impl State {
             content = content.push(text(hint).size(12).style(Self::muted_text));
         }
 
+        // A row that can't run (e.g. a key listed for reference) is static
+        // text, not a disabled button, so it never reads as a broken control.
+        if !command.enabled {
+            return container(content).style(Self::muted_row).width(Fill).height(ROW_HEIGHT).padding([0, 8]).into();
+        }
         let selected = self.selected == Some(index);
         button(content)
             .width(Fill)
             .height(ROW_HEIGHT)
             .padding([0, 8])
-            .on_press_maybe(command.enabled.then_some(Message::Activate(index)))
+            .on_press(Message::Activate(index))
             .style(move |theme: &Theme, status| {
                 let palette = theme.extended_palette();
                 let mut style = button::text(theme, status);
@@ -406,6 +439,11 @@ impl State {
                 style
             })
             .into()
+    }
+
+    /// Text of a row listed for reference only.
+    fn muted_row(theme: &Theme) -> container::Style {
+        container::Style { text_color: Some(theme.palette().text.scale_alpha(0.75)), ..container::Style::default() }
     }
 
     /// Secondary text: the palette's text at reduced opacity.
@@ -443,7 +481,8 @@ impl State {
         rule::Style { color: theme.extended_palette().background.neutral.color, ..rule::default(theme) }
     }
 
-    fn open(&mut self) -> Task<Message> {
+    fn open(&mut self, shortcuts_only: bool) -> Task<Message> {
+        self.shortcuts_only = shortcuts_only;
         self.open = true;
         self.query.clear();
         self.scroll_offset = 0.0;
@@ -542,6 +581,9 @@ impl State {
         self.matcher.set_query(&self.query);
         let mut ranked: Vec<(RankKey, Vec<usize>)> = Vec::new();
         for (index, command) in self.commands.iter().enumerate() {
+            if self.shortcuts_only && command.keys.is_none() && command.shortcut.is_none() {
+                continue;
+            }
             if let Some(found) = self.matcher.matches(&command.title) {
                 let recency = self
                     .recent

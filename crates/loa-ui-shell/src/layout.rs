@@ -120,6 +120,8 @@ pub enum Event {
     OpenPeers,
     /// Show the tools panel.
     OpenTools,
+    /// Show the updates screen.
+    OpenUpdates,
     /// Persist the pinned flag of a session.
     SetPinned {
         /// Session id.
@@ -127,6 +129,8 @@ pub enum Event {
         /// New flag.
         pinned: bool,
     },
+    /// Delete this session and its journal.
+    DeleteSession(String),
     /// The right panel opened or closed.
     PanelToggled {
         /// Whether it is open now.
@@ -148,7 +152,9 @@ impl From<sidebar::Event> for Event {
             sidebar::Event::OpenProject(project) => Event::OpenProject(project),
             sidebar::Event::OpenPeers => Event::OpenPeers,
             sidebar::Event::OpenTools => Event::OpenTools,
+            sidebar::Event::OpenUpdates => Event::OpenUpdates,
             sidebar::Event::SetPinned { id, pinned } => Event::SetPinned { id, pinned },
+            sidebar::Event::DeleteSession(id) => Event::DeleteSession(id),
         }
     }
 }
@@ -227,6 +233,17 @@ impl State {
     pub fn set_nodes(&mut self, nodes: Vec<NodeStatus>) {
         self.sidebar.set_nodes(Nodes::new(nodes));
         self.refresh_breadcrumb();
+    }
+
+    /// Sets how many updates wait for the user; the sidebar lists an
+    /// Updates row while it is non-zero.
+    pub fn set_updates(&mut self, count: usize) {
+        self.sidebar.set_updates(count);
+    }
+
+    /// How many updates wait for the user.
+    pub fn updates(&self) -> usize {
+        self.sidebar.updates()
     }
 
     /// Sets the session shown in the center.

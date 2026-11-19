@@ -60,4 +60,35 @@ pub mod ids {
     pub const COMPOSER_SUBMIT: CommandId = CommandId::from_static("composer.submit");
     /// Insert a line break in the composer.
     pub const COMPOSER_NEWLINE: CommandId = CommandId::from_static("composer.newline");
+    /// Start a new session.
+    pub const SESSION_NEW: CommandId = CommandId::from_static("session.new");
+    /// Show the next session in the sidebar's order (Pinned, then Recents).
+    pub const SESSION_NEXT: CommandId = CommandId::from_static("session.next");
+    /// Show the previous session in the sidebar's order.
+    pub const SESSION_PREVIOUS: CommandId = CommandId::from_static("session.previous");
+    /// Put the keyboard focus in the composer.
+    pub const COMPOSER_FOCUS: CommandId = CommandId::from_static("composer.focus");
+    /// Put the keyboard focus in the sidebar's session search.
+    pub const SEARCH_FOCUS: CommandId = CommandId::from_static("sidebar.search");
+    /// Open the palette listing only keyboard shortcuts.
+    pub const KEYMAP_SHOW: CommandId = CommandId::from_static("keymap.show");
+    /// Move the keyboard focus to the next text field.
+    pub const FOCUS_NEXT: CommandId = CommandId::from_static("focus.next");
+    /// Move the keyboard focus to the previous text field.
+    pub const FOCUS_PREVIOUS: CommandId = CommandId::from_static("focus.previous");
+    /// Prefix of `session.goto.<n>`: show the n-th session (1 based) in the
+    /// sidebar's order.
+    pub const SESSION_GOTO: &str = "session.goto.";
+    /// Prefix of `panel.tab.<n>`: show the n-th right panel tab (1 based).
+    pub const PANEL_TAB: &str = "panel.tab.";
+
+    /// `session.goto.<n>`.
+    pub fn session_goto(n: usize) -> CommandId {
+        CommandId::new(format!("{SESSION_GOTO}{n}"))
+    }
+
+    /// `panel.tab.<n>`.
+    pub fn panel_tab(n: usize) -> CommandId {
+        CommandId::new(format!("{PANEL_TAB}{n}"))
+    }
 }
