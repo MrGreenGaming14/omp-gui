@@ -716,6 +716,14 @@ fn folder_bar_switches_folders_and_starts_a_session_there() {
     let other_path = other.path().canonicalize().unwrap();
     update(&mut app, Message::Composer(composer::Message::FolderPicked(other_path.display().to_string())));
     assert_eq!(app.ctx.services.cwd, other_path);
+    assert_eq!(app.ctx.services.project, other_path.file_name().unwrap().to_string_lossy(), "new sessions belong to the new folder's project");
+    assert!(app.diff.files().is_empty(), "the old folder's changes are gone");
+    let _ = app.update(Message::WorkingDiff(None));
+    {
+        let mut ui = iced_test::Simulator::with_size(iced::Settings::default(), iced::Size::new(600.0, 400.0), app.diff.view());
+        let note = format!("No git changes to show: {} isn't a git repository with a commit", super::workspace(&other_path).path);
+        assert!(ui.find(note.as_str()).is_ok());
+    }
     assert_eq!(app.ctx.composer.workspace().unwrap().full, other_path.display().to_string());
     assert_ne!(active(&app), Some(before.as_str()), "a fresh session starts in the new folder");
 

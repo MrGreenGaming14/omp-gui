@@ -401,7 +401,7 @@ pub enum Overlay {
 }
 
 fn semibold() -> iced::Font {
-    iced::Font { weight: iced::font::Weight::Semibold, ..iced::Font::default() }
+    iced::Font { weight: iced::font::Weight::Bold, ..iced::Font::default() }
 }
 
 #[cfg(test)]

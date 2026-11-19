@@ -133,7 +133,7 @@ impl State {
                     bar = bar.push(text!("on {}", crumb.node.name).size(14).style(style::muted));
                     bar = bar.push(muted(Icon::ChevronRight, 13.0));
                 }
-                bar = bar.push(text(crumb.title.as_str()).size(14).font(iced::Font { weight: iced::font::Weight::Medium, ..iced::Font::default() }).wrapping(text::Wrapping::None));
+                bar = bar.push(text(crumb.title.as_str()).size(14).font(iced::Font { weight: iced::font::Weight::Bold, ..iced::Font::default() }).wrapping(text::Wrapping::None));
                 if crumb.waiting {
                     bar = bar.push(
                         container(text("· Needs you").size(13).style(style::waiting_text)).id(WAITING_BADGE_ID),

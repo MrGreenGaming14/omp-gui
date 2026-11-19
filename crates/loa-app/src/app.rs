@@ -499,6 +499,8 @@ impl App {
             return Task::none();
         }
         self.ctx.services.cwd = path.clone();
+        self.ctx.services.project = path.file_name().map_or_else(|| path.display().to_string(), |name| name.to_string_lossy().into_owned());
+        let _ = self.diff.set_note(Some("Reading changes…".to_owned()));
         self.files = files::State::new(path.clone(), Box::new(files::LocalFs));
         self.recent_folders.retain(|folder| *folder != path);
         self.recent_folders.insert(0, path.clone());
@@ -962,13 +964,21 @@ impl App {
                 Task::none()
             }
             Message::WorkingDiff(Some(patch)) => match diff::parse_unified(&patch) {
-                Ok(files) => self.diff.set_files(files).map(Message::Diff),
+                Ok(files) => {
+                    let _ = self.diff.set_note(None);
+                    self.diff.set_files(files).map(Message::Diff)
+                }
                 Err(error) => {
                     self.ctx.notify(format!("Can't read the working tree diff: {error}"));
                     Task::none()
                 }
             },
-            Message::WorkingDiff(None) => Task::none(),
+            // Not a git repository (or no commit yet): say so instead of
+            // keeping another folder's changes.
+            Message::WorkingDiff(None) => {
+                let folder = workspace(&self.ctx.services.cwd).path;
+                self.diff.set_note(Some(format!("No git changes to show: {folder} isn't a git repository with a commit"))).map(Message::Diff)
+            }
             Message::Harness(message) => area!(harness, Harness, message),
             Message::Sessions(message) => area!(sessions, Sessions, message),
             Message::Decisions(message) => area!(decisions, Decisions, message),

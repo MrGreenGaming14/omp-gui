@@ -580,7 +580,7 @@ fn footer_item<'a>(glyph: Icon, label: &'a str, trailing: Option<Element<'a, Mes
 }
 
 fn bold() -> iced::Font {
-    iced::Font { weight: iced::font::Weight::Semibold, ..iced::Font::default() }
+    iced::Font { weight: iced::font::Weight::Bold, ..iced::Font::default() }
 }
 
 fn header(label: &str) -> Element<'_, Message> {
