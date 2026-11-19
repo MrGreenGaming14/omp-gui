@@ -1,6 +1,7 @@
 //! Non-command frames the host writes: answers to UI requests and results of
 //! host tool and host URI callbacks.
 
+use crate::command::ImageContent;
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -47,12 +48,34 @@ impl UiResponse {
     }
 }
 
+/// One block of a host tool result: what the model sees.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(untagged)]
+pub enum ToolContent {
+    Text(TextContent),
+    /// `{"type":"image","data":<base64>,"mimeType":…}`, the image block of
+    /// omp's tool results.
+    Image(ImageContent),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "type", rename = "text")]
+pub struct TextContent {
+    pub text: String,
+}
+
+impl ToolContent {
+    pub fn text(text: impl Into<String>) -> Self {
+        Self::Text(TextContent { text: text.into() })
+    }
+}
+
 /// Outcome of a host tool call.
 #[derive(Clone, Debug, PartialEq)]
 pub struct HostToolOutput {
-    /// Shown to the model as the tool result text.
-    pub text: String,
-    /// Surfaces `text` as a tool error.
+    /// The result blocks shown to the model.
+    pub content: Vec<ToolContent>,
+    /// Surfaces the text blocks as a tool error.
     pub is_error: bool,
     /// Optional structured details kept with the result.
     pub details: Option<Value>,
@@ -60,15 +83,20 @@ pub struct HostToolOutput {
 
 impl HostToolOutput {
     pub fn ok(text: impl Into<String>) -> Self {
-        Self { text: text.into(), is_error: false, details: None }
+        Self::blocks(vec![ToolContent::text(text)])
     }
 
     pub fn error(text: impl Into<String>) -> Self {
-        Self { text: text.into(), is_error: true, details: None }
+        Self { content: vec![ToolContent::text(text)], is_error: true, details: None }
+    }
+
+    /// A successful result of text and image blocks.
+    pub fn blocks(content: Vec<ToolContent>) -> Self {
+        Self { content, is_error: false, details: None }
     }
 
     fn payload(&self) -> Value {
-        let mut payload = json!({"content": [{"type": "text", "text": self.text}]});
+        let mut payload = json!({"content": self.content});
         if let (Some(details), Some(map)) = (&self.details, payload.as_object_mut()) {
             map.insert("details".to_owned(), details.clone());
         }

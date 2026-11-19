@@ -484,7 +484,7 @@ fn mark(attrs: &mut Vec<(&str, Value)>, entry: &Line) {
 }
 
 /// Text of a message `content`: the string, or the text blocks joined by newlines.
-fn content_text(content: Option<&Json>) -> String {
+pub(crate) fn content_text(content: Option<&Json>) -> String {
     match content {
         Some(Json::String(text)) => text.clone(),
         Some(Json::Array(blocks)) => blocks

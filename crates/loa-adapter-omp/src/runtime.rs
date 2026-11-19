@@ -1,13 +1,13 @@
 //! Connects the harness contract, the RPC process and the DOM event mapper.
 
-use crate::launch::{OmpAdapterConfig, Target, spawn_options, split_selector};
+use crate::launch::{OmpAdapterConfig, Target, drop_unavailable_tools, spawn_options, split_selector};
 use crate::mapping::Mapping;
 use crate::native;
 use async_trait::async_trait;
 use base64::Engine;
-use loa_adapter::{Adapter, AdapterError, Answer, Capabilities, ContextDelivery, Feature, HarnessSession, HostTools, ModelSelection, Prompt, Result, SessionConfig, SessionState};
+use loa_adapter::{Adapter, AdapterError, Answer, Availability, Capabilities, ContextDelivery, Feature, HarnessModel, HarnessSession, HostToolContent, HostTools, ModelSelection, Prompt, Result, SessionConfig, SessionState};
 use loa_core::{DecisionKind, Draft, ElementKind, NodeId, PatchSink, SCHEMA_VERSION, SessionMode, Value, attr, now_ms};
-use loa_omp_rpc::{Event, HostHandler, HostToolCall, HostToolDefinition, HostToolOutput, HostUriRequest, HostUriOutput, ImageContent, Incoming, MessageUpdates, RpcClient, RpcError, SubagentLevel, UiRequest, UiResponse};
+use loa_omp_rpc::{Event, HostHandler, HostToolCall, HostToolDefinition, HostToolOutput, HostUriRequest, HostUriOutput, ImageContent, Incoming, MessageUpdates, ModelInfo, PromptStatus, RpcClient, RpcError, StreamingBehavior, SubagentLevel, ToolContent};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -45,8 +45,11 @@ struct AppHost {
 #[async_trait]
 impl HostHandler for AppHost {
     async fn tool_call(&self, call: HostToolCall) -> HostToolOutput {
-        match self.handler.call(&self.session_id, &call.tool_name, &call.arguments.to_string()).await {
-            Ok(text) => HostToolOutput::ok(text),
+        match self.handler.call_content(&self.session_id, &call.tool_name, &call.arguments.to_string()).await {
+            Ok(content) => HostToolOutput::blocks(content.into_iter().map(|block| match block {
+                HostToolContent::Text(text) => ToolContent::text(text),
+                HostToolContent::Image { mime, data } => ToolContent::Image(ImageContent { data: base64::engine::general_purpose::STANDARD.encode(&data), mime_type: mime }),
+            }).collect()),
             Err(error) => HostToolOutput::error(error),
         }
     }
@@ -71,7 +74,14 @@ impl OmpAdapter {
             let handler = config.host_tool_handler.as_ref().ok_or_else(|| AdapterError::Protocol("host tools require a handler".into()))?;
             options.host = Some(Arc::new(AppHost { session_id: config.session_id.clone(), handler: handler.clone() }));
         }
-        let (client, mut events) = RpcClient::spawn(options).await.map_err(rpc_error)?;
+        // Each retry drops at least one tool, so this ends.
+        let spawned = loop {
+            match RpcClient::spawn(options.clone()).await {
+                Err(RpcError::Exited { stderr, .. }) if drop_unavailable_tools(&mut options, &stderr) => continue,
+                spawned => break spawned,
+            }
+        };
+        let (client, mut events) = spawned.map_err(rpc_error)?;
         let setup = async {
             client.set_event_filter(None, Some(MessageUpdates::Delta)).await.map_err(rpc_error)?;
             client.set_subagent_subscription(SubagentLevel::Events).await.map_err(rpc_error)?;
@@ -96,6 +106,9 @@ impl OmpAdapter {
         if let Some(path) = state.session_file.as_deref() {
             sink.commit(Draft::set(root, "x-omp-session-file", path))?;
         }
+        if let Some(model) = &state.model {
+            sink.commit(Draft::set(root, attr::MODEL, model.selector()))?;
+        }
         let shared = Arc::new(Shared {
             sink,
             mapper: Mutex::new(Mapping::new(root)),
@@ -104,6 +117,7 @@ impl OmpAdapter {
             failure: Mutex::new(None),
         });
         let background = shared.clone();
+        let responder = client.ui_responder();
         tokio::spawn(async move {
             while let Some(incoming) = events.recv().await {
                 let mapped = match incoming {
@@ -112,19 +126,22 @@ impl OmpAdapter {
                         let drafts = mapper.event(&event);
                         let result = commit(&*background.sink, &mut mapper, drafts);
                         if matches!(event, Event::SessionSettled | Event::PromptResult { session_settled: true, .. }) {
-                            *background.status.lock().await = SessionState::Idle;
-                            background.idle.notify_waiters();
+                            background.settle(&mapper).await;
                         }
                         result
                     }
                     Incoming::Ui(request) => {
                         let mut mapper = background.mapper.lock().await;
-                        let drafts = mapper.ui(&request);
-                        let result = commit(&*background.sink, &mut mapper, drafts);
-                        if matches!(request, UiRequest::Select { .. } | UiRequest::Confirm { .. } | UiRequest::Input { .. } | UiRequest::Editor { .. } | UiRequest::Ask { .. }) {
-                            *background.status.lock().await = SessionState::Waiting;
+                        if let Some(response) = mapper.auto_reply(&request) {
+                            responder.respond(&response).await.map_err(rpc_error)
+                        } else {
+                            let drafts = mapper.ui(&request);
+                            let result = commit(&*background.sink, &mut mapper, drafts);
+                            if request.is_dialog() {
+                                *background.status.lock().await = SessionState::Waiting;
+                            }
+                            result
                         }
-                        result
                     }
                     Incoming::Response(_) => Ok(()),
                     Incoming::Exited { status, stderr } => {
@@ -147,11 +164,13 @@ impl OmpAdapter {
     }
 }
 
- 
-
 #[async_trait]
 impl Adapter for OmpAdapter {
     fn harness(&self) -> &'static str { "omp" }
+
+    async fn availability(&self) -> Availability {
+        loa_adapter::probe_cli(&self.config.executable, &["--version"]).await
+    }
 
     fn capabilities(&self) -> Capabilities {
         Capabilities {
@@ -213,6 +232,18 @@ impl Adapter for OmpAdapter {
     fn export(&self, dom: &loa_core::Dom, out: &Path) -> Result<()> { native::export(dom, out) }
 }
 
+/// A model as the picker lists it; efforts from omp's `thinking.efforts`
+/// (e.g. low/medium/high/xhigh/max), none when the model doesn't reason.
+fn harness_model(model: &ModelInfo) -> HarnessModel {
+    let efforts = if model.reasoning {
+        model.extra.get("thinking").and_then(|t| t.get("efforts")).and_then(serde_json::Value::as_array)
+            .map(|levels| levels.iter().filter_map(|l| l.as_str().map(str::to_owned)).collect())
+            .unwrap_or_default()
+    } else { Vec::new() };
+    let name = if model.name.is_empty() { model.id.clone() } else { model.name.clone() };
+    HarnessModel { id: model.selector(), name, provider: model.provider.clone(), efforts }
+}
+
 fn sink_root_after_import(_path: &Path, _sink: &dyn PatchSink) -> Result<NodeId> {
     // `Adapter::import` requires an empty DOM, whose first inserted node has id 1.
     Ok(NodeId(1))
@@ -224,6 +255,19 @@ struct Shared {
     status: Mutex<SessionState>,
     idle: Notify,
     failure: Mutex<Option<String>>,
+}
+
+impl Shared {
+    /// Marks the session idle once no turn is open and no sent prompt waits
+    /// for omp to run it.
+    async fn settle(&self, mapper: &Mapping) {
+        if !mapper.is_idle() { return; }
+        let mut status = self.status.lock().await;
+        if *status != SessionState::Closed {
+            *status = SessionState::Idle;
+            self.idle.notify_waiters();
+        }
+    }
 }
 
 /// A running omp session. Its client can be shared with model and provider UI.
@@ -255,60 +299,59 @@ impl HarnessSession for OmpSession {
             let mime = attachment.mime.as_deref().ok_or_else(|| AdapterError::Format(format!("image {} needs MIME type", attachment.path.display())))?;
             Ok(ImageContent { data: base64::engine::general_purpose::STANDARD.encode(data), mime_type: mime.into() })
         }).collect::<Result<Vec<_>>>()?;
-        let ack = self.client.prompt(prompt.text.clone(), images, None).await.map_err(rpc_error)?;
-        let mut mapper = self.shared.mapper.lock().await;
-        let drafts = mapper.sent(&prompt);
-        commit(&*self.shared.sink, &mut mapper, drafts)?;
+        let id = self.client.reserve_id();
+        {
+            let mut mapper = self.shared.mapper.lock().await;
+            mapper.queue(id.clone(), &prompt);
+            let mut status = self.shared.status.lock().await;
+            if *status == SessionState::Idle { *status = SessionState::Running; }
+        }
+        // As a follow-up, omp runs it at once when idle and after the running
+        // work otherwise.
+        let sent = self.client.prompt_as(id.clone(), prompt.text.clone(), images, Some(StreamingBehavior::FollowUp)).await;
+        let ack = match sent {
+            Ok(ack) => ack,
+            Err(error) => {
+                let mut mapper = self.shared.mapper.lock().await;
+                mapper.withdraw(&id);
+                self.shared.settle(&mapper).await;
+                return Err(rpc_error(error));
+            }
+        };
         if ack.agent_invoked == Some(false) {
-            let drafts = mapper.event(&Event::PromptResult { id: None, agent_invoked: false, status: loa_omp_rpc::PromptStatus::Completed, error: None, session_settled: true });
+            let mut mapper = self.shared.mapper.lock().await;
+            let drafts = mapper.event(&Event::PromptResult { id: Some(id), agent_invoked: false, status: PromptStatus::Completed, error: None, session_settled: true });
             commit(&*self.shared.sink, &mut mapper, drafts)?;
-            *self.shared.status.lock().await = SessionState::Idle;
-            self.shared.idle.notify_waiters();
-        } else {
-            *self.shared.status.lock().await = SessionState::Running;
+            self.shared.settle(&mapper).await;
         }
         Ok(())
     }
 
+    /// Asks omp to abort, withdrawing queued follow-ups (a plain `abort`
+    /// leaves them queued and the prompts unsettled). Each prompt's
+    /// `prompt_result` then cancels its turn.
     async fn interrupt(&self) -> Result<()> {
         self.error_if_closed().await?;
         if self.state() != SessionState::Idle {
-            self.client.abort().await.map_err(rpc_error)?;
-            let mut mapper = self.shared.mapper.lock().await;
-            let drafts = mapper.event(&Event::PromptResult { id: None, agent_invoked: true, status: loa_omp_rpc::PromptStatus::Aborted, error: None, session_settled: true });
-            commit(&*self.shared.sink, &mut mapper, drafts)?;
-            *self.shared.status.lock().await = SessionState::Idle;
-            self.shared.idle.notify_waiters();
+            self.client.abort_and_restore_queue().await.map_err(rpc_error)?;
         }
         Ok(())
     }
 
     async fn answer(&self, decision: NodeId, answer: Answer) -> Result<()> {
         self.error_if_closed().await?;
-        let mut mapper = self.shared.mapper.lock().await;
-        let request = mapper.decision(decision).ok_or(AdapterError::UnknownDecision(decision))?;
-        let id = request.id().to_owned();
-        let response = match request {
-            UiRequest::Select { .. } | UiRequest::Input { .. } | UiRequest::Editor { .. } => match answer.values.first() {
-                Some(value) => UiResponse::Value { id, value: value.clone() },
-                None => UiResponse::Cancelled { id, timed_out: false },
-            },
-            UiRequest::Confirm { .. } => UiResponse::Confirmed { id, confirmed: answer.values.first().is_some_and(|v| matches!(v.as_str(), "approve" | "allow_once" | "allow_session" | "yes" | "true")) },
-            UiRequest::Ask { questions, .. } if answer.values.len() == questions.len() => UiResponse::Answers {
-                id,
-                answers: questions.iter().zip(&answer.values).map(|(question, value)| loa_omp_rpc::AskAnswer {
-                    id: question.id.clone(),
-                    selected_options: vec![value.clone()],
-                    custom_input: None,
-                }).collect(),
-            },
-            UiRequest::Ask { .. } => UiResponse::Cancelled { id, timed_out: false },
-            _ => return Err(AdapterError::UnknownDecision(decision)),
+        let steer = {
+            let mut mapper = self.shared.mapper.lock().await;
+            let reply = mapper.reply(decision, &answer)?;
+            self.client.respond_ui(&reply.response).await.map_err(rpc_error)?;
+            let drafts = mapper.answered(decision, &answer);
+            commit(&*self.shared.sink, &mut mapper, drafts)?;
+            *self.shared.status.lock().await = SessionState::Running;
+            reply.steer
         };
-        self.client.respond_ui(&response).await.map_err(rpc_error)?;
-        let drafts = mapper.answered(decision, &answer);
-        commit(&*self.shared.sink, &mut mapper, drafts)?;
-        *self.shared.status.lock().await = SessionState::Running;
+        if let Some(steer) = steer {
+            self.client.steer(steer).await.map_err(rpc_error)?;
+        }
         Ok(())
     }
 
@@ -316,7 +359,23 @@ impl HarnessSession for OmpSession {
         self.error_if_closed().await?;
         if selection.role.is_some() { return Err(AdapterError::Unsupported { harness: "omp", what: "model role updates over RPC" }); }
         let (provider, model) = split_selector(&selection.model)?;
-        self.client.set_model(provider, model).await.map_err(rpc_error)?;
+        let model = self.client.set_model(provider, model).await.map_err(rpc_error)?;
+        let session = self.shared.mapper.lock().await.session;
+        self.shared.sink.commit(Draft::set(session, attr::MODEL, model.selector()))?;
+        Ok(())
+    }
+
+    async fn models(&self) -> Result<Vec<HarnessModel>> {
+        self.error_if_closed().await?;
+        let models = self.client.get_available_models().await.map_err(rpc_error)?;
+        Ok(models.iter().map(harness_model).collect())
+    }
+
+    async fn set_effort(&self, effort: String) -> Result<()> {
+        self.error_if_closed().await?;
+        self.client.set_thinking_level(effort.as_str()).await.map_err(rpc_error)?;
+        let session = self.shared.mapper.lock().await.session;
+        self.shared.sink.commit(Draft::set(session, attr::EFFORT, effort))?;
         Ok(())
     }
 

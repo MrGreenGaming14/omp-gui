@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use loa_omp_rpc::fake::{FakeOmp, READY_V2, handshake_v2};
 use loa_omp_rpc::{
     AssistantEvent, Command, Event, HostHandler, HostToolCall, HostToolDefinition, HostToolOutput, Incoming, RpcClient,
-    RpcError, SpawnOptions, UiRequest, UiResponse,
+    RpcError, SpawnOptions, StreamingBehavior, UiRequest, UiResponse,
 };
 use serde_json::json;
 use std::sync::Arc;
@@ -112,6 +112,36 @@ async fn a_failed_command_carries_message_and_code() {
     let err = client.fork(None).await.unwrap_err();
     assert_eq!(err.code(), Some("session_busy"));
     assert!(err.to_string().contains("busy"));
+}
+
+#[tokio::test]
+async fn a_prompt_accepted_without_data_still_expects_a_turn() {
+    // omp 19 answers an accepted prompt with no `data` field at all.
+    let script = format!(
+        "{}< prompt p\n> {{\"type\":\"response\",\"id\":\"{{{{p}}}}\",\"command\":\"prompt\",\"success\":true}}\n",
+        handshake_v2()
+    );
+    let (_dir, omp) = fake(&script);
+    let (client, _events) = RpcClient::spawn(opts(&omp)).await.unwrap();
+    let ack = client.prompt("hi", Vec::new(), None).await.unwrap();
+    assert_eq!(ack.agent_invoked, None, "no data means omp did not finish the prompt locally");
+}
+
+#[tokio::test]
+async fn a_prompt_goes_out_under_the_id_reserved_for_it() {
+    let script = format!(
+        "{}< prompt p\n> {{\"type\":\"response\",\"id\":\"{{{{p}}}}\",\"command\":\"prompt\",\"success\":true}}\n",
+        handshake_v2()
+    );
+    let (_dir, omp) = fake(&script);
+    let (client, _events) = RpcClient::spawn(opts(&omp)).await.unwrap();
+    let id = client.reserve_id();
+    assert_ne!(client.reserve_id(), id, "ids are never reused");
+    client.prompt_as(id.clone(), "hi", Vec::new(), Some(StreamingBehavior::FollowUp)).await.unwrap();
+    client.shutdown(Duration::from_secs(10)).await.unwrap();
+    let sent = omp.received();
+    let prompt = sent.iter().find(|frame| frame["type"] == "prompt").unwrap();
+    assert_eq!((&prompt["id"], &prompt["streamingBehavior"]), (&json!(id), &json!("followUp")));
 }
 
 #[tokio::test]

@@ -22,7 +22,7 @@ pub mod fake;
 mod inbound;
 
 pub use client::{
-    Events, HostHandler, Incoming, MAX_PROTOCOL, MIN_PROTOCOL, Mode, RpcClient, SpawnOptions, omp_version,
+    Events, HostHandler, Incoming, MAX_PROTOCOL, MIN_PROTOCOL, Mode, RpcClient, SpawnOptions, UiResponder, omp_version,
     send_tool_update,
 };
 pub use command::*;
@@ -31,4 +31,4 @@ pub use event::{
     AskOption, AskQuestion, AssistantEvent, Event, Frame, HostToolCall, HostUriRequest, PromptError, PromptStatus,
     Response, SubagentLifecycle, SubagentProgress, SubagentStatus, UiRequest, UriOperation,
 };
-pub use inbound::{AskAnswer, HostToolOutput, HostUriOutput, UiResponse};
+pub use inbound::{AskAnswer, HostToolOutput, HostUriOutput, TextContent, ToolContent, UiResponse};

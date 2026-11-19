@@ -4,7 +4,7 @@
 use crate::chunk::Reassembler;
 use crate::command::{
     CancellationResult, Command, CompactionResult, HostToolDefinition, HostUriScheme, ImageContent, LoginProvider,
-    MessageUpdates, ModelInfo, PromptAck, Ready, SessionState, StreamingBehavior, SubagentLevel,
+    MessageUpdates, ModelInfo, PromptAck, Ready, RestoredQueue, SessionState, StreamingBehavior, SubagentLevel,
 };
 use crate::error::{Result, RpcError};
 use crate::event::{Event, Frame, HostToolCall, HostUriRequest, Response, UiRequest};
@@ -178,8 +178,24 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// Decodes response `data` as `T`. A success response may omit `data`
+/// (`data?` in omp's RPC docs; omp 19 answers `prompt` that way), which
+/// decodes like an empty object so types whose fields all have defaults
+/// still parse.
+fn decode<T: DeserializeOwned>(data: Option<Value>) -> Result<T> {
+    let data = match data {
+        None | Some(Value::Null) => Value::Object(serde_json::Map::new()),
+        Some(data) => data,
+    };
+    Ok(serde_json::from_value(data)?)
+}
+
+/// Target of the per-frame trace events (`RUST_LOG=loa_omp_rpc::frames=trace`).
+const FRAMES: &str = "loa_omp_rpc::frames";
+
 impl Shared {
     async fn write_line(&self, mut line: Vec<u8>) -> Result<()> {
+        tracing::trace!(target: FRAMES, frame = %String::from_utf8_lossy(&line), "to omp");
         line.push(b'\n');
         let mut stdin = self.stdin.lock().await;
         let Some(pipe) = stdin.as_mut() else {
@@ -230,6 +246,18 @@ impl Drop for Inner {
         if let Ok(mut stdin) = self.shared.stdin.try_lock() {
             stdin.take();
         }
+    }
+}
+
+/// Answers UI requests for an [`RpcClient`]; see [`RpcClient::ui_responder`].
+#[derive(Clone)]
+pub struct UiResponder {
+    shared: Arc<Shared>,
+}
+
+impl UiResponder {
+    pub async fn respond(&self, response: &UiResponse) -> Result<()> {
+        self.shared.write_json(&response.to_json()).await
     }
 }
 
@@ -397,8 +425,19 @@ impl RpcClient {
 
     /// Sends `command` and waits for its response. Returns the response `data`.
     pub async fn request_raw(&self, command: Command) -> Result<Option<Value>> {
+        self.request_as(self.reserve_id(), command).await
+    }
+
+    /// A fresh command id. Reserve one when frames that will refer to the
+    /// command (such as a prompt's `prompt_result`) must be expected before
+    /// it is sent, then send it with [`RpcClient::request_as`].
+    pub fn reserve_id(&self) -> String {
+        format!("c{}", self.inner.next_id.fetch_add(1, Ordering::Relaxed))
+    }
+
+    /// [`RpcClient::request_raw`] under an id from [`RpcClient::reserve_id`].
+    pub async fn request_as(&self, id: String, command: Command) -> Result<Option<Value>> {
         let shared = &self.inner.shared;
-        let id = format!("c{}", self.inner.next_id.fetch_add(1, Ordering::Relaxed));
         let (tx, rx) = oneshot::channel();
         {
             let mut pending = lock(&shared.pending);
@@ -423,10 +462,10 @@ impl RpcClient {
         Ok(response.data)
     }
 
-    /// Sends `command` and decodes the response `data` as `T`.
+    /// Sends `command` and decodes the response `data` as `T`; a missing
+    /// `data` decodes like an empty object.
     pub async fn request<T: DeserializeOwned>(&self, command: Command) -> Result<T> {
-        let data = self.request_raw(command).await?.unwrap_or(Value::Null);
-        Ok(serde_json::from_value(data)?)
+        decode(self.request_raw(command).await?)
     }
 
     /// Sends `command` and ignores the response `data`.
@@ -439,17 +478,49 @@ impl RpcClient {
         self.inner.shared.write_json(&response.to_json()).await
     }
 
+    /// Answers UI requests like [`RpcClient::respond_ui`] without keeping omp
+    /// running: once every `RpcClient` clone is dropped, omp's stdin closes
+    /// and the responder's writes fail.
+    pub fn ui_responder(&self) -> UiResponder {
+        UiResponder { shared: self.inner.shared.clone() }
+    }
+
     pub async fn prompt(
         &self,
         message: impl Into<String>,
         images: Vec<ImageContent>,
         streaming_behavior: Option<StreamingBehavior>,
     ) -> Result<PromptAck> {
-        self.request(Command::Prompt { message: message.into(), images, streaming_behavior }).await
+        self.prompt_as(self.reserve_id(), message, images, streaming_behavior).await
+    }
+
+    /// [`RpcClient::prompt`] under an id from [`RpcClient::reserve_id`]; the
+    /// prompt's `prompt_result` carries `id`.
+    pub async fn prompt_as(
+        &self,
+        id: String,
+        message: impl Into<String>,
+        images: Vec<ImageContent>,
+        streaming_behavior: Option<StreamingBehavior>,
+    ) -> Result<PromptAck> {
+        decode(self.request_as(id, Command::Prompt { message: message.into(), images, streaming_behavior }).await?)
+    }
+
+    /// Queues `message` as steering for the running turn.
+    pub async fn steer(&self, message: impl Into<String>) -> Result<()> {
+        self.request_unit(Command::Steer { message: message.into(), images: Vec::new() }).await
     }
 
     pub async fn abort(&self) -> Result<()> {
         self.request_unit(Command::Abort).await
+    }
+
+    /// Withdraws queued user input and aborts, atomically. Unlike `abort`,
+    /// which leaves queued follow-ups waiting (and their prompts and the
+    /// running one unsettled), every withdrawn prompt then completes
+    /// `aborted`.
+    pub async fn abort_and_restore_queue(&self) -> Result<RestoredQueue> {
+        self.request(Command::AbortAndRestoreQueue).await
     }
 
     pub async fn fork(&self, entry_id: Option<String>) -> Result<CancellationResult> {
@@ -626,6 +697,7 @@ impl Reader {
 
     async fn handle_line(&mut self, line: &[u8]) {
         let line = line.trim_ascii();
+        tracing::trace!(target: FRAMES, frame = %String::from_utf8_lossy(line), "from omp");
         if line.is_empty() {
             return;
         }

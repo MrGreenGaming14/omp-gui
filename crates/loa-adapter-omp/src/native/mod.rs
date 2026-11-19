@@ -18,6 +18,8 @@ mod export;
 mod import;
 mod time;
 
+pub(crate) use import::content_text;
+
 use loa_adapter::AdapterError;
 use loa_core::{Dom, PatchSink};
 use std::path::Path;

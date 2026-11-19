@@ -513,6 +513,25 @@ pub struct SessionState {
     pub extra: Map<String, Value>,
 }
 
+/// `data` of `abort_and_restore_queue`: the user input omp withdrew from its
+/// queues before aborting, oldest first.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RestoredQueue {
+    #[serde(default)]
+    pub steering: Vec<QueuedInput>,
+    #[serde(default)]
+    pub follow_up: Vec<QueuedInput>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct QueuedInput {
+    /// The queue-chip text.
+    pub text: String,
+    #[serde(default)]
+    pub images: Vec<ImageContent>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 pub struct CancellationResult {
     pub cancelled: bool,
