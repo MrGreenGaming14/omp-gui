@@ -2,11 +2,11 @@
 
 use crate::read::{ReadPage, ReadRequest, read_subtree};
 use crate::search::{AttrFilter, SearchPage, SearchQuery, TextMode, search};
-use crate::source::{Access, Requester, SessionSource};
+use crate::source::{Access, Requester, SessionSource, session_project};
 use crate::{Error, Result};
 use async_trait::async_trait;
 use loa_adapter::{HostToolSpec, HostTools};
-use loa_core::{ElementKind, NodeId, attr};
+use loa_core::{ElementKind, NodeId};
 use serde::Deserialize;
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -41,7 +41,7 @@ impl ProjectTools {
                             "description": "Only elements of this type. The query then matches anywhere inside the element, e.g. element=call with a file path finds every call that touched it."},
                 "attributes": {"type": "object", "additionalProperties": {"type": ["string", "null"]},
                                "description": "Attributes the element must have. A string matches part of the value; null only requires the attribute, e.g. {\"answer\": null} on decisions."},
-                "sessions": {"type": "array", "items": {"type": "string"}, "description": "Only these session ids."},
+                "sessions": {"type": "array", "items": {"type": "string"}, "description": "Only these session ids. List this chat's own id to search it too."},
                 "include_excluded": {"type": "boolean", "default": false,
                                      "description": "Also search sessions excluded from project context."},
                 "limit": {"type": "integer", "minimum": 1, "maximum": crate::search::MAX_LIMIT, "default": crate::search::DEFAULT_LIMIT},
@@ -63,7 +63,7 @@ impl ProjectTools {
         vec![
             HostToolSpec {
                 name: PROJECT_SEARCH.to_owned(),
-                description: "Search every session of this project by text or element type (decisions, calls, \
+                description: "Search the other sessions of this project by text or element type (decisions, calls, \
                               messages, todos, ...). Returns hits with session id, node id, a snippet and where \
                               the node sits. Read a hit with project_read."
                     .to_owned(),
@@ -81,10 +81,7 @@ impl ProjectTools {
 
     async fn project_of(&self, session: &str) -> Result<String> {
         let dom = self.source.load(session).await?.ok_or_else(|| Error::SessionNotFound(session.to_owned()))?;
-        dom.root()
-            .and_then(|r| r.str_attr(attr::PROJECT))
-            .map(str::to_owned)
-            .ok_or_else(|| Error::Arguments("this session is not in a project".into()))
+        session_project(&dom).ok_or_else(|| Error::Arguments("this session is not in a project".into()))
     }
 
     async fn run(&self, session: &str, tool: &str, args: &str) -> Result<String> {
@@ -93,7 +90,7 @@ impl ProjectTools {
         match tool {
             PROJECT_SEARCH => {
                 let args: SearchArgs = serde_json::from_str(args).map_err(|e| Error::Arguments(e.to_string()))?;
-                let query = args.into_query()?;
+                let query = args.into_query(session)?;
                 let page = search(&*self.source, &*self.access, &self.requester, &project, &query).await?;
                 Ok(search_output(&page))
             }
@@ -136,7 +133,9 @@ struct SearchArgs {
 }
 
 impl SearchArgs {
-    fn into_query(self) -> Result<SearchQuery> {
+    /// The query for a call from `caller`. The caller's own session is left
+    /// out unless `sessions` names it.
+    fn into_query(self, caller: &str) -> Result<SearchQuery> {
         let mode = match self.mode.as_deref() {
             None | Some("phrase") => TextMode::Phrase,
             Some("all_words") => TextMode::AllWords,
@@ -151,6 +150,8 @@ impl SearchArgs {
             mode,
             kind,
             attrs: self.attributes.into_iter().map(|(name, value)| AttrFilter { name, value }).collect(),
+            skip_session: (!self.sessions.as_ref().is_some_and(|only| only.iter().any(|s| s == caller)))
+                .then(|| caller.to_owned()),
             sessions: self.sessions,
             include_excluded: self.include_excluded,
             limit: self.limit.unwrap_or(0),
@@ -204,7 +205,7 @@ fn read_output(page: &ReadPage) -> String {
 mod tests {
     use super::*;
     use crate::source::testing::{Builder, MemorySource, TestAccess, peer};
-    use loa_core::{Draft, Value};
+    use loa_core::{Draft, Value, attr};
 
     fn tools(access: TestAccess, requester: Requester) -> (ProjectTools, NodeId) {
         let me = Builder::new("me", "proj", 30);
@@ -246,6 +247,16 @@ mod tests {
         let denied = tools.call("me", PROJECT_READ, r#"{"session":"secret"}"#).await.unwrap_err();
         let missing = tools.call("me", PROJECT_READ, r#"{"session":"nope"}"#).await.unwrap_err();
         assert_eq!(denied.replace("secret", "X"), missing.replace("nope", "X"));
+    }
+
+    #[tokio::test]
+    async fn search_leaves_the_calling_chat_out_unless_listed() {
+        let (tools, _) = tools(TestAccess::default(), Requester::Local);
+        let total = |out: String| serde_json::from_str::<serde_json::Value>(&out).unwrap()["total"].clone();
+        assert_eq!(total(tools.call("me", PROJECT_SEARCH, r#"{"query":"current chat"}"#).await.unwrap()), 0);
+        let own = r#"{"query":"current chat","sessions":["me"]}"#;
+        assert_eq!(total(tools.call("me", PROJECT_SEARCH, own).await.unwrap()), 1);
+        assert_eq!(total(tools.call("a", PROJECT_SEARCH, r#"{"query":"current chat"}"#).await.unwrap()), 1);
     }
 
     #[tokio::test]

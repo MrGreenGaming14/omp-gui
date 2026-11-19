@@ -2,7 +2,8 @@
 
 use crate::Result;
 use async_trait::async_trait;
-use loa_core::Dom;
+use loa_core::{Dom, attr};
+use std::path::Path;
 use std::sync::Arc;
 
 /// Who is asking: this node's own user, or a peer identified by its node key.
@@ -17,13 +18,51 @@ pub enum Requester {
 pub struct SessionInfo {
     /// App-wide session id, as in `<session id>`.
     pub id: String,
-    /// Project id, as in `<session project>`.
+    /// Project id: `<session project>`, else the last component of
+    /// `<session cwd>` (see [`session_project`]).
     pub project: String,
     /// Owner node key, as in `<session node>`.
     pub node: String,
     /// Unix milliseconds, as in `<session created>`.
     pub created: i64,
     pub title: Option<String>,
+}
+
+impl SessionInfo {
+    /// The listing entry of a session DOM. `None` without a `<session id>`
+    /// or a project (see [`session_project`]).
+    pub fn from_dom(dom: &Dom) -> Option<Self> {
+        let root = dom.root()?;
+        Some(Self {
+            id: root.str_attr(attr::ID)?.to_owned(),
+            project: session_project(dom)?,
+            node: root.str_attr(attr::NODE).unwrap_or_default().to_owned(),
+            created: root.int_attr(attr::CREATED).unwrap_or(0),
+            title: root.str_attr(attr::TITLE).map(str::to_owned),
+        })
+    }
+}
+
+/// The project a session belongs to: its `<session project>`, else the name
+/// of its working directory (`<session cwd>`), the same name the app gives
+/// a project it starts in that directory.
+pub fn session_project(dom: &Dom) -> Option<String> {
+    let root = dom.root()?;
+    if let Some(project) = root.str_attr(attr::PROJECT).filter(|p| !p.trim().is_empty()) {
+        return Some(project.to_owned());
+    }
+    root.str_attr(attr::CWD).and_then(project_name)
+}
+
+/// The project name of a working directory: its last component, or the whole
+/// path for a root like `/`.
+pub fn project_name(cwd: &str) -> Option<String> {
+    let cwd = cwd.trim();
+    if cwd.is_empty() {
+        return None;
+    }
+    let path = Path::new(cwd);
+    Some(path.file_name().map_or_else(|| cwd.to_owned(), |name| name.to_string_lossy().into_owned()))
 }
 
 /// Loads the sessions of a project. `loa-app` backs it with the journal.
@@ -41,6 +80,17 @@ pub trait SessionSource: Send + Sync {
 /// answers `false` for sessions created before the grant.
 pub trait Access: Send + Sync {
     fn can_open(&self, requester: &Requester, session: &SessionInfo) -> bool;
+}
+
+/// Access for this node's own user only: every session opens locally, no
+/// peer opens any. For an app without peer grants wired in.
+#[derive(Copy, Clone, Debug, Default)]
+pub struct LocalOnly;
+
+impl Access for LocalOnly {
+    fn can_open(&self, requester: &Requester, _: &SessionInfo) -> bool {
+        *requester == Requester::Local
+    }
 }
 
 /// The sessions of `project` that `requester` may open, newest first (ties

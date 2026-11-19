@@ -36,7 +36,9 @@ pub struct SummaryAnswer {
 /// One model call: prompt in, text out. No tools, no session history.
 #[async_trait]
 pub trait Summarizer: Send + Sync {
-    async fn summarize(&self, prompt: &str) -> Result<SummaryAnswer>;
+    /// `model` overrides the summarizer's own model or role for this call,
+    /// e.g. a project's digest model.
+    async fn summarize(&self, prompt: &str, model: Option<&str>) -> Result<SummaryAnswer>;
 }
 
 /// Size bounds of the digest prompt, in bytes.
@@ -90,10 +92,11 @@ impl Digester {
         Self { summarizer, limits }
     }
 
-    /// Digests `dom` with one summarizer call.
-    pub async fn digest(&self, dom: &Dom) -> Result<BuiltDigest> {
+    /// Digests `dom` with one summarizer call. `model` overrides the
+    /// summarizer's model (a project's own digest model).
+    pub async fn digest(&self, dom: &Dom, model: Option<&str>) -> Result<BuiltDigest> {
         let prompt = build_prompt(dom, &self.limits)?;
-        let answer = self.summarizer.summarize(&prompt.text).await?;
+        let answer = self.summarizer.summarize(&prompt.text, model).await?;
         let content = parse_answer(&answer.text, &prompt)?;
         Ok(BuiltDigest { content, source_seq: prompt.source_seq, model: answer.model })
     }
@@ -331,8 +334,9 @@ pub struct OmpSummarizer {
     timeout: Duration,
 }
 
-/// `--config` overlay that switches omp's memory off for the run.
-const MEMORY_OFF: &str = "memory:\n  backend: off\n";
+/// `--config` overlay that switches omp's memory off for the run. `"off"` is
+/// quoted: a YAML 1.1 parser reads a bare `off` as the boolean `false`.
+const MEMORY_OFF: &str = "memory:\n  backend: \"off\"\n";
 
 impl OmpSummarizer {
     /// `executable` is the omp binary, `cwd` the directory omp starts in.
@@ -358,7 +362,7 @@ impl OmpSummarizer {
     }
 
     /// The command line after the executable.
-    fn args(&self, overlay: &std::path::Path) -> Vec<std::ffi::OsString> {
+    fn args(&self, model: &str, overlay: &std::path::Path) -> Vec<std::ffi::OsString> {
         let mut args: Vec<std::ffi::OsString> = [
             "-p",
             "--mode",
@@ -376,7 +380,7 @@ impl OmpSummarizer {
         .into_iter()
         .map(Into::into)
         .collect();
-        args.push(self.model.clone().into());
+        args.push(model.into());
         args.push("--config".into());
         args.push(overlay.into());
         args.push("--cwd".into());
@@ -387,11 +391,12 @@ impl OmpSummarizer {
 
 #[async_trait]
 impl Summarizer for OmpSummarizer {
-    async fn summarize(&self, prompt: &str) -> Result<SummaryAnswer> {
+    async fn summarize(&self, prompt: &str, model: Option<&str>) -> Result<SummaryAnswer> {
+        let model = model.map(str::trim).filter(|m| !m.is_empty()).unwrap_or(&self.model);
         let mut overlay = tempfile::Builder::new().prefix("loa-digest-").suffix(".yml").tempfile()?;
         std::io::Write::write_all(&mut overlay, MEMORY_OFF.as_bytes())?;
         let mut child = tokio::process::Command::new(&self.executable)
-            .args(self.args(overlay.path()))
+            .args(self.args(model, overlay.path()))
             .current_dir(&self.cwd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -415,7 +420,7 @@ impl Summarizer for OmpSummarizer {
         }
         fed.map_err(|e| Error::Summarizer(format!("writing the prompt to omp: {e}")))?;
         let text = String::from_utf8(output.stdout).map_err(|_| Error::Summarizer("omp printed invalid UTF-8".into()))?;
-        Ok(SummaryAnswer { text, model: Some(self.model.trim_start_matches('@').to_owned()) })
+        Ok(SummaryAnswer { text, model: Some(model.trim_start_matches('@').to_owned()) })
     }
 }
 
@@ -535,24 +540,24 @@ mod tests {
 
     // Some temporary filesystems briefly report ETXTBSY after closing a new
     // executable. Keep that host-specific race out of the summarizer assertions.
-    async fn run_fake(summarizer: &OmpSummarizer, prompt: &str) -> Result<SummaryAnswer> {
+    async fn run_fake(summarizer: &OmpSummarizer, prompt: &str, model: Option<&str>) -> Result<SummaryAnswer> {
         for _ in 0..3 {
-            match summarizer.summarize(prompt).await {
+            match summarizer.summarize(prompt, model).await {
                 Err(Error::Summarizer(message)) if message.contains("Text file busy") => {
                     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
                 }
                 result => return result,
             }
         }
-        summarizer.summarize(prompt).await
+        summarizer.summarize(prompt, model).await
     }
 
     struct RetriedFake(OmpSummarizer);
 
     #[async_trait]
     impl Summarizer for RetriedFake {
-        async fn summarize(&self, prompt: &str) -> Result<SummaryAnswer> {
-            run_fake(&self.0, prompt).await
+        async fn summarize(&self, prompt: &str, model: Option<&str>) -> Result<SummaryAnswer> {
+            run_fake(&self.0, prompt, model).await
         }
     }
 
@@ -564,7 +569,8 @@ mod tests {
         let summarizer = Arc::new(RetriedFake(OmpSummarizer::new(&exe, dir.path())));
         let b = Builder::new("s1", "p", 1);
         let turn = b.turn("build the thing", "done", 2);
-        let built = Digester::new(summarizer, PromptLimits::default()).digest(&b.dom()).await.unwrap();
+        let digester = Digester::new(summarizer, PromptLimits::default());
+        let built = digester.digest(&b.dom(), None).await.unwrap();
         assert_eq!(built.content.summary, "Did things.");
         assert_eq!(built.content.pointers, vec![turn]);
         assert_eq!(built.model.as_deref(), Some("smol"));
@@ -580,20 +586,26 @@ mod tests {
         assert_eq!(std::fs::read_to_string(dir.path().join("overlay")).unwrap(), MEMORY_OFF);
         let stdin = std::fs::read_to_string(dir.path().join("stdin")).unwrap();
         assert!(stdin.contains("User: build the thing"));
+
+        // A project's digest model replaces the role for that call.
+        let built = digester.digest(&b.dom(), Some("anthropic/claude-haiku-5-5")).await.unwrap();
+        assert_eq!(built.model.as_deref(), Some("anthropic/claude-haiku-5-5"));
+        let args = std::fs::read_to_string(dir.path().join("args")).unwrap();
+        assert!(args.lines().any(|a| a == "anthropic/claude-haiku-5-5"), "{args}");
     }
 
     #[tokio::test]
     async fn omp_failure_is_reported_with_stderr() {
         let dir = tempfile::tempdir().unwrap();
         let exe = fake_omp(dir.path(), "echo 'no smol model configured' >&2; exit 2");
-        let err = run_fake(&OmpSummarizer::new(&exe, dir.path()), "hi").await.unwrap_err();
+        let err = run_fake(&OmpSummarizer::new(&exe, dir.path()), "hi", None).await.unwrap_err();
         assert!(matches!(&err, Error::Summarizer(m) if m.contains("no smol model configured")), "{err}");
     }
 
     #[tokio::test]
     async fn missing_omp_is_a_summarizer_error() {
         let dir = tempfile::tempdir().unwrap();
-        let err = OmpSummarizer::new(dir.path().join("absent"), dir.path()).summarize("hi").await.unwrap_err();
+        let err = OmpSummarizer::new(dir.path().join("absent"), dir.path()).summarize("hi", None).await.unwrap_err();
         assert!(matches!(err, Error::Summarizer(_)));
     }
 }

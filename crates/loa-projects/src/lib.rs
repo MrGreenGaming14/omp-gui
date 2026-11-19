@@ -8,6 +8,9 @@
 //! - [`search`], [`read`], [`tools`]: `project_search` and `project_read` host tools
 //! - [`settings`]: shared instructions, pinned files and the per session exclude toggle
 //! - [`source`]: the ports for loading sessions and checking access
+//! - [`sessions`]: the app's live and stored sessions behind those ports
+//! - [`service`]: [`ProjectService`], what the app holds: project listing,
+//!   the project screen's data, rebuilds, new chat context and host tools
 //!
 //! Every path that shows other sessions to a requester goes through
 //! [`source::visible_sessions`], so a session the requester can't open never
@@ -20,6 +23,8 @@ pub mod rank;
 pub mod read;
 pub mod rebuild;
 pub mod search;
+pub mod service;
+pub mod sessions;
 pub mod settings;
 pub mod source;
 pub mod tools;
@@ -32,8 +37,14 @@ pub use rank::{Candidate, RankParams, Ranked, estimate_tokens, rank_and_pack};
 pub use read::{ReadPage, ReadRequest, read_subtree};
 pub use rebuild::{Decision, RebuildDriver, RebuildHandle, RebuildOutcome, SessionWriter, Trigger, decide};
 pub use search::{AttrFilter, PathStep, SearchHit, SearchPage, SearchQuery, TextMode, search};
-pub use settings::{MemorySettingsStore, PinnedFile, ProjectSettings, SettingsStore, exclude_draft, is_excluded};
-pub use source::{Access, Requester, SessionInfo, SessionSource, visible_sessions};
+pub use service::{ProjectOverview, ProjectService, ProjectSummary, ServiceConfig, SessionRow};
+pub use sessions::LiveSessions;
+pub use settings::{
+    FileSettingsStore, MemorySettingsStore, PinnedFile, ProjectSettings, SettingsStore, exclude_draft, is_excluded,
+};
+pub use source::{
+    Access, LocalOnly, Requester, SessionInfo, SessionSource, project_name, session_project, visible_sessions,
+};
 pub use tools::{PROJECT_READ, PROJECT_SEARCH, ProjectTools};
 
 /// Errors of this crate.

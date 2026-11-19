@@ -9,8 +9,8 @@
 
 use crate::digest::{DigestState, digest_state, mark_stale_draft, write_drafts};
 use crate::digester::Digester;
-use crate::settings::is_excluded;
-use crate::source::SessionSource;
+use crate::settings::{SettingsStore, is_excluded};
+use crate::source::{SessionSource, session_project};
 use crate::{Error, Result};
 use loa_core::{Dom, Draft, ElementKind, Patch};
 use std::collections::HashMap;
@@ -89,6 +89,7 @@ pub struct RebuildDriver {
     writer: Arc<dyn SessionWriter>,
     digester: Digester,
     debounce: Duration,
+    settings: Option<Arc<dyn SettingsStore>>,
 }
 
 impl RebuildDriver {
@@ -98,7 +99,14 @@ impl RebuildDriver {
         digester: Digester,
         debounce: Duration,
     ) -> Self {
-        Self { source, writer, digester, debounce }
+        Self { source, writer, digester, debounce, settings: None }
+    }
+
+    /// Builds each session's digest with its project's
+    /// [`digest_model`](crate::ProjectSettings::digest_model), when set.
+    pub fn with_settings(mut self, settings: Arc<dyn SettingsStore>) -> Self {
+        self.settings = Some(settings);
+        self
     }
 
     /// Starts the driver on the current tokio runtime. It stops when every
@@ -164,7 +172,11 @@ impl RebuildDriver {
     }
 
     async fn rebuild(&self, session: &str, dom: &Dom) -> Result<u64> {
-        let built = self.digester.digest(dom).await?;
+        let model = match (&self.settings, session_project(dom)) {
+            (Some(settings), Some(project)) => settings.load(&project).await?.digest_model,
+            _ => None,
+        };
+        let built = self.digester.digest(dom, model.as_deref()).await?;
         for draft in write_drafts(dom, &built.content, built.source_seq, built.model.as_deref(), loa_core::now_ms()) {
             self.writer.commit(session, draft)?;
         }
@@ -217,15 +229,18 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
     struct Fake {
         calls: AtomicUsize,
         fail: bool,
+        last_model: Mutex<Option<String>>,
     }
 
     #[async_trait]
     impl Summarizer for Fake {
-        async fn summarize(&self, _: &str) -> Result<SummaryAnswer> {
+        async fn summarize(&self, _: &str, model: Option<&str>) -> Result<SummaryAnswer> {
             let n = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+            *self.last_model.lock().unwrap() = model.map(str::to_owned);
             if self.fail {
                 return Err(Error::Summarizer("model unavailable".into()));
             }
@@ -262,7 +277,7 @@ mod tests {
         let b = Builder::new("s1", "p", 1);
         b.turn("hi", "hello", 2);
         let sink = live.add(b);
-        let fake = Arc::new(Fake { calls: AtomicUsize::new(0), fail: false });
+        let fake = Arc::new(Fake::default());
         let (handle, mut outcomes) = driver(&live, &fake);
         for _ in 0..3 {
             handle.notify("s1", Trigger::TurnEnd);
@@ -294,7 +309,7 @@ mod tests {
         }
         b.turn("more", "work", 3);
         let sink = live.add(b);
-        let fake = Arc::new(Fake { calls: AtomicUsize::new(0), fail: true });
+        let fake = Arc::new(Fake { fail: true, ..Fake::default() });
         let (handle, mut outcomes) = driver(&live, &fake);
         handle.notify("s1", Trigger::TurnEnd);
         assert!(matches!(outcomes.recv().await.unwrap(), RebuildOutcome::Failed { .. }));
@@ -310,12 +325,30 @@ mod tests {
         let b = Builder::new("s1", "p", 1);
         b.turn("hi", "hello", 2);
         let sink = live.add(b);
-        let fake = Arc::new(Fake { calls: AtomicUsize::new(0), fail: false });
+        let fake = Arc::new(Fake::default());
         let (handle, mut outcomes) = driver(&live, &fake);
         handle.notify("s1", Trigger::TurnEnd);
         drop(handle);
         assert!(matches!(outcomes.recv().await.unwrap(), RebuildOutcome::Rebuilt { .. }));
         assert!(outcomes.recv().await.is_none());
         assert!(digest_of(&sink.dom()).is_some());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_project_digest_model_reaches_the_summarizer() {
+        let live = Arc::new(Live::default());
+        let b = Builder::new("s1", "p", 1);
+        b.turn("hi", "hello", 2);
+        live.add(b);
+        let fake = Arc::new(Fake::default());
+        let settings = Arc::new(crate::MemorySettingsStore::new());
+        let project = crate::ProjectSettings { digest_model: Some("@slow".into()), ..Default::default() };
+        crate::SettingsStore::save(&*settings, "p", &project).await.unwrap();
+        let digester = Digester::new(fake.clone(), PromptLimits::default());
+        let (handle, mut outcomes) =
+            RebuildDriver::new(live.clone(), live.clone(), digester, Duration::from_secs(2)).with_settings(settings).spawn();
+        handle.notify("s1", Trigger::TurnEnd);
+        assert!(matches!(outcomes.recv().await.unwrap(), RebuildOutcome::Rebuilt { .. }));
+        assert_eq!(fake.last_model.lock().unwrap().as_deref(), Some("@slow"));
     }
 }

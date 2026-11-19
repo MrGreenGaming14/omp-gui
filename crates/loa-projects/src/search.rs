@@ -47,6 +47,9 @@ pub struct SearchQuery {
     pub attrs: Vec<AttrFilter>,
     /// Restrict to these sessions.
     pub sessions: Option<Vec<String>>,
+    /// Leave this session out: the chat that searches, which already has its
+    /// own record in context.
+    pub skip_session: Option<String>,
     pub include_excluded: bool,
     /// Hits per page, clamped to 1..=[`MAX_LIMIT`]; 0 means [`DEFAULT_LIMIT`].
     pub limit: usize,
@@ -105,7 +108,9 @@ pub async fn search(
     let mut hits = Vec::with_capacity(limit);
     let mut total = 0;
     for info in visible_sessions(source, access, requester, project).await? {
-        if query.sessions.as_ref().is_some_and(|only| !only.contains(&info.id)) {
+        if query.sessions.as_ref().is_some_and(|only| !only.contains(&info.id))
+            || query.skip_session.as_ref() == Some(&info.id)
+        {
             continue;
         }
         let Some(dom) = source.load(&info.id).await? else { continue };

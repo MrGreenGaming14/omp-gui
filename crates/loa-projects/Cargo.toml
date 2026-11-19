@@ -8,13 +8,16 @@ publish.workspace = true
 [dependencies]
 loa-core.workspace = true
 loa-adapter.workspace = true
+loa-bus = { path = "../loa-bus" }
+loa-journal = { path = "../loa-journal" }
 async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["process", "time", "sync", "io-util", "rt", "macros"] }
+tokio = { workspace = true, features = ["process", "time", "sync", "io-util", "rt", "macros", "fs"] }
 tracing.workspace = true
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["test-util"] }
+tokio = { workspace = true, features = ["test-util", "rt-multi-thread"] }
+loa-adapter-omp = { path = "../loa-adapter-omp" }
