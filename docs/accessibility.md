@@ -65,13 +65,46 @@ From the design ([gui.md](design/gui.md), "Notes from the iced mockup") and [ARC
 
 | Widget | Crate | Built from | Accessibility notes |
 | --- | --- | --- | --- |
-| Command palette | `loa-ui-palette` | Standard widgets only: `text_input`, `scrollable`, `button`, `rich_text`, `mouse_area`, `opaque` | Role: dialog with a search field and a list of buttons labelled by command title. Fully keyboard driven (Ctrl/Cmd+K, Up, Down, Enter, Esc). Highlighting uses weight and underline, not color |
-| Diff view | `loa-ui-panel` | Hand built | Needs per-line role and an added/removed label, not color alone |
-| Tab bar (right panel) | `loa-ui-shell` / `loa-ui-panel` | Hand built | Role `tablist`; tabs need labels and a selected state |
+| Command palette | `loa-ui-palette` | Standard widgets only: `text_input`, `scrollable`, `button`, `rich_text`, `mouse_area`, `opaque` | Role: dialog with a search field (stable id `loa-palette-search`) and a list (`loa-palette-list`) of buttons labelled by command title; reference rows of the keymap are plain text, not disabled buttons. Fully keyboard driven (Ctrl/Cmd+K, Up, Down, Enter, Esc). Highlighting uses weight, not color |
+| Diff view | `loa-ui-panel` | Standard widgets (`column` of `container`s with `text`) | Needs per-line role and an added/removed label, not color alone |
+| Tab bar (right panel) | `loa-ui-shell` | Standard `button`s labelled by tab title | Role `tablist`; the selected state is drawn only (underline); every tab has Ctrl/Cmd+Alt+n and an "Open X tab" palette command |
 | `/` and `@` popups | `loa-ui-composer` | Hand built | Role: listbox attached to the composer field |
 | Virtualized transcript list | `loa-ui-chat` | Hand built | Role `list`; off-screen items must still be reachable by keyboard |
 | Terminal pane | `loa-ui-terminal` | `iced_term` (third party, canvas) | Exposes nothing; depends on `iced_term` upstream |
 | Surface view | `loa-ui-surface` | Pixel frames (image/shader) | Pixel surfaces expose nothing; document mode surfaces should render text with iced text widgets |
+
+## Keyboard map and reachability
+
+Issues #78, #82, #83. The keymap lives in `loa_ui_palette::Keymap::defaults`; the app (`crates/loa-app/src/app/keys.rs`) runs it and lists it in the palette. Ctrl/Cmd+/ opens the palette on the keymap only; the normal palette shows each command's chord and a "Keyboard shortcuts" section for keys that aren't commands.
+
+| Keys | Does |
+| --- | --- |
+| Ctrl/Cmd+K | Command palette (every app and area command) |
+| Ctrl/Cmd+/ | Palette on the keyboard shortcuts |
+| Ctrl/Cmd+N | New session |
+| Ctrl+Tab, Ctrl+Shift+Tab | Next, previous session in the sidebar's order |
+| Ctrl/Cmd+1…9 | n-th session in the sidebar |
+| Ctrl/Cmd+Alt+1…9 | n-th right panel tab (opens the panel) |
+| Ctrl/Cmd+B | Toggle the right panel |
+| Ctrl/Cmd+L | Focus the composer (closes a screen first) |
+| Ctrl/Cmd+Shift+F | Focus the session search |
+| Tab, Shift+Tab | Next, previous text field |
+| Esc | Close the palette, dismiss the focused prompt card, close a screen, else interrupt the turn |
+| 1…9, Enter | Pick and confirm on the focused prompt card |
+| Enter, Shift+Enter, Ctrl/Cmd+Z / Shift+Z | Composer: send, new line, undo, redo |
+
+The composer editor leaves Ctrl/Cmd+letter chords other than copy, cut, paste, select all, undo and redo uncaptured, so the shortcuts work while typing (tested in `app::keys::tests::keys_reach_the_app_while_the_composer_has_focus`). The palette is modal: while it shows, only its own keys apply.
+
+Controls without a key of their own are palette commands: sidebar Tools and Peers ("Show tools", "Show peers"), the hover-only Pin button ("Pin session" / "Unpin session"), each sidebar session ("Go to session: …"), the composer's mode, effort and model pickers ("Mode: …", "Effort: …", "Model: …"), and every area's own commands.
+
+Icon-only buttons carry their label as a tooltip next to the code: the panel toggle (top bar), send and stop, remove queued message (composer), the session tree's expand/collapse chevron.
+
+### What iced 0.14 can't do
+
+- Only `text_input` and `text_editor` are focusable. Buttons, pickers, list rows and cards can't take the keyboard focus, so Tab cycles text fields only and there is no focus ring on buttons. Every button action has a palette command or shortcut instead.
+- No accessibility tree: labels, roles, the selected tab and the waiting state can't reach a screen reader. Widget ids are stable (`loa-composer-editor`, `loa-sidebar-search`, `loa-palette-search`, `loa-palette-list`) so AccessKit nodes can key off them later.
+- Tooltips show on hover only; they are not announced and don't show on keyboard focus.
+- The terminal (`iced_term` canvas) and pixel surfaces (canvas) take keys only when clicked and expose nothing.
 
 ## Re-check on each iced release
 

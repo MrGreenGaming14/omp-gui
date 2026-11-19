@@ -51,6 +51,11 @@ const VISIBLE_POPUP_ROWS: usize = 8;
 const SEND_SIZE: f32 = 24.0;
 /// Width of a picker's menu.
 const MENU_WIDTH: f32 = 260.0;
+/// Labels of the icon-only buttons, shown as tooltips (and their accessible
+/// names once iced exposes them).
+pub const SEND_LABEL: &str = "Send (Enter)";
+pub const STOP_LABEL: &str = "Stop (Esc)";
+pub const REMOVE_QUEUED_LABEL: &str = "Remove queued message";
 
 /// A `/` command offered in the popup.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -174,6 +179,11 @@ impl State {
     pub fn set_commands(&mut self, commands: Vec<Command>) {
         self.commands = commands;
         self.refilter();
+    }
+
+    /// The commands the `/` popup offers.
+    pub fn commands(&self) -> &[Command] {
+        &self.commands
     }
 
     /// Files for the `@` popup, relative to the project, `/` separated.
@@ -379,18 +389,21 @@ impl State {
             .style(style::editor)
             .key_binding(move |press| keys::bind(press, ctx));
 
-        let (glyph, size, on_press) = if self.is_busy() {
-            (Icon::Square, 12.0, Some(Message::StopPressed))
+        let (glyph, size, on_press, label) = if self.is_busy() {
+            (Icon::Square, 12.0, Some(Message::StopPressed), STOP_LABEL)
         } else {
             let can_send = !self.content.text().trim().is_empty();
-            (Icon::ArrowUp, 14.0, can_send.then_some(Message::Send))
+            (Icon::ArrowUp, 14.0, can_send.then_some(Message::Send), SEND_LABEL)
         };
-        let action = button(icon(glyph, size).style(style::on_primary))
-            .width(SEND_SIZE)
-            .height(SEND_SIZE)
-            .padding((SEND_SIZE - size) / 2.0)
-            .style(style::send)
-            .on_press_maybe(on_press);
+        let action = labelled(
+            button(icon(glyph, size).style(style::on_primary))
+                .width(SEND_SIZE)
+                .height(SEND_SIZE)
+                .padding((SEND_SIZE - size) / 2.0)
+                .style(style::send)
+                .on_press_maybe(on_press),
+            label,
+        );
 
         let pickers = &self.pickers;
         let mut controls = row![].spacing(4).align_y(Center);
@@ -519,7 +532,10 @@ impl State {
                     .on_input(move |text| Message::QueueEdit(id, text))
                     .size(13)
                     .width(Length::Fill),
-                button(muted(Icon::X, 14.0)).padding(4).style(style::row(false)).on_press(Message::QueueRemove(id)),
+                labelled(
+                    button(muted(Icon::X, 14.0)).padding(4).style(style::row(false)).on_press(Message::QueueRemove(id)),
+                    REMOVE_QUEUED_LABEL,
+                ),
             ]
             .spacing(8)
             .align_y(Center)
@@ -786,6 +802,12 @@ fn edit_kind(edit: &Edit) -> EditKind {
         Edit::Backspace | Edit::Delete => EditKind::Delete,
         Edit::Paste(_) | Edit::Enter | Edit::Indent | Edit::Unindent => EditKind::Other,
     }
+}
+
+/// An icon-only button with its label as a tooltip.
+fn labelled<'a>(button: iced::widget::Button<'a, Message>, label: &'static str) -> Element<'a, Message> {
+    let tip = container(text(label).size(12)).padding([3, 8]).style(style::menu);
+    iced::widget::tooltip(button, tip, iced::widget::tooltip::Position::Top).into()
 }
 
 #[cfg(test)]
