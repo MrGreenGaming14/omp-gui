@@ -73,7 +73,7 @@ impl FakeOmp {
         std::fs::write(dir.join("version"), "19.0.0\n")?;
         // Written by a separate process so no fork of this one can hold it
         // open for writing when it runs ("Text file busy").
-        loa_test_exec::write_executable(&executable, body)?;
+        loa_exec::write_executable(&executable, body)?;
         Ok(Self { dir, executable })
     }
 

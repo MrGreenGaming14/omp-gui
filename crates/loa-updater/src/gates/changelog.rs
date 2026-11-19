@@ -90,14 +90,16 @@ impl OmpSmolSummarizer {
 #[async_trait::async_trait]
 impl ChangelogSummarizer for OmpSmolSummarizer {
     async fn review(&self, changelog: &str) -> Result<ChangelogReview, String> {
-        let child = Command::new(&self.executable)
-            .args(self.args(changelog))
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|e| format!("cannot start {}: {e}", self.executable.display()))?;
+        let child = loa_exec::retry_busy(|| {
+            Command::new(&self.executable)
+                .args(self.args(changelog))
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .kill_on_drop(true)
+                .spawn()
+        })
+        .map_err(|e| format!("cannot start {}: {e}", self.executable.display()))?;
         // On timeout the future is dropped, which kills the child.
         let output = tokio::time::timeout(self.timeout, child.wait_with_output())
             .await
@@ -179,7 +181,7 @@ mod tests {
 
     fn script(dir: &std::path::Path, body: &str) -> PathBuf {
         let path = dir.join("omp");
-        loa_test_exec::write_executable(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        loa_exec::write_executable(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
         path
     }
 

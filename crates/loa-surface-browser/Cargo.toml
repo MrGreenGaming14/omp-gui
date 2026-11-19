@@ -22,4 +22,4 @@ x11rb = "0.13"
 jpeg-decoder = { version = "0.3", default-features = false }
 
 [dev-dependencies]
-loa-test-exec = { path = "../loa-test-exec" }
+loa-exec = { path = "../loa-exec" }
