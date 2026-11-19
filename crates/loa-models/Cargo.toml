@@ -6,4 +6,14 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+async-trait.workspace = true
 serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["process", "sync", "macros", "io-util", "rt"] }
+toml_edit = "0.25"
+yaml-rust2 = "0.13"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full"] }

@@ -1,0 +1,1259 @@
+//! Model settings screen: model roles with their fallback chains, enabled
+//! models, provider order, per model overrides and custom providers.
+//!
+//! The screen edits omp's own `config.yml` and `models.yml` as plain data. The
+//! app loads the files into [`ModelSettings`], hands them to [`State::new`],
+//! writes what [`Event::Save`] carries and reports the outcome back through
+//! [`State::saved`] or [`State::set_errors`].
+
+use std::fmt;
+
+use iced::widget::{
+    button, checkbox, column, container, pick_list, row, rule, scrollable, space, text, text_input,
+};
+use iced::{Element, Fill, Task};
+
+/// Everything the screen edits, as the app reads it from omp's config files.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct ModelSettings {
+    pub roles: Vec<RoleChain>,
+    pub models: Vec<ModelToggle>,
+    pub providers: Vec<ProviderToggle>,
+    pub overrides: Vec<ModelOverride>,
+    pub custom_providers: Vec<CustomProvider>,
+}
+
+/// A model role and its ordered chain: `chain[0]` is the primary model
+/// (`modelRoles.<role>`), the rest are its fallbacks
+/// (`retry.fallbackChains.<role>`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RoleChain {
+    pub role: String,
+    pub chain: Vec<String>,
+}
+
+/// Whether a model selector is listed in `enabledModels`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ModelToggle {
+    pub selector: String,
+    pub enabled: bool,
+}
+
+/// A provider and whether it is enabled. In provider order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProviderToggle {
+    pub id: String,
+    pub name: String,
+    pub enabled: bool,
+}
+
+/// The `modelOverrides` fields set for one model selector.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModelOverride {
+    pub selector: String,
+    pub fields: Vec<OverrideField>,
+}
+
+/// One overridden model field, e.g. `contextWindow: 200000`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OverrideField {
+    pub key: String,
+    pub value: FieldValue,
+}
+
+/// A typed override value.
+#[derive(Clone, Debug, PartialEq)]
+pub enum FieldValue {
+    Text(String),
+    Int(i64),
+    Float(f64),
+    Bool(bool),
+}
+
+impl FieldValue {
+    fn kind(&self) -> FieldKind {
+        match self {
+            Self::Text(_) => FieldKind::Text,
+            Self::Int(_) => FieldKind::Int,
+            Self::Float(_) => FieldKind::Float,
+            Self::Bool(_) => FieldKind::Bool,
+        }
+    }
+
+    fn raw(&self) -> String {
+        match self {
+            Self::Text(value) => value.clone(),
+            Self::Int(value) => value.to_string(),
+            Self::Float(value) => value.to_string(),
+            Self::Bool(value) => value.to_string(),
+        }
+    }
+}
+
+/// The type an override value is edited as.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FieldKind {
+    Text,
+    Int,
+    Float,
+    Bool,
+}
+
+impl FieldKind {
+    /// All kinds, in the order the kind pick list shows them.
+    pub const ALL: &'static [FieldKind] = &[Self::Text, Self::Int, Self::Float, Self::Bool];
+
+    /// Parses a raw value typed by the user as this kind.
+    fn parse(self, raw: &str) -> Result<FieldValue, String> {
+        let trimmed = raw.trim();
+        match self {
+            Self::Text => Ok(FieldValue::Text(raw.to_owned())),
+            Self::Int => trimmed
+                .parse::<i64>()
+                .map(FieldValue::Int)
+                .map_err(|_| format!("\"{raw}\" is not a whole number")),
+            Self::Float => match trimmed.parse::<f64>() {
+                Ok(value) if value.is_finite() => Ok(FieldValue::Float(value)),
+                _ => Err(format!("\"{raw}\" is not a number")),
+            },
+            Self::Bool => match trimmed {
+                "true" => Ok(FieldValue::Bool(true)),
+                "false" => Ok(FieldValue::Bool(false)),
+                _ => Err(format!("\"{raw}\" is not true or false")),
+            },
+        }
+    }
+}
+
+impl fmt::Display for FieldKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Text => "Text",
+            Self::Int => "Integer",
+            Self::Float => "Number",
+            Self::Bool => "Yes/No",
+        })
+    }
+}
+
+/// How omp authenticates against a custom provider (`auth` in models.yml).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ProviderAuth {
+    #[default]
+    ApiKey,
+    None,
+    OAuth,
+}
+
+impl ProviderAuth {
+    /// All variants, in the order the auth pick list shows them.
+    pub const ALL: &'static [ProviderAuth] = &[Self::ApiKey, Self::None, Self::OAuth];
+}
+
+impl fmt::Display for ProviderAuth {
+    /// Spelled the way omp writes the value.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::ApiKey => "apiKey",
+            Self::None => "none",
+            Self::OAuth => "oauth",
+        })
+    }
+}
+
+/// A provider defined in models.yml. The API key is only ever the name of an
+/// environment variable that holds it; the app never handles the key itself.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct CustomProvider {
+    pub id: String,
+    pub base_url: String,
+    pub api: String,
+    pub auth: ProviderAuth,
+    pub api_key_env: String,
+    pub models: Vec<String>,
+}
+
+/// An error the app's validation (or omp) reported for a saved settings value.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ValidationError {
+    pub location: String,
+    pub message: String,
+}
+
+/// What the app must act on.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Event {
+    /// Write these settings to omp's config files, then call
+    /// [`State::saved`] or [`State::set_errors`].
+    Save(ModelSettings),
+    /// The user discarded the unsaved changes.
+    Reverted,
+}
+
+/// Moves the element at `from` to index `to`, shifting the ones between.
+/// Returns false and leaves `items` unchanged when either index is out of
+/// range.
+pub fn move_item<T>(items: &mut Vec<T>, from: usize, to: usize) -> bool {
+    if from >= items.len() || to >= items.len() {
+        return false;
+    }
+    let item = items.remove(from);
+    items.insert(to, item);
+    true
+}
+
+/// Checks a custom provider the way omp validates models.yml, plus the rules
+/// of this screen (id characters, no pasted secrets). `others` are the other
+/// custom providers, for the duplicate id check. Returns one message per
+/// problem; empty when the provider is valid.
+pub fn validate_custom_provider(provider: &CustomProvider, others: &[CustomProvider]) -> Vec<String> {
+    let mut messages = Vec::new();
+    let id = provider.id.trim();
+    if id.is_empty() {
+        messages.push("Provider id is empty".to_owned());
+    } else if !id.chars().all(|c| matches!(c, 'a'..='z' | '0'..='9' | '-' | '_' | '.')) {
+        messages.push("Provider id may only contain a-z, 0-9, -, _ and .".to_owned());
+    } else if others.iter().any(|other| other.id.trim() == id) {
+        messages.push(format!("Another custom provider already uses the id \"{id}\""));
+    }
+
+    let base_url = provider.base_url.trim();
+    if !base_url.is_empty() && !(base_url.starts_with("http://") || base_url.starts_with("https://")) {
+        messages.push("Base URL must start with http:// or https://".to_owned());
+    }
+
+    let api_key_env = provider.api_key_env.trim();
+    let key_needed = provider.auth == ProviderAuth::ApiKey;
+    if provider.models.is_empty() {
+        if base_url.is_empty() && api_key_env.is_empty() && provider.auth != ProviderAuth::None {
+            messages.push(
+                "A provider without models needs a base URL, an API key variable or auth none".to_owned(),
+            );
+        }
+    } else {
+        if base_url.is_empty() {
+            messages.push("A provider with models needs a base URL".to_owned());
+        }
+        if key_needed && api_key_env.is_empty() {
+            messages.push("A provider with models needs an API key variable unless auth is none or oauth".to_owned());
+        }
+        if provider.api.trim().is_empty() {
+            messages.push("A provider with models needs an API type, e.g. openai-completions".to_owned());
+        }
+    }
+
+    if !api_key_env.is_empty() && !is_env_var_name(api_key_env) {
+        messages.push(
+            "API key must be the name of an environment variable (A-Z, 0-9, _), not the key itself".to_owned(),
+        );
+    }
+    messages
+}
+
+fn is_env_var_name(name: &str) -> bool {
+    name.chars().next().is_some_and(|c| !c.is_ascii_digit())
+        && name.chars().all(|c| matches!(c, 'A'..='Z' | '0'..='9' | '_'))
+}
+
+/// The editable form of [`ModelSettings`]: override values and custom provider
+/// model lists stay raw text so the user can type freely.
+#[derive(Clone, Debug, PartialEq)]
+struct Draft {
+    roles: Vec<RoleChain>,
+    models: Vec<ModelToggle>,
+    providers: Vec<ProviderToggle>,
+    overrides: Vec<OverrideDraft>,
+    custom_providers: Vec<CustomProviderDraft>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct OverrideDraft {
+    selector: String,
+    fields: Vec<FieldDraft>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct FieldDraft {
+    key: String,
+    kind: FieldKind,
+    raw: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct CustomProviderDraft {
+    id: String,
+    base_url: String,
+    api: String,
+    auth: ProviderAuth,
+    api_key_env: String,
+    /// Comma separated model ids.
+    models: String,
+}
+
+impl CustomProviderDraft {
+    fn to_provider(&self) -> CustomProvider {
+        CustomProvider {
+            id: self.id.trim().to_owned(),
+            base_url: self.base_url.trim().to_owned(),
+            api: self.api.trim().to_owned(),
+            auth: self.auth,
+            api_key_env: self.api_key_env.trim().to_owned(),
+            models: self
+                .models
+                .split(',')
+                .map(str::trim)
+                .filter(|model| !model.is_empty())
+                .map(str::to_owned)
+                .collect(),
+        }
+    }
+}
+
+impl Draft {
+    fn new(settings: &ModelSettings) -> Self {
+        Self {
+            roles: settings.roles.clone(),
+            models: settings.models.clone(),
+            providers: settings.providers.clone(),
+            overrides: settings
+                .overrides
+                .iter()
+                .map(|o| OverrideDraft {
+                    selector: o.selector.clone(),
+                    fields: o
+                        .fields
+                        .iter()
+                        .map(|f| FieldDraft { key: f.key.clone(), kind: f.value.kind(), raw: f.value.raw() })
+                        .collect(),
+                })
+                .collect(),
+            custom_providers: settings
+                .custom_providers
+                .iter()
+                .map(|p| CustomProviderDraft {
+                    id: p.id.clone(),
+                    base_url: p.base_url.clone(),
+                    api: p.api.clone(),
+                    auth: p.auth,
+                    api_key_env: p.api_key_env.clone(),
+                    models: p.models.join(", "),
+                })
+                .collect(),
+        }
+    }
+
+    fn custom_providers(&self) -> Vec<CustomProvider> {
+        self.custom_providers.iter().map(CustomProviderDraft::to_provider).collect()
+    }
+
+    fn to_settings(&self) -> Result<ModelSettings, Vec<String>> {
+        let mut errors = Vec::new();
+
+        let mut roles = Vec::with_capacity(self.roles.len());
+        for (index, role) in self.roles.iter().enumerate() {
+            let name = role.role.trim();
+            if name.is_empty() {
+                errors.push(format!("Role {} has no name", index + 1));
+            } else if self.roles[..index].iter().any(|r| r.role.trim() == name) {
+                errors.push(format!("Role \"{name}\" is listed twice"));
+            }
+            roles.push(RoleChain { role: name.to_owned(), chain: role.chain.clone() });
+        }
+
+        let mut overrides = Vec::with_capacity(self.overrides.len());
+        for o in &self.overrides {
+            let mut fields = Vec::with_capacity(o.fields.len());
+            for (index, field) in o.fields.iter().enumerate() {
+                let key = field.key.trim();
+                if key.is_empty() {
+                    errors.push(format!("{}: field {} has no name", o.selector, index + 1));
+                } else if o.fields[..index].iter().any(|f| f.key.trim() == key) {
+                    errors.push(format!("{}: field \"{key}\" is set twice", o.selector));
+                }
+                match field.kind.parse(&field.raw) {
+                    Ok(value) => fields.push(OverrideField { key: key.to_owned(), value }),
+                    Err(message) => errors.push(format!("{}: {key}: {message}", o.selector)),
+                }
+            }
+            overrides.push(ModelOverride { selector: o.selector.clone(), fields });
+        }
+
+        let custom_providers = self.custom_providers();
+        for (index, provider) in custom_providers.iter().enumerate() {
+            let others: Vec<CustomProvider> = custom_providers
+                .iter()
+                .enumerate()
+                .filter(|(other, _)| *other != index)
+                .map(|(_, p)| p.clone())
+                .collect();
+            let label = if provider.id.is_empty() {
+                format!("Custom provider {}", index + 1)
+            } else {
+                provider.id.clone()
+            };
+            for message in validate_custom_provider(provider, &others) {
+                errors.push(format!("{label}: {message}"));
+            }
+        }
+
+        if !errors.is_empty() {
+            return Err(errors);
+        }
+        Ok(ModelSettings {
+            roles,
+            models: self.models.clone(),
+            providers: self.providers.clone(),
+            overrides,
+            custom_providers,
+        })
+    }
+}
+
+/// An edit to one field of a custom provider.
+#[derive(Clone, Debug)]
+pub enum ProviderEdit {
+    Id(String),
+    BaseUrl(String),
+    Api(String),
+    Auth(ProviderAuth),
+    ApiKeyEnv(String),
+    /// Comma separated model ids.
+    Models(String),
+}
+
+#[derive(Clone, Debug)]
+pub enum Message {
+    NewRoleInput(String),
+    AddRole,
+    RemoveRole(usize),
+    RenameRole(usize, String),
+    /// Text typed into a role's "add selector" input.
+    ChainInput(usize, String),
+    /// Adds the typed selector of a role's input to its chain.
+    AddTypedChainEntry(usize),
+    AddChainEntry(usize, String),
+    RemoveChainEntry { role: usize, index: usize },
+    MoveChainEntry { role: usize, from: usize, to: usize },
+    ModelToggled(usize, bool),
+    ProviderToggled(usize, bool),
+    MoveProvider { from: usize, to: usize },
+    NewOverrideInput(String),
+    AddTypedOverride,
+    AddOverride(String),
+    RemoveOverride(usize),
+    AddField(usize),
+    FieldKeyChanged { model: usize, field: usize, key: String },
+    FieldKindChanged { model: usize, field: usize, kind: FieldKind },
+    FieldValueChanged { model: usize, field: usize, raw: String },
+    RemoveField { model: usize, field: usize },
+    AddCustomProvider,
+    RemoveCustomProvider(usize),
+    CustomProviderEdited(usize, ProviderEdit),
+    Save,
+    Revert,
+}
+
+/// The model settings screen.
+#[derive(Clone, Debug)]
+pub struct State {
+    baseline: Draft,
+    draft: Draft,
+    known_models: Vec<String>,
+    new_role: String,
+    /// The "add selector" input of each role, parallel to `draft.roles`.
+    chain_inputs: Vec<String>,
+    new_override: String,
+    /// Problems found in the draft by the last Save.
+    local_errors: Vec<String>,
+    /// Problems the app reported for the last write.
+    app_errors: Vec<ValidationError>,
+}
+
+impl State {
+    /// `known_models` are the selectors offered when adding chain entries and
+    /// overrides.
+    pub fn new(settings: ModelSettings, known_models: Vec<String>) -> Self {
+        let draft = Draft::new(&settings);
+        Self {
+            chain_inputs: vec![String::new(); draft.roles.len()],
+            baseline: draft.clone(),
+            draft,
+            known_models,
+            new_role: String::new(),
+            new_override: String::new(),
+            local_errors: Vec::new(),
+            app_errors: Vec::new(),
+        }
+    }
+
+    /// The app wrote `settings`: they become the new baseline and draft.
+    pub fn saved(&mut self, settings: ModelSettings) {
+        self.baseline = Draft::new(&settings);
+        self.reset_draft();
+    }
+
+    /// Shows the errors the app (or omp) reported for the last write.
+    pub fn set_errors(&mut self, errors: Vec<ValidationError>) {
+        self.app_errors = errors;
+    }
+
+    /// The errors last reported by the app.
+    pub fn errors(&self) -> &[ValidationError] {
+        &self.app_errors
+    }
+
+    /// Problems in the draft found by the last Save.
+    pub fn local_errors(&self) -> &[String] {
+        &self.local_errors
+    }
+
+    /// Whether the draft differs from the last loaded or saved settings.
+    pub fn is_dirty(&self) -> bool {
+        self.draft != self.baseline
+    }
+
+    /// The draft as settings, or the local problems that keep it from being
+    /// saved.
+    pub fn draft_settings(&self) -> Result<ModelSettings, Vec<String>> {
+        self.draft.to_settings()
+    }
+
+    fn reset_draft(&mut self) {
+        self.draft = self.baseline.clone();
+        self.chain_inputs = vec![String::new(); self.draft.roles.len()];
+        self.new_role.clear();
+        self.new_override.clear();
+        self.local_errors.clear();
+        self.app_errors.clear();
+    }
+
+    fn add_chain_entry(&mut self, role: usize, selector: String) {
+        let selector = selector.trim();
+        if selector.is_empty() {
+            return;
+        }
+        if let Some(role) = self.draft.roles.get_mut(role)
+            && !role.chain.iter().any(|s| s == selector)
+        {
+            role.chain.push(selector.to_owned());
+        }
+    }
+
+    fn add_override(&mut self, selector: String) {
+        let selector = selector.trim();
+        if selector.is_empty() || self.draft.overrides.iter().any(|o| o.selector == selector) {
+            return;
+        }
+        self.draft.overrides.push(OverrideDraft { selector: selector.to_owned(), fields: Vec::new() });
+    }
+
+    fn field_mut(&mut self, model: usize, field: usize) -> Option<&mut FieldDraft> {
+        self.draft.overrides.get_mut(model)?.fields.get_mut(field)
+    }
+
+    pub fn update(&mut self, message: Message) -> (Task<Message>, Option<Event>) {
+        let mut event = None;
+        match message {
+            Message::NewRoleInput(value) => self.new_role = value,
+            Message::AddRole => {
+                let name = self.new_role.trim();
+                if !name.is_empty() {
+                    self.draft.roles.push(RoleChain { role: name.to_owned(), chain: Vec::new() });
+                    self.chain_inputs.push(String::new());
+                    self.new_role.clear();
+                }
+            }
+            Message::RemoveRole(index) => {
+                if index < self.draft.roles.len() {
+                    self.draft.roles.remove(index);
+                }
+                if index < self.chain_inputs.len() {
+                    self.chain_inputs.remove(index);
+                }
+            }
+            Message::RenameRole(index, name) => {
+                if let Some(role) = self.draft.roles.get_mut(index) {
+                    role.role = name;
+                }
+            }
+            Message::ChainInput(index, value) => {
+                if let Some(input) = self.chain_inputs.get_mut(index) {
+                    *input = value;
+                }
+            }
+            Message::AddTypedChainEntry(index) => {
+                if let Some(input) = self.chain_inputs.get_mut(index) {
+                    let selector = std::mem::take(input);
+                    self.add_chain_entry(index, selector);
+                }
+            }
+            Message::AddChainEntry(index, selector) => self.add_chain_entry(index, selector),
+            Message::RemoveChainEntry { role, index } => {
+                if let Some(role) = self.draft.roles.get_mut(role)
+                    && index < role.chain.len()
+                {
+                    role.chain.remove(index);
+                }
+            }
+            Message::MoveChainEntry { role, from, to } => {
+                if let Some(role) = self.draft.roles.get_mut(role) {
+                    move_item(&mut role.chain, from, to);
+                }
+            }
+            Message::ModelToggled(index, enabled) => {
+                if let Some(model) = self.draft.models.get_mut(index) {
+                    model.enabled = enabled;
+                }
+            }
+            Message::ProviderToggled(index, enabled) => {
+                if let Some(provider) = self.draft.providers.get_mut(index) {
+                    provider.enabled = enabled;
+                }
+            }
+            Message::MoveProvider { from, to } => {
+                move_item(&mut self.draft.providers, from, to);
+            }
+            Message::NewOverrideInput(value) => self.new_override = value,
+            Message::AddTypedOverride => {
+                let selector = std::mem::take(&mut self.new_override);
+                self.add_override(selector);
+            }
+            Message::AddOverride(selector) => self.add_override(selector),
+            Message::RemoveOverride(index) => {
+                if index < self.draft.overrides.len() {
+                    self.draft.overrides.remove(index);
+                }
+            }
+            Message::AddField(index) => {
+                if let Some(o) = self.draft.overrides.get_mut(index) {
+                    o.fields.push(FieldDraft { key: String::new(), kind: FieldKind::Text, raw: String::new() });
+                }
+            }
+            Message::FieldKeyChanged { model, field, key } => {
+                if let Some(field) = self.field_mut(model, field) {
+                    field.key = key;
+                }
+            }
+            Message::FieldKindChanged { model, field, kind } => {
+                if let Some(field) = self.field_mut(model, field) {
+                    if kind == FieldKind::Bool && field.kind != FieldKind::Bool {
+                        // The checkbox edits only "true"/"false"; anything else reads as unchecked.
+                        field.raw = (field.raw.trim() == "true").to_string();
+                    }
+                    field.kind = kind;
+                }
+            }
+            Message::FieldValueChanged { model, field, raw } => {
+                if let Some(field) = self.field_mut(model, field) {
+                    field.raw = raw;
+                }
+            }
+            Message::RemoveField { model, field } => {
+                if let Some(o) = self.draft.overrides.get_mut(model)
+                    && field < o.fields.len()
+                {
+                    o.fields.remove(field);
+                }
+            }
+            Message::AddCustomProvider => self.draft.custom_providers.push(CustomProviderDraft {
+                id: String::new(),
+                base_url: String::new(),
+                api: String::new(),
+                auth: ProviderAuth::ApiKey,
+                api_key_env: String::new(),
+                models: String::new(),
+            }),
+            Message::RemoveCustomProvider(index) => {
+                if index < self.draft.custom_providers.len() {
+                    self.draft.custom_providers.remove(index);
+                }
+            }
+            Message::CustomProviderEdited(index, edit) => {
+                if let Some(provider) = self.draft.custom_providers.get_mut(index) {
+                    match edit {
+                        ProviderEdit::Id(value) => provider.id = value,
+                        ProviderEdit::BaseUrl(value) => provider.base_url = value,
+                        ProviderEdit::Api(value) => provider.api = value,
+                        ProviderEdit::Auth(value) => provider.auth = value,
+                        ProviderEdit::ApiKeyEnv(value) => provider.api_key_env = value,
+                        ProviderEdit::Models(value) => provider.models = value,
+                    }
+                }
+            }
+            Message::Save => {
+                self.app_errors.clear();
+                match self.draft.to_settings() {
+                    Ok(settings) => {
+                        self.local_errors.clear();
+                        event = Some(Event::Save(settings));
+                    }
+                    Err(errors) => self.local_errors = errors,
+                }
+            }
+            Message::Revert => {
+                self.reset_draft();
+                event = Some(Event::Reverted);
+            }
+        }
+        (Task::none(), event)
+    }
+
+    pub fn view(&self) -> Element<'_, Message> {
+        let dirty = self.is_dirty();
+        let mut header = row![text("Model settings").size(20), space::horizontal()]
+            .spacing(8)
+            .align_y(iced::Center);
+        if dirty {
+            header = header.push(text("Unsaved changes").style(text::secondary));
+        }
+        header = header
+            .push(button(text("Revert")).style(button::secondary).on_press_maybe(dirty.then_some(Message::Revert)))
+            .push(button(text("Save")).style(button::primary).on_press_maybe(dirty.then_some(Message::Save)));
+
+        let mut content = column![header].spacing(16).padding(16);
+
+        if !self.app_errors.is_empty() {
+            let list = self.app_errors.iter().fold(column![].spacing(4), |list, error| {
+                list.push(text(format!("{}: {}", error.location, error.message)))
+            });
+            content = content.push(container(list).style(container::danger).padding(8).width(Fill));
+        }
+        if !self.local_errors.is_empty() {
+            let list = self
+                .local_errors
+                .iter()
+                .fold(column![].spacing(4), |list, error| list.push(text(error.as_str()).style(text::danger)));
+            content = content.push(container(list).style(container::bordered_box).padding(8).width(Fill));
+        }
+
+        let content = content
+            .push(section("Model roles", self.view_roles()))
+            .push(section("Enabled models", self.view_models()))
+            .push(section("Providers (order)", self.view_providers()))
+            .push(section("Model overrides", self.view_overrides()))
+            .push(section("Custom providers", self.view_custom_providers()));
+        scrollable(content).width(Fill).height(Fill).into()
+    }
+
+    fn view_roles(&self) -> Element<'_, Message> {
+        let mut list = column![].spacing(12);
+        for (i, role) in self.draft.roles.iter().enumerate() {
+            let mut entries = column![
+                row![
+                    text_input("Role name", &role.role).on_input(move |name| Message::RenameRole(i, name)),
+                    button(text("Remove role")).style(button::danger).on_press(Message::RemoveRole(i)),
+                ]
+                .spacing(8)
+            ]
+            .spacing(4);
+            let len = role.chain.len();
+            for (j, selector) in role.chain.iter().enumerate() {
+                let label = if j == 0 { "Primary".to_owned() } else { format!("Fallback {j}") };
+                entries = entries.push(
+                    row![
+                        text(label).style(text::secondary).width(90),
+                        text(selector.as_str()).width(Fill),
+                        move_buttons(j, len, move |from, to| Message::MoveChainEntry { role: i, from, to }),
+                        button(text("Remove"))
+                            .style(button::text)
+                            .on_press(Message::RemoveChainEntry { role: i, index: j }),
+                    ]
+                    .spacing(8)
+                    .align_y(iced::Center),
+                );
+            }
+            let input = self.chain_inputs.get(i).map_or("", String::as_str);
+            entries = entries.push(
+                row![
+                    pick_list(self.known_models.as_slice(), None::<String>, move |selector| {
+                        Message::AddChainEntry(i, selector)
+                    })
+                    .placeholder("Add model"),
+                    text_input("or type provider/model[:thinking]", input)
+                        .on_input(move |value| Message::ChainInput(i, value))
+                        .on_submit(Message::AddTypedChainEntry(i)),
+                    button(text("Add")).style(button::secondary).on_press(Message::AddTypedChainEntry(i)),
+                ]
+                .spacing(8),
+            );
+            list = list.push(container(entries).style(container::bordered_box).padding(8).width(Fill));
+        }
+        list.push(
+            row![
+                text_input("New role name", &self.new_role)
+                    .on_input(Message::NewRoleInput)
+                    .on_submit(Message::AddRole),
+                button(text("Add role")).style(button::secondary).on_press(Message::AddRole),
+            ]
+            .spacing(8),
+        )
+        .into()
+    }
+
+    fn view_models(&self) -> Element<'_, Message> {
+        if self.draft.models.is_empty() {
+            return text("No models available").style(text::secondary).into();
+        }
+        self.draft
+            .models
+            .iter()
+            .enumerate()
+            .fold(column![].spacing(4), |list, (i, model)| {
+                list.push(
+                    checkbox(model.enabled)
+                        .label(model.selector.as_str())
+                        .on_toggle(move |enabled| Message::ModelToggled(i, enabled)),
+                )
+            })
+            .into()
+    }
+
+    fn view_providers(&self) -> Element<'_, Message> {
+        if self.draft.providers.is_empty() {
+            return text("No providers available").style(text::secondary).into();
+        }
+        let len = self.draft.providers.len();
+        self.draft
+            .providers
+            .iter()
+            .enumerate()
+            .fold(column![].spacing(4), |list, (i, provider)| {
+                let label = if provider.name.is_empty() {
+                    provider.id.clone()
+                } else {
+                    format!("{} ({})", provider.name, provider.id)
+                };
+                list.push(
+                    row![
+                        checkbox(provider.enabled)
+                            .label(label)
+                            .on_toggle(move |enabled| Message::ProviderToggled(i, enabled))
+                            .width(Fill),
+                        move_buttons(i, len, |from, to| Message::MoveProvider { from, to }),
+                    ]
+                    .spacing(8)
+                    .align_y(iced::Center),
+                )
+            })
+            .into()
+    }
+
+    fn view_overrides(&self) -> Element<'_, Message> {
+        let mut list = column![].spacing(12);
+        for (i, o) in self.draft.overrides.iter().enumerate() {
+            let mut fields = column![
+                row![
+                    text(o.selector.as_str()).width(Fill),
+                    button(text("Add field")).style(button::secondary).on_press(Message::AddField(i)),
+                    button(text("Remove override")).style(button::danger).on_press(Message::RemoveOverride(i)),
+                ]
+                .spacing(8)
+                .align_y(iced::Center)
+            ]
+            .spacing(4);
+            for (j, field) in o.fields.iter().enumerate() {
+                let value: Element<'_, Message> = if field.kind == FieldKind::Bool {
+                    checkbox(field.raw.trim() == "true")
+                        .label("true")
+                        .on_toggle(move |value| Message::FieldValueChanged { model: i, field: j, raw: value.to_string() })
+                        .into()
+                } else {
+                    text_input("Value", &field.raw)
+                        .on_input(move |raw| Message::FieldValueChanged { model: i, field: j, raw })
+                        .into()
+                };
+                fields = fields.push(
+                    row![
+                        text_input("Field, e.g. contextWindow", &field.key)
+                            .on_input(move |key| Message::FieldKeyChanged { model: i, field: j, key }),
+                        pick_list(FieldKind::ALL, Some(field.kind), move |kind| Message::FieldKindChanged {
+                            model: i,
+                            field: j,
+                            kind
+                        }),
+                        value,
+                        button(text("Remove"))
+                            .style(button::text)
+                            .on_press(Message::RemoveField { model: i, field: j }),
+                    ]
+                    .spacing(8)
+                    .align_y(iced::Center),
+                );
+                if let Err(message) = field.kind.parse(&field.raw) {
+                    fields = fields.push(text(message).style(text::danger));
+                }
+            }
+            list = list.push(container(fields).style(container::bordered_box).padding(8).width(Fill));
+        }
+        list.push(
+            row![
+                pick_list(self.known_models.as_slice(), None::<String>, Message::AddOverride)
+                    .placeholder("Override a model"),
+                text_input("or type provider/model", &self.new_override)
+                    .on_input(Message::NewOverrideInput)
+                    .on_submit(Message::AddTypedOverride),
+                button(text("Add")).style(button::secondary).on_press(Message::AddTypedOverride),
+            ]
+            .spacing(8),
+        )
+        .into()
+    }
+
+    fn view_custom_providers(&self) -> Element<'_, Message> {
+        let providers = self.draft.custom_providers();
+        let mut list = column![].spacing(12);
+        for (i, provider) in self.draft.custom_providers.iter().enumerate() {
+            let edit = move |f: fn(String) -> ProviderEdit| move |value| Message::CustomProviderEdited(i, f(value));
+            let mut form = column![
+                labeled("Id", text_input("my-provider", &provider.id).on_input(edit(ProviderEdit::Id))),
+                labeled(
+                    "Base URL",
+                    text_input("https://example.com/v1", &provider.base_url).on_input(edit(ProviderEdit::BaseUrl)),
+                ),
+                labeled("API", text_input("openai-completions", &provider.api).on_input(edit(ProviderEdit::Api))),
+                labeled(
+                    "Auth",
+                    pick_list(ProviderAuth::ALL, Some(provider.auth), move |auth| {
+                        Message::CustomProviderEdited(i, ProviderEdit::Auth(auth))
+                    }),
+                ),
+                labeled(
+                    "API key variable",
+                    text_input("MY_PROVIDER_API_KEY", &provider.api_key_env)
+                        .on_input(edit(ProviderEdit::ApiKeyEnv)),
+                ),
+                labeled(
+                    "Models",
+                    text_input("model-a, model-b", &provider.models).on_input(edit(ProviderEdit::Models)),
+                ),
+            ]
+            .spacing(4);
+            let others: Vec<CustomProvider> = providers
+                .iter()
+                .enumerate()
+                .filter(|(other, _)| *other != i)
+                .map(|(_, p)| p.clone())
+                .collect();
+            if let Some(current) = providers.get(i) {
+                for message in validate_custom_provider(current, &others) {
+                    form = form.push(text(message).style(text::danger));
+                }
+            }
+            form = form.push(
+                button(text("Remove provider")).style(button::danger).on_press(Message::RemoveCustomProvider(i)),
+            );
+            list = list.push(container(form).style(container::bordered_box).padding(8).width(Fill));
+        }
+        list.push(button(text("Add custom provider")).style(button::secondary).on_press(Message::AddCustomProvider))
+            .into()
+    }
+}
+
+fn section<'a>(title: &'a str, body: Element<'a, Message>) -> Element<'a, Message> {
+    column![text(title).size(16), rule::horizontal(1), body].spacing(8).into()
+}
+
+fn labeled<'a>(label: &'a str, field: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+    row![text(label).width(140), field.into()].spacing(8).align_y(iced::Center).into()
+}
+
+/// Up and down buttons for the item at `index` of a list of `len`, disabled at
+/// the ends. `on_move(from, to)` builds the message.
+fn move_buttons<'a>(index: usize, len: usize, on_move: impl Fn(usize, usize) -> Message) -> Element<'a, Message> {
+    let up = index.checked_sub(1).map(|to| on_move(index, to));
+    let down = (index + 1 < len).then(|| on_move(index, index + 1));
+    row![
+        button(text("Up")).style(button::subtle).on_press_maybe(up),
+        button(text("Down")).style(button::subtle).on_press_maybe(down),
+    ]
+    .spacing(4)
+    .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn settings() -> ModelSettings {
+        ModelSettings {
+            roles: vec![RoleChain {
+                role: "default".into(),
+                chain: vec![
+                    "anthropic/claude-sonnet-4-5:high".into(),
+                    "openai/gpt-5".into(),
+                    "google/gemini-2.5-pro".into(),
+                ],
+            }],
+            models: vec![ModelToggle { selector: "openai/gpt-5".into(), enabled: true }],
+            providers: vec![
+                ProviderToggle { id: "anthropic".into(), name: "Anthropic".into(), enabled: true },
+                ProviderToggle { id: "openai".into(), name: "OpenAI".into(), enabled: true },
+                ProviderToggle { id: "google".into(), name: "Google".into(), enabled: false },
+            ],
+            overrides: vec![ModelOverride {
+                selector: "openai/gpt-5".into(),
+                fields: vec![OverrideField { key: "contextWindow".into(), value: FieldValue::Int(400_000) }],
+            }],
+            custom_providers: Vec::new(),
+        }
+    }
+
+    fn state() -> State {
+        State::new(settings(), vec!["openai/gpt-5".into(), "anthropic/claude-haiku-4-5".into()])
+    }
+
+    /// Sends a message and returns the event; the task is never needed here.
+    fn send(state: &mut State, message: Message) -> Option<Event> {
+        let (_task, event) = state.update(message);
+        event
+    }
+
+    fn saved_settings(state: &mut State) -> ModelSettings {
+        match state.update(Message::Save) {
+            (_task, Some(Event::Save(settings))) => settings,
+            (_task, other) => panic!("expected Save, got {other:?}; local errors {:?}", state.local_errors()),
+        }
+    }
+
+    fn full_provider() -> CustomProvider {
+        CustomProvider {
+            id: "local-llm".into(),
+            base_url: "http://localhost:8080/v1".into(),
+            api: "openai-completions".into(),
+            auth: ProviderAuth::ApiKey,
+            api_key_env: "LOCAL_LLM_KEY".into(),
+            models: vec!["qwen3".into()],
+        }
+    }
+
+    #[test]
+    fn move_item_moves_within_range_and_rejects_out_of_range() {
+        let mut items = vec!['a', 'b', 'c'];
+        assert!(move_item(&mut items, 2, 0));
+        assert_eq!(items, ['c', 'a', 'b']);
+        assert!(move_item(&mut items, 0, 2));
+        assert_eq!(items, ['a', 'b', 'c']);
+        assert!(!move_item(&mut items, 3, 0));
+        assert!(!move_item(&mut items, 0, 3));
+        assert_eq!(items, ['a', 'b', 'c']);
+        assert!(!move_item(&mut Vec::<char>::new(), 0, 0));
+    }
+
+    #[test]
+    fn moving_a_fallback_to_the_top_makes_it_primary_in_save() {
+        let mut state = state();
+        send(&mut state, Message::MoveChainEntry { role: 0, from: 2, to: 0 });
+        let saved = saved_settings(&mut state);
+        assert_eq!(
+            saved.roles[0].chain,
+            ["google/gemini-2.5-pro", "anthropic/claude-sonnet-4-5:high", "openai/gpt-5"]
+        );
+        // Save leaves the baseline alone until the app confirms the write.
+        assert!(state.is_dirty());
+    }
+
+    #[test]
+    fn added_chain_entries_append_as_fallbacks() {
+        let mut state = state();
+        send(&mut state, Message::AddChainEntry(0, "anthropic/claude-haiku-4-5".into()));
+        send(&mut state, Message::ChainInput(0, " local/qwen3 ".into()));
+        send(&mut state, Message::AddTypedChainEntry(0));
+        send(&mut state, Message::RemoveChainEntry { role: 0, index: 1 });
+        let saved = saved_settings(&mut state);
+        assert_eq!(
+            saved.roles[0].chain,
+            ["anthropic/claude-sonnet-4-5:high", "google/gemini-2.5-pro", "anthropic/claude-haiku-4-5", "local/qwen3"]
+        );
+    }
+
+    #[test]
+    fn provider_order_moves_are_saved() {
+        let mut state = state();
+        send(&mut state, Message::MoveProvider { from: 2, to: 1 });
+        send(&mut state, Message::MoveProvider { from: 0, to: 1 });
+        let ids: Vec<String> = saved_settings(&mut state).providers.into_iter().map(|p| p.id).collect();
+        assert_eq!(ids, ["google", "anthropic", "openai"]);
+    }
+
+    #[test]
+    fn dirty_tracks_the_draft_against_the_baseline() {
+        let mut state = state();
+        assert!(!state.is_dirty());
+        send(&mut state, Message::ModelToggled(0, false));
+        assert!(state.is_dirty());
+        send(&mut state, Message::ModelToggled(0, true));
+        assert!(!state.is_dirty());
+
+        send(&mut state, Message::RenameRole(0, "smol".into()));
+        assert!(state.is_dirty());
+        let (_task, event) = state.update(Message::Revert);
+        assert_eq!(event, Some(Event::Reverted));
+        assert!(!state.is_dirty());
+        assert_eq!(state.draft_settings(), Ok(settings()));
+    }
+
+    #[test]
+    fn save_refuses_an_unparsable_int_until_fixed() {
+        let mut state = state();
+        send(&mut state, Message::FieldValueChanged { model: 0, field: 0, raw: "12x".into() });
+        let (_task, event) = state.update(Message::Save);
+        assert_eq!(event, None);
+        assert_eq!(state.local_errors().len(), 1);
+        assert!(state.local_errors()[0].contains("contextWindow"), "{:?}", state.local_errors());
+
+        send(&mut state, Message::FieldValueChanged { model: 0, field: 0, raw: "128000".into() });
+        let saved = saved_settings(&mut state);
+        assert_eq!(saved.overrides[0].fields[0].value, FieldValue::Int(128_000));
+        assert!(state.local_errors().is_empty());
+    }
+
+    #[test]
+    fn float_and_bool_fields_parse_to_typed_values() {
+        let mut state = state();
+        send(&mut state, Message::AddOverride("anthropic/claude-haiku-4-5".into()));
+        send(&mut state, Message::AddField(1));
+        send(&mut state, Message::FieldKeyChanged { model: 1, field: 0, key: "temperature".into() });
+        send(&mut state, Message::FieldKindChanged { model: 1, field: 0, kind: FieldKind::Float });
+        send(&mut state, Message::FieldValueChanged { model: 1, field: 0, raw: "abc".into() });
+        assert!(state.draft_settings().is_err());
+        send(&mut state, Message::FieldValueChanged { model: 1, field: 0, raw: "0.5".into() });
+
+        send(&mut state, Message::AddField(1));
+        send(&mut state, Message::FieldKeyChanged { model: 1, field: 1, key: "reasoning".into() });
+        send(&mut state, Message::FieldKindChanged { model: 1, field: 1, kind: FieldKind::Bool });
+        send(&mut state, Message::FieldValueChanged { model: 1, field: 1, raw: true.to_string() });
+
+        let saved = saved_settings(&mut state);
+        assert_eq!(
+            saved.overrides[1],
+            ModelOverride {
+                selector: "anthropic/claude-haiku-4-5".into(),
+                fields: vec![
+                    OverrideField { key: "temperature".into(), value: FieldValue::Float(0.5) },
+                    OverrideField { key: "reasoning".into(), value: FieldValue::Bool(true) },
+                ],
+            }
+        );
+    }
+
+    #[test]
+    fn empty_and_duplicate_names_block_save() {
+        let mut state = state();
+        send(&mut state, Message::AddField(0));
+        send(&mut state, Message::NewRoleInput("plan".into()));
+        send(&mut state, Message::AddRole);
+        send(&mut state, Message::RenameRole(1, "default".into()));
+        let (_task, event) = state.update(Message::Save);
+        assert_eq!(event, None);
+        assert_eq!(state.local_errors().len(), 2, "{:?}", state.local_errors());
+    }
+
+    #[test]
+    fn custom_provider_with_models_needs_api() {
+        let provider = CustomProvider { api: String::new(), ..full_provider() };
+        let messages = validate_custom_provider(&provider, &[]);
+        assert_eq!(messages.len(), 1, "{messages:?}");
+        assert!(messages[0].contains("API type"));
+        assert!(validate_custom_provider(&full_provider(), &[]).is_empty());
+    }
+
+    #[test]
+    fn custom_provider_rejects_a_pasted_secret_key() {
+        let provider = CustomProvider { api_key_env: "sk-ant-api03-abcdef".into(), ..full_provider() };
+        let messages = validate_custom_provider(&provider, &[]);
+        assert_eq!(messages.len(), 1, "{messages:?}");
+        assert!(messages[0].contains("environment variable"));
+        let digit_first = CustomProvider { api_key_env: "1KEY".into(), ..full_provider() };
+        assert_eq!(validate_custom_provider(&digit_first, &[]).len(), 1);
+    }
+
+    #[test]
+    fn custom_provider_with_auth_none_needs_no_key() {
+        let provider = CustomProvider { auth: ProviderAuth::None, api_key_env: String::new(), ..full_provider() };
+        assert!(validate_custom_provider(&provider, &[]).is_empty());
+        let keyless = CustomProvider { api_key_env: String::new(), ..full_provider() };
+        assert_eq!(validate_custom_provider(&keyless, &[]).len(), 1);
+    }
+
+    #[test]
+    fn override_only_provider_needs_one_of_url_key_or_auth_none() {
+        let bare = CustomProvider { id: "anthropic".into(), ..CustomProvider::default() };
+        assert_eq!(validate_custom_provider(&bare, &[]).len(), 1);
+        let with_auth_none = CustomProvider { auth: ProviderAuth::None, ..bare.clone() };
+        assert!(validate_custom_provider(&with_auth_none, &[]).is_empty());
+    }
+
+    #[test]
+    fn custom_provider_rejects_duplicate_id_bad_id_and_bad_url() {
+        let duplicate = validate_custom_provider(&full_provider(), &[full_provider()]);
+        assert_eq!(duplicate.len(), 1, "{duplicate:?}");
+        assert!(duplicate[0].contains("already uses"));
+
+        let bad_url = CustomProvider { base_url: "localhost:8080".into(), ..full_provider() };
+        let messages = validate_custom_provider(&bad_url, &[]);
+        assert_eq!(messages.len(), 1, "{messages:?}");
+        assert!(messages[0].contains("http://"));
+
+        let bad_id = CustomProvider { id: "My Provider".into(), ..full_provider() };
+        assert_eq!(validate_custom_provider(&bad_id, &[]).len(), 1);
+    }
+
+    #[test]
+    fn custom_provider_edits_are_saved_and_validated() {
+        let mut state = state();
+        send(&mut state, Message::AddCustomProvider);
+        let (_task, event) = state.update(Message::Save);
+        assert_eq!(event, None);
+        assert!(!state.local_errors().is_empty());
+
+        let edits = [
+            ProviderEdit::Id("local-llm".into()),
+            ProviderEdit::BaseUrl("http://localhost:8080/v1".into()),
+            ProviderEdit::Api("openai-completions".into()),
+            ProviderEdit::ApiKeyEnv("LOCAL_LLM_KEY".into()),
+            ProviderEdit::Models(" qwen3 ,, llama-4 ".into()),
+        ];
+        for edit in edits {
+            send(&mut state, Message::CustomProviderEdited(0, edit));
+        }
+        let saved = saved_settings(&mut state);
+        assert_eq!(
+            saved.custom_providers,
+            [CustomProvider { models: vec!["qwen3".into(), "llama-4".into()], ..full_provider() }]
+        );
+    }
+
+    #[test]
+    fn app_errors_stay_until_save_revert_or_saved() {
+        let error = ValidationError { location: "modelRoles.default".into(), message: "unknown model".into() };
+        let mut state = state();
+
+        state.set_errors(vec![error.clone()]);
+        send(&mut state, Message::ModelToggled(0, false));
+        assert_eq!(state.errors(), std::slice::from_ref(&error));
+        send(&mut state, Message::Save);
+        assert!(state.errors().is_empty());
+
+        state.set_errors(vec![error.clone()]);
+        send(&mut state, Message::Revert);
+        assert!(state.errors().is_empty());
+
+        state.set_errors(vec![error.clone()]);
+        state.saved(settings());
+        assert!(state.errors().is_empty());
+    }
+
+    #[test]
+    fn saved_makes_the_written_settings_the_new_baseline() {
+        let mut state = state();
+        send(&mut state, Message::ProviderToggled(2, true));
+        let written = saved_settings(&mut state);
+        state.saved(written.clone());
+        assert!(!state.is_dirty());
+        assert_eq!(state.draft_settings(), Ok(written));
+
+        // Toggling back now differs from the new baseline.
+        send(&mut state, Message::ProviderToggled(2, false));
+        assert!(state.is_dirty());
+    }
+}
