@@ -7,13 +7,15 @@
 //! the surface with its surface service and hands it back with
 //! [`Panel::attach`].
 
+use crate::decode::VideoDecoder;
+use crate::decode::encoding_name;
 use crate::picker::{self, FilePicker};
 use crate::state::{self, Clock, MonotonicClock, Options, State};
 use crate::style;
 use crate::document::PageRenderers;
 use iced::widget::{Column, button, column, container, row, rule, scrollable, space, text, text_input};
 use iced::{Center, Element, Fill, Task};
-use loa_surface::{Encoding, Surface, SurfaceInfo, SurfaceMode, SurfaceUri};
+use loa_surface::{Encoding, StreamInfo, Surface, SurfaceInfo, SurfaceMode, SurfaceUri};
 use loa_ui_icons::{Icon, muted};
 use loa_ui_shell::theme::style as shell;
 use std::path::PathBuf;
@@ -25,6 +27,46 @@ pub enum BrowserStatus {
     /// The browser executable, and whether Chrome's sandbox is on.
     Ready { executable: PathBuf, sandboxed: bool },
     Missing,
+}
+
+/// Makes the video decoder of each new pixel tab.
+pub type NewDecoder = Arc<dyn Fn() -> Box<dyn VideoDecoder> + Send + Sync>;
+
+/// Live video encoding, as the launcher shows it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct VideoStatus {
+    /// Live surfaces stream video.
+    pub enabled: bool,
+    /// What tabs here get; `None` while the machine's encoders are tried.
+    pub encoder: Option<StreamInfo>,
+    /// Hardware encoders that work here, e.g. `h264_vaapi`.
+    pub hardware: Vec<String>,
+}
+
+/// How browser frames are captured.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Capture {
+    /// Headless Chrome's own JPEG screencast.
+    #[default]
+    Screencast,
+    /// Headed Chrome on an Xvfb virtual display, captured raw.
+    VirtualDisplay,
+}
+
+/// The browser capture choice, as the launcher shows it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CaptureStatus {
+    pub selected: Capture,
+    /// Why the virtual display can't run here; `None` when it can.
+    pub virtual_display_missing: Option<String>,
+    /// The running browser keeps the other capture until its tabs close.
+    pub pending: bool,
+}
+
+impl Default for CaptureStatus {
+    fn default() -> Self {
+        Self { selected: Capture::Screencast, virtual_display_missing: Some("not checked".into()), pending: false }
+    }
 }
 
 /// A surface that can be opened: a configured VM endpoint, or one an MCP
@@ -56,6 +98,10 @@ pub enum Message {
     Password(String),
     Connect,
     OpenAvailable(SurfaceUri),
+    /// Turn live video encoding on or off.
+    Video(bool),
+    /// Pick how browser frames are captured.
+    Capture(Capture),
 }
 
 /// What the app must do.
@@ -71,6 +117,10 @@ pub enum Event {
     /// A surface streams an encoding the renderer can't show; ask its server
     /// for one of `supported`.
     EncodingUnsupported { uri: SurfaceUri, encoding: Encoding, supported: Vec<Encoding> },
+    /// The user turned live video encoding on or off.
+    SetVideo(bool),
+    /// The user picked how browser frames are captured.
+    SetCapture(Capture),
 }
 
 /// What renderers of new tabs get.
@@ -79,11 +129,13 @@ pub struct PanelOptions {
     pub clock: Arc<dyn Clock>,
     /// Renders PDF and Office documents.
     pub documents: Option<Arc<dyn PageRenderers>>,
+    /// Decodes video in pixel tabs; without it they ask for stills.
+    pub video: Option<NewDecoder>,
 }
 
 impl Default for PanelOptions {
     fn default() -> Self {
-        Self { clock: Arc::new(MonotonicClock::default()), documents: None }
+        Self { clock: Arc::new(MonotonicClock::default()), documents: None, video: None }
     }
 }
 
@@ -101,6 +153,8 @@ pub struct Panel {
     /// What is being opened right now.
     pending: Option<String>,
     error: Option<String>,
+    video: VideoStatus,
+    capture: CaptureStatus,
 }
 
 impl Panel {
@@ -118,6 +172,8 @@ impl Panel {
             picker: FilePicker::new(documents_dir),
             pending: None,
             error: None,
+            video: VideoStatus::default(),
+            capture: CaptureStatus::default(),
         }
     }
 
@@ -175,6 +231,19 @@ impl Panel {
                 self.start(format!("Opening {uri}"));
                 return (Task::none(), Some(Event::Open(uri)));
             }
+            Message::Video(enabled) => {
+                if enabled != self.video.enabled {
+                    self.video.enabled = enabled;
+                    return (Task::none(), Some(Event::SetVideo(enabled)));
+                }
+            }
+            Message::Capture(capture) => {
+                let blocked = capture == Capture::VirtualDisplay && self.capture.virtual_display_missing.is_some();
+                if capture != self.capture.selected && !blocked {
+                    self.capture.selected = capture;
+                    return (Task::none(), Some(Event::SetCapture(capture)));
+                }
+            }
         }
         (Task::none(), None)
     }
@@ -197,7 +266,8 @@ impl Panel {
         if self.tab_mut(&uri).is_some() {
             return Task::none();
         }
-        let options = Options { clock: self.options.clock.clone(), video: None, documents: self.options.documents.clone() };
+        let video = self.options.video.as_ref().map(|make| make());
+        let options = Options { clock: self.options.clock.clone(), video, documents: self.options.documents.clone() };
         let (state, task) = State::open(surface, options);
         self.tabs.push(OpenTab { server: server.into(), state });
         task.map(move |m| Message::Surface(uri.clone(), m))
@@ -235,6 +305,22 @@ impl Panel {
     /// The renderer of an open surface.
     pub fn surface(&self, uri: &SurfaceUri) -> Option<&State> {
         self.tabs.iter().find(|t| &t.state.info().uri == uri).map(|t| &t.state)
+    }
+
+    pub fn set_video(&mut self, video: VideoStatus) {
+        self.video = video;
+    }
+
+    pub fn video(&self) -> &VideoStatus {
+        &self.video
+    }
+
+    pub fn set_capture(&mut self, capture: CaptureStatus) {
+        self.capture = capture;
+    }
+
+    pub fn capture(&self) -> &CaptureStatus {
+        &self.capture
     }
 
     /// Open surfaces in tab order.
@@ -326,17 +412,24 @@ impl Panel {
             .on_press_maybe((browser_ready && !self.url.trim().is_empty()).then_some(Message::OpenUrl))
             .padding([6, 12])
             .style(style::action);
+        let headed = self.capture.selected == Capture::VirtualDisplay;
         let browser_note: Element<'_, Message> = match &self.browser {
             BrowserStatus::Ready { executable, sandboxed } => {
                 let sandbox = if *sandboxed { "" } else { ", without Chrome's sandbox (this kernel restricts user namespaces)" };
-                text(format!("Headless {}{sandbox}", browser_name(executable))).size(style::SMALL).style(shell::muted).into()
+                let kind = if headed { "Headed" } else { "Headless" };
+                text(format!("{kind} {}{sandbox}", browser_name(executable))).size(style::SMALL).style(shell::muted).into()
             }
             BrowserStatus::Missing => text("No Chrome or Chromium installed. Install one, or run `npx playwright install chromium`.")
                 .size(style::SMALL)
                 .style(style::warning)
                 .into(),
         };
-        content = content.push(section(Icon::Globe, "Browser", column![row![url, open].spacing(6).align_y(Center), browser_note].spacing(6)));
+        content = content.push(section(
+            Icon::Globe,
+            "Browser",
+            column![row![url, open].spacing(6).align_y(Center), browser_note, self.capture_choice()].spacing(6),
+        ));
+        content = content.push(section(Icon::Monitor, "Live video", self.video_status()));
 
         content = content.push(section(
             Icon::FileText,
@@ -385,6 +478,78 @@ impl Panel {
         };
         content = content.push(section(Icon::Wrench, "From MCP servers", declared));
         scrollable(content).height(Fill).into()
+    }
+
+    /// The two browser captures; the virtual display only where it runs.
+    fn capture_choice(&self) -> Element<'_, Message> {
+        let choice = |label: &'static str, capture: Capture, enabled: bool| {
+            button(text(label).size(style::SMALL))
+                .on_press_maybe(enabled.then_some(Message::Capture(capture)))
+                .padding([3, 8])
+                .style(shell::row_for(self.capture.selected == capture))
+        };
+        let missing = self.capture.virtual_display_missing.as_deref();
+        let choices = row![
+            text("Capture").size(style::SMALL).style(shell::muted),
+            choice("Headless screencast", Capture::Screencast, true),
+            choice("Headed on a virtual display", Capture::VirtualDisplay, missing.is_none()),
+        ]
+        .spacing(6)
+        .align_y(Center);
+        let note = match (missing, self.capture.selected, self.capture.pending) {
+            (Some(why), _, _) => Some(text(format!("Virtual display unavailable: {why}")).size(style::SMALL).style(style::warning)),
+            (None, _, true) => Some(
+                text("The open browser tabs keep the current capture; new tabs use this one once they close.")
+                    .size(style::SMALL)
+                    .style(shell::muted),
+            ),
+            (None, Capture::VirtualDisplay, false) => Some(
+                text("Each tab runs headed Chrome on its own Xvfb display, captured raw.").size(style::SMALL).style(shell::muted),
+            ),
+            (None, Capture::Screencast, false) => None,
+        };
+        let mut choice = column![choices].spacing(4);
+        if let Some(note) = note {
+            choice = choice.push(note);
+        }
+        choice.into()
+    }
+
+    /// Whether live surfaces stream video, and with which encoder.
+    fn video_status(&self) -> Element<'_, Message> {
+        let toggle = |label: &'static str, on: bool| {
+            button(text(label).size(style::SMALL))
+                .on_press(Message::Video(on))
+                .padding([3, 8])
+                .style(shell::row_for(self.video.enabled == on))
+        };
+        let choices = row![
+            text("Encode browser and VM frames as video").size(style::SMALL).style(shell::muted),
+            space::horizontal(),
+            toggle("On", true),
+            toggle("Off", false),
+        ]
+        .spacing(6)
+        .align_y(Center);
+        let encoder = match &self.video.encoder {
+            _ if !self.video.enabled => "Off: frames go as their source makes them (JPEG screencast, raw VNC rectangles)".to_owned(),
+            None => "Trying this machine's encoders…".to_owned(),
+            Some(stream) if stream.hardware => {
+                format!("{} with {}, hardware encoded", encoding_name(stream.encoding), stream.encoder)
+            }
+            Some(stream) => format!(
+                "No hardware encoder works here: {} with {}, software encoded",
+                encoding_name(stream.encoding),
+                stream.encoder
+            ),
+        };
+        let mut status = column![choices, text(encoder).size(style::SMALL).style(shell::muted)].spacing(4);
+        if self.video.hardware.len() > 1 {
+            status = status.push(
+                text(format!("Hardware encoders: {}", self.video.hardware.join(", "))).size(style::SMALL).style(shell::muted),
+            );
+        }
+        status.into()
     }
 }
 

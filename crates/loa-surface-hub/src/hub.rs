@@ -5,13 +5,16 @@ use crate::{HubError, Result};
 use async_trait::async_trait;
 use loa_mcp::{AllowAll, Manager, Status};
 use loa_surface::{Surface, SurfaceInfo, SurfaceMode, SurfaceServer, SurfaceUri};
-use loa_surface_browser::{BrowserConfig, BrowserServer, Tab};
+use loa_surface_bench::encode::ffmpeg::FfmpegConfig;
+use loa_surface_bench::live::{LiveVideo, VideoSurface};
+use loa_surface_browser::{BrowserConfig, BrowserServer, Capture, Tab, VirtualDisplayConfig};
 use loa_surface_docs::{DocSurface, DocsServer, Fonts};
 use loa_surface_rfb::{PasswordSource, RfbEndpoint, RfbOptions, RfbServer};
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use tokio::sync::broadcast;
+use tokio::sync::{OnceCell, broadcast};
 
 /// What the hub starts with.
 #[derive(Clone, Debug)]
@@ -26,25 +29,72 @@ pub struct HubConfig {
     /// that only take text results.
     pub screenshot_dir: PathBuf,
     pub rfb: RfbOptions,
+    /// Live surfaces (browser tabs, VMs) stream video to viewers that decode
+    /// it.
+    pub video: bool,
+    /// The ffmpeg hardware encoders run through.
+    pub ffmpeg: Option<FfmpegConfig>,
+    /// This machine's encoders; `None` tries them on first need.
+    pub encoders: Option<Arc<LiveVideo>>,
+    /// How browser tabs are captured.
+    pub capture: CaptureMode,
+    /// What the virtual display capture runs with, or why it can't run.
+    pub virtual_display: Result<VirtualDisplaySetup, String>,
+}
+
+/// How browser tabs are captured.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CaptureMode {
+    /// Headless Chrome's JPEG screencast.
+    #[default]
+    Screencast,
+    /// Headed Chrome on an Xvfb virtual display per tab, captured raw.
+    VirtualDisplay,
+}
+
+/// Xvfb and a Chrome that can run headed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VirtualDisplaySetup {
+    pub xvfb: PathBuf,
+    pub chrome: PathBuf,
+}
+
+impl VirtualDisplaySetup {
+    /// Xvfb on `path_var` and a headed Chrome (search path, install
+    /// locations, the Playwright cache under `home`), or what is missing.
+    pub fn find(path_var: Option<&std::ffi::OsStr>, home: Option<&Path>) -> Result<Self, String> {
+        let xvfb = loa_surface_browser::find_xvfb(path_var)
+            .ok_or_else(|| "Xvfb isn't installed (install the xvfb package)".to_owned())?;
+        let chrome = loa_surface_browser::find_chrome(path_var, home, true)
+            .ok_or_else(|| "no Chrome or Chromium that runs headed (the headless shell can't)".to_owned())?;
+        Ok(Self { xvfb, chrome })
+    }
 }
 
 impl HubConfig {
     /// Finds Chrome or Chromium (search path, install locations, then the
-    /// Playwright cache) and the system fonts. Browser profiles and agent
-    /// screenshots go under `state_dir`. Chrome's sandbox is on unless the
-    /// kernel refuses unprivileged user namespaces (see [`user_namespaces`]),
-    /// where Chrome would refuse to start with it.
+    /// Playwright cache), Xvfb, ffmpeg and the system fonts. Browser
+    /// profiles and agent screenshots go under `state_dir`. Chrome's sandbox
+    /// is on unless the kernel refuses unprivileged user namespaces (see
+    /// [`user_namespaces`]), where Chrome would refuse to start with it.
     pub fn discover(state_dir: &Path) -> Self {
         let browser = BrowserConfig::discover().ok().map(|mut config| {
             config.profile_root = Some(state_dir.join("browser"));
             config.sandbox = user_namespaces();
             config
         });
+        let path = std::env::var_os("PATH");
+        let home = std::env::var_os("HOME").map(PathBuf::from);
         Self {
             browser,
             fonts: Fonts::system(),
             screenshot_dir: state_dir.join("screenshots"),
             rfb: RfbOptions::default(),
+            video: true,
+            ffmpeg: FfmpegConfig::discover(),
+            encoders: None,
+            capture: CaptureMode::Screencast,
+            virtual_display: VirtualDisplaySetup::find(path.as_deref(), home.as_deref()),
         }
     }
 }
@@ -138,6 +188,12 @@ pub struct SurfaceHub {
     declared: Mutex<BTreeMap<String, Vec<SurfaceInfo>>>,
     mcp: Mutex<Option<Manager>>,
     events: broadcast::Sender<HubEvent>,
+    /// This machine's encoders, tried once.
+    encoders: OnceCell<Arc<LiveVideo>>,
+    video: AtomicBool,
+    /// Live surfaces coded as video, by uri.
+    videos: Mutex<Vec<(SurfaceUri, Arc<VideoSurface>)>>,
+    capture: Mutex<CaptureMode>,
 }
 
 impl SurfaceHub {
@@ -147,6 +203,10 @@ impl SurfaceHub {
             docs: DocsServer::new(config.fonts.clone()),
             vm: RfbServer::new(Vec::new(), passwords.clone(), config.rfb.clone()),
             passwords,
+            video: AtomicBool::new(config.video),
+            capture: Mutex::new(config.capture),
+            encoders: OnceCell::new_with(config.encoders.clone()),
+            videos: Mutex::new(Vec::new()),
             config,
             browser: tokio::sync::Mutex::new(None),
             open: Mutex::new(Vec::new()),
@@ -185,15 +245,95 @@ impl SurfaceHub {
     pub async fn open_browser(&self, url: &str) -> Result<Opened> {
         let server = self.browser_server().await?;
         let tab = server.open_tab(&normalize_url(url)).await?;
-        Ok(self.register(tab, Origin::Browser))
+        let surface = self.live(tab).await?;
+        Ok(self.register(surface, Origin::Browser))
     }
 
+    /// The encoders of this machine, tried on the first call (it starts
+    /// ffmpeg a few times, so the first call takes a moment).
+    pub async fn encoders(&self) -> Arc<LiveVideo> {
+        let ffmpeg = self.config.ffmpeg.clone();
+        let probe = || async move {
+            let probed = tokio::task::spawn_blocking(move || LiveVideo::probe(ffmpeg)).await;
+            Arc::new(probed.unwrap_or_else(|_| LiveVideo::probe(None)))
+        };
+        self.encoders.get_or_init(probe).await.clone()
+    }
+
+    /// Whether live surfaces stream video to viewers that decode it.
+    pub fn video(&self) -> bool {
+        self.video.load(Ordering::Acquire)
+    }
+
+    /// Turns video on or off, for open surfaces too.
+    pub async fn set_video(&self, enabled: bool) {
+        self.video.store(enabled, Ordering::Release);
+        let videos: Vec<_> = lock(&self.videos).iter().map(|(_, video)| video.clone()).collect();
+        for video in videos {
+            if let Err(error) = video.set_video(enabled).await {
+                tracing::warn!(%error, "switching a surface's video");
+            }
+        }
+    }
+
+    /// `surface`, coded as video for the viewers that negotiate it.
+    async fn live(&self, surface: Arc<dyn Surface>) -> Result<Arc<dyn Surface>> {
+        let encoders = self.encoders().await;
+        let video = VideoSurface::new(surface, encoders, self.video())?;
+        lock(&self.videos).push((video.info().uri, video.clone()));
+        Ok(video)
+    }
+
+    /// How new browser tabs are captured.
+    pub fn capture(&self) -> CaptureMode {
+        *lock(&self.capture)
+    }
+
+    /// Picks how new browser tabs are captured. The virtual display needs
+    /// what [`HubConfig::virtual_display`] found.
+    pub fn set_capture(&self, mode: CaptureMode) -> Result<()> {
+        if mode == CaptureMode::VirtualDisplay
+            && let Err(missing) = &self.config.virtual_display
+        {
+            return Err(HubError::NoVirtualDisplay(missing.clone()));
+        }
+        *lock(&self.capture) = mode;
+        Ok(())
+    }
+
+    /// Whether the running browser still captures the other way: it keeps
+    /// doing so until its tabs are closed.
+    pub async fn capture_pending(&self) -> bool {
+        let browser = self.browser.lock().await.clone();
+        browser.is_some_and(|server| capture_mode(&server) != self.capture() && !server.tabs().is_empty())
+    }
+
+    /// The browser config for `mode`.
+    fn browser_config(&self, mode: CaptureMode) -> Result<BrowserConfig> {
+        let mut config = self.config.browser.clone().ok_or(HubError::NoBrowser)?;
+        if mode == CaptureMode::VirtualDisplay {
+            let setup = self.config.virtual_display.clone().map_err(HubError::NoVirtualDisplay)?;
+            config.executable = setup.chrome;
+            config.capture = Capture::VirtualDisplay(VirtualDisplayConfig::new(setup.xvfb));
+        }
+        Ok(config)
+    }
+
+    /// The running browser, launched (or relaunched for another capture
+    /// once its tabs are closed) as needed.
     async fn browser_server(&self) -> Result<Arc<BrowserServer>> {
         let mut browser = self.browser.lock().await;
+        let mode = self.capture();
         if let Some(server) = &*browser {
-            return Ok(server.clone());
+            if capture_mode(server) == mode || !server.tabs().is_empty() {
+                return Ok(server.clone());
+            }
+            if let Err(error) = server.shutdown().await {
+                tracing::warn!(%error, "stopping the browser to switch its capture");
+            }
+            *browser = None;
         }
-        let config = self.config.browser.clone().ok_or(HubError::NoBrowser)?;
+        let config = self.browser_config(mode)?;
         if let Some(root) = &config.profile_root {
             std::fs::create_dir_all(root).map_err(loa_surface_browser::BrowserError::from)?;
         }
@@ -242,6 +382,7 @@ impl SurfaceHub {
             return Ok(opened);
         }
         let surface = self.vm.open_rfb(&uri).await?;
+        let surface = self.live(surface).await?;
         Ok(self.register(surface, Origin::Vm))
     }
 
@@ -255,6 +396,7 @@ impl SurfaceHub {
             && self.vm.list().await.unwrap_or_default().iter().any(|info| &info.uri == uri);
         if own_vm {
             let surface = self.vm.open_rfb(uri).await?;
+            let surface = self.live(surface).await?;
             return Ok(self.register(surface, Origin::Vm));
         }
         let declared = lock(&self.declared)
@@ -296,6 +438,7 @@ impl SurfaceHub {
             let index = open.iter().position(|o| &o.info.uri == uri).ok_or_else(|| HubError::NotFound(uri.clone()))?;
             open.remove(index)
         };
+        lock(&self.videos).retain(|(open, _)| open != uri);
         match opened.origin {
             Origin::Browser => {
                 let browser = self.browser.lock().await.clone();
@@ -386,12 +529,20 @@ impl SurfaceHub {
     /// Closes every surface and stops the browser.
     pub async fn shutdown(&self) {
         lock(&self.open).clear();
+        lock(&self.videos).clear();
         let browser = self.browser.lock().await.take();
         if let Some(server) = browser
             && let Err(error) = server.shutdown().await
         {
             tracing::warn!(%error, "stopping the browser");
         }
+    }
+}
+
+fn capture_mode(server: &BrowserServer) -> CaptureMode {
+    match server.config().capture {
+        Capture::Screencast => CaptureMode::Screencast,
+        Capture::VirtualDisplay(_) => CaptureMode::VirtualDisplay,
     }
 }
 

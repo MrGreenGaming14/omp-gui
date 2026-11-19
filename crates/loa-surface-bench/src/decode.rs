@@ -1,8 +1,7 @@
 //! Reconstructs the viewer picture from full and partial surface frames.
 
-use crate::{BenchError, Result, canvas::Canvas, encode::ffmpeg::FfmpegConfig, video::VideoDecoder};
+use crate::{BenchError, Result, canvas::Canvas, video::VideoDecoder};
 use loa_surface::{Encoding, Frame, Rect};
-use zune_core::{bytestream::ZCursor, colorspace::ColorSpace, options::DecoderOptions};
 
 /// Stateful decoder: video references persist between successive access units.
 pub struct FrameDecoder {
@@ -19,12 +18,7 @@ impl Default for FrameDecoder {
 impl FrameDecoder {
     /// Stills and H.264.
     pub fn new() -> Self {
-        Self::with_ffmpeg(None)
-    }
-
-    /// Stills, H.264, and HEVC through `ffmpeg` when given.
-    pub fn with_ffmpeg(ffmpeg: Option<FfmpegConfig>) -> Self {
-        Self { video: VideoDecoder::new(ffmpeg), scratch: Vec::new() }
+        Self { video: VideoDecoder::new(), scratch: Vec::new() }
     }
 
     /// Applies a frame to the displayed canvas; rejects invalid regions or payloads.
@@ -45,17 +39,29 @@ impl FrameDecoder {
         canvas.ensure_size(frame.width, frame.height);
         match frame.encoding {
             Encoding::Rgba => canvas.blit(region, &frame.data),
+            // zune-jpeg mis-decodes baseline JPEGs with one scan per
+            // component, which is how Chrome sends some screencast frames.
             Encoding::Jpeg => {
-                let options = DecoderOptions::default().jpeg_set_out_colorspace(ColorSpace::RGBA);
-                let mut decoder = zune_jpeg::JpegDecoder::new_with_options(ZCursor::new(frame.data.as_ref()), options);
-                decoder.decode_headers().map_err(|e| decode_error(frame.encoding, e))?;
+                let mut decoder = jpeg_decoder::Decoder::new(frame.data.as_ref());
+                let pixels = decoder.decode().map_err(|e| decode_error(frame.encoding, e))?;
                 let info = decoder.info().ok_or_else(|| decode_error(frame.encoding, "missing JPEG headers"))?;
                 if u32::from(info.width) != region.width || u32::from(info.height) != region.height {
                     return Err(decode_error(frame.encoding, "JPEG dimensions do not match region"));
                 }
-                let size = decoder.output_buffer_size().ok_or_else(|| decode_error(frame.encoding, "JPEG dimensions overflow"))?;
-                self.scratch.resize(size, 0);
-                decoder.decode_into(&mut self.scratch).map_err(|e| decode_error(frame.encoding, e))?;
+                self.scratch.clear();
+                match info.pixel_format {
+                    jpeg_decoder::PixelFormat::RGB24 => {
+                        for rgb in pixels.as_chunks::<3>().0 {
+                            self.scratch.extend_from_slice(&[rgb[0], rgb[1], rgb[2], 255]);
+                        }
+                    }
+                    jpeg_decoder::PixelFormat::L8 => {
+                        for &gray in &pixels {
+                            self.scratch.extend_from_slice(&[gray, gray, gray, 255]);
+                        }
+                    }
+                    other => return Err(decode_error(frame.encoding, format!("unsupported JPEG pixel format {other:?}"))),
+                }
                 canvas.blit(region, &self.scratch)
             }
             Encoding::Png => {

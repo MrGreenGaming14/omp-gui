@@ -8,7 +8,8 @@
 
 use bytes::Bytes;
 use loa_surface::{
-    Encoding, Frame, Input, InputEvent, Modifiers, MouseButton, Rect, SurfaceInfo, SurfaceMode, SurfaceUri,
+    Encoding, Frame, Input, InputEvent, Modifiers, MouseButton, Rect, StreamInfo, SurfaceInfo, SurfaceMode,
+    SurfaceUri,
 };
 
 use crate::{ProtoError, Result};
@@ -87,6 +88,34 @@ pub struct Accept {
     /// Pixel mode: frames come as datagrams. Otherwise on the stream.
     #[prost(bool, tag = "3")]
     pub datagrams: bool,
+    /// Pixel mode: what the server streams for this viewer, chosen from the
+    /// viewer's `Open.encodings`. Absent when the surface doesn't say.
+    #[prost(message, optional, tag = "4")]
+    pub stream: Option<StreamInfoMsg>,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct StreamInfoMsg {
+    #[prost(enumeration = "WireEncoding", tag = "1")]
+    pub encoding: i32,
+    /// e.g. `h264_vaapi` or `rusty_h264`.
+    #[prost(string, tag = "2")]
+    pub encoder: String,
+    #[prost(bool, tag = "3")]
+    pub hardware: bool,
+}
+
+impl From<&StreamInfo> for StreamInfoMsg {
+    fn from(stream: &StreamInfo) -> Self {
+        Self { encoding: encoding_to_wire(stream.encoding) as i32, encoder: stream.encoder.clone(), hardware: stream.hardware }
+    }
+}
+
+impl StreamInfoMsg {
+    /// `None` when the encoding is unknown to this version.
+    pub fn into_info(self) -> Option<StreamInfo> {
+        Some(StreamInfo { encoding: encoding_from_wire(self.encoding)?, encoder: self.encoder, hardware: self.hardware })
+    }
 }
 
 #[derive(Clone, PartialEq, prost::Message)]

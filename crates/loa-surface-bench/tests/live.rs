@@ -49,14 +49,17 @@ fn pixel(rgba: &[u8], width: u32, x: u32, y: u32) -> [u8; 3] {
     [rgba[at], rgba[at + 1], rgba[at + 2]]
 }
 
+/// Lossy video at the default quantizer moves colors a little.
 fn near(a: [u8; 3], b: [u8; 3]) -> bool {
-    a.iter().zip(b).all(|(a, b)| a.abs_diff(b) <= 24)
+    a.iter().zip(b).all(|(a, b)| a.abs_diff(b) <= 40)
 }
 
+type Decode<'a> = &'a mut dyn FnMut(&Frame, &mut [u8]) -> bool;
+
 /// Codes the synthetic surface with what `accepted` negotiates, decodes the
-/// stream and checks a click shows up in the decoded pixels.
-async fn round_trip(live: Arc<LiveVideo>, accepted: &[Encoding], decoder: &mut VideoDecoder) -> loa_surface::StreamInfo {
-    let video = VideoSurface::new(synthetic(), live).unwrap();
+/// stream with `decode` and checks a click shows up in the pixels.
+async fn round_trip(live: Arc<LiveVideo>, accepted: &[Encoding], decode: Decode<'_>) -> loa_surface::StreamInfo {
+    let video = VideoSurface::new(synthetic(), live, true).unwrap();
     let mut frames = video.frames().unwrap();
     let stream = video.negotiate(accepted).await.unwrap().unwrap();
     assert_eq!(video.stream(), Some(stream.clone()));
@@ -66,20 +69,45 @@ async fn round_trip(live: Arc<LiveVideo>, accepted: &[Encoding], decoder: &mut V
     let first = until(&mut frames, stream.encoding, 0).await;
     let first = first.last().unwrap();
     assert!(first.keyframe, "the first video frame is a keyframe");
-    assert!(decoder.decode(first, &mut picture).unwrap());
+    assert!(decode(first, &mut picture));
     assert!(near(pixel(&picture, width, 100, 100), BACKGROUND), "{:?}", pixel(&picture, width, 100, 100));
 
     video.input(click(1, 100.0, 100.0)).await.unwrap();
     let mut shown = false;
     for frame in until(&mut frames, stream.encoding, 1).await {
         if frame.encoding == stream.encoding {
-            shown |= decoder.decode(&frame, &mut picture).unwrap();
+            shown |= decode(&frame, &mut picture);
         }
     }
     assert!(shown);
     assert!(near(pixel(&picture, width, 110, 110), MARKER), "{:?}", pixel(&picture, width, 110, 110));
     assert!(near(pixel(&picture, width, 20, 20), BACKGROUND));
     stream
+}
+
+fn in_process(decoder: &mut VideoDecoder) -> impl FnMut(&Frame, &mut [u8]) -> bool + '_ {
+    |frame, out| decoder.decode(frame, out).unwrap()
+}
+
+/// Decodes the whole HEVC stream so far with ffmpeg and keeps its last
+/// picture: checks the coded bits, not live decoding.
+fn hevc_with_ffmpeg() -> impl FnMut(&Frame, &mut [u8]) -> bool {
+    let mut stream = Vec::new();
+    move |frame, out| {
+        use std::io::Write;
+        stream.extend_from_slice(&frame.data);
+        let mut child = std::process::Command::new("ffmpeg")
+            .args(["-hide_banner", "-loglevel", "error", "-f", "hevc", "-i", "pipe:0", "-f", "rawvideo", "-pix_fmt", "rgba", "pipe:1"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(&stream).unwrap();
+        let pictures = child.wait_with_output().unwrap().stdout;
+        assert!(pictures.len() >= out.len(), "ffmpeg decoded {} bytes", pictures.len());
+        out.copy_from_slice(&pictures[pictures.len() - out.len()..]);
+        true
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -93,7 +121,7 @@ async fn software_h264_round_trips_when_no_hardware_encoder_works() {
     let live = Arc::new(LiveVideo::with_probed(None, probed));
     assert_eq!(live.choose(&[Encoding::Hevc, Encoding::H264]).unwrap().name, "rusty_h264");
 
-    let stream = round_trip(live, &[Encoding::H264, Encoding::Jpeg], &mut VideoDecoder::new(None)).await;
+    let stream = round_trip(live, &[Encoding::H264, Encoding::Jpeg], &mut in_process(&mut VideoDecoder::new())).await;
     assert_eq!((stream.encoding, stream.encoder.as_str(), stream.hardware), (Encoding::H264, "rusty_h264", false));
 }
 
@@ -108,21 +136,21 @@ async fn a_hardware_encoder_that_fails_at_runtime_falls_back_to_software() {
     let mut probed = vec![working];
     probed.extend(probe(None));
     let live = Arc::new(LiveVideo::with_probed(Some(FfmpegConfig::new("/nonexistent/ffmpeg")), probed));
-    let video = VideoSurface::new(synthetic(), live).unwrap();
+    let video = VideoSurface::new(synthetic(), live, true).unwrap();
     let mut frames = video.frames().unwrap();
     let negotiated = video.negotiate(&[Encoding::H264]).await.unwrap().unwrap();
     assert!(negotiated.hardware);
     let frame = until(&mut frames, Encoding::H264, 0).await.pop().unwrap();
     assert!(frame.keyframe);
     let mut picture = vec![0; 320 * 180 * 4];
-    assert!(VideoDecoder::new(None).decode(&frame, &mut picture).unwrap());
+    assert!(VideoDecoder::new().decode(&frame, &mut picture).unwrap());
     let stream = video.stream().unwrap();
     assert_eq!((stream.encoder.as_str(), stream.hardware), ("rusty_h264", false));
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_viewer_without_video_gets_the_source_frames() {
-    let video = VideoSurface::new(synthetic(), software_only()).unwrap();
+    let video = VideoSurface::new(synthetic(), software_only(), true).unwrap();
     let mut frames = video.frames().unwrap();
     let stream = video.negotiate(&[Encoding::Jpeg, Encoding::Png, Encoding::Rgba]).await.unwrap().unwrap();
     assert_eq!(stream.encoder, SOURCE);
@@ -134,6 +162,23 @@ async fn a_viewer_without_video_gets_the_source_frames() {
     let stream = video.negotiate(&[Encoding::H264, Encoding::Jpeg]).await.unwrap().unwrap();
     assert_eq!(stream.encoding, Encoding::H264);
     until(&mut frames, Encoding::H264, 0).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn turning_video_off_and_on_switches_the_watching_viewer() {
+    let video = VideoSurface::new(synthetic(), software_only(), false).unwrap();
+    let mut frames = video.frames().unwrap();
+    let stream = video.negotiate(&[Encoding::H264, Encoding::Jpeg]).await.unwrap().unwrap();
+    assert_eq!(stream.encoder, SOURCE, "off: the viewer gets source frames though it decodes H.264");
+    until(&mut frames, Encoding::Jpeg, 0).await;
+
+    let stream = video.set_video(true).await.unwrap().unwrap();
+    assert_eq!(stream.encoding, Encoding::H264);
+    until(&mut frames, Encoding::H264, 0).await;
+
+    let stream = video.set_video(false).await.unwrap().unwrap();
+    assert_eq!(stream.encoder, SOURCE);
+    until(&mut frames, Encoding::Jpeg, 0).await;
 }
 
 /// The VA-API, NVENC, Quick Sync or V4L2 encoder this machine has, if any.
@@ -150,19 +195,18 @@ fn hardware() -> Option<Arc<LiveVideo>> {
 #[ignore = "needs ffmpeg and a hardware video encoder (VA-API on this machine)"]
 async fn hardware_h264_round_trips_through_the_in_process_decoder() {
     let live = hardware().expect("a hardware H.264 encoder");
-    let stream = round_trip(live, &[Encoding::H264, Encoding::Jpeg], &mut VideoDecoder::new(None)).await;
+    let stream = round_trip(live, &[Encoding::H264, Encoding::Jpeg], &mut in_process(&mut VideoDecoder::new())).await;
     assert_eq!(stream.encoding, Encoding::H264);
     assert!(stream.hardware, "{stream:?}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs ffmpeg and a hardware HEVC encoder (VA-API on this machine)"]
-async fn hardware_hevc_round_trips_through_the_ffmpeg_decoder() {
+async fn hardware_hevc_encodes_live_pictures_ffmpeg_decodes() {
     let live = hardware().expect("a hardware encoder");
     assert!(live.hardware(Codec::Hevc).is_some(), "{:?}", live.encoders());
-    let mut decoder = VideoDecoder::new(FfmpegConfig::discover());
-    assert!(decoder.supports(Encoding::Hevc));
-    let stream = round_trip(live, &[Encoding::Hevc, Encoding::Jpeg], &mut decoder).await;
+    assert!(!VideoDecoder::new().supports(Encoding::Hevc));
+    let stream = round_trip(live, &[Encoding::Hevc, Encoding::Jpeg], &mut hevc_with_ffmpeg()).await;
     assert_eq!(stream.encoding, Encoding::Hevc);
     assert!(stream.hardware, "{stream:?}");
 }
@@ -171,7 +215,7 @@ async fn hardware_hevc_round_trips_through_the_ffmpeg_decoder() {
 #[ignore = "needs ffmpeg and a hardware video encoder; prints the input to pixels latency"]
 async fn hardware_video_keeps_the_click_to_pixels_budget() {
     let live = hardware().expect("a hardware H.264 encoder");
-    let video = VideoSurface::new(synthetic(), live).unwrap();
+    let video = VideoSurface::new(synthetic(), live, true).unwrap();
     let stream = video.negotiate(&[Encoding::H264]).await.unwrap().unwrap();
     assert!(stream.hardware);
     let config = loa_surface_bench::bench::BenchConfig { iterations: 20, ..Default::default() };

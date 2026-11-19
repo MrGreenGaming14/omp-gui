@@ -89,6 +89,10 @@ struct Shared {
     wanted: Mutex<Option<EncoderInfo>>,
     stream: Mutex<Option<StreamInfo>>,
     keyframe: AtomicBool,
+    /// Video may be chosen; off passes source frames on to every viewer.
+    enabled: AtomicBool,
+    /// What the last viewer to negotiate decodes.
+    accepted: Mutex<Vec<Encoding>>,
     stop: AtomicBool,
 }
 
@@ -109,27 +113,31 @@ pub struct VideoSurface {
     inner: Arc<dyn Surface>,
     shared: Arc<Shared>,
     frames: broadcast::Sender<Arc<Frame>>,
+    runtime: tokio::runtime::Handle,
 }
 
 impl VideoSurface {
-    /// Wraps the pixel surface `inner`. Until a viewer negotiates video it
-    /// passes the source frames on. Needs a Tokio runtime (keyframe requests
-    /// to `inner` run on it).
-    pub fn new(inner: Arc<dyn Surface>, live: Arc<LiveVideo>) -> loa_surface::Result<Arc<Self>> {
+    /// Wraps the pixel surface `inner`. Until a viewer negotiates video (and
+    /// while `enabled` is off) it passes the source frames on. Needs a Tokio
+    /// runtime (keyframe requests to `inner` run on it).
+    pub fn new(inner: Arc<dyn Surface>, live: Arc<LiveVideo>, enabled: bool) -> loa_surface::Result<Arc<Self>> {
         let source = inner.frames()?;
         let shared = Arc::new(Shared {
             live,
             wanted: Mutex::new(None),
             stream: Mutex::new(None),
             keyframe: AtomicBool::new(true),
+            enabled: AtomicBool::new(enabled),
+            accepted: Mutex::new(Vec::new()),
             stop: AtomicBool::new(false),
         });
         let (frames, _) = broadcast::channel(8);
+        let runtime = tokio::runtime::Handle::current();
         let worker = Worker {
             shared: shared.clone(),
             out: frames.clone(),
             inner: Arc::downgrade(&inner),
-            runtime: tokio::runtime::Handle::current(),
+            runtime: runtime.clone(),
             decoder: FrameDecoder::new(),
             canvas: Canvas::new(0, 0),
             encoder: None,
@@ -139,12 +147,23 @@ impl VideoSurface {
             .name("surface-video".into())
             .spawn(move || worker.run(source))
             .map_err(|e| loa_surface::SurfaceError::Backend(format!("starting the video encoder thread: {e}")))?;
-        Ok(Arc::new(Self { inner, shared, frames }))
+        Ok(Arc::new(Self { inner, shared, frames, runtime }))
     }
 
     /// The wrapped surface.
     pub fn inner(&self) -> &Arc<dyn Surface> {
         &self.inner
+    }
+
+    /// Turns video on or off for the viewers already watching: their last
+    /// negotiation is redone.
+    pub async fn set_video(&self, enabled: bool) -> loa_surface::Result<Option<StreamInfo>> {
+        self.shared.enabled.store(enabled, Ordering::Release);
+        let accepted = lock(&self.shared.accepted).clone();
+        if accepted.is_empty() {
+            return Ok(self.stream());
+        }
+        self.negotiate(&accepted).await
     }
 }
 
@@ -160,8 +179,18 @@ impl Surface for VideoSurface {
         self.inner.info()
     }
 
+    /// A new subscriber gets the current picture without asking: the
+    /// source is asked for a keyframe.
     fn frames(&self) -> loa_surface::Result<broadcast::Receiver<Arc<Frame>>> {
-        Ok(self.frames.subscribe())
+        let frames = self.frames.subscribe();
+        self.shared.keyframe.store(true, Ordering::Release);
+        let inner = self.inner.clone();
+        self.runtime.spawn(async move {
+            if let Err(error) = inner.request_keyframe().await {
+                tracing::debug!(%error, "asking the source surface for a keyframe");
+            }
+        });
+        Ok(frames)
     }
 
     async fn request_keyframe(&self) -> loa_surface::Result<()> {
@@ -184,7 +213,9 @@ impl Surface for VideoSurface {
     }
 
     async fn negotiate(&self, accepted: &[Encoding]) -> loa_surface::Result<Option<StreamInfo>> {
-        let chosen = self.shared.live.choose(accepted);
+        *lock(&self.shared.accepted) = accepted.to_vec();
+        let enabled = self.shared.enabled.load(Ordering::Acquire);
+        let chosen = if enabled { self.shared.live.choose(accepted) } else { None };
         let stream = match &chosen {
             Some(info) => stream_info(info),
             None => {
@@ -256,23 +287,26 @@ impl Worker {
     }
 
     fn handle(&mut self, batch: &[Arc<Frame>]) {
+        let Some(last) = batch.last() else { return };
+        // 4:2:0 video needs an even size; odd surfaces go as they come.
+        let even = last.width.is_multiple_of(2) && last.height.is_multiple_of(2) && last.width > 0;
+        let Some(wanted) = self.shared.wanted().filter(|_| even) else {
+            self.encoder = None;
+            for frame in batch {
+                self.pass_on(frame);
+            }
+            return;
+        };
+        // Video codes the whole picture: rebuild it from the source frames.
+        // (Switching to video asks the source for a keyframe, so a picture
+        // left stale while frames were passed on is replaced at once.)
         for frame in batch {
             if let Err(error) = self.decoder.apply(frame, &mut self.canvas) {
                 tracing::debug!(%error, "source frame");
                 self.source_keyframe();
             }
         }
-        let Some(last) = batch.last() else { return };
-        let even = self.canvas.width() % 2 == 0 && self.canvas.height() % 2 == 0 && self.canvas.width() > 0;
-        match self.shared.wanted().filter(|_| even) {
-            Some(wanted) => self.encode(wanted, last),
-            None => {
-                self.encoder = None;
-                for frame in batch {
-                    self.pass_on(frame);
-                }
-            }
-        }
+        self.encode(wanted, last);
     }
 
     fn pass_on(&mut self, frame: &Frame) {

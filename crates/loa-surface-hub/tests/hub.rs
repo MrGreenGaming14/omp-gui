@@ -8,20 +8,25 @@ use loa_adapter::HostToolContent;
 use loa_mcp::{AllowAll, HttpSpec, Manager, ServerSpec, Status, Transport};
 use loa_surface::{Encoding, Frame, Input, InputEvent, Modifiers, MouseButton, SurfaceMode, SurfaceUri};
 use loa_surface_docs::Fonts;
-use loa_surface_hub::{HubConfig, HubEvent, McpEndpoint, Origin, SurfaceHub, SurfaceTools, ToolContent};
+use loa_surface_hub::{
+    CaptureMode, HubConfig, HubEvent, LiveVideo, McpEndpoint, Origin, SurfaceHub, SurfaceTools, ToolContent,
+    VirtualDisplaySetup,
+};
 use serde_json::json;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, oneshot};
 
 const PATIENCE: Duration = Duration::from_secs(20);
 
 fn config(dir: &Path, browser: bool) -> HubConfig {
     let mut config = HubConfig::discover(dir);
     config.fonts = Fonts::none();
+    // Software H.264 only: the same on every machine, and no ffmpeg probing.
+    config.encoders = Some(Arc::new(LiveVideo::with_probed(None, loa_surface_bench::encode::probe(None))));
     if browser {
         if let Some(b) = &mut config.browser {
             b.width = 480;
@@ -45,6 +50,18 @@ async fn next_frame(frames: &mut broadcast::Receiver<Arc<Frame>>) -> Arc<Frame> 
             Ok(frame) => return frame,
             Err(broadcast::error::RecvError::Lagged(_)) => continue,
             Err(e) => panic!("frame stream: {e}"),
+        }
+    }
+}
+
+/// The first frame showing the fake RFB server's update. A new subscriber is
+/// first sent the current picture, which is still the blank framebuffer when
+/// its keyframe is taken before the update arrived.
+async fn updated_frame(frames: &mut broadcast::Receiver<Arc<Frame>>, encoding: Encoding) -> Arc<Frame> {
+    loop {
+        let frame = frame_of(frames, encoding).await;
+        if frame.data[..4] != [0, 0, 0, 255] {
+            return frame;
         }
     }
 }
@@ -98,9 +115,12 @@ async fn documents_open_list_answer_tools_and_close() {
 }
 
 /// A one-connection RFB 3.8 server: no security, `width` x `height`, one
-/// solid raw update after the client's setup. Collects what the client sends
-/// after the setup.
-async fn fake_rfb(width: u16, height: u16, color: [u8; 3]) -> (String, Arc<Mutex<Vec<u8>>>) {
+/// solid raw update after the client's setup once the returned sender fires.
+/// Frames go to whoever is subscribed when they are published, so a test
+/// subscribes first and then lets the update go. Collects what the client
+/// sends after the setup.
+async fn fake_rfb(width: u16, height: u16, color: [u8; 3]) -> (String, Arc<Mutex<Vec<u8>>>, oneshot::Sender<()>) {
+    let (send_update, update_sent) = oneshot::channel();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap().to_string();
     let received = Arc::new(Mutex::new(Vec::new()));
@@ -124,6 +144,9 @@ async fn fake_rfb(width: u16, height: u16, color: [u8; 3]) -> (String, Arc<Mutex
         // SetPixelFormat (20), SetEncodings (4 + 7 * 4), FramebufferUpdateRequest (10).
         let mut setup = vec![0u8; 62];
         stream.read_exact(&mut setup).await.unwrap();
+        if update_sent.await.is_err() {
+            return;
+        }
         let mut update = vec![0, 0, 0, 1, 0, 0, 0, 0];
         update.extend_from_slice(&width.to_be_bytes());
         update.extend_from_slice(&height.to_be_bytes());
@@ -140,7 +163,7 @@ async fn fake_rfb(width: u16, height: u16, color: [u8; 3]) -> (String, Arc<Mutex
             sink.lock().unwrap().extend_from_slice(&chunk[..n]);
         }
     });
-    (address, received)
+    (address, received, send_update)
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -148,13 +171,14 @@ async fn a_vm_opens_from_host_and_port_streams_and_takes_agent_clicks() {
     let dir = tempfile::tempdir().unwrap();
     let hub = SurfaceHub::new(config(dir.path(), false));
     assert!(hub.open_vm("no-port", None).await.is_err());
-    let (address, received) = fake_rfb(8, 4, [0, 200, 0]).await;
+    let (address, received, send_update) = fake_rfb(8, 4, [0, 200, 0]).await;
 
     let opened = hub.open_vm(&address, None).await.unwrap();
     assert_eq!(opened.origin, Origin::Vm);
     assert_eq!(opened.info.uri, SurfaceUri::new("vm", &address).unwrap());
     let mut frames = opened.surface.frames().unwrap();
-    let frame = next_frame(&mut frames).await;
+    send_update.send(()).unwrap();
+    let frame = updated_frame(&mut frames, Encoding::Rgba).await;
     assert_eq!((frame.width, frame.height, frame.encoding), (8, 4, Encoding::Rgba));
     assert_eq!(&frame.data[..4], &[0, 200, 0, 255]);
 
@@ -272,8 +296,9 @@ async fn the_mcp_endpoint_declares_surfaces_and_a_second_hub_opens_them() {
     let image = dir.path().join("blue.png");
     std::fs::write(&image, png(12, 6, [0, 0, 255, 255])).unwrap();
     let doc = hub.open_document(&image).await.unwrap();
-    let (address, _received) = fake_rfb(6, 3, [250, 250, 0]).await;
+    let (address, _received, send_update) = fake_rfb(6, 3, [250, 250, 0]).await;
     let vm = hub.open_vm(&address, None).await.unwrap();
+    send_update.send(()).unwrap();
 
     let endpoint = McpEndpoint::start(SurfaceTools::new(hub.clone())).await.unwrap();
     let specs = endpoint.specs();
@@ -338,4 +363,80 @@ async fn the_mcp_endpoint_declares_surfaces_and_a_second_hub_opens_them() {
         other => panic!("{other:?}"),
     }
     manager.shutdown().await;
+}
+
+async fn frame_of(frames: &mut broadcast::Receiver<Arc<Frame>>, encoding: Encoding) -> Arc<Frame> {
+    loop {
+        let frame = next_frame(frames).await;
+        if frame.encoding == encoding {
+            return frame;
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_vm_streams_h264_to_a_viewer_that_decodes_it_and_the_toggle_turns_it_off() {
+    let dir = tempfile::tempdir().unwrap();
+    let hub = SurfaceHub::new(config(dir.path(), false));
+    assert!(hub.video());
+    let (address, _received, send_update) = fake_rfb(8, 4, [0, 200, 0]).await;
+    let opened = hub.open_vm(&address, None).await.unwrap();
+    let mut frames = opened.surface.frames().unwrap();
+    // The server's picture is in before the stream switches to video.
+    send_update.send(()).unwrap();
+    assert_eq!(&updated_frame(&mut frames, Encoding::Rgba).await.data[..4], &[0, 200, 0, 255]);
+
+    let stream = opened.surface.negotiate(&[Encoding::H264, Encoding::Rgba]).await.unwrap().unwrap();
+    assert_eq!((stream.encoding, stream.encoder.as_str()), (Encoding::H264, "rusty_h264"));
+    let frame = frame_of(&mut frames, Encoding::H264).await;
+    assert!(frame.keyframe);
+    let mut picture = vec![0; 8 * 4 * 4];
+    assert!(loa_surface_bench::video::VideoDecoder::new().decode(&frame, &mut picture).unwrap());
+    let [r, g, b, _] = picture[..4] else { unreachable!() };
+    assert!(r < 40 && g > 160 && b < 40, "decoded {:?}", &picture[..4]);
+
+    hub.set_video(false).await;
+    assert_eq!(opened.surface.stream().unwrap().encoder, loa_surface_bench::live::SOURCE);
+    let frame = frame_of(&mut frames, Encoding::Rgba).await;
+    assert_eq!(&frame.data[..4], &[0, 200, 0, 255]);
+}
+
+fn fake_xvfb(dir: &Path) -> std::path::PathBuf {
+    let path = dir.join("Xvfb");
+    // Reports a display like `-displayfd 1` asks, then serves nothing. The
+    // number is one no X server on this machine listens on (a fixed one
+    // can belong to a real server, which Chrome would then draw on).
+    let free = (6000..7000).find(|n| !Path::new(&format!("/tmp/.X11-unix/X{n}")).exists()).unwrap();
+    loa_test_exec::write_executable(&path, format!("#!/bin/sh\necho {free}\nexec sleep 600\n")).unwrap();
+    path
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_virtual_display_capture_is_refused_where_it_cant_run_and_tried_where_it_can() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut missing = config(dir.path(), true);
+    missing.virtual_display = Err("Xvfb isn't installed (install the xvfb package)".into());
+    let hub = SurfaceHub::new(missing);
+    let error = hub.set_capture(CaptureMode::VirtualDisplay).unwrap_err();
+    assert!(error.to_string().contains("Xvfb isn't installed"), "{error}");
+    assert_eq!(hub.capture(), CaptureMode::Screencast);
+
+    // A display that reports a number but accepts no X clients: the hub
+    // picks the capture and says plainly why the tab can't open.
+    let mut fake = config(dir.path(), true);
+    let Some(chrome) = fake.browser.as_ref().map(|b| b.executable.clone()) else {
+        eprintln!("SKIPPED: no Chrome or Chromium installed");
+        return;
+    };
+    fake.virtual_display = Ok(VirtualDisplaySetup { xvfb: fake_xvfb(dir.path()), chrome });
+    let hub = SurfaceHub::new(fake);
+    hub.set_capture(CaptureMode::VirtualDisplay).unwrap();
+    assert_eq!(hub.capture(), CaptureMode::VirtualDisplay);
+    let error = tokio::time::timeout(Duration::from_secs(60), hub.open_browser("about:blank"))
+        .await
+        .expect("fails in time")
+        .unwrap_err();
+    eprintln!("virtual display tab: {error}");
+    assert!(hub.open_surfaces().is_empty());
+    assert!(!hub.capture_pending().await);
 }

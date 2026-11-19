@@ -20,3 +20,6 @@ base64 = "0.22"
 chromiumoxide = { version = "0.9", default-features = false, features = ["bytes", "rustls", "zip8"] }
 x11rb = "0.13"
 jpeg-decoder = { version = "0.3", default-features = false }
+
+[dev-dependencies]
+loa-test-exec = { path = "../loa-test-exec" }
