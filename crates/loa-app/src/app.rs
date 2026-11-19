@@ -143,6 +143,12 @@ pub enum Message {
     Usage(usage::Message),
     /// Configs and Settings.
     Window(windows::WindowMessage),
+    /// A window closed (the main one or a detached one).
+    WindowClosed(iced::window::Id),
+    /// A detached window's Reattach button.
+    Reattach(iced::window::Id),
+    /// The transcript in a detached session's window.
+    DetachedChat(String, chat::Message),
 }
 
 pub struct App {
@@ -157,9 +163,21 @@ pub struct App {
     overlay: Option<windows::Overlay>,
     configs: Option<windows::ConfigsTab>,
     docs: windows::Docs,
+    main_window: Option<iced::window::Id>,
+    detached: Vec<(iced::window::Id, detach::Detached)>,
+    /// Transcripts of sessions shown in their own window, by session id.
+    detached_chats: std::collections::HashMap<String, chat::State>,
 }
 
 impl App {
+    /// Boots the daemon: the app on this machine's services, with its main
+    /// window open.
+    pub fn boot() -> (Self, Task<Message>) {
+        let (mut app, task) = Self::new();
+        let open = app.open_main();
+        (app, Task::batch([open, task]))
+    }
+
     /// The app on this machine's services.
     pub fn new() -> (Self, Task<Message>) {
         let (services, warnings) = Services::load().unwrap_or_else(|error| panic!("{error}"));
@@ -216,6 +234,9 @@ impl App {
             overlay: None,
             configs: None,
             docs: windows::Docs::default(),
+            main_window: None,
+            detached: Vec::new(),
+            detached_chats: std::collections::HashMap::new(),
         };
         let shown = app.tabs().into_iter().filter(|tab| tab.shown).map(|tab| shell::PanelTab::new(tab.id, tab.title)).collect();
         app.ctx.shell.set_tabs(shown);
@@ -487,6 +508,9 @@ impl App {
                     if active {
                         self.chat.apply(patch, session.dom());
                     }
+                    if let Some(chat) = self.detached_chats.get_mut(id.as_str()) {
+                        chat.apply(patch, session.dom());
+                    }
                     if changes_summary(session.dom(), patch) {
                         if let Some(summary) = session.summary() {
                             self.ctx.shell.upsert_session(summary);
@@ -550,6 +574,7 @@ impl App {
                 let task = match request {
                     Request::NewSession => self.start(None),
                     Request::OpenSession(id) => self.open_session(&id),
+                    Request::DetachSession(id) => self.detach_session(&id),
                     Request::Prompt(prompt) => self.send(prompt),
                     Request::OpenTab(id) => self.open_tab(&id),
                     Request::RevealTab(id) => self.reveal_tab(&id),
@@ -676,6 +701,9 @@ impl App {
                         self.window_update(windows::WindowMessage::OpenSettings(windows::SettingsTab::General))
                     }
                     Some(shell::Event::OpenTools) => self.update(Message::Tools(areas::tools::Message::Open)),
+                    Some(shell::Event::DetachTab(tab)) => self.detach(detach::Detached::Tab(tab)),
+                    Some(shell::Event::ShowDetached(tab)) => self.show_detached_tab(&tab),
+                    Some(shell::Event::ReattachTab(tab)) => self.reattach_tab(&tab),
                     Some(shell::Event::OpenPeers) => {
                         self.window_update(windows::WindowMessage::OpenSettings(windows::SettingsTab::Peers))
                     }
@@ -788,6 +816,19 @@ impl App {
                 task.map(Message::Usage)
             }
             Message::Window(message) => self.window_update(message),
+            Message::WindowClosed(id) => self.window_closed(id),
+            Message::Reattach(id) => self.reattach(id),
+            Message::DetachedChat(session, message) => {
+                let Some(chat) = self.detached_chats.get_mut(&session) else { return Task::none() };
+                let (task, event) = chat.update(message);
+                let task = task.map(move |message| Message::DetachedChat(session.clone(), message));
+                // Rewinds act on the active session, so only links pass on.
+                let action = match event {
+                    Some(event @ chat::Event::OpenLink(_)) => self.update(Message::Sessions(areas::sessions::Message::Chat(event))),
+                    _ => Task::none(),
+                };
+                Task::batch([task, action])
+            }
             Message::NewSession => self.start(None),
             Message::Session(id, feed) => self.feed(id, feed),
             Message::Spawned { id, result, prompt } => match result {
@@ -981,6 +1022,7 @@ impl App {
                 self.ctx.sessions.watch().map(|(id, feed)| Message::Session(id, feed)),
                 if busy { iced::time::every(TICK).map(|_| Message::Tick) } else { Subscription::none() },
                 iced::time::every(USAGE_REFRESH).map(|_| Message::Usage(usage::Message::Refresh)),
+                iced::window::close_events().map(Message::WindowClosed),
             ]
             .into_iter()
             .chain(areas),
@@ -1048,6 +1090,7 @@ async fn git_diff(cwd: &Path) -> Option<String> {
     output.status.success().then(|| String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
+mod detach;
 mod keys;
 mod usage;
 mod windows;

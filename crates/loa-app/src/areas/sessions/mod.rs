@@ -514,6 +514,21 @@ impl State {
     /// directly, else the harness's native subagent file imported as a
     /// linked child of the active session.
     fn open_child(&mut self, ctx: &mut Ctx, child: String) {
+        if let Some(id) = self.child_session(ctx, child) {
+            ctx.request(Request::OpenSession(id));
+        }
+    }
+
+    /// Opens a subagent's session in its own window, next to its parent.
+    fn detach_child(&mut self, ctx: &mut Ctx, child: String) {
+        if let Some(id) = self.child_session(ctx, child) {
+            ctx.request(Request::DetachSession(id));
+        }
+    }
+
+    /// The library id of a subagent's session: stored already, or imported
+    /// from the harness's session file on this machine.
+    fn child_session(&mut self, ctx: &mut Ctx, child: String) -> Option<String> {
         let stored = ctx
             .services
             .library
@@ -521,24 +536,26 @@ impl State {
             .list()
             .is_ok_and(|listings| listings.iter().any(|listing| matches!(listing, Listing::Session(info) if info.id == child)));
         if stored {
-            ctx.request(Request::OpenSession(child));
-            return;
+            return Some(child);
         }
         let path = PathBuf::from(&child);
         if !path.is_file() {
             ctx.notify(format!("The subagent's session {child} isn't on this machine"));
-            return;
+            return None;
         }
-        let Some(parent) = ctx.sessions.active() else { return };
+        let parent = ctx.sessions.active()?;
         let parent_id = parent.id().to_string();
         let Some(adapter) = parent.harness_id().and_then(|harness| ctx.services.harnesses.registry.get(harness)) else {
             ctx.notify("The parent session's harness isn't supported here");
-            return;
+            return None;
         };
         let job = self.agents.jobs().find(|job| job.session() == Some(child.as_str())).map_or(NodeId::DOCUMENT, agents::Job::node);
         match ctx.services.library.import_child(adapter.as_ref(), &parent_id, job, &path, &ctx.services.node.key) {
-            Ok(id) => ctx.request(Request::OpenSession(id)),
-            Err(error) => ctx.notify(format!("Can't open the subagent's session: {error}")),
+            Ok(id) => Some(id),
+            Err(error) => {
+                ctx.notify(format!("Can't open the subagent's session: {error}"));
+                None
+            }
         }
     }
 
@@ -811,6 +828,7 @@ impl Area for State {
                 let (task, event) = self.agents.update(message);
                 match event {
                     Some(agents::Event::OpenSession(child)) => self.open_child(ctx, child),
+                    Some(agents::Event::DetachSession(child)) => self.detach_child(ctx, child),
                     Some(agents::Event::Cancel { .. }) => {
                         // Harnesses stop jobs only with the turn that runs them.
                         if let Some(harness) = ctx.sessions.active().and_then(|session| session.harness().cloned()) {

@@ -130,6 +130,8 @@ pub enum Request {
     NewSession,
     /// Show this session (loading it from its journal when needed).
     OpenSession(String),
+    /// Show this session in its own window, without making it active.
+    DetachSession(String),
     /// Send a prompt to the active session (resuming it when needed).
     Prompt(Prompt),
     /// Add the panel tab with this id when it isn't listed, and show it.

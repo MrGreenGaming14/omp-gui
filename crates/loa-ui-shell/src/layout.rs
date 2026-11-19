@@ -46,6 +46,9 @@ const WHEEL_LINE: f32 = 40.0;
 /// Width of the grab areas at the sidebar and panel edges.
 const HANDLE_WIDTH: f32 = 6.0;
 
+/// Container id of the panel's pop-out button.
+pub const PANEL_DETACH_ID: &str = "loa-panel-detach";
+
 /// Container id of the panel's full screen button.
 pub const PANEL_FULL_ID: &str = "loa-panel-full";
 
@@ -121,6 +124,8 @@ pub struct State {
     sidebar_width: f32,
     dragging: Option<Drag>,
     full: Option<Pane>,
+    /// Tabs shown in their own window instead of the panel.
+    detached: Vec<String>,
 }
 
 /// Internal messages.
@@ -144,6 +149,12 @@ pub enum Message {
     DragEnd,
     /// A pane's full screen button was clicked.
     ToggleFull(Pane),
+    /// The pop-out button of the active tab was clicked.
+    Detach(String),
+    /// "Show window" on a detached tab's placeholder.
+    ShowDetached(String),
+    /// "Reattach here" on a detached tab's placeholder.
+    Reattach(String),
     /// The frame was laid out at this size.
     FrameSized(Size),
     /// The user picked a theme.
@@ -193,6 +204,12 @@ pub enum Event {
     PanelResized(f32),
     /// The user finished resizing the sidebar to this width.
     SidebarResized(f32),
+    /// Show this tab in its own window.
+    DetachTab(String),
+    /// Bring this detached tab's window to the front.
+    ShowDetached(String),
+    /// Put this detached tab back in the panel.
+    ReattachTab(String),
     /// The user picked a theme. Persist it.
     SetTheme(Preference),
 }
@@ -235,6 +252,7 @@ impl State {
             sidebar_width: SIDEBAR_WIDTH,
             dragging: None,
             full: None,
+            detached: Vec::new(),
         };
         (state, theme::State::detect().map(Message::SystemTheme))
     }
@@ -322,6 +340,16 @@ impl State {
     /// The pane filling the window, if any.
     pub fn full(&self) -> Option<Pane> {
         self.full
+    }
+
+    /// Tells the panel which tabs show in their own window.
+    pub fn set_detached(&mut self, tabs: Vec<String>) {
+        self.detached = tabs;
+    }
+
+    /// Whether this tab shows in its own window.
+    pub fn is_detached(&self, tab: &str) -> bool {
+        self.detached.iter().any(|detached| detached == tab)
     }
 
     /// How many updates wait for the user.
@@ -535,6 +563,9 @@ impl State {
                 self.set_full(if self.full == Some(pane) { None } else { Some(pane) });
                 (Task::none(), None)
             }
+            Message::Detach(tab) => (Task::none(), Some(Event::DetachTab(tab))),
+            Message::ShowDetached(tab) => (Task::none(), Some(Event::ShowDetached(tab))),
+            Message::Reattach(tab) => (Task::none(), Some(Event::ReattachTab(tab))),
             Message::FrameSized(size) => {
                 self.frame = Some(size);
                 (Task::none(), None)
@@ -613,6 +644,9 @@ impl State {
                 label = label.push(if selected { icon(glyph, 14.0) } else { muted(glyph, 14.0) });
             }
             label = label.push(text(tab.title.as_str()).size(13));
+            if self.is_detached(&tab.id) {
+                label = label.push(muted(Icon::ExternalLink, 11.0));
+            }
             bar.push(
                 button(label)
                     .on_press(Message::SelectTab(tab.id.clone()))
@@ -636,8 +670,23 @@ impl State {
                 .padding(7),
         )
         .id(PANEL_FULL_ID);
+        let mut controls = row![tabs].spacing(4).align_y(Alignment::Center);
+        if let Some(id) = active
+            && !self.is_detached(id)
+        {
+            controls = controls.push(
+                container(
+                    button(muted(Icon::ExternalLink, 14.0))
+                        .on_press(Message::Detach(id.to_owned()))
+                        .style(style::ghost_button)
+                        .padding(7),
+                )
+                .id(PANEL_DETACH_ID),
+            );
+        }
+        controls = controls.push(full);
         let tab_bar = Element::from(
-            container(row![tabs, full].spacing(4).align_y(Alignment::Center))
+            container(controls)
                 .style(style::side)
                 .padding([0, 8])
                 .center_y(topbar::HEIGHT)
@@ -646,6 +695,32 @@ impl State {
         .map(map);
 
         let body = match active {
+            Some(id) if self.is_detached(id) => {
+                let title = self.panel.tabs.iter().find(|tab| tab.id == id).map_or(id, |tab| tab.title.as_str());
+                Element::from(
+                    container(
+                        column![
+                            muted(Icon::ExternalLink, 28.0),
+                            text!("{title} is in its own window").size(14),
+                            row![
+                                button(text("Show window").size(13))
+                                    .on_press(Message::ShowDetached(id.to_owned()))
+                                    .style(style::secondary_button)
+                                    .padding([6, 12]),
+                                button(text("Reattach here").size(13))
+                                    .on_press(Message::Reattach(id.to_owned()))
+                                    .style(style::primary_button)
+                                    .padding([6, 12]),
+                            ]
+                            .spacing(8),
+                        ]
+                        .spacing(12)
+                        .align_x(Alignment::Center),
+                    )
+                    .center(Fill),
+                )
+                .map(map)
+            }
             Some(id) => panel_body(id),
             None => Element::from(
                 container(text("Nothing to show").style(style::muted)).center_x(Fill).padding(24),
@@ -831,5 +906,15 @@ mod tests {
         send(&mut state, Message::ToggleFull(Pane::Panel));
         toggle(&mut state);
         assert_eq!(state.full(), None, "closing the panel leaves its full screen");
+    }
+
+    #[test]
+    fn detaching_a_tab_reports_it_and_reattaching_reports_back() {
+        let mut state = frame();
+        assert_eq!(send(&mut state, Message::Detach("terminal".into())), Some(Event::DetachTab("terminal".into())));
+        state.set_detached(vec!["terminal".into()]);
+        assert!(state.is_detached("terminal"));
+        assert_eq!(send(&mut state, Message::ShowDetached("terminal".into())), Some(Event::ShowDetached("terminal".into())));
+        assert_eq!(send(&mut state, Message::Reattach("terminal".into())), Some(Event::ReattachTab("terminal".into())));
     }
 }

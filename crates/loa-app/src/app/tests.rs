@@ -607,3 +607,89 @@ fn models_close_button_closes_configs_it_is_drawn_in() {
     let _ = app.update(Message::Models(areas::models::Message::Close));
     assert_eq!(app.configs, None);
 }
+
+#[test]
+fn panel_tabs_detach_into_windows_and_reattach() {
+    use super::detach::Detached;
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = fake_app(dir.path(), &["fake-a"]);
+    let _ = app.update(Message::Shell(shell::Message::SelectTab("terminal".into())));
+
+    // The pop-out button on the panel's active tab.
+    click_id(&mut app, shell::layout::PANEL_DETACH_ID);
+    assert_eq!(app.detached.len(), 1);
+    assert_eq!(app.detached[0].1, Detached::Tab("terminal".into()));
+    assert!(app.ctx.shell.is_detached("terminal"));
+    assert!(shows(&app, "Terminal is in its own window"), "the panel shows a placeholder");
+
+    // Popping out again brings the same window forward instead of a second one.
+    let _ = app.update(Message::Shell(shell::Message::Detach("terminal".into())));
+    assert_eq!(app.detached.len(), 1);
+
+    let id = app.detached[0].0;
+    assert_eq!(app.title(id), "Terminal — Loa");
+    {
+        use iced_test::Simulator;
+        let mut ui = Simulator::with_size(iced::Settings::default(), iced::Size::new(640.0, 560.0), app.view_window(id));
+        assert!(ui.find("Reattach").is_ok(), "the detached window offers Reattach");
+    }
+
+    let _ = app.update(Message::Reattach(id));
+    assert!(app.detached.is_empty());
+    assert!(!app.ctx.shell.is_detached("terminal"));
+    assert_eq!(app.ctx.shell.active_tab(), Some("terminal"), "the panel shows the tab again");
+}
+
+#[test]
+fn closing_a_detached_window_reattaches_and_closing_main_quits() {
+    use super::detach::Detached;
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = fake_app(dir.path(), &["fake-a"]);
+    let _ = app.open_main();
+    let _ = app.update(Message::Shell(shell::Message::Detach("files".into())));
+    let _ = app.update(Message::Shell(shell::Message::Detach("diff".into())));
+    assert_eq!(app.detached.iter().map(|(_, what)| what.clone()).collect::<Vec<_>>(), [Detached::Tab("files".into()), Detached::Tab("diff".into())]);
+
+    let files = app.detached[0].0;
+    let _ = app.update(Message::WindowClosed(files));
+    assert!(!app.ctx.shell.is_detached("files"));
+    assert!(app.ctx.shell.is_detached("diff"), "other windows stay detached");
+}
+
+fn click_id(app: &mut App, id: &'static str) {
+    use iced_test::{Simulator, selector};
+    let messages: Vec<Message> = {
+        let mut ui = Simulator::with_size(iced::Settings::default(), iced::Size::new(1600.0, 1000.0), app.view());
+        ui.click(selector::id(id)).unwrap_or_else(|_| panic!("{id} is clickable"));
+        ui.into_messages().collect()
+    };
+    for message in messages {
+        let _ = app.update(message);
+    }
+}
+
+#[test]
+fn a_session_opens_in_its_own_window_without_becoming_active() {
+    use super::detach::Detached;
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = fake_app(dir.path(), &["fake-a"]);
+    update(&mut app, Message::NewSession);
+    let session = app.ctx.sessions.active().unwrap();
+    let session_id = session.id().clone();
+    let writer = Arc::clone(session.writer());
+    let (_, mut feed) = writer.subscribe(Policy::every_patch(1024));
+    prompt(&mut app, "first session");
+    deliver(&mut app, &session_id, &mut feed);
+    let first = active(&app).unwrap().to_owned();
+    update(&mut app, Message::NewSession);
+    let second = active(&app).unwrap().to_owned();
+    assert_ne!(first, second);
+
+    let _ = app.detach_session(&first);
+    assert_eq!(app.detached.last().map(|(_, what)| what.clone()), Some(Detached::Session(first.clone())));
+    assert_eq!(active(&app), Some(second.as_str()), "the main window keeps its session");
+    let id = app.detached.last().unwrap().0;
+    use iced_test::Simulator;
+    let mut ui = Simulator::with_size(iced::Settings::default(), iced::Size::new(560.0, 720.0), app.view_window(id));
+    assert!(ui.find("first session").is_ok(), "the window shows the detached session's transcript");
+}
