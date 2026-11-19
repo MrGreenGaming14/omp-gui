@@ -50,6 +50,29 @@ fn structure(dom: &Dom) -> Vec<NodeShape> {
 }
 
 #[test]
+fn captured_omp_session_round_trips() {
+    // Captured from omp 18.22.2 with a single no-tools prompt. Local paths and
+    // IDs were replaced, credential/provider metadata removed, and custom
+    // payloads cleared without changing the remaining entry chain.
+    let file = include_str!("fixtures/omp-18.22.2-session.jsonl").replace("\r\n", "\n");
+    let dom = round_trip(&file);
+    let session = dom.root().unwrap();
+    assert_eq!(session.str_attr(attr::CWD), Some("/workspace/omp-round-trip"));
+    assert_eq!(session.str_attr(attr::MODEL), Some("openai-codex/gpt-6.2-sol"));
+    assert_eq!(session.str_attr(attr::EFFORT), Some("medium"));
+
+    let [turn]: [&Node; 1] = nodes(&dom, K::Turn).try_into().unwrap();
+    assert_eq!(turn.str_attr(attr::STATUS), Some("done"));
+    let [user, assistant]: [&Node; 2] = nodes(&dom, K::Message).try_into().unwrap();
+    assert_eq!(user.str_attr(attr::ROLE), Some("user"));
+    assert_eq!(user.text, "Reply with exactly this text and nothing else: OMP round-trip fixture");
+    assert_eq!(assistant.str_attr(attr::ROLE), Some("assistant"));
+    assert_eq!(assistant.text, "OMP round-trip fixture");
+    let [usage]: [&Node; 1] = nodes(&dom, K::Usage).try_into().unwrap();
+    assert_eq!(usage.int_attr(attr::OUTPUT_TOKENS), Some(8));
+}
+
+#[test]
 fn all_message_roles_blocks_calls_results_and_usage() {
     let file = fixture(&[
         json!({"type":"message","message":{"role":"user","content":[{"type":"text","text":"hello"},{"type":"text","text":"world"}]}}),
