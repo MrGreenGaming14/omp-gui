@@ -1,4 +1,4 @@
-//! Model, effort and mode pickers. The app fills them from the harness
+//! Harness, model, effort and mode pickers. The app fills them from the harness
 //! (omp's `get_available_models`, the session's `model`, `model_role`,
 //! `effort` and `mode` attributes) and acts on the change events.
 
@@ -27,19 +27,55 @@ impl fmt::Display for ModelOption {
     }
 }
 
+/// A harness prompts can be routed to, e.g. `omp` or `claude`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HarnessOption {
+    /// Id reported by [`Event::HarnessChanged`](crate::Event::HarnessChanged).
+    pub id: String,
+    /// Name shown in the picker.
+    pub label: String,
+    /// Whether it can run here. Unavailable harnesses are listed, not picked.
+    pub available: bool,
+    /// Muted note beside the label, e.g. `not installed`.
+    pub detail: Option<String>,
+}
+
+/// One of the composer's bottom-row pickers.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Picker {
+    Harness,
+    Model,
+    Effort,
+    Mode,
+}
+
 /// Picker contents and the current choices.
 #[derive(Debug)]
 pub struct Pickers {
+    pub harnesses: Vec<HarnessOption>,
+    /// Id of the current harness.
+    pub harness: Option<String>,
     pub models: Vec<ModelOption>,
     pub model: Option<ModelOption>,
     /// Effort levels the current model supports. Empty hides the picker.
     pub efforts: Vec<String>,
     pub effort: Option<String>,
     pub mode: SessionMode,
+    /// The picker whose menu is open, if any.
+    pub open: Option<Picker>,
 }
 
 impl Default for Pickers {
     fn default() -> Self {
-        Self { models: Vec::new(), model: None, efforts: Vec::new(), effort: None, mode: SessionMode::Normal }
+        Self {
+            harnesses: Vec::new(),
+            harness: None,
+            models: Vec::new(),
+            model: None,
+            efforts: Vec::new(),
+            effort: None,
+            mode: SessionMode::Normal,
+            open: None,
+        }
     }
 }

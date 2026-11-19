@@ -12,10 +12,11 @@ publish = false
 loa-core = { path = "crates/loa-core" }
 loa-adapter = { path = "crates/loa-adapter" }
 loa-surface = { path = "crates/loa-surface" }
+loa-ui-icons = { path = "crates/loa-ui-icons" }
 async-trait = "0.1"
 bytes = "1"
 futures = "0.3"
-iced = { version = "0.14", features = ["tokio", "advanced", "markdown", "image", "canvas"] }
+iced = { version = "0.14", features = ["tokio", "advanced", "markdown", "image", "canvas", "svg"] }
 prost = "0.14"
 rusqlite = { version = "0.43", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }

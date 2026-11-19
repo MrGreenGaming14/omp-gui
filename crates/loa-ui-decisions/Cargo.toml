@@ -9,6 +9,7 @@ publish.workspace = true
 loa-core.workspace = true
 loa-adapter.workspace = true
 iced.workspace = true
+loa-ui-icons.workspace = true
 serde_json = { workspace = true, features = ["preserve_order"] }
 thiserror.workspace = true
 notify-rust = "4.19"

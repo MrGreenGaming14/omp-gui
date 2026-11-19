@@ -15,6 +15,7 @@ use iced::widget::operation::{self, AbsoluteOffset};
 use iced::widget::scrollable::Viewport;
 use iced::widget::{Id, Space, button, column, container, row, scrollable, text};
 use iced::{Alignment, Element, Length, Task};
+use loa_ui_icons::Icon;
 
 use crate::style;
 
@@ -314,7 +315,7 @@ impl State {
             Row::Node(index) => self.node_row(index),
             Row::Error(index) => self.error_row(index),
         });
-        scrollable(column(rows).width(Length::Fill))
+        scrollable(column(rows).width(Length::Fill).padding([0, 6]))
             .id(self.scroll_id.clone())
             .on_scroll(Message::Scrolled)
             .width(Length::Fill)
@@ -324,31 +325,34 @@ impl State {
 
     fn node_row(&self, index: usize) -> Element<'_, Message> {
         let node = &self.nodes[index];
-        let glyph = match (node.is_dir, node.expanded) {
-            (false, _) => "",
-            (true, false) => "▸",
-            (true, true) => "▾",
+        let chevron: Element<'_, Message> = match (node.is_dir, node.expanded) {
+            (false, _) => Space::new().width(style::INDENT).into(),
+            (true, false) => loa_ui_icons::muted(Icon::ChevronRight, 12.0).width(style::INDENT).into(),
+            (true, true) => loa_ui_icons::muted(Icon::ChevronDown, 12.0).width(style::INDENT).into(),
         };
-        let marker = match node.mark {
-            Mark::None => text(""),
-            Mark::Contains => text("•").style(style::muted),
-            Mark::Touched => text("●").style(style::primary_text),
+        let kind = if node.is_dir { Icon::Folder } else { Icon::FileText };
+        let marker: Element<'_, Message> = match node.mark {
+            Mark::None => Space::new().into(),
+            Mark::Contains => loa_ui_icons::muted(Icon::CircleDot, 12.0).into(),
+            Mark::Touched => loa_ui_icons::icon(Icon::CircleDot, 12.0).into(),
         };
         let content = row![
             Space::new().width((node.depth - 1) as f32 * style::INDENT),
-            text(glyph).size(style::TEXT_SIZE).width(style::INDENT),
+            chevron,
+            loa_ui_icons::icon(kind, 14.0),
             text(node.name.as_str())
-                .size(style::TEXT_SIZE)
+                .size(style::LIST_TEXT_SIZE)
                 .wrapping(text::Wrapping::None)
                 .width(Length::Fill),
-            marker.size(style::TEXT_SIZE),
+            marker,
         ]
+        .spacing(6)
         .align_y(Alignment::Center)
         .height(Length::Fill);
         button(content)
             .width(Length::Fill)
-            .height(style::ROW_HEIGHT)
-            .padding([0, 4])
+            .height(style::LIST_ROW_HEIGHT)
+            .padding([0, 8])
             .style(style::row_button(self.selected == Some(index)))
             .on_press(Message::Click(index))
             .into()
@@ -358,9 +362,9 @@ impl State {
         let node = &self.nodes[index];
         let message = node.error.as_deref().unwrap_or_default();
         let content = row![
-            Space::new().width(node.depth as f32 * style::INDENT + style::INDENT),
+            Space::new().width(node.depth as f32 * style::INDENT + style::INDENT + 32.0),
             text(message)
-                .size(style::TEXT_SIZE)
+                .size(style::LIST_TEXT_SIZE)
                 .wrapping(text::Wrapping::None)
                 .style(style::danger_text),
         ]
@@ -368,8 +372,8 @@ impl State {
         .height(Length::Fill);
         container(content)
             .width(Length::Fill)
-            .height(style::ROW_HEIGHT)
-            .padding([0, 4])
+            .height(style::LIST_ROW_HEIGHT)
+            .padding([0, 8])
             .into()
     }
 
@@ -532,8 +536,8 @@ impl State {
         let Some(row) = self.selected_row else {
             return Task::none();
         };
-        let top = row as f32 * style::ROW_HEIGHT;
-        let bottom = top + style::ROW_HEIGHT;
+        let top = row as f32 * style::LIST_ROW_HEIGHT;
+        let bottom = top + style::LIST_ROW_HEIGHT;
         let target = if top < self.scroll_offset {
             top
         } else if self.viewport_height > 0.0 && bottom > self.scroll_offset + self.viewport_height {

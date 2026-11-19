@@ -4,11 +4,13 @@
 
 use crate::catalog::{ModelInfo, ModelRef, RoleAssignment};
 use crate::session::SessionModelChange;
+use crate::style;
 use iced::event::{self, Event as RuntimeEvent};
 use iced::keyboard::{self, key::Named};
 use iced::widget::operation::{self, RelativeOffset};
 use iced::widget::{button, column, container, row, scrollable, space, text, text_input};
 use iced::{Element, Fill, Subscription, Task};
+use loa_ui_icons::Icon;
 
 const SEARCH_ID: &str = "loa-model-picker-search";
 const LIST_ID: &str = "loa-model-picker-list";
@@ -213,30 +215,29 @@ impl State {
             Target::Session => "Model for this session".to_owned(),
             Target::Role(role) => format!("Model for role {role}"),
         };
-        let search = text_input("Search models", &self.query)
-            .id(SEARCH_ID)
-            .on_input(Message::Query)
-            .on_submit(Message::Submit)
-            .padding(6);
+        let search = style::search_box(
+            text_input("Search models", &self.query).id(SEARCH_ID).on_input(Message::Query).on_submit(Message::Submit),
+        );
 
         let mut list = column![].spacing(2);
         if self.rows.is_empty() {
-            list = list.push(text("No models match").style(text::secondary));
+            list = list.push(container(text("No models match").size(style::NOTE).style(style::muted)).padding([4.0, 8.0]));
         }
         for group in self.groups() {
-            list = list.push(text(group.title).size(12).style(text::secondary));
+            list = list.push(container(text(group.title).size(style::SMALL).style(style::muted)).padding([6.0, 8.0]));
             for (offset, row) in group.rows.iter().enumerate() {
                 list = list.push(self.row_view(group.start + offset, *row));
             }
         }
 
         let content = column![
-            row![text(heading).size(14), space::horizontal(), button("Close").style(button::text).on_press(Message::Close)],
+            row![text(heading).size(style::BODY), space::horizontal(), style::icon_button(Icon::X).on_press(Message::Close)]
+                .align_y(iced::Center),
             search,
-            scrollable(list).id(LIST_ID).height(360),
+            scrollable(list).id(LIST_ID).height(360).direction(style::thin_scrollbar()).style(style::scrollbar),
         ]
         .spacing(8);
-        container(content).padding(10).width(420).style(container::bordered_box).into()
+        container(content).padding(8).width(420).style(style::popup).into()
     }
 
     fn row_view(&self, index: usize, row: Row) -> Element<'_, Message> {
@@ -256,12 +257,18 @@ impl State {
                 (info.display_name(), detail, self.current.as_ref() == Some(&info.model))
             }
         };
-        let mut line = row![text(title), space::horizontal(), text(detail).size(12).style(text::secondary)].spacing(8);
+        let mut line = row![
+            text(title).size(style::BODY),
+            space::horizontal(),
+            text(detail).size(style::SMALL).style(style::muted)
+        ]
+        .spacing(8)
+        .align_y(iced::Center);
         if is_current {
-            line = line.push(text("current").size(12).style(text::success));
+            line = line.push(text("current").size(style::SMALL).style(text::success));
         }
-        let style = if index == self.selected { button::primary } else { button::text };
-        button(line).width(Fill).style(style).on_press(Message::Pick(index)).into()
+        let look = if index == self.selected { style::selected } else { style::flat };
+        button(line).width(Fill).padding([6.0, 8.0]).style(look).on_press(Message::Pick(index)).into()
     }
 
     fn pick(&self, index: usize) -> Option<Event> {

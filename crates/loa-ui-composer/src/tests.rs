@@ -398,3 +398,52 @@ fn real_keys_shift_enter_breaks_the_line_and_enter_sends() {
         other => panic!("expected a submit, got {other:?}"),
     }
 }
+
+fn unavailable(id: &str) -> HarnessOption {
+    HarnessOption { id: id.into(), label: id.into(), available: false, detail: Some("not installed".into()) }
+}
+
+fn harnesses() -> Vec<HarnessOption> {
+    vec![
+        HarnessOption { id: "omp".into(), label: "omp".into(), available: true, detail: None },
+        unavailable("claude"),
+        unavailable("codex"),
+    ]
+}
+
+#[test]
+fn harness_switches_to_available_harnesses_only() {
+    let mut state = State::new();
+    let mut options = harnesses();
+    options.push(HarnessOption { id: "opencode".into(), label: "opencode".into(), available: true, detail: None });
+    state.set_harnesses(options, Some("omp"));
+    assert_eq!(state.harness().map(|h| h.id.as_str()), Some("omp"));
+    assert_eq!(act(&mut state, Message::HarnessPicked("claude".into())), None);
+    assert_eq!(act(&mut state, Message::HarnessPicked("missing".into())), None);
+    assert_eq!(act(&mut state, Message::HarnessPicked("omp".into())), None);
+    assert_eq!(state.harness().map(|h| h.id.as_str()), Some("omp"));
+    assert_eq!(
+        act(&mut state, Message::HarnessPicked("opencode".into())),
+        Some(Event::HarnessChanged("opencode".into()))
+    );
+    assert_eq!(state.harness().map(|h| h.id.as_str()), Some("opencode"));
+}
+
+#[test]
+fn picker_menus_toggle_and_close_on_a_choice() {
+    let mut state = State::new();
+    state.set_models(models(), None);
+    act(&mut state, Message::PickerToggled(Picker::Model));
+    assert_eq!(state.pickers.open, Some(Picker::Model));
+    act(&mut state, Message::PickerToggled(Picker::Effort));
+    assert_eq!(state.pickers.open, Some(Picker::Effort));
+    act(&mut state, Message::PickerToggled(Picker::Effort));
+    assert_eq!(state.pickers.open, None);
+    act(&mut state, Message::PickerToggled(Picker::Mode));
+    act(&mut state, Message::PickerClosed);
+    assert_eq!(state.pickers.open, None);
+    act(&mut state, Message::PickerToggled(Picker::Model));
+    let model = models()[1].clone();
+    assert_eq!(act(&mut state, Message::ModelPicked(model.clone())), Some(Event::ModelChanged(model)));
+    assert_eq!(state.pickers.open, None);
+}

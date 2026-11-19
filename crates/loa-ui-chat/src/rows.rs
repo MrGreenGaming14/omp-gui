@@ -3,18 +3,30 @@
 
 use crate::Message;
 use crate::items::{Item, ItemKind};
+use crate::prose;
 use crate::stream::Streamed;
-use iced::widget::{Space, button, column, container, markdown, row, text};
-use iced::{Element, Fill, Font};
+use crate::style::{self, ICON_SIZE, LINE_HEIGHT, Look, SMALL_SIZE, TEXT_SIZE};
+use iced::alignment::Vertical;
+use iced::widget::{Space, button, column, container, row, rule, svg, text};
+use iced::{Element, Fill, Font, Padding, Theme};
 use loa_core::{
     CallStatus, Dom, ElementKind, JobKind, JobStatus, MessageStatus, Node, NodeId, TodoState, attr,
 };
+use loa_ui_icons::Icon;
 
 /// Lines of a call input, call result or job output shown when expanded.
 const MAX_LINES: usize = 40;
 /// Bytes shown of the same, so one huge line can't stall layout.
 const MAX_BYTES: usize = 6_000;
-const DETAIL_SIZE: u32 = 13;
+/// Size of monospace output.
+const CODE_SIZE: f32 = 12.0;
+/// Widest a user bubble grows.
+const BUBBLE_WIDTH: f32 = 560.0;
+/// Indent of the details under an expanded row, lining the guide up with the
+/// header icon.
+const DETAIL_INDENT: f32 = 17.0;
+/// The text an interrupted message ends with.
+const INTERRUPTED: &str = "[interrupted]";
 
 /// How a group of calls is doing as a whole.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -36,15 +48,16 @@ pub(crate) struct CallSummary {
     pub failed: usize,
 }
 
-/// Verb and nouns of a tool, Claude Code style: "Read 3 files".
+/// Past-tense verb and nouns of a tool, Claude Code style: "Read 3 files",
+/// "Edited 1 file".
 fn tool_words(tool: &str) -> (&str, &'static str, &'static str) {
     let lower = |name: &str| tool.eq_ignore_ascii_case(name);
     if lower("read") || lower("read_file") || lower("view") {
         ("Read", "file", "files")
     } else if lower("edit") || lower("multiedit") || lower("apply_patch") || lower("ast_edit") {
-        ("Edit", "file", "files")
+        ("Edited", "file", "files")
     } else if lower("write") || lower("write_file") {
-        ("Write", "file", "files")
+        ("Wrote", "file", "files")
     } else if lower("bash") || lower("shell") || lower("exec") || lower("exec_command") {
         ("Ran", "command", "commands")
     } else if lower("grep") || lower("search") {
@@ -126,7 +139,7 @@ pub(crate) fn summarize(dom: &Dom, calls: &[NodeId]) -> CallSummary {
 
 /// "0.4s", "12s", "2m 5s".
 pub(crate) fn format_duration(ms: i64) -> String {
-    if ms < 10_000 {
+    if ms < 1_000 {
         format!("{:.1}s", ms as f64 / 1000.0)
     } else if ms < 60_000 {
         format!("{}s", ms / 1000)
@@ -161,26 +174,66 @@ pub(crate) fn trailing(text: &str) -> (&str, usize) {
     (&text[start..], start)
 }
 
-fn chevron(expanded: bool) -> &'static str {
-    if expanded { "⌄" } else { "›" }
+fn chevron<'a>(expanded: bool) -> Element<'a, Message> {
+    let icon = if expanded {
+        Icon::ChevronDown
+    } else {
+        Icon::ChevronRight
+    };
+    loa_ui_icons::muted(icon, ICON_SIZE - 2.0).into()
 }
 
-/// A row header that toggles the row open and closed.
-fn header<'a>(content: impl Into<Element<'a, Message>>, key: NodeId) -> Element<'a, Message> {
-    button(content)
-        .style(button::text)
-        .padding([2, 0])
+/// A row icon: muted, or in the danger color when something failed.
+fn glyph<'a>(icon: Icon, failed: bool) -> Element<'a, Message> {
+    let svg = loa_ui_icons::muted(icon, ICON_SIZE);
+    if failed {
+        svg.style(|theme: &Theme, _| svg::Style {
+            color: Some(theme.extended_palette().danger.base.color),
+        })
+        .into()
+    } else {
+        svg.into()
+    }
+}
+
+/// A row header that toggles the row open and closed: `parts` in a line,
+/// followed by a chevron.
+fn header<'a>(
+    parts: impl IntoIterator<Item = Element<'a, Message>>,
+    key: NodeId,
+    expanded: bool,
+) -> Element<'a, Message> {
+    let line = row(parts)
+        .push(chevron(expanded))
+        .spacing(8)
+        .align_y(Vertical::Center);
+    button(line)
+        .style(style::header)
+        .padding([4, 10])
         .on_press(Message::Toggle(key))
         .into()
 }
 
+/// What an expanded row shows below its header, set off by a thin guide.
+fn details<'a>(head: Element<'a, Message>, body: Element<'a, Message>) -> Element<'a, Message> {
+    let body = row![rule::vertical(1).style(style::guide), body]
+        .spacing(14)
+        .height(iced::Shrink);
+    column![
+        head,
+        container(body).padding(Padding::ZERO.left(DETAIL_INDENT).bottom(4))
+    ]
+    .spacing(4)
+    .into()
+}
+
 fn muted<'a>(content: impl text::IntoFragment<'a>) -> text::Text<'a> {
-    text(content).style(text::secondary)
+    text(content).size(TEXT_SIZE).style(style::muted)
 }
 
 fn omitted<'a>(bytes: usize) -> Element<'a, Message> {
     muted(format!("… {} more", format_bytes(bytes)))
-        .size(DETAIL_SIZE)
+        .size(SMALL_SIZE)
         .into()
 }
 
@@ -194,7 +247,7 @@ fn format_bytes(bytes: usize) -> String {
 
 /// A monospace block of `body` with the bytes left out noted below.
 fn block<'a>(body: &'a str, left_out: usize, error: bool) -> Element<'a, Message> {
-    let body = text(body).font(Font::MONOSPACE).size(DETAIL_SIZE);
+    let body = text(body).font(Font::MONOSPACE).size(CODE_SIZE);
     let body = if error {
         body.style(text::danger)
     } else {
@@ -205,9 +258,9 @@ fn block<'a>(body: &'a str, left_out: usize, error: bool) -> Element<'a, Message
         col = col.push(omitted(left_out));
     }
     container(col)
-        .padding(8)
+        .padding([8, 10])
         .width(Fill)
-        .style(container::rounded_box)
+        .style(style::block)
         .into()
 }
 
@@ -217,16 +270,16 @@ pub(crate) fn view<'a>(
     item: &'a Item,
     expanded: bool,
     streamed: Option<&'a Streamed>,
-    settings: markdown::Settings,
+    look: Look,
 ) -> Element<'a, Message> {
     let Some(node) = dom.get(item.key) else {
         return Space::new().into();
     };
     match item.kind {
         ItemKind::User => user(node),
-        ItemKind::Assistant => assistant(node, streamed, settings),
+        ItemKind::Assistant => assistant(node, streamed, look),
         ItemKind::Thinking => thinking(node, expanded),
-        ItemKind::System => muted(node.text.as_str()).into(),
+        ItemKind::System => muted(node.text.as_str()).size(SMALL_SIZE).into(),
         ItemKind::Calls => calls(dom, item, expanded),
         // The app fills decision slots; this row is never asked for them.
         ItemKind::Decision => Space::new().into(),
@@ -238,56 +291,61 @@ pub(crate) fn view<'a>(
     }
 }
 
+/// A user message: a bubble on the right. Clicking it asks for a rewind.
 fn user(node: &Node) -> Element<'_, Message> {
-    let body = container(text(node.text.as_str()))
-        .padding([8, 12])
-        .width(Fill)
-        .style(container::rounded_box);
-    button(body)
-        .style(button::text)
-        .padding(0)
-        .width(Fill)
-        .on_press(Message::Rewind(node.id))
+    let bubble = button(
+        text(node.text.as_str())
+            .size(TEXT_SIZE)
+            .line_height(LINE_HEIGHT),
+    )
+    .style(style::bubble)
+    .padding([6, 12])
+    .on_press(Message::Rewind(node.id));
+    container(container(bubble).max_width(BUBBLE_WIDTH))
+        .align_right(Fill)
         .into()
 }
 
 fn assistant<'a>(
     node: &'a Node,
     streamed: Option<&'a Streamed>,
-    settings: markdown::Settings,
+    look: Look,
 ) -> Element<'a, Message> {
-    let body: Element<'a, Message> = match streamed {
-        Some(streamed) => markdown::view(streamed.items(), settings).map(Message::Link),
-        None => text(node.text.as_str()).into(),
-    };
     let status = node.str_attr(attr::STATUS).and_then(MessageStatus::parse);
-    match status {
-        Some(MessageStatus::Cancelled) => column![body, muted("Interrupted").size(DETAIL_SIZE)]
-            .spacing(4)
-            .into(),
-        Some(MessageStatus::Error) => {
-            column![body, text("Failed").size(DETAIL_SIZE).style(text::danger)]
-                .spacing(4)
-                .into()
-        }
-        _ => body,
+    let marker = (status == Some(MessageStatus::Cancelled)).then_some(INTERRUPTED);
+    let (body, placed) = match streamed {
+        Some(streamed) => prose::view(streamed.items(), look, marker),
+        None => (
+            text(node.text.as_str())
+                .size(TEXT_SIZE)
+                .line_height(LINE_HEIGHT)
+                .into(),
+            false,
+        ),
+    };
+    let mut col = column![body].spacing(4);
+    if let Some(marker) = marker.filter(|_| !placed) {
+        col = col.push(muted(marker));
     }
+    if status == Some(MessageStatus::Error) {
+        col = col.push(text("Failed").size(SMALL_SIZE).style(text::danger));
+    }
+    col.into()
 }
 
 fn thinking(node: &Node, expanded: bool) -> Element<'_, Message> {
     let streaming = node.str_attr(attr::STATUS).and_then(MessageStatus::parse)
         == Some(MessageStatus::Streaming);
     let label = if streaming { "Thinking…" } else { "Thought" };
-    let head = header(
-        row![muted(label).font(italic()), muted(chevron(expanded))].spacing(6),
-        node.id,
-    );
+    let head = header([muted(label).font(italic()).into()], node.id, expanded);
     if !expanded {
         return head;
     }
-    column![head, muted(node.text.as_str()).font(italic())]
-        .spacing(4)
-        .into()
+    let body = muted(node.text.as_str())
+        .size(SMALL_SIZE)
+        .line_height(LINE_HEIGHT)
+        .font(italic());
+    details(head, body.into())
 }
 
 fn italic() -> Font {
@@ -297,52 +355,53 @@ fn italic() -> Font {
     }
 }
 
-fn status_dot<'a>(status: GroupStatus) -> text::Text<'a> {
-    let dot = text("●");
-    match status {
-        GroupStatus::Running => dot.style(text::primary),
-        GroupStatus::Done => dot.style(text::success),
-        GroupStatus::Error => dot.style(text::danger),
-        GroupStatus::Cancelled => dot.style(text::secondary),
-    }
-}
-
 fn calls<'a>(dom: &'a Dom, item: &'a Item, expanded: bool) -> Element<'a, Message> {
     let summary = summarize(dom, &item.calls);
-    let mut line = row![status_dot(summary.status), text(summary.label)].spacing(8);
+    let failed = summary.status == GroupStatus::Error;
+    let mut parts = vec![glyph(Icon::FileText, failed), muted(summary.label).into()];
     match (summary.status, summary.duration_ms) {
-        (GroupStatus::Running, _) => line = line.push(muted("running…")),
-        (_, Some(ms)) => line = line.push(muted(format_duration(ms))),
+        (GroupStatus::Running, _) => parts.push(muted("running…").into()),
+        (_, Some(ms)) => parts.push(muted(format_duration(ms)).into()),
         (_, None) => {}
     }
     if summary.failed > 0 {
-        line = line.push(text(format!("{} failed", summary.failed)).style(text::danger));
+        parts.push(
+            text(format!("{} failed", summary.failed))
+                .size(TEXT_SIZE)
+                .style(text::danger)
+                .into(),
+        );
     }
     if summary.status == GroupStatus::Cancelled {
-        line = line.push(muted("cancelled"));
+        parts.push(muted("cancelled").into());
     }
-    let head = header(line.push(muted(chevron(expanded))), item.key);
+    let head = header(parts, item.key, expanded);
     if !expanded {
         return head;
     }
-    let details = item
+    let lines = item
         .calls
         .iter()
         .filter_map(|id| dom.get(*id))
         .map(|call| call_details(dom, call));
-    column![head, column(details).spacing(8).padding([0, 16])]
-        .spacing(6)
-        .into()
+    details(head, column(lines).spacing(6).into())
+}
+
+/// "Read src/peer/conn.rs", or the bare tool name of an untitled call.
+fn call_line(call: &Node) -> String {
+    let tool = call.str_attr(attr::TOOL).unwrap_or_default();
+    match call.str_attr(attr::TITLE) {
+        Some(title) => format!("{} {title}", tool_words(tool).0),
+        None => tool.to_owned(),
+    }
 }
 
 fn call_details<'a>(dom: &'a Dom, call: &'a Node) -> Element<'a, Message> {
-    let tool = call.str_attr(attr::TOOL).unwrap_or_default();
-    let title = call.str_attr(attr::TITLE).unwrap_or(tool);
-    let mut col = column![text(title).font(Font::MONOSPACE).size(DETAIL_SIZE)].spacing(4);
+    let mut col = column![text(call_line(call)).size(SMALL_SIZE)].spacing(4);
     for input in dom.children_of_kind(call.id, ElementKind::Input) {
         let (shown, left_out) = leading(&input.text);
         col = col
-            .push(muted("Input").size(DETAIL_SIZE))
+            .push(muted("Input").size(SMALL_SIZE - 1.0))
             .push(block(shown, left_out, false));
     }
     for result in dom.children_of_kind(call.id, ElementKind::Result) {
@@ -354,7 +413,7 @@ fn call_details<'a>(dom: &'a Dom, call: &'a Node) -> Element<'a, Message> {
             muted("Result")
         };
         col = col
-            .push(label.size(DETAIL_SIZE))
+            .push(label.size(SMALL_SIZE - 1.0))
             .push(block(shown, left_out, error));
     }
     if call.str_attr(attr::STATUS).and_then(CallStatus::parse) == Some(CallStatus::Error)
@@ -363,16 +422,16 @@ fn call_details<'a>(dom: &'a Dom, call: &'a Node) -> Element<'a, Message> {
             .next()
             .is_none()
     {
-        col = col.push(text("Failed").size(DETAIL_SIZE).style(text::danger));
+        col = col.push(text("Failed").size(SMALL_SIZE).style(text::danger));
     }
     col.into()
 }
 
 fn job(node: &Node, expanded: bool) -> Element<'_, Message> {
     let kind = node.str_attr(attr::KIND).and_then(JobKind::parse);
-    let noun = match kind {
-        Some(JobKind::Subagent) => "Agent",
-        _ => "Shell",
+    let (noun, icon) = match kind {
+        Some(JobKind::Subagent) => ("Agent", Icon::Cpu),
+        _ => ("Shell", Icon::Terminal),
     };
     let name = node
         .str_attr(attr::TITLE)
@@ -391,27 +450,31 @@ fn job(node: &Node, expanded: bool) -> Element<'_, Message> {
         GroupStatus::Error => "failed",
         GroupStatus::Cancelled => "cancelled",
     };
-    let mut line = row![
-        status_dot(status),
-        text(noun),
-        text(name).font(Font::MONOSPACE),
-        muted(state)
-    ]
-    .spacing(8);
+    let failed = status == GroupStatus::Error;
+    let mut parts = vec![
+        glyph(icon, failed),
+        muted(noun).into(),
+        text(name).font(Font::MONOSPACE).size(SMALL_SIZE).into(),
+        muted(state).into(),
+    ];
     if let Some(code) = node.int_attr(attr::EXIT_CODE).filter(|c| *c != 0) {
-        line = line.push(text(format!("exit {code}")).style(text::danger));
+        parts.push(
+            text(format!("exit {code}"))
+                .size(TEXT_SIZE)
+                .style(text::danger)
+                .into(),
+        );
     }
-    let head = header(line.push(muted(chevron(expanded))), node.id);
+    let head = header(parts, node.id, expanded);
     if !expanded || node.text.is_empty() {
         return head;
     }
     let (shown, left_out) = trailing(&node.text);
-    let mut col = column![head].spacing(6);
+    let mut col = column![].spacing(4);
     if left_out > 0 {
         col = col.push(omitted(left_out));
     }
-    col.push(block(shown, 0, status == GroupStatus::Error))
-        .into()
+    details(head, col.push(block(shown, 0, failed)).into())
 }
 
 fn todo(node: &Node) -> Element<'_, Message> {
@@ -425,18 +488,17 @@ fn todo(node: &Node) -> Element<'_, Message> {
         TodoState::Done => ("☑", true),
         TodoState::Cancelled => ("☒", true),
     };
-    let body = text(node.text.as_str());
-    let body = if done {
-        body.style(text::secondary)
+    let body = text(node.text.as_str()).size(TEXT_SIZE);
+    let (mark, body) = if done {
+        (muted(mark), body.style(style::muted))
     } else {
-        body
+        (text(mark).size(TEXT_SIZE), body)
     };
-    row![
-        text(mark).style(if done { text::secondary } else { text::primary }),
-        body
-    ]
-    .spacing(8)
-    .into()
+    row![mark, body]
+        .spacing(8)
+        .padding([0, 10])
+        .align_y(Vertical::Center)
+        .into()
 }
 
 fn surface(node: &Node) -> Element<'_, Message> {
@@ -446,11 +508,13 @@ fn surface(node: &Node) -> Element<'_, Message> {
         .unwrap_or_default();
     let mode = node.str_attr(attr::MODE).unwrap_or_default();
     row![
-        text("Surface"),
-        text(name).font(Font::MONOSPACE),
+        muted("Surface"),
+        text(name).font(Font::MONOSPACE).size(SMALL_SIZE),
         muted(mode)
     ]
     .spacing(8)
+    .padding([0, 10])
+    .align_y(Vertical::Center)
     .into()
 }
 
@@ -464,22 +528,27 @@ fn compaction(node: &Node, expanded: bool) -> Element<'_, Message> {
         1 => "Compacted 1 turn".to_owned(),
         n => format!("Compacted {n} turns"),
     };
-    let head = header(
-        row![muted(label), muted(chevron(expanded))].spacing(6),
-        node.id,
-    );
+    let head = header([muted(label).into()], node.id, expanded);
     if !expanded {
         return head;
     }
-    column![head, muted(node.text.as_str())].spacing(4).into()
+    let body = muted(node.text.as_str())
+        .size(SMALL_SIZE)
+        .line_height(LINE_HEIGHT);
+    details(head, body.into())
 }
 
 fn ext(node: &Node, expanded: bool) -> Element<'_, Message> {
     let harness = node.str_attr(attr::HARNESS).unwrap_or_default();
     let kind = node.str_attr(attr::TYPE).unwrap_or("event");
     let head = header(
-        row![muted(harness), muted(kind), muted(chevron(expanded))].spacing(6),
+        [
+            glyph(Icon::Wrench, false),
+            muted(harness).into(),
+            muted(kind).into(),
+        ],
         node.id,
+        expanded,
     );
     if !expanded {
         return head;
@@ -490,9 +559,7 @@ fn ext(node: &Node, expanded: bool) -> Element<'_, Message> {
         node.text.as_str()
     };
     let (shown, left_out) = leading(raw);
-    column![head, block(shown, left_out, false)]
-        .spacing(4)
-        .into()
+    details(head, block(shown, left_out, false))
 }
 
 #[cfg(test)]
@@ -590,7 +657,7 @@ mod tests {
         let summary = summarize(&dom, &[a, b]);
         assert_eq!(summary.status, GroupStatus::Error);
         assert_eq!(summary.failed, 1);
-        assert_eq!(summary.label, "Edit 2 files");
+        assert_eq!(summary.label, "Edited 2 files");
     }
 
     #[test]

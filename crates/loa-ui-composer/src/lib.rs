@@ -2,7 +2,7 @@
 //!
 //! An iced `text_editor` with what the chat input needs on top: Enter to send
 //! and Shift+Enter for a newline, undo and redo, growing from one line up to a
-//! maximum height, `/` command and `@` file popups, model, effort and mode
+//! maximum height, `/` command and `@` file popups, harness, model, effort and mode
 //! pickers, and a stop button with a queue for messages written mid turn.
 //!
 //! The app feeds it plain data ([`Command`], file paths, [`ModelOption`]s,
@@ -15,19 +15,23 @@ mod mention;
 mod pickers;
 mod popup;
 mod queue;
+mod style;
 
 use std::sync::Arc;
 
+use iced::Alignment::Center;
 use iced::advanced::input_method;
+use iced::keyboard::{self, Key, key::Named};
 use iced::widget::text_editor::{Action, Content, Cursor, Edit, Position};
-use iced::widget::{button, column, container, pick_list, row, space, text, text_input};
+use iced::widget::{button, column, container, row, space, text, text_input};
 use iced::{Element, Length, Subscription, Task};
 use loa_adapter::Prompt;
 use loa_core::SessionMode;
+use loa_ui_icons::{Icon, icon, muted};
 
 use history::{EditKind, History, Snapshot};
 use keys::KeyContext;
-pub use pickers::ModelOption;
+pub use pickers::{HarnessOption, ModelOption, Picker};
 use pickers::Pickers;
 pub use popup::PopupKind;
 use popup::{MAX_ITEMS, Popup, Trigger};
@@ -43,6 +47,10 @@ pub const MAX_EDITOR_HEIGHT: f32 = 240.0;
 pub const UNDO_DEPTH: usize = 200;
 /// Popup rows shown at once; the list scrolls with the selection.
 const VISIBLE_POPUP_ROWS: usize = 8;
+/// Side of the square send and stop button.
+const SEND_SIZE: f32 = 24.0;
+/// Width of a picker's menu.
+const MENU_WIDTH: f32 = 260.0;
 
 /// A `/` command offered in the popup.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -69,6 +77,8 @@ pub enum Event {
     ModelChanged(ModelOption),
     EffortChanged(String),
     ModeChanged(SessionMode),
+    /// The user picked another harness. Holds its id.
+    HarnessChanged(String),
 }
 
 /// Internal messages of the composer.
@@ -91,6 +101,11 @@ pub enum Message {
     ModelPicked(ModelOption),
     EffortPicked(String),
     ModePicked(SessionMode),
+    HarnessPicked(String),
+    /// Opens or closes a picker's menu.
+    PickerToggled(Picker),
+    /// Closes the open picker menu: a press outside it, or Escape.
+    PickerClosed,
     /// Whether an input method is composing text.
     Composing(bool),
 }
@@ -180,6 +195,19 @@ impl State {
         self.pickers.mode = mode;
     }
 
+    /// Harnesses prompts can be routed to and the current one, by id. The
+    /// harness picker shows when there are at least two options.
+    pub fn set_harnesses(&mut self, harnesses: Vec<HarnessOption>, current: Option<&str>) {
+        self.pickers.harness = current.filter(|id| harnesses.iter().any(|h| h.id == *id)).map(str::to_owned);
+        self.pickers.harnesses = harnesses;
+    }
+
+    /// The current harness, if it is one of the options.
+    pub fn harness(&self) -> Option<&HarnessOption> {
+        let id = self.pickers.harness.as_deref()?;
+        self.pickers.harnesses.iter().find(|h| h.id == id)
+    }
+
     /// The session's turn started.
     pub fn turn_started(&mut self) {
         self.phase = Phase::Running;
@@ -260,22 +288,43 @@ impl State {
             }
             Message::QueueEdit(id, text) => self.queue.edit(id, text).then(|| self.queue_changed()),
             Message::QueueRemove(id) => self.queue.remove(id).then(|| self.queue_changed()),
+            Message::HarnessPicked(id) => {
+                self.pickers.open = None;
+                let available = self.pickers.harnesses.iter().any(|h| h.id == id && h.available);
+                (available && self.pickers.harness.as_ref() != Some(&id)).then(|| {
+                    self.pickers.harness = Some(id.clone());
+                    Event::HarnessChanged(id)
+                })
+            }
+            Message::PickerToggled(picker) => {
+                self.pickers.open = (self.pickers.open != Some(picker)).then_some(picker);
+                None
+            }
+            Message::PickerClosed => {
+                self.pickers.open = None;
+                None
+            }
             Message::ModelPicked(model) => {
+                self.pickers.open = None;
                 (self.pickers.model.as_ref() != Some(&model)).then(|| {
                     self.pickers.model = Some(model.clone());
                     Event::ModelChanged(model)
                 })
             }
             Message::EffortPicked(effort) => {
+                self.pickers.open = None;
                 (self.pickers.effort.as_ref() != Some(&effort)).then(|| {
                     self.pickers.effort = Some(effort.clone());
                     Event::EffortChanged(effort)
                 })
             }
-            Message::ModePicked(mode) => (self.pickers.mode != mode).then(|| {
-                self.pickers.mode = mode;
-                Event::ModeChanged(mode)
-            }),
+            Message::ModePicked(mode) => {
+                self.pickers.open = None;
+                (self.pickers.mode != mode).then(|| {
+                    self.pickers.mode = mode;
+                    Event::ModeChanged(mode)
+                })
+            }
             Message::Composing(composing) => {
                 self.composing = composing;
                 None
@@ -290,52 +339,127 @@ impl State {
             composing: self.composing,
             busy: self.is_busy(),
         };
+        let placeholder = match self.harness() {
+            _ if self.is_busy() => "Queue a message…".to_owned(),
+            Some(harness) => format!("Ask {} anything. Type / for commands", harness.label),
+            None => "Ask anything. Type / for commands".to_owned(),
+        };
         let editor = iced::widget::text_editor(&self.content)
             .id(EDITOR_ID)
-            .placeholder(if self.is_busy() { "Queue a message…" } else { "Message, / for commands, @ for files" })
+            .placeholder(placeholder)
             .on_action(Message::Edit)
             .height(Length::Shrink)
             .max_height(MAX_EDITOR_HEIGHT)
-            .padding(8)
+            .padding([6, 8])
+            .size(14)
+            .style(style::editor)
             .key_binding(move |press| keys::bind(press, ctx));
 
-        let action: Element<'_, Message> = if self.is_busy() {
-            button(text("Stop")).style(button::danger).on_press(Message::StopPressed).into()
+        let (glyph, size, on_press) = if self.is_busy() {
+            (Icon::Square, 12.0, Some(Message::StopPressed))
         } else {
             let can_send = !self.content.text().trim().is_empty();
-            button(text("Send")).style(button::primary).on_press_maybe(can_send.then_some(Message::Send)).into()
+            (Icon::ArrowUp, 14.0, can_send.then_some(Message::Send))
         };
+        let action = button(icon(glyph, size).style(style::on_primary))
+            .width(SEND_SIZE)
+            .height(SEND_SIZE)
+            .padding((SEND_SIZE - size) / 2.0)
+            .style(style::send)
+            .on_press_maybe(on_press);
 
-        let mut controls = row![
-            pick_list(&self.pickers.models[..], self.pickers.model.as_ref(), Message::ModelPicked)
-                .placeholder("Model"),
-        ]
-        .spacing(8)
-        .align_y(iced::Alignment::Center);
-        if !self.pickers.efforts.is_empty() {
-            controls = controls.push(
-                pick_list(&self.pickers.efforts[..], self.pickers.effort.as_ref(), Message::EffortPicked)
-                    .placeholder("Effort"),
-            );
+        let pickers = &self.pickers;
+        let mut controls = row![].spacing(4).align_y(Center);
+        if pickers.harnesses.len() > 1 {
+            let label = self.harness().map_or("Harness", |h| h.label.as_str());
+            controls = controls.push(self.picker(Picker::Harness, label));
+        }
+        if !pickers.models.is_empty() || pickers.model.is_some() {
+            let label = pickers.model.as_ref().map_or("Model", |m| m.name.as_str());
+            controls = controls.push(self.picker(Picker::Model, label));
+        }
+        if !pickers.efforts.is_empty() {
+            controls = controls.push(self.picker(Picker::Effort, pickers.effort.as_deref().unwrap_or("Effort")));
         }
         controls = controls
-            .push(pick_list(SessionMode::ALL, Some(self.pickers.mode), Message::ModePicked))
+            .push(self.picker(Picker::Mode, pickers.mode.as_str()))
             .push(space::horizontal())
             .push(action);
+
+        let frame = container(column![editor, controls].spacing(18))
+            .padding(10)
+            .width(Length::Fill)
+            .style(style::frame);
 
         let mut layout = column![].spacing(6);
         if !self.queue.is_empty() {
             layout = layout.push(self.queue_view());
         }
-        if let Some(popup) = self.visible_popup() {
+        if let Some(picker) = pickers.open {
+            layout = layout.push(self.menu_view(picker));
+        } else if let Some(popup) = self.visible_popup() {
             layout = layout.push(self.popup_view(popup));
         }
-        layout.push(editor).push(controls).into()
+        layout.push(frame).into()
     }
 
-    /// Tracks input method composition so Enter and Esc reach the IME.
+    /// A flat bottom-row picker: its current choice and a chevron.
+    fn picker<'a>(&self, picker: Picker, label: &'a str) -> Element<'a, Message> {
+        let open = self.pickers.open == Some(picker);
+        let chevron = if open { Icon::ChevronUp } else { Icon::ChevronDown };
+        button(row![text(label).size(14), muted(chevron, 14.0)].spacing(4).align_y(Center))
+            .padding([3, 6])
+            .style(style::picker(open))
+            .on_press(Message::PickerToggled(picker))
+            .into()
+    }
+
+    /// The open picker's choices. The current one carries a check mark;
+    /// unavailable harnesses are listed but cannot be pressed.
+    fn menu_view(&self, picker: Picker) -> Element<'_, Message> {
+        let pickers = &self.pickers;
+        let rows: Vec<Element<'_, Message>> = match picker {
+            Picker::Harness => pickers
+                .harnesses
+                .iter()
+                .map(|h| {
+                    let current = pickers.harness.as_deref() == Some(h.id.as_str());
+                    let pick = h.available.then(|| Message::HarnessPicked(h.id.clone()));
+                    menu_row(&h.label, h.detail.clone(), current, pick)
+                })
+                .collect(),
+            Picker::Model => pickers
+                .models
+                .iter()
+                .map(|m| {
+                    let detail = match &m.role {
+                        Some(role) => format!("{} · {role}", m.provider),
+                        None => m.provider.clone(),
+                    };
+                    let current = pickers.model.as_ref() == Some(m);
+                    menu_row(&m.name, Some(detail), current, Some(Message::ModelPicked(m.clone())))
+                })
+                .collect(),
+            Picker::Effort => pickers
+                .efforts
+                .iter()
+                .map(|e| {
+                    let current = pickers.effort.as_ref() == Some(e);
+                    menu_row(e, None, current, Some(Message::EffortPicked(e.clone())))
+                })
+                .collect(),
+            Picker::Mode => SessionMode::ALL
+                .iter()
+                .map(|&mode| menu_row(mode.as_str(), None, pickers.mode == mode, Some(Message::ModePicked(mode))))
+                .collect(),
+        };
+        container(column(rows).spacing(2)).padding(4).width(MENU_WIDTH).style(style::menu).into()
+    }
+
+    /// Tracks input method composition so Enter and Esc reach the IME, and
+    /// closes an open picker menu on Esc.
     pub fn subscription(&self) -> Subscription<Message> {
-        iced::event::listen_with(|event, _status, _window| match event {
+        let ime = iced::event::listen_with(|event, _status, _window| match event {
             iced::Event::InputMethod(input_method::Event::Preedit(content, _)) => {
                 Some(Message::Composing(!content.is_empty()))
             }
@@ -343,24 +467,35 @@ impl State {
                 input_method::Event::Commit(_) | input_method::Event::Closed | input_method::Event::Opened,
             ) => Some(Message::Composing(false)),
             _ => None,
-        })
+        });
+        if self.pickers.open.is_none() {
+            return ime;
+        }
+        let escape = iced::event::listen_with(|event, _status, _window| match event {
+            iced::Event::Keyboard(keyboard::Event::KeyPressed { key: Key::Named(Named::Escape), .. }) => {
+                Some(Message::PickerClosed)
+            }
+            _ => None,
+        });
+        Subscription::batch([ime, escape])
     }
 
     fn queue_view(&self) -> Element<'_, Message> {
         let rows = self.queue.iter().map(|item| {
             let id = item.id;
             row![
-                text("Queued").size(12),
+                text("Queued").size(12).style(style::muted),
                 text_input("Empty message is skipped", &item.text)
                     .on_input(move |text| Message::QueueEdit(id, text))
+                    .size(13)
                     .width(Length::Fill),
-                button(text("Remove")).style(button::text).on_press(Message::QueueRemove(id)),
+                button(muted(Icon::X, 14.0)).padding(4).style(style::row(false)).on_press(Message::QueueRemove(id)),
             ]
             .spacing(8)
-            .align_y(iced::Alignment::Center)
+            .align_y(Center)
             .into()
         });
-        container(column(rows).spacing(4)).padding(6).style(container::rounded_box).width(Length::Fill).into()
+        container(column(rows).spacing(4)).padding(6).style(style::menu).width(Length::Fill).into()
     }
 
     fn popup_view<'a>(&'a self, popup: &'a Popup) -> Element<'a, Message> {
@@ -369,16 +504,36 @@ impl State {
             let label: Element<'a, Message> = match popup.trigger.kind {
                 PopupKind::Command => {
                     let command = &self.commands[index];
-                    row![text(format!("/{}", command.name)), text(&command.description).size(12)]
-                        .spacing(12)
-                        .into()
+                    row![
+                        text(format!("/{}", command.name)).size(14),
+                        text(&command.description).size(12).style(style::muted),
+                    ]
+                    .spacing(12)
+                    .align_y(Center)
+                    .into()
                 }
-                PopupKind::File => text(&self.files[index]).into(),
+                PopupKind::File => row![muted(Icon::FileText, 14.0), text(&self.files[index]).size(14)]
+                    .spacing(8)
+                    .align_y(Center)
+                    .into(),
             };
-            let style = if row == popup.selected { button::primary } else { button::text };
-            button(label).style(style).width(Length::Fill).on_press(Message::PopupPick(row)).into()
+            button(label)
+                .padding([7, 8])
+                .style(style::row(row == popup.selected))
+                .width(Length::Fill)
+                .on_press(Message::PopupPick(row))
+                .into()
         });
-        container(column(rows)).padding(4).style(container::rounded_box).width(Length::Fill).into()
+        let title = match popup.trigger.kind {
+            PopupKind::Command => "Commands",
+            PopupKind::File => "Files",
+        };
+        let header = container(text(title).size(12).style(style::muted)).padding([4, 8]);
+        container(column![header, column(rows).spacing(2)].spacing(2))
+            .padding(4)
+            .style(style::menu)
+            .width(Length::Fill)
+            .into()
     }
 
     fn visible_popup(&self) -> Option<&Popup> {
@@ -402,6 +557,9 @@ impl State {
     }
 
     fn edit(&mut self, action: Action) -> Option<Event> {
+        if !matches!(action, Action::Scroll { .. }) {
+            self.pickers.open = None;
+        }
         match &action {
             Action::Edit(edit) => {
                 let kind = edit_kind(edit);
@@ -576,6 +734,20 @@ impl State {
             PopupKind::File => fuzzy::filter(&trigger.query, self.files.iter().map(String::as_str), MAX_ITEMS),
         }
     }
+}
+
+/// A picker menu row: the choice, a muted note, and a check on the current
+/// one. Without `pick` the row is listed but cannot be pressed.
+fn menu_row(label: &str, detail: Option<String>, current: bool, pick: Option<Message>) -> Element<'_, Message> {
+    let mut content = row![text(label).size(14)].spacing(8).align_y(Center);
+    if let Some(detail) = detail {
+        content = content.push(text(detail).size(12).style(style::muted));
+    }
+    content = content.push(space::horizontal());
+    if current {
+        content = content.push(icon(Icon::Check, 14.0));
+    }
+    button(content).padding([6, 8]).width(Length::Fill).style(style::row(false)).on_press_maybe(pick).into()
 }
 
 fn edit_kind(edit: &Edit) -> EditKind {

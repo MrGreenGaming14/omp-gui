@@ -62,7 +62,7 @@ fn new_session_button_asks_for_a_new_session() {
 fn nav_items_open_peers_tools_and_projects() {
     let mut state = shell(false);
     let mut ui = simulator(&state);
-    ui.click("Peers").expect("Peers");
+    ui.click("desk (this)").expect("peer row");
     ui.click("Tools").expect("Tools");
     ui.click("harness").expect("project row");
     let messages: Vec<Message> = ui.into_messages().collect();
@@ -119,13 +119,13 @@ fn panel_toggle_hides_and_restores_the_panel_on_its_tab() {
 
     let mut ui = simulator(&state);
     assert!(ui.find("terminal body").is_ok());
-    ui.click(topbar::HIDE_PANEL).expect("hide panel button");
+    ui.click(selector::id(topbar::PANEL_TOGGLE_ID)).expect("panel toggle");
     let messages: Vec<Message> = ui.into_messages().collect();
     assert_eq!(deliver(&mut state, messages), [Event::PanelToggled { open: false }]);
 
     let mut ui = simulator(&state);
     assert!(ui.find(selector::id(PANEL_ID)).is_err(), "panel still drawn after hiding");
-    ui.click(topbar::SHOW_PANEL).expect("show panel button");
+    ui.click(selector::id(topbar::PANEL_TOGGLE_ID)).expect("panel toggle");
     let messages: Vec<Message> = ui.into_messages().collect();
     assert_eq!(deliver(&mut state, messages), [Event::PanelToggled { open: true }]);
 
@@ -178,7 +178,7 @@ fn both_themes_paint_the_frame_with_their_palettes() {
         assert_close(center, palette.background.base.color, &format!("{name} center"));
 
         let sidebar = pixel(&shot, SIDEBAR_WIDTH - 4.0, 400.0);
-        assert_close(sidebar, palette.background.weak.color, &format!("{name} sidebar"));
+        assert_close(sidebar, palette.background.base.color, &format!("{name} sidebar"));
 
         let panel = pixel(&shot, WINDOW.width - 20.0, 600.0);
         assert_close(panel, palette.background.base.color, &format!("{name} panel"));

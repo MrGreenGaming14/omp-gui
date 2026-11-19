@@ -130,11 +130,6 @@ impl Nodes {
         self.get(key).is_some_and(|node| node.online)
     }
 
-    /// Remote nodes that are online.
-    pub fn online_peers(&self) -> usize {
-        self.list.iter().filter(|node| node.online && !node.local).count()
-    }
-
     /// Every known node.
     pub fn iter(&self) -> impl Iterator<Item = &NodeStatus> {
         self.list.iter()

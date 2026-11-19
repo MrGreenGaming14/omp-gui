@@ -8,6 +8,7 @@
 pub mod catalog;
 pub mod form;
 pub mod model;
+mod style;
 mod view;
 
 use std::collections::{BTreeSet, HashMap};

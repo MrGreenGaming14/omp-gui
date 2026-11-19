@@ -13,8 +13,9 @@ pub use model::{CONTEXT, FileDiff, FileStatus, Fold, Hunk, Intra, Line, MIN_FOLD
 pub use parse::{ParseError, Result, parse_unified};
 
 use crate::style;
-use iced::widget::{Id, button, column, container, operation, row, scrollable, space, text};
+use iced::widget::{Id, button, column, container, operation, row, rule, scrollable, space, text};
 use iced::{Element, Font, Length, Task};
+use loa_ui_icons::Icon;
 use std::ops::Range;
 
 /// Rows built above and below the viewport so fast scrolling doesn't show
@@ -47,6 +48,8 @@ pub enum Message {
     Scrolled { offset: f32, height: f32 },
     /// Open the selected file in the editor or files tab.
     Open,
+    /// Show or hide the lines of the selected file under its header.
+    ToggleCollapsed,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -67,6 +70,8 @@ pub struct State {
     scroll_offset: f32,
     viewport_height: f32,
     scroll_id: Id,
+    /// The selected file's lines are hidden; only its header shows.
+    collapsed: bool,
 }
 
 impl Default for State {
@@ -85,6 +90,7 @@ impl State {
             scroll_offset: 0.0,
             viewport_height: DEFAULT_VIEWPORT,
             scroll_id: Id::unique(),
+            collapsed: false,
         }
     }
 
@@ -154,11 +160,16 @@ impl State {
                 let event = self.selected().map(|file| Event::OpenFile(file.path().to_owned()));
                 (Task::none(), event)
             }
+            Message::ToggleCollapsed => {
+                self.collapsed = !self.collapsed;
+                (Task::none(), None)
+            }
         }
     }
 
     fn select(&mut self, index: usize) -> Task<Message> {
         self.selected = index;
+        self.collapsed = false;
         self.scroll_offset = 0.0;
         self.rebuild_rows();
         operation::snap_to(self.scroll_id.clone(), scrollable::RelativeOffset::START)
@@ -176,11 +187,13 @@ impl State {
         let Some(file) = self.selected() else {
             return container(text("No changes").style(style::muted)).padding(8).into();
         };
-        let mut page = column![self.toolbar(file)];
+        let mut page = column![self.toolbar(file), rule::horizontal(1).style(style::divider)];
         if self.files.len() > 1 {
             page = page.push(self.file_list());
         }
-        let body: Element<'_, Message> = if file.binary {
+        let body: Element<'_, Message> = if self.collapsed {
+            space().into()
+        } else if file.binary {
             container(text("Binary file").style(style::muted)).padding(8).into()
         } else {
             self.body(file)
@@ -188,27 +201,36 @@ impl State {
         page.push(body).into()
     }
 
+    /// The file header: collapse chevron and path on the left, change counts
+    /// and the unified/split switch on the right.
     fn toolbar<'a>(&'a self, file: &'a FileDiff) -> Element<'a, Message> {
-        let mode_button = |label, mode| {
-            button(text(label).size(style::TEXT_SIZE))
-                .padding([2, 8])
-                .style(style::row_button(self.mode == mode))
-                .on_press(Message::SetMode(mode))
-        };
-        let path = button(text(file.path()).size(style::TEXT_SIZE).wrapping(text::Wrapping::None))
+        let chevron = if self.collapsed { Icon::ChevronRight } else { Icon::ChevronDown };
+        let collapse = button(loa_ui_icons::muted(chevron, 14.0))
+            .padding(2)
+            .style(style::row_button(false))
+            .on_press(Message::ToggleCollapsed);
+        let path = button(text(file.path()).size(style::LIST_TEXT_SIZE).wrapping(text::Wrapping::None))
             .padding([2, 4])
             .style(style::row_button(false))
             .on_press(Message::Open);
+        let (other, label) = match self.mode {
+            Mode::Unified => (Mode::Split, "Split"),
+            Mode::Split => (Mode::Unified, "Unified"),
+        };
+        let mode = button(text(label).size(12).style(style::muted))
+            .padding([2, 6])
+            .style(style::row_button(false))
+            .on_press(Message::SetMode(other));
         row![
+            collapse,
             path,
-            text(format!("+{}", file.added())).size(style::TEXT_SIZE).style(style::success_text),
-            text(format!("-{}", file.removed())).size(style::TEXT_SIZE).style(style::danger_text),
             space::horizontal(),
-            mode_button("Unified", Mode::Unified),
-            mode_button("Split", Mode::Split),
+            text(format!("+{}", file.added())).size(12).style(style::success_text),
+            text(format!("-{}", file.removed())).size(12).style(style::danger_text),
+            mode,
         ]
-        .spacing(6)
-        .padding(4)
+        .spacing(4)
+        .padding([5, 8])
         .align_y(iced::Alignment::Center)
         .into()
     }
@@ -268,7 +290,13 @@ impl State {
                     hunk.new_len,
                     file.section(&hunk)
                 );
-                container(mono(header).style(style::primary_text)).style(style::band).padding([0, 6]).into()
+                container(text(header).size(12).wrapping(text::Wrapping::None).style(style::muted))
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .align_y(iced::Center)
+                    .style(style::band)
+                    .padding([0, 10])
+                    .into()
             }
             Row::Fold { fold, hidden } => {
                 let label = if hidden == 1 { "Expand 1 unchanged line".to_owned() } else {
@@ -311,9 +339,8 @@ fn number_digits(file: &FileDiff) -> usize {
 fn number<'a>(no: Option<u32>, digits: usize) -> Element<'a, Message> {
     let label = no.map_or_else(String::new, |n| n.to_string());
     container(mono(label).style(style::muted))
-        .width(digits as f32 * CHAR_WIDTH + 8.0)
+        .width(digits as f32 * CHAR_WIDTH + 16.0)
         .align_x(iced::alignment::Horizontal::Right)
-        .padding([0, 4])
         .into()
 }
 
@@ -335,10 +362,18 @@ fn unified_line(file: &FileDiff, index: usize, digits: usize) -> Element<'_, Mes
     let content = row![
         number(line.old_no, digits),
         number(line.new_no, digits),
-        mono(sign),
+        container(mono(sign).style(sign_style(line.tag))).padding(iced::Padding::ZERO.left(12).right(6)),
         line_content(file, index),
     ];
     paint(content.into(), line.tag)
+}
+
+fn sign_style(tag: Tag) -> fn(&iced::Theme) -> text::Style {
+    match tag {
+        Tag::Equal => style::muted,
+        Tag::Delete => style::danger_text,
+        Tag::Insert => style::success_text,
+    }
 }
 
 fn split_side(file: &FileDiff, index: Option<usize>, side: Side, digits: usize) -> Element<'_, Message> {

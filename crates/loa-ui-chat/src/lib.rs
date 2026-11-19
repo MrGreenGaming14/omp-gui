@@ -10,8 +10,10 @@
 
 mod heights;
 mod items;
+mod prose;
 mod rows;
 mod stream;
+mod style;
 
 pub use items::ItemKind;
 
@@ -39,8 +41,12 @@ const HEIGHT_EPSILON: f32 = 0.5;
 
 const LINE: f32 = 22.0;
 const CHARS_PER_LINE: usize = 90;
-const ROW: f32 = 36.0;
+const ROW: f32 = 30.0;
 const PADDING: f32 = 12.0;
+/// Widest the transcript column grows; wider windows center it.
+const COLUMN_WIDTH: f32 = 700.0;
+/// Space between the column and the edges of a narrow transcript.
+const SIDE_PADDING: f32 = 24.0;
 
 /// Where a decision card goes: the app renders the card for `node` in its
 /// place, so this crate never draws decisions itself.
@@ -126,7 +132,7 @@ pub struct State {
     streamed: HashMap<NodeId, Streamed>,
     expanded: HashSet<NodeId>,
     scroll: Scroll,
-    markdown: markdown::Settings,
+    look: style::Look,
     scroll_id: widget::Id,
 }
 
@@ -148,7 +154,7 @@ impl State {
                 known: false,
                 follow: true,
             },
-            markdown: markdown::Settings::from(theme),
+            look: style::Look::new(theme),
             scroll_id: widget::Id::unique(),
         }
     }
@@ -160,10 +166,10 @@ impl State {
         state
     }
 
-    /// Restyles markdown for `theme`. Other colors follow the theme the app
-    /// renders with.
+    /// Restyles the transcript for `theme`. Colors set through style
+    /// functions follow the theme the app renders with.
     pub fn set_theme(&mut self, theme: &Theme) {
-        self.markdown = markdown::Settings::from(theme);
+        self.look = style::Look::new(theme);
     }
 
     /// The id of the transcript scrollable.
@@ -256,14 +262,14 @@ impl State {
                 })
             } else {
                 let expanded = self.expanded.contains(&key);
-                rows::view(dom, item, expanded, self.streamed.get(&key), self.markdown)
+                rows::view(dom, item, expanded, self.streamed.get(&key), self.look)
                     .map(map.clone())
             };
             let (on_show, on_resize) = (map.clone(), map.clone());
             let measured = sensor(
-                container(content)
-                    .padding([PADDING / 2.0, 16.0])
-                    .width(Fill),
+                container(container(content).width(Fill).max_width(COLUMN_WIDTH))
+                    .center_x(Fill)
+                    .padding([PADDING / 2.0, SIDE_PADDING]),
             )
             .key(key.0)
             .anticipate(OVERSCAN)
@@ -292,8 +298,10 @@ impl State {
         .width(Fill);
 
         let on_scroll = map.clone();
+        let scrollbar = scrollable::Scrollbar::new().width(6).scroller_width(6);
         let transcript = scrollable(list)
             .id(self.scroll_id.clone())
+            .direction(scrollable::Direction::Vertical(scrollbar))
             .width(Fill)
             .height(Fill)
             .on_scroll(move |viewport| on_scroll(Message::Scrolled(viewport.into())));
@@ -301,11 +309,12 @@ impl State {
         if self.scroll.follow {
             return transcript.into();
         }
-        let jump = button(text("Jump to latest ↓"))
-            .style(button::primary)
+        let jump = button(text("Jump to latest ↓").size(style::SMALL_SIZE))
+            .style(style::jump)
+            .padding([6, 14])
             .on_press(Message::JumpToLatest);
         let overlay = container(Element::from(jump).map(map))
-            .padding(12)
+            .padding(16)
             .center_x(Fill)
             .align_bottom(Fill);
         stack![transcript, overlay].into()

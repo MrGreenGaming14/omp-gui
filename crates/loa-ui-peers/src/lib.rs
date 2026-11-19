@@ -2,6 +2,7 @@
 
 mod grants;
 mod peers;
+mod style;
 
 pub use grants::{
     Grant, GrantDirection, GrantForm, GrantFormError, GrantInput, GrantResource, GrantScope,
@@ -9,8 +10,11 @@ pub use grants::{
 };
 pub use peers::{Discovery, Peer, PeerSort, Presence, Transport, VersionRelation};
 
-use iced::widget::{button, column, container, row, scrollable, text, text_input};
-use iced::{Element, Length, Task};
+use iced::widget::{button, column, container, row, scrollable, space, text, text_input};
+use iced::{Element, Fill, Length, Task};
+use loa_ui_icons::{Icon, muted};
+
+const SMALL: f32 = 12.0;
 
 /// App-supplied snapshot consumed by the two screens.
 #[derive(Debug, Clone, Default)]
@@ -203,127 +207,298 @@ impl State {
 
     /// Render the peers list and the selected peer's grant management controls.
     pub fn view(&self) -> Element<'_, Message> {
-        let sort = iced::widget::pick_list(PeerSort::ALL, Some(self.sort), Message::SortChanged);
+        let sort = iced::widget::pick_list(PeerSort::ALL, Some(self.sort), Message::SortChanged)
+            .text_size(13)
+            .padding([5.0, 8.0])
+            .style(style::pick);
         let mut peers_list = column![
-            text("Peers").size(24),
-            row![text_input("Filter peers", &self.filter).on_input(Message::FilterChanged), sort].spacing(8),
-        ].spacing(10);
+            style::section_header("Peers"),
+            row![search("Filter peers", &self.filter, Message::FilterChanged), sort]
+                .spacing(8)
+                .align_y(iced::Center),
+        ]
+        .spacing(8);
         for peer in self.visible_peers() {
             peers_list = peers_list.push(self.peer_row(peer, false));
         }
-        let mut nearby = column![text("Discovered nearby").size(20)].spacing(6);
+        let mut nearby = column![style::section_header("Discovered nearby")].spacing(8);
         for peer in self.visible_nearby() {
             nearby = nearby.push(self.peer_row(peer, true));
         }
         let mut add = column![
-            text("Add by public key"),
-            text_input("Public key", &self.add_key).on_input(Message::KeyChanged),
-            text_input("Address (optional)", &self.add_address).on_input(Message::AddressChanged),
-        ].spacing(6);
+            style::section_header("Add by public key"),
+            field("Public key", &self.add_key, Message::KeyChanged),
+            field("Address (optional)", &self.add_address, Message::AddressChanged),
+        ]
+        .spacing(6);
         if !self.add_key.trim().is_empty() && self.key_validation.as_ref().is_some_and(|(_, valid)| !valid) {
-            add = add.push(text("Invalid public key"));
+            add = add.push(text("Invalid public key").size(SMALL).style(text::danger));
         }
-        let mut add_button = button("Add peer");
+        let mut add_button = filled("Add peer");
         if self.key_validation.as_ref().is_some_and(|(key, valid)| *valid && key == self.add_key.trim()) {
             add_button = add_button.on_press(Message::AddPeer);
         }
         add = add.push(add_button);
-        let content = column![peers_list, nearby, add, self.grants_view()].spacing(20).padding(16);
-        scrollable(container(content).width(Length::Fill)).into()
+        let content = column![
+            peers_list,
+            nearby,
+            add,
+            style::divider(),
+            self.grants_view(),
+        ]
+        .spacing(12)
+        .padding(12);
+        scrollable(container(content).width(Length::Fill))
+            .direction(style::thin_scrollbar())
+            .style(style::scrollbar)
+            .into()
     }
 
     fn peer_row<'a>(&'a self, peer: &'a Peer, discovered: bool) -> Element<'a, Message> {
         let version = peer.version_relation(&self.data.local_version);
-        let mut actions = row![
-            button("Copy full key").on_press(Message::CopyKey(peer.key.clone())),
-        ].spacing(6);
+        let mut actions = row![flat(text("Copy full key").size(SMALL)).on_press(Message::CopyKey(peer.key.clone()))]
+            .spacing(4);
         if discovered {
-            actions = actions.push(button("Add").on_press(Message::AddDiscovered(peer.key.clone())));
+            actions = actions.push(flat(text("Add").size(SMALL)).on_press(Message::AddDiscovered(peer.key.clone())));
         } else {
-            actions = actions.push(button("Grants").on_press(Message::SelectPeer(peer.key.clone())));
-            actions = actions.push(button("Rename").on_press(Message::BeginRename(peer.key.clone())));
-            actions = actions.push(button("Remove").on_press(Message::BeginRemove(peer.key.clone())));
+            actions = actions.push(flat(text("Grants").size(SMALL)).on_press(Message::SelectPeer(peer.key.clone())));
+            actions = actions.push(flat(text("Rename").size(SMALL)).on_press(Message::BeginRename(peer.key.clone())));
+            actions = actions.push(
+                flat(text("Remove").size(SMALL))
+                    .style(style::danger_flat)
+                    .on_press(Message::BeginRemove(peer.key.clone())),
+            );
         }
         let mut card = column![
-            text(format!("{} · {}", peer.name, peer.short_key())),
-            text(format!("{} · {} · {} · last seen {} · {} ({})",
-                peer.discovery, peer.presence, peer.transport, peer.last_seen_text(self.data.now),
-                peer.app_version, version)),
-            text(if peer.shared_protocol { "Shared protocol available" } else { "No shared protocol" }),
+            row![
+                container(space().width(6.0).height(6.0)).style(style::dot(presence_tone(peer.presence))),
+                text(peer.name.as_str()).size(14),
+                text(peer.short_key()).size(SMALL).style(style::muted),
+            ]
+            .spacing(8)
+            .align_y(iced::Center),
+            text(format!(
+                "{} · {} · {} · last seen {} · {} ({})",
+                peer.discovery,
+                peer.presence,
+                peer.transport,
+                peer.last_seen_text(self.data.now),
+                peer.app_version,
+                version
+            ))
+            .size(SMALL)
+            .style(style::muted),
+            text(if peer.shared_protocol {
+                "Shared protocol available"
+            } else {
+                "No shared protocol"
+            })
+            .size(SMALL)
+            .style(style::muted),
             actions,
-        ].spacing(4);
+        ]
+        .spacing(4);
         if self.pending_remove.as_deref() == Some(&peer.key) {
-            card = card.push(row![
-                text("Remove this peer?"),
-                button("Confirm remove").on_press(Message::ConfirmRemove),
-                button("Cancel").on_press(Message::CancelRemove)
-            ].spacing(6));
+            card = card.push(
+                row![
+                    text("Remove this peer?").size(SMALL).style(style::muted),
+                    flat(text("Confirm remove").size(SMALL))
+                        .style(style::danger_flat)
+                        .on_press(Message::ConfirmRemove),
+                    flat(text("Cancel").size(SMALL)).on_press(Message::CancelRemove),
+                ]
+                .spacing(4)
+                .align_y(iced::Center),
+            );
         }
         if let Some((key, name)) = &self.rename && key == &peer.key {
-            card = card.push(row![
-                text_input("Peer name", name).on_input(Message::RenameChanged),
-                button("Save").on_press(Message::SaveRename),
-                button("Cancel").on_press(Message::CancelRename),
-            ].spacing(6));
+            card = card.push(
+                row![
+                    field("Peer name", name, Message::RenameChanged),
+                    flat(text("Save").size(SMALL)).on_press(Message::SaveRename),
+                    flat(text("Cancel").size(SMALL)).on_press(Message::CancelRename),
+                ]
+                .spacing(4)
+                .align_y(iced::Center),
+            );
         }
-        container(card).padding(8).width(Length::Fill).into()
+        list_item(card)
     }
 
     fn grants_view(&self) -> Element<'_, Message> {
-        let Some(key) = &self.selected_peer else { return text("Select a peer to manage grants").into() };
-        let mut list = column![text("Grants").size(24)].spacing(8);
+        let Some(key) = &self.selected_peer else {
+            return text("Select a peer to manage grants").size(SMALL).style(style::muted).into();
+        };
+        let mut list = column![style::section_header("Grants")].spacing(8);
         for grant in self.data.grants.iter().filter(|g| &g.peer_key == key) {
             let mut line = row![
-                text(format!("{}: {} · {} · {}",
-                    grant.direction, grant_summary(grant), grant.expiry_text(self.data.now),
-                    if grant.reshare { "re-share allowed" } else { "no re-share" })),
-            ].spacing(8);
+                text(format!(
+                    "{}: {} · {} · {}",
+                    grant.direction,
+                    grant_summary(grant),
+                    grant.expiry_text(self.data.now),
+                    if grant.reshare { "re-share allowed" } else { "no re-share" }
+                ))
+                .size(SMALL)
+                .style(style::muted)
+                .width(Fill),
+            ]
+            .spacing(8)
+            .align_y(iced::Center);
             if grant.direction == GrantDirection::Given {
-                line = line.push(button("Revoke").on_press(Message::BeginRevoke(grant.id.clone())));
+                line = line.push(
+                    flat(text("Revoke").size(SMALL))
+                        .style(style::danger_flat)
+                        .on_press(Message::BeginRevoke(grant.id.clone())),
+                );
             }
             list = list.push(line);
             if self.pending_revoke.as_deref() == Some(&grant.id) {
-                list = list.push(row![
-                    text("Revoke this grant?"),
-                    button("Confirm revoke").on_press(Message::ConfirmRevoke),
-                    button("Cancel").on_press(Message::CancelRevoke)
-                ].spacing(6));
+                list = list.push(
+                    row![
+                        text("Revoke this grant?").size(SMALL).style(style::muted),
+                        flat(text("Confirm revoke").size(SMALL))
+                            .style(style::danger_flat)
+                            .on_press(Message::ConfirmRevoke),
+                        flat(text("Cancel").size(SMALL)).on_press(Message::CancelRevoke),
+                    ]
+                    .spacing(4)
+                    .align_y(iced::Center),
+                );
             }
         }
-        let mut form = column![text("Create grant").size(20)].spacing(6);
+        let mut form = column![style::section_header("Create grant")].spacing(8);
         for resource in &self.data.resources {
-            let selected = self.grant_form.resource.as_ref().is_some_and(|r| r.id == resource.id);
-            form = form.push(button(text(format!("{} {}", if selected { "●" } else { "○" }, resource.label)))
-                .on_press(Message::SelectResource(resource.id.clone())));
+            let chosen = self.grant_form.resource.as_ref().is_some_and(|r| r.id == resource.id);
+            form = form.push(choice(
+                resource.label.clone(),
+                chosen,
+                Message::SelectResource(resource.id.clone()),
+            ));
         }
         if let Some(resource) = &self.grant_form.resource {
             if resource.scope == GrantScope::Prompt {
-                form = form.push(iced::widget::checkbox(self.grant_form.future_sessions)
-                    .label("Include every future session")
-                    .on_toggle(Message::FutureSessionsChanged));
+                form = form.push(
+                    iced::widget::checkbox(self.grant_form.future_sessions)
+                        .label("Include every future session")
+                        .size(14)
+                        .text_size(13)
+                        .on_toggle(Message::FutureSessionsChanged),
+                );
             }
             for permission in Permission::ALL {
                 if permission.allowed_for(&resource.scope) {
-                    form = form.push(button(text(format!("{} {permission}", if self.grant_form.permission == permission { "●" } else { "○" })))
-                        .on_press(Message::SelectPermission(permission)));
+                    form = form.push(choice(
+                        permission.to_string(),
+                        self.grant_form.permission == permission,
+                        Message::SelectPermission(permission),
+                    ));
                 }
             }
             if self.grant_form.is_ssh() && !self.grant_form.ssh_confirmed {
-                form = form.push(text("SSH access is off until explicitly confirmed."));
-                form = form.push(button("Enable SSH grant").on_press(Message::RequestSshConfirmation));
+                form = form.push(
+                    text("SSH access is off until explicitly confirmed.").size(SMALL).style(style::muted),
+                );
+                form = form.push(flat(text("Enable SSH grant").size(SMALL)).on_press(Message::RequestSshConfirmation));
                 if self.grant_form.ssh_confirmation_pending {
-                    form = form.push(row![
-                        text("Allow this peer to request SSH access through this node?"),
-                        button("Confirm SSH access").on_press(Message::ConfirmSsh),
-                        button("Cancel").on_press(Message::CancelSsh)
-                    ].spacing(6));
+                    form = form.push(
+                        row![
+                            text("Allow this peer to request SSH access through this node?")
+                                .size(SMALL)
+                                .style(style::muted),
+                            flat(text("Confirm SSH access").size(SMALL))
+                                .style(style::danger_flat)
+                                .on_press(Message::ConfirmSsh),
+                            flat(text("Cancel").size(SMALL)).on_press(Message::CancelSsh),
+                        ]
+                        .spacing(4)
+                        .align_y(iced::Center),
+                    );
                 }
             }
         }
-        form = form.push(text_input("TTL (hours)", &self.grant_form.ttl_hours).on_input(Message::TtlChanged));
-        form = form.push(iced::widget::checkbox(self.grant_form.reshare).label("Allow re-share").on_toggle(Message::ReshareChanged));
-        let mut submit = button("Create grant");
-        if self.grant_form.build(key).is_ok() { submit = submit.on_press(Message::SubmitGrant); }
-        list.push(form.push(submit)).into()
+        form = form.push(field("TTL (hours)", &self.grant_form.ttl_hours, Message::TtlChanged));
+        form = form.push(
+            iced::widget::checkbox(self.grant_form.reshare)
+                .label("Allow re-share")
+                .size(14)
+                .text_size(13)
+                .on_toggle(Message::ReshareChanged),
+        );
+        let mut submit = filled("Create grant");
+        if self.grant_form.build(key).is_ok() {
+            submit = submit.on_press(Message::SubmitGrant);
+        }
+        list.push(style::divider()).push(form.push(submit)).into()
+    }
+}
+
+/// Text-first button: no fill until hovered.
+fn flat<'a>(content: impl Into<Element<'a, Message>>) -> button::Button<'a, Message> {
+    button(content).padding([4.0, 8.0]).style(style::flat)
+}
+
+/// The one filled action of a form.
+fn filled(label: &str) -> button::Button<'_, Message> {
+    button(text(label).size(SMALL)).padding([4.0, 10.0]).style(button::primary)
+}
+
+/// A full-width list choice; the chosen one keeps a raised background.
+fn choice<'a>(label: impl Into<String>, chosen: bool, message: Message) -> button::Button<'a, Message> {
+    let label: String = label.into();
+    button(text(label).size(SMALL))
+        .width(Fill)
+        .padding([4.0, 8.0])
+        .style(if chosen { style::selected } else { style::flat })
+        .on_press(message)
+}
+
+/// A raised text field, styled like every other input in the panel.
+fn field<'a>(
+    placeholder: &'a str,
+    value: &'a str,
+    on_input: impl Fn(String) -> Message + 'a,
+) -> text_input::TextInput<'a, Message> {
+    text_input(placeholder, value)
+        .on_input(on_input)
+        .size(14)
+        .style(style::input)
+        .padding([6.0, 8.0])
+}
+
+/// The filter field: a raised block with a search icon.
+fn search<'a>(
+    placeholder: &'a str,
+    value: &'a str,
+    on_input: impl Fn(String) -> Message + 'a,
+) -> Element<'a, Message> {
+    container(
+        row![
+            muted(Icon::Search, 14.0),
+            text_input(placeholder, value)
+                .on_input(on_input)
+                .size(14)
+                .style(style::bare)
+                .padding(0.0)
+                .width(Fill),
+        ]
+        .spacing(8)
+        .align_y(iced::Center),
+    )
+    .padding([6.0, 10.0])
+    .width(Fill)
+    .style(style::card)
+    .into()
+}
+
+/// A row of a list, closed by a hairline.
+fn list_item<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+    column![container(content).padding([10.0, 0.0]).width(Fill), style::divider()].into()
+}
+
+fn presence_tone(presence: Presence) -> style::Tone {
+    match presence {
+        Presence::Online => style::Tone::Ok,
+        Presence::Offline => style::Tone::Off,
     }
 }

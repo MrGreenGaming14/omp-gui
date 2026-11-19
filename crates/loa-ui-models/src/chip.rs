@@ -3,9 +3,11 @@
 //! `model_role` and kept current by applying the session's patches.
 
 use crate::session::SessionModel;
-use iced::widget::{button, text, tooltip};
+use crate::style;
+use iced::widget::{button, container, row, text, tooltip};
 use iced::{Element, Task};
 use loa_core::{Dom, ElementKind, NodeId, Op, Patch, Value, attr};
+use loa_ui_icons::Icon;
 
 /// Separator between role and model in the chip label.
 const SEPARATOR: &str = " · ";
@@ -92,13 +94,21 @@ impl State {
     }
 
     pub fn view(&self) -> Element<'_, Message> {
-        let chip = button(text(self.label()).size(13)).style(button::subtle).on_press(Message::Pressed);
+        let chip = button(
+            row![text(self.label()).size(style::BODY), loa_ui_icons::muted(Icon::ChevronDown, 12.0)]
+                .spacing(4)
+                .align_y(iced::Center),
+        )
+        .padding([4.0, 6.0])
+        .style(style::flat)
+        .on_press(Message::Pressed);
         let detail = match (&self.current.role, &self.current.model) {
             (Some(role), Some(model)) => format!("Role {role}, model {model}"),
             (None, Some(model)) => format!("Model {model}"),
             _ => "Choose a model".to_owned(),
         };
-        tooltip(chip, text(detail).size(12), tooltip::Position::Top).into()
+        let detail = container(text(detail).size(style::SMALL)).padding([4.0, 8.0]).style(style::popup);
+        tooltip(chip, detail, tooltip::Position::Top).into()
     }
 }
 

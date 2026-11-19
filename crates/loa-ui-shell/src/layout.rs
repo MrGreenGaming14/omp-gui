@@ -9,8 +9,8 @@ use crate::data::{NodeStatus, Nodes, SessionSummary, short_key};
 use crate::theme::{self, Preference, style};
 use crate::{sidebar, topbar};
 use iced::theme::Mode;
-use iced::widget::{column, container, mouse_area, pick_list, row, rule, sensor, text};
-use iced::{Alignment, Element, Fill, Size, Subscription, Task, Theme, mouse};
+use iced::widget::{button, column, container, mouse_area, row, rule, sensor, space, text};
+use iced::{Element, Fill, Shrink, Size, Subscription, Task, Theme, mouse};
 
 /// Width of the sidebar.
 pub const SIDEBAR_WIDTH: f32 = 264.0;
@@ -59,7 +59,7 @@ pub struct PanelPrefs {
 
 impl Default for PanelPrefs {
     fn default() -> Self {
-        Self { open: false, width: DEFAULT_PANEL_WIDTH, active: None }
+        Self { open: true, width: DEFAULT_PANEL_WIDTH, active: None }
     }
 }
 
@@ -235,6 +235,12 @@ impl State {
         self.refresh_breadcrumb();
     }
 
+    /// Sets the short status of the session shown in the top bar, e.g.
+    /// "Running", "Waiting" or "Interrupted", or `None` to hide it.
+    pub fn set_session_status(&mut self, status: Option<String>) {
+        self.topbar.set_status(status);
+    }
+
     fn refresh_breadcrumb(&mut self) {
         let crumb = self.sidebar.active().and_then(|id| self.sidebar.session(id)).map(|session| {
             let node = self.sidebar.nodes().get(&session.node).cloned().unwrap_or_else(|| NodeStatus {
@@ -398,29 +404,25 @@ impl State {
         panel_body: impl FnOnce(&'a str) -> Element<'a, M>,
         map: fn(Message) -> M,
     ) -> Element<'a, M> {
-        let theme_picker = row![
-            text("Theme").size(13).style(style::muted).width(Fill),
-            pick_list(Preference::ALL, Some(self.theme.preference()), Message::SetTheme).text_size(13),
-        ]
-        .align_y(Alignment::Center);
-        let sidebar = column![
-            self.sidebar.view().map(Message::Sidebar),
-            container(theme_picker).style(style::chrome).padding([8, 12]).width(Fill),
-        ];
-        let sidebar = Element::from(container(sidebar).width(SIDEBAR_WIDTH).height(Fill)).map(map);
+        let sidebar = container(self.sidebar.view().map(Message::Sidebar)).width(SIDEBAR_WIDTH).height(Fill);
+        let sidebar = Element::from(sidebar).map(map);
 
         let topbar = self.topbar.view().map(Message::Topbar).map(map);
+        let center = container(center).style(style::surface).width(Fill).height(Fill);
 
-        let mut content = row![container(center).style(style::surface).width(Fill).height(Fill)];
+        let mut frame = row![
+            sidebar,
+            rule::vertical(1).style(style::divider),
+            column![topbar, rule::horizontal(1).style(style::divider), center],
+        ];
         if self.panel.open {
-            let handle = mouse_area(container(rule::vertical(1)).center_x(HANDLE_WIDTH).height(Fill))
-                .on_press(Message::DragStart)
-                .interaction(mouse::Interaction::ResizingHorizontally);
-            content = content.push(Element::from(handle).map(map));
-            content = content.push(self.panel_view(panel_body, map));
+            let handle =
+                mouse_area(container(rule::vertical(1).style(style::divider)).center_x(HANDLE_WIDTH).height(Fill))
+                    .on_press(Message::DragStart)
+                    .interaction(mouse::Interaction::ResizingHorizontally);
+            frame = frame.push(Element::from(handle).map(map));
+            frame = frame.push(self.panel_view(panel_body, map));
         }
-
-        let frame = row![sidebar, rule::vertical(1), column![topbar, rule::horizontal(1), content]];
 
         let mut tracked = mouse_area(frame);
         if self.panel.dragging {
@@ -443,15 +445,17 @@ impl State {
         map: fn(Message) -> M,
     ) -> Element<'a, M> {
         let active = self.active_tab();
-        let tabs = self.panel.tabs.iter().fold(row![].spacing(4), |bar, tab| {
-            bar.push(
-                iced::widget::button(text(tab.title.as_str()).size(13))
-                    .on_press(Message::SelectTab(tab.id.clone()))
-                    .style(style::row_for(active == Some(tab.id.as_str())))
-                    .padding([4, 10]),
-            )
+        let tabs = self.panel.tabs.iter().fold(row![], |bar, tab| {
+            let selected = active == Some(tab.id.as_str());
+            let label = button(text(tab.title.as_str()).size(14))
+                .on_press(Message::SelectTab(tab.id.clone()))
+                .style(style::tab(selected))
+                .padding([0, 8]);
+            let underline = container(space()).width(Fill).height(2);
+            let underline = if selected { underline.style(style::tab_underline) } else { underline };
+            bar.push(column![container(label).center_y(Fill), underline].width(Shrink).height(topbar::HEIGHT))
         });
-        let tab_bar = Element::from(container(tabs).style(style::chrome).padding([6, 8]).width(Fill)).map(map);
+        let tab_bar = Element::from(container(tabs).style(style::chrome).padding([0, 4]).width(Fill)).map(map);
 
         let body = match active {
             Some(id) => panel_body(id),
@@ -461,7 +465,7 @@ impl State {
             .map(map),
         };
 
-        container(column![tab_bar, rule::horizontal(1), container(body).width(Fill).height(Fill)])
+        container(column![tab_bar, rule::horizontal(1).style(style::divider), container(body).width(Fill).height(Fill)])
             .id(PANEL_ID)
             .style(style::surface)
             .width(self.panel.width.min(self.max_panel_width()))
@@ -492,7 +496,7 @@ mod tests {
     fn closing_and_reopening_the_panel_keeps_width_and_tab() {
         let mut state = frame();
         send(&mut state, Message::FrameSized(Size::new(1600.0, 900.0)));
-        assert_eq!(toggle(&mut state), Some(Event::PanelToggled { open: true }));
+        assert!(state.panel_open(), "the panel starts open");
 
         send(&mut state, Message::SelectTab("files".into()));
         send(&mut state, Message::DragStart);

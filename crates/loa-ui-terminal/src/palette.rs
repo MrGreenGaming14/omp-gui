@@ -42,7 +42,10 @@ impl TermPalette {
         let red = palette.danger.base.color;
         let green = palette.success.base.color;
         let yellow = palette.warning.base.color;
-        let blue = palette.primary.base.color;
+        // The theme's primary is a neutral grey, so blue is the success green
+        // turned 80° around the hue circle: as saturated and bright as the
+        // other ANSI hues of the theme.
+        let blue = rotate_hue(green, 80.0);
         let magenta = mix(red, blue, 0.5);
         let cyan = mix(green, blue, 0.5);
         let normal = [
@@ -138,6 +141,38 @@ fn rgb_to_color(rgb: Rgb) -> Color {
     Color::from_rgb8(rgb.r, rgb.g, rgb.b)
 }
 
+/// `color` with its hue turned by `degrees`, keeping saturation, lightness
+/// and alpha.
+fn rotate_hue(color: Color, degrees: f32) -> Color {
+    let max = color.r.max(color.g).max(color.b);
+    let min = color.r.min(color.g).min(color.b);
+    let lightness = (max + min) / 2.0;
+    let delta = max - min;
+    if delta <= f32::EPSILON {
+        return color;
+    }
+    let hue = if max == color.r {
+        60.0 * ((color.g - color.b) / delta).rem_euclid(6.0)
+    } else if max == color.g {
+        60.0 * ((color.b - color.r) / delta + 2.0)
+    } else {
+        60.0 * ((color.r - color.g) / delta + 4.0)
+    };
+    let hue = (hue + degrees).rem_euclid(360.0);
+    let chroma = delta;
+    let x = chroma * (1.0 - ((hue / 60.0).rem_euclid(2.0) - 1.0).abs());
+    let (r, g, b) = match hue {
+        h if h < 60.0 => (chroma, x, 0.0),
+        h if h < 120.0 => (x, chroma, 0.0),
+        h if h < 180.0 => (0.0, chroma, x),
+        h if h < 240.0 => (0.0, x, chroma),
+        h if h < 300.0 => (x, 0.0, chroma),
+        _ => (chroma, 0.0, x),
+    };
+    let m = lightness - chroma / 2.0;
+    Color { r: r + m, g: g + m, b: b + m, a: color.a }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -194,5 +229,14 @@ mod tests {
         assert_eq!(palette.resolve(AnsiColor::Indexed(16), &none), Color::from_rgb8(0, 0, 0));
         assert_eq!(palette.resolve(AnsiColor::Indexed(244), &none), Color::from_rgb8(128, 128, 128));
         assert_eq!(palette.resolve(AnsiColor::Indexed(1), &none), palette.ansi[1]);
+    }
+
+    #[test]
+    fn ansi_blue_stays_blue_under_a_neutral_primary() {
+        let mut colors = Theme::Dark.palette();
+        colors.primary = mix(colors.background, colors.text, 0.8);
+        let palette = TermPalette::from_theme(&Theme::custom("Neutral".to_owned(), colors));
+        let blue = palette.ansi[4];
+        assert!(blue.b > blue.r && blue.b > blue.g, "{blue:?}");
     }
 }

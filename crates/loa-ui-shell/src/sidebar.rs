@@ -6,7 +6,8 @@
 use crate::data::{Nodes, SessionSummary};
 use crate::theme::style;
 use iced::widget::{Column, button, column, container, hover, row, scrollable, space, text, text_input};
-use iced::{Alignment, Element, Fill, Task};
+use iced::{Alignment, Element, Fill, Padding, Task};
+use loa_ui_icons::{Icon, icon};
 
 /// Id of the search input, for focusing it from a shortcut.
 pub const SEARCH_ID: &str = "loa-sidebar-search";
@@ -213,48 +214,87 @@ impl State {
 
     /// Draws the sidebar.
     pub fn view(&self) -> Element<'_, Message> {
-        let new = button(text("New session").width(Fill))
-            .on_press(Message::New)
-            .style(button::primary)
-            .padding([8, 12])
-            .width(Fill);
+        let new = button(
+            container(row![icon(Icon::Plus, 14.0), text("New session").size(14)].spacing(8).align_y(Alignment::Center))
+                .center_x(Fill),
+        )
+        .on_press(Message::New)
+        .style(style::row)
+        .padding([7, 8])
+        .width(Fill);
 
         let search = text_input("Search sessions", &self.query)
             .id(SEARCH_ID)
             .on_input(Message::Search)
-            .padding([6, 10]);
+            .size(14)
+            .style(style::input)
+            .padding([3, 8]);
 
-        let peers_online = self.nodes.online_peers();
-        let peers = nav_item("Peers", Some(format!("{peers_online} online")), Message::OpenPeers);
-        let tools = nav_item("Tools", None, Message::OpenTools);
-
-        let mut lists = Column::new().spacing(4);
+        let mut lists = Column::new();
 
         let projects = self.projects();
-        lists = lists.push(header("Projects"));
+        let active_project = self.active.as_deref().and_then(|id| self.session(id)).and_then(|s| s.project.as_deref());
+        lists = lists.push(header("PROJECTS"));
         if projects.is_empty() {
             lists = lists.push(hint(if self.projects.is_empty() { "No projects yet" } else { "No match" }));
         }
         for project in projects {
             lists = lists.push(
-                button(text(project).width(Fill))
+                button(row![icon(Icon::Folder, 14.0), text(project).size(14)].spacing(8).align_y(Alignment::Center))
                     .on_press(Message::OpenProject(project.to_owned()))
-                    .style(style::row)
-                    .padding([4, 8])
+                    .style(style::row_for(active_project == Some(project)))
+                    .padding([6, 8])
                     .width(Fill),
             );
         }
 
+        lists = lists.push(header("PEERS"));
+        if self.nodes.iter().next().is_none() {
+            lists = lists.push(hint("No peers yet"));
+        }
+        for node in self.nodes.iter() {
+            let online = node.local || node.online;
+            let name = if node.local { text!("{} (this)", node.name) } else { text(node.name.as_str()) };
+            let name = if online { name } else { name.style(style::muted) };
+            lists = lists.push(
+                button(
+                    row![container(space()).width(6).height(6).style(style::status_dot(online)), name.size(14)]
+                        .spacing(10)
+                        .align_y(Alignment::Center),
+                )
+                .on_press(Message::OpenPeers)
+                .style(style::row)
+                .padding([6, 8])
+                .width(Fill),
+            );
+        }
+
+        lists = lists.push(space().height(4));
+        lists = lists.push(
+            button(
+                container(
+                    row![icon(Icon::SlidersHorizontal, 13.0), text("Tools").size(14)]
+                        .spacing(6)
+                        .align_y(Alignment::Center),
+                )
+                .center_x(Fill),
+            )
+            .on_press(Message::OpenTools)
+            .style(style::row)
+            .padding([6, 8])
+            .width(Fill),
+        );
+
         let pinned = self.pinned();
         if !pinned.is_empty() {
-            lists = lists.push(header("Pinned"));
+            lists = lists.push(header("PINNED"));
             for session in pinned {
                 lists = lists.push(self.session_row(session));
             }
         }
 
         let recents = self.recents();
-        lists = lists.push(header("Recents"));
+        lists = lists.push(header("RECENTS"));
         if recents.is_empty() {
             lists = lists.push(hint(if self.query.is_empty() { "No sessions yet" } else { "No match" }));
         }
@@ -262,66 +302,51 @@ impl State {
             lists = lists.push(self.session_row(session));
         }
 
-        let content = column![
-            new,
-            search,
-            column![peers, tools].spacing(2),
-            scrollable(lists.padding([0, 4])).height(Fill),
-        ]
-        .spacing(10)
-        .padding(10);
+        let content = column![new, search, scrollable(lists).height(Fill)].spacing(8).padding([6, 8]);
 
         container(content).style(style::chrome).width(Fill).height(Fill).into()
     }
 
     fn session_row<'a>(&'a self, session: &'a SessionSummary) -> Element<'a, Message> {
         let selected = self.active.as_deref() == Some(session.id.as_str());
-        let online = self.nodes.is_online(&session.node);
 
-        let mut line = row![text(session.title.as_str()).width(Fill).wrapping(text::Wrapping::None)]
+        let mut line = row![text(session.title.as_str()).size(14).width(Fill).wrapping(text::Wrapping::None)]
             .spacing(6)
             .align_y(Alignment::Center);
         if session.waiting {
             line = line.push(
-                container(text("waiting").size(11))
+                container(text("waiting").size(12))
                     .id(waiting_badge_id(&session.id))
                     .style(style::waiting_badge)
-                    .padding([1, 6]),
+                    .padding([1, 5]),
             );
         }
-        let tag = text(self.nodes.name_of(&session.node)).size(11);
-        let tag = if online { tag } else { tag.style(style::muted) };
-        line = line.push(container(tag).style(style::badge).padding([1, 6]));
+        let tag = text(self.nodes.name_of(&session.node)).size(12);
+        line = line.push(container(tag).style(style::badge).padding([1, 5]));
 
         let body = button(line)
             .on_press(Message::OpenSession(session.id.clone()))
             .style(style::row_for(selected))
-            .padding([5, 8])
+            .padding([6, 8])
             .width(Fill);
 
-        let pin = button(text(if session.pinned { "Unpin" } else { "Pin" }).size(11))
+        let pin = button(text(if session.pinned { "Unpin" } else { "Pin" }).size(12))
             .on_press(Message::TogglePin(session.id.clone()))
-            .style(button::secondary)
+            .style(style::selected_row)
             .padding([1, 6]);
 
-        hover(body, container(pin).align_right(Fill).center_y(Fill).padding([0, 4]))
+        hover(body, container(pin).align_right(Fill).center_y(Fill).padding([0, 6]))
     }
-}
-
-fn nav_item(label: &str, detail: Option<String>, message: Message) -> Element<'_, Message> {
-    let mut line = row![text(label).width(Fill)].align_y(Alignment::Center);
-    if let Some(detail) = detail {
-        line = line.push(text(detail).size(12).style(style::muted));
-    }
-    button(line).on_press(message).style(style::row).padding([6, 8]).width(Fill).into()
 }
 
 fn header(label: &str) -> Element<'_, Message> {
-    column![space().height(6), text(label).size(12).style(style::muted)].into()
+    container(text(label).size(12).style(style::muted))
+        .padding(Padding { top: 12.0, right: 8.0, bottom: 4.0, left: 8.0 })
+        .into()
 }
 
 fn hint(label: &str) -> Element<'_, Message> {
-    container(text(label).size(12).style(style::muted)).padding([2, 8]).into()
+    container(text(label).size(13).style(style::muted)).padding([4, 8]).into()
 }
 
 #[cfg(test)]

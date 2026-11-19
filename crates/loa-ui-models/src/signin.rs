@@ -9,8 +9,10 @@
 
 use std::collections::HashMap;
 
-use iced::widget::{button, column, container, row, rule, scrollable, space, text, text_input};
+use iced::widget::{column, container, row, scrollable, space, text};
 use iced::{Element, Fill, Task};
+
+use crate::style::{self, BODY, NOTE, SMALL};
 
 /// Identifies one row: the harness that owns the login and its provider id.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -274,18 +276,18 @@ impl State {
             }
         }
 
-        let mut list = column![].spacing(16).padding(16);
+        let mut list = column![].spacing(20).padding(12);
         if groups.is_empty() {
-            list = list.push(text("No providers").style(text::secondary));
+            list = list.push(text("No providers").size(NOTE).style(style::muted));
         }
         for (harness_name, rows) in groups {
-            let mut group = column![text(harness_name).size(20), rule::horizontal(1)].spacing(8);
+            let mut group = column![style::section_header(harness_name), style::divider()].spacing(0);
             for entry in rows {
                 group = group.push(self.view_row(entry));
             }
             list = list.push(group);
         }
-        scrollable(list).width(Fill).into()
+        scrollable(list).width(Fill).direction(style::thin_scrollbar()).style(style::scrollbar).into()
     }
 
     fn entry(&self, key: &ProviderKey) -> Option<&ProviderEntry> {
@@ -302,7 +304,7 @@ impl State {
                 let status = match (signed_in, account) {
                     (true, Some(account)) => text(format!("Signed in as {account}")).style(text::success),
                     (true, None) => text("Signed in").style(text::success),
-                    (false, _) => text("Not signed in").style(text::secondary),
+                    (false, _) => text("Not signed in").style(style::muted),
                 };
                 let label = match login {
                     LoginState::Failed { .. } => Some("Retry"),
@@ -311,82 +313,90 @@ impl State {
                     LoginState::Idle | LoginState::Cancelled => Some("Sign in"),
                     LoginState::Starting { .. } | LoginState::Browser { .. } => None,
                 };
-                let mut header = row![text(&entry.name), status, space::horizontal()]
-                    .spacing(12)
-                    .align_y(iced::Center);
+                let mut header = row![
+                    container(space().width(6).height(6)).style(style::dot(*signed_in)),
+                    text(&entry.name).size(BODY),
+                    status.size(SMALL),
+                    space::horizontal(),
+                ]
+                .spacing(8)
+                .align_y(iced::Center);
                 if let Some(label) = label {
-                    header = header.push(
-                        button(text(label))
-                            .style(button::primary)
-                            .on_press(Message::SignIn(key.clone())),
-                    );
+                    header = header.push(style::flat_button(label).on_press(Message::SignIn(key.clone())));
                 }
                 body = body.push(header);
             }
             Auth::ApiKey { configured_via, instructions } => {
                 let status = match configured_via {
                     Some(source) => text(format!("Configured via {source}")).style(text::success),
-                    None => text("Not configured").style(text::secondary),
+                    None => text("Not configured").style(style::muted),
                 };
                 body = body
-                    .push(row![text(&entry.name), status].spacing(12))
-                    .push(text(instructions).style(text::secondary));
+                    .push(
+                        row![
+                            container(space().width(6).height(6)).style(style::dot(configured_via.is_some())),
+                            text(&entry.name).size(BODY),
+                            status.size(SMALL),
+                        ]
+                        .spacing(8)
+                        .align_y(iced::Center),
+                    )
+                    .push(text(instructions).size(SMALL).style(style::muted));
             }
         }
 
         if let Some(login) = view_login(key, login) {
             body = body.push(login);
         }
-        container(body).style(container::bordered_box).padding(8).width(Fill).into()
+        column![container(body).padding([10.0, 0.0]).width(Fill), style::divider()].into()
     }
 }
 
 /// The login flow part of a row; `None` when no login was started.
 fn view_login<'a>(key: &ProviderKey, login: &'a LoginState) -> Option<Element<'a, Message>> {
-    let cancel = || button(text("Cancel")).style(button::secondary).on_press(Message::Cancel(key.clone()));
-    let dismiss = || button(text("Dismiss")).style(button::text).on_press(Message::Dismiss(key.clone()));
+    let cancel = || style::flat_button("Cancel").on_press(Message::Cancel(key.clone()));
+    let dismiss = || style::flat_button("Dismiss").on_press(Message::Dismiss(key.clone()));
 
     let content: Element<'a, Message> = match login {
         LoginState::Idle => return None,
         LoginState::Starting { progress } => {
-            let mut col = column![text("Waiting for the sign in URL…").style(text::secondary)].spacing(6);
+            let mut col = column![text("Waiting for the sign in URL…").size(NOTE).style(style::muted)].spacing(6);
             if let Some(progress) = progress {
-                col = col.push(text(progress).style(text::secondary));
+                col = col.push(text(progress).size(NOTE).style(style::muted));
             }
             col.push(cancel()).into()
         }
         LoginState::Browser { url, instructions, progress, prompt, .. } => {
             let mut col = column![
-                text_input("", url),
+                style::field("", url).font(iced::Font::MONOSPACE).size(SMALL),
                 row![
-                    button(text("Copy")).style(button::secondary).on_press(Message::CopyUrl(key.clone())),
-                    button(text("Open browser")).style(button::primary).on_press(Message::OpenUrl(key.clone())),
+                    style::flat_button("Copy").on_press(Message::CopyUrl(key.clone())),
+                    style::filled_button("Open browser").on_press(Message::OpenUrl(key.clone())),
                 ]
                 .spacing(8),
             ]
             .spacing(6);
             if let Some(instructions) = instructions {
-                col = col.push(text(instructions));
+                col = col.push(text(instructions).size(NOTE));
             }
             if let Some(progress) = progress {
-                col = col.push(text(progress).style(text::secondary));
+                col = col.push(text(progress).size(NOTE).style(style::muted));
             }
-            col = col.push(text("Waiting for sign in to finish in the browser…").style(text::secondary));
+            col = col.push(text("Waiting for sign in to finish in the browser…").size(NOTE).style(style::muted));
             if let Some(prompt) = prompt {
                 let submit_key = key.clone();
                 let input_key = key.clone();
-                col = col.push(text(&prompt.message)).push(
+                col = col.push(text(&prompt.message).size(NOTE)).push(
                     row![
-                        text_input(prompt.placeholder.as_deref().unwrap_or(""), &prompt.input)
+                        style::field(prompt.placeholder.as_deref().unwrap_or(""), &prompt.input)
                             .on_input(move |value| Message::PromptInput(input_key.clone(), value))
                             .on_submit(Message::SubmitPrompt(submit_key)),
-                        button(text("Submit"))
-                            .style(button::primary)
-                            .on_press_maybe(
-                                (!prompt.input.trim().is_empty()).then(|| Message::SubmitPrompt(key.clone())),
-                            ),
+                        style::filled_button("Submit").on_press_maybe(
+                            (!prompt.input.trim().is_empty()).then(|| Message::SubmitPrompt(key.clone())),
+                        ),
                     ]
-                    .spacing(8),
+                    .spacing(8)
+                    .align_y(iced::Center),
                 );
             }
             col.push(cancel()).into()
@@ -396,16 +406,16 @@ fn view_login<'a>(key: &ProviderKey, login: &'a LoginState) -> Option<Element<'a
                 Some(account) => format!("Signed in as {account}"),
                 None => "Signed in".to_owned(),
             };
-            row![text(message).style(text::success), dismiss()].spacing(8).align_y(iced::Center).into()
+            row![text(message).size(NOTE).style(text::success), dismiss()].spacing(8).align_y(iced::Center).into()
         }
         LoginState::Failed { message } => row![
-            text(format!("Sign in failed: {message}")).style(text::danger),
+            text(format!("Sign in failed: {message}")).size(NOTE).style(text::danger),
             dismiss()
         ]
         .spacing(8)
         .align_y(iced::Center)
         .into(),
-        LoginState::Cancelled => row![text("Sign in cancelled").style(text::secondary), dismiss()]
+        LoginState::Cancelled => row![text("Sign in cancelled").size(NOTE).style(style::muted), dismiss()]
             .spacing(8)
             .align_y(iced::Center)
             .into(),

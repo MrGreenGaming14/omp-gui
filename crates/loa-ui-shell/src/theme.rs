@@ -1,7 +1,8 @@
 //! Dark and light themes, the theme preference, and the shared looks every UI
 //! crate uses (card, muted text, badge, rows).
 //!
-//! The palettes follow Claude Code's warm neutrals with our own indigo accent.
+//! The palettes are near-black and near-white neutrals with a light neutral
+//! accent, matching the design mockup; status colors carry all the hue.
 //! Everything else reads colors from the extended palette, so a theme switch
 //! applies everywhere.
 
@@ -11,19 +12,19 @@ use std::fmt;
 
 /// Palette of the dark theme.
 pub const DARK_PALETTE: Palette = Palette {
-    background: color!(0x262624),
-    text: color!(0xece9e2),
-    primary: color!(0x7c8cff),
-    success: color!(0x6bb38a),
+    background: color!(0x080808),
+    text: color!(0xe5e5e5),
+    primary: color!(0xd4d4d4),
+    success: color!(0x3bb266),
     warning: color!(0xe3a84f),
-    danger: color!(0xe5675e),
+    danger: color!(0xe5484d),
 };
 
 /// Palette of the light theme.
 pub const LIGHT_PALETTE: Palette = Palette {
-    background: color!(0xfaf9f5),
-    text: color!(0x1f1e1d),
-    primary: color!(0x4a5bd4),
+    background: color!(0xfcfcfc),
+    text: color!(0x171717),
+    primary: color!(0x262626),
     success: color!(0x2f8f5b),
     warning: color!(0xb7791f),
     danger: color!(0xc8463d),
@@ -146,11 +147,14 @@ impl Default for State {
 
 /// Style functions for the looks shared across the app.
 pub mod style {
-    use iced::widget::{button, container, text};
+    use iced::widget::{button, container, rule, text, text_input};
     use iced::{Background, Border, Color, Theme, border};
 
-    /// Corner radius of cards and rows.
-    pub const RADIUS: f32 = 8.0;
+    /// Corner radius of cards, fields and rows.
+    pub const RADIUS: f32 = 6.0;
+
+    /// Corner radius of small pills such as node tags.
+    pub const PILL_RADIUS: f32 = 4.0;
 
     /// Main content background (chat, panels).
     pub fn surface(theme: &Theme) -> container::Style {
@@ -162,24 +166,60 @@ pub mod style {
         }
     }
 
-    /// Side areas set apart from the content: sidebar, top bar, tab bar.
+    /// Side areas: sidebar, top bar, tab bar. They share the content
+    /// background and are set apart by [`divider`] lines.
     pub fn chrome(theme: &Theme) -> container::Style {
+        surface(theme)
+    }
+
+    /// The color of thin borders and dividers.
+    pub fn border_color(theme: &Theme) -> Color {
+        theme.extended_palette().background.weak.color
+    }
+
+    /// A 1px line between areas.
+    pub fn divider(theme: &Theme) -> rule::Style {
+        rule::Style { color: border_color(theme), ..rule::default(theme) }
+    }
+
+    /// A block with a thin border on the content background: decision cards,
+    /// tool rows.
+    pub fn card(theme: &Theme) -> container::Style {
         let palette = theme.extended_palette();
         container::Style {
-            background: Some(Background::Color(palette.background.weak.color)),
-            text_color: Some(palette.background.weak.text),
+            background: Some(Background::Color(palette.background.base.color)),
+            text_color: Some(palette.background.base.text),
+            border: Border { color: border_color(theme), width: 1.0, radius: RADIUS.into() },
             ..container::Style::default()
         }
     }
 
-    /// A raised block with a thin border: decision cards, tool rows.
-    pub fn card(theme: &Theme) -> container::Style {
+    /// A field raised slightly above the background, with a thin border.
+    pub fn raised(theme: &Theme) -> container::Style {
         let palette = theme.extended_palette();
         container::Style {
             background: Some(Background::Color(palette.background.weakest.color)),
             text_color: Some(palette.background.weakest.text),
-            border: Border { color: palette.background.strong.color, width: 1.0, radius: RADIUS.into() },
+            border: Border { color: palette.background.neutral.color, width: 1.0, radius: RADIUS.into() },
             ..container::Style::default()
+        }
+    }
+
+    /// A text input drawn as a [`raised`] field.
+    pub fn input(theme: &Theme, status: text_input::Status) -> text_input::Style {
+        let palette = theme.extended_palette();
+        let border = match status {
+            text_input::Status::Focused { .. } => palette.background.strongest.color,
+            text_input::Status::Hovered => palette.background.strong.color,
+            text_input::Status::Active | text_input::Status::Disabled => palette.background.neutral.color,
+        };
+        text_input::Style {
+            background: Background::Color(palette.background.weakest.color),
+            border: Border { color: border, width: 1.0, radius: RADIUS.into() },
+            icon: muted_color(theme),
+            placeholder: muted_color(theme),
+            value: palette.background.base.text,
+            selection: palette.background.strongest.color,
         }
     }
 
@@ -190,17 +230,24 @@ pub mod style {
 
     /// The color of [`muted`] text.
     pub fn muted_color(theme: &Theme) -> Color {
-        theme.extended_palette().background.base.text.scale_alpha(0.6)
+        theme.extended_palette().background.base.text.scale_alpha(0.55)
     }
 
-    /// A small neutral pill: node tags, counts.
+    /// A small dim pill: node tags, counts.
     pub fn badge(theme: &Theme) -> container::Style {
-        let pair = theme.extended_palette().background.strong;
         container::Style {
-            background: Some(Background::Color(pair.color)),
-            text_color: Some(pair.text),
-            border: border::rounded(RADIUS),
+            background: Some(Background::Color(theme.extended_palette().background.weak.color)),
+            text_color: Some(muted_color(theme)),
+            border: border::rounded(PILL_RADIUS),
             ..container::Style::default()
+        }
+    }
+
+    /// A pill outlined by a thin border: the node indicator.
+    pub fn outlined(theme: &Theme) -> container::Style {
+        container::Style {
+            border: Border { color: border_color(theme), width: 1.0, radius: RADIUS.into() },
+            ..surface(theme)
         }
     }
 
@@ -210,16 +257,16 @@ pub mod style {
         container::Style {
             background: Some(Background::Color(pair.color)),
             text_color: Some(pair.text),
-            border: border::rounded(RADIUS),
+            border: border::rounded(PILL_RADIUS),
             ..container::Style::default()
         }
     }
 
-    /// A dot telling whether a node is online.
+    /// A dot telling whether a node is online: green when online, grey when
+    /// not.
     pub fn status_dot(online: bool) -> impl Fn(&Theme) -> container::Style {
         move |theme| {
-            let palette = theme.extended_palette();
-            let color = if online { palette.success.base.color } else { palette.danger.base.color };
+            let color = if online { theme.extended_palette().success.base.color } else { muted_color(theme) };
             container::Style {
                 background: Some(Background::Color(color)),
                 border: border::rounded(RADIUS),
@@ -232,28 +279,28 @@ pub mod style {
     pub fn row(theme: &Theme, status: button::Status) -> button::Style {
         let palette = theme.extended_palette();
         let background = match status {
-            button::Status::Hovered => Some(Background::Color(palette.background.strong.color.scale_alpha(0.5))),
-            button::Status::Pressed => Some(Background::Color(palette.background.strong.color)),
+            button::Status::Hovered => Some(Background::Color(palette.background.weaker.color)),
+            button::Status::Pressed => Some(Background::Color(palette.background.weak.color)),
             button::Status::Active | button::Status::Disabled => None,
         };
         button::Style {
             background,
-            text_color: palette.background.weak.text,
+            text_color: palette.background.base.text,
             border: border::rounded(RADIUS),
             ..button::Style::default()
         }
     }
 
-    /// The selected list row, or the active tab.
+    /// The selected list row.
     pub fn selected_row(theme: &Theme, status: button::Status) -> button::Style {
         let palette = theme.extended_palette();
         let color = match status {
-            button::Status::Pressed => palette.background.strongest.color,
-            _ => palette.background.strong.color,
+            button::Status::Pressed => palette.background.neutral.color,
+            _ => palette.background.weak.color,
         };
         button::Style {
             background: Some(Background::Color(color)),
-            text_color: palette.background.strong.text,
+            text_color: palette.background.base.text,
             border: border::rounded(RADIUS),
             ..button::Style::default()
         }
@@ -262,6 +309,38 @@ pub mod style {
     /// The row style for a selection state.
     pub fn row_for(selected: bool) -> fn(&Theme, button::Status) -> button::Style {
         if selected { selected_row } else { row }
+    }
+
+    /// A text-only tab: bright when active, muted otherwise, brightening on
+    /// hover.
+    pub fn tab(active: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+        move |theme, status| {
+            let text_color = match status {
+                _ if active => theme.extended_palette().background.base.text,
+                button::Status::Hovered | button::Status::Pressed => theme.extended_palette().background.base.text,
+                button::Status::Active | button::Status::Disabled => muted_color(theme),
+            };
+            button::Style { text_color, ..button::Style::default() }
+        }
+    }
+
+    /// The line under the active tab.
+    pub fn tab_underline(theme: &Theme) -> container::Style {
+        container::Style {
+            background: Some(Background::Color(theme.extended_palette().background.base.text.scale_alpha(0.8))),
+            ..container::Style::default()
+        }
+    }
+
+    /// A small floating label: tooltips.
+    pub fn tooltip(theme: &Theme) -> container::Style {
+        let palette = theme.extended_palette();
+        container::Style {
+            background: Some(Background::Color(palette.background.weaker.color)),
+            text_color: Some(palette.background.base.text),
+            border: Border { color: palette.background.neutral.color, width: 1.0, radius: RADIUS.into() },
+            ..container::Style::default()
+        }
     }
 }
 

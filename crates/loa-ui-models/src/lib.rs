@@ -18,6 +18,7 @@ pub mod picker;
 pub mod session;
 pub mod settings;
 pub mod signin;
+mod style;
 
 pub use catalog::{ModelInfo, ModelRef, RoleAssignment};
 pub use session::{SessionModel, SessionModelChange, model_change_drafts};

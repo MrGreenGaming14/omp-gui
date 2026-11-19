@@ -8,10 +8,11 @@
 
 use std::fmt;
 
-use iced::widget::{
-    button, checkbox, column, container, pick_list, row, rule, scrollable, space, text, text_input,
-};
+use iced::widget::{checkbox, column, container, pick_list, row, scrollable, space, text};
 use iced::{Element, Fill, Task};
+use loa_ui_icons::Icon;
+
+use crate::style::{self, BODY, NOTE, SMALL};
 
 /// Everything the screen edits, as the app reads it from omp's config files.
 #[derive(Clone, Debug, PartialEq, Default)]
@@ -700,30 +701,28 @@ impl State {
 
     pub fn view(&self) -> Element<'_, Message> {
         let dirty = self.is_dirty();
-        let mut header = row![text("Model settings").size(20), space::horizontal()]
-            .spacing(8)
-            .align_y(iced::Center);
+        let mut header = row![text("Model settings").size(BODY), space::horizontal()].spacing(8).align_y(iced::Center);
         if dirty {
-            header = header.push(text("Unsaved changes").style(text::secondary));
+            header = header.push(text("Unsaved changes").size(SMALL).style(style::muted));
         }
         header = header
-            .push(button(text("Revert")).style(button::secondary).on_press_maybe(dirty.then_some(Message::Revert)))
-            .push(button(text("Save")).style(button::primary).on_press_maybe(dirty.then_some(Message::Save)));
+            .push(style::flat_button("Revert").on_press_maybe(dirty.then_some(Message::Revert)))
+            .push(style::filled_button("Save").on_press_maybe(dirty.then_some(Message::Save)));
 
-        let mut content = column![header].spacing(16).padding(16);
+        let mut content = column![header].spacing(20).padding(12);
 
         if !self.app_errors.is_empty() {
             let list = self.app_errors.iter().fold(column![].spacing(4), |list, error| {
-                list.push(text(format!("{}: {}", error.location, error.message)))
+                list.push(text(format!("{}: {}", error.location, error.message)).size(NOTE))
             });
-            content = content.push(container(list).style(container::danger).padding(8).width(Fill));
+            content = content.push(container(list).style(style::error_box).padding(8).width(Fill));
         }
         if !self.local_errors.is_empty() {
             let list = self
                 .local_errors
                 .iter()
-                .fold(column![].spacing(4), |list, error| list.push(text(error.as_str()).style(text::danger)));
-            content = content.push(container(list).style(container::bordered_box).padding(8).width(Fill));
+                .fold(column![].spacing(4), |list, error| list.push(text(error.as_str()).size(NOTE)));
+            content = content.push(container(list).style(style::error_box).padding(8).width(Fill));
         }
 
         let content = content
@@ -732,7 +731,12 @@ impl State {
             .push(section("Providers (order)", self.view_providers()))
             .push(section("Model overrides", self.view_overrides()))
             .push(section("Custom providers", self.view_custom_providers()));
-        scrollable(content).width(Fill).height(Fill).into()
+        scrollable(content)
+            .width(Fill)
+            .height(Fill)
+            .direction(style::thin_scrollbar())
+            .style(style::scrollbar)
+            .into()
     }
 
     fn view_roles(&self) -> Element<'_, Message> {
@@ -740,10 +744,11 @@ impl State {
         for (i, role) in self.draft.roles.iter().enumerate() {
             let mut entries = column![
                 row![
-                    text_input("Role name", &role.role).on_input(move |name| Message::RenameRole(i, name)),
-                    button(text("Remove role")).style(button::danger).on_press(Message::RemoveRole(i)),
+                    style::field("Role name", &role.role).on_input(move |name| Message::RenameRole(i, name)),
+                    style::danger_button("Remove role").on_press(Message::RemoveRole(i)),
                 ]
                 .spacing(8)
+                .align_y(iced::Center)
             ]
             .spacing(4);
             let len = role.chain.len();
@@ -751,12 +756,10 @@ impl State {
                 let label = if j == 0 { "Primary".to_owned() } else { format!("Fallback {j}") };
                 entries = entries.push(
                     row![
-                        text(label).style(text::secondary).width(90),
-                        text(selector.as_str()).width(Fill),
+                        text(label).size(SMALL).style(style::muted).width(80),
+                        text(selector.as_str()).size(SMALL).font(iced::Font::MONOSPACE).width(Fill),
                         move_buttons(j, len, move |from, to| Message::MoveChainEntry { role: i, from, to }),
-                        button(text("Remove"))
-                            .style(button::text)
-                            .on_press(Message::RemoveChainEntry { role: i, index: j }),
+                        style::icon_button(Icon::X).on_press(Message::RemoveChainEntry { role: i, index: j }),
                     ]
                     .spacing(8)
                     .align_y(iced::Center),
@@ -765,43 +768,45 @@ impl State {
             let input = self.chain_inputs.get(i).map_or("", String::as_str);
             entries = entries.push(
                 row![
-                    pick_list(self.known_models.as_slice(), None::<String>, move |selector| {
+                    pick(pick_list(self.known_models.as_slice(), None::<String>, move |selector| {
                         Message::AddChainEntry(i, selector)
                     })
-                    .placeholder("Add model"),
-                    text_input("or type provider/model[:thinking]", input)
+                    .placeholder("Add model")),
+                    style::field("or type provider/model[:thinking]", input)
                         .on_input(move |value| Message::ChainInput(i, value))
                         .on_submit(Message::AddTypedChainEntry(i)),
-                    button(text("Add")).style(button::secondary).on_press(Message::AddTypedChainEntry(i)),
+                    style::flat_button("Add").on_press(Message::AddTypedChainEntry(i)),
                 ]
-                .spacing(8),
+                .spacing(8)
+                .align_y(iced::Center),
             );
-            list = list.push(container(entries).style(container::bordered_box).padding(8).width(Fill));
+            list = list.push(container(entries).style(style::card).padding(8).width(Fill));
         }
         list.push(
             row![
-                text_input("New role name", &self.new_role)
-                    .on_input(Message::NewRoleInput)
-                    .on_submit(Message::AddRole),
-                button(text("Add role")).style(button::secondary).on_press(Message::AddRole),
+                style::field("New role name", &self.new_role).on_input(Message::NewRoleInput).on_submit(Message::AddRole),
+                style::icon_label_button(Icon::Plus, "Add role").on_press(Message::AddRole),
             ]
-            .spacing(8),
+            .spacing(8)
+            .align_y(iced::Center),
         )
         .into()
     }
 
     fn view_models(&self) -> Element<'_, Message> {
         if self.draft.models.is_empty() {
-            return text("No models available").style(text::secondary).into();
+            return text("No models available").size(NOTE).style(style::muted).into();
         }
         self.draft
             .models
             .iter()
             .enumerate()
-            .fold(column![].spacing(4), |list, (i, model)| {
+            .fold(column![].spacing(6), |list, (i, model)| {
                 list.push(
                     checkbox(model.enabled)
                         .label(model.selector.as_str())
+                        .size(14)
+                        .text_size(NOTE)
                         .on_toggle(move |enabled| Message::ModelToggled(i, enabled)),
                 )
             })
@@ -810,7 +815,7 @@ impl State {
 
     fn view_providers(&self) -> Element<'_, Message> {
         if self.draft.providers.is_empty() {
-            return text("No providers available").style(text::secondary).into();
+            return text("No providers available").size(NOTE).style(style::muted).into();
         }
         let len = self.draft.providers.len();
         self.draft
@@ -827,6 +832,8 @@ impl State {
                     row![
                         checkbox(provider.enabled)
                             .label(label)
+                            .size(14)
+                            .text_size(NOTE)
                             .on_toggle(move |enabled| Message::ProviderToggled(i, enabled))
                             .width(Fill),
                         move_buttons(i, len, |from, to| Message::MoveProvider { from, to }),
@@ -843,11 +850,11 @@ impl State {
         for (i, o) in self.draft.overrides.iter().enumerate() {
             let mut fields = column![
                 row![
-                    text(o.selector.as_str()).width(Fill),
-                    button(text("Add field")).style(button::secondary).on_press(Message::AddField(i)),
-                    button(text("Remove override")).style(button::danger).on_press(Message::RemoveOverride(i)),
+                    text(o.selector.as_str()).size(SMALL).font(iced::Font::MONOSPACE).width(Fill),
+                    style::icon_label_button(Icon::Plus, "Add field").on_press(Message::AddField(i)),
+                    style::danger_button("Remove override").on_press(Message::RemoveOverride(i)),
                 ]
-                .spacing(8)
+                .spacing(4)
                 .align_y(iced::Center)
             ]
             .spacing(4);
@@ -855,46 +862,46 @@ impl State {
                 let value: Element<'_, Message> = if field.kind == FieldKind::Bool {
                     checkbox(field.raw.trim() == "true")
                         .label("true")
+                        .size(14)
+                        .text_size(NOTE)
                         .on_toggle(move |value| Message::FieldValueChanged { model: i, field: j, raw: value.to_string() })
                         .into()
                 } else {
-                    text_input("Value", &field.raw)
+                    style::field("Value", &field.raw)
                         .on_input(move |raw| Message::FieldValueChanged { model: i, field: j, raw })
                         .into()
                 };
                 fields = fields.push(
                     row![
-                        text_input("Field, e.g. contextWindow", &field.key)
+                        style::field("Field, e.g. contextWindow", &field.key)
                             .on_input(move |key| Message::FieldKeyChanged { model: i, field: j, key }),
-                        pick_list(FieldKind::ALL, Some(field.kind), move |kind| Message::FieldKindChanged {
+                        pick(pick_list(FieldKind::ALL, Some(field.kind), move |kind| Message::FieldKindChanged {
                             model: i,
                             field: j,
                             kind
-                        }),
+                        })),
                         value,
-                        button(text("Remove"))
-                            .style(button::text)
-                            .on_press(Message::RemoveField { model: i, field: j }),
+                        style::icon_button(Icon::X).on_press(Message::RemoveField { model: i, field: j }),
                     ]
                     .spacing(8)
                     .align_y(iced::Center),
                 );
                 if let Err(message) = field.kind.parse(&field.raw) {
-                    fields = fields.push(text(message).style(text::danger));
+                    fields = fields.push(text(message).size(SMALL).style(text::danger));
                 }
             }
-            list = list.push(container(fields).style(container::bordered_box).padding(8).width(Fill));
+            list = list.push(container(fields).style(style::card).padding(8).width(Fill));
         }
         list.push(
             row![
-                pick_list(self.known_models.as_slice(), None::<String>, Message::AddOverride)
-                    .placeholder("Override a model"),
-                text_input("or type provider/model", &self.new_override)
+                pick(pick_list(self.known_models.as_slice(), None::<String>, Message::AddOverride).placeholder("Override a model")),
+                style::field("or type provider/model", &self.new_override)
                     .on_input(Message::NewOverrideInput)
                     .on_submit(Message::AddTypedOverride),
-                button(text("Add")).style(button::secondary).on_press(Message::AddTypedOverride),
+                style::flat_button("Add").on_press(Message::AddTypedOverride),
             ]
-            .spacing(8),
+            .spacing(8)
+            .align_y(iced::Center),
         )
         .into()
     }
@@ -905,29 +912,25 @@ impl State {
         for (i, provider) in self.draft.custom_providers.iter().enumerate() {
             let edit = move |f: fn(String) -> ProviderEdit| move |value| Message::CustomProviderEdited(i, f(value));
             let mut form = column![
-                labeled("Id", text_input("my-provider", &provider.id).on_input(edit(ProviderEdit::Id))),
+                labeled("Id", style::field("my-provider", &provider.id).on_input(edit(ProviderEdit::Id))),
                 labeled(
                     "Base URL",
-                    text_input("https://example.com/v1", &provider.base_url).on_input(edit(ProviderEdit::BaseUrl)),
+                    style::field("https://example.com/v1", &provider.base_url).on_input(edit(ProviderEdit::BaseUrl)),
                 ),
-                labeled("API", text_input("openai-completions", &provider.api).on_input(edit(ProviderEdit::Api))),
+                labeled("API", style::field("openai-completions", &provider.api).on_input(edit(ProviderEdit::Api))),
                 labeled(
                     "Auth",
-                    pick_list(ProviderAuth::ALL, Some(provider.auth), move |auth| {
+                    pick(pick_list(ProviderAuth::ALL, Some(provider.auth), move |auth| {
                         Message::CustomProviderEdited(i, ProviderEdit::Auth(auth))
-                    }),
+                    })),
                 ),
                 labeled(
                     "API key variable",
-                    text_input("MY_PROVIDER_API_KEY", &provider.api_key_env)
-                        .on_input(edit(ProviderEdit::ApiKeyEnv)),
+                    style::field("MY_PROVIDER_API_KEY", &provider.api_key_env).on_input(edit(ProviderEdit::ApiKeyEnv)),
                 ),
-                labeled(
-                    "Models",
-                    text_input("model-a, model-b", &provider.models).on_input(edit(ProviderEdit::Models)),
-                ),
+                labeled("Models", style::field("model-a, model-b", &provider.models).on_input(edit(ProviderEdit::Models))),
             ]
-            .spacing(4);
+            .spacing(6);
             let others: Vec<CustomProvider> = providers
                 .iter()
                 .enumerate()
@@ -936,25 +939,36 @@ impl State {
                 .collect();
             if let Some(current) = providers.get(i) {
                 for message in validate_custom_provider(current, &others) {
-                    form = form.push(text(message).style(text::danger));
+                    form = form.push(text(message).size(SMALL).style(text::danger));
                 }
             }
-            form = form.push(
-                button(text("Remove provider")).style(button::danger).on_press(Message::RemoveCustomProvider(i)),
-            );
-            list = list.push(container(form).style(container::bordered_box).padding(8).width(Fill));
+            form = form.push(style::danger_button("Remove provider").on_press(Message::RemoveCustomProvider(i)));
+            list = list.push(container(form).style(style::card).padding(8).width(Fill));
         }
-        list.push(button(text("Add custom provider")).style(button::secondary).on_press(Message::AddCustomProvider))
+        list.push(style::icon_label_button(Icon::Plus, "Add custom provider").on_press(Message::AddCustomProvider))
             .into()
     }
 }
 
 fn section<'a>(title: &'a str, body: Element<'a, Message>) -> Element<'a, Message> {
-    column![text(title).size(16), rule::horizontal(1), body].spacing(8).into()
+    column![style::section_header(title), style::divider(), body].spacing(8).into()
 }
 
 fn labeled<'a>(label: &'a str, field: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
-    row![text(label).width(140), field.into()].spacing(8).align_y(iced::Center).into()
+    row![text(label).size(SMALL).style(style::muted).width(110), field.into()]
+        .spacing(8)
+        .align_y(iced::Center)
+        .into()
+}
+
+/// A pick list styled like the other raised fields.
+fn pick<'a, T, L, V>(list: pick_list::PickList<'a, T, L, V, Message>) -> pick_list::PickList<'a, T, L, V, Message>
+where
+    T: ToString + PartialEq + Clone,
+    L: std::borrow::Borrow<[T]> + 'a,
+    V: std::borrow::Borrow<T> + 'a,
+{
+    list.text_size(NOTE).padding([5.0, 8.0]).style(style::pick)
 }
 
 /// Up and down buttons for the item at `index` of a list of `len`, disabled at
@@ -962,12 +976,13 @@ fn labeled<'a>(label: &'a str, field: impl Into<Element<'a, Message>>) -> Elemen
 fn move_buttons<'a>(index: usize, len: usize, on_move: impl Fn(usize, usize) -> Message) -> Element<'a, Message> {
     let up = index.checked_sub(1).map(|to| on_move(index, to));
     let down = (index + 1 < len).then(|| on_move(index, index + 1));
-    row![
-        button(text("Up")).style(button::subtle).on_press_maybe(up),
-        button(text("Down")).style(button::subtle).on_press_maybe(down),
-    ]
-    .spacing(4)
-    .into()
+    let arrow = |icon: Icon, message: Option<Message>| -> Element<'a, Message> {
+        match message {
+            Some(message) => style::icon_button(icon).on_press(message).into(),
+            None => space().width(20).height(20).into(),
+        }
+    };
+    row![arrow(Icon::ChevronUp, up), arrow(Icon::ChevronDown, down)].spacing(2).into()
 }
 
 #[cfg(test)]

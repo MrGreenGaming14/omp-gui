@@ -22,6 +22,7 @@ use iced::widget::text::Wrapping;
 use iced::widget::{button, column, container, row, scrollable, space, text};
 use iced::{Center, Element, Fill, Task};
 use loa_core::NodeId;
+use loa_ui_icons::Icon;
 
 use crate::style;
 
@@ -209,7 +210,7 @@ impl State {
     }
 
     pub fn view(&self) -> Element<'_, Message> {
-        scrollable(column(self.rows().map(|row| self.row_view(row)))).height(Fill).into()
+        scrollable(column(self.rows().map(|row| self.row_view(row))).padding([0, 6])).height(Fill).into()
     }
 
     /// Session id and turn node of a turn row of the current session.
@@ -286,7 +287,12 @@ impl State {
         let content: Element<'a, Message> = match row.kind {
             RowKind::Session { id, title, current, on_path, collapsed } => {
                 let chevron: Element<'a, Message> = if self.has_subtree(row.index) {
-                    action(if collapsed { "▸" } else { "▾" }, Message::Toggle(row.index))
+                    let icon = if collapsed { Icon::ChevronRight } else { Icon::ChevronDown };
+                    button(loa_ui_icons::muted(icon, 12.0))
+                        .on_press(Message::Toggle(row.index))
+                        .style(style::action_button)
+                        .padding(1)
+                        .into()
                 } else {
                     space().width(style::INDENT).into()
                 };
@@ -298,7 +304,7 @@ impl State {
                     label = label.style(style::primary_text);
                 }
                 let open = (!current).then(|| action("Open", Message::Open(row.index)));
-                row![indent, chevron, row_label(label, selected, row.index), open].into()
+                row![indent, chevron, row_label(label, selected, row.index), open].spacing(4).align_y(Center).into()
             }
             RowKind::ForkPoint { seq, first_line, .. } => {
                 let label = match first_line {
@@ -307,11 +313,13 @@ impl State {
                 };
                 row![
                     indent,
-                    text("⑂").size(style::TEXT_SIZE).style(style::muted),
+                    loa_ui_icons::muted(Icon::GitCompare, 12.0),
                     container(label.size(style::TEXT_SIZE).wrapping(Wrapping::None).style(style::muted))
                         .width(Fill)
                         .clip(true),
                 ]
+                .spacing(6)
+                .align_y(Center)
                 .into()
             }
             RowKind::Turn { first_line, .. } => row![
@@ -320,25 +328,27 @@ impl State {
                 action("Rewind", Message::Rewind(row.index)),
                 action("Fork", Message::Fork(row.index)),
             ]
+            .spacing(4)
+            .align_y(Center)
             .into(),
         };
-        container(content).height(style::ROW_HEIGHT).align_y(Center).into()
+        container(content).height(style::LIST_ROW_HEIGHT).align_y(Center).into()
     }
 }
 
 /// A selectable one line label filling the rest of the row.
 fn row_label<'a>(label: text::Text<'a>, selected: bool, index: usize) -> Element<'a, Message> {
-    button(container(label.size(style::TEXT_SIZE).wrapping(Wrapping::None)).width(Fill).clip(true))
+    button(container(label.size(style::LIST_TEXT_SIZE).wrapping(Wrapping::None)).width(Fill).clip(true))
         .on_press(Message::Select(index))
         .style(style::row_button(selected))
-        .padding(0)
+        .padding([4, 8])
         .width(Fill)
         .into()
 }
 
 /// A small action button inside a row.
 fn action<'a>(label: &'static str, message: Message) -> Element<'a, Message> {
-    button(text(label).size(style::TEXT_SIZE)).on_press(message).style(style::action_button).padding([0, 4]).into()
+    button(text(label).size(style::TEXT_SIZE)).on_press(message).style(style::action_button).padding([2, 6]).into()
 }
 
 /// Resolved fork links of a family: effective parents, children, roots.

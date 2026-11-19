@@ -7,4 +7,5 @@ publish.workspace = true
 
 [dependencies]
 iced.workspace = true
+loa-ui-icons.workspace = true
 thiserror.workspace = true

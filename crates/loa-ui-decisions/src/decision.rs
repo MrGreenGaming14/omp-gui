@@ -29,6 +29,9 @@ pub struct Decision {
     /// Tool of the `<call>` the decision is about: the node named by the
     /// `call` attribute, else the enclosing `<call>`.
     pub tool: Option<String>,
+    /// Harness of the session the decision belongs to: the `harness`
+    /// attribute of the node, or of its nearest ancestor that has one.
+    pub harness: Option<String>,
 }
 
 impl Decision {
@@ -74,6 +77,13 @@ impl Decision {
             timeout_ms: node.int_attr(attr::TIMEOUT_MS),
             created: node.int_attr(attr::CREATED),
             tool: call.and_then(|c| c.str_attr(attr::TOOL)).map(str::to_owned),
+            harness: node
+                .str_attr(attr::HARNESS)
+                .or_else(|| {
+                    dom.ancestors(node.id)
+                        .find_map(|n| n.str_attr(attr::HARNESS))
+                })
+                .map(str::to_owned),
         })
     }
 
@@ -150,7 +160,7 @@ impl ApprovalChoice {
 
     fn past(self) -> &'static str {
         match self {
-            Self::AllowOnce => "Allowed once",
+            Self::AllowOnce => "Allowed",
             Self::AllowSession => "Allowed for this session",
             Self::Deny => "Denied",
         }

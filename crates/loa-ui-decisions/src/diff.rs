@@ -1,7 +1,8 @@
 //! Unified diff previews for approval cards.
 
-use iced::widget::{column, text};
-use iced::{Element, Font};
+use crate::style::{muted, well};
+use iced::widget::{column, container, text};
+use iced::{Background, Color, Element, Fill, Font, Theme};
 
 /// How one line of a unified diff renders.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -53,20 +54,49 @@ pub fn is_unified_diff(body: &str) -> bool {
     false
 }
 
-/// Renders `diff` in a monospace column, added and removed lines in the
-/// theme's success and danger colors.
+type LineStyle = fn(&Theme) -> text::Style;
+type Tint = fn(&Theme) -> Color;
+
+/// Renders `diff` in a monospace column on a sunken well. Added and removed
+/// lines sit on a faint tint of the theme's success and danger colors.
 pub fn view<'a, Message: 'a>(diff: &'a str) -> Element<'a, Message> {
-    column(diff.lines().map(|line| {
-        let style = match line_kind(line) {
-            LineKind::Header => text::secondary,
-            LineKind::Hunk => text::primary,
-            LineKind::Added => text::success,
-            LineKind::Removed => text::danger,
-            LineKind::Context => text::default,
+    let lines = column(diff.lines().map(|line| {
+        let (style, tint): (LineStyle, Option<Tint>) = match line_kind(line) {
+            LineKind::Header | LineKind::Hunk => (muted, None),
+            LineKind::Added => (text::success, Some(added_tint)),
+            LineKind::Removed => (text::danger, Some(removed_tint)),
+            LineKind::Context => (text::default, None),
         };
-        text(line).font(Font::MONOSPACE).style(style).into()
-    }))
-    .into()
+        let line = text(line).font(Font::MONOSPACE).size(13).style(style);
+        match tint {
+            Some(tint) => container(line)
+                .width(Fill)
+                .style(move |theme: &Theme| container::Style {
+                    background: Some(Background::Color(tint(theme))),
+                    ..container::Style::default()
+                })
+                .into(),
+            None => line.into(),
+        }
+    }));
+    container(lines)
+        .padding([5, 8])
+        .width(Fill)
+        .style(well)
+        .into()
+}
+
+fn added_tint(theme: &Theme) -> Color {
+    theme
+        .extended_palette()
+        .success
+        .base
+        .color
+        .scale_alpha(0.07)
+}
+
+fn removed_tint(theme: &Theme) -> Color {
+    theme.extended_palette().danger.base.color.scale_alpha(0.07)
 }
 
 #[cfg(test)]

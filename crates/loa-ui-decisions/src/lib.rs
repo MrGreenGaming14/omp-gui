@@ -11,6 +11,7 @@ mod card;
 pub mod decision;
 pub mod diff;
 pub mod form;
+mod style;
 pub mod tracker;
 
 pub use card::{FieldInput, form_field_id, text_field_id};

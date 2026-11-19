@@ -58,13 +58,14 @@ Everything else builds on these three. Their existing public items change only w
 | `loa-ui-surface` | Surface renderer |
 | `loa-ui-models` | Sign in, model picker, model settings |
 | `loa-ui-peers` | Peers list, grant management |
+| `loa-ui-icons` | Lucide line icons as theme-tinted SVG widgets, shared by every UI crate |
 | `loa-app` | The binary: wires every crate together |
 
 ## Dependency rules
 
 - Contracts depend on nothing in the workspace except `loa-core`
 - A library depends on contracts. When it needs something another library owns, it declares a trait for it (a port) and `loa-app` passes the implementation in. Example: `loa-projects` declares the access check it needs and `loa-app` backs it with `loa-grants`
-- A UI crate depends on contracts and `iced`. It takes plain data in and gives events out. It never spawns a harness, opens a socket or reads the journal
+- A UI crate depends on contracts, `iced` and `loa-ui-icons`. It takes plain data in and gives events out. It never spawns a harness, opens a socket or reads the journal
 - Only `loa-app`, `loa-features` and `loa-share` depend on several libraries
 
 ## Sessions

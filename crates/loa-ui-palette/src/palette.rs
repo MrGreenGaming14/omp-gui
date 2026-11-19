@@ -17,19 +17,20 @@ use iced::widget::{
     scrollable, space, span, text, text_input,
 };
 use iced::{Element, Fill, Font, Length, Subscription, Task, Theme, font};
+use loa_ui_icons::Icon;
 
 use crate::CommandId;
 use crate::fuzzy::{Class, Matcher, highlight_runs};
 use crate::keymap::{Chord, Platform};
 
 /// Height of one command row, in logical pixels.
-pub const ROW_HEIGHT: f32 = 34.0;
+pub const ROW_HEIGHT: f32 = 35.0;
 /// Height of a section header, in logical pixels.
-pub const HEADER_HEIGHT: f32 = 26.0;
+pub const HEADER_HEIGHT: f32 = 35.0;
 /// Tallest the result list grows before it scrolls.
 pub const MAX_LIST_HEIGHT: f32 = 360.0;
 /// Width of the palette card.
-pub const WIDTH: f32 = 560.0;
+pub const WIDTH: f32 = 520.0;
 /// How many recently run commands are remembered for ranking.
 pub const MAX_RECENT: usize = 32;
 
@@ -312,11 +313,16 @@ impl State {
         let input = text_input("Type a command", &self.query)
             .id(self.input_id.clone())
             .on_input(Message::QueryChanged)
-            .padding(12)
-            .size(16);
+            .padding([7, 0])
+            .size(14)
+            .style(Self::search_style);
+        let search = container(
+            row![loa_ui_icons::muted(Icon::Search, 14.0), input].spacing(6).align_y(iced::Center),
+        )
+        .padding([0, 13]);
 
         let results: Element<'_, Message> = if self.rows.is_empty() {
-            container(text("No matching commands").style(text::secondary))
+            container(text("No matching commands").size(14).style(Self::muted_text))
                 .padding(12)
                 .into()
         } else {
@@ -325,34 +331,36 @@ impl State {
                 let command = &self.commands[row.command];
                 if row.starts_section {
                     list = list.push(
-                        container(text(&command.section).size(12).style(text::secondary))
+                        container(text(&command.section).size(12).style(Self::muted_text))
                             .height(HEADER_HEIGHT)
-                            .padding([4, 12])
+                            .padding(iced::Padding::ZERO.left(13).bottom(7))
                             .align_y(iced::Bottom),
                     );
                 }
-                list = list.push(self.row_view(i, row, command));
+                list = list.push(container(self.row_view(i, row, command)).padding([0, 4]));
             }
-            scrollable(list)
-                .id(self.list_id.clone())
-                .height(Length::Fixed(self.list_height()))
-                .on_scroll(|viewport| Message::Scrolled(viewport.absolute_offset().y))
-                .into()
+            container(
+                scrollable(list)
+                    .id(self.list_id.clone())
+                    .height(Length::Fixed(self.list_height()))
+                    .on_scroll(|viewport| Message::Scrolled(viewport.absolute_offset().y)),
+            )
+            .width(Fill)
+            .padding(iced::Padding::ZERO.bottom(4))
+            .into()
         };
 
-        let card = container(column![input, rule::horizontal(1), results])
+        // Inset children past the 1px border so they never paint over it.
+        let card = container(column![search, rule::horizontal(1).style(Self::divider), results])
+            .padding(1)
             .width(WIDTH)
-            .style(container::bordered_box);
+            .style(Self::card_style);
 
         let backdrop = container(opaque(card))
             .width(Fill)
             .height(Fill)
             .center_x(Fill)
-            .padding(iced::Padding::ZERO.top(80))
-            .style(|theme: &Theme| {
-                let base = theme.extended_palette().background.base.color;
-                container::background(base.scale_alpha(0.6))
-            });
+            .padding(iced::Padding::ZERO.top(120));
 
         opaque(mouse_area(backdrop).on_press(Message::Close))
     }
@@ -366,33 +374,73 @@ impl State {
             .into_iter()
             .map(|(range, hit)| {
                 let piece = span(&command.title[range]);
-                if hit { piece.font(bold).underline(true) } else { piece }
+                if hit { piece.font(bold) } else { piece }
             })
             .collect();
 
         let mut content = row![rich_text(spans).size(14), space::horizontal()]
+            .height(Fill)
             .align_y(iced::Center)
             .spacing(12);
         if let Some(hint) = self.hint(command) {
-            content = content.push(text(hint).size(12).style(text::secondary));
+            content = content.push(text(hint).size(12).style(Self::muted_text));
         }
 
         let selected = self.selected == Some(index);
         button(content)
             .width(Fill)
             .height(ROW_HEIGHT)
-            .padding([6, 12])
+            .padding([0, 8])
             .on_press_maybe(command.enabled.then_some(Message::Activate(index)))
             .style(move |theme: &Theme, status| {
+                let palette = theme.extended_palette();
                 let mut style = button::text(theme, status);
-                if selected || matches!(status, button::Status::Hovered) {
-                    let weak = theme.extended_palette().background.weak;
-                    style.background = Some(weak.color.into());
-                    style.text_color = weak.text;
+                style.border.radius = 6.0.into();
+                if selected {
+                    style.background = Some(palette.background.neutral.color.into());
+                    style.text_color = palette.background.neutral.text;
+                } else if matches!(status, button::Status::Hovered) {
+                    style.background = Some(palette.background.weak.color.into());
+                    style.text_color = palette.background.weak.text;
                 }
                 style
             })
             .into()
+    }
+
+    /// Secondary text: the palette's text at reduced opacity.
+    fn muted_text(theme: &Theme) -> text::Style {
+        text::Style { color: Some(theme.palette().text.scale_alpha(0.55)) }
+    }
+
+    /// The search field: no box of its own, it sits on the card.
+    fn search_style(theme: &Theme, _status: text_input::Status) -> text_input::Style {
+        let palette = theme.extended_palette();
+        let muted = theme.palette().text.scale_alpha(0.55);
+        text_input::Style {
+            background: iced::Color::TRANSPARENT.into(),
+            border: iced::Border::default(),
+            icon: muted,
+            placeholder: muted,
+            value: palette.background.base.text,
+            selection: palette.background.stronger.color,
+        }
+    }
+
+    /// The card: a shade above the window background, with a 1px neutral border.
+    fn card_style(theme: &Theme) -> container::Style {
+        let palette = theme.extended_palette();
+        let raised = iced::theme::palette::mix(palette.background.base.color, palette.background.weakest.color, 0.3);
+        container::Style {
+            background: Some(raised.into()),
+            border: iced::Border { color: palette.background.neutral.color, width: 1.0, radius: 6.0.into() },
+            ..container::Style::default()
+        }
+    }
+
+    /// A 1px rule between the search field and the list.
+    fn divider(theme: &Theme) -> rule::Style {
+        rule::Style { color: theme.extended_palette().background.neutral.color, ..rule::default(theme) }
     }
 
     fn open(&mut self) -> Task<Message> {
@@ -777,7 +825,7 @@ mod tests {
 
     #[test]
     fn selection_scrolls_into_view() {
-        // 20 rows in one section: content 26 + 20 * 34 = 706 px, viewport 360.
+        // 20 rows in one section: content 35 + 20 * 35 = 735 px, viewport 360.
         let commands = (0..20)
             .map(|i| Command::new(CommandId::new(format!("c{i}")), format!("Command {i:02}"), "S"))
             .collect();
@@ -787,9 +835,9 @@ mod tests {
         for _ in 0..10 {
             let _ = state.update(Message::SelectNext);
         }
-        // Row 10 spans 26 + 340 .. 26 + 374 = 366..400, so offset 40.
+        // Row 10 spans 35 + 350 .. 35 + 385 = 385..420, so offset 60.
         assert_eq!(state.selected().unwrap().title, "Command 10");
-        assert_eq!(state.scroll_offset, 400.0 - MAX_LIST_HEIGHT);
+        assert_eq!(state.scroll_offset, HEADER_HEIGHT + 11.0 * ROW_HEIGHT - MAX_LIST_HEIGHT);
 
         // Wrap to the last row from the top.
         for _ in 0..10 {
@@ -799,7 +847,7 @@ mod tests {
         assert_eq!(state.scroll_offset, 0.0);
         let _ = state.update(Message::SelectPrevious);
         assert_eq!(state.selected().unwrap().title, "Command 19");
-        assert_eq!(state.scroll_offset, 706.0 - MAX_LIST_HEIGHT);
+        assert_eq!(state.scroll_offset, HEADER_HEIGHT + 20.0 * ROW_HEIGHT - MAX_LIST_HEIGHT);
     }
 
     #[test]

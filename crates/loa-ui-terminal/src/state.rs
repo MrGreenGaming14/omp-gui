@@ -11,6 +11,7 @@ use bytes::Bytes;
 use iced::task::Handle;
 use iced::widget::{button, canvas, center, column, container, row, text};
 use iced::{Element, Fill, Task, clipboard};
+use loa_ui_icons::{Icon, muted};
 use tokio::sync::mpsc;
 
 use crate::canvas::{CanvasEvent, Metrics, TerminalCanvas};
@@ -19,6 +20,7 @@ use crate::emulator::Emulator;
 use crate::input::{KeyAction, encode_paste, key_action};
 use crate::local::{self, LocalShell};
 use crate::palette::TermPalette;
+use crate::style;
 use crate::{Error, GridSize, Result};
 
 /// Identifies one terminal sub tab.
@@ -524,24 +526,34 @@ impl State {
 
     /// The sub tab bar and the active terminal.
     pub fn view(&self) -> Element<'_, Message> {
-        let mut bar = row![].spacing(4);
+        let mut bar = row![].spacing(2).align_y(iced::Center);
         for tab in &self.tabs {
-            let style = if self.active == Some(tab.id) {
-                button::primary
-            } else {
-                button::secondary
-            };
+            let active = self.active == Some(tab.id);
             let label = row![
-                text(tab.title.as_str()),
-                button(text("×")).style(button::text).on_press(Message::Close(tab.id)),
+                text(tab.title.as_str()).size(13),
+                button(muted(Icon::X, 10.0))
+                    .padding(2)
+                    .style(style::icon)
+                    .on_press(Message::Close(tab.id)),
             ]
-            .spacing(6);
-            bar = bar.push(button(label).style(style).on_press(Message::Select(tab.id)));
+            .spacing(6)
+            .align_y(iced::Center);
+            bar = bar.push(
+                button(label)
+                    .padding([3.0, 8.0])
+                    .style(style::tab(active))
+                    .on_press(Message::Select(tab.id)),
+            );
         }
-        bar = bar.push(button(text("+")).style(button::text).on_press(Message::NewTab));
+        bar = bar.push(
+            button(muted(Icon::Plus, 14.0))
+                .padding(5)
+                .style(style::icon)
+                .on_press(Message::NewTab),
+        );
 
         let body: Element<'_, Message> = match self.active.and_then(|id| self.tab(id)) {
-            None => center(text("No terminal open")).into(),
+            None => center(text("No terminal open").size(13).style(style::muted)).into(),
             Some(tab) => {
                 let screen = canvas(TerminalCanvas {
                     tab: tab.id,
@@ -552,16 +564,27 @@ impl State {
                 })
                 .width(Fill)
                 .height(Fill);
+                let status = |line: text::Text<'static>| container(line.size(12)).padding([4.0, 8.0]);
                 match &tab.status {
                     Status::Running => screen.into(),
-                    Status::Connecting => column![screen, text(format!("Connecting to {}…", tab.title))]
-                        .into(),
-                    Status::Failed(error) => column![screen, text(error.as_str()).style(text::danger)]
-                        .into(),
+                    Status::Connecting => column![
+                        screen,
+                        status(text(format!("Connecting to {}…", tab.title)).style(style::muted))
+                    ]
+                    .into(),
+                    Status::Failed(error) => column![
+                        screen,
+                        status(text(error.clone()).style(text::danger))
+                    ]
+                    .into(),
                 }
             }
         };
-        container(column![bar, body].spacing(4)).width(Fill).height(Fill).into()
+        let bar = container(bar).padding([4.0, 6.0]).width(Fill);
+        container(column![bar, style::divider(), container(body).padding([6.0, 8.0])])
+            .width(Fill)
+            .height(Fill)
+            .into()
     }
 }
 
