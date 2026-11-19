@@ -30,12 +30,12 @@ pub use session::AcpSession;
 
 use async_trait::async_trait;
 use loa_adapter::{
-    Adapter, AdapterError, Capabilities, ContextDelivery, Feature, HarnessSession, McpTransport, ModelSwitch, Result,
-    SessionConfig,
+    Adapter, AdapterError, Availability, AvailabilityStatus, Capabilities, ContextDelivery, Feature, HarnessModel,
+    HarnessSession, McpTransport, ModelSwitch, PROBE_TIMEOUT, Result, SessionConfig,
 };
 use loa_core::{
-    DecisionKind, Dom, Draft, ElementKind, NodeId, PatchSink, SCHEMA_VERSION, SessionMode, TodoState, Value, attr,
-    now_ms,
+    DecisionKind, Dom, Draft, ElementKind, MemorySink, NodeId, PatchSink, SCHEMA_VERSION, SessionMode, TodoState, Value,
+    attr, now_ms,
 };
 use project::Projector;
 use rpc::Rpc;
@@ -49,7 +49,7 @@ use terminal::Terminals;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::watch;
-use wire::{AgentCapabilities, InitializeResponse, LoadSessionResponse, NewSessionResponse, SessionModeState};
+use wire::{AgentCapabilities, InitializeResponse, LoadSessionResponse, NewSessionResponse, SessionModeState, SessionModelState};
 
 /// A byte stream to one agent: what it writes, what it reads, and its
 /// process when there is one.
@@ -116,6 +116,7 @@ impl Connector for CommandConnector {
 #[derive(Clone, Copy, Debug, Default)]
 struct Learned {
     plan_mode: bool,
+    models: bool,
 }
 
 /// The ACP adapter. One instance serves one agent command line.
@@ -155,8 +156,8 @@ impl AcpAdapter {
         }
     }
 
-    fn learn(&self, learned: Learned) {
-        *self.learned.lock().unwrap_or_else(PoisonError::into_inner) = Some(learned);
+    fn learn(&self, update: impl FnOnce(&mut Learned)) {
+        update(self.learned.lock().unwrap_or_else(PoisonError::into_inner).get_or_insert_with(Learned::default));
     }
 
     /// Spawns the agent and starts the reader. `root` is the `<session>`
@@ -185,6 +186,7 @@ impl AcpAdapter {
             state,
             shutting_down: AtomicBool::new(false),
             modes: Mutex::new(Modes::default()),
+            models: Mutex::new(None),
         });
         let reader = tokio::spawn(rpc::read_loop(transport.from_agent, rpc, shared.clone()));
         let session = AcpSession::new(shared.clone(), transport.child, reader);
@@ -236,6 +238,7 @@ impl AcpAdapter {
             projector.set(projector.root(), attr::NATIVE_ID, created.session_id.as_str().into());
         }
         let _ = shared.session_id.set(created.session_id);
+        self.adopt_models(config, shared, created.models).await?;
         self.adopt_modes(shared, created.modes, config.mode).await
     }
 
@@ -259,17 +262,46 @@ impl AcpAdapter {
         let loaded = rx.await.unwrap_or(Err(rpc::RpcError::Closed))?;
         // Agents answer an empty `LoadSessionResponse` as `null` or `{}`.
         let loaded: LoadSessionResponse = if loaded.is_null() { LoadSessionResponse::default() } else { decode(loaded)? };
+        self.adopt_models(config, shared, loaded.models).await?;
         self.adopt_modes(shared, loaded.modes, config.mode).await
+    }
+
+    /// Records the models the agent offers and switches to the configured one
+    /// when it is among them.
+    async fn adopt_models(&self, config: &SessionConfig, shared: &Shared, models: Option<SessionModelState>) -> Result<()> {
+        self.learn(|learned| learned.models = models.is_some());
+        let Some(models) = models else { return Ok(()) };
+        let offered: Vec<HarnessModel> = models
+            .available_models
+            .into_iter()
+            .map(|model| HarnessModel {
+                name: if model.name.is_empty() { model.model_id.clone() } else { model.name },
+                id: model.model_id,
+                provider: HARNESS.to_owned(),
+                efforts: Vec::new(),
+            })
+            .collect();
+        let wanted = config.model.as_deref().filter(|wanted| *wanted != models.current_model_id);
+        let switch = wanted.filter(|wanted| offered.iter().any(|m| m.id == *wanted)).map(str::to_owned);
+        *shared.models.lock().unwrap_or_else(PoisonError::into_inner) = Some(offered);
+        match switch {
+            Some(model) => AcpSession::switch_model(shared, &model).await,
+            None if wanted.is_none() => {
+                shared.projector().model_changed(&models.current_model_id);
+                Ok(())
+            }
+            None => Err(AdapterError::Protocol(format!("the agent doesn't offer model {}", config.model.as_deref().unwrap_or_default()))),
+        }
     }
 
     /// Records the modes the agent offers and switches to the configured one.
     async fn adopt_modes(&self, shared: &Shared, modes: Option<SessionModeState>, wanted: Option<SessionMode>) -> Result<()> {
         let Some(modes) = modes else {
-            self.learn(Learned { plan_mode: false });
+            self.learn(|learned| learned.plan_mode = false);
             return Ok(());
         };
         let available: Vec<String> = modes.available_modes.into_iter().map(|m| m.id).collect();
-        self.learn(Learned { plan_mode: available.iter().any(|m| m == "plan") });
+        self.learn(|learned| learned.plan_mode = available.iter().any(|m| m == "plan"));
         {
             let mut known = shared.modes.lock().unwrap_or_else(PoisonError::into_inner);
             known.available = available;
@@ -304,11 +336,42 @@ impl Adapter for AcpAdapter {
         HARNESS
     }
 
+    /// Starts the agent and runs `initialize`: ready when it speaks this ACP
+    /// version, with the agent's name and version as the detail.
+    async fn availability(&self) -> Availability {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
+        let config = SessionConfig { cwd, ..SessionConfig::default() };
+        let sink = Arc::new(MemorySink::new());
+        let probe = async {
+            let attrs = [(attr::ID, Value::from("availability-probe")), (attr::HARNESS, HARNESS.into()), (attr::NODE, "".into()), (attr::CREATED, Value::Int(now_ms()))];
+            let root = sink.commit(Draft::insert(NodeId::DOCUMENT, ElementKind::Session, attrs, ""))?.node;
+            let (shared, session) = self.connect(&config, sink.clone(), root, None).await?;
+            let initialized = self.initialize(&shared).await;
+            let _ = session.shutdown().await;
+            initialized.map(drop)
+        };
+        match tokio::time::timeout(PROBE_TIMEOUT, probe).await {
+            Ok(Ok(())) => {
+                let agent = sink.with_dom(|dom| dom.root().and_then(|root| root.str_attr(X_AGENT)).map(str::to_owned));
+                Availability { detail: agent.or_else(|| Some("ACP agent".to_owned())), ..Availability::ready(None, None) }
+            }
+            Ok(Err(AdapterError::NotInstalled(program))) => {
+                Availability::unavailable(AvailabilityStatus::NotInstalled, format!("`{program}` not found"))
+            }
+            Ok(Err(AdapterError::Version { detail, .. })) => Availability::unavailable(AvailabilityStatus::Incompatible, detail),
+            Ok(Err(error)) => Availability::unavailable(AvailabilityStatus::Failed, error.to_string()),
+            Err(_) => Availability::unavailable(AvailabilityStatus::Failed, "the agent didn't answer `initialize`"),
+        }
+    }
+
     fn capabilities(&self) -> Capabilities {
         let mut capabilities = Self::base_capabilities();
         let learned = *self.learned.lock().unwrap_or_else(PoisonError::into_inner);
         if learned.is_some_and(|l| l.plan_mode) {
             capabilities.features.push(Feature::PlanMode);
+        }
+        if learned.is_some_and(|l| l.models) {
+            capabilities.model_switch = ModelSwitch::PerTurn;
         }
         capabilities
     }

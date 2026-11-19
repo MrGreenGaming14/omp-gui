@@ -10,13 +10,13 @@ use crate::mcp::{self, HOST_SERVER};
 use crate::{HARNESS, native};
 use async_trait::async_trait;
 use loa_adapter::{
-    Adapter, AdapterError, Answer, Capabilities, ContextDelivery, Feature, HarnessSession, McpTransport,
-    ModelSelection, ModelSwitch, Prompt, Result, SessionConfig, SessionState,
+    Adapter, AdapterError, Answer, Availability, Capabilities, ContextDelivery, Feature, HarnessModel, HarnessSession,
+    McpTransport, ModelSelection, ModelSwitch, Prompt, Result, SessionConfig, SessionState,
 };
 use loa_core::{DecisionKind, Dom, ElementKind, NodeId, PatchSink, SCHEMA_VERSION, SessionMode, attr};
 use serde_json::{Map, Value, json};
 use std::collections::{HashMap, VecDeque};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -34,12 +34,33 @@ const STDERR_LINES: usize = 20;
 const EXIT_GRACE: Duration = Duration::from_secs(10);
 
 /// The Claude Code harness.
-#[derive(Clone, Debug, Default)]
-pub struct ClaudeAdapter;
+#[derive(Clone, Debug)]
+pub struct ClaudeAdapter {
+    /// The CLI run when `SessionConfig::executable` is unset, and probed by
+    /// [`Adapter::availability`].
+    executable: PathBuf,
+}
+
+impl Default for ClaudeAdapter {
+    fn default() -> Self {
+        Self { executable: EXECUTABLE.into() }
+    }
+}
 
 impl ClaudeAdapter {
     pub fn new() -> Self {
-        Self
+        Self::default()
+    }
+
+    /// Runs and probes `executable` instead of `claude` from `PATH`.
+    pub fn with_executable(executable: impl Into<PathBuf>) -> Self {
+        Self { executable: executable.into() }
+    }
+
+    /// `config` with this adapter's executable when it names none.
+    fn configured(&self, mut config: SessionConfig) -> SessionConfig {
+        config.executable.get_or_insert_with(|| self.executable.clone());
+        config
     }
 }
 
@@ -130,6 +151,11 @@ impl Adapter for ClaudeAdapter {
         HARNESS
     }
 
+    /// `claude --version`, or the configured executable's.
+    async fn availability(&self) -> Availability {
+        loa_adapter::probe_cli(&self.executable, &["--version"]).await
+    }
+
     fn capabilities(&self) -> Capabilities {
         Capabilities {
             schema_version: SCHEMA_VERSION,
@@ -152,20 +178,20 @@ impl Adapter for ClaudeAdapter {
 
     async fn start(&self, config: SessionConfig, sink: Arc<dyn PatchSink>) -> Result<Box<dyn HarnessSession>> {
         let mapper = Mapper::create(sink, &config)?;
-        Ok(Box::new(ClaudeSession::launch(config, mapper, &Launch::New).await?))
+        Ok(Box::new(ClaudeSession::launch(self.configured(config), mapper, &Launch::New).await?))
     }
 
     async fn resume(&self, config: SessionConfig, dom: &Dom, sink: Arc<dyn PatchSink>) -> Result<Box<dyn HarnessSession>> {
         let native_id = native_id(dom)?;
         let mapper = Mapper::attach(sink, dom)?;
-        Ok(Box::new(ClaudeSession::launch(config, mapper, &Launch::Resume { native_id }).await?))
+        Ok(Box::new(ClaudeSession::launch(self.configured(config), mapper, &Launch::Resume { native_id }).await?))
     }
 
     async fn fork(&self, config: SessionConfig, dom: &Dom, sink: Arc<dyn PatchSink>) -> Result<Box<dyn HarnessSession>> {
         let native_id = native_id(dom)?;
         let at = fork_point(dom);
         let mapper = Mapper::attach(sink, dom)?;
-        Ok(Box::new(ClaudeSession::launch(config, mapper, &Launch::Fork { native_id, at }).await?))
+        Ok(Box::new(ClaudeSession::launch(self.configured(config), mapper, &Launch::Fork { native_id, at }).await?))
     }
 
     fn import(&self, native: &Path, sink: &dyn PatchSink) -> Result<()> {
@@ -351,6 +377,33 @@ pub struct ClaudeSession {
     shared: Arc<Shared>,
     child: tokio::sync::Mutex<Option<Child>>,
     reader: Mutex<Option<JoinHandle<()>>>,
+    /// The models the CLI listed in its `initialize` response; `None` when it
+    /// listed none (older versions).
+    models: Option<Vec<HarnessModel>>,
+}
+
+/// The `models` of an `initialize` response: `value` is what `set_model`
+/// takes, `supportedEffortLevels` the efforts it accepts.
+pub fn initialize_models(response: &Value) -> Option<Vec<HarnessModel>> {
+    let models = response.get("models")?.as_array()?;
+    let text = |model: &Value, key: &str| model.get(key).and_then(Value::as_str).map(str::to_owned);
+    Some(
+        models
+            .iter()
+            .filter_map(|model| {
+                let id = text(model, "value")?;
+                let efforts = model.get("supportedEffortLevels").and_then(Value::as_array).map_or_else(Vec::new, |levels| {
+                    levels.iter().filter_map(|level| level.as_str().map(str::to_owned)).collect()
+                });
+                Some(HarnessModel {
+                    name: text(model, "displayName").unwrap_or_else(|| id.clone()),
+                    id,
+                    provider: "anthropic".to_owned(),
+                    efforts,
+                })
+            })
+            .collect(),
+    )
 }
 
 impl ClaudeSession {
@@ -399,8 +452,10 @@ impl ClaudeSession {
             }
         });
         let reader = tokio::spawn(read_stdout(Arc::clone(&shared), stdout));
-        let session = Self { shared, child: tokio::sync::Mutex::new(Some(child)), reader: Mutex::new(Some(reader)) };
-        session.shared.control(json!({"subtype": "initialize", "hooks": null})).await?;
+        let mut session =
+            Self { shared, child: tokio::sync::Mutex::new(Some(child)), reader: Mutex::new(Some(reader)), models: None };
+        let init = session.shared.control(json!({"subtype": "initialize", "hooks": null})).await?;
+        session.models = initialize_models(&init);
         Ok(session)
     }
 
@@ -521,6 +576,11 @@ impl HarnessSession for ClaudeSession {
         };
         self.shared.control(json!({"subtype": "set_permission_mode", "mode": native})).await?;
         lock(&self.shared.mapper).record_mode(mode)
+    }
+
+    /// The models from the CLI's `initialize` response.
+    async fn models(&self) -> Result<Vec<HarnessModel>> {
+        self.models.clone().ok_or(AdapterError::Unsupported { harness: HARNESS, what: "listing models with this claude version" })
     }
 
     async fn compact(&self, instructions: Option<String>) -> Result<()> {

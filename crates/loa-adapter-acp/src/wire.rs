@@ -52,12 +52,32 @@ pub struct NewSessionResponse {
     pub session_id: String,
     #[serde(default)]
     pub modes: Option<SessionModeState>,
+    /// Unstable `session/set_model` support: the models the agent offers.
+    #[serde(default)]
+    pub models: Option<SessionModelState>,
 }
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct LoadSessionResponse {
     pub modes: Option<SessionModeState>,
+    pub models: Option<SessionModelState>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionModelState {
+    pub current_model_id: String,
+    #[serde(default)]
+    pub available_models: Vec<ModelInfo>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelInfo {
+    pub model_id: String,
+    #[serde(default)]
+    pub name: String,
 }
 
 #[derive(Debug, Deserialize)]

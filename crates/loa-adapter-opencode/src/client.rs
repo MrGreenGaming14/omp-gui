@@ -7,9 +7,10 @@
 use crate::event::{Event, SseDecoder};
 use crate::native::WithParts;
 use loa_adapter::{AdapterError, Result};
-use reqwest::{Method, RequestBuilder, Response};
+use reqwest::{Method, RequestBuilder, Response, StatusCode};
 use serde_json::{Value as Json, json};
 use std::collections::VecDeque;
+use std::time::Duration;
 
 /// Default user name of the server's basic auth.
 pub const DEFAULT_USERNAME: &str = "opencode";
@@ -165,6 +166,20 @@ impl Client {
     pub async fn add_mcp(&self, name: &str, config: Json) -> Result<()> {
         let body = json!({ "name": name, "config": config });
         self.call(Method::POST, "/mcp", Some(body), "add MCP server").await.map(drop)
+    }
+
+    /// `GET /config/providers`: the connected providers with their models and
+    /// the default model of each.
+    pub async fn providers(&self) -> Result<Json> {
+        self.call_json(Method::GET, "/config/providers", None, "list providers").await
+    }
+
+    /// `GET path` within `timeout`, for probing: the status and the JSON body
+    /// (`null` when it isn't JSON). `Err` when no server answered.
+    pub async fn probe(&self, path: &str, timeout: Duration) -> std::result::Result<(StatusCode, Json), reqwest::Error> {
+        let resp = self.request(Method::GET, path).timeout(timeout).send().await?;
+        let status = resp.status();
+        Ok((status, resp.json().await.unwrap_or(Json::Null)))
     }
 
     /// `GET /event`: the server sent event stream of this directory.

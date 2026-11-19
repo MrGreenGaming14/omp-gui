@@ -89,12 +89,18 @@ async fn fake_codex_process_drives_turn_and_receives_session_overrides() {
     let trace = dir.path().join("arguments");
     std::fs::write(&script, r#"#!/bin/sh
 printf '%s\n' "$@" > "$TRACE_FILE"
+rid() { printf '%s' "$1" | sed 's/^{"id":\([0-9]*\),.*/\1/'; }
 while IFS= read -r line; do
+    printf '%s\n' "$line" >> "$TRACE_FILE.stdin"
     case "$line" in
         *'"method":"initialize"'*) printf '%s\n' '{"id":0,"result":{"serverInfo":{"name":"fake","version":"1"}}}' ;;
         *'"method":"thread/start"'*) printf '%s\n' '{"id":1,"result":{"thread":{"id":"thread-fake"},"model":"gpt-invented"}}' ;;
+        *'"method":"model/list"'*'"cursor":"page-2"'*)
+            printf '{"id":%s,"result":{"data":[{"id":"mini","model":"gpt-mini","displayName":"GPT Mini","supportedReasoningEfforts":[]},{"id":"secret","model":"gpt-secret","hidden":true}],"nextCursor":null}}\n' "$(rid "$line")" ;;
+        *'"method":"model/list"'*)
+            printf '{"id":%s,"result":{"data":[{"id":"invented","model":"gpt-invented","displayName":"GPT Invented","supportedReasoningEfforts":[{"reasoningEffort":"low","description":"fast"},{"reasoningEffort":"high","description":"deep"}],"defaultReasoningEffort":"low","isDefault":true}],"nextCursor":"page-2"}}\n' "$(rid "$line")" ;;
         *'"method":"turn/start"'*)
-            printf '%s\n' '{"id":2,"result":{"turn":{"id":"turn-fake","status":"inProgress"}}}'
+            printf '{"id":%s,"result":{"turn":{"id":"turn-fake","status":"inProgress"}}}\n' "$(rid "$line")"
             printf '%s\n' '{"method":"item/agentMessage/delta","params":{"turnId":"turn-fake","itemId":"msg-fake","delta":"Invented answer"}}'
             printf '%s\n' '{"method":"item/completed","params":{"turnId":"turn-fake","item":{"id":"msg-fake","type":"agentMessage","text":"Invented answer"}}}'
             printf '%s\n' '{"method":"turn/completed","params":{"turn":{"id":"turn-fake","status":"completed"}}}' ;;
@@ -112,6 +118,12 @@ done
     let sink = Arc::new(MemorySink::new());
     let writer: Arc<dyn PatchSink> = sink.clone();
     let session = adapter.start(cfg, writer).await.expect("start fake Codex");
+    let models = session.models().await.expect("model/list");
+    let listed: Vec<(&str, &str, Vec<&str>)> =
+        models.iter().map(|m| (m.id.as_str(), m.name.as_str(), m.efforts.iter().map(String::as_str).collect())).collect();
+    assert_eq!(listed, [("gpt-invented", "GPT Invented", vec!["low", "high"]), ("gpt-mini", "GPT Mini", vec![])]);
+    session.set_effort("high".into()).await.expect("set effort");
+    assert_eq!(sink.dom().root().and_then(|root| root.str_attr(attr::EFFORT)), Some("high"));
     session.send(Prompt { text: "Ask inventory".into(), by: "person".into(), ..Prompt::default() }).await.expect("turn/start");
     tokio::time::timeout(std::time::Duration::from_secs(5), session.wait_idle()).await.expect("fake must complete").expect("idle");
     let dom = sink.dom();
@@ -120,5 +132,8 @@ done
     let arguments = std::fs::read_to_string(trace).expect("CLI trace");
     assert!(arguments.contains("mcp_servers.inventory.command=\"inventory-mcp\""));
     assert!(arguments.contains("app-server\n--listen\nstdio://"));
+    let sent = std::fs::read_to_string(dir.path().join("arguments.stdin")).expect("stdin trace");
+    let turn: Json = sent.lines().map(|line| serde_json::from_str::<Json>(line).expect("JSON line")).find(|line| line["method"] == "turn/start").expect("turn/start sent");
+    assert_eq!(turn["params"]["effort"], "high");
     session.shutdown().await.expect("shutdown fake Codex");
 }

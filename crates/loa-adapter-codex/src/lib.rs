@@ -12,7 +12,8 @@ pub mod session;
 
 use async_trait::async_trait;
 use loa_adapter::{
-    Adapter, AdapterError, Capabilities, ContextDelivery, Feature, HarnessSession, ModelSwitch, Result, SessionConfig,
+    Adapter, AdapterError, Availability, Capabilities, ContextDelivery, Feature, HarnessSession, ModelSwitch, Result,
+    SessionConfig,
 };
 use loa_core::{DecisionKind, Dom, Draft, ElementKind, PatchSink, SCHEMA_VERSION, attr};
 use mapper::Mapper;
@@ -103,6 +104,11 @@ fn native_thread(dom: &Dom) -> Result<String> {
 impl Adapter for CodexAdapter {
     fn harness(&self) -> &'static str {
         HARNESS
+    }
+
+    /// `codex --version` of the configured executable.
+    async fn availability(&self) -> Availability {
+        loa_adapter::probe_cli(&self.executable, &["--version"]).await
     }
 
     fn capabilities(&self) -> Capabilities {

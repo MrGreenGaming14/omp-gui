@@ -384,6 +384,11 @@ impl Mapper {
         Ok(())
     }
 
+    pub fn set_effort(&mut self, effort: &str) -> Result<()> {
+        self.commit(Draft::set(self.session, attr::EFFORT, effort))?;
+        Ok(())
+    }
+
     pub fn set_mode(&mut self, mode: SessionMode) -> Result<()> {
         self.commit(Draft::set(self.session, attr::MODE, mode))?;
         Ok(())

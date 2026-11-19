@@ -783,3 +783,74 @@ async fn command_connector_runs_the_agent_process() {
     let result = missing.start(self::config(dir.path()), WatchSink::new()).await;
     assert!(matches!(result, Err(AdapterError::NotInstalled(_))));
 }
+
+#[tokio::test]
+async fn offered_models_are_listed_picked_from_the_config_and_switched() {
+    let dir = tempfile::tempdir().unwrap();
+    let (adapter, mut agent) = pipe();
+    let sink = WatchSink::new();
+    let start = tokio::spawn({
+        let (adapter, sink, config) = (adapter.clone(), sink.clone(), config(dir.path()));
+        async move { adapter.start(config, sink).await }
+    });
+    let (id, _) = agent.expect_request("initialize").await;
+    agent.respond(id, json!({ "protocolVersion": 1, "agentCapabilities": {} })).await;
+    let (id, _) = agent.expect_request("session/new").await;
+    let models = json!({ "currentModelId": "other-model", "availableModels": [
+        { "modelId": "other-model", "name": "Other" },
+        { "modelId": "fake-model", "name": "Fake" },
+    ] });
+    agent.respond(id, json!({ "sessionId": "s-1", "models": models })).await;
+    // The config asks for `fake-model`, which the agent offers.
+    let (id, params) = agent.expect_request("session/set_model").await;
+    assert_eq!(params, json!({ "sessionId": "s-1", "modelId": "fake-model" }));
+    agent.respond(id, json!({})).await;
+    let session = start.await.unwrap().unwrap();
+
+    let listed: Vec<(String, String)> = session.models().await.unwrap().into_iter().map(|m| (m.id, m.name)).collect();
+    assert_eq!(listed, [("other-model".to_owned(), "Other".to_owned()), ("fake-model".to_owned(), "Fake".to_owned())]);
+    assert_eq!(adapter.capabilities().model_switch, loa_adapter::ModelSwitch::PerTurn);
+
+    let switch = tokio::spawn(async move {
+        let result = session.set_model(loa_adapter::ModelSelection { model: "other-model".to_owned(), role: None }).await;
+        (session, result)
+    });
+    let (id, params) = agent.expect_request("session/set_model").await;
+    assert_eq!(params["modelId"], "other-model");
+    agent.respond(id, json!({})).await;
+    let (session, result) = switch.await.unwrap();
+    result.unwrap();
+    assert_eq!(sink.dom().root().unwrap().str_attr(attr::MODEL), Some("other-model"));
+    let unknown = session.set_model(loa_adapter::ModelSelection { model: "missing".to_owned(), role: None }).await;
+    assert!(matches!(unknown, Err(AdapterError::Protocol(_))), "{unknown:?}");
+}
+
+#[tokio::test]
+async fn agents_without_models_refuse_listing() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_adapter, _agent, session, _sink) = started(dir.path()).await;
+    assert!(matches!(session.models().await, Err(AdapterError::Unsupported { .. })));
+}
+
+#[tokio::test]
+async fn availability_runs_the_initialize_handshake() {
+    let (adapter, mut agent) = pipe();
+    // The probe owns the adapter: if it fails before connecting, the pipe
+    // closes and the read below fails instead of hanging.
+    let probe = tokio::spawn(async move { adapter.availability().await });
+    let (id, _) = agent.expect_request("initialize").await;
+    agent.respond(id, json!({ "protocolVersion": 1, "agentCapabilities": {}, "agentInfo": { "name": "fake-agent", "version": "0.1" } })).await;
+    let ready = probe.await.unwrap();
+    assert!(ready.is_ready(), "{ready:?}");
+    assert_eq!(ready.detail.as_deref(), Some("fake-agent 0.1"));
+
+    let (adapter, mut agent) = pipe();
+    let probe = tokio::spawn(async move { adapter.availability().await });
+    let (id, _) = agent.expect_request("initialize").await;
+    agent.respond(id, json!({ "protocolVersion": 7, "agentCapabilities": {} })).await;
+    assert_eq!(probe.await.unwrap().status, loa_adapter::AvailabilityStatus::Incompatible);
+
+    let dir = tempfile::tempdir().unwrap();
+    let missing = AcpAdapter::new(dir.path().join("no-such-agent"), Vec::<String>::new()).availability().await;
+    assert_eq!(missing.status, loa_adapter::AvailabilityStatus::NotInstalled);
+}

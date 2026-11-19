@@ -10,7 +10,7 @@ use crate::wire::{
     TerminalRef, WriteTextFileRequest, code,
 };
 use async_trait::async_trait;
-use loa_adapter::{AdapterError, Answer, HarnessSession, Prompt, Result, SessionState};
+use loa_adapter::{AdapterError, Answer, HarnessModel, HarnessSession, ModelSelection, Prompt, Result, SessionState};
 use loa_core::{NodeId, SessionMode, answer};
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -34,6 +34,9 @@ pub(crate) struct Shared {
     pub shutting_down: AtomicBool,
     /// Mode ids the agent offers, and the one it started in.
     pub modes: Mutex<Modes>,
+    /// The models the agent offers (unstable `session/set_model`); `None`
+    /// when it offers none.
+    pub models: Mutex<Option<Vec<HarnessModel>>>,
 }
 
 #[derive(Default)]
@@ -198,6 +201,13 @@ impl AcpSession {
         Ok(())
     }
 
+    /// Switches the agent to model `model_id` and records it on the session.
+    pub(crate) async fn switch_model(shared: &Shared, model_id: &str) -> Result<()> {
+        shared.rpc.request("session/set_model", json!({ "sessionId": shared.session_id(), "modelId": model_id })).await?;
+        shared.projector().model_changed(model_id);
+        Ok(())
+    }
+
     /// Picks the agent mode that stands for `mode`: `plan` for plan mode;
     /// `default`, else the starting mode, else the first non-plan mode otherwise.
     pub(crate) fn mode_id(shared: &Shared, mode: SessionMode) -> Option<String> {
@@ -337,6 +347,22 @@ impl HarnessSession for AcpSession {
             return Ok(());
         }
         Self::switch_mode(&self.shared, &mode_id).await
+    }
+
+    /// The models the agent offered in `session/new` or `session/load`.
+    async fn models(&self) -> Result<Vec<HarnessModel>> {
+        lock(&self.shared.models).clone().ok_or(AdapterError::Unsupported { harness: crate::project::HARNESS, what: "listing models" })
+    }
+
+    /// `session/set_model`, for agents that offered models.
+    async fn set_model(&self, selection: ModelSelection) -> Result<()> {
+        let offered = lock(&self.shared.models).as_ref().map(|models| models.iter().any(|m| m.id == selection.model));
+        match (offered, &selection.role) {
+            (None, _) => Err(AdapterError::Unsupported { harness: crate::project::HARNESS, what: "set_model" }),
+            (_, Some(_)) => Err(AdapterError::Unsupported { harness: crate::project::HARNESS, what: "model roles" }),
+            (Some(false), None) => Err(AdapterError::Protocol(format!("the agent doesn't offer model {}", selection.model))),
+            (Some(true), None) => Self::switch_model(&self.shared, &selection.model).await,
+        }
     }
 
     fn harness(&self) -> &'static str {

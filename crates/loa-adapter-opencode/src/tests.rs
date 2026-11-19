@@ -135,3 +135,48 @@ async fn http_driver_prompts_receives_events_replies_and_aborts() {
     session.shutdown().await.unwrap();
     server.abort();
 }
+
+#[tokio::test]
+async fn availability_probes_the_server_and_models_come_from_its_providers() {
+    use loa_adapter::AvailabilityStatus;
+    // A port nothing listens on: bind, read the port, close.
+    let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap().local_addr().unwrap();
+    let down = OpenCodeAdapter::new(format!("http://{closed}"), None).availability().await;
+    assert_eq!(down.status, AvailabilityStatus::Unreachable);
+    assert!(down.detail.unwrap().contains("opencode serve"));
+
+    let (_events_tx, events_rx) = mpsc::channel::<String>(1);
+    let (requests_tx, _requests_rx) = mpsc::unbounded_channel();
+    let fake = Fake { events: Arc::new(Mutex::new(Some(events_rx))), requests: requests_tx };
+    let providers = json!({
+        "providers": [
+            {"id": "anthropic", "name": "Anthropic", "models": {"claude-haiku": {"id": "claude-haiku", "name": "Claude Haiku"}}},
+            {"id": "openai", "name": "OpenAI", "models": {"gpt-mini": {"id": "gpt-mini"}}}
+        ],
+        "default": {"anthropic": "claude-haiku"}
+    });
+    let router = Router::new()
+        .route("/global/health", get(|| async { Json(json!({"healthy": true, "version": "1.4.2"})) }))
+        .route("/config/providers", get(move || async move { Json(providers) }))
+        .route("/event", get(stream_events))
+        .route("/session", post(create))
+        .with_state(fake);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let adapter = OpenCodeAdapter::new(format!("http://{addr}"), None);
+    let up = adapter.availability().await;
+    assert!(up.is_ready(), "{up:?}");
+    assert_eq!(up.version.as_deref(), Some("1.4.2"));
+
+    let config = SessionConfig { session_id: "app_1".into(), cwd: "/work".into(), ..SessionConfig::default() };
+    let session = adapter.start(config, Arc::new(MemorySink::new())).await.unwrap();
+    let models: Vec<(String, String, String)> =
+        session.models().await.unwrap().into_iter().map(|m| (m.id, m.name, m.provider)).collect();
+    assert_eq!(models, [
+        ("anthropic/claude-haiku".to_owned(), "Claude Haiku".to_owned(), "anthropic".to_owned()),
+        ("openai/gpt-mini".to_owned(), "gpt-mini".to_owned(), "openai".to_owned()),
+    ]);
+    session.shutdown().await.unwrap();
+    server.abort();
+}

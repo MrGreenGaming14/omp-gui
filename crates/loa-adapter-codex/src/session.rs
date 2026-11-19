@@ -8,8 +8,8 @@ use crate::mapper::{Mapper, Reply, host_tool_result};
 use crate::{CodexAdapter, HARNESS};
 use async_trait::async_trait;
 use loa_adapter::{
-    AdapterError, Answer, Attachment, HarnessSession, HostTools, McpTransport, ModelSelection, Prompt, Result,
-    SessionConfig, SessionState,
+    AdapterError, Answer, Attachment, HarnessModel, HarnessSession, HostTools, McpTransport, ModelSelection, Prompt,
+    Result, SessionConfig, SessionState,
 };
 use loa_core::{NodeId, SessionMode};
 use serde_json::{Value as Json, json};
@@ -238,6 +238,21 @@ fn turn_input(prompt: &Prompt) -> Json {
         }
     }
     Json::Array(input)
+}
+
+/// One `model/list` entry: `model` is what `turn/start` takes,
+/// `supportedReasoningEfforts` the efforts it accepts. Hidden models are left
+/// out.
+fn listed_model(entry: &Json) -> Option<HarnessModel> {
+    if entry.get("hidden").and_then(Json::as_bool) == Some(true) {
+        return None;
+    }
+    let id = entry.get("model").or_else(|| entry.get("id")).and_then(Json::as_str)?.to_owned();
+    let name = entry.get("displayName").and_then(Json::as_str).unwrap_or(&id).to_owned();
+    let efforts = entry.get("supportedReasoningEfforts").and_then(Json::as_array).map_or_else(Vec::new, |levels| {
+        levels.iter().filter_map(|level| level.get("reasoningEffort").unwrap_or(level).as_str().map(str::to_owned)).collect()
+    });
+    Some(HarnessModel { id, name, provider: "openai".to_owned(), efforts })
 }
 
 impl CodexSession {
@@ -517,6 +532,34 @@ impl HarnessSession for CodexSession {
     async fn set_mode(&self, mode: SessionMode) -> Result<()> {
         lock(&self.shared.settings).mode = Some(mode);
         self.mapper().set_mode(mode)
+    }
+
+    /// Every page of `model/list`.
+    async fn models(&self) -> Result<Vec<HarnessModel>> {
+        let mut models = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let params = match &cursor {
+                Some(cursor) => json!({ "cursor": cursor }),
+                None => json!({}),
+            };
+            let page = self.shared.request("model/list", params).await?;
+            let data = page
+                .get("data")
+                .and_then(Json::as_array)
+                .ok_or_else(|| AdapterError::Protocol("model/list returned no data".to_owned()))?;
+            models.extend(data.iter().filter_map(listed_model));
+            match page.get("nextCursor").and_then(Json::as_str) {
+                Some(next) if cursor.as_deref() != Some(next) => cursor = Some(next.to_owned()),
+                _ => return Ok(models),
+            }
+        }
+    }
+
+    /// Codex takes the effort with each `turn/start`; it applies from the next turn.
+    async fn set_effort(&self, effort: String) -> Result<()> {
+        lock(&self.shared.settings).effort = Some(effort.clone());
+        self.mapper().set_effort(&effort)
     }
 
     async fn compact(&self, instructions: Option<String>) -> Result<()> {

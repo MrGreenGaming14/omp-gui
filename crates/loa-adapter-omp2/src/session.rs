@@ -6,7 +6,7 @@ use crate::wire::{self, DomEvent, Frame, Line};
 use crate::HARNESS;
 use async_trait::async_trait;
 use base64::Engine as _;
-use loa_adapter::{AdapterError, Answer, HarnessSession, ModelSelection, Prompt, Result, SessionState};
+use loa_adapter::{AdapterError, Answer, HarnessModel, HarnessSession, ModelSelection, Prompt, Result, SessionState};
 use loa_core::{Attrs, DecisionKind, DecisionStatus, Draft, ElementKind, NodeId, PatchSink, TurnStatus, Value, answer, attr, now_ms};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -391,6 +391,29 @@ impl HarnessSession for Omp2Session {
         self.inner.call(|id| wire::set_model(id, provider, model)).await?;
         let root = self.inner.lock().translator.root();
         self.inner.commit(Draft::set(root, attr::MODEL, selection.model))?;
+        Ok(())
+    }
+
+    /// `get_available_models`; reasoning models take every omp2 thinking level.
+    async fn models(&self) -> Result<Vec<HarnessModel>> {
+        let data = self.inner.call(|id| wire::bare(id, "get_available_models")).await?;
+        let models = wire::available_models(&data).map_err(|error| AdapterError::Protocol(format!("get_available_models: {error}")))?;
+        Ok(models
+            .into_iter()
+            .map(|model| HarnessModel {
+                id: format!("{}/{}", model.provider, model.id),
+                name: if model.name.is_empty() { model.id.clone() } else { model.name },
+                efforts: if model.reasoning { wire::THINKING_LEVELS.iter().map(|level| (*level).to_owned()).collect() } else { Vec::new() },
+                provider: model.provider,
+            })
+            .collect())
+    }
+
+    /// `set_thinking_level`, recorded as the session's effort.
+    async fn set_effort(&self, effort: String) -> Result<()> {
+        self.inner.call(|id| wire::set_thinking(id, &effort)).await?;
+        let root = self.inner.lock().translator.root();
+        self.inner.commit(Draft::set(root, attr::EFFORT, effort))?;
         Ok(())
     }
 

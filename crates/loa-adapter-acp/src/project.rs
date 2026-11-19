@@ -109,6 +109,15 @@ impl Projector {
         }
     }
 
+    /// The agent switched to `model`: later assistant messages carry it, and
+    /// the session records it.
+    pub fn model_changed(&mut self, model: &str) {
+        if self.model.as_deref() != Some(model) {
+            self.model = Some(model.to_owned());
+            self.set(self.root, attr::MODEL, model.into());
+        }
+    }
+
     /// Takes over `<todo>` elements already in the DOM so plan updates edit them.
     pub fn adopt_todo(&mut self, node: NodeId, text: String, state: TodoState, priority: Option<String>) {
         self.todos.push(Todo { node, text, state, priority });

@@ -5,13 +5,17 @@ use crate::ids;
 use crate::mapper::{ChildSessions, EventMapper, Reply, RootInfo};
 use crate::native;
 use async_trait::async_trait;
-use loa_adapter::{Adapter, AdapterError, Answer, Capabilities, ContextDelivery, Feature, HarnessSession, ModelSelection, ModelSwitch, Prompt, Result, SessionConfig, SessionState};
+use loa_adapter::{Adapter, AdapterError, Answer, Availability, AvailabilityStatus, Capabilities, ContextDelivery, Feature, HarnessModel, HarnessSession, ModelSelection, ModelSwitch, Prompt, Result, SessionConfig, SessionState};
 use loa_core::{DecisionKind, Dom, NodeId, PatchSink, SCHEMA_VERSION, SessionMode, attr, now_ms};
 use serde_json::{Value as Json, json};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
+
+/// How long [`Adapter::availability`] waits for the server.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Connects to a caller-owned `opencode serve` instance; never reads credentials
 /// from the process environment or launches the CLI.
@@ -51,11 +55,44 @@ impl OpenCodeAdapter {
         let worker = tokio::spawn(read_events(inner.clone(), events));
         Ok(Box::new(OpenCodeSession { inner, worker: Mutex::new(Some(worker)) }))
     }
+
+    /// The server's base URL.
+    pub fn base(&self) -> &str { &self.base }
 }
 
 #[async_trait]
 impl Adapter for OpenCodeAdapter {
     fn harness(&self) -> &'static str { "opencode" }
+
+    /// Probes the server: `GET /global/health` (its version), else
+    /// `GET /config/providers` on servers without the health route.
+    async fn availability(&self) -> Availability {
+        let directory = std::env::current_dir().map(|dir| dir.to_string_lossy().into_owned()).unwrap_or_default();
+        let client = Client::new(&self.base, &directory, self.auth.clone());
+        let unreachable = |error: reqwest::Error| {
+            // A refused or silent port is the common case; reqwest's own text
+            // for it only repeats the URL.
+            let reason = if error.is_connect() || error.is_timeout() {
+                format!("no OpenCode server at {}; start `opencode serve`", client.base())
+            } else {
+                format!("no OpenCode server at {} (start `opencode serve`): {error}", client.base())
+            };
+            Availability::unavailable(AvailabilityStatus::Unreachable, reason)
+        };
+        let ready = |version: Option<String>| Availability { detail: Some(version.clone().unwrap_or_else(|| client.base().to_owned())), ..Availability::ready(None, version) };
+        match client.probe("/global/health", PROBE_TIMEOUT).await {
+            Err(error) => unreachable(error),
+            Ok((status, health)) if status.is_success() => ready(health.get("version").and_then(Json::as_str).map(str::to_owned)),
+            Ok(_) => match client.probe("/config/providers", PROBE_TIMEOUT).await {
+                Err(error) => unreachable(error),
+                Ok((status, _)) if status.is_success() => ready(None),
+                Ok((status, _)) => Availability::unavailable(
+                    AvailabilityStatus::Incompatible,
+                    format!("the server at {} answered HTTP {status}", client.base()),
+                ),
+            },
+        }
+    }
 
     fn capabilities(&self) -> Capabilities {
         Capabilities {
@@ -143,6 +180,25 @@ impl Inner {
         *self.closed.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
     fn id(&self) -> String { self.mapper().native_id().to_owned() }
+}
+
+/// The models of `GET /config/providers`, as `provider/model` ids.
+pub fn provider_models(providers: &Json) -> Vec<HarnessModel> {
+    let Some(list) = providers.get("providers").and_then(Json::as_array) else { return Vec::new() };
+    list.iter()
+        .filter_map(|provider| Some((provider.get("id")?.as_str()?, provider.get("models")?.as_object()?)))
+        .flat_map(|(provider, models)| {
+            models.iter().map(move |(key, model)| {
+                let id = model.get("id").and_then(Json::as_str).unwrap_or(key);
+                HarnessModel {
+                    id: format!("{provider}/{id}"),
+                    name: model.get("name").and_then(Json::as_str).unwrap_or(id).to_owned(),
+                    provider: provider.to_owned(),
+                    efforts: Vec::new(),
+                }
+            })
+        })
+        .collect()
 }
 
 async fn read_events(inner: Arc<Inner>, mut events: EventStream) {
@@ -242,6 +298,11 @@ impl HarnessSession for OpenCodeSession {
         if !selection.model.contains('/') { return Err(AdapterError::Format("model must be provider/model".into())); }
         if self.state() != SessionState::Idle { return Err(AdapterError::Busy); }
         self.inner.mapper().set_model(&*self.inner.sink, &selection.model, now_ms())
+    }
+
+    /// The models of the server's connected providers.
+    async fn models(&self) -> Result<Vec<HarnessModel>> {
+        Ok(provider_models(&self.inner.client.providers().await?))
     }
 
     async fn set_mode(&self, mode: SessionMode) -> Result<()> {

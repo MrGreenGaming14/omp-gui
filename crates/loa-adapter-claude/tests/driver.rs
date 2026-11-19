@@ -42,6 +42,9 @@ while IFS= read -r line; do
       ;;
     *'"type":"control_request"'*)
       case "$line" in
+        *'"subtype":"initialize"'*)
+          printf '{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":{"commands":[],"models":[{"value":"default","displayName":"Default (recommended)","description":"Opus"},{"value":"haiku","displayName":"Haiku","description":"Fast","supportedEffortLevels":["low","medium","high"]}]}}}\n' "$(rid "$line")"
+          ;;
         *'"subtype":"set_model"'*)
           case "$line" in
             *'"model":"bad-model"'*)
@@ -272,6 +275,11 @@ async fn interrupt_model_and_mode_go_through_control_requests() {
     let files = Files::new();
     let sink = WatchSink::new();
     let session = ClaudeAdapter::new().start(files.config(None), sink.clone()).await.unwrap();
+    let models = session.models().await.unwrap();
+    let listed: Vec<(&str, &str, Vec<&str>)> =
+        models.iter().map(|m| (m.id.as_str(), m.name.as_str(), m.efforts.iter().map(String::as_str).collect())).collect();
+    assert_eq!(listed, [("default", "Default (recommended)", vec![]), ("haiku", "Haiku", vec!["low", "medium", "high"])]);
+    assert!(models.iter().all(|m| m.provider == "anthropic"));
 
     session.send(prompt("hang please")).await.unwrap();
     assert!(matches!(session.send(prompt("another")).await, Err(AdapterError::Busy)));

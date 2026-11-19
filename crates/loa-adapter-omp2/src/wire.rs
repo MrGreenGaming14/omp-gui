@@ -309,6 +309,29 @@ pub fn set_thinking(id: &str, level: &str) -> String {
     request(id, "set_thinking_level", params(json!({ "level": level })))
 }
 
+/// Levels `set_thinking_level` takes, lowest first. Verified: `rpc_mode.rs`
+/// (`cycle_thinking_level`).
+pub const THINKING_LEVELS: &[&str] = &["off", "minimal", "low", "medium", "high", "xhigh"];
+
+/// One entry of the `get_available_models` response `{models: [...]}`.
+/// Verified: `rpc_mode.rs` (`rpc_models`).
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct ModelEntry {
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub provider: String,
+    /// The model has a thinking setting.
+    #[serde(default)]
+    pub reasoning: bool,
+}
+
+/// The `models` of a `get_available_models` response.
+pub fn available_models(data: &Json) -> Result<Vec<ModelEntry>, serde_json::Error> {
+    Vec::<ModelEntry>::deserialize(data.get("models").unwrap_or(&Json::Null))
+}
+
 /// **Assumed.** omp2's RPC stream deliberately carries projected
 /// `message_*`/`tool_execution_*` events and not `patch@1`
 /// (`crates/app/tests/rpc_spine.rs`: "private journal patches are not part of
@@ -544,5 +567,19 @@ mod tests {
         let response = r#"{"type":"response","id":7,"command":"prompt","success":false,"error":"busy","code":"session_busy"}"#;
         let Line::Frame(Frame::Response { id, code, .. }) = parse_line(response).unwrap() else { panic!() };
         assert_eq!((id.as_str(), code.as_deref()), ("7", Some(SESSION_BUSY)));
+    }
+
+    #[test]
+    fn decodes_available_models_as_rpc_models_writes_them() {
+        let data = json!({ "models": [
+            { "id": "claude-haiku-5-5", "name": "Claude Haiku 5.5", "provider": "anthropic", "contextWindow": 200000, "reasoning": true },
+            { "id": "plain", "name": "Plain", "provider": "local", "reasoning": false },
+        ] });
+        let models = available_models(&data).unwrap();
+        assert_eq!(models[0], ModelEntry { id: "claude-haiku-5-5".into(), name: "Claude Haiku 5.5".into(), provider: "anthropic".into(), reasoning: true });
+        assert!(!models[1].reasoning);
+        assert!(available_models(&json!({})).is_err());
+        let line: Json = serde_json::from_str(&set_thinking("9", "high")).unwrap();
+        assert_eq!(line, json!({ "id": "9", "type": "set_thinking_level", "level": "high" }));
     }
 }

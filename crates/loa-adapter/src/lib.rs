@@ -12,9 +12,13 @@
 //! - the adapter writes everything the harness reports, including decision
 //!   answers passed to [`HarnessSession::answer`]
 
+mod availability;
 mod capabilities;
+mod host_tools;
 
+pub use availability::{Availability, AvailabilityStatus, PROBE_TIMEOUT, find_executable, parse_version, probe_cli};
 pub use capabilities::{Capabilities, ContextDelivery, Feature, ModelSwitch};
+pub use host_tools::{DuplicateHostTool, HostToolContent, HostToolRouter};
 
 use async_trait::async_trait;
 use loa_core::{Dom, NodeId, PatchSink, SessionMode};
@@ -22,8 +26,9 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-/// Semantic version of this interface. Bump the major on a breaking change.
-pub const INTERFACE_VERSION: &str = "0.1.0";
+/// Semantic version of this interface. Bump the major on a breaking change,
+/// the minor on additions (0.2: availability, model listing, effort).
+pub const INTERFACE_VERSION: &str = "0.2.0";
 
 #[derive(Debug, thiserror::Error)]
 pub enum AdapterError {
@@ -83,6 +88,12 @@ pub struct HostToolSpec {
 pub trait HostTools: Send + Sync {
     /// `args` is the JSON arguments as text. `Err` is shown to the model as a tool error.
     async fn call(&self, session_id: &str, tool: &str, args: &str) -> Result<String, String>;
+
+    /// Like [`HostTools::call`], with images kept as image blocks so the
+    /// model sees them. The default wraps `call`'s text in one block.
+    async fn call_content(&self, session_id: &str, tool: &str, args: &str) -> Result<Vec<HostToolContent>, String> {
+        self.call(session_id, tool, args).await.map(|text| vec![HostToolContent::Text(text)])
+    }
 }
 
 /// Everything needed to start or attach a session.
@@ -163,6 +174,20 @@ pub struct ModelSelection {
     pub role: Option<String>,
 }
 
+/// A model the running session can switch to, as its harness lists it
+/// ([`HarnessSession::models`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HarnessModel {
+    /// Id [`HarnessSession::set_model`] takes (omp: `provider/id`).
+    pub id: String,
+    /// Display name.
+    pub name: String,
+    pub provider: String,
+    /// Reasoning effort levels the model accepts, lowest first. Empty when it
+    /// has no effort setting.
+    pub efforts: Vec<String>,
+}
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum SessionState {
     Idle,
@@ -179,6 +204,13 @@ pub trait Adapter: Send + Sync {
     /// Stable id written to `<session harness>`: `omp`, `omp2`, `claude-code`,
     /// `codex`, `opencode`, `acp`.
     fn harness(&self) -> &'static str;
+
+    /// Whether the harness can run on this machine, for the harness picker.
+    /// Adapters probe their executable or server; the default reports
+    /// [`AvailabilityStatus::Unknown`].
+    async fn availability(&self) -> Availability {
+        Availability::unavailable(AvailabilityStatus::Unknown, format!("{} doesn't report availability", self.harness()))
+    }
 
     /// What the harness does natively. The app provides the rest on top.
     fn capabilities(&self) -> Capabilities;
@@ -237,6 +269,20 @@ pub trait HarnessSession: Send + Sync {
     async fn set_mode(&self, mode: SessionMode) -> Result<()> {
         let _ = mode;
         Err(AdapterError::Unsupported { harness: self.harness(), what: "set_mode" })
+    }
+
+    /// The models this session can switch to, from the harness itself (omp:
+    /// `get_available_models`). Listing costs no tokens.
+    async fn models(&self) -> Result<Vec<HarnessModel>> {
+        Err(AdapterError::Unsupported { harness: self.harness(), what: "listing models" })
+    }
+
+    /// Sets the reasoning effort for the following turns, one of
+    /// [`HarnessModel::efforts`] of the current model, and records it as the
+    /// session's `effort` attribute.
+    async fn set_effort(&self, effort: String) -> Result<()> {
+        let _ = effort;
+        Err(AdapterError::Unsupported { harness: self.harness(), what: "set_effort" })
     }
 
     /// Asks the harness to compact. It records a `<compaction>` element.
