@@ -338,6 +338,8 @@ impl Keymap {
     /// - Ctrl/Cmd+N starts a new session
     /// - Ctrl+Tab and Ctrl+Shift+Tab show the next and previous session;
     ///   Ctrl/Cmd+1…9 the n-th one in the sidebar
+    /// - Ctrl/Cmd+PageDown and Ctrl/Cmd+PageUp show the next and previous
+    ///   project tab
     /// - Ctrl/Cmd+Alt+1…9 show the n-th right panel tab
     /// - Ctrl/Cmd+L focuses the composer, Ctrl/Cmd+Shift+F the session search
     /// - Tab and Shift+Tab move the focus between text fields
@@ -358,6 +360,8 @@ impl Keymap {
                 Scope::Global,
                 ids::SESSION_PREVIOUS,
             ),
+            Binding::new(Chord::named(Named::PageDown, primary), Scope::Global, ids::PROJECT_TAB_NEXT),
+            Binding::new(Chord::named(Named::PageUp, primary), Scope::Global, ids::PROJECT_TAB_PREVIOUS),
             Binding::new(Chord::char('l', primary), Scope::Global, ids::COMPOSER_FOCUS),
             Binding::new(Chord::char('f', primary | Modifiers::SHIFT), Scope::Global, ids::SEARCH_FOCUS),
             Binding::new(Chord::named(Named::Tab, none), Scope::Global, ids::FOCUS_NEXT),
@@ -502,6 +506,23 @@ mod tests {
 
         let ctrl_b = ch("b", Code::KeyB, Modifiers::CTRL);
         assert_eq!(linux.resolve(&ctrl_b, Scope::Composer), Some(&ids::PANEL_TOGGLE));
+    }
+
+    #[test]
+    fn project_tabs_step_with_primary_page_keys() {
+        for platform in [Platform::MacOs, Platform::Other] {
+            let map = Keymap::defaults(platform);
+            let primary = platform.primary();
+            let down = press(Key::Named(Named::PageDown), Code::PageDown, primary);
+            let up = press(Key::Named(Named::PageUp), Code::PageUp, primary);
+            assert_eq!(map.resolve(&down, Scope::Global), Some(&ids::PROJECT_TAB_NEXT));
+            assert_eq!(map.resolve(&up, Scope::Global), Some(&ids::PROJECT_TAB_PREVIOUS));
+            assert_eq!(map.resolve(&down, Scope::Composer), Some(&ids::PROJECT_TAB_NEXT));
+            let bare = press(Key::Named(Named::PageDown), Code::PageDown, Modifiers::empty());
+            assert_eq!(map.resolve(&bare, Scope::Global), None);
+        }
+        let linux = Keymap::defaults(Platform::Other);
+        assert_eq!(linux.chord_for(&ids::PROJECT_TAB_NEXT).map(|chord| chord.to_string()), Some("Ctrl+PageDown".into()));
     }
 
     #[test]

@@ -228,6 +228,54 @@ fn the_sidebar_file_list_follows_the_active_project() {
 }
 
 #[test]
+fn project_tabs_list_activated_projects_and_the_shortcuts_switch_between_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let (a, b) = (dir.path().join("a"), dir.path().join("b"));
+    std::fs::create_dir_all(&a).unwrap();
+    std::fs::create_dir_all(&b).unwrap();
+    let (mut app, _) = project_app(dir.path());
+    assert!(!app.ctx.shell.project_tabs(), "off by default");
+    assert!(app.ctx.shell.open_projects().is_empty());
+
+    app.ctx.services.set_active("alpha".into(), a.clone());
+    let in_alpha = chat_in(&mut app, "alpha", "work on a");
+    app.ctx.services.set_active("beta".into(), b.clone());
+    chat_in(&mut app, "beta", "work on b");
+    assert_eq!(app.ctx.shell.open_projects(), ["alpha", "beta"], "both projects have a tab");
+
+    // The palette toggle turns the strip on and saves it.
+    let toggle = loa_ui_palette::CommandId::new("project.tabs.toggle");
+    let task = app.command(&toggle);
+    run(&mut app, task);
+    assert!(app.ctx.shell.project_tabs());
+    assert!(app.ctx.services.config.load().unwrap().config.project_tabs);
+
+    // Next and previous switch the active project, wrapping around.
+    open_from_sidebar(&mut app, "alpha");
+    assert_eq!(app.ctx.services.project, "alpha");
+    let task = app.command(&loa_ui_palette::ids::PROJECT_TAB_NEXT);
+    run(&mut app, task);
+    assert_eq!((app.ctx.services.project.as_str(), app.ctx.services.cwd.clone()), ("beta", b.clone()));
+    let task = app.command(&loa_ui_palette::ids::PROJECT_TAB_NEXT);
+    run(&mut app, task);
+    assert_eq!(app.ctx.services.project, "alpha", "wraps to the first tab");
+    let task = app.command(&loa_ui_palette::ids::PROJECT_TAB_PREVIOUS);
+    run(&mut app, task);
+    assert_eq!(app.ctx.services.project, "beta");
+
+    // Closing a tab leaves its session open and the other tab alone.
+    update(&mut app, AppMessage::Shell(shell::Message::CloseProjectTab("alpha".into())));
+    assert_eq!(app.ctx.shell.open_projects(), ["beta"]);
+    assert!(app.ctx.sessions.get(&in_alpha).is_some(), "closing a tab keeps the session");
+    open_from_sidebar(&mut app, "alpha");
+    assert_eq!(app.ctx.shell.open_projects(), ["beta", "alpha"], "activating brings the tab back");
+
+    let task = app.command(&toggle);
+    run(&mut app, task);
+    assert!(!app.ctx.shell.project_tabs());
+}
+
+#[test]
 fn a_project_without_a_folder_only_opens_its_screen() {
     let dir = tempfile::tempdir().unwrap();
     let (mut app, _) = project_app(dir.path());

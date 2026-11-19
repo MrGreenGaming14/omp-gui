@@ -66,6 +66,10 @@ pub mod ids {
     pub const SESSION_NEXT: CommandId = CommandId::from_static("session.next");
     /// Show the previous session in the sidebar's order.
     pub const SESSION_PREVIOUS: CommandId = CommandId::from_static("session.previous");
+    /// Show the next project tab (shown only with the project tabs setting).
+    pub const PROJECT_TAB_NEXT: CommandId = CommandId::from_static("project.tab.next");
+    /// Show the previous project tab.
+    pub const PROJECT_TAB_PREVIOUS: CommandId = CommandId::from_static("project.tab.previous");
     /// Put the keyboard focus in the composer.
     pub const COMPOSER_FOCUS: CommandId = CommandId::from_static("composer.focus");
     /// Put the keyboard focus in the sidebar's session search.
