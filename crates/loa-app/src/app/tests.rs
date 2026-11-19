@@ -23,11 +23,12 @@ pub(crate) struct FakeAdapter {
     id: &'static str,
     resumes: bool,
     resumed: Arc<AtomicUsize>,
+    interrupts: Arc<AtomicUsize>,
 }
 
 impl FakeAdapter {
     pub(crate) fn new(id: &'static str) -> Self {
-        Self { id, resumes: true, resumed: Arc::default() }
+        Self { id, resumes: true, resumed: Arc::default(), interrupts: Arc::default() }
     }
 }
 
@@ -50,7 +51,7 @@ impl Adapter for FakeAdapter {
             ("native_id", "native-1".into()),
         ];
         let root = sink.commit(Draft::insert(NodeId::DOCUMENT, ElementKind::Session, attrs, ""))?.node;
-        Ok(Box::new(FakeSession::new(self.id, sink, root)))
+        Ok(Box::new(FakeSession::new(self.id, sink, root, Arc::clone(&self.interrupts))))
     }
 
     async fn resume(&self, _: SessionConfig, dom: &Dom, sink: Arc<dyn PatchSink>) -> loa_adapter::Result<Box<dyn HarnessSession>> {
@@ -59,7 +60,7 @@ impl Adapter for FakeAdapter {
         }
         self.resumed.fetch_add(1, Ordering::SeqCst);
         let root = dom.root().map(|root| root.id).ok_or_else(|| AdapterError::Format("empty DOM".into()))?;
-        Ok(Box::new(FakeSession::new(self.id, sink, root)))
+        Ok(Box::new(FakeSession::new(self.id, sink, root, Arc::clone(&self.interrupts))))
     }
 }
 
@@ -67,13 +68,14 @@ struct FakeSession {
     id: &'static str,
     sink: Arc<dyn PatchSink>,
     root: NodeId,
+    interrupts: Arc<AtomicUsize>,
     /// The turn waiting on a decision.
     waiting: Mutex<Option<NodeId>>,
 }
 
 impl FakeSession {
-    fn new(id: &'static str, sink: Arc<dyn PatchSink>, root: NodeId) -> Self {
-        Self { id, sink, root, waiting: Mutex::new(None) }
+    fn new(id: &'static str, sink: Arc<dyn PatchSink>, root: NodeId, interrupts: Arc<AtomicUsize>) -> Self {
+        Self { id, sink, root, interrupts, waiting: Mutex::new(None) }
     }
 
     fn end(&self, turn: NodeId) -> loa_adapter::Result<()> {
@@ -110,6 +112,7 @@ impl HarnessSession for FakeSession {
     }
 
     async fn interrupt(&self) -> loa_adapter::Result<()> {
+        self.interrupts.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
 
@@ -248,13 +251,28 @@ fn panel_command_toggles_without_starting_a_harness() {
 }
 
 #[test]
-fn escape_closes_palette_before_attempting_interrupt() {
+fn escape_interrupts_before_the_first_turn_patch_but_not_while_the_palette_is_open() {
     let dir = tempfile::tempdir().unwrap();
-    let mut app = fake_app(dir.path(), &["fake-a"]);
-    let _ = app.update(Message::Palette(palette::Message::Toggle));
+    let adapter = FakeAdapter::new("fake-a");
+    let interrupts = Arc::clone(&adapter.interrupts);
+    let mut app = App::build(services(dir.path(), vec![adapter])).0;
+    update(&mut app, Message::NewSession);
+
+    update(&mut app, Message::Keyboard(escape()));
+    assert_eq!(interrupts.load(Ordering::SeqCst), 0, "an idle harness is not interrupted");
+
+    update(&mut app, Message::Composer(composer::Message::Edit(Action::Edit(Edit::Insert('x')))));
+    let send = app.update(Message::Composer(composer::Message::Submit));
+    // Hold the send task so the harness cannot have emitted its first turn patch.
+    update(&mut app, Message::Palette(palette::Message::Toggle));
     assert!(app.palette.is_open());
-    let _ = app.update(Message::Keyboard(escape()));
+    update(&mut app, Message::Keyboard(escape()));
     assert!(!app.palette.is_open());
+    assert_eq!(interrupts.load(Ordering::SeqCst), 0, "the palette consumes Escape");
+
+    update(&mut app, Message::Keyboard(escape()));
+    assert_eq!(interrupts.load(Ordering::SeqCst), 1, "Escape reaches the active harness before the first turn patch");
+    run(&mut app, send);
 }
 
 #[test]
