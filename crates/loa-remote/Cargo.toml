@@ -6,4 +6,26 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+async-trait.workspace = true
+loa-core.workspace = true
+rusqlite.workspace = true
 serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+base64 = "0.22"
+hmac = "0.12"
+rmcp = { version = "3.11", default-features = false, features = ["server", "macros", "transport-io"] }
+russh = { version = "0.65", default-features = false, features = ["ring", "rsa", "flate2"] }
+russh-sftp = "3.0"
+schemars = "1"
+sha1 = "0.10"
+tokio-util = "0.7"
+
+[dev-dependencies]
+futures.workspace = true
+rand = "0.10"
+rmcp = { version = "3.11", default-features = false, features = ["server", "client", "transport-io"] }
+tempfile.workspace = true
+tokio-stream = { version = "0.1", features = ["net"] }
