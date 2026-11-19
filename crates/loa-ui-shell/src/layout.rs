@@ -1,20 +1,29 @@
 //! The app frame: sidebar on the left, top bar above a center slot, and a
 //! toggleable right panel with a tab bar.
 //!
-//! The panel remembers its width and active tab while closed. Tabs are data:
-//! the app adds diff, files, terminal, agents, session tree and surface tabs
-//! and draws the body of the active one.
+//! The sidebar and the panel are resizable by their edges, and each of the
+//! three panes can fill the window on its own. The panel remembers its width
+//! and active tab while closed. Tabs are data: the app adds diff, files,
+//! terminal, agents, session tree and surface tabs and draws the body of the
+//! active one.
 
-use crate::data::{NodeStatus, Nodes, SessionSummary, short_key};
+use crate::data::{NodeStatus, Nodes, SessionSummary, UsageMeter, short_key};
 use crate::theme::{self, Preference, style};
 use crate::{sidebar, topbar};
 use iced::theme::Mode;
 use iced::widget::operation::{self, AbsoluteOffset, RelativeOffset};
-use iced::widget::{button, column, container, mouse_area, row, rule, scrollable, sensor, space, text};
-use iced::{Element, Fill, Shrink, Size, Subscription, Task, Theme, mouse};
+use iced::widget::{button, column, container, mouse_area, row, rule, scrollable, sensor, text};
+use iced::{Alignment, Element, Fill, Size, Subscription, Task, Theme, mouse};
+use loa_ui_icons::{Icon, icon, muted};
 
-/// Width of the sidebar.
-pub const SIDEBAR_WIDTH: f32 = 264.0;
+/// Width of the sidebar before the user resizes it.
+pub const SIDEBAR_WIDTH: f32 = 272.0;
+
+/// Narrowest the sidebar gets.
+pub const MIN_SIDEBAR_WIDTH: f32 = 200.0;
+
+/// Widest the sidebar gets.
+pub const MAX_SIDEBAR_WIDTH: f32 = 480.0;
 
 /// Narrowest the right panel gets.
 pub const MIN_PANEL_WIDTH: f32 = 240.0;
@@ -34,8 +43,29 @@ pub const PANEL_TABS_ID: &str = "loa-panel-tabs";
 /// Pixels a mouse wheel line scrolls the tab bar.
 const WHEEL_LINE: f32 = 40.0;
 
-/// Width of the grab area between the center and the panel.
+/// Width of the grab areas at the sidebar and panel edges.
 const HANDLE_WIDTH: f32 = 6.0;
+
+/// Container id of the panel's full screen button.
+pub const PANEL_FULL_ID: &str = "loa-panel-full";
+
+/// A pane that can fill the window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pane {
+    /// The sidebar.
+    Sidebar,
+    /// The top bar and center.
+    Center,
+    /// The right panel.
+    Panel,
+}
+
+/// Which edge is being dragged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Drag {
+    Sidebar,
+    Panel,
+}
 
 /// One tab of the right panel.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,7 +108,6 @@ struct Panel {
     /// The tab the user picked. May name a tab not added yet (restored
     /// prefs); [`State::active_tab`] falls back to the first tab then.
     active: Option<String>,
-    dragging: bool,
 }
 
 /// Frame state: the sidebar, top bar, panel and theme.
@@ -89,6 +118,9 @@ pub struct State {
     panel: Panel,
     theme: theme::State,
     frame: Option<Size>,
+    sidebar_width: f32,
+    dragging: Option<Drag>,
+    full: Option<Pane>,
 }
 
 /// Internal messages.
@@ -104,10 +136,14 @@ pub enum Message {
     TabsWheel(mouse::ScrollDelta),
     /// The panel edge was grabbed.
     DragStart,
-    /// The cursor moved to this x while the panel edge is held.
+    /// The sidebar edge was grabbed.
+    SidebarDragStart,
+    /// The cursor moved to this x while an edge is held.
     DragMove(f32),
-    /// The panel edge was released.
+    /// The held edge was released.
     DragEnd,
+    /// A pane's full screen button was clicked.
+    ToggleFull(Pane),
     /// The frame was laid out at this size.
     FrameSized(Size),
     /// The user picked a theme.
@@ -131,6 +167,12 @@ pub enum Event {
     OpenTools,
     /// Show the updates screen.
     OpenUpdates,
+    /// Show the usage window.
+    OpenUsage,
+    /// Show the configs screen.
+    OpenConfigs,
+    /// Show the settings window.
+    OpenSettings,
     /// Persist the pinned flag of a session.
     SetPinned {
         /// Session id.
@@ -149,6 +191,8 @@ pub enum Event {
     SelectTab(String),
     /// The user finished resizing the panel to this width.
     PanelResized(f32),
+    /// The user finished resizing the sidebar to this width.
+    SidebarResized(f32),
     /// The user picked a theme. Persist it.
     SetTheme(Preference),
 }
@@ -162,6 +206,9 @@ impl From<sidebar::Event> for Event {
             sidebar::Event::OpenPeers => Event::OpenPeers,
             sidebar::Event::OpenTools => Event::OpenTools,
             sidebar::Event::OpenUpdates => Event::OpenUpdates,
+            sidebar::Event::OpenUsage => Event::OpenUsage,
+            sidebar::Event::OpenConfigs => Event::OpenConfigs,
+            sidebar::Event::OpenSettings => Event::OpenSettings,
             sidebar::Event::SetPinned { id, pinned } => Event::SetPinned { id, pinned },
             sidebar::Event::DeleteSession(id) => Event::DeleteSession(id),
         }
@@ -182,10 +229,12 @@ impl State {
                 width: panel.width.max(MIN_PANEL_WIDTH),
                 tabs: Vec::new(),
                 active: panel.active,
-                dragging: false,
             },
             theme: theme::State::new(preference),
             frame: None,
+            sidebar_width: SIDEBAR_WIDTH,
+            dragging: None,
+            full: None,
         };
         (state, theme::State::detect().map(Message::SystemTheme))
     }
@@ -253,6 +302,26 @@ impl State {
     /// Updates row while it is non-zero.
     pub fn set_updates(&mut self, count: usize) {
         self.sidebar.set_updates(count);
+    }
+
+    /// Sets the sidebar's usage meter.
+    pub fn set_usage(&mut self, usage: Option<UsageMeter>) {
+        self.sidebar.set_usage(usage);
+    }
+
+    /// The sidebar width the user chose.
+    pub fn sidebar_width(&self) -> f32 {
+        self.sidebar_width
+    }
+
+    /// Restores a saved sidebar width.
+    pub fn set_sidebar_width(&mut self, width: f32) {
+        self.sidebar_width = width.clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH);
+    }
+
+    /// The pane filling the window, if any.
+    pub fn full(&self) -> Option<Pane> {
+        self.full
     }
 
     /// How many updates wait for the user.
@@ -357,7 +426,12 @@ impl State {
     /// Opens or closes the panel. Width and active tab are kept.
     pub fn set_panel_open(&mut self, open: bool) {
         self.panel.open = open;
-        self.panel.dragging = false;
+        if self.dragging == Some(Drag::Panel) {
+            self.dragging = None;
+        }
+        if !open && self.full == Some(Pane::Panel) {
+            self.set_full(None);
+        }
         self.topbar.set_panel_open(open);
     }
 
@@ -374,8 +448,13 @@ impl State {
     /// Widest the panel may be in the current frame.
     fn max_panel_width(&self) -> f32 {
         self.frame.map_or(f32::INFINITY, |frame| {
-            (frame.width - SIDEBAR_WIDTH - MIN_CENTER_WIDTH - HANDLE_WIDTH).max(MIN_PANEL_WIDTH)
+            (frame.width - self.sidebar_width - MIN_CENTER_WIDTH - 2.0 * HANDLE_WIDTH).max(MIN_PANEL_WIDTH)
         })
+    }
+
+    fn set_full(&mut self, pane: Option<Pane>) {
+        self.full = pane;
+        self.topbar.set_full(pane == Some(Pane::Center));
     }
 
     /// Handles a message.
@@ -391,13 +470,17 @@ impl State {
             Message::Topbar(message) => {
                 let (task, event) = self.topbar.update(message);
                 let event = event.map(|event| match event {
-                    topbar::Event::OpenProject(project) => Event::OpenProject(project),
                     topbar::Event::TogglePanel => {
                         self.set_panel_open(!self.panel.open);
-                        Event::PanelToggled { open: self.panel.open }
+                        Some(Event::PanelToggled { open: self.panel.open })
                     }
+                    topbar::Event::ToggleFull => {
+                        self.set_full(if self.full == Some(Pane::Center) { None } else { Some(Pane::Center) });
+                        None
+                    }
+                    topbar::Event::OpenProject(project) => Some(Event::OpenProject(project)),
                 });
-                (task.map(Message::Topbar), event)
+                (task.map(Message::Topbar), event.flatten())
             }
             Message::SelectTab(id) => {
                 let known = self.panel.tabs.iter().any(|tab| tab.id == id);
@@ -418,21 +501,39 @@ impl State {
                 (task, None)
             }
             Message::DragStart => {
-                self.panel.dragging = self.panel.open;
+                self.dragging = self.panel.open.then_some(Drag::Panel);
+                (Task::none(), None)
+            }
+            Message::SidebarDragStart => {
+                self.dragging = Some(Drag::Sidebar);
                 (Task::none(), None)
             }
             Message::DragMove(x) => {
-                if self.panel.dragging
-                    && let Some(frame) = self.frame
-                {
-                    let width = frame.width - x - HANDLE_WIDTH / 2.0;
-                    self.panel.width = width.min(self.max_panel_width()).max(MIN_PANEL_WIDTH);
+                match self.dragging {
+                    Some(Drag::Panel) => {
+                        if let Some(frame) = self.frame {
+                            let width = frame.width - x - HANDLE_WIDTH / 2.0;
+                            self.panel.width = width.min(self.max_panel_width()).max(MIN_PANEL_WIDTH);
+                        }
+                    }
+                    Some(Drag::Sidebar) => {
+                        self.sidebar_width = (x - HANDLE_WIDTH / 2.0).clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH);
+                    }
+                    None => {}
                 }
                 (Task::none(), None)
             }
             Message::DragEnd => {
-                let event = std::mem::take(&mut self.panel.dragging).then_some(Event::PanelResized(self.panel.width));
+                let event = match self.dragging.take() {
+                    Some(Drag::Panel) => Some(Event::PanelResized(self.panel.width)),
+                    Some(Drag::Sidebar) => Some(Event::SidebarResized(self.sidebar_width)),
+                    None => None,
+                };
                 (Task::none(), event)
+            }
+            Message::ToggleFull(pane) => {
+                self.set_full(if self.full == Some(pane) { None } else { Some(pane) });
+                (Task::none(), None)
             }
             Message::FrameSized(size) => {
                 self.frame = Some(size);
@@ -460,28 +561,32 @@ impl State {
         panel_body: impl FnOnce(&'a str) -> Element<'a, M>,
         map: fn(Message) -> M,
     ) -> Element<'a, M> {
-        let sidebar = container(self.sidebar.view().map(Message::Sidebar)).width(SIDEBAR_WIDTH).height(Fill);
-        let sidebar = Element::from(sidebar).map(map);
+        let full = self.full;
+        let show = |pane: Pane| full.is_none() || full == Some(pane);
+        let mut frame = row![];
 
-        let topbar = self.topbar.view().map(Message::Topbar).map(map);
-        let center = container(center).style(style::surface).width(Fill).height(Fill);
-
-        let mut frame = row![
-            sidebar,
-            rule::vertical(1).style(style::divider),
-            column![topbar, rule::horizontal(1).style(style::divider), center],
-        ];
-        if self.panel.open {
-            let handle =
-                mouse_area(container(rule::vertical(1).style(style::divider)).center_x(HANDLE_WIDTH).height(Fill))
-                    .on_press(Message::DragStart)
-                    .interaction(mouse::Interaction::ResizingHorizontally);
-            frame = frame.push(Element::from(handle).map(map));
+        if show(Pane::Sidebar) {
+            let width = if full == Some(Pane::Sidebar) { iced::Length::Fill } else { iced::Length::Fixed(self.sidebar_width) };
+            let sidebar = container(self.sidebar.view().map(Message::Sidebar)).width(width).height(Fill);
+            frame = frame.push(Element::from(sidebar).map(map));
+        }
+        if full.is_none() {
+            frame = frame.push(Element::from(edge(Message::SidebarDragStart)).map(map));
+        }
+        if show(Pane::Center) {
+            let topbar = self.topbar.view().map(Message::Topbar).map(map);
+            let center = container(center).style(style::surface).width(Fill).height(Fill);
+            frame = frame.push(column![topbar, center].width(Fill));
+        }
+        if self.panel.open && show(Pane::Panel) {
+            if full.is_none() {
+                frame = frame.push(Element::from(edge(Message::DragStart)).map(map));
+            }
             frame = frame.push(self.panel_view(panel_body, map));
         }
 
         let mut tracked = mouse_area(frame);
-        if self.panel.dragging {
+        if self.dragging.is_some() {
             tracked = tracked
                 .on_move(move |point| map(Message::DragMove(point.x)))
                 .on_release(map(Message::DragEnd))
@@ -501,17 +606,21 @@ impl State {
         map: fn(Message) -> M,
     ) -> Element<'a, M> {
         let active = self.active_tab();
-        let tabs = self.panel.tabs.iter().fold(row![], |bar, tab| {
+        let tabs = self.panel.tabs.iter().fold(row![].spacing(2), |bar, tab| {
             let selected = active == Some(tab.id.as_str());
-            let label = button(text(tab.title.as_str()).size(14))
-                .on_press(Message::SelectTab(tab.id.clone()))
-                .style(style::tab(selected))
-                .padding([0, 8]);
-            let underline = container(space()).width(Fill).height(2);
-            let underline = if selected { underline.style(style::tab_underline) } else { underline };
-            bar.push(column![container(label).center_y(Fill), underline].width(Shrink).height(topbar::HEIGHT))
+            let mut label = row![].spacing(6).align_y(Alignment::Center);
+            if let Some(glyph) = tab_icon(&tab.id) {
+                label = label.push(if selected { icon(glyph, 14.0) } else { muted(glyph, 14.0) });
+            }
+            label = label.push(text(tab.title.as_str()).size(13));
+            bar.push(
+                button(label)
+                    .on_press(Message::SelectTab(tab.id.clone()))
+                    .style(style::tab(selected))
+                    .padding([6, 9]),
+            )
         });
-        // Embedded below the tabs, so it never covers the active underline.
+        // Embedded below the tabs, so it never covers a tab.
         let scrollbar = scrollable::Scrollbar::new().width(2).scroller_width(2).spacing(0);
         let tabs = scrollable(tabs)
             .id(PANEL_TABS_ID)
@@ -519,7 +628,22 @@ impl State {
             .style(style::tab_scrollbar)
             .width(Fill);
         let tabs = mouse_area(tabs).on_scroll(Message::TabsWheel);
-        let tab_bar = Element::from(container(tabs).style(style::chrome).padding([0, 4]).width(Fill)).map(map);
+        let is_full = self.full == Some(Pane::Panel);
+        let full = container(
+            button(muted(if is_full { Icon::Minimize } else { Icon::Maximize }, 14.0))
+                .on_press(Message::ToggleFull(Pane::Panel))
+                .style(style::ghost_button)
+                .padding(7),
+        )
+        .id(PANEL_FULL_ID);
+        let tab_bar = Element::from(
+            container(row![tabs, full].spacing(4).align_y(Alignment::Center))
+                .style(style::side)
+                .padding([0, 8])
+                .center_y(topbar::HEIGHT)
+                .width(Fill),
+        )
+        .map(map);
 
         let body = match active {
             Some(id) => panel_body(id),
@@ -529,12 +653,34 @@ impl State {
             .map(map),
         };
 
+        let width = if is_full { iced::Length::Fill } else { iced::Length::Fixed(self.panel.width.min(self.max_panel_width())) };
         container(column![tab_bar, rule::horizontal(1).style(style::divider), container(body).width(Fill).height(Fill)])
             .id(PANEL_ID)
-            .style(style::surface)
-            .width(self.panel.width.min(self.max_panel_width()))
+            .style(style::side)
+            .width(width)
             .height(Fill)
             .into()
+    }
+}
+
+/// A grab area on a pane edge, drawn as the 1px divider between panes.
+fn edge(on_press: Message) -> Element<'static, Message> {
+    mouse_area(container(rule::vertical(1).style(style::divider)).center_x(HANDLE_WIDTH).height(Fill))
+        .on_press(on_press)
+        .interaction(mouse::Interaction::ResizingHorizontally)
+        .into()
+}
+
+/// The icon of a known panel tab.
+fn tab_icon(id: &str) -> Option<Icon> {
+    match id {
+        "diff" | "changes" => Some(Icon::GitCompare),
+        "files" => Some(Icon::Folder),
+        "terminal" => Some(Icon::Terminal),
+        "agents" => Some(Icon::Bot),
+        "tree" | "session-tree" => Some(Icon::GitFork),
+        id if id.starts_with("surface") || id == "browser" => Some(Icon::Globe),
+        _ => None,
     }
 }
 
@@ -581,7 +727,7 @@ mod tests {
         send(&mut state, Message::FrameSized(Size::new(1200.0, 800.0)));
         send(&mut state, Message::DragStart);
         send(&mut state, Message::DragMove(10.0));
-        assert_eq!(state.panel_width(), 1200.0 - SIDEBAR_WIDTH - MIN_CENTER_WIDTH - HANDLE_WIDTH);
+        assert_eq!(state.panel_width(), 1200.0 - SIDEBAR_WIDTH - MIN_CENTER_WIDTH - 2.0 * HANDLE_WIDTH);
         send(&mut state, Message::DragMove(1190.0));
         assert_eq!(state.panel_width(), MIN_PANEL_WIDTH);
 
@@ -656,5 +802,34 @@ mod tests {
         let (_, event) = state.update(Message::SetTheme(Preference::Dark));
         assert_eq!(event, Some(Event::SetTheme(Preference::Dark)));
         assert!(state.theme().extended_palette().is_dark);
+    }
+
+    #[test]
+    fn sidebar_resizes_within_bounds_and_reports_on_release() {
+        let mut state = frame();
+        send(&mut state, Message::FrameSized(Size::new(1600.0, 900.0)));
+        send(&mut state, Message::SidebarDragStart);
+        send(&mut state, Message::DragMove(343.0));
+        assert_eq!(send(&mut state, Message::DragEnd), Some(Event::SidebarResized(340.0)));
+        send(&mut state, Message::SidebarDragStart);
+        send(&mut state, Message::DragMove(5000.0));
+        assert_eq!(state.sidebar_width(), MAX_SIDEBAR_WIDTH);
+        send(&mut state, Message::DragMove(10.0));
+        assert_eq!(state.sidebar_width(), MIN_SIDEBAR_WIDTH);
+    }
+
+    #[test]
+    fn panes_go_full_screen_one_at_a_time() {
+        let mut state = frame();
+        send(&mut state, Message::ToggleFull(Pane::Panel));
+        assert_eq!(state.full(), Some(Pane::Panel));
+        send(&mut state, Message::Topbar(topbar::Message::ToggleFull));
+        assert_eq!(state.full(), Some(Pane::Center), "the chat takes over");
+        send(&mut state, Message::Topbar(topbar::Message::ToggleFull));
+        assert_eq!(state.full(), None);
+
+        send(&mut state, Message::ToggleFull(Pane::Panel));
+        toggle(&mut state);
+        assert_eq!(state.full(), None, "closing the panel leaves its full screen");
     }
 }

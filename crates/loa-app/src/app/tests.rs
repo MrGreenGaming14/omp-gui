@@ -522,3 +522,88 @@ fn tool_calls_collapse_into_one_row_that_expands_on_click() {
     let mut ui = Simulator::with_size(iced::Settings::default(), size, app.view());
     assert!(ui.find("contents of b.rs").is_ok(), "expanded on click");
 }
+
+const USAGE_JSON: &str = r#"{
+  "generatedAt": 1000,
+  "reports": [
+    {"provider": "anthropic", "metadata": {"orgName": "Personal", "credentialId": "c1"},
+     "limits": [{"label": "Claude 7 Day", "window": {"id": "7d", "resetsAt": 9000}, "amount": {"usedFraction": 0.51}}],
+     "resetCredits": {"availableCount": 3, "redeemableCount": 1}}
+  ]
+}"#;
+
+fn click_through(app: &mut App, label: &str) {
+    use iced_test::Simulator;
+    let size = iced::Size::new(1600.0, 1000.0);
+    let messages: Vec<Message> = {
+        let mut ui = Simulator::with_size(iced::Settings::default(), size, app.view());
+        ui.click(label).unwrap_or_else(|_| panic!("{label} is clickable"));
+        ui.into_messages().collect()
+    };
+    for message in messages {
+        let _ = app.update(message);
+    }
+}
+
+fn shows(app: &App, label: &str) -> bool {
+    use iced_test::Simulator;
+    let mut ui = Simulator::with_size(iced::Settings::default(), iced::Size::new(1600.0, 1000.0), app.view());
+    ui.find(label).is_ok()
+}
+
+#[test]
+fn usage_window_expands_a_provider_without_closing() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = fake_app(dir.path(), &["fake-a"]);
+    app.overlay = Some(super::windows::Overlay::Usage);
+    let _ = app.update(Message::Usage(super::usage::Message::Loaded(super::usage::parse(USAGE_JSON))));
+    assert!(shows(&app, "Anthropic"));
+    assert!(!shows(&app, "Claude 7 Day"), "providers start collapsed");
+
+    click_through(&mut app, "Anthropic");
+    assert_eq!(app.overlay, Some(super::windows::Overlay::Usage), "clicking inside the window keeps it open");
+    assert!(shows(&app, "Claude 7 Day"), "the provider expanded");
+    assert!(shows(&app, "Use a reset"));
+}
+
+#[test]
+fn settings_window_switches_sections_and_sidebar_opens_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = fake_app(dir.path(), &["fake-a"]);
+    click_through(&mut app, "Settings");
+    assert_eq!(app.overlay, Some(super::windows::Overlay::Settings(super::windows::SettingsTab::General)));
+    assert!(shows(&app, "Theme"));
+
+    click_through(&mut app, "Peers & sharing");
+    assert_eq!(app.overlay, Some(super::windows::Overlay::Settings(super::windows::SettingsTab::Peers)));
+
+    let _ = app.update(Message::Keyboard(escape()));
+    assert_eq!(app.overlay, None, "Escape closes the window");
+}
+
+#[test]
+fn configs_opens_from_the_sidebar_and_lists_agent_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = fake_app(dir.path(), &["fake-a"]);
+    std::fs::create_dir_all(app.ctx.services.cwd.join(".omp/agents")).unwrap();
+    std::fs::write(app.ctx.services.cwd.join(".omp/agents/reviewer.md"), "---\nname: reviewer\n---\nReview diffs.").unwrap();
+    click_through(&mut app, "Configs");
+    assert_eq!(app.configs, Some(super::windows::ConfigsTab::Models));
+    click_through(&mut app, "Agents");
+    assert_eq!(app.configs, Some(super::windows::ConfigsTab::Agents));
+    assert!(shows(&app, "reviewer"));
+    assert!(shows(&app, "Full screen"));
+    click_through(&mut app, "Full screen");
+    assert!(app.docs.full);
+    let _ = app.update(Message::Keyboard(escape()));
+    assert!(!app.docs.full, "Escape leaves the file's full screen first");
+}
+
+#[test]
+fn models_close_button_closes_configs_it_is_drawn_in() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = fake_app(dir.path(), &["fake-a"]);
+    app.configs = Some(super::windows::ConfigsTab::Models);
+    let _ = app.update(Message::Models(areas::models::Message::Close));
+    assert_eq!(app.configs, None);
+}

@@ -89,6 +89,25 @@ fn derived_title(prompt: &str) -> Option<String> {
     }
 }
 
+/// The usage meter in the sidebar footer: the tightest limit across
+/// providers, e.g. the 7 day window at 51%.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UsageMeter {
+    /// Used share of the tightest limit, 0 to 1.
+    pub fraction: f32,
+    /// What the fraction measures, e.g. "7d".
+    pub label: String,
+}
+
+/// Which machine's sessions the sidebar lists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NodeFilter {
+    /// Recents from every machine, each tagged with its node.
+    All,
+    /// Only sessions that run on the node with this key.
+    Node(String),
+}
+
 /// A node of the p2p network as the shell shows it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeStatus {

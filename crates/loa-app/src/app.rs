@@ -27,6 +27,9 @@ use crate::services::Services;
 use crate::session::{self, Change, Feed, dom_turns};
 
 /// Panel tabs the app draws itself, before the areas' tabs.
+/// How often the sidebar's usage meter re-reads `omp usage`.
+const USAGE_REFRESH: Duration = Duration::from_secs(300);
+
 const BUILTIN_TABS: [(&str, &str); 3] = [("diff", "Diff"), ("files", "Files"), ("terminal", "Terminal")];
 
 /// Theme choices offered in the palette, by command id suffix.
@@ -136,6 +139,10 @@ pub enum Message {
     Peers(areas::peers::Message),
     Updater(areas::updater::Message),
     Sandbox(areas::sandbox::Message),
+    /// The Usage window.
+    Usage(usage::Message),
+    /// Configs and Settings.
+    Window(windows::WindowMessage),
 }
 
 pub struct App {
@@ -146,6 +153,10 @@ pub struct App {
     files: files::State,
     diff: diff::State,
     terminal: terminal::state::State,
+    usage: usage::State,
+    overlay: Option<windows::Overlay>,
+    configs: Option<windows::ConfigsTab>,
+    docs: windows::Docs,
 }
 
 impl App {
@@ -201,12 +212,17 @@ impl App {
             files,
             diff: diff::State::new(),
             terminal,
+            usage: usage::State::default(),
+            overlay: None,
+            configs: None,
+            docs: windows::Docs::default(),
         };
         let shown = app.tabs().into_iter().filter(|tab| tab.shown).map(|tab| shell::PanelTab::new(tab.id, tab.title)).collect();
         app.ctx.shell.set_tabs(shown);
         app.refresh_commands();
         let settle = app.settle();
-        (app, Task::batch([setup.map(Message::Shell), area_tasks, working_diff(cwd), settle]))
+        let usage = app.usage.refresh().map(Message::Usage);
+        (app, Task::batch([setup.map(Message::Shell), area_tasks, working_diff(cwd), settle, usage]))
     }
 
     /// Every panel tab: the built-in ones, then each area's.
@@ -643,10 +659,26 @@ impl App {
         match message {
             Message::Shell(message) => {
                 let (task, event) = self.ctx.shell.update(message);
+                if matches!(event, Some(shell::Event::NewSession | shell::Event::OpenSession(_) | shell::Event::OpenProject(_))) {
+                    self.configs = None;
+                    self.overlay = None;
+                }
                 let action = match event {
                     Some(shell::Event::NewSession) => self.start(None),
+                    Some(shell::Event::OpenUsage) => {
+                        self.overlay = Some(windows::Overlay::Usage);
+                        self.usage.refresh().map(Message::Usage)
+                    }
+                    Some(shell::Event::OpenConfigs) => {
+                        self.window_update(windows::WindowMessage::OpenConfigs(windows::ConfigsTab::Models))
+                    }
+                    Some(shell::Event::OpenSettings) => {
+                        self.window_update(windows::WindowMessage::OpenSettings(windows::SettingsTab::General))
+                    }
                     Some(shell::Event::OpenTools) => self.update(Message::Tools(areas::tools::Message::Open)),
-                    Some(shell::Event::OpenPeers) => self.update(Message::Peers(areas::peers::Message::Open)),
+                    Some(shell::Event::OpenPeers) => {
+                        self.window_update(windows::WindowMessage::OpenSettings(windows::SettingsTab::Peers))
+                    }
                     Some(shell::Event::OpenUpdates) => self.update(Message::Updater(areas::updater::Message::Open)),
                     Some(shell::Event::OpenSession(id)) if areas::peers::is_remote(&id) => {
                         self.update(Message::Peers(areas::peers::Message::OpenRecent(id)))
@@ -715,6 +747,19 @@ impl App {
                     if self.palette.is_open() {
                         return self.update(Message::Palette(palette::Message::Close));
                     }
+                    if self.overlay.take().is_some() {
+                        return Task::none();
+                    }
+                    if self.docs.full {
+                        self.docs.full = false;
+                        return Task::none();
+                    }
+                    if self.configs.take().is_some() {
+                        return Task::none();
+                    }
+                    if let Some(pane) = self.ctx.shell.full() {
+                        return self.update(Message::Shell(shell::Message::ToggleFull(pane)));
+                    }
                     if self.areas.decisions.focused().is_some() {
                         return self.update(Message::Decisions(areas::decisions::State::dismiss()));
                     }
@@ -733,6 +778,16 @@ impl App {
                 }
             }
             Message::Tick => Task::none(),
+            Message::Usage(message) => {
+                let (task, event) = self.usage.update(message);
+                match event {
+                    Some(usage::Event::Close) => self.overlay = None,
+                    Some(usage::Event::Meter(meter)) => self.ctx.shell.set_usage(meter),
+                    None => {}
+                }
+                task.map(Message::Usage)
+            }
+            Message::Window(message) => self.window_update(message),
             Message::NewSession => self.start(None),
             Message::Session(id, feed) => self.feed(id, feed),
             Message::Spawned { id, result, prompt } => match result {
@@ -822,6 +877,13 @@ impl App {
             Message::Decisions(message) => area!(decisions, Decisions, message),
             Message::Tools(message) => area!(tools, Tools, message),
             Message::Surfaces(message) => area!(surfaces, Surfaces, message),
+            Message::Models(areas::models::Message::Close) if self.configs.is_some() || matches!(self.overlay, Some(windows::Overlay::Settings(_))) => {
+                // The models screen's own close button, drawn inside Configs or Settings.
+                self.configs = None;
+                self.overlay = None;
+                self.ctx.close_screen();
+                Task::none()
+            }
             Message::Models(message) => area!(models, Models, message),
             Message::Projects(message) => area!(projects, Projects, message),
             Message::Peers(message) => area!(peers, Peers, message),
@@ -835,7 +897,9 @@ impl App {
         let screen = ctx.screen().and_then(|screen| {
             with_areas!(on_area!(screen, self.areas, ref |area, wrap| area.view_screen(ctx).map(|view| view.map(wrap))))
         });
-        let center_content: Element<'_, Message> = if let Some(screen) = screen {
+        let center_content: Element<'_, Message> = if let Some(tab) = self.configs {
+            self.configs_view(tab)
+        } else if let Some(screen) = screen {
             screen
         } else if let Some(session) = ctx.sessions.active() {
             let transcript = self.chat.view(session.dom(), Message::Chat, |slot| {
@@ -858,7 +922,8 @@ impl App {
                 column![
                     text(if starting { "Starting harness…" } else { "Start a session" }).size(20),
                     button(text("New session").size(14))
-                        .style(button::secondary)
+                        .style(style::accent_button)
+                        .padding([8, 16])
                         .on_press_maybe((!starting).then_some(Message::NewSession)),
                 ]
                 .spacing(16)
@@ -873,6 +938,18 @@ impl App {
             None => center_content,
         };
         let frame = ctx.shell.view(center_content, |tab| self.view_tab(tab), Message::Shell);
+        let frame: Element<'_, Message> = match self.overlay {
+            Some(overlay) => {
+                let window = match overlay {
+                    windows::Overlay::Usage => self.usage.view().map(Message::Usage),
+                    windows::Overlay::Settings(tab) => self.settings_view(tab),
+                };
+                let scrim = iced::widget::mouse_area(container(iced::widget::space()).style(style::scrim).width(Fill).height(Fill))
+                    .on_press(Message::Window(windows::WindowMessage::CloseSettings));
+                stack![frame, scrim, container(iced::widget::opaque(window)).center_x(Fill).padding(Padding { top: 64.0, right: 24.0, bottom: 24.0, left: 24.0 })].into()
+            }
+            None => frame,
+        };
         if self.palette.is_open() { stack![frame, self.palette.view().map(Message::Palette)].into() } else { frame }
     }
 
@@ -903,6 +980,7 @@ impl App {
                 iced::keyboard::listen().map(Message::Keyboard),
                 self.ctx.sessions.watch().map(|(id, feed)| Message::Session(id, feed)),
                 if busy { iced::time::every(TICK).map(|_| Message::Tick) } else { Subscription::none() },
+                iced::time::every(USAGE_REFRESH).map(|_| Message::Usage(usage::Message::Refresh)),
             ]
             .into_iter()
             .chain(areas),
@@ -971,6 +1049,8 @@ async fn git_diff(cwd: &Path) -> Option<String> {
 }
 
 mod keys;
+mod usage;
+mod windows;
 
 #[cfg(test)]
 pub(crate) mod tests;

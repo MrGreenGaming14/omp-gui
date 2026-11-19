@@ -50,6 +50,9 @@ pub enum Message {
     Panel(peers::Message),
     /// Show the Peers tab (the sidebar's node row).
     Open,
+    /// Re-read the node and grants without switching the panel tab, for
+    /// Settings › Peers & sharing.
+    Refresh,
     /// The endpoint started, or why it didn't.
     Started(Result<(), String>),
     /// The node changed or a peer asks something of this node.
@@ -359,6 +362,10 @@ impl Area for State {
             }
             Message::Open => {
                 ctx.open_tab(TAB);
+                self.refresh(ctx);
+                self.resources(ctx)
+            }
+            Message::Refresh => {
                 self.refresh(ctx);
                 self.resources(ctx)
             }

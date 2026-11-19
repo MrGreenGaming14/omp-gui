@@ -5,7 +5,7 @@ use iced::widget::text;
 use iced::{Color, Element, Settings, Size, Theme};
 use iced_test::{Simulator, selector};
 use loa_ui_shell::layout::{PANEL_ID, SIDEBAR_WIDTH};
-use loa_ui_shell::{Event, Message, NodeStatus, PanelPrefs, PanelTab, Preference, SessionSummary, State, sidebar, topbar};
+use loa_ui_shell::{Event, Message, NodeFilter, NodeStatus, PanelPrefs, PanelTab, Preference, SessionSummary, State, sidebar, topbar};
 
 const WINDOW: Size = Size::new(1280.0, 800.0);
 
@@ -59,17 +59,41 @@ fn new_session_button_asks_for_a_new_session() {
 }
 
 #[test]
-fn nav_items_open_peers_tools_and_projects() {
+fn footer_items_open_usage_configs_settings_and_projects() {
     let mut state = shell(false);
     let mut ui = simulator(&state);
-    ui.click("desk (this)").expect("peer row");
-    ui.click("Tools").expect("Tools");
+    ui.click("Usage").expect("Usage");
+    ui.click("Configs").expect("Configs");
+    ui.click("Settings").expect("Settings");
     ui.click("harness").expect("project row");
     let messages: Vec<Message> = ui.into_messages().collect();
     assert_eq!(
         deliver(&mut state, messages),
-        [Event::OpenPeers, Event::OpenTools, Event::OpenProject("harness".into())]
+        [Event::OpenUsage, Event::OpenConfigs, Event::OpenSettings, Event::OpenProject("harness".into())]
     );
+}
+
+#[test]
+fn machine_switcher_lists_peers_and_filters_recents() {
+    let mut state = shell(false);
+    {
+        let mut ui = simulator(&state);
+        assert!(ui.find("Fix deploy script").is_ok(), "this computer's session is listed");
+        assert!(ui.find("Write release notes").is_err(), "the laptop's session is not");
+        ui.click(selector::id(sidebar::MACHINE_SWITCHER_ID)).expect("machine switcher");
+        let messages: Vec<Message> = ui.into_messages().collect();
+        assert!(deliver(&mut state, messages).is_empty());
+    }
+    let mut ui = simulator(&state);
+    assert!(ui.find("1 need you").is_ok(), "the laptop's waiting session is counted");
+    ui.click("laptop").expect("laptop row");
+    let messages: Vec<Message> = ui.into_messages().collect();
+    assert!(deliver(&mut state, messages).is_empty());
+    assert_eq!(state.sidebar().machine(), NodeFilter::Node("k-laptop".into()));
+
+    let mut ui = simulator(&state);
+    assert!(ui.find("Write release notes").is_ok());
+    assert!(ui.find("Fix deploy script").is_err());
 }
 
 #[test]
@@ -90,6 +114,7 @@ fn typing_in_search_filters_recents_live() {
 #[test]
 fn recents_carry_node_tags_and_waiting_badges() {
     let mut state = shell(false);
+    let _ = state.update(Message::Sidebar(sidebar::Message::PickMachine(NodeFilter::All)));
     {
         let mut ui = simulator(&state);
         assert!(ui.find("laptop").is_ok(), "remote session lacks its node tag");
@@ -105,8 +130,7 @@ fn recents_carry_node_tags_and_waiting_badges() {
 
     let mut ui = simulator(&state);
     assert!(ui.find(selector::id(topbar::WAITING_BADGE_ID)).is_ok());
-    assert!(ui.find(selector::id(topbar::NODE_INDICATOR_ID)).is_ok());
-    assert!(ui.find("offline").is_ok(), "node indicator must say the laptop is offline");
+    assert!(ui.find("harness on laptop").is_ok(), "the breadcrumb names the remote machine");
 }
 
 #[test]
@@ -174,14 +198,15 @@ fn both_themes_paint_the_frame_with_their_palettes() {
         let shot = render(&state, &theme, name);
         let palette = theme.extended_palette();
 
+        let tokens = loa_ui_shell::theme::style::tokens(&theme);
         let center = pixel(&shot, SIDEBAR_WIDTH + 200.0, 600.0);
         assert_close(center, palette.background.base.color, &format!("{name} center"));
 
         let sidebar = pixel(&shot, SIDEBAR_WIDTH - 4.0, 400.0);
-        assert_close(sidebar, palette.background.base.color, &format!("{name} sidebar"));
+        assert_close(sidebar, tokens.side, &format!("{name} sidebar"));
 
         let panel = pixel(&shot, WINDOW.width - 20.0, 600.0);
-        assert_close(panel, palette.background.base.color, &format!("{name} panel"));
+        assert_close(panel, tokens.side, &format!("{name} panel"));
 
         let luminance = 0.2126 * center.r + 0.7152 * center.g + 0.0722 * center.b;
         assert_eq!(luminance < 0.5, palette.is_dark, "{name} theme has the wrong brightness");
