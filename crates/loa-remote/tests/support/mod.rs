@@ -448,6 +448,10 @@ pub struct Stats {
     pub forwards: Mutex<Vec<(String, u32)>>,
     /// Signalled each time an exec request arrives.
     pub command_seen: tokio::sync::Notify,
+    /// `(term, cols, rows)` of every PTY request.
+    pub ptys: Mutex<Vec<(String, u32, u32)>>,
+    /// `(cols, rows)` of every window change.
+    pub resizes: Mutex<Vec<(u32, u32)>>,
 }
 
 #[derive(Clone)]
@@ -461,6 +465,8 @@ struct Shared {
 struct ConnHandler {
     shared: Shared,
     channels: HashMap<ChannelId, Channel<Msg>>,
+    /// Typed input of interactive shells, per channel, up to the next Enter.
+    shells: HashMap<ChannelId, Vec<u8>>,
 }
 
 impl russh::server::Handler for ConnHandler {
@@ -557,6 +563,84 @@ impl russh::server::Handler for ConnHandler {
         Ok(())
     }
 
+    async fn pty_request(
+        &mut self,
+        channel: ChannelId,
+        term: &str,
+        col_width: u32,
+        row_height: u32,
+        _pix_width: u32,
+        _pix_height: u32,
+        _modes: &[(russh::Pty, u32)],
+        session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        self.shared
+            .stats
+            .ptys
+            .lock()
+            .unwrap()
+            .push((term.to_string(), col_width, row_height));
+        session.channel_success(channel)?;
+        Ok(())
+    }
+
+    /// A tiny line shell: echoes input, answers each line with
+    /// `you said: <line>`, and `exit` ends it with status 7.
+    async fn shell_request(
+        &mut self,
+        channel: ChannelId,
+        session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        self.shells.insert(channel, Vec::new());
+        session.channel_success(channel)?;
+        session.data(channel, b"welcome\r\n$ ".to_vec())?;
+        Ok(())
+    }
+
+    async fn window_change_request(
+        &mut self,
+        _channel: ChannelId,
+        col_width: u32,
+        row_height: u32,
+        _pix_width: u32,
+        _pix_height: u32,
+        _session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        self.shared.stats.resizes.lock().unwrap().push((col_width, row_height));
+        Ok(())
+    }
+
+    async fn data(
+        &mut self,
+        channel: ChannelId,
+        data: &[u8],
+        session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        let Some(line) = self.shells.get_mut(&channel) else {
+            return Ok(());
+        };
+        session.data(channel, data.to_vec())?;
+        for &byte in data {
+            if byte != b'\r' && byte != b'\n' {
+                line.push(byte);
+                continue;
+            }
+            let typed = String::from_utf8_lossy(&std::mem::take(line)).into_owned();
+            if typed == "exit" {
+                self.shells.remove(&channel);
+                let handle = session.handle();
+                tokio::spawn(async move {
+                    let _ = handle.exit_status_request(channel, 7).await;
+                    let _ = handle.eof(channel).await;
+                    let _ = handle.close(channel).await;
+                });
+                return Ok(());
+            }
+            session.data(channel, format!("\r\nyou said: {typed}\r\n$ ").into_bytes())?;
+        }
+        Ok(())
+    }
+
     async fn signal(
         &mut self,
         _channel: ChannelId,
@@ -641,6 +725,7 @@ impl TestServer {
                 let handler = ConnHandler {
                     shared: shared.clone(),
                     channels: HashMap::new(),
+                    shells: HashMap::new(),
                 };
                 let config = config.clone();
                 tokio::spawn(async move {

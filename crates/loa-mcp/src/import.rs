@@ -154,31 +154,44 @@ impl ImportReport {
 
 /// Reads `files` and decides each entry against the `existing` servers.
 pub fn plan(existing: &[ServerSpec], files: &[ConfigFile]) -> ImportReport {
+    let (found, file_errors) = scan(files);
+    let mut report = plan_found(existing, found);
+    report.file_errors = file_errors;
+    report
+}
+
+/// Decides already read entries (the ones the user picked) against the
+/// `existing` servers.
+pub fn plan_found(existing: &[ServerSpec], found: impl IntoIterator<Item = Found>) -> ImportReport {
     let mut report = ImportReport::default();
     let mut known: Vec<ServerSpec> = existing.to_vec();
-    for file in files {
-        let found = match file.read() {
-            Ok(found) => found,
-            Err(e) => {
-                report.file_errors.push(FileError { file: file.path().to_owned(), message: e.to_string() });
-                continue;
-            }
+    for Found { app, file, name, spec } in found {
+        let outcome = match spec {
+            Err(reason) => Outcome::Unsupported { reason },
+            Ok(spec) => match known.iter().find(|other| other.same_server(&spec) || other.name == spec.name) {
+                Some(other) => Outcome::Duplicate { existing: other.name.clone() },
+                None => {
+                    known.push(spec.clone());
+                    Outcome::Imported(spec)
+                }
+            },
         };
-        for Found { app, file, name, spec } in found {
-            let outcome = match spec {
-                Err(reason) => Outcome::Unsupported { reason },
-                Ok(spec) => match known.iter().find(|other| other.same_server(&spec) || other.name == spec.name) {
-                    Some(other) => Outcome::Duplicate { existing: other.name.clone() },
-                    None => {
-                        known.push(spec.clone());
-                        Outcome::Imported(spec)
-                    }
-                },
-            };
-            report.entries.push(ImportEntry { app, file, name, outcome });
-        }
+        report.entries.push(ImportEntry { app, file, name, outcome });
     }
     report
+}
+
+/// Every entry of `files`, for the import list, and the files that failed.
+pub fn scan(files: &[ConfigFile]) -> (Vec<Found>, Vec<FileError>) {
+    let mut found = Vec::new();
+    let mut file_errors = Vec::new();
+    for file in files {
+        match file.read() {
+            Ok(entries) => found.extend(entries),
+            Err(e) => file_errors.push(FileError { file: file.path().to_owned(), message: e.to_string() }),
+        }
+    }
+    (found, file_errors)
 }
 
 /// `mcpServers` of a Claude or Cursor JSON object.

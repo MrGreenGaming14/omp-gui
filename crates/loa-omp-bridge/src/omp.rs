@@ -86,59 +86,7 @@ struct Session {
 impl OmpExecutor {
     /// Starts the loopback provider and omp, and reads each tool's JSON Schema from omp.
     pub async fn start(config: OmpBridgeConfig) -> Result<Self> {
-        let token = random_token()?;
-        let provider = ScriptedProvider::start(&token).await?;
-        let agent_dir = config.state_dir.join("agent");
-        tokio::fs::create_dir_all(&agent_dir).await?;
-        write_models(&agent_dir, &provider.base_url()).await?;
-        let overlay = config.state_dir.join("bridge-config.yml");
-        // JSON is valid YAML, so serde_json writes omp's YAML config files.
-        let settings = json!({"astGrep": {"enabled": true}, "tools": {"xdev": false}});
-        tokio::fs::write(&overlay, serde_json::to_vec_pretty(&settings)?).await?;
-
-        let mut command = Command::new(&config.program);
-        command
-            .args([
-                "--mode",
-                "rpc",
-                "--no-session",
-                "--no-ui",
-                "--no-extensions",
-                "--no-skills",
-                "--no-rules",
-                "--no-context-files",
-                "--no-title",
-                "--offline",
-                "--auto-approve",
-                "--model",
-            ])
-            .arg(format!("{PROVIDER_ID}/{MODEL_ID}"))
-            .arg("--config")
-            .arg(&overlay);
-        for extra in &config.config_overlays {
-            command.arg("--config").arg(extra);
-        }
-        command
-            .arg("--tools")
-            .arg(config.tools.join(","))
-            .current_dir(&config.cwd)
-            .env("PI_CODING_AGENT_DIR", &agent_dir)
-            .env(TOKEN_ENV, &token);
-        // When the bridge itself runs under an omp tool call, these name that
-        // call's session; the bridge's omp is never part of it.
-        for inherited in INHERITED_SESSION_ENV {
-            command.env_remove(inherited);
-        }
-        command.envs(config.env.iter().map(|(key, value)| (key, value)));
-
-        let mut session = Session {
-            rpc: RpcChild::spawn(command)?,
-            next_id: 0,
-            in_flight: None,
-            history_bytes: 0,
-        };
-        session.handshake().await?;
-        let state = session.command(json!({"type": "get_state"})).await?;
+        let (session, provider, state) = launch(&config, Some(&config.tools)).await?;
         let tools = select_tools(&state, &config.tools)?;
         Ok(Self {
             tools,
@@ -146,6 +94,83 @@ impl OmpExecutor {
             _provider: provider,
         })
     }
+}
+
+/// Every tool omp enables by default (its `tools` settings, no extensions or
+/// skills), with descriptions and schemas, as omp reports them. Runs omp the
+/// bridge's way, so no model is contacted, and stops it again. `config.tools`
+/// is ignored.
+pub async fn list_omp_tools(config: &OmpBridgeConfig) -> Result<Vec<ToolSpec>> {
+    let (session, _provider, state) = launch(config, None).await?;
+    drop(session);
+    let names: Vec<String> = dumped_tools(&state)?
+        .iter()
+        .filter_map(|tool| tool.get("name").and_then(Value::as_str).map(str::to_owned))
+        .collect();
+    select_tools(&state, &names)
+}
+
+/// Starts omp against the loopback provider and reads `get_state`. `tools`
+/// limits omp to those tools; `None` keeps omp's defaults.
+async fn launch(
+    config: &OmpBridgeConfig,
+    tools: Option<&[String]>,
+) -> Result<(Session, ScriptedProvider, Value)> {
+    let token = random_token()?;
+    let provider = ScriptedProvider::start(&token).await?;
+    let agent_dir = config.state_dir.join("agent");
+    tokio::fs::create_dir_all(&agent_dir).await?;
+    write_models(&agent_dir, &provider.base_url()).await?;
+    let overlay = config.state_dir.join("bridge-config.yml");
+    // JSON is valid YAML, so serde_json writes omp's YAML config files.
+    let settings = json!({"astGrep": {"enabled": true}, "tools": {"xdev": false}});
+    tokio::fs::write(&overlay, serde_json::to_vec_pretty(&settings)?).await?;
+
+    let mut command = Command::new(&config.program);
+    command
+        .args([
+            "--mode",
+            "rpc",
+            "--no-session",
+            "--no-ui",
+            "--no-extensions",
+            "--no-skills",
+            "--no-rules",
+            "--no-context-files",
+            "--no-title",
+            "--offline",
+            "--auto-approve",
+            "--model",
+        ])
+        .arg(format!("{PROVIDER_ID}/{MODEL_ID}"))
+        .arg("--config")
+        .arg(&overlay);
+    for extra in &config.config_overlays {
+        command.arg("--config").arg(extra);
+    }
+    if let Some(tools) = tools {
+        command.arg("--tools").arg(tools.join(","));
+    }
+    command
+        .current_dir(&config.cwd)
+        .env("PI_CODING_AGENT_DIR", &agent_dir)
+        .env(TOKEN_ENV, &token);
+    // When the bridge itself runs under an omp tool call, these name that
+    // call's session; the bridge's omp is never part of it.
+    for inherited in INHERITED_SESSION_ENV {
+        command.env_remove(inherited);
+    }
+    command.envs(config.env.iter().map(|(key, value)| (key, value)));
+
+    let mut session = Session {
+        rpc: RpcChild::spawn(command)?,
+        next_id: 0,
+        in_flight: None,
+        history_bytes: 0,
+    };
+    session.handshake().await?;
+    let state = session.command(json!({"type": "get_state"})).await?;
+    Ok((session, provider, state))
 }
 
 #[async_trait::async_trait]
@@ -303,12 +328,17 @@ impl Session {
     }
 }
 
-/// Picks the configured tools out of `get_state`'s `dumpTools`, keeping omp's schemas.
-fn select_tools(state: &Value, wanted: &[String]) -> Result<Vec<ToolSpec>> {
-    let dumped = state
+/// `get_state`'s `dumpTools`: every active tool with its schema.
+fn dumped_tools(state: &Value) -> Result<&Vec<Value>> {
+    state
         .get("dumpTools")
         .and_then(Value::as_array)
-        .ok_or_else(|| Error::Frame("get_state has no dumpTools".into()))?;
+        .ok_or_else(|| Error::Frame("get_state has no dumpTools".into()))
+}
+
+/// Picks the configured tools out of `get_state`'s `dumpTools`, keeping omp's schemas.
+fn select_tools(state: &Value, wanted: &[String]) -> Result<Vec<ToolSpec>> {
+    let dumped = dumped_tools(state)?;
     wanted
         .iter()
         .map(|name| {

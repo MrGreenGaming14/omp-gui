@@ -2,11 +2,14 @@
 
 use loa_adapter::{HostToolSpec, McpServerSpec, McpTransport};
 
-/// A tool as the panel lists it: a name and what it does.
+/// A tool as the panel lists it: a name, what it does, and optional
+/// readiness details shown as sub rows.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ToolInfo {
     pub name: String,
     pub description: String,
+    /// Sub rows under the tool, e.g. one per sandbox provider.
+    pub details: Vec<ToolDetail>,
 }
 
 impl ToolInfo {
@@ -14,17 +17,36 @@ impl ToolInfo {
         Self {
             name: name.into(),
             description: description.into(),
+            details: Vec::new(),
         }
+    }
+
+    pub fn with_details(mut self, details: Vec<ToolDetail>) -> Self {
+        self.details = details;
+        self
     }
 }
 
 impl From<&HostToolSpec> for ToolInfo {
     fn from(spec: &HostToolSpec) -> Self {
-        Self {
-            name: spec.name.clone(),
-            description: spec.description.clone(),
-        }
+        Self::new(spec.name.clone(), spec.description.clone())
     }
+}
+
+/// Readiness of one part a tool depends on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DetailState {
+    Ready,
+    NotConfigured,
+    Unavailable,
+}
+
+/// One sub row under a tool: a label, its state and a short explanation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ToolDetail {
+    pub label: String,
+    pub state: DetailState,
+    pub text: String,
 }
 
 /// Identifies one tool for toggles and grants. MCP tools are always scoped
@@ -76,12 +98,17 @@ pub struct BuiltinTools {
     pub harness: String,
     pub harness_tools: Vec<ToolInfo>,
     pub app_tools: Vec<ToolInfo>,
+    /// Shown under the harness group instead of its tools, e.g. while they
+    /// load or when the harness doesn't report them.
+    pub harness_note: Option<String>,
 }
 
 /// Run state of an MCP server.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ServerStatus {
     Running,
+    /// Spawning or connecting, at first or after a failure.
+    Starting,
     Stopped,
     Error(String),
 }
@@ -169,6 +196,8 @@ pub struct HostLimits {
     pub read_only: bool,
     /// Whether `remote_bash` may run commands.
     pub commands_allowed: bool,
+    /// Writes and commands run without an approval card.
+    pub auto_approve: bool,
 }
 
 /// One SSH host the `remote` server can reach.
@@ -187,16 +216,23 @@ pub struct RemoteHost {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AuditAction {
     Read,
+    List,
     Write,
+    Edit,
     Command,
+    /// The user opened a terminal to the host.
+    Terminal,
 }
 
 impl AuditAction {
     pub fn label(self) -> &'static str {
         match self {
             Self::Read => "read",
+            Self::List => "list",
             Self::Write => "write",
+            Self::Edit => "edit",
             Self::Command => "command",
+            Self::Terminal => "terminal",
         }
     }
 }
@@ -211,6 +247,36 @@ pub struct AuditRow {
     pub action: AuditAction,
     /// The path or command.
     pub detail: String,
+    /// How it ended: `ok`, `denied`, `refused`, `error`, ...
+    pub outcome: String,
+}
+
+/// What a remote host question asks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PromptKind {
+    /// A new or changed host key: trust it or not.
+    HostKey,
+    /// A write or command the agent wants to run.
+    Approval,
+}
+
+/// A question from the `remote` server waiting for the user.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RemotePrompt {
+    pub id: u64,
+    pub kind: PromptKind,
+    pub title: String,
+    pub body: String,
+}
+
+/// The user's answer to a [`RemotePrompt`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PromptAnswer {
+    Trust,
+    Reject,
+    AllowOnce,
+    AllowSession,
+    Deny,
 }
 
 /// One clause of a peer's grant that allows tools.

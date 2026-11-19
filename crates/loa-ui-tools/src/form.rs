@@ -316,6 +316,7 @@ impl AddHostForm {
                 allowed_paths: Vec::new(),
                 read_only: true,
                 commands_allowed: false,
+                auto_approve: false,
             },
         })
     }

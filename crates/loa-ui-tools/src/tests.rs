@@ -39,6 +39,7 @@ fn panel() -> State {
             tool("project_read"),
             tool("sandbox_task"),
         ],
+        harness_note: None,
     });
     state.set_servers(vec![
         server(
@@ -305,6 +306,7 @@ fn host(alias: &str) -> RemoteHost {
             allowed_paths: vec!["/srv".into()],
             read_only: true,
             commands_allowed: false,
+            auto_approve: false,
         },
     }
 }
@@ -316,6 +318,7 @@ fn host_limits_are_edited_and_saved() {
     send(&mut state, Message::EditLimits("build".into()));
     send(&mut state, Message::LimitsReadOnly(false));
     send(&mut state, Message::LimitsCommands(true));
+    send(&mut state, Message::LimitsAutoApprove(true));
     send(&mut state, Message::LimitsNewPath("logs".into()));
     send(&mut state, Message::LimitsAddPath);
     assert_eq!(
@@ -332,7 +335,8 @@ fn host_limits_are_edited_and_saved() {
             limits: HostLimits {
                 allowed_paths: vec!["/var/log".into()],
                 read_only: false,
-                commands_allowed: true
+                commands_allowed: true,
+                auto_approve: true,
             },
         })
     );
@@ -447,12 +451,88 @@ fn rendered_server_controls_emit_actions() {
         })
     );
 
-    let message = click(&state, "Restart");
+    // App-hosted servers run with the app: no run controls.
+    assert!(
+        iced_test::simulator(state.view()).find("Restart").is_err(),
+        "remote is app hosted"
+    );
+
+    // git exited with an error: it can be started again.
+    send(&mut state, Message::FilterChanged("git".into()));
+    let message = click(&state, "Start");
     assert_eq!(
         send(&mut state, message),
         Some(Event::Server {
-            name: "remote".into(),
-            action: ServerAction::Restart
+            name: "git".into(),
+            action: ServerAction::Start
         })
     );
+}
+
+#[test]
+fn tool_details_render_as_sub_rows() {
+    let mut state = panel();
+    state.set_builtin(BuiltinTools {
+        harness: "omp".into(),
+        harness_tools: vec![tool("bash")],
+        app_tools: vec![tool("sandbox_task").with_details(vec![
+            ToolDetail {
+                label: "docker".into(),
+                state: DetailState::Ready,
+                text: "Docker 27.3".into(),
+            },
+            ToolDetail {
+                label: "firecracker".into(),
+                state: DetailState::Unavailable,
+                text: "no /dev/kvm".into(),
+            },
+            ToolDetail {
+                label: "ssh".into(),
+                state: DetailState::NotConfigured,
+                text: "no hosts".into(),
+            },
+        ])],
+        harness_note: None,
+    });
+    let mut ui = iced_test::simulator(state.view());
+    for label in ["sandbox_task tool", "docker", "Docker 27.3", "firecracker", "no /dev/kvm", "no hosts"] {
+        ui.find(label).unwrap_or_else(|e| panic!("{label:?} rendered: {e}"));
+    }
+}
+
+#[test]
+fn remote_prompts_render_as_cards_and_answer_by_id() {
+    let mut state = panel();
+    state.set_prompts(vec![
+        RemotePrompt {
+            id: 4,
+            kind: PromptKind::HostKey,
+            title: "Trust the host key of db?".into(),
+            body: "db.lan presented ssh-ed25519 key\nSHA256:abc".into(),
+        },
+        RemotePrompt {
+            id: 9,
+            kind: PromptKind::Approval,
+            title: "Run a command on db?".into(),
+            body: "uptime".into(),
+        },
+    ]);
+    send(&mut state, Message::SectionSelected(Section::Hosts));
+    {
+        let mut ui = iced_test::simulator(state.view());
+        ui.find("Remote hosts (2)").unwrap();
+        ui.find("Trust the host key of db?").unwrap();
+    }
+    let message = click(&state, "Trust");
+    assert_eq!(
+        send(&mut state, message),
+        Some(Event::AnswerPrompt { id: 4, answer: PromptAnswer::Trust })
+    );
+    let message = click(&state, "Allow for session");
+    assert_eq!(
+        send(&mut state, message),
+        Some(Event::AnswerPrompt { id: 9, answer: PromptAnswer::AllowSession })
+    );
+    assert!(state.prompts().is_empty());
+    assert_eq!(send(&mut state, Message::AnswerPrompt(9, PromptAnswer::Deny)), None, "answered once");
 }

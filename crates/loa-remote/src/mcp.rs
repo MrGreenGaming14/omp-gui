@@ -26,12 +26,18 @@ pub const SERVER_NAME: &str = "remote";
 pub const REMOTE_BASH: &str = "remote_bash";
 pub const REMOTE_FILE: &str = "remote_file";
 
-/// The `remote` server bound to one calling session.
+/// The `remote` server, bound to one calling session or, over HTTP, taking
+/// the session from each request ([`CallerSession`]).
 #[derive(Clone)]
 pub struct RemoteMcp {
     service: Arc<RemoteService>,
-    session_id: Arc<str>,
+    session_id: Option<Arc<str>>,
 }
+
+/// The session an HTTP request was authenticated as. The HTTP layer puts it
+/// into the request's extensions; rmcp hands those to the tool call.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CallerSession(pub Arc<str>);
 
 fn schema<T: schemars::JsonSchema>() -> Arc<JsonObject> {
     let value = serde_json::to_value(schemars::schema_for!(T)).unwrap_or_default();
@@ -84,7 +90,15 @@ impl RemoteMcp {
     pub fn new(service: Arc<RemoteService>, session_id: impl Into<Arc<str>>) -> Self {
         Self {
             service,
-            session_id: session_id.into(),
+            session_id: Some(session_id.into()),
+        }
+    }
+
+    /// A server that serves whichever session each HTTP request carries.
+    pub(crate) fn per_request(service: Arc<RemoteService>) -> Self {
+        Self {
+            service,
+            session_id: None,
         }
     }
 
@@ -107,40 +121,57 @@ impl RemoteMcp {
         Ok(())
     }
 
-    async fn call(&self, request: CallToolRequestParams, ct: tokio_util::sync::CancellationToken) -> Result<CallToolResult, ErrorData> {
-        match request.name.as_ref() {
-            REMOTE_BASH => {
-                let args: BashArgs = parse(request.arguments)?;
-                Ok(
-                    match self.service.bash(&self.session_id, args.into(), &ct).await {
-                        Ok(out) => {
-                            let failed = out.exit_status != Some(0);
-                            let mut result = tool_ok(&out);
-                            if failed {
-                                result.is_error = Some(true);
-                            }
-                            result
-                        }
-                        Err(e) => tool_error(&e),
-                    },
-                )
-            }
-            REMOTE_FILE => {
-                let args: FileArgs = parse(request.arguments)?;
-                let request = match args.into_request() {
-                    Ok(r) => r,
-                    Err(e) => return Err(ErrorData::invalid_params(e.to_string(), None)),
-                };
-                Ok(match self.service.file(&self.session_id, request, &ct).await {
-                    Ok(out) => tool_ok(&out),
-                    Err(e) => tool_error(&e),
-                })
-            }
-            other => Err(ErrorData::invalid_params(
-                Cow::Owned(format!("unknown tool `{other}`")),
-                None,
-            )),
+    fn session<'a>(&'a self, context: &'a RequestContext<RoleServer>) -> Result<&'a str, ErrorData> {
+        if let Some(session) = &self.session_id {
+            return Ok(session);
         }
+        context
+            .extensions
+            .get::<http::request::Parts>()
+            .and_then(|parts| parts.extensions.get::<CallerSession>())
+            .map(|caller| &*caller.0)
+            .ok_or_else(|| ErrorData::invalid_request("the request names no session", None))
+    }
+}
+
+/// Runs one `remote` tool call for `session_id`.
+pub(crate) async fn dispatch(
+    service: &RemoteService,
+    session_id: &str,
+    name: &str,
+    arguments: Option<JsonObject>,
+    ct: &tokio_util::sync::CancellationToken,
+) -> Result<CallToolResult, ErrorData> {
+    match name {
+        REMOTE_BASH => {
+            let args: BashArgs = parse(arguments)?;
+            Ok(match service.bash(session_id, args.into(), ct).await {
+                Ok(out) => {
+                    let failed = out.exit_status != Some(0);
+                    let mut result = tool_ok(&out);
+                    if failed {
+                        result.is_error = Some(true);
+                    }
+                    result
+                }
+                Err(e) => tool_error(&e),
+            })
+        }
+        REMOTE_FILE => {
+            let args: FileArgs = parse(arguments)?;
+            let request = match args.into_request() {
+                Ok(r) => r,
+                Err(e) => return Err(ErrorData::invalid_params(e.to_string(), None)),
+            };
+            Ok(match service.file(session_id, request, ct).await {
+                Ok(out) => tool_ok(&out),
+                Err(e) => tool_error(&e),
+            })
+        }
+        other => Err(ErrorData::invalid_params(
+            Cow::Owned(format!("unknown tool `{other}`")),
+            None,
+        )),
     }
 }
 
@@ -171,6 +202,9 @@ impl ServerHandler for RemoteMcp {
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
-        self.call(request, context.ct).await.map(Into::into)
+        let session = self.session(&context)?;
+        dispatch(&self.service, session, &request.name, request.arguments, &context.ct)
+            .await
+            .map(Into::into)
     }
 }

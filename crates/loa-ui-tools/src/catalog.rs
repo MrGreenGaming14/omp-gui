@@ -242,6 +242,7 @@ mod tests {
                 tool("project_read", "Read a session of the project"),
                 tool("sandbox_task", "Run a task in a sandbox"),
             ],
+            harness_note: None,
         }
     }
 

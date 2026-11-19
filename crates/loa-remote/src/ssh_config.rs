@@ -83,6 +83,15 @@ pub struct Imported {
     pub host: Result<ResolvedHost>,
 }
 
+/// Values given outside the config that win over it, like `ssh -l`, `-p`, `-J`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Overrides {
+    pub user: Option<String>,
+    pub port: Option<u16>,
+    /// A ProxyJump list (`[user@]host[:port],...` or `none`).
+    pub proxy_jump: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 struct HostPattern {
     negated: bool,
@@ -143,6 +152,16 @@ pub fn import_hosts(path: &Path, home: &Path, default_user: &str) -> Result<Vec<
 }
 
 impl SshConfig {
+    /// Reads `path` like [`SshConfig::load`], or an empty config when the
+    /// file does not exist.
+    pub fn load_or_empty(path: &Path, home: &Path) -> Result<Self> {
+        if path.exists() {
+            Self::load(path, home)
+        } else {
+            Self::parse("", path, home)
+        }
+    }
+
     /// Reads `path` and its includes. `home` expands `~`.
     pub fn load(path: &Path, home: &Path) -> Result<Self> {
         let text = std::fs::read_to_string(path).map_err(|source| Error::Io {
@@ -196,9 +215,43 @@ impl SshConfig {
 
     /// Resolves `alias` and its ProxyJump chain.
     pub fn resolve(&self, alias: &str, default_user: &str) -> Result<ResolvedHost> {
+        self.resolve_as(alias, &Overrides::default(), default_user)
+    }
+
+    /// Resolves a host the way `ssh -l USER -p PORT -J JUMPS HOST` would:
+    /// `host` gets every config block matching it, and the given values win
+    /// over the config's. The result is named `name`. Used for hosts the
+    /// app's own config lists.
+    pub fn resolve_named(
+        &self,
+        name: &str,
+        host: &str,
+        overrides: &Overrides,
+        default_user: &str,
+    ) -> Result<ResolvedHost> {
+        let mut resolved = self.resolve_as(host, overrides, default_user)?;
+        if resolved.location.is_none() {
+            resolved.location = self.host_location(name);
+        }
+        resolved.alias = name.to_string();
+        Ok(resolved)
+    }
+
+    fn resolve_as(&self, alias: &str, overrides: &Overrides, default_user: &str) -> Result<ResolvedHost> {
         let mut stack = Vec::new();
-        let (target, jumps, mut unsupported) =
-            self.resolve_chain(alias, None, None, default_user, &mut stack)?;
+        let app_config = Location {
+            file: PathBuf::from("<app config>"),
+            line: 0,
+        };
+        let jump = overrides.proxy_jump.as_deref().map(|list| (list, &app_config));
+        let (target, jumps, mut unsupported) = self.resolve_chain(
+            alias,
+            overrides.user.as_deref(),
+            overrides.port,
+            jump,
+            default_user,
+            &mut stack,
+        )?;
         let mut seen = Vec::with_capacity(unsupported.len());
         unsupported.retain(|u| {
             let new = !seen.contains(u);
@@ -231,6 +284,7 @@ impl SshConfig {
         alias: &str,
         user_override: Option<&str>,
         port_override: Option<u16>,
+        jump_override: Option<(&str, &Location)>,
         default_user: &str,
         stack: &mut Vec<String>,
     ) -> Result<(Endpoint, Vec<Endpoint>, Vec<Unsupported>)> {
@@ -245,42 +299,47 @@ impl SshConfig {
         let target = self.endpoint(alias, &options, user_override, port_override, default_user)?;
         let mut jumps = Vec::new();
         let mut unsupported = std::mem::take(&mut options.unsupported);
-        if let Some(directive) = options.proxy_jump {
-            let list = directive.args.first().map(String::as_str).unwrap_or("none");
-            if !list.eq_ignore_ascii_case("none") {
-                let specs = list
-                    .split(',')
-                    .map(|s| parse_jump(s.trim(), &directive.location))
-                    .collect::<Result<Vec<_>>>()?;
-                let mut specs = specs.into_iter();
-                if let Some(first) = specs.next() {
-                    stack.push(key.clone());
-                    let (first_target, first_jumps, first_unsupported) = self.resolve_chain(
-                        &first.host,
-                        first.user.as_deref(),
-                        first.port,
-                        default_user,
-                        stack,
-                    )?;
-                    stack.pop();
-                    jumps.extend(first_jumps);
-                    jumps.push(first_target);
-                    unsupported.extend(first_unsupported);
-                }
-                for spec in specs {
-                    let opts = self.options(&spec.host);
-                    jumps.push(self.endpoint(
-                        &spec.host,
-                        &opts,
-                        spec.user.as_deref(),
-                        spec.port,
-                        default_user,
-                    )?);
-                    unsupported.extend(opts.unsupported);
-                }
-                if jumps.len() > MAX_JUMPS {
-                    return Err(Error::ProxyJumpTooDeep(alias.to_string()));
-                }
+        let jump = jump_override.or_else(|| {
+            options.proxy_jump.map(|d| {
+                (d.args.first().map(String::as_str).unwrap_or("none"), &d.location)
+            })
+        });
+        if let Some((list, location)) = jump
+            && !list.eq_ignore_ascii_case("none")
+        {
+            let specs = list
+                .split(',')
+                .map(|s| parse_jump(s.trim(), location))
+                .collect::<Result<Vec<_>>>()?;
+            let mut specs = specs.into_iter();
+            if let Some(first) = specs.next() {
+                stack.push(key.clone());
+                let (first_target, first_jumps, first_unsupported) = self.resolve_chain(
+                    &first.host,
+                    first.user.as_deref(),
+                    first.port,
+                    None,
+                    default_user,
+                    stack,
+                )?;
+                stack.pop();
+                jumps.extend(first_jumps);
+                jumps.push(first_target);
+                unsupported.extend(first_unsupported);
+            }
+            for spec in specs {
+                let opts = self.options(&spec.host);
+                jumps.push(self.endpoint(
+                    &spec.host,
+                    &opts,
+                    spec.user.as_deref(),
+                    spec.port,
+                    default_user,
+                )?);
+                unsupported.extend(opts.unsupported);
+            }
+            if jumps.len() > MAX_JUMPS {
+                return Err(Error::ProxyJumpTooDeep(alias.to_string()));
             }
         }
         Ok((target, jumps, unsupported))

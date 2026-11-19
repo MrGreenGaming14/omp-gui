@@ -22,9 +22,9 @@ pub use form::{
     TransportKind,
 };
 pub use model::{
-    AuditAction, AuditRow, BuiltinGroup, BuiltinTools, HostLimits, ImportCandidate, ImportOutcome,
-    ImportSource, McpServer, PeerTools, ProjectRef, RemoteHost, ServerKind, ServerStatus, ToolId,
-    ToolInfo, ToolRule,
+    AuditAction, AuditRow, BuiltinGroup, BuiltinTools, DetailState, HostLimits, ImportCandidate,
+    ImportOutcome, ImportSource, McpServer, PeerTools, ProjectRef, PromptAnswer, PromptKind,
+    RemoteHost, RemotePrompt, ServerKind, ServerStatus, ToolDetail, ToolId, ToolInfo, ToolRule,
 };
 
 /// The panel's tabs.
@@ -79,6 +79,8 @@ pub enum Event {
     OpenTerminal(String),
     /// Load this host's audit log. The app answers with [`State::set_audit`].
     LoadAudit(String),
+    /// The user answered a host key or approval question.
+    AnswerPrompt { id: u64, answer: PromptAnswer },
 }
 
 /// One entry of the import list.
@@ -149,6 +151,8 @@ pub enum Message {
     OpenTerminal(String),
     ShowAudit(String),
     CloseAudit,
+    LimitsAutoApprove(bool),
+    AnswerPrompt(u64, PromptAnswer),
 
     PeerFilter(PeerChoice),
 }
@@ -172,6 +176,8 @@ pub struct State {
     add_host: Option<(AddHostForm, AddHostErrors)>,
     limits: Option<LimitsDraft>,
     audit: Option<(String, Vec<AuditRow>)>,
+    /// Host key and approval questions waiting for the user.
+    prompts: Vec<RemotePrompt>,
     peers: Vec<PeerTools>,
     peer_filter: Option<String>,
 }
@@ -262,6 +268,24 @@ impl State {
 
     pub fn set_audit(&mut self, host: impl Into<String>, rows: Vec<AuditRow>) {
         self.audit = Some((host.into(), rows));
+    }
+
+    /// The questions the `remote` server is waiting on, oldest first.
+    pub fn set_prompts(&mut self, prompts: Vec<RemotePrompt>) {
+        self.prompts = prompts;
+    }
+
+    pub fn prompts(&self) -> &[RemotePrompt] {
+        &self.prompts
+    }
+
+    pub fn hosts(&self) -> &[RemoteHost] {
+        &self.hosts
+    }
+
+    /// The host whose audit log is shown, and its rows.
+    pub fn audit(&self) -> Option<(&str, &[AuditRow])> {
+        self.audit.as_ref().map(|(host, rows)| (host.as_str(), rows.as_slice()))
     }
 
     pub fn set_peers(&mut self, peers: Vec<PeerTools>) {
@@ -495,6 +519,12 @@ impl State {
                 return Some(Event::LoadAudit(alias));
             }
             Message::CloseAudit => self.audit = None,
+            Message::LimitsAutoApprove(on) => self.limits.as_mut()?.limits.auto_approve = on,
+            Message::AnswerPrompt(id, answer) => {
+                let index = self.prompts.iter().position(|p| p.id == id)?;
+                self.prompts.remove(index);
+                return Some(Event::AnswerPrompt { id, answer });
+            }
 
             Message::PeerFilter(choice) => {
                 self.peer_filter = match choice {

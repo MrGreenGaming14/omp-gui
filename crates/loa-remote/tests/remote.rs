@@ -40,6 +40,7 @@ fn write(content: &str) -> FileOp {
 
 fn open_limits() -> HostLimits {
     HostLimits {
+        allowed_paths: vec!["/".into()],
         auto_approve_writes: true,
         auto_approve_commands: true,
         ..HostLimits::default()
@@ -520,7 +521,10 @@ async fn symlinked_allowed_prefix_and_symlinked_file_inside_it() {
 #[tokio::test]
 async fn approvals_gate_writes_and_commands() {
     let (_agent, server, h) = setup(
-        HostLimits::default(),
+        HostLimits {
+            allowed_paths: vec!["/".into()],
+            ..HostLimits::default()
+        },
         vec![
             Approval::Deny {
                 reason: Some("not now".into()),

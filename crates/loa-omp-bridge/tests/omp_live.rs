@@ -139,3 +139,16 @@ async fn a_cancelled_call_leaves_the_next_call_correct() {
     };
     assert!(text.contains("second file"), "the next call must get its own result: {text}");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn omp_reports_its_default_tools_for_the_tools_panel() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut config = loa_omp_bridge::OmpBridgeConfig::new(temp.path(), temp.path().join("state"));
+    config.env.push(("HOME".into(), temp.path().into()));
+    let tools = loa_omp_bridge::list_omp_tools(&config).await.unwrap();
+    let names: Vec<_> = tools.iter().map(|tool| tool.name.as_str()).collect();
+    for expected in ["bash", "read", "edit"] {
+        assert!(names.contains(&expected), "{expected} missing from {names:?}");
+    }
+    assert!(tools.iter().all(|tool| !tool.description.is_empty()), "every tool is described");
+}

@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
 
-/// What the agent asked a host to do.
+/// What the agent (or, for [`Action::Terminal`], the user) asked a host to do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Action {
@@ -21,6 +21,8 @@ pub enum Action {
     List,
     Edit,
     Command,
+    /// The user opened an interactive terminal to the host.
+    Terminal,
 }
 
 impl Action {
@@ -31,6 +33,7 @@ impl Action {
             Action::List => "list",
             Action::Edit => "edit",
             Action::Command => "command",
+            Action::Terminal => "terminal",
         }
     }
 
@@ -41,13 +44,14 @@ impl Action {
             "list" => Action::List,
             "edit" => Action::Edit,
             "command" => Action::Command,
+            "terminal" => Action::Terminal,
             _ => return None,
         })
     }
 
-    /// Whether the action changes the host (writes, edits, commands).
+    /// Whether the action changes the host (writes, edits, commands, terminals).
     pub fn mutates(self) -> bool {
-        matches!(self, Action::Write | Action::Edit | Action::Command)
+        matches!(self, Action::Write | Action::Edit | Action::Command | Action::Terminal)
     }
 }
 

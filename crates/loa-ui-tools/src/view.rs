@@ -9,7 +9,10 @@ use loa_ui_icons::{Icon, icon, muted};
 
 use crate::catalog::{GroupView, ServerView, ToolRow};
 use crate::form::FieldError;
-use crate::model::{BuiltinGroup, RemoteHost, ServerKind, ServerStatus, ToolId, transport_label};
+use crate::model::{
+    BuiltinGroup, DetailState, PromptAnswer, PromptKind, RemoteHost, RemotePrompt, ServerKind,
+    ServerStatus, ToolId, transport_label,
+};
 use crate::style::{self, Tone};
 use crate::{Message, PeerChoice, Section, ServerAction, State, TransportKind};
 
@@ -26,11 +29,15 @@ const ICON: f32 = 12.0;
 
 impl State {
     pub fn view(&self) -> Element<'_, Message> {
+        let hosts_label = match self.prompts.len() {
+            0 => "Remote hosts".to_owned(),
+            n => format!("Remote hosts ({n})"),
+        };
         let tabs = row([
-            (Section::Builtin, "Built in"),
-            (Section::Servers, "MCP servers"),
-            (Section::Hosts, "Remote hosts"),
-            (Section::Peers, "Peers"),
+            (Section::Builtin, "Built in".to_owned()),
+            (Section::Servers, "MCP servers".to_owned()),
+            (Section::Hosts, hosts_label),
+            (Section::Peers, "Peers".to_owned()),
         ]
         .into_iter()
         .map(|(section, label)| tab(label, section, self.section)))
@@ -101,7 +108,10 @@ impl State {
             BuiltinGroup::App => group.title.to_owned(),
         };
         let mut content = column![style::section_header(title)].spacing(SPACING);
-        if group.tools.is_empty() {
+        let harness_note = (group.group == BuiltinGroup::Harness).then_some(self.builtin.harness_note.as_deref()).flatten();
+        if let Some(text) = harness_note {
+            content = content.push(note(text));
+        } else if group.tools.is_empty() {
             content = content.push(note("No tools"));
         }
         for tool in group.tools {
@@ -115,7 +125,7 @@ impl State {
         let on_toggle = self
             .can_toggle()
             .then_some(move |on| Message::ToolToggled(id.clone(), on));
-        column![
+        let mut content = column![
             toggler(enabled)
                 .label(info.name.as_str())
                 .size(14)
@@ -126,8 +136,28 @@ impl State {
                 .size(SMALL)
                 .style(style::muted),
         ]
-        .spacing(2)
-        .into()
+        .spacing(2);
+        if !info.details.is_empty() {
+            let mut details = column![].spacing(2);
+            for detail in &info.details {
+                let tone = match detail.state {
+                    DetailState::Ready => Tone::Ok,
+                    DetailState::NotConfigured => Tone::Off,
+                    DetailState::Unavailable => Tone::Bad,
+                };
+                details = details.push(
+                    row![
+                        container(space().width(6).height(6)).style(style::dot(tone)),
+                        text(detail.label.as_str()).size(SMALL).width(110),
+                        text(detail.text.as_str()).size(SMALL).style(style::muted),
+                    ]
+                    .spacing(SPACING)
+                    .align_y(iced::Center),
+                );
+            }
+            content = content.push(container(details).padding(iced::Padding::ZERO.left(16).top(2)));
+        }
+        content.into()
     }
 
     fn servers_view(&self) -> Element<'_, Message> {
@@ -163,6 +193,7 @@ impl State {
         let name = server.name.as_str();
         let (tone, status_label) = match &server.status {
             ServerStatus::Running => (Tone::Ok, "running".to_owned()),
+            ServerStatus::Starting => (Tone::Off, "starting".to_owned()),
             ServerStatus::Stopped => (Tone::Off, "stopped".to_owned()),
             ServerStatus::Error(message) => (Tone::Bad, format!("error: {message}")),
         };
@@ -190,18 +221,19 @@ impl State {
             flat(text(label).size(SMALL))
                 .on_press_maybe(enabled.then(|| Message::Server(name.to_owned(), action)))
         };
-        let running = server.status == ServerStatus::Running;
+        let running = matches!(server.status, ServerStatus::Running | ServerStatus::Starting);
         let toggle = flat(text(format!("Tools: {}", view.toggle.label())).size(SMALL)).on_press_maybe(
             self.can_toggle()
                 .then(|| Message::ServerToggled(name.to_owned())),
         );
-        let mut actions = row![
-            toggle,
-            action("Start", ServerAction::Start, !running),
-            action("Stop", ServerAction::Stop, running),
-            action("Restart", ServerAction::Restart, running),
-        ]
-        .spacing(4);
+        let mut actions = row![toggle].spacing(4);
+        // App hosted servers run with the app; only their tools toggle.
+        if server.kind != ServerKind::AppHosted {
+            actions = actions
+                .push(action("Start", ServerAction::Start, !running))
+                .push(action("Stop", ServerAction::Stop, running))
+                .push(action("Restart", ServerAction::Restart, running));
+        }
         if server.can_remove() {
             actions = actions.push(
                 flat(text("Remove").size(SMALL))
@@ -350,6 +382,9 @@ impl State {
         ]
         .spacing(4);
         let mut content = column![actions].spacing(BLOCK_SPACING);
+        for prompt in &self.prompts {
+            content = content.push(prompt_card(prompt));
+        }
         if let Some((form, errors)) = &self.add_host {
             let form = column![
                 style::section_header("Add host"),
@@ -412,7 +447,7 @@ impl State {
             limits.allowed_paths.join(", ")
         };
         let summary = format!(
-            "{}, {}, {}",
+            "{}, {}, {}, {}",
             if limits.read_only {
                 "read only"
             } else {
@@ -422,6 +457,11 @@ impl State {
                 "commands allowed"
             } else {
                 "no commands"
+            },
+            if limits.auto_approve {
+                "runs without asking"
+            } else {
+                "asks first"
             },
             paths,
         );
@@ -468,6 +508,11 @@ impl State {
                     .size(14)
                     .text_size(NOTE)
                     .on_toggle(Message::LimitsCommands),
+                checkbox(draft.limits.auto_approve)
+                    .label("Run writes and commands without asking")
+                    .size(14)
+                    .text_size(NOTE)
+                    .on_toggle(Message::LimitsAutoApprove),
                 style::section_header("Allowed paths"),
                 paths,
                 row![
@@ -510,22 +555,35 @@ impl State {
                 log = log.push(text("No entries").size(SMALL).style(style::muted));
             }
             for entry in rows {
+                let ok = entry.outcome == "ok" || entry.outcome.starts_with("ok:");
                 log = log.push(
-                    row![
-                        text(entry.when.as_str())
-                            .size(SMALL)
-                            .style(style::muted)
-                            .width(160),
-                        text(entry.action.label()).size(SMALL).width(70),
-                        text(entry.detail.as_str()).size(SMALL).width(Fill),
-                        text(entry.session.as_str())
-                            .size(SMALL)
-                            .style(style::muted),
+                    column![
+                        row![
+                            text(entry.when.as_str())
+                                .size(SMALL)
+                                .style(style::muted)
+                                .width(160),
+                            text(entry.action.label()).size(SMALL).width(70),
+                            text(entry.detail.as_str()).size(SMALL).width(Fill),
+                        ]
+                        .spacing(SPACING),
+                        row![
+                            text(entry.outcome.as_str())
+                                .size(SMALL)
+                                .width(Fill)
+                                .style(if ok { text::success } else { text::danger }),
+                            text(entry.session.as_str())
+                                .size(SMALL)
+                                .style(style::muted),
+                        ]
+                        .spacing(SPACING),
                     ]
-                    .spacing(SPACING),
+                    .spacing(2),
                 );
             }
-            content = content.push(container(log).padding(iced::Padding::ZERO.left(16)));
+            content = content.push(
+                container(log.spacing(6)).padding(iced::Padding::ZERO.left(16)),
+            );
         }
         list_item(content)
     }
@@ -574,6 +632,7 @@ impl State {
                 text(peer.name.as_str())
                     .size(SMALL)
                     .style(style::muted)
+                    .wrapping(text::Wrapping::None)
                     .width(80),
             );
         }
@@ -602,7 +661,7 @@ impl State {
 }
 
 /// A panel tab: bright over a 2px underline when active, muted otherwise.
-fn tab(label: &str, section: Section, current: Section) -> Element<'_, Message> {
+fn tab<'a>(label: String, section: Section, current: Section) -> Element<'a, Message> {
     let active = section == current;
     button(
         column![
@@ -622,6 +681,48 @@ fn tab(label: &str, section: Section, current: Section) -> Element<'_, Message> 
     .style(style::plain)
     .on_press(Message::SectionSelected(section))
     .into()
+}
+
+/// A host key or approval question with its answers.
+fn prompt_card(prompt: &RemotePrompt) -> Element<'_, Message> {
+    let answer = |label: &'static str, answer: PromptAnswer| {
+        flat(text(label).size(SMALL)).on_press(Message::AnswerPrompt(prompt.id, answer))
+    };
+    let (accept, reject) = match prompt.kind {
+        PromptKind::HostKey => (
+            row![answer("Trust", PromptAnswer::Trust)],
+            answer("Reject", PromptAnswer::Reject),
+        ),
+        PromptKind::Approval => (
+            row![
+                answer("Allow once", PromptAnswer::AllowOnce),
+                answer("Allow for session", PromptAnswer::AllowSession),
+            ]
+            .spacing(4),
+            answer("Deny", PromptAnswer::Deny),
+        ),
+    };
+    let content = column![
+        row![
+            icon(Icon::TriangleAlert, ICON).style(|theme: &iced::Theme, _| iced::widget::svg::Style {
+                color: Some(theme.extended_palette().warning.base.color),
+            }),
+            text(prompt.title.as_str()).size(BODY),
+        ]
+        .spacing(SPACING)
+        .align_y(iced::Center),
+        text(prompt.body.as_str())
+            .size(SMALL)
+            .font(iced::Font::MONOSPACE)
+            .style(style::muted),
+        row![accept, reject.style(style::danger_flat)].spacing(4),
+    ]
+    .spacing(6);
+    container(content)
+        .padding(SPACING)
+        .width(Fill)
+        .style(style::card)
+        .into()
 }
 
 /// A small flat button: transparent until hovered.

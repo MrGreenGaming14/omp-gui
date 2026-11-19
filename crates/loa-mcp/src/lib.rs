@@ -9,10 +9,16 @@
 //!   [`ServerSpec`]s without ever writing to them.
 //! - [`ToolFilter`] is the per project toggle and per peer grant check the
 //!   app applies over `(server, tool)`.
+//! - [`central`] keeps the server list in the app's central config and
+//!   turns its project toggles into a filter and a session's disabled tools.
+//! - [`host_tools`] hands running servers' tools to harnesses that take
+//!   host tools instead of MCP servers (omp).
 
+pub mod central;
 mod connect;
 mod error;
 mod filter;
+pub mod host_tools;
 pub mod import;
 mod manager;
 mod registry;

@@ -11,15 +11,21 @@
 //! - [`ToolExecutor`] is the port the MCP server runs tools through.
 //! - [`OmpExecutor`] implements it on top of an omp child process.
 //! - [`BridgeServer`], [`serve`] and [`serve_stdio`] expose any executor over MCP.
+//! - [`cli::run`] is the stdio server's command line (the binary and the
+//!   app's `omp-bridge` subcommand); [`session::session_spec`] is the MCP
+//!   server spec a session of another harness gets.
+//! - [`list_omp_tools`] reports omp's own tools for the Tools panel.
 
+pub mod cli;
 mod error;
 mod omp;
 mod provider;
 mod rpc;
 mod server;
+pub mod session;
 mod tool;
 
 pub use error::{Error, Result};
-pub use omp::{DEFAULT_TOOLS, OmpBridgeConfig, OmpExecutor};
+pub use omp::{DEFAULT_TOOLS, OmpBridgeConfig, OmpExecutor, list_omp_tools};
 pub use server::{BridgeServer, serve, serve_stdio};
 pub use tool::{OutputBlock, ToolExecutor, ToolOutput, ToolSpec};

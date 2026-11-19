@@ -22,7 +22,11 @@ use crate::hosts::{Host, HostRegistry};
 use crate::known_hosts::KnownHosts;
 use crate::limits::{self, file_name, parent};
 use crate::ports::{Approval, ApprovalRequest, Approver, HostKeyDecider};
+use crate::pty::{self, Shell};
 use crate::sftp::{Sftp, WriteMode, is_server_status};
+
+/// Session id audit rows of user opened terminals carry.
+pub const TERMINAL_SESSION: &str = "terminal";
 
 /// A `remote_bash` call.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -168,7 +172,7 @@ fn class(action: Action) -> Option<Class> {
     match action {
         Action::Write | Action::Edit => Some(Class::Writes),
         Action::Command => Some(Class::Commands),
-        Action::Read | Action::List => None,
+        Action::Read | Action::List | Action::Terminal => None,
     }
 }
 
@@ -403,7 +407,7 @@ impl RemoteService {
         }
         let session = self.connect(&host, cancel).await?;
         if let Some(cwd) = &request.cwd
-            && !host.limits.allowed_paths.is_empty()
+            && !host.limits.allows_every_path()
         {
             let sftp = session.sftp().await?;
             self.real_target(&host, &sftp, cwd, false, &mut String::new()).await?;
@@ -424,6 +428,25 @@ impl RemoteService {
             s = self.connector.session(host) => s,
             () = cancel.cancelled() => Err(Error::Cancelled),
         }
+    }
+
+    /// Opens an interactive login shell on `host` for the terminal pane.
+    /// Host keys are checked as for the agent's tools; limits and approvals
+    /// do not apply because the user opened it. Audited under
+    /// [`TERMINAL_SESSION`].
+    pub async fn open_shell(&self, host: &str, cols: u16, rows: u16) -> Result<Shell> {
+        let result = async {
+            let host = self.host(host)?;
+            let session = self.connector.session(&host).await?;
+            pty::open(session, cols, rows).await
+        }
+        .await;
+        let (outcome, detail) = match &result {
+            Ok(_) => (Outcome::Ok, format!("{cols}x{rows}")),
+            Err(e) => (outcome_of(e), e.to_string()),
+        };
+        self.record(host, TERMINAL_SESSION, Action::Terminal, "login shell", outcome, &detail)?;
+        result
     }
 
     /// Reads, lists, writes or edits a file on a host (`remote_file`).
@@ -640,7 +663,7 @@ impl RemoteService {
         if real != path {
             *target = format!("{path} -> {real}");
         }
-        if host.limits.allowed_paths.is_empty() {
+        if host.limits.allows_every_path() {
             return Ok(real);
         }
         let mut prefixes = Vec::new();

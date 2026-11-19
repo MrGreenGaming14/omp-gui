@@ -12,7 +12,8 @@ use crate::audit::Action;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HostLimits {
-    /// Absolute path prefixes files must sit under. Empty allows any path.
+    /// Absolute path prefixes files must sit under. Empty allows no file
+    /// access at all; `/` allows every path.
     pub allowed_paths: Vec<String>,
     /// Refuse writes, edits and commands.
     pub read_only: bool,
@@ -62,7 +63,10 @@ impl HostLimits {
 
     /// Refuses a normalized path outside the allowed prefixes.
     pub fn check_path(&self, normalized: &str) -> Result<(), String> {
-        if self.allowed_paths.is_empty() || self.allowed_by_any(normalized, &self.prefixes()) {
+        if self.allowed_paths.is_empty() {
+            return Err(format!("{normalized} refused: no paths are allowed on this host"));
+        }
+        if self.allowed_by_any(normalized, &self.prefixes()) {
             Ok(())
         } else {
             Err(format!(
@@ -77,7 +81,7 @@ impl HostLimits {
         match action {
             Action::Write | Action::Edit => !self.auto_approve_writes,
             Action::Command => !self.auto_approve_commands,
-            Action::Read | Action::List => false,
+            Action::Read | Action::List | Action::Terminal => false,
         }
     }
 
@@ -88,6 +92,11 @@ impl HostLimits {
             .iter()
             .filter_map(|p| normalize(p).ok())
             .collect()
+    }
+
+    /// Whether `/` is allowed, so no path (or symlink) can escape.
+    pub fn allows_every_path(&self) -> bool {
+        self.prefixes().iter().any(|p| p == "/")
     }
 
     pub(crate) fn allowed_by_any(&self, path: &str, prefixes: &[String]) -> bool {
@@ -190,6 +199,19 @@ mod tests {
         };
         assert!(no_cmd.check_action(Action::Write).is_ok());
         assert!(no_cmd.check_action(Action::Command).is_err());
+    }
+
+    #[test]
+    fn no_allowed_paths_means_no_file_access_and_root_means_all() {
+        let none = HostLimits::default();
+        assert!(none.check_path("/srv/x").is_err());
+        assert!(!none.allows_every_path());
+        let all = HostLimits {
+            allowed_paths: vec!["/".into()],
+            ..Default::default()
+        };
+        assert!(all.check_path("/etc/hosts").is_ok());
+        assert!(all.allows_every_path());
     }
 
     #[test]

@@ -15,14 +15,18 @@
 
 pub mod agent;
 pub mod audit;
+pub mod config;
 pub mod connection;
 mod error;
 mod exec;
+pub mod host_tools;
 pub mod hosts;
+pub mod http;
 pub mod known_hosts;
 pub mod limits;
 pub mod mcp;
 pub mod ports;
+pub mod pty;
 mod service;
 mod sftp;
 pub mod ssh_config;
@@ -31,6 +35,6 @@ pub use error::{Error, Result};
 pub use exec::{ExecEnd, ExecOutput};
 pub use service::{
     BashRequest, DirEntry, EntryKind, FileOp, FileOutput, FileRequest, RemoteService,
-    RemoteServiceConfig,
+    RemoteServiceConfig, TERMINAL_SESSION,
 };
 pub use sftp::WriteMode;

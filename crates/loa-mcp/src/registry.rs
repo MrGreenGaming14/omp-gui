@@ -5,7 +5,7 @@ use std::sync::{Mutex, PoisonError};
 use async_trait::async_trait;
 use rmcp::model::Tool;
 
-use crate::import::{self, ConfigFile, ImportReport};
+use crate::import::{self, ConfigFile, Found, ImportReport};
 use crate::spec::ServerSpec;
 use crate::{Error, Manager, Result};
 
@@ -163,12 +163,23 @@ impl<S: ServerStore> Registry<S> {
     pub async fn import(&self, files: &[ConfigFile]) -> Result<ImportReport> {
         let mut specs = self.specs.lock().await;
         let report = import::plan(&specs, files);
+        self.register_imported(&mut specs, report).await
+    }
+
+    /// Imports entries a [`import::scan`] found and the user picked.
+    pub async fn import_found(&self, found: Vec<Found>) -> Result<ImportReport> {
+        let mut specs = self.specs.lock().await;
+        let report = import::plan_found(&specs, found);
+        self.register_imported(&mut specs, report).await
+    }
+
+    async fn register_imported(&self, specs: &mut Vec<ServerSpec>, report: ImportReport) -> Result<ImportReport> {
         let before = specs.len();
         specs.extend(report.imported().cloned());
         if specs.len() == before {
             return Ok(report);
         }
-        if let Err(e) = self.store.save(&specs).await {
+        if let Err(e) = self.store.save(specs).await {
             specs.truncate(before);
             return Err(Error::Store(e));
         }

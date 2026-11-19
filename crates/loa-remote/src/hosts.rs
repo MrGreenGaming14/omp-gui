@@ -96,6 +96,11 @@ impl HostRegistry {
         self.write().insert(host.name.clone(), host);
     }
 
+    /// Replaces the whole list, e.g. after the config changed.
+    pub fn replace_all(&self, hosts: impl IntoIterator<Item = Host>) {
+        *self.write() = hosts.into_iter().map(|h| (h.name.clone(), h)).collect();
+    }
+
     pub fn remove(&self, name: &str) -> Option<Host> {
         self.write().remove(name)
     }

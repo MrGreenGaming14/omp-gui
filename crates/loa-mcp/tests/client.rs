@@ -22,6 +22,15 @@ use loa_mcp::{
 const ROLE_ENV: &str = "LOA_MCP_FAKE_SERVER";
 /// Upper bound for anything a test waits on; never a synchronization sleep.
 const LIMIT: Duration = Duration::from_secs(20);
+/// What the fake's `vault_code` tool returns; a model can't guess it.
+const VAULT_CODE: &str = "vault code 7731-QZ";
+/// A 1x1 PNG the fake's `picture` tool returns.
+const PNG: &[u8] = &[
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00,
+    0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4, 0x89, 0x00, 0x00, 0x00, 0x0d, 0x49,
+    0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0xf8, 0xcf, 0xc0, 0xf0, 0x1f, 0x00, 0x05, 0x00, 0x01, 0xff, 0x89, 0x99, 0x3d,
+    0x1d, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+];
 
 fn main() {
     if std::env::var_os(ROLE_ENV).is_some() {
@@ -38,6 +47,9 @@ fn main() {
         trial("http_server_is_validated_with_its_headers", http_server_is_validated_with_its_headers),
         trial("registry_edits_and_removes_servers", registry_edits_and_removes_servers),
         trial("registry_import_starts_new_servers_once", registry_import_starts_new_servers_once),
+        trial("host_tools_route_calls_through_the_filter", host_tools_route_calls_through_the_filter),
+        trial("live_omp_session_calls_a_registered_mcp_tool", live_omp_session_calls_a_registered_mcp_tool)
+            .with_ignored_flag(true),
     ];
     libtest_mimic::run(&args, tests).exit();
 }
@@ -109,7 +121,7 @@ async fn stdio_server_lists_calls_and_reads_resources() {
     wait_status(&manager, "fake", running).await;
 
     let names: Vec<_> = manager.tools("fake", &AllowAll).unwrap().into_iter().map(|tool| tool.name).collect();
-    assert_eq!(names, ["echo", "pid", "crash", "grow"]);
+    assert_eq!(names, ["echo", "pid", "crash", "grow", "vault_code", "picture"]);
 
     assert_eq!(call_text(&manager, "fake", "echo", serde_json::json!({"text": "hello"})).await, "hello");
 
@@ -150,7 +162,10 @@ async fn filter_hides_and_refuses_tools() {
     assert_eq!(view.len(), 1);
     assert_eq!(view[0].spec.name, "fake");
     let allowed: Vec<_> = view[0].tools.iter().map(|tool| (tool.tool.name.as_ref(), tool.allowed)).collect();
-    assert_eq!(allowed, [("echo", true), ("pid", false), ("crash", false), ("grow", false)]);
+    assert_eq!(
+        allowed,
+        [("echo", true), ("pid", false), ("crash", false), ("grow", false), ("vault_code", false), ("picture", false)]
+    );
 
     let refused = manager.call_tool("fake", "crash", None, &grant).await;
     assert!(matches!(refused, Err(Error::NotAllowed { .. })));
@@ -215,7 +230,7 @@ async fn http_server_is_validated_with_its_headers() {
     let headers = [("X-Api-Key".to_owned(), "secret".to_owned())];
     let with = ServerSpec::new("web", Transport::Http(HttpSpec::new(url, headers).unwrap())).unwrap();
     let tools = registry.add(with.clone()).await.unwrap();
-    assert_eq!(tools.len(), 4);
+    assert_eq!(tools.len(), 6);
     assert_eq!(registry.specs().await, [with]);
 
     let manager = registry.manager();
@@ -274,6 +289,90 @@ async fn registry_import_starts_new_servers_once() {
     registry.manager().shutdown().await;
 }
 
+async fn host_tools_route_calls_through_the_filter() {
+    use loa_adapter::{HostToolContent, HostTools};
+    use loa_mcp::host_tools::McpHostTools;
+
+    let manager = Manager::new(options()).unwrap();
+    manager.add(fake_spec("fake")).unwrap();
+    manager.add(ServerSpec { enabled: false, ..fake_spec("off") }).unwrap();
+    wait_status(&manager, "fake", running).await;
+    let filter = |server: &str, tool: &str| server == "fake" && tool != "crash";
+    let tools = McpHostTools::new(manager.clone(), Arc::new(filter));
+    let names: Vec<_> = tools.specs().iter().map(|spec| spec.name.as_str()).collect();
+    assert_eq!(names, ["fake__echo", "fake__pid", "fake__grow", "fake__vault_code", "fake__picture"]);
+    let vault = &tools.specs()[3];
+    assert_eq!(vault.description, "[fake] Returns the current vault code. Takes no arguments.");
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&vault.input_schema).unwrap()["type"], "object");
+
+    assert_eq!(tools.call("s", "fake__echo", r#"{"text":"hi"}"#).await.unwrap(), "hi");
+    assert_eq!(tools.call("s", "fake__vault_code", "{}").await.unwrap(), VAULT_CODE);
+    let blocks = tools.call_content("s", "fake__picture", "{}").await.unwrap();
+    assert_eq!(blocks[0], HostToolContent::Text("a picture".into()));
+    assert!(matches!(&blocks[1], HostToolContent::Image { mime, data } if mime == "image/png" && data.as_ref() == PNG));
+    assert!(tools.call("s", "fake__crash", "{}").await.unwrap_err().contains("unknown MCP tool"), "filtered out");
+    assert!(tools.call("s", "fake__echo", "[1]").await.is_err());
+    manager.shutdown().await;
+}
+
+/// A real omp session (installed omp, real model) gets a registered stdio
+/// MCP server's tools as host tools and calls one. `LOA_LIVE_MODEL` picks
+/// the model; default `anthropic/claude-haiku-5-5`.
+async fn live_omp_session_calls_a_registered_mcp_tool() {
+    use loa_adapter::{Adapter, HostToolRouter, Prompt, SessionConfig};
+    use loa_adapter_omp::{OmpAdapter, OmpAdapterConfig};
+    use loa_core::{ElementKind, MemorySink, attr};
+    use loa_mcp::host_tools::McpHostTools;
+
+    let dir = tempfile::tempdir().unwrap();
+    let manager = Manager::new(options()).unwrap();
+    manager.add(fake_spec("fake")).unwrap();
+    wait_status(&manager, "fake", running).await;
+    let tools = Arc::new(McpHostTools::new(manager.clone(), Arc::new(AllowAll)));
+    let mut router = HostToolRouter::new();
+    router.add_all(tools.specs().to_vec(), tools.clone()).unwrap();
+
+    let model = std::env::var("LOA_LIVE_MODEL").unwrap_or_else(|_| "anthropic/claude-haiku-5-5".into());
+    let mut config = SessionConfig {
+        session_id: "mcp-live".into(),
+        node: "live-test".into(),
+        cwd: dir.path().to_owned(),
+        model: Some(model),
+        ..Default::default()
+    };
+    router.install(&mut config);
+    let adapter = OmpAdapter::new(OmpAdapterConfig::new("live-test", dir.path().join("state")));
+    let sink = Arc::new(MemorySink::new());
+    let session = adapter.start(config, sink.clone()).await.expect("omp starts");
+    session
+        .send(Prompt {
+            text: "Call your fake__vault_code tool and reply with exactly what it returned.".into(),
+            by: "live-test".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(240), session.wait_idle()).await.expect("turn ended in time").unwrap();
+    let dom = sink.dom();
+    let call = dom
+        .iter()
+        .find(|n| n.kind == ElementKind::Call && n.str_attr(attr::TOOL) == Some("fake__vault_code"))
+        .unwrap_or_else(|| {
+            let seen: Vec<_> = dom.iter().map(|n| (n.kind, n.attrs.clone(), n.text.clone())).collect();
+            panic!("omp did not call the MCP tool; the session holds {seen:#?}")
+        });
+    let result = dom.children_of_kind(call.id, ElementKind::Result).next().expect("the call has a result");
+    assert!(result.text.contains(VAULT_CODE), "result {:?}", result.text);
+    let said: String = dom
+        .iter()
+        .filter(|n| n.kind == ElementKind::Message && n.str_attr(attr::ROLE) == Some("assistant"))
+        .map(|n| n.text.as_str())
+        .collect();
+    assert!(said.contains("7731-QZ"), "assistant said {said:?}");
+    session.shutdown().await.unwrap();
+    manager.shutdown().await;
+}
+
 /// The fake MCP server.
 mod fake {
     use super::*;
@@ -313,6 +412,12 @@ mod fake {
             _context: RequestContext<RoleServer>,
         ) -> Result<ListToolsResult, ErrorData> {
             let mut tools = vec![tool("echo"), tool("pid"), tool("crash"), tool("grow")];
+            tools.push(Tool::new(
+                "vault_code",
+                "Returns the current vault code. Takes no arguments.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({"type": "object", "properties": {}})).unwrap(),
+            ));
+            tools.push(tool("picture"));
             if self.grown.load(Ordering::SeqCst) {
                 tools.push(tool("grown"));
             }
@@ -339,6 +444,12 @@ mod fake {
                     self.grown.store(true, Ordering::SeqCst);
                     context.peer.notify_tool_list_changed().await.map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
                     reply("grown".to_owned())
+                }
+                "vault_code" => reply(super::VAULT_CODE.to_owned()),
+                "picture" => {
+                    use base64::Engine;
+                    let png = base64::engine::general_purpose::STANDARD.encode(super::PNG);
+                    Ok(CallToolResult::success(vec![ContentBlock::text("a picture"), ContentBlock::image(png, "image/png")]).into())
                 }
                 other => Err(ErrorData::invalid_params(format!("no tool {other}"), None)),
             }
