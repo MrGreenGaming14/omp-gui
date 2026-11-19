@@ -50,7 +50,7 @@ async fn watches_github_and_npm_with_conditional_requests_and_pins() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
     let handle = tokio::spawn(async move { axum::serve(listener, server).await.unwrap() });
-    let client = reqwest::Client::new();
+    let client = loa_updater::http::client().unwrap();
     let mut watcher = Watcher::new(GitHubFeed::new(client.clone(), &base), NpmFeed::new(client, &base), None, Default::default());
     let app = Product { id: "app".into(), kind: ProductKind::App, feed: Feed::GitHub { owner: "owner".into(), repo: "app".into() }, prereleases: PrereleasePolicy::Stable, asset: Some("app-{version}.tar.gz".into()) };
     let package = Product { id: "omp".into(), kind: ProductKind::Omp, feed: Feed::Npm { package: "omp".into() }, prereleases: PrereleasePolicy::Stable, asset: None };

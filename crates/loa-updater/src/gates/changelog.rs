@@ -41,12 +41,15 @@ pub trait ChangelogSummarizer: Send + Sync {
     async fn review(&self, changelog: &str) -> Result<ChangelogReview, String>;
 }
 
-/// Runs omp once in print mode on the `smol` model role, without tools or a
-/// saved session, and parses its reply with [`parse_review`].
+/// Runs omp once in print mode on the `smol` model role (or another
+/// model), without tools, project context or a saved session, and parses
+/// its reply with [`parse_review`].
 #[derive(Clone, Debug)]
 pub struct OmpSmolSummarizer {
     pub executable: PathBuf,
     pub timeout: Duration,
+    /// `--model` selector: `@smol` for the role, or a concrete model.
+    pub model: String,
 }
 
 const REVIEW_PROMPT: &str = "\
@@ -63,17 +66,24 @@ Changelog:
 
 ";
 
+/// Flags that keep a review from loading project context, skills, rules or
+/// language servers, or naming a session.
+const REVIEW_FLAGS: [&str; 5] =
+    ["--no-context-files", "--no-rules", "--no-skills", "--no-title", "--no-lsp"];
+
 impl OmpSmolSummarizer {
+    /// A reviewer on the `smol` model role.
+    pub fn new(executable: impl Into<PathBuf>, timeout: Duration) -> Self {
+        Self { executable: executable.into(), timeout, model: "@smol".to_owned() }
+    }
+
     /// Arguments passed to omp for one review.
-    fn args(changelog: &str) -> [String; 6] {
-        [
-            "-p".to_string(),
-            "--model".to_string(),
-            "@smol".to_string(),
-            "--no-session".to_string(),
-            "--no-tools".to_string(),
-            format!("{REVIEW_PROMPT}{changelog}"),
-        ]
+    fn args(&self, changelog: &str) -> Vec<String> {
+        let mut args: Vec<String> =
+            ["-p", "--model", &self.model, "--no-session", "--no-tools"].map(String::from).into();
+        args.extend(REVIEW_FLAGS.map(String::from));
+        args.push(format!("{REVIEW_PROMPT}{changelog}"));
+        args
     }
 }
 
@@ -81,7 +91,7 @@ impl OmpSmolSummarizer {
 impl ChangelogSummarizer for OmpSmolSummarizer {
     async fn review(&self, changelog: &str) -> Result<ChangelogReview, String> {
         let child = Command::new(&self.executable)
-            .args(Self::args(changelog))
+            .args(self.args(changelog))
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -131,7 +141,6 @@ pub fn check_changelog(review: &ChangelogReview) -> CheckResult {
 mod tests {
     use super::*;
     use crate::gates::Verdict;
-    use std::os::unix::fs::PermissionsExt;
 
     #[test]
     fn parse_review_is_strict() {
@@ -168,10 +177,21 @@ mod tests {
         assert_eq!(r.details, vec!["- removed: drop `grep`"]);
     }
 
+    /// Writes an executable script from a separate process, so no test
+    /// thread holds a writable descriptor a concurrently forked child could
+    /// inherit (which makes exec fail with "Text file busy").
     fn script(dir: &std::path::Path, body: &str) -> PathBuf {
         let path = dir.join("omp");
-        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut writer = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("cat > \"$0\" && chmod 755 \"$0\"")
+            .arg(&path)
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        std::io::Write::write_all(&mut writer.stdin.take().unwrap(), format!("#!/bin/sh\n{body}\n").as_bytes())
+            .unwrap();
+        assert!(writer.wait().unwrap().success());
         path
     }
 
@@ -187,7 +207,7 @@ mod tests {
                 args_file.display()
             ),
         );
-        let summarizer = OmpSmolSummarizer { executable: exe, timeout: Duration::from_secs(10) };
+        let summarizer = OmpSmolSummarizer::new(exe, Duration::from_secs(10));
         let review = summarizer.review("## 2.0.0\n\n- edit: path renamed").await.unwrap();
         assert_eq!(review.breaking, vec!["edit: path renamed"]);
 
@@ -201,7 +221,7 @@ mod tests {
     async fn smol_summarizer_rejects_junk() {
         let dir = tempfile::tempdir().unwrap();
         let exe = script(dir.path(), "echo 'Sure! Nothing breaking here.'");
-        let summarizer = OmpSmolSummarizer { executable: exe, timeout: Duration::from_secs(10) };
+        let summarizer = OmpSmolSummarizer::new(exe, Duration::from_secs(10));
         assert!(summarizer.review("## 1.0.1\n\n- fix").await.is_err());
     }
 }

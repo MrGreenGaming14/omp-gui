@@ -66,6 +66,14 @@ fn removed_unused_tool_passes() {
 }
 
 #[test]
+fn used_tool_missing_from_both_versions_passes() {
+    let tools = vec![old_tools().remove(1)];
+    let r = check_tool_schemas(&tools, &tools, &used());
+    assert_eq!(r.verdict, Verdict::Pass, "{:?}", r.details);
+    assert!(r.details.contains(&"~ edit: unavailable in both versions".to_string()), "{:?}", r.details);
+}
+
+#[test]
 fn renamed_field_is_reported_as_rename() {
     let new = edit_schema_with(|s| {
         let props = s["properties"].as_object_mut().unwrap();
@@ -219,6 +227,7 @@ impl FormatProbe for FakeFormats {
     async fn config_keys(&self, _: &Path) -> Result<ConfigSchema, String> {
         Ok(ConfigSchema {
             keys: ["modelRoles.smol".to_string()].into(),
+            open: Default::default(),
             renamed: Default::default(),
         })
     }

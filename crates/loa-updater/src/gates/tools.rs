@@ -27,7 +27,9 @@ pub trait ToolCatalog: Send + Sync {
 
 /// Compares the tool lists of two versions. Harmful when a used tool is
 /// gone, a used field is gone or changed JSON type, or any field of a used
-/// tool became required. Additions pass and are listed as `+` lines.
+/// tool became required. Additions pass and are listed as `+` lines. A used
+/// tool neither version offers is no regression of the update and is listed
+/// as a `~` line.
 pub fn check_tool_schemas(old: &[ToolSchema], new: &[ToolSchema], used: &UsedTools) -> CheckResult {
     let old_by_name: HashMap<&str, &Value> =
         old.iter().map(|t| (t.name.as_str(), &t.input_schema)).collect();
@@ -41,7 +43,11 @@ pub fn check_tool_schemas(old: &[ToolSchema], new: &[ToolSchema], used: &UsedToo
 
     for (tool, fields) in used {
         let Some(new_schema) = new_by_name.get(tool.as_str()) else {
-            harmful.push(format!("- {tool}: tool removed"));
+            if old_by_name.contains_key(tool.as_str()) {
+                harmful.push(format!("- {tool}: tool removed"));
+            } else {
+                info.push(format!("~ {tool}: unavailable in both versions"));
+            }
             continue;
         };
         let old_schema = old_by_name.get(tool.as_str()).copied();

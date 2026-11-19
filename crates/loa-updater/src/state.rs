@@ -56,6 +56,9 @@ pub struct UpdaterState {
     /// Versions cleared for swapping at the next point between sessions.
     #[serde(default)]
     pub pending_swap: BTreeMap<String, Version>,
+    /// The last gate report of each product, clean or not, for display.
+    #[serde(default)]
+    pub reports: BTreeMap<String, GateReport>,
 }
 
 impl UpdaterState {

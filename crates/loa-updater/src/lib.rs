@@ -14,15 +14,21 @@ pub mod decision;
 pub mod feeds;
 pub mod gates;
 pub mod http;
+pub mod installed;
 pub mod layout;
 pub mod peers;
 pub mod product;
+pub mod service;
 pub mod signature;
 pub mod stage;
 pub mod state;
 pub mod swap;
 
 pub use layout::{Staged, StagedManifest};
+pub use service::{
+    Gates, Installed, InstalledStatus, OmpGates, Overview, ProductSpec, ProductStatus,
+    SignatureStatus, TurnGate, Updater, UpdaterConfig, UpdaterError, default_products,
+};
 pub use product::{
     ArchiveFormat, Artifact, CachedFeed, Checksum, Feed, PrereleasePolicy, Product, ProductKind,
     Release,

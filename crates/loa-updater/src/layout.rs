@@ -6,6 +6,7 @@
 //! <root>/versions/<product>/<version>/staged.json  StagedManifest
 //! <root>/versions/<product>/active.json            which version is active (swap)
 //! <root>/state.json                                UpdaterState
+//! <root>/feeds.json                                feed cache (ETags, releases)
 //! ```
 //!
 //! A version directory is complete only once `staged.json` exists: staging
@@ -29,6 +30,11 @@ pub fn version_dir(root: &Path, product: &str, version: &Version) -> PathBuf {
 /// Persisted updater state file.
 pub fn state_path(root: &Path) -> PathBuf {
     root.join("state.json")
+}
+
+/// Persisted feed responses, kept for conditional requests across runs.
+pub fn cache_path(root: &Path) -> PathBuf {
+    root.join("feeds.json")
 }
 
 pub const PAYLOAD_DIR: &str = "payload";

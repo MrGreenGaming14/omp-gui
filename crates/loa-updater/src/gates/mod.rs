@@ -7,6 +7,7 @@
 pub mod changelog;
 pub mod contract;
 pub mod formats;
+pub mod omp;
 pub mod rpc;
 pub mod run;
 pub mod tools;
@@ -17,6 +18,7 @@ pub use changelog::{
 };
 pub use contract::{ContractFailure, ContractRunner, check_contract};
 pub use formats::{ConfigSchema, FormatProbe, check_config_schema, check_session_format};
+pub use omp::{GoldenSession, OmpProbe, builtin_goldens};
 pub use rpc::{OmpReadyProbe, RpcProbe, check_rpc_protocol};
 pub use run::{ChangelogGate, FormatGate, GateInputs, RpcGate, ToolGate, run_gates};
 pub use tools::{ToolCatalog, ToolSchema, UsedTools, check_tool_schemas};
