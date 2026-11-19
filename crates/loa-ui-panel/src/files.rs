@@ -216,6 +216,20 @@ impl State {
         &self.root
     }
 
+    /// Roots the tree at `root`: forgets every loaded node, the selection
+    /// and the touched files, and lists the new root's children.
+    pub fn set_root(&mut self, root: PathBuf) {
+        self.root = root;
+        self.nodes = vec![Node::root()];
+        self.selected = None;
+        self.selected_row = None;
+        self.touched.clear();
+        self.touched_dirs.clear();
+        self.scroll_offset = 0.0;
+        self.load(0);
+        self.rebuild_rows();
+    }
+
     /// Root-relative paths of the visible rows, top to bottom.
     pub fn visible(&self) -> impl Iterator<Item = &Path> {
         self.rows.iter().filter_map(|row| match *row {
@@ -640,6 +654,18 @@ mod tests {
 
     fn mark(state: &State, rel: &str) -> Mark {
         state.nodes[index_of(state, rel)].mark
+    }
+
+    #[test]
+    fn set_root_replaces_the_tree() {
+        let (mut state, fs) = fixture();
+        click(&mut state, "src");
+        fs.put("/q", &[("only.txt", false)]);
+        state.set_root(PathBuf::from("/q"));
+        assert_eq!(state.root(), Path::new("/q"));
+        assert_eq!(visible(&state), ["only.txt"]);
+        assert_eq!(selected(&state), None);
+        assert_eq!(fs.calls("/q"), 1);
     }
 
     #[test]
