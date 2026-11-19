@@ -240,6 +240,8 @@ impl App {
         };
         let shown = app.tabs().into_iter().filter(|tab| tab.shown).map(|tab| shell::PanelTab::new(tab.id, tab.title)).collect();
         app.ctx.shell.set_tabs(shown);
+        let folder = workspace(&app.ctx.services.cwd);
+        app.ctx.composer.set_workspace(Some(folder));
         app.refresh_commands();
         let settle = app.settle();
         let usage = app.usage.refresh().map(Message::Usage);
@@ -481,8 +483,16 @@ impl App {
     fn present(&mut self) {
         let Some(session) = self.ctx.sessions.active() else {
             self.chat.load(&Dom::new());
+            let workspace = workspace(&self.ctx.services.cwd);
+            self.ctx.composer.set_workspace(Some(workspace));
             return;
         };
+        let cwd = session
+            .dom()
+            .root()
+            .and_then(|root| root.str_attr(attr::CWD))
+            .map_or_else(|| self.ctx.services.cwd.clone(), PathBuf::from);
+        self.ctx.composer.set_workspace(Some(workspace(&cwd)));
         self.chat.load(session.dom());
         if let Some(summary) = session.summary() {
             self.ctx.shell.upsert_session(summary);
@@ -670,6 +680,7 @@ impl App {
                 self.ctx.composer.set_files(self.files.visible().map(|path| path.to_string_lossy().into_owned()).collect());
                 Task::none()
             }
+            Some(composer::Event::OpenWorkspace) => self.open_tab("files"),
             Some(composer::Event::QueueChanged(_)) | None => Task::none(),
         }
     }
@@ -1030,6 +1041,41 @@ impl App {
     }
 }
 
+/// The composer's folder chip for `cwd`: home shortened to `~`, and the git
+/// branch read from the repository's HEAD.
+fn workspace(cwd: &Path) -> composer::Workspace {
+    let full = cwd.display().to_string();
+    let path = match std::env::var_os("HOME").map(PathBuf::from) {
+        Some(home) if cwd.starts_with(&home) => match cwd.strip_prefix(&home) {
+            Ok(rest) if rest.as_os_str().is_empty() => "~".to_owned(),
+            Ok(rest) => format!("~/{}", rest.display()),
+            Err(_) => full.clone(),
+        },
+        _ => full.clone(),
+    };
+    composer::Workspace { path, full, branch: git_branch(cwd) }
+}
+
+/// The branch checked out in the repository holding `dir`: read from
+/// `.git/HEAD`, following a worktree's `.git` file; a short commit id when
+/// HEAD is detached.
+fn git_branch(dir: &Path) -> Option<String> {
+    let git = dir.ancestors().map(|dir| dir.join(".git")).find(|git| git.exists())?;
+    let git_dir = if git.is_file() {
+        let pointer = std::fs::read_to_string(&git).ok()?;
+        let target = PathBuf::from(pointer.strip_prefix("gitdir:")?.trim());
+        if target.is_absolute() { target } else { git.parent()?.join(target) }
+    } else {
+        git
+    };
+    let head = std::fs::read_to_string(git_dir.join("HEAD")).ok()?;
+    let head = head.trim();
+    match head.strip_prefix("ref: refs/heads/") {
+        Some(branch) => Some(branch.to_owned()),
+        None => head.get(..7).map(str::to_owned),
+    }
+}
+
 /// The shell's theme preference for the saved setting.
 fn preference(theme: loa_config::Theme) -> shell::Preference {
     match theme {
@@ -1097,3 +1143,27 @@ mod windows;
 
 #[cfg(test)]
 pub(crate) mod tests;
+
+#[cfg(test)]
+mod workspace_tests {
+    use super::*;
+
+    #[test]
+    fn workspace_reads_the_branch_and_shortens_home() {
+        let repo = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(repo.path().join(".git")).unwrap();
+        std::fs::write(repo.path().join(".git/HEAD"), "ref: refs/heads/tai/ui-v3\n").unwrap();
+        std::fs::create_dir_all(repo.path().join("crates/app")).unwrap();
+        assert_eq!(git_branch(&repo.path().join("crates/app")).as_deref(), Some("tai/ui-v3"), "found from a subfolder");
+
+        std::fs::write(repo.path().join(".git/HEAD"), "0123456789abcdef\n").unwrap();
+        assert_eq!(git_branch(repo.path()).as_deref(), Some("0123456"), "detached HEAD shows a short id");
+
+        let outside = tempfile::tempdir().unwrap();
+        assert_eq!(git_branch(outside.path()), None);
+
+        if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+            assert_eq!(workspace(&home.join("Projects/omp-gui")).path, "~/Projects/omp-gui");
+        }
+    }
+}

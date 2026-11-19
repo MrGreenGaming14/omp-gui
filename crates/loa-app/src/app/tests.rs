@@ -693,3 +693,14 @@ fn a_session_opens_in_its_own_window_without_becoming_active() {
     let mut ui = Simulator::with_size(iced::Settings::default(), iced::Size::new(560.0, 720.0), app.view_window(id));
     assert!(ui.find("first session").is_ok(), "the window shows the detached session's transcript");
 }
+
+#[test]
+fn composer_shows_the_session_folder_and_opens_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = fake_app(dir.path(), &["fake-a"]);
+    update(&mut app, Message::NewSession);
+    let folder = app.ctx.composer.workspace().expect("a folder chip").clone();
+    assert_eq!(folder.full, app.ctx.services.cwd.display().to_string());
+    click_id(&mut app, composer::WORKSPACE_CHIP_ID);
+    assert_eq!(app.ctx.shell.active_tab(), Some("files"), "the chip opens the folder in Files");
+}

@@ -87,6 +87,19 @@ pub enum Event {
     /// The user pressed one of the [`State::set_model_actions`] rows. Holds
     /// its id.
     ModelAction(String),
+    /// The folder chip was pressed: show the session's folder.
+    OpenWorkspace,
+}
+
+/// The folder a session works in, as the composer's folder chip shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Workspace {
+    /// The folder, shortened for display, e.g. `~/Projects/omp-gui`.
+    pub path: String,
+    /// The full path, shown on hover.
+    pub full: String,
+    /// The git branch checked out there, if it is a repository.
+    pub branch: Option<String>,
 }
 
 /// Internal messages of the composer.
@@ -117,6 +130,8 @@ pub enum Message {
     PickerClosed,
     /// Whether an input method is composing text.
     Composing(bool),
+    /// The folder chip was pressed.
+    WorkspacePressed,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -144,6 +159,7 @@ pub struct State {
     dismissed: Option<Trigger>,
     pickers: Pickers,
     author: String,
+    workspace: Option<Workspace>,
 }
 
 impl Default for State {
@@ -167,7 +183,18 @@ impl State {
             dismissed: None,
             pickers: Pickers::default(),
             author: String::new(),
+            workspace: None,
         }
+    }
+
+    /// Sets the folder the session works in, shown left of the pickers.
+    pub fn set_workspace(&mut self, workspace: Option<Workspace>) {
+        self.workspace = workspace;
+    }
+
+    /// The folder chip's contents.
+    pub fn workspace(&self) -> Option<&Workspace> {
+        self.workspace.as_ref()
     }
 
     /// Node key or user written to [`Prompt::by`].
@@ -334,6 +361,7 @@ impl State {
                 self.pickers.open = None;
                 None
             }
+            Message::WorkspacePressed => Some(Event::OpenWorkspace),
             Message::ModelPicked(model) => {
                 self.pickers.open = None;
                 (self.pickers.model.as_ref() != Some(&model)).then(|| {
@@ -407,6 +435,9 @@ impl State {
 
         let pickers = &self.pickers;
         let mut controls = row![].spacing(4).align_y(Center);
+        if let Some(workspace) = &self.workspace {
+            controls = controls.push(workspace_chip(workspace));
+        }
         if pickers.harnesses.len() > 1 {
             let label = self.harness().map_or("Harness", |h| h.label.as_str());
             controls = controls.push(self.picker(Picker::Harness, label));
@@ -803,6 +834,22 @@ fn edit_kind(edit: &Edit) -> EditKind {
         Edit::Paste(_) | Edit::Enter | Edit::Indent | Edit::Unindent => EditKind::Other,
     }
 }
+
+/// The folder chip: the folder and git branch, the full path on hover.
+fn workspace_chip(workspace: &Workspace) -> Element<'_, Message> {
+    let mut chip = row![muted(Icon::Folder, 14.0), text(workspace.path.as_str()).size(13)].spacing(6).align_y(Center);
+    if let Some(branch) = &workspace.branch {
+        chip = chip.push(muted(Icon::GitFork, 13.0)).push(text(branch.as_str()).size(13));
+    }
+    let chip = button(chip).padding([3, 6]).style(style::picker(false)).on_press(Message::WorkspacePressed);
+    let tip = container(text(workspace.full.as_str()).size(12)).padding([3, 8]).style(style::menu);
+    container(iced::widget::tooltip(chip, tip, iced::widget::tooltip::Position::Top))
+        .id(WORKSPACE_CHIP_ID)
+        .into()
+}
+
+/// Container id of the folder chip.
+pub const WORKSPACE_CHIP_ID: &str = "loa-composer-workspace";
 
 /// An icon-only button with its label as a tooltip.
 fn labelled<'a>(button: iced::widget::Button<'a, Message>, label: &'static str) -> Element<'a, Message> {
