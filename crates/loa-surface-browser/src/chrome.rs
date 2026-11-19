@@ -162,7 +162,7 @@ mod tests {
 
     fn touch_exe(path: &Path) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        loa_test_exec::write_executable(path, "#!/bin/sh\n").unwrap();
+        loa_exec::write_executable(path, "#!/bin/sh\n").unwrap();
     }
 
     #[test]

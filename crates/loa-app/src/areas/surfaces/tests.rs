@@ -565,7 +565,7 @@ async fn the_virtual_display_capture_says_why_it_cant_run_and_is_saved_where_it_
     let xvfb = dir.path().join("Xvfb");
     // A display number no X server here listens on.
     let free = (6000..7000).find(|n| !std::path::Path::new(&format!("/tmp/.X11-unix/X{n}")).exists()).unwrap();
-    loa_test_exec::write_executable(&xvfb, format!("#!/bin/sh\necho {free}\nexec sleep 600\n")).unwrap();
+    loa_exec::write_executable(&xvfb, format!("#!/bin/sh\necho {free}\nexec sleep 600\n")).unwrap();
     config.virtual_display = Ok(loa_surface_hub::VirtualDisplaySetup { xvfb, chrome });
     let hub = SurfaceHub::new(config);
     let mut driver = Driver::new(dir.path(), Arc::clone(&hub));
@@ -583,11 +583,17 @@ async fn the_virtual_display_capture_says_why_it_cant_run_and_is_saved_where_it_
     hub.shutdown().await;
 }
 
+/// The tab's framebuffer pixel at `(x, y)`, RGB.
+fn pixel(app: &App, uri: &SurfaceUri, x: u32, y: u32) -> Option<[u8; 3]> {
+    let fb = app.areas.surfaces.panel().surface(uri).and_then(|s| s.framebuffer())?;
+    let i = (y as usize * fb.width() as usize + x as usize) * 4;
+    fb.pixels().get(i..i + 3).map(|px| [px[0], px[1], px[2]])
+}
+
 /// The center pixel of the tab's framebuffer, RGB.
 fn center(app: &App, uri: &SurfaceUri) -> Option<[u8; 3]> {
     let fb = app.areas.surfaces.panel().surface(uri).and_then(|s| s.framebuffer())?;
-    let i = ((fb.height() / 2) as usize * fb.width() as usize + (fb.width() / 2) as usize) * 4;
-    Some([fb.pixels()[i], fb.pixels()[i + 1], fb.pixels()[i + 2]])
+    pixel(app, uri, fb.width() / 2, fb.height() / 2)
 }
 
 fn key(text: &str, pressed: bool) -> loa_ui_surface::Message {
@@ -643,6 +649,10 @@ async fn live_a_browser_tab_on_a_real_virtual_display_streams_and_takes_clicks_a
         move |app: &App| center(app, &uri).is_some_and(|px| px.iter().zip(rgb).all(|(&a, b)| a.abs_diff(b) < 60))
     };
     driver.until("the virtual display shows the red page", is([255, 0, 0])).await;
+    // The page starts at the top of the picture: no browser bar sits above
+    // it, so what the user sees lines up with where input lands.
+    let top = pixel(&driver.app, &uri, 400, 2).unwrap();
+    assert!(top[0] > 200 && top[1] < 60 && top[2] < 60, "top row is {top:?}, not the page");
     let stream = stream_label(&driver.app, &uri);
     eprintln!("stream: {stream:?}");
 

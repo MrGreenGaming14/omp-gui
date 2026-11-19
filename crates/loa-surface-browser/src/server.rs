@@ -31,6 +31,38 @@ pub(crate) struct Instance {
     _profile: TempDir,
 }
 
+/// chromiumoxide's default flags without `enable-automation`, plus the
+/// switches that keep infobars off a headed window.
+const HEADED_ARGS: [&str; 26] = [
+    "disable-background-networking",
+    "enable-features=NetworkService,NetworkServiceInProcess",
+    "disable-background-timer-throttling",
+    "disable-backgrounding-occluded-windows",
+    "disable-breakpad",
+    "disable-client-side-phishing-detection",
+    "disable-component-extensions-with-background-pages",
+    "disable-default-apps",
+    "disable-dev-shm-usage",
+    "disable-features=TranslateUI",
+    "disable-hang-monitor",
+    "disable-ipc-flooding-protection",
+    "disable-popup-blocking",
+    "disable-prompt-on-repost",
+    "disable-renderer-backgrounding",
+    "disable-sync",
+    "force-color-profile=srgb",
+    "metrics-recording-only",
+    "no-first-run",
+    "password-store=basic",
+    "use-mock-keychain",
+    "enable-blink-features=IdleDetection",
+    "lang=en_US",
+    "disable-infobars",
+    // Hides the "unsupported command-line flag" bar `--no-sandbox` brings.
+    "test-type",
+    "noerrdialogs",
+];
+
 impl Instance {
     async fn launch(config: &BrowserConfig, display: Option<VirtualDisplay>) -> Result<Arc<Self>> {
         let profile = match &config.profile_root {
@@ -49,9 +81,15 @@ impl Instance {
         builder = match &display {
             // The builder defaults to headless.
             None => builder,
+            // Headed: chromiumoxide's default flags minus `enable-automation`,
+            // whose infobar (and Chrome for Testing's) would sit on top of the
+            // page in the captured picture, shifting it away from where
+            // input lands.
             Some(display) => builder
                 .with_head()
+                .disable_default_args()
                 .env("DISPLAY", display.display())
+                .args(HEADED_ARGS)
                 .args(["ozone-platform=x11", "kiosk", "window-position=0,0", "no-default-browser-check"]),
         };
         let (browser, mut handler) = Browser::launch(builder.build().map_err(BrowserError::Config)?).await?;
