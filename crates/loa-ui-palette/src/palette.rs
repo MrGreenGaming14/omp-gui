@@ -931,4 +931,22 @@ mod tests {
         let closed: Vec<Option<Event>> = ui.into_messages().map(|m| state.update(m).1).collect();
         assert_eq!(closed, vec![Some(Event::Closed)]);
     }
+
+    #[test]
+    fn shortcuts_mode_lists_only_commands_with_keys() {
+        let mut state = palette(vec![
+            Command::new(id("a"), "Alpha", "S"),
+            Command::new(id("b"), "Bravo", "S").shortcut(Some(Chord::char('b', iced::keyboard::Modifiers::CTRL))),
+            Command::new(id("c"), "Charlie", "Keys").keys("1–9").enabled(false),
+        ]);
+        let _ = state.update(Message::OpenShortcuts);
+        assert!(state.is_open() && state.shortcuts_only());
+        let titles: Vec<_> = state.entries().map(|e| e.command.title.as_str()).collect();
+        assert_eq!(titles, ["Bravo", "Charlie"]);
+        assert_eq!(state.hint(state.entries().nth(1).unwrap().command).as_deref(), Some("1–9"));
+        let _ = state.update(Message::Close);
+        let _ = state.update(Message::Open);
+        assert!(!state.shortcuts_only());
+        assert_eq!(state.entries().count(), 3);
+    }
 }

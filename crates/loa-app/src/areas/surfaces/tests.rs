@@ -479,3 +479,271 @@ async fn live_an_omp_session_in_the_app_screenshots_the_browser_surface() {
     }
     hub.shutdown().await;
 }
+
+/// The stream the tab of `uri` shows, as its header labels it.
+fn stream_label(app: &App, uri: &SurfaceUri) -> Option<String> {
+    app.areas.surfaces.panel().surface(uri).and_then(|s| s.stream()).map(|s| loa_ui_surface::stream_label(&s))
+}
+
+/// The first frame of `frames` in `encoding`, decoded, with `rgb` in the
+/// middle of the picture.
+async fn decoded(
+    frames: &mut tokio::sync::broadcast::Receiver<Arc<loa_surface::Frame>>,
+    encoding: loa_surface::Encoding,
+    rgb: [u8; 3],
+) {
+    let (mut decoder, mut canvas) = (loa_surface_bench::decode::FrameDecoder::new(), loa_surface_bench::canvas::Canvas::new(0, 0));
+    let wait = async {
+        loop {
+            let Ok(frame) = frames.recv().await else { continue };
+            if decoder.apply(&frame, &mut canvas).is_err() || frame.encoding != encoding {
+                continue;
+            }
+            let at = ((canvas.height() / 2 * canvas.width() + canvas.width() / 2) * 4) as usize;
+            if canvas.rgba()[at..at + 3].iter().zip(rgb).all(|(&a, b)| a.abs_diff(b) < 60) {
+                return;
+            }
+        }
+    };
+    tokio::time::timeout(PATIENCE, wait).await.unwrap_or_else(|_| panic!("no {encoding:?} frame showing {rgb:?}"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_browser_tab_shows_source_frames_here_streams_video_to_peers_and_the_toggle_is_saved() {
+    let dir = tempfile::tempdir().unwrap();
+    let hub = hub(dir.path(), true);
+    if hub.browser_executable().is_none() {
+        eprintln!("SKIPPED: no Chrome or Chromium installed");
+        return;
+    }
+    let mut driver = Driver::new(dir.path(), Arc::clone(&hub));
+    // The launcher learns what this machine encodes with.
+    driver.until("the encoders were tried", |app| app.areas.surfaces.panel().video().encoder.is_some()).await;
+    let video = driver.area().panel().video().clone();
+    assert!(video.enabled);
+    let encoder = video.encoder.clone().unwrap();
+    assert_eq!(encoder.encoding, loa_surface::Encoding::H264);
+    eprintln!("launcher: {} ({}), hardware encoders: {:?}", encoder.encoder, encoder.hardware, video.hardware);
+
+    let page = "data:text/html,<body style='margin:0;height:100vh;background:rgb(255,0,0)' onmousedown=\"document.body.style.background='rgb(0,0,255)'\"></body>";
+    driver.surfaces(panel::Message::Url(page.into()));
+    driver.surfaces(panel::Message::OpenUrl);
+    driver.until("the tab is shown", |app| app.areas.surfaces.panel().active().is_some()).await;
+    let uri = driver.area().panel().active().unwrap().clone();
+    let red = |app: &App, blue: bool| {
+        let Some(fb) = app.areas.surfaces.panel().surface(&uri).and_then(|s| s.framebuffer()) else { return false };
+        let i = ((fb.height() / 2) as usize * fb.width() as usize + (fb.width() / 2) as usize) * 4;
+        let px = &fb.pixels()[i..i + 3];
+        if blue { px[2] > 180 && px[0] < 80 } else { px[0] > 180 && px[2] < 80 }
+    };
+    // The tab here shows the screencast's own JPEG frames, though its
+    // renderer decodes H.264: no encoder sits between the page and the panel.
+    driver.until("the tab shows the red page", |app| red(app, false)).await;
+    assert_eq!(stream_label(&driver.app, &uri).as_deref(), Some("JPEG"));
+    let size = Size::new(480.0, 320.0);
+    let press = PointerInput::Button { at: Point::new(240.0, 160.0), button: MouseButton::Left, pressed: true };
+    driver.surfaces(panel::Message::Surface(uri.clone(), loa_ui_surface::Message::Panel(size)));
+    driver.surfaces(panel::Message::Surface(uri.clone(), loa_ui_surface::Message::Pointer { panel: size, input: press }));
+    driver.until("the click shows in the tab", |app| red(app, true)).await;
+    assert_eq!(driver.area().panel().surface(&uri).unwrap().notice(), None);
+
+    // A peer's viewer that decodes H.264 gets video from the launcher's encoder.
+    let network = hub.network_surface(&uri).await.unwrap();
+    let mut frames = network.frames().unwrap();
+    let accepted = [loa_surface::Encoding::H264, loa_surface::Encoding::Jpeg, loa_surface::Encoding::Png, loa_surface::Encoding::Rgba];
+    assert_eq!(network.negotiate(&accepted).await.unwrap().as_ref(), Some(&encoder));
+    decoded(&mut frames, loa_surface::Encoding::H264, [0, 0, 255]).await;
+    assert_eq!(stream_label(&driver.app, &uri).as_deref(), Some("JPEG"));
+
+    // Off: the peer gets the JPEG screencast too, and it is saved.
+    let switched = async |video: bool| {
+        let wait = async {
+            while network.stream().is_none_or(|s| (s.encoding == loa_surface::Encoding::H264) != video) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        };
+        tokio::time::timeout(PATIENCE, wait).await.expect("the peer's stream switched");
+    };
+    driver.surfaces(panel::Message::Video(false));
+    switched(false).await;
+    assert_eq!(network.stream().unwrap().encoder, loa_surface_bench::live::SOURCE);
+    decoded(&mut frames, loa_surface::Encoding::Jpeg, [0, 0, 255]).await;
+    assert!(!hub.video());
+    assert!(!driver.app.ctx.services.config.load().unwrap().config.surfaces.video);
+    driver.surfaces(panel::Message::Video(true));
+    switched(true).await;
+    decoded(&mut frames, loa_surface::Encoding::H264, [0, 0, 255]).await;
+    assert!(driver.app.ctx.services.config.load().unwrap().config.surfaces.video);
+    assert_eq!(stream_label(&driver.app, &uri).as_deref(), Some("JPEG"));
+    hub.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_virtual_display_capture_says_why_it_cant_run_and_is_saved_where_it_can() {
+    let dir = tempfile::tempdir().unwrap();
+    // No Xvfb: the launcher says so and the choice stays on the screencast.
+    let mut config = HubConfig::discover(&dir.path().join("hub"));
+    config.virtual_display = Err("Xvfb isn't installed (install the xvfb package)".into());
+    let mut driver = Driver::new(dir.path(), SurfaceHub::new(config));
+    let capture = driver.area().panel().capture().clone();
+    assert_eq!(capture.virtual_display_missing.as_deref(), Some("Xvfb isn't installed (install the xvfb package)"));
+    driver.surfaces(panel::Message::Capture(panel::Capture::VirtualDisplay));
+    assert_eq!(driver.area().panel().capture().selected, panel::Capture::Screencast);
+    assert_eq!(driver.area().hub().capture(), loa_surface_hub::CaptureMode::Screencast);
+
+    // A fake Xvfb that reports a display but serves none: the choice is
+    // taken and saved, and opening a tab fails with the browser's reason.
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = HubConfig::discover(&dir.path().join("hub"));
+    let Some(chrome) = config.browser.as_ref().map(|b| b.executable.clone()) else {
+        eprintln!("SKIPPED: no Chrome or Chromium installed");
+        return;
+    };
+    let xvfb = dir.path().join("Xvfb");
+    // A display number no X server here listens on.
+    let free = (6000..7000).find(|n| !std::path::Path::new(&format!("/tmp/.X11-unix/X{n}")).exists()).unwrap();
+    loa_exec::write_executable(&xvfb, format!("#!/bin/sh\necho {free}\nexec sleep 600\n")).unwrap();
+    config.virtual_display = Ok(loa_surface_hub::VirtualDisplaySetup { xvfb, chrome });
+    let hub = SurfaceHub::new(config);
+    let mut driver = Driver::new(dir.path(), Arc::clone(&hub));
+    assert_eq!(driver.area().panel().capture().virtual_display_missing, None);
+    driver.surfaces(panel::Message::Capture(panel::Capture::VirtualDisplay));
+    assert_eq!(hub.capture(), loa_surface_hub::CaptureMode::VirtualDisplay);
+    let saved = driver.app.ctx.services.config.load().unwrap().config.surfaces;
+    assert_eq!(saved.browser_capture, loa_config::BrowserCapture::VirtualDisplay);
+
+    driver.surfaces(panel::Message::Url("about:blank".into()));
+    driver.surfaces(panel::Message::OpenUrl);
+    driver.until("opening fails on the launcher", |app| app.areas.surfaces.panel().error().is_some()).await;
+    eprintln!("launcher error: {}", driver.area().panel().error().unwrap());
+    assert_eq!(driver.area().panel().open_surfaces().count(), 0);
+    hub.shutdown().await;
+}
+
+/// The tab's framebuffer pixel at `(x, y)`, RGB.
+fn pixel(app: &App, uri: &SurfaceUri, x: u32, y: u32) -> Option<[u8; 3]> {
+    let fb = app.areas.surfaces.panel().surface(uri).and_then(|s| s.framebuffer())?;
+    let i = (y as usize * fb.width() as usize + x as usize) * 4;
+    fb.pixels().get(i..i + 3).map(|px| [px[0], px[1], px[2]])
+}
+
+/// The center pixel of the tab's framebuffer, RGB.
+fn center(app: &App, uri: &SurfaceUri) -> Option<[u8; 3]> {
+    let fb = app.areas.surfaces.panel().surface(uri).and_then(|s| s.framebuffer())?;
+    pixel(app, uri, fb.width() / 2, fb.height() / 2)
+}
+
+fn key(text: &str, pressed: bool) -> loa_ui_surface::Message {
+    let code = format!("Key{}", text.to_uppercase());
+    loa_ui_surface::Message::Key(loa_ui_surface::KeyInput {
+        key: text.into(),
+        code,
+        pressed,
+        modifiers: loa_surface::Modifiers::default(),
+        text: pressed.then(|| text.into()),
+    })
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "runs a real Xvfb (from PATH) and headed Chromium"]
+async fn live_a_browser_tab_on_a_real_virtual_display_streams_and_takes_clicks_and_typing() {
+    let dir = tempfile::tempdir().unwrap();
+    // The app's own browser size (1280x720): each panel size below resizes
+    // the tab, as it does in the app.
+    let hub = SurfaceHub::new(HubConfig::discover(&dir.path().join("hub")));
+    if hub.browser_executable().is_none() {
+        eprintln!("SKIPPED: no Chrome or Chromium installed");
+        return;
+    }
+    let mut driver = Driver::new(dir.path(), Arc::clone(&hub));
+    if let Some(missing) = driver.area().panel().capture().virtual_display_missing.clone() {
+        eprintln!("SKIPPED: {missing}");
+        return;
+    }
+    // The launcher switches capture to the virtual display.
+    driver.surfaces(panel::Message::Capture(panel::Capture::VirtualDisplay));
+    assert_eq!(driver.area().panel().capture().selected, panel::Capture::VirtualDisplay);
+    assert_eq!(hub.capture(), loa_surface_hub::CaptureMode::VirtualDisplay);
+
+    // Each click on the page flips it between red and blue; typing "ok" in
+    // the field turns it green.
+    let page = "data:text/html,<body style='margin:0;height:100vh;background:rgb(255,0,0)' \
+        onmousedown=\"if(event.target==document.body)document.body.style.background=\
+        document.body.style.background=='rgb(255, 0, 0)'?'rgb(0,0,255)':'rgb(255,0,0)'\">\
+        <input id=f style='position:absolute;left:0;top:0;width:120px;height:30px' \
+        oninput=\"if(this.value=='ok')document.body.style.background='rgb(0,255,0)'\"></body>";
+    // The browser starts at 480x320; 1000x700 resizes the tab first.
+    for (width, height) in [(480.0, 320.0), (1000.0, 700.0)] {
+        let before = driver.area().panel().active().cloned();
+        driver.surfaces(panel::Message::Url(page.into()));
+        driver.surfaces(panel::Message::OpenUrl);
+        driver
+            .until("the new tab is shown or failed", |app| {
+                app.areas.surfaces.panel().active().is_some_and(|uri| Some(uri) != before.as_ref())
+                    || app.areas.surfaces.panel().error().is_some()
+            })
+            .await;
+        assert_eq!(driver.area().panel().error(), None);
+        let uri = driver.area().panel().active().unwrap().clone();
+        let size = Size::new(width, height);
+        let is = |rgb: [u8; 3]| {
+            let uri = uri.clone();
+            move |app: &App| center(app, &uri).is_some_and(|px| px.iter().zip(rgb).all(|(&a, b)| a.abs_diff(b) < 60))
+        };
+        let shown = |app: &App| {
+            let fb = app.areas.surfaces.panel().surface(&uri).and_then(|s| s.framebuffer());
+            fb.map(|fb| (fb.width(), fb.height()))
+        };
+        driver.until("the tab shows its first picture", |app| shown(app).is_some()).await;
+        // The tab opens at 1280x720 and shrinks to the panel.
+        let resizing = std::time::Instant::now();
+        driver.surfaces(panel::Message::Surface(uri.clone(), loa_ui_surface::Message::Panel(size)));
+        let resized = |app: &App| shown(app).is_some_and(|(w, _)| w == width as u32);
+        driver.until("the red page shows at the panel's size", |app| resized(app) && is([255, 0, 0])(app)).await;
+        let resize_ms = resizing.elapsed().as_millis();
+        let (shown_w, shown_h) = shown(&driver.app).unwrap();
+        // The page starts at the top of the picture: no browser bar sits
+        // above it, so what the user sees lines up with where input lands.
+        let top = pixel(&driver.app, &uri, shown_w - 80, 2).unwrap();
+        assert!(top[0] > 200 && top[1] < 60 && top[2] < 60, "top row is {top:?}, not the page");
+        let stream = stream_label(&driver.app, &uri);
+
+        // Twenty clicks, each waiting for its color, so the latency pill
+        // gets samples; the first comes right after the resize.
+        for i in 0..20 {
+            let at = Point::new(width / 2.0 + (i % 5) as f32 * 30.0 - 60.0, height / 2.0 + (i % 3) as f32 * 30.0 - 30.0);
+            for pressed in [true, false] {
+                let input = PointerInput::Button { at, button: MouseButton::Left, pressed };
+                driver.surfaces(panel::Message::Surface(uri.clone(), loa_ui_surface::Message::Pointer { panel: size, input }));
+            }
+            let (what, rgb) = if i % 2 == 0 { ("blue", [0, 0, 255]) } else { ("red", [255, 0, 0]) };
+            driver.until(&format!("click {} turned the page {what}", i + 1), is(rgb)).await;
+        }
+        driver
+            .until("the latency pill has a reading", |app| app.areas.surfaces.panel().surface(&uri).and_then(|s| s.latency()).is_some())
+            .await;
+
+        // Click the field, then type "ok".
+        let at = Point::new(40.0, 15.0);
+        for pressed in [true, false] {
+            let input = PointerInput::Button { at, button: MouseButton::Left, pressed };
+            driver.surfaces(panel::Message::Surface(uri.clone(), loa_ui_surface::Message::Pointer { panel: size, input }));
+        }
+        assert!(driver.area().panel().surface(&uri).unwrap().focused());
+        for c in ["o", "k"] {
+            driver.surfaces(panel::Message::Surface(uri.clone(), key(c, true)));
+            driver.surfaces(panel::Message::Surface(uri.clone(), key(c, false)));
+        }
+        driver.until("the typing turned the page green", is([0, 255, 0])).await;
+        let reading = driver.area().panel().surface(&uri).unwrap().latency().unwrap();
+        eprintln!(
+            "{width}x{height} panel ({shown_w}x{shown_h} picture), local tab, stream {stream:?}: {} ({} samples), \
+             resize to new picture {resize_ms} ms",
+            loa_ui_surface::latency_label(Some(reading)),
+            reading.samples
+        );
+        assert!(reading.median_us > 0 && reading.p95_us >= reading.median_us && reading.p95_us < 1_000_000, "{reading:?}");
+        assert_eq!(driver.area().panel().surface(&uri).unwrap().notice(), None);
+    }
+    hub.shutdown().await;
+}

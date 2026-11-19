@@ -134,6 +134,9 @@ pub enum Request {
     Prompt(Prompt),
     /// Add the panel tab with this id when it isn't listed, and show it.
     OpenTab(String),
+    /// Add the panel tab with this id when it isn't listed, without taking
+    /// the panel from the tab it shows; a closed panel opens on it.
+    RevealTab(String),
     /// Start a session the area creates in the library itself (fork,
     /// rewind, compaction), with every area's contribution; it becomes the
     /// active session.
@@ -216,6 +219,13 @@ impl Ctx {
     /// shows the tab.
     pub fn open_tab(&mut self, id: impl Into<String>) {
         self.requests.push(Request::OpenTab(id.into()));
+    }
+
+    /// Lists the panel tab `id` because something relevant to it just
+    /// started, without taking the panel from the tab the user reads; a
+    /// closed panel opens on it.
+    pub fn reveal_tab(&mut self, id: impl Into<String>) {
+        self.requests.push(Request::RevealTab(id.into()));
     }
 
     /// Replaces the chat with `area`'s [`Area::view_screen`] until

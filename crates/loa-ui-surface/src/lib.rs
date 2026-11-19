@@ -12,6 +12,7 @@ mod docs;
 pub mod document;
 pub mod framebuffer;
 pub mod geometry;
+mod h264;
 pub mod input;
 pub mod latency;
 pub mod panel;
@@ -22,7 +23,10 @@ mod viewer;
 
 pub use decode::{DecodeError, VideoDecoder};
 pub use docs::DocsRenderers;
-pub use panel::{Available, BrowserStatus, Panel, PanelOptions};
+pub use h264::H264Decoder;
+pub use panel::{
+    Available, BrowserStatus, Capture, CaptureStatus, NewDecoder, Panel, PanelOptions, VideoStatus,
+};
 pub use document::{PageError, PageRenderer, PageRenderers, Pages, RgbaPage};
 pub use framebuffer::Framebuffer;
 pub use geometry::{Placement, fit};
@@ -30,5 +34,5 @@ pub use input::KeyInput;
 pub use latency::{LatencyMeter, Reading};
 pub use state::{
     Clock, Event, LocalCursor, Message, MonotonicClock, Options, PointerInput, State, Tab,
-    latency_label,
+    latency_label, stream_label,
 };

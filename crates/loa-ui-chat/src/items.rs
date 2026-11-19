@@ -3,6 +3,11 @@
 
 use loa_core::{Dom, ElementKind, MessageKind, Node, NodeId, Role, attr};
 
+/// `type` of the `<ext>` where adapters record the harness's slash commands
+/// (omp's and ACP's `available_commands_update`). Session data the
+/// composer offers, not a transcript row.
+pub const COMMANDS_EXT: &str = "available_commands_update";
+
 /// What one transcript row shows.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ItemKind {
@@ -67,6 +72,7 @@ impl<F: FnMut(NodeId, NodeId)> Emitter<'_, F> {
             ElementKind::Todo => self.leaf(out, node, ItemKind::Todo),
             ElementKind::Surface => self.leaf(out, node, ItemKind::Surface),
             ElementKind::Compaction => self.leaf(out, node, ItemKind::Compaction),
+            ElementKind::Ext if node.str_attr(attr::TYPE) == Some(COMMANDS_EXT) => {}
             ElementKind::Ext => self.leaf(out, node, ItemKind::Ext),
             // Parts of a call, or data the transcript doesn't show.
             ElementKind::Input | ElementKind::Result | ElementKind::Usage | ElementKind::Digest => {

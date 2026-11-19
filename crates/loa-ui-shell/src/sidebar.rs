@@ -3,6 +3,8 @@
 //! Recents hold sessions from every node, each tagged with the node's name.
 //! Sessions with an open decision carry a waiting badge.
 
+use std::collections::BTreeSet;
+
 use crate::data::{Nodes, SessionSummary};
 use crate::theme::style;
 use iced::widget::{Column, button, column, container, hover, row, scrollable, space, text, text_input};
@@ -24,6 +26,9 @@ pub struct State {
     sessions: Vec<Entry>,
     projects: Vec<String>,
     nodes: Nodes,
+    /// Ids of the pinned sessions. App data, so it outlives every summary
+    /// the app passes in, including sessions not listed yet.
+    pins: BTreeSet<String>,
     query: String,
     active: Option<String>,
     /// Updates waiting for the user; the Updates row shows while non-zero.
@@ -104,16 +109,40 @@ pub enum Event {
 impl State {
     /// Replaces every session.
     pub fn set_sessions(&mut self, sessions: impl IntoIterator<Item = SessionSummary>) {
-        self.sessions = sessions.into_iter().map(|summary| Entry::new(summary, &self.nodes)).collect();
+        let entries = sessions.into_iter().map(|summary| self.entry(summary)).collect();
+        self.sessions = entries;
     }
 
-    /// Adds a session or replaces the one with the same id.
+    /// Adds a session or replaces the one with the same id. Its pinned flag
+    /// comes from the pins; a summary that says pinned adds a pin.
     pub fn upsert_session(&mut self, summary: SessionSummary) {
-        let entry = Entry::new(summary, &self.nodes);
+        let entry = self.entry(summary);
         match self.sessions.iter_mut().find(|existing| existing.summary.id == entry.summary.id) {
             Some(existing) => *existing = entry,
             None => self.sessions.push(entry),
         }
+    }
+
+    fn entry(&mut self, mut summary: SessionSummary) -> Entry {
+        if summary.pinned {
+            self.pins.insert(summary.id.clone());
+        } else {
+            summary.pinned = self.pins.contains(&summary.id);
+        }
+        Entry::new(summary, &self.nodes)
+    }
+
+    /// Replaces the pinned session ids, as saved by the app.
+    pub fn set_pins(&mut self, pins: impl IntoIterator<Item = String>) {
+        self.pins = pins.into_iter().collect();
+        for entry in &mut self.sessions {
+            entry.summary.pinned = self.pins.contains(&entry.summary.id);
+        }
+    }
+
+    /// Ids of the pinned sessions, listed or not.
+    pub fn pins(&self) -> &BTreeSet<String> {
+        &self.pins
     }
 
     /// Drops a session.
@@ -222,14 +251,18 @@ impl State {
                 self.active = Some(id.clone());
                 Some(Event::OpenSession(id))
             }
-            Message::TogglePin(id) => self
-                .sessions
-                .iter_mut()
-                .find(|entry| entry.summary.id == id)
-                .map(|entry| {
+            Message::TogglePin(id) => {
+                let entry = self.sessions.iter_mut().find(|entry| entry.summary.id == id);
+                entry.map(|entry| {
                     entry.summary.pinned = !entry.summary.pinned;
+                    if entry.summary.pinned {
+                        self.pins.insert(id.clone());
+                    } else {
+                        self.pins.remove(&id);
+                    }
                     Event::SetPinned { id, pinned: entry.summary.pinned }
-                }),
+                })
+            }
             Message::Delete(id) => Some(Event::DeleteSession(id)),
         };
         (Task::none(), event)
@@ -459,6 +492,22 @@ mod tests {
         let (_, event) = state.update(Message::TogglePin("y".into()));
         assert_eq!(event, Some(Event::SetPinned { id: "y".into(), pinned: false }));
         assert_eq!(ids(state.recents()), ["y"]);
+    }
+
+    #[test]
+    fn pins_survive_a_fresh_summary_and_apply_to_sessions_listed_later() {
+        let mut state = State::default();
+        state.set_pins(["later".to_owned()]);
+        state.set_sessions([summary("a", "A", "k-desk", 1)]);
+        let _ = state.update(Message::TogglePin("a".into()));
+        // The app replaces the row after every turn with a summary that
+        // doesn't know about pins.
+        state.upsert_session(summary("a", "A renamed", "k-desk", 2));
+        state.upsert_session(summary("later", "Later", "k-laptop", 3));
+        assert_eq!(ids(state.pinned()), ["later", "a"]);
+        assert_eq!(state.pins().iter().map(String::as_str).collect::<Vec<_>>(), ["a", "later"]);
+        let _ = state.update(Message::TogglePin("later".into()));
+        assert_eq!(state.pins().iter().map(String::as_str).collect::<Vec<_>>(), ["a"]);
     }
 
     #[test]

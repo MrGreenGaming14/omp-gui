@@ -24,6 +24,7 @@ Everything else builds on these three. Their existing public items change only w
 | `loa-journal` | core | Append only prost journal, replay, snapshots, fork |
 | `loa-bus` | core | Session writer (`PatchSink` impl), publish subscribe with backpressure |
 | `loa-config` | core | Central config schema with version and migrations |
+| `loa-exec` | core | Race-free writing and launching of executables (`write_executable`, `retry_busy` for ETXTBSY) |
 | `loa-adapter-testkit` | adapters | Contract test suite, golden fixtures, round trip diff |
 | `loa-omp-rpc`, `loa-adapter-omp` | adapters | `omp --mode rpc` client, omp adapter |
 | `loa-adapter-claude`, `-codex`, `-opencode`, `-acp`, `-omp2` | adapters | One crate per harness |
@@ -38,10 +39,10 @@ Everything else builds on these three. Their existing public items change only w
 | `loa-models` | models | Sign in, model listing and settings through omp and other harnesses |
 | `loa-projects` | projects | Digests, context ranking, `project_search`, `project_read`, project settings, `ProjectService` over the bus and journal |
 | `loa-identity` | p2p | Node ed25519 key in the OS keychain, a `0600` key file in the data directory when no keychain is usable |
-| `loa-grants` | p2p | Biscuit grants, scopes, renewal, narrowing |
+| `loa-grants` | p2p | Biscuit grants, scopes (sessions, prompts, projects, future sessions, SSH hosts, surfaces, sandbox, folders), renewal, narrowing |
 | `loa-net` | p2p | iroh endpoint on 31415, ALPNs, TCP fallback, relay, discovery |
 | `loa-share` | p2p | Session replication, view and drive, fork to own node |
-| `loa-node` | p2p | The app's peer service: identity, endpoint, mDNS and tailnet discovery, presence, grant issue/renew/revoke over `omp/control/1`, session sharing over `omp/session/1`, protocols other areas add (e.g. `loa-sandbox/1`, served only to peers proving a covering grant, registered through the app's `NodeSlot`), the Peers panel snapshot and its events |
+| `loa-node` | p2p | The app's peer service: identity, endpoint, mDNS and tailnet discovery, presence, grant issue/renew/revoke over `omp/control/1`, session sharing over `omp/session/1`, shared folders over `omp/folder/1` (list, read, and with a write grant write, confined to the granted folder), protocols other areas add (e.g. `loa-sandbox/1`, served only to peers proving a covering grant, registered through the app's `NodeSlot`), the Peers panel snapshot and its events |
 | `loa-sandbox`, `loa-sandbox-stub` | sandbox | `sandbox_task`, providers, exec stub |
 | `loa-updater` | updater | Release feeds, staging, gate checks against the installed omp, swap and rollback; `Updater` service for the Updates screen |
 
@@ -60,7 +61,7 @@ Everything else builds on these three. Their existing public items change only w
 | `loa-ui-projects` | Project screen: shared instructions, pinned files, digest model, sessions with digests and exclude toggle |
 | `loa-ui-surface` | Surface renderer, Surfaces tab (open tabs, launcher for browser, documents, VNC and MCP surfaces), document pages through `loa-surface-docs` |
 | `loa-ui-models` | Sign in, model picker, model settings |
-| `loa-ui-peers` | Peers list, grant management |
+| `loa-ui-peers` | Peers list, grant management (incl. a typed folder of this node), shared folders |
 | `loa-ui-updates` | Updates screen: feeds, staged versions, gate reports with update anyway/pin/wait, swap, rollback, signatures, peers behind |
 | `loa-ui-icons` | Lucide line icons as theme-tinted SVG widgets, shared by every UI crate |
 | `loa-app` | The binary: wires every crate together |

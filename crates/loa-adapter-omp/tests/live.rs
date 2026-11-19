@@ -56,8 +56,10 @@ async fn a_real_turn_streams_an_assistant_reply_into_the_dom() {
     let turn = dom.iter().find(|n| n.kind == ElementKind::Turn).expect("a turn");
     assert_eq!(turn.str_attr(attr::STATUS), Some("done"));
     assert!(dom.iter().any(|n| n.kind == ElementKind::Message && n.str_attr(attr::ROLE) == Some("user") && n.text.contains("pong")));
-    // omp's TUI bookkeeping adds no rows; the call's usage is recorded.
-    assert!(!dom.iter().any(|n| matches!(n.kind, ElementKind::Ext | ElementKind::Call)), "{:?}", dom.iter().map(|n| n.kind).collect::<Vec<_>>());
+    // omp's TUI bookkeeping adds no rows (its command list is root session
+    // data, not a row); the call's usage is recorded.
+    let rows: Vec<_> = dom.iter().filter(|n| n.kind == ElementKind::Call || (n.kind == ElementKind::Ext && n.str_attr(attr::TYPE) != Some("available_commands_update"))).map(|n| n.kind).collect();
+    assert!(rows.is_empty(), "{rows:?}");
     assert!(dom.iter().any(|n| n.kind == ElementKind::Usage && n.attrs.contains_key(attr::COST)));
     session.shutdown().await.unwrap();
 }
@@ -191,5 +193,24 @@ async fn a_disabled_tool_is_not_offered() {
     let dom = sink.dom();
     assert!(assistant_text(&dom).contains("NO-BASH"), "assistant said {:?}", assistant_text(&dom));
     assert!(dom.iter().all(|n| n.kind != ElementKind::Call || n.str_attr(attr::TOOL) != Some("bash")));
+    session.shutdown().await.unwrap();
+}
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "runs the installed omp with real model calls"]
+async fn an_at_mentioned_text_file_is_read_by_omp() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("code.txt"), "the code word is LANTERN\n").unwrap();
+    let (sink, session) = start(dir.path()).await;
+    // As the composer sends an `@` mention: the path stays in the text and
+    // rides along as an attachment without a MIME type.
+    let prompt = Prompt {
+        text: "What is the code word in @code.txt? Reply with just the word.".into(),
+        attachments: vec![loa_adapter::Attachment { path: "code.txt".into(), mime: None }],
+        by: "live-test".into(),
+    };
+    session.send(prompt).await.expect("a text file mention is accepted");
+    tokio::time::timeout(TURN_TIMEOUT, session.wait_idle()).await.expect("turn finished in time").expect("turn ended");
+    let reply = assistant_text(&sink.dom());
+    assert!(reply.contains("LANTERN"), "assistant said {reply:?}");
     session.shutdown().await.unwrap();
 }

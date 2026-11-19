@@ -292,7 +292,10 @@ fn unpack(format: ArchiveFormat, artifact: &Path, name: &str, payload: &Path) ->
         ArchiveFormat::Zip => unpack_zip(open()?, payload),
         ArchiveFormat::Raw => {
             let dest = payload.join(name);
-            fs::copy(artifact, &dest).map_err(io_at(&dest))?;
+            let mut source = open()?;
+            let mut file = fs::OpenOptions::new().write(true).create_new(true).open(&dest).map_err(io_at(&dest))?;
+            io::copy(&mut source, &mut file).map_err(io_at(&dest))?;
+            close_synced(file, &dest)?;
             set_mode(&dest, 0o755)?;
             Ok(())
         }
@@ -445,8 +448,16 @@ fn write_file(payload: &Path, rel: &Path, shown: &str, data: &mut dyn Read, mode
     let dest = prepare_leaf(payload, rel, shown)?;
     let mut file = fs::OpenOptions::new().write(true).create_new(true).open(&dest).map_err(io_at(&dest))?;
     io::copy(data, &mut file).map_err(io_at(&dest))?;
+    close_synced(file, &dest)?;
     // Keep the owner able to read and replace what was unpacked.
     set_mode(&dest, (mode & 0o777) | 0o600)
+}
+
+/// Flushes `file` to disk and closes it, so this process holds no writable
+/// descriptor once the file may be run. A child forked meanwhile can still
+/// hold one briefly; launches go through `loa_exec::retry_busy` for that.
+fn close_synced(file: fs::File, path: &Path) -> Result<()> {
+    file.sync_all().map_err(io_at(path))
 }
 
 /// Creates a symlink whose target stays inside `payload`. The target may

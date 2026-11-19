@@ -2,6 +2,14 @@
 //! pictures as H.264 or HEVC, with the hardware encoder [`LiveVideo`] found
 //! on this machine when it has one, the in-process software encoder
 //! otherwise, and what the viewer negotiated.
+//!
+//! Video is for viewers across the network (peers over `omp/surface/1`):
+//! a viewer in the same process takes the source frames, which skip the
+//! encode and decode. A hardware encoder runs as a process with a fixed
+//! picture size, and starting one takes up to a few hundred milliseconds,
+//! so a new size never waits for it: the encoder for it starts on its own
+//! thread (already on the viewer's resize request), and the in-process
+//! software encoder codes the pictures until it is ready.
 
 use crate::canvas::Canvas;
 use crate::decode::FrameDecoder;
@@ -10,16 +18,28 @@ use crate::encode::{
 };
 use async_trait::async_trait;
 use bytes::Bytes;
-use loa_surface::{Document, Encoding, Frame, InputEvent, StreamInfo, Surface, SurfaceInfo};
+use loa_surface::{Document, Encoding, Frame, Input, InputEvent, StreamInfo, Surface, SurfaceInfo};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex, PoisonError, Weak};
 use tokio::sync::broadcast::{self, error::TryRecvError};
 
+/// Opens an encoder for a picture size, instead of ffmpeg or the software
+/// encoder (e.g. one that is slow to start, in tests).
+pub type Opener = Arc<dyn Fn(&EncoderInfo, u32, u32) -> crate::Result<LiveEncoder> + Send + Sync>;
+
 /// The encoders this machine has, each tried once for real.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct LiveVideo {
     ffmpeg: Option<FfmpegConfig>,
     probed: Vec<ProbeResult>,
+    opener: Option<Opener>,
+}
+
+impl std::fmt::Debug for LiveVideo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LiveVideo").field("ffmpeg", &self.ffmpeg).field("probed", &self.probed).finish_non_exhaustive()
+    }
 }
 
 impl LiveVideo {
@@ -27,12 +47,17 @@ impl LiveVideo {
     /// few times). Software H.264 is always there.
     pub fn probe(ffmpeg: Option<FfmpegConfig>) -> Self {
         let probed = encode::probe(ffmpeg.as_ref());
-        Self { ffmpeg, probed }
+        Self { ffmpeg, probed, opener: None }
     }
 
     /// A machine with exactly these probe results, e.g. for tests.
     pub fn with_probed(ffmpeg: Option<FfmpegConfig>, probed: Vec<ProbeResult>) -> Self {
-        Self { ffmpeg, probed }
+        Self { ffmpeg, probed, opener: None }
+    }
+
+    /// A machine with these probe results whose encoders `opener` opens.
+    pub fn with_opener(probed: Vec<ProbeResult>, opener: Opener) -> Self {
+        Self { ffmpeg: None, probed, opener: Some(opener) }
     }
 
     pub fn ffmpeg(&self) -> Option<&FfmpegConfig> {
@@ -63,6 +88,9 @@ impl LiveVideo {
     }
 
     fn open(&self, info: &EncoderInfo, width: u32, height: u32) -> crate::Result<LiveEncoder> {
+        if let Some(opener) = &self.opener {
+            return opener(info, width, height);
+        }
         let choice = match info.name.strip_prefix(encode::ffmpeg::NAME_PREFIX) {
             Some(name) => EncoderChoice::Ffmpeg(name.to_owned()),
             None => EncoderChoice::SoftwareH264,
@@ -85,11 +113,27 @@ pub const SOURCE: &str = "source";
 
 struct Shared {
     live: Arc<LiveVideo>,
+    /// The wrapped surface; its keyframe requests run on `runtime`.
+    source: Weak<dyn Surface>,
+    runtime: tokio::runtime::Handle,
     /// The encoder viewers negotiated; `None` passes source frames on.
     wanted: Mutex<Option<EncoderInfo>>,
     stream: Mutex<Option<StreamInfo>>,
     keyframe: AtomicBool,
+    /// Video may be chosen; off passes source frames on to every viewer.
+    enabled: AtomicBool,
+    /// What the last viewer to negotiate decodes.
+    accepted: Mutex<Vec<Encoding>>,
+    /// The hardware encoder starting for the next picture size.
+    warming: Mutex<Option<Warming>>,
     stop: AtomicBool,
+}
+
+/// An encoder starting on its own thread.
+struct Warming {
+    info: EncoderInfo,
+    size: (u32, u32),
+    ready: mpsc::Receiver<crate::Result<LiveEncoder>>,
 }
 
 impl Shared {
@@ -100,11 +144,64 @@ impl Shared {
     fn set_stream(&self, stream: StreamInfo) {
         *lock(&self.stream) = Some(stream);
     }
+
+    /// Has the source send its current picture, e.g. to code it again.
+    fn source_keyframe(&self) {
+        request_keyframe(&self.source, &self.runtime);
+    }
+
+    /// Starts `info` for `size` on its own thread, unless it is already
+    /// starting. One size at a time: an encoder for another size still
+    /// starting is dropped once it is up. Once up, the source is asked for
+    /// its picture, so the encoder takes over without waiting for a change.
+    fn warm(&self, info: &EncoderInfo, size: (u32, u32)) {
+        let mut warming = lock(&self.warming);
+        if warming.as_ref().is_some_and(|w| w.info == *info && w.size == size) {
+            return;
+        }
+        let (done, ready) = mpsc::channel();
+        let (live, opening) = (self.live.clone(), info.clone());
+        let (source, runtime) = (self.source.clone(), self.runtime.clone());
+        let started = std::thread::Builder::new().name("surface-video-open".into()).spawn(move || {
+            // A hardware encoder sets its device up on the first picture
+            // (about 100 ms with VA-API): code a blank one here, so the
+            // stream's first picture doesn't wait. The next one is a
+            // keyframe either way.
+            let primed = live.open(&opening, size.0, size.1).and_then(|mut encoder| {
+                encoder.encode(&vec![0; size.0 as usize * size.1 as usize * 4], 0, 0)?;
+                encoder.request_keyframe();
+                Ok(encoder)
+            });
+            // The worker may have moved on to another size; then nobody waits.
+            if done.send(primed).is_ok() {
+                request_keyframe(&source, &runtime);
+            }
+        });
+        match started {
+            Ok(_) => *warming = Some(Warming { info: info.clone(), size, ready }),
+            Err(error) => tracing::warn!(%error, "starting the video encoder opening thread"),
+        }
+    }
+
+    /// The encoder [`warm`](Self::warm) started for `info` at `size`, once
+    /// it is up (or failed).
+    fn warmed(&self, info: &EncoderInfo, size: (u32, u32)) -> Option<crate::Result<LiveEncoder>> {
+        let mut warming = lock(&self.warming);
+        let current = warming.as_ref().filter(|w| w.info == *info && w.size == size)?;
+        let result = match current.ready.try_recv() {
+            Ok(result) => result,
+            Err(mpsc::TryRecvError::Empty) => return None,
+            Err(mpsc::TryRecvError::Disconnected) => Err(crate::BenchError::Encode("the encoder opening thread died".into())),
+        };
+        *warming = None;
+        Some(result)
+    }
 }
 
-/// A pixel surface whose pictures are coded as video. Input, screenshots
-/// and info go to the wrapped surface; frames come from a worker thread
-/// that rebuilds the picture from the source frames and codes it.
+/// A pixel surface whose pictures are coded as video, for viewers across
+/// the network. Input, screenshots and info go to the wrapped surface;
+/// frames come from a worker thread that rebuilds the picture from the
+/// source frames and codes it while anyone watches.
 pub struct VideoSurface {
     inner: Arc<dyn Surface>,
     shared: Arc<Shared>,
@@ -112,24 +209,27 @@ pub struct VideoSurface {
 }
 
 impl VideoSurface {
-    /// Wraps the pixel surface `inner`. Until a viewer negotiates video it
-    /// passes the source frames on. Needs a Tokio runtime (keyframe requests
-    /// to `inner` run on it).
-    pub fn new(inner: Arc<dyn Surface>, live: Arc<LiveVideo>) -> loa_surface::Result<Arc<Self>> {
+    /// Wraps the pixel surface `inner`. Until a viewer negotiates video (and
+    /// while `enabled` is off) it passes the source frames on. Needs a Tokio
+    /// runtime (keyframe requests to `inner` run on it).
+    pub fn new(inner: Arc<dyn Surface>, live: Arc<LiveVideo>, enabled: bool) -> loa_surface::Result<Arc<Self>> {
         let source = inner.frames()?;
         let shared = Arc::new(Shared {
             live,
+            source: Arc::downgrade(&inner),
+            runtime: tokio::runtime::Handle::current(),
             wanted: Mutex::new(None),
             stream: Mutex::new(None),
             keyframe: AtomicBool::new(true),
+            enabled: AtomicBool::new(enabled),
+            accepted: Mutex::new(Vec::new()),
+            warming: Mutex::new(None),
             stop: AtomicBool::new(false),
         });
         let (frames, _) = broadcast::channel(8);
         let worker = Worker {
             shared: shared.clone(),
             out: frames.clone(),
-            inner: Arc::downgrade(&inner),
-            runtime: tokio::runtime::Handle::current(),
             decoder: FrameDecoder::new(),
             canvas: Canvas::new(0, 0),
             encoder: None,
@@ -146,6 +246,17 @@ impl VideoSurface {
     pub fn inner(&self) -> &Arc<dyn Surface> {
         &self.inner
     }
+
+    /// Turns video on or off for the viewers already watching: their last
+    /// negotiation is redone.
+    pub async fn set_video(&self, enabled: bool) -> loa_surface::Result<Option<StreamInfo>> {
+        self.shared.enabled.store(enabled, Ordering::Release);
+        let accepted = lock(&self.shared.accepted).clone();
+        if accepted.is_empty() {
+            return Ok(self.stream());
+        }
+        self.negotiate(&accepted).await
+    }
 }
 
 impl Drop for VideoSurface {
@@ -160,8 +271,13 @@ impl Surface for VideoSurface {
         self.inner.info()
     }
 
+    /// A new subscriber gets the current picture without asking: the
+    /// source is asked for a keyframe.
     fn frames(&self) -> loa_surface::Result<broadcast::Receiver<Arc<Frame>>> {
-        Ok(self.frames.subscribe())
+        let frames = self.frames.subscribe();
+        self.shared.keyframe.store(true, Ordering::Release);
+        self.shared.source_keyframe();
+        Ok(frames)
     }
 
     async fn request_keyframe(&self) -> loa_surface::Result<()> {
@@ -171,7 +287,18 @@ impl Surface for VideoSurface {
         self.inner.request_keyframe().await
     }
 
+    /// A resize request starts the video encoder for the new size right
+    /// away, so it is up (or nearly) when the first picture of that size
+    /// comes.
     async fn input(&self, event: InputEvent) -> loa_surface::Result<()> {
+        if let &Input::Resize { width, height } = &event.input
+            && width.is_multiple_of(2)
+            && height.is_multiple_of(2)
+            && self.frames.receiver_count() > 0
+            && let Some(wanted) = self.shared.wanted().filter(|w| w.accel.is_hardware())
+        {
+            self.shared.warm(&wanted, (width, height));
+        }
         self.inner.input(event).await
     }
 
@@ -184,7 +311,9 @@ impl Surface for VideoSurface {
     }
 
     async fn negotiate(&self, accepted: &[Encoding]) -> loa_surface::Result<Option<StreamInfo>> {
-        let chosen = self.shared.live.choose(accepted);
+        *lock(&self.shared.accepted) = accepted.to_vec();
+        let enabled = self.shared.enabled.load(Ordering::Acquire);
+        let chosen = if enabled { self.shared.live.choose(accepted) } else { None };
         let stream = match &chosen {
             Some(info) => stream_info(info),
             None => {
@@ -208,8 +337,6 @@ impl Surface for VideoSurface {
 struct Worker {
     shared: Arc<Shared>,
     out: broadcast::Sender<Arc<Frame>>,
-    inner: Weak<dyn Surface>,
-    runtime: tokio::runtime::Handle,
     decoder: FrameDecoder,
     /// The source picture, rebuilt from its frames.
     canvas: Canvas,
@@ -224,7 +351,7 @@ impl Worker {
             let first = match source.blocking_recv() {
                 Ok(frame) => frame,
                 Err(broadcast::error::RecvError::Lagged(_)) => {
-                    self.source_keyframe();
+                    self.shared.source_keyframe();
                     continue;
                 }
                 Err(broadcast::error::RecvError::Closed) => return,
@@ -237,7 +364,7 @@ impl Worker {
             loop {
                 match source.try_recv() {
                     Ok(frame) => batch.push(frame),
-                    Err(TryRecvError::Lagged(_)) => self.source_keyframe(),
+                    Err(TryRecvError::Lagged(_)) => self.shared.source_keyframe(),
                     Err(TryRecvError::Empty | TryRecvError::Closed) => break,
                 }
             }
@@ -245,34 +372,33 @@ impl Worker {
         }
     }
 
-    fn source_keyframe(&self) {
-        if let Some(inner) = self.inner.upgrade() {
-            self.runtime.spawn(async move {
-                if let Err(error) = inner.request_keyframe().await {
-                    tracing::debug!(%error, "asking the source surface for a keyframe");
-                }
-            });
-        }
-    }
-
     fn handle(&mut self, batch: &[Arc<Frame>]) {
+        let Some(last) = batch.last() else { return };
+        if self.out.receiver_count() == 0 {
+            // Nobody watches: no encoder runs. A new viewer's subscription
+            // asks the source for a whole picture.
+            self.encoder = None;
+            return;
+        }
+        // 4:2:0 video needs an even size; odd surfaces go as they come.
+        let even = last.width.is_multiple_of(2) && last.height.is_multiple_of(2) && last.width > 0;
+        let Some(wanted) = self.shared.wanted().filter(|_| even) else {
+            self.encoder = None;
+            for frame in batch {
+                self.pass_on(frame);
+            }
+            return;
+        };
+        // Video codes the whole picture: rebuild it from the source frames.
+        // (Switching to video asks the source for a keyframe, so a picture
+        // left stale while frames were passed on is replaced at once.)
         for frame in batch {
             if let Err(error) = self.decoder.apply(frame, &mut self.canvas) {
                 tracing::debug!(%error, "source frame");
-                self.source_keyframe();
+                self.shared.source_keyframe();
             }
         }
-        let Some(last) = batch.last() else { return };
-        let even = self.canvas.width() % 2 == 0 && self.canvas.height() % 2 == 0 && self.canvas.width() > 0;
-        match self.shared.wanted().filter(|_| even) {
-            Some(wanted) => self.encode(wanted, last),
-            None => {
-                self.encoder = None;
-                for frame in batch {
-                    self.pass_on(frame);
-                }
-            }
-        }
+        self.encode(wanted, last);
     }
 
     fn pass_on(&mut self, frame: &Frame) {
@@ -283,13 +409,13 @@ impl Worker {
 
     fn encode(&mut self, wanted: EncoderInfo, last: &Frame) {
         let size = (self.canvas.width(), self.canvas.height());
-        let reopen = self.encoder.as_ref().is_none_or(|(info, encoder)| *info != wanted || encoder.size() != size);
-        if reopen {
-            self.encoder = None;
-            match self.shared.live.open(&wanted, size.0, size.1) {
-                Ok(encoder) => {
-                    self.shared.set_stream(stream_info(&wanted));
-                    self.encoder = Some((wanted, encoder));
+        if !self.encoder.as_ref().is_some_and(|(info, encoder)| *info == wanted && encoder.size() == size) {
+            match self.switch(&wanted, size) {
+                Ok(true) => {}
+                Ok(false) => {
+                    // No encoder this viewer decodes is up yet.
+                    self.encoder = None;
+                    return self.pass_on(last);
                 }
                 Err(error) => return self.fall_back(&wanted, &error.to_string(), last),
             }
@@ -313,6 +439,38 @@ impl Worker {
         }
     }
 
+    /// Puts an encoder for `size` in place: `wanted` when it is up (the
+    /// in-process software encoder opens at once), else the software
+    /// encoder bridges while `wanted` starts on its own thread. `Ok(false)`
+    /// when the viewer decodes no software H.264 and `wanted` isn't up yet.
+    fn switch(&mut self, wanted: &EncoderInfo, size: (u32, u32)) -> crate::Result<bool> {
+        let opened = match self.shared.warmed(wanted, size) {
+            Some(warmed) => Some(warmed?),
+            None if !wanted.accel.is_hardware() => Some(self.shared.live.open(wanted, size.0, size.1)?),
+            None => None,
+        };
+        if let Some(encoder) = opened {
+            self.use_encoder(wanted.clone(), encoder);
+            return Ok(true);
+        }
+        self.shared.warm(wanted, size);
+        let bridge = software::info();
+        if self.encoder.as_ref().is_some_and(|(info, encoder)| *info == bridge && encoder.size() == size) {
+            return Ok(true);
+        }
+        if !lock(&self.shared.accepted).contains(&Encoding::H264) {
+            return Ok(false);
+        }
+        let encoder = self.shared.live.open(&bridge, size.0, size.1)?;
+        self.use_encoder(bridge, encoder);
+        Ok(true)
+    }
+
+    fn use_encoder(&mut self, info: EncoderInfo, encoder: LiveEncoder) {
+        self.shared.set_stream(stream_info(&info));
+        self.encoder = Some((info, encoder));
+    }
+
     /// `failed` can't code: hardware falls back to software H.264, software
     /// to the source frames.
     fn fall_back(&mut self, failed: &EncoderInfo, error: &str, last: &Frame) {
@@ -324,10 +482,20 @@ impl Worker {
             Some(next) => self.encode(next, last),
             None => {
                 // The viewer needs a whole picture in the new encoding.
-                self.source_keyframe();
+                self.shared.source_keyframe();
                 self.pass_on(last);
             }
         }
+    }
+}
+
+fn request_keyframe(source: &Weak<dyn Surface>, runtime: &tokio::runtime::Handle) {
+    if let Some(source) = source.upgrade() {
+        runtime.spawn(async move {
+            if let Err(error) = source.request_keyframe().await {
+                tracing::debug!(%error, "asking the source surface for a keyframe");
+            }
+        });
     }
 }
 

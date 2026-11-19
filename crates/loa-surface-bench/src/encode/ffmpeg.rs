@@ -58,28 +58,40 @@ impl FfmpegConfig {
 }
 
 /// Tries two pictures, not just `ffmpeg -encoders`: drivers and devices may be
-/// absent even though the binary advertises the encoder.
+/// absent even though the binary advertises the encoder. Every encoder is
+/// tried at once; one that never answers costs its timeout only once.
 pub fn probe(config: &FfmpegConfig) -> Vec<ProbeResult> {
     // HEVC hardware encoders refuse pictures under 128 pixels on a side.
     let settings = EncoderSettings::new(256, 256);
-    KNOWN.iter().map(|known| {
-        let info = EncoderInfo { name: format!("{NAME_PREFIX}{}", known.name), codec: known.codec, accel: known.accel };
-        let error = (|| -> Result<()> {
-            let mut encoder = FfmpegEncoder::spawn(config, known.name, &settings)?;
-            let first = vec![64u8; settings.frame_len()];
-            let second = vec![128u8; settings.frame_len()];
-            let initial = encoder.encode(&first, false)?;
-            if !initial.keyframe || !has_parameter_sets(known.codec, &initial.data) {
-                return Err(BenchError::Encode("first picture lacks a keyframe or parameter sets".into()));
-            }
-            let following = encoder.encode(&second, false)?;
-            if !nal::has_picture(known.codec, &following.data) {
-                return Err(BenchError::Encode("second picture has no coded slice".into()));
-            }
-            Ok(())
-        })().err().map(|error| error.to_string());
-        ProbeResult { info, error }
-    }).collect()
+    let try_one = |known: &KnownEncoder| -> Result<()> {
+        let mut encoder = FfmpegEncoder::spawn(config, known.name, &settings)?;
+        let first = vec![64u8; settings.frame_len()];
+        let second = vec![128u8; settings.frame_len()];
+        let initial = encoder.encode(&first, false)?;
+        if !initial.keyframe || !has_parameter_sets(known.codec, &initial.data) {
+            return Err(BenchError::Encode("first picture lacks a keyframe or parameter sets".into()));
+        }
+        let following = encoder.encode(&second, false)?;
+        if !nal::has_picture(known.codec, &following.data) {
+            return Err(BenchError::Encode("second picture has no coded slice".into()));
+        }
+        Ok(())
+    };
+    thread::scope(|scope| {
+        let tried: Vec<_> = KNOWN.iter().map(|known| scope.spawn(move || try_one(known))).collect();
+        KNOWN
+            .iter()
+            .zip(tried)
+            .map(|(known, tried)| {
+                let info = EncoderInfo { name: format!("{NAME_PREFIX}{}", known.name), codec: known.codec, accel: known.accel };
+                let error = match tried.join() {
+                    Ok(result) => result.err().map(|error| error.to_string()),
+                    Err(_) => Some("the probe panicked".to_owned()),
+                };
+                ProbeResult { info, error }
+            })
+            .collect()
+    })
 }
 
 fn has_parameter_sets(codec: Codec, data: &[u8]) -> bool {

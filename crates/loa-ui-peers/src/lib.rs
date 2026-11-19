@@ -52,6 +52,17 @@ pub struct RemoteItem {
     pub online: bool,
 }
 
+/// A peer's folder this node's grants reach.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SharedFolderItem {
+    pub peer_key: String,
+    pub peer_name: String,
+    /// The folder's path on the peer.
+    pub path: String,
+    pub can_write: bool,
+    pub online: bool,
+}
+
 /// App-supplied snapshot consumed by the two screens.
 #[derive(Debug, Clone, Default)]
 pub struct Data {
@@ -61,6 +72,7 @@ pub struct Data {
     pub grants: Vec<Grant>,
     pub resources: Vec<ResourceChoice>,
     pub remote_sessions: Vec<RemoteItem>,
+    pub shared_folders: Vec<SharedFolderItem>,
     pub local_version: String,
     /// Current UTC instant in seconds; the app refreshes it to update countdowns.
     pub now: u64,
@@ -86,6 +98,8 @@ pub enum Event {
     OpenRemote { peer: String, session: String },
     /// Copy a peer's session into a new session on this node.
     ForkRemote { peer: String, session: String },
+    /// Browse a peer's shared folder in the center view.
+    BrowseFolder { peer: String, folder: String },
 }
 
 /// Input from the widgets; the app handles the resulting `Event`.
@@ -124,6 +138,10 @@ pub enum Message {
     ScanTailscale,
     OpenRemote { peer: String, session: String },
     ForkRemote { peer: String, session: String },
+    FolderPathChanged(String),
+    /// Pick the typed folder as the grant's resource.
+    UseFolder,
+    BrowseFolder { peer: String, folder: String },
 }
 
 /// Resource choices shown at once; the filter narrows longer lists.
@@ -160,7 +178,10 @@ impl State {
             self.selected_peer = None;
             self.grant_form = GrantForm::default();
         }
-        if self.grant_form.resource.as_ref().is_some_and(|resource| !data.resources.iter().any(|r| r == resource)) {
+        // A typed folder isn't in the app's list; the app checks it on issue.
+        if self.grant_form.resource.as_ref().is_some_and(|resource| {
+            resource.scope != GrantScope::Folder && !data.resources.iter().any(|r| r == resource)
+        }) {
             self.grant_form = GrantForm::default();
         }
         self.data = data;
@@ -272,6 +293,16 @@ impl State {
             Message::ForkRemote { peer, session } => self.data.remote_sessions.iter()
                 .any(|r| r.peer_key == peer && r.session == session && r.can_fork)
                 .then_some(Event::ForkRemote { peer, session }),
+            Message::FolderPathChanged(path) => { self.grant_form.folder_path = path; None }
+            Message::UseFolder => {
+                if let Some(folder) = self.grant_form.folder_choice() {
+                    self.grant_form.select_resource(Some(folder));
+                }
+                None
+            }
+            Message::BrowseFolder { peer, folder } => self.data.shared_folders.iter()
+                .any(|f| f.peer_key == peer && f.path == folder && f.online)
+                .then_some(Event::BrowseFolder { peer, folder }),
         };
         (Task::none(), event)
     }
@@ -322,6 +353,7 @@ impl State {
             add,
             style::divider(),
             self.shared_view(),
+            self.folders_view(),
             style::divider(),
             self.grants_view(),
             style::divider(),
@@ -408,6 +440,37 @@ impl State {
                     .align_y(iced::Center),
                     text(format!("{} · {} · {}", item.peer_name, item.harness, item.access)).size(SMALL).style(style::muted),
                     actions,
+                ]
+                .spacing(4),
+            ));
+        }
+        list.into()
+    }
+
+    /// Peers' folders this node may browse, read and (with drive) write.
+    fn folders_view(&self) -> Element<'_, Message> {
+        let mut list = column![style::section_header("Shared folders")].spacing(8);
+        if self.data.shared_folders.is_empty() {
+            return list.push(text("No peer has shared a folder with this node").size(SMALL).style(style::muted)).into();
+        }
+        for folder in &self.data.shared_folders {
+            let mut browse = flat(row![muted(Icon::Folder, 14.0), text("Browse").size(SMALL)].spacing(6).align_y(iced::Center));
+            if folder.online {
+                browse = browse.on_press(Message::BrowseFolder { peer: folder.peer_key.clone(), folder: folder.path.clone() });
+            }
+            let tone = if folder.online { style::Tone::Ok } else { style::Tone::Off };
+            list = list.push(list_item(
+                column![
+                    row![
+                        container(space().width(6.0).height(6.0)).style(style::dot(tone)),
+                        text(folder.path.as_str()).size(14).width(Fill),
+                    ]
+                    .spacing(8)
+                    .align_y(iced::Center),
+                    text(format!("{} · {}", folder.peer_name, if folder.can_write { "read, write" } else { "read" }))
+                        .size(SMALL)
+                        .style(style::muted),
+                    browse,
                 ]
                 .spacing(4),
             ));
@@ -586,6 +649,16 @@ impl State {
                 text(format!("{} more; filter to find them", matching.len() - RESOURCE_ROWS)).size(SMALL).style(style::muted),
             );
         }
+        form = form.push(
+            row![
+                field("Folder on this node, e.g. /home/me/shared", &self.grant_form.folder_path, Message::FolderPathChanged)
+                    .on_submit(Message::UseFolder)
+                    .width(Fill),
+                flat(text("Use folder").size(SMALL)).on_press(Message::UseFolder),
+            ]
+            .spacing(8)
+            .align_y(iced::Center),
+        );
         if let Some(resource) = &self.grant_form.resource {
             if resource.scope == GrantScope::Prompt {
                 form = form.push(

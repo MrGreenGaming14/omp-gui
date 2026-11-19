@@ -287,12 +287,13 @@ impl State {
         let content: Element<'a, Message> = match row.kind {
             RowKind::Session { id, title, current, on_path, collapsed } => {
                 let chevron: Element<'a, Message> = if self.has_subtree(row.index) {
-                    let icon = if collapsed { Icon::ChevronRight } else { Icon::ChevronDown };
-                    button(loa_ui_icons::muted(icon, 12.0))
+                    let (icon, label) = if collapsed { (Icon::ChevronRight, "Expand") } else { (Icon::ChevronDown, "Collapse") };
+                    let toggle = button(loa_ui_icons::muted(icon, 12.0))
                         .on_press(Message::Toggle(row.index))
                         .style(style::action_button)
-                        .padding(1)
-                        .into()
+                        .padding(1);
+                    let tip = container(text(label).size(12)).padding([3, 8]).style(style::band);
+                    iced::widget::tooltip(toggle, tip, iced::widget::tooltip::Position::Right).into()
                 } else {
                     space().width(style::INDENT).into()
                 };

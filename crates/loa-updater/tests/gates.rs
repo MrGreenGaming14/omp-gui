@@ -7,7 +7,6 @@ use loa_updater::gates::{
 use semver::Version;
 use serde_json::json;
 use std::collections::BTreeSet;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -162,8 +161,7 @@ fn unused_tool_changes_never_harm() {
 
 fn script(dir: &Path, body: &str) -> PathBuf {
     let path = dir.join("omp");
-    std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    loa_exec::write_executable(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
     path
 }
 

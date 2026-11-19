@@ -16,6 +16,13 @@ use loa_omp_rpc::{AskAnswer, AskQuestion, AssistantEvent, Event, PromptError, Pr
 use serde_json::Value as Json;
 use std::collections::{HashMap, HashSet, VecDeque};
 
+/// omp's event listing its slash commands. Recorded as an `<ext>` of this
+/// type on the session root (the latest one is current), where the app reads
+/// the commands it offers in the composer.
+pub const COMMANDS: &str = "available_commands_update";
+/// omp's output of a slash command it ran itself.
+const COMMAND_OUTPUT: &str = "command_output";
+
 #[derive(Debug)]
 enum Pending {
     /// The current turn; its user message is the prompt omp is running.
@@ -64,6 +71,8 @@ pub struct Mapping {
     /// Text typed on a question card whose `select` offered omp's "Other"
     /// row: omp asks for it with the `input` that follows.
     typed: Option<String>,
+    /// The command list last recorded, so repeats add nothing.
+    commands: Option<Json>,
 }
 
 impl Mapping {
@@ -75,7 +84,7 @@ impl Mapping {
             queued: VecDeque::new(), turn_prompt: None, echo: false,
             blocks: HashMap::new(), text: HashMap::new(), inputs: HashMap::new(),
             input_text: HashMap::new(), requests: HashMap::new(), closed: HashSet::new(), turns: Vec::new(),
-            current_message: None, typed: None,
+            current_message: None, typed: None, commands: None,
         }
     }
 
@@ -126,7 +135,8 @@ impl Mapping {
     }
 
     pub fn event(&mut self, event: &Event) -> Vec<Draft> {
-        if self.turn.is_none() && needs_turn(event) {
+        let command_output = matches!(event, Event::Unknown { kind, .. } if kind == COMMAND_OUTPUT) && !self.queued.is_empty();
+        if self.turn.is_none() && (needs_turn(event) || command_output) {
             self.deferred.push_back(event.clone());
             return if self.opening() { Vec::new() } else { self.open_turn() };
         }
@@ -233,9 +243,24 @@ impl Mapping {
                 if let Some(title) = title { out.push(set(self.session, attr::TITLE, title.clone())); }
                 out
             }
+            Event::Unknown { kind, raw } if kind == COMMANDS => {
+                let commands = raw.get("commands").cloned().unwrap_or(Json::Null);
+                if self.commands.as_ref() == Some(&commands) { return Vec::new(); }
+                self.commands = Some(commands);
+                vec![self.insert(self.session, K::Ext, vec![(attr::HARNESS, "omp".into()), (attr::TYPE, COMMANDS.into())], raw.to_string(), Pending::Other)]
+            }
+            // A slash command omp ran itself answers in its turn. The
+            // runtime may close that turn from the prompt's response before
+            // the output frame is read; it then joins the turn just closed.
+            Event::Unknown { kind, raw } if kind == COMMAND_OUTPUT => {
+                let text = raw.get("text").and_then(Json::as_str).unwrap_or_default();
+                match self.turn.or_else(|| self.turns.last().copied()) {
+                    Some(turn) => vec![self.insert(turn, K::Message, vec![(attr::ROLE, "assistant".into()), (attr::KIND, MessageKind::Text.into()), (attr::STATUS, MessageStatus::Done.into())], text, Pending::Other)],
+                    None => vec![self.ext(COMMAND_OUTPUT, raw)],
+                }
+            }
             // omp's TUI bookkeeping (`advisor_cost_changed` carries no
-            // payload; the cost arrives as usage on `message_end`,
-            // `available_commands_update` lists slash commands) has no
+            // payload; the cost arrives as usage on `message_end`) has no
             // element; newer events are dropped the same way.
             Event::Unknown { kind, .. } => {
                 tracing::trace!(kind, "omp event without an element, ignored");

@@ -120,6 +120,54 @@ fn sandbox_grants_cover_only_sandbox_exec() {
 }
 
 #[test]
+fn folder_grants_cover_the_folder_and_below_read_is_view_write_is_drive() {
+    let root = key(10); let alice = key(11); let bob = key(12);
+    let store = GrantStore::with_connection(rusqlite::Connection::open_in_memory().unwrap()).unwrap();
+    let folder = |path: &str| Resource::Folder { path: path.into() };
+    let read = issue(&root, &store, &alice, vec![scope(folder("/srv/share"), Action::Read)], true);
+    let grant = verify(&root, &store, &alice, &read.token);
+    for covered in ["/srv/share", "/srv/share/docs", "/srv/share/docs/deep"] {
+        assert!(grant.authorize(&Request::folder(Action::Read, covered), NOW).is_ok(), "{covered}");
+    }
+    // Siblings with the same prefix, parents, relative and unnormalized paths are outside.
+    for outside in ["/srv/shared", "/srv", "/", "srv/share", "/srv/share/../etc"] {
+        assert!(grant.authorize(&Request::folder(Action::Read, outside), NOW).is_err(), "{outside}");
+    }
+    // View only: no writes.
+    assert!(matches!(
+        grant.authorize(&Request::folder(Action::Write, "/srv/share/a"), NOW),
+        Err(Denied::NotGranted { action: Action::Write, resource: "folder" })
+    ));
+    assert!(grant.authorize(&Request::ssh(Action::Read, "/srv/share"), NOW).is_err());
+
+    // Write brings read; the holder reads both back.
+    let write = issue(&root, &store, &alice, vec![scope(folder("/srv/share"), Action::Write)], true);
+    let writer = verify(&root, &store, &alice, &write.token);
+    assert!(writer.authorize(&Request::folder(Action::Write, "/srv/share/a"), NOW).is_ok());
+    assert!(writer.authorize(&Request::folder(Action::Read, "/srv/share/a"), NOW).is_ok());
+    let scopes = token_scopes(&write.token, &root.public()).unwrap();
+    assert_eq!(scopes, vec![Scope::new(folder("/srv/share"), [Action::Read, Action::Write]).unwrap()]);
+
+    // Folder grants take only read and write, on normalized absolute paths.
+    assert!(Scope::new(folder("/srv/share"), [Action::View]).is_err());
+    for bad in ["relative", "/a/../b", "/a/", "/a//b", ""] {
+        assert!(matches!(Scope::new(folder(bad), [Action::Read]), Err(GrantError::FolderPath(_))), "{bad:?}");
+    }
+
+    // A re-share narrows to a subfolder.
+    let alice_store = GrantStore::with_connection(rusqlite::Connection::open_in_memory().unwrap()).unwrap();
+    alice_store.receive(&alice.public(), &root.public(), &write.token).unwrap();
+    let child = alice_store.reshare(&alice, &write.id, bob.public(), Narrowing {
+        scopes: Some(vec![scope(folder("/srv/share/docs"), Action::Read)]),
+        ttl_ms: TTL, reshare: false,
+    }, NOW).unwrap();
+    let narrowed = verify(&root, &store, &bob, &child.token);
+    assert!(narrowed.authorize(&Request::folder(Action::Read, "/srv/share/docs/x"), NOW).is_ok());
+    assert!(matches!(narrowed.authorize(&Request::folder(Action::Read, "/srv/share"), NOW), Err(Denied::Narrowed { .. })));
+    assert!(matches!(narrowed.authorize(&Request::folder(Action::Write, "/srv/share/docs"), NOW), Err(Denied::Narrowed { .. })));
+}
+
+#[test]
 fn ssh_tool_call_checks_host_and_operation_not_just_tool_listing() {
     let root = key(20);
     let alice = key(21);

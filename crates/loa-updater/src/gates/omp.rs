@@ -217,15 +217,17 @@ impl FormatProbe for OmpProbe {
 
     async fn config_keys(&self, executable: &Path) -> Result<ConfigSchema, String> {
         let dir = workdir()?;
-        let child = Command::new(executable)
-            .args(["config", "list", "--json"])
-            .current_dir(dir.path())
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|e| format!("cannot start {}: {e}", executable.display()))?;
+        let child = loa_exec::retry_busy(|| {
+            Command::new(executable)
+                .args(["config", "list", "--json"])
+                .current_dir(dir.path())
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .kill_on_drop(true)
+                .spawn()
+        })
+        .map_err(|e| format!("cannot start {}: {e}", executable.display()))?;
         let output = tokio::time::timeout(self.timeout, child.wait_with_output())
             .await
             .map_err(|_| format!("config list did not finish within {:?}", self.timeout))?
@@ -445,16 +447,18 @@ impl Rpc {
     /// Starts `executable --mode rpc <args>` in `cwd` and waits for its
     /// `ready` frame.
     async fn start(executable: &Path, args: &[String], cwd: &Path, deadline: Instant) -> Result<Self, Start> {
-        let mut child = Command::new(executable)
-            .args(["--mode", "rpc"])
-            .args(args)
-            .current_dir(cwd)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|e| Start::Failed(format!("cannot start {}: {e}", executable.display())))?;
+        let mut child = loa_exec::retry_busy(|| {
+            Command::new(executable)
+                .args(["--mode", "rpc"])
+                .args(args)
+                .current_dir(cwd)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .kill_on_drop(true)
+                .spawn()
+        })
+        .map_err(|e| Start::Failed(format!("cannot start {}: {e}", executable.display())))?;
         let stdin = child.stdin.take();
         let stdout = child.stdout.take().ok_or_else(|| Start::Failed("stdout not captured".into()))?;
         let mut stderr = child.stderr.take().ok_or_else(|| Start::Failed("stderr not captured".into()))?;

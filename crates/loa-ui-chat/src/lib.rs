@@ -15,7 +15,7 @@ mod rows;
 mod stream;
 mod style;
 
-pub use items::ItemKind;
+pub use items::{COMMANDS_EXT, ItemKind};
 
 use heights::Heights;
 use iced::widget::{

@@ -9,7 +9,8 @@ use crate::data::{NodeStatus, Nodes, SessionSummary, short_key};
 use crate::theme::{self, Preference, style};
 use crate::{sidebar, topbar};
 use iced::theme::Mode;
-use iced::widget::{button, column, container, mouse_area, row, rule, sensor, space, text};
+use iced::widget::operation::{self, AbsoluteOffset, RelativeOffset};
+use iced::widget::{button, column, container, mouse_area, row, rule, scrollable, sensor, space, text};
 use iced::{Element, Fill, Shrink, Size, Subscription, Task, Theme, mouse};
 
 /// Width of the sidebar.
@@ -26,6 +27,12 @@ pub const MIN_CENTER_WIDTH: f32 = 320.0;
 
 /// Container id of the right panel.
 pub const PANEL_ID: &str = "loa-right-panel";
+
+/// Id of the panel's tab bar, which scrolls sideways when the tabs overflow.
+pub const PANEL_TABS_ID: &str = "loa-panel-tabs";
+
+/// Pixels a mouse wheel line scrolls the tab bar.
+const WHEEL_LINE: f32 = 40.0;
 
 /// Width of the grab area between the center and the panel.
 const HANDLE_WIDTH: f32 = 6.0;
@@ -93,6 +100,8 @@ pub enum Message {
     Topbar(topbar::Message),
     /// A panel tab was clicked.
     SelectTab(String),
+    /// The mouse wheel turned over the tab bar.
+    TabsWheel(mouse::ScrollDelta),
     /// The panel edge was grabbed.
     DragStart,
     /// The cursor moved to this x while the panel edge is held.
@@ -224,6 +233,11 @@ impl State {
         self.refresh_breadcrumb();
     }
 
+    /// Replaces the pinned session ids, as saved by the app.
+    pub fn set_pins(&mut self, pins: impl IntoIterator<Item = String>) {
+        self.sidebar.set_pins(pins);
+    }
+
     /// Replaces the project list.
     pub fn set_projects(&mut self, projects: impl IntoIterator<Item = String>) {
         self.sidebar.set_projects(projects);
@@ -303,11 +317,26 @@ impl State {
     }
 
     /// Opens the panel on this tab, e.g. when a file is clicked in the chat.
+    /// Pair it with [`State::reveal_active_tab`] so the tab bar scrolls to
+    /// it when the tabs overflow.
     pub fn show_tab(&mut self, id: &str) {
         if self.panel.tabs.iter().any(|tab| tab.id == id) {
             self.panel.active = Some(id.to_owned());
             self.set_panel_open(true);
         }
+    }
+
+    /// Scrolls an overflowing tab bar so the active tab shows: the bar snaps
+    /// to the active tab's share of the bar, so the first and last tabs land
+    /// exactly at the start and the end.
+    pub fn reveal_active_tab<T: Send + 'static>(&self) -> Task<T> {
+        let tabs = &self.panel.tabs;
+        let index = self.active_tab().and_then(|active| tabs.iter().position(|tab| tab.id == active)).unwrap_or(0);
+        let x = match tabs.len() {
+            0 | 1 => 0.0,
+            len => index as f32 / (len - 1) as f32,
+        };
+        operation::snap_to(PANEL_TABS_ID, RelativeOffset { x: Some(x), y: None })
     }
 
     /// The id of the tab whose body the panel shows.
@@ -377,6 +406,16 @@ impl State {
                     Event::SelectTab(id)
                 });
                 (Task::none(), event)
+            }
+            Message::TabsWheel(delta) => {
+                // The tab bar scrolls only sideways: a vertical wheel turns
+                // it, sideways deltas reach the scrollable itself.
+                let x = match delta {
+                    mouse::ScrollDelta::Lines { y, .. } => -y * WHEEL_LINE,
+                    mouse::ScrollDelta::Pixels { y, .. } => -y,
+                };
+                let task = if x == 0.0 { Task::none() } else { operation::scroll_by(PANEL_TABS_ID, AbsoluteOffset { x, y: 0.0 }) };
+                (task, None)
             }
             Message::DragStart => {
                 self.panel.dragging = self.panel.open;
@@ -472,6 +511,14 @@ impl State {
             let underline = if selected { underline.style(style::tab_underline) } else { underline };
             bar.push(column![container(label).center_y(Fill), underline].width(Shrink).height(topbar::HEIGHT))
         });
+        // Embedded below the tabs, so it never covers the active underline.
+        let scrollbar = scrollable::Scrollbar::new().width(2).scroller_width(2).spacing(0);
+        let tabs = scrollable(tabs)
+            .id(PANEL_TABS_ID)
+            .direction(scrollable::Direction::Horizontal(scrollbar))
+            .style(style::tab_scrollbar)
+            .width(Fill);
+        let tabs = mouse_area(tabs).on_scroll(Message::TabsWheel);
         let tab_bar = Element::from(container(tabs).style(style::chrome).padding([0, 4]).width(Fill)).map(map);
 
         let body = match active {

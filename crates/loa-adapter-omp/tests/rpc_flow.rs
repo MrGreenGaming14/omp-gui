@@ -308,3 +308,32 @@ async fn text_typed_on_an_ask_question_card_goes_through_omps_other_row() {
         json!({"type":"extension_ui_response","id":"in-1","value":"DuckDB"}),
     ]);
 }
+
+#[tokio::test]
+async fn an_at_mention_of_a_text_file_stays_a_path_and_an_image_goes_as_an_image() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("notes.md"), "# notes").unwrap();
+    let image = dir.path().join("shot.png");
+    std::fs::write(&image, [137, 80, 78, 71]).unwrap();
+    let script = "< prompt p\n\
+        > {\"id\":\"{{p}}\",\"type\":\"response\",\"command\":\"prompt\",\"success\":true}\n\
+        > {\"type\":\"agent_start\"}\n\
+        > {\"type\":\"agent_end\",\"messages\":[],\"isTerminal\":true}\n\
+        > {\"type\":\"prompt_result\",\"id\":\"{{p}}\",\"agentInvoked\":true,\"status\":\"completed\",\"sessionSettled\":true}\n\
+        > {\"type\":\"session_settled\"}\n";
+    let (fake, _sink, session) = session_with(dir.path(), script).await;
+    let notes = dir.path().join("notes.md");
+    let text = format!("Summarize @{} and @{}", notes.display(), image.display());
+    let attachments = vec![
+        loa_adapter::Attachment { path: notes, mime: None },
+        loa_adapter::Attachment { path: image, mime: Some("image/png".into()) },
+    ];
+    session.send(Prompt { text: text.clone(), attachments, by: "owner".into() }).await.expect("a text file mention doesn't fail the send");
+    tokio::time::timeout(WAIT, session.wait_idle()).await.unwrap().unwrap();
+    session.shutdown().await.unwrap();
+    let sent = fake.received().into_iter().find(|frame| frame["type"] == "prompt").unwrap();
+    assert_eq!(sent["message"], text.as_str(), "the text keeps both @paths");
+    let images = sent["images"].as_array().unwrap();
+    assert_eq!(images.len(), 1, "only the image is sent as image content");
+    assert_eq!(images[0]["mimeType"], "image/png");
+}

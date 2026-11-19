@@ -18,8 +18,11 @@ serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+# `retry_busy` for spawning; `write_executable` for the `fake-omp` stand-in.
+loa-exec = { path = "../loa-exec" }
 
 [dev-dependencies]
 # Turns on `fake-omp` for this crate's own integration tests.
 loa-omp-rpc = { path = ".", features = ["fake-omp"] }
 tempfile.workspace = true
+loa-exec = { path = "../loa-exec" }

@@ -2,7 +2,7 @@
 
 use crate::Result;
 use async_trait::async_trait;
-use loa_core::{Dom, attr};
+use loa_core::{Dom, ElementKind, Role, attr};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -25,6 +25,8 @@ pub struct SessionInfo {
     pub node: String,
     /// Unix milliseconds, as in `<session created>`.
     pub created: i64,
+    /// The `<session title>`, else the first line of the first user prompt
+    /// (clipped), the title Recents shows.
     pub title: Option<String>,
 }
 
@@ -38,9 +40,26 @@ impl SessionInfo {
             project: session_project(dom)?,
             node: root.str_attr(attr::NODE).unwrap_or_default().to_owned(),
             created: root.int_attr(attr::CREATED).unwrap_or(0),
-            title: root.str_attr(attr::TITLE).map(str::to_owned),
+            title: session_title(dom),
         })
     }
+}
+
+/// Characters of a prompt line kept in a title derived from it.
+const DERIVED_TITLE_CHARS: usize = 60;
+
+/// The `<session title>`, else the first line of the first user prompt.
+fn session_title(dom: &Dom) -> Option<String> {
+    let root = dom.root()?;
+    if let Some(title) = root.str_attr(attr::TITLE).map(str::trim).filter(|title| !title.is_empty()) {
+        return Some(title.to_owned());
+    }
+    let prompt = dom.iter().find(|node| node.kind == ElementKind::Message && node.str_attr(attr::ROLE) == Some(Role::User.as_str()))?;
+    let line = prompt.text.lines().map(str::trim).find(|line| !line.is_empty())?;
+    Some(match line.char_indices().nth(DERIVED_TITLE_CHARS) {
+        Some((cut, _)) => format!("{}…", line[..cut].trim_end()),
+        None => line.to_owned(),
+    })
 }
 
 /// The project a session belongs to: its `<session project>`, else the name

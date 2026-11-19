@@ -3,7 +3,7 @@
 //! once).
 
 use bytes::BytesMut;
-use loa_surface::{Document, Encoding, Frame, Input, InputEvent, SurfaceInfo, SurfaceUri};
+use loa_surface::{Document, Encoding, Frame, Input, InputEvent, StreamInfo, SurfaceInfo, SurfaceUri};
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
@@ -85,6 +85,7 @@ pub async fn open(transport: Transport, uri: &SurfaceUri, options: ViewerOptions
             Ok(Opened::Pixel(PixelViewer {
                 info,
                 size,
+                stream: accept.stream.and_then(crate::wire::StreamInfoMsg::into_info),
                 reader,
                 datagrams: accept.datagrams.then_some(transport.datagrams),
                 reassembler: Reassembler::new(),
@@ -125,6 +126,8 @@ pub enum ViewerEvent {
 pub struct PixelViewer {
     info: SurfaceInfo,
     size: (u32, u32),
+    /// What the server said it streams for this viewer.
+    stream: Option<StreamInfo>,
     reader: MessageReader,
     /// `None` when frames come on the stream (TCP fallback).
     datagrams: Option<Arc<dyn Datagrams>>,
@@ -140,6 +143,12 @@ impl PixelViewer {
     /// Current surface size.
     pub fn size(&self) -> (u32, u32) {
         self.size
+    }
+
+    /// What the server streams for this viewer (encoding and encoder), when
+    /// it says.
+    pub fn stream(&self) -> Option<&StreamInfo> {
+        self.stream.as_ref()
     }
 
     /// Sends input to the surface. Clone it into the UI; it works while

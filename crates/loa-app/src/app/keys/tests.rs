@@ -178,13 +178,20 @@ fn the_palette_lists_every_area_command_and_the_whole_keymap() {
 fn composer_pickers_and_pin_run_from_the_palette() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = fake_app(dir.path(), &["fake-a"]);
-    let id = session(&mut app, "hello");
+    key(&mut app, chord('n', primary()));
+    let session = app.ctx.sessions.active().expect("started");
+    let id = session.id().clone();
+    let (_, mut feed) = session.writer().subscribe(Policy::every_patch(1024));
+    prompt(&mut app, "hello");
+    deliver(&mut app, &id, &mut feed);
+    assert!(!app.ctx.sessions.active().unwrap().is_busy(), "the turn ended");
+    let id = id.to_string();
     let task = app.command(&CommandId::new(format!("{MODE}plan")));
     crate::app::tests::run(&mut app, task);
-    update(&mut app, Message::Palette(palette::Message::Open));
-    let titles: Vec<&str> = app.palette.commands().iter().map(|command| command.title.as_str()).collect();
-    assert!(titles.contains(&"Leave plan mode"), "the session is in plan mode: {titles:?}");
-    update(&mut app, Message::Palette(palette::Message::Close));
+    // The fake harness can't be limited to read-only tools, so the sessions
+    // area refuses: proof the command took the composer picker's path.
+    let notice = app.ctx.notice().unwrap_or_default();
+    assert!(notice.contains("Can't enter plan mode on fake-a"), "{notice}");
     let _ = app.command(&PIN);
     assert_eq!(app.ctx.shell.sidebar().session(&id).map(|summary| summary.pinned), Some(true));
     assert_eq!(app.session_order().first(), Some(&id), "pinned sessions come first");

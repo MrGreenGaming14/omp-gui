@@ -6,9 +6,15 @@
 //!   when the harness forks, else a fresh session seeded with the history
 //! - compaction (`/compact`, palette): native, else a small-model summary
 //!   carried into a fresh session
-//! - model roles (palette): switch the running session to a role's model
+//! - `/` commands in the composer: the app's (this area's, plus `/new` and
+//!   `/model`, which the app runs) and the harness's own, listed from the
+//!   commands its adapter records in the session
+//! - model roles (palette, `/role`): switch the running session to a role's
+//!   model
 //! - the Agents tab (jobs, live, with omp's `wait`) and opening a subagent's
-//!   linked child session
+//!   linked child session; the tab shows up when a job starts, and the
+//!   Session tree when a fork or rewind makes a branch
+//! - links in the transcript open in the system browser
 //! - plan mode on harnesses without it: read-only through the harness's tool
 //!   approvals, then a plan review card
 //! - rules and advisor around each turn on harnesses without them
@@ -31,12 +37,14 @@ use std::time::Duration;
 use iced::{Element, Subscription, Task};
 use loa_adapter::{Answer, Capabilities, Feature, Prompt, SessionConfig};
 use loa_bus::SessionId;
-use loa_core::{Dom, Draft, JobStatus, NodeId, PatchSink, SessionMode, TurnStatus, answer, attr};
+use loa_core::{Dom, Draft, ElementKind, JobStatus, NodeId, Op, PatchSink, SessionMode, TurnStatus, answer, attr};
 use loa_features::hooks::{self, Advisor, TurnHooks};
 use loa_features::plan::{self as plan_mode, Outcome, PlanGate, Verdict};
 use loa_features::smol::OneShot;
 use loa_features::{Compaction, PlanPermit, native};
 use loa_journal::Listing;
+use loa_models::login::UrlOpener;
+use loa_models::opener::SystemUrlOpener;
 use loa_ui_chat as chat;
 use loa_ui_composer as composer;
 use loa_ui_palette as palette;
@@ -55,6 +63,22 @@ const COMPACT: &str = "compact";
 const TICK: Duration = Duration::from_secs(1);
 const ROLE_COMMAND: &str = "role.";
 
+/// The app's `/` commands, offered in the composer before the harness's
+/// own. The app runs `/new` and `/model`; this area runs the rest
+/// ([`slash`]).
+const APP_COMMANDS: [(&str, &str); 10] = [
+    ("new", "Start a new session"),
+    ("model", "Switch this session's model: /model <provider/model>"),
+    ("role", "Switch to one of omp's model roles: /role <name>"),
+    (COMPACT, "Summarize the session and continue with the summary"),
+    ("fork", "Fork the session into a new one"),
+    ("plan", "Plan mode: read only until you approve a plan"),
+    ("normal", "Leave plan mode"),
+    ("export", "Export the session as a native file"),
+    ("export-xml", "Export the session as XML for debugging"),
+    ("import", "Import a native session"),
+];
+
 #[derive(Clone, Debug)]
 pub enum Message {
     Agents(agents::Message),
@@ -67,6 +91,9 @@ pub enum Message {
     Delete(String),
     /// Compact the active session, with optional instructions.
     Compact(Option<String>),
+    /// Run this area's palette command `name` (without the `sessions.`
+    /// prefix), typed as a `/` command.
+    Command(String),
     /// Answer to a plan review the app raised, from the decision card.
     AnswerPlan { session: SessionId, decision: NodeId, answer: Answer },
     PlanAnswered { session: SessionId, decision: NodeId, result: Result<PlanNext, String> },
@@ -131,6 +158,11 @@ pub struct State {
     home: PathBuf,
     /// Compacted successor id -> the session it replaces.
     compacted: HashMap<String, String>,
+    /// Opens links clicked in the transcript.
+    opener: Arc<dyn UrlOpener>,
+    /// The fork or rewind being started, to show the Session tab once it
+    /// is active.
+    branching: Option<String>,
 }
 
 impl State {
@@ -142,10 +174,7 @@ impl State {
         } else {
             on_path("omp").map(|omp| OneShot::new(Arc::new(loa_projects::OmpSummarizer::new(omp, ctx.services.cwd.clone()))))
         };
-        ctx.composer.set_commands(vec![composer::Command {
-            name: COMPACT.to_owned(),
-            description: "Summarize the session and continue with the summary".to_owned(),
-        }]);
+        ctx.composer.set_commands(composer_commands(None));
         let state = Self {
             agents: agents::State::from_dom(&Dom::new()),
             tree: tree::Tree::default(),
@@ -156,6 +185,8 @@ impl State {
             small,
             home,
             compacted: HashMap::new(),
+            opener: Arc::new(SystemUrlOpener),
+            branching: None,
         };
         (state, Task::none())
     }
@@ -172,6 +203,12 @@ impl State {
         self.home = home;
     }
 
+    /// Opens transcript links with `opener`.
+    #[cfg(test)]
+    pub(crate) fn set_opener(&mut self, opener: Arc<dyn UrlOpener>) {
+        self.opener = opener;
+    }
+
     fn hooks(&self) -> MutexGuard<'_, HashMap<String, TurnHooks>> {
         self.hooks.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -183,6 +220,7 @@ impl State {
         self.agents.reset(dom);
         let _ = self.agents.update(agents::Message::Tick(loa_core::now_ms()));
         ctx.composer.set_mode(mode(dom));
+        ctx.composer.set_commands(composer_commands(ctx.sessions.active().map(|session| session.dom())));
         self.tree.refresh(ctx);
         self.restore_plan(ctx);
     }
@@ -316,6 +354,7 @@ impl State {
                 Ok(Arc::from(running.harness))
             })
         });
+        self.branching = Some(id.clone());
         ctx.request(Request::Spawn(Spawn { id: SessionId::from(id), harness, start, prompt: None }));
     }
 
@@ -410,19 +449,24 @@ impl State {
         self.tree.forget(id);
         self.plans.remove(id);
         self.hooks().remove(id);
-        if ctx.sessions.get(id).is_some() {
-            return match ctx.discard_session(id) {
+        let task = if ctx.sessions.get(id).is_some() {
+            match ctx.discard_session(id) {
                 Some(harness) => {
                     Task::perform(async move { harness.shutdown().await.map_err(|error| error.to_string()) }, Message::Done)
                 }
                 None => Task::none(),
-            };
+            }
+        } else {
+            match ctx.services.library.delete(id) {
+                Ok(()) => ctx.shell.remove_session(id),
+                Err(error) => ctx.notify(format!("Can't delete session {id}: {error}")),
+            }
+            Task::none()
+        };
+        if ctx.shell.sidebar().session(id).is_none() {
+            unpin(ctx, id);
         }
-        match ctx.services.library.delete(id) {
-            Ok(()) => ctx.shell.remove_session(id),
-            Err(error) => ctx.notify(format!("Can't delete session {id}: {error}")),
-        }
-        Task::none()
+        task
     }
 
     fn role(&mut self, ctx: &mut Ctx, role: String) -> Task<Message> {
@@ -436,7 +480,18 @@ impl State {
         };
         let Some(root) = session.dom().root().map(|root| root.id) else { return Task::none() };
         let candidates = match model_roles(&self.home) {
-            Ok(roles) => roles.into_iter().find(|(name, _)| *name == role).map(|(_, models)| models).unwrap_or_default(),
+            Ok(roles) => match roles.iter().find(|(name, _)| *name == role) {
+                Some((_, models)) => models.clone(),
+                None => {
+                    let names: Vec<&str> = roles.iter().map(|(name, _)| name.as_str()).collect();
+                    ctx.notify(if role.is_empty() {
+                        format!("Name a model role: /role <{}>", names.join("|"))
+                    } else {
+                        format!("omp has no model role {role}; its roles: {}", names.join(", "))
+                    });
+                    return Task::none();
+                }
+            },
             Err(error) => {
                 ctx.notify(error);
                 return Task::none();
@@ -640,13 +695,68 @@ impl State {
     }
 }
 
+/// A `/` command typed in the composer: its name and its trimmed arguments.
+pub fn split_slash(text: &str) -> Option<(&str, &str)> {
+    let rest = text.trim().strip_prefix('/')?;
+    let (name, args) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+    Some((name, args.trim()))
+}
+
 /// The message for a `/` command typed in the composer, when it is one of
 /// this area's.
 pub fn slash(text: &str) -> Option<Message> {
-    let rest = text.trim().strip_prefix('/')?;
-    let (name, args) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
-    let args = args.trim();
-    (name == COMPACT).then(|| Message::Compact((!args.is_empty()).then(|| args.to_owned())))
+    let (name, args) = split_slash(text)?;
+    Some(match name {
+        COMPACT => Message::Compact((!args.is_empty()).then(|| args.to_owned())),
+        "plan" => Message::Mode(SessionMode::Plan),
+        "normal" => Message::Mode(SessionMode::Normal),
+        "role" => Message::Command(format!("{ROLE_COMMAND}{args}")),
+        "fork" | "export" | "export-xml" | "import" => Message::Command(name.to_owned()),
+        _ => return None,
+    })
+}
+
+/// The composer's `/` commands: the app's, then the harness's own from the
+/// latest list its adapter recorded in `dom` (omp's `commands`, ACP's
+/// `availableCommands`). A harness command named like an app command is
+/// left out: the app's runs.
+fn composer_commands(dom: Option<&Dom>) -> Vec<composer::Command> {
+    let mut commands: Vec<composer::Command> = APP_COMMANDS
+        .iter()
+        .map(|(name, description)| composer::Command { name: (*name).to_owned(), description: (*description).to_owned() })
+        .collect();
+    let listed = dom.and_then(|dom| {
+        dom.iter()
+            .filter(|node| node.kind == ElementKind::Ext && node.str_attr(attr::TYPE) == Some(chat::COMMANDS_EXT))
+            .max_by_key(|node| node.id)
+    });
+    let Some(listed) = listed else { return commands };
+    let harness = listed.str_attr(attr::HARNESS).unwrap_or("harness");
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(&listed.text) else { return commands };
+    let list = json.get("commands").or_else(|| json.get("availableCommands")).and_then(serde_json::Value::as_array);
+    for command in list.into_iter().flatten() {
+        let Some(name) = command.get("name").and_then(serde_json::Value::as_str) else { continue };
+        if commands.iter().any(|known| known.name == name) {
+            continue;
+        }
+        let description = command.get("description").and_then(serde_json::Value::as_str).unwrap_or_default();
+        commands.push(composer::Command { name: name.to_owned(), description: format!("{harness}: {description}") });
+    }
+    commands
+}
+
+/// Drops session `id` from the sidebar's pins and the saved ones.
+fn unpin(ctx: &mut Ctx, id: &str) {
+    if ctx.shell.sidebar().pins().contains(id) {
+        let pins: Vec<String> = ctx.shell.sidebar().pins().iter().filter(|pin| *pin != id).cloned().collect();
+        ctx.shell.set_pins(pins);
+    }
+    let saved = ctx.services.config.load().and_then(|mut loaded| {
+        if loaded.config.pinned.remove(id) { ctx.services.config.save(&loaded.config) } else { Ok(()) }
+    });
+    if let Err(error) = saved {
+        ctx.notify(format!("Can't save the pins: {error}"));
+    }
 }
 
 /// The session's mode, `normal` unless the DOM says otherwise.
@@ -735,12 +845,21 @@ impl Area for State {
                 Task::none()
             }
             Message::Chat(chat::Event::OpenLink(link)) => {
-                ctx.notify(link);
+                if !(link.starts_with("https://") || link.starts_with("http://")) {
+                    ctx.notify(format!("Only web links open in the browser: {link}"));
+                } else if let Err(error) = self.opener.open_url(&link) {
+                    ctx.notify(format!("Can't open {link}: {error}"));
+                }
                 Task::none()
             }
-            Message::Mode(mode) => self.set_mode(mode, ctx),
+            Message::Mode(mode) => {
+                // Also typed as `/plan` or `/normal`: the picker follows.
+                ctx.composer.set_mode(mode);
+                self.set_mode(mode, ctx)
+            }
             Message::Delete(id) => self.delete(ctx, &id),
             Message::Compact(instructions) => self.compact(ctx, instructions),
+            Message::Command(name) => self.run_command(AreaId::Sessions.command(&name).as_str(), ctx).unwrap_or_else(Task::none),
             Message::AnswerPlan { session, decision, answer } => self.answer_plan(ctx, session, decision, answer),
             Message::PlanAnswered { session, decision, result } => {
                 let prompt = match result {
@@ -920,20 +1039,40 @@ impl Area for State {
                     // The compacted session's harness already stopped.
                     let _ = ctx.close_session(&old);
                 }
+                if id.is_some() && id.as_ref().map(SessionId::as_str) == self.branching.as_deref() {
+                    self.branching = None;
+                    ctx.reveal_tab("session");
+                }
                 self.reload(ctx);
             }
             SessionEvent::Loaded(id) if ctx.sessions.is_active(id.as_str()) => self.reload(ctx),
             SessionEvent::Patch(id, patch) => {
-                if let Some(session) = ctx.sessions.get(id.as_str()).filter(|_| ctx.sessions.is_active(id.as_str())) {
+                let active = ctx.sessions.is_active(id.as_str());
+                let mut job_started = false;
+                if let Some(session) = ctx.sessions.get(id.as_str()).filter(|_| active) {
                     let dom = session.dom();
                     self.agents.apply(dom, patch);
-                    if let loa_core::Op::Set { name, .. } = &patch.op
+                    if let Op::Insert { kind, .. } = &patch.op {
+                        match kind {
+                            ElementKind::Job => job_started = true,
+                            ElementKind::Ext
+                                if dom.get(patch.node).and_then(|node| node.str_attr(attr::TYPE)) == Some(chat::COMMANDS_EXT) =>
+                            {
+                                ctx.composer.set_commands(composer_commands(Some(dom)));
+                            }
+                            _ => {}
+                        }
+                    }
+                    if let Op::Set { name, .. } = &patch.op
                         && name == attr::MODE
                         && dom.root().is_some_and(|root| root.id == patch.node)
                     {
                         let mode = mode(dom);
                         ctx.composer.set_mode(mode);
                     }
+                }
+                if job_started {
+                    ctx.reveal_tab("agents");
                 }
             }
             SessionEvent::TurnStarted { session, .. } if ctx.sessions.is_active(session.as_str()) => self.tree.refresh(ctx),

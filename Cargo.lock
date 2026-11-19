@@ -4583,6 +4583,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "loa-core",
+ "loa-exec",
  "serde",
  "tempfile",
  "thiserror 2.0.21",
@@ -4596,6 +4597,7 @@ dependencies = [
  "async-trait",
  "loa-adapter",
  "loa-core",
+ "loa-exec",
  "serde",
  "serde_json",
  "tempfile",
@@ -4611,6 +4613,7 @@ dependencies = [
  "async-trait",
  "loa-adapter",
  "loa-core",
+ "loa-exec",
  "serde_json",
  "tempfile",
  "tokio",
@@ -4625,6 +4628,7 @@ dependencies = [
  "async-trait",
  "loa-adapter",
  "loa-core",
+ "loa-exec",
  "serde_json",
  "tempfile",
  "tokio",
@@ -4716,6 +4720,7 @@ dependencies = [
  "loa-bus",
  "loa-config",
  "loa-core",
+ "loa-exec",
  "loa-features",
  "loa-grants",
  "loa-identity",
@@ -4728,6 +4733,7 @@ dependencies = [
  "loa-remote",
  "loa-sandbox",
  "loa-surface",
+ "loa-surface-bench",
  "loa-surface-hub",
  "loa-ui-chat",
  "loa-ui-composer",
@@ -4784,6 +4790,13 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "loa-exec"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
 ]
 
 [[package]]
@@ -4888,6 +4901,7 @@ name = "loa-models"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "loa-exec",
  "loa-omp-rpc",
  "serde",
  "serde_json",
@@ -4907,6 +4921,7 @@ dependencies = [
  "ed25519-dalek 2.2.0",
  "futures",
  "iroh",
+ "loa-exec",
  "mdns-sd",
  "prost 0.14.6",
  "rcgen",
@@ -4972,6 +4987,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
+ "loa-exec",
  "loa-omp-rpc",
  "serde",
  "serde_json",
@@ -4990,6 +5006,7 @@ dependencies = [
  "loa-adapter-omp",
  "loa-bus",
  "loa-core",
+ "loa-exec",
  "loa-journal",
  "serde",
  "serde_json",
@@ -5048,6 +5065,7 @@ dependencies = [
  "async-trait",
  "loa-adapter",
  "loa-core",
+ "loa-exec",
  "serde",
  "serde_json",
  "tempfile",
@@ -5102,6 +5120,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "bytes",
+ "jpeg-decoder",
  "jpeg-encoder",
  "loa-surface",
  "png 0.18.1",
@@ -5112,8 +5131,6 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tracing",
- "zune-core 0.5.3",
- "zune-jpeg 0.5.15",
 ]
 
 [[package]]
@@ -5126,6 +5143,7 @@ dependencies = [
  "chromiumoxide",
  "futures",
  "jpeg-decoder",
+ "loa-exec",
  "loa-surface",
  "serde",
  "serde_json",
@@ -5171,8 +5189,10 @@ dependencies = [
  "loa-adapter",
  "loa-adapter-omp",
  "loa-core",
+ "loa-exec",
  "loa-mcp",
  "loa-surface",
+ "loa-surface-bench",
  "loa-surface-browser",
  "loa-surface-docs",
  "loa-surface-proto",
@@ -5195,6 +5215,7 @@ dependencies = [
  "bytes",
  "crc32fast",
  "loa-surface",
+ "loa-surface-bench",
  "prost 0.14.6",
  "serde",
  "serde_json",
@@ -5272,6 +5293,7 @@ dependencies = [
  "loa-adapter",
  "loa-adapter-omp",
  "loa-core",
+ "loa-exec",
  "loa-models",
  "loa-ui-icons",
  "serde_json",
@@ -5347,6 +5369,7 @@ dependencies = [
  "image",
  "jpeg-decoder",
  "loa-surface",
+ "loa-surface-bench",
  "loa-surface-docs",
  "loa-surface-hub",
  "loa-ui-icons",
@@ -5408,6 +5431,7 @@ dependencies = [
  "flate2",
  "futures",
  "hex",
+ "loa-exec",
  "reqwest",
  "rustls",
  "semver",

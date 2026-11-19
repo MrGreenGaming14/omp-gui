@@ -123,7 +123,6 @@ impl Sandbox for DockerSandbox {
 mod tests {
     use super::*;
     use crate::provider::SandboxOptions;
-    use std::os::unix::fs::PermissionsExt;
     use tokio::io::AsyncReadExt;
 
     /// A script stands in for the Docker CLI and prints its arguments, one per line.
@@ -131,8 +130,7 @@ mod tests {
     async fn runs_the_mounted_stub_in_an_isolated_container() {
         let dir = tempfile::tempdir().unwrap();
         let fake = dir.path().join("docker");
-        std::fs::write(&fake, "#!/bin/sh\nif [ \"$1\" = run ]; then printf '%s\\n' \"$@\"; fi\n").unwrap();
-        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        loa_exec::write_executable(&fake, "#!/bin/sh\nif [ \"$1\" = run ]; then printf '%s\\n' \"$@\"; fi\n").unwrap();
         let mut provider = DockerProvider::new("debian:stable-slim", DockerStub::Mount("/host/stub".into()));
         provider.docker = fake;
         let spec = SandboxSpec {

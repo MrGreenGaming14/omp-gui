@@ -602,3 +602,14 @@ fn a_refused_answer_reopens_the_card() {
     state.answer_failed(a);
     assert_eq!(answered(send(&mut state, Message::Choose(a, 0))).0, a);
 }
+
+#[test]
+fn node_names_shorten_keys_and_name_the_local_node() {
+    let local = "a".repeat(64);
+    let peer = format!("0123abcd{}", "f".repeat(56));
+    assert_eq!(node_name(&local, &local, Some("desk")), "desk");
+    assert_eq!(node_name(&local, &local, None), "aaaaaaaa");
+    assert_eq!(node_name(&peer, &local, Some("desk")), "0123abcd");
+    assert_eq!(node_name("timeout", &local, Some("desk")), "timeout");
+    assert_eq!(node_name("alice", &local, Some("desk")), "alice");
+}

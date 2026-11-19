@@ -17,7 +17,11 @@ mod mcp_surface;
 mod tools;
 
 pub use endpoint::{McpEndpoint, SERVER_PREFIX};
-pub use hub::{HubConfig, HubEvent, Listed, Opened, Origin, SurfaceHub, normalize_url, user_namespaces};
+pub use hub::{
+    CaptureMode, HubConfig, HubEvent, Listed, Opened, Origin, SurfaceHub, VirtualDisplaySetup, normalize_url,
+    user_namespaces,
+};
+pub use loa_surface_bench::live::LiveVideo;
 pub use mcp_surface::McpSurface;
 pub use tools::{SurfaceTools, ToolContent, ToolResult, tool_definitions};
 
@@ -33,6 +37,8 @@ pub enum HubError {
     NotFound(SurfaceUri),
     #[error("the MCP servers aren't connected")]
     NoMcp,
+    #[error("the virtual display can't run here: {0}")]
+    NoVirtualDisplay(String),
     #[error(transparent)]
     Surface(#[from] SurfaceError),
     #[error(transparent)]

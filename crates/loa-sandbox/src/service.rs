@@ -359,11 +359,9 @@ async fn docker_server_version(docker: &Path) -> Result<String, String> {
 mod tests {
     use super::*;
     use crate::worker::MemoryJournal;
-    use std::os::unix::fs::PermissionsExt;
 
     fn script(path: &Path, body: &str) {
-        std::fs::write(path, body).unwrap();
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        loa_exec::write_executable(path, body).unwrap();
     }
 
     fn service(dir: &Path, config: SandboxConfig, stub: Option<PathBuf>) -> SandboxService {

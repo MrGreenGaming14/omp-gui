@@ -481,6 +481,17 @@ fn measured_heights_replace_estimates_and_size_the_spacers() {
 }
 
 #[test]
+fn the_harness_command_list_is_no_transcript_row() {
+    let mut s = Session::new();
+    let list = [("harness", Value::from("omp")), ("type", Value::from(COMMANDS_EXT))];
+    s.insert(s.session, ElementKind::Ext, &list, r#"{"commands":[]}"#);
+    assert!(s.chat.items.is_empty());
+    let notice = [("harness", Value::from("omp")), ("type", Value::from("notice"))];
+    s.insert(s.session, ElementKind::Ext, &notice, "{}");
+    assert_eq!(s.chat.items.len(), 1, "other harness events stay rows");
+}
+
+#[test]
 fn a_row_growing_above_the_viewport_keeps_the_reading_position() {
     let mut s = long_session(200);
     let content = s.chat.heights.total() as f32;

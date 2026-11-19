@@ -85,26 +85,14 @@ impl VirtualDisplay {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::PermissionsExt;
 
     fn script(dir: &Path, body: &str) -> PathBuf {
         let path = dir.join("Xvfb");
-        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        loa_exec::write_executable(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
         path
     }
 
-    /// A freshly written script can briefly be `ETXTBSY` while a concurrent
-    /// test's forked child still holds its write descriptor.
     async fn start(xvfb: &Path) -> Result<VirtualDisplay> {
-        for _ in 0..20 {
-            match VirtualDisplay::start(xvfb, Path::new("/sockets"), 640, 480).await {
-                Err(error) if error.to_string().contains("Text file busy") => {
-                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-                }
-                result => return result,
-            }
-        }
         VirtualDisplay::start(xvfb, Path::new("/sockets"), 640, 480).await
     }
 

@@ -7,6 +7,7 @@ publish.workspace = true
 
 [dependencies]
 loa-surface.workspace = true
+loa-surface-bench = { path = "../loa-surface-bench" }
 loa-surface-docs = { path = "../loa-surface-docs" }
 loa-ui-icons.workspace = true
 loa-ui-shell = { path = "../loa-ui-shell" }

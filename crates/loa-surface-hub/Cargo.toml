@@ -10,6 +10,7 @@ loa-core.workspace = true
 loa-adapter.workspace = true
 loa-surface.workspace = true
 loa-surface-proto = { path = "../loa-surface-proto" }
+loa-surface-bench = { path = "../loa-surface-bench" }
 loa-surface-browser = { path = "../loa-surface-browser" }
 loa-surface-docs = { path = "../loa-surface-docs" }
 loa-surface-rfb = { path = "../loa-surface-rfb" }
@@ -28,5 +29,6 @@ rmcp = { version = "3.11", default-features = false, features = ["server", "tran
 
 [dev-dependencies]
 loa-adapter-omp = { path = "../loa-adapter-omp" }
+loa-exec = { path = "../loa-exec" }
 image = { version = "0.25", default-features = false, features = ["png"] }
 tempfile.workspace = true
