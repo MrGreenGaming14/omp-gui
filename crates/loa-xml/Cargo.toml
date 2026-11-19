@@ -7,3 +7,4 @@ publish.workspace = true
 
 [dependencies]
 loa-core.workspace = true
+base64 = "0.22"
