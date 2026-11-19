@@ -5,7 +5,21 @@ version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
+[features]
+# Exposes `fake`, a scripted stand-in for the `omp` executable used by tests
+# of this crate and of crates built on it.
+fake-omp = []
+
 [dependencies]
+async-trait.workspace = true
+base64 = "0.23"
 serde.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
 tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+# Turns on `fake-omp` for this crate's own integration tests.
+loa-omp-rpc = { path = ".", features = ["fake-omp"] }
+tempfile.workspace = true

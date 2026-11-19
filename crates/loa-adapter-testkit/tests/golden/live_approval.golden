@@ -1,0 +1,12 @@
+#1 <session created=* harness="scripted" id="live-session" node="node-live" project="demo" schema=1>
+  #2 <turn ended=* started=* status="done">
+    #3 <message by="contract-user" role="user" status="done">
+      "Delete a.txt"
+    #4 <call call_id="call-1" ended=* started=* status="done" title="rm a.txt" tool="bash">
+      #5 <input>
+        "{\"command\":\"rm a.txt\"}"
+      #6 <decision answer=["allow_once"] by="contract-user" call=#4 created=* ended=* kind="approval" request_id="req-1" status="answered" title="Run rm a.txt?">
+        "rm a.txt"
+      #7 <result is_error=false>
+    #8 <message role="assistant" status="done">
+      "Removed a.txt."

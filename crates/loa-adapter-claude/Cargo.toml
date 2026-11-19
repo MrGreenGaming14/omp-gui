@@ -8,3 +8,11 @@ publish.workspace = true
 [dependencies]
 loa-core.workspace = true
 loa-adapter.workspace = true
+async-trait.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid = { version = "1.29", features = ["v4"] }
+
+[dev-dependencies]
+tempfile.workspace = true

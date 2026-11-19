@@ -1,0 +1,9 @@
+#1 <session created=* harness="scripted" id="live-session" node="node-live" project="demo" schema=1>
+  #2 <turn ended=* started=* status="done">
+    #3 <message by="contract-user" role="user" status="done">
+      "Say hello"
+    #4 <message kind="thinking" role="assistant" status="done">
+      "The user wants a greeting."
+    #5 <message role="assistant" status="done">
+      "Hello there, how can I help?"
+    #6 <usage input_tokens=12 output_tokens=9>

@@ -1,0 +1,16 @@
+[package]
+name = "loa-features"
+description = "Harness-independent session features"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+loa-core.workspace = true
+loa-adapter.workspace = true
+loa-rewind = { path = "../loa-rewind" }
+async-trait.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
