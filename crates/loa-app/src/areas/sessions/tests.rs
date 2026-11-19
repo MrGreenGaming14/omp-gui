@@ -734,3 +734,160 @@ fn native_sessions_of_every_harness_round_trip_through_the_import_screen() {
     let exported = import_and_export(&mut app, dir.path(), &opencode, false, "hi opencode");
     assert_eq!(serde_json::from_str::<serde_json::Value>(&exported).unwrap(), opencode_file, "OpenCode round trip");
 }
+
+/// The names the composer's `/` popup offers.
+fn slash_names(app: &App) -> Vec<String> {
+    app.ctx.composer.commands().iter().map(|command| command.name.clone()).collect()
+}
+
+#[test]
+fn slash_commands_run_through_their_areas_and_the_harness_lists_its_own() {
+    let mut env = Env::new("fake-s");
+    let config = env.home().join(".omp/agent/config.yml");
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    std::fs::write(&config, "modelRoles:\n  smol: test/small\n").unwrap();
+    let first = env.start();
+    env.say("the code word is HERON");
+    let names = slash_names(&env.app);
+    for name in ["new", "model", "role", "compact", "fork", "plan", "normal", "export", "export-xml", "import"] {
+        assert!(names.iter().any(|known| known == name), "/{name} is offered: {names:?}");
+    }
+
+    // The harness's own commands, as its adapter records them, join the
+    // list; one named like an app command doesn't.
+    let writer = Arc::clone(env.app.ctx.sessions.active().unwrap().writer());
+    let root = env.active_dom().root().unwrap().id;
+    let listed = r#"{"type":"available_commands_update","commands":[{"name":"dirs","description":"List this session's workspace directories"},{"name":"compact","description":"Compact the conversation"}]}"#;
+    let attrs: [(&str, Value); 2] = [("harness", "omp".into()), ("type", loa_ui_chat::COMMANDS_EXT.into())];
+    writer.commit(Draft::insert(root, ElementKind::Ext, attrs, listed)).unwrap();
+    env.pump();
+    let commands = env.app.ctx.composer.commands().to_vec();
+    let dirs = commands.iter().find(|command| command.name == "dirs").expect("the harness's command");
+    assert_eq!(dirs.description, "omp: List this session's workspace directories");
+    assert_eq!(commands.iter().filter(|command| command.name == "compact").count(), 1);
+    assert!(!commands.iter().any(|command| command.description.starts_with("omp: Compact")), "the app's /compact runs");
+
+    // A harness command goes to the harness as typed.
+    env.say("/dirs");
+    assert_eq!(env.seen.lock().unwrap().prompts.last().map(String::as_str), Some("/dirs"));
+
+    // The app's commands run in their areas, never reaching the harness.
+    env.say("/model test/fast");
+    assert_eq!(env.seen.lock().unwrap().models, ["test/fast"], "notice: {:?}", env.app.ctx.notice());
+    env.say("/role smol");
+    assert_eq!(root_attr(&env.active_dom(), attr::MODEL).as_deref(), Some("test/small"));
+    assert_eq!(root_attr(&env.active_dom(), attr::MODEL_ROLE).as_deref(), Some("smol"));
+    env.say("/role nope");
+    assert_eq!(env.app.ctx.notice(), Some("omp has no model role nope; its roles: smol"));
+    // This harness can't be held to read-only tools; the area says so.
+    // (Plan mode itself is `plan_mode_blocks_changing_tools_and_raises_a_plan_review`.)
+    env.say("/plan");
+    assert_eq!(
+        env.app.ctx.notice(),
+        Some("Can't enter plan mode on fake-s: feature port failed: this harness can't be limited to read-only tools")
+    );
+    env.say("/normal");
+    assert!(!env.app.areas.sessions.plans.contains_key(first.as_str()), "in normal mode");
+    env.say("/export-xml");
+    let exported = env.dir.path().join(format!("loa/exports/{first}.xml"));
+    assert!(exported.is_file(), "notice: {:?}", env.app.ctx.notice());
+    env.say("/import");
+    assert_eq!(env.app.ctx.screen(), Some(crate::area::AreaId::Sessions));
+    env.app.ctx.close_screen();
+    env.say("/fork");
+    let fork = active(&env.app).unwrap().to_owned();
+    assert_ne!(fork, first.as_str());
+    assert_eq!(root_attr(&env.active_dom(), attr::PARENT_SESSION).as_deref(), Some(first.as_str()));
+    env.say("/new");
+    let new = active(&env.app).unwrap().to_owned();
+    assert!(new != fork && new != first.as_str());
+    let prompts = env.seen.lock().unwrap().prompts.clone();
+    assert!(!prompts.iter().any(|prompt| ["/model", "/role", "/plan", "/normal", "/export", "/import", "/fork", "/new"]
+        .iter()
+        .any(|command| prompt.starts_with(command))), "{prompts:?}");
+    assert!(!env.app.ctx.composer.is_busy(), "commands aren't turns");
+    assert_eq!(slash_names(&env.app).iter().filter(|name| *name == "dirs").count(), 0, "a new session has no harness list yet");
+}
+
+#[test]
+fn slash_plan_and_normal_switch_the_mode() {
+    let mut env = Env::new("omp");
+    let id = env.start();
+    env.say("/plan");
+    assert!(env.app.areas.sessions.plans.contains_key(id.as_str()), "notice: {:?}", env.app.ctx.notice());
+    assert_eq!(root_attr(&env.active_dom(), attr::MODE).as_deref(), Some("plan"));
+    env.say("/normal");
+    assert!(!env.app.areas.sessions.plans.contains_key(id.as_str()));
+    assert_eq!(root_attr(&env.active_dom(), attr::MODE).as_deref(), Some("normal"));
+    assert!(env.seen.lock().unwrap().prompts.is_empty(), "not sent to the harness");
+}
+
+#[test]
+fn a_job_or_a_branch_shows_its_tab_without_taking_the_panel() {
+    let mut env = Env::new("omp");
+    env.start();
+    env.say("run a subagent");
+    env.app.ctx.shell.show_tab("diff");
+    let listed = |app: &App, id: &str| app.ctx.shell.tabs().iter().any(|tab| tab.id == id);
+    assert!(!listed(&env.app, "agents") && !listed(&env.app, "session"));
+
+    // A job starting lists the Agents tab; the user keeps reading Diff.
+    let writer = Arc::clone(env.app.ctx.sessions.active().unwrap().writer());
+    let turn = crate::session::dom_turns(&env.active_dom()).last().unwrap().id;
+    let job: [(&str, Value); 3] = [("kind", "subagent".into()), ("status", "running".into()), ("started", Value::Int(now_ms()))];
+    writer.commit(Draft::insert(turn, ElementKind::Job, job.clone(), "")).unwrap();
+    env.pump();
+    assert!(listed(&env.app, "agents"));
+    assert_eq!(env.app.ctx.shell.active_tab(), Some("diff"));
+    assert!(env.app.ctx.shell.panel_open());
+
+    // With the panel closed, the next job opens it on the Agents tab.
+    env.app.ctx.shell.set_panel_open(false);
+    writer.commit(Draft::insert(turn, ElementKind::Job, job, "")).unwrap();
+    env.pump();
+    assert!(env.app.ctx.shell.panel_open());
+    assert_eq!(env.app.ctx.shell.active_tab(), Some("agents"));
+
+    // A fork lists the Session tree once it runs.
+    env.app.ctx.shell.show_tab("diff");
+    env.command("sessions.fork");
+    assert!(listed(&env.app, "session"));
+    assert_eq!(env.app.ctx.shell.active_tab(), Some("diff"));
+}
+
+/// Records the URLs it was asked to open.
+#[derive(Default)]
+struct Browser(Mutex<Vec<String>>);
+
+impl loa_models::login::UrlOpener for Browser {
+    fn open_url(&self, url: &str) -> Result<(), String> {
+        self.0.lock().unwrap().push(url.to_owned());
+        Ok(())
+    }
+}
+
+#[test]
+fn web_links_in_the_transcript_open_in_the_browser() {
+    let mut env = Env::new("fake-s");
+    let browser = Arc::new(Browser::default());
+    env.app.areas.sessions.set_opener(Arc::clone(&browser) as _);
+    env.start();
+    env.send(Message::Chat(loa_ui_chat::Message::Link("https://example.com/docs".into())));
+    env.send(Message::Chat(loa_ui_chat::Message::Link("file:///etc/passwd".into())));
+    assert_eq!(*browser.0.lock().unwrap(), ["https://example.com/docs"]);
+    assert_eq!(env.app.ctx.notice(), Some("Only web links open in the browser: file:///etc/passwd"));
+}
+
+#[test]
+fn deleting_a_pinned_session_drops_its_pin() {
+    let mut env = Env::new("fake-s");
+    let id = env.start();
+    env.say("pin me");
+    env.send(Message::Shell(shell::Message::Sidebar(shell::sidebar::Message::TogglePin(id.to_string()))));
+    let saved = |env: &Env| env.app.ctx.services.config.load().unwrap().config.pinned;
+    assert!(saved(&env).contains(id.as_str()));
+
+    env.send(Message::Shell(shell::Message::Sidebar(shell::sidebar::Message::Delete(id.to_string()))));
+    assert!(!saved(&env).contains(id.as_str()), "the saved pin is gone");
+    assert!(!env.app.ctx.shell.sidebar().pins().contains(id.as_str()));
+}

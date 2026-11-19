@@ -30,14 +30,16 @@ fn is_executable(path: &Path) -> bool {
 /// Runs `<executable> --version` and reads the first semantic version in
 /// its output: `omp/19.0.0`, `2.0.14 (Claude Code)`, `codex-cli 0.46.0`.
 pub async fn executable_version(executable: &Path, timeout: Duration) -> Result<Version, String> {
-    let child = Command::new(executable)
-        .arg("--version")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|e| format!("cannot start {}: {e}", executable.display()))?;
+    let child = loa_exec::retry_busy(|| {
+        Command::new(executable)
+            .arg("--version")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+    })
+    .map_err(|e| format!("cannot start {}: {e}", executable.display()))?;
     let output = tokio::time::timeout(timeout, child.wait_with_output())
         .await
         .map_err(|_| format!("{} --version did not finish within {timeout:?}", executable.display()))?
@@ -78,5 +80,28 @@ mod tests {
         assert_eq!(find_executable(&sh), Some(sh.clone()));
         assert_eq!(find_executable(Path::new("/nonexistent/loa-updater-test")), None);
         assert_eq!(find_executable(Path::new("loa-updater-surely-missing")), None);
+    }
+
+    /// A staged binary still open for writing (as in a child forked while it
+    /// was being written) is busy; asking its version waits until it closes.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn version_of_a_busy_staged_binary_is_read_once_the_writer_closes() {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("omp");
+        let mut writer = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o755).open(&path).unwrap();
+        writer.write_all(b"#!/bin/sh\necho omp/19.2.0\n").unwrap();
+        let busy = std::process::Command::new(&path).output().unwrap_err();
+        assert_eq!(busy.kind(), std::io::ErrorKind::ExecutableFileBusy, "{busy}");
+
+        let closer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(30));
+            drop(writer);
+        });
+        let version = executable_version(&path, Duration::from_secs(10)).await.unwrap();
+        closer.join().unwrap();
+        assert_eq!(version.to_string(), "19.2.0");
     }
 }

@@ -71,12 +71,9 @@ impl FakeOmp {
         let body = SCRIPT.replace("@DIR@", &dir.display().to_string());
         std::fs::write(dir.join("script"), script)?;
         std::fs::write(dir.join("version"), "19.0.0\n")?;
-        std::fs::write(&executable, body)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755))?;
-        }
+        // Written by a separate process so no fork of this one can hold it
+        // open for writing when it runs ("Text file busy").
+        loa_exec::write_executable(&executable, body)?;
         Ok(Self { dir, executable })
     }
 

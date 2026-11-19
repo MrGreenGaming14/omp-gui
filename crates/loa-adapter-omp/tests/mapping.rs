@@ -1,5 +1,5 @@
 use loa_adapter::{Answer, Prompt};
-use loa_adapter_omp::mapping::Mapping;
+use loa_adapter_omp::mapping::{COMMANDS, Mapping};
 use loa_core::{answer, attr, Draft, ElementKind as K, MemorySink, NodeId, PatchSink};
 use loa_omp_rpc::{AssistantEvent, Event, Frame, PromptStatus, UiRequest, UiResponse};
 use serde_json::json;
@@ -305,7 +305,7 @@ fn omp_tui_bookkeeping_adds_no_elements_and_usage_lands_on_the_reply() {
     let (sink, mut mapper) = fixture();
     replay(&sink, &mut mapper, TUI_NOISE);
     let dom = sink.dom();
-    let kinds: Vec<K> = dom.iter().map(|n| n.kind).collect();
+    let kinds: Vec<K> = dom.iter().filter(|n| n.str_attr(attr::TYPE) != Some(COMMANDS)).map(|n| n.kind).collect();
     assert!(!kinds.contains(&K::Ext) && !kinds.contains(&K::Call), "{kinds:?}");
     let turn = dom.iter().find(|n| n.kind == K::Turn).unwrap();
     assert_eq!(turn.str_attr(attr::STATUS), Some("done"));
@@ -318,6 +318,53 @@ fn omp_tui_bookkeeping_adds_no_elements_and_usage_lands_on_the_reply() {
     assert_eq!(usage.str_attr(attr::MODEL), Some("anthropic/claude-haiku-5-5"));
     let Some(loa_core::Value::Float(cost)) = usage.attrs.get(attr::COST) else { panic!("cost: {:?}", usage.attrs) };
     assert!((cost - 0.0023008).abs() < 1e-9);
+}
+
+const SLASH_COMMAND: &str = include_str!("fixtures/omp19/slash-command.script");
+
+#[test]
+fn omps_command_list_is_recorded_on_the_root_and_a_command_it_runs_answers_in_its_turn() {
+    let (sink, mut mapper) = fixture();
+    replay(&sink, &mut mapper, SLASH_COMMAND);
+    // The runtime turns the `agentInvoked: false` response into this.
+    let drafts = mapper.event(&Event::PromptResult {
+        id: Some("p".into()), agent_invoked: false, status: PromptStatus::Completed, error: None, session_settled: true,
+    });
+    commit(&sink, &mut mapper, drafts);
+    let dom = sink.dom();
+    let root = dom.root().unwrap().id;
+
+    let lists: Vec<_> = dom.iter().filter(|n| n.kind == K::Ext && n.str_attr(attr::TYPE) == Some(COMMANDS)).collect();
+    assert_eq!(lists.len(), 1, "a repeated list adds nothing");
+    assert_eq!(lists[0].parent, root);
+    assert_eq!(lists[0].str_attr(attr::HARNESS), Some("omp"));
+    let listed: serde_json::Value = serde_json::from_str(&lists[0].text).unwrap();
+    let names: Vec<&str> = listed["commands"].as_array().unwrap().iter().map(|c| c["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["dirs", "switch", "review"]);
+
+    let turn = dom.iter().find(|n| n.kind == K::Turn).expect("the command's turn");
+    assert_eq!(turn.str_attr(attr::STATUS), Some("done"));
+    let messages: Vec<_> = dom.children_of_kind(turn.id, K::Message).map(|m| (m.str_attr(attr::ROLE), m.text.as_str())).collect();
+    assert_eq!(messages, [(Some("user"), "prompt p"), (Some("assistant"), "Workspace directories:\n  /tmp (working directory)")]);
+    assert_eq!(dom.iter().filter(|n| n.kind == K::Turn).count(), 1);
+}
+
+#[test]
+fn command_output_read_after_the_response_closed_the_turn_joins_that_turn() {
+    let (sink, mut mapper) = fixture();
+    mapper.queue("p", &Prompt { text: "/dirs".into(), by: "owner".into(), ..Prompt::default() });
+    let drafts = mapper.event(&Event::PromptResult {
+        id: Some("p".into()), agent_invoked: false, status: PromptStatus::Completed, error: None, session_settled: true,
+    });
+    commit(&sink, &mut mapper, drafts);
+    let Frame::Event(output) = Frame::parse(br#"{"type":"command_output","text":"Workspace directories:\n  /tmp"}"#).unwrap() else { panic!() };
+    let drafts = mapper.event(&output);
+    commit(&sink, &mut mapper, drafts);
+    let dom = sink.dom();
+    let turn = dom.iter().find(|n| n.kind == K::Turn).unwrap();
+    let messages: Vec<_> = dom.children_of_kind(turn.id, K::Message).map(|m| (m.str_attr(attr::ROLE), m.text.as_str())).collect();
+    assert_eq!(messages, [(Some("user"), "/dirs"), (Some("assistant"), "Workspace directories:\n  /tmp")]);
+    assert!(!dom.iter().any(|n| n.kind == K::Ext));
 }
 
 #[test]

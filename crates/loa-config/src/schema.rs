@@ -22,6 +22,9 @@ pub struct Config {
     /// Schema version of the file. Set by the loader; see [`CURRENT_VERSION`].
     pub version: u32,
     pub theme: Theme,
+    /// Ids of the sessions pinned in the sidebar.
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    pub pinned: BTreeSet<String>,
     pub harness: HarnessSettings,
     pub network: NetworkSettings,
     pub updater: UpdaterSettings,
@@ -43,6 +46,7 @@ impl Default for Config {
         Self {
             version: CURRENT_VERSION,
             theme: Theme::default(),
+            pinned: BTreeSet::new(),
             harness: HarnessSettings::default(),
             network: NetworkSettings::default(),
             updater: UpdaterSettings::default(),

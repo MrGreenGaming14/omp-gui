@@ -619,11 +619,15 @@ impl Area for State {
                 Task::none()
             }
             Message::PromptsChanged => {
+                const WAITING: &str = "Remote host question waiting: ";
                 let (prompts, new) = self.remote.sync(ctx);
                 if new && let Some(prompt) = prompts.last() {
-                    ctx.notify(format!("Remote host question waiting: {}", prompt.title));
+                    ctx.notify(format!("{WAITING}{}", prompt.title));
                     let _ = self.panel.update(tools::Message::SectionSelected(tools::Section::Hosts));
                     ctx.open_tab(TAB);
+                } else if prompts.is_empty() && ctx.notice().is_some_and(|notice| notice.starts_with(WAITING)) {
+                    // Every question is answered or cancelled: the notice is stale.
+                    ctx.clear_notice();
                 }
                 self.panel.set_prompts(prompts);
                 Task::none()

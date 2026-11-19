@@ -10,7 +10,7 @@ use crate::fragment::fragment;
 use crate::transport::{DatagramError, Datagrams, MessageReader, MessageWriter, Transport};
 use crate::wire::{
     Accept, Body, Close, DocumentChunk, DocumentHeader, FrameHeader, FrameMsg, Open, Reject, RejectCode, Resize,
-    SurfaceInfoMsg, VERSION, encoding_from_wire,
+    StreamInfoMsg, SurfaceInfoMsg, VERSION, encoding_from_wire,
 };
 use crate::{ProtoError, Result};
 
@@ -101,18 +101,25 @@ impl Handshake {
     async fn run(mut self, surface: Arc<dyn Surface>, open: Open) -> Result<()> {
         let info = surface.info();
         let datagrams = info.mode == SurfaceMode::Pixel && self.datagrams.max_size().is_some();
-        // Subscribe before accepting so no frame after the keyframe is missed.
-        let frames = match info.mode {
-            SurfaceMode::Pixel => Some(surface.frames()?),
-            SurfaceMode::Document => None,
+        let encodings: Vec<Encoding> = open.encodings.iter().filter_map(|&e| encoding_from_wire(e)).collect();
+        // Subscribe before accepting so no frame after the keyframe is
+        // missed, and pick the encoding from what this viewer decodes.
+        let (frames, stream) = match info.mode {
+            SurfaceMode::Pixel => {
+                let frames = surface.frames()?;
+                (Some(frames), surface.negotiate(&encodings).await?)
+            }
+            SurfaceMode::Document => (None, None),
         };
-        let accept = Accept { version: open.version.min(VERSION), info: Some(SurfaceInfoMsg::from(&info)), datagrams };
+        let accept = Accept {
+            version: open.version.min(VERSION),
+            info: Some(SurfaceInfoMsg::from(&info)),
+            datagrams,
+            stream: stream.as_ref().map(StreamInfoMsg::from),
+        };
         self.writer.send(Body::Accept(accept)).await?;
         match frames {
-            Some(frames) => {
-                let encodings = open.encodings.iter().filter_map(|&e| encoding_from_wire(e)).collect();
-                self.pixel(surface, frames, encodings, datagrams, (info.width, info.height)).await
-            }
+            Some(frames) => self.pixel(surface, frames, encodings, datagrams, (info.width, info.height)).await,
             None => self.document(surface).await,
         }
     }

@@ -429,6 +429,7 @@ fn accept_document(len: u64, crc32: u32) -> Vec<StreamMessage> {
             version: 1,
             info: Some((&info).into()),
             datagrams: false,
+            stream: None,
         })
         .into(),
         Body::DocumentHeader(DocumentHeader { name: "a.pdf".into(), mime: "application/pdf".into(), length: len, crc32 })

@@ -754,17 +754,9 @@ mod tests {
         }
     }
 
-    /// Writes an executable shell script without keeping a writable
-    /// descriptor open in this process.
     fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
         let path = dir.join(name);
-        let status = std::process::Command::new("/bin/sh")
-            .args(["-c", "printf '%s' \"$1\" > \"$2\" && chmod 755 \"$2\"", "sh"])
-            .arg(format!("#!/bin/sh\n{body}\n"))
-            .arg(&path)
-            .status()
-            .unwrap();
-        assert!(status.success());
+        loa_exec::write_executable(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
         path
     }
 

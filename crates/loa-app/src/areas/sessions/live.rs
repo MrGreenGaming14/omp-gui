@@ -105,3 +105,26 @@ fn live_omp_session_compacts_with_the_compact_command() {
     let reply = turn(&mut live, &mut app, "What is my favourite colour? Reply with one word.", 2);
     assert!(reply.to_lowercase().contains("teal"), "after compaction omp answered {reply:?}");
 }
+
+#[test]
+#[ignore = "runs the installed omp (its /dirs command makes no model call)"]
+fn live_omp_lists_its_commands_in_the_composer_and_runs_one_typed_there() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut live = Live::new();
+    let mut app = live_session(dir.path(), &mut live);
+    live.until(&mut app, "omp's command list", Duration::from_secs(60), |app| {
+        app.ctx.composer.commands().iter().any(|command| command.name == "dirs")
+    });
+    let dirs = app.ctx.composer.commands().iter().find(|command| command.name == "dirs").unwrap();
+    assert!(dirs.description.starts_with("omp: "), "{dirs:?}");
+    assert!(app.ctx.composer.commands().iter().any(|command| command.name == "fork"), "the app's own stay listed");
+
+    live.prompt(&mut app, "/dirs");
+    live.until(&mut app, "the command's output", Duration::from_secs(30), |app| {
+        ended(turn_status(active_dom(app), 0)) && !turn_text(active_dom(app), 0, "assistant").is_empty()
+    });
+    assert_eq!(turn_status(active_dom(&app), 0), Some(loa_core::TurnStatus::Done));
+    let output = turn_text(active_dom(&app), 0, "assistant");
+    assert!(output.contains("Workspace directories"), "omp's output: {output:?}");
+    assert!(!app.ctx.composer.is_busy());
+}

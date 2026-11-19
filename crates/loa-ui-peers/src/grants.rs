@@ -4,7 +4,7 @@ use std::fmt;
 
 /// Resource category protected by a grant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GrantScope { Session, Prompt, Project, FutureSessions, SshHost, Surface, Sandbox }
+pub enum GrantScope { Session, Prompt, Project, FutureSessions, SshHost, Surface, Sandbox, Folder }
 
 /// A concrete resource in an app-supplied picker.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,13 +28,13 @@ pub struct GrantResource {
 pub enum Permission { View, Suggest, Drive, #[default] Fork }
 impl Permission {
     pub const ALL: [Self; 4] = [Self::View, Self::Suggest, Self::Drive, Self::Fork];
-    /// Surface streams only allow viewing or sending input; an SSH host is
-    /// read (view) or used to run commands (drive); a sandbox only runs
-    /// tasks (drive).
+    /// Surface streams only allow viewing or sending input; an SSH host or
+    /// a folder is read (view) or also written, and on SSH run (drive); a
+    /// sandbox only runs tasks (drive).
     pub fn allowed_for(self, scope: &GrantScope) -> bool {
         match scope {
             GrantScope::Sandbox => self == Self::Drive,
-            GrantScope::Surface | GrantScope::SshHost => matches!(self, Self::View | Self::Drive),
+            GrantScope::Surface | GrantScope::SshHost | GrantScope::Folder => matches!(self, Self::View | Self::Drive),
             _ => true,
         }
     }
@@ -132,10 +132,12 @@ pub struct GrantForm {
     pub future_sessions: bool,
     pub ssh_confirmed: bool,
     pub ssh_confirmation_pending: bool,
+    /// A folder of this node typed in to grant; the app checks it exists.
+    pub folder_path: String,
 }
 impl Default for GrantForm {
     fn default() -> Self {
-        Self { resource: None, permission: Permission::Fork, ttl_hours: "24".into(), reshare: false, future_sessions: false, ssh_confirmed: false, ssh_confirmation_pending: false }
+        Self { resource: None, permission: Permission::Fork, ttl_hours: "24".into(), reshare: false, future_sessions: false, ssh_confirmed: false, ssh_confirmation_pending: false, folder_path: String::new() }
     }
 }
 
@@ -159,12 +161,18 @@ impl GrantForm {
             self.ssh_confirmation_pending = false;
             self.future_sessions = false;
             self.permission = match resource.as_ref().map(|r| r.scope) {
-                Some(GrantScope::Surface | GrantScope::SshHost) => Permission::View,
+                Some(GrantScope::Surface | GrantScope::SshHost | GrantScope::Folder) => Permission::View,
                 Some(GrantScope::Sandbox) => Permission::Drive,
                 _ => Permission::Fork,
             };
         }
         self.resource = resource;
+    }
+
+    /// Picks the typed folder path as the resource; `None` when it's empty.
+    pub fn folder_choice(&self) -> Option<ResourceChoice> {
+        let path = self.folder_path.trim();
+        (!path.is_empty()).then(|| ResourceChoice { id: format!("folder:{path}"), label: format!("Folder {path}"), scope: GrantScope::Folder })
     }
 
     /// Whether the selected resource gives access to this node's SSH connection.
@@ -367,5 +375,38 @@ mod tests {
         assert_eq!(form.permission, Permission::View);
         assert!(!Permission::Fork.allowed_for(&GrantScope::SshHost));
         assert!(Permission::Drive.allowed_for(&GrantScope::SshHost));
+    }
+
+    #[test]
+    fn a_typed_folder_is_granted_view_or_drive_and_survives_snapshots() {
+        let mut state = state();
+        let _ = state.update(Message::SelectPeer("peer".into()));
+        let _ = state.update(Message::UseFolder);
+        assert!(state.grant_form.resource.is_none(), "an empty path picks nothing");
+        let _ = state.update(Message::FolderPathChanged(" /srv/share ".into()));
+        let _ = state.update(Message::UseFolder);
+        assert_eq!(state.grant_form.permission, Permission::View);
+        state.set_data(state.data.clone());
+        assert!(state.grant_form.resource.is_some(), "a typed folder isn't in the app's list but stays chosen");
+        let _ = state.update(Message::SelectPermission(Permission::Fork));
+        assert!(state.update(Message::SubmitGrant).1.is_none());
+        let _ = state.update(Message::SelectPermission(Permission::Drive));
+        let Some(Event::CreateGrant(request)) = state.update(Message::SubmitGrant).1 else { panic!("folder grant must reach issuer") };
+        assert_eq!(request.resource.id, "folder:/srv/share");
+        assert_eq!(request.resource.scope, GrantScope::Folder);
+        assert_eq!(request.permission, Permission::Drive);
+    }
+
+    #[test]
+    fn only_listed_shared_folders_are_browsed() {
+        let mut state = state();
+        state.data.shared_folders = vec![crate::SharedFolderItem {
+            peer_key: "peer".into(), peer_name: "Alice".into(), path: "/srv/share".into(), can_write: false, online: true,
+        }];
+        let browse = |folder: &str| Message::BrowseFolder { peer: "peer".into(), folder: folder.into() };
+        assert_eq!(state.update(browse("/srv/share")).1, Some(Event::BrowseFolder { peer: "peer".into(), folder: "/srv/share".into() }));
+        assert!(state.update(browse("/etc")).1.is_none());
+        state.data.shared_folders[0].online = false;
+        assert!(state.update(browse("/srv/share")).1.is_none(), "offline peers can't be browsed");
     }
 }

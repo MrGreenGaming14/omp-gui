@@ -90,14 +90,16 @@ impl OmpSmolSummarizer {
 #[async_trait::async_trait]
 impl ChangelogSummarizer for OmpSmolSummarizer {
     async fn review(&self, changelog: &str) -> Result<ChangelogReview, String> {
-        let child = Command::new(&self.executable)
-            .args(self.args(changelog))
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|e| format!("cannot start {}: {e}", self.executable.display()))?;
+        let child = loa_exec::retry_busy(|| {
+            Command::new(&self.executable)
+                .args(self.args(changelog))
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .kill_on_drop(true)
+                .spawn()
+        })
+        .map_err(|e| format!("cannot start {}: {e}", self.executable.display()))?;
         // On timeout the future is dropped, which kills the child.
         let output = tokio::time::timeout(self.timeout, child.wait_with_output())
             .await
@@ -177,21 +179,9 @@ mod tests {
         assert_eq!(r.details, vec!["- removed: drop `grep`"]);
     }
 
-    /// Writes an executable script from a separate process, so no test
-    /// thread holds a writable descriptor a concurrently forked child could
-    /// inherit (which makes exec fail with "Text file busy").
     fn script(dir: &std::path::Path, body: &str) -> PathBuf {
         let path = dir.join("omp");
-        let mut writer = std::process::Command::new("sh")
-            .arg("-c")
-            .arg("cat > \"$0\" && chmod 755 \"$0\"")
-            .arg(&path)
-            .stdin(std::process::Stdio::piped())
-            .spawn()
-            .unwrap();
-        std::io::Write::write_all(&mut writer.stdin.take().unwrap(), format!("#!/bin/sh\n{body}\n").as_bytes())
-            .unwrap();
-        assert!(writer.wait().unwrap().success());
+        loa_exec::write_executable(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
         path
     }
 

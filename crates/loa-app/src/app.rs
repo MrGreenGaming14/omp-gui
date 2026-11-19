@@ -162,8 +162,10 @@ impl App {
     /// The app over `services`: Recents from the session store, every area
     /// registered.
     pub fn build(services: Services) -> (Self, Task<Message>) {
+        // Sidebar pins and the theme are app data in the central config.
+        let saved = services.config.load().map(|loaded| loaded.config).unwrap_or_default();
         let (shell, setup) =
-            shell::State::new(shell::Preference::System, shell::PanelPrefs { open: true, ..Default::default() });
+            shell::State::new(preference(saved.theme), shell::PanelPrefs { open: true, ..Default::default() });
         let theme = shell.theme();
         let mut composer = composer::State::new();
         let mut sessions = Sessions::default();
@@ -188,6 +190,7 @@ impl App {
             requests: Vec::new(),
             events: Vec::new(),
         };
+        ctx.shell.set_pins(saved.pinned);
         ctx.shell.set_sessions(recents);
         let (areas, area_tasks) = Areas::new(&mut ctx);
         let mut app = Self {
@@ -216,16 +219,50 @@ impl App {
         tabs
     }
 
-    /// Adds the panel tab `id` when it isn't listed and shows it.
-    fn open_tab(&mut self, id: &str) {
+    /// Lists the panel tab `id` when it isn't; `false` when no such tab
+    /// exists.
+    fn list_tab(&mut self, id: &str) -> bool {
         if !self.ctx.shell.tabs().iter().any(|tab| tab.id == id) {
             let Some(tab) = self.tabs().into_iter().find(|tab| tab.id == id) else {
                 self.ctx.notify(format!("There is no {id} tab"));
-                return;
+                return false;
             };
             self.ctx.shell.add_tab(shell::PanelTab::new(tab.id, tab.title));
         }
+        true
+    }
+
+    /// Adds the panel tab `id` when it isn't listed and shows it, scrolling
+    /// the tab bar to it.
+    fn open_tab(&mut self, id: &str) -> Task<Message> {
+        if !self.list_tab(id) {
+            return Task::none();
+        }
         self.ctx.shell.show_tab(id);
+        self.ctx.shell.reveal_active_tab()
+    }
+
+    /// Lists the panel tab `id` for something that just became relevant
+    /// there (a job started, a branch was made), without taking the panel
+    /// from the tab the user is reading: a closed panel opens on it, an
+    /// open one only gains the tab.
+    fn reveal_tab(&mut self, id: &str) -> Task<Message> {
+        if !self.ctx.shell.panel_open() {
+            return self.open_tab(id);
+        }
+        self.list_tab(id);
+        Task::none()
+    }
+
+    /// Saves a change to the app's own config keys (theme, sidebar pins).
+    fn save_ui(&mut self, change: impl FnOnce(&mut loa_config::Config)) {
+        let saved = self.ctx.services.config.load().and_then(|mut loaded| {
+            change(&mut loaded.config);
+            self.ctx.services.config.save(&loaded.config)
+        });
+        if let Err(error) = saved {
+            self.ctx.notify(format!("Can't save the settings: {error}"));
+        }
     }
 
     /// The palette's commands: session and view actions, panel tabs, themes
@@ -472,9 +509,9 @@ impl App {
         }
         if active && was_busy && !busy {
             tasks.push(working_diff(self.ctx.services.cwd.clone()));
-            if let Some(composer::Event::Submit(prompt)) = self.ctx.composer.turn_ended() {
-                tasks.push(self.send(prompt));
-            }
+            // A queued `/` command runs like a typed one.
+            let next = self.ctx.composer.turn_ended();
+            tasks.push(self.composer_event(next));
         }
         Task::batch(tasks)
     }
@@ -498,10 +535,8 @@ impl App {
                     Request::NewSession => self.start(None),
                     Request::OpenSession(id) => self.open_session(&id),
                     Request::Prompt(prompt) => self.send(prompt),
-                    Request::OpenTab(id) => {
-                        self.open_tab(&id);
-                        Task::none()
-                    }
+                    Request::OpenTab(id) => self.open_tab(&id),
+                    Request::RevealTab(id) => self.reveal_tab(&id),
                     Request::Spawn(spawn) => self.spawn(spawn),
                     Request::Forward(message) => self.update(*message),
                 };
@@ -517,8 +552,7 @@ impl App {
             return task;
         }
         if let Some(tab) = id.strip_prefix(TAB_COMMAND) {
-            self.open_tab(tab);
-            return Task::none();
+            return self.open_tab(tab);
         }
         if let Some((_, _, preference)) =
             id.strip_prefix(THEME_COMMAND).and_then(|theme| THEMES.into_iter().find(|(key, _, _)| *key == theme))
@@ -550,14 +584,35 @@ impl App {
         }
     }
 
+    /// Runs a `/` command typed in the composer when it is one of the
+    /// app's: `/new`, `/model <id>` (the models area) and the sessions
+    /// area's. `None` for anything else, which goes to the harness as typed,
+    /// its own commands included.
+    fn slash(&mut self, text: &str) -> Option<Task<Message>> {
+        let (name, model) = areas::sessions::split_slash(text)?;
+        match name {
+            "new" => Some(self.start(None)),
+            "model" if model.is_empty() => {
+                self.ctx.notify("Name the model: /model <provider/model>, or pick one in the model picker");
+                Some(Task::none())
+            }
+            "model" => {
+                let option =
+                    composer::ModelOption { id: model.to_owned(), name: model.to_owned(), provider: String::new(), role: None };
+                Some(self.update(Message::Models(areas::models::Message::Model(option))))
+            }
+            _ => areas::sessions::slash(text).map(|message| self.update(Message::Sessions(message))),
+        }
+    }
+
     fn composer_event(&mut self, event: Option<composer::Event>) -> Task<Message> {
         match event {
-            Some(composer::Event::Submit(prompt)) => match areas::sessions::slash(&prompt.text) {
-                Some(message) => {
-                    // Not a turn: the composer is ready again. It wasn't
-                    // busy at the submit, so nothing is queued to release.
-                    let _ = self.ctx.composer.turn_ended();
-                    self.update(Message::Sessions(message))
+            Some(composer::Event::Submit(prompt)) => match self.slash(&prompt.text) {
+                Some(task) => {
+                    // Not a turn: the composer is ready again, and a message
+                    // queued behind the command goes out now.
+                    let next = self.ctx.composer.turn_ended();
+                    Task::batch([task, self.composer_event(next)])
                 }
                 None => self.send(prompt),
             },
@@ -603,6 +658,15 @@ impl App {
                     Some(shell::Event::DeleteSession(id)) => self.update(Message::Sessions(areas::sessions::Message::Delete(id))),
                     Some(shell::Event::OpenProject(project)) => {
                         self.update(Message::Projects(areas::projects::Message::Open(project)))
+                    }
+                    Some(shell::Event::SetTheme(preference)) => {
+                        self.save_ui(|config| config.theme = theme_setting(preference));
+                        Task::none()
+                    }
+                    Some(shell::Event::SetPinned { .. }) => {
+                        let pins = self.ctx.shell.sidebar().pins().clone();
+                        self.save_ui(|config| config.pinned = pins);
+                        Task::none()
                     }
                     _ => Task::none(),
                 };
@@ -843,6 +907,24 @@ impl App {
             .into_iter()
             .chain(areas),
         )
+    }
+}
+
+/// The shell's theme preference for the saved setting.
+fn preference(theme: loa_config::Theme) -> shell::Preference {
+    match theme {
+        loa_config::Theme::System => shell::Preference::System,
+        loa_config::Theme::Dark => shell::Preference::Dark,
+        loa_config::Theme::Light => shell::Preference::Light,
+    }
+}
+
+/// The saved setting for the shell's theme preference.
+fn theme_setting(preference: shell::Preference) -> loa_config::Theme {
+    match preference {
+        shell::Preference::System => loa_config::Theme::System,
+        shell::Preference::Dark => loa_config::Theme::Dark,
+        shell::Preference::Light => loa_config::Theme::Light,
     }
 }
 

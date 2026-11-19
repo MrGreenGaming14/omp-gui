@@ -17,7 +17,7 @@ use iced::widget::{button, canvas, column, container, image, row, scrollable, sp
 use iced::{Center, Element, Fill, Point, Size, Task};
 use loa_surface::{
     Document, Encoding, Frame, Input, InputEvent, Modifiers, MouseButton, Surface, SurfaceInfo,
-    SurfaceMode, SurfaceUri,
+    SurfaceMode, SurfaceUri, StreamInfo,
 };
 use std::sync::Arc;
 use std::time::Instant;
@@ -239,6 +239,7 @@ impl State {
                     Ok(frames) => {
                         work.push(Task::stream(frame_stream(frames)));
                         work.push(request_keyframe(&surface));
+                        work.push(negotiate(&surface, accepted(options.video.as_deref())));
                     }
                     Err(e) => notice = Some(Notice::Error(e.to_string())),
                 }
@@ -333,7 +334,10 @@ impl State {
     }
 
     pub fn view(&self) -> Element<'_, Message> {
-        let mut header = row![text(&self.info.name).size(style::TEXT)]
+        // Long names (a data: URL without a title) are clipped to one line
+        // so the codec and latency chips keep their width.
+        let name = text(&self.info.name).size(style::TEXT).wrapping(text::Wrapping::None);
+        let mut header = row![container(name).width(Fill).clip(true)]
             .spacing(8)
             .padding([6, 10])
             .align_y(Center);
@@ -344,14 +348,20 @@ impl State {
                     .style(style::warning),
             );
         }
-        header = header.push(space::horizontal());
         let body: Element<'_, Message> = match &self.body {
             Body::Pixel(_) => {
+                if let Some(stream) = self.stream() {
+                    header = header.push(
+                        container(text(stream_label(&stream)).size(style::SMALL).wrapping(text::Wrapping::None))
+                            .padding([2, 6])
+                            .style(shell::badge),
+                    );
+                }
                 let latency = self.meter.reading();
                 let warning = latency.is_some_and(|r| r.warning);
                 header = header.push(
                     container(
-                        text(format!("Latency {}", latency_label(latency))).size(style::SMALL),
+                        text(format!("Latency {}", latency_label(latency))).size(style::SMALL).wrapping(text::Wrapping::None),
                     )
                     .padding([2, 6])
                     .style(style::latency(warning)),
@@ -408,6 +418,19 @@ impl State {
 
     pub fn latency(&self) -> Option<Reading> {
         self.meter.reading()
+    }
+
+    /// What the surface streams: what it says, or else the encoding of the
+    /// last frame shown.
+    pub fn stream(&self) -> Option<StreamInfo> {
+        self.surface.stream().or_else(|| match &self.body {
+            Body::Pixel(px) => px.last_encoding.map(|encoding| StreamInfo {
+                encoding,
+                encoder: String::new(),
+                hardware: false,
+            }),
+            Body::Document(_) => None,
+        })
     }
 
     pub fn notice(&self) -> Option<String> {
@@ -628,7 +651,8 @@ impl State {
                 encoding: frame.encoding,
                 supported: STILL_ENCODINGS.to_vec(),
             };
-            return (Task::none(), Some(event));
+            // Ask the surface for stills itself; the app hears about it too.
+            return (negotiate(&self.surface, STILL_ENCODINGS.to_vec()), Some(event));
         }
         if video && px.awaiting_keyframe && !frame.keyframe {
             return (Task::none(), None);
@@ -808,6 +832,35 @@ fn document_body(doc: &DocumentState) -> Element<'_, Message> {
         .width(Fill)
         .height(Fill)
         .into()
+}
+
+/// What the header says a pixel surface streams: the codec and its
+/// encoder for video, the encoding alone for frames passed on as made.
+pub fn stream_label(stream: &StreamInfo) -> String {
+    let encoding = encoding_name(stream.encoding);
+    if !is_video(stream.encoding) || stream.encoder.is_empty() {
+        return encoding.to_owned();
+    }
+    let place = if stream.hardware { "hardware" } else { "software" };
+    format!("{encoding} · {} · {place}", stream.encoder)
+}
+
+/// What this renderer decodes, best first: video when it has a decoder,
+/// then the stills it always decodes.
+fn accepted(video: Option<&dyn VideoDecoder>) -> Vec<Encoding> {
+    let videos = [Encoding::H264, Encoding::Hevc].into_iter().filter(|&e| video.is_some_and(|d| d.supports(e)));
+    videos.chain(STILL_ENCODINGS).collect()
+}
+
+/// Tells the surface what this renderer decodes; it may switch encodings.
+fn negotiate(surface: &Arc<dyn Surface>, accepted: Vec<Encoding>) -> Task<Message> {
+    let surface = surface.clone();
+    Task::future(async move {
+        match surface.negotiate(&accepted).await {
+            Ok(_) => Message::Done,
+            Err(e) => Message::Failed(e.to_string()),
+        }
+    })
 }
 
 fn request_keyframe(surface: &Arc<dyn Surface>) -> Task<Message> {

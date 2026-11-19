@@ -21,6 +21,7 @@ pub fn resource_id(resource: &Resource) -> String {
         Resource::Ssh { host } => format!("ssh:{host}"),
         Resource::Surface { uri } => format!("surface:{uri}"),
         Resource::Sandbox => "sandbox".to_owned(),
+        Resource::Folder { path } => format!("folder:{path}"),
     }
 }
 
@@ -41,6 +42,7 @@ pub fn parse_resource(id: &str, now_ms: i64) -> Option<Resource> {
         "project" => Resource::Project { id: rest.to_owned() },
         "ssh" => Resource::Ssh { host: rest.to_owned() },
         "surface" => Resource::Surface { uri: rest.to_owned() },
+        "folder" => Resource::Folder { path: rest.to_owned() },
         _ => return None,
     })
 }
@@ -54,6 +56,7 @@ fn scope_kind(resource: &Resource) -> panel::GrantScope {
         Resource::Ssh { .. } => panel::GrantScope::SshHost,
         Resource::Surface { .. } => panel::GrantScope::Surface,
         Resource::Sandbox => panel::GrantScope::Sandbox,
+        Resource::Folder { .. } => panel::GrantScope::Folder,
     }
 }
 
@@ -65,9 +68,10 @@ fn actions(permission: panel::Permission, scope: panel::GrantScope) -> Result<Ve
         (panel::GrantScope::Sandbox, _) => {
             return Err(NodeError::Refused("a sandbox grant only runs tasks (drive)".into()));
         }
-        (panel::GrantScope::SshHost, P::View) => vec![Action::Read],
+        (panel::GrantScope::SshHost | panel::GrantScope::Folder, P::View) => vec![Action::Read],
+        (panel::GrantScope::Folder, P::Drive) => vec![Action::Read, Action::Write],
         (panel::GrantScope::SshHost, P::Drive) => vec![Action::Read, Action::Write, Action::Exec],
-        (panel::GrantScope::SshHost | panel::GrantScope::Surface, P::Suggest | P::Fork) => {
+        (panel::GrantScope::SshHost | panel::GrantScope::Surface | panel::GrantScope::Folder, P::Suggest | P::Fork) => {
             return Err(NodeError::Refused(format!("{permission} does not apply to this resource")));
         }
         (_, P::View) => vec![Action::View],
@@ -94,6 +98,10 @@ fn permission(actions: &std::collections::BTreeSet<Action>) -> panel::Permission
 pub fn grant_request(input: &panel::GrantInput, now_ms: i64) -> Result<(Vec<Scope>, Option<i64>), NodeError> {
     let resource = parse_resource(&input.resource.id, now_ms)
         .ok_or_else(|| NodeError::Refused(format!("unknown resource {}", input.resource.id)))?;
+    let resource = match resource {
+        Resource::Folder { path } => Resource::Folder { path: local_folder(&path)? },
+        other => other,
+    };
     let actions = actions(input.permission, scope_kind(&resource))?;
     let mut scopes = vec![Scope::new(resource.clone(), actions.clone())?];
     if input.resource.future_sessions && matches!(resource, Resource::Prompt { .. }) {
@@ -101,6 +109,23 @@ pub fn grant_request(input: &panel::GrantInput, now_ms: i64) -> Result<(Vec<Scop
     }
     let ttl_ms = i64::try_from(input.ttl_seconds).unwrap_or(i64::MAX / 2).saturating_mul(1000);
     Ok((scopes, Some(now_ms.saturating_add(ttl_ms))))
+}
+
+/// The real path of a folder on this node a grant may name: it must be an
+/// absolute path to an existing folder; links are resolved, so the grant
+/// names the folder they lead to.
+pub fn local_folder(path: &str) -> Result<String, NodeError> {
+    // Checked on this node, so not a peer's refusal.
+    let error = |text: String| NodeError::Unavailable(format!("Can't share {text}"));
+    let path = path.trim();
+    if !std::path::Path::new(path).is_absolute() {
+        return Err(error(format!("{path:?}: give the folder's full path")));
+    }
+    let real = std::fs::canonicalize(path).map_err(|e| error(format!("{path}: {e}")))?;
+    if !real.is_dir() {
+        return Err(error(format!("{path}: not a folder")));
+    }
+    real.into_os_string().into_string().map_err(|_| error(format!("{path}: not a UTF-8 path")))
 }
 
 fn resource_label(resource: &Resource, labels: &[(Resource, String)]) -> String {
@@ -119,6 +144,7 @@ fn resource_label(resource: &Resource, labels: &[(Resource, String)]) -> String 
         Resource::Ssh { host } => format!("SSH {host}"),
         Resource::Surface { uri } => uri.clone(),
         Resource::Sandbox => crate::SANDBOX_LABEL.to_owned(),
+        Resource::Folder { path } => format!("Folder {path}"),
     }
 }
 
@@ -273,6 +299,17 @@ pub fn data(node: &Node, now_ms: i64) -> panel::Data {
             }
         })
         .collect();
+    let shared_folders = node
+        .shared_folders()
+        .into_iter()
+        .map(|folder| panel::SharedFolderItem {
+            peer_key: folder.peer.to_string(),
+            peer_name: node.peer_name(&folder.peer),
+            online: peers_info.iter().any(|p| p.key == folder.peer && p.online),
+            path: folder.path,
+            can_write: folder.can_write,
+        })
+        .collect();
     panel::Data {
         node: card,
         peers,
@@ -280,6 +317,7 @@ pub fn data(node: &Node, now_ms: i64) -> panel::Data {
         grants,
         resources,
         remote_sessions,
+        shared_folders,
         local_version: status.app_version,
         now: secs(now_ms),
     }
@@ -298,6 +336,8 @@ pub enum Outcome {
     Opened(Arc<RemoteView>),
     /// A fork of a peer's session, now a local session with this id.
     Forked(String),
+    /// A peer's shared folder, listed, to browse in the center.
+    Folder { peer: String, folder: String, entries: Vec<crate::FolderEntry>, can_write: bool },
 }
 
 /// Carries out a panel event on `node`.
@@ -361,6 +401,11 @@ async fn run(node: &Node, event: panel::Event) -> Result<Outcome, NodeError> {
         }
         E::OpenRemote { peer, session } => Outcome::Opened(Arc::new(node.open_remote(&peer, &session).await?)),
         E::ForkRemote { peer, session } => Outcome::Forked(node.fork_remote(&peer, &session).await?),
+        E::BrowseFolder { peer, folder } => {
+            let entries = node.list_folder(&peer, &folder, "").await?;
+            let can_write = node.shared_folders().iter().any(|f| f.peer.to_string() == peer && f.path == folder && f.can_write);
+            Outcome::Folder { peer, folder, entries, can_write }
+        }
     })
 }
 
@@ -376,6 +421,7 @@ mod tests {
             Resource::Project { id: "/home/me/work".into() },
             Resource::Ssh { host: "box".into() },
             Resource::Surface { uri: "surface://browser/tab".into() },
+            Resource::Folder { path: "/srv/my share".into() },
         ];
         for resource in resources {
             assert_eq!(parse_resource(&resource_id(&resource), 5), Some(resource));
@@ -402,5 +448,33 @@ mod tests {
         assert!(grant_request(&input("ssh:box", panel::GrantScope::SshHost, panel::Permission::Fork, false), 0).is_err());
         let (scopes, _) = grant_request(&input("session:s", panel::GrantScope::Session, panel::Permission::Drive, false), 0).unwrap();
         assert_eq!(permission(&scopes[0].actions), panel::Permission::Drive);
+    }
+
+    #[test]
+    fn folder_requests_name_the_real_folder_view_reads_drive_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = std::fs::canonicalize(dir.path()).unwrap();
+        std::fs::create_dir(real.join("share")).unwrap();
+        std::fs::write(real.join("file.txt"), "x").unwrap();
+        let input = |path: &str, permission| panel::GrantInput {
+            peer_key: "k".into(),
+            resource: panel::GrantResource { id: format!("folder:{path}"), label: String::new(), scope: panel::GrantScope::Folder, future_sessions: false },
+            permission,
+            ttl_seconds: 3600,
+            reshare: false,
+        };
+        let share = real.join("share").to_str().unwrap().to_owned();
+        // Typed with a trailing slash and a `..` detour: the grant names the real folder.
+        let typed = format!("{}/../share/", share);
+        let (scopes, _) = grant_request(&input(&typed, panel::Permission::View), 0).unwrap();
+        assert_eq!(scopes[0].resource, Resource::Folder { path: share.clone() });
+        assert_eq!(scopes[0].actions, [Action::Read].into());
+        let (scopes, _) = grant_request(&input(&share, panel::Permission::Drive), 0).unwrap();
+        assert_eq!(scopes[0].actions, [Action::Read, Action::Write].into());
+        assert_eq!(permission(&scopes[0].actions), panel::Permission::Drive);
+        for refused in ["share", "/no/such/folder", real.join("file.txt").to_str().unwrap()] {
+            assert!(grant_request(&input(refused, panel::Permission::View), 0).is_err(), "{refused}");
+        }
+        assert!(grant_request(&input(&share, panel::Permission::Fork), 0).is_err());
     }
 }

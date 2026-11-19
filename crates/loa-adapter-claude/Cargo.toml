@@ -15,4 +15,5 @@ tracing.workspace = true
 uuid = { version = "1.29", features = ["v4"] }
 
 [dev-dependencies]
+loa-exec = { path = "../loa-exec" }
 tempfile.workspace = true

@@ -19,3 +19,4 @@ tokio = { workspace = true, features = ["io-util", "sync", "rt", "macros"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
+loa-surface-bench = { path = "../loa-surface-bench" }

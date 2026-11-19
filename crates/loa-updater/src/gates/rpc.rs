@@ -59,14 +59,16 @@ fn parse_ready(line: &str) -> Result<Vec<u32>, String> {
 #[async_trait::async_trait]
 impl RpcProbe for OmpReadyProbe {
     async fn protocol_versions(&self, executable: &Path) -> Result<Vec<u32>, String> {
-        let mut child = Command::new(executable)
-            .args(&self.args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|e| format!("cannot start {}: {e}", executable.display()))?;
+        let mut child = loa_exec::retry_busy(|| {
+            Command::new(executable)
+                .args(&self.args)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .kill_on_drop(true)
+                .spawn()
+        })
+        .map_err(|e| format!("cannot start {}: {e}", executable.display()))?;
         // Keep stdin open until the child is killed: closing it makes omp shut down.
         let stdin = child.stdin.take();
         let stdout = child

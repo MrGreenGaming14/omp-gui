@@ -17,5 +17,6 @@ toml_edit = "0.25"
 yaml-rust2 = "0.13"
 
 [dev-dependencies]
+loa-exec = { path = "../loa-exec" }
 loa-omp-rpc = { path = "../loa-omp-rpc", features = ["fake-omp"] }
 tokio = { workspace = true, features = ["full"] }

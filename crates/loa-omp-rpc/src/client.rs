@@ -325,18 +325,8 @@ fn spawn_child(opts: &SpawnOptions) -> Result<Child> {
     }
     // A freshly written executable (a staged update, a test fake) can still be
     // open for writing in a child forked by another thread; that clears once
-    // the child execs, so a busy executable is retried a few times.
-    let mut attempts = 0;
-    loop {
-        match command.spawn() {
-            Ok(child) => return Ok(child),
-            Err(err) if err.kind() == std::io::ErrorKind::ExecutableFileBusy && attempts < 20 => {
-                attempts += 1;
-                std::thread::sleep(Duration::from_millis(5));
-            }
-            Err(err) => return Err(spawn_error(err, &opts.executable)),
-        }
-    }
+    // the child execs, so a busy executable is retried briefly.
+    loa_exec::retry_busy(|| command.spawn()).map_err(|err| spawn_error(err, &opts.executable))
 }
 
 impl RpcClient {

@@ -1,13 +1,15 @@
 //! This node on the peer network: its key, the iroh endpoint (UDP) with the
 //! TCP fallback on `[network] port`, LAN and tailnet discovery, the Peers
-//! panel tab (peers, grants given and received, peers' sessions), peers'
-//! sessions in Recents tagged by node, and a peer's session opened in the
-//! center to watch, prompt, answer or fork.
+//! panel tab (peers, grants given and received, peers' sessions and shared
+//! folders), peers' sessions in Recents tagged by node, a peer's session
+//! opened in the center to watch, prompt, answer or fork, and a peer's shared
+//! folder browsed in the center, its files opened and (with drive) saved.
 //!
 //! The node checks every peer request on this node's sessions against the
 //! grants in `Services::grants`; peers' prompts and decision answers run
 //! through this app's harness like the user's own.
 
+mod folder;
 mod remote;
 #[cfg(test)]
 mod tests;
@@ -29,6 +31,7 @@ use loa_ui_shell::{NodeStatus, SessionSummary};
 
 use crate::area::{Area, AreaId, Ctx, PanelTab, Request};
 
+pub use folder::FolderMessage;
 pub use remote::{Feed, RemoteMessage};
 
 /// Id of the Peers panel tab.
@@ -62,6 +65,7 @@ pub enum Message {
     /// Delete on a peer's session in Recents.
     ForgetRecent(String),
     Remote(RemoteMessage),
+    Folder(FolderMessage),
 }
 
 pub struct State {
@@ -72,6 +76,8 @@ pub struct State {
     generation: u64,
     /// A peer's session shown in the center.
     remote: Option<remote::Remote>,
+    /// A peer's shared folder shown in the center.
+    folder: Option<folder::Browser>,
     /// Recents ids of the peers' sessions listed in the sidebar.
     listed: Vec<String>,
 }
@@ -130,7 +136,8 @@ impl State {
     /// Opens the node over the app's sessions and grant store with
     /// `config`; the task starts its endpoint.
     pub(crate) fn with_config(ctx: &mut Ctx, config: NodeConfig) -> (Self, Task<Message>) {
-        let mut state = Self { panel: peers::State::default(), node: None, generation: 0, remote: None, listed: Vec::new() };
+        let mut state =
+            Self { panel: peers::State::default(), node: None, generation: 0, remote: None, folder: None, listed: Vec::new() };
         let task = state.open(ctx, config);
         (state, task)
     }
@@ -178,6 +185,12 @@ impl State {
     #[cfg(test)]
     pub(crate) fn remote(&self) -> Option<&remote::Remote> {
         self.remote.as_ref()
+    }
+
+    /// The peer's shared folder shown in the center.
+    #[cfg(test)]
+    pub(crate) fn folder(&self) -> Option<&folder::Browser> {
+        self.folder.as_ref()
     }
 
     /// Brings the panel, the sidebar's nodes and peers' sessions, and
@@ -279,12 +292,22 @@ impl State {
                 let name = self.node.as_ref().map_or_else(|| view.peer().fmt_short().to_string(), |node| node.peer_name(&view.peer()));
                 let theme = ctx.shell.theme();
                 self.remote = Some(remote::Remote::new(view, name, ctx.services.node.key.clone(), &theme));
+                self.folder = None;
                 ctx.show_screen(AreaId::Peers);
                 Task::none()
             }
             Outcome::Forked(id) => {
                 ctx.request(Request::OpenSession(id));
                 ctx.notify("Forked into a session on this node; it runs on this node's harness and keys");
+                Task::none()
+            }
+            Outcome::Folder { peer, folder, entries, can_write } => {
+                if let Some(node) = &self.node {
+                    let name = Node::parse_key(&peer).map_or_else(|_| peer.clone(), |key| node.peer_name(&key));
+                    self.folder = Some(folder::Browser::new(node.clone(), peer, name, folder, entries, can_write));
+                    self.remote = None;
+                    ctx.show_screen(AreaId::Peers);
+                }
                 Task::none()
             }
         };
@@ -313,6 +336,7 @@ impl State {
     /// Opens the node again with the saved `[network]` settings.
     fn restart(&mut self, ctx: &mut Ctx) -> Task<Message> {
         self.remote = None;
+        self.folder = None;
         if ctx.screen() == Some(AreaId::Peers) {
             ctx.close_screen();
         }
@@ -370,6 +394,7 @@ impl Area for State {
             Message::OpenRecent(id) => {
                 let Some((peer, session)) = parse_recent(&id) else { return Task::none() };
                 if self.remote.as_ref().is_some_and(|remote| remote.is(peer, session) && remote.ended.is_none()) {
+                    self.folder = None;
                     ctx.show_screen(AreaId::Peers);
                     return Task::none();
                 }
@@ -380,6 +405,7 @@ impl Area for State {
                 Task::none()
             }
             Message::Remote(message) => self.remote_update(message, ctx),
+            Message::Folder(message) => self.folder_update(message, ctx),
         }
     }
 
@@ -415,6 +441,9 @@ impl Area for State {
     }
 
     fn view_screen<'a>(&'a self, _: &'a Ctx) -> Option<Element<'a, Message>> {
+        if let Some(browser) = &self.folder {
+            return Some(browser.view().map(Message::Folder));
+        }
         self.remote.as_ref().map(|remote| remote.view().map(Message::Remote))
     }
 

@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 
 /// One permission. Sessions (and prompts, projects, future sessions) take
 /// view, suggest, drive and fork; surfaces take view and drive; SSH hosts take
-/// read, write and exec.
+/// read, write and exec; folders take read and write.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Action {
@@ -20,9 +20,9 @@ pub enum Action {
     Drive,
     /// Copy the session and run it on the peer's own machine and keys.
     Fork,
-    /// SSH: read files on the host.
+    /// SSH or folder: read files.
     Read,
-    /// SSH: write files on the host.
+    /// SSH or folder: write files.
     Write,
     /// SSH: run commands on the host.
     Exec,
@@ -84,6 +84,9 @@ pub enum Resource {
     Surface { uri: String },
     /// Running sandbox tasks on the issuing node (its sandbox providers).
     Sandbox,
+    /// One folder of the issuing node and everything under it, by absolute
+    /// path. Read lists and reads its files; write also writes them.
+    Folder { path: String },
 }
 
 impl Resource {
@@ -96,6 +99,7 @@ impl Resource {
             Resource::Ssh { .. } => "ssh",
             Resource::Surface { .. } => "surface",
             Resource::Sandbox => "sandbox",
+            Resource::Folder { .. } => "folder",
         }
     }
 
@@ -109,6 +113,7 @@ impl Resource {
             Resource::Ssh { .. } => matches!(action, A::Read | A::Write | A::Exec),
             Resource::Surface { .. } => matches!(action, A::View | A::Drive),
             Resource::Sandbox => matches!(action, A::Exec),
+            Resource::Folder { .. } => matches!(action, A::Read | A::Write),
         }
     }
 }
@@ -121,12 +126,13 @@ pub struct Scope {
 }
 
 impl Scope {
-    /// Checks the actions fit the resource and adds the implied ones.
+    /// Checks the actions fit the resource and adds the implied ones the
+    /// resource takes (a surface's drive brings view, not suggest).
     pub fn new(resource: Resource, actions: impl IntoIterator<Item = Action>) -> Result<Self> {
         let mut set = BTreeSet::new();
         for action in actions {
             set.insert(action);
-            set.extend(action.implied());
+            set.extend(action.implied().iter().filter(|implied| resource.supports(**implied)));
         }
         if set.is_empty() {
             return Err(GrantError::NoActions);
@@ -134,9 +140,7 @@ impl Scope {
         if let Some(&action) = set.iter().find(|a| !resource.supports(**a)) {
             return Err(GrantError::Action { resource: resource.kind(), action });
         }
-        if let Resource::Prompt { turn, .. } = &resource {
-            i64::try_from(turn.0).map_err(|_| GrantError::NodeId(*turn))?;
-        }
+        resource.validate()?;
         Ok(Self { resource, actions: set })
     }
 
@@ -150,11 +154,56 @@ impl Scope {
                 return Err(GrantError::Action { resource: self.resource.kind(), action });
             }
         }
-        if let Resource::Prompt { turn, .. } = &self.resource {
-            i64::try_from(turn.0).map_err(|_| GrantError::NodeId(*turn))?;
+        self.resource.validate()
+    }
+}
+
+impl Resource {
+    /// Checks what the resource names fits a grant: prompt ids fit an i64,
+    /// folder paths are absolute and normalized (no `.`, `..` or trailing `/`).
+    fn validate(&self) -> Result<()> {
+        match self {
+            Resource::Prompt { turn, .. } => {
+                i64::try_from(turn.0).map_err(|_| GrantError::NodeId(*turn))?;
+            }
+            Resource::Folder { path } => {
+                let normal = folder_ancestors(path).is_some_and(|ancestors| ancestors.last() == Some(path));
+                if !normal {
+                    return Err(GrantError::FolderPath(path.clone()));
+                }
+            }
+            _ => {}
         }
         Ok(())
     }
+}
+
+/// Every folder from the root down to `path`, as normalized absolute paths
+/// (`/`, `/a`, `/a/b`). `None` when `path` isn't absolute or has `.`/`..`.
+pub(crate) fn folder_ancestors(path: &str) -> Option<Vec<String>> {
+    use std::path::{Component, Path, PathBuf};
+    let path = Path::new(path);
+    if !path.is_absolute() {
+        return None;
+    }
+    let mut out = Vec::new();
+    let mut current = PathBuf::new();
+    for component in path.components() {
+        match component {
+            // A Windows prefix comes before its root: the first folder is both.
+            Component::Prefix(prefix) => current.push(prefix.as_os_str()),
+            Component::RootDir => {
+                current.push(component.as_os_str());
+                out.push(current.to_string_lossy().into_owned());
+            }
+            Component::Normal(name) => {
+                current.push(name);
+                out.push(current.to_string_lossy().into_owned());
+            }
+            Component::CurDir | Component::ParentDir => return None,
+        }
+    }
+    Some(out)
 }
 
 /// The facts about a session that grant checks need. The owner node reads
@@ -197,6 +246,9 @@ pub enum Target<'a> {
     Surface { uri: &'a str },
     /// The issuing node's sandbox.
     Sandbox,
+    /// A folder of the issuing node, by normalized absolute path: grants on
+    /// it or any folder above it cover the request.
+    Folder { path: &'a str },
 }
 
 /// One thing a peer wants to do.
@@ -229,6 +281,11 @@ impl<'a> Request<'a> {
     pub fn sandbox(action: Action) -> Self {
         Self { action, target: Target::Sandbox }
     }
+
+    /// `action` (`Read` or `Write`) on the folder at `path` of this node.
+    pub fn folder(action: Action, path: &'a str) -> Self {
+        Self { action, target: Target::Folder { path } }
+    }
 }
 
 #[cfg(test)]
@@ -239,6 +296,9 @@ mod tests {
     fn drive_brings_suggest_and_view() {
         let scope = Scope::new(Resource::Session { id: "s".into() }, [Action::Drive]).unwrap();
         assert_eq!(scope.actions, BTreeSet::from([Action::View, Action::Suggest, Action::Drive]));
+        // A surface takes no suggest: its drive brings only view.
+        let surface = Scope::new(Resource::Surface { uri: "surface://b/t".into() }, [Action::Drive]).unwrap();
+        assert_eq!(surface.actions, BTreeSet::from([Action::View, Action::Drive]));
     }
 
     #[test]

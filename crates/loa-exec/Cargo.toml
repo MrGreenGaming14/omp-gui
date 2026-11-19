@@ -1,0 +1,11 @@
+[package]
+name = "loa-exec"
+description = "Race-free writing and launching of executables: write_executable for freshly written scripts, retry_busy for ETXTBSY at spawn"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[dev-dependencies]
+tempfile.workspace = true

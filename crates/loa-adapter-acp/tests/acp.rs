@@ -753,10 +753,9 @@ async fn agent_exit_mid_turn_fails_the_turn_and_closes_the_session() {
 #[cfg(unix)]
 #[tokio::test]
 async fn command_connector_runs_the_agent_process() {
-    use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().unwrap();
     let script = dir.path().join("agent.sh");
-    std::fs::write(
+    loa_exec::write_executable(
         &script,
         "#!/bin/sh\n\
          read line\n\
@@ -766,7 +765,6 @@ async fn command_connector_runs_the_agent_process() {
          cat > /dev/null\n",
     )
     .unwrap();
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
     let adapter = AcpAdapter::new(&script, Vec::<String>::new());
     let sink = WatchSink::new();
     let mut config = config(dir.path());

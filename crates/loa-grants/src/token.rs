@@ -131,6 +131,7 @@ fn right_fact(scope: &Scope, action: Action) -> biscuit_auth::builder::Fact {
         Resource::Ssh { host } => fact("ssh_right", &[string(host), a]),
         Resource::Surface { uri } => fact("surface_right", &[string(uri), a]),
         Resource::Sandbox => fact("sandbox_right", &[string(SANDBOX), a]),
+        Resource::Folder { path } => fact("folder_right", &[string(path), a]),
     }
 }
 
@@ -223,6 +224,10 @@ pub fn token_scopes(token: &[u8], root: &NodePublicKey) -> Result<Vec<Scope>> {
     for (_, action) in sandboxes {
         add(Resource::Sandbox, &action)?;
     }
+    let folders: Vec<(String, String)> = authorizer.query("r($p, $a) <- folder_right($p, $a)")?;
+    for (path, action) in folders {
+        add(Resource::Folder { path }, &action)?;
+    }
     Ok(scopes)
 }
 
@@ -254,6 +259,7 @@ fn narrowing_check(scopes: &[Scope]) -> (String, HashMap<String, Term>) {
             Resource::Ssh { host } => (format!("ssh_host({{v{i}x0}})"), vec![string(host)]),
             Resource::Surface { uri } => (format!("surface({{v{i}x0}})"), vec![string(uri)]),
             Resource::Sandbox => (format!("sandbox({{v{i}x0}})"), vec![string(SANDBOX)]),
+            Resource::Folder { path } => (format!("folder({{v{i}x0}})"), vec![string(path)]),
         };
         for (j, value) in values.into_iter().enumerate() {
             params.insert(format!("v{i}x{j}"), value);
@@ -279,6 +285,7 @@ granted($a) <- future_right($after, $a), created($c), $c >= $after;
 granted($a) <- ssh_right($h, $a), ssh_host($h);
 granted($a) <- surface_right($u, $a), surface($u);
 granted($a) <- sandbox_right($n, $a), sandbox($n);
+granted($a) <- folder_right($p, $a), folder($p);
 allow if action($a), granted($a);
 "#;
 
@@ -420,6 +427,7 @@ impl VerifiedGrant {
             Target::Ssh { .. } => "ssh host",
             Target::Surface { .. } => "surface",
             Target::Sandbox => "sandbox",
+            Target::Folder { .. } => "folder",
         };
         let engine = |e: BiscuitError| Denied::Engine(e.to_string());
         let mut builder = AuthorizerBuilder::new()
@@ -444,6 +452,12 @@ impl VerifiedGrant {
             Target::Ssh { host } => facts.push(fact("ssh_host", &[string(host)])),
             Target::Surface { uri } => facts.push(fact("surface", &[string(uri)])),
             Target::Sandbox => facts.push(fact("sandbox", &[string(SANDBOX)])),
+            Target::Folder { path } => {
+                // The folder and every folder above it: a grant on any of them covers it.
+                let ancestors = crate::scope::folder_ancestors(path)
+                    .ok_or(Denied::NotGranted { action: request.action, resource })?;
+                facts.extend(ancestors.iter().map(|folder| fact("folder", &[string(folder)])));
+            }
         }
         for f in facts {
             builder = builder.fact(f).map_err(engine)?;

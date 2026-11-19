@@ -31,4 +31,5 @@ tokio = { workspace = true, optional = true }
 tempfile = { workspace = true, optional = true }
 
 [dev-dependencies]
+loa-exec = { path = "../loa-exec" }
 tempfile.workspace = true

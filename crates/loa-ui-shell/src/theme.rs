@@ -147,7 +147,7 @@ impl Default for State {
 
 /// Style functions for the looks shared across the app.
 pub mod style {
-    use iced::widget::{button, container, rule, text, text_input};
+    use iced::widget::{button, container, rule, scrollable, text, text_input};
     use iced::{Background, Border, Color, Theme, border};
 
     /// Corner radius of cards, fields and rows.
@@ -180,6 +180,22 @@ pub mod style {
     /// A 1px line between areas.
     pub fn divider(theme: &Theme) -> rule::Style {
         rule::Style { color: border_color(theme), ..rule::default(theme) }
+    }
+
+    /// The thin scroller of an overflowing tab bar, without a rail: in the
+    /// border tone, stronger while hovered or dragged.
+    pub fn tab_scrollbar(theme: &Theme, status: scrollable::Status) -> scrollable::Style {
+        let palette = theme.extended_palette();
+        let scroller = match status {
+            scrollable::Status::Dragged { .. } | scrollable::Status::Hovered { .. } => palette.background.strongest.color,
+            scrollable::Status::Active { .. } => palette.background.strong.color,
+        };
+        let rail = scrollable::Rail {
+            background: None,
+            border: Border::default(),
+            scroller: scrollable::Scroller { background: Background::Color(scroller), border: border::rounded(1) },
+        };
+        scrollable::Style { vertical_rail: rail, horizontal_rail: rail, ..scrollable::default(theme, status) }
     }
 
     /// A block with a thin border on the content background: decision cards,

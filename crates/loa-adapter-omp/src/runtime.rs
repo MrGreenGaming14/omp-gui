@@ -294,11 +294,13 @@ impl OmpSession {
 impl HarnessSession for OmpSession {
     async fn send(&self, prompt: Prompt) -> Result<()> {
         self.error_if_closed().await?;
-        let images = prompt.attachments.iter().map(|attachment| {
-            let data = std::fs::read(&attachment.path)?;
-            let mime = attachment.mime.as_deref().ok_or_else(|| AdapterError::Format(format!("image {} needs MIME type", attachment.path.display())))?;
-            Ok(ImageContent { data: base64::engine::general_purpose::STANDARD.encode(data), mime_type: mime.into() })
-        }).collect::<Result<Vec<_>>>()?;
+        // omp's prompt carries images only. Other mentioned files stay the
+        // `@path` reference the prompt text already holds; omp reads them
+        // with its own tools.
+        let images = prompt.attachments.iter().filter_map(|attachment| {
+            let mime = attachment.mime.as_deref().filter(|mime| mime.starts_with("image/"))?;
+            Some(std::fs::read(&attachment.path).map(|data| ImageContent { data: base64::engine::general_purpose::STANDARD.encode(data), mime_type: mime.into() }))
+        }).collect::<std::io::Result<Vec<_>>>()?;
         let id = self.client.reserve_id();
         {
             let mut mapper = self.shared.mapper.lock().await;

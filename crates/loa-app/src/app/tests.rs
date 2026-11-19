@@ -456,3 +456,69 @@ fn feeds_name_turn_decision_and_compaction_events() {
     );
     assert_eq!(app.ctx.sessions.active().unwrap().dom(), &writer.with_dom(Dom::clone));
 }
+
+#[test]
+fn pins_and_the_theme_survive_new_turns_and_a_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let id = {
+        let mut app = fake_app(dir.path(), &["fake-a"]);
+        update(&mut app, Message::NewSession);
+        let id = app.ctx.sessions.active().unwrap().id().clone();
+        let (_, mut feed) = app.ctx.sessions.active().unwrap().writer().subscribe(Policy::every_patch(1024));
+        prompt(&mut app, "pin me");
+        deliver(&mut app, &id, &mut feed);
+        update(&mut app, Message::Shell(shell::Message::Sidebar(shell::sidebar::Message::TogglePin(id.to_string()))));
+        // The next turn replaces the sidebar row with a fresh summary.
+        prompt(&mut app, "still pinned");
+        deliver(&mut app, &id, &mut feed);
+        let pinned: Vec<_> = app.ctx.shell.sidebar().pinned().into_iter().map(|summary| summary.id.clone()).collect();
+        assert_eq!(pinned, [id.to_string()]);
+        let task = app.command(&palette::CommandId::new("theme.light"));
+        run(&mut app, task);
+        id
+    };
+    let app = fake_app(dir.path(), &["fake-a"]);
+    assert_eq!(app.ctx.shell.theme_preference(), shell::Preference::Light);
+    let summary = app.ctx.shell.sidebar().session(id.as_str()).expect("listed after the restart");
+    assert!(summary.pinned, "the pin was saved");
+}
+
+#[test]
+fn tool_calls_collapse_into_one_row_that_expands_on_click() {
+    use iced_test::Simulator;
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = fake_app(dir.path(), &["fake-a"]);
+    update(&mut app, Message::NewSession);
+    let session = app.ctx.sessions.active().unwrap();
+    let id = session.id().clone();
+    let writer = Arc::clone(session.writer());
+    let (_, mut feed) = writer.subscribe(Policy::every_patch(1024));
+    prompt(&mut app, "read the sources");
+    let turn = writer.with_dom(|dom| dom_turns(dom).last().map(|turn| turn.id)).unwrap();
+    for (index, file) in ["a.rs", "b.rs", "c.rs"].into_iter().enumerate() {
+        let started = 1_000 * (index as i64 + 1);
+        let attrs: [(&str, Value); 4] =
+            [("tool", "read".into()), ("status", "done".into()), ("started", Value::Int(started)), ("ended", Value::Int(started + 11_000))];
+        let call = writer.commit(Draft::insert(turn, ElementKind::Call, attrs, "")).unwrap().node;
+        writer.commit(Draft::insert(call, ElementKind::Input, [] as [(&str, Value); 0], format!(r#"{{"path":"{file}"}}"#))).unwrap();
+        writer.commit(Draft::insert(call, ElementKind::Result, [] as [(&str, Value); 0], format!("contents of {file}"))).unwrap();
+    }
+    deliver(&mut app, &id, &mut feed);
+
+    let size = iced::Size::new(1600.0, 1000.0);
+    let messages: Vec<Message> = {
+        let mut ui = Simulator::with_size(iced::Settings::default(), size, app.view());
+        assert!(ui.find("Read 3 files").is_ok(), "one collapsed row for the three reads");
+        // From the first start (1s) to the last end (3s + 11s).
+        assert!(ui.find("13s").is_ok(), "with the time the reads took");
+        assert!(ui.find("contents of b.rs").is_err(), "collapsed");
+        ui.click("Read 3 files").expect("the row is clickable");
+        ui.into_messages().collect()
+    };
+    assert!(!messages.is_empty());
+    for message in messages {
+        update(&mut app, message);
+    }
+    let mut ui = Simulator::with_size(iced::Settings::default(), size, app.view());
+    assert!(ui.find("contents of b.rs").is_ok(), "expanded on click");
+}

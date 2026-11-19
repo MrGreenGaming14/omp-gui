@@ -22,8 +22,8 @@ tracing.workspace = true
 # allocator, so defaults stay off.
 rusty_h264 = { version = "0.17.3", default-features = false, features = ["std", "asm"] }
 jpeg-encoder = "0.7.1"
-zune-jpeg = "0.5"
-zune-core = "0.5"
+# zune-jpeg mis-decodes Chrome's one-scan-per-component screencast JPEGs.
+jpeg-decoder = { version = "0.3", default-features = false }
 png = "0.18.1"
 
 [dev-dependencies]

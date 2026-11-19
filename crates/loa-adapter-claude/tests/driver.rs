@@ -86,18 +86,12 @@ while IFS= read -r line; do
 done
 "#;
 
-/// The fake written once to a temp dir. Every test reads it before it spawns
-/// anything, so no fork can inherit the write handle (which would make exec
-/// fail with "text file busy").
+/// The fake, written once to a temp dir by a separate process so no fork of
+/// this one holds it open for writing when it runs ("text file busy").
 static FAKE_CLAUDE: LazyLock<(tempfile::TempDir, PathBuf)> = LazyLock::new(|| {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("claude");
-    std::fs::write(&path, FAKE).unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    loa_exec::write_executable(&path, FAKE).unwrap();
     (dir, path)
 });
 

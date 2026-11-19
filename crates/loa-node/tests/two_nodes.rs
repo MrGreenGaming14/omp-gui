@@ -128,7 +128,7 @@ async fn two_nodes_share_view_drive_fork_and_revoke_a_session() {
     assert_eq!(seen[0].name.as_deref(), Some("owner-box"));
     assert_eq!(seen[0].shared_protocol, Some(true));
     assert_eq!(seen[0].protocols, loa_node::local_protocols());
-    assert_eq!(loa_node::local_protocols(), ["omp/control/1", "omp/session/1"]);
+    assert_eq!(loa_node::local_protocols(), ["omp/control/1", "omp/session/1", "omp/folder/1"]);
 
     let (writer, answer) = session(&owner, "s-shared");
     let mut owner_events = owner.node.events();
@@ -470,6 +470,72 @@ async fn added_protocols_serve_only_peers_with_a_covering_grant() {
     // Revoked: refused again.
     owner.node.revoke_grant(&id).await.unwrap();
     assert!(guest.node.open_stream(owner.node.key(), "loa-echo", 1).await.is_err());
+    guest.node.stop().await;
+    owner.node.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn folder_grants_list_read_and_write_only_inside_the_folder() {
+    let owner = peer("owner-box").await;
+    let guest = peer("guest-box").await;
+    let (owner_udp, _) = addresses(&owner.node);
+    let (guest_udp, _) = addresses(&guest.node);
+    guest.node.add_peer(&owner.node.key().to_string(), Some(&owner_udp.to_string())).await.unwrap();
+    owner.node.add_peer(&guest.node.key().to_string(), Some(&guest_udp.to_string())).await.unwrap();
+    let files = tempfile::tempdir().unwrap();
+    let base = std::fs::canonicalize(files.path()).unwrap();
+    let share = base.join("share");
+    std::fs::create_dir_all(share.join("docs")).unwrap();
+    std::fs::write(base.join("secret.txt"), "outside").unwrap();
+    // More than one 512 KiB frame.
+    let big: Vec<u8> = (0..1_300_000u32).map(|i| (i % 251) as u8).collect();
+    std::fs::write(share.join("docs/big.bin"), &big).unwrap();
+    std::fs::write(share.join("notes.txt"), "hello").unwrap();
+    let folder = share.to_str().unwrap().to_owned();
+    let owner_key = owner.node.key().to_string();
+
+    // No grant: refused.
+    assert!(matches!(guest.node.list_folder(&owner_key, &folder, "").await, Err(loa_node::NodeError::Refused(_))));
+
+    // A read grant: list, read (several frames), no writes, nothing outside.
+    let read = Scope::new(Resource::Folder { path: folder.clone() }, [Action::Read]).unwrap();
+    let id = owner.node.issue_grant(&guest.node.key().to_string(), vec![read], None, false).await.unwrap();
+    eventually("the folder grant at the guest", || !guest.node.shared_folders().is_empty()).await;
+    let shared = guest.node.shared_folders();
+    assert_eq!(shared, [loa_node::SharedFolder { peer: owner.node.key(), path: folder.clone(), can_write: false }]);
+    let entries = guest.node.list_folder(&owner_key, &folder, "").await.unwrap();
+    let names: Vec<(&str, bool)> = entries.iter().map(|e| (e.name.as_str(), e.dir)).collect();
+    assert_eq!(names, [("docs", true), ("notes.txt", false)]);
+    assert_eq!(guest.node.read_folder_file(&owner_key, &folder, "docs/big.bin").await.unwrap(), big);
+    assert_eq!(guest.node.list_folder(&owner_key, &format!("{folder}/docs"), "").await.unwrap()[0].size, big.len() as u64);
+    for escape in ["../secret.txt", "/etc/hostname", "docs/../../secret.txt"] {
+        assert!(guest.node.read_folder_file(&owner_key, &folder, escape).await.is_err(), "{escape}");
+    }
+    assert!(guest.node.list_folder(&owner_key, base.to_str().unwrap(), "").await.is_err(), "the folder above");
+    let write = guest.node.write_folder_file(&owner_key, &folder, "notes.txt", b"changed").await;
+    assert!(matches!(&write, Err(loa_node::NodeError::Refused(error)) if error.contains("no grant")), "{write:?}");
+    assert_eq!(std::fs::read_to_string(share.join("notes.txt")).unwrap(), "hello");
+
+    // A write grant writes, in several frames too.
+    let write = Scope::new(Resource::Folder { path: folder.clone() }, [Action::Write]).unwrap();
+    owner.node.issue_grant(&guest.node.key().to_string(), vec![write], None, false).await.unwrap();
+    eventually("the write grant at the guest", || guest.node.shared_folders().first().is_some_and(|f| f.can_write)).await;
+    guest.node.write_folder_file(&owner_key, &folder, "docs/copy.bin", &big).await.unwrap();
+    assert_eq!(std::fs::read(share.join("docs/copy.bin")).unwrap(), big);
+    guest.node.write_folder_file(&owner_key, &folder, "empty.txt", b"").await.unwrap();
+    assert_eq!(std::fs::read(share.join("empty.txt")).unwrap(), b"");
+    assert!(guest.node.write_folder_file(&owner_key, &folder, "../escaped.txt", b"x").await.is_err());
+    assert!(!base.join("escaped.txt").exists());
+    assert!(owner.node.resources().iter().any(|(resource, label)| *resource == Resource::Folder { path: folder.clone() } && *label == format!("Folder {folder}")));
+
+    // Revoking the read grant leaves the write grant working; revoking it too ends access.
+    owner.node.revoke_grant(&id).await.unwrap();
+    assert!(guest.node.list_folder(&owner_key, &folder, "").await.is_ok());
+    let given: Vec<GrantId> = owner.node.grants().into_iter().filter(|g| g.direction == GrantDirection::Given && !g.ended).map(|g| g.id).collect();
+    for id in given {
+        owner.node.revoke_grant(&id).await.unwrap();
+    }
+    assert!(guest.node.list_folder(&owner_key, &folder, "").await.is_err());
     guest.node.stop().await;
     owner.node.stop().await;
 }
