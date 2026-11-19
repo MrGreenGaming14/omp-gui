@@ -1,0 +1,22 @@
+name: Input to pixels latency
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  latency:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.100.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Install FFmpeg for hardware encoder probing
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Exercise latency gate and synthetic surface tests
+        run: cargo test -p loa-surface-bench
+      - name: Gate input to pixels at 50 ms p95
+        run: cargo run --release -p loa-surface-bench --bin latency-gate -- --iterations 30 --budget-ms 50 --json

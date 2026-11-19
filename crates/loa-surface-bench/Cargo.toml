@@ -5,5 +5,25 @@ version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
+[[bin]]
+name = "latency-gate"
+path = "src/bin/latency-gate.rs"
+
 [dependencies]
 loa-surface.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+# Pure Rust H.264. The `global-alloc` default feature installs a process wide
+# allocator, so defaults stay off.
+rusty_h264 = { version = "0.17.3", default-features = false, features = ["std", "asm"] }
+jpeg-encoder = "0.7.1"
+zune-jpeg = "0.5"
+zune-core = "0.5"
+png = "0.18.1"
+
+[dev-dependencies]
+tempfile.workspace = true

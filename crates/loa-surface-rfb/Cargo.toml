@@ -7,3 +7,10 @@ publish.workspace = true
 
 [dependencies]
 loa-surface.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
+png = "0.18"

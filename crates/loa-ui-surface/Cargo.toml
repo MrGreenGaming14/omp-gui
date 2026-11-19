@@ -8,3 +8,18 @@ publish.workspace = true
 [dependencies]
 loa-surface.workspace = true
 iced.workspace = true
+bytes.workspace = true
+futures.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+image = { version = "0.25", default-features = false, features = ["png", "gif", "webp", "bmp"] }
+# image 0.25's JPEG backend mis-decodes baseline JPEGs with one scan per
+# component, which is how Chrome encodes some screencast frames.
+jpeg-decoder = { version = "0.3", default-features = false }
+
+[dev-dependencies]
+async-trait.workspace = true
+iced_runtime = "0.14"
+iced_test = "0.14"
+tempfile.workspace = true
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
