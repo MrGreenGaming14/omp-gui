@@ -471,15 +471,18 @@ impl State {
     ///
     /// `center` fills the area under the top bar. `panel_body` draws the body
     /// of the active tab and is only called while the panel is open with a
-    /// tab. `map` lifts this crate's messages into the app's.
+    /// tab. `project_files`, when set, is drawn in the sidebar under the
+    /// active project's row. `map` lifts this crate's messages into the app's.
     pub fn view<'a, M: Clone + 'a>(
         &'a self,
         center: impl Into<Element<'a, M>>,
         panel_body: impl FnOnce(&'a str) -> Element<'a, M>,
+        project_files: Option<Element<'a, M>>,
         map: fn(Message) -> M,
     ) -> Element<'a, M> {
-        let sidebar = container(self.sidebar.view().map(Message::Sidebar)).width(SIDEBAR_WIDTH).height(Fill);
-        let sidebar = Element::from(sidebar).map(map);
+        let sidebar = self.sidebar.view_with(move |message| map(Message::Sidebar(message)), project_files);
+        let sidebar = container(sidebar).width(SIDEBAR_WIDTH).height(Fill);
+        let sidebar = Element::from(sidebar);
 
         let topbar = self.topbar.view().map(Message::Topbar).map(map);
         let center = container(center).style(style::surface).width(Fill).height(Fill);
