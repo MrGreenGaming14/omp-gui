@@ -34,6 +34,8 @@ mod tests;
 
 /// Palette command prefix that opens a project, followed by its name.
 const OPEN_COMMAND: &str = "open:";
+/// Palette command id prefix that toggles a project's sidebar pin.
+const PIN_COMMAND: &str = "pin:";
 
 #[derive(Clone, Debug)]
 pub enum Message {
@@ -320,17 +322,29 @@ impl Area for State {
     }
 
     fn palette_commands(&self, ctx: &Ctx) -> Vec<palette::Command> {
+        let pinned = ctx.shell.sidebar().pinned_projects();
         self.names(&ctx.services.workspace_project())
             .into_iter()
-            .map(|name| {
-                let id = AreaId::Projects.command(&format!("{OPEN_COMMAND}{name}"));
-                palette::Command::new(id, format!("Open project: {name}"), "Projects")
+            .flat_map(|name| {
+                let open = AreaId::Projects.command(&format!("{OPEN_COMMAND}{name}"));
+                let pin = AreaId::Projects.command(&format!("{PIN_COMMAND}{name}"));
+                let verb = if pinned.contains(&name) { "Unpin" } else { "Pin" };
+                [
+                    palette::Command::new(open, format!("Open project: {name}"), "Projects"),
+                    palette::Command::new(pin, format!("{verb} project: {name}"), "Projects"),
+                ]
             })
             .collect()
     }
 
     fn run_command(&mut self, id: &str, ctx: &mut Ctx) -> Option<Task<Message>> {
-        let project = id.strip_prefix(AreaId::Projects.key())?.strip_prefix('.')?.strip_prefix(OPEN_COMMAND)?;
+        let rest = id.strip_prefix(AreaId::Projects.key())?.strip_prefix('.')?;
+        if let Some(project) = rest.strip_prefix(PIN_COMMAND) {
+            let toggle = loa_ui_shell::sidebar::Message::ToggleProjectPin(project.to_owned());
+            ctx.request(Request::Forward(Box::new(crate::app::Message::Shell(loa_ui_shell::Message::Sidebar(toggle)))));
+            return Some(Task::none());
+        }
+        let project = rest.strip_prefix(OPEN_COMMAND)?;
         Some(self.open(project.to_owned(), ctx))
     }
 

@@ -29,6 +29,8 @@ pub struct State {
     /// Ids of the pinned sessions. App data, so it outlives every summary
     /// the app passes in, including sessions not listed yet.
     pins: BTreeSet<String>,
+    /// Names of the pinned projects; names not in the list stay saved but hidden.
+    pinned_projects: BTreeSet<String>,
     query: String,
     active: Option<String>,
     /// The project the user selected; highlighted instead of the active
@@ -79,6 +81,8 @@ pub enum Message {
     OpenSession(String),
     /// The pin button on a session row was clicked.
     TogglePin(String),
+    /// The pin button on a project row was clicked.
+    ToggleProjectPin(String),
     /// The delete button on a session row was clicked.
     Delete(String),
 }
@@ -102,6 +106,13 @@ pub enum Event {
     SetPinned {
         /// Session id.
         id: String,
+        /// New flag.
+        pinned: bool,
+    },
+    /// Persist the pinned flag of a project.
+    SetProjectPinned {
+        /// Project name.
+        project: String,
         /// New flag.
         pinned: bool,
     },
@@ -156,6 +167,16 @@ impl State {
     /// The session with this id.
     pub fn session(&self, id: &str) -> Option<&SessionSummary> {
         self.sessions.iter().map(|entry| &entry.summary).find(|summary| summary.id == id)
+    }
+
+    /// Replaces the pinned project names, as saved by the app.
+    pub fn set_pinned_projects(&mut self, pinned: impl IntoIterator<Item = String>) {
+        self.pinned_projects = pinned.into_iter().collect();
+    }
+
+    /// The pinned project names, including any no longer listed.
+    pub fn pinned_projects(&self) -> &BTreeSet<String> {
+        &self.pinned_projects
     }
 
     /// Replaces the project list.
@@ -218,11 +239,16 @@ impl State {
         self.section(false)
     }
 
-    /// Projects whose name matches the search, in the order given.
+    /// Projects whose name matches the search: pinned ones first, by name,
+    /// then the rest in the order given.
     pub fn projects(&self) -> Vec<&str> {
         let query = self.query.to_lowercase();
-        self.projects
-            .iter()
+        let pinned = self.projects.iter().filter(|project| self.pinned_projects.contains(*project));
+        let mut pinned: Vec<&String> = pinned.collect();
+        pinned.sort();
+        pinned
+            .into_iter()
+            .chain(self.projects.iter().filter(|project| !self.pinned_projects.contains(*project)))
             .filter(|project| {
                 let name = project.to_lowercase();
                 query.split_whitespace().all(|term| name.contains(term))
@@ -272,6 +298,13 @@ impl State {
                     Event::SetPinned { id, pinned: entry.summary.pinned }
                 })
             }
+            Message::ToggleProjectPin(project) => {
+                let pinned = !self.pinned_projects.remove(&project);
+                if pinned {
+                    self.pinned_projects.insert(project.clone());
+                }
+                Some(Event::SetProjectPinned { project, pinned })
+            }
             Message::Delete(id) => Some(Event::DeleteSession(id)),
         };
         (Task::none(), event)
@@ -307,13 +340,16 @@ impl State {
             lists = lists.push(hint(if self.projects.is_empty() { "No projects yet" } else { "No match" }));
         }
         for project in projects {
-            lists = lists.push(
-                button(row![icon(Icon::Folder, 14.0), text(project).size(14)].spacing(8).align_y(Alignment::Center))
-                    .on_press(Message::OpenProject(project.to_owned()))
-                    .style(style::row_for(active_project == Some(project)))
-                    .padding([6, 8])
-                    .width(Fill),
-            );
+            let body = button(row![icon(Icon::Folder, 14.0), text(project).size(14)].spacing(8).align_y(Alignment::Center))
+                .on_press(Message::OpenProject(project.to_owned()))
+                .style(style::row_for(active_project == Some(project)))
+                .padding([6, 8])
+                .width(Fill);
+            let pin = button(text(if self.pinned_projects.contains(project) { "Unpin" } else { "Pin" }).size(12))
+                .on_press(Message::ToggleProjectPin(project.to_owned()))
+                .style(style::selected_row)
+                .padding([1, 6]);
+            lists = lists.push(hover(body, container(pin).align_right(Fill).center_y(Fill).padding([0, 6])));
         }
 
         lists = lists.push(header("PEERS"));

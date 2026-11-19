@@ -197,6 +197,7 @@ impl App {
         };
         ctx.shell.set_active_project(restored.map(|active| active.name));
         ctx.shell.set_pins(saved.pinned);
+        ctx.shell.set_pinned_projects(saved.pinned_projects);
         ctx.shell.set_sessions(recents);
         let (areas, area_tasks) = Areas::new(&mut ctx);
         let mut app = Self {
@@ -694,6 +695,11 @@ impl App {
                     Some(shell::Event::SetPinned { .. }) => {
                         let pins = self.ctx.shell.sidebar().pins().clone();
                         self.save_ui(|config| config.pinned = pins);
+                        Task::none()
+                    }
+                    Some(shell::Event::SetProjectPinned { .. }) => {
+                        let pins = self.ctx.shell.sidebar().pinned_projects().clone();
+                        self.save_ui(|config| config.pinned_projects = pins);
                         Task::none()
                     }
                     _ => Task::none(),
