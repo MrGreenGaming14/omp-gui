@@ -13,7 +13,9 @@ use loa_sandbox::proto::{
 use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Read, Write};
+#[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
+#[cfg(unix)]
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{self as sys, Stdio};
@@ -56,12 +58,25 @@ impl Out {
 /// Process groups of running commands, by request id.
 type Running = Arc<Mutex<HashMap<u32, i32>>>;
 
+#[cfg(unix)]
 fn kill_group(pgid: i32) {
     // SAFETY: kill(2) takes plain integers and has no memory effects. A
     // negative pid names the process group the command leads.
     unsafe {
         libc::kill(-pgid, libc::SIGKILL);
     }
+}
+
+/// Windows has no process groups: kill the command's whole process tree.
+#[cfg(not(unix))]
+fn kill_group(pid: i32) {
+    let _ = sys::Command::new("taskkill")
+        .args(["/F", "/T", "/PID"])
+        .arg(pid.to_string())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
 }
 
 struct Stub {
@@ -126,8 +141,9 @@ impl Stub {
             .envs(env)
             .stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() })
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .process_group(0);
+            .stderr(Stdio::piped());
+        #[cfg(unix)]
+        cmd.process_group(0);
         let mut child = match cmd.spawn() {
             Ok(child) => child,
             Err(e) => return self.out.error(id, format_args!("spawn: {e}")),
@@ -190,12 +206,22 @@ impl Stub {
             match status {
                 Ok(status) => out.send(&Response::Exit {
                     id,
-                    status: ExitStatus { code: status.code(), signal: status.signal(), timed_out },
+                    status: ExitStatus { code: status.code(), signal: exit_signal(&status), timed_out },
                 }),
                 Err(e) => out.error(id, format_args!("wait: {e}")),
             }
         });
     }
+}
+
+#[cfg(unix)]
+fn exit_signal(status: &sys::ExitStatus) -> Option<i32> {
+    status.signal()
+}
+
+#[cfg(not(unix))]
+fn exit_signal(_: &sys::ExitStatus) -> Option<i32> {
+    None
 }
 
 /// Forwards one output pipe as frames until it closes.
@@ -227,9 +253,22 @@ fn write_file(path: &Path, data: &[u8], mode: Option<u32>) -> io::Result<()> {
     }
     fs::write(path, data)?;
     if let Some(mode) = mode {
-        fs::set_permissions(path, fs::Permissions::from_mode(mode))?;
+        set_mode(path, mode)?;
     }
     Ok(())
+}
+
+#[cfg(unix)]
+fn set_mode(path: &Path, mode: u32) -> io::Result<()> {
+    fs::set_permissions(path, fs::Permissions::from_mode(mode))
+}
+
+/// Windows only has a read-only flag, which stands for a missing owner write bit.
+#[cfg(not(unix))]
+fn set_mode(path: &Path, mode: u32) -> io::Result<()> {
+    let mut permissions = fs::metadata(path)?.permissions();
+    permissions.set_readonly(mode & 0o200 == 0);
+    fs::set_permissions(path, permissions)
 }
 
 fn list_dir(path: &Path) -> io::Result<Vec<DirEntry>> {
@@ -259,7 +298,23 @@ fn metadata(meta: &fs::Metadata) -> Metadata {
         .ok()
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
         .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
-    Metadata { kind, size: meta.len(), mode: meta.mode() & 0o7777, mtime_ms }
+    Metadata { kind, size: meta.len(), mode: file_mode(meta), mtime_ms }
+}
+
+#[cfg(unix)]
+fn file_mode(meta: &fs::Metadata) -> u32 {
+    meta.mode() & 0o7777
+}
+
+/// Windows has no mode bits: report what the read-only flag and the file
+/// kind imply.
+#[cfg(not(unix))]
+fn file_mode(meta: &fs::Metadata) -> u32 {
+    match (meta.is_dir(), meta.permissions().readonly()) {
+        (true, _) => 0o755,
+        (false, true) => 0o444,
+        (false, false) => 0o644,
+    }
 }
 
 fn main() {

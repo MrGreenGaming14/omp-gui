@@ -135,7 +135,7 @@ impl Sandbox for SshSandbox {
 mod tests {
     use super::*;
     use crate::provider::SandboxOptions;
-    use std::os::unix::fs::PermissionsExt;
+    #[cfg(unix)]
     use tokio::io::AsyncReadExt;
 
     #[test]
@@ -143,12 +143,14 @@ mod tests {
         assert_eq!(quote("a b'c"), "'a b'\\''c'");
     }
 
+    #[cfg(unix)]
     fn script(path: &std::path::Path, body: &str) {
         loa_exec::write_executable(path, body).unwrap();
     }
 
     /// A fake `ssh` runs the remote command locally after `-- <host>`, and
     /// records the host it was asked for.
+    #[cfg(unix)]
     #[tokio::test]
     async fn uploads_the_stub_runs_it_in_a_private_root_and_removes_it() {
         let dir = tempfile::tempdir().unwrap();
@@ -167,8 +169,11 @@ mod tests {
         sandbox.take_channel().unwrap().reader.read_to_string(&mut output).await.unwrap();
         let root = remote.join("loa-sbx-7");
         assert_eq!(output, format!("stub in {}", root.display()));
-        let mode = std::fs::metadata(root.join("loa-sandbox-stub")).unwrap().permissions().mode();
-        assert_eq!(mode & 0o777, 0o700);
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(root.join("loa-sandbox-stub")).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o700);
+        }
         sandbox.stop().await.unwrap();
         assert!(!root.exists(), "the remote root is removed");
         let hosts = std::fs::read_to_string(dir.path().join("hosts")).unwrap();

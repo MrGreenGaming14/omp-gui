@@ -1,10 +1,9 @@
 //! One browser tab as a pixel surface.
 
-use crate::frames::{FrameHub, InputLog, now_us};
+use crate::frames::{CaptureTarget, FrameHub, InputLog, now_us};
 use crate::input::{Command, InputMapper};
 use crate::server::Instance;
 use crate::structured::{self, OutlineNode, PageInfo};
-use crate::x11::CaptureTarget;
 use crate::{BrowserError, Result, screencast};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
@@ -23,6 +22,7 @@ use tokio::task::JoinHandle;
 /// Where a tab's frames come from.
 pub(crate) enum Feed {
     Screencast { pump: JoinHandle<()>, quality: u8 },
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     Display { target: Arc<CaptureTarget>, screen: (u32, u32) },
 }
 

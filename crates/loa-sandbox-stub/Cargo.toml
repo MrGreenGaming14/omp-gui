@@ -7,6 +7,8 @@ publish.workspace = true
 
 [dependencies]
 loa-sandbox = { path = "../loa-sandbox", default-features = false }
+
+[target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
 [dev-dependencies]

@@ -3,6 +3,7 @@
 
 use crate::isolation;
 use crate::provider::docker::{DockerProvider, DockerStub};
+#[cfg(target_os = "linux")]
 use crate::provider::firecracker::FirecrackerProvider;
 use crate::provider::local::{LocalProvider, find_stub};
 use crate::provider::peer::{PeerLink, PeerProvider};
@@ -101,7 +102,7 @@ struct Machine {
 
 impl Machine {
     fn this() -> Self {
-        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from);
         Self {
             path: std::env::var_os("PATH"),
             kvm_device: "/dev/kvm".into(),
@@ -110,11 +111,8 @@ impl Machine {
     }
 
     fn which(&self, name: &str) -> Option<PathBuf> {
-        use std::os::unix::fs::PermissionsExt;
         let paths = self.path.as_ref()?;
-        std::env::split_paths(paths)
-            .map(|dir| dir.join(name))
-            .find(|file| file.metadata().is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0))
+        std::env::split_paths(paths).find_map(|dir| loa_exec::find_executable(&dir.join(name)))
     }
 
     fn kvm(&self) -> bool {
@@ -227,12 +225,15 @@ impl SandboxService {
                 providers.push(Arc::new(provider));
             }
         }
-        if let (Some(firecracker), Some(kernel), Some(rootfs)) =
-            (self.machine.which("firecracker"), &self.config.firecracker_kernel, &self.config.firecracker_rootfs)
+        #[cfg(target_os = "linux")]
         {
-            let mut provider = FirecrackerProvider::new(kernel, rootfs);
-            provider.firecracker = firecracker;
-            providers.push(Arc::new(provider));
+            if let (Some(firecracker), Some(kernel), Some(rootfs)) =
+                (self.machine.which("firecracker"), &self.config.firecracker_kernel, &self.config.firecracker_rootfs)
+            {
+                let mut provider = FirecrackerProvider::new(kernel, rootfs);
+                provider.firecracker = firecracker;
+                providers.push(Arc::new(provider));
+            }
         }
         if let (Some(qemu), Some(disk)) = (self.machine.which(QEMU), &self.config.vm_disk) {
             let mut provider = QemuProvider::new(disk);
@@ -305,12 +306,15 @@ impl SandboxService {
                 },
             });
 
+            #[cfg(target_os = "linux")]
             statuses.push(match (machine.which("firecracker"), kvm, &config.firecracker_kernel, &config.firecracker_rootfs) {
                 (None, ..) => status(SandboxKind::Firecracker, Unavailable, "Firecracker is not installed".into()),
                 (Some(_), false, ..) => status(SandboxKind::Firecracker, Unavailable, format!("{} is not accessible", machine.kvm_device.display())),
                 (Some(_), true, Some(kernel), Some(rootfs)) => status(SandboxKind::Firecracker, Ready, format!("Kernel {}, rootfs {}", kernel.display(), rootfs.display())),
                 (Some(_), true, ..) => status(SandboxKind::Firecracker, NotConfigured, "Set a guest kernel and a rootfs whose init runs loa-sandbox-stub on ttyS0".into()),
             });
+            #[cfg(not(target_os = "linux"))]
+            statuses.push(status(SandboxKind::Firecracker, Unavailable, "Firecracker needs Linux (KVM)".into()));
 
             statuses.push(match (machine.which(QEMU), &config.vm_disk) {
                 (None, _) => status(SandboxKind::Vm, Unavailable, format!("{QEMU} is not installed")),
@@ -360,6 +364,7 @@ mod tests {
     use super::*;
     use crate::worker::MemoryJournal;
 
+    #[cfg(unix)]
     fn script(path: &Path, body: &str) {
         loa_exec::write_executable(path, body).unwrap();
     }
@@ -406,6 +411,7 @@ mod tests {
         assert!(service.host_tool(Arc::new(crate::tests::NoAdapter), &template).is_none());
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_configured_machine_offers_every_provider() {
         let dir = tempfile::tempdir().unwrap();
@@ -450,6 +456,7 @@ mod tests {
         assert!(spec.description.contains("- peer: a peer node; set options.peer to one of studio"), "{}", spec.description);
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn reports_installed_but_unconfigured_providers() {
         let dir = tempfile::tempdir().unwrap();

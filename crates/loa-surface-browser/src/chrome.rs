@@ -102,9 +102,9 @@ pub fn chrome_candidates(path_var: Option<&OsStr>, home: Option<&Path>, headed: 
         if headed && name == "chrome-headless-shell" {
             continue;
         }
-        found.extend(dirs.iter().map(|dir| dir.join(name)).filter(|p| is_executable(p)));
+        found.extend(dirs.iter().filter_map(|dir| loa_exec::find_executable(&dir.join(name))));
     }
-    found.extend(FIXED_PATHS.iter().map(PathBuf::from).filter(|p| is_executable(p)));
+    found.extend(FIXED_PATHS.iter().map(PathBuf::from).filter(|p| loa_exec::is_executable(p)));
     if let Some(home) = home {
         found.extend(playwright_browsers(&home.join(".cache/ms-playwright"), headed));
     }
@@ -117,10 +117,16 @@ pub fn find_chrome(path_var: Option<&OsStr>, home: Option<&Path>, headed: bool) 
     chrome_candidates(path_var, home, headed).into_iter().next()
 }
 
-/// Xvfb on the search path in `path_var`.
+/// Why the virtual display capture is not offered off Linux.
+pub const VIRTUAL_DISPLAY_UNAVAILABLE: &str = "needs Linux (Xvfb)";
+
+/// Xvfb on the search path in `path_var`. Always `None` off Linux.
 pub fn find_xvfb(path_var: Option<&OsStr>) -> Option<PathBuf> {
+    if !cfg!(target_os = "linux") {
+        return None;
+    }
     let path_var = path_var?;
-    std::env::split_paths(path_var).map(|dir| dir.join("Xvfb")).find(|p| is_executable(p))
+    std::env::split_paths(path_var).find_map(|dir| loa_exec::find_executable(&dir.join("Xvfb")))
 }
 
 /// Playwright installs `chromium-<rev>/chrome-linux64/chrome` and
@@ -143,17 +149,12 @@ fn playwright_browsers(cache: &Path, headed: bool) -> Vec<PathBuf> {
             }
             _ => continue,
         };
-        if is_executable(&exe) {
+        if loa_exec::is_executable(&exe) {
             found.push((rank, revision, exe));
         }
     }
     found.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)));
     found.into_iter().map(|(_, _, exe)| exe).collect()
-}
-
-fn is_executable(path: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
 }
 
 #[cfg(test)]

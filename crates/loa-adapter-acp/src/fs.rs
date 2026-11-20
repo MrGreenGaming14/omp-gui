@@ -104,6 +104,7 @@ mod tests {
         assert_eq!(resolve_inside(&root, inside.to_str().unwrap()).unwrap(), root.join("notes.txt"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn symlink_out_of_the_root_is_refused() {
         let (dir, root) = root();

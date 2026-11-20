@@ -3,7 +3,11 @@
 use crate::chrome::{BrowserConfig, Capture, VirtualDisplayConfig};
 use crate::frames::{FrameHub, InputLog};
 use crate::tab::{Feed, Tab, TabParts, set_viewport};
-use crate::x11::{CaptureTarget, X11Capture, spawn_capture};
+#[cfg(target_os = "linux")]
+use crate::frames::CaptureTarget;
+#[cfg(target_os = "linux")]
+use crate::x11::{X11Capture, spawn_capture};
+#[cfg(target_os = "linux")]
 use crate::xvfb::VirtualDisplay;
 use crate::{BrowserError, Result, SERVER_NAME, screencast};
 use async_trait::async_trait;
@@ -18,6 +22,21 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tempfile::TempDir;
 use tokio::task::JoinHandle;
+
+/// Xvfb exists only on Linux; no instance of this is ever made elsewhere.
+#[cfg(not(target_os = "linux"))]
+enum VirtualDisplay {}
+
+#[cfg(not(target_os = "linux"))]
+impl VirtualDisplay {
+    fn display(&self) -> String {
+        match *self {}
+    }
+
+    async fn stop(self) -> Result<()> {
+        match self {}
+    }
+}
 
 /// How long Chrome gets to exit after `Browser.close` before it is killed.
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -220,6 +239,7 @@ impl BrowserServer {
         }))
     }
 
+    #[cfg(target_os = "linux")]
     async fn open_display_tab(&self, uri: SurfaceUri, config: &VirtualDisplayConfig) -> Result<Tab> {
         let (width, height) = (self.config.width, self.config.height);
         let display = VirtualDisplay::start(&config.xvfb, &config.socket_dir, width, height).await?;
@@ -255,6 +275,11 @@ impl BrowserServer {
         // The thread ends when the tab sets `stop` or the display goes away.
         drop(spawn_capture(capture, target.clone()));
         Ok(Tab::new(TabParts { uri, page, instance, hub, log, size, feed: Feed::Display { target, screen } }))
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    async fn open_display_tab(&self, _uri: SurfaceUri, _config: &VirtualDisplayConfig) -> Result<Tab> {
+        Err(BrowserError::Display(crate::chrome::VIRTUAL_DISPLAY_UNAVAILABLE.into()))
     }
 
     /// The open tab behind `uri`.

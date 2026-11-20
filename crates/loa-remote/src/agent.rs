@@ -47,9 +47,11 @@ pub async fn authenticate<H: client::Handler>(
         path: socket.to_path_buf(),
         message,
     };
-    let mut agent = AgentClient::connect_uds(socket)
-        .await
-        .map_err(|e| agent_err(e.to_string()))?;
+    #[cfg(unix)]
+    let connected = AgentClient::connect_uds(socket).await;
+    #[cfg(windows)]
+    let connected = AgentClient::connect_named_pipe(socket).await;
+    let mut agent = connected.map_err(|e| agent_err(e.to_string()))?;
     let identities = agent
         .request_identities()
         .await

@@ -164,6 +164,7 @@ mod tests {
         assert!(error.to_string().contains("no sandbox grant from peer stranger"), "{error}");
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn serve_stub_pipes_a_process_in_an_empty_directory() {
         // A script stands in for the stub: it reports its directory and

@@ -5123,6 +5123,7 @@ dependencies = [
  "bytes",
  "jpeg-decoder",
  "jpeg-encoder",
+ "loa-exec",
  "loa-surface",
  "png 0.18.1",
  "rusty_h264",

@@ -3,7 +3,7 @@ use super::serial::command_channel;
 use super::{Sandbox, SandboxKind, SandboxProvider, SandboxSpec, WorkspaceMode};
 use crate::Result;
 use async_trait::async_trait;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use tokio::process::Command;
 
 pub struct LocalProvider {
@@ -31,12 +31,7 @@ pub fn find_stub() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok();
     let near = exe.iter().flat_map(|exe| exe.ancestors().skip(1).take(LEVELS).map(|dir| dir.join(STUB_NAME)));
     let path = std::env::var_os("PATH").into_iter().flat_map(|paths| std::env::split_paths(&paths).map(|dir| dir.join(STUB_NAME)).collect::<Vec<_>>());
-    explicit.into_iter().chain(near).chain(path).find(|candidate| is_executable(candidate))
-}
-
-fn is_executable(path: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    path.metadata().is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+    explicit.into_iter().chain(near).chain(path).find_map(|candidate| loa_exec::find_executable(&candidate))
 }
 
 #[async_trait]
@@ -50,7 +45,7 @@ impl SandboxProvider for LocalProvider {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::provider::SandboxOptions;
