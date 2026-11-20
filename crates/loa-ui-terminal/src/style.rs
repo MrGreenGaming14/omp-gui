@@ -48,3 +48,16 @@ pub fn divider<'a>() -> rule::Rule<'a> {
         snap: true,
     })
 }
+
+/// A bordered button: the empty tab's "Open a terminal".
+pub fn secondary(theme: &Theme, status: button::Status) -> button::Style {
+    let palette = theme.extended_palette();
+    let background = matches!(status, button::Status::Hovered | button::Status::Pressed)
+        .then(|| Background::Color(palette.background.weak.color));
+    button::Style {
+        background,
+        text_color: palette.background.base.text,
+        border: iced::Border { color: palette.background.strong.color, width: 1.0, radius: 6.0.into() },
+        ..button::Style::default()
+    }
+}

@@ -132,6 +132,9 @@ pub struct State {
     pending: Mutex<HashMap<Option<String>, Pending>>,
 }
 
+/// Effort levels offered for omp before a session runs and lists its own.
+const PRE_SESSION_EFFORTS: [&str; 4] = ["low", "medium", "high", "xhigh"];
+
 impl State {
     pub fn new(ctx: &mut Ctx) -> (Self, Task<Message>) {
         let executable = ctx.services.harnesses.get(OMP).and_then(|harness| harness.executable.clone());
@@ -140,7 +143,10 @@ impl State {
             cwd: Some(ctx.services.cwd.clone()),
             env: Vec::new(),
         };
-        (Self::with_backend(Backend::system(launch)), Task::none())
+        let state = Self::with_backend(Backend::system(launch));
+        // omp's catalog fills the pickers before any session runs.
+        let catalog = state.read_roles();
+        (state, catalog)
     }
 
     pub(crate) fn with_backend(backend: Backend) -> Self {
@@ -247,9 +253,14 @@ impl State {
     /// The active session's model and role, with a pending pick on top.
     fn current(&self, ctx: &Ctx) -> SessionModel {
         let Some(session) = ctx.sessions.active() else {
-            return self.pending().get(&None).and_then(|pending| pending.model.clone()).map_or_else(SessionModel::default, |(model, role)| {
-                SessionModel { model: Some(model), role }
-            });
+            if let Some((model, role)) = self.pending().get(&None).and_then(|pending| pending.model.clone()) {
+                return SessionModel { model: Some(model), role };
+            }
+            // A new omp session runs on the default role's model.
+            let default = (Self::harness_id(ctx) == OMP)
+                .then(|| self.roles.as_deref().unwrap_or_default().iter().find(|role| role.role == "default"))
+                .flatten();
+            return default.map_or_else(SessionModel::default, |role| SessionModel { model: Some(role.model.selector()), role: None });
         };
         let mut current = SessionModel::from_dom(session.dom()).map(|(_, model)| model).unwrap_or_default();
         if let Some((model, role)) = self.pending().get(&Some(session.id().to_string())).and_then(|pending| pending.model.clone()) {
@@ -282,7 +293,11 @@ impl State {
 
     fn set_effort(&mut self, effort: String, ctx: &mut Ctx) -> Task<Message> {
         let harness = Self::harness_id(ctx).to_owned();
-        let Some(session) = ctx.sessions.active() else { return Task::none() };
+        let Some(session) = ctx.sessions.active() else {
+            self.pending().entry(None).or_insert_with(|| Pending { harness, ..Pending::default() }).effort = Some(effort);
+            self.sync(ctx);
+            return Task::none();
+        };
         let id = session.id().clone();
         let Some(running) = session.harness().cloned() else {
             ctx.notify(format!("This session continues with {effort} effort when it resumes"));
@@ -325,7 +340,7 @@ impl State {
         let current = self.current(ctx);
         let session = ctx.sessions.active();
         let harness = Self::harness_id(ctx);
-        let pending_effort = session.and_then(|session| self.pending().get(&Some(session.id().to_string())).and_then(|p| p.effort.clone()));
+        let pending_effort = self.pending().get(&session.map(|session| session.id().to_string())).and_then(|p| p.effort.clone());
         let effort = pending_effort.or_else(|| session.and_then(|session| session.dom().root()?.str_attr(attr::EFFORT).map(str::to_owned)));
         let roles = if harness == OMP { self.roles.as_deref().unwrap_or_default() } else { &[] };
         let role_of = |id: &str| roles.iter().find(|role| role.model.selector() == id).map(|role| role.role.clone());
@@ -353,6 +368,11 @@ impl State {
             }
         }
         let mut efforts = current.model.as_ref().and_then(|id| listed.iter().find(|model| &model.id == id)).map(|model| model.efforts.clone()).unwrap_or_default();
+        // omp's catalog doesn't say which levels a model takes; before a
+        // session runs, offer omp's levels.
+        if efforts.is_empty() && session.is_none() && harness == OMP && current.model.is_some() {
+            efforts = PRE_SESSION_EFFORTS.iter().map(|level| (*level).to_owned()).collect();
+        }
         if let Some(effort) = &effort
             && !efforts.contains(effort)
         {
@@ -446,6 +466,32 @@ fn record_role(session: &Session, role: Option<String>) -> Result<(), String> {
     match draft {
         Some(draft) => writer.commit(draft).map(drop).map_err(|error| error.to_string()),
         None => Ok(()),
+    }
+}
+
+impl State {
+    /// One page's body without the screen's page switch and close button,
+    /// for Settings and Configs, which draw their own navigation.
+    pub(crate) fn page_body(&self, page: Page) -> Element<'_, Message> {
+        match page {
+            Page::SignIn => match &self.signin {
+                Load::Ready(state) => state.view().map(Message::SignIn),
+                Load::Loading => screen::status("Reading sign in status…"),
+                Load::Failed(error) => screen::status(error.as_str()),
+            },
+            Page::Model => match &self.picker.1 {
+                Load::Ready(picker) => {
+                    container(picker.state.view().map(Message::Picker)).center_x(Fill).padding([24.0, 0.0]).into()
+                }
+                Load::Loading => screen::status("Reading models…"),
+                Load::Failed(error) => screen::status(error.as_str()),
+            },
+            Page::Settings => match &self.settings {
+                Load::Ready(state) => state.view().map(Message::Settings),
+                Load::Loading => screen::status("Reading omp's model settings…"),
+                Load::Failed(error) => screen::status(error.as_str()),
+            },
+        }
     }
 }
 
@@ -629,26 +675,7 @@ impl Area for State {
     }
 
     fn view_screen<'a>(&'a self, _: &'a Ctx) -> Option<Element<'a, Message>> {
-        let body = match self.page {
-            Page::SignIn => match &self.signin {
-                Load::Ready(state) => state.view().map(Message::SignIn),
-                Load::Loading => screen::status("Reading sign in status…"),
-                Load::Failed(error) => screen::status(error.as_str()),
-            },
-            Page::Model => match &self.picker.1 {
-                Load::Ready(picker) => {
-                    container(picker.state.view().map(Message::Picker)).center_x(Fill).padding([24.0, 0.0]).into()
-                }
-                Load::Loading => screen::status("Reading models…"),
-                Load::Failed(error) => screen::status(error.as_str()),
-            },
-            Page::Settings => match &self.settings {
-                Load::Ready(state) => state.view().map(Message::Settings),
-                Load::Loading => screen::status("Reading omp's model settings…"),
-                Load::Failed(error) => screen::status(error.as_str()),
-            },
-        };
-        Some(screen::frame(self.page, body, Message::Show, Message::Close))
+        Some(screen::frame(self.page, self.page_body(self.page), Message::Show, Message::Close))
     }
 
     fn contribute(&self, config: &mut SessionConfig, target: &Target<'_>, _: &Ctx) {

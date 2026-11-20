@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use iced::keyboard::{self, key};
-use iced::widget::{button, center, column, container, stack, text};
+use iced::widget::{column, container, stack, text};
 use iced::{Element, Fill, Font, Padding, Subscription, Task, Theme};
 use loa_adapter::{AdapterError, HarnessSession, HostToolRouter, Prompt, SessionConfig};
 use loa_bus::SessionId;
@@ -44,7 +44,7 @@ const THEME_COMMAND: &str = "theme.";
 const NEW_SESSION: palette::CommandId = palette::CommandId::from_static("session.new");
 
 /// Width of the composer: the transcript's column width.
-const COMPOSER_WIDTH: f32 = 700.0;
+pub(crate) const COMPOSER_WIDTH: f32 = 700.0;
 
 /// How often running sessions redraw, so elapsed times advance.
 const TICK: Duration = Duration::from_secs(1);
@@ -151,6 +151,8 @@ pub enum Message {
     DetachedChat(String, chat::Message),
     /// The folder dialog closed with this folder, or none when cancelled.
     FolderChosen(Result<Option<PathBuf>, String>),
+    /// The start screen.
+    Start(start::StartMessage),
 }
 
 pub struct App {
@@ -510,7 +512,8 @@ impl App {
         self.ctx.composer.set_workspace(Some(folder));
         self.refresh_folders();
         let start = if self.ctx.sessions.active().is_some() { self.start(None) } else { Task::none() };
-        Task::batch([working_diff(path), start])
+        let terminal = self.terminal_follow(path.clone());
+        Task::batch([working_diff(path), start, terminal])
     }
 
     fn refresh_folders(&mut self) {
@@ -519,12 +522,13 @@ impl App {
     }
 
     /// Loads the active session's DOM into the chat and the frame.
-    fn present(&mut self) {
+    fn present(&mut self) -> Task<Message> {
         let Some(session) = self.ctx.sessions.active() else {
             self.chat.load(&Dom::new());
             let workspace = workspace(&self.ctx.services.cwd);
             self.ctx.composer.set_workspace(Some(workspace));
-            return;
+            let cwd = self.ctx.services.cwd.clone();
+            return self.terminal_follow(cwd);
         };
         let cwd = session
             .dom()
@@ -538,15 +542,32 @@ impl App {
         }
         self.ctx.shell.set_active_session(Some(session.id().to_string()));
         self.ctx.shell.set_session_status(turn_status(session.dom()).map(str::to_owned));
+        self.terminal_follow(cwd)
+    }
+
+    /// Points the Terminal tab at `cwd`: + opens shells there, and when a
+    /// shell is open somewhere else, one opens (or is picked) in `cwd`.
+    fn terminal_follow(&mut self, cwd: PathBuf) -> Task<Message> {
+        self.terminal.set_new_tab(terminal::local::LocalShell::login_shell(cwd.clone()));
+        if self.terminal.is_empty() {
+            return Task::none();
+        }
+        let here = self.terminal.tabs().find(|id| matches!(self.terminal.target(*id), Some(terminal::state::Target::Local(shell)) if shell.cwd == cwd));
+        let message = match here {
+            Some(id) => terminal::state::Message::Select(id),
+            None => terminal::state::Message::NewTab,
+        };
+        self.terminal.update(message).0.map(Message::Terminal)
     }
 
     /// The app's own reaction to a session event, then every area's.
     fn dispatch(&mut self, event: SessionEvent) -> Task<Message> {
+        let mut presented = Task::none();
         match &event {
-            SessionEvent::Activated(_) => self.present(),
+            SessionEvent::Activated(_) => presented = self.present(),
             SessionEvent::Loaded(id) => {
                 if self.ctx.sessions.is_active(id.as_str()) {
-                    self.present();
+                    presented = self.present();
                 } else if let Some(summary) = self.ctx.sessions.get(id.as_str()).and_then(|session| session.summary()) {
                     self.ctx.shell.upsert_session(summary);
                 }
@@ -573,7 +594,7 @@ impl App {
             _ => {}
         }
         let tasks = with_areas!(each_area!(self.areas, mut |area, wrap| area.on_session_event(&event, &mut self.ctx).map(wrap)));
-        Task::batch(tasks.into_iter().chain([self.settle()]))
+        Task::batch(tasks.into_iter().chain([presented, self.settle()]))
     }
 
     /// Applies a session feed and reacts to the active session starting or
@@ -704,6 +725,7 @@ impl App {
                     let next = self.ctx.composer.turn_ended();
                     Task::batch([task, self.composer_event(next)])
                 }
+                None if self.ctx.sessions.active().is_none() => self.start(Some(prompt)),
                 None => self.send(prompt),
             },
             Some(composer::Event::Stop) => self.interrupt(),
@@ -888,6 +910,11 @@ impl App {
                 Task::batch([task, action])
             }
             Message::NewSession => self.start(None),
+            Message::Start(start::StartMessage::Starter(index)) => match start::STARTERS.get(index) {
+                Some((_, _, prompt)) => self.ctx.composer.set_text(prompt).map(Message::Composer),
+                None => Task::none(),
+            },
+            Message::Start(start::StartMessage::Open(id)) => self.open_session(&id),
             Message::Session(id, feed) => self.feed(id, feed),
             Message::Spawned { id, result, prompt } => match result {
                 Ok(harness) => match self.ctx.sessions.load(&self.ctx.services, id.as_str()) {
@@ -1024,19 +1051,7 @@ impl App {
             ]
             .into()
         } else {
-            let starting = ctx.sessions.starting().is_some();
-            center(
-                column![
-                    text(if starting { "Starting harness…" } else { "Start a session" }).size(20),
-                    button(text("New session").size(14))
-                        .style(style::accent_button)
-                        .padding([8, 16])
-                        .on_press_maybe((!starting).then_some(Message::NewSession)),
-                ]
-                .spacing(16)
-                .align_x(iced::Alignment::Center),
-            )
-            .into()
+            self.start_view()
         };
         let center_content: Element<'_, Message> = match ctx.notice() {
             Some(notice) => {
@@ -1215,6 +1230,7 @@ async fn git_diff(cwd: &Path) -> Option<String> {
 }
 
 mod detach;
+mod start;
 mod keys;
 mod usage;
 mod windows;

@@ -1,6 +1,7 @@
-//! Lucide line icons (ISC, see `LICENSE-lucide`; each SVG under `icons/` is
-//! copied unchanged from `lucide-static` with its license header) as iced
-//! SVG widgets.
+//! Lucide line icons (ISC, see `LICENSE-lucide`; SVGs under `icons/` with a
+//! lucide license header are copied unchanged from `lucide-static`, the few
+//! marked `Loa` are drawn here in the same 24x24, 2px round-stroke style) as
+//! iced SVG widgets.
 //!
 //! Icons are tinted with a theme color, so they follow the dark and light
 //! themes like text does. Handles are built once and shared, so drawing an
@@ -15,6 +16,7 @@ use std::sync::LazyLock;
 pub enum Icon {
     ArrowUp,
     Bot,
+    Brain,
     Check,
     ChevronDown,
     ChevronLeft,
@@ -39,7 +41,9 @@ pub enum Icon {
     Plus,
     Search,
     Settings,
+    Shield,
     SlidersHorizontal,
+    Sparkles,
     Square,
     Terminal,
     TriangleAlert,
@@ -47,9 +51,10 @@ pub enum Icon {
     X,
 }
 
-const ALL: [(Icon, &[u8]); 32] = [
+const ALL: [(Icon, &[u8]); 35] = [
     (Icon::ArrowUp, include_bytes!("../icons/arrow-up.svg")),
     (Icon::Bot, include_bytes!("../icons/bot.svg")),
+    (Icon::Brain, include_bytes!("../icons/brain.svg")),
     (Icon::Check, include_bytes!("../icons/check.svg")),
     (Icon::ChevronDown, include_bytes!("../icons/chevron-down.svg")),
     (Icon::ChevronLeft, include_bytes!("../icons/chevron-left.svg")),
@@ -74,7 +79,9 @@ const ALL: [(Icon, &[u8]); 32] = [
     (Icon::Plus, include_bytes!("../icons/plus.svg")),
     (Icon::Search, include_bytes!("../icons/search.svg")),
     (Icon::Settings, include_bytes!("../icons/settings-2.svg")),
+    (Icon::Shield, include_bytes!("../icons/shield.svg")),
     (Icon::SlidersHorizontal, include_bytes!("../icons/sliders-horizontal.svg")),
+    (Icon::Sparkles, include_bytes!("../icons/sparkles.svg")),
     (Icon::Square, include_bytes!("../icons/square.svg")),
     (Icon::Terminal, include_bytes!("../icons/terminal.svg")),
     (Icon::TriangleAlert, include_bytes!("../icons/triangle-alert.svg")),

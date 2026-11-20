@@ -13,6 +13,7 @@ mod history;
 mod keys;
 mod mention;
 mod pickers;
+mod popover;
 mod popup;
 mod queue;
 mod style;
@@ -47,8 +48,14 @@ pub const MAX_EDITOR_HEIGHT: f32 = 240.0;
 pub const UNDO_DEPTH: usize = 200;
 /// Popup rows shown at once; the list scrolls with the selection.
 const VISIBLE_POPUP_ROWS: usize = 8;
-/// Side of the square send and stop button.
-const SEND_SIZE: f32 = 24.0;
+/// Diameter of the round send and stop button.
+const SEND_SIZE: f32 = 28.0;
+/// Text size in the editor.
+const EDITOR_TEXT_SIZE: f32 = 15.0;
+/// Size of the ghost controls' icons, labels and chevrons.
+const CONTROL_ICON: f32 = 15.0;
+const CONTROL_TEXT: f32 = 13.0;
+const CHEVRON: f32 = 12.0;
 /// Width of a picker's menu.
 const MENU_WIDTH: f32 = 260.0;
 /// Labels of the icon-only buttons, shown as tooltips (and their accessible
@@ -56,6 +63,7 @@ const MENU_WIDTH: f32 = 260.0;
 pub const SEND_LABEL: &str = "Send (Enter)";
 pub const STOP_LABEL: &str = "Stop (Esc)";
 pub const REMOVE_QUEUED_LABEL: &str = "Remove queued message";
+pub const MENTION_LABEL: &str = "Mention a file (@)";
 
 /// A `/` command offered in the popup.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -140,6 +148,8 @@ pub enum Message {
     FolderPicked(String),
     /// "Choose another folder…" in the folder menu.
     BrowseFolders,
+    /// The `+` button: starts an `@` file mention at the cursor.
+    MentionPressed,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -299,6 +309,18 @@ impl State {
         self.phase != Phase::Idle
     }
 
+    /// Replaces the editor's text, cursor at the end, and focuses it. Undo
+    /// brings back what was there.
+    pub fn set_text(&mut self, text: &str) -> Task<Message> {
+        self.history.begin(history::EditKind::Other, self.snapshot());
+        self.history.break_group();
+        self.content = Content::with_text(text);
+        let line = self.content.line_count().saturating_sub(1);
+        let column = self.content.line(line).map_or(0, |l| l.text.len());
+        self.content.move_to(Cursor { position: Position { line, column }, selection: None });
+        iced::widget::operation::focus(EDITOR_ID)
+    }
+
     /// Text in the editor.
     pub fn text(&self) -> String {
         self.content.text()
@@ -389,6 +411,10 @@ impl State {
                 self.pickers.open = None;
                 Some(Event::BrowseFolders)
             }
+            Message::MentionPressed => {
+                task = iced::widget::operation::focus(EDITOR_ID);
+                self.start_mention()
+            }
             Message::ModelPicked(model) => {
                 self.pickers.open = None;
                 (self.pickers.model.as_ref() != Some(&model)).then(|| {
@@ -433,14 +459,17 @@ impl State {
             Some(harness) => format!("Ask {} anything. Type / for commands", harness.label),
             None => "Ask anything. Type / for commands".to_owned(),
         };
+        // At least two lines of text (iced adds the padding) before the controls.
+        let line = EDITOR_TEXT_SIZE * 1.3;
         let editor = iced::widget::text_editor(&self.content)
             .id(EDITOR_ID)
             .placeholder(placeholder)
             .on_action(Message::Edit)
             .height(Length::Shrink)
+            .min_height(2.0 * line)
             .max_height(MAX_EDITOR_HEIGHT)
             .padding([6, 8])
-            .size(14)
+            .size(EDITOR_TEXT_SIZE)
             .style(style::editor)
             .key_binding(move |press| keys::bind(press, ctx));
 
@@ -448,10 +477,11 @@ impl State {
             (Icon::Square, 12.0, Some(Message::StopPressed), STOP_LABEL)
         } else {
             let can_send = !self.content.text().trim().is_empty();
-            (Icon::ArrowUp, 14.0, can_send.then_some(Message::Send), SEND_LABEL)
+            (Icon::ArrowUp, 16.0, can_send.then_some(Message::Send), SEND_LABEL)
         };
+        let tint = if on_press.is_some() { style::on_accent } else { style::send_idle };
         let action = labelled(
-            button(icon(glyph, size).style(style::on_primary))
+            button(icon(glyph, size).style(tint))
                 .width(SEND_SIZE)
                 .height(SEND_SIZE)
                 .padding((SEND_SIZE - size) / 2.0)
@@ -461,56 +491,68 @@ impl State {
         );
 
         let pickers = &self.pickers;
-        let mut controls = row![].spacing(4).align_y(Center);
+        let mention = labelled(
+            button(icon(Icon::Plus, 18.0).style(style::ghost_icon))
+                .padding(5)
+                .style(style::ghost(false))
+                .on_press(Message::MentionPressed),
+            MENTION_LABEL,
+        );
+        let mut controls = row![mention].spacing(2).align_y(Center);
         if pickers.harnesses.len() > 1 {
             let label = self.harness().map_or("Harness", |h| h.label.as_str());
-            controls = controls.push(self.picker(Picker::Harness, label));
+            controls = controls.push(self.picker(Picker::Harness, Icon::Bot, label.to_owned()));
         }
         if !pickers.models.is_empty() || pickers.model.is_some() || !pickers.model_actions.is_empty() {
-            let label = pickers.model.as_ref().map_or("Model", |m| m.name.as_str());
-            controls = controls.push(self.picker(Picker::Model, label));
+            let label = pickers.model.as_ref().map_or_else(|| "Model".to_owned(), |m| short_model_name(&m.name));
+            controls = controls.push(self.picker(Picker::Model, Icon::Sparkles, label));
         }
         if !pickers.efforts.is_empty() {
-            controls = controls.push(self.picker(Picker::Effort, pickers.effort.as_deref().unwrap_or("Effort")));
+            let label = capitalized(pickers.effort.as_deref().unwrap_or("Effort"));
+            controls = controls.push(self.picker(Picker::Effort, Icon::Brain, label));
         }
         controls = controls
-            .push(self.picker(Picker::Mode, pickers.mode.as_str()))
+            .push(self.picker(Picker::Mode, Icon::Shield, capitalized(pickers.mode.as_str())))
             .push(space::horizontal())
             .push(action);
 
-        let frame = container(column![editor, controls].spacing(18))
-            .padding(10)
-            .width(Length::Fill)
-            .style(style::frame);
+        let controls = container(controls).padding(iced::Padding { top: 4.0, right: 12.0, bottom: 12.0, left: 12.0 });
+        // The editor's own padding plus this gives the text ~20px of room at
+        // the top and left.
+        let editor = container(editor).padding(iced::Padding { top: 12.0, right: 12.0, bottom: 0.0, left: 12.0 });
+        let frame = container(column![editor, controls]).width(Length::Fill).style(style::frame);
 
         // Fixed slots, each an empty space when unused, so the editor keeps
         // its place in the widget tree (and its state) whatever appears
         // above it.
         let queue: Element<'_, Message> = if self.queue.is_empty() { space().into() } else { self.queue_view() };
-        let menu: Element<'_, Message> = match pickers.open {
-            Some(Picker::Folder) => self.folder_menu(),
-            Some(picker) => self.menu_view(picker),
-            None => match self.visible_popup() {
-                Some(popup) => self.popup_view(popup),
-                None => space().into(),
-            },
+        // Menus float over the page above the folder bar instead of taking
+        // room in the layout, so opening one never moves anything.
+        let menu: Option<Element<'_, Message>> = match pickers.open {
+            Some(Picker::Folder) => Some(self.folder_menu()),
+            Some(picker) => Some(self.menu_view(picker)),
+            None => self.visible_popup().map(|popup| self.popup_view(popup)),
         };
         let bar: Element<'_, Message> = match &self.workspace {
             Some(workspace) => self.folder_bar(workspace),
             None => space().into(),
         };
-        column![queue, menu, bar, frame].spacing(6).into()
+        popover::popover(column![queue, bar, frame].spacing(6), menu).into()
     }
 
-    /// A flat bottom-row picker: its current choice and a chevron.
-    fn picker<'a>(&self, picker: Picker, label: &'a str) -> Element<'a, Message> {
+    /// A ghost bottom-row picker: a muted icon, its current choice and a
+    /// small chevron, with no fill until hovered or open.
+    fn picker<'a>(&self, picker: Picker, glyph: Icon, label: String) -> Element<'a, Message> {
         let open = self.pickers.open == Some(picker);
         let chevron = if open { Icon::ChevronUp } else { Icon::ChevronDown };
-        button(row![text(label).size(14), muted(chevron, 14.0)].spacing(4).align_y(Center))
-            .padding([3, 6])
-            .style(style::picker(open))
-            .on_press(Message::PickerToggled(picker))
-            .into()
+        let content = row![
+            icon(glyph, CONTROL_ICON).style(style::ghost_icon),
+            text(label).size(CONTROL_TEXT),
+            icon(chevron, CHEVRON).style(style::chevron),
+        ]
+        .spacing(6)
+        .align_y(Center);
+        button(content).padding([5, 8]).style(style::ghost(open)).on_press(Message::PickerToggled(picker)).into()
     }
 
     /// The open picker's choices. The current one carries a check mark;
@@ -566,12 +608,16 @@ impl State {
     /// click opens the folder menu.
     fn folder_bar<'a>(&'a self, workspace: &'a Workspace) -> Element<'a, Message> {
         let open = self.pickers.open == Some(Picker::Folder);
-        let mut chip = row![muted(Icon::Folder, 14.0), text(workspace.path.as_str()).size(13)].spacing(6).align_y(Center);
+        let mut chip = row![icon(Icon::Folder, CONTROL_ICON).style(style::ghost_icon), text(workspace.path.as_str()).size(CONTROL_TEXT)]
+            .spacing(6)
+            .align_y(Center);
         if let Some(branch) = &workspace.branch {
-            chip = chip.push(muted(Icon::GitFork, 13.0)).push(text(branch.as_str()).size(13).style(style::muted));
+            chip = chip
+                .push(icon(Icon::GitFork, 13.0).style(style::chevron))
+                .push(text(branch.as_str()).size(CONTROL_TEXT).style(style::faint));
         }
-        chip = chip.push(muted(if open { Icon::ChevronUp } else { Icon::ChevronDown }, 13.0));
-        let chip = button(chip).padding([3, 8]).style(style::picker(open)).on_press(Message::PickerToggled(Picker::Folder));
+        chip = chip.push(icon(if open { Icon::ChevronUp } else { Icon::ChevronDown }, CHEVRON).style(style::chevron));
+        let chip = button(chip).padding([5, 8]).style(style::ghost(open)).on_press(Message::PickerToggled(Picker::Folder));
         // The full path on hover, except while the menu is open: the tip
         // would cover the menu's last row.
         let chip: Element<'_, Message> = if open {
@@ -740,6 +786,18 @@ impl State {
         self.refresh_popup()
     }
 
+    /// Types an `@` at the cursor, after a space when it follows a word, so
+    /// the file mention popup opens.
+    fn start_mention(&mut self) -> Option<Event> {
+        let cursor = self.content.cursor();
+        let after_word = cursor.selection.is_none()
+            && self.content.line(cursor.position.line).is_some_and(|line| {
+                line.text.get(..cursor.position.column).and_then(|b| b.chars().next_back()).is_some_and(|c| !c.is_whitespace())
+            });
+        let mention = if after_word { " @" } else { "@" };
+        self.edit(Action::Edit(Edit::Paste(Arc::new(mention.to_owned()))))
+    }
+
     fn submit(&mut self) -> Option<Event> {
         let text = self.content.text();
         let message = text.trim();
@@ -896,6 +954,17 @@ fn menu_row(label: &str, detail: Option<String>, current: bool, pick: Option<Mes
         content = content.push(icon(Icon::Check, 14.0));
     }
     button(content).padding([6, 8]).width(Length::Fill).style(style::row(false)).on_press_maybe(pick).into()
+}
+
+/// A model name as the picker shows it: `Claude Opus 5.5` reads `Opus 5.5`.
+fn short_model_name(name: &str) -> String {
+    name.strip_prefix("Claude ").filter(|rest| !rest.trim().is_empty()).unwrap_or(name).to_owned()
+}
+
+/// `medium` reads `Medium`.
+fn capitalized(label: &str) -> String {
+    let mut chars = label.chars();
+    chars.next().map_or_else(String::new, |first| first.to_uppercase().chain(chars).collect())
 }
 
 fn edit_kind(edit: &Edit) -> EditKind {

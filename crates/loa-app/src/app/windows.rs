@@ -254,9 +254,7 @@ impl App {
 
         let ctx = &self.ctx;
         let body: Element<'_, Message> = match tab {
-            ConfigsTab::Models => {
-                self.areas.models.view_screen(ctx).map(|view| view.map(Message::Models)).unwrap_or_else(|| text("").into())
-            }
+            ConfigsTab::Models => self.areas.models.page_body(Page::Settings).map(Message::Models),
             ConfigsTab::Tools => {
                 self.areas.tools.view_tab("tools", ctx).map(|view| view.map(Message::Tools)).unwrap_or_else(|| text("").into())
             }
@@ -349,9 +347,7 @@ impl App {
             SettingsTab::Peers => {
                 self.areas.peers.view_tab("peers", ctx).map(|view| view.map(Message::Peers)).unwrap_or_else(|| text("").into())
             }
-            SettingsTab::Harnesses => {
-                self.areas.models.view_screen(ctx).map(|view| view.map(Message::Models)).unwrap_or_else(|| text("").into())
-            }
+            SettingsTab::Harnesses => self.areas.models.page_body(Page::SignIn).map(Message::Models),
             SettingsTab::Updates => {
                 self.areas.updater.view_screen(ctx).map(|view| view.map(Message::Updater)).unwrap_or_else(|| text("").into())
             }
