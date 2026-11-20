@@ -1,0 +1,68 @@
+# Line budgets (*.rs, tests included) per target crate, from docs/REFACTOR.md
+# "Final crate map" as amended by "User decisions" (surfaces +2100, harness +800).
+#
+#   budget <target> <lines>
+#   map    <crate dir> <target>     (a crate dir with no map line is its own target)
+
+budget loa-util          650
+budget loa-core         1300
+budget loa-contracts     700
+budget loa-bus          1300
+budget loa-config        550
+budget loa-harness      8800
+budget loa-mcp          1500
+budget loa-remote       1800
+budget loa-sandbox      1300
+budget loa-sandbox-stub  250
+budget loa-surfaces     6900
+budget loa-trust         950
+budget loa-p2p          2200
+budget loa-updater      1450
+budget loa-models       2300
+budget loa-projects     1500
+budget loa-ui-kit       1400
+budget loa-ui-shell     1400
+budget loa-ui-session   2700
+budget loa-ui-panel     2300
+budget loa-ui-terminal  1000
+budget loa-ui-surface   1500
+budget loa-ui-settings  2000
+budget loa-app          5000
+
+map loa-exec              loa-util
+map loa-xml               loa-core
+map loa-rewind            loa-core
+map loa-adapter           loa-contracts
+map loa-surface           loa-contracts
+map loa-journal           loa-bus
+map loa-adapter-acp       loa-harness
+map loa-adapter-claude    loa-harness
+map loa-adapter-codex     loa-harness
+map loa-adapter-omp       loa-harness
+map loa-adapter-omp2      loa-harness
+map loa-adapter-opencode  loa-harness
+map loa-adapter-testkit   loa-harness
+map loa-omp-rpc           loa-harness
+map loa-features          loa-harness
+map loa-omp-bridge        loa-mcp
+map loa-surface-browser   loa-surfaces
+map loa-surface-docs      loa-surfaces
+map loa-surface-rfb       loa-surfaces
+map loa-surface-hub       loa-surfaces
+map loa-surface-proto     loa-surfaces
+map loa-surface-bench     loa-surfaces
+map loa-identity          loa-trust
+map loa-grants            loa-trust
+map loa-net               loa-p2p
+map loa-share             loa-p2p
+map loa-node              loa-p2p
+map loa-ui-icons          loa-ui-kit
+map loa-ui-palette        loa-ui-shell
+map loa-ui-chat           loa-ui-session
+map loa-ui-composer       loa-ui-session
+map loa-ui-decisions      loa-ui-session
+map loa-ui-tools          loa-ui-panel
+map loa-ui-models         loa-ui-settings
+map loa-ui-projects       loa-ui-settings
+map loa-ui-peers          loa-ui-settings
+map loa-ui-updates        loa-ui-settings

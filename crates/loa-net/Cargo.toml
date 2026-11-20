@@ -26,5 +26,5 @@ tokio-util = { version = "0.7", features = ["compat"] }
 ed25519-dalek = { version = "2.2", features = ["pkcs8"] }
 
 [dev-dependencies]
-loa-exec = { path = "../loa-exec" }
+loa-util.workspace = true
 tempfile.workspace = true

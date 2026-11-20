@@ -4583,7 +4583,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "loa-core",
- "loa-exec",
+ "loa-util",
  "serde",
  "tempfile",
  "thiserror 2.0.21",
@@ -4597,7 +4597,7 @@ dependencies = [
  "async-trait",
  "loa-adapter",
  "loa-core",
- "loa-exec",
+ "loa-util",
  "serde",
  "serde_json",
  "tempfile",
@@ -4613,7 +4613,7 @@ dependencies = [
  "async-trait",
  "loa-adapter",
  "loa-core",
- "loa-exec",
+ "loa-util",
  "serde_json",
  "tempfile",
  "tokio",
@@ -4628,7 +4628,7 @@ dependencies = [
  "async-trait",
  "loa-adapter",
  "loa-core",
- "loa-exec",
+ "loa-util",
  "serde_json",
  "tempfile",
  "tokio",
@@ -4720,7 +4720,6 @@ dependencies = [
  "loa-bus",
  "loa-config",
  "loa-core",
- "loa-exec",
  "loa-features",
  "loa-grants",
  "loa-identity",
@@ -4750,6 +4749,7 @@ dependencies = [
  "loa-ui-tools",
  "loa-ui-updates",
  "loa-updater",
+ "loa-util",
  "rand 0.10.4",
  "russh",
  "russh-sftp",
@@ -4790,13 +4790,6 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
-]
-
-[[package]]
-name = "loa-exec"
-version = "0.1.0"
-dependencies = [
- "tempfile",
 ]
 
 [[package]]
@@ -4901,8 +4894,8 @@ name = "loa-models"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "loa-exec",
  "loa-omp-rpc",
+ "loa-util",
  "serde",
  "serde_json",
  "tempfile",
@@ -4921,7 +4914,7 @@ dependencies = [
  "ed25519-dalek 2.2.0",
  "futures",
  "iroh",
- "loa-exec",
+ "loa-util",
  "mdns-sd",
  "prost 0.14.6",
  "rcgen",
@@ -4987,8 +4980,8 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
- "loa-exec",
  "loa-omp-rpc",
+ "loa-util",
  "serde",
  "serde_json",
  "tempfile",
@@ -5006,8 +4999,8 @@ dependencies = [
  "loa-adapter-omp",
  "loa-bus",
  "loa-core",
- "loa-exec",
  "loa-journal",
+ "loa-util",
  "serde",
  "serde_json",
  "tempfile",
@@ -5065,7 +5058,7 @@ dependencies = [
  "async-trait",
  "loa-adapter",
  "loa-core",
- "loa-exec",
+ "loa-util",
  "serde",
  "serde_json",
  "tempfile",
@@ -5143,8 +5136,8 @@ dependencies = [
  "chromiumoxide",
  "futures",
  "jpeg-decoder",
- "loa-exec",
  "loa-surface",
+ "loa-util",
  "serde",
  "serde_json",
  "tempfile",
@@ -5189,7 +5182,6 @@ dependencies = [
  "loa-adapter",
  "loa-adapter-omp",
  "loa-core",
- "loa-exec",
  "loa-mcp",
  "loa-surface",
  "loa-surface-bench",
@@ -5197,6 +5189,7 @@ dependencies = [
  "loa-surface-docs",
  "loa-surface-proto",
  "loa-surface-rfb",
+ "loa-util",
  "rmcp",
  "serde",
  "serde_json",
@@ -5295,9 +5288,9 @@ dependencies = [
  "loa-adapter",
  "loa-adapter-omp",
  "loa-core",
- "loa-exec",
  "loa-models",
  "loa-ui-icons",
+ "loa-util",
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
@@ -5433,7 +5426,7 @@ dependencies = [
  "flate2",
  "futures",
  "hex",
- "loa-exec",
+ "loa-util",
  "reqwest",
  "rustls",
  "semver",
@@ -5447,6 +5440,18 @@ dependencies = [
  "tracing",
  "webpki-roots",
  "zip 9.7.2",
+]
+
+[[package]]
+name = "loa-util"
+version = "0.1.0"
+dependencies = [
+ "getrandom 0.3.4",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "time",
+ "tokio",
 ]
 
 [[package]]

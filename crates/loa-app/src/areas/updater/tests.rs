@@ -70,7 +70,7 @@ struct Fixture {
 }
 
 fn script(path: &Path, body: &str) -> PathBuf {
-    loa_exec::write_executable(path, format!("#!/bin/sh\n{body}\n")).unwrap();
+    loa_util::exec::write_executable(path, format!("#!/bin/sh\n{body}\n")).unwrap();
     path.to_path_buf()
 }
 

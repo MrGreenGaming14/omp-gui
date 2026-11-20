@@ -326,7 +326,7 @@ fn spawn_child(opts: &SpawnOptions) -> Result<Child> {
     // A freshly written executable (a staged update, a test fake) can still be
     // open for writing in a child forked by another thread; that clears once
     // the child execs, so a busy executable is retried briefly.
-    loa_exec::retry_busy(|| command.spawn()).map_err(|err| spawn_error(err, &opts.executable))
+    loa_util::exec::retry_busy(|| command.spawn()).map_err(|err| spawn_error(err, &opts.executable))
 }
 
 impl RpcClient {

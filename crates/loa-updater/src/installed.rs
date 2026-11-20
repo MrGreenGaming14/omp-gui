@@ -30,7 +30,7 @@ fn is_executable(path: &Path) -> bool {
 /// Runs `<executable> --version` and reads the first semantic version in
 /// its output: `omp/19.0.0`, `2.0.14 (Claude Code)`, `codex-cli 0.46.0`.
 pub async fn executable_version(executable: &Path, timeout: Duration) -> Result<Version, String> {
-    let child = loa_exec::retry_busy(|| {
+    let child = loa_util::exec::retry_busy(|| {
         Command::new(executable)
             .arg("--version")
             .stdin(Stdio::null())

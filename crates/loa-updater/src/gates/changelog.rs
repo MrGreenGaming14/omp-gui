@@ -90,7 +90,7 @@ impl OmpSmolSummarizer {
 #[async_trait::async_trait]
 impl ChangelogSummarizer for OmpSmolSummarizer {
     async fn review(&self, changelog: &str) -> Result<ChangelogReview, String> {
-        let child = loa_exec::retry_busy(|| {
+        let child = loa_util::exec::retry_busy(|| {
             Command::new(&self.executable)
                 .args(self.args(changelog))
                 .stdin(Stdio::null())
@@ -181,7 +181,7 @@ mod tests {
 
     fn script(dir: &std::path::Path, body: &str) -> PathBuf {
         let path = dir.join("omp");
-        loa_exec::write_executable(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        loa_util::exec::write_executable(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
         path
     }
 

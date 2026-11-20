@@ -62,7 +62,7 @@ mod tests {
         let spec = SandboxSpec { name: "test".into(), workspace: dir.path().into(), env: vec![("SANDBOX_TEST".into(), "yes".into())], options: SandboxOptions::default() };
         // A script stands in for the stub and reports its environment and cwd.
         let fake = dir.path().join("stub");
-        loa_exec::write_executable(&fake, "#!/bin/sh\npwd\nprintf '%s' \"$SANDBOX_TEST\"\n").unwrap();
+        loa_util::exec::write_executable(&fake, "#!/bin/sh\npwd\nprintf '%s' \"$SANDBOX_TEST\"\n").unwrap();
         let provider = LocalProvider { stub: fake };
         let mut sandbox = provider.start(&spec).await.unwrap();
         assert_eq!(sandbox.workspace_mode(), WorkspaceMode::Shared);

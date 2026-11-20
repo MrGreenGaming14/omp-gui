@@ -415,7 +415,7 @@ fn fake_xvfb(dir: &Path) -> std::path::PathBuf {
     // number is one no X server on this machine listens on (a fixed one
     // can belong to a real server, which Chrome would then draw on).
     let free = (6000..7000).find(|n| !Path::new(&format!("/tmp/.X11-unix/X{n}")).exists()).unwrap();
-    loa_exec::write_executable(&path, format!("#!/bin/sh\necho {free}\nexec sleep 600\n")).unwrap();
+    loa_util::exec::write_executable(&path, format!("#!/bin/sh\necho {free}\nexec sleep 600\n")).unwrap();
     path
 }
 

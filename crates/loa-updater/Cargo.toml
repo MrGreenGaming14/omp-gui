@@ -12,7 +12,7 @@ ed25519-dalek = { version = "3", default-features = false, features = ["fast", "
 flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
 futures.workspace = true
 hex = "0.4"
-loa-exec = { path = "../loa-exec" }
+loa-util.workspace = true
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "stream"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 semver = { version = "1", features = ["serde"] }
@@ -28,5 +28,5 @@ webpki-roots = "1"
 zip = { version = "9.7", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
-loa-exec = { path = "../loa-exec" }
+loa-util.workspace = true
 axum = "0.8"
