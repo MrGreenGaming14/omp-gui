@@ -5450,6 +5450,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "loa-util"
+version = "0.1.0"
+dependencies = [
+ "getrandom 0.3.4",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "time",
+ "tokio",
+]
+
+[[package]]
 name = "loa-xml"
 version = "0.1.0"
 dependencies = [
