@@ -26,3 +26,21 @@ jobs:
           echo "$dir" >> "$GITHUB_PATH"
       - run: cargo build --workspace --all-targets
       - run: xvfb-run -a cargo test --workspace
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install OMP for bridge integration tests
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'loa-ci-omp'
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          $omp = Join-Path $dir 'omp.exe'
+          Invoke-WebRequest https://github.com/can1357/oh-my-pi/releases/download/v19.0.0/omp-windows-x64.exe -OutFile $omp
+          $hash = (Get-FileHash $omp -Algorithm SHA256).Hash.ToLower()
+          if ($hash -ne '36ac685c7b932f4bb81ccc5a7116abee90575d32110e74dd2a066e082690d941') { throw "omp.exe checksum mismatch: $hash" }
+          Add-Content $env:GITHUB_PATH $dir
+      - run: cargo build --workspace --all-targets
+      - run: cargo test --workspace --no-fail-fast
