@@ -27,7 +27,8 @@ pub struct SessionSummary {
     pub pinned: bool,
     /// Whether a decision in the session waits for an answer.
     pub waiting: bool,
-    /// Unix milliseconds of the last known change.
+    /// Unix milliseconds of creation or of the latest `ended`. A turn that is
+    /// still running does not move the session.
     pub updated: i64,
 }
 
@@ -35,8 +36,8 @@ impl SessionSummary {
     /// Reads the summary of a session from its DOM.
     ///
     /// The title is the `title` attribute, else the first line of the first
-    /// user prompt, else [`UNTITLED`]. `updated` is the latest of `created`,
-    /// `started` and `ended` anywhere in the tree. `waiting` is set when any
+    /// user prompt, else [`UNTITLED`]. `updated` is the latest of `created` and
+    /// `ended` anywhere in the tree; `started` does not count. `waiting` is set when any
     /// `<decision>` has `status="waiting"`. Returns `None` when the DOM has no
     /// `<session>` root or the root lacks `id` or `node`.
     pub fn from_dom(dom: &Dom, pinned: bool) -> Option<Self> {
@@ -47,7 +48,7 @@ impl SessionSummary {
         let mut updated = root.int_attr(attr::CREATED).unwrap_or(0);
         let mut waiting = false;
         for element in dom.iter() {
-            updated = updated.max(latest(element));
+            updated = updated.max(ended_at(element));
             waiting |= is_waiting(element);
         }
 
@@ -74,7 +75,7 @@ impl SessionSummary {
             (_, None) => false,
             (Op::Insert { .. }, Some(node)) => {
                 let mut changed = false;
-                let time = latest(node);
+                let time = ended_at(node);
                 if time > self.updated {
                     self.updated = time;
                     changed = true;
@@ -89,11 +90,11 @@ impl SessionSummary {
                 changed
             }
             (Op::Set { name, .. }, Some(node)) => match name.as_str() {
-                attr::STARTED | attr::ENDED => {
+                attr::ENDED => {
                     let updated = match node.int_attr(name) {
                         Some(time) if time >= self.updated => time,
                         // The value fell or went away: the latest may be elsewhere.
-                        _ => dom.iter().map(latest).fold(dom.root().and_then(|root| root.int_attr(attr::CREATED)).unwrap_or(0), i64::max),
+                        _ => dom.iter().map(ended_at).fold(dom.root().and_then(|root| root.int_attr(attr::CREATED)).unwrap_or(0), i64::max),
                     };
                     std::mem::replace(&mut self.updated, updated) != updated
                 }
@@ -143,9 +144,9 @@ fn title_of(dom: &Dom, root: &Node) -> String {
     }
 }
 
-/// The later of `element`'s `started` and `ended`; `i64::MIN` without either.
-fn latest(element: &Node) -> i64 {
-    [attr::STARTED, attr::ENDED].into_iter().filter_map(|name| element.int_attr(name)).fold(i64::MIN, i64::max)
+/// `element`'s `ended` time; `i64::MIN` without one.
+fn ended_at(element: &Node) -> i64 {
+    element.int_attr(attr::ENDED).unwrap_or(i64::MIN)
 }
 
 fn is_waiting(element: &Node) -> bool {
@@ -305,11 +306,11 @@ mod tests {
         step(&mut dom, Draft::set(turn, attr::STATUS, Value::from("done")), 10);
         step(&mut dom, Draft::set(root, attr::TITLE, Value::from("Release")), 11);
         step(&mut dom, Draft::remove(decision), 12);
-        // Clearing the latest time falls back to the next latest.
+        // Clearing the latest end falls back to `created`; the turn's start never counts.
         step(&mut dom, Draft::clear(turn, attr::ENDED), 13);
 
         let summary = summary.expect("summary");
-        assert_eq!((summary.title.as_str(), summary.waiting, summary.updated), ("Release", false, 200));
+        assert_eq!((summary.title.as_str(), summary.waiting, summary.updated), ("Release", false, 100));
     }
 
     #[test]
@@ -354,7 +355,8 @@ mod tests {
         assert_eq!(summary.title, "Fix the flaky deploy test");
         assert!(summary.waiting);
         assert!(summary.pinned);
-        assert_eq!(summary.updated, 900);
+        // Started work does not count: only `created` and `ended` move the session.
+        assert_eq!(summary.updated, 100);
         assert_eq!(summary.node, "key-laptop");
     }
 

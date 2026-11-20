@@ -60,6 +60,29 @@ fn streamed_text_and_tool_result_survive_prompt_completion() {
     assert!(dom.iter().any(|n| n.kind == K::Turn && n.str_attr(attr::STATUS) == Some("done")));
 }
 
+#[test]
+fn a_turn_records_when_it_started_and_when_it_ended() {
+    let (sink, mut mapper) = fixture();
+    let drafts = mapper_sent(&mut mapper);
+    commit(&sink, &mut mapper, drafts);
+    let drafts = mapper.event(&Event::AgentStart);
+    commit(&sink, &mut mapper, drafts);
+    let times = |sink: &MemorySink| {
+        let dom = sink.dom();
+        let turn = dom.iter().find(|n| n.kind == K::Turn).expect("turn");
+        (turn.int_attr(attr::STARTED), turn.int_attr(attr::ENDED))
+    };
+    let (started, ended) = times(&sink);
+    assert!(started.is_some() && ended.is_none(), "a running turn has started but not ended");
+    let drafts = mapper.event(&Event::PromptResult {
+        id: Some("p".into()), agent_invoked: true, status: PromptStatus::Completed,
+        error: None, session_settled: true,
+    });
+    commit(&sink, &mut mapper, drafts);
+    let (started, ended) = times(&sink);
+    assert!(started.is_some() && ended.is_some(), "a finished turn records when it ended");
+}
+
 fn mapper_sent(mapper: &mut Mapping) -> Vec<Draft> {
     mapper.queue("p", &Prompt { text: "read a.rs".into(), by: "owner".into(), ..Prompt::default() });
     Vec::new()
