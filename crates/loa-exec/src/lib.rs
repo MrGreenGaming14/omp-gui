@@ -180,6 +180,21 @@ mod find_tests {
         std::env::join_paths(dirs).unwrap()
     }
 
+    /// `name` as a launchable file: unchanged on Unix, with `.exe` on Windows,
+    /// where a file without a PATHEXT extension isn't an executable.
+    fn exe(name: &str) -> String {
+        if cfg!(windows) { format!("{name}.exe") } else { name.to_owned() }
+    }
+
+    /// Paths compared the way the filesystem does: Windows matches names
+    /// case-insensitively, so `tool.CMD` from PATHEXT is the file `tool.cmd`.
+    fn norm(path: Option<PathBuf>) -> Option<String> {
+        path.map(|p| {
+            let text = p.to_string_lossy().into_owned();
+            if cfg!(windows) { text.to_lowercase() } else { text }
+        })
+    }
+
     #[test]
     fn is_executable_rejects_missing_and_directories() {
         let dir = tempfile::tempdir().unwrap();
@@ -204,9 +219,9 @@ mod find_tests {
     fn bare_name_found_on_path() {
         let a = tempfile::tempdir().unwrap();
         let b = tempfile::tempdir().unwrap();
-        let want = make(b.path(), "omp-tool");
+        let want = make(b.path(), &exe("omp-tool"));
         let var = path_of(&[a.path(), b.path()]);
-        assert_eq!(find_executable_in(Path::new("omp-tool"), Some(&var), None), Some(want));
+        assert_eq!(norm(find_executable_in(Path::new("omp-tool"), Some(&var), None)), norm(Some(want)));
         assert_eq!(find_executable_in(Path::new("missing"), Some(&var), None), None);
         assert_eq!(find_executable_in(Path::new("omp-tool"), None, None), None);
     }
@@ -215,10 +230,10 @@ mod find_tests {
     fn first_path_entry_wins() {
         let a = tempfile::tempdir().unwrap();
         let b = tempfile::tempdir().unwrap();
-        let want = make(a.path(), "dup");
-        make(b.path(), "dup");
+        let want = make(a.path(), &exe("dup"));
+        make(b.path(), &exe("dup"));
         let var = path_of(&[a.path(), b.path()]);
-        assert_eq!(find_executable_in(Path::new("dup"), Some(&var), None), Some(want));
+        assert_eq!(norm(find_executable_in(Path::new("dup"), Some(&var), None)), norm(Some(want)));
     }
 
     #[test]
@@ -264,7 +279,7 @@ mod find_tests {
         let want = make(dir.path(), "tool.cmd");
         let var = path_of(&[dir.path()]);
         let ext = OsString::from(".EXE;.CMD");
-        assert_eq!(find_executable_in(Path::new("tool"), Some(&var), Some(&ext)), Some(want));
+        assert_eq!(norm(find_executable_in(Path::new("tool"), Some(&var), Some(&ext))), norm(Some(want)));
         // Default PATHEXT when unset.
         assert!(find_executable_in(Path::new("tool"), Some(&var), None).is_some());
         // Extension not in PATHEXT is not found.
@@ -280,13 +295,10 @@ mod find_tests {
         make(dir.path(), "omp-1.exe");
         let var = path_of(&[dir.path()]);
         let ext = OsString::from(".EXE");
-        assert_eq!(find_executable_in(Path::new("omp-1.2"), Some(&var), Some(&ext)), Some(want));
+        assert_eq!(norm(find_executable_in(Path::new("omp-1.2"), Some(&var), Some(&ext))), norm(Some(want)));
         // A name that exists as-is with an extension wins over appending.
         let exact = make(dir.path(), "run.bat");
-        assert_eq!(
-            find_executable_in(Path::new("run.bat"), Some(&var), Some(&ext)),
-            Some(exact)
-        );
+        assert_eq!(norm(find_executable_in(Path::new("run.bat"), Some(&var), Some(&ext))), norm(Some(exact)));
     }
 
     #[cfg(windows)]
@@ -295,10 +307,7 @@ mod find_tests {
         let dir = tempfile::tempdir().unwrap();
         let want = make(dir.path(), "tool.exe");
         let ext = OsString::from(".EXE");
-        assert_eq!(
-            find_executable_in(&dir.path().join("tool"), None, Some(&ext)),
-            Some(want)
-        );
+        assert_eq!(norm(find_executable_in(&dir.path().join("tool"), None, Some(&ext))), norm(Some(want)));
     }
 }
 
