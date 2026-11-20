@@ -299,6 +299,10 @@ mod tests {
         let mut proc = TokioProcessRunner.spawn(&spec).await.unwrap();
         let _stdin = proc.take_stdin().unwrap();
         proc.kill().await.unwrap();
-        assert_eq!(proc.wait().await.unwrap(), None);
+        let exit = proc.wait().await.unwrap();
+        #[cfg(unix)]
+        assert_eq!(exit, None);
+        #[cfg(windows)]
+        assert!(exit.is_some_and(|code| code != 0), "{exit:?}");
     }
 }

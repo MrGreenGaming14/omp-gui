@@ -18,7 +18,7 @@ fn stdout_stderr_exit_7() -> Command {
 /// cmd has no printf: `set /p` fed from nul prints its text without a newline.
 #[cfg(windows)]
 fn stdout_stderr_exit_7() -> Command {
-    Command::Shell("<nul set /p =out& <nul set /p =err 1>&2& exit 7".into())
+    Command::Shell("<nul set /p =out& <nul 1>&2 set /p =err& exit 7".into())
 }
 
 async fn stub(root: PathBuf) -> (StubClient, Box<dyn loa_sandbox::provider::Sandbox>) {

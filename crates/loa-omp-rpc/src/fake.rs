@@ -25,6 +25,8 @@ printf '%s\n' "$@" > "$dir/args"
 declare -A ids
 exec 3< "$dir/script"
 while IFS= read -r step <&3 || [[ -n "$step" ]]; do
+  # Transcript fixtures may have CRLF when checked out on Windows.
+  step="${step%$'\r'}"
   case "$step" in
     '' | '#'*) ;;
     '> '*)

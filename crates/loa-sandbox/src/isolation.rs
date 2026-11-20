@@ -347,10 +347,10 @@ mod tests {
             PatchFile { path: "tracked".into(), added: 2, removed: 1, binary: false },
         ]);
         apply_patch(root, &patch).unwrap();
-        assert_eq!(fs::read_to_string(root.join("tracked")).unwrap(), "one\nthree\nfour\n");
-        assert_eq!(fs::read_to_string(root.join("added")).unwrap(), "new\n");
+        assert_eq!(fs::read_to_string(root.join("tracked")).unwrap().replace("\r\n", "\n"), "one\nthree\nfour\n");
+        assert_eq!(fs::read_to_string(root.join("added")).unwrap().replace("\r\n", "\n"), "new\n");
         // Applying it again fails the check and changes nothing.
         assert!(apply_patch(root, &patch).is_err());
-        assert_eq!(fs::read_to_string(root.join("added")).unwrap(), "new\n");
+        assert_eq!(fs::read_to_string(root.join("added")).unwrap().replace("\r\n", "\n"), "new\n");
     }
 }

@@ -110,7 +110,7 @@ async fn the_service_tool_runs_isolated_and_returns_the_patch() {
     }
 
     apply_patch(repo.path(), patch.as_bytes()).unwrap();
-    assert_eq!(std::fs::read_to_string(repo.path().join("notes/hello.txt")).unwrap(), "from the sandbox\n");
+    assert_eq!(std::fs::read_to_string(repo.path().join("notes/hello.txt")).unwrap().replace("\r\n", "\n"), "from the sandbox\n");
     // cmd's `echo` ends lines with CRLF.
     assert_eq!(std::fs::read_to_string(repo.path().join("tracked.txt")).unwrap().replace("\r\n", "\n"), "changed\n");
 }

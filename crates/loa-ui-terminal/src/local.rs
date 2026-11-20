@@ -7,6 +7,7 @@
 use std::ffi::OsString;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
@@ -132,6 +133,9 @@ pub fn spawn(shell: &LocalShell, size: GridSize) -> Result<PtyChannel> {
             return Err(error);
         }
     };
+    let master = Arc::new(Mutex::new(Some(pair.master)));
+    #[cfg(windows)]
+    let console = Arc::clone(&master);
     let waiter = std::thread::Builder::new()
         .name("loa-pty-wait".into())
         .spawn(move || {
@@ -140,6 +144,10 @@ pub fn spawn(shell: &LocalShell, size: GridSize) -> Result<PtyChannel> {
                 .ok()
                 .filter(|status| status.signal().is_none())
                 .map(|status| status.exit_code());
+            // ConPTY keeps its output pipe open after the shell exits; closing
+            // the pseudoconsole flushes it and lets the reader reach EOF.
+            #[cfg(windows)]
+            drop(console.lock().unwrap_or_else(PoisonError::into_inner).take());
             let _ = exit_tx.send(code);
         });
     if let Err(error) = waiter {
@@ -154,7 +162,7 @@ pub fn spawn(shell: &LocalShell, size: GridSize) -> Result<PtyChannel> {
         }),
         writer: Box::new(LocalWriter {
             writer: Some(writer),
-            master: Some(pair.master),
+            master,
             killer: Some(killer),
         }),
     })
@@ -208,7 +216,7 @@ impl ChannelReader for LocalReader {
 
 struct LocalWriter {
     writer: Option<Box<dyn Write + Send>>,
-    master: Option<Box<dyn MasterPty + Send>>,
+    master: Arc<Mutex<Option<Box<dyn MasterPty + Send>>>>,
     killer: Option<Box<dyn ChildKiller + Send + Sync>>,
 }
 
@@ -217,7 +225,7 @@ impl LocalWriter {
     /// releases the master. The wait thread reaps the child.
     fn shutdown(&mut self) {
         self.writer = None;
-        self.master = None;
+        drop(self.master.lock().unwrap_or_else(PoisonError::into_inner).take());
         if let Some(mut killer) = self.killer.take() {
             // Fails only when the child already exited.
             let _ = killer.kill();
@@ -242,8 +250,10 @@ impl ChannelWriter for LocalWriter {
     }
 
     async fn resize(&mut self, size: GridSize) -> Result<()> {
-        let master = self.master.as_ref().ok_or(Error::Closed)?;
+        let master = self.master.lock().unwrap_or_else(PoisonError::into_inner);
         master
+            .as_ref()
+            .ok_or(Error::Closed)?
             .resize(size.into())
             .map_err(|error| Error::Io(io::Error::other(error.to_string())))
     }
@@ -265,30 +275,31 @@ impl Drop for LocalWriter {
 pub(crate) mod testing {
     use super::*;
 
-    /// A POSIX shell with the prompt `$ `: `/bin/sh`, or Bash from Git for
-    /// Windows (on `PATH`) there.
-    pub(crate) fn sh(cwd: &std::path::Path) -> LocalShell {
-        let (program, args): (&str, &[&str]) = if cfg!(windows) {
-            ("bash.exe", &["--noprofile", "--norc"])
+    pub(crate) fn shell(cwd: &std::path::Path) -> LocalShell {
+        if cfg!(windows) {
+            LocalShell::program("cmd.exe", ["/D", "/Q"], printed(cwd))
         } else {
-            ("/bin/sh", &[])
-        };
-        // A `\\?\` working directory is no use to Windows shells.
-        let cwd = std::path::PathBuf::from(printed(cwd));
-        let mut shell = LocalShell::program(program, args.iter().copied(), cwd);
-        shell.env.push(("PS1".into(), "$ ".into()));
-        shell
+            LocalShell::program("/bin/sh", std::iter::empty::<&str>(), cwd)
+        }
     }
 
-    /// Prints the working directory the way the host names it: Git Bash
-    /// otherwise prints `/c/Users/...` for `C:\Users\...`.
-    pub(crate) const PWD: &str = if cfg!(windows) { "pwd -W" } else { "pwd" };
+    pub(crate) const PWD: &str = if cfg!(windows) { "cd" } else { "pwd" };
+    pub(crate) const SIZE: &str = if cfg!(windows) {
+        r#"powershell.exe -NoProfile -Command "'{0} {1}' -f [Console]::WindowHeight,[Console]::WindowWidth""#
+    } else {
+        "stty size"
+    };
+    pub(crate) const EXIT_7: &str = "exit 7";
 
-    /// `path` as [`PWD`] prints it: plain (no `\\?\`) with `/` on Windows.
+    pub(crate) fn line(command: &str) -> Bytes {
+        let enter = if cfg!(windows) { '\r' } else { '\n' };
+        Bytes::from(format!("{command}{enter}"))
+    }
+
     pub(crate) fn printed(path: &std::path::Path) -> String {
         let text = path.to_str().unwrap();
         if cfg!(windows) {
-            text.trim_start_matches(r"\\?\").replace('\\', "/")
+            text.trim_start_matches(r"\\?\").to_owned()
         } else {
             text.to_owned()
         }
@@ -297,18 +308,24 @@ pub(crate) mod testing {
 
 #[cfg(test)]
 mod tests {
-    use super::testing::{PWD, printed, sh};
+    use super::testing::{SIZE, line, printed, shell};
     use super::*;
     use std::time::Duration;
 
     const LIMIT: Duration = Duration::from_secs(10);
 
-    /// Reads until the accumulated output contains `needle`.
-    async fn read_until(reader: &mut dyn ChannelReader, out: &mut Vec<u8>, needle: &str) {
+    /// Reads until the accumulated output contains `needle`. ConPTY asks for
+    /// the cursor position at startup and waits for the terminal to answer.
+    async fn read_until(channel: &mut PtyChannel, out: &mut Vec<u8>, needle: &str) {
         let wait = async {
             while !String::from_utf8_lossy(out).contains(needle) {
-                match reader.read().await.expect("read") {
-                    ChannelRead::Data(bytes) => out.extend_from_slice(&bytes),
+                match channel.reader.read().await.expect("read") {
+                    ChannelRead::Data(bytes) => {
+                        if bytes.windows(4).any(|window| window == b"\x1b[6n") {
+                            channel.writer.write(Bytes::from_static(b"\x1b[1;1R")).await.unwrap();
+                        }
+                        out.extend_from_slice(&bytes);
+                    }
                     ChannelRead::Closed { .. } => panic!(
                         "closed before {needle:?}: {}",
                         String::from_utf8_lossy(out)
@@ -316,7 +333,9 @@ mod tests {
                 }
             }
         };
-        tokio::time::timeout(LIMIT, wait).await.expect("output in time");
+        if tokio::time::timeout(LIMIT, wait).await.is_err() {
+            panic!("timed out waiting for {needle:?}; output: {:?}", String::from_utf8_lossy(out));
+        }
     }
 
     async fn read_to_close(reader: &mut dyn ChannelReader) -> Option<u32> {
@@ -334,14 +353,15 @@ mod tests {
     async fn shell_starts_in_requested_cwd_and_runs_input() {
         let dir = tempfile::tempdir().unwrap();
         let cwd = dir.path().canonicalize().unwrap();
-        let mut channel = spawn(&sh(&cwd), GridSize::new(80, 24)).unwrap();
+        let mut channel = spawn(&shell(&cwd), GridSize::new(80, 24)).unwrap();
         channel
             .writer
-            .write(Bytes::from(format!("{PWD}; echo done-$((40+2))\n")))
+            .write(line(if cfg!(windows) { "cd&echo done-42" } else { "pwd; echo done-$((40+2))" }))
             .await
             .unwrap();
         let mut out = Vec::new();
-        read_until(channel.reader.as_mut(), &mut out, "done-42").await;
+        // The line break keeps cmd's echo of the typed command from matching.
+        read_until(&mut channel, &mut out, "\ndone-42").await;
         let text = String::from_utf8_lossy(&out);
         assert!(text.contains(&printed(&cwd)), "{text}");
     }
@@ -349,42 +369,42 @@ mod tests {
     #[tokio::test]
     async fn resize_reaches_the_program() {
         let dir = tempfile::tempdir().unwrap();
-        let mut channel = spawn(&sh(dir.path()), GridSize::new(80, 24)).unwrap();
+        let mut channel = spawn(&shell(dir.path()), GridSize::new(80, 24)).unwrap();
         channel.writer.resize(GridSize::new(132, 43)).await.unwrap();
         channel
             .writer
-            .write(Bytes::from_static(b"stty size; echo end\n"))
+            .write(line(SIZE))
             .await
             .unwrap();
         let mut out = Vec::new();
-        read_until(channel.reader.as_mut(), &mut out, "43 132").await;
+        read_until(&mut channel, &mut out, "43 132").await;
     }
 
     #[tokio::test]
     async fn exit_status_is_reported_after_output() {
         let dir = tempfile::tempdir().unwrap();
-        let mut channel = spawn(&sh(dir.path()), GridSize::new(80, 24)).unwrap();
+        let mut channel = spawn(&shell(dir.path()), GridSize::new(80, 24)).unwrap();
         channel
             .writer
-            .write(Bytes::from_static(b"echo bye; exit 3\n"))
+            .write(line(if cfg!(windows) { "echo bye&exit 3" } else { "echo bye; exit 3" }))
             .await
             .unwrap();
         let mut out = Vec::new();
-        read_until(channel.reader.as_mut(), &mut out, "bye\r\n").await;
+        read_until(&mut channel, &mut out, "bye\r\n").await;
         assert_eq!(read_to_close(channel.reader.as_mut()).await, Some(3));
     }
 
     #[tokio::test]
     async fn close_hangs_up_a_busy_shell() {
         let dir = tempfile::tempdir().unwrap();
-        let mut channel = spawn(&sh(dir.path()), GridSize::new(80, 24)).unwrap();
+        let mut channel = spawn(&shell(dir.path()), GridSize::new(80, 24)).unwrap();
         channel
             .writer
-            .write(Bytes::from_static(b"echo ready; read line\n"))
+            .write(line(if cfg!(windows) { "echo ready&set /p answer=" } else { "echo ready; read line" }))
             .await
             .unwrap();
         let mut out = Vec::new();
-        read_until(channel.reader.as_mut(), &mut out, "ready\r\n").await;
+        read_until(&mut channel, &mut out, "ready\r\n").await;
         channel.writer.close().await.unwrap();
         // Unix: killed by SIGHUP, so there is no exit code. Windows has no
         // signals and reports the code the killed process ended with.
@@ -402,7 +422,7 @@ mod tests {
     async fn dropping_the_writer_hangs_up_the_shell() {
         let dir = tempfile::tempdir().unwrap();
         let PtyChannel { mut reader, writer } =
-            spawn(&sh(dir.path()), GridSize::new(80, 24)).unwrap();
+            spawn(&shell(dir.path()), GridSize::new(80, 24)).unwrap();
         drop(writer);
         read_to_close(reader.as_mut()).await;
     }
@@ -411,7 +431,7 @@ mod tests {
     fn missing_cwd_is_rejected_before_spawning() {
         let dir = tempfile::tempdir().unwrap();
         let missing = dir.path().join("nope");
-        let error = spawn(&sh(&missing), GridSize::default()).unwrap_err();
+        let error = spawn(&shell(&missing), GridSize::default()).unwrap_err();
         assert!(matches!(error, Error::NotADirectory(path) if path == missing));
     }
 }

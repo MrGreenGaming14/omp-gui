@@ -309,15 +309,34 @@ async fn structured_reads_give_url_title_text_and_clickable_outline() {
     server.shutdown().await.unwrap();
 }
 
+#[cfg(target_os = "linux")]
+fn process_running(pid: u32) -> bool {
+    std::path::Path::new(&format!("/proc/{pid}")).exists()
+}
+
+#[cfg(windows)]
+fn process_running(pid: u32) -> bool {
+    let out = std::process::Command::new("tasklist.exe")
+        .args(["/fi", &format!("PID eq {pid}"), "/fo", "csv", "/nh"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .any(|line| line.split("\",\"").nth(1).and_then(|value| value.parse::<u32>().ok()) == Some(pid))
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn shutdown_kills_chrome_and_refuses_new_tabs() {
     let Some(server) = server(320, 240).await else { return };
     let tab = server.open_tab(&html("<p>x</p>")).await.unwrap();
     let pids = server.process_ids().await;
     assert_eq!(pids.len(), 1);
-    assert!(std::path::Path::new(&format!("/proc/{}", pids[0])).exists());
+    #[cfg(any(target_os = "linux", windows))]
+    assert!(process_running(pids[0]));
     server.shutdown().await.unwrap();
-    assert!(!std::path::Path::new(&format!("/proc/{}", pids[0])).exists(), "chrome still running");
+    #[cfg(any(target_os = "linux", windows))]
+    assert!(!process_running(pids[0]), "chrome still running");
     assert!(matches!(server.open_tab("about:blank").await, Err(BrowserError::Closed)));
     assert!(server.list().await.unwrap().is_empty());
     assert!(tab.page_text().await.is_err());

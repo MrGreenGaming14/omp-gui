@@ -214,7 +214,7 @@ fn a_session_runs_sandbox_task_and_the_patch_is_reviewed_and_applied() {
     assert!(app.ctx.services.library.load(&worker).unwrap().root().is_some(), "the worker session is journaled");
 
     sandbox(&mut app, Message::Apply(entry.run.run));
-    assert_eq!(std::fs::read_to_string(repo.join("notes/hello.txt")).unwrap(), "from the sandbox\n");
+    assert_eq!(std::fs::read_to_string(repo.join("notes/hello.txt")).unwrap().replace("\r\n", "\n"), "from the sandbox\n");
     // cmd's `echo` ends lines with CRLF.
     assert_eq!(std::fs::read_to_string(repo.join("tracked.txt")).unwrap().replace("\r\n", "\n"), "changed\n");
     let applied = app.areas.sandbox.runs().get(entry.run.run).unwrap();
@@ -435,7 +435,7 @@ mod peer {
         assert!(!repo.join("notes").exists(), "the workspace is untouched until the patch is applied");
         assert_eq!(guest.ctx.shell.active_tab(), Some(TAB));
         update(&rt, &mut guest, AppMessage::Sandbox(Message::Apply(entry.run.run)));
-        assert_eq!(std::fs::read_to_string(repo.join("notes/hello.txt")).unwrap(), "from the sandbox\n");
+        assert_eq!(std::fs::read_to_string(repo.join("notes/hello.txt")).unwrap().replace("\r\n", "\n"), "from the sandbox\n");
         assert!(owner.ctx.notice().is_none_or(|notice| !notice.contains("sandbox run")), "{:?}", owner.ctx.notice());
     }
 }
