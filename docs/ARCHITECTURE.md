@@ -61,6 +61,7 @@ Everything else builds on these three. Their existing public items change only w
 | `loa-ui-projects` | Project screen: shared instructions, pinned files, digest model, sessions with digests and exclude toggle |
 | `loa-ui-surface` | Surface renderer, Surfaces tab (open tabs, launcher for browser, documents, VNC and MCP surfaces), document pages through `loa-surface-docs` |
 | `loa-ui-models` | Sign in, model picker, model settings |
+| `loa-ui-agents` | Agents screen: omp agents on disk, the form that builds one (templates, model and thinking pickers, tool and spawn checkboxes, prompt body) with field errors |
 | `loa-ui-peers` | Peers list, grant management (incl. a typed folder of this node), shared folders |
 | `loa-ui-updates` | Updates screen: feeds, staged versions, gate reports with update anyway/pin/wait, swap, rollback, signatures, peers behind |
 | `loa-ui-icons` | Lucide line icons as theme-tinted SVG widgets, shared by every UI crate |

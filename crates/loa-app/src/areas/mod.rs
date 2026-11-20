@@ -5,6 +5,7 @@ use iced::Task;
 
 use crate::area::Ctx;
 
+pub mod agents;
 pub mod decisions;
 pub mod harness;
 pub mod models;
@@ -28,6 +29,7 @@ pub struct Areas {
     pub peers: peers::State,
     pub updater: updater::State,
     pub sandbox: sandbox::State,
+    pub agents: agents::State,
 }
 
 impl Areas {
@@ -43,6 +45,7 @@ impl Areas {
         let (peers, peers_task) = peers::State::new(ctx);
         let (updater, updater_task) = updater::State::new(ctx);
         let (sandbox, sandbox_task) = sandbox::State::new(ctx);
+        let (agents, agents_task) = agents::State::new(ctx);
         let task = Task::batch([
             harness_task.map(Message::Harness),
             sessions_task.map(Message::Sessions),
@@ -54,8 +57,9 @@ impl Areas {
             peers_task.map(Message::Peers),
             updater_task.map(Message::Updater),
             sandbox_task.map(Message::Sandbox),
+            agents_task.map(Message::Agents),
         ]);
-        let areas = Self { harness, sessions, decisions, tools, surfaces, models, projects, peers, updater, sandbox };
+        let areas = Self { harness, sessions, decisions, tools, surfaces, models, projects, peers, updater, sandbox, agents };
         (areas, task)
     }
 }
@@ -66,7 +70,7 @@ impl Areas {
 macro_rules! with_areas {
     ($m:ident!($($args:tt)*)) => {
         $m!($($args)*; harness Harness, sessions Sessions, decisions Decisions, tools Tools, surfaces Surfaces,
-            models Models, projects Projects, peers Peers, updater Updater, sandbox Sandbox)
+            models Models, projects Projects, peers Peers, updater Updater, sandbox Sandbox, agents Agents)
     };
 }
 

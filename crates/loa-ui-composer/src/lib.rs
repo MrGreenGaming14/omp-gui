@@ -105,6 +105,8 @@ pub enum Event {
     FolderPicked(String),
     /// "Choose another folder…" in the folder menu: open a folder dialog.
     BrowseFolders,
+    /// The user pressed Agents. Only sent while the harness is omp.
+    OpenAgents,
 }
 
 /// The folder a session works in, as the composer's folder chip shows it.
@@ -140,6 +142,8 @@ pub enum Message {
     EffortPicked(String),
     ModePicked(SessionMode),
     AccessPicked(String),
+    /// The Agents button was pressed.
+    OpenAgents,
     HarnessPicked(String),
     /// Opens or closes a picker's menu.
     PickerToggled(Picker),
@@ -452,6 +456,7 @@ impl State {
                     Event::AccessChanged(id)
                 })
             }
+            Message::OpenAgents => self.harness().is_some_and(|h| h.id == AGENTS_HARNESS).then_some(Event::OpenAgents),
             Message::ModePicked(mode) => {
                 self.pickers.open = None;
                 (self.pickers.mode != mode).then(|| {
@@ -537,6 +542,7 @@ impl State {
         }
         controls = controls
             .push(self.picker(Picker::Mode, Icon::FileText, capitalized(pickers.mode.as_str())))
+            .push(agents_button(self.harness().is_some_and(|h| h.id == AGENTS_HARNESS)))
             .push(space::horizontal())
             .push(action);
 
@@ -1021,6 +1027,27 @@ fn edit_kind(edit: &Edit) -> EditKind {
 
 /// Container id of the folder chip.
 pub const WORKSPACE_CHIP_ID: &str = "loa-composer-workspace";
+
+/// Label of the bottom row's Agents button.
+const AGENTS_LABEL: &str = "Agents";
+/// The tooltip of the Agents button while it is disabled.
+const AGENTS_UNAVAILABLE: &str = "Available with OMP sessions";
+/// The harness the Agents button works with.
+const AGENTS_HARNESS: &str = "omp";
+
+/// The Agents button, a ghost control like the pickers: pressable with
+/// `enabled`, otherwise drawn without an action and a tooltip saying why.
+fn agents_button<'a>(enabled: bool) -> Element<'a, Message> {
+    let content = row![icon(Icon::Bot, CONTROL_ICON).style(style::ghost_icon), text(AGENTS_LABEL).size(CONTROL_TEXT)]
+        .spacing(6)
+        .align_y(Center);
+    let control = button(content).padding([5, 8]).style(style::ghost(false));
+    if enabled {
+        return control.on_press(Message::OpenAgents).into();
+    }
+    let tip = container(text(AGENTS_UNAVAILABLE).size(12)).padding([3, 8]).style(style::menu);
+    iced::widget::tooltip(control, tip, iced::widget::tooltip::Position::Top).into()
+}
 
 /// An icon-only button with its label as a tooltip.
 fn labelled<'a>(button: iced::widget::Button<'a, Message>, label: &'static str) -> Element<'a, Message> {

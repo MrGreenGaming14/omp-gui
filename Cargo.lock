@@ -4735,6 +4735,7 @@ dependencies = [
  "loa-surface",
  "loa-surface-bench",
  "loa-surface-hub",
+ "loa-ui-agents",
  "loa-ui-chat",
  "loa-ui-composer",
  "loa-ui-decisions",
@@ -5235,6 +5236,14 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "loa-ui-agents"
+version = "0.1.0"
+dependencies = [
+ "iced",
+ "loa-models",
 ]
 
 [[package]]

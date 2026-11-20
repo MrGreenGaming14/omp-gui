@@ -483,3 +483,22 @@ fn picker_labels_are_short_and_capitalized() {
     assert_eq!(capitalized("plan"), "Plan");
     assert_eq!(capitalized(""), "");
 }
+
+#[test]
+fn agents_button_opens_agents_with_omp_only() {
+    let mut state = State::new();
+    let mut options = harnesses();
+    options.push(HarnessOption { id: "opencode".into(), label: "opencode".into(), available: true, detail: None });
+    state.set_harnesses(options, Some("omp"));
+    assert_eq!(act(&mut state, Message::OpenAgents), Some(Event::OpenAgents));
+    act(&mut state, Message::HarnessPicked("opencode".into()));
+    assert_eq!(act(&mut state, Message::OpenAgents), None);
+    // Drawn disabled, with its tooltip, for the other harness.
+    let _ = state.view();
+}
+
+#[test]
+fn agents_button_does_nothing_without_a_harness() {
+    let mut state = State::new();
+    assert_eq!(act(&mut state, Message::OpenAgents), None);
+}

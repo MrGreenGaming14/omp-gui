@@ -167,6 +167,7 @@ pub enum Message {
     FolderChosen(Result<Option<PathBuf>, String>),
     /// The start screen.
     Start(start::StartMessage),
+    Agents(areas::agents::Message),
 }
 
 pub struct App {
@@ -905,6 +906,7 @@ impl App {
             }
             Some(composer::Event::AccessChanged(id)) => self.set_access(id),
             Some(composer::Event::ModeChanged(mode)) => self.update(Message::Sessions(areas::sessions::Message::Mode(mode))),
+            Some(composer::Event::OpenAgents) => self.update(Message::Agents(areas::agents::Message::Open)),
             Some(composer::Event::FilesRequested { .. }) => {
                 self.files.refresh();
                 self.ctx.composer.set_files(self.files.visible().map(|path| path.to_string_lossy().into_owned()).collect());
@@ -1266,6 +1268,7 @@ impl App {
             Message::Peers(message) => area!(peers, Peers, message),
             Message::Updater(message) => area!(updater, Updater, message),
             Message::Sandbox(message) => area!(sandbox, Sandbox, message),
+            Message::Agents(message) => area!(agents, Agents, message),
         }
     }
 
