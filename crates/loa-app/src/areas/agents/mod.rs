@@ -8,14 +8,17 @@
 //! the composer button and the palette commands are disabled for any other
 //! harness.
 //!
-//! Save writes the validated definition to the user agents directory without
-//! replacing an existing file.
+//! Save writes the validated definition: back to the file the form edits, or
+//! to a new file in the user agents directory. An existing name is replaced
+//! only after the screen asks. Enable, disable and delete act on the file
+//! being edited (delete asks first). Each outcome refreshes the lists and
+//! says that only omp sessions started later see the change.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use iced::{Element, Task};
-use loa_models::agents::{self, AgentFile, Overwrite};
+use loa_models::agents::{self, AgentDefinition, AgentFile, Overwrite};
 use loa_models::omp::{OmpFiles, OmpLaunch};
 use loa_omp_bridge::OmpBridgeConfig;
 use loa_ui_agents as form;
@@ -24,6 +27,8 @@ use loa_ui_palette as palette;
 
 use crate::area::{Area, AreaId, Ctx};
 
+#[cfg(test)]
+mod live;
 #[cfg(test)]
 mod tests;
 
@@ -178,30 +183,131 @@ impl State {
         match event {
             form::Event::Close => ctx.close_screen(),
             form::Event::Save(definition) => self.save(definition, ctx),
+            form::Event::Replace(definition, path) => self.replace(definition, &path, ctx),
+            form::Event::Toggle(path) => self.toggle(&path, ctx),
+            form::Event::Delete(path) => self.delete(&path, ctx),
         }
     }
 
-    /// Writes `definition` to the user agents directory, refusing to replace
-    /// an agent of the same name, and lists the agents again.
-    fn save(&mut self, definition: loa_models::agents::AgentDefinition, ctx: &mut Ctx) {
-        let Some(agent_dir) = self.agent_dir.clone() else {
-            ctx.notify("omp's agent directory isn't known yet");
+    /// Writes `definition`: back to the file the form edits, or to a new file
+    /// in the user agents directory. An agent of the same name elsewhere is
+    /// replaced only after the screen asks.
+    fn save(&mut self, definition: AgentDefinition, ctx: &mut Ctx) {
+        if self.agent_dir.is_none() {
+            self.form.set_error("form", "omp's agent directory isn't known yet".to_owned());
             return;
-        };
+        }
+        let editing = self.form.editing().map(Path::to_path_buf);
         let name = definition.name().to_owned();
-        match agents::write(&agent_dir.join("agents"), &definition, Overwrite::No) {
-            Ok(path) => {
-                ctx.notify(format!("Saved agent {name}"));
-                self.relist(&agent_dir, ctx);
-                if let Some(index) = self.files.iter().position(|file| file.path == path) {
-                    self.form.edit(index);
-                }
+        let clash = self
+            .files
+            .iter()
+            .find(|file| file.definition.name() == name && Some(&file.path) != editing.as_ref())
+            .map(|file| file.path.clone());
+        match (clash, editing) {
+            (Some(path), _) => self.form.ask_replace(definition, path),
+            (None, Some(path)) => self.replace_file(&definition, &path, ctx),
+            (None, None) => {
+                let dir = self.user_agents();
+                let result = agents::write(&dir, &definition, Overwrite::No);
+                self.saved(&definition, result, ctx);
             }
-            Err(error) => ctx.notify(format!("Can't save agent {name}: {error}")),
         }
     }
 
-    fn relist(&mut self, agent_dir: &Path, ctx: &Ctx) {
+    /// The user confirmed replacing the file at `path`.
+    fn replace(&mut self, definition: AgentDefinition, path: &Path, ctx: &mut Ctx) {
+        let editing = self.form.editing().map(Path::to_path_buf);
+        self.replace_file(&definition, path, ctx);
+        // Renaming an agent onto another one: the old file is gone with the rename.
+        if let Some(old) = editing.filter(|old| old != path && old.exists())
+            && self.form.editing() == Some(path)
+            && let Err(error) = agents::delete(&old)
+        {
+            self.form.set_error("form", error.to_string());
+        }
+    }
+
+    fn user_agents(&self) -> PathBuf {
+        self.agent_dir.clone().unwrap_or_default().join("agents")
+    }
+
+    /// Writes `definition` over the file at `path`: into the same directory,
+    /// and disabled again if it was disabled. A renamed agent leaves the old
+    /// file behind only when it is the file written.
+    fn replace_file(&mut self, definition: &AgentDefinition, path: &Path, ctx: &mut Ctx) {
+        let result = self.overwrite(definition, path);
+        self.saved(definition, result, ctx);
+    }
+
+    fn overwrite(&self, definition: &AgentDefinition, path: &Path) -> loa_models::Result<PathBuf> {
+        let dir = path.parent().map(Path::to_path_buf).unwrap_or_else(|| self.user_agents());
+        let enabled = self.files.iter().find(|file| file.path == path).is_none_or(|file| file.enabled);
+        let written = agents::write(&dir, definition, Overwrite::Yes)?;
+        if enabled {
+            if path != written && path.exists() {
+                agents::delete(path)?;
+            }
+            return Ok(written);
+        }
+        if path.exists() {
+            agents::delete(path)?;
+        }
+        agents::set_enabled(&written, false)
+    }
+
+    /// Shows the outcome of a write and lists the agents again.
+    fn saved(&mut self, definition: &AgentDefinition, result: loa_models::Result<PathBuf>, ctx: &mut Ctx) {
+        let name = definition.name();
+        match result {
+            Ok(path) => {
+                ctx.notify(format!("Saved {name}. omp sessions started from now on can use it; sessions already running won't."));
+                self.relist(ctx);
+                self.form.edit_path(&path);
+            }
+            Err(error) => self.show_error(error),
+        }
+    }
+
+    /// Keeps the form open with the reason next to the field it concerns.
+    fn show_error(&mut self, error: loa_models::Error) {
+        let field = match &error {
+            loa_models::Error::Invalid { field, .. } if field == "name" => "name",
+            loa_models::Error::AlreadyExists { .. } => "name",
+            _ => "form",
+        };
+        self.form.set_error(field, error.to_string());
+    }
+
+    fn toggle(&mut self, path: &Path, ctx: &mut Ctx) {
+        let Some(enabled) = self.form.is_enabled(path) else { return };
+        let name = self.form.name().to_owned();
+        match agents::set_enabled(path, !enabled) {
+            Ok(path) => {
+                let verb = if enabled { "Disabled" } else { "Enabled" };
+                ctx.notify(format!("{verb} {name}. omp sessions started from now on pick up the change; sessions already running won't."));
+                self.relist(ctx);
+                self.form.edit_path(&path);
+            }
+            Err(error) => self.show_error(error),
+        }
+    }
+
+    fn delete(&mut self, path: &Path, ctx: &mut Ctx) {
+        let name = self.form.name().to_owned();
+        match agents::delete(path) {
+            Ok(()) => {
+                ctx.notify(format!("Deleted {name}. omp sessions started from now on won't have it; sessions already running keep it."));
+                self.relist(ctx);
+                self.form.new_agent();
+            }
+            Err(error) => self.show_error(error),
+        }
+    }
+
+    /// Lists the agents again, for the screen and the palette.
+    fn relist(&mut self, ctx: &Ctx) {
+        let Some(agent_dir) = &self.agent_dir else { return };
         let (files, _) = agents::list(agent_dir, Some(&ctx.services.cwd));
         self.files = files;
         self.form.set_agents(&self.files);
