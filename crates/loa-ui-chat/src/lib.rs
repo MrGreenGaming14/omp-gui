@@ -19,7 +19,7 @@ pub use items::{COMMANDS_EXT, ItemKind};
 
 use heights::Heights;
 use iced::widget::{
-    self, button, container, keyed_column, markdown, scrollable, sensor, space, stack, text,
+    self, button, container, markdown, scrollable, sensor, space, stack, text,
 };
 use iced::{Element, Fill, Task, Theme};
 use items::{Emitter, Item};
@@ -288,14 +288,17 @@ impl State {
             (key.0, Element::from(measured))
         });
 
-        // Spacers stand in for the rows outside the window. Keys 0 (the
-        // document) and `u64::MAX` are never row keys.
-        let list = keyed_column(
-            std::iter::once((0, space().height(above).into()))
-                .chain(built)
-                .chain(std::iter::once((u64::MAX, space().height(below).into()))),
-        )
-        .width(Fill);
+        // Spacers stand in for the rows outside the window. A plain column,
+        // not `keyed_column`: iced 0.14's keyed diff assumes one contiguous
+        // insert or removal per frame, and a turn's first reply (rows added
+        // while the window shifts) paired a row's sensor with a spacer's
+        // state and panicked ("Downcast on stateless state"). Index diffing
+        // rebuilds mismatched widgets instead, and each row's sensor carries
+        // its own key, so measurements still follow rows that move.
+        let rows = std::iter::once(space().height(above).into())
+            .chain(built.map(|(_, row)| row))
+            .chain(std::iter::once(space().height(below).into()));
+        let list = iced::widget::Column::with_children(rows).width(Fill);
 
         let on_scroll = map.clone();
         let scrollbar = scrollable::Scrollbar::new().width(6).scroller_width(6);

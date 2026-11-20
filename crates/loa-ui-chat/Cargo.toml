@@ -12,3 +12,5 @@ loa-ui-icons.workspace = true
 
 [dev-dependencies]
 iced_test = "0.14"
+# The runtime's UserInterface, to diff frames the way a running app does.
+iced_runtime = "0.14"

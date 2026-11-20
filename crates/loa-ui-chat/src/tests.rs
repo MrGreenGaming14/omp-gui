@@ -601,3 +601,78 @@ fn jump_to_latest_resumes_following() {
     assert!(s.chat.is_following());
     assert!(s.shows("message 299"));
 }
+
+/// One step of a frame-by-frame run: changes the session before a frame.
+type Step = Box<dyn Fn(&mut Session)>;
+
+/// Renders `frames` one after another through one `UserInterface` cache and
+/// sends each frame events, the way the running app does. `iced_test`'s
+/// simulator builds every view from scratch, so it never diffs one frame
+/// against the last and misses widget-state mix-ups between frames.
+fn run_frames(session: &mut Session, steps: Vec<Step>) {
+    use iced::advanced::clipboard;
+    use iced::advanced::renderer::Headless;
+    use iced::{Font, Pixels, Point, Size, mouse};
+    use iced_runtime::user_interface::{Cache, UserInterface};
+
+    let mut renderer = iced::futures::executor::block_on(<iced::Renderer as Headless>::new(Font::DEFAULT, Pixels(16.0), None))
+        .expect("headless renderer");
+    let size = Size::new(900.0, 700.0);
+    let mut cache = Cache::default();
+    let events = [
+        iced::Event::Mouse(mouse::Event::CursorMoved { position: Point::new(400.0, 300.0) }),
+        iced::Event::Window(iced::window::Event::RedrawRequested(std::time::Instant::now())),
+    ];
+    let mut frame = |session: &mut Session, cache: Cache| -> Cache {
+        let mut messages = Vec::new();
+        let cache = {
+            let mut ui = UserInterface::build(session.view(), size, cache, &mut renderer);
+            let _ = ui.update(&events, mouse::Cursor::Available(Point::new(400.0, 300.0)), &mut renderer, &mut clipboard::Null, &mut messages);
+            ui.into_cache()
+        };
+        for message in messages {
+            session.send(message);
+        }
+        cache
+    };
+    cache = frame(session, cache);
+    for step in steps {
+        step(session);
+        cache = frame(session, cache);
+        cache = frame(session, cache);
+    }
+}
+
+#[test]
+fn a_new_sessions_first_reply_renders_frame_after_frame_without_a_state_mix_up() {
+    // The first reply of a new session adds rows while the visible window
+    // shifts; `keyed_column` paired a row's sensor with a spacer's state and
+    // the app panicked with "Downcast on stateless state" on every send.
+    let mut session = Session::new();
+    let turn = std::cell::Cell::new(NodeId::DOCUMENT);
+    let turn = std::rc::Rc::new(turn);
+    let (t1, t2, t3, t4) = (turn.clone(), turn.clone(), turn.clone(), turn.clone());
+    run_frames(
+        &mut session,
+        vec![
+            Box::new(move |s| {
+                t1.set(s.turn());
+                s.user(t1.get(), "Reply with the single word pong");
+            }),
+            Box::new(move |s| {
+                s.insert(t2.get(), ElementKind::Message, &[("role", "assistant".into())], "po");
+            }),
+            Box::new(move |s| {
+                s.call(t3.get(), "read", 1, 2, "{}", "file");
+                s.insert(t3.get(), ElementKind::Message, &[("role", "assistant".into())], "pong");
+            }),
+            Box::new(move |s| {
+                let next = s.turn();
+                t4.set(next);
+                s.user(next, "Now reply with ping");
+                s.insert(next, ElementKind::Message, &[("role", "assistant".into())], "ping");
+            }),
+        ],
+    );
+    assert_eq!(session.rows().iter().filter(|(kind, ..)| *kind == ItemKind::User).count(), 2, "both prompts are rows");
+}

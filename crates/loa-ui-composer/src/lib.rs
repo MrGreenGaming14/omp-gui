@@ -483,22 +483,23 @@ impl State {
             .width(Length::Fill)
             .style(style::frame);
 
-        let mut layout = column![].spacing(6);
-        if !self.queue.is_empty() {
-            layout = layout.push(self.queue_view());
-        }
-        if pickers.open == Some(Picker::Folder) {
-            layout = layout.push(self.folder_menu());
-        }
-        if let Some(workspace) = &self.workspace {
-            layout = layout.push(self.folder_bar(workspace));
-        }
-        if let Some(picker) = pickers.open.filter(|picker| *picker != Picker::Folder) {
-            layout = layout.push(self.menu_view(picker));
-        } else if let Some(popup) = self.visible_popup() {
-            layout = layout.push(self.popup_view(popup));
-        }
-        layout.push(frame).into()
+        // Fixed slots, each an empty space when unused, so the editor keeps
+        // its place in the widget tree (and its state) whatever appears
+        // above it.
+        let queue: Element<'_, Message> = if self.queue.is_empty() { space().into() } else { self.queue_view() };
+        let menu: Element<'_, Message> = match pickers.open {
+            Some(Picker::Folder) => self.folder_menu(),
+            Some(picker) => self.menu_view(picker),
+            None => match self.visible_popup() {
+                Some(popup) => self.popup_view(popup),
+                None => space().into(),
+            },
+        };
+        let bar: Element<'_, Message> = match &self.workspace {
+            Some(workspace) => self.folder_bar(workspace),
+            None => space().into(),
+        };
+        column![queue, menu, bar, frame].spacing(6).into()
     }
 
     /// A flat bottom-row picker: its current choice and a chevron.
@@ -571,8 +572,15 @@ impl State {
         }
         chip = chip.push(muted(if open { Icon::ChevronUp } else { Icon::ChevronDown }, 13.0));
         let chip = button(chip).padding([3, 8]).style(style::picker(open)).on_press(Message::PickerToggled(Picker::Folder));
-        let tip = container(text(workspace.full.as_str()).size(12)).padding([3, 8]).style(style::menu);
-        container(iced::widget::tooltip(chip, tip, iced::widget::tooltip::Position::Top)).id(WORKSPACE_CHIP_ID).into()
+        // The full path on hover, except while the menu is open: the tip
+        // would cover the menu's last row.
+        let chip: Element<'_, Message> = if open {
+            chip.into()
+        } else {
+            let tip = container(text(workspace.full.as_str()).size(12)).padding([3, 8]).style(style::menu);
+            iced::widget::tooltip(chip, tip, iced::widget::tooltip::Position::Top).into()
+        };
+        container(chip).id(WORKSPACE_CHIP_ID).into()
     }
 
     /// Recent folders, a folder dialog and Show in Files.
