@@ -23,11 +23,11 @@ use std::time::Duration;
 
 /// Canonicalizes a path without a Windows verbatim prefix when an equivalent
 /// DOS path exists. Use for paths passed to programs that reject that prefix.
-pub fn canonicalize(path: &Path) -> io::Result<PathBuf> {
+pub fn canonicalize(path: impl AsRef<Path>) -> io::Result<PathBuf> {
     #[cfg(windows)]
     return dunce::canonicalize(path);
     #[cfg(not(windows))]
-    path.canonicalize()
+    path.as_ref().canonicalize()
 }
 
 /// Uses the ordinary Windows spelling only when it refers to the same path.
