@@ -77,9 +77,9 @@ impl Terminals {
         let start_failed = |e| RpcError::remote(code::INTERNAL, format!("can't run `{}`: {e}", request.command));
         #[cfg(windows)]
         let (mut child, stdout, stderr) = {
-            use process_wrap::tokio::{CommandWrap, JobObject};
+            use process_wrap::tokio::{CommandWrap, JobObject, KillOnDrop};
             let mut command = CommandWrap::from(command);
-            command.wrap(JobObject);
+            command.wrap(KillOnDrop).wrap(JobObject);
             let mut child = command.spawn().map_err(start_failed)?;
             let (stdout, stderr) = (child.stdout().take(), child.stderr().take());
             (child, stdout, stderr)

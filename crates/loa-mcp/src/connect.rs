@@ -107,7 +107,7 @@ fn spawn(stdio: &StdioSpec) -> std::io::Result<(TokioChildProcess, Option<ChildS
     command.args(&stdio.args).envs(&stdio.env);
     if let Some(cwd) = &stdio.cwd {
         #[cfg(windows)]
-        command.current_dir(loa_exec::simplify(cwd.clone()));
+        command.current_dir(loa_exec::simplify(cwd));
         #[cfg(not(windows))]
         command.current_dir(cwd);
     }
@@ -118,7 +118,7 @@ fn spawn(stdio: &StdioSpec) -> std::io::Result<(TokioChildProcess, Option<ChildS
     #[cfg(unix)]
     command.wrap(process_wrap::tokio::ProcessGroup::leader());
     #[cfg(windows)]
-    command.wrap(process_wrap::tokio::JobObject);
+    command.wrap(process_wrap::tokio::KillOnDrop).wrap(process_wrap::tokio::JobObject);
     TokioChildProcess::builder(command).stderr(Stdio::piped()).spawn()
 }
 

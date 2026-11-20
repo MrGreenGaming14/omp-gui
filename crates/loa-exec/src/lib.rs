@@ -31,16 +31,8 @@ pub fn canonicalize(path: &Path) -> io::Result<PathBuf> {
 }
 
 /// Uses the ordinary Windows spelling only when it refers to the same path.
-pub fn simplify(path: PathBuf) -> PathBuf {
-    #[cfg(windows)]
-    {
-        let plain = dunce::simplified(&path);
-        if plain != path.as_path() {
-            return plain.to_path_buf();
-        }
-    }
-    path
-}
+#[cfg(windows)]
+pub use dunce::simplified as simplify;
 
 /// Calls `spawn` and, while it fails with `ETXTBSY` ("Text file busy"),
 /// calls it again after a short doubling backoff (2 ms up to 50 ms, about
