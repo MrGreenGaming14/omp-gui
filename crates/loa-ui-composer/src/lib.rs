@@ -87,6 +87,8 @@ pub enum Event {
     /// The user pressed one of the [`State::set_model_actions`] rows. Holds
     /// its id.
     ModelAction(String),
+    /// The user pressed Agents. Only sent while the harness is omp.
+    OpenAgents,
 }
 
 /// Internal messages of the composer.
@@ -110,6 +112,8 @@ pub enum Message {
     ModelActionPicked(String),
     EffortPicked(String),
     ModePicked(SessionMode),
+    /// The Agents button was pressed.
+    OpenAgents,
     HarnessPicked(String),
     /// Opens or closes a picker's menu.
     PickerToggled(Picker),
@@ -352,6 +356,7 @@ impl State {
                     Event::EffortChanged(effort)
                 })
             }
+            Message::OpenAgents => self.harness().is_some_and(|h| h.id == AGENTS_HARNESS).then_some(Event::OpenAgents),
             Message::ModePicked(mode) => {
                 self.pickers.open = None;
                 (self.pickers.mode != mode).then(|| {
@@ -420,6 +425,7 @@ impl State {
         }
         controls = controls
             .push(self.picker(Picker::Mode, pickers.mode.as_str()))
+            .push(agents_button(self.harness().is_some_and(|h| h.id == AGENTS_HARNESS)))
             .push(space::horizontal())
             .push(action);
 
@@ -802,6 +808,29 @@ fn edit_kind(edit: &Edit) -> EditKind {
         Edit::Backspace | Edit::Delete => EditKind::Delete,
         Edit::Paste(_) | Edit::Enter | Edit::Indent | Edit::Unindent => EditKind::Other,
     }
+}
+
+/// Label of the bottom row's Agents button.
+const AGENTS_LABEL: &str = "Agents";
+/// The tooltip of the Agents button while it is disabled.
+const AGENTS_UNAVAILABLE: &str = "Available with OMP sessions";
+/// The harness the Agents button works with.
+const AGENTS_HARNESS: &str = "omp";
+
+/// The Agents button: pressable with `enabled`, otherwise drawn disabled
+/// with a tooltip saying why.
+fn agents_button<'a>(enabled: bool) -> Element<'a, Message> {
+    let content = text(AGENTS_LABEL).size(14);
+    if enabled {
+        return button(content).padding([3, 6]).style(style::picker(false)).on_press(Message::OpenAgents).into();
+    }
+    let tip = container(text(AGENTS_UNAVAILABLE).size(12)).padding([3, 8]).style(style::menu);
+    iced::widget::tooltip(
+        button(content).padding([3, 6]).style(style::picker(false)),
+        tip,
+        iced::widget::tooltip::Position::Top,
+    )
+    .into()
 }
 
 /// An icon-only button with its label as a tooltip.
