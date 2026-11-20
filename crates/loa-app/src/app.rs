@@ -181,7 +181,8 @@ impl App {
     pub fn boot() -> (Self, Task<Message>) {
         let (mut app, task) = Self::new();
         let open = app.open_main();
-        (app, Task::batch([open, task]))
+        let catalog = app.areas.models.read_catalog().map(Message::Models);
+        (app, Task::batch([open, task, catalog]))
     }
 
     /// The app on this machine's services.
@@ -438,6 +439,19 @@ impl App {
         )
     }
 
+    /// Continues the active session's conversation in a new session in the
+    /// same folder, for a session its harness can no longer resume.
+    fn continue_in_new_session(&mut self, prompt: Prompt) -> Task<Message> {
+        let folder = self
+            .ctx
+            .sessions
+            .active()
+            .and_then(|session| session.dom().root()?.str_attr(attr::CWD).map(PathBuf::from))
+            .filter(|folder| folder.is_dir() && *folder != self.ctx.services.cwd);
+        let moved = folder.map_or_else(Task::none, |folder| self.set_folder(folder));
+        Task::batch([moved, self.start(Some(prompt))])
+    }
+
     /// Sends `prompt` to the active session, resuming it first when no
     /// harness runs it.
     fn send(&mut self, mut prompt: Prompt) -> Task<Message> {
@@ -500,6 +514,14 @@ impl App {
         if path == self.ctx.services.cwd {
             return Task::none();
         }
+        let moved = self.set_folder(path.clone());
+        let start = if self.ctx.sessions.active().is_some() { self.start(None) } else { Task::none() };
+        Task::batch([moved, start])
+    }
+
+    /// Points Files, Changes, the terminal, the composer and new sessions
+    /// at `path`, without touching the open session.
+    fn set_folder(&mut self, path: PathBuf) -> Task<Message> {
         self.ctx.services.cwd = path.clone();
         self.ctx.services.project = path.file_name().map_or_else(|| path.display().to_string(), |name| name.to_string_lossy().into_owned());
         let _ = self.diff.set_note(Some("Reading changes…".to_owned()));
@@ -511,9 +533,8 @@ impl App {
         self.ctx.notify(format!("Working in {}", folder.path));
         self.ctx.composer.set_workspace(Some(folder));
         self.refresh_folders();
-        let start = if self.ctx.sessions.active().is_some() { self.start(None) } else { Task::none() };
         let terminal = self.terminal_follow(path.clone());
-        Task::batch([working_diff(path), start, terminal])
+        Task::batch([working_diff(path), terminal])
     }
 
     fn refresh_folders(&mut self) {
@@ -749,6 +770,14 @@ impl App {
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
+        let task = self.handle(message);
+        // The sidebar and top bar follow a project page in the center.
+        let shown = (self.ctx.screen() == Some(AreaId::Projects)).then(|| self.areas.projects.shown().map(str::to_owned)).flatten();
+        self.ctx.shell.set_shown_project(shown);
+        task
+    }
+
+    fn handle(&mut self, message: Message) -> Task<Message> {
         macro_rules! area {
             ($field:ident, $variant:ident, $message:expr) => {{
                 let task = self.areas.$field.update($message, &mut self.ctx).map(Message::$variant);
@@ -945,6 +974,7 @@ impl App {
                             None => error,
                         });
                         self.ctx.show_harness();
+                        let _ = self.ctx.composer.turn_ended();
                         return Task::none();
                     }
                 };
@@ -973,10 +1003,18 @@ impl App {
                     }
                     Err(ResumeError::Unsupported(reason)) => {
                         self.ctx.notify(format!("Can't resume this session ({reason}); continuing in a new session"));
-                        self.start(Some(prompt))
+                        self.continue_in_new_session(prompt)
+                    }
+                    // omp no longer has the session's own file: carry on
+                    // in a new session rather than failing every send.
+                    Err(ResumeError::Failed(error)) if error.contains("not found") => {
+                        self.ctx.notify("This session's harness history is gone; continuing in a new session");
+                        self.continue_in_new_session(prompt)
                     }
                     Err(ResumeError::Failed(error)) => {
                         self.ctx.notify(error);
+                        // Nothing runs: give the composer back.
+                        let _ = self.ctx.composer.turn_ended();
                         Task::none()
                     }
                 }

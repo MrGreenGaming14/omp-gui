@@ -79,6 +79,11 @@ pub struct State {
 }
 
 impl State {
+    /// The project whose page this area shows, if any.
+    pub(crate) fn shown(&self) -> Option<&str> {
+        self.screen.as_ref().map(|screen| screen.project())
+    }
+
     /// The projects of this node, digests built by omp's `smol` role.
     pub fn new(ctx: &mut Ctx) -> (Self, Task<Message>) {
         let omp = ctx.services.harnesses.get("omp").and_then(|harness| harness.executable.clone());

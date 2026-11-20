@@ -36,6 +36,8 @@ pub struct State {
     pins: BTreeSet<String>,
     query: String,
     active: Option<String>,
+    /// The project whose page fills the center, if one does.
+    shown_project: Option<String>,
     /// Updates waiting for the user; the Updates row shows while non-zero.
     updates: usize,
     /// The machine the user picked; `None` means this computer.
@@ -202,6 +204,12 @@ impl State {
     /// Highlights a session row.
     pub fn set_active(&mut self, id: Option<String>) {
         self.active = id;
+    }
+
+    /// Marks the project whose page is open; it is highlighted instead of
+    /// the active session.
+    pub fn set_shown_project(&mut self, project: Option<String>) {
+        self.shown_project = project;
     }
 
     /// The highlighted session.
@@ -390,7 +398,7 @@ impl State {
         }
 
         let projects = self.projects();
-        let active_project = self.active.as_deref().and_then(|id| self.session(id)).and_then(|s| s.project.as_deref());
+        let active_project = self.shown_project.as_deref();
         lists = lists.push(header("Projects"));
         if projects.is_empty() {
             lists = lists.push(hint(if self.projects.is_empty() { "No projects yet" } else { "No match" }));
@@ -537,7 +545,7 @@ impl State {
     }
 
     fn session_row<'a>(&'a self, session: &'a SessionSummary) -> Element<'a, Message> {
-        let selected = self.active.as_deref() == Some(session.id.as_str());
+        let selected = self.shown_project.is_none() && self.active.as_deref() == Some(session.id.as_str());
 
         let mut line = row![text(session.title.as_str()).size(14).width(Fill).wrapping(text::Wrapping::None)]
             .spacing(8)

@@ -43,6 +43,8 @@ pub struct Breadcrumb {
 #[derive(Debug, Clone, Default)]
 pub struct State {
     crumb: Option<Breadcrumb>,
+    /// A project page in the center: shown instead of the session crumb.
+    project_page: Option<String>,
     status: Option<String>,
     panel_open: bool,
     full: bool,
@@ -74,6 +76,11 @@ impl State {
     /// Sets the session shown, or `None` when no session is open.
     pub fn set_breadcrumb(&mut self, crumb: Option<Breadcrumb>) {
         self.crumb = crumb;
+    }
+
+    /// Shows "Projects › name" while a project's page fills the center.
+    pub fn set_project_page(&mut self, project: Option<String>) {
+        self.project_page = project;
     }
 
     /// The session shown.
@@ -117,9 +124,14 @@ impl State {
     pub fn view(&self) -> Element<'_, Message> {
         let mut bar = row![].spacing(8).align_y(Alignment::Center);
 
-        match &self.crumb {
-            None => bar = bar.push(text("New session").size(14).style(style::muted)),
-            Some(crumb) => {
+        match (&self.project_page, &self.crumb) {
+            (Some(project), _) => {
+                bar = bar.push(text("Projects").size(14).style(style::muted));
+                bar = bar.push(muted(Icon::ChevronRight, 13.0));
+                bar = bar.push(text(project.as_str()).size(14).font(iced::Font { weight: iced::font::Weight::Bold, ..iced::Font::default() }).wrapping(text::Wrapping::None));
+            }
+            (None, None) => bar = bar.push(text("New session").size(14).style(style::muted)),
+            (None, Some(crumb)) => {
                 if let Some(project) = &crumb.project {
                     let place = if crumb.node.local { project.clone() } else { format!("{project} on {}", crumb.node.name) };
                     bar = bar.push(

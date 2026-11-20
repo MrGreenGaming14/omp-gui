@@ -367,7 +367,7 @@ fn sessions_view(sessions: &[SessionRow], now: i64) -> Element<'_, Message> {
         }
         rows = rows.push(session_row(session, now));
     }
-    list = list.push(container(rows).style(style::card));
+    list = list.push(container(rows).padding(1).style(style::card));
     list.into()
 }
 
@@ -379,38 +379,44 @@ fn session_row(session: &SessionRow, now: i64) -> Element<'_, Message> {
     }
     meta.push(if session.turns == 1 { "1 turn".to_owned() } else { format!("{} turns", session.turns) });
     meta.push(ago(now, session.last_active));
-    let (state, state_style): (String, fn(&iced::Theme) -> container::Style) = if session.excluded {
-        ("Not in context".into(), style::badge)
+    // The digest state is plain text at the end of the meta line, only
+    // tinted when it needs attention.
+    let (state, state_style): (String, fn(&iced::Theme) -> text::Style) = if session.excluded {
+        ("not in context".into(), style::muted)
     } else {
         match session.digest_state {
             DigestState::Fresh => match &session.digest_model {
-                Some(model) => (format!("Digest by {model}"), style::badge_good),
-                None => ("Digest up to date".into(), style::badge_good),
+                Some(model) => (format!("digest by {model}"), style::muted),
+                None => ("digest up to date".into(), style::muted),
             },
-            DigestState::Stale => ("Digest out of date".into(), style::badge_warn),
-            DigestState::Missing => ("No digest yet".into(), style::badge),
+            DigestState::Stale => ("digest out of date".into(), style::warning),
+            DigestState::Missing => ("no digest yet".into(), style::muted),
         }
     };
-    let head = row![
-        button(text(title).size(style::BODY)).padding(0).style(style::flat).on_press(Message::OpenSession(session.id.clone())),
-        container(text(state).size(style::SMALL)).padding([2.0, 6.0]).style(state_style),
-        space::horizontal(),
-        toggler(!session.excluded)
-            .label("In context")
-            .text_size(style::SMALL)
-            .size(16)
-            .on_toggle(|included| Message::SetIncluded { session: session.id.clone(), included }),
-    ]
-    .spacing(10)
-    .align_y(Alignment::Center);
-    let mut body = column![head, text(meta.join("  ·  ")).size(style::SMALL).style(style::muted)].spacing(4);
+    let meta = row![
+        text(meta.join("  ·  ")).size(style::SMALL).style(style::muted),
+        text("  ·  ").size(style::SMALL).style(style::muted),
+        text(state).size(style::SMALL).style(state_style),
+    ];
+    let mut body = column![text(title).size(style::BODY).wrapping(text::Wrapping::None), meta].spacing(3).width(Fill);
     if let Some(digest) = &session.digest {
         body = body.push(text(&digest.summary).size(style::NOTE).style(style::muted));
         for decision in digest.decisions.iter().take(SHOWN_DECISIONS) {
             body = body.push(text(format!("• {decision}")).size(style::SMALL).style(style::muted));
         }
     }
-    container(body).padding([10.0, 12.0]).width(Fill).into()
+    let include = toggler(!session.excluded)
+        .label("In context")
+        .text_size(style::SMALL)
+        .size(14)
+        .on_toggle(|included| Message::SetIncluded { session: session.id.clone(), included });
+    // The whole row opens the session; the toggle takes its own clicks.
+    button(row![body, include].spacing(16).align_y(Alignment::Center))
+        .padding([10.0, 12.0])
+        .width(Fill)
+        .style(style::list_row)
+        .on_press(Message::OpenSession(session.id.clone()))
+        .into()
 }
 
 /// "just now", "5m ago", "3h ago", "2d ago".

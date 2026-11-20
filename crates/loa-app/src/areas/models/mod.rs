@@ -143,10 +143,7 @@ impl State {
             cwd: Some(ctx.services.cwd.clone()),
             env: Vec::new(),
         };
-        let state = Self::with_backend(Backend::system(launch));
-        // omp's catalog fills the pickers before any session runs.
-        let catalog = state.read_roles();
-        (state, catalog)
+        (Self::with_backend(Backend::system(launch)), Task::none())
     }
 
     pub(crate) fn with_backend(backend: Backend) -> Self {
@@ -327,6 +324,12 @@ impl State {
             harness: harness.clone(),
             result,
         })
+    }
+
+    /// Reads omp's catalog so the composer offers models before any session
+    /// runs. The app calls it once at startup.
+    pub(crate) fn read_catalog(&self) -> Task<Message> {
+        self.read_roles()
     }
 
     fn read_roles(&self) -> Task<Message> {

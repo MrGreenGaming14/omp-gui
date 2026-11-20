@@ -363,6 +363,14 @@ impl State {
         self.refresh_breadcrumb();
     }
 
+    /// Marks the project whose page fills the center (`None` when a session
+    /// or the start screen does): the sidebar highlights it and the top bar
+    /// names it.
+    pub fn set_shown_project(&mut self, project: Option<String>) {
+        self.sidebar.set_shown_project(project.clone());
+        self.topbar.set_project_page(project);
+    }
+
     /// Sets the short status of the session shown in the top bar, e.g.
     /// "Running", "Waiting" or "Interrupted", or `None` to hide it.
     pub fn set_session_status(&mut self, status: Option<String>) {
