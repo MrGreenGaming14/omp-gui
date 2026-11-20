@@ -203,6 +203,79 @@ fn selecting_a_project_switches_the_active_folder_and_survives_a_restart() {
 }
 
 #[test]
+fn the_sidebar_file_list_follows_the_active_project() {
+    let dir = tempfile::tempdir().unwrap();
+    let (a, b) = (dir.path().join("a"), dir.path().join("b"));
+    std::fs::create_dir_all(&a).unwrap();
+    std::fs::create_dir_all(&b).unwrap();
+    std::fs::write(a.join("in_a.txt"), "a").unwrap();
+    std::fs::write(b.join("in_b.txt"), "b").unwrap();
+    let (mut app, _) = project_app(dir.path());
+    app.ctx.services.set_active("alpha".into(), a.clone());
+    chat_in(&mut app, "alpha", "work on a");
+    app.ctx.services.set_active("beta".into(), b.clone());
+    chat_in(&mut app, "beta", "work on b");
+
+    open_from_sidebar(&mut app, "alpha");
+    assert_eq!(app.files.root(), a);
+    assert!(app.files.visible().any(|path| path == Path::new("in_a.txt")));
+
+    open_from_sidebar(&mut app, "beta");
+    assert_eq!(app.files.root(), b, "the sidebar list is re-rooted at the opened project");
+    let listed: Vec<_> = app.files.visible().collect();
+    assert_eq!(listed, [Path::new("in_b.txt")]);
+    let _ = app.view();
+}
+
+#[test]
+fn project_tabs_list_activated_projects_and_the_shortcuts_switch_between_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let (a, b) = (dir.path().join("a"), dir.path().join("b"));
+    std::fs::create_dir_all(&a).unwrap();
+    std::fs::create_dir_all(&b).unwrap();
+    let (mut app, _) = project_app(dir.path());
+    assert!(!app.ctx.shell.project_tabs(), "off by default");
+    assert!(app.ctx.shell.open_projects().is_empty());
+
+    app.ctx.services.set_active("alpha".into(), a.clone());
+    let in_alpha = chat_in(&mut app, "alpha", "work on a");
+    app.ctx.services.set_active("beta".into(), b.clone());
+    chat_in(&mut app, "beta", "work on b");
+    assert_eq!(app.ctx.shell.open_projects(), ["alpha", "beta"], "both projects have a tab");
+
+    // The palette toggle turns the strip on and saves it.
+    let toggle = loa_ui_palette::CommandId::new("project.tabs.toggle");
+    let task = app.command(&toggle);
+    run(&mut app, task);
+    assert!(app.ctx.shell.project_tabs());
+    assert!(app.ctx.services.config.load().unwrap().config.project_tabs);
+
+    // Next and previous switch the active project, wrapping around.
+    open_from_sidebar(&mut app, "alpha");
+    assert_eq!(app.ctx.services.project, "alpha");
+    let task = app.command(&loa_ui_palette::ids::PROJECT_TAB_NEXT);
+    run(&mut app, task);
+    assert_eq!((app.ctx.services.project.as_str(), app.ctx.services.cwd.clone()), ("beta", b.clone()));
+    let task = app.command(&loa_ui_palette::ids::PROJECT_TAB_NEXT);
+    run(&mut app, task);
+    assert_eq!(app.ctx.services.project, "alpha", "wraps to the first tab");
+    let task = app.command(&loa_ui_palette::ids::PROJECT_TAB_PREVIOUS);
+    run(&mut app, task);
+    assert_eq!(app.ctx.services.project, "beta");
+
+    // Closing a tab leaves its session open and the other tab alone.
+    update(&mut app, AppMessage::Shell(shell::Message::CloseProjectTab("alpha".into())));
+    assert_eq!(app.ctx.shell.open_projects(), ["beta"]);
+    assert!(app.ctx.sessions.get(&in_alpha).is_some(), "closing a tab keeps the session");
+    open_from_sidebar(&mut app, "alpha");
+    assert_eq!(app.ctx.shell.open_projects(), ["beta", "alpha"], "activating brings the tab back");
+
+    let task = app.command(&toggle);
+    run(&mut app, task);
+    assert!(!app.ctx.shell.project_tabs());
+}
+
+#[test]
 fn a_project_without_a_folder_only_opens_its_screen() {
     let dir = tempfile::tempdir().unwrap();
     let (mut app, _) = project_app(dir.path());
@@ -231,6 +304,7 @@ fn project_screen_lists_sessions_saves_settings_and_excludes() {
     assert_eq!(app.ctx.shell.sidebar().projects(), ["work", "alpha"], "listed from the session's project");
     let titles: Vec<String> = app.areas.projects.palette_commands(&app.ctx).into_iter().map(|c| c.title).collect();
     assert!(titles.contains(&"Open project: alpha".to_owned()), "{titles:?}");
+    assert!(titles.contains(&"Pin project: alpha".to_owned()), "{titles:?}");
     assert!(app.ctx.app_tools.iter().any(|tool| tool.name == PROJECT_SEARCH), "the Tools panel lists project_search");
 
     // The palette reopens the screen; the overview lists the session.

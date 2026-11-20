@@ -8,6 +8,7 @@
 use crate::data::{NodeStatus, Nodes, SessionSummary, short_key};
 use crate::theme::{self, Preference, style};
 use crate::{sidebar, topbar};
+use loa_ui_icons::{Icon, icon};
 use iced::theme::Mode;
 use iced::widget::operation::{self, AbsoluteOffset, RelativeOffset};
 use iced::widget::{button, column, container, mouse_area, row, rule, scrollable, sensor, space, text};
@@ -30,6 +31,22 @@ pub const PANEL_ID: &str = "loa-right-panel";
 
 /// Id of the panel's tab bar, which scrolls sideways when the tabs overflow.
 pub const PANEL_TABS_ID: &str = "loa-panel-tabs";
+
+/// Id of the project tab strip, which scrolls sideways when the tabs overflow.
+pub const PROJECT_TABS_ID: &str = "loa-project-tabs";
+
+/// Container id of the tab of `project` in the project tab strip.
+pub fn project_tab_id(project: &str) -> String {
+    format!("loa-project-tab-{project}")
+}
+
+/// Container id of the close button of the tab of `project`.
+pub fn project_tab_close_id(project: &str) -> String {
+    format!("loa-project-tab-close-{project}")
+}
+
+/// Height of the project tab strip.
+const PROJECT_TABS_HEIGHT: f32 = 34.0;
 
 /// Pixels a mouse wheel line scrolls the tab bar.
 const WHEEL_LINE: f32 = 40.0;
@@ -89,6 +106,11 @@ pub struct State {
     panel: Panel,
     theme: theme::State,
     frame: Option<Size>,
+    /// Whether the project tab strip is drawn.
+    project_tabs: bool,
+    /// The projects with a tab, in order.
+    open_projects: Vec<String>,
+    active_project: Option<String>,
 }
 
 /// Internal messages.
@@ -102,6 +124,12 @@ pub enum Message {
     SelectTab(String),
     /// The mouse wheel turned over the tab bar.
     TabsWheel(mouse::ScrollDelta),
+    /// A project tab was clicked.
+    OpenProjectTab(String),
+    /// The close button of a project tab was clicked.
+    CloseProjectTab(String),
+    /// The mouse wheel turned over the project tab strip.
+    ProjectTabsWheel(mouse::ScrollDelta),
     /// The panel edge was grabbed.
     DragStart,
     /// The cursor moved to this x while the panel edge is held.
@@ -125,6 +153,8 @@ pub enum Event {
     OpenSession(String),
     /// Show this project.
     OpenProject(String),
+    /// Drop this project's tab from the strip. Its sessions stay open.
+    CloseProjectTab(String),
     /// Show the peers list.
     OpenPeers,
     /// Show the tools panel.
@@ -135,6 +165,13 @@ pub enum Event {
     SetPinned {
         /// Session id.
         id: String,
+        /// New flag.
+        pinned: bool,
+    },
+    /// Persist the pinned flag of a project.
+    SetProjectPinned {
+        /// Project name.
+        project: String,
         /// New flag.
         pinned: bool,
     },
@@ -163,6 +200,7 @@ impl From<sidebar::Event> for Event {
             sidebar::Event::OpenTools => Event::OpenTools,
             sidebar::Event::OpenUpdates => Event::OpenUpdates,
             sidebar::Event::SetPinned { id, pinned } => Event::SetPinned { id, pinned },
+            sidebar::Event::SetProjectPinned { project, pinned } => Event::SetProjectPinned { project, pinned },
             sidebar::Event::DeleteSession(id) => Event::DeleteSession(id),
         }
     }
@@ -186,6 +224,9 @@ impl State {
             },
             theme: theme::State::new(preference),
             frame: None,
+            project_tabs: false,
+            open_projects: Vec::new(),
+            active_project: None,
         };
         (state, theme::State::detect().map(Message::SystemTheme))
     }
@@ -238,14 +279,42 @@ impl State {
         self.sidebar.set_pins(pins);
     }
 
+    /// Replaces the pinned project names, as saved by the app.
+    pub fn set_pinned_projects(&mut self, pinned: impl IntoIterator<Item = String>) {
+        self.sidebar.set_pinned_projects(pinned);
+    }
+
     /// Replaces the project list.
     pub fn set_projects(&mut self, projects: impl IntoIterator<Item = String>) {
         self.sidebar.set_projects(projects);
     }
 
     /// Highlights the project the user selected in the sidebar.
+    /// The project tab strip highlights it too.
     pub fn set_active_project(&mut self, project: Option<String>) {
-        self.sidebar.set_active_project(project);
+        self.sidebar.set_active_project(project.clone());
+        self.active_project = project;
+    }
+
+    /// Shows or hides the project tab strip. Hidden, the frame is as it was
+    /// without the strip.
+    pub fn set_project_tabs(&mut self, enabled: bool) {
+        self.project_tabs = enabled;
+    }
+
+    /// Whether the project tab strip is drawn.
+    pub fn project_tabs(&self) -> bool {
+        self.project_tabs
+    }
+
+    /// Replaces the projects with a tab, in order.
+    pub fn set_open_projects(&mut self, projects: Vec<String>) {
+        self.open_projects = projects;
+    }
+
+    /// The projects with a tab, in order.
+    pub fn open_projects(&self) -> &[String] {
+        &self.open_projects
     }
 
     /// Replaces the node list.
@@ -412,15 +481,11 @@ impl State {
                 });
                 (Task::none(), event)
             }
-            Message::TabsWheel(delta) => {
-                // The tab bar scrolls only sideways: a vertical wheel turns
-                // it, sideways deltas reach the scrollable itself.
-                let x = match delta {
-                    mouse::ScrollDelta::Lines { y, .. } => -y * WHEEL_LINE,
-                    mouse::ScrollDelta::Pixels { y, .. } => -y,
-                };
-                let task = if x == 0.0 { Task::none() } else { operation::scroll_by(PANEL_TABS_ID, AbsoluteOffset { x, y: 0.0 }) };
-                (task, None)
+            Message::TabsWheel(delta) => (wheel_tabs(PANEL_TABS_ID, delta), None),
+            Message::ProjectTabsWheel(delta) => (wheel_tabs(PROJECT_TABS_ID, delta), None),
+            Message::OpenProjectTab(project) => (Task::none(), Some(Event::OpenProject(project))),
+            Message::CloseProjectTab(project) => {
+                (Task::none(), Some(Event::CloseProjectTab(project)))
             }
             Message::DragStart => {
                 self.panel.dragging = self.panel.open;
@@ -458,24 +523,29 @@ impl State {
     ///
     /// `center` fills the area under the top bar. `panel_body` draws the body
     /// of the active tab and is only called while the panel is open with a
-    /// tab. `map` lifts this crate's messages into the app's.
+    /// tab. `project_files`, when set, is drawn in the sidebar under the
+    /// active project's row. `map` lifts this crate's messages into the app's.
     pub fn view<'a, M: Clone + 'a>(
         &'a self,
         center: impl Into<Element<'a, M>>,
         panel_body: impl FnOnce(&'a str) -> Element<'a, M>,
+        project_files: Option<Element<'a, M>>,
         map: fn(Message) -> M,
     ) -> Element<'a, M> {
-        let sidebar = container(self.sidebar.view().map(Message::Sidebar)).width(SIDEBAR_WIDTH).height(Fill);
-        let sidebar = Element::from(sidebar).map(map);
+        let sidebar = self.sidebar.view_with(move |message| map(Message::Sidebar(message)), project_files);
+        let sidebar = container(sidebar).width(SIDEBAR_WIDTH).height(Fill);
+        let sidebar = Element::from(sidebar);
 
         let topbar = self.topbar.view().map(Message::Topbar).map(map);
         let center = container(center).style(style::surface).width(Fill).height(Fill);
 
-        let mut frame = row![
-            sidebar,
-            rule::vertical(1).style(style::divider),
-            column![topbar, rule::horizontal(1).style(style::divider), center],
-        ];
+        let mut main = column![];
+        if self.project_tabs {
+            main = main.push(self.project_tabs_view(map));
+            main = main.push(rule::horizontal(1).style(style::divider));
+        }
+        let main = main.push(topbar).push(rule::horizontal(1).style(style::divider)).push(center);
+        let mut frame = row![sidebar, rule::vertical(1).style(style::divider), main];
         if self.panel.open {
             let handle =
                 mouse_area(container(rule::vertical(1).style(style::divider)).center_x(HANDLE_WIDTH).height(Fill))
@@ -500,6 +570,32 @@ impl State {
             .into()
     }
 
+    /// The strip of open projects above the top bar: a tab per project that
+    /// opens it, with a close button that only drops the tab.
+    fn project_tabs_view<'a, M: 'a>(&'a self, map: fn(Message) -> M) -> Element<'a, M> {
+        let active = self.active_project.as_deref();
+        let tabs = self.open_projects.iter().fold(row![].align_y(iced::Alignment::Center), |bar, project| {
+            let selected = active == Some(project.as_str());
+            let label = button(text(project.as_str()).size(14))
+                .on_press(Message::OpenProjectTab(project.clone()))
+                .style(style::tab(selected))
+                .padding([0, 8]);
+            let close = button(icon(Icon::X, 12.0))
+                .on_press(Message::CloseProjectTab(project.clone()))
+                .style(style::row)
+                .padding(3);
+            let line = row![
+                container(label).id(project_tab_id(project)),
+                container(close).id(project_tab_close_id(project)),
+            ]
+            .align_y(iced::Alignment::Center);
+            let underline = container(space()).width(Fill).height(2);
+            let underline = if selected { underline.style(style::tab_underline) } else { underline };
+            bar.push(column![container(line).center_y(Fill), underline].width(Shrink).height(PROJECT_TABS_HEIGHT))
+        });
+        Element::from(scrolling_tabs(tabs, PROJECT_TABS_ID, Message::ProjectTabsWheel)).map(map)
+    }
+
     fn panel_view<'a, M: 'a>(
         &'a self,
         panel_body: impl FnOnce(&'a str) -> Element<'a, M>,
@@ -516,15 +612,7 @@ impl State {
             let underline = if selected { underline.style(style::tab_underline) } else { underline };
             bar.push(column![container(label).center_y(Fill), underline].width(Shrink).height(topbar::HEIGHT))
         });
-        // Embedded below the tabs, so it never covers the active underline.
-        let scrollbar = scrollable::Scrollbar::new().width(2).scroller_width(2).spacing(0);
-        let tabs = scrollable(tabs)
-            .id(PANEL_TABS_ID)
-            .direction(scrollable::Direction::Horizontal(scrollbar))
-            .style(style::tab_scrollbar)
-            .width(Fill);
-        let tabs = mouse_area(tabs).on_scroll(Message::TabsWheel);
-        let tab_bar = Element::from(container(tabs).style(style::chrome).padding([0, 4]).width(Fill)).map(map);
+        let tab_bar = Element::from(scrolling_tabs(tabs, PANEL_TABS_ID, Message::TabsWheel)).map(map);
 
         let body = match active {
             Some(id) => panel_body(id),
@@ -541,6 +629,33 @@ impl State {
             .height(Fill)
             .into()
     }
+}
+
+/// A tab bar that scrolls sideways when its tabs overflow, wheel included.
+fn scrolling_tabs<'a>(
+    tabs: iced::widget::Row<'a, Message>,
+    id: &'static str,
+    wheel: fn(mouse::ScrollDelta) -> Message,
+) -> Element<'a, Message> {
+    // Embedded below the tabs, so it never covers the active underline.
+    let scrollbar = scrollable::Scrollbar::new().width(2).scroller_width(2).spacing(0);
+    let tabs = scrollable(tabs)
+        .id(id)
+        .direction(scrollable::Direction::Horizontal(scrollbar))
+        .style(style::tab_scrollbar)
+        .width(Fill);
+    let tabs = mouse_area(tabs).on_scroll(wheel);
+    container(tabs).style(style::chrome).padding([0, 4]).width(Fill).into()
+}
+
+/// Scrolls the tab bar `id` for a wheel turn. The bar scrolls only sideways:
+/// a vertical wheel turns it, sideways deltas reach the scrollable itself.
+fn wheel_tabs(id: &'static str, delta: mouse::ScrollDelta) -> Task<Message> {
+    let x = match delta {
+        mouse::ScrollDelta::Lines { y, .. } => -y * WHEEL_LINE,
+        mouse::ScrollDelta::Pixels { y, .. } => -y,
+    };
+    if x == 0.0 { Task::none() } else { operation::scroll_by(id, AbsoluteOffset { x, y: 0.0 }) }
 }
 
 #[cfg(test)]
@@ -651,6 +766,23 @@ mod tests {
 
         state.remove_session("s1");
         assert!(state.topbar().breadcrumb().is_none());
+    }
+
+    #[test]
+    fn project_tab_messages_become_events_and_the_strip_is_off_by_default() {
+        let mut state = frame();
+        assert!(!state.project_tabs());
+        state.set_open_projects(vec!["loa".into(), "docs".into()]);
+        state.set_active_project(Some("docs".into()));
+        assert_eq!(state.open_projects(), ["loa", "docs"]);
+        assert_eq!(send(&mut state, Message::OpenProjectTab("loa".into())), Some(Event::OpenProject("loa".into())));
+        assert_eq!(
+            send(&mut state, Message::CloseProjectTab("docs".into())),
+            Some(Event::CloseProjectTab("docs".into()))
+        );
+        assert_eq!(state.open_projects(), ["loa", "docs"], "the app owns the list");
+        state.set_project_tabs(true);
+        assert!(state.project_tabs());
     }
 
     #[test]
