@@ -1,3 +1,7 @@
+// No console window behind the desktop app. `omp-bridge` still speaks over
+// the stdio pipes its parent hands it.
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 use std::process::ExitCode;
 
 use iced::Font;
