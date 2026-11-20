@@ -224,6 +224,8 @@ pub enum Message {
     /// Show or hide the full output of a job.
     Toggle(NodeId),
     Open(NodeId),
+    /// Open the subagent's session in its own window.
+    Detach(NodeId),
     Cancel(NodeId),
 }
 
@@ -231,6 +233,8 @@ pub enum Message {
 pub enum Event {
     /// Open the child session with this id.
     OpenSession(String),
+    /// Show the child session with this id in its own window.
+    DetachSession(String),
     /// Stop a running job. `id` is the harness's job id when known.
     Cancel { node: NodeId, id: Option<String> },
 }
@@ -331,6 +335,9 @@ impl State {
             Message::Open(node) => {
                 self.jobs.get(&node).and_then(|job| job.session.clone()).map(Event::OpenSession)
             }
+            Message::Detach(node) => {
+                self.jobs.get(&node).and_then(|job| job.session.clone()).map(Event::DetachSession)
+            }
             Message::Cancel(node) => self
                 .jobs
                 .get(&node)
@@ -423,6 +430,7 @@ impl State {
         head = head.push(space().width(Fill));
         if job.kind == JobKind::Subagent && job.session.is_some() {
             head = head.push(action("Open", Message::Open(job.node)));
+            head = head.push(action("Window", Message::Detach(job.node)));
         }
         if job.status == JobStatus::Running {
             head = head.push(action("Cancel", Message::Cancel(job.node)));

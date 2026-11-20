@@ -137,6 +137,8 @@ fn the_palette_lists_every_area_command_and_the_whole_keymap() {
         ids::SESSION_INTERRUPT,
         ids::SESSION_NEXT,
         ids::SESSION_PREVIOUS,
+        ids::PROJECT_TAB_NEXT,
+        ids::PROJECT_TAB_PREVIOUS,
         ids::COMPOSER_FOCUS,
         ids::SEARCH_FOCUS,
         ids::KEYMAP_SHOW,
@@ -169,7 +171,7 @@ fn the_palette_lists_every_area_command_and_the_whole_keymap() {
     }
 
     // Composer pickers and the hover-only pin button are reachable too.
-    for title in ["Mode: plan", "Pin session", "Show tools", "Show peers"] {
+    for title in ["Mode: plan", "Pin session", "Show tools", "Show peers", "Show project tabs"] {
         assert!(commands.iter().any(|command| command.title == title), "{title} missing");
     }
 }

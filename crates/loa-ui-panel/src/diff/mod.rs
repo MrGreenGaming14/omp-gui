@@ -72,6 +72,8 @@ pub struct State {
     scroll_id: Id,
     /// The selected file's lines are hidden; only its header shows.
     collapsed: bool,
+    /// Shown instead of "No changes" when set.
+    note: Option<String>,
 }
 
 impl Default for State {
@@ -91,7 +93,15 @@ impl State {
             viewport_height: DEFAULT_VIEWPORT,
             scroll_id: Id::unique(),
             collapsed: false,
+            note: None,
         }
+    }
+
+    /// Replaces the "No changes" text, e.g. when the folder isn't a git
+    /// repository. Clears the files shown.
+    pub fn set_note(&mut self, note: Option<String>) -> Task<Message> {
+        self.note = note;
+        if self.note.is_some() { self.set_files(Vec::new()) } else { Task::none() }
     }
 
     /// Replaces the files shown and selects the first.
@@ -185,7 +195,8 @@ impl State {
 
     pub fn view(&self) -> Element<'_, Message> {
         let Some(file) = self.selected() else {
-            return container(text("No changes").style(style::muted)).padding(8).into();
+            let note = self.note.as_deref().unwrap_or("No changes");
+            return container(text(note).style(style::muted)).padding(8).into();
         };
         let mut page = column![self.toolbar(file), rule::horizontal(1).style(style::divider)];
         if self.files.len() > 1 {

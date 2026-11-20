@@ -1,55 +1,66 @@
-//! Looks of the composer. Colors come from the theme's extended palette, so
-//! the light and dark themes both work.
+//! Looks of the composer. Colors come from the shell's theme tokens, so the
+//! light and dark themes both work.
 
 use iced::widget::{button, container, svg, text, text_editor};
 use iced::{Background, Border, Color, Theme};
+use loa_ui_shell::theme::style::tokens;
 
 /// Corner radius of the composer box.
-const FRAME_RADIUS: f32 = 10.0;
+const FRAME_RADIUS: f32 = 16.0;
 /// Corner radius of menus.
 const MENU_RADIUS: f32 = 8.0;
-/// Corner radius of rows, pickers and the send button.
+/// Corner radius of rows and the ghost controls.
 const RADIUS: f32 = 6.0;
 
-/// Secondary text: the body text color at reduced alpha.
+/// Secondary text: labels of the ghost controls, placeholders.
 pub(crate) fn muted_color(theme: &Theme) -> Color {
-    theme.palette().text.scale_alpha(0.55)
+    tokens(theme).text2
 }
 
 pub(crate) fn muted(theme: &Theme) -> text::Style {
     text::Style { color: Some(muted_color(theme)) }
 }
 
-/// One-pixel edge of the composer box and menus.
-fn hairline(theme: &Theme, radius: f32) -> Border {
-    Border { color: theme.extended_palette().background.weak.color, width: 1.0, radius: radius.into() }
+/// Tertiary text, e.g. the folder chip's branch.
+pub(crate) fn faint(theme: &Theme) -> text::Style {
+    text::Style { color: Some(tokens(theme).text3) }
 }
 
-/// The composer box: the page background inside a hairline edge.
+/// One-pixel edge of the composer box and menus.
+fn hairline(theme: &Theme, radius: f32) -> Border {
+    Border { color: tokens(theme).line, width: 1.0, radius: radius.into() }
+}
+
+/// The composer box: a raised fill a step above the ground, inside a
+/// hairline edge.
 pub(crate) fn frame(theme: &Theme) -> container::Style {
+    let t = tokens(theme);
     container::Style {
-        background: Some(Background::Color(theme.palette().background)),
-        border: hairline(theme, FRAME_RADIUS),
+        background: Some(Background::Color(t.raised)),
+        text_color: Some(t.text),
+        border: Border { color: t.line_strong.scale_alpha(0.6), width: 1.0, radius: FRAME_RADIUS.into() },
         ..container::Style::default()
     }
 }
 
 /// The editor inside the box: no fill and no edge of its own.
 pub(crate) fn editor(theme: &Theme, _status: text_editor::Status) -> text_editor::Style {
-    let palette = theme.extended_palette();
+    let t = tokens(theme);
     text_editor::Style {
         background: Background::Color(Color::TRANSPARENT),
         border: Border::default(),
-        placeholder: muted_color(theme),
-        value: palette.background.base.text,
-        selection: palette.primary.weak.color.scale_alpha(0.4),
+        placeholder: t.text3,
+        value: t.text,
+        selection: t.accent.scale_alpha(0.3),
     }
 }
 
 /// Raised surface of the popups and picker menus, like the command palette.
 pub(crate) fn menu(theme: &Theme) -> container::Style {
+    let t = tokens(theme);
     container::Style {
-        background: Some(Background::Color(theme.extended_palette().background.weakest.color)),
+        background: Some(Background::Color(t.card)),
+        text_color: Some(t.text),
         border: hairline(theme, MENU_RADIUS),
         ..container::Style::default()
     }
@@ -59,15 +70,15 @@ pub(crate) fn menu(theme: &Theme) -> container::Style {
 /// Disabled rows (unavailable choices) keep no fill and dim their text.
 pub(crate) fn row(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
     move |theme: &Theme, status: button::Status| {
-        let palette = theme.extended_palette();
+        let t = tokens(theme);
         let fill = match status {
-            _ if selected => Some(palette.background.neutral.color),
-            button::Status::Hovered | button::Status::Pressed => Some(palette.background.weak.color),
+            _ if selected => Some(t.selected),
+            button::Status::Hovered | button::Status::Pressed => Some(t.selected),
             button::Status::Active | button::Status::Disabled => None,
         };
         let text_color = match status {
-            button::Status::Disabled => muted_color(theme),
-            _ => palette.background.base.text,
+            button::Status::Disabled => t.text3,
+            _ => t.text,
         };
         button::Style {
             background: fill.map(Background::Color),
@@ -78,39 +89,54 @@ pub(crate) fn row(selected: bool) -> impl Fn(&Theme, button::Status) -> button::
     }
 }
 
-/// A flat picker: just its label and chevron, filled on hover or while its
-/// menu is open.
-pub(crate) fn picker(open: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+/// A borderless ghost control (pickers, `+`, the folder chip): muted label,
+/// a soft fill only on hover or while its menu is open.
+pub(crate) fn ghost(open: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
     move |theme: &Theme, status: button::Status| {
-        let palette = theme.extended_palette();
+        let t = tokens(theme);
         let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
         button::Style {
-            background: (open || hovered).then_some(Background::Color(palette.background.weak.color)),
-            text_color: palette.background.base.text,
+            background: (open || hovered).then_some(Background::Color(t.hover)),
+            text_color: if open || hovered { t.text } else { t.text2 },
             border: Border { radius: RADIUS.into(), ..Border::default() },
             ..button::Style::default()
         }
     }
 }
 
-/// The square send and stop button: filled with the primary color, slightly
-/// dimmed while there is nothing to send.
+/// Icon tint of the ghost controls: secondary text.
+pub(crate) fn ghost_icon(theme: &Theme, _status: svg::Status) -> svg::Style {
+    svg::Style { color: Some(tokens(theme).text2) }
+}
+
+/// Tint of the ghost controls' chevrons: a step quieter than their icons.
+pub(crate) fn chevron(theme: &Theme, _status: svg::Status) -> svg::Style {
+    svg::Style { color: Some(tokens(theme).text3) }
+}
+
+/// The round send and stop button: the accent while there is something to
+/// send (or a turn to stop), a quiet neutral disc otherwise.
 pub(crate) fn send(theme: &Theme, status: button::Status) -> button::Style {
-    let palette = theme.extended_palette();
+    let t = tokens(theme);
     let fill = match status {
-        button::Status::Hovered | button::Status::Pressed => palette.primary.strong.color,
-        button::Status::Disabled => palette.primary.base.color.scale_alpha(0.85),
-        button::Status::Active => palette.primary.base.color,
+        button::Status::Hovered | button::Status::Pressed => t.accent.scale_alpha(0.85),
+        button::Status::Disabled => t.selected,
+        button::Status::Active => t.accent,
     };
     button::Style {
         background: Some(Background::Color(fill)),
-        text_color: palette.primary.base.text,
-        border: Border { radius: RADIUS.into(), ..Border::default() },
+        text_color: t.on_accent,
+        border: Border { radius: (crate::SEND_SIZE / 2.0).into(), ..Border::default() },
         ..button::Style::default()
     }
 }
 
-/// Icon tint on the send button: the text color of the primary fill.
-pub(crate) fn on_primary(theme: &Theme, _status: svg::Status) -> svg::Style {
-    svg::Style { color: Some(theme.extended_palette().primary.base.text) }
+/// Icon tint on the send button: the text color on the accent.
+pub(crate) fn on_accent(theme: &Theme, _status: svg::Status) -> svg::Style {
+    svg::Style { color: Some(tokens(theme).on_accent) }
+}
+
+/// Icon tint on the disabled send button.
+pub(crate) fn send_idle(theme: &Theme, _status: svg::Status) -> svg::Style {
+    svg::Style { color: Some(tokens(theme).text3) }
 }

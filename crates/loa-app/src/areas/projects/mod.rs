@@ -1,5 +1,6 @@
 //! Projects (P1, P2): the sidebar's project list from the sessions' projects
-//! and working directories, the project screen (shared instructions, pinned
+//! and working directories, selecting a project (it becomes the active
+//! project with its folder, and its screen lists its chats), the project screen (shared instructions, pinned
 //! files, sessions with their digests and exclude toggle), digest rebuilds
 //! at turn end and compaction, the project context new chats receive, and
 //! the `project_search` / `project_read` host tools.
@@ -33,6 +34,8 @@ mod tests;
 
 /// Palette command prefix that opens a project, followed by its name.
 const OPEN_COMMAND: &str = "open:";
+/// Palette command id prefix that toggles a project's sidebar pin.
+const PIN_COMMAND: &str = "pin:";
 
 #[derive(Clone, Debug)]
 pub enum Message {
@@ -79,6 +82,11 @@ pub struct State {
 }
 
 impl State {
+    /// The project whose page this area shows, if any.
+    pub(crate) fn shown(&self) -> Option<&str> {
+        self.screen.as_ref().map(|screen| screen.project())
+    }
+
     /// The projects of this node, digests built by omp's `smol` role.
     pub fn new(ctx: &mut Ctx) -> (Self, Task<Message>) {
         let omp = ctx.services.harnesses.get("omp").and_then(|harness| harness.executable.clone());
@@ -98,7 +106,7 @@ impl State {
         for spec in &tools.0 {
             ctx.set_app_tool(loa_ui_tools::ToolInfo::from(spec));
         }
-        ctx.shell.set_projects([ctx.services.project.clone()]);
+        ctx.shell.set_projects([ctx.services.workspace_project()]);
         let state = Self {
             service,
             tools,
@@ -173,7 +181,24 @@ impl State {
         }
     }
 
+    /// The folder of `project`: the launch folder for the workspace project,
+    /// else the folder of its most recent session, when it still exists.
+    fn folder(&self, project: &str, ctx: &Ctx) -> Option<PathBuf> {
+        let folder = if project == ctx.services.workspace_project() {
+            Some(ctx.services.workspace.clone())
+        } else {
+            self.projects.iter().find(|summary| summary.name == project).and_then(|summary| summary.cwd.as_deref()).map(PathBuf::from)
+        };
+        folder.filter(|folder| folder.is_dir())
+    }
+
+    /// Makes `project` the active project, with its folder, and shows its
+    /// screen: the project's chats, most recent first.
     fn open(&mut self, project: String, ctx: &mut Ctx) -> Task<Message> {
+        match self.folder(&project, ctx) {
+            Some(cwd) => ctx.request(Request::ActivateProject { project: project.clone(), cwd }),
+            None => ctx.notify(format!("{project} has no folder yet; start a chat in it first")),
+        }
         if self.screen.as_ref().is_none_or(|screen| screen.project() != project) {
             self.screen = Some(screen::State::new(project.clone()));
         }
@@ -242,7 +267,7 @@ impl Area for State {
             Message::Open(project) => self.open(project, ctx),
             Message::Listed(Ok(projects)) => {
                 self.projects = projects;
-                ctx.shell.set_projects(self.names(&ctx.services.project));
+                ctx.shell.set_projects(self.names(&ctx.services.workspace_project()));
                 let uncached: Vec<String> =
                     self.projects.iter().filter(|p| !self.contexts.contains_key(&p.name)).map(|p| p.name.clone()).collect();
                 Task::batch(uncached.into_iter().map(|project| self.refresh_context(project)))
@@ -302,17 +327,29 @@ impl Area for State {
     }
 
     fn palette_commands(&self, ctx: &Ctx) -> Vec<palette::Command> {
-        self.names(&ctx.services.project)
+        let pinned = ctx.shell.sidebar().pinned_projects();
+        self.names(&ctx.services.workspace_project())
             .into_iter()
-            .map(|name| {
-                let id = AreaId::Projects.command(&format!("{OPEN_COMMAND}{name}"));
-                palette::Command::new(id, format!("Open project: {name}"), "Projects")
+            .flat_map(|name| {
+                let open = AreaId::Projects.command(&format!("{OPEN_COMMAND}{name}"));
+                let pin = AreaId::Projects.command(&format!("{PIN_COMMAND}{name}"));
+                let verb = if pinned.contains(&name) { "Unpin" } else { "Pin" };
+                [
+                    palette::Command::new(open, format!("Open project: {name}"), "Projects"),
+                    palette::Command::new(pin, format!("{verb} project: {name}"), "Projects"),
+                ]
             })
             .collect()
     }
 
     fn run_command(&mut self, id: &str, ctx: &mut Ctx) -> Option<Task<Message>> {
-        let project = id.strip_prefix(AreaId::Projects.key())?.strip_prefix('.')?.strip_prefix(OPEN_COMMAND)?;
+        let rest = id.strip_prefix(AreaId::Projects.key())?.strip_prefix('.')?;
+        if let Some(project) = rest.strip_prefix(PIN_COMMAND) {
+            let toggle = loa_ui_shell::sidebar::Message::ToggleProjectPin(project.to_owned());
+            ctx.request(Request::Forward(Box::new(crate::app::Message::Shell(loa_ui_shell::Message::Sidebar(toggle)))));
+            return Some(Task::none());
+        }
+        let project = rest.strip_prefix(OPEN_COMMAND)?;
         Some(self.open(project.to_owned(), ctx))
     }
 

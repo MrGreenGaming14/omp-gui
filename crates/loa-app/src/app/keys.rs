@@ -41,6 +41,8 @@ impl App {
         let mut commands = vec![
             hinted(ids::SESSION_NEXT, "Next session".into(), "Commands"),
             hinted(ids::SESSION_PREVIOUS, "Previous session".into(), "Commands"),
+            hinted(ids::PROJECT_TAB_NEXT, "Next project tab".into(), "Commands"),
+            hinted(ids::PROJECT_TAB_PREVIOUS, "Previous project tab".into(), "Commands"),
             hinted(ids::COMPOSER_FOCUS, "Focus the composer".into(), "Commands"),
             hinted(ids::SEARCH_FOCUS, "Search sessions".into(), "Commands"),
             hinted(ids::FOCUS_NEXT, "Focus the next field".into(), "Commands"),
@@ -127,6 +129,8 @@ impl App {
         let task = match id {
             "session.next" => self.step_session(true),
             "session.previous" => self.step_session(false),
+            "project.tab.next" => self.step_project_tab(true),
+            "project.tab.previous" => self.step_project_tab(false),
             "composer.focus" => self.focus_composer(),
             "sidebar.search" => operation::focus(shell::sidebar::SEARCH_ID),
             "focus.next" => operation::focus_next(),

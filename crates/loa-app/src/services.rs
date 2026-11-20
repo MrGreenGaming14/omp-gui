@@ -75,10 +75,12 @@ pub struct Services {
     /// Decides peer requests on sessions this node owns.
     pub peer_access: Arc<PeerAccess>,
     pub harnesses: Harnesses,
-    /// Directory new sessions run in.
+    /// Directory new sessions run in; the active project's folder.
     pub cwd: PathBuf,
-    /// Name of the project, the last component of `cwd`.
+    /// Name of the active project. At launch the last component of `cwd`.
     pub project: String,
+    /// The folder the app was launched in, the workspace project's folder.
+    pub workspace: PathBuf,
     /// The central config file, `<data>/config.toml`. Each area reads it
     /// and saves only the table it owns.
     pub config: ConfigStore,
@@ -109,7 +111,7 @@ impl Services {
             }
         };
         let harnesses = Harnesses::detect(&node.key, &dirs.omp);
-        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let cwd = starting_folder(std::env::args().nth(1), std::env::temp_dir());
         Ok((Self::new(node, dirs, harnesses, cwd)?, warnings))
     }
 
@@ -133,12 +135,27 @@ impl Services {
             library: Arc::new(library),
             peer_access,
             harnesses,
+            workspace: cwd.clone(),
             cwd,
             project,
             config,
             mcp,
             grants: Arc::new(grants),
         })
+    }
+
+    /// Name of the workspace project, the last component of `workspace`.
+    pub fn workspace_project(&self) -> String {
+        self.workspace
+            .file_name()
+            .map_or_else(|| self.workspace.display().to_string(), |name| name.to_string_lossy().into_owned())
+    }
+
+    /// Makes `project` and its folder `cwd` the active ones: new sessions
+    /// start there. Running sessions keep their own folder.
+    pub fn set_active(&mut self, project: String, cwd: PathBuf) {
+        self.project = project;
+        self.cwd = cwd;
     }
 }
 
@@ -172,5 +189,27 @@ struct NoGrants;
 impl Authorize for NoGrants {
     fn authorize(&self, _: &SessionId, _: &NodeKey, _: &Draft, _: &Dom) -> Result<(), Denied> {
         Err(Denied("this node has issued no grants".to_owned()))
+    }
+}
+
+/// The folder the app starts in: a folder given as the first argument
+/// (`loa-app ~/code/project`), else the system's temporary folder
+/// (`$TMPDIR`, usually `/tmp`), so nothing lands in wherever the app
+/// happened to be launched from until a folder is picked.
+pub fn starting_folder(arg: Option<String>, temp: PathBuf) -> PathBuf {
+    arg.map(PathBuf::from).filter(|path| path.is_dir()).and_then(|path| path.canonicalize().ok()).unwrap_or(temp)
+}
+
+#[cfg(test)]
+mod starting_folder_tests {
+    use super::starting_folder;
+
+    #[test]
+    fn starts_in_the_temp_folder_unless_a_folder_is_given() {
+        let temp = std::env::temp_dir();
+        let given = tempfile::tempdir().unwrap();
+        assert_eq!(starting_folder(None, temp.clone()), temp);
+        assert_eq!(starting_folder(Some("/no/such/folder".into()), temp.clone()), temp);
+        assert_eq!(starting_folder(Some(given.path().display().to_string()), temp.clone()), given.path().canonicalize().unwrap());
     }
 }

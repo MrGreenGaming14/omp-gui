@@ -19,7 +19,7 @@ pub use items::{COMMANDS_EXT, ItemKind};
 
 use heights::Heights;
 use iced::widget::{
-    self, button, container, keyed_column, markdown, scrollable, sensor, space, stack, text,
+    self, button, container, markdown, scrollable, sensor, space, stack, text,
 };
 use iced::{Element, Fill, Task, Theme};
 use items::{Emitter, Item};
@@ -134,9 +134,18 @@ pub struct State {
     scroll: Scroll,
     look: style::Look,
     scroll_id: widget::Id,
+    /// Room left under the last row for what floats over the transcript's
+    /// bottom edge (the composer), so the last row can scroll clear of it.
+    bottom_inset: f32,
 }
 
 impl State {
+    /// Leaves `inset` pixels under the last row for something drawn over
+    /// the transcript's bottom edge.
+    pub fn set_bottom_inset(&mut self, inset: f32) {
+        self.bottom_inset = inset;
+    }
+
     /// An empty transcript styled for `theme`.
     pub fn new(theme: &Theme) -> Self {
         Self {
@@ -156,6 +165,7 @@ impl State {
             },
             look: style::Look::new(theme),
             scroll_id: widget::Id::unique(),
+            bottom_inset: 0.0,
         }
     }
 
@@ -288,14 +298,17 @@ impl State {
             (key.0, Element::from(measured))
         });
 
-        // Spacers stand in for the rows outside the window. Keys 0 (the
-        // document) and `u64::MAX` are never row keys.
-        let list = keyed_column(
-            std::iter::once((0, space().height(above).into()))
-                .chain(built)
-                .chain(std::iter::once((u64::MAX, space().height(below).into()))),
-        )
-        .width(Fill);
+        // Spacers stand in for the rows outside the window. A plain column,
+        // not `keyed_column`: iced 0.14's keyed diff assumes one contiguous
+        // insert or removal per frame, and a turn's first reply (rows added
+        // while the window shifts) paired a row's sensor with a spacer's
+        // state and panicked ("Downcast on stateless state"). Index diffing
+        // rebuilds mismatched widgets instead, and each row's sensor carries
+        // its own key, so measurements still follow rows that move.
+        let rows = std::iter::once(space().height(above).into())
+            .chain(built.map(|(_, row)| row))
+            .chain(std::iter::once(space().height(below + self.bottom_inset).into()));
+        let list = iced::widget::Column::with_children(rows).width(Fill);
 
         let on_scroll = map.clone();
         let scrollbar = scrollable::Scrollbar::new().width(6).scroller_width(6);
@@ -314,7 +327,7 @@ impl State {
             .padding([6, 14])
             .on_press(Message::JumpToLatest);
         let overlay = container(Element::from(jump).map(map))
-            .padding(16)
+            .padding(iced::Padding { bottom: 16.0 + self.bottom_inset, ..iced::Padding::new(16.0) })
             .center_x(Fill)
             .align_bottom(Fill);
         stack![transcript, overlay].into()

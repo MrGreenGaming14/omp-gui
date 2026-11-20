@@ -384,3 +384,17 @@ fn surfaces_settings_round_trip_and_default_when_absent() {
     assert!(saved.contains("[surfaces]") && saved.contains("browser_capture = \"virtual-display\""), "{saved}");
     assert_eq!(store.load().unwrap().config, c);
 }
+
+#[test]
+fn project_tabs_default_off_stay_out_of_the_file_and_round_trip() {
+    let (_dir, store) = store_with(FULL);
+    let mut c = store.load().unwrap().config;
+    assert!(!c.project_tabs);
+    store.save(&c).unwrap();
+    assert!(!fs::read_to_string(store.path()).unwrap().contains("project_tabs"));
+
+    c.project_tabs = true;
+    store.save(&c).unwrap();
+    assert!(fs::read_to_string(store.path()).unwrap().contains("project_tabs = true"));
+    assert!(store.load().unwrap().config.project_tabs);
+}

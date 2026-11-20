@@ -1,26 +1,31 @@
-//! The left sidebar: New, Search, Projects, Peers, Tools, Pinned and Recents.
+//! The left sidebar.
 //!
-//! Recents hold sessions from every node, each tagged with the node's name.
-//! Sessions with an open decision carry a waiting badge.
+//! From the top: a machine switcher that says which machine you are working
+//! on and lists your peers, New session, Search, Projects, Pinned and
+//! Recents for the chosen machine, and a footer with Usage, Configs and
+//! Settings. Sessions with an open decision say so in the needs-you color.
 
 use std::collections::BTreeSet;
 
-use crate::data::{Nodes, SessionSummary};
+use crate::data::{NodeFilter, NodeStatus, Nodes, SessionSummary, UsageMeter};
 use crate::theme::style;
 use iced::widget::{Column, button, column, container, hover, row, scrollable, space, text, text_input};
-use iced::{Alignment, Element, Fill, Padding, Task};
-use loa_ui_icons::{Icon, icon};
+use iced::{Alignment, Element, Fill, Length, Padding, Task};
+use loa_ui_icons::{Icon, icon, muted};
 
 /// Id of the search input, for focusing it from a shortcut.
 pub const SEARCH_ID: &str = "loa-sidebar-search";
 
-/// Container id of the waiting badge on a session row.
+/// Container id of the machine switcher.
+pub const MACHINE_SWITCHER_ID: &str = "loa-sidebar-machine";
+
+/// Container id of the waiting label on a session row.
 pub fn waiting_badge_id(session: &str) -> String {
     format!("loa-sidebar-waiting-{session}")
 }
 
 /// Sidebar state: the sessions, projects and nodes the app passed in, the
-/// search query and the highlighted session.
+/// search query, the chosen machine and the highlighted session.
 #[derive(Debug, Clone, Default)]
 pub struct State {
     sessions: Vec<Entry>,
@@ -29,10 +34,23 @@ pub struct State {
     /// Ids of the pinned sessions. App data, so it outlives every summary
     /// the app passes in, including sessions not listed yet.
     pins: BTreeSet<String>,
+    /// Names of the pinned projects; names not in the list stay saved but hidden.
+    pinned_projects: BTreeSet<String>,
     query: String,
     active: Option<String>,
+    /// The project the user selected; highlighted instead of the active
+    /// session's project while set.
+    active_project: Option<String>,
+    /// The project whose page fills the center, if one does.
+    shown_project: Option<String>,
     /// Updates waiting for the user; the Updates row shows while non-zero.
     updates: usize,
+    /// The machine the user picked; `None` means this computer.
+    machine: Option<NodeFilter>,
+    /// Whether the machine list is open.
+    machines_open: bool,
+    /// The footer usage meter, once usage is known.
+    usage: Option<UsageMeter>,
 }
 
 /// A session with its lowercase search text, rebuilt when sessions or node
@@ -66,16 +84,28 @@ pub enum Message {
     Search(String),
     /// A project row was clicked.
     OpenProject(String),
-    /// The Peers item was clicked.
+    /// Manage peers, from the machine list.
     OpenPeers,
     /// The Tools item was clicked.
     OpenTools,
     /// The Updates item was clicked.
     OpenUpdates,
+    /// The Usage item was clicked.
+    OpenUsage,
+    /// The Configs item was clicked.
+    OpenConfigs,
+    /// The Settings item was clicked.
+    OpenSettings,
+    /// The machine switcher was clicked.
+    ToggleMachines,
+    /// A machine was picked in the switcher.
+    PickMachine(NodeFilter),
     /// A session row was clicked.
     OpenSession(String),
     /// The pin button on a session row was clicked.
     TogglePin(String),
+    /// The pin button on a project row was clicked.
+    ToggleProjectPin(String),
     /// The delete button on a session row was clicked.
     Delete(String),
 }
@@ -95,10 +125,23 @@ pub enum Event {
     OpenTools,
     /// Show the updates screen.
     OpenUpdates,
+    /// Show the usage window.
+    OpenUsage,
+    /// Show the configs screen.
+    OpenConfigs,
+    /// Show the settings window.
+    OpenSettings,
     /// Persist the pinned flag of a session.
     SetPinned {
         /// Session id.
         id: String,
+        /// New flag.
+        pinned: bool,
+    },
+    /// Persist the pinned flag of a project.
+    SetProjectPinned {
+        /// Project name.
+        project: String,
         /// New flag.
         pinned: bool,
     },
@@ -155,6 +198,22 @@ impl State {
         self.sessions.iter().map(|entry| &entry.summary).find(|summary| summary.id == id)
     }
 
+    /// Replaces the pinned project names, as saved by the app.
+    pub fn set_pinned_projects(&mut self, pinned: impl IntoIterator<Item = String>) {
+        self.pinned_projects = pinned.into_iter().collect();
+    }
+
+    /// The pinned project names, including any no longer listed.
+    pub fn pinned_projects(&self) -> &BTreeSet<String> {
+        &self.pinned_projects
+    }
+
+    /// Highlights a project row. While set it replaces the active session's
+    /// project as the highlighted one.
+    pub fn set_active_project(&mut self, project: Option<String>) {
+        self.active_project = project;
+    }
+
     /// Replaces the project list.
     pub fn set_projects(&mut self, projects: impl IntoIterator<Item = String>) {
         self.projects = projects.into_iter().collect();
@@ -177,6 +236,12 @@ impl State {
         self.active = id;
     }
 
+    /// Marks the project whose page is open; it is highlighted instead of
+    /// the active session.
+    pub fn set_shown_project(&mut self, project: Option<String>) {
+        self.shown_project = project;
+    }
+
     /// The highlighted session.
     pub fn active(&self) -> Option<&str> {
         self.active.as_deref()
@@ -193,18 +258,48 @@ impl State {
         self.updates
     }
 
+    /// Sets the footer usage meter.
+    pub fn set_usage(&mut self, usage: Option<UsageMeter>) {
+        self.usage = usage;
+    }
+
     /// The search text.
     pub fn query(&self) -> &str {
         &self.query
     }
 
-    /// Pinned sessions that match the search, most recently updated first.
+    /// The machine whose sessions are listed: the user's pick, else this
+    /// computer, else every machine when no local node is known yet.
+    pub fn machine(&self) -> NodeFilter {
+        if let Some(machine) = &self.machine {
+            return machine.clone();
+        }
+        match self.nodes.iter().find(|node| node.local) {
+            Some(local) => NodeFilter::Node(local.key.clone()),
+            None => NodeFilter::All,
+        }
+    }
+
+    /// Whether the machine list is open.
+    pub fn machines_open(&self) -> bool {
+        self.machines_open
+    }
+
+    fn on_machine(&self, summary: &SessionSummary) -> bool {
+        match self.machine() {
+            NodeFilter::All => true,
+            NodeFilter::Node(key) => summary.node == key,
+        }
+    }
+
+    /// Pinned sessions on the chosen machine that match the search, most
+    /// recently updated first.
     pub fn pinned(&self) -> Vec<&SessionSummary> {
         self.section(true)
     }
 
-    /// Unpinned sessions from every node that match the search, most recently
-    /// updated first.
+    /// Unpinned sessions on the chosen machine that match the search, most
+    /// recently updated first.
     pub fn recents(&self) -> Vec<&SessionSummary> {
         self.section(false)
     }
@@ -212,8 +307,11 @@ impl State {
     /// Projects whose name matches the search, in the order given.
     pub fn projects(&self) -> Vec<&str> {
         let query = self.query.to_lowercase();
-        self.projects
-            .iter()
+        let mut pinned: Vec<&String> = self.projects.iter().filter(|project| self.pinned_projects.contains(*project)).collect();
+        pinned.sort();
+        pinned
+            .into_iter()
+            .chain(self.projects.iter().filter(|project| !self.pinned_projects.contains(*project)))
             .filter(|project| {
                 let name = project.to_lowercase();
                 query.split_whitespace().all(|term| name.contains(term))
@@ -227,12 +325,22 @@ impl State {
         let mut list: Vec<&SessionSummary> = self
             .sessions
             .iter()
-            .filter(|entry| entry.summary.pinned == pinned)
+            .filter(|entry| entry.summary.pinned == pinned && self.on_machine(&entry.summary))
             .filter(|entry| query.split_whitespace().all(|term| entry.haystack.contains(term)))
             .map(|entry| &entry.summary)
             .collect();
         list.sort_by(|a, b| b.updated.cmp(&a.updated).then_with(|| a.id.cmp(&b.id)));
         list
+    }
+
+    /// Sessions and waiting sessions on a machine, for the switcher.
+    fn counts(&self, filter: &NodeFilter) -> (usize, usize) {
+        let on = |summary: &SessionSummary| match filter {
+            NodeFilter::All => true,
+            NodeFilter::Node(key) => &summary.node == key,
+        };
+        let list: Vec<&SessionSummary> = self.sessions.iter().map(|entry| &entry.summary).filter(|s| on(s)).collect();
+        (list.len(), list.iter().filter(|s| s.waiting).count())
     }
 
     /// Handles a message.
@@ -244,9 +352,31 @@ impl State {
                 None
             }
             Message::OpenProject(project) => Some(Event::OpenProject(project)),
-            Message::OpenPeers => Some(Event::OpenPeers),
+            Message::OpenPeers => {
+                self.machines_open = false;
+                Some(Event::OpenPeers)
+            }
             Message::OpenTools => Some(Event::OpenTools),
             Message::OpenUpdates => Some(Event::OpenUpdates),
+            Message::OpenUsage => Some(Event::OpenUsage),
+            Message::OpenConfigs => Some(Event::OpenConfigs),
+            Message::OpenSettings => Some(Event::OpenSettings),
+            Message::ToggleMachines => {
+                self.machines_open = !self.machines_open;
+                None
+            }
+            Message::PickMachine(filter) => {
+                self.machine = Some(filter);
+                self.machines_open = false;
+                None
+            }
+            Message::ToggleProjectPin(project) => {
+                let pinned = !self.pinned_projects.remove(&project);
+                if pinned {
+                    self.pinned_projects.insert(project.clone());
+                }
+                Some(Event::SetProjectPinned { project, pinned })
+            }
             Message::OpenSession(id) => {
                 self.active = Some(id.clone());
                 Some(Event::OpenSession(id))
@@ -270,164 +400,285 @@ impl State {
 
     /// Draws the sidebar.
     pub fn view(&self) -> Element<'_, Message> {
+        self.view_with(|message| message, None)
+    }
+
+    /// Draws the sidebar in the app's message type. `project_files` is drawn
+    /// directly under the highlighted project's row: the project whose page
+    /// is open, else the one set by `set_active_project`, else the active
+    /// session's project. The search box does not filter it.
+    pub fn view_with<'a, M: 'a>(
+        &'a self,
+        map: impl Fn(Message) -> M + Clone + 'a,
+        mut project_files: Option<Element<'a, M>>,
+    ) -> Element<'a, M> {
         let new = button(
-            container(row![icon(Icon::Plus, 14.0), text("New session").size(14)].spacing(8).align_y(Alignment::Center))
-                .center_x(Fill),
+            row![
+                container(icon(Icon::Plus, 13.0)).center(22).style(|theme: &iced::Theme| container::Style {
+                    background: Some(style::tokens(theme).accent.into()),
+                    border: iced::border::rounded(99),
+                    ..container::Style::default()
+                }),
+                text("New session").size(14).width(Fill),
+                text("Ctrl N").size(12).style(style::faint),
+            ]
+            .spacing(10)
+            .align_y(Alignment::Center),
         )
         .on_press(Message::New)
         .style(style::row)
-        .padding([7, 8])
+        .padding([7, 10])
         .width(Fill);
 
-        let search = text_input("Search sessions", &self.query)
+        let search = text_input("Search", &self.query)
             .id(SEARCH_ID)
             .on_input(Message::Search)
+            .icon(text_input::Icon {
+                font: iced::Font::default(),
+                code_point: '⌕',
+                size: Some(14.0.into()),
+                spacing: 8.0,
+                side: text_input::Side::Left,
+            })
             .size(14)
             .style(style::input)
-            .padding([3, 8]);
+            .padding([6, 10]);
 
         let mut lists = Column::new();
+        if self.machines_open {
+            lists = lists.push(self.machine_list());
+        }
 
+        let mut segments: Vec<Element<'a, M>> = Vec::new();
         let projects = self.projects();
-        let active_project = self.active.as_deref().and_then(|id| self.session(id)).and_then(|s| s.project.as_deref());
-        lists = lists.push(header("PROJECTS"));
+        let active_project = self
+            .shown_project
+            .as_deref()
+            .or(self.active_project.as_deref())
+            .or_else(|| self.active.as_deref().and_then(|id| self.session(id)).and_then(|s| s.project.as_deref()));
+        lists = lists.push(header("Projects"));
         if projects.is_empty() {
             lists = lists.push(hint(if self.projects.is_empty() { "No projects yet" } else { "No match" }));
         }
         for project in projects {
-            lists = lists.push(
-                button(row![icon(Icon::Folder, 14.0), text(project).size(14)].spacing(8).align_y(Alignment::Center))
-                    .on_press(Message::OpenProject(project.to_owned()))
-                    .style(style::row_for(active_project == Some(project)))
-                    .padding([6, 8])
-                    .width(Fill),
-            );
-        }
-
-        lists = lists.push(header("PEERS"));
-        if self.nodes.iter().next().is_none() {
-            lists = lists.push(hint("No peers yet"));
-        }
-        for node in self.nodes.iter() {
-            let online = node.local || node.online;
-            let name = if node.local { text!("{} (this)", node.name) } else { text(node.name.as_str()) };
-            let name = if online { name } else { name.style(style::muted) };
-            lists = lists.push(
-                button(
-                    row![container(space()).width(6).height(6).style(style::status_dot(online)), name.size(14)]
-                        .spacing(10)
-                        .align_y(Alignment::Center),
-                )
-                .on_press(Message::OpenPeers)
-                .style(style::row)
-                .padding([6, 8])
-                .width(Fill),
-            );
-        }
-
-        lists = lists.push(space().height(4));
-        lists = lists.push(
-            button(
-                container(
-                    row![icon(Icon::SlidersHorizontal, 13.0), text("Tools").size(14)]
-                        .spacing(6)
-                        .align_y(Alignment::Center),
-                )
-                .center_x(Fill),
-            )
-            .on_press(Message::OpenTools)
-            .style(style::row)
-            .padding([6, 8])
-            .width(Fill),
-        );
-        if self.updates > 0 {
-            lists = lists.push(
-                button(
-                    container(
-                        row![
-                            icon(Icon::ArrowUp, 13.0),
-                            text("Updates").size(14),
-                            container(text(self.updates).size(12)).style(style::badge).padding([1, 6]),
-                        ]
-                        .spacing(6)
-                        .align_y(Alignment::Center),
-                    )
-                    .center_x(Fill),
-                )
-                .on_press(Message::OpenUpdates)
-                .style(style::row)
-                .padding([6, 8])
-                .width(Fill),
-            );
+            let is_active = active_project == Some(project);
+            let pinned = self.pinned_projects.contains(project);
+            let mut line = row![muted(Icon::Folder, 15.0), text(project).size(14).width(Fill)].spacing(10).align_y(Alignment::Center);
+            if pinned {
+                line = line.push(muted(Icon::Pin, 12.0));
+            }
+            let body = button(line)
+                .on_press(Message::OpenProject(project.to_owned()))
+                .style(style::row_for(is_active))
+                .padding([7, 10])
+                .width(Fill);
+            let pin = button(muted(Icon::Pin, 13.0))
+                .on_press(Message::ToggleProjectPin(project.to_owned()))
+                .style(style::ghost_button)
+                .padding(4);
+            let pin = container(pin)
+                .padding([0, 2])
+                .style(move |theme| style::row_actions(theme, is_active));
+            lists = lists.push(hover(body, container(pin).align_right(Fill).center_y(Fill).padding([0, 6])));
+            if is_active && let Some(files) = project_files.take() {
+                segments.push(Element::from(std::mem::replace(&mut lists, Column::new()).spacing(2)).map(map.clone()));
+                segments.push(files);
+            }
         }
 
         let pinned = self.pinned();
         if !pinned.is_empty() {
-            lists = lists.push(header("PINNED"));
+            lists = lists.push(header("Pinned"));
             for session in pinned {
                 lists = lists.push(self.session_row(session));
             }
         }
 
         let recents = self.recents();
-        lists = lists.push(header("RECENTS"));
+        lists = lists.push(header("Recents"));
         if recents.is_empty() {
-            lists = lists.push(hint(if self.query.is_empty() { "No sessions yet" } else { "No match" }));
+            lists = lists.push(hint(if self.query.is_empty() { "No sessions on this machine" } else { "No match" }));
         }
         for session in recents {
             lists = lists.push(self.session_row(session));
         }
 
-        let content = column![new, search, scrollable(lists).height(Fill)].spacing(8).padding([6, 8]);
+        segments.push(Element::from(lists.spacing(2)).map(map.clone()));
+        let content = column![
+            Element::from(self.machine_switcher()).map(map.clone()),
+            Element::from(new).map(map.clone()),
+            Element::from(search).map(map.clone()),
+            scrollable(Column::with_children(segments)).height(Fill),
+            Element::from(self.footer()).map(map),
+        ]
+        .spacing(4)
+        .padding(Padding { top: 8.0, right: 8.0, bottom: 8.0, left: 8.0 });
 
-        container(content).style(style::chrome).width(Fill).height(Fill).into()
+        container(content).style(style::side).width(Fill).height(Fill).into()
+    }
+
+    fn node_label(node: &NodeStatus) -> &'static str {
+        match (node.local, node.online) {
+            (true, _) => "This computer",
+            (false, true) => "Peer · online",
+            (false, false) => "Peer · offline",
+        }
+    }
+
+    fn machine_switcher(&self) -> Element<'_, Message> {
+        let machine = self.machine();
+        let (name, sub, online) = match &machine {
+            NodeFilter::All => ("All machines".to_owned(), "Recents from every machine".to_owned(), true),
+            NodeFilter::Node(key) => match self.nodes.get(key) {
+                Some(node) => (node.name.clone(), Self::node_label(node).to_owned(), node.local || node.online),
+                None => (self.nodes.name_of(key).to_owned(), "Unknown machine".to_owned(), false),
+            },
+        };
+        let chevron = if self.machines_open { Icon::ChevronUp } else { Icon::ChevronDown };
+        let body = button(
+            row![
+                container(space()).width(8).height(8).style(style::status_dot(online)),
+                column![text(name).size(14).font(bold()), text(sub).size(12).style(style::muted)].width(Fill),
+                muted(chevron, 14.0),
+            ]
+            .spacing(10)
+            .align_y(Alignment::Center),
+        )
+        .on_press(Message::ToggleMachines)
+        .style(style::row_for(self.machines_open))
+        .padding([6, 10])
+        .width(Fill);
+        container(body).id(MACHINE_SWITCHER_ID).into()
+    }
+
+    fn machine_list(&self) -> Element<'_, Message> {
+        let current = self.machine();
+        let mut list = Column::new().spacing(2);
+        let mut options = vec![(NodeFilter::All, "All machines".to_owned(), "Recents from every machine".to_owned(), true)];
+        for node in self.nodes.iter() {
+            options.push((NodeFilter::Node(node.key.clone()), node.name.clone(), Self::node_label(node).to_owned(), node.local || node.online));
+        }
+        for (filter, name, sub, online) in options {
+            let (count, waiting) = self.counts(&filter);
+            let tally = if waiting > 0 {
+                text!("{waiting} need you").size(12).style(style::waiting_text)
+            } else {
+                text!("{count} sessions").size(12).style(style::faint)
+            };
+            let selected = filter == current;
+            list = list.push(
+                button(
+                    row![
+                        container(space()).width(8).height(8).style(style::status_dot(online)),
+                        column![text(name).size(14), text(sub).size(12).style(style::faint)].width(Fill),
+                        tally,
+                    ]
+                    .spacing(10)
+                    .align_y(Alignment::Center),
+                )
+                .on_press(Message::PickMachine(filter))
+                .style(style::row_for(selected))
+                .padding([6, 10])
+                .width(Fill),
+            );
+        }
+        list = list.push(
+            button(text("Manage peers").size(13)).on_press(Message::OpenPeers).style(style::ghost_button).padding([6, 10]),
+        );
+        container(list).style(style::window).padding(6).into()
+    }
+
+    fn footer(&self) -> Element<'_, Message> {
+        let mut footer = Column::new().spacing(2);
+        if self.updates > 0 {
+            footer = footer.push(footer_item(
+                Icon::ArrowUp,
+                "Updates",
+                Some(text(self.updates).size(12).style(style::waiting_text).into()),
+                Message::OpenUpdates,
+            ));
+        }
+        let meter: Option<Element<'_, Message>> = self.usage.as_ref().map(|usage| {
+            let fraction = usage.fraction.clamp(0.0, 1.0);
+            let filled = (fraction * 44.0).max(if fraction > 0.0 { 2.0 } else { 0.0 });
+            row![
+                container(container(space()).width(filled).height(4).style(style::meter_fill(fraction)))
+                    .width(44)
+                    .height(4)
+                    .style(style::meter_track),
+                text!("{} {:.0}%", usage.label, fraction * 100.0).size(12).style(style::faint),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center)
+            .into()
+        });
+        footer = footer.push(footer_item(Icon::Gauge, "Usage", meter, Message::OpenUsage));
+        footer = footer.push(footer_item(Icon::SlidersHorizontal, "Configs", None, Message::OpenConfigs));
+        footer = footer.push(footer_item(Icon::Settings, "Settings", None, Message::OpenSettings));
+        column![iced::widget::rule::horizontal(1).style(style::divider), footer].spacing(6).into()
     }
 
     fn session_row<'a>(&'a self, session: &'a SessionSummary) -> Element<'a, Message> {
-        let selected = self.active.as_deref() == Some(session.id.as_str());
+        let selected = self.shown_project.is_none() && self.active.as_deref() == Some(session.id.as_str());
 
-        let mut line = row![text(session.title.as_str()).size(14).width(Fill).wrapping(text::Wrapping::None)]
-            .spacing(6)
+        // Clipped, so a long title ends at its own edge instead of running
+        // under "Needs you" or the machine name.
+        let title = container(text(session.title.as_str()).size(14).wrapping(text::Wrapping::None)).width(Fill).clip(true);
+        let mut line = row![title]
+            .spacing(8)
             .align_y(Alignment::Center);
         if session.waiting {
             line = line.push(
-                container(text("waiting").size(12))
-                    .id(waiting_badge_id(&session.id))
-                    .style(style::waiting_badge)
-                    .padding([1, 5]),
+                container(text("Needs you").size(12).style(style::waiting_text)).id(waiting_badge_id(&session.id)),
             );
         }
-        let tag = text(self.nodes.name_of(&session.node)).size(12);
-        line = line.push(container(tag).style(style::badge).padding([1, 5]));
+        if self.machine() == NodeFilter::All {
+            line = line.push(text(self.nodes.name_of(&session.node)).size(12).style(style::faint));
+        }
 
         let body = button(line)
             .on_press(Message::OpenSession(session.id.clone()))
             .style(style::row_for(selected))
-            .padding([6, 8])
+            .padding([7, 10])
             .width(Fill);
 
-        let pin = button(text(if session.pinned { "Unpin" } else { "Pin" }).size(12))
+        let pin = button(muted(Icon::Pin, 13.0))
             .on_press(Message::TogglePin(session.id.clone()))
-            .style(style::selected_row)
-            .padding([1, 6]);
+            .style(style::ghost_button)
+            .padding(4);
 
-        let delete = button(text("Delete").size(12))
+        let delete = button(muted(Icon::X, 13.0))
             .on_press(Message::Delete(session.id.clone()))
-            .style(style::selected_row)
-            .padding([1, 6]);
+            .style(style::ghost_button)
+            .padding(4);
 
-        hover(body, container(row![pin, delete].spacing(4)).align_right(Fill).center_y(Fill).padding([0, 6]))
+        // On a backing the color of the hovered (or selected) row, so the
+        // icons cover the end of the title instead of mixing with it.
+        let actions = container(row![pin, delete].spacing(2)).padding([0, 2]).style(move |theme| style::row_actions(theme, selected));
+        hover(body, container(actions).align_right(Fill).center_y(Fill).padding([0, 6]))
     }
 }
 
+fn footer_item<'a>(glyph: Icon, label: &'a str, trailing: Option<Element<'a, Message>>, on_press: Message) -> Element<'a, Message> {
+    let mut line = row![muted(glyph, 15.0), text(label).size(14).width(Fill)].spacing(10).align_y(Alignment::Center);
+    if let Some(trailing) = trailing {
+        line = line.push(trailing);
+    }
+    button(line).on_press(on_press).style(style::row).padding([7, 10]).width(Length::Fill).into()
+}
+
+fn bold() -> iced::Font {
+    iced::Font { weight: iced::font::Weight::Bold, ..iced::Font::default() }
+}
+
 fn header(label: &str) -> Element<'_, Message> {
-    container(text(label).size(12).style(style::muted))
-        .padding(Padding { top: 12.0, right: 8.0, bottom: 4.0, left: 8.0 })
+    container(text(label).size(12).style(style::faint))
+        .padding(Padding { top: 14.0, right: 10.0, bottom: 4.0, left: 10.0 })
         .into()
 }
 
 fn hint(label: &str) -> Element<'_, Message> {
-    container(text(label).size(13).style(style::muted)).padding([4, 8]).into()
+    container(text(label).size(13).style(style::faint)).padding([4, 10]).into()
 }
 
 #[cfg(test)]
@@ -462,6 +713,7 @@ mod tests {
     fn recents_merge_nodes_newest_first_and_skip_pinned() {
         let mut state = State::default();
         state.set_nodes(nodes());
+        let _ = state.update(Message::PickMachine(NodeFilter::All));
         let mut pinned_old = summary("p", "Pinned", "k-desk", 10);
         pinned_old.pinned = true;
         state.set_sessions([
@@ -514,6 +766,7 @@ mod tests {
     fn search_filters_by_title_project_and_node_name_case_insensitively() {
         let mut state = State::default();
         state.set_nodes(nodes());
+        let _ = state.update(Message::PickMachine(NodeFilter::All));
         let mut in_project = summary("p", "Refactor", "k-desk", 1);
         in_project.project = Some("Harness".into());
         state.set_sessions([summary("a", "Fix Deploy script", "k-desk", 3), summary("b", "Notes", "k-laptop", 2), in_project]);
@@ -570,5 +823,35 @@ mod tests {
         let (_, event) = state.update(Message::OpenSession("a".into()));
         assert_eq!(event, Some(Event::OpenSession("a".into())));
         assert_eq!(state.active(), Some("a"));
+    }
+
+    #[test]
+    fn machine_switcher_defaults_to_this_computer_and_filters_recents() {
+        let mut state = State::default();
+        state.set_nodes(nodes());
+        state.set_sessions([summary("a", "Desk", "k-desk", 2), summary("b", "Laptop", "k-laptop", 1)]);
+        assert_eq!(state.machine(), NodeFilter::Node("k-desk".into()));
+        assert_eq!(ids(state.recents()), ["a"]);
+
+        let _ = state.update(Message::ToggleMachines);
+        assert!(state.machines_open());
+        let _ = state.update(Message::PickMachine(NodeFilter::Node("k-laptop".into())));
+        assert!(!state.machines_open(), "picking closes the list");
+        assert_eq!(ids(state.recents()), ["b"]);
+
+        let _ = state.update(Message::PickMachine(NodeFilter::All));
+        assert_eq!(ids(state.recents()), ["a", "b"]);
+    }
+
+    #[test]
+    fn footer_items_raise_their_events() {
+        let mut state = State::default();
+        for (message, event) in [
+            (Message::OpenUsage, Event::OpenUsage),
+            (Message::OpenConfigs, Event::OpenConfigs),
+            (Message::OpenSettings, Event::OpenSettings),
+        ] {
+            assert_eq!(state.update(message).1, Some(event));
+        }
     }
 }

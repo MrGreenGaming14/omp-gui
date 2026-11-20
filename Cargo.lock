@@ -5242,6 +5242,7 @@ name = "loa-ui-chat"
 version = "0.1.0"
 dependencies = [
  "iced",
+ "iced_runtime",
  "iced_test",
  "loa-core",
  "loa-ui-icons",
@@ -5256,6 +5257,7 @@ dependencies = [
  "loa-adapter",
  "loa-core",
  "loa-ui-icons",
+ "loa-ui-shell",
 ]
 
 [[package]]

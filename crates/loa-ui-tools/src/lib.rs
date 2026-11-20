@@ -155,6 +155,12 @@ pub enum Message {
     AnswerPrompt(u64, PromptAnswer),
 
     PeerFilter(PeerChoice),
+
+    /// Open or close a collapsible block: a tool group, a server's tool
+    /// list or the hosts list, by its key.
+    BlockOpen(String, bool),
+    /// Show or hide one tool's details inline.
+    ToolExpanded(ToolId),
 }
 
 /// Tools panel state.
@@ -180,6 +186,11 @@ pub struct State {
     prompts: Vec<RemotePrompt>,
     peers: Vec<PeerTools>,
     peer_filter: Option<String>,
+    /// Blocks the user opened or closed, by key. Blocks not listed use
+    /// their default: closed when long.
+    open_blocks: HashMap<String, bool>,
+    /// The tool whose details are shown inline.
+    expanded_tool: Option<ToolId>,
 }
 
 impl State {
@@ -524,6 +535,17 @@ impl State {
                 let index = self.prompts.iter().position(|p| p.id == id)?;
                 self.prompts.remove(index);
                 return Some(Event::AnswerPrompt { id, answer });
+            }
+
+            Message::BlockOpen(key, open) => {
+                self.open_blocks.insert(key, open);
+            }
+            Message::ToolExpanded(tool) => {
+                self.expanded_tool = if self.expanded_tool.as_ref() == Some(&tool) {
+                    None
+                } else {
+                    Some(tool)
+                };
             }
 
             Message::PeerFilter(choice) => {

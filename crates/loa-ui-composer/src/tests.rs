@@ -457,3 +457,29 @@ fn model_actions_close_the_menu_and_report_their_id() {
     assert_eq!(act(&mut state, Message::ModelActionPicked("browse".into())), Some(Event::ModelAction("browse".into())));
     assert_eq!(state.pickers.open, None);
 }
+
+#[test]
+fn plus_starts_a_file_mention_at_the_cursor() {
+    let mut state = State::new();
+    assert_eq!(act(&mut state, Message::MentionPressed), Some(Event::FilesRequested { query: String::new() }));
+    assert_eq!(state.text(), "@");
+    state.set_files(vec!["README.md".into()]);
+    assert_eq!(state.popup_kind(), Some(PopupKind::File));
+
+    let mut state = State::new();
+    type_text(&mut state, "look at");
+    assert_eq!(act(&mut state, Message::MentionPressed), Some(Event::FilesRequested { query: String::new() }));
+    assert_eq!(state.text(), "look at @");
+    act(&mut state, Message::Undo);
+    assert_eq!(state.text(), "look at");
+}
+
+#[test]
+fn picker_labels_are_short_and_capitalized() {
+    assert_eq!(short_model_name("Claude Opus 5.5"), "Opus 5.5");
+    assert_eq!(short_model_name("GPT-5"), "GPT-5");
+    assert_eq!(short_model_name("Claude "), "Claude ");
+    assert_eq!(capitalized("medium"), "Medium");
+    assert_eq!(capitalized("plan"), "Plan");
+    assert_eq!(capitalized(""), "");
+}

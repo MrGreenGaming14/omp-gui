@@ -9,7 +9,7 @@ mod remote;
 mod tests;
 
 use std::collections::{BTreeSet, HashMap};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use iced::futures::SinkExt;
@@ -780,6 +780,13 @@ impl Area for State {
             _ => {}
         }
         self.follow_builtin(ctx)
+    }
+
+    fn project_activated(&mut self, project: &str, cwd: &Path, ctx: &mut Ctx) -> Task<Message> {
+        self.terminal.set_new_tab(terminal::LocalShell::login_shell(cwd));
+        project.clone_into(&mut self.project);
+        self.refresh_projects(ctx);
+        Task::none()
     }
 
     fn subscription(&self) -> Subscription<Message> {

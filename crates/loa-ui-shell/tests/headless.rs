@@ -4,8 +4,8 @@
 use iced::widget::text;
 use iced::{Color, Element, Settings, Size, Theme};
 use iced_test::{Simulator, selector};
-use loa_ui_shell::layout::{PANEL_ID, SIDEBAR_WIDTH};
-use loa_ui_shell::{Event, Message, NodeStatus, PanelPrefs, PanelTab, Preference, SessionSummary, State, sidebar, topbar};
+use loa_ui_shell::layout::{PANEL_ID, SIDEBAR_WIDTH, project_tab_close_id, project_tab_id};
+use loa_ui_shell::{Event, Message, NodeFilter, NodeStatus, PanelPrefs, PanelTab, Preference, SessionSummary, State, sidebar, topbar};
 
 const WINDOW: Size = Size::new(1280.0, 800.0);
 
@@ -37,7 +37,7 @@ fn shell(panel_open: bool) -> State {
 }
 
 fn view(state: &State) -> Element<'_, Message> {
-    state.view(text("Chat goes here"), |tab| text(format!("{tab} body")).into(), std::convert::identity)
+    state.view(text("Chat goes here"), |tab| text(format!("{tab} body")).into(), None, std::convert::identity)
 }
 
 fn simulator(state: &State) -> Simulator<'_, Message> {
@@ -59,17 +59,102 @@ fn new_session_button_asks_for_a_new_session() {
 }
 
 #[test]
-fn nav_items_open_peers_tools_and_projects() {
+fn footer_items_open_usage_configs_settings_and_projects() {
     let mut state = shell(false);
     let mut ui = simulator(&state);
-    ui.click("desk (this)").expect("peer row");
-    ui.click("Tools").expect("Tools");
+    ui.click("Usage").expect("Usage");
+    ui.click("Configs").expect("Configs");
+    ui.click("Settings").expect("Settings");
     ui.click("harness").expect("project row");
     let messages: Vec<Message> = ui.into_messages().collect();
     assert_eq!(
         deliver(&mut state, messages),
-        [Event::OpenPeers, Event::OpenTools, Event::OpenProject("harness".into())]
+        [Event::OpenUsage, Event::OpenConfigs, Event::OpenSettings, Event::OpenProject("harness".into())]
     );
+}
+
+fn with_project_files(state: &State) -> Element<'_, Message> {
+    state.view(
+        text("Chat goes here"),
+        |tab| text(format!("{tab} body")).into(),
+        Some(text("main.rs marker").into()),
+        std::convert::identity,
+    )
+}
+
+#[test]
+fn project_files_draw_under_the_active_project_only() {
+    let mut state = shell(false);
+    state.set_projects(["harness".to_owned(), "other".to_owned()]);
+
+    state.set_active_project(Some("harness".into()));
+    let mut ui = Simulator::with_size(Settings::default(), WINDOW, with_project_files(&state));
+    assert!(ui.find("main.rs marker").is_ok(), "the active project lacks its file list");
+    assert!(ui.find("other").is_ok());
+    drop(ui);
+
+    state.set_active_project(Some("elsewhere".into()));
+    let mut ui = Simulator::with_size(Settings::default(), WINDOW, with_project_files(&state));
+    assert!(ui.find("main.rs marker").is_err(), "a file list was drawn without an active project row");
+    drop(ui);
+
+    state.set_active_project(None);
+    let mut ui = Simulator::with_size(Settings::default(), WINDOW, with_project_files(&state));
+    assert!(ui.find("main.rs marker").is_err());
+}
+
+#[test]
+fn pinning_a_project_moves_it_first_emits_the_save_event_and_search_still_filters() {
+    let mut state = shell(false);
+    state.set_projects(["alpha".to_owned(), "beta".to_owned(), "gamma".to_owned()]);
+    assert_eq!(state.sidebar().projects(), ["alpha", "beta", "gamma"]);
+    let events = deliver(&mut state, [Message::Sidebar(sidebar::Message::ToggleProjectPin("gamma".into()))]);
+    assert_eq!(events, [Event::SetProjectPinned { project: "gamma".into(), pinned: true }]);
+    assert_eq!(state.sidebar().projects(), ["gamma", "alpha", "beta"]);
+
+    // The pin is a hover icon, as on session rows; the row itself still
+    // draws, now first.
+    let mut ui = simulator(&state);
+    assert!(ui.find("gamma").is_ok(), "the pinned project is listed");
+    drop(ui);
+
+    let _ = deliver(&mut state, [Message::Sidebar(sidebar::Message::Search("gam".into()))]);
+    assert_eq!(state.sidebar().projects(), ["gamma"]);
+    let _ = deliver(&mut state, [Message::Sidebar(sidebar::Message::Search("alp".into()))]);
+    assert_eq!(state.sidebar().projects(), ["alpha"]);
+    let _ = deliver(&mut state, [Message::Sidebar(sidebar::Message::Search(String::new()))]);
+
+    let events = deliver(&mut state, [Message::Sidebar(sidebar::Message::ToggleProjectPin("gamma".into()))]);
+    assert_eq!(events, [Event::SetProjectPinned { project: "gamma".into(), pinned: false }]);
+    assert_eq!(state.sidebar().projects(), ["alpha", "beta", "gamma"]);
+
+    // A pin on a project that is no longer listed stays saved but hidden.
+    state.set_pinned_projects(["gone".to_owned()]);
+    assert_eq!(state.sidebar().projects(), ["alpha", "beta", "gamma"]);
+    assert_eq!(state.sidebar().pinned_projects().len(), 1);
+}
+
+#[test]
+fn machine_switcher_lists_peers_and_filters_recents() {
+    let mut state = shell(false);
+    {
+        let mut ui = simulator(&state);
+        assert!(ui.find("Fix deploy script").is_ok(), "this computer's session is listed");
+        assert!(ui.find("Write release notes").is_err(), "the laptop's session is not");
+        ui.click(selector::id(sidebar::MACHINE_SWITCHER_ID)).expect("machine switcher");
+        let messages: Vec<Message> = ui.into_messages().collect();
+        assert!(deliver(&mut state, messages).is_empty());
+    }
+    let mut ui = simulator(&state);
+    assert!(ui.find("1 need you").is_ok(), "the laptop's waiting session is counted");
+    ui.click("laptop").expect("laptop row");
+    let messages: Vec<Message> = ui.into_messages().collect();
+    assert!(deliver(&mut state, messages).is_empty());
+    assert_eq!(state.sidebar().machine(), NodeFilter::Node("k-laptop".into()));
+
+    let mut ui = simulator(&state);
+    assert!(ui.find("Write release notes").is_ok());
+    assert!(ui.find("Fix deploy script").is_err());
 }
 
 #[test]
@@ -90,6 +175,7 @@ fn typing_in_search_filters_recents_live() {
 #[test]
 fn recents_carry_node_tags_and_waiting_badges() {
     let mut state = shell(false);
+    let _ = state.update(Message::Sidebar(sidebar::Message::PickMachine(NodeFilter::All)));
     {
         let mut ui = simulator(&state);
         assert!(ui.find("laptop").is_ok(), "remote session lacks its node tag");
@@ -105,8 +191,7 @@ fn recents_carry_node_tags_and_waiting_badges() {
 
     let mut ui = simulator(&state);
     assert!(ui.find(selector::id(topbar::WAITING_BADGE_ID)).is_ok());
-    assert!(ui.find(selector::id(topbar::NODE_INDICATOR_ID)).is_ok());
-    assert!(ui.find("offline").is_ok(), "node indicator must say the laptop is offline");
+    assert!(ui.find("harness on laptop").is_ok(), "the breadcrumb names the remote machine");
 }
 
 #[test]
@@ -132,6 +217,43 @@ fn panel_toggle_hides_and_restores_the_panel_on_its_tab() {
     let mut ui = simulator(&state);
     assert!(ui.find(selector::id(PANEL_ID)).is_ok());
     assert!(ui.find("terminal body").is_ok(), "panel forgot its active tab");
+}
+
+fn with_project_tabs(enabled: bool) -> State {
+    let mut state = shell(false);
+    state.set_project_tabs(enabled);
+    state.set_open_projects(vec!["harness".into(), "docs".into()]);
+    state.set_active_project(Some("harness".into()));
+    state
+}
+
+#[test]
+fn project_tabs_open_their_project_and_close_without_opening() {
+    let mut state = with_project_tabs(true);
+    {
+        let mut ui = simulator(&state);
+        assert!(ui.find(selector::id(project_tab_id("harness"))).is_ok());
+        assert!(ui.find(selector::id(project_tab_id("docs"))).is_ok());
+    }
+
+    let mut ui = simulator(&state);
+    ui.click(selector::id(project_tab_id("docs"))).expect("docs tab");
+    let messages: Vec<Message> = ui.into_messages().collect();
+    assert_eq!(deliver(&mut state, messages), [Event::OpenProject("docs".into())]);
+
+    let mut ui = simulator(&state);
+    ui.click(selector::id(project_tab_close_id("docs"))).expect("docs close button");
+    let messages: Vec<Message> = ui.into_messages().collect();
+    assert_eq!(deliver(&mut state, messages), [Event::CloseProjectTab("docs".into())]);
+}
+
+#[test]
+fn project_tabs_off_draws_no_strip() {
+    let state = with_project_tabs(false);
+    let mut ui = simulator(&state);
+    assert!(ui.find(selector::id(project_tab_id("harness"))).is_err());
+    assert!(ui.find(selector::id(project_tab_close_id("harness"))).is_err());
+    assert!(ui.find(selector::id(project_tab_id("docs"))).is_err());
 }
 
 /// Renders the frame in `theme` and returns `(width, rgba)` of the snapshot.
@@ -174,14 +296,15 @@ fn both_themes_paint_the_frame_with_their_palettes() {
         let shot = render(&state, &theme, name);
         let palette = theme.extended_palette();
 
+        let tokens = loa_ui_shell::theme::style::tokens(&theme);
         let center = pixel(&shot, SIDEBAR_WIDTH + 200.0, 600.0);
         assert_close(center, palette.background.base.color, &format!("{name} center"));
 
         let sidebar = pixel(&shot, SIDEBAR_WIDTH - 4.0, 400.0);
-        assert_close(sidebar, palette.background.base.color, &format!("{name} sidebar"));
+        assert_close(sidebar, tokens.side, &format!("{name} sidebar"));
 
         let panel = pixel(&shot, WINDOW.width - 20.0, 600.0);
-        assert_close(panel, palette.background.base.color, &format!("{name} panel"));
+        assert_close(panel, tokens.side, &format!("{name} panel"));
 
         let luminance = 0.2126 * center.r + 0.7152 * center.g + 0.0722 * center.b;
         assert_eq!(luminance < 0.5, palette.is_dark, "{name} theme has the wrong brightness");

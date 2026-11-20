@@ -132,6 +132,12 @@ impl Session {
         self.busy = dom_busy(&self.dom);
     }
 
+    /// Takes the running harness off the session; the next send resumes it
+    /// on a fresh harness.
+    pub(crate) fn detach(&mut self) -> Option<Arc<dyn HarnessSession>> {
+        self.harness.take()
+    }
+
     /// Applies one feed event. `Ok(None)` when it carries nothing new.
     fn apply(&mut self, event: Event) -> Result<Option<Arc<Patch>>, loa_core::ApplyError> {
         let seq = self.dom.seq();

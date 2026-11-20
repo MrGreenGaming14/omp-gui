@@ -23,11 +23,12 @@ pub(crate) struct FakeAdapter {
     id: &'static str,
     resumes: bool,
     resumed: Arc<AtomicUsize>,
+    interrupts: Arc<AtomicUsize>,
 }
 
 impl FakeAdapter {
     pub(crate) fn new(id: &'static str) -> Self {
-        Self { id, resumes: true, resumed: Arc::default() }
+        Self { id, resumes: true, resumed: Arc::default(), interrupts: Arc::default() }
     }
 }
 
@@ -50,7 +51,7 @@ impl Adapter for FakeAdapter {
             ("native_id", "native-1".into()),
         ];
         let root = sink.commit(Draft::insert(NodeId::DOCUMENT, ElementKind::Session, attrs, ""))?.node;
-        Ok(Box::new(FakeSession::new(self.id, sink, root)))
+        Ok(Box::new(FakeSession::new(self.id, sink, root, Arc::clone(&self.interrupts))))
     }
 
     async fn resume(&self, _: SessionConfig, dom: &Dom, sink: Arc<dyn PatchSink>) -> loa_adapter::Result<Box<dyn HarnessSession>> {
@@ -59,7 +60,7 @@ impl Adapter for FakeAdapter {
         }
         self.resumed.fetch_add(1, Ordering::SeqCst);
         let root = dom.root().map(|root| root.id).ok_or_else(|| AdapterError::Format("empty DOM".into()))?;
-        Ok(Box::new(FakeSession::new(self.id, sink, root)))
+        Ok(Box::new(FakeSession::new(self.id, sink, root, Arc::clone(&self.interrupts))))
     }
 }
 
@@ -67,13 +68,14 @@ struct FakeSession {
     id: &'static str,
     sink: Arc<dyn PatchSink>,
     root: NodeId,
+    interrupts: Arc<AtomicUsize>,
     /// The turn waiting on a decision.
     waiting: Mutex<Option<NodeId>>,
 }
 
 impl FakeSession {
-    fn new(id: &'static str, sink: Arc<dyn PatchSink>, root: NodeId) -> Self {
-        Self { id, sink, root, waiting: Mutex::new(None) }
+    fn new(id: &'static str, sink: Arc<dyn PatchSink>, root: NodeId, interrupts: Arc<AtomicUsize>) -> Self {
+        Self { id, sink, root, interrupts, waiting: Mutex::new(None) }
     }
 
     fn end(&self, turn: NodeId) -> loa_adapter::Result<()> {
@@ -110,6 +112,7 @@ impl HarnessSession for FakeSession {
     }
 
     async fn interrupt(&self) -> loa_adapter::Result<()> {
+        self.interrupts.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
 
@@ -248,13 +251,28 @@ fn panel_command_toggles_without_starting_a_harness() {
 }
 
 #[test]
-fn escape_closes_palette_before_attempting_interrupt() {
+fn escape_interrupts_before_the_first_turn_patch_but_not_while_the_palette_is_open() {
     let dir = tempfile::tempdir().unwrap();
-    let mut app = fake_app(dir.path(), &["fake-a"]);
-    let _ = app.update(Message::Palette(palette::Message::Toggle));
+    let adapter = FakeAdapter::new("fake-a");
+    let interrupts = Arc::clone(&adapter.interrupts);
+    let mut app = App::build(services(dir.path(), vec![adapter])).0;
+    update(&mut app, Message::NewSession);
+
+    update(&mut app, Message::Keyboard(escape()));
+    assert_eq!(interrupts.load(Ordering::SeqCst), 0, "an idle harness is not interrupted");
+
+    update(&mut app, Message::Composer(composer::Message::Edit(Action::Edit(Edit::Insert('x')))));
+    let send = app.update(Message::Composer(composer::Message::Submit));
+    // Hold the send task so the harness cannot have emitted its first turn patch.
+    update(&mut app, Message::Palette(palette::Message::Toggle));
     assert!(app.palette.is_open());
-    let _ = app.update(Message::Keyboard(escape()));
+    update(&mut app, Message::Keyboard(escape()));
     assert!(!app.palette.is_open());
+    assert_eq!(interrupts.load(Ordering::SeqCst), 0, "the palette consumes Escape");
+
+    update(&mut app, Message::Keyboard(escape()));
+    assert_eq!(interrupts.load(Ordering::SeqCst), 1, "Escape reaches the active harness before the first turn patch");
+    run(&mut app, send);
 }
 
 #[test]
@@ -484,6 +502,20 @@ fn pins_and_the_theme_survive_new_turns_and_a_restart() {
 }
 
 #[test]
+fn a_project_pin_survives_a_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let mut app = fake_app(dir.path(), &["fake-a"]);
+        app.ctx.shell.set_projects(["alpha".to_owned(), "beta".to_owned()]);
+        update(&mut app, Message::Shell(shell::Message::Sidebar(shell::sidebar::Message::ToggleProjectPin("beta".into()))));
+        assert_eq!(app.ctx.shell.sidebar().projects(), ["beta", "alpha"]);
+    }
+    let mut app = fake_app(dir.path(), &["fake-a"]);
+    app.ctx.shell.set_projects(["alpha".to_owned(), "beta".to_owned()]);
+    assert_eq!(app.ctx.shell.sidebar().projects(), ["beta", "alpha"], "the project pin was saved");
+}
+
+#[test]
 fn tool_calls_collapse_into_one_row_that_expands_on_click() {
     use iced_test::Simulator;
     let dir = tempfile::tempdir().unwrap();
@@ -521,4 +553,232 @@ fn tool_calls_collapse_into_one_row_that_expands_on_click() {
     }
     let mut ui = Simulator::with_size(iced::Settings::default(), size, app.view());
     assert!(ui.find("contents of b.rs").is_ok(), "expanded on click");
+}
+
+const USAGE_JSON: &str = r#"{
+  "generatedAt": 1000,
+  "reports": [
+    {"provider": "anthropic", "metadata": {"orgName": "Personal", "credentialId": "c1"},
+     "limits": [{"label": "Claude 7 Day", "window": {"id": "7d", "resetsAt": 9000}, "amount": {"usedFraction": 0.51}}],
+     "resetCredits": {"availableCount": 3, "redeemableCount": 1}}
+  ]
+}"#;
+
+fn click_through(app: &mut App, label: &str) {
+    use iced_test::Simulator;
+    let size = iced::Size::new(1600.0, 1000.0);
+    let messages: Vec<Message> = {
+        let mut ui = Simulator::with_size(iced::Settings::default(), size, app.view());
+        ui.click(label).unwrap_or_else(|_| panic!("{label} is clickable"));
+        ui.into_messages().collect()
+    };
+    for message in messages {
+        let _ = app.update(message);
+    }
+}
+
+fn shows(app: &App, label: &str) -> bool {
+    use iced_test::Simulator;
+    let mut ui = Simulator::with_size(iced::Settings::default(), iced::Size::new(1600.0, 1000.0), app.view());
+    ui.find(label).is_ok()
+}
+
+#[test]
+fn usage_window_expands_a_provider_without_closing() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = fake_app(dir.path(), &["fake-a"]);
+    app.overlay = Some(super::windows::Overlay::Usage);
+    let _ = app.update(Message::Usage(super::usage::Message::Loaded(super::usage::parse(USAGE_JSON))));
+    assert!(shows(&app, "Anthropic"));
+    assert!(!shows(&app, "Claude 7 Day"), "providers start collapsed");
+
+    click_through(&mut app, "Anthropic");
+    assert_eq!(app.overlay, Some(super::windows::Overlay::Usage), "clicking inside the window keeps it open");
+    assert!(shows(&app, "Claude 7 Day"), "the provider expanded");
+    assert!(shows(&app, "Use a reset"));
+}
+
+#[test]
+fn settings_window_switches_sections_and_sidebar_opens_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = fake_app(dir.path(), &["fake-a"]);
+    click_through(&mut app, "Settings");
+    assert_eq!(app.overlay, Some(super::windows::Overlay::Settings(super::windows::SettingsTab::General)));
+    assert!(shows(&app, "Theme"));
+
+    click_through(&mut app, "Peers & sharing");
+    assert_eq!(app.overlay, Some(super::windows::Overlay::Settings(super::windows::SettingsTab::Peers)));
+
+    let _ = app.update(Message::Keyboard(escape()));
+    assert_eq!(app.overlay, None, "Escape closes the window");
+}
+
+#[test]
+fn configs_opens_from_the_sidebar_and_lists_agent_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = fake_app(dir.path(), &["fake-a"]);
+    std::fs::create_dir_all(app.ctx.services.cwd.join(".omp/agents")).unwrap();
+    std::fs::write(app.ctx.services.cwd.join(".omp/agents/reviewer.md"), "---\nname: reviewer\n---\nReview diffs.").unwrap();
+    click_through(&mut app, "Configs");
+    assert_eq!(app.configs, Some(super::windows::ConfigsTab::Models));
+    click_through(&mut app, "Agents");
+    assert_eq!(app.configs, Some(super::windows::ConfigsTab::Agents));
+    assert!(shows(&app, "reviewer"));
+    assert!(shows(&app, "Full screen"));
+    click_through(&mut app, "Full screen");
+    assert!(app.docs.full);
+    let _ = app.update(Message::Keyboard(escape()));
+    assert!(!app.docs.full, "Escape leaves the file's full screen first");
+}
+
+#[test]
+fn models_close_button_closes_configs_it_is_drawn_in() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = fake_app(dir.path(), &["fake-a"]);
+    app.configs = Some(super::windows::ConfigsTab::Models);
+    let _ = app.update(Message::Models(areas::models::Message::Close));
+    assert_eq!(app.configs, None);
+}
+
+#[test]
+fn panel_tabs_detach_into_windows_and_reattach() {
+    use super::detach::Detached;
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = fake_app(dir.path(), &["fake-a"]);
+    let _ = app.update(Message::Shell(shell::Message::SelectTab("terminal".into())));
+
+    // The pop-out button on the panel's active tab.
+    click_id(&mut app, shell::layout::PANEL_DETACH_ID);
+    assert_eq!(app.detached.len(), 1);
+    assert_eq!(app.detached[0].1, Detached::Tab("terminal".into()));
+    assert!(app.ctx.shell.is_detached("terminal"));
+    assert!(shows(&app, "Terminal is in its own window"), "the panel shows a placeholder");
+
+    // Popping out again brings the same window forward instead of a second one.
+    let _ = app.update(Message::Shell(shell::Message::Detach("terminal".into())));
+    assert_eq!(app.detached.len(), 1);
+
+    let id = app.detached[0].0;
+    assert_eq!(app.title(id), "Terminal — Loa");
+    {
+        use iced_test::Simulator;
+        let mut ui = Simulator::with_size(iced::Settings::default(), iced::Size::new(640.0, 560.0), app.view_window(id));
+        assert!(ui.find("Reattach").is_ok(), "the detached window offers Reattach");
+    }
+
+    let _ = app.update(Message::Reattach(id));
+    assert!(app.detached.is_empty());
+    assert!(!app.ctx.shell.is_detached("terminal"));
+    assert_eq!(app.ctx.shell.active_tab(), Some("terminal"), "the panel shows the tab again");
+}
+
+#[test]
+fn closing_a_detached_window_reattaches_and_closing_main_quits() {
+    use super::detach::Detached;
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = fake_app(dir.path(), &["fake-a"]);
+    let _ = app.open_main();
+    let _ = app.update(Message::Shell(shell::Message::Detach("files".into())));
+    let _ = app.update(Message::Shell(shell::Message::Detach("diff".into())));
+    assert_eq!(app.detached.iter().map(|(_, what)| what.clone()).collect::<Vec<_>>(), [Detached::Tab("files".into()), Detached::Tab("diff".into())]);
+
+    let files = app.detached[0].0;
+    let _ = app.update(Message::WindowClosed(files));
+    assert!(!app.ctx.shell.is_detached("files"));
+    assert!(app.ctx.shell.is_detached("diff"), "other windows stay detached");
+}
+
+fn click_id(app: &mut App, id: &'static str) {
+    use iced_test::{Simulator, selector};
+    let messages: Vec<Message> = {
+        let mut ui = Simulator::with_size(iced::Settings::default(), iced::Size::new(1600.0, 1000.0), app.view());
+        ui.click(selector::id(id)).unwrap_or_else(|_| panic!("{id} is clickable"));
+        ui.into_messages().collect()
+    };
+    for message in messages {
+        let _ = app.update(message);
+    }
+}
+
+#[test]
+fn a_session_opens_in_its_own_window_without_becoming_active() {
+    use super::detach::Detached;
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = fake_app(dir.path(), &["fake-a"]);
+    update(&mut app, Message::NewSession);
+    let session = app.ctx.sessions.active().unwrap();
+    let session_id = session.id().clone();
+    let writer = Arc::clone(session.writer());
+    let (_, mut feed) = writer.subscribe(Policy::every_patch(1024));
+    prompt(&mut app, "first session");
+    deliver(&mut app, &session_id, &mut feed);
+    let first = active(&app).unwrap().to_owned();
+    update(&mut app, Message::NewSession);
+    let second = active(&app).unwrap().to_owned();
+    assert_ne!(first, second);
+
+    let _ = app.detach_session(&first);
+    assert_eq!(app.detached.last().map(|(_, what)| what.clone()), Some(Detached::Session(first.clone())));
+    assert_eq!(active(&app), Some(second.as_str()), "the main window keeps its session");
+    let id = app.detached.last().unwrap().0;
+    use iced_test::Simulator;
+    let mut ui = Simulator::with_size(iced::Settings::default(), iced::Size::new(560.0, 720.0), app.view_window(id));
+    assert!(ui.find("first session").is_ok(), "the window shows the detached session's transcript");
+}
+
+#[test]
+fn folder_bar_switches_folders_and_starts_a_session_there() {
+    use iced_test::Simulator;
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = fake_app(dir.path(), &["fake-a"]);
+    update(&mut app, Message::NewSession);
+    let before = active(&app).unwrap().to_owned();
+    let folder = app.ctx.composer.workspace().expect("a folder bar").clone();
+    assert_eq!(folder.full, app.ctx.services.cwd.display().to_string());
+
+    // The bar sits above the editor and opens the folder menu.
+    click_id(&mut app, composer::WORKSPACE_CHIP_ID);
+    {
+        let mut ui = Simulator::with_size(iced::Settings::default(), iced::Size::new(1600.0, 1000.0), app.view());
+        assert!(ui.find("Choose another folder…").is_ok());
+        assert!(ui.find("Show in Files").is_ok());
+    }
+
+    let other = tempfile::tempdir().unwrap();
+    let other_path = other.path().canonicalize().unwrap();
+    update(&mut app, Message::Composer(composer::Message::FolderPicked(other_path.display().to_string())));
+    assert_eq!(app.ctx.services.cwd, other_path);
+    assert_eq!(app.ctx.services.project, other_path.file_name().unwrap().to_string_lossy(), "new sessions belong to the new folder's project");
+    assert!(app.diff.files().is_empty(), "the old folder's changes are gone");
+    let _ = app.update(Message::WorkingDiff(None));
+    {
+        let mut ui = iced_test::Simulator::with_size(iced::Settings::default(), iced::Size::new(600.0, 400.0), app.diff.view());
+        let note = format!("No git changes to show: {} isn't a git repository with a commit", super::workspace(&other_path).path);
+        assert!(ui.find(note.as_str()).is_ok());
+    }
+    assert_eq!(app.ctx.composer.workspace().unwrap().full, other_path.display().to_string());
+    assert_ne!(active(&app), Some(before.as_str()), "a fresh session starts in the new folder");
+
+    // The old folder stays in the menu.
+    click_id(&mut app, composer::WORKSPACE_CHIP_ID);
+    let mut ui = Simulator::with_size(iced::Settings::default(), iced::Size::new(1600.0, 1000.0), app.view());
+    assert!(ui.find(folder.path.as_str()).is_ok(), "recent folders are offered");
+}
+
+#[test]
+fn show_in_files_opens_the_files_tab() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = fake_app(dir.path(), &["fake-a"]);
+    update(&mut app, Message::NewSession);
+    click_id(&mut app, composer::WORKSPACE_CHIP_ID);
+    let messages: Vec<Message> = {
+        use iced_test::Simulator;
+        let mut ui = Simulator::with_size(iced::Settings::default(), iced::Size::new(1600.0, 1000.0), app.view());
+        ui.click("Show in Files").expect("Show in Files");
+        ui.into_messages().collect()
+    };
+    for message in messages {
+        let _ = app.update(message);
+    }
+    assert_eq!(app.ctx.shell.active_tab(), Some("files"));
 }

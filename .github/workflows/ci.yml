@@ -13,5 +13,16 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - run: sudo apt-get update && sudo apt-get install -y xvfb libxkbcommon-dev libwayland-dev libvulkan1 mesa-vulkan-drivers
+      - name: Install OMP for bridge integration tests
+        shell: bash
+        run: |
+          dir="$RUNNER_TEMP/loa-ci-omp"
+          mkdir -p "$dir"
+          cd "$dir"
+          curl --fail --silent --show-error --location --retry 3 \
+            https://github.com/can1357/oh-my-pi/releases/download/v19.0.0/omp-linux-x64 -o omp
+          echo 'c7cc5c8d505053c8ffaf180417e5d5c781235b9d936f286810560151120109bf  omp' | sha256sum --check
+          chmod +x omp
+          echo "$dir" >> "$GITHUB_PATH"
       - run: cargo build --workspace --all-targets
       - run: xvfb-run -a cargo test --workspace
