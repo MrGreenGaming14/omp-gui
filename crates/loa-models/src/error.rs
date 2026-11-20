@@ -31,6 +31,9 @@ pub enum Error {
     /// omp itself rejected the edited file.
     #[error("omp rejected {what}: {message}")]
     Rejected { what: String, message: String },
+    /// A file to create already exists and overwriting was not requested.
+    #[error("{path} already exists")]
+    AlreadyExists { path: PathBuf },
     /// An external program (omp, claude, codex) could not be run.
     #[error("cannot run {program}: {message}")]
     Process { program: String, message: String },
