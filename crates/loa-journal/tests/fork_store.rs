@@ -19,10 +19,10 @@ fn root_attr<'a>(dom: &'a Dom, name: &str) -> Option<&'a Value> {
 fn dir_contents(dir: &Path) -> BTreeMap<String, Vec<u8>> {
     fs::read_dir(dir)
         .unwrap()
-        .map(|e| {
-            let e = e.unwrap();
-            (e.file_name().to_string_lossy().into_owned(), fs::read(e.path()).unwrap())
-        })
+        .map(|e| e.unwrap())
+        // The store holds a byte-range lock on `lock`; Windows refuses reads of it.
+        .filter(|e| e.file_name() != "lock")
+        .map(|e| (e.file_name().to_string_lossy().into_owned(), fs::read(e.path()).unwrap()))
         .collect()
 }
 
