@@ -138,6 +138,7 @@ pub enum Message {
     Peers(areas::peers::Message),
     Updater(areas::updater::Message),
     Sandbox(areas::sandbox::Message),
+    Agents(areas::agents::Message),
 }
 
 pub struct App {
@@ -740,6 +741,7 @@ impl App {
                 self.update(Message::Models(areas::models::Message::Effort(effort)))
             }
             Some(composer::Event::ModeChanged(mode)) => self.update(Message::Sessions(areas::sessions::Message::Mode(mode))),
+            Some(composer::Event::OpenAgents) => self.update(Message::Agents(areas::agents::Message::Open)),
             Some(composer::Event::FilesRequested { .. }) => {
                 self.files.refresh();
                 self.ctx.composer.set_files(self.files.visible().map(|path| path.to_string_lossy().into_owned()).collect());
@@ -958,6 +960,7 @@ impl App {
             Message::Peers(message) => area!(peers, Peers, message),
             Message::Updater(message) => area!(updater, Updater, message),
             Message::Sandbox(message) => area!(sandbox, Sandbox, message),
+            Message::Agents(message) => area!(agents, Agents, message),
         }
     }
 
