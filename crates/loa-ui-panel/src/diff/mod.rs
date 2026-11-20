@@ -343,8 +343,7 @@ fn mono<'a>(content: impl text::IntoFragment<'a>) -> text::Text<'a> {
 
 /// Digits needed for the largest line number of the file.
 fn number_digits(file: &FileDiff) -> usize {
-    let max = file.lines().iter().flat_map(|l| l.old_no.max(l.new_no)).max().unwrap_or(0);
-    max.max(1).ilog10() as usize + 1
+    file.max_line_no().max(1).ilog10() as usize + 1
 }
 
 fn number<'a>(no: Option<u32>, digits: usize) -> Element<'a, Message> {

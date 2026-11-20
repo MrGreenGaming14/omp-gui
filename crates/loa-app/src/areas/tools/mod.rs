@@ -115,8 +115,8 @@ pub struct State {
     harness_tools: HashMap<String, Result<Vec<tools::ToolInfo>, String>>,
     /// omp's tools are being read.
     omp_loading: bool,
-    /// The harness and app tools the Built in section shows.
-    shown: (Option<String>, Vec<tools::ToolInfo>),
+    /// The harness and app tools revision the Built in section shows.
+    shown: (Option<String>, u64),
     /// Entries of the last import scan.
     found: Vec<Found>,
     /// Project the toggles apply to.
@@ -142,7 +142,7 @@ impl State {
             ssh,
             harness_tools: HashMap::new(),
             omp_loading: false,
-            shown: (None, Vec::new()),
+            shown: (None, 0),
             found: Vec::new(),
             project: ctx.services.project.clone(),
             terminal,
@@ -173,7 +173,11 @@ impl State {
     /// The harness the Built in section describes: the active session's,
     /// else the one new sessions start on.
     fn harness(ctx: &Ctx) -> Option<String> {
-        ctx.sessions.active().and_then(|session| session.harness_id()).map(str::to_owned).or_else(|| ctx.sessions.harness.clone())
+        Self::harness_id(ctx).map(str::to_owned)
+    }
+
+    fn harness_id(ctx: &Ctx) -> Option<&str> {
+        ctx.sessions.active().and_then(|session| session.harness_id()).or(ctx.sessions.harness.as_deref())
     }
 
     /// The omp executable, when omp runs here.
@@ -186,7 +190,7 @@ impl State {
     /// when they haven't been read.
     fn refresh_builtin(&mut self, ctx: &Ctx) -> Task<Message> {
         let harness = Self::harness(ctx);
-        self.shown = (harness.clone(), ctx.app_tools.clone());
+        self.shown = (harness.clone(), ctx.app_tools_rev());
         let label = harness.as_deref().map(|id| ctx.services.harnesses.label(id).to_owned()).unwrap_or_default();
         let (harness_tools, harness_note, load) = match harness.as_deref() {
             None => (Vec::new(), Some("No harness is available".to_owned()), None),
@@ -228,7 +232,7 @@ impl State {
     /// Refreshes the Built in section when the harness or the app tools
     /// other areas publish changed.
     fn follow_builtin(&mut self, ctx: &Ctx) -> Task<Message> {
-        if self.shown.0 != Self::harness(ctx) || self.shown.1 != ctx.app_tools {
+        if self.shown.0.as_deref() != Self::harness_id(ctx) || self.shown.1 != ctx.app_tools_rev() {
             self.refresh_builtin(ctx)
         } else {
             Task::none()
@@ -779,7 +783,10 @@ impl Area for State {
             SessionEvent::Closed(id) => self.remote.forget(id.as_str()),
             _ => {}
         }
-        self.follow_builtin(ctx)
+        match event {
+            SessionEvent::Activated(_) | SessionEvent::Loaded(_) | SessionEvent::Closed(_) => self.follow_builtin(ctx),
+            _ => Task::none(),
+        }
     }
 
     fn project_activated(&mut self, project: &str, cwd: &Path, ctx: &mut Ctx) -> Task<Message> {

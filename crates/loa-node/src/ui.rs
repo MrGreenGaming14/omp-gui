@@ -370,7 +370,7 @@ async fn run(node: &Node, event: panel::Event) -> Result<Outcome, NodeError> {
             Outcome::Done
         }
         E::CreateGrant(input) => {
-            let (scopes, until) = grant_request(&input, crate::now_ms())?;
+            let (scopes, until) = grant_request(&input, loa_core::now_ms())?;
             node.issue_grant(&input.peer_key, scopes, until, input.reshare).await?;
             Outcome::Notice("Grant created".to_owned())
         }
@@ -387,7 +387,7 @@ async fn run(node: &Node, event: panel::Event) -> Result<Outcome, NodeError> {
                 .find(|g| g.id == id)
                 .ok_or_else(|| NodeError::Refused("unknown grant".into()))?;
             // Renewing gives the grant its original length again from now.
-            let until = record.until_ms.map(|until| crate::now_ms() + (until - record.created_ms).max(60_000));
+            let until = record.until_ms.map(|until| loa_core::now_ms() + (until - record.created_ms).max(60_000));
             node.renew_grant(&id, until).await?;
             Outcome::Notice("Grant renewed".to_owned())
         }

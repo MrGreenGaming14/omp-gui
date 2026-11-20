@@ -1,8 +1,9 @@
 //! `omp/control/1` for the node: presence, grant delivery, renewal and
 //! revocation; LAN browsing and tailnet probing.
 
-use crate::{Inner, Node, NodeError, Result, grant_key, now_ms};
+use crate::{Inner, Node, NodeError, Result, grant_key};
 use async_trait::async_trait;
+use loa_core::now_ms;
 use loa_grants::{GrantId, NodePublicKey, RenewFailure, RenewTransport};
 use loa_net::NodeId;
 use loa_net::alpn;

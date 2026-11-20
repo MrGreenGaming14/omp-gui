@@ -1,12 +1,12 @@
 //! Chat transcript rendered from the session DOM.
 //!
 //! [`State`] is fed every committed patch with [`State::apply`] and keeps a
-//! cache per row: assistant markdown is parsed incrementally, so a token
-//! append parses only the new text and touches one row. The transcript is a
-//! virtual list: [`State::view`] builds only the rows that intersect the
-//! viewport plus an overscan margin, sized by measured heights where known
-//! and estimates elsewhere. The view follows new content only while it is
-//! scrolled to the bottom.
+//! cache per row: assistant markdown is parsed the first time its row is
+//! drawn, then incrementally, so a token append parses only the new text and
+//! touches one row. The transcript is a virtual list: [`State::view`] builds
+//! only the rows that intersect the viewport plus an overscan margin, sized
+//! by measured heights where known and estimates elsewhere. The view follows
+//! new content only while it is scrolled to the bottom.
 
 mod heights;
 mod items;
@@ -14,19 +14,20 @@ mod prose;
 mod rows;
 mod stream;
 mod style;
+mod virtual_list;
 
 pub use items::{COMMANDS_EXT, ItemKind};
 
 use heights::Heights;
-use iced::widget::{
-    self, button, container, markdown, scrollable, sensor, space, stack, text,
-};
+use iced::widget::{self, button, container, markdown, scrollable, sensor, stack, text};
 use iced::{Element, Fill, Task, Theme};
 use items::{Emitter, Item};
 use loa_core::{Dom, ElementKind, Node, NodeId, Op, Patch, attr, schema::TEXT};
+use std::cell::OnceCell;
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use stream::Streamed;
+use virtual_list::VirtualList;
 
 /// Pixels of rows built above and below the viewport.
 const OVERSCAN: f32 = 600.0;
@@ -129,9 +130,13 @@ pub struct State {
     owner: HashMap<NodeId, NodeId>,
     spans: HashMap<NodeId, Span>,
     measured: HashMap<NodeId, f32>,
-    streamed: HashMap<NodeId, Streamed>,
+    /// Parsed markdown of assistant rows, made the first time a row is drawn.
+    streamed: HashMap<NodeId, OnceCell<Streamed>>,
     expanded: HashSet<NodeId>,
     scroll: Scroll,
+    /// `id` of the session the rows show. Loading another one starts it
+    /// following at the bottom.
+    shown: Option<String>,
     look: style::Look,
     scroll_id: widget::Id,
     /// Room left under the last row for what floats over the transcript's
@@ -163,6 +168,7 @@ impl State {
                 known: false,
                 follow: true,
             },
+            shown: None,
             look: style::Look::new(theme),
             scroll_id: widget::Id::unique(),
             bottom_inset: 0.0,
@@ -192,7 +198,8 @@ impl State {
         self.scroll.follow
     }
 
-    /// Rebuilds every row from `dom`, keeping the scroll position state.
+    /// Rebuilds every row from `dom`. The scroll position state is kept for
+    /// the same session; another session starts following its newest rows.
     pub fn load(&mut self, dom: &Dom) {
         self.items.clear();
         self.heights = Heights::default();
@@ -202,10 +209,16 @@ impl State {
         self.measured.clear();
         self.streamed.clear();
         self.expanded.clear();
-        self.session = dom
-            .root()
-            .filter(|r| r.kind == ElementKind::Session)
-            .map(|r| r.id);
+        let root = dom.root().filter(|r| r.kind == ElementKind::Session);
+        self.session = root.map(|r| r.id);
+        let shown = root.and_then(|r| r.str_attr(attr::ID));
+        if shown != self.shown.as_deref() {
+            self.shown = shown.map(str::to_owned);
+            // The old offset belongs to the other session: forget it, so the
+            // shorter content it reports next doesn't read as a scroll up.
+            self.scroll.follow = true;
+            self.scroll.known = false;
+        }
         let Some(session) = self.session else {
             return;
         };
@@ -263,52 +276,34 @@ impl State {
         let above = self.heights.prefix(window.start) as f32;
         let below = (self.heights.total() - self.heights.prefix(window.end)) as f32;
 
-        let built = self.items[window.clone()].iter().map(|item| {
-            let key = item.key;
-            let content: Element<'a, M> = if item.kind == ItemKind::Decision {
-                slot(Slot {
-                    kind: item.kind,
-                    node: key,
-                })
-            } else {
-                let expanded = self.expanded.contains(&key);
-                rows::view(dom, item, expanded, self.streamed.get(&key), self.look)
-                    .map(map.clone())
-            };
-            let (on_show, on_resize) = (map.clone(), map.clone());
-            let measured = sensor(
-                container(container(content).width(Fill).max_width(COLUMN_WIDTH))
-                    .center_x(Fill)
-                    .padding([PADDING / 2.0, SIDE_PADDING]),
-            )
-            .key(key.0)
-            .anticipate(OVERSCAN)
-            .on_show(move |size| {
-                on_show(Message::Measured {
-                    key,
-                    height: size.height,
-                })
+        let (keys, children) = self.items[window]
+            .iter()
+            .map(|item| {
+                let key = item.key;
+                let content: Element<'a, M> = if item.kind == ItemKind::Decision {
+                    slot(Slot { kind: item.kind, node: key })
+                } else {
+                    let expanded = self.expanded.contains(&key);
+                    let streamed = self.streamed.get(&key).and_then(|cell| {
+                        let node = dom.get(key)?;
+                        Some(cell.get_or_init(|| Streamed::new(&node.text)))
+                    });
+                    rows::view(dom, item, expanded, streamed, self.look).map(map.clone())
+                };
+                let (on_show, on_resize) = (map.clone(), map.clone());
+                let measured = sensor(
+                    container(container(content).width(Fill).max_width(COLUMN_WIDTH))
+                        .center_x(Fill)
+                        .padding([PADDING / 2.0, SIDE_PADDING]),
+                )
+                .key(key.0)
+                .anticipate(OVERSCAN)
+                .on_show(move |size| on_show(Message::Measured { key, height: size.height }))
+                .on_resize(move |size| on_resize(Message::Measured { key, height: size.height }));
+                (key.0, Element::from(measured))
             })
-            .on_resize(move |size| {
-                on_resize(Message::Measured {
-                    key,
-                    height: size.height,
-                })
-            });
-            (key.0, Element::from(measured))
-        });
-
-        // Spacers stand in for the rows outside the window. A plain column,
-        // not `keyed_column`: iced 0.14's keyed diff assumes one contiguous
-        // insert or removal per frame, and a turn's first reply (rows added
-        // while the window shifts) paired a row's sensor with a spacer's
-        // state and panicked ("Downcast on stateless state"). Index diffing
-        // rebuilds mismatched widgets instead, and each row's sensor carries
-        // its own key, so measurements still follow rows that move.
-        let rows = std::iter::once(space().height(above).into())
-            .chain(built.map(|(_, row)| row))
-            .chain(std::iter::once(space().height(below + self.bottom_inset).into()));
-        let list = iced::widget::Column::with_children(rows).width(Fill);
+            .unzip();
+        let list = VirtualList { top: above, bottom: below + self.bottom_inset, keys, children };
 
         let on_scroll = map.clone();
         let scrollbar = scrollable::Scrollbar::new().width(6).scroller_width(6);
@@ -319,8 +314,11 @@ impl State {
             .height(Fill)
             .on_scroll(move |viewport| on_scroll(Message::Scrolled(viewport.into())));
 
+        // The root stays a stack whether or not the button shows, so the
+        // scrollable keeps its state (and its offset) when following stops.
+        let root = stack![transcript];
         if self.scroll.follow {
-            return transcript.into();
+            return root.into();
         }
         let jump = button(text("Jump to latest ↓").size(style::SMALL_SIZE))
             .style(style::jump)
@@ -330,7 +328,7 @@ impl State {
             .padding(iced::Padding { bottom: 16.0 + self.bottom_inset, ..iced::Padding::new(16.0) })
             .center_x(Fill)
             .align_bottom(Fill);
-        stack![transcript, overlay].into()
+        root.push(overlay).into()
     }
 
     /// Indices of the rows to build: those intersecting the viewport plus
@@ -479,7 +477,7 @@ impl State {
             }
         }
         for index in start..self.items.len() {
-            self.prepare_row(dom, index);
+            self.prepare_row(index);
             let height = self.height_of(dom, &self.items[index]);
             self.heights.push(height);
             self.pos.insert(self.items[index].key, index);
@@ -554,7 +552,7 @@ impl State {
         let added = fresh.len();
         self.items.splice(range.clone(), fresh);
         for index in start..start + added {
-            self.prepare_row(dom, index);
+            self.prepare_row(index);
         }
         let heights: Vec<f32> = self.items[start..start + added]
             .iter()
@@ -580,18 +578,14 @@ impl State {
         }
     }
 
-    /// Parses the markdown of a new assistant row once; rows that existed
-    /// before keep their parse.
-    fn prepare_row(&mut self, dom: &Dom, index: usize) {
+    /// Gives a new assistant row an empty parse cell, filled the first time
+    /// the row is drawn; rows that existed before keep their parse.
+    fn prepare_row(&mut self, index: usize) {
         let row = &self.items[index];
-        if row.kind != ItemKind::Assistant {
+        if row.kind == ItemKind::Assistant {
+            self.streamed.entry(row.key).or_default();
+        } else {
             self.streamed.remove(&row.key);
-            return;
-        }
-        if let Some(node) = dom.get(row.key) {
-            self.streamed
-                .entry(row.key)
-                .or_insert_with(|| Streamed::new(&node.text));
         }
     }
 
@@ -610,15 +604,17 @@ impl State {
             return;
         }
         if name == TEXT {
-            if let Some(streamed) = self.streamed.get_mut(&id) {
-                *streamed = Streamed::new(&node.text);
+            if let Some(cell) = self.streamed.get_mut(&id) {
+                // Parsed again when the row is next drawn.
+                cell.take();
             }
             self.reestimate(dom, id);
         }
     }
 
     fn appended(&mut self, dom: &Dom, id: NodeId, chunk: &str) {
-        if let (Some(streamed), Some(node)) = (self.streamed.get_mut(&id), dom.get(id)) {
+        // A row not drawn yet parses the whole text when it is.
+        if let (Some(streamed), Some(node)) = (self.streamed.get_mut(&id).and_then(OnceCell::get_mut), dom.get(id)) {
             streamed.append(&node.text, chunk);
         }
         self.reestimate(dom, id);
@@ -667,7 +663,7 @@ impl State {
     }
 
     /// A guess at the height of a row that has not been laid out. Constant
-    /// time, so streaming can refresh it on every append.
+    /// time for a drawn reply, so streaming can refresh it on every append.
     fn estimate(&self, dom: &Dom, row: &Item) -> f32 {
         let node = dom.get(row.key);
         let text_lines =
@@ -675,9 +671,12 @@ impl State {
         let expanded = self.expanded.contains(&row.key);
         let body = match row.kind {
             ItemKind::User | ItemKind::System => LINE * text_lines(node) + PADDING,
-            ItemKind::Assistant => match self.streamed.get(&row.key) {
+            ItemKind::Assistant => match self.streamed.get(&row.key).and_then(OnceCell::get) {
                 Some(s) => LINE * (s.lines() + s.fed() / CHARS_PER_LINE + 1) as f32,
-                None => LINE * text_lines(node),
+                None => node.map_or(LINE, |n| {
+                    let newlines = n.text.bytes().filter(|b| *b == b'\n').count();
+                    LINE * (newlines + n.text.len() / CHARS_PER_LINE + 1) as f32
+                }),
             },
             ItemKind::Thinking if expanded => ROW + LINE * text_lines(node),
             ItemKind::Calls | ItemKind::Job | ItemKind::Compaction | ItemKind::Ext if expanded => {

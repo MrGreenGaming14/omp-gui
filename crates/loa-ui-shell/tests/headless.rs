@@ -37,7 +37,7 @@ fn shell(panel_open: bool) -> State {
 }
 
 fn view(state: &State) -> Element<'_, Message> {
-    state.view(text("Chat goes here"), |tab| text(format!("{tab} body")).into(), None, std::convert::identity)
+    state.view(text("Chat goes here"), |tab| text(format!("{tab} body")).into(), || None, std::convert::identity)
 }
 
 fn simulator(state: &State) -> Simulator<'_, Message> {
@@ -77,7 +77,7 @@ fn with_project_files(state: &State) -> Element<'_, Message> {
     state.view(
         text("Chat goes here"),
         |tab| text(format!("{tab} body")).into(),
-        Some(text("main.rs marker").into()),
+        || Some(text("main.rs marker").into()),
         std::convert::identity,
     )
 }

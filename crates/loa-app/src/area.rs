@@ -186,8 +186,9 @@ pub struct Ctx {
     /// App tools areas serve to sessions, as the Tools panel lists them.
     /// Each area replaces its own entries by name ([`Ctx::set_app_tool`]).
     pub app_tools: Vec<loa_ui_tools::ToolInfo>,
-    /// Peers the peers area knows; refreshed by it.
-    pub peers: Vec<loa_node::PeerInfo>,
+    /// Bumped whenever an app tool is added or changed. Views that list
+    /// the tools compare it to know when to rebuild.
+    app_tools_rev: u64,
     /// The running peer node, set by the peers area each time it opens one;
     /// clones of the slot see the current node. Areas add protocols to it
     /// before it starts (`loa_node::Node::add_protocol`).
@@ -199,6 +200,30 @@ pub struct Ctx {
 }
 
 impl Ctx {
+    /// Starts the context with no app tools, notice or requests.
+    pub(crate) fn new(
+        services: Services,
+        sessions: Sessions,
+        shell: shell::State,
+        composer: composer::State,
+        keymap: palette::Keymap,
+    ) -> Self {
+        Self {
+            services,
+            sessions,
+            shell,
+            composer,
+            keymap,
+            app_tools: Vec::new(),
+            app_tools_rev: 0,
+            node: loa_node::NodeSlot::default(),
+            screen: None,
+            notice: None,
+            requests: Vec::new(),
+            events: Vec::new(),
+        }
+    }
+
     /// Shows a one line notice under the center content.
     pub fn notify(&mut self, text: impl Into<String>) {
         self.notice = Some(text.into());
@@ -213,12 +238,19 @@ impl Ctx {
     }
 
     /// Lists `info` among the app tools, replacing the entry of the same
-    /// name.
+    /// name. An unchanged entry leaves the revision alone.
     pub fn set_app_tool(&mut self, info: loa_ui_tools::ToolInfo) {
         match self.app_tools.iter_mut().find(|tool| tool.name == info.name) {
+            Some(tool) if *tool == info => return,
             Some(tool) => *tool = info,
             None => self.app_tools.push(info),
         }
+        self.app_tools_rev += 1;
+    }
+
+    /// Changes whenever `app_tools` does.
+    pub fn app_tools_rev(&self) -> u64 {
+        self.app_tools_rev
     }
 
     pub fn request(&mut self, request: Request) {

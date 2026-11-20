@@ -330,7 +330,16 @@ impl State {
 
     /// Adds a session or replaces the one with the same id.
     pub fn upsert_session(&mut self, summary: SessionSummary) {
+        let active = self.sidebar.active() == Some(summary.id.as_str());
         self.sidebar.upsert_session(summary);
+        if active {
+            self.refresh_breadcrumb();
+        }
+    }
+
+    /// Adds or replaces many sessions at once, e.g. the ones read from disk.
+    pub fn upsert_sessions(&mut self, summaries: impl IntoIterator<Item = SessionSummary>) {
+        self.sidebar.upsert_sessions(summaries);
         self.refresh_breadcrumb();
     }
 
@@ -440,6 +449,9 @@ impl State {
     /// or the start screen does): the sidebar highlights it and the top bar
     /// names it.
     pub fn set_shown_project(&mut self, project: Option<String>) {
+        if self.sidebar.shown_project() == project.as_deref() {
+            return;
+        }
         self.sidebar.set_shown_project(project.clone());
         self.topbar.set_project_page(project);
     }
@@ -661,11 +673,13 @@ impl State {
     /// `center` fills the area under the top bar. `panel_body` draws the body
     /// of the active tab and is only called while the panel is open with a
     /// tab. `map` lifts this crate's messages into the app's.
+    /// `project_files` is drawn under the highlighted project in the sidebar
+    /// and is only called while the sidebar shows that project.
     pub fn view<'a, M: Clone + 'a>(
         &'a self,
         center: impl Into<Element<'a, M>>,
         panel_body: impl FnOnce(&'a str) -> Element<'a, M>,
-        project_files: Option<Element<'a, M>>,
+        project_files: impl FnOnce() -> Option<Element<'a, M>>,
         map: fn(Message) -> M,
     ) -> Element<'a, M> {
         let full = self.full;

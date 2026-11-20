@@ -396,7 +396,7 @@ pub enum Overlay {
     Settings(SettingsTab),
 }
 
-fn semibold() -> iced::Font {
+pub(crate) fn semibold() -> iced::Font {
     iced::Font { weight: iced::font::Weight::Bold, ..iced::Font::default() }
 }
 

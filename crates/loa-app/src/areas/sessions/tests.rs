@@ -243,7 +243,7 @@ impl Env {
                 while let Ok(event) = self.feeds[index].1.try_recv() {
                     idle = false;
                     let id = self.feeds[index].0.clone();
-                    update(&mut self.app, Message::Session(id, Feed::Event(event)));
+                    update(&mut self.app, Message::Session(id, Feed::Events(vec![event])));
                 }
             }
             if idle {
@@ -292,6 +292,7 @@ fn build(dir: &Path, id: &'static str, seen: &Shared, reply: &Arc<Mutex<String>>
     let node = Node::new(NodeIdentity::from_secret_bytes(&[7; 32]), "testhost".into());
     let services = Services::new(node, Dirs::new(dir.join("loa")), harnesses, dir.to_owned()).unwrap();
     let mut app = App::build(services).0;
+    crate::app::tests::list_recents(&mut app);
     let home = dir.join("home");
     std::fs::create_dir_all(&home).unwrap();
     app.areas.sessions.set_home(home);

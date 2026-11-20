@@ -133,25 +133,9 @@ impl State {
             })
             .collect();
         ctx.shell.set_updates(waiting(&overview));
-        let peers = self.peers(ctx);
+        let known = ctx.node.get().map(|node| node.peers()).unwrap_or_default();
+        let peers = standings(&self.version, &known);
         self.screen.set_data(updates::Data::from_updater(&overview, &peers, self.running > 0, now_unix()));
-    }
-
-    /// The peers whose hello this node has seen, against this app.
-    fn peers(&self, ctx: &Ctx) -> Vec<PeerStanding> {
-        let known: Vec<PeerInfo> = ctx
-            .peers
-            .iter()
-            // Without a hello there is nothing to compare.
-            .filter(|peer| !peer.protocols.is_empty())
-            .map(|peer| PeerInfo {
-                node: peer.key.to_string(),
-                name: peer.name.clone(),
-                app_version: peer.app_version.as_deref().and_then(|v| Version::parse(v.trim_start_matches('v')).ok()),
-                alpns: peer.protocols.clone(),
-            })
-            .collect();
-        peers::classify(&self.version, &loa_node::local_protocols(), &known)
     }
 
     /// Checks every feed, as the screen's "Check all" does.
@@ -318,6 +302,22 @@ impl State {
         use loa_updater::swap::Activity;
         self.turns.turn_running()
     }
+}
+
+/// The peers whose hello this node has seen, against an app at `version`.
+fn standings(version: &Version, known: &[loa_node::PeerInfo]) -> Vec<PeerStanding> {
+    let known: Vec<PeerInfo> = known
+        .iter()
+        // Without a hello there is nothing to compare.
+        .filter(|peer| !peer.protocols.is_empty())
+        .map(|peer| PeerInfo {
+            node: peer.key.to_string(),
+            name: peer.name.clone(),
+            app_version: peer.app_version.as_deref().and_then(|v| Version::parse(v.trim_start_matches('v')).ok()),
+            alpns: peer.protocols.clone(),
+        })
+        .collect();
+    peers::classify(version, &loa_node::local_protocols(), &known)
 }
 
 impl Area for State {

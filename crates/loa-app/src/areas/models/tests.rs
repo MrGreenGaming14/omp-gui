@@ -537,7 +537,7 @@ impl Live {
                 while let Ok(event) = self.feeds[index].1.try_recv() {
                     idle = false;
                     let id = self.feeds[index].0.clone();
-                    self.update(app, AppMessage::Session(id, Feed::Event(event)));
+                    self.update(app, AppMessage::Session(id, Feed::Events(vec![event])));
                 }
             }
             if done(app) {

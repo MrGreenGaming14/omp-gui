@@ -89,14 +89,23 @@ const ALL: [(Icon, &[u8]); 35] = [
     (Icon::X, include_bytes!("../icons/x.svg")),
 ];
 
+// `ALL` lists every variant once, in declaration order, so a variant's
+// discriminant is its index there.
+const _: () = {
+    assert!(ALL.len() == Icon::X as usize + 1, "ALL lists every icon");
+    let mut index = 0;
+    while index < ALL.len() {
+        assert!(ALL[index].0 as usize == index, "ALL follows the declaration order of Icon");
+        index += 1;
+    }
+};
+
 static HANDLES: LazyLock<[Handle; ALL.len()]> =
     LazyLock::new(|| ALL.map(|(_, bytes)| Handle::from_memory(bytes)));
 
 impl Icon {
     fn handle(self) -> Handle {
-        // `ALL` lists every variant, so the position is always found.
-        let index = ALL.iter().position(|(icon, _)| *icon == self).unwrap_or(0);
-        HANDLES[index].clone()
+        HANDLES[self as usize].clone()
     }
 }
 

@@ -174,6 +174,9 @@ pub struct State {
     content: Content,
     history: History,
     composing: bool,
+    /// The editor holds text the send button can send. Kept in step with the
+    /// editor, so `view` does not read the text.
+    can_send: bool,
     phase: Phase,
     queue: Queue,
     commands: Vec<Command>,
@@ -203,6 +206,7 @@ impl State {
             content: Content::new(),
             history: History::new(UNDO_DEPTH),
             composing: false,
+            can_send: false,
             phase: Phase::Idle,
             queue: Queue::default(),
             commands: Vec::new(),
@@ -334,6 +338,7 @@ impl State {
         let line = self.content.line_count().saturating_sub(1);
         let column = self.content.line(line).map_or(0, |l| l.text.len());
         self.content.move_to(Cursor { position: Position { line, column }, selection: None });
+        self.can_send = has_sendable_text(&self.content);
         iced::widget::operation::focus(EDITOR_ID)
     }
 
@@ -465,6 +470,9 @@ impl State {
                 })
             }
             Message::Composing(composing) => {
+                if composing == self.composing {
+                    return (task, None);
+                }
                 self.composing = composing;
                 None
             }
@@ -500,8 +508,7 @@ impl State {
         let (glyph, size, on_press, label) = if self.is_busy() {
             (Icon::Square, 12.0, Some(Message::StopPressed), STOP_LABEL)
         } else {
-            let can_send = !self.content.text().trim().is_empty();
-            (Icon::ArrowUp, 16.0, can_send.then_some(Message::Send), SEND_LABEL)
+            (Icon::ArrowUp, 16.0, self.can_send.then_some(Message::Send), SEND_LABEL)
         };
         let tint = if on_press.is_some() { style::on_accent } else { style::send_idle };
         let action = labelled(
@@ -693,9 +700,8 @@ impl State {
             iced::Event::InputMethod(input_method::Event::Preedit(content, _)) => {
                 Some(Message::Composing(!content.is_empty()))
             }
-            iced::Event::InputMethod(
-                input_method::Event::Commit(_) | input_method::Event::Closed | input_method::Event::Opened,
-            ) => Some(Message::Composing(false)),
+            // winit sends an empty preedit right before a commit, so commits need no arm.
+            iced::Event::InputMethod(input_method::Event::Closed) => Some(Message::Composing(false)),
             _ => None,
         });
         if self.pickers.open.is_none() {
@@ -787,6 +793,7 @@ impl State {
     fn restore(&mut self, snapshot: Snapshot) {
         self.content = Content::with_text(&snapshot.text);
         self.content.move_to(snapshot.cursor);
+        self.can_send = has_sendable_text(&self.content);
     }
 
     fn edit(&mut self, action: Action) -> Option<Event> {
@@ -801,13 +808,17 @@ impl State {
                     self.history.extend(kind);
                 } else {
                     let before = self.snapshot();
+                    let line_count = self.content.line_count();
                     self.content.perform(action);
-                    if self.content.text() == before.text {
+                    // The text is compared only when the cursor and line count stay put.
+                    let moved = self.content.cursor() != before.cursor || self.content.line_count() != line_count;
+                    if !moved && self.content.text() == before.text {
                         self.history.break_group();
                     } else {
                         self.history.begin(kind, before);
                     }
                 }
+                self.can_send = has_sendable_text(&self.content);
             }
             Action::Scroll { .. } => self.content.perform(action),
             _ => {
@@ -845,6 +856,7 @@ impl State {
         }
         let message = message.to_owned();
         self.content = Content::new();
+        self.can_send = false;
         self.history.clear();
         self.popup = None;
         self.dismissed = None;
@@ -886,6 +898,7 @@ impl State {
             let line = self.content.line_count().saturating_sub(1);
             let column = self.content.line(line).map_or(0, |l| l.text.len());
             self.content.move_to(Cursor { position: Position { line, column }, selection: None });
+            self.can_send = has_sendable_text(&self.content);
             self.popup = None;
         }
         Some(Event::Stop)
@@ -922,6 +935,7 @@ impl State {
             selection: Some(Position { line: trigger.line, column: trigger.start }),
         });
         self.content.perform(Action::Edit(Edit::Paste(Arc::new(replacement))));
+        self.can_send = has_sendable_text(&self.content);
         self.history.begin(EditKind::Other, before);
         self.popup = None;
         self.dismissed = None;
@@ -1020,9 +1034,23 @@ fn capitalized(label: &str) -> String {
 fn edit_kind(edit: &Edit) -> EditKind {
     match edit {
         Edit::Insert(c) => EditKind::Insert { whitespace: c.is_whitespace() },
+        // An IME commit arrives as a paste; a single typed character is an insert.
+        Edit::Paste(text) => {
+            let mut chars = text.chars();
+            match (chars.next(), chars.next()) {
+                (Some(c), None) if c != '\n' && c != '\r' => EditKind::Insert { whitespace: c.is_whitespace() },
+                _ => EditKind::Other,
+            }
+        }
         Edit::Backspace | Edit::Delete => EditKind::Delete,
-        Edit::Paste(_) | Edit::Enter | Edit::Indent | Edit::Unindent => EditKind::Other,
+        Edit::Enter | Edit::Indent | Edit::Unindent => EditKind::Other,
     }
+}
+
+/// Whether `content` holds text the send button can send: a line that is not
+/// blank. Stops at the first such line, so the text is not copied whole.
+fn has_sendable_text(content: &Content) -> bool {
+    !content.is_empty() && content.lines().any(|line| !line.text.trim().is_empty())
 }
 
 /// Container id of the folder chip.

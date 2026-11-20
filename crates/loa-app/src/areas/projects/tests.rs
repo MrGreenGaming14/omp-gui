@@ -441,7 +441,7 @@ fn live_turn(app: &mut App, runtime: &tokio::runtime::Runtime, text: &str) -> Do
                 })
         });
         while let Ok(event) = feed.try_recv() {
-            live(app, runtime, AppMessage::Session(id.clone(), crate::session::Feed::Event(event)));
+            live(app, runtime, AppMessage::Session(id.clone(), crate::session::Feed::Events(vec![event])));
         }
         if let Some(decision) = app.areas.decisions.focused() {
             eprintln!("allowing decision {decision:?}");

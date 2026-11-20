@@ -5,7 +5,7 @@
 //! rebuilt only when expansion or the listing changes.
 
 use std::cmp::Ordering;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
@@ -21,6 +21,9 @@ use crate::style;
 
 /// Tallest the sidebar's compact file list grows before it scrolls.
 pub const COMPACT_MAX_HEIGHT: f32 = 240.0;
+
+/// Rows built above and below the compact list's viewport.
+const COMPACT_OVERSCAN: usize = 4;
 
 /// Failure to list a directory.
 #[derive(Debug, thiserror::Error)]
@@ -116,21 +119,14 @@ pub enum Message {
     /// A row was clicked; carries the node index.
     Click(usize),
     Scrolled(Viewport),
+    /// The sidebar's compact list scrolled.
+    CompactScrolled(Viewport),
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
     /// Open this file (absolute path).
     Open(PathBuf),
-}
-
-/// Session touch marker of a node.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Mark {
-    None,
-    /// A touched path lies under this directory.
-    Contains,
-    Touched,
 }
 
 /// One file or directory. Index 0 is the root, which is never shown.
@@ -147,7 +143,6 @@ struct Node {
     /// Children are pushed contiguously when the directory is listed.
     children: Option<Range<usize>>,
     error: Option<String>,
-    mark: Mark,
 }
 
 impl Node {
@@ -161,7 +156,6 @@ impl Node {
             expanded: true,
             children: None,
             error: None,
-            mark: Mark::None,
         }
     }
 }
@@ -184,13 +178,11 @@ pub struct State {
     selected: Option<usize>,
     /// Position of the selected node in `rows`.
     selected_row: Option<usize>,
-    /// Root-relative touched paths.
-    touched: HashSet<PathBuf>,
-    /// Every proper ancestor of a touched path.
-    touched_dirs: HashSet<PathBuf>,
     scroll_id: Id,
     scroll_offset: f32,
     viewport_height: f32,
+    /// Scroll offset of the compact list, as its viewport last reported it.
+    compact_offset: f32,
 }
 
 impl State {
@@ -203,11 +195,10 @@ impl State {
             rows: Vec::new(),
             selected: None,
             selected_row: None,
-            touched: HashSet::new(),
-            touched_dirs: HashSet::new(),
             scroll_id: Id::unique(),
             scroll_offset: 0.0,
             viewport_height: 0.0,
+            compact_offset: 0.0,
         };
         state.load(0);
         state.rebuild_rows();
@@ -219,15 +210,13 @@ impl State {
         &self.root
     }
 
-    /// Roots the tree at `root`: forgets every loaded node, the selection
-    /// and the touched files, and lists the new root's children.
+    /// Roots the tree at `root`: forgets every loaded node and the selection,
+    /// and lists the new root's children.
     pub fn set_root(&mut self, root: PathBuf) {
         self.root = root;
         self.nodes = vec![Node::root()];
         self.selected = None;
         self.selected_row = None;
-        self.touched.clear();
-        self.touched_dirs.clear();
         self.scroll_offset = 0.0;
         self.load(0);
         self.rebuild_rows();
@@ -244,34 +233,6 @@ impl State {
     /// Root-relative path of the selected row.
     pub fn selected_path(&self) -> Option<&Path> {
         self.selected.map(|index| self.nodes[index].rel.as_path())
-    }
-
-    /// Replaces the set of files the session touched. Absolute paths outside
-    /// the root are ignored.
-    pub fn set_touched(&mut self, paths: impl IntoIterator<Item = PathBuf>) {
-        self.touched.clear();
-        self.touched_dirs.clear();
-        for path in paths {
-            let rel = if path.is_absolute() {
-                match path.strip_prefix(&self.root) {
-                    Ok(rel) => rel.to_path_buf(),
-                    Err(_) => continue,
-                }
-            } else {
-                path
-            };
-            for ancestor in rel.ancestors().skip(1) {
-                // Ancestors of a recorded dir are recorded too.
-                if self.touched_dirs.contains(ancestor) {
-                    break;
-                }
-                self.touched_dirs.insert(ancestor.to_path_buf());
-            }
-            self.touched.insert(rel);
-        }
-        for node in &mut self.nodes {
-            node.mark = mark_for(&self.touched, &self.touched_dirs, &node.rel, node.is_dir);
-        }
     }
 
     /// Re-lists every loaded directory, keeping expansion and the selection
@@ -324,6 +285,10 @@ impl State {
                 self.viewport_height = viewport.bounds().height;
                 (Task::none(), None)
             }
+            Message::CompactScrolled(viewport) => {
+                self.compact_offset = viewport.absolute_offset().y;
+                (Task::none(), None)
+            }
         }
     }
 
@@ -337,19 +302,44 @@ impl State {
     }
 
     /// The same rows and messages as [`State::view`], sized to its content up
-    /// to [`COMPACT_MAX_HEIGHT`], for embedding in a sidebar. Its scrollable
-    /// has no id and does not report scrolling, so it never disturbs the
-    /// keyboard reveal of the Files tab.
+    /// to [`COMPACT_MAX_HEIGHT`], for embedding in a sidebar. Only the rows
+    /// near the scroll position are built; spacers stand in for the rest. The
+    /// scrollable reports its offset as [`Message::CompactScrolled`], so the
+    /// Files tab's own offset and keyboard reveal are left alone.
     pub fn view_compact(&self) -> Element<'_, Message> {
-        let rows = column(self.row_elements()).width(Length::Fill).padding([0, 6]);
-        container(scrollable(rows).width(Length::Fill)).max_height(COMPACT_MAX_HEIGHT).width(Length::Fill).into()
+        let range = self.compact_rows();
+        let above = range.start as f32 * style::LIST_ROW_HEIGHT;
+        let below = (self.rows.len() - range.end) as f32 * style::LIST_ROW_HEIGHT;
+        let rows = self.rows[range].iter().map(|row| self.row_element(*row));
+        let content = column![Space::new().height(above), column(rows), Space::new().height(below)]
+            .width(Length::Fill)
+            .padding([0, 6]);
+        let list = scrollable(content).on_scroll(Message::CompactScrolled).width(Length::Fill);
+        container(list).max_height(COMPACT_MAX_HEIGHT).width(Length::Fill).into()
+    }
+
+    /// Rows the compact list builds: those on screen plus [`COMPACT_OVERSCAN`]
+    /// on each side. The offset is clamped to the scrollable range, which the
+    /// scrollable itself applies when drawing.
+    fn compact_rows(&self) -> Range<usize> {
+        let content = self.rows.len() as f32 * style::LIST_ROW_HEIGHT;
+        let max_offset = (content - COMPACT_MAX_HEIGHT).max(0.0);
+        let first = (self.compact_offset.clamp(0.0, max_offset) / style::LIST_ROW_HEIGHT) as usize;
+        let shown = (COMPACT_MAX_HEIGHT / style::LIST_ROW_HEIGHT).ceil() as usize;
+        let start = first.saturating_sub(COMPACT_OVERSCAN).min(self.rows.len());
+        let end = (first + shown + COMPACT_OVERSCAN).min(self.rows.len());
+        start..end
     }
 
     fn row_elements(&self) -> impl Iterator<Item = Element<'_, Message>> {
-        self.rows.iter().map(|row| match *row {
+        self.rows.iter().map(|row| self.row_element(*row))
+    }
+
+    fn row_element(&self, row: Row) -> Element<'_, Message> {
+        match row {
             Row::Node(index) => self.node_row(index),
             Row::Error(index) => self.error_row(index),
-        })
+        }
     }
 
     fn node_row(&self, index: usize) -> Element<'_, Message> {
@@ -360,11 +350,6 @@ impl State {
             (true, true) => loa_ui_icons::muted(Icon::ChevronDown, 12.0).width(style::INDENT).into(),
         };
         let kind = if node.is_dir { Icon::Folder } else { Icon::FileText };
-        let marker: Element<'_, Message> = match node.mark {
-            Mark::None => Space::new().into(),
-            Mark::Contains => loa_ui_icons::muted(Icon::CircleDot, 12.0).into(),
-            Mark::Touched => loa_ui_icons::icon(Icon::CircleDot, 12.0).into(),
-        };
         let content = row![
             Space::new().width((node.depth - 1) as f32 * style::INDENT),
             chevron,
@@ -373,7 +358,6 @@ impl State {
                 .size(style::LIST_TEXT_SIZE)
                 .wrapping(text::Wrapping::None)
                 .width(Length::Fill),
-            marker,
         ]
         .spacing(6)
         .align_y(Alignment::Center)
@@ -422,7 +406,6 @@ impl State {
                 self.nodes.reserve(entries.len());
                 for Entry { name, is_dir } in entries {
                     let rel = self.nodes[dir].rel.join(&name);
-                    let mark = mark_for(&self.touched, &self.touched_dirs, &rel, is_dir);
                     self.nodes.push(Node {
                         parent: dir,
                         depth,
@@ -432,7 +415,6 @@ impl State {
                         expanded: false,
                         children: None,
                         error: None,
-                        mark,
                     });
                 }
                 let end = self.nodes.len();
@@ -592,16 +574,6 @@ fn compare_entries(a: &Entry, b: &Entry) -> Ordering {
         .then_with(|| a.name.cmp(&b.name))
 }
 
-fn mark_for(touched: &HashSet<PathBuf>, touched_dirs: &HashSet<PathBuf>, rel: &Path, is_dir: bool) -> Mark {
-    if touched.contains(rel) {
-        Mark::Touched
-    } else if is_dir && touched_dirs.contains(rel) {
-        Mark::Contains
-    } else {
-        Mark::None
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -667,10 +639,6 @@ mod tests {
         state.update(Message::Click(index)).1
     }
 
-    fn mark(state: &State, rel: &str) -> Mark {
-        state.nodes[index_of(state, rel)].mark
-    }
-
     #[test]
     fn view_compact_draws_the_visible_rows() {
         let (mut state, _) = fixture();
@@ -678,6 +646,23 @@ mod tests {
         click(&mut state, "src");
         assert_eq!(state.row_elements().count(), state.visible().count());
         let _ = state.view_compact();
+    }
+
+    #[test]
+    fn compact_view_builds_only_the_rows_near_the_scroll_offset() {
+        let fs = Arc::new(FakeFs::default());
+        let names: Vec<String> = (0..100).map(|i| format!("f{i:03}.txt")).collect();
+        let entries: Vec<(&str, bool)> = names.iter().map(|name| (name.as_str(), false)).collect();
+        fs.put("/r", &entries);
+        let mut state = State::new(PathBuf::from("/r"), Box::new(Arc::clone(&fs)));
+        assert_eq!(state.compact_rows(), 0..13);
+
+        state.compact_offset = 50.0 * style::LIST_ROW_HEIGHT;
+        assert_eq!(state.compact_rows(), 46..63);
+        let _ = state.view_compact();
+
+        state.compact_offset = f32::MAX;
+        assert_eq!(state.compact_rows(), 87..100);
     }
 
     #[test]
@@ -769,28 +754,6 @@ mod tests {
         assert_eq!(nav(&mut state, Nav::Activate), Some(Event::Open(PathBuf::from("/r/src/main.rs"))));
         assert_eq!(click(&mut state, "Z.md"), Some(Event::Open(PathBuf::from("/r/Z.md"))));
         assert_eq!(selected(&state), Some("Z.md"));
-    }
-
-    #[test]
-    fn touched_marks_file_and_its_ancestor_dirs() {
-        let (mut state, _) = fixture();
-        state.set_touched([PathBuf::from("/r/src/lib/x.rs"), PathBuf::from("b.txt"), PathBuf::from("/elsewhere/a")]);
-        assert_eq!(mark(&state, "b.txt"), Mark::Touched);
-        assert_eq!(mark(&state, "src"), Mark::Contains);
-        assert_eq!(mark(&state, "a"), Mark::None);
-        assert_eq!(mark(&state, "Z.md"), Mark::None);
-
-        click(&mut state, "src");
-        click(&mut state, "src/lib");
-        assert_eq!(mark(&state, "src/lib"), Mark::Contains);
-        assert_eq!(mark(&state, "src/lib/x.rs"), Mark::Touched);
-        assert_eq!(mark(&state, "src/main.rs"), Mark::None);
-
-        state.set_touched([PathBuf::from("src/main.rs")]);
-        assert_eq!(mark(&state, "src/lib"), Mark::None);
-        assert_eq!(mark(&state, "src/lib/x.rs"), Mark::None);
-        assert_eq!(mark(&state, "b.txt"), Mark::None);
-        assert_eq!(mark(&state, "src"), Mark::Contains);
     }
 
     #[test]

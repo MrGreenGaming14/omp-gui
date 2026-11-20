@@ -1,8 +1,9 @@
 //! Local shells on a PTY, exposed as a [`PtyChannel`].
 //!
-//! Output is read on a dedicated thread and handed over as [`Bytes`] chunks
-//! with no further copies. A second thread waits on the child so it is always
-//! reaped, and reports its exit status after the output ends.
+//! Output is read on a dedicated thread and handed over as [`Bytes`] chunks.
+//! Chunks the thread has already sent when the pane asks are joined into one,
+//! so a burst of output takes a single read. A second thread waits on the child
+//! so it is always reaped, and reports its exit status after the output ends.
 
 use std::ffi::OsString;
 use std::io::{self, Read, Write};
@@ -22,6 +23,9 @@ const READ_CHUNK: usize = 64 * 1024;
 /// behind, the read thread blocks and the kernel applies backpressure to the
 /// program.
 const READ_QUEUE: usize = 64;
+/// Output joined into one chunk. Gathering stops once a burst reaches this
+/// size, so a flood still reaches the pane in bounded pieces.
+const BURST_LIMIT: usize = 256 * 1024;
 /// `EIO`, returned by a PTY master once every slave descriptor is closed.
 const EIO: i32 = 5;
 
@@ -150,6 +154,7 @@ pub fn spawn(shell: &LocalShell, size: GridSize) -> Result<PtyChannel> {
     Ok(PtyChannel {
         reader: Box::new(LocalReader {
             data: data_rx,
+            failed: None,
             exit: Some(exit_rx),
         }),
         writer: Box::new(LocalWriter {
@@ -162,15 +167,15 @@ pub fn spawn(shell: &LocalShell, size: GridSize) -> Result<PtyChannel> {
 
 /// Reads the PTY master until EOF and forwards each chunk.
 fn read_loop(mut reader: Box<dyn Read + Send>, tx: mpsc::Sender<io::Result<Bytes>>) {
-    let mut buf = BytesMut::with_capacity(READ_CHUNK);
+    // Every read lands in one scratch buffer, zeroed once; each chunk is copied
+    // out at its real length.
+    let mut scratch = vec![0u8; READ_CHUNK];
     loop {
-        buf.reserve(READ_CHUNK);
-        buf.resize(READ_CHUNK, 0);
-        match reader.read(&mut buf) {
+        match reader.read(&mut scratch) {
             Ok(0) => break,
             Ok(n) => {
-                buf.truncate(n);
-                if tx.blocking_send(Ok(buf.split().freeze())).is_err() {
+                let chunk = Bytes::copy_from_slice(&scratch[..n]);
+                if tx.blocking_send(Ok(chunk)).is_err() {
                     break;
                 }
             }
@@ -186,14 +191,51 @@ fn read_loop(mut reader: Box<dyn Read + Send>, tx: mpsc::Sender<io::Result<Bytes
 
 struct LocalReader {
     data: mpsc::Receiver<io::Result<Bytes>>,
+    /// A read error that arrived behind buffered output, reported on the next read.
+    failed: Option<io::Error>,
     exit: Option<oneshot::Receiver<Option<u32>>>,
+}
+
+impl LocalReader {
+    /// Joins `first` with the chunks the read thread has already sent, up to
+    /// [`BURST_LIMIT`] bytes.
+    fn coalesce(&mut self, first: Bytes) -> Bytes {
+        let mut rest = Vec::new();
+        let mut len = first.len();
+        while len < BURST_LIMIT {
+            match self.data.try_recv() {
+                Ok(Ok(bytes)) => {
+                    len += bytes.len();
+                    rest.push(bytes);
+                }
+                Ok(Err(error)) => {
+                    self.failed = Some(error);
+                    break;
+                }
+                // Empty or closed: the next `recv` says which.
+                Err(_) => break,
+            }
+        }
+        if rest.is_empty() {
+            return first;
+        }
+        let mut burst = BytesMut::with_capacity(len);
+        burst.extend_from_slice(&first);
+        for chunk in &rest {
+            burst.extend_from_slice(chunk);
+        }
+        burst.freeze()
+    }
 }
 
 #[async_trait]
 impl ChannelReader for LocalReader {
     async fn read(&mut self) -> Result<ChannelRead> {
+        if let Some(error) = self.failed.take() {
+            return Err(error.into());
+        }
         match self.data.recv().await {
-            Some(Ok(bytes)) => Ok(ChannelRead::Data(bytes)),
+            Some(Ok(bytes)) => Ok(ChannelRead::Data(self.coalesce(bytes))),
             Some(Err(error)) => Err(error.into()),
             None => {
                 let exit = self.exit.take().ok_or(Error::Closed)?;

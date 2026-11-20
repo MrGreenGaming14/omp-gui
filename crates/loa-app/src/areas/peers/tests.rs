@@ -155,7 +155,7 @@ fn two_apps_share_a_session_view_drive_and_fork_over_loopback() {
     // N1/N2: each adds the other by key; presence, transport and version show.
     add_peer(&rt, &mut guest, &owner, owner_port);
     add_peer(&rt, &mut owner, &guest, guest_port);
-    let seen = &guest.ctx.peers;
+    let seen = guest.areas.peers.node().unwrap().peers();
     assert_eq!(seen.len(), 1, "{:?}", guest.ctx.notice());
     assert!(seen[0].online);
     assert_eq!(seen[0].transport, Some(loa_node::Transport::Quic));
@@ -311,10 +311,10 @@ fn a_project_grant_shares_its_sessions_and_peers_are_renamed_and_removed() {
     panel(&rt, &mut guest, panel::Message::RenameChanged("build server".into()));
     panel(&rt, &mut guest, panel::Message::SaveRename);
     assert_eq!(guest.ctx.shell.sidebar().nodes().name_of(&owner_key), "build server");
-    assert_eq!(guest.ctx.peers[0].name.as_deref(), Some("build server"));
+    assert_eq!(guest.areas.peers.node().unwrap().peers()[0].name.as_deref(), Some("build server"));
     panel(&rt, &mut guest, panel::Message::BeginRemove(owner_key.clone()));
     panel(&rt, &mut guest, panel::Message::ConfirmRemove);
-    assert!(guest.ctx.peers.is_empty(), "{:?}", guest.ctx.notice());
+    assert!(guest.areas.peers.node().unwrap().peers().is_empty(), "{:?}", guest.ctx.notice());
 
     rt.block_on(owner_node.stop());
     rt.block_on(guest_node.stop());

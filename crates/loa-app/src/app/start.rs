@@ -3,8 +3,6 @@
 //! there), a few starters that fill the composer, and the folder's recent
 //! sessions.
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use iced::widget::{Column, button, column, container, row, rule, space, text};
 use iced::{Alignment, Element, Fill, Length, Padding};
 use loa_ui_icons::{Icon, muted};
@@ -73,7 +71,7 @@ impl App {
             .filter(|summary| summary.project.as_deref() == Some(project))
             .take(RECENTS)
             .collect();
-        let now = now_ms();
+        let now = loa_core::now_ms();
         let recent: Element<'_, Message> = if recents.is_empty() {
             space().into()
         } else {
@@ -114,10 +112,6 @@ impl App {
         .height(Length::Shrink);
         container(page).center(Fill).into()
     }
-}
-
-fn now_ms() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |elapsed| i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX))
 }
 
 /// "just now", "5m", "3h", "2d" since `then`, both in Unix milliseconds.

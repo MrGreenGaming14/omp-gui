@@ -160,7 +160,7 @@ impl Rig {
             }
             for (id, feed) in &mut self.feeds {
                 while let Ok(event) = feed.try_recv() {
-                    messages.push(AppMessage::Session(id.clone(), Feed::Event(event)));
+                    messages.push(AppMessage::Session(id.clone(), Feed::Events(vec![event])));
                 }
             }
             let mut servers = false;
