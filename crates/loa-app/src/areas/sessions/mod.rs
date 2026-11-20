@@ -799,7 +799,7 @@ fn model_roles(home: &Path) -> Result<Vec<(String, Vec<String>)>, String> {
 
 /// `name` on `PATH`.
 fn on_path(name: &str) -> Option<PathBuf> {
-    std::env::split_paths(&std::env::var_os("PATH")?).map(|dir| dir.join(name)).find(|path| path.is_file())
+    loa_exec::find_executable(Path::new(name))
 }
 
 impl Area for State {

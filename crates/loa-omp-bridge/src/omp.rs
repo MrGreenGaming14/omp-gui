@@ -126,7 +126,7 @@ async fn launch(
     let settings = json!({"astGrep": {"enabled": true}, "tools": {"xdev": false}});
     tokio::fs::write(&overlay, serde_json::to_vec_pretty(&settings)?).await?;
 
-    let mut command = Command::new(&config.program);
+    let mut command = Command::new(loa_exec::resolve(&config.program));
     command
         .args([
             "--mode",

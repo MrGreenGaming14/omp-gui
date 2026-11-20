@@ -60,7 +60,7 @@ fn parse_ready(line: &str) -> Result<Vec<u32>, String> {
 impl RpcProbe for OmpReadyProbe {
     async fn protocol_versions(&self, executable: &Path) -> Result<Vec<u32>, String> {
         let mut child = loa_exec::retry_busy(|| {
-            Command::new(executable)
+            Command::new(loa_exec::resolve(executable))
                 .args(&self.args)
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())

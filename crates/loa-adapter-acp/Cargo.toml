@@ -6,6 +6,7 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+loa-exec = { path = "../loa-exec" }
 loa-core.workspace = true
 loa-adapter.workspace = true
 async-trait.workspace = true
@@ -16,6 +17,5 @@ tokio = { workspace = true, features = ["process", "io-util", "sync", "rt", "mac
 tracing.workspace = true
 
 [dev-dependencies]
-loa-exec = { path = "../loa-exec" }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["full"] }

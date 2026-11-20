@@ -105,6 +105,13 @@ pub fn find_executable(program: &Path) -> Option<PathBuf> {
     )
 }
 
+/// The path to spawn for `program`: what [`find_executable`] resolves, else
+/// `program` unchanged so the spawn fails with its usual "not found" error.
+/// Spawning the resolved path is what makes npm `.cmd` shims run on Windows.
+pub fn resolve(program: &Path) -> PathBuf {
+    find_executable(program).unwrap_or_else(|| program.to_path_buf())
+}
+
 /// Testable core of [`find_executable`] with the `PATH` and `PATHEXT` values
 /// passed in. `pathext` is ignored outside Windows.
 pub fn find_executable_in(
@@ -308,6 +315,14 @@ mod find_tests {
         let want = make(dir.path(), "tool.exe");
         let ext = OsString::from(".EXE");
         assert_eq!(norm(find_executable_in(&dir.path().join("tool"), None, Some(&ext))), norm(Some(want)));
+    }
+
+    #[test]
+    fn resolve_keeps_an_unfound_program_as_given() {
+        assert_eq!(resolve(Path::new("loa-surely-missing-program")), PathBuf::from("loa-surely-missing-program"));
+        let dir = tempfile::tempdir().unwrap();
+        let tool = make(dir.path(), "tool.exe");
+        assert_eq!(resolve(&tool), tool);
     }
 }
 

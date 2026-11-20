@@ -91,7 +91,7 @@ impl OmpSmolSummarizer {
 impl ChangelogSummarizer for OmpSmolSummarizer {
     async fn review(&self, changelog: &str) -> Result<ChangelogReview, String> {
         let child = loa_exec::retry_busy(|| {
-            Command::new(&self.executable)
+            Command::new(loa_exec::resolve(&self.executable))
                 .args(self.args(changelog))
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())

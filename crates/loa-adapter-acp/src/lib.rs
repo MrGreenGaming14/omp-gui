@@ -84,7 +84,7 @@ impl CommandConnector {
 impl Connector for CommandConnector {
     async fn connect(&self, config: &SessionConfig) -> Result<Transport> {
         let program = config.executable.as_ref().unwrap_or(&self.program);
-        let mut child = Command::new(program)
+        let mut child = Command::new(loa_exec::resolve(program))
             .args(&self.args)
             .current_dir(&config.cwd)
             .envs(&config.env)

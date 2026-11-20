@@ -47,7 +47,7 @@ impl OmpLaunch {
     }
 
     fn command(&self, args: &[&str]) -> tokio::process::Command {
-        let mut command = tokio::process::Command::new(&self.executable);
+        let mut command = tokio::process::Command::new(loa_exec::resolve(&self.executable));
         command
             .args(args)
             .envs(self.env.iter().map(|(k, v)| (k, v)))

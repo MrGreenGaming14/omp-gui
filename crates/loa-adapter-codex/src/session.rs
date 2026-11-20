@@ -266,7 +266,7 @@ impl CodexSession {
             return Err(AdapterError::Protocol("host tools need a host tool handler".to_owned()));
         }
         let executable = config.executable.clone().unwrap_or_else(|| adapter.executable.clone());
-        let mut command = Command::new(&executable);
+        let mut command = Command::new(loa_exec::resolve(&executable));
         command
             .args(&adapter.args)
             .args(mcp_overrides(&config))

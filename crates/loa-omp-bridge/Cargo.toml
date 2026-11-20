@@ -6,6 +6,7 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+loa-exec = { path = "../loa-exec" }
 async-trait.workspace = true
 bytes.workspace = true
 loa-adapter.workspace = true

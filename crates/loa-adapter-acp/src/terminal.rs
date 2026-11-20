@@ -63,7 +63,7 @@ impl Terminals {
             Some(cwd) => resolve_inside(&self.root, cwd)?,
             None => self.root.clone(),
         };
-        let mut command = Command::new(&request.command);
+        let mut command = Command::new(loa_exec::resolve(std::path::Path::new(&request.command)));
         command
             .args(request.args.unwrap_or_default())
             .current_dir(&cwd)

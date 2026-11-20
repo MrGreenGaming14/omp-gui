@@ -109,7 +109,7 @@ pub struct TokioProcessRunner;
 
 impl TokioProcessRunner {
     fn command(spec: &CommandSpec) -> tokio::process::Command {
-        let mut cmd = tokio::process::Command::new(&spec.program);
+        let mut cmd = tokio::process::Command::new(loa_exec::resolve(&spec.program));
         cmd.args(&spec.args);
         cmd.envs(spec.env.iter().map(|(k, v)| (k, v)));
         if let Some(dir) = &spec.current_dir {

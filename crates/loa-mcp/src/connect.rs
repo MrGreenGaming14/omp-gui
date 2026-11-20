@@ -103,7 +103,7 @@ pub(crate) async fn connect<H: ClientHandler>(
 }
 
 fn spawn(stdio: &StdioSpec) -> std::io::Result<(TokioChildProcess, Option<ChildStderr>)> {
-    let mut command = tokio::process::Command::new(&stdio.command);
+    let mut command = tokio::process::Command::new(loa_exec::resolve(std::path::Path::new(&stdio.command)));
     command.args(&stdio.args).envs(&stdio.env);
     if let Some(cwd) = &stdio.cwd {
         command.current_dir(cwd);
