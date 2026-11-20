@@ -32,6 +32,7 @@ pub enum Icon {
     GitCompare,
     GitFork,
     Globe,
+    Image,
     Maximize,
     Minimize,
     Monitor,
@@ -51,7 +52,7 @@ pub enum Icon {
     X,
 }
 
-const ALL: [(Icon, &[u8]); 35] = [
+const ALL: [(Icon, &[u8]); 36] = [
     (Icon::ArrowUp, include_bytes!("../icons/arrow-up.svg")),
     (Icon::Bot, include_bytes!("../icons/bot.svg")),
     (Icon::Brain, include_bytes!("../icons/brain.svg")),
@@ -70,6 +71,7 @@ const ALL: [(Icon, &[u8]); 35] = [
     (Icon::GitCompare, include_bytes!("../icons/git-compare.svg")),
     (Icon::GitFork, include_bytes!("../icons/git-fork.svg")),
     (Icon::Globe, include_bytes!("../icons/globe.svg")),
+    (Icon::Image, include_bytes!("../icons/image.svg")),
     (Icon::Maximize, include_bytes!("../icons/maximize-2.svg")),
     (Icon::Minimize, include_bytes!("../icons/minimize-2.svg")),
     (Icon::Monitor, include_bytes!("../icons/monitor.svg")),

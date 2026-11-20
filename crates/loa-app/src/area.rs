@@ -147,10 +147,10 @@ pub enum Request {
     /// rewind, compaction), with every area's contribution; it becomes the
     /// active session.
     Spawn(Spawn),
-    /// Make `project` and its folder `cwd` the active ones: the Files tab,
-    /// new terminals, the Diff tab and new sessions follow. Running sessions
-    /// keep their folder.
-    ActivateProject { project: String, cwd: PathBuf },
+    /// Make `project` the active one, and its default folder `cwd`, when it
+    /// has one, the active folder: the Files tab, new terminals, the Diff tab
+    /// and new sessions follow. Running sessions keep their folder.
+    ActivateProject { project: String, cwd: Option<PathBuf> },
     /// Run this message through the app's `update`, e.g. to hand a decision
     /// answer to the area that owns it.
     Forward(Box<crate::app::Message>),
@@ -390,8 +390,8 @@ pub trait Area {
         Task::none()
     }
 
-    /// Called for every area after `project` became the active project and
-    /// `cwd` the active folder ([`Request::ActivateProject`]).
+    /// Called for every area after `project` became the active project;
+    /// `cwd` is the active folder ([`Request::ActivateProject`]).
     fn project_activated(&mut self, project: &str, cwd: &Path, ctx: &mut Ctx) -> Task<Self::Message> {
         let _ = (project, cwd, ctx);
         Task::none()

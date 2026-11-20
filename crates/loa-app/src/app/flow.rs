@@ -14,7 +14,7 @@ impl App {
             session_id: session_id.to_owned(),
             node: services.node.key.clone(),
             cwd: attr(attr::CWD).map_or_else(|| services.cwd.clone(), PathBuf::from),
-            project: Some(attr(attr::PROJECT).unwrap_or(&services.project).to_owned()),
+            project: attr(attr::PROJECT).map(str::to_owned).or_else(|| services.project.clone()),
             mode: Some(attr(attr::MODE).and_then(SessionMode::parse).unwrap_or(SessionMode::Normal)),
             executable: services.harnesses.get(harness).and_then(|entry| entry.executable.clone()),
             ..SessionConfig::default()
@@ -44,22 +44,23 @@ impl App {
     /// runs.
     pub(super) fn start(&mut self, prompt: Option<Prompt>) -> Task<Message> {
         if self.ctx.sessions.starting().is_some() {
-            return Task::none();
+            self.ctx.notify("A session is already starting");
+            return self.give_back(prompt);
         }
         let Some(harness) = self.ctx.sessions.harness.clone() else {
             self.ctx.notify("No harness is available on this machine");
-            return Task::none();
+            return self.give_back(prompt);
         };
         let Some(adapter) = self.ctx.services.harnesses.runnable(&harness) else {
             let label = self.ctx.services.harnesses.label(&harness).to_owned();
             self.ctx.notify(format!("{label} is unavailable"));
-            return Task::none();
+            return self.give_back(prompt);
         };
         let (id, writer) = match self.ctx.sessions.create(&self.ctx.services) {
             Ok(created) => created,
             Err(error) => {
                 self.ctx.notify(error);
-                return Task::none();
+                return self.give_back(prompt);
             }
         };
         self.ctx.sessions.set_starting(Some(id.clone()));
@@ -79,7 +80,7 @@ impl App {
     pub(super) fn resume(&mut self, prompt: Prompt) -> Task<Message> {
         if self.ctx.sessions.starting().is_some() {
             self.ctx.notify("A session is already starting");
-            return Task::none();
+            return self.give_back(Some(prompt));
         }
         let Some(session) = self.ctx.sessions.active() else { return Task::none() };
         let id = session.id().clone();
@@ -98,6 +99,16 @@ impl App {
             async move { adapter.resume(config, &dom, sink).await.map(Arc::from).map_err(ResumeError::from) },
             move |result| Message::Resumed { id, result, prompt },
         )
+    }
+
+    /// A prompt that couldn't be sent goes back into the composer, which
+    /// stops waiting for its turn. Without a prompt (New session) the
+    /// composer is left as it is: a turn may be running elsewhere.
+    fn give_back(&mut self, prompt: Option<Prompt>) -> Task<Message> {
+        match prompt {
+            Some(prompt) => self.ctx.composer.give_back(&prompt.text).map(Message::Composer),
+            None => Task::none(),
+        }
     }
 
     /// Continues the active session's conversation in a new session in the
