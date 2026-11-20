@@ -50,6 +50,9 @@ pub enum Message {
     Panel(peers::Message),
     /// Show the Peers tab (the sidebar's node row).
     Open,
+    /// Re-read the node and grants without switching the panel tab, for
+    /// Settings › Peers & sharing.
+    Refresh,
     /// The endpoint started, or why it didn't.
     Started(Result<(), String>),
     /// The node changed or a peer asks something of this node.
@@ -193,27 +196,24 @@ impl State {
         self.folder.as_ref()
     }
 
-    /// Brings the panel, the sidebar's nodes and peers' sessions, and
-    /// `ctx.peers` in line with the node.
+    /// Brings the panel, the sidebar's nodes and peers' sessions in line
+    /// with the node.
     fn refresh(&mut self, ctx: &mut Ctx) {
         let local = &ctx.services.node;
         let Some(node) = &self.node else {
             ctx.shell.set_nodes(vec![NodeStatus { key: local.key.clone(), name: local.label.clone(), online: false, local: true }]);
-            ctx.peers.clear();
             return;
         };
         self.panel.set_data(ui::data(node, loa_core::now_ms()));
         let online = matches!(node.status().endpoint, Endpoint::Listening { .. });
-        let peers = node.peers();
         let mut nodes = vec![NodeStatus { key: local.key.clone(), name: local.label.clone(), online, local: true }];
-        nodes.extend(peers.iter().map(|peer| NodeStatus {
+        nodes.extend(node.peers().into_iter().map(|peer| NodeStatus {
             key: peer.key.to_string(),
             name: node.peer_name(&peer.key),
             online: peer.online,
             local: false,
         }));
         ctx.shell.set_nodes(nodes);
-        ctx.peers = peers;
         let sessions = node.remote_sessions();
         let ids: Vec<String> = sessions.iter().map(|session| recent_id(&session.peer.to_string(), &session.id)).collect();
         for stale in self.listed.iter().filter(|id| !ids.contains(id)) {
@@ -359,6 +359,10 @@ impl Area for State {
             }
             Message::Open => {
                 ctx.open_tab(TAB);
+                self.refresh(ctx);
+                self.resources(ctx)
+            }
+            Message::Refresh => {
                 self.refresh(ctx);
                 self.resources(ctx)
             }

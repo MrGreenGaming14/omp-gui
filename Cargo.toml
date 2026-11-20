@@ -26,6 +26,17 @@ thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 
-# Surface frame decoding is on the latency path even in debug builds.
-[profile.dev.package.jpeg-decoder]
+# Smooth `cargo run`: iced/wgpu/cosmic-text code is generic and monomorphizes
+# into our crates, so workspace crates get opt-level 1 and dependencies 3.
+[profile.dev]
+opt-level = 1
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
 opt-level = 3
+debug = false
+debug-assertions = false
+overflow-checks = false
+
+[profile.dev.build-override]
+opt-level = 0

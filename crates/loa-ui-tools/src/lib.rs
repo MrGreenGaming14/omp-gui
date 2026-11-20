@@ -155,6 +155,12 @@ pub enum Message {
     AnswerPrompt(u64, PromptAnswer),
 
     PeerFilter(PeerChoice),
+
+    /// Open or close a collapsible block: a tool group, a server's tool
+    /// list or the hosts list, by its key.
+    BlockOpen(String, bool),
+    /// Show or hide one tool's details inline.
+    ToolExpanded(ToolId),
 }
 
 /// Tools panel state.
@@ -180,6 +186,15 @@ pub struct State {
     prompts: Vec<RemotePrompt>,
     peers: Vec<PeerTools>,
     peer_filter: Option<String>,
+    /// Blocks the user opened or closed, by key. Blocks not listed use
+    /// their default: closed when long.
+    open_blocks: HashMap<String, bool>,
+    /// The tool whose details are shown inline.
+    expanded_tool: Option<ToolId>,
+    /// Lowercased tool names and descriptions, index-aligned with the tool lists.
+    search: catalog::Search,
+    /// The filtered and toggled rows the sections show.
+    rows: catalog::Rows,
 }
 
 impl State {
@@ -190,6 +205,7 @@ impl State {
     /// Harness tools of the active adapter and the app tools.
     pub fn set_builtin(&mut self, builtin: BuiltinTools) {
         self.builtin = builtin;
+        self.rebuild_search();
     }
 
     pub fn set_servers(&mut self, servers: Vec<McpServer>) {
@@ -202,6 +218,7 @@ impl State {
                     .any(|s| s.name == entry.candidate.server.name);
             }
         }
+        self.rebuild_search();
     }
 
     /// Projects for the selector. Keeps the selection when it still exists.
@@ -210,6 +227,7 @@ impl State {
             && !projects.iter().any(|p| &p.id == id)
         {
             self.project = None;
+            self.rebuild();
         }
         self.projects = projects;
     }
@@ -217,6 +235,7 @@ impl State {
     /// Selects a project without emitting [`Event::ProjectSelected`].
     pub fn select_project(&mut self, id: impl Into<String>) {
         self.project = Some(id.into());
+        self.rebuild();
     }
 
     /// The tools switched off in a project, as stored in the config.
@@ -227,6 +246,7 @@ impl State {
     ) {
         self.disabled
             .insert(project.into(), tools.into_iter().collect());
+        self.rebuild();
     }
 
     pub fn set_import_candidates(&mut self, candidates: Vec<ImportCandidate>) {
@@ -302,15 +322,28 @@ impl State {
         self.project.as_ref().and_then(|id| self.disabled.get(id))
     }
 
-    /// Built in and MCP sections as currently shown.
-    pub fn catalog(&self) -> Catalog<'_> {
+    /// Rebuilds the lowercased search data after the builtin or server lists change.
+    fn rebuild_search(&mut self) {
+        self.search = catalog::Search::new(&self.builtin, &self.servers);
+        self.rebuild();
+    }
+
+    /// Refilters and retoggles the rows after the filter, the selected project,
+    /// or the disabled tools change.
+    fn rebuild(&mut self) {
         let empty = BTreeSet::new();
-        catalog::catalog(
+        self.rows = catalog::Rows::new(
             &self.builtin,
             &self.servers,
+            &self.search,
             self.disabled_tools().unwrap_or(&empty),
             &self.filter,
-        )
+        );
+    }
+
+    /// Built in and MCP sections as currently shown.
+    pub fn catalog(&self) -> Catalog<'_> {
+        self.rows.catalog(&self.builtin, &self.servers)
     }
 
     /// The peers view as currently shown.
@@ -350,12 +383,14 @@ impl State {
             Message::FilterChanged(text) => {
                 self.filter = Filter::new(&text);
                 self.filter_text = text;
+                self.rebuild();
             }
             Message::ProjectSelected(project) => {
                 if self.project.as_ref() == Some(&project.id) {
                     return None;
                 }
                 self.project = Some(project.id.clone());
+                self.rebuild();
                 return Some(Event::ProjectSelected(project.id));
             }
             Message::ToolToggled(tool, enabled) => return self.set_enabled(vec![tool], enabled),
@@ -526,6 +561,17 @@ impl State {
                 return Some(Event::AnswerPrompt { id, answer });
             }
 
+            Message::BlockOpen(key, open) => {
+                self.open_blocks.insert(key, open);
+            }
+            Message::ToolExpanded(tool) => {
+                self.expanded_tool = if self.expanded_tool.as_ref() == Some(&tool) {
+                    None
+                } else {
+                    Some(tool)
+                };
+            }
+
             Message::PeerFilter(choice) => {
                 self.peer_filter = match choice {
                     PeerChoice::All => None,
@@ -550,6 +596,7 @@ impl State {
                 disabled.insert(tool.clone());
             }
         }
+        self.rebuild();
         Some(Event::SetToolsEnabled {
             project,
             tools,

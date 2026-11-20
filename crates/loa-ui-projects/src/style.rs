@@ -8,8 +8,6 @@ use iced::{Background, Border, Color, Theme, border};
 
 /// Corner radius of cards, fields and buttons.
 const RADIUS: f32 = 6.0;
-/// Corner radius of small pills.
-const PILL_RADIUS: f32 = 4.0;
 
 /// The project name.
 pub const TITLE: f32 = 20.0;
@@ -52,38 +50,6 @@ pub fn card(theme: &Theme) -> container::Style {
         background: Some(Background::Color(palette.background.base.color)),
         text_color: Some(palette.background.base.text),
         border: Border { color: border_color(theme), width: 1.0, radius: RADIUS.into() },
-        ..container::Style::default()
-    }
-}
-
-/// A small dim pill: digest state, harness.
-pub fn badge(theme: &Theme) -> container::Style {
-    container::Style {
-        background: Some(Background::Color(theme.extended_palette().background.weak.color)),
-        text_color: Some(muted_color(theme)),
-        border: border::rounded(PILL_RADIUS),
-        ..container::Style::default()
-    }
-}
-
-/// A pill for a digest that is current: a faint success tint.
-pub fn badge_good(theme: &Theme) -> container::Style {
-    let success = theme.extended_palette().success.base.color;
-    container::Style {
-        background: Some(Background::Color(success.scale_alpha(0.12))),
-        text_color: Some(success),
-        border: border::rounded(PILL_RADIUS),
-        ..container::Style::default()
-    }
-}
-
-/// A pill for a digest that is out of date: a faint warning tint.
-pub fn badge_warn(theme: &Theme) -> container::Style {
-    let warning = theme.extended_palette().warning.base.color;
-    container::Style {
-        background: Some(Background::Color(warning.scale_alpha(0.12))),
-        text_color: Some(warning),
-        border: border::rounded(PILL_RADIUS),
         ..container::Style::default()
     }
 }
@@ -156,4 +122,20 @@ pub fn scrollbar(theme: &Theme, status: scrollable::Status) -> scrollable::Style
         scroller: scrollable::Scroller { background: Background::Color(scroller), border: border::rounded(2) },
     };
     scrollable::Style { vertical_rail: rail, horizontal_rail: rail, ..scrollable::default(theme, status) }
+}
+
+/// Text that needs a look: a digest out of date.
+pub fn warning(theme: &Theme) -> text::Style {
+    text::Style { color: Some(theme.extended_palette().warning.base.color) }
+}
+
+/// A clickable row inside a card: no fill until hovered.
+pub fn list_row(theme: &Theme, status: button::Status) -> button::Style {
+    let palette = theme.extended_palette();
+    let background = match status {
+        button::Status::Hovered => Some(Background::Color(palette.background.weak.color.scale_alpha(0.6))),
+        button::Status::Pressed => Some(Background::Color(palette.background.weak.color)),
+        button::Status::Active | button::Status::Disabled => None,
+    };
+    button::Style { background, text_color: palette.background.base.text, border: border::rounded(RADIUS - 1.0), ..button::Style::default() }
 }

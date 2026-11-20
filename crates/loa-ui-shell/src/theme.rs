@@ -1,10 +1,11 @@
 //! Dark and light themes, the theme preference, and the shared looks every UI
 //! crate uses (card, muted text, badge, rows).
 //!
-//! The palettes are near-black and near-white neutrals with a light neutral
-//! accent, matching the design mockup; status colors carry all the hue.
-//! Everything else reads colors from the extended palette, so a theme switch
-//! applies everywhere.
+//! The palettes are warm neutrals with one sage accent, matching the v3
+//! design: a near-black ground, a darker sidebar and panel, and raised cards
+//! a step lighter. Status colors carry the remaining hue. Shell styles read
+//! exact colors from [`style::tokens`]; every other crate reads the extended
+//! palette, so a theme switch applies everywhere.
 
 use iced::theme::{Mode, Palette};
 use iced::{Subscription, Task, Theme, color};
@@ -12,22 +13,22 @@ use std::fmt;
 
 /// Palette of the dark theme.
 pub const DARK_PALETTE: Palette = Palette {
-    background: color!(0x080808),
-    text: color!(0xe5e5e5),
-    primary: color!(0xd4d4d4),
-    success: color!(0x3bb266),
-    warning: color!(0xe3a84f),
-    danger: color!(0xe5484d),
+    background: color!(0x262624),
+    text: color!(0xecebe6),
+    primary: color!(0x7fb7a4),
+    success: color!(0x6fbf73),
+    warning: color!(0xf0b866),
+    danger: color!(0xe8a0a0),
 };
 
 /// Palette of the light theme.
 pub const LIGHT_PALETTE: Palette = Palette {
-    background: color!(0xfcfcfc),
-    text: color!(0x171717),
-    primary: color!(0x262626),
+    background: color!(0xfaf9f5),
+    text: color!(0x1f1e1d),
+    primary: color!(0x2f7a66),
     success: color!(0x2f8f5b),
-    warning: color!(0xb7791f),
-    danger: color!(0xc8463d),
+    warning: color!(0x8a560c),
+    danger: color!(0xb3423a),
 };
 
 /// Builds the dark theme.
@@ -148,33 +149,139 @@ impl Default for State {
 /// Style functions for the looks shared across the app.
 pub mod style {
     use iced::widget::{button, container, rule, scrollable, text, text_input};
-    use iced::{Background, Border, Color, Theme, border};
+    use iced::{Background, Border, Color, Shadow, Theme, Vector, border, color};
 
-    /// Corner radius of cards, fields and rows.
+    /// Corner radius of fields, rows and small buttons.
     pub const RADIUS: f32 = 6.0;
 
-    /// Corner radius of small pills such as node tags.
+    /// Corner radius of cards, the composer and windows.
+    pub const CARD_RADIUS: f32 = 12.0;
+
+    /// Corner radius of small tags such as node names.
     pub const PILL_RADIUS: f32 = 4.0;
 
-    /// Main content background (chat, panels).
-    pub fn surface(theme: &Theme) -> container::Style {
-        let palette = theme.extended_palette();
-        container::Style {
-            background: Some(Background::Color(palette.background.base.color)),
-            text_color: Some(palette.background.base.text),
-            ..container::Style::default()
-        }
+    /// The exact colors of one theme. Shell styles use these; other crates
+    /// read the extended palette, which iced derives from the same base.
+    #[derive(Debug, Clone, Copy)]
+    pub struct Tokens {
+        /// Chat and content ground.
+        pub ground: Color,
+        /// Sidebar and side panel.
+        pub side: Color,
+        /// Cards and windows.
+        pub card: Color,
+        /// Composer, user messages and selected-tab fills.
+        pub raised: Color,
+        /// Row hover.
+        pub hover: Color,
+        /// Selected row.
+        pub selected: Color,
+        /// Hairlines between areas.
+        pub line: Color,
+        /// Borders of fields and outlined buttons.
+        pub line_strong: Color,
+        /// Body text.
+        pub text: Color,
+        /// Secondary text: labels, hints.
+        pub text2: Color,
+        /// Tertiary text: counts, timestamps.
+        pub text3: Color,
+        /// The one accent: send, selection, toggles.
+        pub accent: Color,
+        /// Text on the accent.
+        pub on_accent: Color,
+        /// Needs-you color: waiting sessions, approvals.
+        pub warn: Color,
+        /// Online, added lines.
+        pub ok: Color,
+        /// Errors, removed lines.
+        pub danger: Color,
+        /// Window scrim.
+        pub scrim: Color,
     }
 
-    /// Side areas: sidebar, top bar, tab bar. They share the content
-    /// background and are set apart by [`divider`] lines.
+    /// Dark theme tokens.
+    pub const DARK: Tokens = Tokens {
+        ground: color!(0x262624),
+        side: color!(0x1f1e1d),
+        card: color!(0x2b2a28),
+        raised: color!(0x30302e),
+        hover: color!(0x2b2a28),
+        selected: color!(0x34332f),
+        line: color!(0x33322f),
+        line_strong: color!(0x4a4945),
+        text: color!(0xecebe6),
+        text2: color!(0xb7b5ac),
+        text3: color!(0x9a988f),
+        accent: color!(0x7fb7a4),
+        on_accent: color!(0x1f1e1d),
+        warn: color!(0xf0b866),
+        ok: color!(0x6fbf73),
+        danger: color!(0xe8a0a0),
+        scrim: Color { r: 0.055, g: 0.051, b: 0.047, a: 0.6 },
+    };
+
+    /// Light theme tokens.
+    pub const LIGHT: Tokens = Tokens {
+        ground: color!(0xfaf9f5),
+        side: color!(0xf1efe8),
+        card: color!(0xffffff),
+        raised: color!(0xffffff),
+        hover: color!(0xebe8df),
+        selected: color!(0xe4e0d5),
+        line: color!(0xe3e0d6),
+        line_strong: color!(0xcbc7bb),
+        text: color!(0x1f1e1d),
+        text2: color!(0x55534d),
+        text3: color!(0x6f6d66),
+        accent: color!(0x2f7a66),
+        on_accent: color!(0xffffff),
+        warn: color!(0x8a560c),
+        ok: color!(0x2f8f5b),
+        danger: color!(0xb3423a),
+        scrim: Color { r: 0.1, g: 0.1, b: 0.09, a: 0.35 },
+    };
+
+    /// The tokens of this theme.
+    pub fn tokens(theme: &Theme) -> &'static Tokens {
+        if theme.extended_palette().is_dark { &DARK } else { &LIGHT }
+    }
+
+    fn fill(color: Color) -> Option<Background> {
+        Some(Background::Color(color))
+    }
+
+    /// Main content background (chat, screens).
+    pub fn surface(theme: &Theme) -> container::Style {
+        let t = tokens(theme);
+        container::Style { background: fill(t.ground), text_color: Some(t.text), ..container::Style::default() }
+    }
+
+    /// Under the floating composer: clear at the top, fading into the
+    /// ground, so the transcript shows through and slides under it.
+    pub fn composer_fade(theme: &Theme) -> container::Style {
+        let t = tokens(theme);
+        let fade = iced::gradient::Linear::new(iced::Degrees(180.0))
+            .add_stop(0.0, t.ground.scale_alpha(0.0))
+            .add_stop(0.14, t.ground.scale_alpha(0.97))
+            .add_stop(1.0, t.ground);
+        container::Style { background: Some(Background::Gradient(fade.into())), ..container::Style::default() }
+    }
+
+    /// The sidebar and side panel ground, a step darker than [`surface`].
+    pub fn side(theme: &Theme) -> container::Style {
+        let t = tokens(theme);
+        container::Style { background: fill(t.side), text_color: Some(t.text), ..container::Style::default() }
+    }
+
+    /// Bars that sit on the content ground: the top bar and tab bars.
     pub fn chrome(theme: &Theme) -> container::Style {
         surface(theme)
     }
 
     /// The color of thin borders and dividers.
     pub fn border_color(theme: &Theme) -> Color {
-        theme.extended_palette().background.weak.color
+        tokens(theme).line
     }
 
     /// A 1px line between areas.
@@ -185,10 +292,10 @@ pub mod style {
     /// The thin scroller of an overflowing tab bar, without a rail: in the
     /// border tone, stronger while hovered or dragged.
     pub fn tab_scrollbar(theme: &Theme, status: scrollable::Status) -> scrollable::Style {
-        let palette = theme.extended_palette();
+        let t = tokens(theme);
         let scroller = match status {
-            scrollable::Status::Dragged { .. } | scrollable::Status::Hovered { .. } => palette.background.strongest.color,
-            scrollable::Status::Active { .. } => palette.background.strong.color,
+            scrollable::Status::Dragged { .. } | scrollable::Status::Hovered { .. } => t.text3,
+            scrollable::Status::Active { .. } => t.line_strong,
         };
         let rail = scrollable::Rail {
             background: None,
@@ -198,163 +305,235 @@ pub mod style {
         scrollable::Style { vertical_rail: rail, horizontal_rail: rail, ..scrollable::default(theme, status) }
     }
 
-    /// A block with a thin border on the content background: decision cards,
-    /// tool rows.
+    /// A card: decision prompts, subagents, settings groups.
     pub fn card(theme: &Theme) -> container::Style {
-        let palette = theme.extended_palette();
+        let t = tokens(theme);
         container::Style {
-            background: Some(Background::Color(palette.background.base.color)),
-            text_color: Some(palette.background.base.text),
-            border: Border { color: border_color(theme), width: 1.0, radius: RADIUS.into() },
+            background: fill(t.card),
+            text_color: Some(t.text),
+            border: Border { color: t.line, width: 1.0, radius: CARD_RADIUS.into() },
             ..container::Style::default()
         }
     }
 
-    /// A field raised slightly above the background, with a thin border.
+    /// A card that waits for the user: approvals and questions.
+    pub fn attention_card(theme: &Theme) -> container::Style {
+        let t = tokens(theme);
+        container::Style { border: Border { color: t.warn.scale_alpha(0.35), width: 1.0, radius: CARD_RADIUS.into() }, ..card(theme) }
+    }
+
+    /// The composer and user message bubbles.
     pub fn raised(theme: &Theme) -> container::Style {
-        let palette = theme.extended_palette();
+        let t = tokens(theme);
         container::Style {
-            background: Some(Background::Color(palette.background.weakest.color)),
-            text_color: Some(palette.background.weakest.text),
-            border: Border { color: palette.background.neutral.color, width: 1.0, radius: RADIUS.into() },
+            background: fill(t.raised),
+            text_color: Some(t.text),
+            border: Border { color: t.line, width: 1.0, radius: CARD_RADIUS.into() },
             ..container::Style::default()
         }
     }
 
-    /// A text input drawn as a [`raised`] field.
+    /// A floating window: Usage, Settings, menus and pickers.
+    pub fn window(theme: &Theme) -> container::Style {
+        let t = tokens(theme);
+        container::Style {
+            background: fill(t.card),
+            text_color: Some(t.text),
+            border: Border { color: t.line_strong, width: 1.0, radius: CARD_RADIUS.into() },
+            shadow: Shadow { color: Color::BLACK.scale_alpha(0.45), offset: Vector::new(0.0, 16.0), blur_radius: 40.0 },
+            ..container::Style::default()
+        }
+    }
+
+    /// The dimmed layer behind a window.
+    pub fn scrim(theme: &Theme) -> container::Style {
+        container::Style { background: fill(tokens(theme).scrim), ..container::Style::default() }
+    }
+
+    /// A text input on the side ground with a thin border.
     pub fn input(theme: &Theme, status: text_input::Status) -> text_input::Style {
-        let palette = theme.extended_palette();
+        let t = tokens(theme);
         let border = match status {
-            text_input::Status::Focused { .. } => palette.background.strongest.color,
-            text_input::Status::Hovered => palette.background.strong.color,
-            text_input::Status::Active | text_input::Status::Disabled => palette.background.neutral.color,
+            text_input::Status::Focused { .. } => t.accent,
+            text_input::Status::Hovered => t.line_strong,
+            text_input::Status::Active | text_input::Status::Disabled => t.line,
         };
         text_input::Style {
-            background: Background::Color(palette.background.weakest.color),
+            background: Background::Color(t.side),
             border: Border { color: border, width: 1.0, radius: RADIUS.into() },
-            icon: muted_color(theme),
-            placeholder: muted_color(theme),
-            value: palette.background.base.text,
-            selection: palette.background.strongest.color,
+            icon: t.text3,
+            placeholder: t.text3,
+            value: t.text,
+            selection: t.accent.scale_alpha(0.35),
         }
     }
 
-    /// Secondary text: section headers, node tags, hints.
+    /// Secondary text: labels, hints.
     pub fn muted(theme: &Theme) -> text::Style {
         text::Style { color: Some(muted_color(theme)) }
     }
 
+    /// Tertiary text: counts and timestamps.
+    pub fn faint(theme: &Theme) -> text::Style {
+        text::Style { color: Some(tokens(theme).text3) }
+    }
+
     /// The color of [`muted`] text.
     pub fn muted_color(theme: &Theme) -> Color {
-        theme.extended_palette().background.base.text.scale_alpha(0.55)
+        tokens(theme).text2
     }
 
-    /// A small dim pill: node tags, counts.
+    /// Text in the needs-you color: "Approve", "Needs approval".
+    pub fn waiting_text(theme: &Theme) -> text::Style {
+        text::Style { color: Some(tokens(theme).warn) }
+    }
+
+    /// Text in the accent color.
+    pub fn accent_text(theme: &Theme) -> text::Style {
+        text::Style { color: Some(tokens(theme).accent) }
+    }
+
+    /// A small quiet tag: node names, counts. No fill, just tertiary text.
     pub fn badge(theme: &Theme) -> container::Style {
-        container::Style {
-            background: Some(Background::Color(theme.extended_palette().background.weak.color)),
-            text_color: Some(muted_color(theme)),
-            border: border::rounded(PILL_RADIUS),
-            ..container::Style::default()
-        }
+        container::Style { text_color: Some(tokens(theme).text3), ..container::Style::default() }
     }
 
-    /// A pill outlined by a thin border: the node indicator.
+    /// A thin outlined block.
     pub fn outlined(theme: &Theme) -> container::Style {
-        container::Style {
-            border: Border { color: border_color(theme), width: 1.0, radius: RADIUS.into() },
-            ..surface(theme)
-        }
+        let t = tokens(theme);
+        container::Style { border: Border { color: t.line_strong, width: 1.0, radius: RADIUS.into() }, ..surface(theme) }
     }
 
-    /// A pill that asks for attention: a session waiting for a decision.
+    /// The needs-you label on a waiting session: plain warn-colored text, no
+    /// fill.
     pub fn waiting_badge(theme: &Theme) -> container::Style {
-        let pair = theme.extended_palette().warning.base;
-        container::Style {
-            background: Some(Background::Color(pair.color)),
-            text_color: Some(pair.text),
-            border: border::rounded(PILL_RADIUS),
-            ..container::Style::default()
-        }
+        container::Style { text_color: Some(tokens(theme).warn), ..container::Style::default() }
     }
 
     /// A dot telling whether a node is online: green when online, grey when
     /// not.
     pub fn status_dot(online: bool) -> impl Fn(&Theme) -> container::Style {
+        move |theme| dot(if online { tokens(theme).ok } else { tokens(theme).text3 })(theme)
+    }
+
+    /// A round dot of this color.
+    pub fn dot(color: Color) -> impl Fn(&Theme) -> container::Style {
+        move |_| container::Style { background: fill(color), border: border::rounded(99), ..container::Style::default() }
+    }
+
+    /// A bar track and its fill, for usage meters.
+    pub fn meter_track(theme: &Theme) -> container::Style {
+        container::Style { background: fill(tokens(theme).line_strong), border: border::rounded(99), ..container::Style::default() }
+    }
+
+    /// The filled part of a meter: accent below half, warn from half, danger
+    /// from 80%.
+    pub fn meter_fill(fraction: f32) -> impl Fn(&Theme) -> container::Style {
         move |theme| {
-            let color = if online { theme.extended_palette().success.base.color } else { muted_color(theme) };
-            container::Style {
-                background: Some(Background::Color(color)),
-                border: border::rounded(RADIUS),
-                ..container::Style::default()
-            }
+            let t = tokens(theme);
+            let color = if fraction >= 0.8 { t.danger } else if fraction >= 0.5 { t.warn } else { t.accent };
+            container::Style { background: fill(color), border: border::rounded(99), ..container::Style::default() }
         }
     }
 
     /// A list row or nav item that is not selected.
     pub fn row(theme: &Theme, status: button::Status) -> button::Style {
-        let palette = theme.extended_palette();
+        let t = tokens(theme);
         let background = match status {
-            button::Status::Hovered => Some(Background::Color(palette.background.weaker.color)),
-            button::Status::Pressed => Some(Background::Color(palette.background.weak.color)),
+            button::Status::Hovered => fill(t.hover),
+            button::Status::Pressed => fill(t.selected),
             button::Status::Active | button::Status::Disabled => None,
         };
-        button::Style {
-            background,
-            text_color: palette.background.base.text,
-            border: border::rounded(RADIUS),
-            ..button::Style::default()
-        }
+        button::Style { background, text_color: t.text, border: border::rounded(RADIUS + 2.0), ..button::Style::default() }
     }
 
     /// The selected list row.
-    pub fn selected_row(theme: &Theme, status: button::Status) -> button::Style {
-        let palette = theme.extended_palette();
-        let color = match status {
-            button::Status::Pressed => palette.background.neutral.color,
-            _ => palette.background.weak.color,
-        };
-        button::Style {
-            background: Some(Background::Color(color)),
-            text_color: palette.background.base.text,
-            border: border::rounded(RADIUS),
-            ..button::Style::default()
-        }
+    pub fn selected_row(theme: &Theme, _status: button::Status) -> button::Style {
+        let t = tokens(theme);
+        button::Style { background: fill(t.selected), text_color: t.text, border: border::rounded(RADIUS + 2.0), ..button::Style::default() }
     }
 
     /// The row style for a selection state.
+    /// Behind a hovered row's action icons: the row's own fill.
+    pub fn row_actions(theme: &Theme, selected: bool) -> container::Style {
+        let t = tokens(theme);
+        container::Style { background: fill(if selected { t.selected } else { t.hover }), ..container::Style::default() }
+    }
+
     pub fn row_for(selected: bool) -> fn(&Theme, button::Status) -> button::Style {
         if selected { selected_row } else { row }
     }
 
-    /// A text-only tab: bright when active, muted otherwise, brightening on
-    /// hover.
-    pub fn tab(active: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
-        move |theme, status| {
-            let text_color = match status {
-                _ if active => theme.extended_palette().background.base.text,
-                button::Status::Hovered | button::Status::Pressed => theme.extended_palette().background.base.text,
-                button::Status::Active | button::Status::Disabled => muted_color(theme),
-            };
-            button::Style { text_color, ..button::Style::default() }
+    /// The main action: a light fill with dark text (Allow once, Retry).
+    pub fn primary_button(theme: &Theme, status: button::Status) -> button::Style {
+        let t = tokens(theme);
+        let bg = match status {
+            button::Status::Hovered => t.text.scale_alpha(0.9),
+            button::Status::Disabled => t.text.scale_alpha(0.4),
+            _ => t.text,
+        };
+        button::Style { background: fill(bg), text_color: t.side, border: border::rounded(RADIUS + 2.0), ..button::Style::default() }
+    }
+
+    /// The accent action: send, start.
+    pub fn accent_button(theme: &Theme, status: button::Status) -> button::Style {
+        let t = tokens(theme);
+        let bg = match status {
+            button::Status::Hovered => t.accent.scale_alpha(0.9),
+            button::Status::Disabled => t.accent.scale_alpha(0.4),
+            _ => t.accent,
+        };
+        button::Style { background: fill(bg), text_color: t.on_accent, border: border::rounded(RADIUS + 3.0), ..button::Style::default() }
+    }
+
+    /// A secondary action: outlined, no fill.
+    pub fn secondary_button(theme: &Theme, status: button::Status) -> button::Style {
+        let t = tokens(theme);
+        let background = matches!(status, button::Status::Hovered | button::Status::Pressed).then(|| Background::Color(t.hover));
+        button::Style {
+            background,
+            text_color: t.text,
+            border: Border { color: t.line_strong, width: 1.0, radius: (RADIUS + 2.0).into() },
+            ..button::Style::default()
         }
     }
 
-    /// The line under the active tab.
-    pub fn tab_underline(theme: &Theme) -> container::Style {
-        container::Style {
-            background: Some(Background::Color(theme.extended_palette().background.base.text.scale_alpha(0.8))),
-            ..container::Style::default()
+    /// A quiet text or icon button: secondary text, a hover fill.
+    pub fn ghost_button(theme: &Theme, status: button::Status) -> button::Style {
+        let t = tokens(theme);
+        let (background, text_color) = match status {
+            button::Status::Hovered | button::Status::Pressed => (fill(t.hover), t.text),
+            _ => (None, t.text2),
+        };
+        button::Style { background, text_color, border: border::rounded(RADIUS), ..button::Style::default() }
+    }
+
+    /// A tab with an icon: a filled pill when active, secondary text
+    /// otherwise.
+    pub fn tab(active: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+        move |theme, status| {
+            let t = tokens(theme);
+            let (background, text_color) = match status {
+                _ if active => (fill(t.selected), t.text),
+                button::Status::Hovered | button::Status::Pressed => (fill(t.hover), t.text),
+                button::Status::Active | button::Status::Disabled => (None, t.text2),
+            };
+            button::Style { background, text_color, border: border::rounded(RADIUS + 2.0), ..button::Style::default() }
         }
+    }
+
+    /// The line under the active tab. Kept for tab bars that still draw one.
+    pub fn tab_underline(theme: &Theme) -> container::Style {
+        container::Style { background: fill(tokens(theme).accent), ..container::Style::default() }
     }
 
     /// A small floating label: tooltips.
     pub fn tooltip(theme: &Theme) -> container::Style {
-        let palette = theme.extended_palette();
+        let t = tokens(theme);
         container::Style {
-            background: Some(Background::Color(palette.background.weaker.color)),
-            text_color: Some(palette.background.base.text),
-            border: Border { color: palette.background.neutral.color, width: 1.0, radius: RADIUS.into() },
+            background: fill(t.raised),
+            text_color: Some(t.text),
+            border: Border { color: t.line_strong, width: 1.0, radius: RADIUS.into() },
             ..container::Style::default()
         }
     }
@@ -381,13 +560,23 @@ mod tests {
     }
 
     #[test]
-    fn badge_text_is_readable_on_both_themes() {
+    fn text_tokens_are_readable_on_their_grounds() {
+        for tokens in [style::DARK, style::LIGHT] {
+            for ground in [tokens.ground, tokens.side, tokens.card] {
+                for (name, fg) in [("text", tokens.text), ("text2", tokens.text2), ("text3", tokens.text3), ("warn", tokens.warn)] {
+                    assert!(contrast(ground, fg) >= 4.5, "{name} on {ground:?}: contrast {}", contrast(ground, fg));
+                }
+            }
+            assert!(contrast(tokens.accent, tokens.on_accent) >= 4.5, "accent button contrast");
+        }
+    }
+
+    #[test]
+    fn waiting_badge_is_plain_text() {
         for theme in [dark(), light()] {
             let badge = style::waiting_badge(&theme);
-            let (Some(iced::Background::Color(bg)), Some(fg)) = (badge.background, badge.text_color) else {
-                panic!("badge must set background and text colors");
-            };
-            assert!(contrast(bg, fg) >= 4.5, "{theme}: contrast {}", contrast(bg, fg));
+            assert!(badge.background.is_none(), "{theme}: no pill fill");
+            assert_eq!(badge.text_color, Some(style::tokens(&theme).warn));
         }
     }
 

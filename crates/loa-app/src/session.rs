@@ -2,18 +2,19 @@
 //! [`Persist`](loa_bus::Persist) port appends to its loa-journal journal, so
 //! every patch an adapter commits is on disk before the UI sees it. The UI
 //! keeps its own copy of each DOM, fed by the writer's subscription
-//! ([`Sessions::watch`]); [`Sessions::feed`] applies what arrives and names
+//! ([`Sessions::watch`]); [`Sessions::apply`] applies what arrives and names
 //! the [`SessionEvent`]s areas react to.
 
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use iced::Subscription;
 use iced::futures::{SinkExt, Stream};
 use loa_adapter::HarnessSession;
-use loa_bus::{Event, Policy, SessionId, SessionWriter};
+use loa_bus::{Event, Policy, SessionId, SessionWriter, TryRecvError};
 use loa_core::{DecisionStatus, Dom, ElementKind, NodeId, Op, Patch, TurnStatus, attr};
 use loa_features::library::{Library, Live};
 use loa_journal::{JournalWriter, Listing};
@@ -23,6 +24,10 @@ use crate::services::Services;
 
 /// Undelivered patches a session feed may hold before it resubscribes.
 const FEED_CAPACITY: usize = 4096;
+
+/// How long a feed gathers the events that arrive while it waits: one frame,
+/// so a streamed burst reaches the app as one update.
+const FRAME: Duration = Duration::from_millis(16);
 
 /// What happened to a session, as every area sees it through
 /// [`Area::on_session_event`](crate::area::Area::on_session_event). When an
@@ -56,7 +61,8 @@ pub enum SessionEvent {
 pub enum Feed {
     /// The writer's DOM when the feed (re)subscribed; events follow it.
     Synced(Arc<Dom>),
-    Event(Event),
+    /// The events that arrived within one frame, oldest first.
+    Events(Vec<Event>),
 }
 
 /// One open session.
@@ -66,6 +72,8 @@ pub struct Session {
     journal: Arc<JournalWriter>,
     /// The UI's copy of the writer's DOM.
     dom: Dom,
+    /// The sidebar entry of `dom`; `None` until the DOM has a session root.
+    summary: Option<SessionSummary>,
     /// The running harness; `None` until the session is started or resumed.
     harness: Option<Arc<dyn HarnessSession>>,
     busy: bool,
@@ -74,7 +82,8 @@ pub struct Session {
 impl Session {
     fn new(id: SessionId, live: Live, dom: Dom) -> Self {
         let busy = dom_busy(&dom);
-        Self { id, writer: live.writer, journal: live.journal, dom, harness: None, busy }
+        let summary = SessionSummary::from_dom(&dom, false);
+        Self { id, writer: live.writer, journal: live.journal, dom, summary, harness: None, busy }
     }
 
     pub fn id(&self) -> &SessionId {
@@ -115,9 +124,9 @@ impl Session {
         dom_turns(&self.dom).next().is_some()
     }
 
-    /// The sidebar entry of the session.
-    pub fn summary(&self) -> Option<SessionSummary> {
-        SessionSummary::from_dom(&self.dom, false)
+    /// The sidebar entry of the session, kept in step with the DOM.
+    pub fn summary(&self) -> Option<&SessionSummary> {
+        self.summary.as_ref()
     }
 
     pub(crate) fn set_busy(&mut self, busy: bool) {
@@ -130,6 +139,13 @@ impl Session {
         self.harness = Some(harness);
         self.dom = self.writer.with_dom(Dom::clone);
         self.busy = dom_busy(&self.dom);
+        self.summary = SessionSummary::from_dom(&self.dom, false);
+    }
+
+    /// Takes the running harness off the session; the next send resumes it
+    /// on a fresh harness.
+    pub(crate) fn detach(&mut self) -> Option<Arc<dyn HarnessSession>> {
+        self.harness.take()
     }
 
     /// Applies one feed event. `Ok(None)` when it carries nothing new.
@@ -162,11 +178,18 @@ impl Session {
     }
 }
 
-/// What [`Sessions::feed`] did.
+/// What [`Sessions::sync`] and [`Sessions::apply`] did.
 pub(crate) enum Change {
     None,
     Loaded,
-    Patch(Arc<Patch>, Option<SessionEvent>),
+    Patch {
+        patch: Arc<Patch>,
+        derived: Option<SessionEvent>,
+        /// The session's sidebar entry changed.
+        summary_changed: bool,
+        /// The patch changed a turn's status, so the busy flag may have changed.
+        turn_changed: bool,
+    },
 }
 
 /// The open sessions, the active one and the harness new ones start on.
@@ -261,34 +284,45 @@ impl Sessions {
         (session, closed.err().map(|error| format!("Can't close session {id}: {error}")))
     }
 
-    /// Applies what a session's feed delivered to the UI's copy.
-    pub(crate) fn feed(&mut self, id: &str, feed: Feed) -> Change {
+    /// Replaces the UI's copy with the writer's DOM when that is newer.
+    pub(crate) fn sync(&mut self, id: &str, dom: Arc<Dom>) -> Change {
         let Some(session) = self.open.get_mut(id) else { return Change::None };
-        match feed {
-            Feed::Synced(dom) => {
-                if dom.seq() == session.dom.seq() {
-                    return Change::None;
+        if dom.seq() == session.dom.seq() {
+            return Change::None;
+        }
+        session.dom = Arc::unwrap_or_clone(dom);
+        session.busy = dom_busy(&session.dom);
+        session.summary = SessionSummary::from_dom(&session.dom, false);
+        Change::Loaded
+    }
+
+    /// Applies one event from a session's feed to the UI's copy.
+    pub(crate) fn apply(&mut self, id: &str, event: Event) -> Change {
+        let Some(session) = self.open.get_mut(id) else { return Change::None };
+        match session.apply(event) {
+            Ok(None) => Change::None,
+            Ok(Some(patch)) => {
+                let turn_changed = touches_turn_status(&session.dom, &patch);
+                if turn_changed {
+                    session.busy = dom_busy(&session.dom);
                 }
-                session.dom = Arc::unwrap_or_clone(dom);
+                let summary_changed = match session.summary.as_mut() {
+                    Some(summary) => summary.apply(&session.dom, &patch),
+                    None => {
+                        session.summary = SessionSummary::from_dom(&session.dom, false);
+                        session.summary.is_some()
+                    }
+                };
+                let derived = derive(&session.id, &session.dom, &patch);
+                Change::Patch { patch, derived, summary_changed, turn_changed }
+            }
+            Err(_) => {
+                // The copy fell out of step: take the writer's DOM.
+                session.dom = session.writer.with_dom(Dom::clone);
                 session.busy = dom_busy(&session.dom);
+                session.summary = SessionSummary::from_dom(&session.dom, false);
                 Change::Loaded
             }
-            Feed::Event(event) => match session.apply(event) {
-                Ok(None) => Change::None,
-                Ok(Some(patch)) => {
-                    if touches_turn_status(&session.dom, &patch) {
-                        session.busy = dom_busy(&session.dom);
-                    }
-                    let event = derive(&session.id, &session.dom, &patch);
-                    Change::Patch(patch, event)
-                }
-                Err(_) => {
-                    // The copy fell out of step: take the writer's DOM.
-                    session.dom = session.writer.with_dom(Dom::clone);
-                    session.busy = dom_busy(&session.dom);
-                    Change::Loaded
-                }
-            },
         }
     }
 
@@ -306,16 +340,17 @@ fn keeps_history(dom: &Dom) -> bool {
 }
 
 /// Lists the library's sessions for Recents, newest first, with titles from
-/// their DOMs. Sessions without a turn hold nothing to keep and are deleted,
-/// unless they continue another session (a fork, rewind or compaction that
-/// carries its history as context).
-/// Returns the summaries and a note per session that couldn't be read.
-pub(crate) fn recents(library: &Library) -> (Vec<SessionSummary>, Vec<String>) {
+/// their DOMs. Sessions without a turn hold nothing to keep and come back in
+/// `empty` for the caller to delete, unless they continue another session (a
+/// fork, rewind or compaction that carries its history as context). Returns
+/// the summaries, those empty ids and a note per session that couldn't be read.
+pub(crate) fn recents(library: &Library) -> (Vec<SessionSummary>, Vec<String>, Vec<String>) {
     let mut summaries = Vec::new();
     let mut problems = Vec::new();
+    let mut empty = Vec::new();
     let listings = match library.store().list() {
         Ok(listings) => listings,
-        Err(error) => return (summaries, vec![format!("Can't list sessions: {error}")]),
+        Err(error) => return (summaries, vec![format!("Can't list sessions: {error}")], empty),
     };
     for listing in listings {
         let info = match listing {
@@ -328,17 +363,13 @@ pub(crate) fn recents(library: &Library) -> (Vec<SessionSummary>, Vec<String>) {
         match library.load(&info.id) {
             Ok(dom) => match SessionSummary::from_dom(&dom, false).filter(|_| keeps_history(&dom)) {
                 Some(summary) => summaries.push(summary),
-                None => {
-                    if let Err(error) = library.delete(&info.id) {
-                        problems.push(format!("Can't delete empty session {}: {error}", info.id));
-                    }
-                }
+                None => empty.push(info.id),
             },
             Err(error) => problems.push(format!("Session {} can't be read: {error}", info.id)),
         }
     }
     summaries.sort_by_key(|summary| std::cmp::Reverse(summary.updated));
-    (summaries, problems)
+    (summaries, problems, empty)
 }
 
 /// The `<turn>` children of the session root, oldest first.
@@ -409,27 +440,95 @@ impl Hash for Watch {
     }
 }
 
-/// The writer's DOM, then each patch; resubscribes after falling behind and
-/// ends when the session closes.
+/// The writer's DOM, then the events that arrive within each frame as one
+/// batch. Resubscribes after falling behind and ends when the session closes.
 fn feed(watch: &Watch) -> impl Stream<Item = Feed> + use<> {
     let writer = Arc::clone(&watch.0);
-    iced::stream::channel(64, async move |mut out: iced::futures::channel::mpsc::Sender<Feed>| {
+    iced::stream::channel(1, async move |mut out: iced::futures::channel::mpsc::Sender<Feed>| {
         loop {
             let (dom, mut subscription) = writer.subscribe(Policy::coalescing(FEED_CAPACITY));
             if out.send(Feed::Synced(Arc::new(dom))).await.is_err() {
                 return;
             }
             loop {
-                match subscription.recv().await {
+                let first = match subscription.recv().await {
                     None => return,
                     Some(Event::Lagged { .. }) => break,
-                    Some(event) => {
-                        if out.send(Feed::Event(event)).await.is_err() {
-                            return;
+                    Some(event) => event,
+                };
+                // Appends that arrive during the frame merge in the bus queue.
+                let mut batch = vec![first];
+                tokio::time::sleep(FRAME).await;
+                let (mut lagged, mut closed) = (false, false);
+                loop {
+                    match subscription.try_recv() {
+                        Ok(Event::Lagged { .. }) => {
+                            lagged = true;
+                            break;
+                        }
+                        Ok(event) => batch.push(event),
+                        Err(TryRecvError::Empty) => break,
+                        Err(TryRecvError::Closed) => {
+                            closed = true;
+                            break;
                         }
                     }
+                }
+                if out.send(Feed::Events(batch)).await.is_err() {
+                    return;
+                }
+                if lagged {
+                    break;
+                }
+                if closed {
+                    return;
                 }
             }
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use iced::futures::StreamExt;
+    use loa_core::{Draft, ElementKind, NodeId, PatchSink, Value};
+
+    /// Appends committed while the feed waits reach the app in a few batches,
+    /// and applying them gives the writer's text.
+    #[tokio::test]
+    async fn streamed_appends_arrive_in_few_batches() {
+        let dir = tempfile::tempdir().unwrap();
+        let services = crate::app::tests::services(dir.path(), Vec::new());
+        let live = services.library.create("stream-test").unwrap();
+        let writer = Arc::clone(&live.writer);
+        let root_attrs = [
+            (attr::ID, Value::from("stream-test")),
+            (attr::HARNESS, Value::from("omp")),
+            (attr::NODE, Value::from("n1")),
+            (attr::CREATED, Value::Int(0)),
+        ];
+        let root = writer.commit(Draft::insert(NodeId::DOCUMENT, ElementKind::Session, root_attrs, "")).unwrap().node;
+        let turn = writer.commit(Draft::insert(root, ElementKind::Turn, Vec::<(&str, Value)>::new(), "")).unwrap().node;
+        let message = writer.commit(Draft::insert(turn, ElementKind::Message, [(attr::ROLE, Value::from("assistant"))], "")).unwrap().node;
+
+        let mut stream = Box::pin(feed(&Watch(Arc::clone(&writer))));
+        let Some(Feed::Synced(synced)) = stream.next().await else { panic!("the feed opens with the writer's DOM") };
+        let mut mirror = Arc::unwrap_or_clone(synced);
+
+        for _ in 0..500 {
+            writer.commit(Draft::append(message, "token ")).unwrap();
+        }
+        let mut batches = 0;
+        while mirror.seq() < writer.seq() {
+            let Some(Feed::Events(events)) = stream.next().await else { panic!("the feed delivers the writer's patches") };
+            batches += 1;
+            for event in events {
+                event.apply_to(&mut mirror).unwrap();
+            }
+        }
+        assert!(batches <= 3, "{batches} batches for 500 appends");
+        let expected = writer.with_dom(|dom| dom.get(message).unwrap().text.clone());
+        assert_eq!(mirror.get(message).unwrap().text, expected);
+    }
 }

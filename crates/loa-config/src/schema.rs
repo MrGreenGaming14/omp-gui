@@ -130,11 +130,16 @@ pub struct HarnessSettings {
     pub default: String,
     /// Executable per harness name, used instead of the one on `PATH`.
     pub executables: BTreeMap<String, PathBuf>,
+    /// omp's approval mode for new sessions (`always-ask`,
+    /// `always-ask-cached`, `write`, `yolo`); unset uses the app's default,
+    /// `always-ask`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub approval_mode: Option<String>,
 }
 
 impl Default for HarnessSettings {
     fn default() -> Self {
-        Self { default: "omp".to_owned(), executables: BTreeMap::new() }
+        Self { default: "omp".to_owned(), executables: BTreeMap::new(), approval_mode: None }
     }
 }
 

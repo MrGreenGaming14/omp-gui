@@ -494,10 +494,59 @@ fn tool_details_render_as_sub_rows() {
         ])],
         harness_note: None,
     });
-    let mut ui = iced_test::simulator(state.view());
-    for label in ["sandbox_task tool", "docker", "Docker 27.3", "firecracker", "no /dev/kvm", "no hosts"] {
-        ui.find(label).unwrap_or_else(|e| panic!("{label:?} rendered: {e}"));
+    // Closed, the row shows the tool and its description, not the details.
+    assert!(iced_test::simulator(state.view()).find("Docker 27.3").is_err(), "details start closed");
+
+    // A click on the row opens its details inline.
+    let message = click(&state, "sandbox_task");
+    send(&mut state, message);
+    {
+        let mut ui = iced_test::simulator(state.view());
+        for label in ["sandbox_task tool", "docker", "Docker 27.3", "firecracker", "no /dev/kvm", "no hosts"] {
+            ui.find(label).unwrap_or_else(|e| panic!("{label:?} rendered: {e}"));
+        }
     }
+
+    // A second click closes them.
+    let message = click(&state, "sandbox_task");
+    send(&mut state, message);
+    assert!(iced_test::simulator(state.view()).find("Docker 27.3").is_err(), "details closed again");
+}
+
+#[test]
+fn long_lists_show_a_preview_until_opened_and_filtering_shows_all() {
+    let mut state = panel();
+    let names: Vec<String> = (0..20).map(|i| format!("tool_{i:02}")).collect();
+    state.set_builtin(BuiltinTools {
+        harness: "omp".into(),
+        harness_tools: names.iter().map(|n| tool(n)).collect(),
+        app_tools: vec![tool("sandbox_task")],
+        harness_note: None,
+    });
+    {
+        let mut ui = iced_test::simulator(state.view());
+        ui.find("tool_00").unwrap();
+        assert!(ui.find("tool_19").is_err(), "the long list is cut");
+    }
+    let message = click(&state, "Show all 20");
+    send(&mut state, message);
+    iced_test::simulator(state.view()).find("tool_19").unwrap();
+    // "Show fewer" sits below the fold of the test window; send its message.
+    send(&mut state, Message::BlockOpen("harness:all".into(), false));
+    assert!(iced_test::simulator(state.view()).find("tool_19").is_err());
+
+    // A filter shows every match.
+    send(&mut state, Message::FilterChanged("tool_1".into()));
+    iced_test::simulator(state.view()).find("tool_19").unwrap();
+    send(&mut state, Message::FilterChanged(String::new()));
+
+    // The header closes and opens its card.
+    let message = click(&state, "App tools");
+    send(&mut state, message);
+    assert!(iced_test::simulator(state.view()).find("sandbox_task").is_err(), "app tools closed");
+    let message = click(&state, "App tools");
+    send(&mut state, message);
+    iced_test::simulator(state.view()).find("sandbox_task").unwrap();
 }
 
 #[test]
@@ -535,4 +584,23 @@ fn remote_prompts_render_as_cards_and_answer_by_id() {
     );
     assert!(state.prompts().is_empty());
     assert_eq!(send(&mut state, Message::AnswerPrompt(9, PromptAnswer::Deny)), None, "answered once");
+}
+
+#[test]
+fn every_section_renders_in_a_narrow_panel() {
+    let mut state = panel();
+    state.select_project("a");
+    state.set_hosts(vec![host("db")]);
+    send(&mut state, Message::ShowAudit("db".into()));
+    send(&mut state, Message::EditLimits("db".into()));
+    for (section, label) in [
+        (Section::Builtin, "project_search"),
+        (Section::Servers, "remote_bash"),
+        (Section::Hosts, "Edit limits"),
+        (Section::Peers, "No peers"),
+    ] {
+        send(&mut state, Message::SectionSelected(section));
+        let mut ui = iced_test::Simulator::with_size(iced_test::core::Settings::default(), (340.0, 2000.0), state.view());
+        ui.find(label).unwrap_or_else(|e| panic!("{label:?} in {section:?}: {e}"));
+    }
 }

@@ -5,8 +5,7 @@
 //! agents under the workspace, and reads what the form offers: omp's models
 //! and role aliases, and omp's tools (the built in defaults when omp can't
 //! list them, which the screen says). Everything here is for omp sessions:
-//! the composer button and the palette commands are disabled for any other
-//! harness.
+//! the palette commands are disabled for any other harness.
 //!
 //! Save writes the validated definition: back to the file the form edits, or
 //! to a new file in the user agents directory. An existing name is replaced

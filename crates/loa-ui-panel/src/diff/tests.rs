@@ -25,6 +25,14 @@ fn header(h: &Hunk) -> (u32, u32, u32, u32) {
 }
 
 #[test]
+fn max_line_no_is_the_largest_numbered_line() {
+    let old = numbered(9);
+    let new = numbered(12);
+    let file = FileDiff::from_texts(None, None, &old, &new);
+    assert_eq!(file.max_line_no(), 12);
+}
+
+#[test]
 fn one_change_gets_diff_u_hunk_and_folds_on_both_sides() {
     let old = numbered(20);
     let new = replace_line(&old, 10, "line ten");

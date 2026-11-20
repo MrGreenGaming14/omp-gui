@@ -95,6 +95,8 @@ pub enum Message {
     Field(NodeId, usize, FieldInput),
     Shortcut(Shortcut),
     Link(markdown::Uri),
+    /// Expands or collapses the whole diff of an approval card.
+    ToggleDiff(NodeId),
 }
 
 /// What the app must act on.
@@ -196,6 +198,12 @@ impl State {
     pub fn update(&mut self, message: Message) -> (Task<Message>, Option<Event>) {
         let none = (Task::none(), None);
         let (id, reply) = match message {
+            Message::ToggleDiff(id) => {
+                if let Some(card) = self.cards.get_mut(&id) {
+                    card.toggle_diff();
+                }
+                return none;
+            }
             Message::Link(uri) => return (Task::none(), Some(Event::OpenLink(uri))),
             Message::Shortcut(shortcut) => {
                 let Some(id) = self.focused() else {
@@ -249,7 +257,7 @@ impl State {
                         card.set_field(index, input);
                         None
                     }
-                    Message::Shortcut(_) | Message::Link(_) => None,
+                    Message::Shortcut(_) | Message::Link(_) | Message::ToggleDiff(_) => None,
                 };
                 (id, reply)
             }
