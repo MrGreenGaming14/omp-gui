@@ -16,8 +16,10 @@ use windows_sys::Win32::Security::{
     ACL, GetTokenInformation, InitializeSecurityDescriptor, SECURITY_ATTRIBUTES, SECURITY_DESCRIPTOR, SE_DACL_PROTECTED,
     SetSecurityDescriptorControl, SetSecurityDescriptorDacl, TOKEN_QUERY, TOKEN_USER, TokenUser,
 };
-use windows_sys::Win32::Storage::FileSystem::{CREATE_NEW, CreateFileW, FILE_ALL_ACCESS, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_DELETE};
-use windows_sys::Win32::System::SystemServices::SECURITY_DESCRIPTOR_REVISION;
+use windows_sys::Win32::Storage::FileSystem::{
+    CREATE_NEW, CreateFileW, FILE_ALL_ACCESS, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_DELETE, GetVolumeInformationByHandleW,
+};
+use windows_sys::Win32::System::SystemServices::{FILE_PERSISTENT_ACLS, SECURITY_DESCRIPTOR_REVISION};
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
 struct Acl(*mut ACL);
@@ -87,5 +89,22 @@ pub(super) fn create(path: &Path) -> io::Result<File> {
     if handle == INVALID_HANDLE_VALUE {
         return Err(io::Error::last_os_error());
     }
-    Ok(File::from(unsafe { OwnedHandle::from_raw_handle(handle) }))
+    let file = File::from(unsafe { OwnedHandle::from_raw_handle(handle) });
+    // FAT and exFAT ignore the DACL; never write a key that anyone can read.
+    let mut flags = 0;
+    // SAFETY: `file` is an open handle; unused outputs are null with zero sizes.
+    let queried = unsafe {
+        GetVolumeInformationByHandleW(file.as_raw_handle(), null_mut(), 0, null_mut(), null_mut(), &mut flags, null_mut(), 0)
+    };
+    if queried == 0 || flags & FILE_PERSISTENT_ACLS == 0 {
+        let error = if queried == 0 {
+            io::Error::last_os_error()
+        } else {
+            io::Error::new(io::ErrorKind::Unsupported, "the key folder's volume can't restrict file access")
+        };
+        drop(file);
+        let _ = std::fs::remove_file(path);
+        return Err(error);
+    }
+    Ok(file)
 }

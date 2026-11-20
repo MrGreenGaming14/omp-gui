@@ -147,7 +147,10 @@ pub fn spawn(shell: &LocalShell, size: GridSize) -> Result<PtyChannel> {
             // ConPTY keeps its output pipe open after the shell exits; closing
             // the pseudoconsole flushes it and lets the reader reach EOF.
             #[cfg(windows)]
-            drop(console.lock().unwrap_or_else(PoisonError::into_inner).take());
+            {
+                let console = console.lock().unwrap_or_else(PoisonError::into_inner).take();
+                drop(console);
+            }
             let _ = exit_tx.send(code);
         });
     if let Err(error) = waiter {
@@ -225,10 +228,18 @@ impl LocalWriter {
     /// releases the master. The wait thread reaps the child.
     fn shutdown(&mut self) {
         self.writer = None;
-        drop(self.master.lock().unwrap_or_else(PoisonError::into_inner).take());
+        let master = self.master.lock().unwrap_or_else(PoisonError::into_inner).take();
+        #[cfg(not(windows))]
+        drop(master);
         if let Some(mut killer) = self.killer.take() {
             // Fails only when the child already exited.
             let _ = killer.kill();
+        }
+        // ClosePseudoConsole can wait for its output to drain, which needs
+        // the reader this caller may be responsible for polling.
+        #[cfg(windows)]
+        if let Some(master) = master {
+            let _ = std::thread::Builder::new().name("loa-pty-close".into()).spawn(move || drop(master));
         }
     }
 }

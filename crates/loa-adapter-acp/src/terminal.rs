@@ -99,6 +99,21 @@ impl Terminals {
         let (exit_tx, exit_rx) = watch::channel(None);
         let (kill_tx, kill_rx) = oneshot::channel::<()>();
         tokio::spawn(async move {
+            // Windows: the job's own wait would also wait for background
+            // helpers, so wait for the command itself and end the job after.
+            #[cfg(windows)]
+            let status = {
+                let status = tokio::select! {
+                    status = child.inner_mut().wait() => status,
+                    _ = kill_rx => {
+                        let _ = child.start_kill();
+                        child.inner_mut().wait().await
+                    }
+                };
+                drop(child);
+                status
+            };
+            #[cfg(not(windows))]
             let status = tokio::select! {
                 status = child.wait() => status,
                 _ = kill_rx => {

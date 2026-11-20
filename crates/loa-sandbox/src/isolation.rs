@@ -48,6 +48,20 @@ fn canonical(path: &Path) -> Result<PathBuf> {
     Ok(loa_exec::canonicalize(path)?)
 }
 
+/// Whether `meta` describes a link: a symlink anywhere, and on Windows also
+/// a junction or any other reparse point, which `is_symlink` does not report.
+pub(crate) fn is_link(meta: &fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        if meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return true;
+        }
+    }
+    meta.file_type().is_symlink()
+}
+
 /// Copy `src` to `dst`. `boundary` is the canonical source workspace: on
 /// Windows, where symlinks can't be recreated, a link is copied as the file
 /// it points to when that file is inside the workspace and refused otherwise.
@@ -63,7 +77,7 @@ fn copy_entry(src: &Path, dst: &Path, boundary: &Path) -> Result<()> {
             fs::remove_file(dst)?;
         }
     }
-    if meta.file_type().is_symlink() {
+    if is_link(&meta) {
         #[cfg(unix)]
         {
             let _ = boundary;
@@ -71,11 +85,17 @@ fn copy_entry(src: &Path, dst: &Path, boundary: &Path) -> Result<()> {
         }
         #[cfg(not(unix))]
         {
-            let resolved = canonical(src).map_err(|e| error(format!("symlink {} can't be resolved: {e}", src.display())))?;
+            // Only a link to a file inside the workspace is copied, as that
+            // file. A directory link (symlink or junction) could lead back
+            // into the tree, so it is never followed.
+            let resolved = canonical(src).map_err(|e| error(format!("link {} can't be resolved: {e}", src.display())))?;
             if !resolved.starts_with(boundary) {
-                return Err(error(format!("symlink {} points outside the workspace; refusing to copy it", src.display())));
+                return Err(error(format!("link {} points outside the workspace; refusing to copy it", src.display())));
             }
-            copy_entry(&resolved, dst, boundary)?;
+            if !fs::metadata(&resolved)?.is_file() {
+                return Err(error(format!("link {} points to a directory or special file; only links to files are copied on Windows", src.display())));
+            }
+            fs::copy(&resolved, dst)?;
         }
     } else if meta.is_dir() {
         fs::create_dir(dst)?;
