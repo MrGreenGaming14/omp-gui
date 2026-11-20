@@ -536,9 +536,13 @@ mod tests {
         let state = loaded();
         let mut ui = iced_test::simulator(state.view());
         let header = "Shared instructions".to_uppercase();
-        for label in [header.as_str(), "Set up iroh", "Picked port 31415.", "Digest by smol", "Not in context", "Untitled session", "omp  ·  3 turns  ·  3h ago"] {
+        for label in [header.as_str(), "Set up iroh", "Picked port 31415.", "digest by smol", "not in context", "Untitled session", "omp  ·  3 turns  ·  3h ago"] {
             assert!(ui.find(label).is_ok(), "missing {label}");
         }
+        // The whole row opens its session, not only the title.
+        let mut ui = iced_test::simulator(state.view());
+        ui.click("omp  ·  3 turns  ·  3h ago").unwrap();
+        assert!(ui.into_messages().any(|message| matches!(message, Message::OpenSession(_))));
         let mut ui = iced_test::simulator(state.view());
         ui.click("New chat").unwrap();
         assert!(matches!(ui.into_messages().next(), Some(Message::NewChat)));

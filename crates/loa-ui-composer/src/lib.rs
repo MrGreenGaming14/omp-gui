@@ -32,7 +32,7 @@ use loa_ui_icons::{Icon, icon, muted};
 
 use history::{EditKind, History, Snapshot};
 use keys::KeyContext;
-pub use pickers::{HarnessOption, ModelOption, Picker, PickerAction};
+pub use pickers::{AccessOption, HarnessOption, ModelOption, Picker, PickerAction};
 use pickers::Pickers;
 pub use popup::PopupKind;
 use popup::{MAX_ITEMS, Popup, Trigger};
@@ -58,6 +58,8 @@ const CONTROL_TEXT: f32 = 13.0;
 const CHEVRON: f32 = 12.0;
 /// Width of a picker's menu.
 const MENU_WIDTH: f32 = 260.0;
+/// Width of the permission menu, whose rows carry a line of detail.
+const ACCESS_MENU_WIDTH: f32 = 340.0;
 /// Labels of the icon-only buttons, shown as tooltips (and their accessible
 /// names once iced exposes them).
 pub const SEND_LABEL: &str = "Send (Enter)";
@@ -90,6 +92,8 @@ pub enum Event {
     ModelChanged(ModelOption),
     EffortChanged(String),
     ModeChanged(SessionMode),
+    /// A permission level was picked: its [`AccessOption::id`].
+    AccessChanged(String),
     /// The user picked another harness. Holds its id.
     HarnessChanged(String),
     /// The user pressed one of the [`State::set_model_actions`] rows. Holds
@@ -135,6 +139,7 @@ pub enum Message {
     ModelActionPicked(String),
     EffortPicked(String),
     ModePicked(SessionMode),
+    AccessPicked(String),
     HarnessPicked(String),
     /// Opens or closes a picker's menu.
     PickerToggled(Picker),
@@ -276,6 +281,13 @@ impl State {
 
     pub fn set_mode(&mut self, mode: SessionMode) {
         self.pickers.mode = mode;
+    }
+
+    /// Permission levels and the current one, by id. No levels hides the
+    /// picker.
+    pub fn set_access(&mut self, options: Vec<AccessOption>, current: Option<&str>) {
+        self.pickers.access_current = current.map(str::to_owned);
+        self.pickers.access = options;
     }
 
     /// Harnesses prompts can be routed to and the current one, by id. The
@@ -433,6 +445,13 @@ impl State {
                     Event::EffortChanged(effort)
                 })
             }
+            Message::AccessPicked(id) => {
+                self.pickers.open = None;
+                (self.pickers.access_current.as_ref() != Some(&id)).then(|| {
+                    self.pickers.access_current = Some(id.clone());
+                    Event::AccessChanged(id)
+                })
+            }
             Message::ModePicked(mode) => {
                 self.pickers.open = None;
                 (self.pickers.mode != mode).then(|| {
@@ -511,8 +530,13 @@ impl State {
             let label = capitalized(pickers.effort.as_deref().unwrap_or("Effort"));
             controls = controls.push(self.picker(Picker::Effort, Icon::Brain, label));
         }
+        if !pickers.access.is_empty() {
+            let current = pickers.access.iter().find(|a| pickers.access_current.as_deref() == Some(a.id.as_str()));
+            let label = current.map_or("Permissions", |a| a.label.as_str()).to_owned();
+            controls = controls.push(self.picker(Picker::Access, Icon::Shield, label));
+        }
         controls = controls
-            .push(self.picker(Picker::Mode, Icon::Shield, capitalized(pickers.mode.as_str())))
+            .push(self.picker(Picker::Mode, Icon::FileText, capitalized(pickers.mode.as_str())))
             .push(space::horizontal())
             .push(action);
 
@@ -599,9 +623,18 @@ impl State {
                 .iter()
                 .map(|&mode| menu_row(mode.as_str(), None, pickers.mode == mode, Some(Message::ModePicked(mode))))
                 .collect(),
+            Picker::Access => pickers
+                .access
+                .iter()
+                .map(|a| {
+                    let current = pickers.access_current.as_deref() == Some(a.id.as_str());
+                    two_line_row(&a.label, &a.detail, current, Message::AccessPicked(a.id.clone()))
+                })
+                .collect(),
             Picker::Folder => Vec::new(),
         };
-        container(column(rows).spacing(2)).padding(4).width(MENU_WIDTH).style(style::menu).into()
+        let width = if picker == Picker::Access { ACCESS_MENU_WIDTH } else { MENU_WIDTH };
+        container(column(rows).spacing(2)).padding(4).width(width).style(style::menu).into()
     }
 
     /// The bar above the editor: the session's folder and git branch. A
@@ -954,6 +987,17 @@ fn menu_row(label: &str, detail: Option<String>, current: bool, pick: Option<Mes
         content = content.push(icon(Icon::Check, 14.0));
     }
     button(content).padding([6, 8]).width(Length::Fill).style(style::row(false)).on_press_maybe(pick).into()
+}
+
+/// A menu row with a label over a muted line of detail.
+fn two_line_row<'a>(label: &'a str, detail: &'a str, current: bool, pick: Message) -> Element<'a, Message> {
+    let mut content = row![column![text(label).size(14), text(detail).size(12).style(style::muted)].spacing(2).width(Length::Fill)]
+        .spacing(8)
+        .align_y(Center);
+    if current {
+        content = content.push(icon(Icon::Check, 14.0));
+    }
+    button(content).padding([6, 8]).width(Length::Fill).style(style::row(false)).on_press(pick).into()
 }
 
 /// A model name as the picker shows it: `Claude Opus 5.5` reads `Opus 5.5`.

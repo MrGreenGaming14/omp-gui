@@ -257,6 +257,17 @@ pub mod style {
         container::Style { background: fill(t.ground), text_color: Some(t.text), ..container::Style::default() }
     }
 
+    /// Under the floating composer: clear at the top, fading into the
+    /// ground, so the transcript shows through and slides under it.
+    pub fn composer_fade(theme: &Theme) -> container::Style {
+        let t = tokens(theme);
+        let fade = iced::gradient::Linear::new(iced::Degrees(180.0))
+            .add_stop(0.0, t.ground.scale_alpha(0.0))
+            .add_stop(0.14, t.ground.scale_alpha(0.97))
+            .add_stop(1.0, t.ground);
+        container::Style { background: Some(Background::Gradient(fade.into())), ..container::Style::default() }
+    }
+
     /// The sidebar and side panel ground, a step darker than [`surface`].
     pub fn side(theme: &Theme) -> container::Style {
         let t = tokens(theme);
@@ -443,6 +454,12 @@ pub mod style {
     }
 
     /// The row style for a selection state.
+    /// Behind a hovered row's action icons: the row's own fill.
+    pub fn row_actions(theme: &Theme, selected: bool) -> container::Style {
+        let t = tokens(theme);
+        container::Style { background: fill(if selected { t.selected } else { t.hover }), ..container::Style::default() }
+    }
+
     pub fn row_for(selected: bool) -> fn(&Theme, button::Status) -> button::Style {
         if selected { selected_row } else { row }
     }

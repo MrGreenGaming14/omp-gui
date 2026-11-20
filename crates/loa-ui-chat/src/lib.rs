@@ -134,9 +134,18 @@ pub struct State {
     scroll: Scroll,
     look: style::Look,
     scroll_id: widget::Id,
+    /// Room left under the last row for what floats over the transcript's
+    /// bottom edge (the composer), so the last row can scroll clear of it.
+    bottom_inset: f32,
 }
 
 impl State {
+    /// Leaves `inset` pixels under the last row for something drawn over
+    /// the transcript's bottom edge.
+    pub fn set_bottom_inset(&mut self, inset: f32) {
+        self.bottom_inset = inset;
+    }
+
     /// An empty transcript styled for `theme`.
     pub fn new(theme: &Theme) -> Self {
         Self {
@@ -156,6 +165,7 @@ impl State {
             },
             look: style::Look::new(theme),
             scroll_id: widget::Id::unique(),
+            bottom_inset: 0.0,
         }
     }
 
@@ -297,7 +307,7 @@ impl State {
         // its own key, so measurements still follow rows that move.
         let rows = std::iter::once(space().height(above).into())
             .chain(built.map(|(_, row)| row))
-            .chain(std::iter::once(space().height(below).into()));
+            .chain(std::iter::once(space().height(below + self.bottom_inset).into()));
         let list = iced::widget::Column::with_children(rows).width(Fill);
 
         let on_scroll = map.clone();
@@ -317,7 +327,7 @@ impl State {
             .padding([6, 14])
             .on_press(Message::JumpToLatest);
         let overlay = container(Element::from(jump).map(map))
-            .padding(16)
+            .padding(iced::Padding { bottom: 16.0 + self.bottom_inset, ..iced::Padding::new(16.0) })
             .center_x(Fill)
             .align_bottom(Fill);
         stack![transcript, overlay].into()

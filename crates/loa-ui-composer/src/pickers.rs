@@ -49,6 +49,17 @@ pub struct HarnessOption {
     pub detail: Option<String>,
 }
 
+/// A permission level: what the agent may do without asking.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AccessOption {
+    /// Id the app acts on, e.g. omp's approval mode.
+    pub id: String,
+    /// Short label on the picker, e.g. "Full access".
+    pub label: String,
+    /// One line on what it allows.
+    pub detail: String,
+}
+
 /// One of the composer's bottom-row pickers.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Picker {
@@ -56,6 +67,8 @@ pub enum Picker {
     Model,
     Effort,
     Mode,
+    /// What the agent may do without asking.
+    Access,
     /// The folder bar above the editor.
     Folder,
 }
@@ -74,6 +87,10 @@ pub struct Pickers {
     pub efforts: Vec<String>,
     pub effort: Option<String>,
     pub mode: SessionMode,
+    /// Permission levels; empty hides the picker.
+    pub access: Vec<AccessOption>,
+    /// Id of the current permission level.
+    pub access_current: Option<String>,
     /// The picker whose menu is open, if any.
     pub open: Option<Picker>,
 }
@@ -89,6 +106,8 @@ impl Default for Pickers {
             efforts: Vec::new(),
             effort: None,
             mode: SessionMode::Normal,
+            access: Vec::new(),
+            access_current: None,
             open: None,
         }
     }

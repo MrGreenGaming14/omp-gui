@@ -547,7 +547,10 @@ impl State {
     fn session_row<'a>(&'a self, session: &'a SessionSummary) -> Element<'a, Message> {
         let selected = self.shown_project.is_none() && self.active.as_deref() == Some(session.id.as_str());
 
-        let mut line = row![text(session.title.as_str()).size(14).width(Fill).wrapping(text::Wrapping::None)]
+        // Clipped, so a long title ends at its own edge instead of running
+        // under "Needs you" or the machine name.
+        let title = container(text(session.title.as_str()).size(14).wrapping(text::Wrapping::None)).width(Fill).clip(true);
+        let mut line = row![title]
             .spacing(8)
             .align_y(Alignment::Center);
         if session.waiting {
@@ -575,7 +578,10 @@ impl State {
             .style(style::ghost_button)
             .padding(4);
 
-        hover(body, container(row![pin, delete].spacing(2)).align_right(Fill).center_y(Fill).padding([0, 6]))
+        // On a backing the color of the hovered (or selected) row, so the
+        // icons cover the end of the title instead of mixing with it.
+        let actions = container(row![pin, delete].spacing(2)).padding([0, 2]).style(move |theme| style::row_actions(theme, selected));
+        hover(body, container(actions).align_right(Fill).center_y(Fill).padding([0, 6]))
     }
 }
 

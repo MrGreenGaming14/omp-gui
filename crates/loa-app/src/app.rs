@@ -45,6 +45,18 @@ const NEW_SESSION: palette::CommandId = palette::CommandId::from_static("session
 
 /// Width of the composer: the transcript's column width.
 pub(crate) const COMPOSER_WIDTH: f32 = 700.0;
+/// The permission picker's choices: omp's approval modes. Sessions start on
+/// [`ACCESS_DEFAULT`] until another is picked (the adapter's own default).
+const ACCESS: [(&str, &str, &str); 4] = [
+    ("always-ask", "Ask first", "Reads run; edits and commands ask"),
+    ("always-ask-cached", "Ask and remember", "Asks before file reads and writes, remembers answers"),
+    ("write", "Auto-edit", "Reads and edits run; commands ask"),
+    ("yolo", "Full access", "Everything runs without asking"),
+];
+const ACCESS_DEFAULT: &str = "always-ask";
+
+/// Room under the transcript's last row for the floating composer.
+const COMPOSER_INSET: f32 = 190.0;
 
 /// How often running sessions redraw, so elapsed times advance.
 const TICK: Duration = Duration::from_secs(1);
@@ -173,6 +185,12 @@ pub struct App {
     detached_chats: std::collections::HashMap<String, chat::State>,
     /// Folders worked in this run, most recent first, for the folder menu.
     recent_folders: Vec<PathBuf>,
+    /// omp's approval mode for sessions started from now on; `None` uses
+    /// the adapter's default (`always-ask`).
+    access: Option<String>,
+    /// The active session restarts on the new approval mode once its turn
+    /// ends.
+    restart_for_access: bool,
 }
 
 impl App {
@@ -232,7 +250,7 @@ impl App {
         let mut app = Self {
             ctx,
             areas,
-            chat: chat::State::new(&theme),
+            chat: { let mut chat = chat::State::new(&theme); chat.set_bottom_inset(COMPOSER_INSET); chat },
             palette: palette::State::new(palette::Platform::current()),
             files,
             diff: diff::State::new(),
@@ -245,6 +263,8 @@ impl App {
             detached: Vec::new(),
             detached_chats: std::collections::HashMap::new(),
             recent_folders: Vec::new(),
+            access: saved.harness.approval_mode.clone(),
+            restart_for_access: false,
         };
         let shown = app.tabs().into_iter().filter(|tab| tab.shown).map(|tab| shell::PanelTab::new(tab.id, tab.title)).collect();
         app.ctx.shell.set_tabs(shown);
@@ -359,7 +379,8 @@ impl App {
             executable: services.harnesses.get(harness).and_then(|entry| entry.executable.clone()),
             ..SessionConfig::default()
         };
-        let capabilities = services.harnesses.registry.get(harness).map(|adapter| adapter.capabilities()).unwrap_or_default();
+        config.approval_mode = self.access.clone();
+        let capabilities = self.ctx.services.harnesses.registry.get(harness).map(|adapter| adapter.capabilities()).unwrap_or_default();
         let target = Target { harness, capabilities: &capabilities, resume: dom.is_some() };
         let ctx = &self.ctx;
         with_areas!(each_area!(self.areas, ref |area, wrap| area.contribute(&mut config, &target, ctx)));
@@ -639,6 +660,9 @@ impl App {
             self.ctx.composer.turn_started();
         }
         if active && was_busy && !busy {
+            if self.restart_for_access {
+                tasks.push(self.restart_active_harness());
+            }
             tasks.push(working_diff(self.ctx.services.cwd.clone()));
             // A queued `/` command runs like a typed one.
             let next = self.ctx.composer.turn_ended();
@@ -756,6 +780,7 @@ impl App {
             Some(composer::Event::EffortChanged(effort)) => {
                 self.update(Message::Models(areas::models::Message::Effort(effort)))
             }
+            Some(composer::Event::AccessChanged(id)) => self.set_access(id),
             Some(composer::Event::ModeChanged(mode)) => self.update(Message::Sessions(areas::sessions::Message::Mode(mode))),
             Some(composer::Event::FilesRequested { .. }) => {
                 self.files.refresh();
@@ -774,7 +799,54 @@ impl App {
         // The sidebar and top bar follow a project page in the center.
         let shown = (self.ctx.screen() == Some(AreaId::Projects)).then(|| self.areas.projects.shown().map(str::to_owned)).flatten();
         self.ctx.shell.set_shown_project(shown);
+        self.sync_access();
         task
+    }
+
+    /// Shows the permission picker for omp sessions, with the current level.
+    fn sync_access(&mut self) {
+        let harness = self.ctx.sessions.active().and_then(|session| session.harness_id()).or(self.ctx.sessions.harness.as_deref());
+        if harness != Some("omp") {
+            self.ctx.composer.set_access(Vec::new(), None);
+            return;
+        }
+        let options = ACCESS
+            .iter()
+            .map(|(id, label, detail)| composer::AccessOption { id: (*id).to_owned(), label: (*label).to_owned(), detail: (*detail).to_owned() })
+            .collect();
+        let current = self.access.clone().unwrap_or_else(|| ACCESS_DEFAULT.to_owned());
+        self.ctx.composer.set_access(options, Some(&current));
+    }
+
+    /// A permission level was picked: new sessions start on it, and the
+    /// open session restarts on it (resuming its conversation), now when
+    /// it is idle, else once its turn ends.
+    fn set_access(&mut self, id: String) -> Task<Message> {
+        let access = Some(id.clone());
+        if access.as_deref().unwrap_or(ACCESS_DEFAULT) == self.access.as_deref().unwrap_or(ACCESS_DEFAULT) {
+            return Task::none();
+        }
+        self.access = access.clone();
+        self.save_ui(|config| config.harness.approval_mode = access);
+        let label = ACCESS.iter().find(|(each, _, _)| *each == id).map_or("", |(_, label, _)| *label);
+        let running = self.ctx.sessions.active().is_some_and(|session| session.harness().is_some());
+        if running && self.ctx.sessions.active().is_some_and(|session| session.is_busy()) {
+            self.restart_for_access = true;
+            self.ctx.notify(format!("{label}: applies once this turn ends"));
+            return Task::none();
+        }
+        self.ctx.notify(format!("{label}: applies from your next message"));
+        if running { self.restart_active_harness() } else { Task::none() }
+    }
+
+    /// Stops the active session's harness; the next send resumes the
+    /// conversation on a new one, started with the current settings.
+    fn restart_active_harness(&mut self) -> Task<Message> {
+        self.restart_for_access = false;
+        match self.ctx.sessions.active_mut().and_then(|session| session.detach()) {
+            Some(harness) => Task::perform(async move { harness.shutdown().await.map_err(|error| error.to_string()) }, Message::Operation),
+            None => Task::none(),
+        }
     }
 
     fn handle(&mut self, message: Message) -> Task<Message> {
@@ -1081,13 +1153,13 @@ impl App {
                     .map(|card| card.map(Message::Decisions))
                     .unwrap_or_else(|| text("Decision no longer available").into())
             });
-            column![
-                container(transcript).height(Fill),
-                container(container(ctx.composer.view().map(Message::Composer)).width(Fill).max_width(COMPOSER_WIDTH))
-                    .center_x(Fill)
-                    .padding(Padding { top: 8.0, right: 24.0, bottom: 16.0, left: 24.0 }),
-            ]
-            .into()
+            // The composer floats over the transcript's bottom edge; the
+            // transcript scrolls on underneath it (see `COMPOSER_INSET`).
+            let composer = container(container(ctx.composer.view().map(Message::Composer)).width(Fill).max_width(COMPOSER_WIDTH))
+                .center_x(Fill)
+                .padding(Padding { top: 28.0, right: 24.0, bottom: 16.0, left: 24.0 })
+                .style(style::composer_fade);
+            stack![container(transcript).height(Fill), container(composer).align_bottom(Fill)].into()
         } else {
             self.start_view()
         };

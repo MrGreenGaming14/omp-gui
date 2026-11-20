@@ -155,7 +155,7 @@ fn streaming_feeds_each_chunk_to_the_parser_once() {
     let streamed = &s.chat.streamed[&reply];
     // Re-parsing the whole message per token would feed ~N²/2 bytes.
     assert_eq!(streamed.fed(), full.len());
-    let whole = markdown::Content::parse(&full);
+    let whole = markdown::Content::parse(&crate::stream::hard_breaks(&full));
     assert_eq!(
         format!("{:?}", streamed.items()),
         format!("{:?}", whole.items())
@@ -675,4 +675,14 @@ fn a_new_sessions_first_reply_renders_frame_after_frame_without_a_state_mix_up()
         ],
     );
     assert_eq!(session.rows().iter().filter(|(kind, ..)| *kind == ItemKind::User).count(), 2, "both prompts are rows");
+}
+
+#[test]
+fn single_line_breaks_in_a_reply_stay_line_breaks() {
+    use iced::widget::markdown::Item;
+    let streamed = crate::stream::Streamed::new("1\n2\n3\n\nnext paragraph");
+    let paragraphs: Vec<_> = streamed.items().iter().filter(|item| matches!(item, Item::Paragraph(_))).collect();
+    assert_eq!(paragraphs.len(), 2, "a blank line still ends the paragraph");
+    let first = format!("{:?}", paragraphs[0]);
+    assert_eq!(first.matches(r#"text: "\n""#).count(), 2, "both line breaks kept: {first}");
 }
