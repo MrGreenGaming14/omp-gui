@@ -5374,6 +5374,7 @@ dependencies = [
  "iced_test",
  "loa-projects",
  "loa-ui-icons",
+ "tempfile",
 ]
 
 [[package]]

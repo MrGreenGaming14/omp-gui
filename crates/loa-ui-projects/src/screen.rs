@@ -49,6 +49,8 @@ pub enum Message {
     SetIncluded { session: String, included: bool },
     OpenSession(String),
     NewChat,
+    /// The Change… button beside the project's folder.
+    ChangeFolder,
 }
 
 /// What the app does for the screen.
@@ -61,6 +63,9 @@ pub enum Event {
     OpenSession(String),
     /// Start a chat in this project, in its working directory when known.
     NewChat { project: String, cwd: Option<String> },
+    /// Show a folder dialog for the project's folder, starting at the
+    /// current one; the app stores the choice and sends a fresh overview.
+    ChangeFolder { project: String, current: Option<String> },
 }
 
 impl State {
@@ -192,6 +197,10 @@ impl State {
                 let cwd = self.overview.as_ref().and_then(|o| o.cwd.clone());
                 return Some(Event::NewChat { project: self.project.clone(), cwd });
             }
+            Message::ChangeFolder => {
+                let current = self.overview.as_ref().and_then(|o| o.cwd.clone());
+                return Some(Event::ChangeFolder { project: self.project.clone(), current });
+            }
         }
         None
     }
@@ -214,18 +223,24 @@ impl State {
     fn header(&self) -> Element<'_, Message> {
         let cwd = self.overview.as_ref().and_then(|o| o.cwd.as_deref());
         let count = self.overview.as_ref().map(|o| o.sessions.len());
-        let mut details = Vec::new();
-        if let Some(cwd) = cwd {
-            details.push(cwd.to_owned());
-        }
+        let mut details = row![].spacing(8).align_y(Alignment::Center);
         if let Some(count) = count {
-            details.push(if count == 1 { "1 session".to_owned() } else { format!("{count} sessions") });
+            let count = if count == 1 { "1 session".to_owned() } else { format!("{count} sessions") };
+            let folder = cwd.unwrap_or("No folder");
+            details = details
+                .push(text(format!("{folder}  ·  {count}")).size(style::SMALL).style(style::muted))
+                .push(
+                    button(text(if cwd.is_some() { "Change folder…" } else { "Set folder…" }).size(style::SMALL))
+                        .padding([2.0, 6.0])
+                        .style(style::flat)
+                        .on_press(Message::ChangeFolder),
+                );
         }
         let title = column![
             row![loa_ui_icons::icon(Icon::Folder, 20.0), text(&self.project).size(style::TITLE)]
                 .spacing(10)
                 .align_y(Alignment::Center),
-            text(details.join("  ·  ")).size(style::SMALL).style(style::muted),
+            details,
         ]
         .spacing(4);
         let new_chat = button(
@@ -345,11 +360,11 @@ impl State {
     }
 }
 
-fn section<'a>(title: &str) -> text::Text<'a> {
+pub(crate) fn section<'a>(title: &str) -> text::Text<'a> {
     text(title.to_uppercase()).size(style::SMALL).style(style::muted)
 }
 
-fn hint(line: &str) -> text::Text<'_> {
+pub(crate) fn hint(line: &str) -> text::Text<'_> {
     text(line).size(style::NOTE).style(style::muted)
 }
 

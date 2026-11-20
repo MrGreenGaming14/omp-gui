@@ -229,8 +229,8 @@ pub enum Event {
     CloseProjectTab(String),
     /// Delete this session and its journal.
     DeleteSession(String),
-    /// Create a project with this name, from the sidebar.
-    CreateProject(String),
+    /// Open the New project screen, from the sidebar's `+`.
+    NewProject,
     /// Move a session to a project, or out of every project with `None`.
     MoveSession { id: String, project: Option<String> },
     /// The right panel opened or closed.
@@ -269,7 +269,7 @@ impl From<sidebar::Event> for Event {
             sidebar::Event::SetPinned { id, pinned } => Event::SetPinned { id, pinned },
             sidebar::Event::SetProjectPinned { project, pinned } => Event::SetProjectPinned { project, pinned },
             sidebar::Event::DeleteSession(id) => Event::DeleteSession(id),
-            sidebar::Event::CreateProject(name) => Event::CreateProject(name),
+            sidebar::Event::NewProject => Event::NewProject,
             sidebar::Event::MoveSession { id, project } => Event::MoveSession { id, project },
         }
     }
@@ -679,13 +679,10 @@ impl State {
     /// `center` fills the area under the top bar. `panel_body` draws the body
     /// of the active tab and is only called while the panel is open with a
     /// tab. `map` lifts this crate's messages into the app's.
-    /// `project_files` is drawn under the highlighted project in the sidebar
-    /// and is only called while the sidebar shows that project.
     pub fn view<'a, M: Clone + 'a>(
         &'a self,
         center: impl Into<Element<'a, M>>,
         panel_body: impl FnOnce(&'a str) -> Element<'a, M>,
-        project_files: impl FnOnce() -> Option<Element<'a, M>>,
         map: fn(Message) -> M,
     ) -> Element<'a, M> {
         let full = self.full;
@@ -694,7 +691,7 @@ impl State {
 
         if show(Pane::Sidebar) {
             let width = if full == Some(Pane::Sidebar) { iced::Length::Fill } else { iced::Length::Fixed(self.sidebar_width) };
-            let sidebar = self.sidebar.view_with(move |message| map(Message::Sidebar(message)), project_files);
+            let sidebar = self.sidebar.view_with(move |message| map(Message::Sidebar(message)));
             frame = frame.push(container(sidebar).width(width).height(Fill));
         }
         if full.is_none() {

@@ -289,33 +289,58 @@ fn session_project(app: &App, id: &str) -> Option<String> {
     session.writer().with_dom(|dom| dom.root().and_then(|root| root.str_attr(attr::PROJECT)).map(str::to_owned))
 }
 
+/// The directories `<folder>/.omgui` links to.
+fn linked(folder: &Path) -> Vec<std::path::PathBuf> {
+    let Ok(entries) = std::fs::read_dir(folder.join(loa_projects::links::LINKS_DIR)) else { return Vec::new() };
+    let mut targets: Vec<_> = entries.filter_map(|entry| std::fs::read_link(entry.unwrap().path()).ok()).collect();
+    targets.sort();
+    targets
+}
+
 #[test]
-fn projects_are_made_in_the_sidebar_and_sessions_move_between_them() {
+fn the_new_project_screen_makes_a_project_whose_folder_links_its_sessions() {
     let dir = tempfile::tempdir().unwrap();
+    let (home, moved) = (dir.path().join("launch"), dir.path().join("moved"));
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&moved).unwrap();
     let (mut app, _) = project_app(dir.path());
     let session = chat_in(&mut app, "alpha", "first");
+    let session_dir = dir.path().join("work");
     assert_eq!(session_project(&app, &session).as_deref(), Some("alpha"));
 
-    let sidebar = |message| AppMessage::Shell(shell::Message::Sidebar(message));
+    update(&mut app, AppMessage::Shell(shell::Message::Sidebar(shell::sidebar::Message::NewProject)));
+    assert_eq!(app.ctx.screen(), Some(AreaId::Projects), "the + opens the New project screen");
+    let form = |message| AppMessage::Projects(Message::Form(message));
     for message in [
-        shell::sidebar::Message::NewProject,
-        shell::sidebar::Message::ProjectNameChanged(" Launch ".into()),
-        shell::sidebar::Message::CreateProject,
+        screen::create::Message::NameChanged(" Launch ".into()),
+        screen::create::Message::FolderChanged(home.display().to_string()),
+        screen::create::Message::Create,
     ] {
-        update(&mut app, sidebar(message));
+        update(&mut app, form(message));
     }
     assert!(app.ctx.shell.sidebar().projects().contains(&"Launch"), "an empty project is listed");
     assert_eq!(app.ctx.services.project.as_deref(), Some("Launch"), "a new project becomes the active one");
+    assert_eq!(app.ctx.services.cwd, home, "new chats start in its folder");
     assert_eq!(session_project(&app, &session).as_deref(), Some("alpha"), "making a project moves nothing");
+    assert!(linked(&home).is_empty());
 
     let row = shell::sidebar::Message::MoveTo { id: session.clone(), project: Some("Launch".into()) };
-    update(&mut app, sidebar(row));
+    update(&mut app, AppMessage::Shell(shell::Message::Sidebar(row)));
     assert_eq!(session_project(&app, &session).as_deref(), Some("Launch"), "moved from its sidebar row");
+    assert_eq!(linked(&home), [session_dir.clone()], ".omgui links the folder the session runs in");
+
+    // Changing the folder moves the links and the active folder with it.
+    let chosen = Message::FolderChosen(super::Pick::Project("Launch".into()), Ok(Some(moved.clone())));
+    update(&mut app, AppMessage::Projects(chosen));
+    assert!(linked(&home).is_empty(), "the old folder's links are gone");
+    assert_eq!(linked(&moved), [session_dir]);
+    assert_eq!(app.ctx.services.cwd, moved);
 
     // The composer's chip moves the shown session out of every project.
-    assert_eq!(app.ctx.sessions.active().map(|active| active.id().to_string()), Some(session.clone()));
+    update(&mut app, AppMessage::Shell(shell::Message::Sidebar(shell::sidebar::Message::OpenSession(session.clone()))));
     update(&mut app, AppMessage::Composer(loa_ui_composer::Message::ProjectPicked(None)));
     assert_eq!(session_project(&app, &session), None, "moved out by the composer chip");
+    assert!(linked(&moved).is_empty(), "and its link goes with it");
 }
 
 #[test]

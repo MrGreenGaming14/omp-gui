@@ -14,8 +14,8 @@ use crate::tools::ProjectTools;
 use crate::{Error, Result};
 use loa_adapter::{HostToolSpec, HostTools};
 use loa_core::{Dom, Draft, ElementKind, attr};
-use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -89,6 +89,29 @@ fn folder_of(settings: &ProjectSettings) -> Option<String> {
     settings.folder.as_ref().map(|dir| dir.to_string_lossy().into_owned())
 }
 
+/// Updates the `.omgui` links in `folder`, when the folder exists. A failure
+/// is logged: the listing matters more than the links.
+fn sync_links(project: &str, folder: &Path, dirs: &BTreeSet<PathBuf>) {
+    if !folder.is_dir() {
+        return;
+    }
+    if let Err(error) = crate::links::sync(folder, dirs) {
+        tracing::warn!(project, folder = %folder.display(), %error, "can't update the .omgui links");
+    }
+}
+
+/// `folder`, unless it is the system temp folder itself (`/tmp`): then a new
+/// directory inside it, named like `/tmp/.tmpAbC123`, so the project's files
+/// and `.omgui` links don't mix with everything else there.
+pub fn isolated(folder: PathBuf) -> Result<PathBuf> {
+    let temp = std::env::temp_dir();
+    let same = |a: &Path, b: &Path| a == b || a.canonicalize().ok().is_some_and(|a| b.canonicalize().is_ok_and(|b| a == b));
+    if !same(&folder, &temp) {
+        return Ok(folder);
+    }
+    Ok(tempfile::Builder::new().tempdir_in(&folder)?.keep())
+}
+
 /// Everything the project screen shows.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProjectOverview {
@@ -141,7 +164,8 @@ impl ProjectService {
 
     /// Every project: each stored project and each project a session names,
     /// most recently active first. A project's folder is its stored one when
-    /// set, else the cwd of its most recent session.
+    /// set, else the cwd of its most recent session. Also brings each
+    /// stored folder's `.omgui` links up to date with its sessions.
     pub async fn projects(&self) -> Result<Vec<ProjectSummary>> {
         let mut folders = BTreeMap::new();
         let mut projects: BTreeMap<String, (ProjectSummary, i64)> = BTreeMap::new();
@@ -153,12 +177,16 @@ impl ProjectService {
             let summary = ProjectSummary { name: name.clone(), cwd: None, sessions: 0, last_active: 0 };
             projects.insert(name, (summary, i64::MIN));
         }
+        let mut dirs: BTreeMap<String, BTreeSet<PathBuf>> = BTreeMap::new();
         for (info, dom) in self.sessions.all().await? {
             if info.project.is_empty() {
                 continue;
             }
             let active = last_active(&dom);
             let cwd = dom.root().and_then(|r| r.str_attr(attr::CWD)).map(str::to_owned);
+            if let Some(cwd) = &cwd {
+                dirs.entry(info.project.clone()).or_default().insert(PathBuf::from(cwd));
+            }
             let (summary, cwd_at) = projects.entry(info.project.clone()).or_insert_with(|| {
                 (ProjectSummary { name: info.project.clone(), cwd: None, sessions: 0, last_active: active }, i64::MIN)
             });
@@ -168,6 +196,9 @@ impl ProjectService {
                 summary.cwd = cwd;
                 *cwd_at = active;
             }
+        }
+        for (name, folder) in &folders {
+            sync_links(name, Path::new(folder), &dirs.remove(name).unwrap_or_default());
         }
         let mut projects: Vec<ProjectSummary> = projects
             .into_iter()
@@ -182,18 +213,40 @@ impl ProjectService {
         Ok(projects)
     }
 
-    /// Creates a project, or sets the folder of an existing one when `folder`
-    /// is given. Fails on a blank name.
-    pub async fn create(&self, name: &str, folder: Option<PathBuf>) -> Result<()> {
+    /// Creates a project with `settings` and returns the folder it stored,
+    /// which [`isolated`] may have replaced. Fails on a blank name or one a
+    /// stored project already has.
+    pub async fn create(&self, name: &str, settings: &ProjectSettings) -> Result<Option<PathBuf>> {
         let name = name.trim();
         if name.is_empty() {
             return Err(Error::EmptyName);
         }
-        let mut settings = self.settings.load(name).await?;
-        if folder.is_some() {
-            settings.folder = folder;
+        if self.settings.names().await?.iter().any(|stored| stored == name) {
+            return Err(Error::ProjectExists(name.to_owned()));
         }
-        self.settings.save(name, &settings).await
+        let mut settings = settings.clone();
+        settings.folder = settings.folder.map(isolated).transpose()?;
+        self.settings.save(name, &settings).await?;
+        Ok(settings.folder)
+    }
+
+    /// Makes `folder` the project's folder, or a new one inside it per
+    /// [`isolated`], and returns it. Its `.omgui` links move with it on the
+    /// next listing; the old folder's are removed now.
+    pub async fn set_folder(&self, project: &str, folder: PathBuf) -> Result<PathBuf> {
+        let mut settings = self.settings.load(project).await?;
+        if settings.folder.as_ref() == Some(&folder) {
+            return Ok(folder);
+        }
+        let folder = isolated(folder)?;
+        let old = settings.folder.replace(folder.clone());
+        self.settings.save(project, &settings).await?;
+        if let Some(old) = old.filter(|old| old.is_dir())
+            && let Err(error) = crate::links::remove(&old)
+        {
+            tracing::warn!(project, folder = %old.display(), %error, "can't remove the old .omgui links");
+        }
+        Ok(folder)
     }
 
     /// Puts `session` into `project`, or out of every project when `None`. A
@@ -458,13 +511,18 @@ mod tests {
         assert_eq!(rows, [("loa", 1, Some("/home/u/loa"))]);
     }
 
+    fn in_folder(folder: &str) -> ProjectSettings {
+        ProjectSettings { folder: Some(PathBuf::from(folder)), ..ProjectSettings::default() }
+    }
+
     #[tokio::test]
     async fn created_projects_list_with_their_folder() {
         let env = env();
         let _a = open(&env, "a", "loa", "/home/u/loa", "set up iroh", 10);
-        env.service.create("  docs  ", Some(PathBuf::from("/home/u/docs"))).await.unwrap();
-        env.service.create("empty", None).await.unwrap();
-        env.service.create("loa", Some(PathBuf::from("/srv/loa"))).await.unwrap();
+        env.service.create("  docs  ", &in_folder("/home/u/docs")).await.unwrap();
+        env.service.create("empty", &ProjectSettings::default()).await.unwrap();
+        // A project only sessions named until now becomes a stored one.
+        env.service.create("loa", &in_folder("/srv/loa")).await.unwrap();
         let projects = env.service.projects().await.unwrap();
         let rows: Vec<(&str, usize, Option<&str>)> =
             projects.iter().map(|p| (p.name.as_str(), p.sessions, p.cwd.as_deref())).collect();
@@ -472,10 +530,69 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_rejects_a_blank_name() {
+    async fn create_rejects_a_blank_or_taken_name() {
         let env = env();
-        assert!(matches!(env.service.create("  ", None).await, Err(Error::EmptyName)));
+        assert!(matches!(env.service.create("  ", &ProjectSettings::default()).await, Err(Error::EmptyName)));
         assert!(env.service.projects().await.unwrap().is_empty());
+        env.service.create("docs", &in_folder("/home/u/docs")).await.unwrap();
+        let again = env.service.create(" docs ", &ProjectSettings::default()).await;
+        assert!(matches!(again, Err(Error::ProjectExists(name)) if name == "docs"));
+        assert_eq!(env.service.overview("docs").await.unwrap().cwd.as_deref(), Some("/home/u/docs"), "left as it was");
+    }
+
+    #[tokio::test]
+    async fn a_project_in_the_temp_folder_gets_its_own_folder_inside_it() {
+        let env = env();
+        let temp = std::env::temp_dir();
+        let folder = env.service.create("scratch", &in_folder(temp.to_str().unwrap())).await.unwrap().unwrap();
+        assert_eq!(folder.parent(), Some(temp.as_path()));
+        assert!(folder.is_dir(), "the isolated folder is made");
+        assert_eq!(env.service.overview("scratch").await.unwrap().settings.folder.as_ref(), Some(&folder), "and stored");
+
+        // Choosing the temp folder again isolates again; any other folder is kept as is.
+        let again = env.service.set_folder("scratch", temp.clone()).await.unwrap();
+        assert_ne!(again, folder);
+        assert_eq!(again.parent(), Some(temp.as_path()));
+        let elsewhere = tempfile::tempdir().unwrap();
+        let kept = env.service.set_folder("scratch", elsewhere.path().to_path_buf()).await.unwrap();
+        assert_eq!(kept, elsewhere.path());
+        for dir in [folder, again] {
+            std::fs::remove_dir(dir).unwrap();
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_project_folder_links_to_its_sessions_directories_and_moves() {
+        let env = env();
+        let root = tempfile::tempdir().unwrap();
+        let dir = |name: &str| {
+            let dir = root.path().join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            dir
+        };
+        let (home, api, web, moved) = (dir("home"), dir("api"), dir("web"), dir("moved"));
+        let linked = |folder: &Path| -> BTreeSet<PathBuf> {
+            let Ok(entries) = std::fs::read_dir(folder.join(crate::links::LINKS_DIR)) else { return BTreeSet::new() };
+            entries.filter_map(|entry| std::fs::read_link(entry.unwrap().path()).ok()).collect()
+        };
+        let settings = ProjectSettings { folder: Some(home.clone()), ..ProjectSettings::default() };
+        env.service.create("launch", &settings).await.unwrap();
+        let _a = open(&env, "a", "launch", api.to_str().unwrap(), "api", 10);
+        let _b = open(&env, "b", "launch", web.to_str().unwrap(), "web", 20);
+        let _c = open(&env, "c", "launch", home.to_str().unwrap(), "home", 30);
+
+        env.service.projects().await.unwrap();
+        assert_eq!(linked(&home), BTreeSet::from([api.clone(), web.clone()]));
+
+        env.service.move_session("b", None).await.unwrap();
+        env.service.projects().await.unwrap();
+        assert_eq!(linked(&home), BTreeSet::from([api.clone()]), "a session leaving takes its link");
+
+        env.service.set_folder("launch", moved.clone()).await.unwrap();
+        assert!(!home.join(crate::links::LINKS_DIR).exists(), "the old folder's links are removed");
+        env.service.projects().await.unwrap();
+        assert_eq!(linked(&moved), BTreeSet::from([api, home]), "the old folder is now a session directory like any");
     }
 
     #[tokio::test]

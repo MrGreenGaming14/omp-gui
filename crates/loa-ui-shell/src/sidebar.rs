@@ -27,6 +27,9 @@ pub fn waiting_badge_id(session: &str) -> String {
 /// Recents rows drawn at first, and added by each "Show more".
 pub const RECENTS_PAGE: usize = 50;
 
+/// Sessions listed under the highlighted project; the rest are on its page.
+pub const PROJECT_SESSIONS: usize = 8;
+
 /// Sidebar state: the sessions, projects and nodes the app passed in, the
 /// search query, the chosen machine and the highlighted session.
 #[derive(Debug, Clone, Default)]
@@ -67,14 +70,9 @@ pub struct State {
     machines_open: bool,
     /// The footer usage meter, once usage is known.
     usage: Option<UsageMeter>,
-    /// The name typed in the "New project" input, while it is open.
-    new_project: Option<String>,
     /// The session whose "Move to project" list is open.
     move_menu: Option<String>,
 }
-
-/// Id of the "New project" name input, focused when it opens.
-pub const NEW_PROJECT_ID: &str = "loa-sidebar-new-project";
 
 /// A session with its lowercase search text, rebuilt when sessions or node
 /// names change so typing in the search box does not allocate per row.
@@ -133,11 +131,8 @@ pub enum Message {
     Delete(String),
     /// The row under Recents that lists the next page of sessions.
     ShowMoreRecents,
-    /// The `+` in the Projects header: opens or closes the name input.
+    /// The `+` in the Projects header.
     NewProject,
-    ProjectNameChanged(String),
-    /// Enter in the name input.
-    CreateProject,
     /// The folder button on a session row: opens or closes its project list.
     ToggleMoveMenu(String),
     /// A project picked in a session's list; `None` is "No project".
@@ -181,8 +176,8 @@ pub enum Event {
     },
     /// Delete this session and its journal.
     DeleteSession(String),
-    /// Create a project with this name.
-    CreateProject(String),
+    /// Open the New project screen.
+    NewProject,
     /// Move a session to a project, or out of every project with `None`.
     MoveSession { id: String, project: Option<String> },
 }
@@ -492,24 +487,7 @@ impl State {
                 self.recents_pages += 1;
                 None
             }
-            Message::NewProject => {
-                if self.new_project.take().is_none() {
-                    self.new_project = Some(String::new());
-                    return (iced::widget::operation::focus(NEW_PROJECT_ID), None);
-                }
-                None
-            }
-            Message::ProjectNameChanged(name) => {
-                if let Some(typed) = &mut self.new_project {
-                    *typed = name;
-                }
-                None
-            }
-            Message::CreateProject => {
-                let name = self.new_project.take().unwrap_or_default();
-                let name = name.trim();
-                (!name.is_empty()).then(|| Event::CreateProject(name.to_owned()))
-            }
+            Message::NewProject => Some(Event::NewProject),
             Message::ToggleMoveMenu(id) => {
                 self.move_menu = (self.move_menu.as_deref() != Some(id.as_str())).then_some(id);
                 None
@@ -524,20 +502,13 @@ impl State {
 
     /// Draws the sidebar.
     pub fn view(&self) -> Element<'_, Message> {
-        self.view_with(|message| message, || None)
+        self.view_with(|message| message)
     }
 
-    /// Draws the sidebar in the app's message type. `project_files` is drawn
-    /// directly under the highlighted project's row: the project whose page
-    /// is open, else the one set by `set_active_project`, else the active
-    /// session's project. It is only called when that row is listed. The
-    /// search box does not filter it.
-    pub fn view_with<'a, M: 'a>(
-        &'a self,
-        map: impl Fn(Message) -> M + Clone + 'a,
-        project_files: impl FnOnce() -> Option<Element<'a, M>>,
-    ) -> Element<'a, M> {
-        let mut project_files = Some(project_files);
+    /// Draws the sidebar in the app's message type. The highlighted project
+    /// (the one whose page is open, else the one set by `set_active_project`,
+    /// else the active session's project) lists its sessions under its row.
+    pub fn view_with<'a, M: 'a>(&'a self, map: impl Fn(Message) -> M + Clone + 'a) -> Element<'a, M> {
         let new = button(
             row![
                 container(icon(Icon::Plus, 13.0)).center(22).style(|theme: &iced::Theme| container::Style {
@@ -575,7 +546,6 @@ impl State {
             lists = lists.push(self.machine_list());
         }
 
-        let mut segments: Vec<Element<'a, M>> = Vec::new();
         let projects = self.visible_projects.iter().map(|&index| self.projects[index].as_str());
         let active_project = self
             .shown_project
@@ -590,17 +560,6 @@ impl State {
                 .align_y(Alignment::Center)
                 .padding(Padding { top: 6.0, right: 12.0, bottom: 0.0, left: 10.0 }),
         );
-        if let Some(name) = &self.new_project {
-            lists = lists.push(
-                text_input("Project name", name)
-                    .id(NEW_PROJECT_ID)
-                    .on_input(Message::ProjectNameChanged)
-                    .on_submit(Message::CreateProject)
-                    .size(13)
-                    .style(style::input)
-                    .padding([5, 10]),
-            );
-        }
         if self.visible_projects.is_empty() {
             lists = lists.push(hint(if self.projects.is_empty() { "No projects yet" } else { "No match" }));
         }
@@ -624,9 +583,8 @@ impl State {
                 .padding([0, 2])
                 .style(move |theme| style::row_actions(theme, is_active));
             lists = lists.push(hover(body, container(pin).align_right(Fill).center_y(Fill).padding([0, 6])));
-            if is_active && let Some(files) = project_files.take().and_then(|files| files()) {
-                segments.push(Element::from(std::mem::replace(&mut lists, Column::new()).spacing(2)).map(map.clone()));
-                segments.push(files);
+            if is_active {
+                lists = self.project_sessions(lists, project);
             }
         }
 
@@ -657,12 +615,11 @@ impl State {
             );
         }
 
-        segments.push(Element::from(lists.spacing(2)).map(map.clone()));
         let content = column![
             Element::from(self.machine_switcher()).map(map.clone()),
             Element::from(new).map(map.clone()),
             Element::from(search).map(map.clone()),
-            scrollable(Column::with_children(segments)).height(Fill),
+            Element::from(scrollable(lists.spacing(2)).height(Fill)).map(map.clone()),
             Element::from(self.footer()).map(map),
         ]
         .spacing(4)
@@ -770,6 +727,41 @@ impl State {
         footer = footer.push(footer_item(Icon::SlidersHorizontal, "Configs", None, Message::OpenConfigs));
         footer = footer.push(footer_item(Icon::Settings, "Settings", None, Message::OpenSettings));
         column![iced::widget::rule::horizontal(1).style(style::divider), footer].spacing(6).into()
+    }
+
+    /// Pushes `project`'s sessions under its row, indented, pinned first then
+    /// newest, at most [`PROJECT_SESSIONS`] with a row to the project's page
+    /// for the rest.
+    fn project_sessions<'a>(&'a self, mut lists: Column<'a, Message>, project: &'a str) -> Column<'a, Message> {
+        let mut sessions = self
+            .pinned_order
+            .iter()
+            .chain(&self.recent_order)
+            .map(|&index| &self.sessions[index].summary)
+            .filter(|session| session.project.as_deref() == Some(project));
+        let indent = Padding { top: 0.0, right: 0.0, bottom: 0.0, left: 16.0 };
+        let mut shown = 0;
+        for session in sessions.by_ref().take(PROJECT_SESSIONS) {
+            lists = lists.push(container(self.session_row(session, &self.filter)).padding(indent));
+            shown += 1;
+        }
+        if shown == 0 {
+            return lists.push(container(hint("No sessions yet")).padding(indent));
+        }
+        let more = sessions.count();
+        if more > 0 {
+            lists = lists.push(
+                container(
+                    button(text(format!("All {} sessions", shown + more)).size(13).style(style::muted))
+                        .on_press(Message::OpenProject(project.to_owned()))
+                        .style(style::ghost_button)
+                        .padding([6, 10])
+                        .width(Fill),
+                )
+                .padding(indent),
+            );
+        }
+        lists
     }
 
     fn session_row<'a>(&'a self, session: &'a SessionSummary, filter: &NodeFilter) -> Element<'a, Message> {
@@ -1050,22 +1042,6 @@ mod tests {
 
         let _ = state.update(Message::PickMachine(NodeFilter::All));
         assert_eq!(state.recents_limit(), RECENTS_PAGE);
-    }
-
-    #[test]
-    fn new_project_takes_a_trimmed_name_and_ignores_a_blank_one() {
-        let mut state = State::default();
-        let _ = state.update(Message::NewProject);
-        let _ = state.update(Message::ProjectNameChanged("  Launch plan ".into()));
-        assert_eq!(state.update(Message::CreateProject).1, Some(Event::CreateProject("Launch plan".into())));
-        assert!(state.new_project.is_none(), "the input closes");
-
-        let _ = state.update(Message::NewProject);
-        let _ = state.update(Message::ProjectNameChanged("   ".into()));
-        assert_eq!(state.update(Message::CreateProject).1, None);
-        let _ = state.update(Message::NewProject);
-        let _ = state.update(Message::NewProject);
-        assert!(state.new_project.is_none(), "the + closes it again");
     }
 
     #[test]

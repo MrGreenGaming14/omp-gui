@@ -27,7 +27,8 @@ use crate::areas::{self, Areas, with_areas};
 use crate::services::Services;
 use crate::session::{self, Change, Feed, dom_turns};
 use feed::turn_status;
-use folders::{choose_folder, working_diff, workspace};
+pub(crate) use folders::choose_folder;
+use folders::{working_diff, workspace};
 
 /// Panel tabs the app draws itself, before the areas' tabs.
 /// How often the sidebar's usage meter re-reads `omp usage`.
@@ -551,7 +552,7 @@ impl App {
                         self.overlay = Some(windows::Overlay::Usage);
                         self.usage.refresh().map(Message::Usage)
                     }
-                    Some(shell::Event::CreateProject(name)) => self.update(Message::Projects(areas::projects::Message::Create(name))),
+                    Some(shell::Event::NewProject) => self.update(Message::Projects(areas::projects::Message::New)),
                     Some(shell::Event::MoveSession { id, project }) => {
                         self.update(Message::Projects(areas::projects::Message::Move { session: id, project }))
                     }
@@ -786,13 +787,7 @@ impl App {
             }
             None => center_content,
         };
-        // The active project's top-level files sit under its sidebar row. A
-        // peer's project never lists them: its disk is only reached through
-        // the grant-checked folder path.
-        let project_files = || {
-            (!ctx.services.project.as_deref().is_some_and(areas::peers::is_remote)).then(|| self.files.view_compact().map(Message::Files))
-        };
-        let frame = ctx.shell.view(center_content, |tab| self.view_tab(tab), project_files, Message::Shell);
+        let frame = ctx.shell.view(center_content, |tab| self.view_tab(tab), Message::Shell);
         let frame: Element<'_, Message> = match self.overlay {
             Some(overlay) => {
                 let window = match overlay {

@@ -61,7 +61,7 @@ impl App {
 
 /// Asks for a folder with the desktop's folder dialog: zenity (GNOME), else
 /// kdialog (KDE). `Ok(None)` when the dialog was cancelled.
-pub(super) async fn choose_folder(start: PathBuf) -> Result<Option<PathBuf>, String> {
+pub(crate) async fn choose_folder(start: PathBuf) -> Result<Option<PathBuf>, String> {
     let start = format!("{}/", start.display());
     let dialogs: [(&str, Vec<&str>); 2] = [
         ("zenity", vec!["--file-selection", "--directory", "--title=Choose a folder", "--filename", start.as_str()]),

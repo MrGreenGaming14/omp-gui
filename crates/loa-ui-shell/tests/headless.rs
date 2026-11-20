@@ -37,7 +37,7 @@ fn shell(panel_open: bool) -> State {
 }
 
 fn view(state: &State) -> Element<'_, Message> {
-    state.view(text("Chat goes here"), |tab| text(format!("{tab} body")).into(), || None, std::convert::identity)
+    state.view(text("Chat goes here"), |tab| text(format!("{tab} body")).into(), std::convert::identity)
 }
 
 fn simulator(state: &State) -> Simulator<'_, Message> {
@@ -73,34 +73,30 @@ fn footer_items_open_usage_configs_settings_and_projects() {
     );
 }
 
-fn with_project_files(state: &State) -> Element<'_, Message> {
-    state.view(
-        text("Chat goes here"),
-        |tab| text(format!("{tab} body")).into(),
-        || Some(text("main.rs marker").into()),
-        std::convert::identity,
-    )
-}
-
 #[test]
-fn project_files_draw_under_the_active_project_only() {
+fn the_active_project_lists_its_sessions_under_its_row() {
     let mut state = shell(false);
     state.set_projects(["harness".to_owned(), "other".to_owned()]);
 
-    state.set_active_project(Some("harness".into()));
-    let mut ui = Simulator::with_size(Settings::default(), WINDOW, with_project_files(&state));
-    assert!(ui.find("main.rs marker").is_ok(), "the active project lacks its file list");
-    assert!(ui.find("other").is_ok());
+    state.set_active_project(Some("other".into()));
+    let mut ui = simulator(&state);
+    assert!(ui.find("No sessions yet").is_ok(), "an empty project says so under its row");
     drop(ui);
 
-    state.set_active_project(Some("elsewhere".into()));
-    let mut ui = Simulator::with_size(Settings::default(), WINDOW, with_project_files(&state));
-    assert!(ui.find("main.rs marker").is_err(), "a file list was drawn without an active project row");
-    drop(ui);
+    // More sessions than fit link to the project's page.
+    state.upsert_sessions((0..9).map(|i| session(&format!("h{i}"), &format!("Harness task {i}"), "k-desk", 100 + i, false)));
+    state.set_active_project(Some("harness".into()));
+    let mut ui = simulator(&state);
+    assert!(ui.find("No sessions yet").is_err());
+    let all = ["All 10 sessions", "All 11 sessions"].into_iter().find(|label| ui.find(*label).is_ok());
+    let label = all.expect("no row to the rest of the project's sessions");
+    ui.click(label).unwrap();
+    let messages: Vec<Message> = ui.into_messages().collect();
+    assert_eq!(deliver(&mut state, messages), [Event::OpenProject("harness".into())]);
 
     state.set_active_project(None);
-    let mut ui = Simulator::with_size(Settings::default(), WINDOW, with_project_files(&state));
-    assert!(ui.find("main.rs marker").is_err());
+    let mut ui = simulator(&state);
+    assert!(ui.find("No sessions yet").is_err(), "no highlighted project, no list");
 }
 
 #[test]

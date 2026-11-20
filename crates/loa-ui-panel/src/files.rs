@@ -19,12 +19,6 @@ use loa_ui_icons::Icon;
 
 use crate::style;
 
-/// Tallest the sidebar's compact file list grows before it scrolls.
-pub const COMPACT_MAX_HEIGHT: f32 = 240.0;
-
-/// Rows built above and below the compact list's viewport.
-const COMPACT_OVERSCAN: usize = 4;
-
 /// Failure to list a directory.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -119,8 +113,6 @@ pub enum Message {
     /// A row was clicked; carries the node index.
     Click(usize),
     Scrolled(Viewport),
-    /// The sidebar's compact list scrolled.
-    CompactScrolled(Viewport),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -181,8 +173,6 @@ pub struct State {
     scroll_id: Id,
     scroll_offset: f32,
     viewport_height: f32,
-    /// Scroll offset of the compact list, as its viewport last reported it.
-    compact_offset: f32,
 }
 
 impl State {
@@ -198,7 +188,6 @@ impl State {
             scroll_id: Id::unique(),
             scroll_offset: 0.0,
             viewport_height: 0.0,
-            compact_offset: 0.0,
         };
         state.load(0);
         state.rebuild_rows();
@@ -285,10 +274,6 @@ impl State {
                 self.viewport_height = viewport.bounds().height;
                 (Task::none(), None)
             }
-            Message::CompactScrolled(viewport) => {
-                self.compact_offset = viewport.absolute_offset().y;
-                (Task::none(), None)
-            }
         }
     }
 
@@ -299,36 +284,6 @@ impl State {
             .width(Length::Fill)
             .height(Length::Fill)
             .into()
-    }
-
-    /// The same rows and messages as [`State::view`], sized to its content up
-    /// to [`COMPACT_MAX_HEIGHT`], for embedding in a sidebar. Only the rows
-    /// near the scroll position are built; spacers stand in for the rest. The
-    /// scrollable reports its offset as [`Message::CompactScrolled`], so the
-    /// Files tab's own offset and keyboard reveal are left alone.
-    pub fn view_compact(&self) -> Element<'_, Message> {
-        let range = self.compact_rows();
-        let above = range.start as f32 * style::LIST_ROW_HEIGHT;
-        let below = (self.rows.len() - range.end) as f32 * style::LIST_ROW_HEIGHT;
-        let rows = self.rows[range].iter().map(|row| self.row_element(*row));
-        let content = column![Space::new().height(above), column(rows), Space::new().height(below)]
-            .width(Length::Fill)
-            .padding([0, 6]);
-        let list = scrollable(content).on_scroll(Message::CompactScrolled).width(Length::Fill);
-        container(list).max_height(COMPACT_MAX_HEIGHT).width(Length::Fill).into()
-    }
-
-    /// Rows the compact list builds: those on screen plus [`COMPACT_OVERSCAN`]
-    /// on each side. The offset is clamped to the scrollable range, which the
-    /// scrollable itself applies when drawing.
-    fn compact_rows(&self) -> Range<usize> {
-        let content = self.rows.len() as f32 * style::LIST_ROW_HEIGHT;
-        let max_offset = (content - COMPACT_MAX_HEIGHT).max(0.0);
-        let first = (self.compact_offset.clamp(0.0, max_offset) / style::LIST_ROW_HEIGHT) as usize;
-        let shown = (COMPACT_MAX_HEIGHT / style::LIST_ROW_HEIGHT).ceil() as usize;
-        let start = first.saturating_sub(COMPACT_OVERSCAN).min(self.rows.len());
-        let end = (first + shown + COMPACT_OVERSCAN).min(self.rows.len());
-        start..end
     }
 
     fn row_elements(&self) -> impl Iterator<Item = Element<'_, Message>> {
@@ -637,32 +592,6 @@ mod tests {
     fn click(state: &mut State, rel: &str) -> Option<Event> {
         let index = index_of(state, rel);
         state.update(Message::Click(index)).1
-    }
-
-    #[test]
-    fn view_compact_draws_the_visible_rows() {
-        let (mut state, _) = fixture();
-        assert_eq!(state.row_elements().count(), state.visible().count());
-        click(&mut state, "src");
-        assert_eq!(state.row_elements().count(), state.visible().count());
-        let _ = state.view_compact();
-    }
-
-    #[test]
-    fn compact_view_builds_only_the_rows_near_the_scroll_offset() {
-        let fs = Arc::new(FakeFs::default());
-        let names: Vec<String> = (0..100).map(|i| format!("f{i:03}.txt")).collect();
-        let entries: Vec<(&str, bool)> = names.iter().map(|name| (name.as_str(), false)).collect();
-        fs.put("/r", &entries);
-        let mut state = State::new(PathBuf::from("/r"), Box::new(Arc::clone(&fs)));
-        assert_eq!(state.compact_rows(), 0..13);
-
-        state.compact_offset = 50.0 * style::LIST_ROW_HEIGHT;
-        assert_eq!(state.compact_rows(), 46..63);
-        let _ = state.view_compact();
-
-        state.compact_offset = f32::MAX;
-        assert_eq!(state.compact_rows(), 87..100);
     }
 
     #[test]

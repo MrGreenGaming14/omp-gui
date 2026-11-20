@@ -58,12 +58,27 @@ pub enum Message {
     /// Make this project the active one, without showing its screen: the
     /// composer's project chip with no session shown.
     Activate(String),
-    /// Create a project named this, with the current folder as its default.
-    Create(String),
-    Created(String, Result<(), String>),
+    /// Open the New project screen.
+    New,
+    Form(screen::create::Message),
+    /// A project was created, with the folder it stored.
+    Created(String, Result<Option<PathBuf>, String>),
+    /// A folder dialog closed, with the folder picked if any.
+    FolderChosen(Pick, Result<Option<PathBuf>, String>),
+    /// A project's folder was stored, possibly isolated inside `/tmp`.
+    FolderSet(String, Result<PathBuf, String>),
     /// Move a session to a project, or out of every project with `None`.
     Move { session: String, project: Option<String> },
     Moved(Result<(), String>),
+}
+
+/// What a folder dialog picks for.
+#[derive(Clone, Debug)]
+pub enum Pick {
+    /// The New project form's folder.
+    Form,
+    /// The folder of this existing project.
+    Project(String),
 }
 
 /// The project and directory the next new session starts in, set by the
@@ -82,6 +97,8 @@ pub struct State {
     projects: Vec<ProjectSummary>,
     /// The project screen, drawn while the app shows this area's screen.
     screen: Option<screen::State>,
+    /// The New project form, drawn instead of the project screen while open.
+    creating: Option<screen::create::State>,
     /// Context for new chats, by project.
     contexts: HashMap<String, Option<String>>,
     /// Taken by the next new session's `contribute`.
@@ -93,6 +110,9 @@ pub struct State {
 impl State {
     /// The project whose page this area shows, if any.
     pub(crate) fn shown(&self) -> Option<&str> {
+        if self.creating.is_some() {
+            return None;
+        }
         self.screen.as_ref().map(|screen| screen.project())
     }
 
@@ -121,6 +141,7 @@ impl State {
             outcomes: Outcomes(Arc::new(Mutex::new(Some(outcomes)))),
             projects: Vec::new(),
             screen: None,
+            creating: None,
             contexts: HashMap::new(),
             new_chat: Mutex::new(None),
             _runtime: runtime,
@@ -213,7 +234,14 @@ impl State {
     /// Makes `project` the active project, with its folder, and shows its
     /// screen: the project's chats, most recent first.
     fn open(&mut self, project: String, ctx: &mut Ctx) -> Task<Message> {
-        ctx.request(Request::ActivateProject { project: project.clone(), cwd: self.folder(&project) });
+        let folder = self.folder(&project);
+        self.open_in(project, folder, ctx)
+    }
+
+    /// [`Self::open`] with the folder given, for a project not listed yet.
+    fn open_in(&mut self, project: String, folder: Option<PathBuf>, ctx: &mut Ctx) -> Task<Message> {
+        self.creating = None;
+        ctx.request(Request::ActivateProject { project: project.clone(), cwd: folder });
         if self.screen.as_ref().is_none_or(|screen| screen.project() != project) {
             self.screen = Some(screen::State::new(project.clone()));
         }
@@ -253,6 +281,38 @@ impl State {
             screen::Event::NewChat { project, cwd } => {
                 *self.new_chat() = Some(NewChat { project, cwd: cwd.map(PathBuf::from) });
                 ctx.request(Request::NewSession);
+                Task::none()
+            }
+            screen::Event::ChangeFolder { project, current } => {
+                let start = current.map_or_else(|| ctx.services.cwd.clone(), PathBuf::from);
+                Task::perform(crate::app::choose_folder(start), move |result| {
+                    Message::FolderChosen(Pick::Project(project.clone()), result)
+                })
+            }
+        }
+    }
+
+    fn form_event(&mut self, event: screen::create::Event, ctx: &mut Ctx) -> Task<Message> {
+        match event {
+            screen::create::Event::ChooseFolder(start) => {
+                Task::perform(crate::app::choose_folder(start), |result| Message::FolderChosen(Pick::Form, result))
+            }
+            screen::create::Event::Create { name, settings } => {
+                let service = self.service.clone();
+                Task::perform(
+                    async move {
+                        let result = service.create(&name, &settings).await.map_err(|error| error.to_string());
+                        (name, result)
+                    },
+                    |(name, result)| Message::Created(name, result),
+                )
+            }
+            screen::create::Event::Cancel => {
+                self.creating = None;
+                // Back to the project screen it was opened over, if any.
+                if self.screen.is_none() {
+                    ctx.close_screen();
+                }
                 Task::none()
             }
         }
@@ -337,23 +397,58 @@ impl Area for State {
                 ctx.request(Request::ActivateProject { project: project.clone(), cwd: self.folder(&project) });
                 Task::none()
             }
-            Message::Create(name) => {
-                let service = self.service.clone();
-                let folder = ctx.services.cwd.clone();
-                Task::perform(
-                    async move {
-                        let result = service.create(&name, Some(folder)).await.map_err(|error| error.to_string());
-                        (name, result)
-                    },
-                    |(name, result)| Message::Created(name, result),
-                )
+            Message::New => {
+                self.creating = Some(screen::create::State::new(ctx.services.cwd.display().to_string()));
+                ctx.show_screen(AreaId::Projects);
+                iced::widget::operation::focus(screen::create::NAME_ID)
             }
-            Message::Created(name, Ok(())) => {
-                let open = self.open(name.trim().to_owned(), ctx);
+            Message::Form(message) => {
+                let Some(event) = self.creating.as_mut().and_then(|form| form.update(message)) else {
+                    return Task::none();
+                };
+                self.form_event(event, ctx)
+            }
+            Message::Created(name, Ok(folder)) => {
+                let open = self.open_in(name, folder, ctx);
                 Task::batch([self.list(), open])
             }
             Message::Created(name, Err(error)) => {
-                ctx.notify(format!("Can't create project {name}: {error}"));
+                match self.creating.as_mut() {
+                    Some(form) => form.failed(error),
+                    None => ctx.notify(format!("Can't create project {name}: {error}")),
+                }
+                Task::none()
+            }
+            Message::FolderChosen(_, Ok(None)) => Task::none(),
+            Message::FolderChosen(Pick::Form, Ok(Some(folder))) => {
+                if let Some(form) = self.creating.as_mut() {
+                    form.set_folder(folder);
+                }
+                Task::none()
+            }
+            Message::FolderChosen(Pick::Project(project), Ok(Some(folder))) => {
+                let service = self.service.clone();
+                Task::perform(
+                    async move {
+                        let result = service.set_folder(&project, folder).await.map_err(|error| error.to_string());
+                        (project, result)
+                    },
+                    |(project, result)| Message::FolderSet(project, result),
+                )
+            }
+            Message::FolderChosen(_, Err(error)) => {
+                ctx.notify(error);
+                Task::none()
+            }
+            Message::FolderSet(project, Ok(folder)) => {
+                // New chats in the active project start in its new folder.
+                if ctx.services.project.as_deref() == Some(project.as_str()) {
+                    ctx.request(Request::ActivateProject { project, cwd: Some(folder) });
+                }
+                Task::batch([self.list(), self.reload_screen()])
+            }
+            Message::FolderSet(project, Err(error)) => {
+                ctx.notify(format!("Can't change the folder of {project}: {error}"));
                 Task::none()
             }
             Message::Move { session, project } => {
@@ -399,6 +494,9 @@ impl Area for State {
     }
 
     fn view_screen<'a>(&'a self, _: &'a Ctx) -> Option<Element<'a, Message>> {
+        if let Some(form) = &self.creating {
+            return Some(form.view().map(Message::Form));
+        }
         self.screen.as_ref().map(|screen| screen.view().map(Message::Screen))
     }
 
