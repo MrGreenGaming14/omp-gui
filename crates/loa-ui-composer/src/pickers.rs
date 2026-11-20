@@ -71,6 +71,8 @@ pub enum Picker {
     Access,
     /// The folder bar above the editor.
     Folder,
+    /// The project the session belongs to.
+    Project,
 }
 
 /// Picker contents and the current choices.
@@ -91,6 +93,10 @@ pub struct Pickers {
     pub access: Vec<AccessOption>,
     /// Id of the current permission level.
     pub access_current: Option<String>,
+    /// Project names; the chip shows even when empty, as "No project".
+    pub projects: Vec<String>,
+    /// The session's project, or the one new sessions join.
+    pub project: Option<String>,
     /// The picker whose menu is open, if any.
     pub open: Option<Picker>,
 }
@@ -108,6 +114,8 @@ impl Default for Pickers {
             mode: SessionMode::Normal,
             access: Vec::new(),
             access_current: None,
+            projects: Vec::new(),
+            project: None,
             open: None,
         }
     }

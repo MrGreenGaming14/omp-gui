@@ -100,9 +100,10 @@ impl Live {
                 idle = false;
                 self.update(message);
             }
-            while let Some(Ok(event)) = self.feed.as_mut().map(loa_bus::Subscription::try_recv) {
+            let events: Vec<_> = std::iter::from_fn(|| self.feed.as_mut().and_then(|feed| feed.try_recv().ok())).collect();
+            if !events.is_empty() {
                 idle = false;
-                self.update(AppMessage::Session(self.id.clone(), Feed::Event(event)));
+                self.update(AppMessage::Session(self.id.clone(), Feed::Events(events)));
             }
             while let Ok(event) = self.runs.try_recv() {
                 idle = false;

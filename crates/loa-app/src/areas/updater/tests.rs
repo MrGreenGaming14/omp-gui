@@ -276,9 +276,6 @@ fn shell_sidebar(message: loa_ui_shell::sidebar::Message) -> loa_ui_shell::Messa
 
 #[test]
 fn peers_behind_come_from_the_peers_the_node_knows() {
-    let dir = tempfile::tempdir().unwrap();
-    let fixture = Fixture::new(dir.path());
-    let mut app = app_with(dir.path(), &fixture);
     let key = |seed: u8| {
         let identity = loa_identity::NodeIdentity::from_secret_bytes(&[seed; 32]);
         loa_node::NodeId::from_bytes(identity.public_key().as_bytes()).unwrap()
@@ -297,19 +294,19 @@ fn peers_behind_come_from_the_peers_the_node_knows() {
     };
     let ours = loa_node::local_protocols();
     let ours: Vec<&str> = ours.iter().map(String::as_str).collect();
-    app.ctx.peers = vec![
+    let known = vec![
         peer(1, "old-box", Some("0.0.1-alpha"), &ours),
         peer(2, "same-box", Some(env!("CARGO_PKG_VERSION")), &ours),
         peer(3, "never-seen", Some("0.0.1"), &[]),
     ];
 
-    update(&mut app, AppMessage::Updater(Message::Open));
-    let peers = &app.areas.updater.screen().data.peers;
+    let version = semver::Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
+    let peers = super::standings(&version, &known);
     let names: Vec<_> = peers.iter().map(|p| p.name.as_deref().unwrap_or_default()).collect();
     assert_eq!(names, ["old-box", "same-box"], "only peers whose hello was seen");
-    assert!(matches!(peers[0].standing, updates::Standing::Behind { .. }), "{:?}", peers[0].standing);
+    assert!(matches!(peers[0].standing, loa_updater::peers::Standing::Behind { .. }), "{:?}", peers[0].standing);
     assert!(peers.iter().all(|p| p.can_talk));
-    assert_eq!(peers[1].standing, updates::Standing::Current);
+    assert_eq!(peers[1].standing, loa_updater::peers::Standing::Current);
 }
 
 /// Like `update`, without the helper's 10 s limit per task: live feeds,

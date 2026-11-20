@@ -6,7 +6,6 @@
 //! sidebar's usage meter.
 
 use std::collections::BTreeSet;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use iced::widget::{Column, button, column, container, row, scrollable, space, text};
 use iced::{Alignment, Element, Fill, Length, Task};
@@ -14,6 +13,8 @@ use loa_ui_icons::{Icon, muted};
 use loa_ui_shell::UsageMeter;
 use loa_ui_shell::theme::style;
 use serde_json::Value;
+
+use super::windows::semibold;
 
 /// Width of the window.
 const WIDTH: f32 = 660.0;
@@ -236,7 +237,7 @@ impl State {
 
     /// Draws the window.
     pub fn view(&self) -> Element<'_, Message> {
-        let now = now_ms();
+        let now = loa_core::now_ms();
         let updated = match &self.usage {
             _ if self.loading => "Updating…".to_owned(),
             Some(Ok(usage)) => format!("Updated {}", ago(now - usage.generated_at)),
@@ -369,14 +370,6 @@ fn meter<'a>(fraction: f32, width: f32) -> Element<'a, Message> {
     let bar = iced::widget::stack![track(Length::Fill), row![fill, rest]];
     let width = if width.is_finite() { Length::Fixed(width) } else { Length::Fill };
     container(bar).width(width).height(6).into()
-}
-
-fn now_ms() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|elapsed| elapsed.as_millis() as i64).unwrap_or_default()
-}
-
-fn semibold() -> iced::Font {
-    iced::Font { weight: iced::font::Weight::Bold, ..iced::Font::default() }
 }
 
 /// "just now", "2 minutes ago".

@@ -247,7 +247,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lists_live_and_stored_sessions_by_project_and_cwd() {
+    async fn lists_live_and_stored_sessions_by_project() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::new(dir.path(), JournalOptions::default()).unwrap();
         let bus = Arc::new(Bus::new());
@@ -258,8 +258,9 @@ mod tests {
         let sessions = LiveSessions::new(bus, store);
         let mut ids: Vec<String> = sessions.list("loa").await.unwrap().into_iter().map(|i| i.id).collect();
         ids.sort();
-        assert_eq!(ids, ["live1", "s1", "s2"]);
-        assert_eq!(sessions.list("web").await.unwrap().len(), 1);
+        // A session without a PROJECT attr belongs to no project, whatever its cwd.
+        assert_eq!(ids, ["live1", "s1"]);
+        assert!(sessions.list("web").await.unwrap().is_empty());
         let dom = sessions.load("s1").await.unwrap().unwrap();
         assert!(dom.iter().any(|n| n.text == "hello from the journal"));
         assert!(sessions.load("missing").await.unwrap().is_none());

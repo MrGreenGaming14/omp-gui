@@ -4,8 +4,9 @@
 //! reaches the app's handler with the raw stream.
 
 use crate::share::{challenge_grants, expect, present_grants, send};
-use crate::{Inner, Node, NodeError, Result, now_ms};
+use crate::{Inner, Node, NodeError, Result};
 use async_trait::async_trait;
+use loa_core::now_ms;
 use loa_grants::{Action, Request, Resource, Revocations, VerifiedGrant};
 use loa_net::NodeId;
 use loa_net::conn::{Connection, Stream};

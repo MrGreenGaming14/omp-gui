@@ -1,6 +1,7 @@
 //! A popover: content drawn as an overlay above its anchor, so opening a
 //! menu never moves the page. The anchor lays out as if the popover weren't
-//! there; the popover is as wide as the anchor and sits `gap` above it.
+//! there; the popover sits `gap` above it, as wide as the anchor or, with
+//! [`Popover::own_width`], as wide as itself from the anchor's left edge.
 
 use iced::advanced::layout::{self, Layout};
 use iced::advanced::renderer;
@@ -13,15 +14,33 @@ pub struct Popover<'a, Message, Theme, Renderer> {
     anchor: Element<'a, Message, Theme, Renderer>,
     popup: Option<Element<'a, Message, Theme, Renderer>>,
     gap: f32,
+    fit_anchor: bool,
+    on_dismiss: Option<Message>,
 }
 
 impl<'a, Message, Theme, Renderer> Popover<'a, Message, Theme, Renderer> {
     pub fn new(anchor: impl Into<Element<'a, Message, Theme, Renderer>>, popup: Option<Element<'a, Message, Theme, Renderer>>) -> Self {
-        Self { anchor: anchor.into(), popup, gap: 6.0 }
+        Self { anchor: anchor.into(), popup, gap: 6.0, fit_anchor: true, on_dismiss: None }
+    }
+
+    /// Lays the popup out at its own width, starting at the anchor's left
+    /// edge and shifted left as needed to stay inside the window. For a menu
+    /// that opens from a small button.
+    pub fn own_width(mut self) -> Self {
+        self.fit_anchor = false;
+        self
+    }
+
+    /// Publishes `message` when a mouse button is pressed outside both the
+    /// open popup and its anchor. The anchor is left out, so its own toggle
+    /// still closes the popup.
+    pub fn on_dismiss(mut self, message: Message) -> Self {
+        self.on_dismiss = Some(message);
+        self
     }
 }
 
-impl<Message, Theme, Renderer> Widget<Message, Theme, Renderer> for Popover<'_, Message, Theme, Renderer>
+impl<Message: Clone, Theme, Renderer> Widget<Message, Theme, Renderer> for Popover<'_, Message, Theme, Renderer>
 where
     Renderer: renderer::Renderer,
 {
@@ -102,6 +121,8 @@ where
                 tree: popup_tree,
                 anchor: layout.bounds() + translation,
                 gap: self.gap,
+                fit_anchor: self.fit_anchor,
+                on_dismiss: self.on_dismiss.clone(),
             }))),
             _ => None,
         };
@@ -117,9 +138,11 @@ struct Overlay<'a, 'b, Message, Theme, Renderer> {
     tree: &'b mut Tree,
     anchor: Rectangle,
     gap: f32,
+    fit_anchor: bool,
+    on_dismiss: Option<Message>,
 }
 
-impl<Message, Theme, Renderer> overlay::Overlay<Message, Theme, Renderer> for Overlay<'_, '_, Message, Theme, Renderer>
+impl<Message: Clone, Theme, Renderer> overlay::Overlay<Message, Theme, Renderer> for Overlay<'_, '_, Message, Theme, Renderer>
 where
     Renderer: renderer::Renderer,
 {
@@ -128,11 +151,13 @@ where
         let above = (self.anchor.y - self.gap).max(0.0);
         let below = (bounds.height - self.anchor.y - self.anchor.height - self.gap).max(0.0);
         let room = above.max(below);
-        let limits = layout::Limits::new(Size::ZERO, Size::new(self.anchor.width, room));
+        let max_width = if self.fit_anchor { self.anchor.width } else { bounds.width };
+        let limits = layout::Limits::new(Size::ZERO, Size::new(max_width, room));
         let node = self.popup.as_widget_mut().layout(self.tree, renderer, &limits);
-        let height = node.size().height;
+        let Size { width, height } = node.size();
         let y = if height <= above || above >= below { self.anchor.y - self.gap - height } else { self.anchor.y + self.anchor.height + self.gap };
-        node.move_to(Point::new(self.anchor.x, y.max(0.0)))
+        let x = if self.fit_anchor { self.anchor.x } else { self.anchor.x.min(bounds.width - width).max(0.0) };
+        node.move_to(Point::new(x, y.max(0.0)))
     }
 
     fn draw(&self, renderer: &mut Renderer, theme: &Theme, style: &renderer::Style, layout: Layout<'_>, cursor: mouse::Cursor) {
@@ -145,6 +170,12 @@ where
 
     fn update(&mut self, event: &Event, layout: Layout<'_>, cursor: mouse::Cursor, renderer: &Renderer, clipboard: &mut dyn Clipboard, shell: &mut Shell<'_, Message>) {
         let bounds = layout.bounds();
+        if let (Some(message), Event::Mouse(mouse::Event::ButtonPressed(_))) = (&self.on_dismiss, event)
+            && !cursor.is_over(bounds)
+            && !cursor.is_over(self.anchor)
+        {
+            shell.publish(message.clone());
+        }
         self.popup.as_widget_mut().update(self.tree, event, layout, cursor, renderer, clipboard, shell, &bounds);
     }
 
@@ -159,7 +190,7 @@ where
 
 impl<'a, Message, Theme, Renderer> From<Popover<'a, Message, Theme, Renderer>> for Element<'a, Message, Theme, Renderer>
 where
-    Message: 'a,
+    Message: Clone + 'a,
     Theme: 'a,
     Renderer: renderer::Renderer + 'a,
 {

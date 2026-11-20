@@ -32,6 +32,7 @@ pub enum Icon {
     GitCompare,
     GitFork,
     Globe,
+    Image,
     Maximize,
     Minimize,
     Monitor,
@@ -51,7 +52,7 @@ pub enum Icon {
     X,
 }
 
-const ALL: [(Icon, &[u8]); 35] = [
+const ALL: [(Icon, &[u8]); 36] = [
     (Icon::ArrowUp, include_bytes!("../icons/arrow-up.svg")),
     (Icon::Bot, include_bytes!("../icons/bot.svg")),
     (Icon::Brain, include_bytes!("../icons/brain.svg")),
@@ -70,6 +71,7 @@ const ALL: [(Icon, &[u8]); 35] = [
     (Icon::GitCompare, include_bytes!("../icons/git-compare.svg")),
     (Icon::GitFork, include_bytes!("../icons/git-fork.svg")),
     (Icon::Globe, include_bytes!("../icons/globe.svg")),
+    (Icon::Image, include_bytes!("../icons/image.svg")),
     (Icon::Maximize, include_bytes!("../icons/maximize-2.svg")),
     (Icon::Minimize, include_bytes!("../icons/minimize-2.svg")),
     (Icon::Monitor, include_bytes!("../icons/monitor.svg")),
@@ -89,14 +91,23 @@ const ALL: [(Icon, &[u8]); 35] = [
     (Icon::X, include_bytes!("../icons/x.svg")),
 ];
 
+// `ALL` lists every variant once, in declaration order, so a variant's
+// discriminant is its index there.
+const _: () = {
+    assert!(ALL.len() == Icon::X as usize + 1, "ALL lists every icon");
+    let mut index = 0;
+    while index < ALL.len() {
+        assert!(ALL[index].0 as usize == index, "ALL follows the declaration order of Icon");
+        index += 1;
+    }
+};
+
 static HANDLES: LazyLock<[Handle; ALL.len()]> =
     LazyLock::new(|| ALL.map(|(_, bytes)| Handle::from_memory(bytes)));
 
 impl Icon {
     fn handle(self) -> Handle {
-        // `ALL` lists every variant, so the position is always found.
-        let index = ALL.iter().position(|(icon, _)| *icon == self).unwrap_or(0);
-        HANDLES[index].clone()
+        HANDLES[self as usize].clone()
     }
 }
 

@@ -8,7 +8,7 @@ use iced::widget::text_editor::{Action, Edit};
 use iced_runtime::Action as RuntimeAction;
 use loa_adapter::{Adapter, Answer, Capabilities, Registry, SessionState};
 use loa_bus::Policy;
-use loa_core::{DecisionKind, DecisionStatus, Draft, NodeId, PatchSink, Role, Value, now_ms};
+use loa_core::{DecisionKind, DecisionStatus, Draft, ElementKind, NodeId, PatchSink, Role, Value, now_ms};
 use loa_identity::NodeIdentity;
 use loa_ui_decisions as decisions;
 
@@ -163,7 +163,17 @@ pub(crate) fn services(dir: &Path, adapters: Vec<FakeAdapter>) -> Services {
 }
 
 pub(crate) fn fake_app(dir: &Path, ids: &[&'static str]) -> App {
-    App::build(services(dir, ids.iter().map(|id| FakeAdapter::new(id)).collect())).0
+    let mut app = App::build(services(dir, ids.iter().map(|id| FakeAdapter::new(id)).collect())).0;
+    list_recents(&mut app);
+    app
+}
+
+/// Lists the stored sessions in Recents, as the journal scan `App::build`
+/// starts does once it finishes. Needs no runtime, so tests inside one can
+/// call it.
+pub(crate) fn list_recents(app: &mut App) {
+    let (summaries, problems, empty) = crate::session::recents(&app.ctx.services.library);
+    let _ = app.update(Message::Recents { summaries, problems, empty });
 }
 
 /// Runs `task` the way the iced runtime would, feeding every message it
@@ -196,7 +206,7 @@ pub(crate) fn update(app: &mut App, message: Message) {
 /// Delivers every patch `subscription` holds as the session's feed would.
 pub(crate) fn deliver(app: &mut App, id: &SessionId, subscription: &mut loa_bus::Subscription) {
     while let Ok(event) = subscription.try_recv() {
-        update(app, Message::Session(id.clone(), Feed::Event(event)));
+        update(app, Message::Session(id.clone(), Feed::Events(vec![event])));
     }
 }
 
@@ -377,6 +387,7 @@ fn sessions_persist_across_an_app_restart() {
     let adapter = FakeAdapter::new("fake-a");
     let resumed = Arc::clone(&adapter.resumed);
     let mut app = App::build(services(dir.path(), vec![adapter])).0;
+    list_recents(&mut app);
     let summary = app.ctx.shell.sidebar().session(&id).expect("listed in Recents");
     assert_eq!(summary.title, "hello journal");
     assert!(active(&app).is_none());
@@ -456,8 +467,8 @@ fn feeds_name_turn_decision_and_compaction_events() {
 
     let mut named = Vec::new();
     while let Ok(event) = feed.try_recv() {
-        match app.ctx.sessions.feed(id.as_str(), Feed::Event(event)) {
-            Change::Patch(_, derived) => named.extend(derived.map(|event| format!("{event:?}"))),
+        match app.ctx.sessions.apply(id.as_str(), event) {
+            Change::Patch { derived, .. } => named.extend(derived.map(|event| format!("{event:?}"))),
             _ => panic!("every patch is new"),
         }
     }
@@ -620,24 +631,27 @@ fn configs_opens_from_the_sidebar_and_lists_agent_files() {
     std::fs::create_dir_all(app.ctx.services.cwd.join(".omp/agents")).unwrap();
     std::fs::write(app.ctx.services.cwd.join(".omp/agents/reviewer.md"), "---\nname: reviewer\n---\nReview diffs.").unwrap();
     click_through(&mut app, "Configs");
-    assert_eq!(app.configs, Some(super::windows::ConfigsTab::Models));
+    assert_eq!(app.overlay, Some(super::windows::Overlay::Configs(super::windows::ConfigsTab::Models)));
     click_through(&mut app, "Agents");
-    assert_eq!(app.configs, Some(super::windows::ConfigsTab::Agents));
+    assert_eq!(app.overlay, Some(super::windows::Overlay::Configs(super::windows::ConfigsTab::Agents)));
     assert!(shows(&app, "reviewer"));
     assert!(shows(&app, "Full screen"));
     click_through(&mut app, "Full screen");
     assert!(app.docs.full);
     let _ = app.update(Message::Keyboard(escape()));
     assert!(!app.docs.full, "Escape leaves the file's full screen first");
+    assert_eq!(app.overlay, Some(super::windows::Overlay::Configs(super::windows::ConfigsTab::Agents)));
+    let _ = app.update(Message::Keyboard(escape()));
+    assert_eq!(app.overlay, None);
 }
 
 #[test]
 fn models_close_button_closes_configs_it_is_drawn_in() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = fake_app(dir.path(), &["fake-a"]);
-    app.configs = Some(super::windows::ConfigsTab::Models);
+    app.overlay = Some(super::windows::Overlay::Configs(super::windows::ConfigsTab::Models));
     let _ = app.update(Message::Models(areas::models::Message::Close));
-    assert_eq!(app.configs, None);
+    assert_eq!(app.overlay, None);
 }
 
 #[test]
@@ -748,7 +762,7 @@ fn folder_bar_switches_folders_and_starts_a_session_there() {
     let other_path = other.path().canonicalize().unwrap();
     update(&mut app, Message::Composer(composer::Message::FolderPicked(other_path.display().to_string())));
     assert_eq!(app.ctx.services.cwd, other_path);
-    assert_eq!(app.ctx.services.project, other_path.file_name().unwrap().to_string_lossy(), "new sessions belong to the new folder's project");
+    assert_eq!(app.ctx.services.project, None, "a folder is not a project: picking one leaves the project alone");
     assert!(app.diff.files().is_empty(), "the old folder's changes are gone");
     let _ = app.update(Message::WorkingDiff(None));
     {

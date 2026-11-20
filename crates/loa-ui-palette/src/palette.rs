@@ -10,6 +10,7 @@
 //! the command title.
 
 use std::cmp::Reverse;
+use std::ops::Range;
 
 use iced::keyboard::{self, key::Named};
 use iced::widget::{
@@ -98,6 +99,10 @@ struct Row {
     indices: Vec<usize>,
     /// First row of its section: a header is drawn above it.
     starts_section: bool,
+    /// Title pieces and whether each is matched, computed when the rows are built.
+    runs: Vec<(Range<usize>, bool)>,
+    /// Shortcut or keys text at the right edge, computed when the rows are built.
+    hint: Option<String>,
 }
 
 /// Palette state.
@@ -398,11 +403,12 @@ impl State {
             weight: font::Weight::Bold,
             ..Font::DEFAULT
         };
-        let spans: Vec<text::Span<'a, (), Font>> = highlight_runs(&command.title, &row.indices)
-            .into_iter()
+        let spans: Vec<text::Span<'a, (), Font>> = row
+            .runs
+            .iter()
             .map(|(range, hit)| {
-                let piece = span(&command.title[range]);
-                if hit { piece.font(bold) } else { piece }
+                let piece = span(&command.title[range.clone()]);
+                if *hit { piece.font(bold) } else { piece }
             })
             .collect();
 
@@ -410,8 +416,8 @@ impl State {
             .height(Fill)
             .align_y(iced::Center)
             .spacing(12);
-        if let Some(hint) = self.hint(command) {
-            content = content.push(text(hint).size(12).style(Self::muted_text));
+        if let Some(hint) = &row.hint {
+            content = content.push(text(hint.as_str()).size(12).style(Self::muted_text));
         }
 
         // A row that can't run (e.g. a key listed for reference) is static
@@ -616,11 +622,15 @@ impl State {
         self.rows.clear();
         let mut previous = None;
         for (rank, command, indices) in keyed {
-            self.rows.push(Row {
+            let entry = &self.commands[command];
+            let row = Row {
+                runs: highlight_runs(&entry.title, &indices),
+                hint: self.hint(entry),
+                starts_section: previous != Some(rank),
                 command,
                 indices,
-                starts_section: previous != Some(rank),
-            });
+            };
+            self.rows.push(row);
             previous = Some(rank);
         }
         self.selected = self

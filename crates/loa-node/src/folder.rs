@@ -10,8 +10,9 @@
 //! them back in chunks.
 
 use crate::share::{challenge_grants, present_grants};
-use crate::{Inner, Node, NodeError, Result, now_ms};
+use crate::{Inner, Node, NodeError, Result};
 use async_trait::async_trait;
+use loa_core::now_ms;
 use loa_grants::{Action, Request, Revocations, VerifiedGrant};
 use loa_net::NodeId;
 use loa_net::conn::{Connection, RecvHalf, Stream};

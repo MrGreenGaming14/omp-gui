@@ -75,7 +75,12 @@ impl Filter {
     }
 
     pub fn matches(&self, text: &str) -> bool {
-        self.0.is_empty() || text.to_lowercase().contains(&self.0)
+        self.is_empty() || self.matches_lower(&text.to_lowercase())
+    }
+
+    /// [`Filter::matches`] for text that is already lowercase.
+    fn matches_lower(&self, lower: &str) -> bool {
+        lower.contains(&self.0)
     }
 
     fn matches_tool(&self, tool: &ToolInfo) -> bool {
@@ -86,66 +91,225 @@ impl Filter {
 /// Title of the app tools group.
 pub const APP_GROUP_TITLE: &str = "App tools";
 
-/// Builds the Built in and MCP servers sections.
-///
-/// A server whose name matches the filter keeps all its tools; otherwise
-/// only matching tools are kept. Groups and servers left empty by a
-/// non-empty filter are dropped.
-pub fn catalog<'a>(
-    builtin: &'a BuiltinTools,
-    servers: &'a [McpServer],
-    disabled: &BTreeSet<ToolId>,
-    filter: &Filter,
-) -> Catalog<'a> {
-    let row = |id: ToolId, info: &'a ToolInfo| {
-        let enabled = !disabled.contains(&id);
-        ToolRow { id, info, enabled }
-    };
-    let builtin_rows = |tools: &'a [ToolInfo]| -> Vec<ToolRow<'a>> {
-        tools
-            .iter()
-            .filter(|tool| filter.matches_tool(tool))
-            .map(|tool| row(ToolId::builtin(&tool.name), tool))
-            .collect()
-    };
-    let groups = [
-        GroupView {
-            group: BuiltinGroup::Harness,
-            title: &builtin.harness,
-            tools: builtin_rows(&builtin.harness_tools),
-        },
-        GroupView {
-            group: BuiltinGroup::App,
-            title: APP_GROUP_TITLE,
-            tools: builtin_rows(&builtin.app_tools),
-        },
-    ];
-    let builtin = groups
-        .into_iter()
-        .filter(|g| filter.is_empty() || !g.tools.is_empty())
-        .collect();
+/// Lowercased names and descriptions of every tool, so filtering never
+/// lowercases again. Entries pair with the builtin and server lists by index,
+/// so rebuild the search whenever those lists change.
+#[derive(Clone, Debug, Default)]
+pub struct Search {
+    harness: Vec<Haystack>,
+    app: Vec<Haystack>,
+    servers: Vec<ServerSearch>,
+}
 
-    let servers = servers
-        .iter()
-        .filter_map(|server| {
-            let name_matches = filter.matches(&server.name);
-            let tools: Vec<_> = server
-                .tools
+#[derive(Clone, Debug)]
+struct ServerSearch {
+    name: String,
+    tools: Vec<Haystack>,
+}
+
+#[derive(Clone, Debug)]
+struct Haystack {
+    name: String,
+    description: String,
+}
+
+impl Haystack {
+    fn of(tool: &ToolInfo) -> Self {
+        Self {
+            name: tool.name.to_lowercase(),
+            description: tool.description.to_lowercase(),
+        }
+    }
+
+    fn matches(&self, filter: &Filter) -> bool {
+        filter.matches_lower(&self.name) || filter.matches_lower(&self.description)
+    }
+}
+
+fn haystacks(tools: &[ToolInfo]) -> Vec<Haystack> {
+    tools.iter().map(Haystack::of).collect()
+}
+
+impl Search {
+    /// Lowercases every name and description once.
+    pub fn new(builtin: &BuiltinTools, servers: &[McpServer]) -> Self {
+        Self {
+            harness: haystacks(&builtin.harness_tools),
+            app: haystacks(&builtin.app_tools),
+            servers: servers
                 .iter()
-                .filter(|tool| name_matches || filter.matches_tool(tool))
-                .map(|tool| row(ToolId::mcp(&server.name, &tool.name), tool))
-                .collect();
-            if !name_matches && tools.is_empty() {
-                return None;
-            }
-            Some(ServerView {
-                server,
-                toggle: server_toggle(server, disabled),
-                tools,
+                .map(|server| ServerSearch {
+                    name: server.name.to_lowercase(),
+                    tools: haystacks(&server.tools),
+                })
+                .collect(),
+        }
+    }
+}
+
+/// The Built in and MCP rows, filtered and toggled, held as indices into the
+/// lists their [`Search`] was built from. Rebuild them whenever the filter, the
+/// selected project's disabled tools or those lists change.
+#[derive(Clone, Debug)]
+pub struct Rows {
+    builtin: Vec<GroupRows>,
+    servers: Vec<ServerRows>,
+}
+
+#[derive(Clone, Debug)]
+struct GroupRows {
+    group: BuiltinGroup,
+    rows: Vec<Row>,
+}
+
+#[derive(Clone, Debug)]
+struct ServerRows {
+    server: usize,
+    toggle: Toggle,
+    rows: Vec<Row>,
+}
+
+#[derive(Clone, Debug)]
+struct Row {
+    id: ToolId,
+    index: usize,
+    enabled: bool,
+}
+
+impl Default for Rows {
+    fn default() -> Self {
+        Self::new(
+            &BuiltinTools::default(),
+            &[],
+            &Search::default(),
+            &BTreeSet::new(),
+            &Filter::default(),
+        )
+    }
+}
+
+impl Rows {
+    /// Builds the Built in and MCP servers rows. A server whose name matches
+    /// the filter keeps all its tools; otherwise only matching tools are kept.
+    /// Groups and servers left empty by a non-empty filter are dropped.
+    /// `search` must be built from the same `builtin` and `servers`.
+    pub fn new(
+        builtin: &BuiltinTools,
+        servers: &[McpServer],
+        search: &Search,
+        disabled: &BTreeSet<ToolId>,
+        filter: &Filter,
+    ) -> Self {
+        let builtin_rows = |tools: &[ToolInfo], lowered: &[Haystack]| -> Vec<Row> {
+            tools
+                .iter()
+                .zip(lowered)
+                .enumerate()
+                .filter(|(_, (_, haystack))| haystack.matches(filter))
+                .map(|(index, (tool, _))| {
+                    let id = ToolId::builtin(&tool.name);
+                    let enabled = !disabled.contains(&id);
+                    Row { id, index, enabled }
+                })
+                .collect()
+        };
+        let groups = [
+            GroupRows {
+                group: BuiltinGroup::Harness,
+                rows: builtin_rows(&builtin.harness_tools, &search.harness),
+            },
+            GroupRows {
+                group: BuiltinGroup::App,
+                rows: builtin_rows(&builtin.app_tools, &search.app),
+            },
+        ];
+        let builtin_groups: Vec<GroupRows> = groups
+            .into_iter()
+            .filter(|group| filter.is_empty() || !group.rows.is_empty())
+            .collect();
+        let server_rows: Vec<ServerRows> = servers
+            .iter()
+            .zip(&search.servers)
+            .enumerate()
+            .filter_map(|(server_index, (server, searched))| {
+                let name_matches = filter.matches_lower(&searched.name);
+                let rows: Vec<Row> = server
+                    .tools
+                    .iter()
+                    .zip(&searched.tools)
+                    .enumerate()
+                    .filter(|(_, (_, haystack))| name_matches || haystack.matches(filter))
+                    .map(|(index, (tool, _))| {
+                        let id = ToolId::mcp(&server.name, &tool.name);
+                        let enabled = !disabled.contains(&id);
+                        Row { id, index, enabled }
+                    })
+                    .collect();
+                if !name_matches && rows.is_empty() {
+                    return None;
+                }
+                Some(ServerRows {
+                    server: server_index,
+                    toggle: server_toggle(server, disabled),
+                    rows,
+                })
+            })
+            .collect();
+        Self {
+            builtin: builtin_groups,
+            servers: server_rows,
+        }
+    }
+
+    /// The sections as shown, borrowing names and infos from the lists the rows
+    /// were built from.
+    pub fn catalog<'a>(&self, builtin: &'a BuiltinTools, servers: &'a [McpServer]) -> Catalog<'a> {
+        let groups: Vec<GroupView<'a>> = self
+            .builtin
+            .iter()
+            .map(|group| {
+                let (title, infos) = match group.group {
+                    BuiltinGroup::Harness => (builtin.harness.as_str(), &builtin.harness_tools),
+                    BuiltinGroup::App => (APP_GROUP_TITLE, &builtin.app_tools),
+                };
+                GroupView {
+                    group: group.group,
+                    title,
+                    tools: tool_rows(&group.rows, infos),
+                }
+            })
+            .collect();
+        let server_views: Vec<ServerView<'a>> = self
+            .servers
+            .iter()
+            .filter_map(|group| {
+                let server = servers.get(group.server)?;
+                Some(ServerView {
+                    server,
+                    toggle: group.toggle,
+                    tools: tool_rows(&group.rows, &server.tools),
+                })
+            })
+            .collect();
+        Catalog {
+            builtin: groups,
+            servers: server_views,
+        }
+    }
+}
+
+/// Materializes cached rows against the infos they index. A stale index drops
+/// its row instead of panicking.
+fn tool_rows<'a>(rows: &[Row], infos: &'a [ToolInfo]) -> Vec<ToolRow<'a>> {
+    rows.iter()
+        .filter_map(|row| {
+            Some(ToolRow {
+                id: row.id.clone(),
+                info: infos.get(row.index)?,
+                enabled: row.enabled,
             })
         })
-        .collect();
-    Catalog { builtin, servers }
+        .collect()
 }
 
 /// Toggle state over every tool of a server. A server with no tools is on.
@@ -228,6 +392,16 @@ mod tests {
 
     fn tool(name: &str, description: &str) -> ToolInfo {
         ToolInfo::new(name, description)
+    }
+
+    fn catalog<'a>(
+        builtin: &'a BuiltinTools,
+        servers: &'a [McpServer],
+        disabled: &BTreeSet<ToolId>,
+        filter: &Filter,
+    ) -> Catalog<'a> {
+        let search = Search::new(builtin, servers);
+        Rows::new(builtin, servers, &search, disabled, filter).catalog(builtin, servers)
     }
 
     fn builtin() -> BuiltinTools {

@@ -70,19 +70,6 @@ pub struct WriterConfig {
     pub authorize: Arc<dyn Authorize>,
 }
 
-/// Firehose subscribers shared by every writer opened on one bus.
-#[derive(Default)]
-pub(crate) struct Hub {
-    subs: Mutex<Vec<Arc<Queue<SessionId>>>>,
-}
-
-impl Hub {
-    pub(crate) fn lock(&self) -> MutexGuard<'_, Vec<Arc<Queue<SessionId>>>> {
-        // Pushing and pruning leave the list valid at every step.
-        self.subs.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-}
-
 /// The [`PatchSink`] of one live session.
 ///
 /// On the owner node it orders local drafts ([`PatchSink::commit_at`]) and
@@ -96,25 +83,26 @@ pub struct SessionWriter {
     owner: NodeKey,
     local: NodeKey,
     authorize: Arc<dyn Authorize>,
-    hub: Arc<Hub>,
     inner: Mutex<Inner>,
 }
 
 struct Inner {
     dom: Dom,
     persist: Box<dyn Persist>,
-    subs: Vec<Arc<Queue<()>>>,
+    subs: Vec<Arc<Queue>>,
     closed: bool,
 }
 
 impl SessionWriter {
     pub fn new(config: WriterConfig) -> Self {
-        Self::with_hub(config, Arc::default())
-    }
-
-    pub(crate) fn with_hub(config: WriterConfig, hub: Arc<Hub>) -> Self {
         let WriterConfig { session, owner, local, dom, persist, authorize } = config;
-        Self { session, owner, local, authorize, hub, inner: Mutex::new(Inner { dom, persist, subs: Vec::new(), closed: false }) }
+        Self {
+            session,
+            owner,
+            local,
+            authorize,
+            inner: Mutex::new(Inner { dom, persist, subs: Vec::new(), closed: false }),
+        }
     }
 
     fn lock(&self) -> MutexGuard<'_, Inner> {
@@ -180,7 +168,7 @@ impl SessionWriter {
         self.writable(&inner)?;
         self.authorize.authorize(&self.session, requester, &draft, &inner.dom)?;
         let patch = inner.dom.prepare(draft, ts);
-        Ok(self.write(&mut inner, patch)?)
+        Ok(Self::write(&mut inner, patch)?)
     }
 
     /// Orders a peer change only if the owner still has the revision the peer
@@ -201,7 +189,7 @@ impl SessionWriter {
         }
         self.authorize.authorize(&self.session, requester, &draft, &inner.dom)?;
         let patch = inner.dom.prepare(draft, ts);
-        Ok(self.write(&mut inner, patch)?)
+        Ok(Self::write(&mut inner, patch)?)
     }
 
     /// Mirrors a patch the owner ordered. Only on nodes that don't own the
@@ -214,7 +202,7 @@ impl SessionWriter {
         if inner.closed {
             return Err(CommitError::Closed.into());
         }
-        self.write(&mut inner, patch)?;
+        Self::write(&mut inner, patch)?;
         Ok(())
     }
 
@@ -242,7 +230,7 @@ impl SessionWriter {
     }
 
     /// Checks, persists, applies and publishes the next patch.
-    fn write(&self, inner: &mut Inner, patch: Patch) -> Result<Patch, CommitError> {
+    fn write(inner: &mut Inner, patch: Patch) -> Result<Patch, CommitError> {
         check(&inner.dom, &patch)?;
         inner.persist.append(&patch).map_err(|e| CommitError::Journal(e.to_string()))?;
         if let Err(error) = inner.dom.apply(&patch) {
@@ -254,18 +242,15 @@ impl SessionWriter {
         }
         let Inner { dom, persist, .. } = inner;
         persist.applied(dom);
-        Ok(self.publish(inner, patch))
+        Ok(Self::publish(inner, patch))
     }
 
-    fn publish(&self, inner: &mut Inner, patch: Patch) -> Patch {
-        let mut hub = self.hub.lock();
-        if inner.subs.is_empty() && hub.is_empty() {
+    fn publish(inner: &mut Inner, patch: Patch) -> Patch {
+        if inner.subs.is_empty() {
             return patch;
         }
         let shared = Arc::new(patch);
-        inner.subs.retain(|queue| queue.push(&(), &shared));
-        hub.retain(|queue| queue.push(&self.session, &shared));
-        drop(hub);
+        inner.subs.retain(|queue| queue.push(&shared));
         Arc::try_unwrap(shared).unwrap_or_else(|shared| Patch::clone(&shared))
     }
 }
@@ -275,7 +260,7 @@ impl PatchSink for SessionWriter {
         let mut inner = self.lock();
         self.writable(&inner)?;
         let patch = inner.dom.prepare(draft, ts);
-        self.write(&mut inner, patch)
+        Self::write(&mut inner, patch)
     }
 }
 

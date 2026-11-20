@@ -70,6 +70,10 @@ pub(crate) struct Card {
     /// Plan being edited.
     pub editor: Option<text_editor::Content>,
     pub form: Option<Result<Form, FormError>>,
+    /// Line count of the body when it is a unified diff, else `None`.
+    diff_lines: Option<usize>,
+    /// Whether an approval diff longer than the preview is shown in full.
+    show_full: bool,
 }
 
 impl Card {
@@ -78,11 +82,13 @@ impl Card {
             picked: vec![false; decision.options.len()],
             plan: parse_plan(&decision),
             form: parse_form(&decision),
+            diff_lines: preview_lines(&decision),
             decision,
             pending: false,
             selected: None,
             text: String::new(),
             editor: None,
+            show_full: false,
         };
         card.close_if_settled();
         card
@@ -96,6 +102,7 @@ impl Card {
         }
         if decision.body != self.decision.body {
             self.plan = parse_plan(&decision);
+            self.diff_lines = preview_lines(&decision);
         }
         if decision.fields != self.decision.fields {
             self.form = parse_form(&decision);
@@ -106,6 +113,11 @@ impl Card {
         }
         self.decision = decision;
         self.close_if_settled();
+    }
+
+    /// Shows the whole approval diff, or its preview again.
+    pub fn toggle_diff(&mut self) {
+        self.show_full = !self.show_full;
     }
 
     fn close_if_settled(&mut self) {
@@ -290,16 +302,31 @@ impl Card {
 
         match d.kind {
             DecisionKind::Approval => {
-                let preview: Element<'a, Message> = if diff::is_unified_diff(&d.body) {
-                    diff::view(&d.body)
-                } else {
-                    container(text(&d.body).size(13).font(Font::MONOSPACE))
-                        .padding([5, 8])
-                        .width(Fill)
-                        .style(style::raised)
-                        .into()
-                };
-                body = body.push(preview);
+                match self.diff_lines {
+                    Some(lines) => {
+                        body = body.push(diff::view(&d.body, self.show_full));
+                        if lines > diff::PREVIEW_LINES {
+                            let label = if self.show_full {
+                                "Show fewer lines".to_owned()
+                            } else {
+                                format!("Show all {lines} lines")
+                            };
+                            body = body.push(action_button(
+                                label,
+                                Some(Message::ToggleDiff(id)),
+                                false,
+                            ));
+                        }
+                    }
+                    None => {
+                        body = body.push(
+                            container(text(&d.body).size(13).font(Font::MONOSPACE))
+                                .padding([5, 8])
+                                .width(Fill)
+                                .style(style::raised),
+                        );
+                    }
+                }
                 if d.is_waiting() {
                     let buttons = ApprovalChoice::ALL.iter().enumerate().map(|(i, c)| {
                         self.choice_button(
@@ -543,7 +570,7 @@ fn header<'a>(d: &'a Decision) -> Element<'a, Message> {
 
 /// A labeled card button; `primary` marks the answer the card leans toward.
 fn action_button<'a>(
-    label: &'a str,
+    label: impl text::IntoFragment<'a>,
     on_press: Option<Message>,
     primary: bool,
 ) -> Element<'a, Message> {
@@ -670,4 +697,10 @@ fn parse_form(decision: &Decision) -> Option<Result<Form, FormError>> {
         return None;
     }
     decision.fields.as_deref().map(Form::parse)
+}
+
+/// Line count of an approval body that is a unified diff, or `None`.
+fn preview_lines(decision: &Decision) -> Option<usize> {
+    (matches!(decision.kind, DecisionKind::Approval) && diff::is_unified_diff(&decision.body))
+        .then(|| decision.body.lines().count())
 }

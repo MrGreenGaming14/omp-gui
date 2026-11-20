@@ -62,7 +62,7 @@ pub fn resolve(text: &str, is_known: impl Fn(&str) -> bool) -> Vec<Attachment> {
 
 /// MIME type for the extensions a harness treats differently from text.
 /// Everything else is left to the adapter.
-fn mime(path: &str) -> Option<&'static str> {
+pub(crate) fn mime(path: &str) -> Option<&'static str> {
     let (_, ext) = path.rsplit_once('.')?;
     let ext = ext.to_ascii_lowercase();
     Some(match ext.as_str() {

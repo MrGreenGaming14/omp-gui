@@ -31,6 +31,10 @@ pub struct ProjectSettings {
     /// uses the `smol` role.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub digest_model: Option<String>,
+    /// Working directory of the project, set by `ProjectService::create`.
+    /// `None` when the project has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder: Option<PathBuf>,
 }
 
 /// Stores project settings. `loa-app` backs it with its config or SQLite.
@@ -39,6 +43,10 @@ pub trait SettingsStore: Send + Sync {
     /// The project's settings; defaults when it has none.
     async fn load(&self, project: &str) -> Result<ProjectSettings>;
     async fn save(&self, project: &str, settings: &ProjectSettings) -> Result<()>;
+    /// The projects that have settings, sorted by name.
+    async fn names(&self) -> Result<Vec<String>>;
+    /// Forgets the project's settings; nothing happens when it has none.
+    async fn remove(&self, project: &str) -> Result<()>;
 }
 
 /// Settings kept in memory, for previews and tests.
@@ -66,6 +74,17 @@ impl SettingsStore for MemorySettingsStore {
 
     async fn save(&self, project: &str, settings: &ProjectSettings) -> Result<()> {
         self.lock().insert(project.to_owned(), settings.clone());
+        Ok(())
+    }
+
+    async fn names(&self) -> Result<Vec<String>> {
+        let mut names: Vec<String> = self.lock().keys().cloned().collect();
+        names.sort();
+        Ok(names)
+    }
+
+    async fn remove(&self, project: &str) -> Result<()> {
+        self.lock().remove(project);
         Ok(())
     }
 }
@@ -127,6 +146,53 @@ impl SettingsStore for FileSettingsStore {
         .await
         .map_err(|e| Error::Port(e.to_string()))?
     }
+
+    async fn names(&self) -> Result<Vec<String>> {
+        let mut entries = match tokio::fs::read_dir(&self.dir).await {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(e.into()),
+        };
+        let mut names = Vec::new();
+        while let Some(entry) = entries.next_entry().await? {
+            let file = entry.file_name();
+            let Some(name) = file.to_str().and_then(|f| f.strip_suffix(".json")).and_then(decode_name) else {
+                continue;
+            };
+            // Only the file `path` writes for a name counts, so strays are skipped.
+            if self.path(&name).file_name() != Some(file.as_os_str()) {
+                continue;
+            }
+            if entry.file_type().await?.is_file() {
+                names.push(name);
+            }
+        }
+        names.sort();
+        Ok(names)
+    }
+
+    async fn remove(&self, project: &str) -> Result<()> {
+        match tokio::fs::remove_file(self.path(project)).await {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
+            _ => Ok(()),
+        }
+    }
+}
+
+/// Undoes the encoding `FileSettingsStore::path` applies to a file name stem,
+/// or `None` for a malformed escape or bytes that are not UTF-8.
+fn decode_name(stem: &str) -> Option<String> {
+    let mut out = Vec::with_capacity(stem.len());
+    let mut bytes = stem.bytes();
+    while let Some(byte) = bytes.next() {
+        if byte == b'%' {
+            let hex = [bytes.next()?, bytes.next()?];
+            out.push(u8::from_str_radix(std::str::from_utf8(&hex).ok()?, 16).ok()?);
+        } else {
+            out.push(byte);
+        }
+    }
+    String::from_utf8(out).ok()
 }
 
 /// Whether the session is excluded from project context.
@@ -169,11 +235,37 @@ mod tests {
             instructions: "Use rustls.".into(),
             pinned: vec![PinnedFile { path: "docs/a.md".into(), note: Some("contract".into()) }],
             digest_model: Some("@smol".into()),
+            folder: Some("/work/my-proj".into()),
         };
         store.save("my/proj", &settings).await.unwrap();
         assert_eq!(store.load("my/proj").await.unwrap(), settings);
         assert!(dir.path().join("projects/my%2Fproj.json").is_file());
         assert_eq!(FileSettingsStore::new(dir.path().join("projects")).load("my/proj").await.unwrap(), settings);
         assert_eq!(store.load("other").await.unwrap(), ProjectSettings::default());
+    }
+
+    #[tokio::test]
+    async fn file_store_names_lists_projects_and_skips_strays() {
+        let dir = tempfile::tempdir().unwrap();
+        let projects = dir.path().join("projects");
+        let store = FileSettingsStore::new(&projects);
+        assert!(store.names().await.unwrap().is_empty());
+        let saved = ["my/proj", "with space", "a.b", ".", "héllo", "loa"];
+        for name in saved {
+            store.save(name, &ProjectSettings::default()).await.unwrap();
+        }
+        let mut expected = saved.to_vec();
+        expected.sort();
+        assert_eq!(store.names().await.unwrap(), expected);
+        // Strays: no `.json` suffix, a bad escape, a non-canonical escape, a directory.
+        std::fs::write(projects.join("notes.txt"), "x").unwrap();
+        std::fs::write(projects.join("bad%zz.json"), "{}").unwrap();
+        std::fs::write(projects.join("my%2fproj.json"), "{}").unwrap();
+        std::fs::create_dir(projects.join("dir.json")).unwrap();
+        assert_eq!(store.names().await.unwrap(), expected);
+        let memory = MemorySettingsStore::new();
+        memory.save("b", &ProjectSettings::default()).await.unwrap();
+        memory.save("a", &ProjectSettings::default()).await.unwrap();
+        assert_eq!(memory.names().await.unwrap(), ["a", "b"]);
     }
 }

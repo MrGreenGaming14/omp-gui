@@ -10,7 +10,7 @@
 //! it.
 
 use loa_adapter::{AdapterError, Answer, Prompt, Result};
-use loa_core::{answer, attr, CallStatus, DecisionKind, DecisionStatus, Draft, ElementKind as K, JobStatus, MessageKind, MessageStatus, NodeId, Op, Patch, TodoState, TurnStatus, Value};
+use loa_core::{answer, attr, now_ms, CallStatus, DecisionKind, DecisionStatus, Draft, ElementKind as K, JobStatus, MessageKind, MessageStatus, NodeId, Op, Patch, TodoState, TurnStatus, Value};
 use loa_core::schema::TEXT;
 use loa_omp_rpc::{AskAnswer, AskQuestion, AssistantEvent, Event, PromptError, PromptStatus, SubagentStatus, TodoItem, TodoStatus, UiRequest, UiResponse};
 use serde_json::Value as Json;
@@ -110,7 +110,7 @@ impl Mapping {
             prompt
         });
         self.echo = prompt.is_some();
-        out.push(self.insert(self.session, K::Turn, vec![(attr::STATUS, TurnStatus::Running.into())], "", Pending::Turn(prompt)));
+        out.push(self.insert(self.session, K::Turn, vec![(attr::STATUS, TurnStatus::Running.into()), (attr::STARTED, Value::Int(now_ms()))], "", Pending::Turn(prompt)));
         out
     }
 
@@ -480,7 +480,7 @@ impl Mapping {
             // omp finished the prompt without running it: an abort dropped it
             // from omp's queue, or it was handled locally.
             let (_, prompt) = self.queued.remove(index).expect("position is in the queue");
-            vec![self.insert(self.session, K::Turn, vec![(attr::STATUS, status.into())], "", Pending::Closed(prompt))]
+            vec![self.insert(self.session, K::Turn, vec![(attr::STATUS, status.into()), (attr::ENDED, Value::Int(now_ms()))], "", Pending::Closed(prompt))]
         } else if id.is_none() || self.turn_prompt.is_none() || self.turn_prompt.as_deref() == id {
             self.finish(status)
         } else {
@@ -507,6 +507,7 @@ impl Mapping {
         }
         out.extend(self.requests.keys().map(|id| set(*id, attr::STATUS, DecisionStatus::Cancelled)));
         out.push(set(turn, attr::STATUS, status));
+        out.push(set(turn, attr::ENDED, Value::Int(now_ms())));
         self.calls.clear(); self.messages.clear(); self.jobs.clear(); self.blocks.clear(); self.text.clear(); self.inputs.clear(); self.input_text.clear(); self.requests.clear(); self.decisions.clear(); self.closed.clear();
         self.turn_prompt = None;
         self.typed = None;

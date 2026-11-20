@@ -425,7 +425,7 @@ impl State {
             .sessions
             .get(&run.parent)
             .and_then(|session| session.summary())
-            .map_or_else(|| run.parent.clone(), |summary| summary.title);
+            .map_or(run.parent.as_str(), |summary| summary.title.as_str());
         let title = row![mark, kind, text(first_line(&run.task)).size(panel_style::TEXT_SIZE)].spacing(8).align_y(iced::Center);
         let meta = text(format!("{summary} · {session}")).size(12).style(panel_style::muted);
         button(column![title, meta].spacing(2))
