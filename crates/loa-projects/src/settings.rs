@@ -45,6 +45,8 @@ pub trait SettingsStore: Send + Sync {
     async fn save(&self, project: &str, settings: &ProjectSettings) -> Result<()>;
     /// The projects that have settings, sorted by name.
     async fn names(&self) -> Result<Vec<String>>;
+    /// Forgets the project's settings; nothing happens when it has none.
+    async fn remove(&self, project: &str) -> Result<()>;
 }
 
 /// Settings kept in memory, for previews and tests.
@@ -79,6 +81,11 @@ impl SettingsStore for MemorySettingsStore {
         let mut names: Vec<String> = self.lock().keys().cloned().collect();
         names.sort();
         Ok(names)
+    }
+
+    async fn remove(&self, project: &str) -> Result<()> {
+        self.lock().remove(project);
+        Ok(())
     }
 }
 
@@ -162,6 +169,13 @@ impl SettingsStore for FileSettingsStore {
         }
         names.sort();
         Ok(names)
+    }
+
+    async fn remove(&self, project: &str) -> Result<()> {
+        match tokio::fs::remove_file(self.path(project)).await {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
+            _ => Ok(()),
+        }
     }
 }
 

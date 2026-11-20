@@ -231,6 +231,10 @@ pub enum Event {
     DeleteSession(String),
     /// Open the New project screen, from the sidebar's `+`.
     NewProject,
+    /// Start a new session in this project, from its sidebar row.
+    NewSessionIn(String),
+    /// Ask to delete this project, from its sidebar row.
+    DeleteProject(String),
     /// Move a session to a project, or out of every project with `None`.
     MoveSession { id: String, project: Option<String> },
     /// The right panel opened or closed.
@@ -270,6 +274,8 @@ impl From<sidebar::Event> for Event {
             sidebar::Event::SetProjectPinned { project, pinned } => Event::SetProjectPinned { project, pinned },
             sidebar::Event::DeleteSession(id) => Event::DeleteSession(id),
             sidebar::Event::NewProject => Event::NewProject,
+            sidebar::Event::NewSessionIn(project) => Event::NewSessionIn(project),
+            sidebar::Event::DeleteProject(project) => Event::DeleteProject(project),
             sidebar::Event::MoveSession { id, project } => Event::MoveSession { id, project },
         }
     }

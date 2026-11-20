@@ -553,6 +553,12 @@ impl App {
                         self.usage.refresh().map(Message::Usage)
                     }
                     Some(shell::Event::NewProject) => self.update(Message::Projects(areas::projects::Message::New)),
+                    Some(shell::Event::NewSessionIn(project)) => {
+                        self.update(Message::Projects(areas::projects::Message::NewChatIn(project)))
+                    }
+                    Some(shell::Event::DeleteProject(project)) => {
+                        self.update(Message::Projects(areas::projects::Message::AskDelete(project)))
+                    }
                     Some(shell::Event::MoveSession { id, project }) => {
                         self.update(Message::Projects(areas::projects::Message::Move { session: id, project }))
                     }

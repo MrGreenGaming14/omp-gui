@@ -127,6 +127,10 @@ pub enum Message {
     TogglePin(String),
     /// The pin button on a project row was clicked.
     ToggleProjectPin(String),
+    /// The `+` on a project row: a new session in that project.
+    NewSessionIn(String),
+    /// The delete button on a project row was clicked.
+    DeleteProject(String),
     /// The delete button on a session row was clicked.
     Delete(String),
     /// The row under Recents that lists the next page of sessions.
@@ -178,6 +182,10 @@ pub enum Event {
     DeleteSession(String),
     /// Open the New project screen.
     NewProject,
+    /// Start a new session in this project.
+    NewSessionIn(String),
+    /// Ask to delete this project; its sessions are kept.
+    DeleteProject(String),
     /// Move a session to a project, or out of every project with `None`.
     MoveSession { id: String, project: Option<String> },
 }
@@ -488,6 +496,8 @@ impl State {
                 None
             }
             Message::NewProject => Some(Event::NewProject),
+            Message::NewSessionIn(project) => Some(Event::NewSessionIn(project)),
+            Message::DeleteProject(project) => Some(Event::DeleteProject(project)),
             Message::ToggleMoveMenu(id) => {
                 self.move_menu = (self.move_menu.as_deref() != Some(id.as_str())).then_some(id);
                 None
@@ -553,12 +563,12 @@ impl State {
             .or(self.active_project.as_deref())
             .or_else(|| self.active.as_deref().and_then(|id| self.session(id)).and_then(|s| s.project.as_deref()));
         // "Projects" where the other headers sit, with the `+` centered
-        // beside it and clear of the scrollbar drawn over the list's edge.
+        // beside it, lined up with the row actions below.
         let add = button(muted(Icon::Plus, 14.0)).on_press(Message::NewProject).style(style::ghost_button).padding(5);
         lists = lists.push(
             row![text("Projects").size(12).style(style::faint).width(Fill), add]
                 .align_y(Alignment::Center)
-                .padding(Padding { top: 6.0, right: 12.0, bottom: 0.0, left: 10.0 }),
+                .padding(Padding { top: 6.0, right: 4.0, bottom: 0.0, left: 10.0 }),
         );
         if self.visible_projects.is_empty() {
             lists = lists.push(hint(if self.projects.is_empty() { "No projects yet" } else { "No match" }));
@@ -575,14 +585,15 @@ impl State {
                 .style(style::row_for(is_active))
                 .padding([7, 10])
                 .width(Fill);
-            let pin = button(muted(Icon::Pin, 13.0))
-                .on_press(Message::ToggleProjectPin(project.to_owned()))
-                .style(style::ghost_button)
-                .padding(4);
-            let pin = container(pin)
-                .padding([0, 2])
-                .style(move |theme| style::row_actions(theme, is_active));
-            lists = lists.push(hover(body, container(pin).align_right(Fill).center_y(Fill).padding([0, 6])));
+            let action = |glyph, message| button(muted(glyph, 13.0)).on_press(message).style(style::ghost_button).padding(4);
+            let actions = row![
+                action(Icon::Plus, Message::NewSessionIn(project.to_owned())),
+                action(Icon::Pin, Message::ToggleProjectPin(project.to_owned())),
+                action(Icon::X, Message::DeleteProject(project.to_owned())),
+            ]
+            .spacing(2);
+            let actions = container(actions).padding([0, 2]).style(move |theme| style::row_actions(theme, is_active));
+            lists = lists.push(hover(body, container(actions).align_right(Fill).center_y(Fill).padding([0, 6])));
             if is_active {
                 lists = self.project_sessions(lists, project);
             }
@@ -619,7 +630,14 @@ impl State {
             Element::from(self.machine_switcher()).map(map.clone()),
             Element::from(new).map(map.clone()),
             Element::from(search).map(map.clone()),
-            Element::from(scrollable(lists.spacing(2)).height(Fill)).map(map.clone()),
+            // Scrolls by wheel and trackpad with no bar, which would sit over
+            // the rows' ends and their hover actions.
+            Element::from(
+                scrollable(lists.spacing(2))
+                    .direction(scrollable::Direction::Vertical(scrollable::Scrollbar::hidden()))
+                    .height(Fill),
+            )
+            .map(map.clone()),
             Element::from(self.footer()).map(map),
         ]
         .spacing(4)

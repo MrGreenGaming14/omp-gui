@@ -151,6 +151,9 @@ pub enum Request {
     /// has one, the active folder: the Files tab, new terminals, the Diff tab
     /// and new sessions follow. Running sessions keep their folder.
     ActivateProject { project: String, cwd: Option<PathBuf> },
+    /// `project` was deleted: drop its tab and pin, and stop it being the
+    /// active project.
+    ForgetProject(String),
     /// Run this message through the app's `update`, e.g. to hand a decision
     /// answer to the area that owns it.
     Forward(Box<crate::app::Message>),

@@ -344,6 +344,31 @@ fn the_new_project_screen_makes_a_project_whose_folder_links_its_sessions() {
 }
 
 #[test]
+fn a_project_row_starts_a_session_in_it_and_deleting_keeps_its_sessions() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, configs) = project_app(dir.path());
+    let session = chat_in(&mut app, "alpha", "first");
+    let sidebar = |message| AppMessage::Shell(shell::Message::Sidebar(message));
+    app.ctx.shell.set_pinned_projects(["alpha".to_owned()]);
+
+    update(&mut app, sidebar(shell::sidebar::Message::NewSessionIn("alpha".into())));
+    assert_eq!(configs.lock().unwrap().last().unwrap().project.as_deref(), Some("alpha"), "the row's + starts a session in it");
+
+    update(&mut app, sidebar(shell::sidebar::Message::DeleteProject("alpha".into())));
+    assert_eq!(app.ctx.screen(), Some(AreaId::Projects), "the row's X asks on the project screen");
+    assert_eq!(session_project(&app, &session).as_deref(), Some("alpha"), "nothing is deleted before the confirmation");
+    on_screen(&mut app, screen::Message::ConfirmDelete);
+
+    assert_eq!(session_project(&app, &session), None, "its sessions are kept, in no project");
+    assert!(app.ctx.sessions.get(&session).is_some());
+    assert!(!app.ctx.shell.sidebar().projects().contains(&"alpha"));
+    assert!(app.ctx.shell.sidebar().pinned_projects().is_empty(), "its pin goes");
+    assert!(!app.ctx.shell.open_projects().iter().any(|open| open == "alpha"), "its tab goes");
+    assert_eq!(app.ctx.services.project, None, "it is no longer the active project");
+    assert_ne!(app.ctx.screen(), Some(AreaId::Projects), "its screen closes");
+}
+
+#[test]
 fn project_screen_lists_sessions_saves_settings_and_excludes() {
     let dir = tempfile::tempdir().unwrap();
     let (mut app, configs) = project_app(dir.path());

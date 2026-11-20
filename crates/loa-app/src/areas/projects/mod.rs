@@ -58,6 +58,12 @@ pub enum Message {
     /// Make this project the active one, without showing its screen: the
     /// composer's project chip with no session shown.
     Activate(String),
+    /// A new session in this project, in its folder: the `+` on its row.
+    NewChatIn(String),
+    /// Show the project's screen asking to confirm its deletion.
+    AskDelete(String),
+    /// A project was deleted, with how many sessions it had.
+    Deleted(String, Result<usize, String>),
     /// Open the New project screen.
     New,
     Form(screen::create::Message),
@@ -240,8 +246,13 @@ impl State {
 
     /// [`Self::open`] with the folder given, for a project not listed yet.
     fn open_in(&mut self, project: String, folder: Option<PathBuf>, ctx: &mut Ctx) -> Task<Message> {
-        self.creating = None;
         ctx.request(Request::ActivateProject { project: project.clone(), cwd: folder });
+        self.show(project, ctx)
+    }
+
+    /// Shows `project`'s screen without making it the active project.
+    fn show(&mut self, project: String, ctx: &mut Ctx) -> Task<Message> {
+        self.creating = None;
         if self.screen.as_ref().is_none_or(|screen| screen.project() != project) {
             self.screen = Some(screen::State::new(project.clone()));
         }
@@ -288,6 +299,16 @@ impl State {
                 Task::perform(crate::app::choose_folder(start), move |result| {
                     Message::FolderChosen(Pick::Project(project.clone()), result)
                 })
+            }
+            screen::Event::Delete { project } => {
+                let service = self.service.clone();
+                Task::perform(
+                    async move {
+                        let result = service.delete(&project).await.map_err(|error| error.to_string());
+                        (project, result)
+                    },
+                    |(project, result)| Message::Deleted(project, result),
+                )
             }
         }
     }
@@ -395,6 +416,32 @@ impl Area for State {
             },
             Message::Activate(project) => {
                 ctx.request(Request::ActivateProject { project: project.clone(), cwd: self.folder(&project) });
+                Task::none()
+            }
+            Message::NewChatIn(project) => {
+                let cwd = self.folder(&project);
+                *self.new_chat() = Some(NewChat { project, cwd });
+                ctx.request(Request::NewSession);
+                Task::none()
+            }
+            Message::AskDelete(project) => {
+                let task = self.show(project, ctx);
+                if let Some(screen) = self.screen.as_mut() {
+                    screen.ask_delete();
+                }
+                task
+            }
+            Message::Deleted(project, Ok(_)) => {
+                self.contexts.remove(&project);
+                if self.screen.as_ref().is_some_and(|screen| screen.project() == project) {
+                    self.screen = None;
+                    ctx.close_screen();
+                }
+                ctx.request(Request::ForgetProject(project));
+                self.list()
+            }
+            Message::Deleted(project, Err(error)) => {
+                ctx.notify(format!("Can't delete project {project}: {error}"));
                 Task::none()
             }
             Message::New => {

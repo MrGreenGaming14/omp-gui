@@ -160,6 +160,7 @@ impl App {
                     Request::RevealTab(id) => self.reveal_tab(&id),
                     Request::Spawn(spawn) => self.spawn(spawn),
                     Request::ActivateProject { project, cwd } => self.activate_project(project, cwd),
+                    Request::ForgetProject(project) => self.forget_project(&project),
                     Request::Forward(message) => self.update(*message),
                 };
                 tasks.push(task);

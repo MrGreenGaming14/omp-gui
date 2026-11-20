@@ -249,6 +249,30 @@ impl ProjectService {
         Ok(folder)
     }
 
+    /// Deletes `project`: its settings and its folder's `.omgui` links go,
+    /// and its sessions are kept, in no project. Returns how many sessions
+    /// it had.
+    pub async fn delete(&self, project: &str) -> Result<usize> {
+        let settings = self.settings.load(project).await?;
+        let mut moved = 0;
+        for (info, dom) in self.sessions.all().await? {
+            if info.project != project {
+                continue;
+            }
+            if let Some(root) = dom.root() {
+                self.sessions.commit(&info.id, Draft::clear(root.id, attr::PROJECT)).await?;
+                moved += 1;
+            }
+        }
+        self.settings.remove(project).await?;
+        if let Some(folder) = settings.folder.filter(|folder| folder.is_dir())
+            && let Err(error) = crate::links::remove(&folder)
+        {
+            tracing::warn!(project, folder = %folder.display(), %error, "can't remove the .omgui links");
+        }
+        Ok(moved)
+    }
+
     /// Puts `session` into `project`, or out of every project when `None`. A
     /// blank name counts as `None`.
     pub async fn move_session(&self, session: &str, project: Option<&str>) -> Result<()> {
@@ -593,6 +617,13 @@ mod tests {
         assert!(!home.join(crate::links::LINKS_DIR).exists(), "the old folder's links are removed");
         env.service.projects().await.unwrap();
         assert_eq!(linked(&moved), BTreeSet::from([api, home]), "the old folder is now a session directory like any");
+
+        // Deleting keeps the sessions, in no project, and takes the links.
+        assert_eq!(env.service.delete("launch").await.unwrap(), 2);
+        assert!(!moved.join(crate::links::LINKS_DIR).exists());
+        assert!(env.service.projects().await.unwrap().is_empty(), "neither stored nor named by a session");
+        assert_eq!(env.service.overview("launch").await.unwrap().sessions.len(), 0);
+        assert!(crate::source::SessionSource::load(&env.service.sessions, "a").await.unwrap().is_some(), "sessions are kept");
     }
 
     #[tokio::test]

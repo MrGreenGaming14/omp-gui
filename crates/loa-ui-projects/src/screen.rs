@@ -33,6 +33,8 @@ pub struct State {
     new_pin_note: String,
     saving: bool,
     error: Option<String>,
+    /// The Delete project button was pressed; waiting for the confirmation.
+    confirm_delete: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -51,6 +53,10 @@ pub enum Message {
     NewChat,
     /// The Change… button beside the project's folder.
     ChangeFolder,
+    /// Delete project: asks for a confirmation first.
+    Delete,
+    ConfirmDelete,
+    CancelDelete,
 }
 
 /// What the app does for the screen.
@@ -66,6 +72,8 @@ pub enum Event {
     /// Show a folder dialog for the project's folder, starting at the
     /// current one; the app stores the choice and sends a fresh overview.
     ChangeFolder { project: String, current: Option<String> },
+    /// Delete the project, confirmed; its sessions are kept.
+    Delete { project: String },
 }
 
 impl State {
@@ -83,7 +91,13 @@ impl State {
             new_pin_note: String::new(),
             saving: false,
             error: None,
+            confirm_delete: false,
         }
+    }
+
+    /// Shows the delete confirmation, as for the Delete project button.
+    pub fn ask_delete(&mut self) {
+        self.confirm_delete = true;
     }
 
     pub fn project(&self) -> &str {
@@ -201,16 +215,31 @@ impl State {
                 let current = self.overview.as_ref().and_then(|o| o.cwd.clone());
                 return Some(Event::ChangeFolder { project: self.project.clone(), current });
             }
+            Message::Delete => self.confirm_delete = true,
+            Message::CancelDelete => self.confirm_delete = false,
+            Message::ConfirmDelete => {
+                self.confirm_delete = false;
+                return Some(Event::Delete { project: self.project.clone() });
+            }
         }
         None
     }
 
     pub fn view(&self) -> Element<'_, Message> {
         let mut content = column![self.header()].spacing(28).max_width(CONTENT_WIDTH);
+        let sessions = self.overview.as_ref().map(|overview| overview.sessions.len());
+        // Asked for, the confirmation sits on top where it is seen, also when
+        // it came from the sidebar; otherwise the section waits at the end.
+        if self.confirm_delete {
+            content = content.push(container(self.delete_view(sessions)).padding(14).style(style::card));
+        }
         match &self.overview {
             None => content = content.push(text("Loading project…").size(style::NOTE).style(style::muted)),
             Some(overview) => {
                 content = content.push(self.settings_view()).push(sessions_view(&overview.sessions, self.now));
+                if !self.confirm_delete {
+                    content = content.push(self.delete_view(sessions));
+                }
             }
         }
         scrollable(container(content).padding([28.0, 32.0]).center_x(Fill))
@@ -218,6 +247,33 @@ impl State {
             .style(style::scrollbar)
             .height(Fill)
             .into()
+    }
+
+    /// The Delete project section; after a press it asks to confirm.
+    fn delete_view(&self, sessions: Option<usize>) -> Element<'_, Message> {
+        let kept = match sessions {
+            None | Some(0) => "Its instructions and pins are removed.".to_owned(),
+            Some(1) => "Its instructions and pins are removed. Its session is kept, in no project.".to_owned(),
+            Some(n) => format!("Its instructions and pins are removed. Its {n} sessions are kept, in no project."),
+        };
+        let action: Element<'_, Message> = if self.confirm_delete {
+            row![
+                text(format!("Delete {}?", self.project)).size(style::SMALL).style(style::danger),
+                space::horizontal(),
+                button(text("Cancel").size(style::SMALL)).padding([6.0, 10.0]).style(style::flat).on_press(Message::CancelDelete),
+                button(text("Delete").size(style::SMALL)).padding([6.0, 14.0]).style(button::danger).on_press(Message::ConfirmDelete),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center)
+            .into()
+        } else {
+            row![
+                space::horizontal(),
+                button(text("Delete project").size(style::SMALL)).padding([6.0, 12.0]).style(style::flat).on_press(Message::Delete),
+            ]
+            .into()
+        };
+        column![section("Delete project"), text(kept).size(style::NOTE).style(style::muted), action].spacing(8).into()
     }
 
     fn header(&self) -> Element<'_, Message> {

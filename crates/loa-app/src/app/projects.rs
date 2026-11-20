@@ -103,11 +103,31 @@ impl App {
         match project {
             Some(project) => self.update(Message::Projects(areas::projects::Message::Activate(project))),
             None => {
-                self.ctx.services.project = None;
-                self.ctx.shell.set_active_project(None);
-                self.save_ui(|config| config.active_project = None);
+                self.clear_project();
                 Task::none()
             }
         }
+    }
+
+    /// No project is active: new sessions join none.
+    fn clear_project(&mut self) {
+        self.ctx.services.project = None;
+        self.ctx.shell.set_active_project(None);
+        self.save_ui(|config| config.active_project = None);
+    }
+
+    /// Drops every trace of the deleted `project`: its tab, its pin, and its
+    /// place as the active project.
+    pub(super) fn forget_project(&mut self, project: &str) -> Task<Message> {
+        self.close_project_tab(project);
+        let mut pins = self.ctx.shell.sidebar().pinned_projects().clone();
+        if pins.remove(project) {
+            self.ctx.shell.set_pinned_projects(pins.clone());
+            self.save_ui(|config| config.pinned_projects = pins);
+        }
+        if self.ctx.services.project.as_deref() == Some(project) {
+            self.clear_project();
+        }
+        Task::none()
     }
 }
