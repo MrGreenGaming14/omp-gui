@@ -152,7 +152,10 @@ fn first_executable(base: &Path, pathext: Option<&OsStr>, searched: bool) -> Opt
                 if !ext.starts_with('.') {
                     name.push(".");
                 }
-                name.push(ext);
+                // PATHEXT is upper case; files are almost always lower case
+                // and Windows matches names case-insensitively, so report
+                // the path the way the file is usually spelled.
+                name.push(ext.to_ascii_lowercase());
                 let candidate = PathBuf::from(name);
                 if is_executable(&candidate) {
                     return Some(candidate);
