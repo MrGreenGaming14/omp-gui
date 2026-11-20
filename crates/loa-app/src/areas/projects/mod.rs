@@ -55,6 +55,15 @@ pub enum Message {
     Context(String, Result<Option<String>, String>),
     /// The rebuild driver finished with a session's digest.
     Rebuild(RebuildOutcome),
+    /// Make this project the active one, without showing its screen: the
+    /// composer's project chip with no session shown.
+    Activate(String),
+    /// Create a project named this, with the current folder as its default.
+    Create(String),
+    Created(String, Result<(), String>),
+    /// Move a session to a project, or out of every project with `None`.
+    Move { session: String, project: Option<String> },
+    Moved(Result<(), String>),
 }
 
 /// The project and directory the next new session starts in, set by the
@@ -106,7 +115,6 @@ impl State {
         for spec in &tools.0 {
             ctx.set_app_tool(loa_ui_tools::ToolInfo::from(spec));
         }
-        ctx.shell.set_projects([ctx.services.workspace_project()]);
         let state = Self {
             service,
             tools,
@@ -117,7 +125,7 @@ impl State {
             new_chat: Mutex::new(None),
             _runtime: runtime,
         };
-        let task = Task::batch([state.list(), state.refresh_context(ctx.services.project.clone())]);
+        let task = Task::batch([state.list(), ctx.services.project.clone().map_or_else(Task::none, |project| state.refresh_context(project))]);
         (state, task)
     }
 
@@ -181,24 +189,31 @@ impl State {
         }
     }
 
-    /// The folder of `project`: the launch folder for the workspace project,
-    /// else the folder of its most recent session, when it still exists.
-    fn folder(&self, project: &str, ctx: &Ctx) -> Option<PathBuf> {
-        let folder = if project == ctx.services.workspace_project() {
-            Some(ctx.services.workspace.clone())
-        } else {
-            self.projects.iter().find(|summary| summary.name == project).and_then(|summary| summary.cwd.as_deref()).map(PathBuf::from)
+    /// The default folder of `project`, when it still exists: the one it was
+    /// created with, else that of its most recent session.
+    fn folder(&self, project: &str) -> Option<PathBuf> {
+        self.projects
+            .iter()
+            .find(|summary| summary.name == project)
+            .and_then(|summary| summary.cwd.as_deref())
+            .map(PathBuf::from)
+            .filter(|folder| folder.is_dir())
+    }
+
+    /// Puts the project list and the current project into the composer's
+    /// project chip: the shown session's project, else the active one.
+    fn sync_chip(&self, ctx: &mut Ctx) {
+        let current = match ctx.sessions.active() {
+            Some(session) => session.summary().and_then(|summary| summary.project.clone()),
+            None => ctx.services.project.clone(),
         };
-        folder.filter(|folder| folder.is_dir())
+        ctx.composer.set_projects(self.names(), current);
     }
 
     /// Makes `project` the active project, with its folder, and shows its
     /// screen: the project's chats, most recent first.
     fn open(&mut self, project: String, ctx: &mut Ctx) -> Task<Message> {
-        match self.folder(&project, ctx) {
-            Some(cwd) => ctx.request(Request::ActivateProject { project: project.clone(), cwd }),
-            None => ctx.notify(format!("{project} has no folder yet; start a chat in it first")),
-        }
+        ctx.request(Request::ActivateProject { project: project.clone(), cwd: self.folder(&project) });
         if self.screen.as_ref().is_none_or(|screen| screen.project() != project) {
             self.screen = Some(screen::State::new(project.clone()));
         }
@@ -243,15 +258,9 @@ impl State {
         }
     }
 
-    /// The sidebar's project names: the listed projects, and this
-    /// workspace's project first when it has no sessions yet.
-    fn names(&self, workspace: &str) -> Vec<String> {
-        let mut names: Vec<String> = Vec::with_capacity(self.projects.len() + 1);
-        if !self.projects.iter().any(|project| project.name == workspace) {
-            names.push(workspace.to_owned());
-        }
-        names.extend(self.projects.iter().map(|project| project.name.clone()));
-        names
+    /// The project names, most recently active first.
+    fn names(&self) -> Vec<String> {
+        self.projects.iter().map(|project| project.name.clone()).collect()
     }
 }
 
@@ -267,7 +276,8 @@ impl Area for State {
             Message::Open(project) => self.open(project, ctx),
             Message::Listed(Ok(projects)) => {
                 self.projects = projects;
-                ctx.shell.set_projects(self.names(&ctx.services.workspace_project()));
+                ctx.shell.set_projects(self.names());
+                self.sync_chip(ctx);
                 let uncached: Vec<String> =
                     self.projects.iter().filter(|p| !self.contexts.contains_key(&p.name)).map(|p| p.name.clone()).collect();
                 Task::batch(uncached.into_iter().map(|project| self.refresh_context(project)))
@@ -323,12 +333,47 @@ impl Area for State {
                 }
                 RebuildOutcome::Skipped { .. } => Task::none(),
             },
+            Message::Activate(project) => {
+                ctx.request(Request::ActivateProject { project: project.clone(), cwd: self.folder(&project) });
+                Task::none()
+            }
+            Message::Create(name) => {
+                let service = self.service.clone();
+                let folder = ctx.services.cwd.clone();
+                Task::perform(
+                    async move {
+                        let result = service.create(&name, Some(folder)).await.map_err(|error| error.to_string());
+                        (name, result)
+                    },
+                    |(name, result)| Message::Created(name, result),
+                )
+            }
+            Message::Created(name, Ok(())) => {
+                let open = self.open(name.trim().to_owned(), ctx);
+                Task::batch([self.list(), open])
+            }
+            Message::Created(name, Err(error)) => {
+                ctx.notify(format!("Can't create project {name}: {error}"));
+                Task::none()
+            }
+            Message::Move { session, project } => {
+                let service = self.service.clone();
+                Task::perform(
+                    async move { service.move_session(&session, project.as_deref()).await.map_err(|error| error.to_string()) },
+                    Message::Moved,
+                )
+            }
+            Message::Moved(Ok(())) => self.list(),
+            Message::Moved(Err(error)) => {
+                ctx.notify(format!("Can't move the session: {error}"));
+                Task::none()
+            }
         }
     }
 
     fn palette_commands(&self, ctx: &Ctx) -> Vec<palette::Command> {
         let pinned = ctx.shell.sidebar().pinned_projects();
-        self.names(&ctx.services.workspace_project())
+        self.names()
             .into_iter()
             .flat_map(|name| {
                 let open = AreaId::Projects.command(&format!("{OPEN_COMMAND}{name}"));
@@ -381,7 +426,7 @@ impl Area for State {
             .then(|| HostToolSet { specs: self.tools.0.clone(), handler: Arc::clone(&self.tools.1) })
     }
 
-    fn on_session_event(&mut self, event: &SessionEvent, _: &mut Ctx) -> Task<Message> {
+    fn on_session_event(&mut self, event: &SessionEvent, ctx: &mut Ctx) -> Task<Message> {
         match event {
             SessionEvent::TurnEnded { session, .. } => {
                 self.service.notify(session.as_str(), Trigger::TurnEnd);
@@ -391,7 +436,17 @@ impl Area for State {
                 self.service.notify(session.as_str(), Trigger::Compaction);
                 Task::none()
             }
-            SessionEvent::Activated(Some(_)) | SessionEvent::Closed(_) => self.list(),
+            SessionEvent::Activated(_) | SessionEvent::Closed(_) => {
+                self.sync_chip(ctx);
+                self.list()
+            }
+            // A session moved between projects.
+            SessionEvent::Patch(_, patch)
+                if matches!(&patch.op, loa_core::Op::Set { name, .. } if name == loa_core::attr::PROJECT) =>
+            {
+                self.sync_chip(ctx);
+                self.list()
+            }
             _ => Task::none(),
         }
     }

@@ -287,7 +287,7 @@ fn a_project_grant_shares_its_sessions_and_peers_are_renamed_and_removed() {
     // N3: the session's project is a grant resource; a view grant on it
     // shares the project's sessions. Real adapters record the project on
     // the session root; the fake one doesn't, so it is set here.
-    let project = owner.ctx.services.project.clone();
+    let project = String::from("shared");
     let writer = Arc::clone(owner.ctx.sessions.get(&session).unwrap().writer());
     let root = writer.with_dom(|dom| dom.root().unwrap().id);
     writer.commit(Draft::set(root, attr::PROJECT, project.as_str())).unwrap();

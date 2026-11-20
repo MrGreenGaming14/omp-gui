@@ -229,6 +229,10 @@ pub enum Event {
     CloseProjectTab(String),
     /// Delete this session and its journal.
     DeleteSession(String),
+    /// Create a project with this name, from the sidebar.
+    CreateProject(String),
+    /// Move a session to a project, or out of every project with `None`.
+    MoveSession { id: String, project: Option<String> },
     /// The right panel opened or closed.
     PanelToggled {
         /// Whether it is open now.
@@ -265,6 +269,8 @@ impl From<sidebar::Event> for Event {
             sidebar::Event::SetPinned { id, pinned } => Event::SetPinned { id, pinned },
             sidebar::Event::SetProjectPinned { project, pinned } => Event::SetProjectPinned { project, pinned },
             sidebar::Event::DeleteSession(id) => Event::DeleteSession(id),
+            sidebar::Event::CreateProject(name) => Event::CreateProject(name),
+            sidebar::Event::MoveSession { id, project } => Event::MoveSession { id, project },
         }
     }
 }

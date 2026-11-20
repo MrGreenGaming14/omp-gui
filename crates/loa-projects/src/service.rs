@@ -13,8 +13,9 @@ use crate::source::{Access, Requester, SessionInfo, visible_sessions};
 use crate::tools::ProjectTools;
 use crate::{Error, Result};
 use loa_adapter::{HostToolSpec, HostTools};
-use loa_core::{Dom, ElementKind, attr};
+use loa_core::{Dom, Draft, ElementKind, attr};
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -40,7 +41,7 @@ impl Default for ServiceConfig {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProjectSummary {
     pub name: String,
-    /// Working directory of the project's most recent session.
+    /// The folder when set, else the working directory of the latest session.
     pub cwd: Option<String>,
     pub sessions: usize,
     /// Unix milliseconds of the latest activity in any of its sessions.
@@ -81,6 +82,11 @@ impl SessionRow {
             digest: digest.map(|d| d.content),
         }
     }
+}
+
+/// A project's folder as a path string, when one is set.
+fn folder_of(settings: &ProjectSettings) -> Option<String> {
+    settings.folder.as_ref().map(|dir| dir.to_string_lossy().into_owned())
 }
 
 /// Everything the project screen shows.
@@ -133,10 +139,24 @@ impl ProjectService {
         self.rebuild.notify(session, trigger)
     }
 
-    /// Every project that has sessions, most recently active first.
+    /// Every project: each stored project and each project a session names,
+    /// most recently active first. A project's folder is its stored one when
+    /// set, else the cwd of its most recent session.
     pub async fn projects(&self) -> Result<Vec<ProjectSummary>> {
+        let mut folders = BTreeMap::new();
         let mut projects: BTreeMap<String, (ProjectSummary, i64)> = BTreeMap::new();
+        for name in self.settings.names().await? {
+            let settings = self.settings.load(&name).await?;
+            if let Some(folder) = folder_of(&settings) {
+                folders.insert(name.clone(), folder);
+            }
+            let summary = ProjectSummary { name: name.clone(), cwd: None, sessions: 0, last_active: 0 };
+            projects.insert(name, (summary, i64::MIN));
+        }
         for (info, dom) in self.sessions.all().await? {
+            if info.project.is_empty() {
+                continue;
+            }
             let active = last_active(&dom);
             let cwd = dom.root().and_then(|r| r.str_attr(attr::CWD)).map(str::to_owned);
             let (summary, cwd_at) = projects.entry(info.project.clone()).or_insert_with(|| {
@@ -149,9 +169,50 @@ impl ProjectService {
                 *cwd_at = active;
             }
         }
-        let mut projects: Vec<ProjectSummary> = projects.into_values().map(|(p, _)| p).collect();
+        let mut projects: Vec<ProjectSummary> = projects
+            .into_iter()
+            .map(|(name, (mut summary, _))| {
+                if let Some(folder) = folders.remove(&name) {
+                    summary.cwd = Some(folder);
+                }
+                summary
+            })
+            .collect();
         projects.sort_by(|a, b| b.last_active.cmp(&a.last_active).then_with(|| a.name.cmp(&b.name)));
         Ok(projects)
+    }
+
+    /// Creates a project, or sets the folder of an existing one when `folder`
+    /// is given. Fails on a blank name.
+    pub async fn create(&self, name: &str, folder: Option<PathBuf>) -> Result<()> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(Error::EmptyName);
+        }
+        let mut settings = self.settings.load(name).await?;
+        if folder.is_some() {
+            settings.folder = folder;
+        }
+        self.settings.save(name, &settings).await
+    }
+
+    /// Puts `session` into `project`, or out of every project when `None`. A
+    /// blank name counts as `None`.
+    pub async fn move_session(&self, session: &str, project: Option<&str>) -> Result<()> {
+        let project = project.map(str::trim).filter(|name| !name.is_empty());
+        let dom = crate::source::SessionSource::load(&self.sessions, session)
+            .await?
+            .ok_or_else(|| Error::SessionNotFound(session.to_owned()))?;
+        let root = dom.root().ok_or_else(|| Error::SessionNotFound(session.to_owned()))?;
+        if root.str_attr(attr::PROJECT).map(str::trim).filter(|name| !name.is_empty()) == project {
+            return Ok(());
+        }
+        let draft = match project {
+            Some(name) => Draft::set(root.id, attr::PROJECT, name),
+            None => Draft::clear(root.id, attr::PROJECT),
+        };
+        self.sessions.commit(session, draft).await?;
+        Ok(())
     }
 
     /// The project screen's data.
@@ -170,7 +231,9 @@ impl ProjectService {
             sessions.push(row);
         }
         sessions.sort_by(|a, b| b.last_active.cmp(&a.last_active).then_with(|| a.id.cmp(&b.id)));
-        Ok(ProjectOverview { name: project.to_owned(), cwd: cwd.map(|(_, dir)| dir), settings, sessions })
+        let folder = folder_of(&settings);
+        let cwd = folder.or_else(|| cwd.map(|(_, dir)| dir));
+        Ok(ProjectOverview { name: project.to_owned(), cwd, settings, sessions })
     }
 
     pub async fn save_settings(&self, project: &str, settings: &ProjectSettings) -> Result<()> {
@@ -286,7 +349,7 @@ mod tests {
         Env { _dir: dir, bus, store, service, outcomes }
     }
 
-    fn open(env: &Env, id: &str, cwd: &str, prompt: &str, at: i64) -> Arc<SessionWriter> {
+    fn open(env: &Env, id: &str, project: &str, cwd: &str, prompt: &str, at: i64) -> Arc<SessionWriter> {
         let writer = env
             .bus
             .open(WriterConfig {
@@ -309,6 +372,7 @@ mod tests {
                         (attr::NODE, "n".into()),
                         (attr::CREATED, at.into()),
                         (attr::CWD, cwd.into()),
+                        (attr::PROJECT, project.into()),
                         (attr::TITLE, format!("Title {id}").into()),
                     ],
                     "",
@@ -328,9 +392,9 @@ mod tests {
     #[tokio::test]
     async fn projects_overview_digest_and_context_end_to_end() {
         let mut env = env();
-        let _a = open(&env, "a", "/home/u/loa", "set up iroh", 10);
-        let _b = open(&env, "b", "/home/u/loa", "write docs", 20);
-        let _c = open(&env, "c", "/home/u/web", "landing page", 5);
+        let _a = open(&env, "a", "loa", "/home/u/loa", "set up iroh", 10);
+        let _b = open(&env, "b", "loa", "/home/u/loa", "write docs", 20);
+        let _c = open(&env, "c", "web", "/home/u/web", "landing page", 5);
         // Closed sessions stay in their project.
         env.bus.close("c");
         drop(_c);
@@ -356,6 +420,7 @@ mod tests {
             instructions: "Use rustls.".into(),
             pinned: vec![PinnedFile { path: "docs/ARCH.md".into(), note: None }],
             digest_model: None,
+            folder: None,
         };
         env.service.save_settings("loa", &settings).await.unwrap();
         assert_eq!(env.service.overview("loa").await.unwrap().settings, settings);
@@ -379,5 +444,50 @@ mod tests {
         let out = handler.call("b", crate::PROJECT_SEARCH, r#"{"query":"iroh","include_excluded":true}"#).await.unwrap();
         let out: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(out["hits"][0]["session"], "a");
+    }
+
+    #[tokio::test]
+    async fn sessions_without_a_project_belong_to_no_project() {
+        let env = env();
+        let _a = open(&env, "a", "loa", "/home/u/loa", "set up iroh", 10);
+        let _b = open(&env, "b", "loa", "/home/u/scratch", "scratch", 20);
+        env.service.move_session("b", None).await.unwrap();
+        let projects = env.service.projects().await.unwrap();
+        let rows: Vec<(&str, usize, Option<&str>)> =
+            projects.iter().map(|p| (p.name.as_str(), p.sessions, p.cwd.as_deref())).collect();
+        assert_eq!(rows, [("loa", 1, Some("/home/u/loa"))]);
+    }
+
+    #[tokio::test]
+    async fn created_projects_list_with_their_folder() {
+        let env = env();
+        let _a = open(&env, "a", "loa", "/home/u/loa", "set up iroh", 10);
+        env.service.create("  docs  ", Some(PathBuf::from("/home/u/docs"))).await.unwrap();
+        env.service.create("empty", None).await.unwrap();
+        env.service.create("loa", Some(PathBuf::from("/srv/loa"))).await.unwrap();
+        let projects = env.service.projects().await.unwrap();
+        let rows: Vec<(&str, usize, Option<&str>)> =
+            projects.iter().map(|p| (p.name.as_str(), p.sessions, p.cwd.as_deref())).collect();
+        assert_eq!(rows, [("loa", 1, Some("/srv/loa")), ("docs", 0, Some("/home/u/docs")), ("empty", 0, None)]);
+    }
+
+    #[tokio::test]
+    async fn create_rejects_a_blank_name() {
+        let env = env();
+        assert!(matches!(env.service.create("  ", None).await, Err(Error::EmptyName)));
+        assert!(env.service.projects().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn move_session_sets_and_clears_the_project() {
+        let env = env();
+        let _a = open(&env, "a", "loa", "/home/u/loa", "set up iroh", 10);
+        env.service.move_session("a", Some("web")).await.unwrap();
+        let moved = env.service.projects().await.unwrap();
+        let names: Vec<(&str, usize)> = moved.iter().map(|p| (p.name.as_str(), p.sessions)).collect();
+        assert_eq!(names, [("web", 1)]);
+        env.service.move_session("a", None).await.unwrap();
+        assert!(env.service.projects().await.unwrap().is_empty());
+        assert!(matches!(env.service.move_session("nope", Some("web")).await, Err(Error::SessionNotFound(_))));
     }
 }

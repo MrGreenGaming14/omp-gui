@@ -168,6 +168,10 @@ pub enum Message {
     /// The start screen.
     Start(start::StartMessage),
     Agents(areas::agents::Message),
+    /// The clipboard image a paste asked for, saved to disk, or none.
+    ImagePasted(Result<Option<media::Pasted>, String>),
+    /// A file was dropped on a window.
+    FileDropped(PathBuf),
 }
 
 pub struct App {
@@ -180,7 +184,6 @@ pub struct App {
     pub(crate) terminal: terminal::state::State,
     usage: usage::State,
     overlay: Option<windows::Overlay>,
-    configs: Option<windows::ConfigsTab>,
     docs: windows::Docs,
     main_window: Option<iced::window::Id>,
     detached: Vec<(iced::window::Id, detach::Detached)>,
@@ -234,7 +237,7 @@ impl App {
         // The project selected last run, while its folder still exists, is the active one from the start.
         let restored = saved.active_project.filter(|active| active.cwd.is_dir());
         if let Some(active) = &restored {
-            services.set_active(active.name.clone(), active.cwd.clone());
+            services.set_active(active.name.clone(), Some(active.cwd.clone()));
         }
         let (shell, setup) =
             shell::State::new(preference(saved.theme), shell::PanelPrefs { open: true, ..Default::default() });
@@ -270,7 +273,6 @@ impl App {
             terminal,
             usage: usage::State::default(),
             overlay: None,
-            configs: None,
             docs: windows::Docs::default(),
             main_window: None,
             detached: Vec::new(),
@@ -393,8 +395,11 @@ impl App {
         }
     }
 
-    /// Loads the active session's DOM into the chat and the frame.
+    /// Loads the active session's DOM into the chat and the frame. The
+    /// composer follows its turn state, so it never waits on a session that
+    /// isn't shown.
     fn present(&mut self) -> Task<Message> {
+        self.ctx.composer.follow_session(self.ctx.sessions.active().is_some_and(|session| session.is_busy()));
         let Some(session) = self.ctx.sessions.active() else {
             self.chat.load(&Dom::new());
             let workspace = workspace(&self.ctx.services.cwd);
@@ -503,7 +508,6 @@ impl App {
             }
             Some(composer::Event::AccessChanged(id)) => self.set_access(id),
             Some(composer::Event::ModeChanged(mode)) => self.update(Message::Sessions(areas::sessions::Message::Mode(mode))),
-            Some(composer::Event::OpenAgents) => self.update(Message::Agents(areas::agents::Message::Open)),
             Some(composer::Event::FilesRequested { .. }) => {
                 self.files.refresh();
                 self.ctx.composer.set_files(self.files.visible().map(|path| path.to_string_lossy().into_owned()).collect());
@@ -512,6 +516,8 @@ impl App {
             Some(composer::Event::OpenWorkspace) => self.open_tab("files"),
             Some(composer::Event::FolderPicked(path)) => self.switch_folder(PathBuf::from(path)),
             Some(composer::Event::BrowseFolders) => Task::perform(choose_folder(self.ctx.services.cwd.clone()), Message::FolderChosen),
+            Some(composer::Event::ImagePasteRequested) => self.paste_image(),
+            Some(composer::Event::ProjectPicked(project)) => self.project_picked(project),
             Some(composer::Event::QueueChanged(_)) | None => Task::none(),
         }
     }
@@ -537,7 +543,6 @@ impl App {
             Message::Shell(message) => {
                 let (task, event) = self.ctx.shell.update(message);
                 if matches!(event, Some(shell::Event::NewSession | shell::Event::OpenSession(_) | shell::Event::OpenProject(_))) {
-                    self.configs = None;
                     self.overlay = None;
                 }
                 let action = match event {
@@ -545,6 +550,10 @@ impl App {
                     Some(shell::Event::OpenUsage) => {
                         self.overlay = Some(windows::Overlay::Usage);
                         self.usage.refresh().map(Message::Usage)
+                    }
+                    Some(shell::Event::CreateProject(name)) => self.update(Message::Projects(areas::projects::Message::Create(name))),
+                    Some(shell::Event::MoveSession { id, project }) => {
+                        self.update(Message::Projects(areas::projects::Message::Move { session: id, project }))
                     }
                     Some(shell::Event::OpenConfigs) => {
                         self.window_update(windows::WindowMessage::OpenConfigs(windows::ConfigsTab::Models))
@@ -636,14 +645,12 @@ impl App {
                     if self.palette.is_open() {
                         return self.update(Message::Palette(palette::Message::Close));
                     }
-                    if self.overlay.take().is_some() {
-                        return Task::none();
-                    }
-                    if self.docs.full {
+                    // A file's full screen leaves before the Configs window it is drawn in.
+                    if self.docs.full && matches!(self.overlay, Some(windows::Overlay::Configs(_))) {
                         self.docs.full = false;
                         return Task::none();
                     }
-                    if self.configs.take().is_some() {
+                    if self.overlay.take().is_some() {
                         return Task::none();
                     }
                     if let Some(pane) = self.ctx.shell.full() {
@@ -679,6 +686,8 @@ impl App {
             Message::Window(message) => self.window_update(message),
             Message::WindowClosed(id) => self.window_closed(id),
             Message::Reattach(id) => self.reattach(id),
+            Message::ImagePasted(pasted) => self.image_pasted(pasted),
+            Message::FileDropped(path) => self.file_dropped(path),
             Message::FolderChosen(Ok(Some(path))) => self.switch_folder(path),
             Message::FolderChosen(Ok(None)) => Task::none(),
             Message::FolderChosen(Err(error)) => {
@@ -697,10 +706,6 @@ impl App {
                 Task::batch([task, action])
             }
             Message::NewSession => self.start(None),
-            Message::Start(start::StartMessage::Starter(index)) => match start::STARTERS.get(index) {
-                Some((_, _, prompt)) => self.ctx.composer.set_text(prompt).map(Message::Composer),
-                None => Task::none(),
-            },
             Message::Start(start::StartMessage::Open(id)) => self.open_session(&id),
             Message::Session(id, feed) => self.feed(id, feed),
             Message::Recents { summaries, problems, empty } => self.recents_loaded(summaries, problems, empty),
@@ -735,9 +740,8 @@ impl App {
             Message::Decisions(message) => area!(decisions, Decisions, message),
             Message::Tools(message) => area!(tools, Tools, message),
             Message::Surfaces(message) => area!(surfaces, Surfaces, message),
-            Message::Models(areas::models::Message::Close) if self.configs.is_some() || matches!(self.overlay, Some(windows::Overlay::Settings(_))) => {
+            Message::Models(areas::models::Message::Close) if matches!(self.overlay, Some(windows::Overlay::Settings(_) | windows::Overlay::Configs(_))) => {
                 // The models screen's own close button, drawn inside Configs or Settings.
-                self.configs = None;
                 self.overlay = None;
                 self.ctx.close_screen();
                 Task::none()
@@ -756,9 +760,7 @@ impl App {
         let screen = ctx.screen().and_then(|screen| {
             with_areas!(on_area!(screen, self.areas, ref |area, wrap| area.view_screen(ctx).map(|view| view.map(wrap))))
         });
-        let center_content: Element<'_, Message> = if let Some(tab) = self.configs {
-            self.configs_view(tab)
-        } else if let Some(screen) = screen {
+        let center_content: Element<'_, Message> = if let Some(screen) = screen {
             screen
         } else if let Some(session) = ctx.sessions.active() {
             let transcript = self.chat.view(session.dom(), Message::Chat, |slot| {
@@ -788,17 +790,18 @@ impl App {
         // peer's project never lists them: its disk is only reached through
         // the grant-checked folder path.
         let project_files = || {
-            (!areas::peers::is_remote(&ctx.services.project)).then(|| self.files.view_compact().map(Message::Files))
+            (!ctx.services.project.as_deref().is_some_and(areas::peers::is_remote)).then(|| self.files.view_compact().map(Message::Files))
         };
         let frame = ctx.shell.view(center_content, |tab| self.view_tab(tab), project_files, Message::Shell);
         let frame: Element<'_, Message> = match self.overlay {
             Some(overlay) => {
                 let window = match overlay {
                     windows::Overlay::Usage => self.usage.view().map(Message::Usage),
+                    windows::Overlay::Configs(tab) => self.configs_view(tab),
                     windows::Overlay::Settings(tab) => self.settings_view(tab),
                 };
                 let scrim = iced::widget::mouse_area(container(iced::widget::space()).style(style::scrim).width(Fill).height(Fill))
-                    .on_press(Message::Window(windows::WindowMessage::CloseSettings));
+                    .on_press(Message::Window(windows::WindowMessage::CloseOverlay));
                 stack![frame, scrim, container(iced::widget::opaque(window)).center_x(Fill).padding(Padding { top: 64.0, right: 24.0, bottom: 24.0, left: 24.0 })].into()
             }
             None => frame,
@@ -831,6 +834,7 @@ impl App {
                 self.ctx.shell.subscription().map(Message::Shell),
                 self.ctx.composer.subscription().map(Message::Composer),
                 iced::event::listen_with(key_press),
+                iced::event::listen_with(file_drop),
                 self.ctx.sessions.watch().map(|(id, feed)| Message::Session(id, feed)),
                 if busy { iced::time::every(TICK).map(|_| Message::Tick) } else { Subscription::none() },
                 iced::time::every(USAGE_REFRESH).map(|_| Message::Usage(usage::Message::Refresh)),
@@ -871,6 +875,14 @@ fn key_press(event: iced::event::Event, status: iced::event::Status, _: iced::wi
     }
 }
 
+/// Files dropped on a window go to the composer.
+fn file_drop(event: iced::event::Event, _: iced::event::Status, _: iced::window::Id) -> Option<Message> {
+    match event {
+        iced::event::Event::Window(iced::window::Event::FileDropped(path)) => Some(Message::FileDropped(path)),
+        _ => None,
+    }
+}
+
 mod detach;
 mod start;
 mod keys;
@@ -879,6 +891,7 @@ mod windows;
 mod access;
 mod feed;
 mod flow;
+mod media;
 mod folders;
 mod projects;
 

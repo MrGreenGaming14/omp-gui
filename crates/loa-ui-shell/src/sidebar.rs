@@ -67,7 +67,14 @@ pub struct State {
     machines_open: bool,
     /// The footer usage meter, once usage is known.
     usage: Option<UsageMeter>,
+    /// The name typed in the "New project" input, while it is open.
+    new_project: Option<String>,
+    /// The session whose "Move to project" list is open.
+    move_menu: Option<String>,
 }
+
+/// Id of the "New project" name input, focused when it opens.
+pub const NEW_PROJECT_ID: &str = "loa-sidebar-new-project";
 
 /// A session with its lowercase search text, rebuilt when sessions or node
 /// names change so typing in the search box does not allocate per row.
@@ -126,6 +133,15 @@ pub enum Message {
     Delete(String),
     /// The row under Recents that lists the next page of sessions.
     ShowMoreRecents,
+    /// The `+` in the Projects header: opens or closes the name input.
+    NewProject,
+    ProjectNameChanged(String),
+    /// Enter in the name input.
+    CreateProject,
+    /// The folder button on a session row: opens or closes its project list.
+    ToggleMoveMenu(String),
+    /// A project picked in a session's list; `None` is "No project".
+    MoveTo { id: String, project: Option<String> },
 }
 
 /// What the app must act on.
@@ -165,6 +181,10 @@ pub enum Event {
     },
     /// Delete this session and its journal.
     DeleteSession(String),
+    /// Create a project with this name.
+    CreateProject(String),
+    /// Move a session to a project, or out of every project with `None`.
+    MoveSession { id: String, project: Option<String> },
 }
 
 impl State {
@@ -472,6 +492,32 @@ impl State {
                 self.recents_pages += 1;
                 None
             }
+            Message::NewProject => {
+                if self.new_project.take().is_none() {
+                    self.new_project = Some(String::new());
+                    return (iced::widget::operation::focus(NEW_PROJECT_ID), None);
+                }
+                None
+            }
+            Message::ProjectNameChanged(name) => {
+                if let Some(typed) = &mut self.new_project {
+                    *typed = name;
+                }
+                None
+            }
+            Message::CreateProject => {
+                let name = self.new_project.take().unwrap_or_default();
+                let name = name.trim();
+                (!name.is_empty()).then(|| Event::CreateProject(name.to_owned()))
+            }
+            Message::ToggleMoveMenu(id) => {
+                self.move_menu = (self.move_menu.as_deref() != Some(id.as_str())).then_some(id);
+                None
+            }
+            Message::MoveTo { id, project } => {
+                self.move_menu = None;
+                Some(Event::MoveSession { id, project })
+            }
         };
         (Task::none(), event)
     }
@@ -536,7 +582,25 @@ impl State {
             .as_deref()
             .or(self.active_project.as_deref())
             .or_else(|| self.active.as_deref().and_then(|id| self.session(id)).and_then(|s| s.project.as_deref()));
-        lists = lists.push(header("Projects"));
+        // "Projects" where the other headers sit, with the `+` centered
+        // beside it and clear of the scrollbar drawn over the list's edge.
+        let add = button(muted(Icon::Plus, 14.0)).on_press(Message::NewProject).style(style::ghost_button).padding(5);
+        lists = lists.push(
+            row![text("Projects").size(12).style(style::faint).width(Fill), add]
+                .align_y(Alignment::Center)
+                .padding(Padding { top: 6.0, right: 12.0, bottom: 0.0, left: 10.0 }),
+        );
+        if let Some(name) = &self.new_project {
+            lists = lists.push(
+                text_input("Project name", name)
+                    .id(NEW_PROJECT_ID)
+                    .on_input(Message::ProjectNameChanged)
+                    .on_submit(Message::CreateProject)
+                    .size(13)
+                    .style(style::input)
+                    .padding([5, 10]),
+            );
+        }
         if self.visible_projects.is_empty() {
             lists = lists.push(hint(if self.projects.is_empty() { "No projects yet" } else { "No match" }));
         }
@@ -742,10 +806,34 @@ impl State {
             .style(style::ghost_button)
             .padding(4);
 
+        let move_to = button(muted(Icon::Folder, 13.0))
+            .on_press(Message::ToggleMoveMenu(session.id.clone()))
+            .style(style::ghost_button)
+            .padding(4);
+
         // On a backing the color of the hovered (or selected) row, so the
         // icons cover the end of the title instead of mixing with it.
-        let actions = container(row![pin, delete].spacing(2)).padding([0, 2]).style(move |theme| style::row_actions(theme, selected));
-        hover(body, container(actions).align_right(Fill).center_y(Fill).padding([0, 6]))
+        let actions = container(row![move_to, pin, delete].spacing(2)).padding([0, 2]).style(move |theme| style::row_actions(theme, selected));
+        let row = hover(body, container(actions).align_right(Fill).center_y(Fill).padding([0, 6]));
+        if self.move_menu.as_deref() != Some(session.id.as_str()) {
+            return row;
+        }
+        // The session's project list: "No project", then every project.
+        let choice = |label: &'a str, project: Option<&'a String>| {
+            let current = session.project.as_ref() == project;
+            let mut line = row![text(label).size(13).width(Fill)].align_y(Alignment::Center);
+            if current {
+                line = line.push(muted(Icon::Check, 12.0));
+            }
+            button(line)
+                .on_press(Message::MoveTo { id: session.id.clone(), project: project.cloned() })
+                .style(style::row_for(current))
+                .padding([4, 10])
+                .width(Fill)
+        };
+        let list = std::iter::once(choice("No project", None)).chain(self.projects.iter().map(|project| choice(project, Some(project))));
+        let menu = container(Column::with_children(list.map(Element::from)).spacing(1)).padding(Padding { top: 2.0, right: 0.0, bottom: 4.0, left: 16.0 });
+        column![row, menu].into()
     }
 }
 
@@ -962,5 +1050,39 @@ mod tests {
 
         let _ = state.update(Message::PickMachine(NodeFilter::All));
         assert_eq!(state.recents_limit(), RECENTS_PAGE);
+    }
+
+    #[test]
+    fn new_project_takes_a_trimmed_name_and_ignores_a_blank_one() {
+        let mut state = State::default();
+        let _ = state.update(Message::NewProject);
+        let _ = state.update(Message::ProjectNameChanged("  Launch plan ".into()));
+        assert_eq!(state.update(Message::CreateProject).1, Some(Event::CreateProject("Launch plan".into())));
+        assert!(state.new_project.is_none(), "the input closes");
+
+        let _ = state.update(Message::NewProject);
+        let _ = state.update(Message::ProjectNameChanged("   ".into()));
+        assert_eq!(state.update(Message::CreateProject).1, None);
+        let _ = state.update(Message::NewProject);
+        let _ = state.update(Message::NewProject);
+        assert!(state.new_project.is_none(), "the + closes it again");
+    }
+
+    #[test]
+    fn a_session_moves_to_a_project_or_out_of_every_project() {
+        let mut state = State::default();
+        state.set_projects(["alpha".to_owned(), "beta".to_owned()]);
+        state.set_sessions([summary("a", "A", "k", 1)]);
+        let _ = state.update(Message::ToggleMoveMenu("a".into()));
+        assert_eq!(state.move_menu.as_deref(), Some("a"));
+        let _ = state.view();
+        let moved = state.update(Message::MoveTo { id: "a".into(), project: Some("beta".into()) }).1;
+        assert_eq!(moved, Some(Event::MoveSession { id: "a".into(), project: Some("beta".into()) }));
+        assert!(state.move_menu.is_none(), "picking closes the list");
+        let _ = state.update(Message::ToggleMoveMenu("a".into()));
+        let _ = state.update(Message::ToggleMoveMenu("a".into()));
+        assert!(state.move_menu.is_none(), "the folder button closes it again");
+        let out = state.update(Message::MoveTo { id: "a".into(), project: None }).1;
+        assert_eq!(out, Some(Event::MoveSession { id: "a".into(), project: None }));
     }
 }

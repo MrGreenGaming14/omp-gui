@@ -3,18 +3,19 @@
 use super::*;
 
 impl App {
-    /// Makes `project` and its folder `cwd` the active ones: new sessions,
-    /// new terminals, the Files and Diff tabs follow, every area is told and
-    /// the choice is saved. Running sessions and open terminals keep their
-    /// folder.
-    pub(super) fn activate_project(&mut self, project: String, cwd: PathBuf) -> Task<Message> {
+    /// Makes `project` the active one, with its default folder `cwd` when it
+    /// has one: new sessions, new terminals, the Files and Diff tabs follow,
+    /// every area is told and the choice is saved. Running sessions and open
+    /// terminals keep their folder.
+    pub(super) fn activate_project(&mut self, project: String, cwd: Option<PathBuf>) -> Task<Message> {
         self.ctx.shell.set_active_project(Some(project.clone()));
         self.add_project_tab(&project);
+        let cwd = cwd.unwrap_or_else(|| self.ctx.services.cwd.clone());
         let services = &mut self.ctx.services;
-        if services.project == project && services.cwd == cwd {
+        if services.project.as_deref() == Some(project.as_str()) && services.cwd == cwd {
             return Task::none();
         }
-        services.set_active(project.clone(), cwd.clone());
+        services.set_active(project.clone(), Some(cwd.clone()));
         self.files.set_root(cwd.clone());
         // The composer's folder bar, the folder menu and the terminal follow
         // too, as they do for a folder picked in the composer.
@@ -81,7 +82,7 @@ impl App {
             self.ctx.notify("No project tabs are open");
             return Task::none();
         };
-        let current = tabs.iter().position(|open| *open == self.ctx.services.project);
+        let current = tabs.iter().position(|open| self.ctx.services.project.as_deref() == Some(open.as_str()));
         let index = match (current, forward) {
             (Some(index), true) => if index == last { 0 } else { index + 1 },
             (Some(index), false) => index.checked_sub(1).unwrap_or(last),
@@ -90,5 +91,23 @@ impl App {
         };
         let project = tabs[index].clone();
         self.update(Message::Projects(areas::projects::Message::Open(project)))
+    }
+
+    /// The composer's project chip. The shown session moves to `project`;
+    /// with none shown, new sessions join it.
+    pub(super) fn project_picked(&mut self, project: Option<String>) -> Task<Message> {
+        if let Some(session) = self.ctx.sessions.active() {
+            let session = session.id().to_string();
+            return self.update(Message::Projects(areas::projects::Message::Move { session, project }));
+        }
+        match project {
+            Some(project) => self.update(Message::Projects(areas::projects::Message::Activate(project))),
+            None => {
+                self.ctx.services.project = None;
+                self.ctx.shell.set_active_project(None);
+                self.save_ui(|config| config.active_project = None);
+                Task::none()
+            }
+        }
     }
 }

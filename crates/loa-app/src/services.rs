@@ -77,8 +77,9 @@ pub struct Services {
     pub harnesses: Harnesses,
     /// Directory new sessions run in; the active project's folder.
     pub cwd: PathBuf,
-    /// Name of the active project. At launch the last component of `cwd`.
-    pub project: String,
+    /// The active project, which new sessions join; `None` for no project.
+    /// Projects group sessions; they are not folders.
+    pub project: Option<String>,
     /// The folder the app was launched in, the workspace project's folder.
     pub workspace: PathBuf,
     /// The central config file, `<data>/config.toml`. Each area reads it
@@ -122,7 +123,6 @@ impl Services {
             .map_err(|error| format!("Can't open the session store {}: {error}", dirs.sessions.display()))?;
         let peer_access = Arc::new(PeerAccess::default());
         let library = Library::new(store, Arc::new(Bus::new()), node.bus_key(), Arc::clone(&peer_access) as Arc<dyn Authorize>);
-        let project = cwd.file_name().map_or_else(|| cwd.display().to_string(), |name| name.to_string_lossy().into_owned());
         let config = ConfigStore::in_dir(&dirs.data);
         let mcp = loa_mcp::Manager::new(loa_mcp::Options::default())
             .map_err(|error| format!("Can't set up the MCP client: {error}"))?;
@@ -137,25 +137,21 @@ impl Services {
             harnesses,
             workspace: cwd.clone(),
             cwd,
-            project,
+            project: None,
             config,
             mcp,
             grants: Arc::new(grants),
         })
     }
 
-    /// Name of the workspace project, the last component of `workspace`.
-    pub fn workspace_project(&self) -> String {
-        self.workspace
-            .file_name()
-            .map_or_else(|| self.workspace.display().to_string(), |name| name.to_string_lossy().into_owned())
-    }
-
-    /// Makes `project` and its folder `cwd` the active ones: new sessions
-    /// start there. Running sessions keep their own folder.
-    pub fn set_active(&mut self, project: String, cwd: PathBuf) {
-        self.project = project;
-        self.cwd = cwd;
+    /// Makes `project` the active one, and its folder `cwd` the active folder
+    /// when it has one: new sessions start there. Running sessions keep
+    /// their own folder.
+    pub fn set_active(&mut self, project: String, cwd: Option<PathBuf>) {
+        self.project = Some(project);
+        if let Some(cwd) = cwd {
+            self.cwd = cwd;
+        }
     }
 }
 

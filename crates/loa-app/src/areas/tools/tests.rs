@@ -234,7 +234,7 @@ impl Rig {
     }
 
     fn project(&self) -> String {
-        self.app.ctx.services.project.clone()
+        self.app.ctx.services.project.clone().unwrap_or_default()
     }
 
     fn type_prompt(&mut self, text: &str) {

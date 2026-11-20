@@ -70,6 +70,9 @@ pub enum Error {
     NothingToDigest,
     #[error("invalid tool arguments: {0}")]
     Arguments(String),
+    /// A project was given a blank name.
+    #[error("the project name is empty")]
+    EmptyName,
     #[error(transparent)]
     Commit(#[from] loa_core::CommitError),
     #[error(transparent)]

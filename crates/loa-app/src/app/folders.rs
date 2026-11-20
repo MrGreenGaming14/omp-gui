@@ -25,7 +25,6 @@ impl App {
     /// at `path`, without touching the open session.
     pub(super) fn set_folder(&mut self, path: PathBuf) -> Task<Message> {
         self.ctx.services.cwd = path.clone();
-        self.ctx.services.project = path.file_name().map_or_else(|| path.display().to_string(), |name| name.to_string_lossy().into_owned());
         let _ = self.diff.set_note(Some("Reading changes…".to_owned()));
         self.files = files::State::new(path.clone(), Box::new(files::LocalFs));
         self.recent_folders.retain(|folder| *folder != path);

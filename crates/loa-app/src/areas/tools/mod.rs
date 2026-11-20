@@ -144,7 +144,8 @@ impl State {
             omp_loading: false,
             shown: (None, 0),
             found: Vec::new(),
-            project: ctx.services.project.clone(),
+            // No active project: toggles apply to the empty project key, the defaults.
+            project: ctx.services.project.clone().unwrap_or_default(),
             terminal,
         };
         state.reload_hosts(ctx);
@@ -302,8 +303,9 @@ impl State {
     fn refresh_projects(&mut self, ctx: &Ctx) {
         let config = ctx.services.config.load().map(|loaded| loaded.config).unwrap_or_default();
         let mut ids: BTreeSet<String> = config.projects.keys().cloned().collect();
-        ids.insert(ctx.services.project.clone());
+        ids.extend(ctx.services.project.clone());
         ids.insert(self.project.clone());
+        ids.remove("");
         self.panel.set_projects(ids.into_iter().map(|id| tools::ProjectRef { name: id.clone(), id }).collect());
         self.panel.select_project(self.project.clone());
         let settings = config.projects.get(&self.project).cloned().unwrap_or_default();
@@ -735,7 +737,7 @@ impl Area for State {
         if !capabilities.mcp_servers && !capabilities.host_tools {
             return;
         }
-        let project = config.project.clone().unwrap_or_else(|| ctx.services.project.clone());
+        let project = config.project.clone().or_else(|| ctx.services.project.clone()).unwrap_or_default();
         let settings = Self::settings(&project, ctx);
         for name in central::session_disabled_tools(&settings) {
             if !config.disabled_tools.contains(&name) {
@@ -761,7 +763,7 @@ impl Area for State {
         if !target.capabilities.host_tools || target.capabilities.mcp_servers {
             return None;
         }
-        let project = config.project.clone().unwrap_or_else(|| ctx.services.project.clone());
+        let project = config.project.clone().or_else(|| ctx.services.project.clone()).unwrap_or_default();
         let settings = Self::settings(&project, ctx);
         let mut router = HostToolRouter::new();
         let mcp = Arc::new(McpHostTools::new(self.mcp.clone(), Arc::new(ProjectFilter::new(settings.clone()))));

@@ -161,22 +161,22 @@ fn selecting_a_project_switches_the_active_folder_and_survives_a_restart() {
     std::fs::create_dir_all(&b).unwrap();
     let (mut app, configs) = project_app(dir.path());
     // One running chat per project, each in its own folder.
-    app.ctx.services.set_active("alpha".into(), a.clone());
+    app.ctx.services.set_active("alpha".into(), Some(a.clone()));
     let in_a = chat_in(&mut app, "alpha", "work on a");
-    app.ctx.services.set_active("beta".into(), b.clone());
+    app.ctx.services.set_active("beta".into(), Some(b.clone()));
     let in_b = chat_in(&mut app, "beta", "work on b");
     assert_eq!(session_cwd(&app, &in_a), Some(a.display().to_string()));
     assert_eq!(session_cwd(&app, &in_b), Some(b.display().to_string()));
 
     open_from_sidebar(&mut app, "alpha");
-    assert_eq!(app.ctx.services.project, "alpha");
+    assert_eq!(app.ctx.services.project.as_deref(), Some("alpha"));
     assert_eq!(app.ctx.services.cwd, a);
     assert_eq!(app.files.root(), a);
     assert_eq!(app.terminal.new_tab().cwd, a, "new terminals open in the active folder");
     assert_eq!(app.ctx.screen(), Some(AreaId::Projects), "the project screen lists its chats");
 
     open_from_sidebar(&mut app, "beta");
-    assert_eq!(app.ctx.services.project, "beta");
+    assert_eq!(app.ctx.services.project.as_deref(), Some("beta"));
     assert_eq!(app.ctx.services.cwd, b);
     assert_eq!(app.files.root(), b);
     assert_eq!(app.terminal.new_tab().cwd, b);
@@ -189,14 +189,11 @@ fn selecting_a_project_switches_the_active_folder_and_survives_a_restart() {
     }
     assert_eq!(session_cwd(&app, &in_a), Some(a.display().to_string()), "a running session keeps its folder");
 
-    // The workspace project goes back to the launch folder.
-    open_from_sidebar(&mut app, "work");
-    assert_eq!(app.ctx.services.cwd, dir.path().join("work"));
     open_from_sidebar(&mut app, "alpha");
     drop(app);
 
     let (restarted, _) = App::build(services(&dir.path().join("work"), Vec::new()));
-    assert_eq!(restarted.ctx.services.project, "alpha");
+    assert_eq!(restarted.ctx.services.project.as_deref(), Some("alpha"));
     assert_eq!(restarted.ctx.services.cwd, a);
     assert_eq!(restarted.files.root(), a);
     assert_eq!(restarted.terminal.new_tab().cwd, a);
@@ -211,9 +208,9 @@ fn the_sidebar_file_list_follows_the_active_project() {
     std::fs::write(a.join("in_a.txt"), "a").unwrap();
     std::fs::write(b.join("in_b.txt"), "b").unwrap();
     let (mut app, _) = project_app(dir.path());
-    app.ctx.services.set_active("alpha".into(), a.clone());
+    app.ctx.services.set_active("alpha".into(), Some(a.clone()));
     chat_in(&mut app, "alpha", "work on a");
-    app.ctx.services.set_active("beta".into(), b.clone());
+    app.ctx.services.set_active("beta".into(), Some(b.clone()));
     chat_in(&mut app, "beta", "work on b");
 
     open_from_sidebar(&mut app, "alpha");
@@ -237,9 +234,9 @@ fn project_tabs_list_activated_projects_and_the_shortcuts_switch_between_them() 
     assert!(!app.ctx.shell.project_tabs(), "off by default");
     assert!(app.ctx.shell.open_projects().is_empty());
 
-    app.ctx.services.set_active("alpha".into(), a.clone());
+    app.ctx.services.set_active("alpha".into(), Some(a.clone()));
     let in_alpha = chat_in(&mut app, "alpha", "work on a");
-    app.ctx.services.set_active("beta".into(), b.clone());
+    app.ctx.services.set_active("beta".into(), Some(b.clone()));
     chat_in(&mut app, "beta", "work on b");
     assert_eq!(app.ctx.shell.open_projects(), ["alpha", "beta"], "both projects have a tab");
 
@@ -252,16 +249,16 @@ fn project_tabs_list_activated_projects_and_the_shortcuts_switch_between_them() 
 
     // Next and previous switch the active project, wrapping around.
     open_from_sidebar(&mut app, "alpha");
-    assert_eq!(app.ctx.services.project, "alpha");
+    assert_eq!(app.ctx.services.project.as_deref(), Some("alpha"));
     let task = app.command(&loa_ui_palette::ids::PROJECT_TAB_NEXT);
     run(&mut app, task);
-    assert_eq!((app.ctx.services.project.as_str(), app.ctx.services.cwd.clone()), ("beta", b.clone()));
+    assert_eq!((app.ctx.services.project.as_deref(), app.ctx.services.cwd.clone()), (Some("beta"), b.clone()));
     let task = app.command(&loa_ui_palette::ids::PROJECT_TAB_NEXT);
     run(&mut app, task);
-    assert_eq!(app.ctx.services.project, "alpha", "wraps to the first tab");
+    assert_eq!(app.ctx.services.project.as_deref(), Some("alpha"), "wraps to the first tab");
     let task = app.command(&loa_ui_palette::ids::PROJECT_TAB_PREVIOUS);
     run(&mut app, task);
-    assert_eq!(app.ctx.services.project, "beta");
+    assert_eq!(app.ctx.services.project.as_deref(), Some("beta"));
 
     // Closing a tab leaves its session open and the other tab alone.
     update(&mut app, AppMessage::Shell(shell::Message::CloseProjectTab("alpha".into())));
@@ -276,21 +273,56 @@ fn project_tabs_list_activated_projects_and_the_shortcuts_switch_between_them() 
 }
 
 #[test]
-fn a_project_without_a_folder_only_opens_its_screen() {
+fn a_project_without_a_folder_keeps_the_current_folder() {
     let dir = tempfile::tempdir().unwrap();
     let (mut app, _) = project_app(dir.path());
     let cwd = app.ctx.services.cwd.clone();
     open_from_sidebar(&mut app, "ghost");
+    assert_eq!(app.ctx.services.project.as_deref(), Some("ghost"), "a project is a group, not a folder");
     assert_eq!(app.ctx.services.cwd, cwd);
     assert_eq!(app.ctx.screen(), Some(AreaId::Projects));
-    assert_eq!(app.ctx.notice(), Some("ghost has no folder yet; start a chat in it first"));
+}
+
+/// The project recorded on session `id`'s root.
+fn session_project(app: &App, id: &str) -> Option<String> {
+    let session = app.ctx.sessions.get(id).unwrap();
+    session.writer().with_dom(|dom| dom.root().and_then(|root| root.str_attr(attr::PROJECT)).map(str::to_owned))
+}
+
+#[test]
+fn projects_are_made_in_the_sidebar_and_sessions_move_between_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, _) = project_app(dir.path());
+    let session = chat_in(&mut app, "alpha", "first");
+    assert_eq!(session_project(&app, &session).as_deref(), Some("alpha"));
+
+    let sidebar = |message| AppMessage::Shell(shell::Message::Sidebar(message));
+    for message in [
+        shell::sidebar::Message::NewProject,
+        shell::sidebar::Message::ProjectNameChanged(" Launch ".into()),
+        shell::sidebar::Message::CreateProject,
+    ] {
+        update(&mut app, sidebar(message));
+    }
+    assert!(app.ctx.shell.sidebar().projects().contains(&"Launch"), "an empty project is listed");
+    assert_eq!(app.ctx.services.project.as_deref(), Some("Launch"), "a new project becomes the active one");
+    assert_eq!(session_project(&app, &session).as_deref(), Some("alpha"), "making a project moves nothing");
+
+    let row = shell::sidebar::Message::MoveTo { id: session.clone(), project: Some("Launch".into()) };
+    update(&mut app, sidebar(row));
+    assert_eq!(session_project(&app, &session).as_deref(), Some("Launch"), "moved from its sidebar row");
+
+    // The composer's chip moves the shown session out of every project.
+    assert_eq!(app.ctx.sessions.active().map(|active| active.id().to_string()), Some(session.clone()));
+    update(&mut app, AppMessage::Composer(loa_ui_composer::Message::ProjectPicked(None)));
+    assert_eq!(session_project(&app, &session), None, "moved out by the composer chip");
 }
 
 #[test]
 fn project_screen_lists_sessions_saves_settings_and_excludes() {
     let dir = tempfile::tempdir().unwrap();
     let (mut app, configs) = project_app(dir.path());
-    assert_eq!(app.ctx.shell.sidebar().projects(), ["work"], "the workspace's project before any session");
+    assert!(app.ctx.shell.sidebar().projects().is_empty(), "no projects before any is made or used");
 
     let session = chat_in(&mut app, "alpha", "set up iroh");
     {
@@ -301,7 +333,7 @@ fn project_screen_lists_sessions_saves_settings_and_excludes() {
         let tools: Vec<&str> = config.host_tools.iter().map(|tool| tool.name.as_str()).collect();
         assert!(tools.contains(&PROJECT_SEARCH) && tools.contains(&PROJECT_READ), "{tools:?}");
     }
-    assert_eq!(app.ctx.shell.sidebar().projects(), ["work", "alpha"], "listed from the session's project");
+    assert_eq!(app.ctx.shell.sidebar().projects(), ["alpha"], "listed from the session's project");
     let titles: Vec<String> = app.areas.projects.palette_commands(&app.ctx).into_iter().map(|c| c.title).collect();
     assert!(titles.contains(&"Open project: alpha".to_owned()), "{titles:?}");
     assert!(titles.contains(&"Pin project: alpha".to_owned()), "{titles:?}");

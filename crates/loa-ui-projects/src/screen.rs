@@ -122,13 +122,15 @@ impl State {
         }
     }
 
-    /// The settings as edited.
+    /// The settings as edited. The default folder isn't edited here and is
+    /// kept as stored.
     pub fn draft(&self) -> ProjectSettings {
         let model = self.digest_model.trim();
         ProjectSettings {
             instructions: self.instructions.text().trim_end().to_owned(),
             pinned: self.pinned.clone(),
             digest_model: (!model.is_empty()).then(|| model.to_owned()),
+            folder: self.overview.as_ref().and_then(|overview| overview.settings.folder.clone()),
         }
     }
 
