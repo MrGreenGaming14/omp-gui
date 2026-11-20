@@ -87,7 +87,7 @@ impl HubConfig {
             config
         });
         let path = std::env::var_os("PATH");
-        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let home = loa_core::home_dir();
         Self {
             browser,
             fonts: Fonts::system(),

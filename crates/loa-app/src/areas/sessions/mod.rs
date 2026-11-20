@@ -167,7 +167,7 @@ pub struct State {
 
 impl State {
     pub fn new(ctx: &mut Ctx) -> (Self, Task<Message>) {
-        let home = std::env::var_os("HOME").map_or_else(|| PathBuf::from("."), PathBuf::from);
+        let home = loa_core::home_dir().unwrap_or_else(|| PathBuf::from("."));
         // Unit tests never make model calls; they install a fake.
         let small = if cfg!(test) {
             None

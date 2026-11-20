@@ -102,7 +102,7 @@ struct Machine {
 
 impl Machine {
     fn this() -> Self {
-        let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from);
+        let home = loa_core::home_dir();
         Self {
             path: std::env::var_os("PATH"),
             kvm_device: "/dev/kvm".into(),

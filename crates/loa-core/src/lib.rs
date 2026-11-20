@@ -6,11 +6,13 @@
 //! - [`PatchSink`]: the single writer of a session
 
 pub mod dom;
+pub mod home;
 pub mod patch;
 pub mod schema;
 pub mod sink;
 pub mod value;
 
+pub use home::home_dir;
 pub use dom::{ApplyError, Descendants, Dom, Node, NodeId, PartsError};
 pub use patch::{Attrs, Draft, Op, Patch};
 pub use schema::{

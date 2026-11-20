@@ -212,7 +212,7 @@ impl std::fmt::Debug for Backend {
 }
 
 fn home() -> Option<PathBuf> {
-    std::env::var_os("HOME").filter(|h| !h.is_empty()).map(PathBuf::from)
+    loa_core::home_dir()
 }
 
 fn dir_from_env(var: &str, home_dir: &str) -> PathBuf {

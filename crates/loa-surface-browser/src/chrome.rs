@@ -71,7 +71,7 @@ impl BrowserConfig {
     /// reads the environment.
     pub fn discover() -> Result<Self> {
         let path = std::env::var_os("PATH");
-        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let home = loa_core::home_dir();
         find_chrome(path.as_deref(), home.as_deref(), false).map(Self::new).ok_or(BrowserError::NoBrowser)
     }
 }
@@ -107,6 +107,10 @@ pub fn chrome_candidates(path_var: Option<&OsStr>, home: Option<&Path>, headed: 
     found.extend(FIXED_PATHS.iter().map(PathBuf::from).filter(|p| loa_exec::is_executable(p)));
     if let Some(home) = home {
         found.extend(playwright_browsers(&home.join(".cache/ms-playwright"), headed));
+    }
+    #[cfg(windows)]
+    if let Some(local) = std::env::var_os("LOCALAPPDATA").filter(|v| !v.is_empty()) {
+        found.extend(playwright_browsers(&PathBuf::from(local).join("ms-playwright"), headed));
     }
     found.dedup();
     found
