@@ -13,6 +13,7 @@
 //! what [`Event::Save`] carries.
 
 use std::fmt;
+use std::path::{Path, PathBuf};
 
 use iced::widget::{button, checkbox, column, container, pick_list, row, scrollable, space, text, text_editor, text_input};
 use iced::{Element, Fill, Length};
@@ -37,7 +38,21 @@ const EDITOR_HEIGHT: f32 = 240.0;
 pub enum Event {
     /// The form validated: write this definition.
     Save(AgentDefinition),
+    /// The user confirmed replacing the agent file at the path.
+    Replace(AgentDefinition, PathBuf),
+    /// Enable or disable the agent file at the path (the opposite of its
+    /// state now).
+    Toggle(PathBuf),
+    /// The user confirmed deleting the agent file at the path.
+    Delete(PathBuf),
     Close,
+}
+
+/// A question waiting for the user's answer.
+#[derive(Clone, Debug)]
+enum Pending {
+    Replace { definition: AgentDefinition, path: PathBuf },
+    Delete { name: String, path: PathBuf },
 }
 
 #[derive(Clone, Debug)]
@@ -55,6 +70,14 @@ pub enum Message {
     Spawn(String, bool),
     Body(text_editor::Action),
     Save,
+    /// Enables or disables the agent being edited.
+    Toggle,
+    /// Asks before deleting the agent being edited.
+    Delete,
+    /// Answers the pending question with yes.
+    Confirm,
+    /// Answers the pending question with no.
+    Cancel,
     Close,
 }
 
@@ -79,6 +102,7 @@ impl fmt::Display for Template {
 }
 
 struct Entry {
+    path: PathBuf,
     name: String,
     source: AgentSource,
     enabled: bool,
@@ -102,6 +126,9 @@ pub struct State {
     spawns_on: Vec<String>,
     body: text_editor::Content,
     errors: Vec<FieldError>,
+    /// The file the form edits; `None` for a new agent or a copy.
+    editing: Option<PathBuf>,
+    pending: Option<Pending>,
     /// Set by the first Save press; from then on the errors follow the
     /// edits.
     show_errors: bool,
@@ -130,6 +157,8 @@ impl State {
             spawns_on: Vec::new(),
             body: text_editor::Content::new(),
             errors: Vec::new(),
+            editing: None,
+            pending: None,
             show_errors: false,
         }
     }
@@ -139,6 +168,7 @@ impl State {
         self.entries = files
             .iter()
             .map(|file| Entry {
+                path: file.path.clone(),
                 name: file.definition.name().to_owned(),
                 source: file.source,
                 enabled: file.enabled,
@@ -152,6 +182,48 @@ impl State {
             Some(_) => self.template = Template::blank(),
             None => {}
         }
+    }
+
+    /// The question waiting for an answer, if any.
+    pub fn pending_question(&self) -> Option<String> {
+        self.pending.as_ref().map(|pending| match pending {
+            Pending::Replace { definition, .. } => format!("Replace {}?", definition.name()),
+            Pending::Delete { name, .. } => format!("Delete {name}?"),
+        })
+    }
+
+    /// The file the form edits, when it edits one.
+    pub fn editing(&self) -> Option<&Path> {
+        self.editing.as_deref()
+    }
+
+    /// Whether the agent file at `path` is listed enabled.
+    pub fn is_enabled(&self, path: &Path) -> Option<bool> {
+        self.entries.iter().find(|entry| entry.path == path).map(|entry| entry.enabled)
+    }
+
+    /// Fills the form from the listed agent file at `path`, unchanged.
+    pub fn edit_path(&mut self, path: &Path) -> bool {
+        match self.entries.iter().position(|entry| entry.path == path) {
+            Some(index) => {
+                self.edit(index);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Asks whether to replace the agent file at `path` with `definition`.
+    pub fn ask_replace(&mut self, definition: AgentDefinition, path: PathBuf) {
+        self.pending = Some(Pending::Replace { definition, path });
+    }
+
+    /// Shows `message` next to `field` (`"form"` for the top of the form),
+    /// keeping the form open.
+    pub fn set_error(&mut self, field: &'static str, message: String) {
+        self.pending = None;
+        self.errors.retain(|error| error.field != field);
+        self.errors.push(FieldError { field, message });
     }
 
     /// Model choices: `provider/model` ids and role aliases such as `@slow`.
@@ -175,7 +247,9 @@ impl State {
     pub fn edit(&mut self, index: usize) {
         if let Some(entry) = self.entries.get(index) {
             let definition = entry.definition.clone();
+            let path = entry.path.clone();
             self.fill(Template::blank(), definition, None);
+            self.editing = Some(path);
         }
     }
 
@@ -245,6 +319,8 @@ impl State {
         self.base = base;
         self.errors.clear();
         self.show_errors = false;
+        self.editing = None;
+        self.pending = None;
     }
 
     /// The other known agents, deduplicated, in list order.
@@ -271,6 +347,7 @@ impl State {
         match message {
             Message::Close => return Some(Event::Close),
             Message::Save => {
+                self.pending = None;
                 self.show_errors = true;
                 self.check();
                 if !self.errors.is_empty() {
@@ -282,6 +359,24 @@ impl State {
                         self.errors.push(FieldError { field: "form", message: error.to_string() });
                         None
                     }
+                };
+            }
+            Message::Toggle => return self.editing.clone().map(Event::Toggle),
+            Message::Delete => {
+                if let Some(path) = self.editing.clone() {
+                    self.pending = Some(Pending::Delete { name: self.name.clone(), path });
+                }
+                return None;
+            }
+            Message::Cancel => {
+                self.pending = None;
+                return None;
+            }
+            Message::Confirm => {
+                return match self.pending.take() {
+                    Some(Pending::Replace { definition, path }) => Some(Event::Replace(definition, path)),
+                    Some(Pending::Delete { path, .. }) => Some(Event::Delete(path)),
+                    None => None,
                 };
             }
             Message::Template(template) => match template.index {
@@ -370,6 +465,32 @@ impl State {
         let list = container(scrollable(list).height(Fill)).width(LIST_WIDTH).padding(8);
 
         let mut form = column![].spacing(12).max_width(720.0);
+        if let Some(pending) = &self.pending {
+            let yes = match pending {
+                Pending::Replace { .. } => "Replace",
+                Pending::Delete { .. } => "Delete",
+            };
+            let question = self.pending_question().unwrap_or_default();
+            form = form.push(
+                row![
+                    text(question).size(BODY),
+                    button(text(yes).size(SMALL)).on_press(Message::Confirm),
+                    button(text("Cancel").size(SMALL)).style(button::secondary).on_press(Message::Cancel),
+                ]
+                .spacing(8)
+                .align_y(iced::Center),
+            );
+        }
+        if let Some(path) = &self.editing {
+            let enabled = self.entries.iter().find(|entry| entry.path == *path).is_none_or(|entry| entry.enabled);
+            form = form.push(
+                row![
+                    button(text(if enabled { "Disable" } else { "Enable" }).size(SMALL)).style(button::secondary).on_press(Message::Toggle),
+                    button(text("Delete").size(SMALL)).style(button::danger).on_press(Message::Delete),
+                ]
+                .spacing(8),
+            );
+        }
         form = form
             .push(self.field("Template", "template", pick_list(self.templates(), Some(self.template.clone()), Message::Template)))
             .push(self.field("Name", "name", text_input("my-agent", &self.name).on_input(Message::Name).size(BODY)))

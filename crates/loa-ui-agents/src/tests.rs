@@ -148,3 +148,25 @@ fn view_builds_with_and_without_errors() {
     state.update(Message::Save);
     let _ = state.view();
 }
+
+#[test]
+fn replace_and_delete_ask_before_their_event() {
+    let mut state = state();
+    state.edit(0);
+    assert_eq!(state.editing(), Some(std::path::Path::new("reviewer.md")));
+
+    assert!(state.update(Message::Delete).is_none());
+    assert_eq!(state.pending_question().as_deref(), Some("Delete reviewer?"));
+    assert!(state.update(Message::Cancel).is_none());
+    assert!(state.pending_question().is_none());
+    assert!(state.update(Message::Confirm).is_none());
+
+    state.update(Message::Delete);
+    assert!(matches!(state.update(Message::Confirm), Some(Event::Delete(path)) if path == PathBuf::from("reviewer.md")));
+
+    let def = state.definition().unwrap();
+    state.ask_replace(def, PathBuf::from("reviewer.md"));
+    assert_eq!(state.pending_question().as_deref(), Some("Replace reviewer?"));
+    assert!(matches!(state.update(Message::Confirm), Some(Event::Replace(def, _)) if def.name() == "reviewer"));
+    assert!(matches!(state.update(Message::Toggle), Some(Event::Toggle(_))));
+}
