@@ -1,8 +1,11 @@
 name: ci
 on:
   push:
-    branches: [main]
+    branches: [main, tai-dev]
   pull_request:
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   test:
     runs-on: ubuntu-24.04
@@ -12,6 +15,9 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci
+          cache-on-failure: true
       - run: sudo apt-get update && sudo apt-get install -y xvfb libxkbcommon-dev libwayland-dev libvulkan1 mesa-vulkan-drivers
       - name: Install OMP for bridge integration tests
         shell: bash
@@ -24,5 +30,5 @@ jobs:
           echo 'c7cc5c8d505053c8ffaf180417e5d5c781235b9d936f286810560151120109bf  omp' | sha256sum --check
           chmod +x omp
           echo "$dir" >> "$GITHUB_PATH"
-      - run: cargo build --workspace --all-targets
-      - run: xvfb-run -a cargo test --workspace
+      - run: cargo build --workspace --all-targets --profile ci
+      - run: xvfb-run -a cargo test --workspace --profile ci

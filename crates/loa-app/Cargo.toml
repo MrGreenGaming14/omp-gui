@@ -31,6 +31,7 @@ loa-ui-terminal = { path = "../loa-ui-terminal" }
 loa-ui-palette = { path = "../loa-ui-palette" }
 loa-ui-tools = { path = "../loa-ui-tools" }
 loa-ui-models = { path = "../loa-ui-models" }
+loa-ui-agents = { path = "../loa-ui-agents" }
 loa-models = { path = "../loa-models" }
 loa-ui-peers = { path = "../loa-ui-peers" }
 loa-ui-surface = { path = "../loa-ui-surface" }
@@ -50,6 +51,9 @@ loa-ui-updates = { path = "../loa-ui-updates" }
 semver = "1"
 loa-sandbox = { path = "../loa-sandbox" }
 serde_json.workspace = true
+# Images pasted into the composer: read from the clipboard and saved as PNG.
+arboard = "3"
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 [dev-dependencies]
 loa-exec = { path = "../loa-exec" }
@@ -58,7 +62,6 @@ iced_runtime = "0.14"
 iced_futures = "0.14"
 tempfile.workspace = true
 iced_test = "0.14"
-image = { version = "0.25", default-features = false, features = ["png"] }
 # The in-process SSH server of loa-remote's tests, for the Remote hosts tests.
 russh = { version = "0.65", default-features = false, features = ["ring", "rsa", "flate2"] }
 russh-sftp = "3.0"

@@ -57,10 +57,15 @@ pub fn is_unified_diff(body: &str) -> bool {
 type LineStyle = fn(&Theme) -> text::Style;
 type Tint = fn(&Theme) -> Color;
 
+/// Lines of a diff shown before the rest waits behind a button.
+pub const PREVIEW_LINES: usize = 300;
+
 /// Renders `diff` in a monospace column on a sunken well. Added and removed
-/// lines sit on a faint tint of the theme's success and danger colors.
-pub fn view<'a, Message: 'a>(diff: &'a str) -> Element<'a, Message> {
-    let lines = column(diff.lines().map(|line| {
+/// lines sit on a faint tint of the theme's success and danger colors. Unless
+/// `full`, only the first [`PREVIEW_LINES`] lines render.
+pub fn view<'a, Message: 'a>(diff: &'a str, full: bool) -> Element<'a, Message> {
+    let limit = if full { usize::MAX } else { PREVIEW_LINES };
+    let lines = column(diff.lines().take(limit).map(|line| {
         let (style, tint): (LineStyle, Option<Tint>) = match line_kind(line) {
             LineKind::Header | LineKind::Hunk => (muted, None),
             LineKind::Added => (text::success, Some(added_tint)),

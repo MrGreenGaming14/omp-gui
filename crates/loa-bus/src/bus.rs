@@ -1,7 +1,6 @@
-//! Registry of live sessions and the firehose across them.
+//! Registry of live sessions.
 
-use crate::queue::{Firehose, Policy, Queue};
-use crate::writer::{Hub, SessionWriter, WriterConfig};
+use crate::writer::{SessionWriter, WriterConfig};
 use crate::SessionId;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -14,12 +13,10 @@ pub enum BusError {
 
 pub type Result<T, E = BusError> = std::result::Result<T, E>;
 
-/// The live sessions of this node. Every writer opened here also feeds the
-/// bus's firehose.
+/// The live sessions of this node.
 #[derive(Default)]
 pub struct Bus {
     sessions: Mutex<HashMap<SessionId, Arc<SessionWriter>>>,
-    hub: Arc<Hub>,
 }
 
 impl Bus {
@@ -39,7 +36,7 @@ impl Bus {
             return Err(BusError::AlreadyOpen(config.session));
         }
         let id = config.session.clone();
-        let writer = Arc::new(SessionWriter::with_hub(config, Arc::clone(&self.hub)));
+        let writer = Arc::new(SessionWriter::new(config));
         sessions.insert(id, Arc::clone(&writer));
         Ok(writer)
     }
@@ -59,22 +56,5 @@ impl Bus {
         let writer = self.sessions().remove(session)?;
         writer.close();
         Some(writer)
-    }
-
-    /// Patches of every session on this bus from now on, tagged with their
-    /// session. To start without a gap, subscribe first, then read each
-    /// session's [`SessionWriter::seq`] and skip events at or below it.
-    pub fn firehose(&self, policy: Policy) -> Firehose {
-        let queue = Queue::new(policy);
-        self.hub.lock().push(Arc::clone(&queue));
-        Firehose::new(queue)
-    }
-}
-
-impl Drop for Bus {
-    fn drop(&mut self) {
-        for queue in self.hub.lock().drain(..) {
-            queue.close();
-        }
     }
 }

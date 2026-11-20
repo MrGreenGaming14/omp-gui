@@ -10,7 +10,7 @@ use loa_ui_decisions::{Decision, FieldInput, Shortcut, desk};
 use super::*;
 use crate::app::tests::{active, deliver, escape, fake_app, prompt, update};
 use crate::app::{App, Message as AppMessage};
-use crate::session::{Change, Feed};
+use crate::session::Change;
 
 /// Starts a session and sends `text`, which makes the fake harness wait on
 /// a decision. Returns the session, its feed and the waiting card.
@@ -219,7 +219,7 @@ fn new_waiting_cards_raise_a_system_notification_only_while_the_window_is_in_the
         prompt(app, text);
         let mut tasks = 0;
         while let Ok(event) = feed.try_recv() {
-            if let Change::Patch(patch, _) = app.ctx.sessions.feed(id.as_str(), Feed::Event(event)) {
+            if let Change::Patch { patch, .. } = app.ctx.sessions.apply(id.as_str(), event) {
                 let event = SessionEvent::Patch(id.clone(), patch);
                 tasks += app.areas.decisions.on_session_event(&event, &mut app.ctx).units();
             }
@@ -296,10 +296,10 @@ fn unattended_prompts_are_turned_on_in_the_palette_saved_and_answer_after_the_ti
 
     let (id, mut feed, decision) = ask(&mut app, "ask while away");
     assert!(app.areas.decisions.desk.subscription().units() > 0);
-    update(&mut app, desk_message(desk::Message::Tick(desk::now_ms() + 29_000)));
+    update(&mut app, desk_message(desk::Message::Tick(loa_core::now_ms() + 29_000)));
     deliver(&mut app, &id, &mut feed);
     assert_eq!(recorded(&app, &id, decision).status, DecisionStatus::Waiting, "not yet");
-    update(&mut app, desk_message(desk::Message::Tick(desk::now_ms() + 31_000)));
+    update(&mut app, desk_message(desk::Message::Tick(loa_core::now_ms() + 31_000)));
     deliver(&mut app, &id, &mut feed);
     let answered = recorded(&app, &id, decision);
     assert_eq!(answered.answer, [loa_core::answer::DENY]);

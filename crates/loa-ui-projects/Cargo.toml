@@ -12,3 +12,4 @@ loa-projects = { path = "../loa-projects" }
 
 [dev-dependencies]
 iced_test = "0.14"
+tempfile.workspace = true

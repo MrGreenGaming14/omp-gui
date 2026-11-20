@@ -122,9 +122,14 @@ fn token_minted_with_node_key_verifies_under_node_public_key_text() {
 
     let root_public: biscuit_auth::PublicKey = id.public_key().to_biscuit_string().parse().unwrap();
     let parsed = biscuit_auth::Biscuit::from(&token, root_public).unwrap();
+    // Biscuit's default limit is 1ms of Datalog time, which a busy CI runner
+    // can exceed; this test is about keys, not speed. (biscuit's own tests
+    // raise it the same way for GitHub Actions.)
+    let limits = biscuit_auth::AuthorizerLimits { max_time: std::time::Duration::from_secs(10), ..Default::default() };
     let mut authorizer = AuthorizerBuilder::new()
         .code("allow if right(\"view\");")
         .unwrap()
+        .set_limits(limits)
         .build(&parsed)
         .unwrap();
     authorizer.authorize().unwrap();

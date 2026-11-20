@@ -218,7 +218,14 @@ async fn a_late_viewer_gets_the_last_frame_on_request() {
     let Some(server) = server(320, 240).await else { return };
     let tab = server.open_tab(&html("<title>k</title><p>static</p>")).await.unwrap();
     let mut early = tab.frames().unwrap();
-    let first = next_frame(&mut early).await;
+    // Chrome may paint once before the viewport override takes effect; the
+    // late viewer is asked for the last frame after the page settles.
+    let first = loop {
+        let frame = next_frame(&mut early).await;
+        if (frame.width, frame.height) == (320, 240) {
+            break frame;
+        }
+    };
     let mut late = tab.frames().unwrap();
     tab.request_keyframe().await.unwrap();
     let again = next_frame(&mut late).await;

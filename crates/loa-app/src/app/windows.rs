@@ -1,4 +1,4 @@
-//! Configs (a center screen) and Settings (a window), each a side menu over
+//! Configs and Settings, each a window over the app: a side menu over
 //! existing area screens plus the agent, skill and rule files omp reads.
 //!
 //! Configs is for what shapes the agents: model roles, tools and MCP
@@ -168,11 +168,10 @@ fn home() -> Option<PathBuf> {
 #[derive(Debug, Clone)]
 pub enum WindowMessage {
     OpenConfigs(ConfigsTab),
-    CloseConfigs,
     PickDoc(usize),
     ToggleDocFull,
     OpenSettings(SettingsTab),
-    CloseSettings,
+    CloseOverlay,
     SetTheme(Preference),
 }
 
@@ -180,8 +179,7 @@ impl App {
     pub(super) fn window_update(&mut self, message: WindowMessage) -> Task<Message> {
         match message {
             WindowMessage::OpenConfigs(tab) => {
-                self.configs = Some(tab);
-                self.overlay = None;
+                self.overlay = Some(Overlay::Configs(tab));
                 self.docs = Docs { files: scan(tab, &self.ctx.services.cwd, home().as_deref()), selected: 0, full: false };
                 let load = match tab {
                     ConfigsTab::Models => self.update(Message::Models(areas::models::Message::Show(Page::Settings))),
@@ -190,10 +188,6 @@ impl App {
                 // Areas open their own screen when they load; Configs draws them instead.
                 self.ctx.close_screen();
                 load
-            }
-            WindowMessage::CloseConfigs => {
-                self.configs = None;
-                Task::none()
             }
             WindowMessage::PickDoc(index) => {
                 self.docs.selected = index.min(self.docs.files.len().saturating_sub(1));
@@ -214,7 +208,7 @@ impl App {
                 self.ctx.close_screen();
                 load
             }
-            WindowMessage::CloseSettings => {
+            WindowMessage::CloseOverlay => {
                 self.overlay = None;
                 Task::none()
             }
@@ -224,7 +218,7 @@ impl App {
         }
     }
 
-    /// The Configs screen, drawn in the center.
+    /// The Configs window, drawn over the app.
     pub(super) fn configs_view(&self, tab: ConfigsTab) -> Element<'_, Message> {
         let wrap = |message: WindowMessage| Message::Window(message);
         let mut nav = Column::new().spacing(2).padding([16, 10]).width(200);
@@ -247,7 +241,7 @@ impl App {
             column![text(tab.title()).size(20).font(semibold()), text(tab.blurb()).size(13).style(style::muted)]
                 .spacing(4)
                 .width(Fill),
-            button(muted(Icon::X, 15.0)).on_press(wrap(WindowMessage::CloseConfigs)).style(style::ghost_button).padding(6),
+            button(muted(Icon::X, 15.0)).on_press(wrap(WindowMessage::CloseOverlay)).style(style::ghost_button).padding(6),
         ]
         .spacing(12)
         .align_y(Alignment::Start);
@@ -262,15 +256,14 @@ impl App {
         };
 
         if self.docs.full && matches!(tab, ConfigsTab::Agents | ConfigsTab::Skills | ConfigsTab::Rules) {
-            return self.docs_view(tab);
+            return window_frame(self.docs_view(tab));
         }
 
-        row![
+        window_frame(row![
             container(nav).style(style::side).height(Fill),
             rule::vertical(1).style(style::divider),
             column![container(header).padding([20, 28]), container(body).width(Fill).height(Fill).padding([0, 28])].width(Fill),
-        ]
-        .into()
+        ])
     }
 
     fn docs_view(&self, tab: ConfigsTab) -> Element<'_, Message> {
@@ -338,7 +331,7 @@ impl App {
         let title = SettingsTab::ALL.iter().find(|(item, _)| *item == tab).map_or("", |(_, title)| title);
         let header = row![
             text(title).size(16).font(semibold()).width(Fill),
-            button(muted(Icon::X, 15.0)).on_press(wrap(WindowMessage::CloseSettings)).style(style::ghost_button).padding(6),
+            button(muted(Icon::X, 15.0)).on_press(wrap(WindowMessage::CloseOverlay)).style(style::ghost_button).padding(6),
         ]
         .align_y(Alignment::Center);
         let ctx = &self.ctx;
@@ -352,15 +345,10 @@ impl App {
                 self.areas.updater.view_screen(ctx).map(|view| view.map(Message::Updater)).unwrap_or_else(|| text("").into())
             }
         };
-        container(row![
+        window_frame(row![
             container(nav).style(style::side).height(Fill),
             column![container(header).padding([16, 20]), container(body).padding([0, 20]).width(Fill).height(Fill)].width(Fill),
         ])
-        .style(style::window)
-        .width(900)
-        .height(640)
-        .clip(true)
-        .into()
     }
 
     fn general_settings(&self) -> Element<'_, Message> {
@@ -393,10 +381,16 @@ impl App {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Overlay {
     Usage,
+    Configs(ConfigsTab),
     Settings(SettingsTab),
 }
 
-fn semibold() -> iced::Font {
+/// The frame both windows draw their content in.
+fn window_frame<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+    container(content).style(style::window).width(900).height(640).clip(true).into()
+}
+
+pub(crate) fn semibold() -> iced::Font {
     iced::Font { weight: iced::font::Weight::Bold, ..iced::Font::default() }
 }
 

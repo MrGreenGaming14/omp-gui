@@ -18,6 +18,9 @@ use std::ops::Range;
 /// Tool name of omp's blocking wait.
 const WAIT_TOOL: &str = "wait";
 
+/// Output lines a job shows while collapsed; longer output shows only its tail.
+const TAIL_LINES: usize = 200;
+
 /// One `<job>` element as the panel shows it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Job {
@@ -39,6 +42,8 @@ pub struct Job {
     /// Start of the line the output ends in. Lines before it are complete and
     /// already searched for `last_line`.
     line_start: usize,
+    /// Newlines in `output`, kept in step with it.
+    newlines: usize,
     expanded: bool,
 }
 
@@ -64,6 +69,7 @@ impl Job {
             last_line: 0..0,
             line_start: 0,
             expanded: false,
+            newlines: 0,
         };
         job.read_attrs(node);
         job.rescan_output();
@@ -92,11 +98,12 @@ impl Job {
         self.exit_code = node.int_attr(attr::EXIT_CODE);
     }
 
-    /// Recomputes the last line after the whole output was replaced.
+    /// Recomputes the last line and newline count after the whole output was replaced.
     fn rescan_output(&mut self) {
         self.last_line = 0..0;
         self.find_last_line(0);
         self.line_start = self.output.rfind('\n').map_or(0, |i| i + 1);
+        self.newlines = self.output.matches('\n').count();
     }
 
     /// Adds streamed output, searching only the unfinished line and `chunk`.
@@ -107,6 +114,26 @@ impl Job {
         if let Some(i) = chunk.rfind('\n') {
             self.line_start = old_len + i + 1;
         }
+        self.newlines += chunk.matches('\n').count();
+    }
+
+    /// Byte offset where the last [`TAIL_LINES`] lines of the output start.
+    /// Walks back over at most `TAIL_LINES` newlines.
+    fn tail_start(&self) -> usize {
+        let body = self.output.strip_suffix('\n').unwrap_or(&self.output);
+        let mut end = body.len();
+        for _ in 0..TAIL_LINES {
+            match body[..end].rfind('\n') {
+                Some(newline) => end = newline,
+                None => return 0,
+            }
+        }
+        end + 1
+    }
+
+    /// Lines in the output, counting an unterminated last line.
+    fn line_count(&self) -> usize {
+        self.newlines + usize::from(!self.output.is_empty() && !self.output.ends_with('\n'))
     }
 
     /// Sets `last_line` to the last non-blank line starting at or after `from`,
@@ -213,6 +240,8 @@ pub struct State {
     jobs: BTreeMap<NodeId, Job>,
     /// `<call tool="wait">` nodes that are pending or running.
     waits: HashSet<NodeId>,
+    /// Jobs whose output is shown in full instead of its tail.
+    full: HashSet<NodeId>,
     /// Unix milliseconds of the last tick.
     now: Option<i64>,
 }
@@ -221,8 +250,10 @@ pub struct State {
 pub enum Message {
     /// Current time in unix milliseconds.
     Tick(i64),
-    /// Show or hide the full output of a job.
+    /// Expand or collapse the output of a job.
     Toggle(NodeId),
+    /// Show all output lines of a job, or only its last lines.
+    ToggleFull(NodeId),
     Open(NodeId),
     /// Open the subagent's session in its own window.
     Detach(NodeId),
@@ -257,6 +288,7 @@ impl State {
                 job.expanded = true;
             }
         }
+        self.full.retain(|node| self.jobs.contains_key(node));
     }
 
     fn scan(&mut self, dom: &Dom) {
@@ -307,6 +339,7 @@ impl State {
             Op::Remove => {
                 self.jobs.retain(|node, _| dom.contains(*node));
                 self.waits.retain(|node| dom.contains(*node));
+                self.full.retain(|node| dom.contains(*node));
             }
         }
     }
@@ -329,6 +362,14 @@ impl State {
             Message::Toggle(node) => {
                 if let Some(job) = self.jobs.get_mut(&node) {
                     job.expanded = !job.expanded;
+                }
+                None
+            }
+            Message::ToggleFull(node) => {
+                if self.full.contains(&node) {
+                    self.full.remove(&node);
+                } else if self.jobs.contains_key(&node) {
+                    self.full.insert(node);
                 }
                 None
             }
@@ -442,8 +483,19 @@ impl State {
 
         let mut entry = Column::with_capacity(2).push(head);
         if job.expanded {
-            let output = text(job.output()).font(Font::MONOSPACE).size(style::TEXT_SIZE);
-            entry = entry.push(container(output).padding([6, 10]).width(Fill).style(style::band));
+            let full = self.full.contains(&job.node);
+            let shown = if full { job.output() } else { &job.output()[job.tail_start()..] };
+            let output = text(shown).font(Font::MONOSPACE).size(style::TEXT_SIZE);
+            let mut body = Column::with_capacity(2).push(output);
+            if job.line_count() > TAIL_LINES {
+                let label = if full {
+                    format!("Show last {TAIL_LINES} lines")
+                } else {
+                    format!("Show all {} lines", job.line_count())
+                };
+                body = body.push(action(label, Message::ToggleFull(job.node)));
+            }
+            entry = entry.push(container(body).padding([6, 10]).width(Fill).style(style::band));
         } else if !job.last_line.is_empty() {
             let line = text(job.last_line()).size(12).style(style::muted).wrapping(Wrapping::None);
             entry = entry.push(Row::new().push(space().width(22)).push(line));
@@ -476,7 +528,7 @@ fn badge(label: &str) -> Element<'_, Message> {
     container(text(label).size(12).style(style::muted)).padding([1, 6]).style(style::badge).into()
 }
 
-fn action(label: &str, message: Message) -> Element<'_, Message> {
+fn action<'a>(label: impl text::IntoFragment<'a>, message: Message) -> Element<'a, Message> {
     button(text(label).size(12)).padding([2, 6]).style(style::action_button).on_press(message).into()
 }
 
@@ -675,5 +727,21 @@ mod tests {
         assert!(!fx.dom.contains(wait));
         assert_eq!(fx.get(b).last_line(), "tail");
         assert_eq!(fx.get(c).last_line(), "last");
+    }
+
+    #[test]
+    fn long_output_shows_only_its_tail_until_expanded_in_full() {
+        let mut fx = Fixture::new();
+        let turn = fx.turn;
+        let job = fx.job(turn, shell("make"));
+        let text: String = (1..=250).map(|i| format!("line {i}\n")).collect();
+        fx.commit(Draft::append(job, text.as_str()));
+        assert_eq!(fx.get(job).line_count(), 250);
+        let shown = &fx.get(job).output()[fx.get(job).tail_start()..];
+        assert_eq!(shown.lines().next(), Some("line 51"));
+        assert_eq!(shown.lines().count(), TAIL_LINES);
+
+        let _ = fx.state.update(Message::ToggleFull(job));
+        assert!(fx.state.full.contains(&job));
     }
 }

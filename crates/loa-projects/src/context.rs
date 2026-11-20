@@ -239,6 +239,7 @@ mod tests {
             instructions: "Use rustls, never openssl.".into(),
             pinned: vec![PinnedFile { path: "docs/ARCHITECTURE.md".into(), note: Some("the code contract".into()) }],
             digest_model: None,
+            folder: None,
         };
         store.save("proj", &settings).await.unwrap();
         store

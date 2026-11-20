@@ -1,7 +1,7 @@
 //! Looks of the composer. Colors come from the shell's theme tokens, so the
 //! light and dark themes both work.
 
-use iced::widget::{button, container, svg, text, text_editor};
+use iced::widget::{button, container, slider, svg, text, text_editor};
 use iced::{Background, Border, Color, Theme};
 use loa_ui_shell::theme::style::tokens;
 
@@ -63,6 +63,46 @@ pub(crate) fn menu(theme: &Theme) -> container::Style {
         text_color: Some(t.text),
         border: hairline(theme, MENU_RADIUS),
         ..container::Style::default()
+    }
+}
+
+/// The effort card: the menu surface with rounder corners.
+pub(crate) fn effort_card(theme: &Theme) -> container::Style {
+    container::Style { border: hairline(theme, 14.0), ..menu(theme) }
+}
+
+/// The current effort level in the card's heading.
+pub(crate) fn accent_text(theme: &Theme) -> text::Style {
+    text::Style { color: Some(tokens(theme).accent) }
+}
+
+/// The effort slider: a thick rounded track, filled with the accent up to a
+/// large white knob.
+pub(crate) fn effort_slider(rail: f32, knob: f32) -> impl Fn(&Theme, slider::Status) -> slider::Style {
+    move |theme, _status| {
+        let t = tokens(theme);
+        slider::Style {
+            rail: slider::Rail {
+                backgrounds: (Background::Color(t.accent), Background::Color(t.raised)),
+                width: rail,
+                border: Border { color: t.line, width: 1.0, radius: (rail / 2.0).into() },
+            },
+            handle: slider::Handle {
+                shape: slider::HandleShape::Circle { radius: knob },
+                background: Background::Color(Color::WHITE),
+                border_width: 0.0,
+                border_color: Color::TRANSPARENT,
+            },
+        }
+    }
+}
+
+/// A level mark on the effort track: light on the filled part, faint on the rest.
+pub(crate) fn effort_dot(filled: bool) -> impl Fn(&Theme) -> container::Style {
+    move |theme| {
+        let t = tokens(theme);
+        let color = if filled { Color::WHITE.scale_alpha(0.6) } else { t.text3 };
+        container::Style { background: Some(Background::Color(color)), border: Border { radius: 99.0.into(), ..Border::default() }, ..container::Style::default() }
     }
 }
 

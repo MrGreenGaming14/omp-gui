@@ -229,6 +229,14 @@ pub enum Event {
     CloseProjectTab(String),
     /// Delete this session and its journal.
     DeleteSession(String),
+    /// Open the New project screen, from the sidebar's `+`.
+    NewProject,
+    /// Start a new session in this project, from its sidebar row.
+    NewSessionIn(String),
+    /// Ask to delete this project, from its sidebar row.
+    DeleteProject(String),
+    /// Move a session to a project, or out of every project with `None`.
+    MoveSession { id: String, project: Option<String> },
     /// The right panel opened or closed.
     PanelToggled {
         /// Whether it is open now.
@@ -265,6 +273,10 @@ impl From<sidebar::Event> for Event {
             sidebar::Event::SetPinned { id, pinned } => Event::SetPinned { id, pinned },
             sidebar::Event::SetProjectPinned { project, pinned } => Event::SetProjectPinned { project, pinned },
             sidebar::Event::DeleteSession(id) => Event::DeleteSession(id),
+            sidebar::Event::NewProject => Event::NewProject,
+            sidebar::Event::NewSessionIn(project) => Event::NewSessionIn(project),
+            sidebar::Event::DeleteProject(project) => Event::DeleteProject(project),
+            sidebar::Event::MoveSession { id, project } => Event::MoveSession { id, project },
         }
     }
 }
@@ -330,7 +342,16 @@ impl State {
 
     /// Adds a session or replaces the one with the same id.
     pub fn upsert_session(&mut self, summary: SessionSummary) {
+        let active = self.sidebar.active() == Some(summary.id.as_str());
         self.sidebar.upsert_session(summary);
+        if active {
+            self.refresh_breadcrumb();
+        }
+    }
+
+    /// Adds or replaces many sessions at once, e.g. the ones read from disk.
+    pub fn upsert_sessions(&mut self, summaries: impl IntoIterator<Item = SessionSummary>) {
+        self.sidebar.upsert_sessions(summaries);
         self.refresh_breadcrumb();
     }
 
@@ -440,6 +461,9 @@ impl State {
     /// or the start screen does): the sidebar highlights it and the top bar
     /// names it.
     pub fn set_shown_project(&mut self, project: Option<String>) {
+        if self.sidebar.shown_project() == project.as_deref() {
+            return;
+        }
         self.sidebar.set_shown_project(project.clone());
         self.topbar.set_project_page(project);
     }
@@ -665,7 +689,6 @@ impl State {
         &'a self,
         center: impl Into<Element<'a, M>>,
         panel_body: impl FnOnce(&'a str) -> Element<'a, M>,
-        project_files: Option<Element<'a, M>>,
         map: fn(Message) -> M,
     ) -> Element<'a, M> {
         let full = self.full;
@@ -674,7 +697,7 @@ impl State {
 
         if show(Pane::Sidebar) {
             let width = if full == Some(Pane::Sidebar) { iced::Length::Fill } else { iced::Length::Fixed(self.sidebar_width) };
-            let sidebar = self.sidebar.view_with(move |message| map(Message::Sidebar(message)), project_files);
+            let sidebar = self.sidebar.view_with(move |message| map(Message::Sidebar(message)));
             frame = frame.push(container(sidebar).width(width).height(Fill));
         }
         if full.is_none() {

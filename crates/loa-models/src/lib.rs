@@ -15,6 +15,7 @@
 //!   reading or returning a key value.
 //! - [`catalog`] groups available models by provider with their role assignments
 //!   and switches the session model or a role's model.
+//! - [`agents`] lists, validates and writes omp agent definition Markdown files.
 //! - [`yaml`], [`config`] and [`models_yml`] edit omp's own `config.yml` and
 //!   `models.yml` in place, keeping comments and ordering of untouched keys.
 //! - [`validate`] checks edited files with omp itself, without a model call.
@@ -29,6 +30,7 @@
 //! Reading reports a [`models_yml::ApiKeySetting::Literal`] with no payload when
 //! the file holds an inline key, and [`keys`] reports sources by name only.
 
+pub mod agents;
 pub mod catalog;
 pub mod config;
 mod error;

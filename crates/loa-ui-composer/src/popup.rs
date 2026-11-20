@@ -45,7 +45,9 @@ pub fn detect(line_index: usize, line: &str, column: usize) -> Option<Trigger> {
         _ => return None,
     };
     let end = line[column..].find(char::is_whitespace).map_or(line.len(), |i| column + i);
-    Some(Trigger { kind, line: line_index, start, end, query: before[start + 1..].to_owned() })
+    // The cursor right before the `@` or `/` is not inside the word yet.
+    let query = before.get(start + 1..)?.to_owned();
+    Some(Trigger { kind, line: line_index, start, end, query })
 }
 
 fn whitespace_len(text: &str, at: usize) -> usize {
