@@ -40,3 +40,18 @@ overflow-checks = false
 
 [profile.dev.build-override]
 opt-level = 0
+
+# CI compiles everything at opt-level 0. With the optimised dependencies above a
+# cold cache took ~18 minutes, and the workspace crates, rebuilt on every run,
+# compile ~3.5x faster than at opt-level 1. jpeg-decoder stays optimised: the
+# browser latency benchmark decodes every screencast frame in its timed loop,
+# and at opt-level 0 a 1280x720 frame takes ~80 ms instead of ~4 ms.
+[profile.ci]
+inherits = "dev"
+opt-level = 0
+
+[profile.ci.package."*"]
+opt-level = 0
+
+[profile.ci.package.jpeg-decoder]
+opt-level = 3
