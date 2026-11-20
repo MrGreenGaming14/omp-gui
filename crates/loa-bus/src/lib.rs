@@ -6,21 +6,20 @@
 //!   applied and published.
 //! - [`Subscription`]: a subscriber's own bounded queue of patches, with a
 //!   [`Policy`] that decides how it is fed and when it lags.
-//! - [`Bus`]: the registry of live sessions and the [`Firehose`] across them.
+//! - [`Bus`]: the registry of live sessions.
 
 mod bus;
 mod queue;
 mod writer;
 
 pub use bus::{Bus, BusError};
-pub use queue::{Appends, Event, Firehose, Policy, Subscription, TryRecvError};
+pub use queue::{Appends, Event, Policy, Subscription, TryRecvError};
 pub use writer::{Authorize, Denied, Persist, PersistError, ReplicateError, RequestError, SessionWriter, WriterConfig};
 
 use std::fmt;
 use std::sync::Arc;
 
-/// Id of a session, the `id` attribute of its `<session>`. Cheap to clone, so
-/// the firehose can tag every patch with it.
+/// Id of a session, the `id` attribute of its `<session>`. Cheap to clone.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SessionId(Arc<str>);
 

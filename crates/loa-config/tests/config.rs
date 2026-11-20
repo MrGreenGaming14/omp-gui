@@ -85,6 +85,12 @@ fn invalid_key(err: ConfigError) -> String {
     }
 }
 
+/// Reads the file through a new store, so the answer comes from disk and
+/// not from the store's read cache.
+fn load_from_disk(store: &ConfigStore) -> Config {
+    ConfigStore::new(store.path()).load().unwrap().config
+}
+
 #[test]
 fn full_config_loads_into_typed_settings_and_round_trips() {
     let (_dir, store) = store_with(FULL);
@@ -126,7 +132,7 @@ fn full_config_loads_into_typed_settings_and_round_trips() {
     assert!(project.mcp_tool_enabled("files", "read"));
 
     store.save(&c).unwrap();
-    assert_eq!(store.load().unwrap().config, c);
+    assert_eq!(load_from_disk(&store), c);
 }
 
 #[test]
@@ -200,7 +206,7 @@ future_digest_mode = "dense"
     assert_eq!(raw["projects"]["p"]["future_digest_mode"].as_str(), Some("dense"));
 
     // A second cycle keeps them too.
-    let again = store.load().unwrap().config;
+    let again = load_from_disk(&store);
     store.save(&again).unwrap();
     let raw2: toml::Table = fs::read_to_string(store.path()).unwrap().parse().unwrap();
     assert_eq!(raw, raw2);
@@ -254,7 +260,7 @@ fn save_creates_the_directory_and_leaves_no_temp_files() {
     store.save(&c).unwrap();
     let names: Vec<PathBuf> = fs::read_dir(&config_dir).unwrap().map(|e| e.unwrap().path()).collect();
     assert_eq!(names, vec![config_path(&config_dir)]);
-    assert_eq!(store.load().unwrap().config.theme, Theme::Dark);
+    assert_eq!(load_from_disk(&store).theme, Theme::Dark);
 }
 
 #[test]
@@ -265,6 +271,20 @@ fn saving_an_invalid_config_keeps_the_old_file() {
     let err = store.save(&c).unwrap_err();
     assert_eq!(invalid_key(err), "network.port");
     assert_eq!(fs::read_to_string(store.path()).unwrap(), FULL);
+}
+
+#[test]
+fn load_sees_external_edit() {
+    let (_dir, store) = store_with(FULL);
+    let c = store.load().unwrap().config;
+    store.save(&c).unwrap();
+    assert_eq!(store.load().unwrap().config, c);
+
+    // A longer file, so the length alone shows the edit.
+    let saved = fs::read_to_string(store.path()).unwrap();
+    let edited = format!("version = 1\ntheme = \"light\"\n# {}\n", "x".repeat(saved.len()));
+    fs::write(store.path(), edited).unwrap();
+    assert_eq!(store.load().unwrap().config.theme, Theme::Light);
 }
 
 #[test]
@@ -363,7 +383,7 @@ fn updater_token_and_trusted_keys_round_trip_and_default_when_absent() {
     c.updater.github_token = Some("ghp_test".into());
     c.updater.trusted_keys = vec!["ab".repeat(32)];
     store.save(&c).unwrap();
-    let loaded = store.load().unwrap().config;
+    let loaded = load_from_disk(&store);
     assert_eq!(loaded.updater.github_token.as_deref(), Some("ghp_test"));
     assert_eq!(loaded.updater.trusted_keys, vec!["ab".repeat(32)]);
     assert_eq!(loaded, c);
@@ -382,7 +402,7 @@ fn surfaces_settings_round_trip_and_default_when_absent() {
     store.save(&c).unwrap();
     let saved = fs::read_to_string(store.path()).unwrap();
     assert!(saved.contains("[surfaces]") && saved.contains("browser_capture = \"virtual-display\""), "{saved}");
-    assert_eq!(store.load().unwrap().config, c);
+    assert_eq!(load_from_disk(&store), c);
 }
 
 #[test]
@@ -396,5 +416,5 @@ fn project_tabs_default_off_stay_out_of_the_file_and_round_trip() {
     c.project_tabs = true;
     store.save(&c).unwrap();
     assert!(fs::read_to_string(store.path()).unwrap().contains("project_tabs = true"));
-    assert!(store.load().unwrap().config.project_tabs);
+    assert!(load_from_disk(&store).project_tabs);
 }
