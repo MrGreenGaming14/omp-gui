@@ -56,7 +56,9 @@ mod tests {
 
     #[test]
     fn bare_names_resolve_on_path_and_paths_must_exist() {
-        let sh = find_executable(Path::new("sh")).expect("sh on PATH");
+        // The shell every platform ships: `sh` is not on a Windows PATH, `cmd` is.
+        let shell = if cfg!(windows) { "cmd" } else { "sh" };
+        let sh = find_executable(Path::new(shell)).unwrap_or_else(|| panic!("{shell} on PATH"));
         assert!(sh.is_absolute());
         assert_eq!(find_executable(&sh), Some(sh.clone()));
         assert_eq!(find_executable(Path::new("/nonexistent/loa-updater-test")), None);

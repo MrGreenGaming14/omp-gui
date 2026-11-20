@@ -483,7 +483,7 @@ async fn folder_grants_list_read_and_write_only_inside_the_folder() {
     guest.node.add_peer(&owner.node.key().to_string(), Some(&owner_udp.to_string())).await.unwrap();
     owner.node.add_peer(&guest.node.key().to_string(), Some(&guest_udp.to_string())).await.unwrap();
     let files = tempfile::tempdir().unwrap();
-    let base = std::fs::canonicalize(files.path()).unwrap();
+    let base = loa_exec::canonicalize(files.path()).unwrap();
     let share = base.join("share");
     std::fs::create_dir_all(share.join("docs")).unwrap();
     std::fs::write(base.join("secret.txt"), "outside").unwrap();

@@ -34,6 +34,7 @@ mod ssh;
 
 const WAIT: Duration = Duration::from_secs(30);
 const TURN_TIMEOUT: Duration = Duration::from_secs(600);
+const PYTHON: &str = if cfg!(windows) { "python" } else { "python3" };
 
 /// Harness ids of the rig: one connects to MCP servers itself, one takes
 /// host tools (like omp), one takes neither.
@@ -277,7 +278,7 @@ impl Drop for Rig {
 }
 
 /// A tiny stdio MCP server with one tool, `vault_code`, answering `code`.
-fn vault_server(dir: &Path, code: &str) -> String {
+fn vault_script(dir: &Path, code: &str) -> PathBuf {
     let script = dir.join("vault.py");
     std::fs::write(
         &script,
@@ -307,7 +308,14 @@ for line in sys.stdin:
         ),
     )
     .unwrap();
-    format!("python3 -u {}", script.display())
+    script
+}
+
+fn vault_server(dir: &Path, code: &str) -> String {
+    let script = vault_script(dir, code);
+    let path = script.to_str().unwrap();
+    // The form uses shell-style word splitting, not cmd.exe's quoting.
+    format!("{PYTHON} -u {}", serde_json::to_string(path).unwrap())
 }
 
 /// Adds a stdio server through the panel's add form.
@@ -428,11 +436,11 @@ fn an_mcp_server_added_in_the_panel_runs_is_controlled_and_reaches_every_session
 #[test]
 fn servers_import_from_claude_cursor_and_codex_configs() {
     let mut rig = Rig::new().started();
-    let command = vault_server(rig.dir.path(), "77");
-    let script = command.trim_start_matches("python3 -u ");
+    let script = vault_script(rig.dir.path(), "77");
+    let script = serde_json::to_string(script.to_str().unwrap()).unwrap();
     std::fs::write(
         rig.home.join(".claude.json"),
-        format!(r#"{{"mcpServers": {{"claude-vault": {{"command": "python3", "args": ["-u", "{script}"]}}}}}}"#),
+        format!(r#"{{"mcpServers": {{"claude-vault": {{"command": "{PYTHON}", "args": ["-u", {script}]}}}}}}"#),
     )
     .unwrap();
     std::fs::create_dir_all(rig.home.join(".cursor")).unwrap();
@@ -440,7 +448,7 @@ fn servers_import_from_claude_cursor_and_codex_configs() {
     std::fs::create_dir_all(rig.home.join(".codex")).unwrap();
     std::fs::write(
         rig.home.join(".codex/config.toml"),
-        format!("[mcp_servers.codex-vault]\ncommand = \"python3\"\nargs = [\"-u\", \"{script}\", \"codex\"]\n"),
+        format!("[mcp_servers.codex-vault]\ncommand = \"{PYTHON}\"\nargs = [\"-u\", {script}, \"codex\"]\n"),
     )
     .unwrap();
 

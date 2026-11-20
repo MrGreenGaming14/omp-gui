@@ -137,11 +137,19 @@ fn read(path: &Path) -> Result<Vec<u8>> {
     std::fs::read(path).map_err(|source| Error::io(path, source))
 }
 
+/// Collects the files under `root`. Relative paths are joined with `/` on
+/// every platform: the report is keyed by them and should read (and
+/// compare) the same everywhere; Windows accepts `/` when they are opened.
 fn walk(root: &Path, rel: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
     let dir = root.join(rel);
     for entry in std::fs::read_dir(&dir).map_err(|source| Error::io(&dir, source))? {
         let entry = entry.map_err(|source| Error::io(&dir, source))?;
-        let rel = rel.join(entry.file_name());
+        let mut rel = rel.as_os_str().to_owned();
+        if !rel.is_empty() {
+            rel.push("/");
+        }
+        rel.push(entry.file_name());
+        let rel = PathBuf::from(rel);
         if entry.file_type().map_err(|source| Error::io(&dir, source))?.is_dir() {
             walk(root, &rel, out)?;
         } else {

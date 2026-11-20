@@ -4598,6 +4598,7 @@ dependencies = [
  "loa-adapter",
  "loa-core",
  "loa-exec",
+ "process-wrap",
  "serde",
  "serde_json",
  "tempfile",
@@ -4798,6 +4799,7 @@ dependencies = [
 name = "loa-exec"
 version = "0.1.0"
 dependencies = [
+ "dunce",
  "tempfile",
 ]
 
@@ -4848,7 +4850,9 @@ dependencies = [
  "getrandom 0.4.3",
  "iroh-base",
  "keyring",
+ "tempfile",
  "thiserror 2.0.21",
+ "windows-sys 0.61.2",
  "zeroize",
 ]
 
@@ -5088,6 +5092,7 @@ dependencies = [
  "loa-adapter-omp",
  "loa-core",
  "loa-sandbox",
+ "process-wrap",
  "serde_json",
  "tempfile",
  "tokio",

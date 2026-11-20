@@ -21,6 +21,27 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+/// Canonicalizes a path without a Windows verbatim prefix when an equivalent
+/// DOS path exists. Use for paths passed to programs that reject that prefix.
+pub fn canonicalize(path: &Path) -> io::Result<PathBuf> {
+    #[cfg(windows)]
+    return dunce::canonicalize(path);
+    #[cfg(not(windows))]
+    path.canonicalize()
+}
+
+/// Uses the ordinary Windows spelling only when it refers to the same path.
+pub fn simplify(path: PathBuf) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let plain = dunce::simplified(&path);
+        if plain != path.as_path() {
+            return plain.to_path_buf();
+        }
+    }
+    path
+}
+
 /// Calls `spawn` and, while it fails with `ETXTBSY` ("Text file busy"),
 /// calls it again after a short doubling backoff (2 ms up to 50 ms, about
 /// 0.4 s in total). A forked child that inherited a writable descriptor
@@ -64,10 +85,27 @@ pub fn write_executable(path: &Path, contents: impl AsRef<[u8]>) -> io::Result<(
     }
 }
 
-/// Writes `contents` to `path`. Without fork there is no race to avoid.
-#[cfg(not(unix))]
+/// Writes a shell-script fixture and a Windows launcher next to it.
+///
+/// Callers spawn [`resolve`]`(path)`, which finds the `.cmd` launcher through
+/// `PATHEXT`. The launcher uses Bash from Git for Windows; a checkout's CRLF
+/// line endings must not reach Bash.
+#[cfg(windows)]
 pub fn write_executable(path: &Path, contents: impl AsRef<[u8]>) -> io::Result<()> {
-    std::fs::write(path, contents)
+    let sidecar = |suffix: &str| {
+        let mut name = path.as_os_str().to_owned();
+        name.push(suffix);
+        PathBuf::from(name)
+    };
+    let contents = contents.as_ref();
+    let mut script = Vec::with_capacity(contents.len());
+    for (i, &byte) in contents.iter().enumerate() {
+        if byte != b'\r' || contents.get(i + 1) != Some(&b'\n') {
+            script.push(byte);
+        }
+    }
+    std::fs::write(sidecar(".sh"), script)?;
+    std::fs::write(sidecar(".cmd"), b"@bash.exe --noprofile --norc \"%~dpn0.sh\" %*\r\n")
 }
 
 /// Whether `path` names an executable file. Unix: a regular file with any
@@ -327,6 +365,22 @@ mod find_tests {
         let tool = make(dir.path(), "tool.exe");
         assert_eq!(resolve(&tool), tool);
     }
+}
+
+#[cfg(all(test, windows))]
+#[test]
+fn windows_script_fixture_preserves_args_streams_and_exit_code() {
+    let dir = tempfile::tempdir().unwrap();
+    let script = dir.path().join("fake tool");
+    write_executable(
+        &script,
+        "#!/usr/bin/env bash\r\nprintf '%s' \"$1\"\r\nprintf 'diagnostic' >&2\r\nexit 3\r\n",
+    )
+    .unwrap();
+    let result = std::process::Command::new(resolve(&script)).arg("two words").output().unwrap();
+    assert_eq!(result.stdout, b"two words");
+    assert_eq!(result.stderr, b"diagnostic");
+    assert_eq!(result.status.code(), Some(3));
 }
 
 #[cfg(all(test, unix))]

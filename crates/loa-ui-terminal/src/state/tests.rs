@@ -157,13 +157,12 @@ fn remote_state() -> (State, tokio::sync::mpsc::UnboundedReceiver<LoopbackSessio
 async fn local_shell_tab_runs_typed_commands_resizes_and_exits() {
     let dir = tempfile::tempdir().unwrap();
     let cwd = dir.path().canonicalize().unwrap();
-    let mut shell = LocalShell::program("/bin/sh", Vec::<std::ffi::OsString>::new(), &cwd);
-    shell.env.push(("PS1".into(), "$ ".into()));
+    let shell = crate::local::testing::sh(&cwd);
     let mut h = Harness::new(State::new(metrics(), shell.clone()));
     let id = h.open(Target::Local(shell));
     // Typed before the shell is up: must not be lost.
-    h.type_text(id, "pwd\r");
-    h.until_screen(id, cwd.to_str().unwrap()).await;
+    h.type_text(id, &format!("{}\r", crate::local::testing::PWD));
+    h.until_screen(id, &crate::local::testing::printed(&cwd)).await;
     assert_eq!(h.state.status(id), Some(&Status::Running));
 
     // The pane is laid out at 50x10 cells.

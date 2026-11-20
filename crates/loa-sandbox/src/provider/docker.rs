@@ -12,7 +12,11 @@ pub const MOUNTED_STUB: &str = "/opt/loa/loa-sandbox-stub";
 /// Variables of the host the Docker CLI itself needs to find its daemon and
 /// configuration. They reach the `docker` client process only, never the
 /// container.
-const CLIENT_ENV: &[&str] = &["PATH", "HOME", "XDG_RUNTIME_DIR", "DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG", "DOCKER_CERT_PATH", "DOCKER_TLS_VERIFY"];
+const CLIENT_ENV: &[&str] = &[
+    "PATH", "HOME", "XDG_RUNTIME_DIR", "DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG", "DOCKER_CERT_PATH", "DOCKER_TLS_VERIFY",
+    // Windows: where processes find the system, and the user profile that holds `.docker`.
+    "SystemRoot", "windir", "ComSpec", "PATHEXT", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "ProgramData", "ProgramFiles",
+];
 
 /// How the container gets the stub.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -119,7 +123,7 @@ impl Sandbox for DockerSandbox {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::provider::SandboxOptions;
@@ -132,7 +136,7 @@ mod tests {
         let fake = dir.path().join("docker");
         loa_exec::write_executable(&fake, "#!/bin/sh\nif [ \"$1\" = run ]; then printf '%s\\n' \"$@\"; fi\n").unwrap();
         let mut provider = DockerProvider::new("debian:stable-slim", DockerStub::Mount("/host/stub".into()));
-        provider.docker = fake;
+        provider.docker = loa_exec::resolve(&fake);
         let spec = SandboxSpec {
             name: "loa-sbx-1".into(),
             workspace: "/work".into(),

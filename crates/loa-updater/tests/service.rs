@@ -21,6 +21,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+mod common;
+
 fn v(s: &str) -> Version {
     Version::parse(s).unwrap()
 }
@@ -94,9 +96,24 @@ fn script(path: &Path, body: &str) -> PathBuf {
     path.to_path_buf()
 }
 
-/// A tool that reports `version`.
+/// Extension of a staged `tool` asset: a raw file is launched as is, and
+/// Windows only launches batch files and `.exe`s, so the fixture is a `.cmd`.
+const TOOL_EXT: &str = if cfg!(windows) { ".cmd" } else { "" };
+
+/// File name of the `tool` asset published for `version`.
+fn tool_asset(version: &str) -> String {
+    format!("tool-{version}{TOOL_EXT}")
+}
+
+/// A tool that reports `version`: a shell script, or on Windows a
+/// self-contained batch file (release assets are plain bytes, not fixtures
+/// the shell bridge of `write_executable` can wrap).
 fn tool_bytes(version: &str) -> Vec<u8> {
-    format!("#!/bin/sh\necho \"tool {version}\"\n").into_bytes()
+    if cfg!(windows) {
+        format!("@echo off\r\necho tool {version}\r\n").into_bytes()
+    } else {
+        format!("#!/bin/sh\necho \"tool {version}\"\n").into_bytes()
+    }
 }
 
 struct Setup {
@@ -116,10 +133,7 @@ async fn setup() -> Setup {
     let review = dir.path().join("review.json");
     std::fs::write(&review, r#"{"breaking": [], "removed": []}"#).unwrap();
     let system_tool = script(&dir.path().join("tool"), "echo 'tool 1.0.0'");
-    let reviewer = script(
-        &dir.path().join("omp"),
-        &format!("if [ \"$1\" = --version ]; then echo omp/9.0.0; else cat '{}'; fi", review.display()),
-    );
+    let reviewer = common::write_omp_stub(dir.path());
     let feed = Feed2::default();
     let base = feed.serve().await;
     let tool = ProductSpec {
@@ -128,7 +142,7 @@ async fn setup() -> Setup {
             kind: ProductKind::Harness("tool".into()),
             feed: Feed::GitHub { owner: "acme".into(), repo: "tool".into() },
             prereleases: PrereleasePolicy::Stable,
-            asset: Some("tool-{version}".into()),
+            asset: Some(format!("tool-{{version}}{TOOL_EXT}")),
         },
         label: "Tool".into(),
         installed: Installed::Executable(system_tool),
@@ -156,7 +170,7 @@ async fn setup() -> Setup {
 #[tokio::test]
 async fn check_stage_gate_hold_choices_swap_and_rollback() {
     let s = setup().await;
-    s.feed.publish(&s.base, "1.1.0", "- tool: `--fast` flag removed", "tool-1.1.0", &tool_bytes("1.1.0"), &[]);
+    s.feed.publish(&s.base, "1.1.0", "- tool: `--fast` flag removed", &tool_asset("1.1.0"), &tool_bytes("1.1.0"), &[]);
     let updater = Updater::open(s.config.clone()).unwrap();
 
     updater.detect().await;
@@ -222,7 +236,7 @@ async fn check_stage_gate_hold_choices_swap_and_rollback() {
 
     // A clean 1.2.0 swaps straight away; rollback goes back to 1.1.0.
     std::fs::write(&s.review, r#"{"breaking": [], "removed": []}"#).unwrap();
-    s.feed.publish(&s.base, "1.2.0", "- faster startup", "tool-1.2.0", &tool_bytes("1.2.0"), &[]);
+    s.feed.publish(&s.base, "1.2.0", "- faster startup", &tool_asset("1.2.0"), &tool_bytes("1.2.0"), &[]);
     assert_eq!(updater.check("tool").await.unwrap().map(|r| r.version), Some(v("1.2.0")));
     updater.stage("tool").await.unwrap();
     assert!(updater.gate("tool").await.unwrap().is_clean());
@@ -252,7 +266,7 @@ async fn check_stage_gate_hold_choices_swap_and_rollback() {
 #[tokio::test]
 async fn pins_from_the_config_replace_the_stored_pins() {
     let s = setup().await;
-    s.feed.publish(&s.base, "1.1.0", "- faster", "tool-1.1.0", &tool_bytes("1.1.0"), &[]);
+    s.feed.publish(&s.base, "1.1.0", "- faster", &tool_asset("1.1.0"), &tool_bytes("1.1.0"), &[]);
     let updater = Updater::open(s.config.clone()).unwrap();
     updater.detect().await;
     updater.check("tool").await.unwrap();
@@ -273,7 +287,7 @@ async fn pins_from_the_config_replace_the_stored_pins() {
 #[tokio::test]
 async fn product_without_release_notes_passes_changelog_and_errors_are_shown() {
     let s = setup().await;
-    s.feed.publish(&s.base, "2.0.0", "", "tool-2.0.0", &tool_bytes("2.0.0"), &[]);
+    s.feed.publish(&s.base, "2.0.0", "", &tool_asset("2.0.0"), &tool_bytes("2.0.0"), &[]);
     let updater = Updater::open(s.config.clone()).unwrap();
     assert!(matches!(updater.stage("nope").await, Err(UpdaterError::UnknownProduct(_))));
     assert!(matches!(updater.stage("tool").await, Err(UpdaterError::NothingOffered(_))));

@@ -119,23 +119,29 @@ fn sandbox_grants_cover_only_sandbox_exec() {
     assert!(verify(&root, &store, &alice, &other.token).authorize(&Request::sandbox(Action::Exec), NOW).is_err());
 }
 
+/// An absolute path for the platform: `/srv/share` stays as is on Unix and
+/// becomes `C:\srv\share` on Windows. Relative paths pass through.
+fn abs(path: &str) -> String {
+    if cfg!(windows) && path.starts_with('/') { format!("C:{}", path.replace('/', "\\")) } else { path.to_owned() }
+}
+
 #[test]
 fn folder_grants_cover_the_folder_and_below_read_is_view_write_is_drive() {
     let root = key(10); let alice = key(11); let bob = key(12);
     let store = GrantStore::with_connection(rusqlite::Connection::open_in_memory().unwrap()).unwrap();
-    let folder = |path: &str| Resource::Folder { path: path.into() };
+    let folder = |path: &str| Resource::Folder { path: abs(path) };
     let read = issue(&root, &store, &alice, vec![scope(folder("/srv/share"), Action::Read)], true);
     let grant = verify(&root, &store, &alice, &read.token);
     for covered in ["/srv/share", "/srv/share/docs", "/srv/share/docs/deep"] {
-        assert!(grant.authorize(&Request::folder(Action::Read, covered), NOW).is_ok(), "{covered}");
+        assert!(grant.authorize(&Request::folder(Action::Read, &abs(covered)), NOW).is_ok(), "{covered}");
     }
     // Siblings with the same prefix, parents, relative and unnormalized paths are outside.
     for outside in ["/srv/shared", "/srv", "/", "srv/share", "/srv/share/../etc"] {
-        assert!(grant.authorize(&Request::folder(Action::Read, outside), NOW).is_err(), "{outside}");
+        assert!(grant.authorize(&Request::folder(Action::Read, &abs(outside)), NOW).is_err(), "{outside}");
     }
     // View only: no writes.
     assert!(matches!(
-        grant.authorize(&Request::folder(Action::Write, "/srv/share/a"), NOW),
+        grant.authorize(&Request::folder(Action::Write, &abs("/srv/share/a")), NOW),
         Err(Denied::NotGranted { action: Action::Write, resource: "folder" })
     ));
     assert!(grant.authorize(&Request::ssh(Action::Read, "/srv/share"), NOW).is_err());
@@ -143,8 +149,8 @@ fn folder_grants_cover_the_folder_and_below_read_is_view_write_is_drive() {
     // Write brings read; the holder reads both back.
     let write = issue(&root, &store, &alice, vec![scope(folder("/srv/share"), Action::Write)], true);
     let writer = verify(&root, &store, &alice, &write.token);
-    assert!(writer.authorize(&Request::folder(Action::Write, "/srv/share/a"), NOW).is_ok());
-    assert!(writer.authorize(&Request::folder(Action::Read, "/srv/share/a"), NOW).is_ok());
+    assert!(writer.authorize(&Request::folder(Action::Write, &abs("/srv/share/a")), NOW).is_ok());
+    assert!(writer.authorize(&Request::folder(Action::Read, &abs("/srv/share/a")), NOW).is_ok());
     let scopes = token_scopes(&write.token, &root.public()).unwrap();
     assert_eq!(scopes, vec![Scope::new(folder("/srv/share"), [Action::Read, Action::Write]).unwrap()]);
 
@@ -162,9 +168,9 @@ fn folder_grants_cover_the_folder_and_below_read_is_view_write_is_drive() {
         ttl_ms: TTL, reshare: false,
     }, NOW).unwrap();
     let narrowed = verify(&root, &store, &bob, &child.token);
-    assert!(narrowed.authorize(&Request::folder(Action::Read, "/srv/share/docs/x"), NOW).is_ok());
-    assert!(matches!(narrowed.authorize(&Request::folder(Action::Read, "/srv/share"), NOW), Err(Denied::Narrowed { .. })));
-    assert!(matches!(narrowed.authorize(&Request::folder(Action::Write, "/srv/share/docs"), NOW), Err(Denied::Narrowed { .. })));
+    assert!(narrowed.authorize(&Request::folder(Action::Read, &abs("/srv/share/docs/x")), NOW).is_ok());
+    assert!(matches!(narrowed.authorize(&Request::folder(Action::Read, &abs("/srv/share")), NOW), Err(Denied::Narrowed { .. })));
+    assert!(matches!(narrowed.authorize(&Request::folder(Action::Write, &abs("/srv/share/docs")), NOW), Err(Denied::Narrowed { .. })));
 }
 
 #[test]

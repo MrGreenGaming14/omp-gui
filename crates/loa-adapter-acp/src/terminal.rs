@@ -74,14 +74,27 @@ impl Terminals {
         for var in request.env.unwrap_or_default() {
             command.env(var.name, var.value);
         }
-        let mut child = command
-            .spawn()
-            .map_err(|e| RpcError::remote(code::INTERNAL, format!("can't run `{}`: {e}", request.command)))?;
+        let start_failed = |e| RpcError::remote(code::INTERNAL, format!("can't run `{}`: {e}", request.command));
+        #[cfg(windows)]
+        let (mut child, stdout, stderr) = {
+            use process_wrap::tokio::{CommandWrap, JobObject};
+            let mut command = CommandWrap::from(command);
+            command.wrap(JobObject);
+            let mut child = command.spawn().map_err(start_failed)?;
+            let (stdout, stderr) = (child.stdout().take(), child.stderr().take());
+            (child, stdout, stderr)
+        };
+        #[cfg(not(windows))]
+        let (mut child, stdout, stderr) = {
+            let mut child = command.spawn().map_err(start_failed)?;
+            let (stdout, stderr) = (child.stdout.take(), child.stderr.take());
+            (child, stdout, stderr)
+        };
         let limit = request.output_byte_limit.map(|l| usize::try_from(l).unwrap_or(usize::MAX));
         let output = Arc::new(Mutex::new(Output { bytes: Vec::new(), limit, truncated: false }));
         let readers = [
-            child.stdout.take().map(|out| tokio::spawn(pump(out, output.clone()))),
-            child.stderr.take().map(|err| tokio::spawn(pump(err, output.clone()))),
+            stdout.map(|out| tokio::spawn(pump(out, output.clone()))),
+            stderr.map(|err| tokio::spawn(pump(err, output.clone()))),
         ];
         let (exit_tx, exit_rx) = watch::channel(None);
         let (kill_tx, kill_rx) = oneshot::channel::<()>();

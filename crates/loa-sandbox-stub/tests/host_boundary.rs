@@ -7,6 +7,12 @@ use loa_sandbox::worker::MemoryJournal;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+/// The `sandbox_bash` call that prints the host key, or `unset` without it.
+#[cfg(unix)]
+const PRINT_HOST_KEY: &str = r#"{"command":"printf '%s' \"${HOST_API_KEY-unset}\""}"#;
+#[cfg(windows)]
+const PRINT_HOST_KEY: &str = r#"{"command":"if defined HOST_API_KEY (echo %HOST_API_KEY%) else (echo unset)"}"#;
+
 struct TestAdapter {
     observed: Arc<Mutex<Vec<String>>>,
 }
@@ -36,7 +42,7 @@ impl Adapter for TestAdapter {
 #[async_trait]
 impl HarnessSession for TestSession {
     async fn send(&self, _: Prompt) -> loa_adapter::Result<()> {
-        let env = self.tools.call(&self.id, "sandbox_bash", r#"{"command":"printf '%s' \"${HOST_API_KEY-unset}\""}"#)
+        let env = self.tools.call(&self.id, "sandbox_bash", PRINT_HOST_KEY)
             .await.map_err(AdapterError::Protocol)?;
         let files = self.tools.call(&self.id, "sandbox_list", r#"{"path":"."}"#)
             .await.map_err(AdapterError::Protocol)?;

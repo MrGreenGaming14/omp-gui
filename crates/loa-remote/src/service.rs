@@ -146,19 +146,39 @@ pub struct RemoteServiceConfig {
 
 impl RemoteServiceConfig {
     /// The usual OpenSSH files under `home` (`~/.ssh/known_hosts`,
-    /// `~/.ssh/known_hosts2`, `/etc/ssh/ssh_known_hosts`) and `SSH_AUTH_SOCK`.
+    /// `~/.ssh/known_hosts2`, the system `ssh_known_hosts`) and SSH agent.
     pub fn from_home(home: &std::path::Path) -> Self {
         let user = home.join(".ssh/known_hosts");
         Self {
             known_hosts: vec![
                 user.clone(),
                 home.join(".ssh/known_hosts2"),
-                PathBuf::from("/etc/ssh/ssh_known_hosts"),
+                system_known_hosts(std::env::var_os("ProgramData")),
             ],
             known_hosts_write: user,
             connector: ConnectorConfig::from_env(),
         }
     }
+}
+
+fn system_known_hosts(program_data: Option<std::ffi::OsString>) -> PathBuf {
+    if cfg!(windows) {
+        program_data
+            .filter(|path| !path.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"))
+            .join("ssh")
+            .join("ssh_known_hosts")
+    } else {
+        PathBuf::from("/etc/ssh/ssh_known_hosts")
+    }
+}
+
+#[cfg(all(test, windows))]
+#[test]
+fn openssh_system_known_hosts_uses_program_data() {
+    assert_eq!(system_known_hosts(Some(r"D:\Data".into())), PathBuf::from(r"D:\Data\ssh\ssh_known_hosts"));
+    assert_eq!(system_known_hosts(None), PathBuf::from(r"C:\ProgramData\ssh\ssh_known_hosts"));
 }
 
 /// Approval classes remembered for a session after "allow for session".

@@ -135,7 +135,6 @@ impl Sandbox for SshSandbox {
 mod tests {
     use super::*;
     use crate::provider::SandboxOptions;
-    #[cfg(unix)]
     use tokio::io::AsyncReadExt;
 
     #[test]
@@ -143,41 +142,51 @@ mod tests {
         assert_eq!(quote("a b'c"), "'a b'\\''c'");
     }
 
-    #[cfg(unix)]
     fn script(path: &std::path::Path, body: &str) {
         loa_exec::write_executable(path, body).unwrap();
     }
 
+    /// The path in the form Git Bash and POSIX shell scripts take.
+    fn posix(path: &std::path::Path) -> String {
+        path.display().to_string().replace('\\', "/")
+    }
+
     /// A fake `ssh` runs the remote command locally after `-- <host>`, and
     /// records the host it was asked for.
-    #[cfg(unix)]
     #[tokio::test]
     async fn uploads_the_stub_runs_it_in_a_private_root_and_removes_it() {
         let dir = tempfile::tempdir().unwrap();
         let fake_ssh = dir.path().join("ssh");
-        script(&fake_ssh, &format!("#!/bin/sh\nwhile [ \"$1\" != -- ]; do shift; done\nshift\necho \"$1\" >> {}/hosts\nshift\nexec sh -c \"$1\"\n", dir.path().display()));
+        script(&fake_ssh, &format!("#!/bin/sh\nwhile [ \"$1\" != -- ]; do shift; done\nshift\necho \"$1\" >> '{}/hosts'\nshift\nexec sh -c \"$1\"\n", posix(dir.path())));
         let stub = dir.path().join("stub");
         script(&stub, "#!/bin/sh\nprintf 'stub in %s' \"$1\"\n");
+        // The provider uploads the stub's bytes: on Windows the script is
+        // the `.sh` beside its `.cmd` launcher.
+        let uploaded = if cfg!(windows) { dir.path().join("stub.sh") } else { stub };
         let remote = dir.path().join("remote");
-        let mut provider = SshProvider::new(&stub, vec!["builder".into()]);
-        provider.ssh = fake_ssh;
-        provider.remote_root = remote.display().to_string();
+        let mut provider = SshProvider::new(&uploaded, vec!["builder".into()]);
+        provider.ssh = loa_exec::resolve(&fake_ssh);
+        provider.remote_root = posix(&remote);
         let spec = SandboxSpec { name: "loa-sbx-7".into(), workspace: "/unused".into(), env: vec![], options: SandboxOptions::default() };
         let mut sandbox = provider.start(&spec).await.unwrap();
         assert_eq!(sandbox.workspace_mode(), WorkspaceMode::Copied);
         let mut output = String::new();
         sandbox.take_channel().unwrap().reader.read_to_string(&mut output).await.unwrap();
         let root = remote.join("loa-sbx-7");
-        assert_eq!(output, format!("stub in {}", root.display()));
+        assert_eq!(output, format!("stub in {}/loa-sbx-7", posix(&remote)));
+        // Windows has no mode bits to check.
+        #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             let mode = std::fs::metadata(root.join("loa-sandbox-stub")).unwrap().permissions().mode();
             assert_eq!(mode & 0o777, 0o700);
         }
+        #[cfg(not(unix))]
+        assert!(root.join("loa-sandbox-stub").is_file());
         sandbox.stop().await.unwrap();
         assert!(!root.exists(), "the remote root is removed");
         let hosts = std::fs::read_to_string(dir.path().join("hosts")).unwrap();
-        assert!(hosts.lines().all(|host| host == "builder"), "{hosts}");
+        assert!(hosts.lines().all(|host| host.trim_end() == "builder"), "{hosts}");
     }
 
     #[tokio::test]

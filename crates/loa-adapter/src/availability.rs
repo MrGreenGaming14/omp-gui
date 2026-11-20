@@ -139,7 +139,7 @@ mod tests {
         let ready = probe_cli(&script, &["--version"]).await;
         assert!(ready.is_ready(), "{ready:?}");
         assert_eq!(ready.version.as_deref(), Some("4.5.6"));
-        assert_eq!(ready.executable.as_deref(), Some(script.as_path()));
+        assert_eq!(ready.executable.as_deref(), Some(loa_exec::resolve(&script).as_path()));
 
         let broken = dir.path().join("broken-harness");
         loa_exec::write_executable(&broken, "#!/bin/sh\necho 'bad flag' >&2\nexit 3\n").unwrap();

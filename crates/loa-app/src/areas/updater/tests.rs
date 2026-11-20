@@ -69,6 +69,14 @@ struct Fixture {
     config: UpdaterConfig,
 }
 
+/// Fixtures shared with the updater crate's own tests.
+#[path = "../../../../loa-updater/tests/common/mod.rs"]
+mod common;
+
+/// Extension of the staged `fake` asset: a raw file is launched as is, and
+/// Windows only launches batch files and `.exe`s, so the fixture is a `.cmd`.
+const FAKE_EXT: &str = if cfg!(windows) { ".cmd" } else { "" };
+
 fn script(path: &Path, body: &str) -> PathBuf {
     loa_exec::write_executable(path, format!("#!/bin/sh\n{body}\n")).unwrap();
     path.to_path_buf()
@@ -82,10 +90,7 @@ impl Fixture {
         let review = dir.join("review.json");
         std::fs::write(&review, r#"{"breaking": [], "removed": []}"#).unwrap();
         let system = script(&dir.join("fake-cli"), "echo 'fake 1.0.0'");
-        let reviewer = script(
-            &dir.join("omp"),
-            &format!("if [ \"$1\" = --version ]; then echo omp/9.0.0; else cat '{}'; fi", review.display()),
-        );
+        let reviewer = common::write_omp_stub(dir);
         let spec = |id: &str, installed: PathBuf, asset: Option<String>| ProductSpec {
             product: Product {
                 id: id.into(),
@@ -101,7 +106,7 @@ impl Fixture {
         };
         let mut config = UpdaterConfig::new(
             dir.join("updates"),
-            vec![spec("fake", system, Some("fake-{version}".into())), spec("omp", reviewer, None)],
+            vec![spec("fake", system, Some(format!("fake-{{version}}{FAKE_EXT}"))), spec("omp", reviewer, None)],
         );
         config.github_api = base.clone();
         Self { served, base, review, config }
@@ -109,8 +114,13 @@ impl Fixture {
 
     /// Publishes `fake` `version`: a CLI that reports it.
     fn publish(&self, version: &str, notes: &str) {
-        let bytes = format!("#!/bin/sh\necho \"fake {version}\"\n").into_bytes();
-        self.served.publish(&self.base, version, notes, &format!("fake-{version}"), bytes);
+        let bytes = if cfg!(windows) {
+            format!("@echo off\r\necho fake {version}\r\n")
+        } else {
+            format!("#!/bin/sh\necho \"fake {version}\"\n")
+        }
+        .into_bytes();
+        self.served.publish(&self.base, version, notes, &format!("fake-{version}{FAKE_EXT}"), bytes);
     }
 
     fn review(&self, removed: &[&str]) {

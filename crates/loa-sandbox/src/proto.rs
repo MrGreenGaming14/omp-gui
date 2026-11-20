@@ -28,7 +28,7 @@ pub const MAX_FRAME: u32 = 64 << 20;
 pub enum Command {
     /// Program and arguments, run directly.
     Argv(Vec<String>),
-    /// A script for `/bin/sh -c`.
+    /// A script for `/bin/sh -c`, or `cmd /C` on Windows.
     Shell(String),
 }
 

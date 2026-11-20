@@ -175,7 +175,7 @@ impl SandboxTools {
                 serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "command": { "type": "string", "description": "Script for /bin/sh -c" },
+                        "command": { "type": "string", "description": "Script for /bin/sh -c (cmd /C on Windows)" },
                         "cwd": { "type": "string", "description": "Directory relative to the workspace" },
                         "timeout_ms": { "type": "integer", "minimum": 1 }
                     },

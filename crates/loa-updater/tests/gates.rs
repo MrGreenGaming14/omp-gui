@@ -1,6 +1,7 @@
 use loa_updater::gates::{
     ChangelogGate, ChangelogReview, ChangelogSummarizer, ConfigSchema, ContractFailure,
-    ContractRunner, FormatGate, FormatProbe, GateCheck, GateInputs, OmpReadyProbe, RpcGate,
+    ContractRunner, FormatGate, FormatProbe, GateCheck, GateInputs, OmpReadyProbe,
+    OmpSmolSummarizer, RpcGate,
     RpcProbe, ToolCatalog, ToolGate, ToolSchema, UsedTools, Verdict, check_tool_schemas,
     run_gates,
 };
@@ -9,6 +10,8 @@ use serde_json::json;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+
+mod common;
 
 fn tool(name: &str, schema: serde_json::Value) -> ToolSchema {
     ToolSchema { name: name.to_string(), input_schema: schema }
@@ -196,12 +199,40 @@ async fn ready_probe_passes_rpc_args() {
         dir.path(),
         &format!(
             "echo \"$@\" > '{}'\nprintf '%s\\n' '{{\"type\":\"ready\",\"protocolVersion\":1}}'\nexec sleep 30",
-            args_file.display()
+            common::sh_path(&args_file)
         ),
     );
     let probe = OmpReadyProbe::new(Duration::from_secs(20));
     assert_eq!(probe.protocol_versions(&exe).await.unwrap(), vec![1]);
     assert_eq!(std::fs::read_to_string(&args_file).unwrap().trim(), "--mode rpc --no-session");
+}
+
+#[tokio::test]
+async fn smol_summarizer_parses_reply_and_passes_flags() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("review.json"),
+        r#"{"breaking": ["edit: path renamed"], "removed": []}"#,
+    )
+    .unwrap();
+    let exe = common::write_omp_stub(dir.path());
+    let summarizer = OmpSmolSummarizer::new(exe, Duration::from_secs(10));
+    let review = summarizer.review("## 2.0.0\n\n- edit: path renamed").await.unwrap();
+    assert_eq!(review.breaking, vec!["edit: path renamed"]);
+
+    let args = std::fs::read_to_string(dir.path().join("args.txt")).unwrap();
+    let lines: Vec<&str> = args.lines().collect();
+    assert_eq!(&lines[..5], ["-p", "--model", "@smol", "--no-session", "--no-tools"]);
+    assert!(args.contains("- edit: path renamed"));
+}
+
+#[tokio::test]
+async fn smol_summarizer_rejects_junk() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("review.json"), "Sure! Nothing breaking here.").unwrap();
+    let exe = common::write_omp_stub(dir.path());
+    let summarizer = OmpSmolSummarizer::new(exe, Duration::from_secs(10));
+    assert!(summarizer.review("## 1.0.1\n\n- fix").await.is_err());
 }
 
 struct FakeCatalog {

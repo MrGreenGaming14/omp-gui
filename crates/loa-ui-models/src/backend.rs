@@ -757,15 +757,15 @@ mod tests {
     fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
         let path = dir.join(name);
         loa_exec::write_executable(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-        path
+        loa_exec::resolve(&path)
     }
 
     /// A `claude` that is signed out until its login (URL, pasted code) ran.
     fn fake_claude(dir: &Path) -> ClaudeCode {
-        let program = script(
-            dir,
-            "claude",
-            r#"dir=$(dirname "$0")
+        // The script's own folder, spelled with forward slashes so Git Bash
+        // on Windows reads it; `$0` isn't reliable behind the `.cmd` launcher.
+        let folder = dir.display().to_string().replace('\\', "/");
+        let body = r#"dir='@DIR@'
 if [ "$1 $2" = "auth status" ]; then
   if [ -f "$dir/signed-in" ]; then echo '{"loggedIn":true,"authMethod":"claude.ai"}'; exit 0; fi
   echo '{"loggedIn":false}'; exit 1
@@ -778,8 +778,9 @@ if [ "$1 $2" = "auth login" ]; then
   echo "Login successful for $code"
   exit 0
 fi
-exit 64"#,
-        );
+exit 64"#
+            .replace("@DIR@", &folder);
+        let program = script(dir, "claude", &body);
         ClaudeCode::new(program, dir.join("claude-settings.json"), Arc::new(TokioProcessRunner))
     }
 

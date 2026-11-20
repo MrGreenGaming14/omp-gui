@@ -121,7 +121,7 @@ pub fn local_folder(path: &str) -> Result<String, NodeError> {
     if !std::path::Path::new(path).is_absolute() {
         return Err(error(format!("{path:?}: give the folder's full path")));
     }
-    let real = std::fs::canonicalize(path).map_err(|e| error(format!("{path}: {e}")))?;
+    let real = loa_exec::canonicalize(path).map_err(|e| error(format!("{path}: {e}")))?;
     if !real.is_dir() {
         return Err(error(format!("{path}: not a folder")));
     }
@@ -453,7 +453,7 @@ mod tests {
     #[test]
     fn folder_requests_name_the_real_folder_view_reads_drive_writes() {
         let dir = tempfile::tempdir().unwrap();
-        let real = std::fs::canonicalize(dir.path()).unwrap();
+        let real = loa_exec::canonicalize(dir.path()).unwrap();
         std::fs::create_dir(real.join("share")).unwrap();
         std::fs::write(real.join("file.txt"), "x").unwrap();
         let input = |path: &str, permission| panel::GrantInput {

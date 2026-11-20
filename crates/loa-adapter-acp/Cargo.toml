@@ -16,6 +16,9 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["process", "io-util", "sync", "rt", "macros"] }
 tracing.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+process-wrap = { version = "10", default-features = false, features = ["tokio1", "job-object"] }
+
 [dev-dependencies]
 tempfile.workspace = true
 tokio = { workspace = true, features = ["full"] }

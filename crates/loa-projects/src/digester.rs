@@ -528,10 +528,10 @@ mod tests {
         let script = format!(
             "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"{d}/args\"\ncat > \"{d}/stdin\"\n\
              while [ $# -gt 0 ]; do if [ \"$1\" = --config ]; then cp \"$2\" \"{d}/overlay\"; fi; shift; done\n{body}\n",
-            d = dir.display()
+            d = dir.display().to_string().replace('\\', "/")
         );
         loa_exec::write_executable(&path, script).unwrap();
-        path
+        loa_exec::resolve(&path)
     }
 
     #[tokio::test]

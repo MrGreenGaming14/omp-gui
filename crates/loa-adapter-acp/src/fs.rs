@@ -46,7 +46,7 @@ pub fn resolve_inside(root: &Path, path: &str) -> Result<PathBuf, FsError> {
     let mut existing = lexical.as_path();
     let mut rest = Vec::new();
     let canonical = loop {
-        match existing.canonicalize() {
+        match loa_exec::canonicalize(existing) {
             Ok(canonical) => break canonical,
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
                 let (Some(parent), Some(name)) = (existing.parent(), existing.file_name()) else {
@@ -90,7 +90,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("project");
         std::fs::create_dir(&root).unwrap();
-        let root = root.canonicalize().unwrap();
+        let root = loa_exec::canonicalize(&root).unwrap();
         (dir, root)
     }
 

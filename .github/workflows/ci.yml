@@ -28,10 +28,20 @@ jobs:
       - run: xvfb-run -a cargo test --workspace
   windows:
     runs-on: windows-latest
+    env:
+      # Hosted runners have no reliable GPU; keep the headless pixel assertions.
+      ICED_TEST_BACKEND: tiny-skia
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: Add Git for Windows Bash for test fixtures
+        shell: pwsh
+        run: |
+          $git = (Get-Command git.exe).Source
+          $bin = Join-Path (Split-Path (Split-Path $git)) 'bin'
+          if (-not (Test-Path (Join-Path $bin 'bash.exe'))) { throw "Git for Windows Bash not found at $bin" }
+          Add-Content $env:GITHUB_PATH $bin
       - name: Install OMP for bridge integration tests
         shell: pwsh
         run: |

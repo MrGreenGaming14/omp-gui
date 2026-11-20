@@ -64,9 +64,28 @@ async fn send_entry(client: &StubClient, root: &Path, path: &Path) -> Result<()>
             run(client, "chmod", &[&mode, "--", &remote]).await?;
         }
     } else if meta.file_type().is_symlink() {
-        let target = fs::read_link(path)?;
-        let target = target.to_str().ok_or_else(|| invalid(format!("non-UTF8 symlink: {}", path.display())))?;
-        run(client, "ln", &["-s", "--", target, &remote]).await?;
+        #[cfg(unix)]
+        {
+            let target = fs::read_link(path)?;
+            let target = target.to_str().ok_or_else(|| invalid(format!("non-UTF8 symlink: {}", path.display())))?;
+            run(client, "ln", &["-s", "--", target, &remote]).await?;
+        }
+        #[cfg(not(unix))]
+        {
+            // Windows symlinks are copied as the file they point to, when that
+            // file is inside the workspace.
+            let resolved = fs::canonicalize(path)
+                .map_err(|e| invalid(format!("symlink {} can't be resolved: {e}", path.display())))?;
+            if !resolved.starts_with(fs::canonicalize(root)?) {
+                return Err(invalid(format!("symlink {} points outside the workspace; refusing to copy it", path.display())));
+            }
+            let target = fs::metadata(&resolved)?;
+            if !target.is_file() {
+                return Err(invalid(format!("symlink {} points to a directory; only file links are copied on Windows", path.display())));
+            }
+            check_size(path, target.len())?;
+            client.write_file(&remote, fs::read(&resolved)?, None).await?;
+        }
     } else if meta.is_file() {
         check_size(path, meta.len())?;
         #[cfg(unix)]
@@ -148,7 +167,23 @@ async fn receive_dir(client: &StubClient, workspace: &Path, remote_dir: &Path) -
                     std::os::unix::fs::symlink(target, &local)?;
                 }
                 #[cfg(not(unix))]
-                return Err(invalid("symlink transfer requires Unix"));
+                {
+                    // Windows can't make the guest's symlink, so the file it
+                    // points to comes back instead. The stub follows the link
+                    // on read; links that leave the workspace are refused.
+                    let bytes = run(client, "readlink", &["--", &remote]).await?;
+                    let target = String::from_utf8(bytes).map_err(|e| invalid(e.to_string()))?;
+                    let target = target.trim_end_matches('\n');
+                    if target.starts_with('/') || target.split('/').any(|part| part == "..") {
+                        return Err(invalid(format!("symlink {remote} points outside the workspace ({target}); refusing to copy it to Windows")));
+                    }
+                    check_size(&child, meta.size)?;
+                    let data = client.read_file(&remote, Some(MAX_FILE + 1)).await
+                        .map_err(|e| invalid(format!("symlink {remote} -> {target} can't be copied as a file on Windows: {e}")))?;
+                    check_size(&child, data.len() as u64)?;
+                    if fs::symlink_metadata(&local).is_ok() { remove(&local)?; }
+                    fs::write(&local, data)?;
+                }
             }
             FileKind::Other => return Err(invalid(format!("unsupported stub entry: {remote}"))),
         }

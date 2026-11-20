@@ -178,40 +178,4 @@ mod tests {
         assert_eq!(r.verdict, Verdict::Harmful);
         assert_eq!(r.details, vec!["- removed: drop `grep`"]);
     }
-
-    fn script(dir: &std::path::Path, body: &str) -> PathBuf {
-        let path = dir.join("omp");
-        loa_exec::write_executable(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-        path
-    }
-
-    #[tokio::test]
-    async fn smol_summarizer_parses_reply_and_passes_flags() {
-        let dir = tempfile::tempdir().unwrap();
-        let args_file = dir.path().join("args");
-        let exe = script(
-            dir.path(),
-            &format!(
-                "for a in \"$@\"; do printf '%s\\n' \"$a\"; done > '{}'\n\
-                 echo '{{\"breaking\": [\"edit: path renamed\"], \"removed\": []}}'",
-                args_file.display()
-            ),
-        );
-        let summarizer = OmpSmolSummarizer::new(exe, Duration::from_secs(10));
-        let review = summarizer.review("## 2.0.0\n\n- edit: path renamed").await.unwrap();
-        assert_eq!(review.breaking, vec!["edit: path renamed"]);
-
-        let args = std::fs::read_to_string(&args_file).unwrap();
-        let lines: Vec<&str> = args.lines().collect();
-        assert_eq!(&lines[..5], ["-p", "--model", "@smol", "--no-session", "--no-tools"]);
-        assert!(args.contains("- edit: path renamed"));
-    }
-
-    #[tokio::test]
-    async fn smol_summarizer_rejects_junk() {
-        let dir = tempfile::tempdir().unwrap();
-        let exe = script(dir.path(), "echo 'Sure! Nothing breaking here.'");
-        let summarizer = OmpSmolSummarizer::new(exe, Duration::from_secs(10));
-        assert!(summarizer.review("## 1.0.1\n\n- fix").await.is_err());
-    }
 }

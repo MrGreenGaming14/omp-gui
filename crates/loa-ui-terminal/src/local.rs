@@ -260,18 +260,48 @@ impl Drop for LocalWriter {
     }
 }
 
+/// Shell fixtures shared by the terminal tests.
+#[cfg(test)]
+pub(crate) mod testing {
+    use super::*;
+
+    /// A POSIX shell with the prompt `$ `: `/bin/sh`, or Bash from Git for
+    /// Windows (on `PATH`) there.
+    pub(crate) fn sh(cwd: &std::path::Path) -> LocalShell {
+        let (program, args): (&str, &[&str]) = if cfg!(windows) {
+            ("bash.exe", &["--noprofile", "--norc"])
+        } else {
+            ("/bin/sh", &[])
+        };
+        // A `\\?\` working directory is no use to Windows shells.
+        let cwd = std::path::PathBuf::from(printed(cwd));
+        let mut shell = LocalShell::program(program, args.iter().copied(), cwd);
+        shell.env.push(("PS1".into(), "$ ".into()));
+        shell
+    }
+
+    /// Prints the working directory the way the host names it: Git Bash
+    /// otherwise prints `/c/Users/...` for `C:\Users\...`.
+    pub(crate) const PWD: &str = if cfg!(windows) { "pwd -W" } else { "pwd" };
+
+    /// `path` as [`PWD`] prints it: plain (no `\\?\`) with `/` on Windows.
+    pub(crate) fn printed(path: &std::path::Path) -> String {
+        let text = path.to_str().unwrap();
+        if cfg!(windows) {
+            text.trim_start_matches(r"\\?\").replace('\\', "/")
+        } else {
+            text.to_owned()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::testing::{PWD, printed, sh};
     use super::*;
     use std::time::Duration;
 
     const LIMIT: Duration = Duration::from_secs(10);
-
-    fn sh(cwd: &std::path::Path) -> LocalShell {
-        let mut shell = LocalShell::program("/bin/sh", Vec::<OsString>::new(), cwd);
-        shell.env.push(("PS1".into(), "$ ".into()));
-        shell
-    }
 
     /// Reads until the accumulated output contains `needle`.
     async fn read_until(reader: &mut dyn ChannelReader, out: &mut Vec<u8>, needle: &str) {
@@ -307,13 +337,13 @@ mod tests {
         let mut channel = spawn(&sh(&cwd), GridSize::new(80, 24)).unwrap();
         channel
             .writer
-            .write(Bytes::from_static(b"pwd; echo done-$((40+2))\n"))
+            .write(Bytes::from(format!("{PWD}; echo done-$((40+2))\n")))
             .await
             .unwrap();
         let mut out = Vec::new();
         read_until(channel.reader.as_mut(), &mut out, "done-42").await;
         let text = String::from_utf8_lossy(&out);
-        assert!(text.contains(cwd.to_str().unwrap()), "{text}");
+        assert!(text.contains(&printed(&cwd)), "{text}");
     }
 
     #[tokio::test]
@@ -356,8 +386,12 @@ mod tests {
         let mut out = Vec::new();
         read_until(channel.reader.as_mut(), &mut out, "ready\r\n").await;
         channel.writer.close().await.unwrap();
-        // Killed by SIGHUP, so there is no exit code, and the child was reaped.
-        assert_eq!(read_to_close(channel.reader.as_mut()).await, None);
+        // Unix: killed by SIGHUP, so there is no exit code. Windows has no
+        // signals and reports the code the killed process ended with.
+        let exit_code = read_to_close(channel.reader.as_mut()).await;
+        if cfg!(unix) {
+            assert_eq!(exit_code, None);
+        }
         assert!(matches!(
             channel.writer.write(Bytes::from_static(b"x")).await,
             Err(Error::Closed)

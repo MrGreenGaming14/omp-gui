@@ -364,9 +364,29 @@ mod tests {
     use super::*;
     use crate::worker::MemoryJournal;
 
-    #[cfg(unix)]
     fn script(path: &Path, body: &str) {
         loa_exec::write_executable(path, body).unwrap();
+    }
+
+    /// Firecracker needs Linux (KVM); every other provider runs everywhere.
+    fn supported(kind: SandboxKind) -> bool {
+        cfg!(target_os = "linux") || kind != SandboxKind::Firecracker
+    }
+
+    fn supported_kinds() -> Vec<SandboxKind> {
+        SandboxKind::ALL.iter().copied().filter(|kind| supported(*kind)).collect()
+    }
+
+    /// The kind a `sandbox_task` schema names.
+    fn kind_of(name: &str) -> SandboxKind {
+        match name {
+            "local" => SandboxKind::Local,
+            "docker" => SandboxKind::Docker,
+            "firecracker" => SandboxKind::Firecracker,
+            "vm" => SandboxKind::Vm,
+            "ssh" => SandboxKind::Ssh,
+            _ => SandboxKind::Peer,
+        }
     }
 
     fn service(dir: &Path, config: SandboxConfig, stub: Option<PathBuf>) -> SandboxService {
@@ -411,7 +431,6 @@ mod tests {
         assert!(service.host_tool(Arc::new(crate::tests::NoAdapter), &template).is_none());
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn a_configured_machine_offers_every_provider() {
         let dir = tempfile::tempdir().unwrap();
@@ -439,24 +458,24 @@ mod tests {
         }
         let service = service(dir.path(), config, Some(stub)).with_peers(Arc::new(Peers));
         let statuses = service.probe().await;
-        assert!(statuses.iter().all(|status| status.availability == Availability::Ready), "{statuses:#?}");
+        assert!(statuses.iter().filter(|status| supported(status.kind)).all(|status| status.availability == Availability::Ready), "{statuses:#?}");
         assert_eq!(by_kind(&statuses, SandboxKind::Docker).detail, "Docker 27.1.0, default image debian:stable-slim");
-        assert!(by_kind(&statuses, SandboxKind::Ssh).detail.starts_with("build; hosts must run linux"));
+        assert!(by_kind(&statuses, SandboxKind::Ssh).detail.starts_with(&format!("build; hosts must run {}", std::env::consts::OS)));
         assert_eq!(by_kind(&statuses, SandboxKind::Peer).detail, "studio");
         let mut kinds: Vec<_> = service.providers().iter().map(|provider| provider.kind()).collect();
         kinds.sort();
-        assert_eq!(kinds, SandboxKind::ALL);
+        assert_eq!(kinds, supported_kinds());
 
         let template = SessionConfig { session_id: "parent".into(), cwd: dir.path().into(), ..SessionConfig::default() };
         let (spec, _) = service.host_tool(Arc::new(crate::tests::NoAdapter), &template).unwrap();
         assert_eq!(spec.name, "sandbox_task");
         let schema: serde_json::Value = serde_json::from_str(&spec.input_schema).unwrap();
-        assert_eq!(schema["properties"]["kind"]["enum"], serde_json::json!(["local", "docker", "firecracker", "vm", "ssh", "peer"]));
+        let expected_kinds: Vec<_> = ["local", "docker", "firecracker", "vm", "ssh", "peer"].into_iter().filter(|kind| supported(kind_of(kind))).collect();
+        assert_eq!(schema["properties"]["kind"]["enum"], serde_json::json!(expected_kinds));
         assert!(spec.description.contains("- ssh: the SSH host build"), "{}", spec.description);
         assert!(spec.description.contains("- peer: a peer node; set options.peer to one of studio"), "{}", spec.description);
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn reports_installed_but_unconfigured_providers() {
         let dir = tempfile::tempdir().unwrap();
@@ -474,7 +493,9 @@ mod tests {
         let docker = by_kind(&statuses, SandboxKind::Docker);
         assert_eq!((docker.availability, docker.detail.as_str()), (Availability::Unavailable, "The Docker daemon is not reachable: Cannot connect to the Docker daemon at unix:///var/run/docker.sock."));
         for kind in [SandboxKind::Firecracker, SandboxKind::Vm, SandboxKind::Ssh] {
-            assert_eq!(by_kind(&statuses, kind).availability, Availability::NotConfigured, "{kind:?}");
+            // Firecracker needs Linux: elsewhere it is unavailable, not unconfigured.
+            let expected = if kind == SandboxKind::Firecracker && !cfg!(target_os = "linux") { Availability::Unavailable } else { Availability::NotConfigured };
+            assert_eq!(by_kind(&statuses, kind).availability, expected, "{kind:?}");
         }
         let mut kinds: Vec<_> = service.providers().iter().map(|provider| provider.kind()).collect();
         kinds.sort();
