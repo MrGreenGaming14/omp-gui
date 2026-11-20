@@ -40,3 +40,17 @@ overflow-checks = false
 
 [profile.dev.build-override]
 opt-level = 0
+
+# CI builds dependencies at opt-level 0, so a cold cache compiles in minutes
+# instead of the ~18 the optimised dependencies above take; workspace crates
+# keep the dev settings. jpeg-decoder stays optimised: the browser latency
+# benchmark decodes every screencast frame in its timed loop, and at opt-level 0
+# a 1280x720 frame takes ~80 ms instead of ~4 ms.
+[profile.ci]
+inherits = "dev"
+
+[profile.ci.package."*"]
+opt-level = 0
+
+[profile.ci.package.jpeg-decoder]
+opt-level = 3
