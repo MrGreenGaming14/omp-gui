@@ -34,8 +34,13 @@ pub struct State {
     /// Ids of the pinned sessions. App data, so it outlives every summary
     /// the app passes in, including sessions not listed yet.
     pins: BTreeSet<String>,
+    /// Names of the pinned projects; names not in the list stay saved but hidden.
+    pinned_projects: BTreeSet<String>,
     query: String,
     active: Option<String>,
+    /// The project the user selected; highlighted instead of the active
+    /// session's project while set.
+    active_project: Option<String>,
     /// The project whose page fills the center, if one does.
     shown_project: Option<String>,
     /// Updates waiting for the user; the Updates row shows while non-zero.
@@ -99,6 +104,8 @@ pub enum Message {
     OpenSession(String),
     /// The pin button on a session row was clicked.
     TogglePin(String),
+    /// The pin button on a project row was clicked.
+    ToggleProjectPin(String),
     /// The delete button on a session row was clicked.
     Delete(String),
 }
@@ -128,6 +135,13 @@ pub enum Event {
     SetPinned {
         /// Session id.
         id: String,
+        /// New flag.
+        pinned: bool,
+    },
+    /// Persist the pinned flag of a project.
+    SetProjectPinned {
+        /// Project name.
+        project: String,
         /// New flag.
         pinned: bool,
     },
@@ -182,6 +196,22 @@ impl State {
     /// The session with this id.
     pub fn session(&self, id: &str) -> Option<&SessionSummary> {
         self.sessions.iter().map(|entry| &entry.summary).find(|summary| summary.id == id)
+    }
+
+    /// Replaces the pinned project names, as saved by the app.
+    pub fn set_pinned_projects(&mut self, pinned: impl IntoIterator<Item = String>) {
+        self.pinned_projects = pinned.into_iter().collect();
+    }
+
+    /// The pinned project names, including any no longer listed.
+    pub fn pinned_projects(&self) -> &BTreeSet<String> {
+        &self.pinned_projects
+    }
+
+    /// Highlights a project row. While set it replaces the active session's
+    /// project as the highlighted one.
+    pub fn set_active_project(&mut self, project: Option<String>) {
+        self.active_project = project;
     }
 
     /// Replaces the project list.
@@ -277,8 +307,11 @@ impl State {
     /// Projects whose name matches the search, in the order given.
     pub fn projects(&self) -> Vec<&str> {
         let query = self.query.to_lowercase();
-        self.projects
-            .iter()
+        let mut pinned: Vec<&String> = self.projects.iter().filter(|project| self.pinned_projects.contains(*project)).collect();
+        pinned.sort();
+        pinned
+            .into_iter()
+            .chain(self.projects.iter().filter(|project| !self.pinned_projects.contains(*project)))
             .filter(|project| {
                 let name = project.to_lowercase();
                 query.split_whitespace().all(|term| name.contains(term))
@@ -337,6 +370,13 @@ impl State {
                 self.machines_open = false;
                 None
             }
+            Message::ToggleProjectPin(project) => {
+                let pinned = !self.pinned_projects.remove(&project);
+                if pinned {
+                    self.pinned_projects.insert(project.clone());
+                }
+                Some(Event::SetProjectPinned { project, pinned })
+            }
             Message::OpenSession(id) => {
                 self.active = Some(id.clone());
                 Some(Event::OpenSession(id))
@@ -360,6 +400,18 @@ impl State {
 
     /// Draws the sidebar.
     pub fn view(&self) -> Element<'_, Message> {
+        self.view_with(|message| message, None)
+    }
+
+    /// Draws the sidebar in the app's message type. `project_files` is drawn
+    /// directly under the highlighted project's row: the project whose page
+    /// is open, else the one set by `set_active_project`, else the active
+    /// session's project. The search box does not filter it.
+    pub fn view_with<'a, M: 'a>(
+        &'a self,
+        map: impl Fn(Message) -> M + Clone + 'a,
+        mut project_files: Option<Element<'a, M>>,
+    ) -> Element<'a, M> {
         let new = button(
             row![
                 container(icon(Icon::Plus, 13.0)).center(22).style(|theme: &iced::Theme| container::Style {
@@ -397,20 +449,41 @@ impl State {
             lists = lists.push(self.machine_list());
         }
 
+        let mut segments: Vec<Element<'a, M>> = Vec::new();
         let projects = self.projects();
-        let active_project = self.shown_project.as_deref();
+        let active_project = self
+            .shown_project
+            .as_deref()
+            .or(self.active_project.as_deref())
+            .or_else(|| self.active.as_deref().and_then(|id| self.session(id)).and_then(|s| s.project.as_deref()));
         lists = lists.push(header("Projects"));
         if projects.is_empty() {
             lists = lists.push(hint(if self.projects.is_empty() { "No projects yet" } else { "No match" }));
         }
         for project in projects {
-            lists = lists.push(
-                button(row![muted(Icon::Folder, 15.0), text(project).size(14)].spacing(10).align_y(Alignment::Center))
-                    .on_press(Message::OpenProject(project.to_owned()))
-                    .style(style::row_for(active_project == Some(project)))
-                    .padding([7, 10])
-                    .width(Fill),
-            );
+            let is_active = active_project == Some(project);
+            let pinned = self.pinned_projects.contains(project);
+            let mut line = row![muted(Icon::Folder, 15.0), text(project).size(14).width(Fill)].spacing(10).align_y(Alignment::Center);
+            if pinned {
+                line = line.push(muted(Icon::Pin, 12.0));
+            }
+            let body = button(line)
+                .on_press(Message::OpenProject(project.to_owned()))
+                .style(style::row_for(is_active))
+                .padding([7, 10])
+                .width(Fill);
+            let pin = button(muted(Icon::Pin, 13.0))
+                .on_press(Message::ToggleProjectPin(project.to_owned()))
+                .style(style::ghost_button)
+                .padding(4);
+            let pin = container(pin)
+                .padding([0, 2])
+                .style(move |theme| style::row_actions(theme, is_active));
+            lists = lists.push(hover(body, container(pin).align_right(Fill).center_y(Fill).padding([0, 6])));
+            if is_active && let Some(files) = project_files.take() {
+                segments.push(Element::from(std::mem::replace(&mut lists, Column::new()).spacing(2)).map(map.clone()));
+                segments.push(files);
+            }
         }
 
         let pinned = self.pinned();
@@ -430,12 +503,13 @@ impl State {
             lists = lists.push(self.session_row(session));
         }
 
+        segments.push(Element::from(lists.spacing(2)).map(map.clone()));
         let content = column![
-            self.machine_switcher(),
-            new,
-            search,
-            scrollable(lists.spacing(2)).height(Fill),
-            self.footer(),
+            Element::from(self.machine_switcher()).map(map.clone()),
+            Element::from(new).map(map.clone()),
+            Element::from(search).map(map.clone()),
+            scrollable(Column::with_children(segments)).height(Fill),
+            Element::from(self.footer()).map(map),
         ]
         .spacing(4)
         .padding(Padding { top: 8.0, right: 8.0, bottom: 8.0, left: 8.0 });

@@ -3,6 +3,7 @@
 //! Terminal) and the areas. Sessions start, resume and stream here; the
 //! areas react through the [`Area`] contract.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -42,6 +43,7 @@ const THEMES: [(&str, &str, shell::Preference); 3] = [
 const TAB_COMMAND: &str = "tab.";
 const THEME_COMMAND: &str = "theme.";
 const NEW_SESSION: palette::CommandId = palette::CommandId::from_static("session.new");
+const PROJECT_TABS_TOGGLE: palette::CommandId = palette::CommandId::from_static("project.tabs.toggle");
 
 /// Width of the composer: the transcript's column width.
 pub(crate) const COMPOSER_WIDTH: f32 = 700.0;
@@ -172,9 +174,9 @@ pub struct App {
     pub(crate) areas: Areas,
     pub(crate) chat: chat::State,
     pub(crate) palette: palette::State,
-    files: files::State,
+    pub(crate) files: files::State,
     diff: diff::State,
-    terminal: terminal::state::State,
+    pub(crate) terminal: terminal::state::State,
     usage: usage::State,
     overlay: Option<windows::Overlay>,
     configs: Option<windows::ConfigsTab>,
@@ -191,6 +193,13 @@ pub struct App {
     /// The active session restarts on the new approval mode once its turn
     /// ends.
     restart_for_access: bool,
+    /// The projects with a tab in the project strip, in order. Not saved:
+    /// projects selected this run plus the project of every session opened
+    /// this run. Closing a tab only removes the entry here.
+    pub(crate) open_projects: Vec<String>,
+    /// Sessions whose project was already offered a tab, so a closed tab
+    /// stays closed until its project is activated again.
+    tabbed_sessions: HashSet<String>,
 }
 
 impl App {
@@ -215,9 +224,14 @@ impl App {
 
     /// The app over `services`: Recents from the session store, every area
     /// registered.
-    pub fn build(services: Services) -> (Self, Task<Message>) {
-        // Sidebar pins and the theme are app data in the central config.
+    pub fn build(mut services: Services) -> (Self, Task<Message>) {
+        // Sidebar pins, the theme and the active project are app data in the central config.
         let saved = services.config.load().map(|loaded| loaded.config).unwrap_or_default();
+        // The project selected last run, while its folder still exists, is the active one from the start.
+        let restored = saved.active_project.filter(|active| active.cwd.is_dir());
+        if let Some(active) = &restored {
+            services.set_active(active.name.clone(), active.cwd.clone());
+        }
         let (shell, setup) =
             shell::State::new(preference(saved.theme), shell::PanelPrefs { open: true, ..Default::default() });
         let theme = shell.theme();
@@ -244,7 +258,10 @@ impl App {
             requests: Vec::new(),
             events: Vec::new(),
         };
+        ctx.shell.set_project_tabs(saved.project_tabs);
+        ctx.shell.set_active_project(restored.map(|active| active.name));
         ctx.shell.set_pins(saved.pinned);
+        ctx.shell.set_pinned_projects(saved.pinned_projects);
         ctx.shell.set_sessions(recents);
         let (areas, area_tasks) = Areas::new(&mut ctx);
         let mut app = Self {
@@ -265,6 +282,8 @@ impl App {
             recent_folders: Vec::new(),
             access: saved.harness.approval_mode.clone(),
             restart_for_access: false,
+            open_projects: Vec::new(),
+            tabbed_sessions: HashSet::new(),
         };
         let shown = app.tabs().into_iter().filter(|tab| tab.shown).map(|tab| shell::PanelTab::new(tab.id, tab.title)).collect();
         app.ctx.shell.set_tabs(shown);
@@ -343,6 +362,11 @@ impl App {
             palette::Command::new(palette::ids::PANEL_TOGGLE, "Toggle right panel", "Commands")
                 .shortcut(keymap.chord_for(&palette::ids::PANEL_TOGGLE)),
             palette::Command::new(palette::ids::SESSION_INTERRUPT, "Interrupt session", "Commands"),
+            palette::Command::new(
+                PROJECT_TABS_TOGGLE,
+                if self.ctx.shell.project_tabs() { "Hide project tabs" } else { "Show project tabs" },
+                "Commands",
+            ),
             palette::Command::new(palette::ids::PALETTE_TOGGLE, "Command palette", "Commands")
                 .shortcut(keymap.chord_for(&palette::ids::PALETTE_TOGGLE)),
         ];
@@ -694,12 +718,105 @@ impl App {
                     Request::OpenTab(id) => self.open_tab(&id),
                     Request::RevealTab(id) => self.reveal_tab(&id),
                     Request::Spawn(spawn) => self.spawn(spawn),
+                    Request::ActivateProject { project, cwd } => self.activate_project(project, cwd),
                     Request::Forward(message) => self.update(*message),
                 };
                 tasks.push(task);
             }
         }
         Task::batch(tasks)
+    }
+
+    /// Makes `project` and its folder `cwd` the active ones: new sessions,
+    /// new terminals, the Files and Diff tabs follow, every area is told and
+    /// the choice is saved. Running sessions and open terminals keep their
+    /// folder.
+    fn activate_project(&mut self, project: String, cwd: PathBuf) -> Task<Message> {
+        self.ctx.shell.set_active_project(Some(project.clone()));
+        self.add_project_tab(&project);
+        let services = &mut self.ctx.services;
+        if services.project == project && services.cwd == cwd {
+            return Task::none();
+        }
+        services.set_active(project.clone(), cwd.clone());
+        self.files.set_root(cwd.clone());
+        // The composer's folder bar, the folder menu and the terminal follow
+        // too, as they do for a folder picked in the composer.
+        self.recent_folders.retain(|folder| *folder != cwd);
+        self.recent_folders.insert(0, cwd.clone());
+        self.recent_folders.truncate(8);
+        self.ctx.composer.set_workspace(Some(workspace(&cwd)));
+        self.refresh_folders();
+        let terminal = self.terminal_follow(cwd.clone());
+        let saved = loa_config::ActiveProject { name: project.clone(), cwd: cwd.clone() };
+        self.save_ui(|config| config.active_project = Some(saved));
+        let tasks = with_areas!(each_area!(self.areas, mut |area, wrap| area
+            .project_activated(&project, &cwd, &mut self.ctx)
+            .map(wrap)));
+        Task::batch(tasks.into_iter().chain([terminal, working_diff(cwd), self.settle()]))
+    }
+
+    /// Gives `project` a tab in the project strip when it has none.
+    fn add_project_tab(&mut self, project: &str) {
+        if !self.open_projects.iter().any(|open| open == project) {
+            self.open_projects.push(project.to_owned());
+            self.ctx.shell.set_open_projects(self.open_projects.clone());
+        }
+    }
+
+    /// Drops the tab of `project`. Its sessions stay open, and it gets a tab
+    /// again only when it is activated again.
+    fn close_project_tab(&mut self, project: &str) {
+        self.open_projects.retain(|open| open != project);
+        self.ctx.shell.set_open_projects(self.open_projects.clone());
+    }
+
+    /// Gives a tab to the project of every session opened since the last
+    /// call. A session whose journal has no root yet is looked at again next
+    /// time.
+    fn sync_project_tabs(&mut self) {
+        let mut seen = Vec::new();
+        for session in self.ctx.sessions.iter() {
+            let id = session.id().to_string();
+            if self.tabbed_sessions.contains(&id) {
+                continue;
+            }
+            let project = session.writer().with_dom(|dom| {
+                dom.root().map(|root| root.str_attr(attr::PROJECT).map(str::to_owned))
+            });
+            if let Some(project) = project {
+                seen.push((id, project));
+            }
+        }
+        for (id, project) in seen {
+            self.tabbed_sessions.insert(id);
+            if let Some(project) = project.filter(|project| !project.is_empty()) {
+                self.add_project_tab(&project);
+            }
+        }
+    }
+
+    /// Activates the project tab after (or before) the active project's,
+    /// wrapping around, the way a click on that tab does.
+    fn step_project_tab(&mut self, forward: bool) -> Task<Message> {
+        if !self.ctx.shell.project_tabs() {
+            self.ctx.notify("Project tabs are off; turn them on from the palette");
+            return Task::none();
+        }
+        let tabs = &self.open_projects;
+        let Some(last) = tabs.len().checked_sub(1) else {
+            self.ctx.notify("No project tabs are open");
+            return Task::none();
+        };
+        let current = tabs.iter().position(|open| *open == self.ctx.services.project);
+        let index = match (current, forward) {
+            (Some(index), true) => if index == last { 0 } else { index + 1 },
+            (Some(index), false) => index.checked_sub(1).unwrap_or(last),
+            (None, true) => 0,
+            (None, false) => last,
+        };
+        let project = tabs[index].clone();
+        self.update(Message::Projects(areas::projects::Message::Open(project)))
     }
 
     pub(crate) fn command(&mut self, id: &palette::CommandId) -> Task<Message> {
@@ -722,6 +839,12 @@ impl App {
                 Task::none()
             }
             "session.new" => self.start(None),
+            "project.tabs.toggle" => {
+                let enabled = !self.ctx.shell.project_tabs();
+                self.ctx.shell.set_project_tabs(enabled);
+                self.save_ui(|config| config.project_tabs = enabled);
+                Task::none()
+            }
             "session.interrupt" => self.update(Message::Composer(composer::Message::Interrupt)),
             _ => {
                 let Some(area) = AreaId::of_command(id) else {
@@ -800,6 +923,7 @@ impl App {
         let shown = (self.ctx.screen() == Some(AreaId::Projects)).then(|| self.areas.projects.shown().map(str::to_owned)).flatten();
         self.ctx.shell.set_shown_project(shown);
         self.sync_access();
+        self.sync_project_tabs();
         task
     }
 
@@ -894,6 +1018,10 @@ impl App {
                     Some(shell::Event::OpenProject(project)) => {
                         self.update(Message::Projects(areas::projects::Message::Open(project)))
                     }
+                    Some(shell::Event::CloseProjectTab(project)) => {
+                        self.close_project_tab(&project);
+                        Task::none()
+                    }
                     Some(shell::Event::SetTheme(preference)) => {
                         self.save_ui(|config| config.theme = theme_setting(preference));
                         Task::none()
@@ -901,6 +1029,11 @@ impl App {
                     Some(shell::Event::SetPinned { .. }) => {
                         let pins = self.ctx.shell.sidebar().pins().clone();
                         self.save_ui(|config| config.pinned = pins);
+                        Task::none()
+                    }
+                    Some(shell::Event::SetProjectPinned { .. }) => {
+                        let pins = self.ctx.shell.sidebar().pinned_projects().clone();
+                        self.save_ui(|config| config.pinned_projects = pins);
                         Task::none()
                     }
                     _ => Task::none(),
@@ -1169,7 +1302,12 @@ impl App {
             }
             None => center_content,
         };
-        let frame = ctx.shell.view(center_content, |tab| self.view_tab(tab), Message::Shell);
+        // The active project's top-level files sit under its sidebar row. A
+        // peer's project never lists them: its disk is only reached through
+        // the grant-checked folder path.
+        let project_files = (!areas::peers::is_remote(&ctx.services.project))
+            .then(|| self.files.view_compact().map(Message::Files));
+        let frame = ctx.shell.view(center_content, |tab| self.view_tab(tab), project_files, Message::Shell);
         let frame: Element<'_, Message> = match self.overlay {
             Some(overlay) => {
                 let window = match overlay {

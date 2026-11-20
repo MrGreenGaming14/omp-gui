@@ -84,6 +84,7 @@ Issues #78, #82, #83. The keymap lives in `loa_ui_palette::Keymap::defaults`; th
 | Ctrl/Cmd+N | New session |
 | Ctrl+Tab, Ctrl+Shift+Tab | Next, previous session in the sidebar's order |
 | Ctrl/Cmd+1…9 | n-th session in the sidebar |
+| Ctrl/Cmd+PageDown, Ctrl/Cmd+PageUp | Next, previous project tab (with the project tabs setting on) |
 | Ctrl/Cmd+Alt+1…9 | n-th right panel tab (opens the panel) |
 | Ctrl/Cmd+B | Toggle the right panel |
 | Ctrl/Cmd+L | Focus the composer (closes a screen first) |
