@@ -109,6 +109,9 @@ pub struct SessionConfig {
     pub model_role: Option<String>,
     pub effort: Option<String>,
     pub mode: Option<SessionMode>,
+    /// What the agent may do without asking, in the harness's own terms
+    /// (omp's `--approval-mode`). `None` keeps the harness's setting.
+    pub approval_mode: Option<String>,
     /// Project context (digests, shared instructions) to deliver in the way
     /// [`Capabilities::context_delivery`] declares.
     pub context: Option<String>,
@@ -133,6 +136,7 @@ impl std::fmt::Debug for SessionConfig {
             .field("project", &self.project)
             .field("model", &self.model)
             .field("mode", &self.mode)
+            .field("approval_mode", &self.approval_mode)
             .field("host_tools", &self.host_tools.len())
             .field("mcp_servers", &self.mcp_servers.len())
             .finish_non_exhaustive()

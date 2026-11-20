@@ -33,6 +33,8 @@ pub struct State {
     new_pin_note: String,
     saving: bool,
     error: Option<String>,
+    /// The Delete project button was pressed; waiting for the confirmation.
+    confirm_delete: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -49,6 +51,12 @@ pub enum Message {
     SetIncluded { session: String, included: bool },
     OpenSession(String),
     NewChat,
+    /// The Change… button beside the project's folder.
+    ChangeFolder,
+    /// Delete project: asks for a confirmation first.
+    Delete,
+    ConfirmDelete,
+    CancelDelete,
 }
 
 /// What the app does for the screen.
@@ -61,6 +69,11 @@ pub enum Event {
     OpenSession(String),
     /// Start a chat in this project, in its working directory when known.
     NewChat { project: String, cwd: Option<String> },
+    /// Show a folder dialog for the project's folder, starting at the
+    /// current one; the app stores the choice and sends a fresh overview.
+    ChangeFolder { project: String, current: Option<String> },
+    /// Delete the project, confirmed; its sessions are kept.
+    Delete { project: String },
 }
 
 impl State {
@@ -78,7 +91,13 @@ impl State {
             new_pin_note: String::new(),
             saving: false,
             error: None,
+            confirm_delete: false,
         }
+    }
+
+    /// Shows the delete confirmation, as for the Delete project button.
+    pub fn ask_delete(&mut self) {
+        self.confirm_delete = true;
     }
 
     pub fn project(&self) -> &str {
@@ -122,13 +141,15 @@ impl State {
         }
     }
 
-    /// The settings as edited.
+    /// The settings as edited. The default folder isn't edited here and is
+    /// kept as stored.
     pub fn draft(&self) -> ProjectSettings {
         let model = self.digest_model.trim();
         ProjectSettings {
             instructions: self.instructions.text().trim_end().to_owned(),
             pinned: self.pinned.clone(),
             digest_model: (!model.is_empty()).then(|| model.to_owned()),
+            folder: self.overview.as_ref().and_then(|overview| overview.settings.folder.clone()),
         }
     }
 
@@ -190,16 +211,35 @@ impl State {
                 let cwd = self.overview.as_ref().and_then(|o| o.cwd.clone());
                 return Some(Event::NewChat { project: self.project.clone(), cwd });
             }
+            Message::ChangeFolder => {
+                let current = self.overview.as_ref().and_then(|o| o.cwd.clone());
+                return Some(Event::ChangeFolder { project: self.project.clone(), current });
+            }
+            Message::Delete => self.confirm_delete = true,
+            Message::CancelDelete => self.confirm_delete = false,
+            Message::ConfirmDelete => {
+                self.confirm_delete = false;
+                return Some(Event::Delete { project: self.project.clone() });
+            }
         }
         None
     }
 
     pub fn view(&self) -> Element<'_, Message> {
         let mut content = column![self.header()].spacing(28).max_width(CONTENT_WIDTH);
+        let sessions = self.overview.as_ref().map(|overview| overview.sessions.len());
+        // Asked for, the confirmation sits on top where it is seen, also when
+        // it came from the sidebar; otherwise the section waits at the end.
+        if self.confirm_delete {
+            content = content.push(container(self.delete_view(sessions)).padding(14).style(style::card));
+        }
         match &self.overview {
             None => content = content.push(text("Loading project…").size(style::NOTE).style(style::muted)),
             Some(overview) => {
                 content = content.push(self.settings_view()).push(sessions_view(&overview.sessions, self.now));
+                if !self.confirm_delete {
+                    content = content.push(self.delete_view(sessions));
+                }
             }
         }
         scrollable(container(content).padding([28.0, 32.0]).center_x(Fill))
@@ -209,21 +249,54 @@ impl State {
             .into()
     }
 
+    /// The Delete project section; after a press it asks to confirm.
+    fn delete_view(&self, sessions: Option<usize>) -> Element<'_, Message> {
+        let kept = match sessions {
+            None | Some(0) => "Its instructions and pins are removed.".to_owned(),
+            Some(1) => "Its instructions and pins are removed. Its session is kept, in no project.".to_owned(),
+            Some(n) => format!("Its instructions and pins are removed. Its {n} sessions are kept, in no project."),
+        };
+        let action: Element<'_, Message> = if self.confirm_delete {
+            row![
+                text(format!("Delete {}?", self.project)).size(style::SMALL).style(style::danger),
+                space::horizontal(),
+                button(text("Cancel").size(style::SMALL)).padding([6.0, 10.0]).style(style::flat).on_press(Message::CancelDelete),
+                button(text("Delete").size(style::SMALL)).padding([6.0, 14.0]).style(button::danger).on_press(Message::ConfirmDelete),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center)
+            .into()
+        } else {
+            row![
+                space::horizontal(),
+                button(text("Delete project").size(style::SMALL)).padding([6.0, 12.0]).style(style::flat).on_press(Message::Delete),
+            ]
+            .into()
+        };
+        column![section("Delete project"), text(kept).size(style::NOTE).style(style::muted), action].spacing(8).into()
+    }
+
     fn header(&self) -> Element<'_, Message> {
         let cwd = self.overview.as_ref().and_then(|o| o.cwd.as_deref());
         let count = self.overview.as_ref().map(|o| o.sessions.len());
-        let mut details = Vec::new();
-        if let Some(cwd) = cwd {
-            details.push(cwd.to_owned());
-        }
+        let mut details = row![].spacing(8).align_y(Alignment::Center);
         if let Some(count) = count {
-            details.push(if count == 1 { "1 session".to_owned() } else { format!("{count} sessions") });
+            let count = if count == 1 { "1 session".to_owned() } else { format!("{count} sessions") };
+            let folder = cwd.unwrap_or("No folder");
+            details = details
+                .push(text(format!("{folder}  ·  {count}")).size(style::SMALL).style(style::muted))
+                .push(
+                    button(text(if cwd.is_some() { "Change folder…" } else { "Set folder…" }).size(style::SMALL))
+                        .padding([2.0, 6.0])
+                        .style(style::flat)
+                        .on_press(Message::ChangeFolder),
+                );
         }
         let title = column![
             row![loa_ui_icons::icon(Icon::Folder, 20.0), text(&self.project).size(style::TITLE)]
                 .spacing(10)
                 .align_y(Alignment::Center),
-            text(details.join("  ·  ")).size(style::SMALL).style(style::muted),
+            details,
         ]
         .spacing(4);
         let new_chat = button(
@@ -343,11 +416,11 @@ impl State {
     }
 }
 
-fn section<'a>(title: &str) -> text::Text<'a> {
+pub(crate) fn section<'a>(title: &str) -> text::Text<'a> {
     text(title.to_uppercase()).size(style::SMALL).style(style::muted)
 }
 
-fn hint(line: &str) -> text::Text<'_> {
+pub(crate) fn hint(line: &str) -> text::Text<'_> {
     text(line).size(style::NOTE).style(style::muted)
 }
 
@@ -367,7 +440,7 @@ fn sessions_view(sessions: &[SessionRow], now: i64) -> Element<'_, Message> {
         }
         rows = rows.push(session_row(session, now));
     }
-    list = list.push(container(rows).style(style::card));
+    list = list.push(container(rows).padding(1).style(style::card));
     list.into()
 }
 
@@ -379,38 +452,44 @@ fn session_row(session: &SessionRow, now: i64) -> Element<'_, Message> {
     }
     meta.push(if session.turns == 1 { "1 turn".to_owned() } else { format!("{} turns", session.turns) });
     meta.push(ago(now, session.last_active));
-    let (state, state_style): (String, fn(&iced::Theme) -> container::Style) = if session.excluded {
-        ("Not in context".into(), style::badge)
+    // The digest state is plain text at the end of the meta line, only
+    // tinted when it needs attention.
+    let (state, state_style): (String, fn(&iced::Theme) -> text::Style) = if session.excluded {
+        ("not in context".into(), style::muted)
     } else {
         match session.digest_state {
             DigestState::Fresh => match &session.digest_model {
-                Some(model) => (format!("Digest by {model}"), style::badge_good),
-                None => ("Digest up to date".into(), style::badge_good),
+                Some(model) => (format!("digest by {model}"), style::muted),
+                None => ("digest up to date".into(), style::muted),
             },
-            DigestState::Stale => ("Digest out of date".into(), style::badge_warn),
-            DigestState::Missing => ("No digest yet".into(), style::badge),
+            DigestState::Stale => ("digest out of date".into(), style::warning),
+            DigestState::Missing => ("no digest yet".into(), style::muted),
         }
     };
-    let head = row![
-        button(text(title).size(style::BODY)).padding(0).style(style::flat).on_press(Message::OpenSession(session.id.clone())),
-        container(text(state).size(style::SMALL)).padding([2.0, 6.0]).style(state_style),
-        space::horizontal(),
-        toggler(!session.excluded)
-            .label("In context")
-            .text_size(style::SMALL)
-            .size(16)
-            .on_toggle(|included| Message::SetIncluded { session: session.id.clone(), included }),
-    ]
-    .spacing(10)
-    .align_y(Alignment::Center);
-    let mut body = column![head, text(meta.join("  ·  ")).size(style::SMALL).style(style::muted)].spacing(4);
+    let meta = row![
+        text(meta.join("  ·  ")).size(style::SMALL).style(style::muted),
+        text("  ·  ").size(style::SMALL).style(style::muted),
+        text(state).size(style::SMALL).style(state_style),
+    ];
+    let mut body = column![text(title).size(style::BODY).wrapping(text::Wrapping::None), meta].spacing(3).width(Fill);
     if let Some(digest) = &session.digest {
         body = body.push(text(&digest.summary).size(style::NOTE).style(style::muted));
         for decision in digest.decisions.iter().take(SHOWN_DECISIONS) {
             body = body.push(text(format!("• {decision}")).size(style::SMALL).style(style::muted));
         }
     }
-    container(body).padding([10.0, 12.0]).width(Fill).into()
+    let include = toggler(!session.excluded)
+        .label("In context")
+        .text_size(style::SMALL)
+        .size(14)
+        .on_toggle(|included| Message::SetIncluded { session: session.id.clone(), included });
+    // The whole row opens the session; the toggle takes its own clicks.
+    button(row![body, include].spacing(16).align_y(Alignment::Center))
+        .padding([10.0, 12.0])
+        .width(Fill)
+        .style(style::list_row)
+        .on_press(Message::OpenSession(session.id.clone()))
+        .into()
 }
 
 /// "just now", "5m ago", "3h ago", "2d ago".
@@ -530,9 +609,13 @@ mod tests {
         let state = loaded();
         let mut ui = iced_test::simulator(state.view());
         let header = "Shared instructions".to_uppercase();
-        for label in [header.as_str(), "Set up iroh", "Picked port 31415.", "Digest by smol", "Not in context", "Untitled session", "omp  ·  3 turns  ·  3h ago"] {
+        for label in [header.as_str(), "Set up iroh", "Picked port 31415.", "digest by smol", "not in context", "Untitled session", "omp  ·  3 turns  ·  3h ago"] {
             assert!(ui.find(label).is_ok(), "missing {label}");
         }
+        // The whole row opens its session, not only the title.
+        let mut ui = iced_test::simulator(state.view());
+        ui.click("omp  ·  3 turns  ·  3h ago").unwrap();
+        assert!(ui.into_messages().any(|message| matches!(message, Message::OpenSession(_))));
         let mut ui = iced_test::simulator(state.view());
         ui.click("New chat").unwrap();
         assert!(matches!(ui.into_messages().next(), Some(Message::NewChat)));

@@ -5,6 +5,8 @@ use crate::{Config, ConfigError, Migrator, Result};
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::time::SystemTime;
 use toml::Table;
 
 /// File name of the config inside the app's config directory.
@@ -14,6 +16,15 @@ pub const CONFIG_FILE_NAME: &str = "config.toml";
 /// file's location is decided; callers pick the directory.
 pub fn config_path(config_dir: &Path) -> PathBuf {
     config_dir.join(CONFIG_FILE_NAME)
+}
+
+/// Modification time and length of the config file: the read cache's key.
+type Stamp = (SystemTime, u64);
+
+/// `None` when the file is missing or its metadata can't be read.
+fn stamp(path: &Path) -> Option<Stamp> {
+    let meta = fs::metadata(path).ok()?;
+    Some((meta.modified().ok()?, meta.len()))
 }
 
 /// The result of [`ConfigStore::load`].
@@ -31,12 +42,14 @@ pub struct Loaded {
 pub struct ConfigStore {
     path: PathBuf,
     migrator: Migrator,
+    /// The file as last read or written, with its stamp. Clones share it.
+    cache: Arc<Mutex<Option<(Stamp, Config)>>>,
 }
 
 impl ConfigStore {
     /// A store for the file at `path`, migrating with [`Migrator::standard`].
     pub fn new(path: impl Into<PathBuf>) -> Self {
-        Self { path: path.into(), migrator: Migrator::standard() }
+        Self { path: path.into(), migrator: Migrator::standard(), cache: Arc::default() }
     }
 
     /// A store for [`config_path`] in `config_dir`.
@@ -48,6 +61,7 @@ impl ConfigStore {
     #[must_use]
     pub fn with_migrator(mut self, migrator: Migrator) -> Self {
         self.migrator = migrator;
+        self.cache = Arc::default();
         self
     }
 
@@ -55,15 +69,29 @@ impl ConfigStore {
         &self.path
     }
 
-    /// Loads the file, or the defaults when it doesn't exist yet.
+    fn cache(&self) -> MutexGuard<'_, Option<(Stamp, Config)>> {
+        // The cache is replaced whole, so a poisoned lock still holds a valid value.
+        self.cache.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Loads the file, or the defaults when it doesn't exist yet. A file that
+    /// is unchanged since this store last read or wrote it, judged by its
+    /// modification time and length, comes from memory.
     ///
     /// An older file is migrated in memory and validated first. Only then is
     /// the original copied to a backup next to it and the migrated config
     /// written over it, so a failed migration leaves the file untouched.
     pub fn load(&self) -> Result<Loaded> {
+        let on_disk = stamp(&self.path);
+        if let Some((cached, config)) = self.cache().as_ref()
+            && Some(*cached) == on_disk
+        {
+            return Ok(Loaded { config: config.clone(), migrated_from: None, backup: None });
+        }
         let text = match fs::read_to_string(&self.path) {
             Ok(text) => text,
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                *self.cache() = None;
                 let config = Config { version: self.migrator.target(), ..Config::default() };
                 return Ok(Loaded { config, migrated_from: None, backup: None });
             }
@@ -74,11 +102,16 @@ impl ConfigStore {
         let config = decode(doc, self.migrator.target())?;
         let backup = match migrated_from {
             Some(from) => {
+                // The file is about to change; the next load re-reads it.
+                *self.cache() = None;
                 let backup = self.write_backup(from, text.as_bytes())?;
                 self.write_atomic(encode(&config)?.as_bytes())?;
                 Some(backup)
             }
-            None => None,
+            None => {
+                *self.cache() = on_disk.map(|at| (at, config.clone()));
+                None
+            }
         };
         Ok(Loaded { config, migrated_from, backup })
     }
@@ -88,7 +121,13 @@ impl ConfigStore {
     /// directory, then renamed over the old one.
     pub fn save(&self, config: &Config) -> Result<()> {
         config.validate()?;
-        self.write_atomic(encode(config)?.as_bytes())
+        *self.cache() = None;
+        self.write_atomic(encode(config)?.as_bytes())?;
+        *self.cache() = match stamp(&self.path) {
+            Some(at) if config.version == self.migrator.target() => Some((at, config.clone())),
+            _ => None,
+        };
+        Ok(())
     }
 
     fn write_atomic(&self, bytes: &[u8]) -> Result<()> {

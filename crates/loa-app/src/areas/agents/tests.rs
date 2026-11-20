@@ -3,8 +3,6 @@
 
 use std::path::{Path, PathBuf};
 
-use loa_ui_composer as composer;
-
 use super::*;
 use crate::app::tests::{fake_app, run, update};
 use crate::app::{App, Message as AppMessage};
@@ -40,10 +38,10 @@ fn palette_command(app: &mut App, title: &str) -> Option<palette::Command> {
 }
 
 #[test]
-fn composer_button_opens_the_form_with_omp() {
+fn the_form_opens_with_omp() {
     let dir = tempfile::tempdir().unwrap();
     let (mut app, _) = omp_app(dir.path(), "omp");
-    update(&mut app, AppMessage::Composer(composer::Message::OpenAgents));
+    update(&mut app, AppMessage::Agents(Message::Open));
     assert_eq!(app.ctx.screen(), Some(AreaId::Agents));
     assert!(app.areas.agents.form.errors().is_empty());
 }
@@ -52,7 +50,7 @@ fn composer_button_opens_the_form_with_omp() {
 fn other_harnesses_cannot_open_the_form() {
     let dir = tempfile::tempdir().unwrap();
     let (mut app, _) = omp_app(dir.path(), "fake-a");
-    update(&mut app, AppMessage::Composer(composer::Message::OpenAgents));
+    update(&mut app, AppMessage::Agents(Message::Open));
     assert_eq!(app.ctx.screen(), None);
 
     let new = palette_command(&mut app, "New agent").expect("listed");
@@ -75,7 +73,7 @@ fn palette_commands_are_enabled_with_omp() {
 fn save_writes_the_agent_with_exactly_the_ticked_tools() {
     let dir = tempfile::tempdir().unwrap();
     let (mut app, agent_dir) = omp_app(dir.path(), "omp");
-    update(&mut app, AppMessage::Composer(composer::Message::OpenAgents));
+    update(&mut app, AppMessage::Agents(Message::Open));
     fill(&mut app, form::Message::Name("reviewer".into()));
     fill(&mut app, form::Message::Description("Reviews diffs".into()));
     fill(&mut app, form::Message::Tool("grep".into(), true));
@@ -105,7 +103,7 @@ fn save_writes_the_agent_with_exactly_the_ticked_tools() {
 fn invalid_forms_show_their_errors_and_write_nothing() {
     let dir = tempfile::tempdir().unwrap();
     let (mut app, agent_dir) = omp_app(dir.path(), "omp");
-    update(&mut app, AppMessage::Composer(composer::Message::OpenAgents));
+    update(&mut app, AppMessage::Agents(Message::Open));
     fill(&mut app, form::Message::Description("No name".into()));
     fill(&mut app, form::Message::Save);
     assert!(app.areas.agents.form.errors().iter().any(|error| error.field == "name"));

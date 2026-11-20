@@ -1,6 +1,7 @@
-//! Lucide line icons (ISC, see `LICENSE-lucide`; each SVG under `icons/` is
-//! copied unchanged from `lucide-static` with its license header) as iced
-//! SVG widgets.
+//! Lucide line icons (ISC, see `LICENSE-lucide`; SVGs under `icons/` with a
+//! lucide license header are copied unchanged from `lucide-static`, the few
+//! marked `Loa` are drawn here in the same 24x24, 2px round-stroke style) as
+//! iced SVG widgets.
 //!
 //! Icons are tinted with a theme color, so they follow the dark and light
 //! themes like text does. Handles are built once and shared, so drawing an
@@ -14,23 +15,36 @@ use std::sync::LazyLock;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Icon {
     ArrowUp,
+    Bot,
+    Brain,
     Check,
     ChevronDown,
+    ChevronLeft,
     ChevronRight,
     ChevronUp,
     CircleDot,
     Cpu,
+    ExternalLink,
     FileText,
     Files,
     Folder,
+    Gauge,
     GitCompare,
+    GitFork,
     Globe,
+    Image,
+    Maximize,
+    Minimize,
     Monitor,
     PanelRight,
     PanelRightClose,
+    Pin,
     Plus,
     Search,
+    Settings,
+    Shield,
     SlidersHorizontal,
+    Sparkles,
     Square,
     Terminal,
     TriangleAlert,
@@ -38,25 +52,38 @@ pub enum Icon {
     X,
 }
 
-const ALL: [(Icon, &[u8]); 23] = [
+const ALL: [(Icon, &[u8]); 36] = [
     (Icon::ArrowUp, include_bytes!("../icons/arrow-up.svg")),
+    (Icon::Bot, include_bytes!("../icons/bot.svg")),
+    (Icon::Brain, include_bytes!("../icons/brain.svg")),
     (Icon::Check, include_bytes!("../icons/check.svg")),
     (Icon::ChevronDown, include_bytes!("../icons/chevron-down.svg")),
+    (Icon::ChevronLeft, include_bytes!("../icons/chevron-left.svg")),
     (Icon::ChevronRight, include_bytes!("../icons/chevron-right.svg")),
     (Icon::ChevronUp, include_bytes!("../icons/chevron-up.svg")),
     (Icon::CircleDot, include_bytes!("../icons/circle-dot.svg")),
     (Icon::Cpu, include_bytes!("../icons/cpu.svg")),
+    (Icon::ExternalLink, include_bytes!("../icons/external-link.svg")),
     (Icon::FileText, include_bytes!("../icons/file-text.svg")),
     (Icon::Files, include_bytes!("../icons/files.svg")),
     (Icon::Folder, include_bytes!("../icons/folder.svg")),
+    (Icon::Gauge, include_bytes!("../icons/gauge.svg")),
     (Icon::GitCompare, include_bytes!("../icons/git-compare.svg")),
+    (Icon::GitFork, include_bytes!("../icons/git-fork.svg")),
     (Icon::Globe, include_bytes!("../icons/globe.svg")),
+    (Icon::Image, include_bytes!("../icons/image.svg")),
+    (Icon::Maximize, include_bytes!("../icons/maximize-2.svg")),
+    (Icon::Minimize, include_bytes!("../icons/minimize-2.svg")),
     (Icon::Monitor, include_bytes!("../icons/monitor.svg")),
     (Icon::PanelRight, include_bytes!("../icons/panel-right.svg")),
     (Icon::PanelRightClose, include_bytes!("../icons/panel-right-close.svg")),
+    (Icon::Pin, include_bytes!("../icons/pin.svg")),
     (Icon::Plus, include_bytes!("../icons/plus.svg")),
     (Icon::Search, include_bytes!("../icons/search.svg")),
+    (Icon::Settings, include_bytes!("../icons/settings-2.svg")),
+    (Icon::Shield, include_bytes!("../icons/shield.svg")),
     (Icon::SlidersHorizontal, include_bytes!("../icons/sliders-horizontal.svg")),
+    (Icon::Sparkles, include_bytes!("../icons/sparkles.svg")),
     (Icon::Square, include_bytes!("../icons/square.svg")),
     (Icon::Terminal, include_bytes!("../icons/terminal.svg")),
     (Icon::TriangleAlert, include_bytes!("../icons/triangle-alert.svg")),
@@ -64,14 +91,23 @@ const ALL: [(Icon, &[u8]); 23] = [
     (Icon::X, include_bytes!("../icons/x.svg")),
 ];
 
+// `ALL` lists every variant once, in declaration order, so a variant's
+// discriminant is its index there.
+const _: () = {
+    assert!(ALL.len() == Icon::X as usize + 1, "ALL lists every icon");
+    let mut index = 0;
+    while index < ALL.len() {
+        assert!(ALL[index].0 as usize == index, "ALL follows the declaration order of Icon");
+        index += 1;
+    }
+};
+
 static HANDLES: LazyLock<[Handle; ALL.len()]> =
     LazyLock::new(|| ALL.map(|(_, bytes)| Handle::from_memory(bytes)));
 
 impl Icon {
     fn handle(self) -> Handle {
-        // `ALL` lists every variant, so the position is always found.
-        let index = ALL.iter().position(|(icon, _)| *icon == self).unwrap_or(0);
-        HANDLES[index].clone()
+        HANDLES[self as usize].clone()
     }
 }
 

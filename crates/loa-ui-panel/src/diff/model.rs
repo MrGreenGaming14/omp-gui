@@ -108,6 +108,8 @@ pub struct FileDiff {
     breaks: Vec<Break>,
     added: usize,
     removed: usize,
+    /// Largest line number on either side; sizes the number column.
+    max_line_no: u32,
 }
 
 impl FileDiff {
@@ -173,6 +175,11 @@ impl FileDiff {
     /// Lines removed.
     pub fn removed(&self) -> usize {
         self.removed
+    }
+
+    /// Largest line number on either side. Zero when no line is numbered.
+    pub fn max_line_no(&self) -> u32 {
+        self.max_line_no
     }
 
     pub fn lines(&self) -> &[Line] {
@@ -370,6 +377,7 @@ impl Builder {
         // to the diff; a full text diff starts and ends at the file edges.
         let edges_are_context = !self.breaks.is_empty();
         let folds = compute_folds(&self.lines, &self.breaks, CONTEXT, edges_are_context);
+        let max_line_no = self.lines.iter().flat_map(|l| l.old_no.max(l.new_no)).max().unwrap_or(0);
         FileDiff {
             old_path,
             new_path,
@@ -381,6 +389,7 @@ impl Builder {
             breaks: self.breaks,
             added,
             removed,
+            max_line_no,
         }
     }
 

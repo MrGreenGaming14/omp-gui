@@ -535,7 +535,7 @@ impl State {
         for tab in &self.tabs {
             let active = self.active == Some(tab.id);
             let label = row![
-                text(tab.title.as_str()).size(13),
+                container(text(tab.title.as_str()).size(13).wrapping(text::Wrapping::None)).max_width(220.0).clip(true),
                 button(muted(Icon::X, 10.0))
                     .padding(2)
                     .style(style::icon)
@@ -558,7 +558,21 @@ impl State {
         );
 
         let body: Element<'_, Message> = match self.active.and_then(|id| self.tab(id)) {
-            None => center(text("No terminal open").size(13).style(style::muted)).into(),
+            None => {
+                let folder = self.new_tab.cwd.file_name().map_or_else(|| self.new_tab.cwd.display().to_string(), |name| name.to_string_lossy().into_owned());
+                center(
+                    column![
+                        text("No terminal open").size(13).style(style::muted),
+                        button(text(format!("Open a terminal in {folder}")).size(13))
+                            .padding([6.0, 12.0])
+                            .style(style::secondary)
+                            .on_press(Message::NewTab),
+                    ]
+                    .spacing(10)
+                    .align_x(iced::Center),
+                )
+                .into()
+            }
             Some(tab) => {
                 let screen = canvas(TerminalCanvas {
                     tab: tab.id,

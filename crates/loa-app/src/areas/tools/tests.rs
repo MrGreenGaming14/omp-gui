@@ -161,7 +161,7 @@ impl Rig {
             }
             for (id, feed) in &mut self.feeds {
                 while let Ok(event) = feed.try_recv() {
-                    messages.push(AppMessage::Session(id.clone(), Feed::Event(event)));
+                    messages.push(AppMessage::Session(id.clone(), Feed::Events(vec![event])));
                 }
             }
             let mut servers = false;
@@ -235,7 +235,7 @@ impl Rig {
     }
 
     fn project(&self) -> String {
-        self.app.ctx.services.project.clone()
+        self.app.ctx.services.project.clone().unwrap_or_default()
     }
 
     fn type_prompt(&mut self, text: &str) {

@@ -18,8 +18,7 @@ pub enum Requester {
 pub struct SessionInfo {
     /// App-wide session id, as in `<session id>`.
     pub id: String,
-    /// Project id: `<session project>`, else the last component of
-    /// `<session cwd>` (see [`session_project`]).
+    /// Project name: `<session project>` (see [`session_project`]).
     pub project: String,
     /// Owner node key, as in `<session node>`.
     pub node: String,
@@ -62,15 +61,12 @@ fn session_title(dom: &Dom) -> Option<String> {
     })
 }
 
-/// The project a session belongs to: its `<session project>`, else the name
-/// of its working directory (`<session cwd>`), the same name the app gives
-/// a project it starts in that directory.
+/// The project a session belongs to: its `<session project>`, trimmed. A
+/// session without one belongs to no project; its working directory does
+/// not name one.
 pub fn session_project(dom: &Dom) -> Option<String> {
-    let root = dom.root()?;
-    if let Some(project) = root.str_attr(attr::PROJECT).filter(|p| !p.trim().is_empty()) {
-        return Some(project.to_owned());
-    }
-    root.str_attr(attr::CWD).and_then(project_name)
+    let project = dom.root()?.str_attr(attr::PROJECT)?.trim();
+    (!project.is_empty()).then(|| project.to_owned())
 }
 
 /// The project name of a working directory: its last component, or the whole
@@ -221,7 +217,7 @@ pub(crate) mod testing {
         let root = dom.root().unwrap();
         SessionInfo {
             id: root.str_attr(attr::ID).unwrap().to_owned(),
-            project: root.str_attr(attr::PROJECT).unwrap_or_default().to_owned(),
+            project: root.str_attr(attr::PROJECT).map(str::trim).unwrap_or_default().to_owned(),
             node: root.str_attr(attr::NODE).unwrap().to_owned(),
             created: root.int_attr(attr::CREATED).unwrap(),
             title: root.str_attr(attr::TITLE).map(str::to_owned),

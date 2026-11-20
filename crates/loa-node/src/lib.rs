@@ -38,6 +38,7 @@ pub use loa_net::conn::Transport;
 pub use loa_net::endpoint::RelayConfig;
 pub use loa_net::peers::DiscoverySource;
 
+use loa_core::now_ms;
 use loa_grants::{Action, GrantId, GrantSpec, GrantStore, NodePublicKey, RenewOutcome, Renewer, Resource, Scope};
 use loa_identity::NodeIdentity;
 use loa_journal::{Journal, Store};
@@ -326,10 +327,6 @@ pub(crate) fn bus_key(id: &NodeId) -> loa_bus::NodeKey {
 
 fn node_id(key: &NodePublicKey) -> Option<NodeId> {
     NodeId::from_bytes(&key.0).ok()
-}
-
-pub(crate) fn now_ms() -> i64 {
-    loa_core::now_ms()
 }
 
 impl Node {

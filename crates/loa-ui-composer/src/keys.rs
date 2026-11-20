@@ -1,9 +1,9 @@
 //! Key bindings of the composer editor: Enter submits, Shift+Enter breaks the
-//! line, undo and redo, popup navigation and Esc to interrupt.
+//! line, undo and redo, word deletes, popup navigation and Esc to interrupt.
 
 use iced::keyboard::Key;
 use iced::keyboard::key::Named;
-use iced::widget::text_editor::{Binding, KeyPress, Status};
+use iced::widget::text_editor::{Binding, KeyPress, Motion, Status};
 
 use crate::Message;
 
@@ -17,6 +17,8 @@ pub(crate) struct KeyContext {
     pub composing: bool,
     /// A turn runs or is starting.
     pub busy: bool,
+    /// Text is selected; a word delete then deletes just the selection.
+    pub selection: bool,
 }
 
 pub(crate) fn bind(press: KeyPress, ctx: KeyContext) -> Option<Binding<Message>> {
@@ -39,8 +41,10 @@ pub(crate) fn bind(press: KeyPress, ctx: KeyContext) -> Option<Binding<Message>>
             Some('z') if modifiers.shift() => return Some(Binding::Custom(Message::Redo)),
             Some('z') => return Some(Binding::Custom(Message::Undo)),
             Some('y') => return Some(Binding::Custom(Message::Redo)),
-            // Clipboard and select all stay with the editor.
-            Some('c' | 'x' | 'v' | 'a') => {}
+            // Clipboard and select all stay with the editor; a paste also
+            // asks the app whether the clipboard holds an image.
+            Some('v') => return Some(Binding::Sequence(vec![Binding::Paste, Binding::Custom(Message::PasteImage)])),
+            Some('c' | 'x' | 'a') => {}
             // Any other Ctrl/Cmd+character chord is an app shortcut (new
             // session, palette, switch session…): leave it uncaptured so the
             // app's keymap sees it. On Windows AltGr arrives as Ctrl+Alt and
@@ -60,6 +64,14 @@ pub(crate) fn bind(press: KeyPress, ctx: KeyContext) -> Option<Binding<Message>>
         Some(Named::ArrowDown) if ctx.popup_open => custom(Message::PopupNext),
         Some(Named::Escape) if ctx.popup_open => custom(Message::PopupClose),
         Some(Named::Escape) if ctx.busy => custom(Message::Interrupt),
+        // Ctrl+Backspace / Ctrl+Delete (Alt on macOS) delete a word; on
+        // macOS Cmd+Backspace deletes to the start of the line.
+        Some(Named::Backspace | Named::Delete) if ctx.selection && (modifiers.jump() || modifiers.macos_command()) => {
+            Some(if named == Some(Named::Backspace) { Binding::Backspace } else { Binding::Delete })
+        }
+        Some(Named::Backspace) if modifiers.macos_command() => Some(Binding::Sequence(vec![Binding::Select(Motion::Home), Binding::Backspace])),
+        Some(Named::Backspace) if modifiers.jump() => Some(Binding::Sequence(vec![Binding::Select(Motion::WordLeft), Binding::Backspace])),
+        Some(Named::Delete) if modifiers.jump() => Some(Binding::Sequence(vec![Binding::Select(Motion::WordRight), Binding::Delete])),
         _ => Binding::from_key_press(press),
     }
 }
@@ -136,5 +148,23 @@ mod tests {
         }
         let copy = bind(press(Key::Character("c".into()), Modifiers::COMMAND), ctx);
         assert_eq!(copy, Some(Binding::Copy));
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn ctrl_edit_keys_delete_and_move_by_word() {
+        let ctx = KeyContext::default();
+        let ctrl = |named| bind(press(Key::Named(named), Modifiers::CTRL), ctx);
+        assert_eq!(ctrl(Named::Backspace), Some(Binding::Sequence(vec![Binding::Select(Motion::WordLeft), Binding::Backspace])));
+        assert_eq!(ctrl(Named::Delete), Some(Binding::Sequence(vec![Binding::Select(Motion::WordRight), Binding::Delete])));
+        assert_eq!(ctrl(Named::ArrowLeft), Some(Binding::Move(Motion::WordLeft)));
+        assert_eq!(ctrl(Named::ArrowRight), Some(Binding::Move(Motion::WordRight)));
+        assert_eq!(ctrl(Named::Home), Some(Binding::Move(Motion::DocumentStart)));
+        assert_eq!(ctrl(Named::End), Some(Binding::Move(Motion::DocumentEnd)));
+        let select = bind(press(Key::Named(Named::ArrowLeft), Modifiers::CTRL | Modifiers::SHIFT), ctx);
+        assert_eq!(select, Some(Binding::Select(Motion::WordLeft)));
+        // With a selection, the word delete takes just the selection.
+        let selected = KeyContext { selection: true, ..ctx };
+        assert_eq!(bind(press(Key::Named(Named::Backspace), Modifiers::CTRL), selected), Some(Binding::Backspace));
     }
 }

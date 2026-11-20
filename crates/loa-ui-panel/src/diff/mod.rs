@@ -72,6 +72,8 @@ pub struct State {
     scroll_id: Id,
     /// The selected file's lines are hidden; only its header shows.
     collapsed: bool,
+    /// Shown instead of "No changes" when set.
+    note: Option<String>,
 }
 
 impl Default for State {
@@ -91,7 +93,15 @@ impl State {
             viewport_height: DEFAULT_VIEWPORT,
             scroll_id: Id::unique(),
             collapsed: false,
+            note: None,
         }
+    }
+
+    /// Replaces the "No changes" text, e.g. when the folder isn't a git
+    /// repository. Clears the files shown.
+    pub fn set_note(&mut self, note: Option<String>) -> Task<Message> {
+        self.note = note;
+        if self.note.is_some() { self.set_files(Vec::new()) } else { Task::none() }
     }
 
     /// Replaces the files shown and selects the first.
@@ -185,7 +195,8 @@ impl State {
 
     pub fn view(&self) -> Element<'_, Message> {
         let Some(file) = self.selected() else {
-            return container(text("No changes").style(style::muted)).padding(8).into();
+            let note = self.note.as_deref().unwrap_or("No changes");
+            return container(text(note).style(style::muted)).padding(8).into();
         };
         let mut page = column![self.toolbar(file), rule::horizontal(1).style(style::divider)];
         if self.files.len() > 1 {
@@ -332,8 +343,7 @@ fn mono<'a>(content: impl text::IntoFragment<'a>) -> text::Text<'a> {
 
 /// Digits needed for the largest line number of the file.
 fn number_digits(file: &FileDiff) -> usize {
-    let max = file.lines().iter().flat_map(|l| l.old_no.max(l.new_no)).max().unwrap_or(0);
-    max.max(1).ilog10() as usize + 1
+    file.max_line_no().max(1).ilog10() as usize + 1
 }
 
 fn number<'a>(no: Option<u32>, digits: usize) -> Element<'a, Message> {

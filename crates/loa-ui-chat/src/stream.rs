@@ -22,7 +22,7 @@ impl Streamed {
 
     /// Parses `chunk`, which follows the text pushed so far.
     pub(crate) fn push(&mut self, chunk: &str) {
-        self.content.push_str(chunk);
+        self.content.push_str(&hard_breaks(chunk));
         self.fed += chunk.len();
         self.lines += newlines(chunk);
     }
@@ -49,6 +49,14 @@ impl Streamed {
     pub(crate) fn lines(&self) -> usize {
         self.lines
     }
+}
+
+/// `text` with every newline made a markdown hard break: replies keep the
+/// line breaks the model wrote ("one number per line") instead of markdown
+/// joining the lines of a paragraph. Blank lines still end paragraphs, and
+/// the trailing spaces this adds inside code blocks don't show.
+pub(crate) fn hard_breaks(text: &str) -> String {
+    text.replace('\n', "  \n")
 }
 
 fn newlines(text: &str) -> usize {

@@ -8,7 +8,7 @@ use iced::widget::text_editor::{Action, Edit};
 use iced_runtime::Action as RuntimeAction;
 use loa_adapter::{Adapter, Answer, Capabilities, Registry, SessionState};
 use loa_bus::Policy;
-use loa_core::{DecisionKind, DecisionStatus, Draft, NodeId, PatchSink, Role, Value, now_ms};
+use loa_core::{DecisionKind, DecisionStatus, Draft, ElementKind, NodeId, PatchSink, Role, Value, now_ms};
 use loa_identity::NodeIdentity;
 use loa_ui_decisions as decisions;
 
@@ -163,7 +163,17 @@ pub(crate) fn services(dir: &Path, adapters: Vec<FakeAdapter>) -> Services {
 }
 
 pub(crate) fn fake_app(dir: &Path, ids: &[&'static str]) -> App {
-    App::build(services(dir, ids.iter().map(|id| FakeAdapter::new(id)).collect())).0
+    let mut app = App::build(services(dir, ids.iter().map(|id| FakeAdapter::new(id)).collect())).0;
+    list_recents(&mut app);
+    app
+}
+
+/// Lists the stored sessions in Recents, as the journal scan `App::build`
+/// starts does once it finishes. Needs no runtime, so tests inside one can
+/// call it.
+pub(crate) fn list_recents(app: &mut App) {
+    let (summaries, problems, empty) = crate::session::recents(&app.ctx.services.library);
+    let _ = app.update(Message::Recents { summaries, problems, empty });
 }
 
 /// Runs `task` the way the iced runtime would, feeding every message it
@@ -196,7 +206,7 @@ pub(crate) fn update(app: &mut App, message: Message) {
 /// Delivers every patch `subscription` holds as the session's feed would.
 pub(crate) fn deliver(app: &mut App, id: &SessionId, subscription: &mut loa_bus::Subscription) {
     while let Ok(event) = subscription.try_recv() {
-        update(app, Message::Session(id.clone(), Feed::Event(event)));
+        update(app, Message::Session(id.clone(), Feed::Events(vec![event])));
     }
 }
 
@@ -377,6 +387,7 @@ fn sessions_persist_across_an_app_restart() {
     let adapter = FakeAdapter::new("fake-a");
     let resumed = Arc::clone(&adapter.resumed);
     let mut app = App::build(services(dir.path(), vec![adapter])).0;
+    list_recents(&mut app);
     let summary = app.ctx.shell.sidebar().session(&id).expect("listed in Recents");
     assert_eq!(summary.title, "hello journal");
     assert!(active(&app).is_none());
@@ -456,8 +467,8 @@ fn feeds_name_turn_decision_and_compaction_events() {
 
     let mut named = Vec::new();
     while let Ok(event) = feed.try_recv() {
-        match app.ctx.sessions.feed(id.as_str(), Feed::Event(event)) {
-            Change::Patch(_, derived) => named.extend(derived.map(|event| format!("{event:?}"))),
+        match app.ctx.sessions.apply(id.as_str(), event) {
+            Change::Patch { derived, .. } => named.extend(derived.map(|event| format!("{event:?}"))),
             _ => panic!("every patch is new"),
         }
     }
@@ -553,4 +564,235 @@ fn tool_calls_collapse_into_one_row_that_expands_on_click() {
     }
     let mut ui = Simulator::with_size(iced::Settings::default(), size, app.view());
     assert!(ui.find("contents of b.rs").is_ok(), "expanded on click");
+}
+
+const USAGE_JSON: &str = r#"{
+  "generatedAt": 1000,
+  "reports": [
+    {"provider": "anthropic", "metadata": {"orgName": "Personal", "credentialId": "c1"},
+     "limits": [{"label": "Claude 7 Day", "window": {"id": "7d", "resetsAt": 9000}, "amount": {"usedFraction": 0.51}}],
+     "resetCredits": {"availableCount": 3, "redeemableCount": 1}}
+  ]
+}"#;
+
+fn click_through(app: &mut App, label: &str) {
+    use iced_test::Simulator;
+    let size = iced::Size::new(1600.0, 1000.0);
+    let messages: Vec<Message> = {
+        let mut ui = Simulator::with_size(iced::Settings::default(), size, app.view());
+        ui.click(label).unwrap_or_else(|_| panic!("{label} is clickable"));
+        ui.into_messages().collect()
+    };
+    for message in messages {
+        let _ = app.update(message);
+    }
+}
+
+fn shows(app: &App, label: &str) -> bool {
+    use iced_test::Simulator;
+    let mut ui = Simulator::with_size(iced::Settings::default(), iced::Size::new(1600.0, 1000.0), app.view());
+    ui.find(label).is_ok()
+}
+
+#[test]
+fn usage_window_expands_a_provider_without_closing() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = fake_app(dir.path(), &["fake-a"]);
+    app.overlay = Some(super::windows::Overlay::Usage);
+    let _ = app.update(Message::Usage(super::usage::Message::Loaded(super::usage::parse(USAGE_JSON))));
+    assert!(shows(&app, "Anthropic"));
+    assert!(!shows(&app, "Claude 7 Day"), "providers start collapsed");
+
+    click_through(&mut app, "Anthropic");
+    assert_eq!(app.overlay, Some(super::windows::Overlay::Usage), "clicking inside the window keeps it open");
+    assert!(shows(&app, "Claude 7 Day"), "the provider expanded");
+    assert!(shows(&app, "Use a reset"));
+}
+
+#[test]
+fn settings_window_switches_sections_and_sidebar_opens_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = fake_app(dir.path(), &["fake-a"]);
+    click_through(&mut app, "Settings");
+    assert_eq!(app.overlay, Some(super::windows::Overlay::Settings(super::windows::SettingsTab::General)));
+    assert!(shows(&app, "Theme"));
+
+    click_through(&mut app, "Peers & sharing");
+    assert_eq!(app.overlay, Some(super::windows::Overlay::Settings(super::windows::SettingsTab::Peers)));
+
+    let _ = app.update(Message::Keyboard(escape()));
+    assert_eq!(app.overlay, None, "Escape closes the window");
+}
+
+#[test]
+fn configs_opens_from_the_sidebar_and_lists_agent_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = fake_app(dir.path(), &["fake-a"]);
+    std::fs::create_dir_all(app.ctx.services.cwd.join(".omp/agents")).unwrap();
+    std::fs::write(app.ctx.services.cwd.join(".omp/agents/reviewer.md"), "---\nname: reviewer\n---\nReview diffs.").unwrap();
+    click_through(&mut app, "Configs");
+    assert_eq!(app.overlay, Some(super::windows::Overlay::Configs(super::windows::ConfigsTab::Models)));
+    click_through(&mut app, "Agents");
+    assert_eq!(app.overlay, Some(super::windows::Overlay::Configs(super::windows::ConfigsTab::Agents)));
+    assert!(shows(&app, "reviewer"));
+    assert!(shows(&app, "Full screen"));
+    click_through(&mut app, "Full screen");
+    assert!(app.docs.full);
+    let _ = app.update(Message::Keyboard(escape()));
+    assert!(!app.docs.full, "Escape leaves the file's full screen first");
+    assert_eq!(app.overlay, Some(super::windows::Overlay::Configs(super::windows::ConfigsTab::Agents)));
+    let _ = app.update(Message::Keyboard(escape()));
+    assert_eq!(app.overlay, None);
+}
+
+#[test]
+fn models_close_button_closes_configs_it_is_drawn_in() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = fake_app(dir.path(), &["fake-a"]);
+    app.overlay = Some(super::windows::Overlay::Configs(super::windows::ConfigsTab::Models));
+    let _ = app.update(Message::Models(areas::models::Message::Close));
+    assert_eq!(app.overlay, None);
+}
+
+#[test]
+fn panel_tabs_detach_into_windows_and_reattach() {
+    use super::detach::Detached;
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = fake_app(dir.path(), &["fake-a"]);
+    let _ = app.update(Message::Shell(shell::Message::SelectTab("terminal".into())));
+
+    // The pop-out button on the panel's active tab.
+    click_id(&mut app, shell::layout::PANEL_DETACH_ID);
+    assert_eq!(app.detached.len(), 1);
+    assert_eq!(app.detached[0].1, Detached::Tab("terminal".into()));
+    assert!(app.ctx.shell.is_detached("terminal"));
+    assert!(shows(&app, "Terminal is in its own window"), "the panel shows a placeholder");
+
+    // Popping out again brings the same window forward instead of a second one.
+    let _ = app.update(Message::Shell(shell::Message::Detach("terminal".into())));
+    assert_eq!(app.detached.len(), 1);
+
+    let id = app.detached[0].0;
+    assert_eq!(app.title(id), "Terminal — Loa");
+    {
+        use iced_test::Simulator;
+        let mut ui = Simulator::with_size(iced::Settings::default(), iced::Size::new(640.0, 560.0), app.view_window(id));
+        assert!(ui.find("Reattach").is_ok(), "the detached window offers Reattach");
+    }
+
+    let _ = app.update(Message::Reattach(id));
+    assert!(app.detached.is_empty());
+    assert!(!app.ctx.shell.is_detached("terminal"));
+    assert_eq!(app.ctx.shell.active_tab(), Some("terminal"), "the panel shows the tab again");
+}
+
+#[test]
+fn closing_a_detached_window_reattaches_and_closing_main_quits() {
+    use super::detach::Detached;
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = fake_app(dir.path(), &["fake-a"]);
+    let _ = app.open_main();
+    let _ = app.update(Message::Shell(shell::Message::Detach("files".into())));
+    let _ = app.update(Message::Shell(shell::Message::Detach("diff".into())));
+    assert_eq!(app.detached.iter().map(|(_, what)| what.clone()).collect::<Vec<_>>(), [Detached::Tab("files".into()), Detached::Tab("diff".into())]);
+
+    let files = app.detached[0].0;
+    let _ = app.update(Message::WindowClosed(files));
+    assert!(!app.ctx.shell.is_detached("files"));
+    assert!(app.ctx.shell.is_detached("diff"), "other windows stay detached");
+}
+
+fn click_id(app: &mut App, id: &'static str) {
+    use iced_test::{Simulator, selector};
+    let messages: Vec<Message> = {
+        let mut ui = Simulator::with_size(iced::Settings::default(), iced::Size::new(1600.0, 1000.0), app.view());
+        ui.click(selector::id(id)).unwrap_or_else(|_| panic!("{id} is clickable"));
+        ui.into_messages().collect()
+    };
+    for message in messages {
+        let _ = app.update(message);
+    }
+}
+
+#[test]
+fn a_session_opens_in_its_own_window_without_becoming_active() {
+    use super::detach::Detached;
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = fake_app(dir.path(), &["fake-a"]);
+    update(&mut app, Message::NewSession);
+    let session = app.ctx.sessions.active().unwrap();
+    let session_id = session.id().clone();
+    let writer = Arc::clone(session.writer());
+    let (_, mut feed) = writer.subscribe(Policy::every_patch(1024));
+    prompt(&mut app, "first session");
+    deliver(&mut app, &session_id, &mut feed);
+    let first = active(&app).unwrap().to_owned();
+    update(&mut app, Message::NewSession);
+    let second = active(&app).unwrap().to_owned();
+    assert_ne!(first, second);
+
+    let _ = app.detach_session(&first);
+    assert_eq!(app.detached.last().map(|(_, what)| what.clone()), Some(Detached::Session(first.clone())));
+    assert_eq!(active(&app), Some(second.as_str()), "the main window keeps its session");
+    let id = app.detached.last().unwrap().0;
+    use iced_test::Simulator;
+    let mut ui = Simulator::with_size(iced::Settings::default(), iced::Size::new(560.0, 720.0), app.view_window(id));
+    assert!(ui.find("first session").is_ok(), "the window shows the detached session's transcript");
+}
+
+#[test]
+fn folder_bar_switches_folders_and_starts_a_session_there() {
+    use iced_test::Simulator;
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = fake_app(dir.path(), &["fake-a"]);
+    update(&mut app, Message::NewSession);
+    let before = active(&app).unwrap().to_owned();
+    let folder = app.ctx.composer.workspace().expect("a folder bar").clone();
+    assert_eq!(folder.full, app.ctx.services.cwd.display().to_string());
+
+    // The bar sits above the editor and opens the folder menu.
+    click_id(&mut app, composer::WORKSPACE_CHIP_ID);
+    {
+        let mut ui = Simulator::with_size(iced::Settings::default(), iced::Size::new(1600.0, 1000.0), app.view());
+        assert!(ui.find("Choose another folder…").is_ok());
+        assert!(ui.find("Show in Files").is_ok());
+    }
+
+    let other = tempfile::tempdir().unwrap();
+    let other_path = other.path().canonicalize().unwrap();
+    update(&mut app, Message::Composer(composer::Message::FolderPicked(other_path.display().to_string())));
+    assert_eq!(app.ctx.services.cwd, other_path);
+    assert_eq!(app.ctx.services.project, None, "a folder is not a project: picking one leaves the project alone");
+    assert!(app.diff.files().is_empty(), "the old folder's changes are gone");
+    let _ = app.update(Message::WorkingDiff(None));
+    {
+        let mut ui = iced_test::Simulator::with_size(iced::Settings::default(), iced::Size::new(600.0, 400.0), app.diff.view());
+        let note = format!("No git changes to show: {} isn't a git repository with a commit", super::workspace(&other_path).path);
+        assert!(ui.find(note.as_str()).is_ok());
+    }
+    assert_eq!(app.ctx.composer.workspace().unwrap().full, other_path.display().to_string());
+    assert_ne!(active(&app), Some(before.as_str()), "a fresh session starts in the new folder");
+
+    // The old folder stays in the menu.
+    click_id(&mut app, composer::WORKSPACE_CHIP_ID);
+    let mut ui = Simulator::with_size(iced::Settings::default(), iced::Size::new(1600.0, 1000.0), app.view());
+    assert!(ui.find(folder.path.as_str()).is_ok(), "recent folders are offered");
+}
+
+#[test]
+fn show_in_files_opens_the_files_tab() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = fake_app(dir.path(), &["fake-a"]);
+    update(&mut app, Message::NewSession);
+    click_id(&mut app, composer::WORKSPACE_CHIP_ID);
+    let messages: Vec<Message> = {
+        use iced_test::Simulator;
+        let mut ui = Simulator::with_size(iced::Settings::default(), iced::Size::new(1600.0, 1000.0), app.view());
+        ui.click("Show in Files").expect("Show in Files");
+        ui.into_messages().collect()
+    };
+    for message in messages {
+        let _ = app.update(message);
+    }
+    assert_eq!(app.ctx.shell.active_tab(), Some("files"));
 }

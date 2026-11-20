@@ -88,7 +88,7 @@ impl State {
             self.desk.set_theme(&theme);
             self.theme = theme;
         }
-        let notices = self.desk.sync(session.dom(), desk::now_ms());
+        let notices = self.desk.sync(session.dom(), loa_core::now_ms());
         self.desk.notify(notices).map(Message::Desk)
     }
 

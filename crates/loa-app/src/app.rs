@@ -9,11 +9,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use iced::keyboard::{self, key};
-use iced::widget::{button, center, column, container, stack, text};
+use iced::widget::{column, container, stack, text};
 use iced::{Element, Fill, Font, Padding, Subscription, Task, Theme};
 use loa_adapter::{AdapterError, HarnessSession, HostToolRouter, Prompt, SessionConfig};
 use loa_bus::SessionId;
-use loa_core::{Dom, ElementKind, Op, SessionMode, TurnStatus, attr};
+use loa_core::{Dom, Op, Patch, SessionMode, TurnStatus, attr};
 use loa_ui_chat as chat;
 use loa_ui_composer as composer;
 use loa_ui_palette as palette;
@@ -26,8 +26,14 @@ use crate::area::{Area, AreaId, Ctx, Request, SessionEvent, Sessions, Spawn, Tar
 use crate::areas::{self, Areas, with_areas};
 use crate::services::Services;
 use crate::session::{self, Change, Feed, dom_turns};
+use feed::turn_status;
+pub(crate) use folders::choose_folder;
+use folders::{working_diff, workspace};
 
 /// Panel tabs the app draws itself, before the areas' tabs.
+/// How often the sidebar's usage meter re-reads `omp usage`.
+const USAGE_REFRESH: Duration = Duration::from_secs(300);
+
 const BUILTIN_TABS: [(&str, &str); 3] = [("diff", "Diff"), ("files", "Files"), ("terminal", "Terminal")];
 
 /// Theme choices offered in the palette, by command id suffix.
@@ -43,7 +49,10 @@ const NEW_SESSION: palette::CommandId = palette::CommandId::from_static("session
 const PROJECT_TABS_TOGGLE: palette::CommandId = palette::CommandId::from_static("project.tabs.toggle");
 
 /// Width of the composer: the transcript's column width.
-const COMPOSER_WIDTH: f32 = 700.0;
+pub(crate) const COMPOSER_WIDTH: f32 = 700.0;
+
+/// Room under the transcript's last row for the floating composer.
+const COMPOSER_INSET: f32 = 190.0;
 
 /// How often running sessions redraw, so elapsed times advance.
 const TICK: Duration = Duration::from_secs(1);
@@ -127,7 +136,14 @@ pub enum Message {
     Spawned { id: SessionId, result: Started, prompt: Option<Prompt> },
     /// A harness call returned.
     Operation(Result<(), String>),
-    WorkingDiff(Option<String>),
+    /// The working tree's changes against HEAD, already parsed off the UI thread.
+    WorkingDiff(Option<Result<Vec<diff::FileDiff>, String>>),
+    /// Sessions read from disk at startup. `empty` lists sessions with no turns.
+    Recents {
+        summaries: Vec<shell::SessionSummary>,
+        problems: Vec<String>,
+        empty: Vec<String>,
+    },
     Harness(areas::harness::Message),
     Sessions(areas::sessions::Message),
     Decisions(areas::decisions::Message),
@@ -138,7 +154,25 @@ pub enum Message {
     Peers(areas::peers::Message),
     Updater(areas::updater::Message),
     Sandbox(areas::sandbox::Message),
+    /// The Usage window.
+    Usage(usage::Message),
+    /// Configs and Settings.
+    Window(windows::WindowMessage),
+    /// A window closed (the main one or a detached one).
+    WindowClosed(iced::window::Id),
+    /// A detached window's Reattach button.
+    Reattach(iced::window::Id),
+    /// The transcript in a detached session's window.
+    DetachedChat(String, chat::Message),
+    /// The folder dialog closed with this folder, or none when cancelled.
+    FolderChosen(Result<Option<PathBuf>, String>),
+    /// The start screen.
+    Start(start::StartMessage),
     Agents(areas::agents::Message),
+    /// The clipboard image a paste asked for, saved to disk, or none.
+    ImagePasted(Result<Option<media::Pasted>, String>),
+    /// A file was dropped on a window.
+    FileDropped(PathBuf),
 }
 
 pub struct App {
@@ -149,6 +183,24 @@ pub struct App {
     pub(crate) files: files::State,
     diff: diff::State,
     pub(crate) terminal: terminal::state::State,
+    usage: usage::State,
+    overlay: Option<windows::Overlay>,
+    docs: windows::Docs,
+    main_window: Option<iced::window::Id>,
+    detached: Vec<(iced::window::Id, detach::Detached)>,
+    /// Transcripts of sessions shown in their own window, by session id.
+    detached_chats: std::collections::HashMap<String, chat::State>,
+    /// Folders worked in this run, most recent first, for the folder menu.
+    recent_folders: Vec<PathBuf>,
+    /// omp's approval mode for sessions started from now on; `None` uses
+    /// the adapter's default (`always-ask`).
+    access: Option<String>,
+    /// The active session restarts on the new approval mode once its turn
+    /// ends.
+    restart_for_access: bool,
+    /// What `sync_access` last pushed to the composer: whether the active session
+    /// runs omp, and the permission level it showed.
+    access_synced: Option<(bool, Option<String>)>,
     /// The projects with a tab in the project strip, in order. Not saved:
     /// projects selected this run plus the project of every session opened
     /// this run. Closing a tab only removes the entry here.
@@ -159,6 +211,15 @@ pub struct App {
 }
 
 impl App {
+    /// Boots the daemon: the app on this machine's services, with its main
+    /// window open.
+    pub fn boot() -> (Self, Task<Message>) {
+        let (mut app, task) = Self::new();
+        let open = app.open_main();
+        let catalog = app.areas.models.read_catalog().map(Message::Models);
+        (app, Task::batch([open, task, catalog]))
+    }
+
     /// The app on this machine's services.
     pub fn new() -> (Self, Task<Message>) {
         let (services, warnings) = Services::load().unwrap_or_else(|error| panic!("{error}"));
@@ -177,7 +238,7 @@ impl App {
         // The project selected last run, while its folder still exists, is the active one from the start.
         let restored = saved.active_project.filter(|active| active.cwd.is_dir());
         if let Some(active) = &restored {
-            services.set_active(active.name.clone(), active.cwd.clone());
+            services.set_active(active.name.clone(), Some(active.cwd.clone()));
         }
         let (shell, setup) =
             shell::State::new(preference(saved.theme), shell::PanelPrefs { open: true, ..Default::default() });
@@ -186,47 +247,63 @@ impl App {
         let mut sessions = Sessions::default();
         sessions.harness = services.harnesses.default_id();
         composer.set_harnesses(services.harnesses.options(), sessions.harness.as_deref());
-        let (recents, problems) = session::recents(&services.library);
+        let library = Arc::clone(&services.library);
         let metrics = terminal::canvas::Metrics::measure(Font::MONOSPACE, 13.0);
         let terminal = terminal::state::State::new(metrics, terminal::local::LocalShell::login_shell(services.cwd.clone()));
         let files = files::State::new(services.cwd.clone(), Box::new(files::LocalFs));
         let cwd = services.cwd.clone();
-        let mut ctx = Ctx {
+        let mut ctx = Ctx::new(
             services,
             sessions,
             shell,
             composer,
-            keymap: palette::Keymap::defaults(palette::Platform::current()),
-            app_tools: Vec::new(),
-            peers: Vec::new(),
-            node: loa_node::NodeSlot::default(),
-            screen: None,
-            notice: (!problems.is_empty()).then(|| problems.join("; ")),
-            requests: Vec::new(),
-            events: Vec::new(),
-        };
+            palette::Keymap::defaults(palette::Platform::current()),
+        );
         ctx.shell.set_project_tabs(saved.project_tabs);
         ctx.shell.set_active_project(restored.map(|active| active.name));
         ctx.shell.set_pins(saved.pinned);
         ctx.shell.set_pinned_projects(saved.pinned_projects);
-        ctx.shell.set_sessions(recents);
         let (areas, area_tasks) = Areas::new(&mut ctx);
         let mut app = Self {
             ctx,
             areas,
-            chat: chat::State::new(&theme),
+            chat: { let mut chat = chat::State::new(&theme); chat.set_bottom_inset(COMPOSER_INSET); chat },
             palette: palette::State::new(palette::Platform::current()),
             files,
             diff: diff::State::new(),
             terminal,
+            usage: usage::State::default(),
+            overlay: None,
+            docs: windows::Docs::default(),
+            main_window: None,
+            detached: Vec::new(),
+            detached_chats: std::collections::HashMap::new(),
+            recent_folders: Vec::new(),
+            access: saved.harness.approval_mode.clone(),
+            restart_for_access: false,
+            access_synced: None,
             open_projects: Vec::new(),
             tabbed_sessions: HashSet::new(),
         };
         let shown = app.tabs().into_iter().filter(|tab| tab.shown).map(|tab| shell::PanelTab::new(tab.id, tab.title)).collect();
         app.ctx.shell.set_tabs(shown);
+        let folder = workspace(&app.ctx.services.cwd);
+        app.ctx.composer.set_workspace(Some(folder));
+        app.recent_folders.push(app.ctx.services.cwd.clone());
+        app.refresh_folders();
         app.refresh_commands();
         let settle = app.settle();
-        (app, Task::batch([setup.map(Message::Shell), area_tasks, working_diff(cwd), settle]))
+        let usage = app.usage.refresh().map(Message::Usage);
+        // The sidebar fills in once the sessions on disk have been read.
+        let recents = Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || session::recents(&library))
+                    .await
+                    .unwrap_or_else(|error| (Vec::new(), vec![format!("Can't read sessions: {error}")], Vec::new()))
+            },
+            |(summaries, problems, empty)| Message::Recents { summaries, problems, empty },
+        );
+        (app, Task::batch([setup.map(Message::Shell), area_tasks, working_diff(cwd), recents, settle, usage]))
     }
 
     /// Every panel tab: the built-in ones, then each area's.
@@ -319,342 +396,31 @@ impl App {
         }
     }
 
-    /// The config of a session on harness `harness`: this node and
-    /// workspace, the session's own `cwd`, `project` and `mode` when it is
-    /// resumed from `dom`, then every area's contribution and host tools.
-    fn session_config(&mut self, session_id: &str, harness: &str, dom: Option<&Dom>) -> SessionConfig {
-        let services = &self.ctx.services;
-        let root = dom.and_then(Dom::root);
-        let attr = |name| root.and_then(|root| root.str_attr(name));
-        let mut config = SessionConfig {
-            session_id: session_id.to_owned(),
-            node: services.node.key.clone(),
-            cwd: attr(attr::CWD).map_or_else(|| services.cwd.clone(), PathBuf::from),
-            project: Some(attr(attr::PROJECT).unwrap_or(&services.project).to_owned()),
-            mode: Some(attr(attr::MODE).and_then(SessionMode::parse).unwrap_or(SessionMode::Normal)),
-            executable: services.harnesses.get(harness).and_then(|entry| entry.executable.clone()),
-            ..SessionConfig::default()
-        };
-        let capabilities = services.harnesses.registry.get(harness).map(|adapter| adapter.capabilities()).unwrap_or_default();
-        let target = Target { harness, capabilities: &capabilities, resume: dom.is_some() };
-        let ctx = &self.ctx;
-        with_areas!(each_area!(self.areas, ref |area, wrap| area.contribute(&mut config, &target, ctx)));
-        let mut router = HostToolRouter::new();
-        let mut duplicates = Vec::new();
-        for set in with_areas!(each_area!(self.areas, ref |area, wrap| area.host_tools(&config, &target, ctx))).into_iter().flatten() {
-            for spec in set.specs {
-                if let Err(duplicate) = router.add(spec, Arc::clone(&set.handler)) {
-                    duplicates.push(duplicate.0);
-                }
-            }
-        }
-        router.install(&mut config);
-        if !duplicates.is_empty() {
-            self.ctx.notify(format!("Host tools offered twice, first one kept: {}", duplicates.join(", ")));
-        }
-        config
-    }
-
-    /// Starts a session on the selected harness; `prompt` is sent once it
-    /// runs.
-    fn start(&mut self, prompt: Option<Prompt>) -> Task<Message> {
-        if self.ctx.sessions.starting().is_some() {
-            return Task::none();
-        }
-        let Some(harness) = self.ctx.sessions.harness.clone() else {
-            self.ctx.notify("No harness is available on this machine");
-            return Task::none();
-        };
-        let Some(adapter) = self.ctx.services.harnesses.runnable(&harness) else {
-            let label = self.ctx.services.harnesses.label(&harness).to_owned();
-            self.ctx.notify(format!("{label} is unavailable"));
-            return Task::none();
-        };
-        let (id, writer) = match self.ctx.sessions.create(&self.ctx.services) {
-            Ok(created) => created,
-            Err(error) => {
-                self.ctx.notify(error);
-                return Task::none();
-            }
-        };
-        self.ctx.sessions.set_starting(Some(id.clone()));
-        self.ctx.clear_notice();
-        let config = self.session_config(id.as_str(), &harness, None);
-        Task::perform(
-            async move {
-                let sink: Arc<dyn loa_core::PatchSink> = writer;
-                adapter.start(config, sink).await.map(Arc::from).map_err(|error| error.to_string())
-            },
-            move |result| Message::Started { id, result, prompt },
-        )
-    }
-
-    /// Resumes the active session on its harness, then sends `prompt`. A
-    /// harness that can't resume it, or isn't here, gets a new session.
-    fn resume(&mut self, prompt: Prompt) -> Task<Message> {
-        if self.ctx.sessions.starting().is_some() {
-            self.ctx.notify("A session is already starting");
-            return Task::none();
-        }
-        let Some(session) = self.ctx.sessions.active() else { return Task::none() };
-        let id = session.id().clone();
-        let harness = session.harness_id().map(str::to_owned);
-        let adapter = harness.as_deref().and_then(|harness| self.ctx.services.harnesses.runnable(harness));
-        let (Some(harness), Some(adapter)) = (harness, adapter) else {
-            self.ctx.notify("This session's harness isn't available here; continuing in a new session");
-            return self.start(Some(prompt));
-        };
-        let dom = session.dom().clone();
-        let sink: Arc<dyn loa_core::PatchSink> = Arc::clone(session.writer()) as _;
-        let config = self.session_config(id.as_str(), &harness, Some(&dom));
-        self.ctx.sessions.set_starting(Some(id.clone()));
-        self.ctx.sessions.harness = Some(harness);
-        Task::perform(
-            async move { adapter.resume(config, &dom, sink).await.map(Arc::from).map_err(ResumeError::from) },
-            move |result| Message::Resumed { id, result, prompt },
-        )
-    }
-
-    /// Sends `prompt` to the active session, resuming it first when no
-    /// harness runs it.
-    fn send(&mut self, mut prompt: Prompt) -> Task<Message> {
-        let Some(session) = self.ctx.sessions.active() else { return Task::none() };
-        let Some(harness) = session.harness().cloned() else { return self.resume(prompt) };
-        let id = session.id().clone();
-        with_areas!(each_area!(self.areas, mut |area, wrap| area.before_send(&id, &mut prompt, &mut self.ctx)));
-        if let Some(session) = self.ctx.sessions.get_mut(id.as_str()) {
-            session.set_busy(true);
-        }
-        self.ctx.composer.turn_started();
-        let send = Task::perform(async move { harness.send(prompt).await.map_err(|error| error.to_string()) }, Message::Operation);
-        Task::batch([send, self.settle()])
-    }
-
-    /// Starts a session an area creates itself: its config gets every
-    /// area's contribution, then `spawn.start` creates and runs it.
-    fn spawn(&mut self, spawn: Spawn) -> Task<Message> {
-        if self.ctx.sessions.starting().is_some() {
-            self.ctx.notify("A session is already starting");
-            return Task::none();
-        }
-        let Spawn { id, harness, start, prompt } = spawn;
-        let config = self.session_config(id.as_str(), &harness, None);
-        self.ctx.sessions.set_starting(Some(id.clone()));
-        self.ctx.clear_notice();
-        Task::perform(start(config), move |result| Message::Spawned { id, result, prompt })
-    }
-
-    fn interrupt(&mut self) -> Task<Message> {
-        let Some(session) = self.ctx.sessions.active() else { return Task::none() };
-        let Some(harness) = session.harness().filter(|_| session.is_busy()).cloned() else { return Task::none() };
-        Task::perform(async move { harness.interrupt().await.map_err(|error| error.to_string()) }, Message::Operation)
-    }
-
-    /// Shows session `id`, loading it from its journal when needed.
-    fn open_session(&mut self, id: &str) -> Task<Message> {
-        if self.ctx.sessions.is_active(id) {
-            return Task::none();
-        }
-        if let Err(error) = self.ctx.sessions.load(&self.ctx.services, id) {
-            self.ctx.notify(error);
-            return Task::none();
-        }
-        let id = SessionId::from(id);
-        self.ctx.sessions.set_active(Some(id.clone()));
-        self.ctx.close_screen();
-        self.dispatch(SessionEvent::Activated(Some(id)))
-    }
-
-    /// Loads the active session's DOM into the chat and the frame.
-    fn present(&mut self) {
+    /// Loads the active session's DOM into the chat and the frame. The
+    /// composer follows its turn state, so it never waits on a session that
+    /// isn't shown.
+    fn present(&mut self) -> Task<Message> {
+        self.ctx.composer.follow_session(self.ctx.sessions.active().is_some_and(|session| session.is_busy()));
         let Some(session) = self.ctx.sessions.active() else {
             self.chat.load(&Dom::new());
-            return;
+            let workspace = workspace(&self.ctx.services.cwd);
+            self.ctx.composer.set_workspace(Some(workspace));
+            let cwd = self.ctx.services.cwd.clone();
+            return self.terminal_follow(cwd);
         };
+        let cwd = session
+            .dom()
+            .root()
+            .and_then(|root| root.str_attr(attr::CWD))
+            .map_or_else(|| self.ctx.services.cwd.clone(), PathBuf::from);
+        self.ctx.composer.set_workspace(Some(workspace(&cwd)));
         self.chat.load(session.dom());
         if let Some(summary) = session.summary() {
-            self.ctx.shell.upsert_session(summary);
+            self.ctx.shell.upsert_session(summary.clone());
         }
         self.ctx.shell.set_active_session(Some(session.id().to_string()));
         self.ctx.shell.set_session_status(turn_status(session.dom()).map(str::to_owned));
-    }
-
-    /// The app's own reaction to a session event, then every area's.
-    fn dispatch(&mut self, event: SessionEvent) -> Task<Message> {
-        match &event {
-            SessionEvent::Activated(_) => self.present(),
-            SessionEvent::Loaded(id) => {
-                if self.ctx.sessions.is_active(id.as_str()) {
-                    self.present();
-                } else if let Some(summary) = self.ctx.sessions.get(id.as_str()).and_then(|session| session.summary()) {
-                    self.ctx.shell.upsert_session(summary);
-                }
-            }
-            SessionEvent::Patch(id, patch) => {
-                let active = self.ctx.sessions.is_active(id.as_str());
-                if let Some(session) = self.ctx.sessions.get(id.as_str()) {
-                    if active {
-                        self.chat.apply(patch, session.dom());
-                    }
-                    if changes_summary(session.dom(), patch) {
-                        if let Some(summary) = session.summary() {
-                            self.ctx.shell.upsert_session(summary);
-                        }
-                        if active {
-                            self.ctx.shell.set_session_status(turn_status(session.dom()).map(str::to_owned));
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
-        let tasks = with_areas!(each_area!(self.areas, mut |area, wrap| area.on_session_event(&event, &mut self.ctx).map(wrap)));
-        Task::batch(tasks.into_iter().chain([self.settle()]))
-    }
-
-    /// Applies a session feed and reacts to the active session starting or
-    /// finishing a turn.
-    fn feed(&mut self, id: SessionId, feed: Feed) -> Task<Message> {
-        let active = self.ctx.sessions.is_active(id.as_str());
-        let was_busy = active && self.ctx.sessions.active().is_some_and(|session| session.is_busy());
-        let mut tasks = Vec::new();
-        match self.ctx.sessions.feed(id.as_str(), feed) {
-            Change::None => return Task::none(),
-            Change::Loaded => tasks.push(self.dispatch(SessionEvent::Loaded(id))),
-            Change::Patch(patch, derived) => {
-                tasks.push(self.dispatch(SessionEvent::Patch(id, patch)));
-                if let Some(event) = derived {
-                    tasks.push(self.dispatch(event));
-                }
-            }
-        }
-        let busy = active && self.ctx.sessions.active().is_some_and(|session| session.is_busy());
-        if busy && !was_busy {
-            self.ctx.composer.turn_started();
-        }
-        if active && was_busy && !busy {
-            tasks.push(working_diff(self.ctx.services.cwd.clone()));
-            // A queued `/` command runs like a typed one.
-            let next = self.ctx.composer.turn_ended();
-            tasks.push(self.composer_event(next));
-        }
-        Task::batch(tasks)
-    }
-
-    /// Runs what areas asked for and delivers the session events they
-    /// caused, until none are left.
-    fn settle(&mut self) -> Task<Message> {
-        let mut tasks = Vec::new();
-        loop {
-            if !self.ctx.events.is_empty() {
-                for event in std::mem::take(&mut self.ctx.events) {
-                    tasks.push(self.dispatch(event));
-                }
-                continue;
-            }
-            if self.ctx.requests.is_empty() {
-                break;
-            }
-            for request in std::mem::take(&mut self.ctx.requests) {
-                let task = match request {
-                    Request::NewSession => self.start(None),
-                    Request::OpenSession(id) => self.open_session(&id),
-                    Request::Prompt(prompt) => self.send(prompt),
-                    Request::OpenTab(id) => self.open_tab(&id),
-                    Request::RevealTab(id) => self.reveal_tab(&id),
-                    Request::Spawn(spawn) => self.spawn(spawn),
-                    Request::ActivateProject { project, cwd } => self.activate_project(project, cwd),
-                    Request::Forward(message) => self.update(*message),
-                };
-                tasks.push(task);
-            }
-        }
-        Task::batch(tasks)
-    }
-
-    /// Makes `project` and its folder `cwd` the active ones: new sessions,
-    /// new terminals, the Files and Diff tabs follow, every area is told and
-    /// the choice is saved. Running sessions and open terminals keep their
-    /// folder.
-    fn activate_project(&mut self, project: String, cwd: PathBuf) -> Task<Message> {
-        self.ctx.shell.set_active_project(Some(project.clone()));
-        self.add_project_tab(&project);
-        let services = &mut self.ctx.services;
-        if services.project == project && services.cwd == cwd {
-            return Task::none();
-        }
-        services.set_active(project.clone(), cwd.clone());
-        self.files.set_root(cwd.clone());
-        self.terminal.set_new_tab(terminal::local::LocalShell::login_shell(cwd.clone()));
-        let saved = loa_config::ActiveProject { name: project.clone(), cwd: cwd.clone() };
-        self.save_ui(|config| config.active_project = Some(saved));
-        let tasks = with_areas!(each_area!(self.areas, mut |area, wrap| area
-            .project_activated(&project, &cwd, &mut self.ctx)
-            .map(wrap)));
-        Task::batch(tasks.into_iter().chain([working_diff(cwd), self.settle()]))
-    }
-
-    /// Gives `project` a tab in the project strip when it has none.
-    fn add_project_tab(&mut self, project: &str) {
-        if !self.open_projects.iter().any(|open| open == project) {
-            self.open_projects.push(project.to_owned());
-            self.ctx.shell.set_open_projects(self.open_projects.clone());
-        }
-    }
-
-    /// Drops the tab of `project`. Its sessions stay open, and it gets a tab
-    /// again only when it is activated again.
-    fn close_project_tab(&mut self, project: &str) {
-        self.open_projects.retain(|open| open != project);
-        self.ctx.shell.set_open_projects(self.open_projects.clone());
-    }
-
-    /// Gives a tab to the project of every session opened since the last
-    /// call. A session whose journal has no root yet is looked at again next
-    /// time.
-    fn sync_project_tabs(&mut self) {
-        let mut seen = Vec::new();
-        for session in self.ctx.sessions.iter() {
-            let id = session.id().to_string();
-            if self.tabbed_sessions.contains(&id) {
-                continue;
-            }
-            let project = session.writer().with_dom(|dom| {
-                dom.root().map(|root| root.str_attr(attr::PROJECT).map(str::to_owned))
-            });
-            if let Some(project) = project {
-                seen.push((id, project));
-            }
-        }
-        for (id, project) in seen {
-            self.tabbed_sessions.insert(id);
-            if let Some(project) = project.filter(|project| !project.is_empty()) {
-                self.add_project_tab(&project);
-            }
-        }
-    }
-
-    /// Activates the project tab after (or before) the active project's,
-    /// wrapping around, the way a click on that tab does.
-    fn step_project_tab(&mut self, forward: bool) -> Task<Message> {
-        if !self.ctx.shell.project_tabs() {
-            self.ctx.notify("Project tabs are off; turn them on from the palette");
-            return Task::none();
-        }
-        let tabs = &self.open_projects;
-        let Some(last) = tabs.len().checked_sub(1) else {
-            self.ctx.notify("No project tabs are open");
-            return Task::none();
-        };
-        let current = tabs.iter().position(|open| *open == self.ctx.services.project);
-        let index = match (current, forward) {
-            (Some(index), true) => if index == last { 0 } else { index + 1 },
-            (Some(index), false) => index.checked_sub(1).unwrap_or(last),
-            (None, true) => 0,
-            (None, false) => last,
-        };
-        let project = tabs[index].clone();
-        self.update(Message::Projects(areas::projects::Message::Open(project)))
+        self.terminal_follow(cwd)
     }
 
     pub(crate) fn command(&mut self, id: &palette::CommandId) -> Task<Message> {
@@ -731,6 +497,7 @@ impl App {
                     let next = self.ctx.composer.turn_ended();
                     Task::batch([task, self.composer_event(next)])
                 }
+                None if self.ctx.sessions.active().is_none() => self.start(Some(prompt)),
                 None => self.send(prompt),
             },
             Some(composer::Event::Stop) => self.interrupt(),
@@ -740,19 +507,28 @@ impl App {
             Some(composer::Event::EffortChanged(effort)) => {
                 self.update(Message::Models(areas::models::Message::Effort(effort)))
             }
+            Some(composer::Event::AccessChanged(id)) => self.set_access(id),
             Some(composer::Event::ModeChanged(mode)) => self.update(Message::Sessions(areas::sessions::Message::Mode(mode))),
-            Some(composer::Event::OpenAgents) => self.update(Message::Agents(areas::agents::Message::Open)),
             Some(composer::Event::FilesRequested { .. }) => {
                 self.files.refresh();
                 self.ctx.composer.set_files(self.files.visible().map(|path| path.to_string_lossy().into_owned()).collect());
                 Task::none()
             }
+            Some(composer::Event::OpenWorkspace) => self.open_tab("files"),
+            Some(composer::Event::FolderPicked(path)) => self.switch_folder(PathBuf::from(path)),
+            Some(composer::Event::BrowseFolders) => Task::perform(choose_folder(self.ctx.services.cwd.clone()), Message::FolderChosen),
+            Some(composer::Event::ImagePasteRequested) => self.paste_image(),
+            Some(composer::Event::ProjectPicked(project)) => self.project_picked(project),
             Some(composer::Event::QueueChanged(_)) | None => Task::none(),
         }
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
         let task = self.handle(message);
+        // The sidebar and top bar follow a project page in the center.
+        let shown = (self.ctx.screen() == Some(AreaId::Projects)).then(|| self.areas.projects.shown().map(str::to_owned)).flatten();
+        self.ctx.shell.set_shown_project(shown);
+        self.sync_access();
         self.sync_project_tabs();
         task
     }
@@ -767,10 +543,38 @@ impl App {
         match message {
             Message::Shell(message) => {
                 let (task, event) = self.ctx.shell.update(message);
+                if matches!(event, Some(shell::Event::NewSession | shell::Event::OpenSession(_) | shell::Event::OpenProject(_))) {
+                    self.overlay = None;
+                }
                 let action = match event {
                     Some(shell::Event::NewSession) => self.start(None),
+                    Some(shell::Event::OpenUsage) => {
+                        self.overlay = Some(windows::Overlay::Usage);
+                        self.usage.refresh().map(Message::Usage)
+                    }
+                    Some(shell::Event::NewProject) => self.update(Message::Projects(areas::projects::Message::New)),
+                    Some(shell::Event::NewSessionIn(project)) => {
+                        self.update(Message::Projects(areas::projects::Message::NewChatIn(project)))
+                    }
+                    Some(shell::Event::DeleteProject(project)) => {
+                        self.update(Message::Projects(areas::projects::Message::AskDelete(project)))
+                    }
+                    Some(shell::Event::MoveSession { id, project }) => {
+                        self.update(Message::Projects(areas::projects::Message::Move { session: id, project }))
+                    }
+                    Some(shell::Event::OpenConfigs) => {
+                        self.window_update(windows::WindowMessage::OpenConfigs(windows::ConfigsTab::Models))
+                    }
+                    Some(shell::Event::OpenSettings) => {
+                        self.window_update(windows::WindowMessage::OpenSettings(windows::SettingsTab::General))
+                    }
                     Some(shell::Event::OpenTools) => self.update(Message::Tools(areas::tools::Message::Open)),
-                    Some(shell::Event::OpenPeers) => self.update(Message::Peers(areas::peers::Message::Open)),
+                    Some(shell::Event::DetachTab(tab)) => self.detach(detach::Detached::Tab(tab)),
+                    Some(shell::Event::ShowDetached(tab)) => self.show_detached_tab(&tab),
+                    Some(shell::Event::ReattachTab(tab)) => self.reattach_tab(&tab),
+                    Some(shell::Event::OpenPeers) => {
+                        self.window_update(windows::WindowMessage::OpenSettings(windows::SettingsTab::Peers))
+                    }
                     Some(shell::Event::OpenUpdates) => self.update(Message::Updater(areas::updater::Message::Open)),
                     Some(shell::Event::OpenSession(id)) if areas::peers::is_remote(&id) => {
                         self.update(Message::Peers(areas::peers::Message::OpenRecent(id)))
@@ -848,6 +652,17 @@ impl App {
                     if self.palette.is_open() {
                         return self.update(Message::Palette(palette::Message::Close));
                     }
+                    // A file's full screen leaves before the Configs window it is drawn in.
+                    if self.docs.full && matches!(self.overlay, Some(windows::Overlay::Configs(_))) {
+                        self.docs.full = false;
+                        return Task::none();
+                    }
+                    if self.overlay.take().is_some() {
+                        return Task::none();
+                    }
+                    if let Some(pane) = self.ctx.shell.full() {
+                        return self.update(Message::Shell(shell::Message::ToggleFull(pane)));
+                    }
                     if self.areas.decisions.focused().is_some() {
                         return self.update(Message::Decisions(areas::decisions::State::dismiss()));
                     }
@@ -866,73 +681,44 @@ impl App {
                 }
             }
             Message::Tick => Task::none(),
+            Message::Usage(message) => {
+                let (task, event) = self.usage.update(message);
+                match event {
+                    Some(usage::Event::Close) => self.overlay = None,
+                    Some(usage::Event::Meter(meter)) => self.ctx.shell.set_usage(meter),
+                    None => {}
+                }
+                task.map(Message::Usage)
+            }
+            Message::Window(message) => self.window_update(message),
+            Message::WindowClosed(id) => self.window_closed(id),
+            Message::Reattach(id) => self.reattach(id),
+            Message::ImagePasted(pasted) => self.image_pasted(pasted),
+            Message::FileDropped(path) => self.file_dropped(path),
+            Message::FolderChosen(Ok(Some(path))) => self.switch_folder(path),
+            Message::FolderChosen(Ok(None)) => Task::none(),
+            Message::FolderChosen(Err(error)) => {
+                self.ctx.notify(error);
+                Task::none()
+            }
+            Message::DetachedChat(session, message) => {
+                let Some(chat) = self.detached_chats.get_mut(&session) else { return Task::none() };
+                let (task, event) = chat.update(message);
+                let task = task.map(move |message| Message::DetachedChat(session.clone(), message));
+                // Rewinds act on the active session, so only links pass on.
+                let action = match event {
+                    Some(event @ chat::Event::OpenLink(_)) => self.update(Message::Sessions(areas::sessions::Message::Chat(event))),
+                    _ => Task::none(),
+                };
+                Task::batch([task, action])
+            }
             Message::NewSession => self.start(None),
+            Message::Start(start::StartMessage::Open(id)) => self.open_session(&id),
             Message::Session(id, feed) => self.feed(id, feed),
-            Message::Spawned { id, result, prompt } => match result {
-                Ok(harness) => match self.ctx.sessions.load(&self.ctx.services, id.as_str()) {
-                    Ok(()) => self.update(Message::Started { id, result: Ok(harness), prompt }),
-                    Err(error) => {
-                        self.ctx.sessions.set_starting(None);
-                        self.ctx.notify(error);
-                        Task::perform(async move { harness.shutdown().await.map_err(|error| error.to_string()) }, Message::Operation)
-                    }
-                },
-                Err(error) => {
-                    self.ctx.sessions.set_starting(None);
-                    // Leave no half created session behind; it may not exist.
-                    let _ = self.ctx.services.library.delete(id.as_str());
-                    self.ctx.notify(error);
-                    Task::none()
-                }
-            },
-            Message::Started { id, result, prompt } => {
-                self.ctx.sessions.set_starting(None);
-                let harness = match result {
-                    Ok(harness) => harness,
-                    Err(error) => {
-                        // Nothing ran: drop the journal it was given.
-                        let (_, closed) = self.ctx.sessions.close(&self.ctx.services, id.as_str(), true);
-                        self.ctx.notify(match closed {
-                            Some(closed) => format!("{error}; {closed}"),
-                            None => error,
-                        });
-                        self.ctx.show_harness();
-                        return Task::none();
-                    }
-                };
-                let Some(session) = self.ctx.sessions.get_mut(id.as_str()) else {
-                    // Discarded while starting.
-                    return Task::perform(async move { harness.shutdown().await.map_err(|error| error.to_string()) }, Message::Operation);
-                };
-                session.attach(harness);
-                self.ctx.sessions.set_active(Some(id.clone()));
-                self.ctx.close_screen();
-                self.files.refresh();
-                let activated = self.dispatch(SessionEvent::Activated(Some(id)));
-                let send = prompt.map_or_else(Task::none, |prompt| self.send(prompt));
-                Task::batch([activated, working_diff(self.ctx.services.cwd.clone()), send])
-            }
-            Message::Resumed { id, result, prompt } => {
-                self.ctx.sessions.set_starting(None);
-                match result {
-                    Ok(harness) => {
-                        let Some(session) = self.ctx.sessions.get_mut(id.as_str()) else {
-                            return Task::perform(async move { harness.shutdown().await.map_err(|error| error.to_string()) }, Message::Operation);
-                        };
-                        session.attach(harness);
-                        let open = self.open_session(id.as_str());
-                        Task::batch([open, self.send(prompt)])
-                    }
-                    Err(ResumeError::Unsupported(reason)) => {
-                        self.ctx.notify(format!("Can't resume this session ({reason}); continuing in a new session"));
-                        self.start(Some(prompt))
-                    }
-                    Err(ResumeError::Failed(error)) => {
-                        self.ctx.notify(error);
-                        Task::none()
-                    }
-                }
-            }
+            Message::Recents { summaries, problems, empty } => self.recents_loaded(summaries, problems, empty),
+            Message::Spawned { id, result, prompt } => self.on_spawned(id, result, prompt),
+            Message::Started { id, result, prompt } => self.on_started(id, result, prompt),
+            Message::Resumed { id, result, prompt } => self.on_resumed(id, result, prompt),
             Message::Operation(result) => {
                 if let Err(error) = result {
                     if let Some(session) = self.ctx.sessions.active_mut() {
@@ -942,19 +728,31 @@ impl App {
                 }
                 Task::none()
             }
-            Message::WorkingDiff(Some(patch)) => match diff::parse_unified(&patch) {
-                Ok(files) => self.diff.set_files(files).map(Message::Diff),
-                Err(error) => {
-                    self.ctx.notify(format!("Can't read the working tree diff: {error}"));
-                    Task::none()
-                }
-            },
-            Message::WorkingDiff(None) => Task::none(),
+            Message::WorkingDiff(Some(Ok(files))) => {
+                let _ = self.diff.set_note(None);
+                self.diff.set_files(files).map(Message::Diff)
+            }
+            Message::WorkingDiff(Some(Err(error))) => {
+                self.ctx.notify(error);
+                Task::none()
+            }
+            // Not a git repository (or no commit yet): say so instead of
+            // keeping another folder's changes.
+            Message::WorkingDiff(None) => {
+                let folder = workspace(&self.ctx.services.cwd).path;
+                self.diff.set_note(Some(format!("No git changes to show: {folder} isn't a git repository with a commit"))).map(Message::Diff)
+            }
             Message::Harness(message) => area!(harness, Harness, message),
             Message::Sessions(message) => area!(sessions, Sessions, message),
             Message::Decisions(message) => area!(decisions, Decisions, message),
             Message::Tools(message) => area!(tools, Tools, message),
             Message::Surfaces(message) => area!(surfaces, Surfaces, message),
+            Message::Models(areas::models::Message::Close) if matches!(self.overlay, Some(windows::Overlay::Settings(_) | windows::Overlay::Configs(_))) => {
+                // The models screen's own close button, drawn inside Configs or Settings.
+                self.overlay = None;
+                self.ctx.close_screen();
+                Task::none()
+            }
             Message::Models(message) => area!(models, Models, message),
             Message::Projects(message) => area!(projects, Projects, message),
             Message::Peers(message) => area!(peers, Peers, message),
@@ -979,26 +777,15 @@ impl App {
                     .map(|card| card.map(Message::Decisions))
                     .unwrap_or_else(|| text("Decision no longer available").into())
             });
-            column![
-                container(transcript).height(Fill),
-                container(container(ctx.composer.view().map(Message::Composer)).width(Fill).max_width(COMPOSER_WIDTH))
-                    .center_x(Fill)
-                    .padding(Padding { top: 8.0, right: 24.0, bottom: 16.0, left: 24.0 }),
-            ]
-            .into()
+            // The composer floats over the transcript's bottom edge; the
+            // transcript scrolls on underneath it (see `COMPOSER_INSET`).
+            let composer = container(container(ctx.composer.view().map(Message::Composer)).width(Fill).max_width(COMPOSER_WIDTH))
+                .center_x(Fill)
+                .padding(Padding { top: 28.0, right: 24.0, bottom: 16.0, left: 24.0 })
+                .style(style::composer_fade);
+            stack![container(transcript).height(Fill), container(composer).align_bottom(Fill)].into()
         } else {
-            let starting = ctx.sessions.starting().is_some();
-            center(
-                column![
-                    text(if starting { "Starting harness…" } else { "Start a session" }).size(20),
-                    button(text("New session").size(14))
-                        .style(button::secondary)
-                        .on_press_maybe((!starting).then_some(Message::NewSession)),
-                ]
-                .spacing(16)
-                .align_x(iced::Alignment::Center),
-            )
-            .into()
+            self.start_view()
         };
         let center_content: Element<'_, Message> = match ctx.notice() {
             Some(notice) => {
@@ -1006,12 +793,20 @@ impl App {
             }
             None => center_content,
         };
-        // The active project's top-level files sit under its sidebar row. A
-        // peer's project never lists them: its disk is only reached through
-        // the grant-checked folder path.
-        let project_files = (!areas::peers::is_remote(&ctx.services.project))
-            .then(|| self.files.view_compact().map(Message::Files));
-        let frame = ctx.shell.view(center_content, |tab| self.view_tab(tab), project_files, Message::Shell);
+        let frame = ctx.shell.view(center_content, |tab| self.view_tab(tab), Message::Shell);
+        let frame: Element<'_, Message> = match self.overlay {
+            Some(overlay) => {
+                let window = match overlay {
+                    windows::Overlay::Usage => self.usage.view().map(Message::Usage),
+                    windows::Overlay::Configs(tab) => self.configs_view(tab),
+                    windows::Overlay::Settings(tab) => self.settings_view(tab),
+                };
+                let scrim = iced::widget::mouse_area(container(iced::widget::space()).style(style::scrim).width(Fill).height(Fill))
+                    .on_press(Message::Window(windows::WindowMessage::CloseOverlay));
+                stack![frame, scrim, container(iced::widget::opaque(window)).center_x(Fill).padding(Padding { top: 64.0, right: 24.0, bottom: 24.0, left: 24.0 })].into()
+            }
+            None => frame,
+        };
         if self.palette.is_open() { stack![frame, self.palette.view().map(Message::Palette)].into() } else { frame }
     }
 
@@ -1039,9 +834,12 @@ impl App {
             [
                 self.ctx.shell.subscription().map(Message::Shell),
                 self.ctx.composer.subscription().map(Message::Composer),
-                iced::keyboard::listen().map(Message::Keyboard),
+                iced::event::listen_with(key_press),
+                iced::event::listen_with(file_drop),
                 self.ctx.sessions.watch().map(|(id, feed)| Message::Session(id, feed)),
                 if busy { iced::time::every(TICK).map(|_| Message::Tick) } else { Subscription::none() },
+                iced::time::every(USAGE_REFRESH).map(|_| Message::Usage(usage::Message::Refresh)),
+                iced::window::close_events().map(Message::WindowClosed),
             ]
             .into_iter()
             .chain(areas),
@@ -1067,49 +865,36 @@ fn theme_setting(preference: shell::Preference) -> loa_config::Theme {
     }
 }
 
-/// Whether `patch` may change the session's sidebar entry or status: its
-/// title, project, waiting flag, last change or turn status.
-fn changes_summary(dom: &Dom, patch: &loa_core::Patch) -> bool {
-    match &patch.op {
-        Op::Insert { kind, .. } => matches!(kind, ElementKind::Session | ElementKind::Turn | ElementKind::Message | ElementKind::Decision),
-        Op::Set { name, .. } => {
-            matches!(name.as_str(), attr::TITLE | attr::PROJECT | attr::STATUS | attr::STARTED | attr::ENDED)
-                && dom.get(patch.node).is_some_and(|node| node.kind != ElementKind::Call)
+/// Keeps only key presses that no widget captured. Releases and modifier
+/// changes would each cost a full update and view.
+fn key_press(event: iced::event::Event, status: iced::event::Status, _: iced::window::Id) -> Option<Message> {
+    match (event, status) {
+        (iced::event::Event::Keyboard(event @ keyboard::Event::KeyPressed { .. }), iced::event::Status::Ignored) => {
+            Some(Message::Keyboard(event))
         }
-        Op::Remove => true,
-        Op::Append { .. } => false,
+        _ => None,
     }
 }
 
-/// The top bar status of the session: the state of its latest turn while it
-/// runs, waits, or ended interrupted or failed.
-fn turn_status(dom: &Dom) -> Option<&'static str> {
-    match dom_turns(dom).last()?.str_attr(attr::STATUS).and_then(TurnStatus::parse)? {
-        TurnStatus::Running => Some("Running"),
-        TurnStatus::Waiting => Some("Waiting"),
-        TurnStatus::Cancelled => Some("Interrupted"),
-        TurnStatus::Error => Some("Error"),
-        TurnStatus::Done => None,
+/// Files dropped on a window go to the composer.
+fn file_drop(event: iced::event::Event, _: iced::event::Status, _: iced::window::Id) -> Option<Message> {
+    match event {
+        iced::event::Event::Window(iced::window::Event::FileDropped(path)) => Some(Message::FileDropped(path)),
+        _ => None,
     }
 }
 
-/// Reads `git diff HEAD` of `cwd` for the Diff tab. `None` when `cwd` isn't a
-/// git work tree or git isn't installed.
-fn working_diff(cwd: PathBuf) -> Task<Message> {
-    Task::perform(async move { git_diff(&cwd).await }, Message::WorkingDiff)
-}
-
-async fn git_diff(cwd: &Path) -> Option<String> {
-    let output = tokio::process::Command::new("git")
-        .args(["diff", "--no-color", "--no-ext-diff", "HEAD"])
-        .current_dir(cwd)
-        .output()
-        .await
-        .ok()?;
-    output.status.success().then(|| String::from_utf8_lossy(&output.stdout).into_owned())
-}
-
+mod detach;
+mod start;
 mod keys;
+mod usage;
+mod windows;
+mod access;
+mod feed;
+mod flow;
+mod media;
+mod folders;
+mod projects;
 
 #[cfg(test)]
 pub(crate) mod tests;

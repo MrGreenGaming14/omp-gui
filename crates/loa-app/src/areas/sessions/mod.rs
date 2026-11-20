@@ -28,16 +28,17 @@ mod live;
 #[cfg(test)]
 mod tests;
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use iced::{Element, Subscription, Task};
 use loa_adapter::{Answer, Capabilities, Feature, Prompt, SessionConfig};
 use loa_bus::SessionId;
-use loa_core::{Dom, Draft, ElementKind, JobStatus, NodeId, Op, PatchSink, SessionMode, TurnStatus, answer, attr};
+use loa_core::{Dom, Draft, ElementKind, JobStatus, NodeId, Op, Patch, PatchSink, SessionMode, TurnStatus, answer, attr};
 use loa_features::hooks::{self, Advisor, TurnHooks};
 use loa_features::plan::{self as plan_mode, Outcome, PlanGate, Verdict};
 use loa_features::smol::OneShot;
@@ -106,6 +107,8 @@ pub enum Message {
     Tick(i64),
     /// A harness call returned.
     Done(Result<(), String>),
+    /// A Session tree read off the UI thread finished.
+    TreeLoaded(Box<tree::Loaded>),
 }
 
 /// What follows a plan review.
@@ -163,7 +166,12 @@ pub struct State {
     /// The fork or rewind being started, to show the Session tab once it
     /// is active.
     branching: Option<String>,
+    /// omp's model roles, cached by the mtime of the config file they came from.
+    roles: RefCell<Option<(SystemTime, Roles)>>,
 }
+
+/// omp's model roles with their candidate models in order.
+type Roles = Vec<(String, Vec<String>)>;
 
 impl State {
     pub fn new(ctx: &mut Ctx) -> (Self, Task<Message>) {
@@ -187,6 +195,7 @@ impl State {
             compacted: HashMap::new(),
             opener: Arc::new(SystemUrlOpener),
             branching: None,
+            roles: RefCell::new(None),
         };
         (state, Task::none())
     }
@@ -214,15 +223,38 @@ impl State {
     }
 
     /// Rebuilds from the active session.
-    fn reload(&mut self, ctx: &mut Ctx) {
+    fn reload(&mut self, ctx: &mut Ctx) -> Task<Message> {
         let empty = Dom::new();
         let dom = ctx.sessions.active().map_or(&empty, |session| session.dom());
         self.agents.reset(dom);
         let _ = self.agents.update(agents::Message::Tick(loa_core::now_ms()));
         ctx.composer.set_mode(mode(dom));
         ctx.composer.set_commands(composer_commands(ctx.sessions.active().map(|session| session.dom())));
-        self.tree.refresh(ctx);
+        let task = self.tree.refresh(ctx);
         self.restore_plan(ctx);
+        task
+    }
+
+    /// A streamed append to session `id`; only the Agents tab follows those.
+    pub(crate) fn on_append(&mut self, id: &SessionId, patch: &Patch, ctx: &Ctx) {
+        if let Some(session) = ctx.sessions.get(id.as_str()).filter(|_| ctx.sessions.is_active(id.as_str())) {
+            self.agents.apply(session.dom(), patch);
+        }
+    }
+
+    /// omp's model roles, read again only when its config file changed.
+    fn roles(&self) -> Result<Roles, String> {
+        let mtime = std::fs::metadata(model_roles_path(&self.home)).and_then(|meta| meta.modified()).ok();
+        if let (Some(mtime), Some((cached, roles))) = (mtime, self.roles.borrow().as_ref())
+            && *cached == mtime
+        {
+            return Ok(roles.clone());
+        }
+        let roles = model_roles(&self.home)?;
+        if let Some(mtime) = mtime {
+            *self.roles.borrow_mut() = Some((mtime, roles.clone()));
+        }
+        Ok(roles)
     }
 
     /// Takes a reopened session that is in app plan mode back into it.
@@ -479,7 +511,7 @@ impl State {
             return Task::none();
         };
         let Some(root) = session.dom().root().map(|root| root.id) else { return Task::none() };
-        let candidates = match model_roles(&self.home) {
+        let candidates = match self.roles() {
             Ok(roles) => match roles.iter().find(|(name, _)| *name == role) {
                 Some((_, models)) => models.clone(),
                 None => {
@@ -514,6 +546,21 @@ impl State {
     /// directly, else the harness's native subagent file imported as a
     /// linked child of the active session.
     fn open_child(&mut self, ctx: &mut Ctx, child: String) {
+        if let Some(id) = self.child_session(ctx, child) {
+            ctx.request(Request::OpenSession(id));
+        }
+    }
+
+    /// Opens a subagent's session in its own window, next to its parent.
+    fn detach_child(&mut self, ctx: &mut Ctx, child: String) {
+        if let Some(id) = self.child_session(ctx, child) {
+            ctx.request(Request::DetachSession(id));
+        }
+    }
+
+    /// The library id of a subagent's session: stored already, or imported
+    /// from the harness's session file on this machine.
+    fn child_session(&mut self, ctx: &mut Ctx, child: String) -> Option<String> {
         let stored = ctx
             .services
             .library
@@ -521,24 +568,26 @@ impl State {
             .list()
             .is_ok_and(|listings| listings.iter().any(|listing| matches!(listing, Listing::Session(info) if info.id == child)));
         if stored {
-            ctx.request(Request::OpenSession(child));
-            return;
+            return Some(child);
         }
         let path = PathBuf::from(&child);
         if !path.is_file() {
             ctx.notify(format!("The subagent's session {child} isn't on this machine"));
-            return;
+            return None;
         }
-        let Some(parent) = ctx.sessions.active() else { return };
+        let parent = ctx.sessions.active()?;
         let parent_id = parent.id().to_string();
         let Some(adapter) = parent.harness_id().and_then(|harness| ctx.services.harnesses.registry.get(harness)) else {
             ctx.notify("The parent session's harness isn't supported here");
-            return;
+            return None;
         };
         let job = self.agents.jobs().find(|job| job.session() == Some(child.as_str())).map_or(NodeId::DOCUMENT, agents::Job::node);
         match ctx.services.library.import_child(adapter.as_ref(), &parent_id, job, &path, &ctx.services.node.key) {
-            Ok(id) => ctx.request(Request::OpenSession(id)),
-            Err(error) => ctx.notify(format!("Can't open the subagent's session: {error}")),
+            Ok(id) => Some(id),
+            Err(error) => {
+                ctx.notify(format!("Can't open the subagent's session: {error}"));
+                None
+            }
         }
     }
 
@@ -788,10 +837,15 @@ fn name(library: &loa_features::library::Library, id: &str, title: &str) -> Resu
     Ok(())
 }
 
+/// Where omp keeps its config, `modelRoles` included.
+fn model_roles_path(home: &Path) -> PathBuf {
+    home.join(".omp/agent/config.yml")
+}
+
 /// omp's model roles (`modelRoles` in `~/.omp/agent/config.yml`) with their
 /// candidate models in order.
-fn model_roles(home: &Path) -> Result<Vec<(String, Vec<String>)>, String> {
-    let path = home.join(".omp/agent/config.yml");
+fn model_roles(home: &Path) -> Result<Roles, String> {
+    let path = model_roles_path(home);
     let config = loa_models::config::OmpConfig::load(&path).map_err(|error| format!("Can't read {}: {error}", path.display()))?;
     let roles = config.model_roles().map_err(|error| format!("Can't read the model roles in {}: {error}", path.display()))?;
     Ok(roles.into_iter().map(|role| (role.role, role.candidates.iter().map(ToString::to_string).collect())).collect())
@@ -811,6 +865,7 @@ impl Area for State {
                 let (task, event) = self.agents.update(message);
                 match event {
                     Some(agents::Event::OpenSession(child)) => self.open_child(ctx, child),
+                    Some(agents::Event::DetachSession(child)) => self.detach_child(ctx, child),
                     Some(agents::Event::Cancel { .. }) => {
                         // Harnesses stop jobs only with the turn that runs them.
                         if let Some(harness) = ctx.sessions.active().and_then(|session| session.harness().cloned()) {
@@ -837,6 +892,10 @@ impl Area for State {
                     None => {}
                 }
                 task.map(Message::Tree)
+            }
+            Message::TreeLoaded(loaded) => {
+                self.tree.merge(*loaded);
+                self.tree.refresh(ctx)
             }
             Message::Chat(chat::Event::Rewind(node)) => {
                 if let Some(id) = ctx.sessions.active_id().map(ToString::to_string) {
@@ -937,7 +996,7 @@ impl Area for State {
                 palette::Command::new(AreaId::Sessions.command("export"), "Export session as native file", "Session"),
                 palette::Command::new(AreaId::Sessions.command("export-xml"), "Export session as XML (debug)", "Session"),
             ]);
-            if let Ok(roles) = model_roles(&self.home) {
+            if let Ok(roles) = self.roles() {
                 commands.extend(roles.into_iter().map(|(role, models)| {
                     let id = AreaId::Sessions.command(&format!("{ROLE_COMMAND}{role}"));
                     let first = models.first().map_or("no model", String::as_str);
@@ -1043,10 +1102,15 @@ impl Area for State {
                     self.branching = None;
                     ctx.reveal_tab("session");
                 }
-                self.reload(ctx);
+                return self.reload(ctx);
             }
-            SessionEvent::Loaded(id) if ctx.sessions.is_active(id.as_str()) => self.reload(ctx),
+            SessionEvent::Loaded(id) if ctx.sessions.is_active(id.as_str()) => return self.reload(ctx),
             SessionEvent::Patch(id, patch) => {
+                if let Op::Insert { parent, kind: ElementKind::Turn, .. } = &patch.op
+                    && ctx.sessions.get(id.as_str()).and_then(|session| session.dom().root()).is_some_and(|root| root.id == *parent)
+                {
+                    self.tree.record_turn(id.as_str(), patch.node, patch.seq);
+                }
                 let active = ctx.sessions.is_active(id.as_str());
                 let mut job_started = false;
                 if let Some(session) = ctx.sessions.get(id.as_str()).filter(|_| active) {
@@ -1075,7 +1139,7 @@ impl Area for State {
                     ctx.reveal_tab("agents");
                 }
             }
-            SessionEvent::TurnStarted { session, .. } if ctx.sessions.is_active(session.as_str()) => self.tree.refresh(ctx),
+            SessionEvent::TurnStarted { session, .. } if ctx.sessions.is_active(session.as_str()) => return self.tree.refresh(ctx),
             SessionEvent::DecisionWaiting { session, decision } => {
                 let Some(open) = ctx.sessions.get(session.as_str()) else { return Task::none() };
                 let (Some(node), Some(harness)) = (open.dom().get(*decision), open.harness().cloned()) else { return Task::none() };

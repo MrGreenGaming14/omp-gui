@@ -130,6 +130,8 @@ fn streaming_feeds_each_chunk_to_the_parser_once() {
         &[("role", "assistant".into())],
         "",
     );
+    // The reply is parsed when it is first drawn, then fed each chunk.
+    drop(s.view());
     let mut full = String::new();
     for i in 0..400 {
         let chunk = match i % 4 {
@@ -152,10 +154,10 @@ fn streaming_feeds_each_chunk_to_the_parser_once() {
             ));
         }
     }
-    let streamed = &s.chat.streamed[&reply];
+    let streamed = s.chat.streamed[&reply].get().expect("drawn, so parsed");
     // Re-parsing the whole message per token would feed ~N²/2 bytes.
     assert_eq!(streamed.fed(), full.len());
-    let whole = markdown::Content::parse(&full);
+    let whole = markdown::Content::parse(&crate::stream::hard_breaks(&full));
     assert_eq!(
         format!("{:?}", streamed.items()),
         format!("{:?}", whole.items())
@@ -172,8 +174,11 @@ fn replacing_a_message_text_reparses_it() {
         &[("role", "assistant".into())],
         "first draft",
     );
+    drop(s.view());
     s.commit(Draft::set_text(reply, "# Final"));
-    let streamed = &s.chat.streamed[&reply];
+    assert!(s.chat.streamed[&reply].get().is_none(), "the old parse is dropped");
+    drop(s.view());
+    let streamed = s.chat.streamed[&reply].get().expect("drawn, so parsed");
     assert_eq!(streamed.fed(), "# Final".len());
     assert!(matches!(streamed.items(), [markdown::Item::Heading(..)]));
 }
@@ -600,4 +605,162 @@ fn jump_to_latest_resumes_following() {
     s.send(Message::JumpToLatest);
     assert!(s.chat.is_following());
     assert!(s.shows("message 299"));
+}
+
+#[test]
+fn another_session_starts_following_and_its_first_scroll_report_keeps_it() {
+    let mut s = long_session(300);
+    let content = s.chat.heights.total() as f32;
+    let at = |offset| Message::Scrolled(ScrollMetrics { offset, viewport: 600.0, content });
+    s.send(at(content - 600.0));
+    s.send(at(1_000.0));
+    assert!(!s.chat.is_following());
+
+    // Reloading the same session (a resync) keeps the reading position.
+    s.chat.load(&s.dom);
+    assert!(!s.chat.is_following());
+
+    // Another session follows its newest rows, even when the scrollable
+    // then reports a smaller offset left over from the first one.
+    s.commit(Draft::set(s.session, "id", "s2"));
+    s.chat.load(&s.dom);
+    assert!(s.chat.is_following());
+    s.send(Message::Scrolled(ScrollMetrics { offset: 200.0, viewport: 600.0, content }));
+    assert!(s.chat.is_following(), "the old offset is not a scroll up");
+    assert!(!s.shows("Jump to latest ↓"));
+}
+
+/// One step of a frame-by-frame run: changes the session before a frame.
+type Step = Box<dyn Fn(&mut Session)>;
+
+/// Draws frames one after another through one `UserInterface` cache and
+/// sends each frame events, the way the running app does. `iced_test`'s
+/// simulator builds every view from scratch, so it never diffs one frame
+/// against the last and misses widget-state mix-ups between frames.
+struct Frames {
+    renderer: iced::Renderer,
+    cache: Option<iced_runtime::user_interface::Cache>,
+}
+
+impl Frames {
+    const CURSOR: iced::Point = iced::Point::new(400.0, 300.0);
+
+    fn new() -> Self {
+        use iced::advanced::renderer::Headless;
+        let renderer = iced::futures::executor::block_on(<iced::Renderer as Headless>::new(iced::Font::DEFAULT, iced::Pixels(16.0), None))
+            .expect("headless renderer");
+        Self { renderer, cache: Some(iced_runtime::user_interface::Cache::default()) }
+    }
+
+    /// Draws one frame after `events`, hands the session the messages it
+    /// published and returns them.
+    fn frame(&mut self, session: &mut Session, events: &[iced::Event]) -> Vec<Message> {
+        use iced::advanced::clipboard;
+        use iced::{Size, mouse};
+        use iced_runtime::user_interface::UserInterface;
+
+        let mut events = events.to_vec();
+        events.insert(0, iced::Event::Mouse(mouse::Event::CursorMoved { position: Self::CURSOR }));
+        events.push(iced::Event::Window(iced::window::Event::RedrawRequested(std::time::Instant::now())));
+        let mut messages = Vec::new();
+        let cache = self.cache.take().unwrap_or_default();
+        let mut ui = UserInterface::build(session.view(), Size::new(900.0, 700.0), cache, &mut self.renderer);
+        let _ = ui.update(&events, mouse::Cursor::Available(Self::CURSOR), &mut self.renderer, &mut clipboard::Null, &mut messages);
+        self.cache = Some(ui.into_cache());
+        for message in &messages {
+            session.send(message.clone());
+        }
+        messages
+    }
+}
+
+/// Applies each step and draws two frames after it.
+fn run_frames(session: &mut Session, steps: Vec<Step>) {
+    let mut frames = Frames::new();
+    frames.frame(session, &[]);
+    for step in steps {
+        step(session);
+        frames.frame(session, &[]);
+        frames.frame(session, &[]);
+    }
+}
+
+#[test]
+fn window_shift_keeps_row_state() {
+    // Rows keep their widget state when the window of built rows slides, so
+    // only rows new to the window report a size. Paired by position, every
+    // row took another row's state and every sensor reported again.
+    let mut s = long_session(300);
+    let content = s.chat.heights.total() as f32;
+    // Pinned at the top, where the scrollable starts too.
+    s.send(Message::Scrolled(ScrollMetrics { offset: 1_000.0, viewport: 700.0, content }));
+    s.send(Message::Scrolled(ScrollMetrics { offset: 0.0, viewport: 700.0, content }));
+    assert!(!s.chat.is_following());
+
+    let mut frames = Frames::new();
+    let mut reported = HashSet::new();
+    let sizes = |messages: Vec<Message>| -> Vec<NodeId> {
+        messages.into_iter().filter_map(|message| if let Message::Measured { key, .. } = message { Some(key) } else { None }).collect()
+    };
+    for _ in 0..3 {
+        reported.extend(sizes(frames.frame(&mut s, &[])));
+    }
+    assert!(!reported.is_empty(), "the first rows report their size");
+    let before = s.chat.window();
+
+    let wheel = iced::Event::Mouse(iced::mouse::Event::WheelScrolled { delta: iced::mouse::ScrollDelta::Pixels { x: 0.0, y: -1_500.0 } });
+    let mut after_shift = Vec::new();
+    after_shift.extend(sizes(frames.frame(&mut s, &[wheel])));
+    for _ in 0..3 {
+        after_shift.extend(sizes(frames.frame(&mut s, &[])));
+    }
+    let after = s.chat.window();
+    assert!(after.start > before.start, "the window slid down: {before:?} -> {after:?}");
+    assert!(!after_shift.is_empty(), "rows new to the window report their size");
+    let again: Vec<_> = after_shift.iter().filter(|key| reported.contains(*key)).collect();
+    assert!(again.is_empty(), "rows that stayed in the window reported again: {again:?}");
+}
+
+#[test]
+fn a_new_sessions_first_reply_renders_frame_after_frame_without_a_state_mix_up() {
+    // The first reply of a new session adds rows while the visible window
+    // shifts; `keyed_column` paired a row's sensor with a spacer's state and
+    // the app panicked with "Downcast on stateless state" on every send.
+    let mut session = Session::new();
+    let turn = std::cell::Cell::new(NodeId::DOCUMENT);
+    let turn = std::rc::Rc::new(turn);
+    let (t1, t2, t3, t4) = (turn.clone(), turn.clone(), turn.clone(), turn.clone());
+    run_frames(
+        &mut session,
+        vec![
+            Box::new(move |s| {
+                t1.set(s.turn());
+                s.user(t1.get(), "Reply with the single word pong");
+            }),
+            Box::new(move |s| {
+                s.insert(t2.get(), ElementKind::Message, &[("role", "assistant".into())], "po");
+            }),
+            Box::new(move |s| {
+                s.call(t3.get(), "read", 1, 2, "{}", "file");
+                s.insert(t3.get(), ElementKind::Message, &[("role", "assistant".into())], "pong");
+            }),
+            Box::new(move |s| {
+                let next = s.turn();
+                t4.set(next);
+                s.user(next, "Now reply with ping");
+                s.insert(next, ElementKind::Message, &[("role", "assistant".into())], "ping");
+            }),
+        ],
+    );
+    assert_eq!(session.rows().iter().filter(|(kind, ..)| *kind == ItemKind::User).count(), 2, "both prompts are rows");
+}
+
+#[test]
+fn single_line_breaks_in_a_reply_stay_line_breaks() {
+    use iced::widget::markdown::Item;
+    let streamed = crate::stream::Streamed::new("1\n2\n3\n\nnext paragraph");
+    let paragraphs: Vec<_> = streamed.items().iter().filter(|item| matches!(item, Item::Paragraph(_))).collect();
+    assert_eq!(paragraphs.len(), 2, "a blank line still ends the paragraph");
+    let first = format!("{:?}", paragraphs[0]);
+    assert_eq!(first.matches(r#"text: "\n""#).count(), 2, "both line breaks kept: {first}");
 }

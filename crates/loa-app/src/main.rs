@@ -19,12 +19,12 @@ fn main() -> ExitCode {
             }
         };
     }
-    let result = iced::application(App::new, App::update, App::view)
-        .title("Loa")
-        .theme(App::theme)
+    // A daemon, so panel tabs and subagents can open in windows of their own.
+    let result = iced::daemon(App::boot, App::update, App::view_window)
+        .title(App::title)
+        .theme(|app: &App, _| app.theme())
         .subscription(App::subscription)
         .default_font(Font::with_name("Noto Sans"))
-        .window_size((1440.0, 900.0))
         .run();
     match result {
         Ok(()) => ExitCode::SUCCESS,

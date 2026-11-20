@@ -114,7 +114,7 @@ pub fn spawn_options(adapter: &OmpAdapterConfig, session: &SessionConfig, target
         opts.args.push("--session-dir".into());
         opts.args.push(dir.into());
     }
-    if let Some(mode) = &adapter.approval_mode {
+    if let Some(mode) = session.approval_mode.as_ref().or(adapter.approval_mode.as_ref()) {
         opts.args.push("--approval-mode".into());
         opts.args.push(mode.into());
     }
@@ -236,6 +236,16 @@ mod tests {
         assert_eq!(flag(&args, "--model"), Some("anthropic/claude"));
         assert!(flag(&args, "--session-dir").is_some());
         assert!(flag(&args, "--approval-mode").is_none(), "omp's configured approval mode stays");
+    }
+
+    #[test]
+    fn a_sessions_approval_mode_wins_over_the_adapters() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut adapter = OmpAdapterConfig::new("node", dir.path());
+        adapter.approval_mode = Some("always-ask".into());
+        let session = SessionConfig { approval_mode: Some("yolo".into()), ..SessionConfig::default() };
+        let args = args(&spawn_options(&adapter, &session, &Target::New).unwrap());
+        assert_eq!(flag(&args, "--approval-mode"), Some("yolo"));
     }
 
     #[test]
