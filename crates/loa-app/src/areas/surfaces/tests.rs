@@ -602,7 +602,7 @@ async fn the_virtual_display_capture_says_why_it_cant_run_and_is_saved_where_it_
     let xvfb = dir.path().join("Xvfb");
     // A display number no X server here listens on.
     let free = (6000..7000).find(|n| !std::path::Path::new(&format!("/tmp/.X11-unix/X{n}")).exists()).unwrap();
-    loa_exec::write_executable(&xvfb, format!("#!/bin/sh\necho {free}\nexec sleep 600\n")).unwrap();
+    loa_util::exec::write_executable(&xvfb, format!("#!/bin/sh\necho {free}\nexec sleep 600\n")).unwrap();
     config.virtual_display = Ok(loa_surface_hub::VirtualDisplaySetup { xvfb, chrome });
     let hub = SurfaceHub::new(config);
     let mut driver = Driver::new(dir.path(), Arc::clone(&hub));

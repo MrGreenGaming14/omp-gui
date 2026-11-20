@@ -302,9 +302,9 @@ impl Canvas {
         }
         let i = (y as usize * self.width as usize + x as usize) * 4;
         let px = &mut self.data[i..i + 4];
-        for c in 0..3 {
-            let dst = f32::from(px[c]);
-            px[c] = (dst + (f32::from(color.0[c]) - dst) * alpha).round() as u8;
+        for (p, &src) in px[..3].iter_mut().zip(&color.0[..3]) {
+            let dst = f32::from(*p);
+            *p = (dst + (f32::from(src) - dst) * alpha).round() as u8;
         }
         let dst_a = f32::from(px[3]) / 255.0;
         px[3] = ((alpha + dst_a * (1.0 - alpha)) * 255.0).round() as u8;

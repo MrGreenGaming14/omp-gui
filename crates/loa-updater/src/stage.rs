@@ -455,7 +455,7 @@ fn write_file(payload: &Path, rel: &Path, shown: &str, data: &mut dyn Read, mode
 
 /// Flushes `file` to disk and closes it, so this process holds no writable
 /// descriptor once the file may be run. A child forked meanwhile can still
-/// hold one briefly; launches go through `loa_exec::retry_busy` for that.
+/// hold one briefly; launches go through `loa_util::exec::retry_busy` for that.
 fn close_synced(file: fs::File, path: &Path) -> Result<()> {
     file.sync_all().map_err(io_at(path))
 }

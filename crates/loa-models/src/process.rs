@@ -218,7 +218,7 @@ pub(crate) mod testutil {
     /// `body` after the shebang line and returns its absolute path.
     pub(crate) fn fake_program(dir: &Path, name: &str, body: &str) -> PathBuf {
         let path = dir.join(name);
-        loa_exec::write_executable(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        loa_util::exec::write_executable(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
         path
     }
 }

@@ -52,7 +52,7 @@ loa-sandbox = { path = "../loa-sandbox" }
 serde_json.workspace = true
 
 [dev-dependencies]
-loa-exec = { path = "../loa-exec" }
+loa-util.workspace = true
 iced_runtime = "0.14"
 # The iced runtime's subscription tracker, to run the app's subscriptions in tests.
 iced_futures = "0.14"

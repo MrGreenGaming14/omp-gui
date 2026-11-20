@@ -361,7 +361,7 @@ mod tests {
     use crate::worker::MemoryJournal;
 
     fn script(path: &Path, body: &str) {
-        loa_exec::write_executable(path, body).unwrap();
+        loa_util::exec::write_executable(path, body).unwrap();
     }
 
     fn service(dir: &Path, config: SandboxConfig, stub: Option<PathBuf>) -> SandboxService {

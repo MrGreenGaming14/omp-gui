@@ -530,7 +530,7 @@ mod tests {
              while [ $# -gt 0 ]; do if [ \"$1\" = --config ]; then cp \"$2\" \"{d}/overlay\"; fi; shift; done\n{body}\n",
             d = dir.display()
         );
-        loa_exec::write_executable(&path, script).unwrap();
+        loa_util::exec::write_executable(&path, script).unwrap();
         path
     }
 

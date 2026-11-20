@@ -170,7 +170,7 @@ mod tests {
         // environment, then echoes what the host sends.
         let dir = tempfile::tempdir().unwrap();
         let fake = dir.path().join("stub");
-        loa_exec::write_executable(&fake, "#!/bin/sh\nls -A \"$1\"\nprintf '[%s]' \"${HOME-}\"\nexec cat\n").unwrap();
+        loa_util::exec::write_executable(&fake, "#!/bin/sh\nls -A \"$1\"\nprintf '[%s]' \"${HOME-}\"\nexec cat\n").unwrap();
         let (near, far) = tokio::io::duplex(1024);
         let (reader, writer) = tokio::io::split(far);
         let server = tokio::spawn(async move {

@@ -217,7 +217,7 @@ impl FormatProbe for OmpProbe {
 
     async fn config_keys(&self, executable: &Path) -> Result<ConfigSchema, String> {
         let dir = workdir()?;
-        let child = loa_exec::retry_busy(|| {
+        let child = loa_util::exec::retry_busy(|| {
             Command::new(executable)
                 .args(["config", "list", "--json"])
                 .current_dir(dir.path())
@@ -447,7 +447,7 @@ impl Rpc {
     /// Starts `executable --mode rpc <args>` in `cwd` and waits for its
     /// `ready` frame.
     async fn start(executable: &Path, args: &[String], cwd: &Path, deadline: Instant) -> Result<Self, Start> {
-        let mut child = loa_exec::retry_busy(|| {
+        let mut child = loa_util::exec::retry_busy(|| {
             Command::new(executable)
                 .args(["--mode", "rpc"])
                 .args(args)

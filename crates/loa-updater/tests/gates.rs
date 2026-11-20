@@ -161,7 +161,7 @@ fn unused_tool_changes_never_harm() {
 
 fn script(dir: &Path, body: &str) -> PathBuf {
     let path = dir.join("omp");
-    loa_exec::write_executable(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+    loa_util::exec::write_executable(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
     path
 }
 

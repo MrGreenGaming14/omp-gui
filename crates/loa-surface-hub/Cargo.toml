@@ -29,6 +29,6 @@ rmcp = { version = "3.11", default-features = false, features = ["server", "tran
 
 [dev-dependencies]
 loa-adapter-omp = { path = "../loa-adapter-omp" }
-loa-exec = { path = "../loa-exec" }
+loa-util.workspace = true
 image = { version = "0.25", default-features = false, features = ["png"] }
 tempfile.workspace = true

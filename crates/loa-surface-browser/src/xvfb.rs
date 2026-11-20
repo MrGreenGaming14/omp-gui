@@ -88,7 +88,7 @@ mod tests {
 
     fn script(dir: &Path, body: &str) -> PathBuf {
         let path = dir.join("Xvfb");
-        loa_exec::write_executable(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        loa_util::exec::write_executable(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
         path
     }
 

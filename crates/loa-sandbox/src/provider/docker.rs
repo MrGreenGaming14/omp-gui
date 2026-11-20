@@ -130,7 +130,7 @@ mod tests {
     async fn runs_the_mounted_stub_in_an_isolated_container() {
         let dir = tempfile::tempdir().unwrap();
         let fake = dir.path().join("docker");
-        loa_exec::write_executable(&fake, "#!/bin/sh\nif [ \"$1\" = run ]; then printf '%s\\n' \"$@\"; fi\n").unwrap();
+        loa_util::exec::write_executable(&fake, "#!/bin/sh\nif [ \"$1\" = run ]; then printf '%s\\n' \"$@\"; fi\n").unwrap();
         let mut provider = DockerProvider::new("debian:stable-slim", DockerStub::Mount("/host/stub".into()));
         provider.docker = fake;
         let spec = SandboxSpec {
