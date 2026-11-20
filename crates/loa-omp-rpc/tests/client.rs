@@ -261,7 +261,10 @@ async fn version_flag_reads_the_installed_version() {
 }
 
 /// Talks to the real omp when one is installed: startup, negotiation and
-/// calls that make no model call. Skipped when `omp` isn't on `PATH`.
+/// calls that make no model call. Skipped when `omp` isn't on `PATH`. omp
+/// refuses to start without a model, so it runs in its own agent directory
+/// with one placeholder model that is never called; the user's omp sign-ins
+/// and settings are never read.
 #[tokio::test]
 async fn live_omp_negotiates_and_reports_state() {
     let Some(path) = std::env::var_os("PATH")
@@ -270,9 +273,28 @@ async fn live_omp_negotiates_and_reports_state() {
         return;
     };
     let cwd = tempfile::tempdir().unwrap();
-    let mut o = SpawnOptions::new(path).arg("--no-session");
+    let agent_dir = cwd.path().join("agent");
+    std::fs::create_dir_all(&agent_dir).unwrap();
+    let models = json!({"providers": {"loa-test": {
+        "baseUrl": "http://127.0.0.1:9/v1",
+        "apiKey": "LOA_TEST_UNUSED_KEY",
+        "api": "openai-completions",
+        "models": [{"id": "never-called", "name": "never called", "reasoning": false, "input": ["text"],
+            "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+            "contextWindow": 8192, "maxTokens": 1024}],
+    }}});
+    std::fs::write(agent_dir.join("models.yml"), serde_json::to_vec_pretty(&models).unwrap()).unwrap();
+    let mut o = SpawnOptions::new(path)
+        .arg("--no-session")
+        .arg("--no-extensions")
+        .arg("--no-skills")
+        .arg("--offline")
+        .arg("--model")
+        .arg("loa-test/never-called");
     o.cwd = Some(cwd.path().to_path_buf());
     o.no_ui = true;
+    o.env.push(("PI_CODING_AGENT_DIR".into(), agent_dir.into_os_string()));
+    o.env.push(("LOA_TEST_UNUSED_KEY".into(), "unused".into()));
     let (client, _events) = RpcClient::spawn(o).await.unwrap();
     assert_eq!(client.protocol_version(), 2);
     let state = client.get_state().await.unwrap();
