@@ -99,6 +99,17 @@ impl Driver {
         tokio::time::timeout(PATIENCE, wait).await.unwrap_or_else(|_| panic!("timed out waiting until {what}"));
     }
 
+    /// Waits until a tab is shown. Opening it failed: panics with the
+    /// launcher's error instead of timing out.
+    async fn until_tab_shown(&mut self) {
+        self.until("the tab is shown or failed", |app| {
+            let panel = app.areas.surfaces.panel();
+            panel.active().is_some() || panel.error().is_some()
+        })
+        .await;
+        assert_eq!(self.area().panel().error(), None, "opening the tab failed");
+    }
+
     fn area(&self) -> &State {
         &self.app.areas.surfaces
     }
@@ -274,7 +285,7 @@ async fn a_browser_tab_opens_from_a_url_takes_clicks_and_the_agent_drives_it() {
     let page = "data:text/html,<title>Red</title><body style='margin:0;height:100vh;background:rgb(255,0,0)' onmousedown=\"document.body.style.background='rgb(0,0,255)'\"></body>";
     driver.surfaces(panel::Message::Url(page.into()));
     driver.surfaces(panel::Message::OpenUrl);
-    driver.until("the tab is shown", |app| app.areas.surfaces.panel().active().is_some()).await;
+    driver.until_tab_shown().await;
     let uri = driver.area().panel().active().unwrap().clone();
     assert_eq!(uri.server(), "browser");
 
@@ -400,7 +411,7 @@ async fn live_an_omp_session_in_the_app_screenshots_the_browser_surface() {
     let page = "data:text/html,<title>Live</title><body style='margin:0;height:100vh;background:rgb(0,160,0)'><h1 style='color:white'>GREEN PAGE 4417</h1></body>";
     driver.surfaces(panel::Message::Url(page.into()));
     driver.surfaces(panel::Message::OpenUrl);
-    driver.until("the tab is shown", |app| app.areas.surfaces.panel().active().is_some()).await;
+    driver.until_tab_shown().await;
     let uri = driver.area().panel().active().unwrap().clone();
 
     driver.update(AppMessage::NewSession);
@@ -528,7 +539,7 @@ async fn a_browser_tab_shows_source_frames_here_streams_video_to_peers_and_the_t
     let page = "data:text/html,<body style='margin:0;height:100vh;background:rgb(255,0,0)' onmousedown=\"document.body.style.background='rgb(0,0,255)'\"></body>";
     driver.surfaces(panel::Message::Url(page.into()));
     driver.surfaces(panel::Message::OpenUrl);
-    driver.until("the tab is shown", |app| app.areas.surfaces.panel().active().is_some()).await;
+    driver.until_tab_shown().await;
     let uri = driver.area().panel().active().unwrap().clone();
     let red = |app: &App, blue: bool| {
         let Some(fb) = app.areas.surfaces.panel().surface(&uri).and_then(|s| s.framebuffer()) else { return false };
