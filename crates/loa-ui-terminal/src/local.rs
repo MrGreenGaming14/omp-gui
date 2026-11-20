@@ -406,15 +406,18 @@ mod tests {
     async fn shell_starts_in_requested_cwd_and_runs_input() {
         let dir = tempfile::tempdir().unwrap();
         let cwd = dir.path().canonicalize().unwrap();
-        let mut channel = spawn(&shell(&cwd), GridSize::new(80, 24)).unwrap();
+        let mut shell = shell(&cwd);
+        // Expanded only in the output, so the echoed command line can't match
+        // however ConPTY redraws the screen.
+        shell.env.push(("LOA_MARK".into(), "done-42".into()));
+        let mut channel = spawn(&shell, GridSize::new(80, 24)).unwrap();
         channel
             .writer
-            .write(line(if cfg!(windows) { "cd&echo done-42" } else { "pwd; echo done-$((40+2))" }))
+            .write(line(if cfg!(windows) { "cd&echo %LOA_MARK%" } else { "pwd; echo $LOA_MARK" }))
             .await
             .unwrap();
         let mut out = Vec::new();
-        // The line break keeps cmd's echo of the typed command from matching.
-        read_until(&mut channel, &mut out, "\ndone-42").await;
+        read_until(&mut channel, &mut out, "done-42").await;
         let text = String::from_utf8_lossy(&out);
         assert!(text.contains(&printed(&cwd)), "{text}");
     }
