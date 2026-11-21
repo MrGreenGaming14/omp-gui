@@ -100,6 +100,7 @@ pub enum Command {
         images: Vec<ImageContent>,
     },
     Abort,
+    NewSession,
     /// Withdraws queued user input and aborts, atomically.
     AbortAndRestoreQueue,
     NegotiateProtocol { protocol_version: u32 },

@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use libtest_mimic::{Arguments, Trial};
-use loa_mcp::import::{ConfigFile, Outcome};
+use loa_mcp::import::{self, App, CodexToml, ImportSource, JsonServers, Outcome};
 use loa_mcp::model::ResourceContents;
 use loa_mcp::{
     AllowAll, Backoff, Error, Event, HttpSpec, Manager, MemoryStore, Options, Registry, ServerSpec, Status, StdioSpec,
@@ -40,14 +40,15 @@ fn main() {
     let args = Arguments::from_args();
     let tests = vec![
         trial("stdio_server_lists_calls_and_reads_resources", stdio_server_lists_calls_and_reads_resources),
-        trial("filter_hides_and_refuses_tools", filter_hides_and_refuses_tools),
+        trial("filter_hides_and_refuses_tools_and_missing_commands_stop_cleanly", filter_hides_and_refuses_tools_and_missing_commands_stop_cleanly),
         trial("crashed_server_restarts_with_its_error_shown", crashed_server_restarts_with_its_error_shown),
-        trial("tool_list_change_is_picked_up", tool_list_change_is_picked_up),
-        trial("missing_command_reports_error_and_stops_cleanly", missing_command_reports_error_and_stops_cleanly),
         trial("http_server_is_validated_with_its_headers", http_server_is_validated_with_its_headers),
         trial("registry_edits_and_removes_servers", registry_edits_and_removes_servers),
         trial("registry_import_starts_new_servers_once", registry_import_starts_new_servers_once),
+        trial("registry_rolls_back_a_failed_save", registry_rolls_back_a_failed_save),
+        trial("import_fixture_table", import_fixture_table),
         trial("host_tools_route_calls_through_the_filter", host_tools_route_calls_through_the_filter),
+        trial("omp_bridge_serves_omp_tools_over_mcp", omp_bridge_serves_omp_tools_over_mcp),
     ];
     libtest_mimic::run(&args, tests).exit();
 }
@@ -136,6 +137,11 @@ async fn stdio_server_lists_calls_and_reads_resources() {
     };
     assert_eq!(text, "the notes");
 
+    let mut events = manager.events();
+    call_text(&manager, "fake", "grow", serde_json::json!({})).await;
+    next_event(&mut events, |event| matches!(event, Event::ToolsChanged { server } if server == "fake")).await;
+    assert!(manager.tools("fake", &AllowAll).unwrap().iter().any(|tool| tool.name == "grown"));
+
     let pid: u32 = call_text(&manager, "fake", "pid", serde_json::json!({})).await.parse().unwrap();
     manager.shutdown().await;
     assert_eq!(manager.status("fake"), Some(Status::Stopped));
@@ -146,19 +152,23 @@ async fn stdio_server_lists_calls_and_reads_resources() {
     ));
 }
 
-async fn filter_hides_and_refuses_tools() {
+async fn filter_hides_and_refuses_tools_and_missing_commands_stop_cleanly() {
     let manager = Manager::new(options()).unwrap();
     manager.add(fake_spec("fake")).unwrap();
+    manager.add(ServerSpec::new("ghost", Transport::Stdio(StdioSpec::parse("/nonexistent/loa-mcp-ghost --x").unwrap())).unwrap()).unwrap();
     wait_status(&manager, "fake", running).await;
+    let ghost = wait_status(&manager, "ghost", |status| matches!(status, Status::Error(_))).await;
+    assert!(matches!(&ghost, Status::Error(message) if message.contains("/nonexistent/loa-mcp-ghost")), "{ghost:?}");
+    manager.stop("ghost").await.unwrap();
+    assert_eq!(manager.status("ghost"), Some(Status::Stopped));
 
     // A peer whose grant allows only `echo` on `fake`.
     let grant = |server: &str, tool: &str| server == "fake" && tool == "echo";
     let names: Vec<_> = manager.tools("fake", &grant).unwrap().into_iter().map(|tool| tool.name).collect();
     assert_eq!(names, ["echo"]);
 
-    let view = manager.view(&grant);
+    let view: Vec<_> = manager.view(&grant).into_iter().filter(|view| view.spec.name == "fake").collect();
     assert_eq!(view.len(), 1);
-    assert_eq!(view[0].spec.name, "fake");
     let allowed: Vec<_> = view[0].tools.iter().map(|tool| (tool.tool.name.as_ref(), tool.allowed)).collect();
     assert_eq!(
         allowed,
@@ -191,31 +201,6 @@ async fn crashed_server_restarts_with_its_error_shown() {
     manager.shutdown().await;
 }
 
-async fn tool_list_change_is_picked_up() {
-    let manager = Manager::new(options()).unwrap();
-    manager.add(fake_spec("fake")).unwrap();
-    wait_status(&manager, "fake", running).await;
-
-    let mut events = manager.events();
-    call_text(&manager, "fake", "grow", serde_json::json!({})).await;
-    next_event(&mut events, |event| matches!(event, Event::ToolsChanged { server } if server == "fake")).await;
-    let names: Vec<_> = manager.tools("fake", &AllowAll).unwrap().into_iter().map(|tool| tool.name).collect();
-    assert!(names.iter().any(|name| name == "grown"), "{names:?}");
-    manager.shutdown().await;
-}
-
-async fn missing_command_reports_error_and_stops_cleanly() {
-    let manager = Manager::new(options()).unwrap();
-    let spec = ServerSpec::new("ghost", Transport::Stdio(StdioSpec::parse("/nonexistent/loa-mcp-ghost --x").unwrap())).unwrap();
-    manager.add(spec).unwrap();
-    let status = wait_status(&manager, "ghost", |status| matches!(status, Status::Error(_))).await;
-    let Status::Error(message) = status else { unreachable!() };
-    assert!(message.contains("/nonexistent/loa-mcp-ghost"), "{message}");
-
-    manager.stop("ghost").await.unwrap();
-    assert_eq!(manager.status("ghost"), Some(Status::Stopped));
-}
-
 async fn http_server_is_validated_with_its_headers() {
     let url = fake::serve_http("secret").await;
     let registry = Registry::open(MemoryStore::default(), Manager::new(options()).unwrap()).await.unwrap();
@@ -244,6 +229,7 @@ async fn registry_edits_and_removes_servers() {
     let registry = Registry::open(store.clone(), Manager::new(options()).unwrap()).await.unwrap();
     registry.add(fake_spec("one")).await.unwrap();
     assert!(matches!(registry.add(fake_spec("one")).await, Err(Error::NameTaken(_))));
+    assert!(matches!(registry.edit("nope", fake_spec("x")).await, Err(Error::UnknownServer(_))));
 
     let broken = ServerSpec::new("two", Transport::Stdio(StdioSpec::parse("/nonexistent/loa-mcp-ghost").unwrap())).unwrap();
     assert!(matches!(registry.edit("one", broken).await, Err(Error::Connect { .. })));
@@ -272,24 +258,83 @@ async fn registry_import_starts_new_servers_once() {
     let config = serde_json::json!({"mcpServers": {"imported": {"command": stdio.command, "env": stdio.env}}});
     let path = dir.path().join(".mcp.json");
     std::fs::write(&path, config.to_string()).unwrap();
-    let files = [ConfigFile::ClaudeProject(path)];
+    let files: Vec<Box<dyn ImportSource>> = vec![Box::new(JsonServers { app: App::Claude, path, project: None })];
 
     let store = Arc::new(MemoryStore::default());
     let registry = Registry::open(store.clone(), Manager::new(options()).unwrap()).await.unwrap();
-    let report = registry.import(&files).await.unwrap();
+    let report = registry.import_found(import::scan(&files).0).await.unwrap();
     assert!(matches!(report.entries[0].outcome, Outcome::Imported(_)));
     assert_eq!(store.servers().len(), 1);
     wait_status(registry.manager(), "imported", running).await;
 
-    let again = registry.import(&files).await.unwrap();
+    let again = registry.import_found(import::scan(&files).0).await.unwrap();
     assert_eq!(again.entries[0].outcome, Outcome::Duplicate { existing: "imported".to_owned() });
     assert_eq!(store.servers().len(), 1);
     registry.manager().shutdown().await;
 }
 
+struct FailingStore;
+
+#[async_trait::async_trait]
+impl loa_mcp::ServerStore for FailingStore {
+    async fn load(&self) -> Result<Vec<ServerSpec>, loa_mcp::StoreError> {
+        Ok(vec![ServerSpec { enabled: false, ..fake_spec("kept") }])
+    }
+    async fn save(&self, _: &[ServerSpec]) -> Result<(), loa_mcp::StoreError> {
+        Err("disk full".into())
+    }
+}
+
+async fn registry_rolls_back_a_failed_save() {
+    let registry = Registry::open(FailingStore, Manager::new(options()).unwrap()).await.unwrap();
+    assert!(matches!(registry.remove("kept").await, Err(Error::Store(_))));
+    assert!(matches!(registry.set_enabled("nope", true).await, Err(Error::UnknownServer(_))));
+    assert_eq!(registry.specs().await.len(), 1);
+    registry.manager().shutdown().await;
+}
+
+async fn import_fixture_table() {
+    let dir = tempfile::tempdir().unwrap();
+    let json = r#"{"mcpServers": {
+        "a": {"command": "srv", "args": ["-v"], "env": {"N": 1}},
+        "b": {"type": "http", "url": "https://x.test/mcp", "headers": {"K": "v"}, "disabled": true},
+        "c": {"type": "sse", "url": "https://x.test/sse"},
+        "d": {"envFile": ".env", "command": "x"},
+        "e": {"args": []}
+    }, "projects": {"/p": {"mcpServers": {"f": {"command": "local"}}}}}"#;
+    let toml = "[mcp_servers.g]\nurl = \"https://y.test\"\nbearer_token = \"t\"\nenabled = false\n[mcp_servers.h]\ncommand = \"x\"\nbearer_token_env_var = \"T\"\n";
+    std::fs::write(dir.path().join("c.json"), json).unwrap();
+    std::fs::write(dir.path().join("c.toml"), toml).unwrap();
+    std::fs::write(dir.path().join("bad.json"), "{").unwrap();
+    let files: Vec<Box<dyn ImportSource>> = vec![
+        Box::new(JsonServers { app: App::Claude, path: dir.path().join("c.json"), project: Some("/p".into()) }),
+        Box::new(CodexToml(dir.path().join("c.toml"))),
+        Box::new(JsonServers { app: App::Cursor, path: dir.path().join("bad.json"), project: None }),
+        Box::new(CodexToml(dir.path().join("missing.toml"))),
+    ];
+    let (found, errors) = import::scan(&files);
+    assert_eq!(errors.len(), 1);
+    let names: Vec<_> = found.iter().map(|f| (f.name.as_str(), f.spec.is_ok())).collect();
+    let expect = [("a", true), ("b", true), ("c", false), ("d", false), ("e", false), ("f", true), ("g", true), ("h", false)];
+    assert_eq!(names, expect);
+    let spec = |name: &str| found.iter().find(|f| f.name == name).unwrap().spec.clone().unwrap();
+    let Transport::Stdio(a) = spec("a").transport else { panic!("stdio") };
+    assert_eq!((a.args, a.env["N"].as_str()), (vec!["-v".to_owned()], "1"));
+    let (b, g) = (spec("b"), spec("g"));
+    assert!(!b.enabled && !g.enabled);
+    let Transport::Http(g) = g.transport else { panic!("http") };
+    assert_eq!(g.headers["Authorization"], "Bearer t");
+    let report = import::plan_found(&[spec("a")], found);
+    assert_eq!(report.entries[0].outcome, Outcome::Duplicate { existing: "a".into() });
+    assert_eq!(report.imported().count(), 3);
+}
+
 async fn host_tools_route_calls_through_the_filter() {
     use loa_contracts::harness::{OutputBlock, HostTools};
-    use loa_mcp::host_tools::McpHostTools;
+    use loa_mcp::host_tools::{McpHostTools, host_tool_name};
+
+    assert_eq!(host_tool_name("github.com", "list issues"), "github_com__list_issues");
+    assert_eq!(host_tool_name("fs-2", "read_file"), "fs-2__read_file");
 
     let manager = Manager::new(options()).unwrap();
     manager.add(fake_spec("fake")).unwrap();
@@ -313,16 +358,59 @@ async fn host_tools_route_calls_through_the_filter() {
     manager.shutdown().await;
 }
 
+async fn omp_bridge_serves_omp_tools_over_mcp() {
+    use loa_harness::testing::{FakeProcess, handshake_v2};
+    use loa_mcp::bridge::{OmpBridgeConfig, OmpExecutor};
+    use loa_mcp::model::CallToolRequestParams;
+    use rmcp::ServiceExt;
+    use serde_json::json;
+
+    let read = json!({"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]});
+    let edit = json!({"type": "object", "properties": {"input": {"type": "string"}}});
+    let dumped = json!([{"name": "read", "description": "Reads", "parameters": read}, {"name": "edit", "description": "Edits", "parameters": edit}]);
+    let state = json!({"type": "response", "id": "{{s}}", "command": "get_state", "success": true, "data": {"sessionId": "b", "dumpTools": dumped}});
+    let call = |n: u32, text: &str, is_error: bool| {
+        let end = json!({"type": "tool_execution_end", "toolCallId": format!("loa-omp-bridge-call-{n}"), "toolName": "read",
+            "result": {"content": [{"type": "text", "text": text}]}, "isError": is_error});
+        let ack = json!({"type": "response", "id": format!("{{{{p{n}}}}}"), "command": "prompt", "success": true});
+        let done = json!({"type": "prompt_result", "id": format!("{{{{p{n}}}}}"), "agentInvoked": true, "status": "completed"});
+        format!("< prompt p{n}\n> {ack}\n> {end}\n> {done}\n")
+    };
+    let script = format!("{}< get_state s\n> {state}\n{}{}", handshake_v2(), call(1, "file text", false), call(2, "no such file", true));
+    let dir = tempfile::tempdir().unwrap();
+    let omp = FakeProcess::install(dir.path(), &script).unwrap();
+    let mut config = OmpBridgeConfig::new(dir.path(), dir.path().join("state"));
+    (config.program, config.tools) = (omp.executable().to_owned(), vec!["read".into(), "edit".into()]);
+    let executor = OmpExecutor::start(&config).await.unwrap();
+
+    let (server, client) = tokio::io::duplex(1 << 16);
+    let (reader, writer) = tokio::io::split(server);
+    tokio::spawn(loa_mcp::ToolSetMcp::new(executor.tool_set(), "omp").serve(reader, writer));
+    let client = ().serve(tokio::io::split(client)).await.unwrap();
+    let tools = client.list_all_tools().await.unwrap();
+    let listed: Vec<_> = tools.iter().map(|tool| (tool.name.as_ref(), serde_json::Value::Object((*tool.input_schema).clone()))).collect();
+    assert_eq!(listed, [("edit", edit), ("read", read)]);
+    let destructive: Vec<_> = tools.iter().map(|tool| tool.annotations.as_ref().and_then(|a| a.destructive_hint)).collect();
+    assert_eq!(destructive, [Some(true), None], "no hints sent for read, so MCP's defaults apply");
+
+    let arguments = json!({"path": "a.rs"}).as_object().cloned().unwrap();
+    let ok = client.call_tool(CallToolRequestParams::new("read").with_arguments(arguments)).await.unwrap();
+    assert_eq!((text(&ok), ok.is_error), ("file text", Some(false)));
+    let failed = client.call_tool(CallToolRequestParams::new("read")).await.unwrap();
+    assert_eq!((text(&failed), failed.is_error), ("no such file", Some(true)));
+    assert!(client.call_tool(CallToolRequestParams::new("bash")).await.is_err(), "unknown tool refused");
+    let prompts = omp.received().into_iter().filter(|frame| frame["type"] == "prompt").count();
+    assert_eq!(prompts, 2, "the refused call never reached omp");
+    client.cancel().await.unwrap();
+}
+
 /// The fake MCP server.
 mod fake {
     use super::*;
     use axum::response::IntoResponse;
     use rmcp::handler::server::ServerHandler;
-    use rmcp::model::{
-        CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ErrorData, JsonObject,
-        ListResourcesResult, ListToolsResult, PaginatedRequestParams, ReadResourceRequestParams, ReadResourceResponse,
-        ReadResourceResult, Resource, ServerCapabilities, ServerConfig, Tool,
-    };
+    use rmcp::model::{CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ErrorData, JsonObject, ListResourcesResult, ListToolsResult};
+    use rmcp::model::{PaginatedRequestParams, ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult, Resource, ServerCapabilities, ServerConfig, Tool};
     use rmcp::service::RequestContext;
     use rmcp::transport::StreamableHttpService;
     use rmcp::transport::streamable_http_server::StreamableHttpServerConfig;
@@ -334,47 +422,28 @@ mod fake {
         grown: Arc<AtomicBool>,
     }
 
-    fn tool(name: &'static str) -> Tool {
-        let schema: JsonObject = serde_json::from_value(serde_json::json!({"type": "object"})).unwrap();
-        Tool::new(name, name, schema)
+    fn tool(name: &'static str, description: &'static str) -> Tool {
+        Tool::new(name, description, serde_json::from_value::<JsonObject>(serde_json::json!({"type": "object"})).unwrap())
     }
 
     impl ServerHandler for Fake {
         fn get_info(&self) -> ServerConfig {
-            ServerConfig::new(
-                ServerCapabilities::builder().enable_tools().enable_tool_list_changed().enable_resources().build(),
-            )
+            ServerConfig::new(ServerCapabilities::builder().enable_tools().enable_tool_list_changed().enable_resources().build())
         }
 
-        async fn list_tools(
-            &self,
-            _request: Option<PaginatedRequestParams>,
-            _context: RequestContext<RoleServer>,
-        ) -> Result<ListToolsResult, ErrorData> {
-            let mut tools = vec![tool("echo"), tool("pid"), tool("crash"), tool("grow")];
-            tools.push(Tool::new(
-                "vault_code",
-                "Returns the current vault code. Takes no arguments.",
-                serde_json::from_value::<JsonObject>(serde_json::json!({"type": "object", "properties": {}})).unwrap(),
-            ));
-            tools.push(tool("picture"));
+        async fn list_tools(&self, _: Option<PaginatedRequestParams>, _: RequestContext<RoleServer>) -> Result<ListToolsResult, ErrorData> {
+            let mut tools = ["echo", "pid", "crash", "grow"].map(|name| tool(name, name)).to_vec();
+            tools.extend([tool("vault_code", "Returns the current vault code. Takes no arguments."), tool("picture", "picture")]);
             if self.grown.load(Ordering::SeqCst) {
-                tools.push(tool("grown"));
+                tools.push(tool("grown", "grown"));
             }
             Ok(ListToolsResult::with_all_items(tools))
         }
 
-        async fn call_tool(
-            &self,
-            request: CallToolRequestParams,
-            context: RequestContext<RoleServer>,
-        ) -> Result<CallToolResponse, ErrorData> {
+        async fn call_tool(&self, request: CallToolRequestParams, context: RequestContext<RoleServer>) -> Result<CallToolResponse, ErrorData> {
             let reply = |text: String| Ok(CallToolResult::success(vec![ContentBlock::text(text)]).into());
             match request.name.as_ref() {
-                "echo" => {
-                    let arguments = request.arguments.unwrap_or_default();
-                    reply(arguments.get("text").and_then(|text| text.as_str()).unwrap_or_default().to_owned())
-                }
+                "echo" => reply(request.arguments.unwrap_or_default().get("text").and_then(|text| text.as_str()).unwrap_or_default().to_owned()),
                 "pid" => reply(std::process::id().to_string()),
                 "crash" => {
                     eprintln!("fatal: crash requested");
@@ -387,30 +456,19 @@ mod fake {
                 }
                 "vault_code" => reply(super::VAULT_CODE.to_owned()),
                 "picture" => {
-                    use base64::Engine;
-                    let png = base64::engine::general_purpose::STANDARD.encode(super::PNG);
+                    let png = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, super::PNG);
                     Ok(CallToolResult::success(vec![ContentBlock::text("a picture"), ContentBlock::image(png, "image/png")]).into())
                 }
                 other => Err(ErrorData::invalid_params(format!("no tool {other}"), None)),
             }
         }
 
-        async fn list_resources(
-            &self,
-            _request: Option<PaginatedRequestParams>,
-            _context: RequestContext<RoleServer>,
-        ) -> Result<ListResourcesResult, ErrorData> {
-            Ok(ListResourcesResult::with_all_items(vec![
-                Resource::new("surface://fake/tab1", "Tab 1").with_mime_type("image/png"),
-                Resource::new("file:///notes.txt", "notes"),
-            ]))
+        async fn list_resources(&self, _: Option<PaginatedRequestParams>, _: RequestContext<RoleServer>) -> Result<ListResourcesResult, ErrorData> {
+            let tab = Resource::new("surface://fake/tab1", "Tab 1").with_mime_type("image/png");
+            Ok(ListResourcesResult::with_all_items(vec![tab, Resource::new("file:///notes.txt", "notes")]))
         }
 
-        async fn read_resource(
-            &self,
-            request: ReadResourceRequestParams,
-            _context: RequestContext<RoleServer>,
-        ) -> Result<ReadResourceResponse, ErrorData> {
+        async fn read_resource(&self, request: ReadResourceRequestParams, _: RequestContext<RoleServer>) -> Result<ReadResourceResponse, ErrorData> {
             match request.uri.as_str() {
                 "file:///notes.txt" => Ok(ReadResourceResult::new(vec![ResourceContents::text("the notes", request.uri)]).into()),
                 _ => Err(ErrorData::resource_not_found(request.uri, None)),

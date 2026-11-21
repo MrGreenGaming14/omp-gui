@@ -20,9 +20,9 @@ use loa_config::ProjectSettings;
 use loa_core::{Dom, ElementKind, NodeId, attr};
 use loa_mcp::central::{self, ConfigServers, ProjectFilter};
 use loa_mcp::host_tools::McpHostTools;
-use loa_mcp::import::{self, ConfigFile, Found};
+use loa_mcp::import::{self, Found};
 use loa_mcp::{AllowAll, Registry};
-use loa_omp_bridge::OmpBridgeConfig;
+use loa_mcp::bridge::{self, OmpBridgeConfig};
 use loa_remote::host_tools::RemoteHostTools;
 use loa_remote::http::RemoteHttp;
 use loa_remote::mcp::SERVER_NAME as REMOTE_SERVER;
@@ -214,7 +214,7 @@ impl State {
         config.program = program;
         Task::perform(
             async move {
-                loa_omp_bridge::list_omp_tools(&config)
+                bridge::list_omp_tools(&config)
                     .await
                     .map(|specs| {
                         specs.into_iter().map(|spec| tools::ToolInfo::new(spec.name, listing::short_description(&spec.description))).collect()
@@ -239,7 +239,7 @@ impl State {
     /// that connect to MCP servers.
     fn bridge_row(&self, ctx: &Ctx) -> tools::McpServer {
         let described = self.harness_tools.get(OMP).and_then(|tools| tools.as_ref().ok());
-        let tools = loa_omp_bridge::DEFAULT_TOOLS
+        let tools = bridge::DEFAULT_TOOLS
             .iter()
             .map(|name| {
                 let description = described
@@ -254,7 +254,7 @@ impl State {
         };
         let command = std::env::current_exe().map_or_else(|_| "loa-app".to_owned(), |exe| exe.display().to_string());
         let transport = McpTransport::Stdio { command, args: vec!["omp-bridge".to_owned()], env: Default::default() };
-        listing::app_server(loa_omp_bridge::session::SERVER_NAME, transport, status, tools)
+        listing::app_server(bridge::SERVER_NAME, transport, status, tools)
     }
 
     fn remote_row(&self) -> tools::McpServer {
@@ -448,7 +448,7 @@ impl State {
                 )
             }
             tools::Event::ScanImports => {
-                let files = ConfigFile::defaults(&self.ssh.home, Some(&ctx.services.cwd));
+                let files = import::defaults(&self.ssh.home, Some(&ctx.services.cwd));
                 Task::perform(
                     async move {
                         let scan = tokio::task::spawn_blocking(move || import::scan(&files)).await;
@@ -534,8 +534,8 @@ impl State {
         let state = ctx.services.dirs.data.join("omp-bridge").join(&config.session_id);
         let mut bridge = OmpBridgeConfig::new(config.cwd.clone(), state);
         bridge.program = program;
-        bridge.tools.retain(|tool| settings.mcp_tool_enabled(loa_omp_bridge::session::SERVER_NAME, tool));
-        (!bridge.tools.is_empty()).then(|| loa_omp_bridge::session::session_spec(&exe, &["omp-bridge"], &bridge))
+        bridge.tools.retain(|tool| settings.mcp_tool_enabled(loa_mcp::bridge::SERVER_NAME, tool));
+        (!bridge.tools.is_empty()).then(|| bridge.session_spec(&exe, &["omp-bridge"]))
     }
 }
 

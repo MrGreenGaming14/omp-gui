@@ -87,7 +87,7 @@ impl<T: Tool> DynTool for T {
 /// Tools by name.
 #[derive(Clone, Default)]
 pub struct ToolSet {
-    tools: BTreeMap<&'static str, Arc<dyn DynTool>>,
+    tools: BTreeMap<String, Arc<dyn DynTool>>,
 }
 
 impl ToolSet {
@@ -95,7 +95,12 @@ impl ToolSet {
 
     /// Adds `tool`, replacing one with the same name.
     pub fn register<T: Tool>(&mut self, tool: T) -> &mut Self {
-        self.tools.insert(T::NAME, Arc::new(tool));
+        self.add(Arc::new(tool))
+    }
+
+    /// Adds a tool whose name and schema are only known at runtime.
+    pub fn add(&mut self, tool: Arc<dyn DynTool>) -> &mut Self {
+        self.tools.insert(tool.spec().name, tool);
         self
     }
 
