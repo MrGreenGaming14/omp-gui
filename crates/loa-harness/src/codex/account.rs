@@ -108,7 +108,7 @@ impl Codex {
 
 #[async_trait]
 impl loa_contracts::harness::HarnessAccount for Codex {
-    fn id(&self) -> &'static str { "codex" }
+    fn id(&self) -> &'static str { super::HARNESS }
     fn name(&self) -> &'static str { "Codex" }
     async fn sign_in_state(&self) -> SignInState {
         Codex::sign_in_state(self).await.unwrap_or_else(|error| SignInState::Unknown { reason: error.to_string() })

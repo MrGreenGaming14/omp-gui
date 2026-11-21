@@ -264,7 +264,7 @@ impl ClaudeCode {
 
 #[async_trait]
 impl loa_contracts::harness::HarnessAccount for ClaudeCode {
-    fn id(&self) -> &'static str { "claude" }
+    fn id(&self) -> &'static str { super::HARNESS }
     fn name(&self) -> &'static str { "Claude Code" }
     async fn sign_in_state(&self) -> SignInState {
         ClaudeCode::sign_in_state(self).await.unwrap_or_else(|error| SignInState::Unknown { reason: error.to_string() })
