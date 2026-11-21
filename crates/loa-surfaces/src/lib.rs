@@ -26,3 +26,5 @@ pub mod vnc;
 
 #[cfg(feature = "hub")]
 pub use hub::*;
+#[cfg(not(feature = "hub"))]
+pub use feed::CaptureMode;

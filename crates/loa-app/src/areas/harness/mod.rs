@@ -6,15 +6,15 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use iced::widget::{button, column, container, row, scrollable, space, svg, text, text_input};
-use iced::{Element, Font, Length, Task, Theme};
-use loa_contracts::harness::{Availability, AvailabilityStatus};
+use iced::widget::{column, row, scrollable, space, text_input};
+use iced::{Alignment, Element, Fill, Task};
 use loa_config::HarnessSettings;
-use loa_ui_kit::icons::Icon;
-use loa_ui_shell::theme::style;
+use loa_contracts::harness::{Availability, AvailabilityStatus};
+use loa_ui_kit::icons::{Icon, tinted};
+use loa_ui_kit::style::{self, ButtonKind, Tone};
+use loa_ui_kit::theme::{SpaceRole, TextRole, sp};
+use loa_ui_kit::widgets::{card, label, section_header, text_button};
 
-use loa_ui_kit::theme::{TextRole, text_size};
-use loa_ui_kit::{ButtonKind, Tone, style as kit_style};
 use crate::area::{perform, Area, AreaCommand, AreaMessage, Ctx, Listed, PanelTab, Request, SessionEvent};
 use crate::services::Harness;
 
@@ -163,70 +163,48 @@ impl State {
 
     fn view<'a>(&'a self, ctx: &'a Ctx) -> Element<'a, Message> {
         let checking = !self.probing.is_empty();
-        let recheck = button(text(if checking { "Checking…" } else { "Recheck" }).size(text_size(TextRole::Label)))
-            .padding([2, 8])
-            .style(kit_style::button(ButtonKind::Secondary))
-            .on_press_maybe((!checking).then_some(Message::Recheck));
-        let header = row![text("Harnesses").size(text_size(TextRole::Body)), space::horizontal(), recheck].align_y(iced::Center);
+        let recheck = text_button(if checking { "Checking…" } else { "Recheck" }, ButtonKind::Secondary, (!checking).then_some(Message::Recheck));
         let selected = ctx.sessions.harness.as_deref();
         let rows = ctx.services.harnesses.list.iter().map(|harness| self.harness_row(harness, selected));
-        let list = column(rows).spacing(8);
-        scrollable(column![header, list].spacing(10).padding(12)).height(Length::Fill).into()
+        let body = column![section_header("Harnesses", [recheck]), column(rows).spacing(sp(SpaceRole::S))];
+        scrollable(body.spacing(sp(SpaceRole::M)).padding(sp(SpaceRole::M))).height(Fill).into()
     }
 
     fn harness_row<'a>(&'a self, harness: &'a Harness, selected: Option<&str>) -> Element<'a, Message> {
         let id = harness.option.id.as_str();
         let probing = self.probing.iter().any(|probing| probing == id);
         let status = harness.availability.as_ref().filter(|_| !probing).map(|availability| availability.status);
-        let mark = status_icon(status);
-        let label = text(harness.option.label.as_str()).size(text_size(TextRole::Body));
-        let word = text(status_word(status)).size(text_size(TextRole::Label)).style(move |theme: &Theme| match status {
-            Some(AvailabilityStatus::Ready) => kit_style::text(Tone::Ok)(theme),
-            Some(AvailabilityStatus::Unknown) | None => kit_style::text(Tone::Muted)(theme),
-            Some(_) => kit_style::text(Tone::Danger)(theme),
-        });
-        let action: Element<'a, Message> = if selected == Some(id) {
-            text("New sessions").size(text_size(TextRole::Label)).style(kit_style::text(Tone::Accent)).into()
-        } else if harness.option.available {
-            button(text("Use").size(text_size(TextRole::Label)))
-                .padding([2, 8])
-                .style(kit_style::button(ButtonKind::Secondary))
-                .on_press(Message::Pick(id.to_owned()))
-                .into()
-        } else {
-            space::horizontal().width(0).into()
+        let (icon, tone) = match status {
+            Some(AvailabilityStatus::Ready) => (Icon::Check, Tone::Ok),
+            None | Some(AvailabilityStatus::Unknown) => (Icon::CircleDot, Tone::Muted),
+            Some(_) => (Icon::TriangleAlert, Tone::Danger),
         };
-        let title = row![mark, label, word, space::horizontal(), action].spacing(8).align_y(iced::Center);
-        let mut body = column![title].spacing(4);
-        let version = harness.availability.as_ref().and_then(|availability| availability.version.as_deref());
-        if let Some(detail) = harness.option.detail.as_deref().filter(|detail| Some(*detail) != version) {
-            body = body.push(text(detail).size(text_size(TextRole::Label)).style(kit_style::text(Tone::Muted)));
-        }
-        if let Some(version) = version {
-            body = body.push(text(format!("Version {version}")).size(text_size(TextRole::Label)).style(kit_style::text(Tone::Muted)));
-        }
-        if harness.traits.server_url {
-            body = body.push(text(format!("Server {}", harness.program)).size(text_size(TextRole::Label)).style(kit_style::text(Tone::Muted)));
+        let action = if selected == Some(id) {
+            Some(label("New sessions", TextRole::Label, Tone::Accent).into())
         } else {
-            if let Some(executable) = &harness.executable {
-                body = body.push(text(executable.display().to_string()).size(text_size(TextRole::Label)).font(Font::MONOSPACE).style(kit_style::text(Tone::Muted)));
-            }
+            harness.option.available.then(|| text_button("Use", ButtonKind::Secondary, Some(Message::Pick(id.to_owned()))))
+        };
+        let title = row![tinted(icon, TextRole::Body, tone), label(harness.option.label.as_str(), TextRole::Body, Tone::Normal), label(status_word(status), TextRole::Label, tone), space::horizontal()];
+        let note = |s: String| label(s, TextRole::Label, Tone::Muted);
+        let version = harness.availability.as_ref().and_then(|availability| availability.version.as_deref());
+        let detail = harness.option.detail.as_deref().filter(|detail| Some(*detail) != version).map(|detail| note(detail.to_owned()));
+        let body = column![title.push(action).spacing(sp(SpaceRole::S)).align_y(Alignment::Center)].push(detail).push(version.map(|version| note(format!("Version {version}"))));
+        let body = if harness.traits.server_url {
+            body.push(note(format!("Server {}", harness.program)))
+        } else {
+            let executable = harness.executable.as_ref().map(|executable| label(executable.display().to_string(), TextRole::Mono, Tone::Muted));
             let draft = self.drafts.get(id).map_or("", String::as_str);
             let field = text_input(harness.program, draft)
-                .size(text_size(TextRole::Label))
-                .padding([4, 8])
+                .padding(sp(SpaceRole::Xs))
                 .style(style::input)
                 .on_input(move |value| Message::EditExecutable(id.to_owned(), value))
                 .on_submit(Message::SaveExecutable(id.to_owned()));
             let configured = harness.configured.as_ref().map(|path| path.display().to_string());
             let changed = configured.as_deref().unwrap_or("") != draft.trim();
-            let apply = button(text("Save").size(text_size(TextRole::Label)))
-                .padding([4, 8])
-                .style(kit_style::button(ButtonKind::Secondary))
-                .on_press_maybe(changed.then(|| Message::SaveExecutable(id.to_owned())));
-            body = body.push(row![field, apply].spacing(6).align_y(iced::Center));
-        }
-        container(body).padding(10).width(Length::Fill).style(style::card).into()
+            let save = text_button("Save", ButtonKind::Secondary, changed.then(|| Message::SaveExecutable(id.to_owned())));
+            body.push(executable).push(row![field, save].spacing(sp(SpaceRole::Xs)).align_y(Alignment::Center))
+        };
+        card(body.spacing(sp(SpaceRole::Xs))).width(Fill).into()
     }
 }
 
@@ -241,15 +219,6 @@ fn status_word(status: Option<AvailabilityStatus>) -> &'static str {
         Some(AvailabilityStatus::Failed) => "Failed",
         Some(AvailabilityStatus::Unknown) => "Unknown",
     }
-}
-
-fn status_icon<'a>(status: Option<AvailabilityStatus>) -> Element<'a, Message> {
-    let (icon, color): (Icon, fn(&Theme) -> iced::Color) = match status {
-        Some(AvailabilityStatus::Ready) => (Icon::Check, |theme| theme.extended_palette().success.base.color),
-        None | Some(AvailabilityStatus::Unknown) => (Icon::CircleDot, style::muted_color),
-        Some(_) => (Icon::TriangleAlert, |theme| theme.extended_palette().danger.base.color),
-    };
-    loa_ui_kit::icons::icon(icon, 14.0).style(move |theme: &Theme, _| svg::Style { color: Some(color(theme)) }).into()
 }
 
 impl AreaMessage for Message {

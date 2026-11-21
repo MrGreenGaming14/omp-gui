@@ -13,11 +13,12 @@ use loa_harness::account_support::opener::SystemUrlOpener;
 use loa_p2p::RemoteView;
 use loa_ui_session::transcript as chat;
 use loa_ui_session::decisions as cards;
-use loa_ui_kit::icons::{Icon, icon};
+use loa_ui_kit::icons::{Icon, tinted};
+use loa_ui_kit::style::{self, ButtonKind, Tone};
+use loa_ui_kit::widgets::{icon_button, label, text_button};
 use loa_ui_kit::theme::{LayoutRole, SpaceRole, TextRole, sp, text_size as ts, width};
 use loa_ui_settings::peers;
 use loa_ui_shell::SessionSummary;
-use loa_ui_shell::theme::style;
 
 use super::{Message, State};
 use crate::area::{perform, Area, Ctx};
@@ -135,16 +136,9 @@ impl Remote {
             self.peer_name,
             if access.is_empty() { "some prompts".to_owned() } else { access.join(", ") }
         );
-        let fork = self.view.can(Action::Fork).then(|| {
-            button(text("Fork to this node").size(ts(TextRole::Label))).style(button::secondary).on_press(RemoteMessage::Fork)
-        });
-        let header = row![
-            column![text(self.title()).size(ts(TextRole::Title)), text(subtitle).size(ts(TextRole::Caption)).style(style::muted)].spacing(sp(SpaceRole::Xs)).width(Fill),
-        ]
-        .push(fork)
-        .push(button(icon(Icon::X, ts(TextRole::Heading))).style(button::text).on_press(RemoteMessage::Close))
-        .spacing(sp(SpaceRole::M))
-        .align_y(Alignment::Center);
+        let fork = self.view.can(Action::Fork).then(|| text_button("Fork to this node", ButtonKind::Secondary, Some(RemoteMessage::Fork)));
+        let title = column![label(self.title(), TextRole::Title, Tone::Normal), label(subtitle, TextRole::Caption, Tone::Muted)].spacing(sp(SpaceRole::Xs)).width(Fill);
+        let header = row![title].push(fork).push(icon_button(Icon::X, "Close", Some(RemoteMessage::Close))).spacing(sp(SpaceRole::M)).align_y(Alignment::Center);
         let transcript = self.chat.view(&self.dom, RemoteMessage::Chat, |slot| {
             self.cards
                 .view_card(slot.node)
@@ -152,23 +146,14 @@ impl Remote {
                 .unwrap_or_else(|| text("Decision no longer available").into())
         });
         let footer: Element<'_, RemoteMessage> = if let Some(reason) = &self.ended {
-            text(format!("No longer following {}: {reason}", self.peer_name)).size(ts(TextRole::Caption)).style(style::muted).into()
+            label(format!("No longer following {}: {reason}", self.peer_name), TextRole::Caption, Tone::Muted).into()
         } else if self.can_drive() {
             let ready = !self.sending && !self.input.trim().is_empty();
-            row![
-                text_input(&format!("Prompt {}'s harness", self.peer_name), &self.input)
-                    .on_input(RemoteMessage::Input)
-                    .on_submit_maybe(ready.then_some(RemoteMessage::Send))
-                    .style(style::input)
-                    .padding(sp(SpaceRole::S))
-                    .size(ts(TextRole::Body)),
-                button(icon(Icon::ArrowUp, ts(TextRole::Heading))).style(button::primary).padding(sp(SpaceRole::S)).on_press_maybe(ready.then_some(RemoteMessage::Send)),
-            ]
-            .spacing(sp(SpaceRole::S))
-            .align_y(Alignment::Center)
-            .into()
+            let input = text_input(&format!("Prompt {}'s harness", self.peer_name), &self.input).on_input(RemoteMessage::Input).on_submit_maybe(ready.then_some(RemoteMessage::Send));
+            let send = button(tinted(Icon::ArrowUp, TextRole::Heading, Tone::OnAccent)).style(style::button(ButtonKind::Primary)).padding(sp(SpaceRole::S)).on_press_maybe(ready.then_some(RemoteMessage::Send));
+            row![input.style(style::input).padding(sp(SpaceRole::S)).size(ts(TextRole::Body)), send].spacing(sp(SpaceRole::S)).align_y(Alignment::Center).into()
         } else {
-            text(format!("View only: {}'s grant doesn't let this node prompt or answer", self.peer_name)).size(ts(TextRole::Caption)).style(style::muted).into()
+            label(format!("View only: {}'s grant doesn't let this node prompt or answer", self.peer_name), TextRole::Caption, Tone::Muted).into()
         };
         column![
             container(header).padding([sp(SpaceRole::L), sp(SpaceRole::Xl)]),

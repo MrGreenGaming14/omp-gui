@@ -5,8 +5,8 @@ use std::collections::BTreeMap;
 
 use loa_contracts::harness::McpTransport;
 use loa_trust::{Action, IssuedRecord, Resource};
-use loa_mcp::import::{App, Found, ImportReport, Outcome};
-use loa_mcp::{ServerView, Status, central};
+use loa_mcp::import::{Found, ImportReport};
+use loa_mcp::{ServerView, central};
 use loa_ui_panel::tools;
 
 /// Prefix of the tools surface servers expose.
@@ -26,17 +26,11 @@ pub(super) fn short_description(text: &str) -> String {
 
 /// A server the manager runs, as a panel row.
 pub(super) fn server(view: &ServerView) -> tools::McpServer {
-    let status = match &view.status {
-        Status::Starting => tools::ServerStatus::Starting,
-        Status::Running => tools::ServerStatus::Running,
-        Status::Stopped => tools::ServerStatus::Stopped,
-        Status::Error(message) => tools::ServerStatus::Error(message.clone()),
-    };
     let surface = view.tools.iter().any(|tool| tool.tool.name.starts_with(SURFACE_TOOL_PREFIX));
     tools::McpServer {
         name: view.spec.name.clone(),
         transport: central::transport(&view.spec),
-        status,
+        status: (&view.status).into(),
         kind: if surface { tools::ServerKind::Surface } else { tools::ServerKind::External },
         tools: view
             .tools
@@ -56,14 +50,6 @@ pub(super) fn app_server(
     tools::McpServer { name: name.to_owned(), transport, status, kind: tools::ServerKind::AppHosted, tools }
 }
 
-pub(super) fn import_source(app: App) -> tools::ImportSource {
-    match app {
-        App::Claude => tools::ImportSource::Claude,
-        App::Cursor => tools::ImportSource::Cursor,
-        App::Codex => tools::ImportSource::Codex,
-    }
-}
-
 /// The usable entries of a scan as import candidates.
 pub(super) fn candidates(found: &[Found]) -> Vec<tools::ImportCandidate> {
     found
@@ -71,7 +57,7 @@ pub(super) fn candidates(found: &[Found]) -> Vec<tools::ImportCandidate> {
         .filter_map(|entry| {
             let spec = entry.spec.as_ref().ok()?;
             Some(tools::ImportCandidate {
-                source: import_source(entry.app),
+                source: entry.app.into(),
                 path: entry.file.display().to_string(),
                 server: central::session_spec(spec),
             })
@@ -85,7 +71,7 @@ pub(super) fn picked(found: &[Found], chosen: &[tools::ImportCandidate]) -> Vec<
         .iter()
         .filter(|entry| {
             chosen.iter().any(|candidate| {
-                candidate.source == import_source(entry.app)
+                candidate.source == entry.app.into()
                     && candidate.path == entry.file.display().to_string()
                     && candidate.server.name == entry.name
             })
@@ -99,14 +85,7 @@ pub(super) fn outcomes(report: &ImportReport) -> Vec<(tools::ImportSource, Strin
     report
         .entries
         .iter()
-        .map(|entry| {
-            let outcome = match &entry.outcome {
-                Outcome::Imported(_) => tools::ImportOutcome::Imported,
-                Outcome::Duplicate { existing } => tools::ImportOutcome::Skipped(format!("already registered as {existing}")),
-                Outcome::Unsupported { reason } => tools::ImportOutcome::Failed(reason.clone()),
-            };
-            (import_source(entry.app), entry.name.clone(), outcome)
-        })
+        .map(|entry| (entry.app.into(), entry.name.clone(), (&entry.outcome).into()))
         .collect()
 }
 

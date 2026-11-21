@@ -124,17 +124,13 @@ impl State {
     }
 
     fn set_capture(&mut self, capture: Capture, ctx: &mut Ctx) -> Task<Message> {
-        let mode = match capture {
-            Capture::Screencast => CaptureMode::Screencast,
-            Capture::VirtualDisplay => CaptureMode::VirtualDisplay,
-        };
-        if let Err(error) = self.hub.set_capture(mode) {
+        if let Err(error) = self.hub.set_capture(capture) {
             ctx.notify(error.to_string());
             self.panel.set_capture(capture_status(&self.hub, false));
             return Task::none();
         }
         save(ctx, |settings| {
-            settings.browser_capture = match mode {
+            settings.browser_capture = match capture {
                 CaptureMode::Screencast => loa_config::BrowserCapture::Screencast,
                 CaptureMode::VirtualDisplay => loa_config::BrowserCapture::VirtualDisplay,
             };
@@ -245,10 +241,7 @@ fn browser_status(hub: &SurfaceHub) -> BrowserStatus {
 /// What the launcher says about the browser capture.
 fn capture_status(hub: &SurfaceHub, pending: bool) -> CaptureStatus {
     CaptureStatus {
-        selected: match hub.capture() {
-            CaptureMode::Screencast => Capture::Screencast,
-            CaptureMode::VirtualDisplay => Capture::VirtualDisplay,
-        },
+        selected: hub.capture(),
         virtual_display_missing: hub.config().virtual_display.as_ref().err().cloned(),
         pending,
     }
