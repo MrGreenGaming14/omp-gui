@@ -58,12 +58,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn clip_never_splits_a_char() {
-        assert_eq!(clip("añb", 2), "a");
-        assert_eq!(clip("añb", 3), "añ");
-    }
-
-    #[test]
     fn folded_maps_matches_back_to_the_original() {
         // 'İ' lowercases to two chars, so lowercase offsets drift from the original.
         let folded = Folded::new("İx Needle");

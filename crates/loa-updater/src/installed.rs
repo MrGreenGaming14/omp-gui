@@ -2,9 +2,7 @@
 
 use semver::Version;
 use std::path::Path;
-use std::process::Stdio;
 use std::time::Duration;
-use tokio::process::Command;
 
 /// `name` resolved against `PATH` when it is a bare name; paths are kept as
 /// they are when they exist.
@@ -13,33 +11,13 @@ pub use loa_util::exec::which as find_executable;
 /// Runs `<executable> --version` and reads the first semantic version in
 /// its output: `omp/19.0.0`, `2.0.14 (Claude Code)`, `codex-cli 0.46.0`.
 pub async fn executable_version(executable: &Path, timeout: Duration) -> Result<Version, String> {
-    let child = loa_util::exec::retry_busy(|| {
-        Command::new(executable)
-            .arg("--version")
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-    })
-    .map_err(|e| format!("cannot start {}: {e}", executable.display()))?;
-    let output = tokio::time::timeout(timeout, child.wait_with_output())
-        .await
-        .map_err(|_| format!("{} --version did not finish within {timeout:?}", executable.display()))?
-        .map_err(|e| format!("running {} --version: {e}", executable.display()))?;
-    if !output.status.success() {
-        return Err(format!("{} --version exited with {}", executable.display(), output.status));
-    }
-    let text = String::from_utf8_lossy(&output.stdout);
+    let text = loa_util::exec::probe_cli(executable, &["--version"], timeout).await.map_err(|e| e.to_string())?;
     parse_version(&text).ok_or_else(|| format!("no version in {:?}", text.trim()))
 }
 
-/// The first token of `text` that parses as a semantic version, after
-/// splitting on whitespace and `/` and dropping a leading `v`.
+/// The first semantic version in `text`, after an optional leading `v`.
 pub fn parse_version(text: &str) -> Option<Version> {
-    text.split(|c: char| c.is_whitespace() || c == '/' || c == '(' || c == ')' || c == ',')
-        .map(|token| token.strip_prefix('v').unwrap_or(token))
-        .find_map(|token| Version::parse(token).ok())
+    Version::parse(&loa_util::exec::parse_version(text)?).ok()
 }
 
 #[cfg(test)]
@@ -54,15 +32,6 @@ mod tests {
         assert_eq!(v("codex-cli 0.46.0").as_deref(), Some("0.46.0"));
         assert_eq!(v("opencode v1.2.3-beta.1").as_deref(), Some("1.2.3-beta.1"));
         assert_eq!(v("no version here"), None);
-    }
-
-    #[test]
-    fn bare_names_resolve_on_path_and_paths_must_exist() {
-        let sh = find_executable(Path::new("sh")).expect("sh on PATH");
-        assert!(sh.is_absolute());
-        assert_eq!(find_executable(&sh), Some(sh.clone()));
-        assert_eq!(find_executable(Path::new("/nonexistent/loa-updater-test")), None);
-        assert_eq!(find_executable(Path::new("loa-updater-surely-missing")), None);
     }
 
     /// A staged binary still open for writing (as in a child forked while it
