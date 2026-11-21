@@ -126,11 +126,11 @@ fn probes_set_availability_in_the_picker_palette_and_harnesses_tab() {
     let harness = app.ctx.services.harnesses.get("ready").unwrap();
     assert_eq!(harness.executable.as_deref(), Some(Path::new("/opt/ready/bin/ready")), "sessions run the probed executable");
 
-    let titles: Vec<String> = app.areas.harness.palette_commands(&app.ctx).into_iter().map(|command| command.title).collect();
+    let titles: Vec<String> = app.areas.iter().flat_map(|area| area.commands(&app.ctx)).collect::<Vec<_>>().into_iter().map(|command| command.title).collect();
     assert!(titles.contains(&"Switch harness: ready".to_owned()), "{titles:?}");
     assert!(!titles.iter().any(|title| title.contains("gone")), "{titles:?}");
 
-    let tab = app.areas.harness.view_tab(TAB, &app.ctx).expect("Harnesses tab");
+    let tab = app.areas.get::<crate::areas::harness::State>().view_tab(TAB, &app.ctx).expect("Harnesses tab");
     let mut ui = iced_test::simulator(tab);
     for label in ["Ready", "Not installed", "`gone` not found", "Version 1.2.3", "/opt/ready/bin/ready", "New sessions"] {
         assert!(ui.find(label).is_ok(), "the tab shows {label:?}");
@@ -141,13 +141,13 @@ fn probes_set_availability_in_the_picker_palette_and_harnesses_tab() {
 fn an_unavailable_harness_cannot_be_picked() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = app(dir.path(), probed_harnesses());
-    update(&mut app, Message::Harness(HarnessMessage::Recheck));
+    update(&mut app, Message::area(HarnessMessage::Recheck));
     // The composer's picker lists it greyed out and ignores the pick.
     let pick = app.ctx.composer.pick_key(composer::PickerId::Harness, "gone").expect("listed");
     update(&mut app, Message::Composer(pick));
     assert_eq!(app.ctx.sessions.harness.as_deref(), Some("ready"));
     // A switch command for it is refused with a notice.
-    update(&mut app, Message::Harness(HarnessMessage::Pick("gone".into())));
+    update(&mut app, Message::area(HarnessMessage::Pick("gone".into())));
     assert_eq!(app.ctx.sessions.harness.as_deref(), Some("ready"));
     assert_eq!(app.ctx.notice(), Some("gone is unavailable"));
     assert!(app.ctx.sessions.active().is_none(), "nothing started");
@@ -160,7 +160,7 @@ fn the_picked_harness_is_saved_as_the_default_for_the_next_launch() {
     let other = Availability::ready(None, Some("2.0".into()));
     harnesses.add(Arc::new(Probed { id: "other", availability: other }), "other", true, None, None);
     let mut first = app(dir.path(), harnesses);
-    update(&mut first, Message::Harness(HarnessMessage::Recheck));
+    update(&mut first, Message::area(HarnessMessage::Recheck));
     assert_eq!(first.ctx.sessions.harness.as_deref(), Some("ready"));
     // Picking starts a session on it; this fake can't run one.
     let pick = first.ctx.composer.pick_key(composer::PickerId::Harness, "other").expect("listed");
@@ -190,8 +190,8 @@ fn an_executable_set_in_the_tab_is_saved_registered_and_probed() {
     let mut app = App::build(services).0;
     let id = loa_harness::codex::HARNESS;
 
-    update(&mut app, Message::Harness(HarnessMessage::EditExecutable(id.into(), codex.display().to_string())));
-    update(&mut app, Message::Harness(HarnessMessage::SaveExecutable(id.into())));
+    update(&mut app, Message::area(HarnessMessage::EditExecutable(id.into(), codex.display().to_string())));
+    update(&mut app, Message::area(HarnessMessage::SaveExecutable(id.into())));
 
     let saved = app.ctx.services.config.load().unwrap().harness;
     assert_eq!(saved.executable(id), Some(codex.as_path()));
@@ -207,8 +207,8 @@ fn an_executable_set_in_the_tab_is_saved_registered_and_probed() {
     assert_eq!(relaunched.ctx.services.harnesses.get(id).unwrap().configured.as_deref(), Some(codex.as_path()));
 
     // Clearing the field restores the default and forgets the override.
-    update(&mut app, Message::Harness(HarnessMessage::EditExecutable(id.into(), String::new())));
-    update(&mut app, Message::Harness(HarnessMessage::SaveExecutable(id.into())));
+    update(&mut app, Message::area(HarnessMessage::EditExecutable(id.into(), String::new())));
+    update(&mut app, Message::area(HarnessMessage::SaveExecutable(id.into())));
     assert_eq!(app.ctx.services.config.load().unwrap().harness.executable(id), None);
     let harness = app.ctx.services.harnesses.get(id).unwrap();
     assert_eq!(harness.configured, None);

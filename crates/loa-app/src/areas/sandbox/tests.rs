@@ -164,7 +164,7 @@ fn scripted_app_as(dir: &Path, seed: u8, name: &str) -> (App, Arc<Mutex<Vec<Vec<
 }
 
 fn sandbox(app: &mut App, message: Message) {
-    update(app, AppMessage::Sandbox(message));
+    update(app, AppMessage::area(message));
 }
 
 #[test]
@@ -172,7 +172,7 @@ fn a_session_runs_sandbox_task_and_the_patch_is_reviewed_and_applied() {
     let dir = tempfile::tempdir().unwrap();
     let (mut app, parent_tools) = scripted_app(dir.path());
     let repo = app.ctx.services.cwd.clone();
-    let mut events = app.areas.sandbox.subscribe();
+    let mut events = app.areas.get::<crate::areas::sandbox::State>().subscribe();
 
     update(&mut app, AppMessage::NewSession);
     prompt(&mut app, "Write the notes");
@@ -184,7 +184,7 @@ fn a_session_runs_sandbox_task_and_the_patch_is_reviewed_and_applied() {
         sandbox(&mut app, Message::Event(event));
     }
 
-    let entries = app.areas.sandbox.runs().entries();
+    let entries = app.areas.get::<crate::areas::sandbox::State>().runs().entries();
     assert_eq!(entries.len(), 1);
     let entry = entries[0].clone();
     assert_eq!((entry.run.parent.as_str(), entry.run.task.as_str(), entry.run.isolated), (parent.as_str(), "Write the notes", true));
@@ -198,8 +198,8 @@ fn a_session_runs_sandbox_task_and_the_patch_is_reviewed_and_applied() {
 
     // The patch comes up for review in the Sandbox tab.
     assert_eq!(app.ctx.shell.active_tab(), Some(TAB));
-    assert_eq!(app.areas.sandbox.selected, Some(entry.run.run));
-    let shown: Vec<_> = app.areas.sandbox.diff.files().iter().map(|file| file.path().to_owned()).collect();
+    assert_eq!(app.areas.get::<crate::areas::sandbox::State>().selected, Some(entry.run.run));
+    let shown: Vec<_> = app.areas.get::<crate::areas::sandbox::State>().diff.files().iter().map(|file| file.path().to_owned()).collect();
     assert_eq!(shown, ["notes/hello.txt", "tracked.txt"]);
 
     // The worker was journaled in the library and released when it ended.
@@ -210,7 +210,7 @@ fn a_session_runs_sandbox_task_and_the_patch_is_reviewed_and_applied() {
     sandbox(&mut app, Message::Apply(entry.run.run));
     assert_eq!(std::fs::read_to_string(repo.join("notes/hello.txt")).unwrap(), "from the sandbox\n");
     assert_eq!(std::fs::read_to_string(repo.join("tracked.txt")).unwrap(), "changed\n");
-    let applied = app.areas.sandbox.runs().get(entry.run.run).unwrap();
+    let applied = app.areas.get::<crate::areas::sandbox::State>().runs().get(entry.run.run).unwrap();
     assert!(matches!(applied.state, loa_sandbox::RunState::Finished { applied: true, .. }));
     assert_eq!(applied.pending_patch(), None);
 
@@ -227,13 +227,13 @@ fn a_failed_run_is_listed_with_its_error() {
     let plain = dir.path().join("plain");
     std::fs::create_dir(&plain).unwrap();
     app.ctx.services.cwd = plain;
-    let mut events = app.areas.sandbox.subscribe();
+    let mut events = app.areas.get::<crate::areas::sandbox::State>().subscribe();
     update(&mut app, AppMessage::NewSession);
     prompt(&mut app, "Write the notes");
     while let Ok(event) = events.try_recv() {
         sandbox(&mut app, Message::Event(event));
     }
-    let entry = &app.areas.sandbox.runs().entries()[0];
+    let entry = &app.areas.get::<crate::areas::sandbox::State>().runs().entries()[0];
     let loa_sandbox::RunState::Failed(error) = &entry.state else { panic!("{:?}", entry.state) };
     assert!(error.starts_with("isolation:"), "{error}");
     assert_ne!(app.ctx.shell.active_tab(), Some(TAB), "nothing to review");
@@ -264,7 +264,7 @@ fn settings_are_saved_and_used_for_new_sessions() {
     for message in [palette::Message::Open, palette::Message::QueryChanged("Sandbox settings".into()), palette::Message::Submit] {
         update(&mut app, AppMessage::Palette(message));
     }
-    assert_eq!((app.ctx.shell.active_tab(), app.areas.sandbox.view), (Some(TAB), View::Settings));
+    assert_eq!((app.ctx.shell.active_tab(), app.areas.get::<crate::areas::sandbox::State>().view), (Some(TAB), View::Settings));
 
     sandbox(&mut app, Message::Edit(Field::DockerImage, "alpine:3".into()));
     sandbox(&mut app, Message::Edit(Field::VmDisk, "/images/guest.img".into()));
@@ -277,7 +277,7 @@ fn settings_are_saved_and_used_for_new_sessions() {
     assert_eq!(saved.vm_disk.as_deref(), Some(Path::new("/images/guest.img")));
     assert_eq!(saved.ssh_hosts, ["build", "gpu"]);
     assert!(saved.docker_network);
-    assert_eq!(app.areas.sandbox.service.config(), &saved, "new sessions use the saved settings");
+    assert_eq!(app.areas.get::<crate::areas::sandbox::State>().service.config(), &saved, "new sessions use the saved settings");
     let ssh = app.ctx.app_tools.iter().find(|tool| tool.name == "sandbox_task").unwrap().details.iter().find(|d| d.label == "SSH host").cloned();
     assert!(ssh.is_some_and(|ssh| ssh.state != DetailState::Ready || ssh.text.starts_with("build, gpu")), "probed again with the new hosts");
 
@@ -291,7 +291,7 @@ fn settings_are_saved_and_used_for_new_sessions() {
     .unwrap();
     drop(app);
     let app = App::build(services).0;
-    assert_eq!(app.areas.sandbox.service.config(), &saved);
+    assert_eq!(app.areas.get::<crate::areas::sandbox::State>().service.config(), &saved);
 }
 
 /// Peer runs: two apps in one process, each with its own node listening on
@@ -335,7 +335,7 @@ mod peer {
     }
 
     fn panel(rt: &Runtime, app: &mut App, message: Local) {
-        update(rt, app, AppMessage::Peers(peers::Message::Panel(Msg::Local(message))));
+        update(rt, app, AppMessage::area(peers::Message::Panel(Msg::Local(message))));
     }
 
     /// The scripted app with its node on a free loopback port, started; the
@@ -347,10 +347,10 @@ mod peer {
         settings.network.discovery.tailscale = false;
         settings.network.port = 0;
         let config = peers::node_config(&app.ctx, &settings.network);
-        app.areas.peers = peers::State::with_config(&mut app.ctx, config).0;
-        let node = app.areas.peers.node().expect("node opened").clone();
+        *app.areas.get_mut::<crate::areas::peers::State>() = peers::State::with_config(&mut app.ctx, config).0;
+        let node = app.areas.get::<crate::areas::peers::State>().node().expect("node opened").clone();
         let started = rt.block_on(node.start()).map_err(|error| error.to_string());
-        update(rt, &mut app, AppMessage::Peers(peers::Message::Started(started)));
+        update(rt, &mut app, AppMessage::area(peers::Message::Started(started)));
         let Endpoint::Listening { udp, .. } = node.status().endpoint else { panic!("not listening: {:?}", node.status().endpoint) };
         (app, peer, udp[0].port())
     }
@@ -373,7 +373,7 @@ mod peer {
         let (owner_dir, guest_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         let (mut owner, _, _) = networked(&rt, owner_dir.path(), 21, "owner-box");
         let (mut guest, guest_peer, guest_port) = networked(&rt, guest_dir.path(), 22, "guest-box");
-        let owner_port = match owner.areas.peers.node().unwrap().status().endpoint {
+        let owner_port = match owner.areas.get::<crate::areas::peers::State>().node().unwrap().status().endpoint {
             Endpoint::Listening { udp, .. } => udp[0].port(),
             other => panic!("{other:?}"),
         };
@@ -381,13 +381,13 @@ mod peer {
         add_peer(&rt, &mut owner, &guest, guest_port);
 
         // Networking runs, but nobody granted the guest a sandbox yet.
-        update(&rt, &mut guest, AppMessage::Sandbox(Message::Refresh));
+        update(&rt, &mut guest, AppMessage::area(Message::Refresh));
         let detail = peer_detail(&guest);
         assert_eq!((detail.state, detail.text.as_str()), (DetailState::NotConfigured, "No peer has granted this device sandbox access"));
 
         // The owner grants "Sandbox on this node" from the Peers panel.
         let owner_key = owner.ctx.services.node.key.clone();
-        update(&rt, &mut owner, AppMessage::Peers(peers::Message::Open));
+        update(&rt, &mut owner, AppMessage::area(peers::Message::Open));
         panel(&rt, &mut owner, Local::SelectPeer(guest.ctx.services.node.key.clone()));
         panel(&rt, &mut owner, Local::SelectResource("sandbox".into()));
         panel(&rt, &mut owner, Local::Permission(Permission::Drive));
@@ -395,7 +395,7 @@ mod peer {
         panel(&rt, &mut owner, Local::SubmitGrant);
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
-            update(&rt, &mut guest, AppMessage::Sandbox(Message::Refresh));
+            update(&rt, &mut guest, AppMessage::area(Message::Refresh));
             if peer_detail(&guest).state == DetailState::Ready {
                 break;
             }
@@ -407,7 +407,7 @@ mod peer {
         // A session on the guest runs its task on the owner, isolated.
         *guest_peer.lock().unwrap() = Some(owner_key);
         let repo = guest.ctx.services.cwd.clone();
-        let mut events = guest.areas.sandbox.subscribe();
+        let mut events = guest.areas.get::<crate::areas::sandbox::State>().subscribe();
         update(&rt, &mut guest, AppMessage::NewSession);
         for c in "Write the notes".chars() {
             use iced::widget::text_editor::{Action, Edit};
@@ -415,21 +415,21 @@ mod peer {
         }
         update(&rt, &mut guest, AppMessage::Composer(loa_ui_session::composer::Message::Submit));
         let deadline = Instant::now() + Duration::from_secs(30);
-        while guest.areas.sandbox.runs().entries().first().is_none_or(|entry| matches!(entry.state, loa_sandbox::RunState::Running)) {
+        while guest.areas.get::<crate::areas::sandbox::State>().runs().entries().first().is_none_or(|entry| matches!(entry.state, loa_sandbox::RunState::Running)) {
             while let Ok(event) = events.try_recv() {
-                update(&rt, &mut guest, AppMessage::Sandbox(Message::Event(event)));
+                update(&rt, &mut guest, AppMessage::area(Message::Event(event)));
             }
             assert!(Instant::now() < deadline, "the peer run ended");
             std::thread::sleep(Duration::from_millis(25));
         }
-        let entry = guest.areas.sandbox.runs().entries()[0].clone();
+        let entry = guest.areas.get::<crate::areas::sandbox::State>().runs().entries()[0].clone();
         assert_eq!((entry.run.kind, entry.run.isolated), (loa_sandbox::SandboxKind::Peer, true));
         let loa_sandbox::RunState::Finished { files, .. } = &entry.state else { panic!("the run finished: {:?}", entry.state) };
         let paths: Vec<_> = files.iter().map(|file| file.path.as_str()).collect();
         assert_eq!(paths, ["notes/hello.txt", "tracked.txt"]);
         assert!(!repo.join("notes").exists(), "the workspace is untouched until the patch is applied");
         assert_eq!(guest.ctx.shell.active_tab(), Some(TAB));
-        update(&rt, &mut guest, AppMessage::Sandbox(Message::Apply(entry.run.run)));
+        update(&rt, &mut guest, AppMessage::area(Message::Apply(entry.run.run)));
         assert_eq!(std::fs::read_to_string(repo.join("notes/hello.txt")).unwrap(), "from the sandbox\n");
         assert!(owner.ctx.notice().is_none_or(|notice| !notice.contains("sandbox run")), "{:?}", owner.ctx.notice());
     }

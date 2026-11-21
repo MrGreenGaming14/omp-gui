@@ -26,12 +26,11 @@ use loa_config::{NetworkSettings, Relay};
 use loa_trust::Resource;
 use adapter::{self as ui, Outcome};
 use loa_p2p::{Endpoint, LibrarySessions, Node, NodeConfig, NodeEvent, RelayConfig};
-use loa_ui_shell::palette;
 use loa_ui_kit::widgets::Screen;
 use loa_ui_settings::peers;
 use loa_ui_shell::{NodeStatus, SessionSummary};
 
-use crate::area::{Area, AreaId, Ctx, PanelTab, Request};
+use crate::area::{Area, AreaCommand, AreaMessage, Ctx, PanelTab, Request};
 
 pub use folder::FolderMessage;
 pub use remote::{Feed, RemoteMessage};
@@ -41,11 +40,6 @@ const TAB: &str = "peers";
 
 /// Recents ids of peers' sessions: `peer:<node key>:<session id>`.
 const RECENT_PREFIX: &str = "peer:";
-
-const COPY_KEY: &str = "copy_key";
-const REFRESH: &str = "refresh";
-const SCAN: &str = "scan_tailnet";
-const RESTART: &str = "restart";
 
 #[derive(Clone, Debug)]
 pub enum Message {
@@ -127,12 +121,6 @@ fn network_settings(ctx: &mut Ctx) -> NetworkSettings {
 }
 
 impl State {
-    pub fn new(ctx: &mut Ctx) -> (Self, Task<Message>) {
-        let network = network_settings(ctx);
-        let config = node_config(ctx, &network);
-        Self::with_config(ctx, config)
-    }
-
     /// Opens the node over the app's sessions and grant store with
     /// `config`; the task starts its endpoint.
     pub(crate) fn with_config(ctx: &mut Ctx, config: NodeConfig) -> (Self, Task<Message>) {
@@ -287,7 +275,7 @@ impl State {
                 let theme = ctx.shell.theme();
                 self.remote = Some(remote::Remote::new(view, name, ctx.services.node.key.clone(), &theme));
                 self.folder = None;
-                ctx.show_screen(AreaId::Peers);
+                ctx.show_screen(State::ID);
                 Task::none()
             }
             Outcome::Forked(id) => {
@@ -300,7 +288,7 @@ impl State {
                     let name = Node::parse_key(&peer).map_or_else(|_| peer.clone(), |key| node.peer_name(&key));
                     self.folder = Some(folder::Browser::new(node.clone(), peer, name, folder, entries, can_write));
                     self.remote = None;
-                    ctx.show_screen(AreaId::Peers);
+                    ctx.show_screen(State::ID);
                 }
                 Task::none()
             }
@@ -322,7 +310,7 @@ impl State {
             NodeEvent::AnswerRequested { peer, session, decision, values, reason } => {
                 let answer = Answer { values, reason, by: peer.to_string() };
                 let message = crate::areas::decisions::Message::Answer { session, decision, answer };
-                ctx.request(Request::Forward(Box::new(crate::app::Message::Decisions(message))));
+                ctx.request(Request::Forward(Box::new(crate::app::Message::area(message))));
             }
         }
     }
@@ -331,7 +319,7 @@ impl State {
     fn restart(&mut self, ctx: &mut Ctx) -> Task<Message> {
         self.remote = None;
         self.folder = None;
-        if ctx.screen() == Some(AreaId::Peers) {
+        if ctx.screen() == Some(State::ID) {
             ctx.close_screen();
         }
         match self.node.take() {
@@ -341,8 +329,29 @@ impl State {
     }
 }
 
+impl AreaMessage for Message {
+    type Area = State;
+}
+
 impl Area for State {
+    const ID: &'static str = "peers";
+    const COMMANDS: &'static [AreaCommand<Self>] = &[
+        AreaCommand::<Self>::new("peers.copy_key", "Copy this node's key", "Peers", |_, _, ctx| {
+            ctx.notify("Key copied");
+            iced::clipboard::write(ctx.services.node.key.clone())
+        }),
+        AreaCommand::<Self>::new("peers.refresh", "Check peers now", "Peers", |state, _, ctx| state.apply(peers::Event::Refresh, ctx)),
+        AreaCommand::<Self>::new("peers.scan_tailnet", "Scan the tailnet for nodes", "Peers", |state, _, ctx| state.apply(peers::Event::ScanTailscale, ctx)),
+        AreaCommand::<Self>::new("peers.restart", "Restart the peer endpoint with the network settings", "Peers", |state, _, ctx| state.restart(ctx)),
+    ];
+
     type Message = Message;
+
+    fn new(ctx: &mut Ctx) -> (Self, Task<Message>) {
+        let network = network_settings(ctx);
+        let config = node_config(ctx, &network);
+        Self::with_config(ctx, config)
+    }
 
     fn update(&mut self, message: Message, ctx: &mut Ctx) -> Task<Message> {
         match message {
@@ -389,7 +398,7 @@ impl Area for State {
                 let Some((peer, session)) = parse_recent(&id) else { return Task::none() };
                 if self.remote.as_ref().is_some_and(|remote| remote.is(peer, session) && remote.ended.is_none()) {
                     self.folder = None;
-                    ctx.show_screen(AreaId::Peers);
+                    ctx.show_screen(State::ID);
                     return Task::none();
                 }
                 self.apply(peers::Event::OpenRemote { peer: peer.to_owned(), session: session.to_owned() }, ctx)
@@ -401,29 +410,6 @@ impl Area for State {
             Message::Remote(message) => self.remote_update(message, ctx),
             Message::Folder(message) => self.folder_update(message, ctx),
         }
-    }
-
-    fn palette_commands(&self, _: &Ctx) -> Vec<palette::Command> {
-        vec![
-            palette::Command::new(AreaId::Peers.command(COPY_KEY), "Copy this node's key", "Peers"),
-            palette::Command::new(AreaId::Peers.command(REFRESH), "Check peers now", "Peers"),
-            palette::Command::new(AreaId::Peers.command(SCAN), "Scan the tailnet for nodes", "Peers"),
-            palette::Command::new(AreaId::Peers.command(RESTART), "Restart the peer endpoint with the network settings", "Peers"),
-        ]
-    }
-
-    fn run_command(&mut self, id: &str, ctx: &mut Ctx) -> Option<Task<Message>> {
-        let name = id.strip_prefix(AreaId::Peers.key())?.strip_prefix('.')?;
-        Some(match name {
-            COPY_KEY => {
-                ctx.notify("Key copied");
-                iced::clipboard::write(ctx.services.node.key.clone())
-            }
-            REFRESH => self.apply(peers::Event::Refresh, ctx),
-            SCAN => self.apply(peers::Event::ScanTailscale, ctx),
-            RESTART => self.restart(ctx),
-            _ => return None,
-        })
     }
 
     fn panel_tabs(&self) -> Vec<PanelTab> {

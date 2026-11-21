@@ -22,19 +22,13 @@ use loa_ui_shell as shell;
 use loa_ui_shell::theme::style;
 use loa_ui_terminal as terminal;
 
-use crate::area::{Area, AreaId, Ctx, Request, SessionEvent, Sessions, Spawn, Target};
-use crate::areas::{self, Areas, with_areas};
+use crate::area::{Area, AreaMsg, Ctx, Request, SessionEvent, Sessions, Spawn, Target};
+use crate::areas::{self, Registry};
 use crate::services::Services;
 use crate::session::{self, Change, Feed, dom_turns};
 
-/// Panel tabs the app draws itself, before the areas' tabs.
 /// How often the sidebar's usage meter re-reads `omp usage`.
 const USAGE_REFRESH: Duration = Duration::from_secs(300);
-
-const TAB_COMMAND: &str = "tab.";
-const THEME_COMMAND: &str = "theme.";
-const NEW_SESSION: palette::CommandId = palette::CommandId::from_static("session.new");
-const PROJECT_TABS_TOGGLE: palette::CommandId = palette::CommandId::from_static("project.tabs.toggle");
 
 /// Width of the composer: the transcript's column width.
 pub(crate) const COMPOSER_WIDTH: f32 = 700.0;
@@ -53,43 +47,6 @@ const COMPOSER_INSET: f32 = 190.0;
 
 /// How often running sessions redraw, so elapsed times advance.
 const TICK: Duration = Duration::from_secs(1);
-
-/// `&$e` for `ref`, `&mut $e` for `mut`.
-macro_rules! borrow {
-    (ref, $e:expr) => {
-        &$e
-    };
-    (mut, $e:expr) => {
-        &mut $e
-    };
-}
-
-/// `[$body; each area]`, with `$area` bound to the area (borrowed `ref` or
-/// `mut`) and `$wrap` to its `Message` variant.
-macro_rules! each_area {
-    ($areas:expr, $borrow:ident |$area:ident, $wrap:ident| $body:expr; $($field:ident $variant:ident),+) => {
-        [$({
-            let $area = borrow!($borrow, $areas.$field);
-            let $wrap = Message::$variant;
-            let _ = $wrap;
-            $body
-        }),+]
-    };
-}
-
-/// `$body` for the area `$id`, bound as in [`each_area`].
-macro_rules! on_area {
-    ($id:expr, $areas:expr, $borrow:ident |$area:ident, $wrap:ident| $body:expr; $($field:ident $variant:ident),+) => {
-        match $id {
-            $(AreaId::$variant => {
-                let $area = borrow!($borrow, $areas.$field);
-                let $wrap = Message::$variant;
-                let _ = $wrap;
-                $body
-            })+
-        }
-    };
-}
 
 /// Why a session couldn't be resumed.
 #[derive(Clone, Debug)]
@@ -134,16 +91,8 @@ pub enum Message {
     /// A harness call returned.
     Operation(Result<(), String>),
     WorkingDiff(Option<String>),
-    Harness(areas::harness::Message),
-    Sessions(areas::sessions::Message),
-    Decisions(areas::decisions::Message),
-    Tools(areas::tools::Message),
-    Surfaces(areas::surfaces::Message),
-    Models(areas::models::Message),
-    Projects(areas::projects::Message),
-    Peers(areas::peers::Message),
-    Updater(areas::updater::Message),
-    Sandbox(areas::sandbox::Message),
+    /// A message for area `.0` ([`Message::area`]).
+    Area(&'static str, AreaMsg),
     /// The Usage window.
     Usage(usage::Message),
     /// Configs and Settings.
@@ -162,7 +111,7 @@ pub enum Message {
 
 pub struct App {
     pub(crate) ctx: Ctx,
-    pub(crate) areas: Areas,
+    pub(crate) areas: Registry,
     pub(crate) chat: chat::State,
     pub(crate) palette: palette::State,
     pub(crate) files: files::State,
@@ -199,7 +148,7 @@ impl App {
     pub fn boot() -> (Self, Task<Message>) {
         let (mut app, task) = Self::new();
         let open = app.open_main();
-        let catalog = app.areas.models.read_catalog().map(Message::Models);
+        let catalog = app.areas.get::<crate::areas::models::State>().read_catalog().map(Message::area);
         (app, Task::batch([open, task, catalog]))
     }
 
@@ -249,13 +198,16 @@ impl App {
             notice: (!problems.is_empty()).then(|| problems.join("; ")),
             requests: Vec::new(),
             events: Vec::new(),
+            slash: Vec::new(),
         };
         ctx.shell.set_project_tabs(saved.project_tabs);
         ctx.shell.set_active_project(restored.map(|active| active.name));
         ctx.shell.sidebar_mut().set_pins(saved.pinned);
         ctx.shell.sidebar_mut().set_pinned_projects(saved.pinned_projects);
         ctx.shell.sidebar_mut().set_sessions(recents);
-        let (areas, area_tasks) = Areas::new(&mut ctx);
+        let (areas, area_tasks) = Registry::new(&mut ctx);
+        ctx.slash = crate::area::slash_rows(keys::APP_COMMANDS).chain(areas.slash_rows()).collect();
+        ctx.composer.set_commands(ctx.slash.clone());
         let mut app = Self {
             ctx,
             areas,
@@ -291,11 +243,8 @@ impl App {
 
     /// Every panel tab: the built-in ones, then each area's.
     fn tabs(&self) -> Vec<crate::area::PanelTab> {
-        let mut tabs: Vec<_> = panes::REGISTRY.iter().map(|pane| pane.tab(self)).collect();
-        for area_tabs in with_areas!(each_area!(self.areas, ref |area, wrap| area.panel_tabs())) {
-            tabs.extend(area_tabs);
-        }
-        tabs
+        let tabs = panes::REGISTRY.iter().map(|pane| pane.tab(self));
+        tabs.chain(self.areas.iter().flat_map(|area| area.panel_tabs())).collect()
     }
 
     /// Lists the panel tab `id` when it isn't; `false` when no such tab
@@ -338,34 +287,12 @@ impl App {
         self.ctx.edit_config("settings", change);
     }
 
-    /// The palette's commands: session and view actions, panel tabs, themes
-    /// and each area's.
+    /// The palette's commands: the app's ([`keys::APP_COMMANDS`]), the
+    /// keymap's reference rows, then each area's.
     fn refresh_commands(&mut self) {
-        let keymap = &self.ctx.keymap;
-        let mut commands = vec![
-            palette::Command::new(NEW_SESSION, "New session", "Commands"),
-            palette::Command::new(palette::ids::PANEL_TOGGLE, "Toggle right panel", "Commands")
-                .shortcut(keymap.chord_for(&palette::ids::PANEL_TOGGLE)),
-            palette::Command::new(palette::ids::SESSION_INTERRUPT, "Interrupt session", "Commands"),
-            palette::Command::new(
-                PROJECT_TABS_TOGGLE,
-                if self.ctx.shell.project_tabs() { "Hide project tabs" } else { "Show project tabs" },
-                "Commands",
-            ),
-            palette::Command::new(palette::ids::PALETTE_TOGGLE, "Command palette", "Commands")
-                .shortcut(keymap.chord_for(&palette::ids::PALETTE_TOGGLE)),
-        ];
-        commands.extend(self.tabs().into_iter().map(|tab| {
-            let id = palette::CommandId::new(format!("{TAB_COMMAND}{}", tab.id));
-            palette::Command::new(id, format!("Open {} tab", tab.title), "Commands")
-        }));
-        commands.extend(self.ctx.shell.theme_state().themes().into_iter().map(|(key, label)| {
-            palette::Command::new(palette::CommandId::new(format!("{THEME_COMMAND}{key}")), format!("Theme: {label}"), "Theme")
-        }));
-        commands.extend(self.keyboard_commands());
-        for area_commands in with_areas!(each_area!(self.areas, ref |area, wrap| area.palette_commands(&self.ctx))) {
-            commands.extend(area_commands);
-        }
+        let mut commands: Vec<_> = keys::APP_COMMANDS.iter().flat_map(|spec| spec.palette(self, &self.ctx)).collect();
+        commands.extend(self.reference_keys());
+        commands.extend(self.areas.iter().flat_map(|area| area.commands(&self.ctx)));
         self.hint_commands(&mut commands);
         if self.palette.commands() != commands.as_slice() {
             self.palette.set_commands(commands);
@@ -392,10 +319,10 @@ impl App {
         let capabilities = self.ctx.services.harnesses.registry.get(harness).map(|adapter| adapter.capabilities()).unwrap_or_default();
         let target = Target { harness, capabilities: &capabilities, resume: dom.is_some() };
         let ctx = &self.ctx;
-        with_areas!(each_area!(self.areas, ref |area, wrap| area.contribute(&mut config, &target, ctx)));
+        self.areas.iter().for_each(|area| area.contribute(&mut config, &target, ctx));
         let mut router = HostToolRouter::new();
         let mut duplicates = Vec::new();
-        for set in with_areas!(each_area!(self.areas, ref |area, wrap| area.host_tools(&config, &target, ctx))).into_iter().flatten() {
+        for set in self.areas.iter().filter_map(|area| area.host_tools(&config, &target, ctx)) {
             for spec in set.specs {
                 if let Err(duplicate) = router.add(spec, Arc::clone(&set.handler)) {
                     duplicates.push(duplicate.0);
@@ -488,7 +415,7 @@ impl App {
         let Some(session) = self.ctx.sessions.active() else { return Task::none() };
         let Some(harness) = session.harness().cloned() else { return self.resume(prompt) };
         let id = session.id().clone();
-        with_areas!(each_area!(self.areas, mut |area, wrap| area.before_send(&id, &mut prompt, &mut self.ctx)));
+        self.areas.iter_mut().for_each(|area| area.before_send(&id, &mut prompt, &mut self.ctx));
         if let Some(session) = self.ctx.sessions.get_mut(id.as_str()) {
             session.set_busy(true);
         }
@@ -644,7 +571,7 @@ impl App {
             }
             _ => {}
         }
-        let tasks = with_areas!(each_area!(self.areas, mut |area, wrap| area.on_session_event(&event, &mut self.ctx).map(wrap)));
+        let tasks: Vec<_> = self.areas.iter_mut().map(|area| area.on_session_event(&event, &mut self.ctx)).collect();
         Task::batch(tasks.into_iter().chain([presented, self.settle()]))
     }
 
@@ -735,9 +662,7 @@ impl App {
         let terminal = self.terminal_follow(cwd.clone());
         let saved = loa_config::ActiveProject { name: project.clone(), cwd: cwd.clone() };
         self.save_ui(|config| config.active_project = Some(saved));
-        let tasks = with_areas!(each_area!(self.areas, mut |area, wrap| area
-            .project_activated(&project, &cwd, &mut self.ctx)
-            .map(wrap)));
+        let tasks: Vec<_> = self.areas.iter_mut().map(|area| area.project_activated(&project, &cwd, &mut self.ctx)).collect();
         Task::batch(tasks.into_iter().chain([terminal, working_diff(cwd), self.settle()]))
     }
 
@@ -801,70 +726,35 @@ impl App {
             (None, false) => last,
         };
         let project = tabs[index].clone();
-        self.update(Message::Projects(areas::projects::Message::Open(project)))
+        self.update(Message::area(areas::projects::Message::Open(project)))
     }
 
+    /// Runs palette command `id`: one of [`keys::APP_COMMANDS`], else the
+    /// command of the area its prefix names.
     pub(crate) fn command(&mut self, id: &palette::CommandId) -> Task<Message> {
         let id = id.as_str();
-        if let Some(task) = self.keyboard_command(id) {
-            return task;
+        if let Some((spec, arg)) = crate::area::find_command(keys::APP_COMMANDS, id) {
+            return (spec.run)(self, arg);
         }
-        if let Some(tab) = id.strip_prefix(TAB_COMMAND) {
-            return self.open_tab(tab);
-        }
-        if let Some(theme) = id.strip_prefix(THEME_COMMAND).filter(|t| self.ctx.shell.theme_state().themes().iter().any(|(k, _)| k == t)) {
-            return self.update(Message::Shell(shell::Message::SetTheme(shell::ThemeRef(theme.to_owned()))));
-        }
-        match id {
-            "palette.toggle" => self.update(Message::Palette(palette::Message::Toggle)),
-            "panel.toggle" => {
-                self.ctx.shell.set_panel_open(!self.ctx.shell.panel_open());
+        let area = id.split_once('.').and_then(|(area, _)| self.areas.find(area));
+        match area.and_then(|area| area.run(id, &mut self.ctx)) {
+            Some(task) => Task::batch([task, self.settle()]),
+            None => {
+                self.ctx.notify(format!("Unknown command {id}"));
                 Task::none()
-            }
-            "session.new" => self.start(None),
-            "project.tabs.toggle" => {
-                let enabled = !self.ctx.shell.project_tabs();
-                self.ctx.shell.set_project_tabs(enabled);
-                self.save_ui(|config| config.project_tabs = enabled);
-                Task::none()
-            }
-            "session.interrupt" => self.update(Message::Composer(composer::Message::Interrupt)),
-            _ => {
-                let Some(area) = AreaId::of_command(id) else {
-                    self.ctx.notify(format!("Unknown command {id}"));
-                    return Task::none();
-                };
-                let task = with_areas!(on_area!(area, self.areas, mut |area, wrap| area
-                    .run_command(id, &mut self.ctx)
-                    .map(|task| task.map(wrap))));
-                let Some(task) = task else {
-                    self.ctx.notify(format!("Unknown command {id}"));
-                    return Task::none();
-                };
-                Task::batch([task, self.settle()])
             }
         }
     }
 
     /// Runs a `/` command typed in the composer when it is one of the
-    /// app's: `/new`, `/model <id>` (the models area) and the sessions
-    /// area's. `None` for anything else, which goes to the harness as typed,
-    /// its own commands included.
+    /// app's or an area's. `None` for anything else, which goes to the
+    /// harness as typed, its own commands included.
     fn slash(&mut self, text: &str) -> Option<Task<Message>> {
-        let (name, model) = areas::sessions::split_slash(text)?;
-        match name {
-            "new" => Some(self.start(None)),
-            "model" if model.is_empty() => {
-                self.ctx.notify("Name the model: /model <provider/model>, or pick one in the model picker");
-                Some(Task::none())
-            }
-            "model" => {
-                let option =
-                    composer::ModelOption { id: model.to_owned(), name: model.to_owned(), provider: String::new(), role: None };
-                Some(self.update(Message::Models(areas::models::Message::Model(option))))
-            }
-            _ => areas::sessions::slash(text).map(|message| self.update(Message::Sessions(message))),
+        if let Some((spec, args)) = crate::area::find_slash(keys::APP_COMMANDS, text) {
+            return Some((spec.run)(self, args));
         }
+        let task = self.areas.iter_mut().find_map(|area| area.slash(text, &mut self.ctx))?;
+        Some(Task::batch([task, self.settle()]))
     }
 
     fn composer_event(&mut self, event: Option<composer::Event>) -> Task<Message> {
@@ -880,14 +770,14 @@ impl App {
                 None => self.send(prompt),
             },
             Some(composer::Event::Stop) => self.interrupt(),
-            Some(composer::Event::HarnessChanged(id)) => self.update(Message::Harness(areas::harness::Message::Pick(id))),
-            Some(composer::Event::ModelChanged(model)) => self.update(Message::Models(areas::models::Message::Model(model))),
-            Some(composer::Event::ModelAction(id)) => self.update(Message::Models(areas::models::Message::Action(id))),
+            Some(composer::Event::HarnessChanged(id)) => self.update(Message::area(areas::harness::Message::Pick(id))),
+            Some(composer::Event::ModelChanged(model)) => self.update(Message::area(areas::models::Message::Model(model))),
+            Some(composer::Event::ModelAction(id)) => self.update(Message::area(areas::models::Message::Action(id))),
             Some(composer::Event::EffortChanged(effort)) => {
-                self.update(Message::Models(areas::models::Message::Effort(effort)))
+                self.update(Message::area(areas::models::Message::Effort(effort)))
             }
             Some(composer::Event::AccessChanged(id)) => self.set_access(id),
-            Some(composer::Event::ModeChanged(mode)) => self.update(Message::Sessions(areas::sessions::Message::Mode(mode))),
+            Some(composer::Event::ModeChanged(mode)) => self.update(Message::area(areas::sessions::Message::Mode(mode))),
             Some(composer::Event::FilesRequested { .. }) => {
                 self.files.refresh();
                 self.ctx.composer.set_files(self.files.visible().map(|path| path.to_string_lossy().into_owned()).collect());
@@ -903,7 +793,8 @@ impl App {
     pub fn update(&mut self, message: Message) -> Task<Message> {
         let task = self.handle(message);
         // The sidebar and top bar follow a project page in the center.
-        let shown = (self.ctx.screen() == Some(AreaId::Projects)).then(|| self.areas.projects.shown().map(str::to_owned)).flatten();
+        let projects = areas::projects::State::ID;
+        let shown = (self.ctx.screen() == Some(projects)).then(|| self.areas.get::<areas::projects::State>().shown().map(str::to_owned)).flatten();
         self.ctx.shell.set_shown_project(shown);
         self.sync_access();
         self.sync_project_tabs();
@@ -959,12 +850,6 @@ impl App {
     }
 
     fn handle(&mut self, message: Message) -> Task<Message> {
-        macro_rules! area {
-            ($field:ident, $variant:ident, $message:expr) => {{
-                let task = self.areas.$field.update($message, &mut self.ctx).map(Message::$variant);
-                Task::batch([task, self.settle()])
-            }};
-        }
         match message {
             Message::Shell(message) => {
                 use shell::sidebar::Event as Nav;
@@ -985,24 +870,24 @@ impl App {
                     Some(shell::Event::Sidebar(Nav::OpenSettings)) => {
                         self.window_update(windows::WindowMessage::OpenSettings(windows::SettingsTab::General))
                     }
-                    Some(shell::Event::Sidebar(Nav::OpenTools)) => self.update(Message::Tools(areas::tools::Message::Open)),
+                    Some(shell::Event::Sidebar(Nav::OpenTools)) => self.update(Message::area(areas::tools::Message::Open)),
                     Some(shell::Event::DetachTab(tab)) => self.detach(detach::Detached::Tab(tab)),
                     Some(shell::Event::ShowDetached(tab)) => self.show_detached_tab(&tab),
                     Some(shell::Event::ReattachTab(tab)) => self.reattach_tab(&tab),
                     Some(shell::Event::Sidebar(Nav::OpenPeers)) => {
                         self.window_update(windows::WindowMessage::OpenSettings(windows::SettingsTab::Peers))
                     }
-                    Some(shell::Event::Sidebar(Nav::OpenUpdates)) => self.update(Message::Updater(areas::updater::Message::Open)),
+                    Some(shell::Event::Sidebar(Nav::OpenUpdates)) => self.update(Message::area(areas::updater::Message::Open)),
                     Some(shell::Event::Sidebar(Nav::OpenSession(id))) if areas::peers::is_remote(&id) => {
-                        self.update(Message::Peers(areas::peers::Message::OpenRecent(id)))
+                        self.update(Message::area(areas::peers::Message::OpenRecent(id)))
                     }
                     Some(shell::Event::Sidebar(Nav::DeleteSession(id))) if areas::peers::is_remote(&id) => {
-                        self.update(Message::Peers(areas::peers::Message::ForgetRecent(id)))
+                        self.update(Message::area(areas::peers::Message::ForgetRecent(id)))
                     }
                     Some(shell::Event::Sidebar(Nav::OpenSession(id))) => self.open_session(&id),
-                    Some(shell::Event::Sidebar(Nav::DeleteSession(id))) => self.update(Message::Sessions(areas::sessions::Message::Delete(id))),
+                    Some(shell::Event::Sidebar(Nav::DeleteSession(id))) => self.update(Message::area(areas::sessions::Message::Delete(id))),
                     Some(shell::Event::Sidebar(Nav::OpenProject(project))) => {
-                        self.update(Message::Projects(areas::projects::Message::Open(project)))
+                        self.update(Message::area(areas::projects::Message::Open(project)))
                     }
                     Some(shell::Event::CloseProjectTab(project)) => {
                         self.close_project_tab(&project);
@@ -1011,14 +896,14 @@ impl App {
                     Some(shell::Event::SetTheme(theme)) => {
                         let active = self.ctx.shell.theme();
                         self.chat.set_theme(&active);
-                        self.areas.decisions.set_theme(&active);
+                        self.areas.get_mut::<crate::areas::decisions::State>().set_theme(&active);
                         self.save_ui(|config| config.appearance.theme = theme);
                         Task::none()
                     }
                     Some(shell::Event::ThemeChanged(_)) => {
                         let active = self.ctx.shell.theme();
                         self.chat.set_theme(&active);
-                        self.areas.decisions.set_theme(&active);
+                        self.areas.get_mut::<crate::areas::decisions::State>().set_theme(&active);
                         Task::none()
                     }
                     Some(shell::Event::Sidebar(Nav::SetPinned { .. })) => {
@@ -1038,7 +923,7 @@ impl App {
             Message::Chat(message) => {
                 let (task, event) = self.chat.update(message);
                 let action = match event {
-                    Some(event) => self.update(Message::Sessions(areas::sessions::Message::Chat(event))),
+                    Some(event) => self.update(Message::area(areas::sessions::Message::Chat(event))),
                     None => Task::none(),
                 };
                 Task::batch([task.map(Message::Chat), action])
@@ -1091,8 +976,8 @@ impl App {
                     if let Some(pane) = self.ctx.shell.full() {
                         return self.update(Message::Shell(shell::Message::ToggleFull(pane)));
                     }
-                    if self.areas.decisions.focused().is_some() {
-                        return self.update(Message::Decisions(areas::decisions::State::dismiss()));
+                    if self.areas.get::<crate::areas::decisions::State>().focused().is_some() {
+                        return self.update(Message::area(areas::decisions::State::dismiss()));
                     }
                     if self.ctx.screen().is_some() {
                         self.ctx.close_screen();
@@ -1133,7 +1018,7 @@ impl App {
                 let task = task.map(move |message| Message::DetachedChat(session.clone(), message));
                 // Rewinds act on the active session, so only links pass on.
                 let action = match event {
-                    Some(event @ chat::Event::OpenLink(_)) => self.update(Message::Sessions(areas::sessions::Message::Chat(event))),
+                    Some(event @ chat::Event::OpenLink(_)) => self.update(Message::area(areas::sessions::Message::Chat(event))),
                     _ => Task::none(),
                 };
                 Task::batch([task, action])
@@ -1244,31 +1129,26 @@ impl App {
                 let folder = workspace(&self.ctx.services.cwd).path;
                 self.diff.set_note(Some(format!("No git changes to show: {folder} isn't a git repository with a commit"))).map(Message::Diff)
             }
-            Message::Harness(message) => area!(harness, Harness, message),
-            Message::Sessions(message) => area!(sessions, Sessions, message),
-            Message::Decisions(message) => area!(decisions, Decisions, message),
-            Message::Tools(message) => area!(tools, Tools, message),
-            Message::Surfaces(message) => area!(surfaces, Surfaces, message),
-            Message::Models(areas::models::Message::Close) if self.configs.is_some() || matches!(self.overlay, Some(windows::Overlay::Settings(_))) => {
-                // The models screen's own close button, drawn inside Configs or Settings.
+            // The models screen's own close button, drawn inside Configs or Settings.
+            Message::Area(_, message)
+                if matches!(message.downcast_ref(), Some(areas::models::Message::Close))
+                    && (self.configs.is_some() || matches!(self.overlay, Some(windows::Overlay::Settings(_)))) =>
+            {
                 self.configs = None;
                 self.overlay = None;
                 self.ctx.close_screen();
                 Task::none()
             }
-            Message::Models(message) => area!(models, Models, message),
-            Message::Projects(message) => area!(projects, Projects, message),
-            Message::Peers(message) => area!(peers, Peers, message),
-            Message::Updater(message) => area!(updater, Updater, message),
-            Message::Sandbox(message) => area!(sandbox, Sandbox, message),
+            Message::Area(id, message) => {
+                let task = self.areas.update(id, message, &mut self.ctx);
+                Task::batch([task, self.settle()])
+            }
         }
     }
 
     pub fn view(&self) -> Element<'_, Message> {
         let ctx = &self.ctx;
-        let screen = ctx.screen().and_then(|screen| {
-            with_areas!(on_area!(screen, self.areas, ref |area, wrap| area.view_screen(ctx).map(|view| view.map(wrap))))
-        });
+        let screen = ctx.screen().and_then(|screen| self.areas.iter().find(|area| area.id() == screen)?.view_screen(ctx));
         let center_content: Element<'_, Message> = if let Some(tab) = self.configs {
             self.configs_view(tab)
         } else if let Some(screen) = screen {
@@ -1276,9 +1156,9 @@ impl App {
         } else if let Some(session) = ctx.sessions.active() {
             let transcript = self.chat.view(session.dom(), Message::Chat, |slot| {
                 self.areas
-                    .decisions
+                    .get::<areas::decisions::State>()
                     .card(session.id().as_str(), slot.node)
-                    .map(|card| card.map(Message::Decisions))
+                    .map(|card| card.map(Message::area))
                     .unwrap_or_else(|| text("Decision no longer available").into())
             });
             // The composer floats over the transcript's bottom edge; the
@@ -1321,11 +1201,7 @@ impl App {
     fn view_tab<'a>(&'a self, tab: &'a str) -> Element<'a, Message> {
         match panes::find(self, tab) {
             Some(pane) => pane.view(self),
-            None => with_areas!(each_area!(self.areas, ref |area, wrap| area.view_tab(tab, &self.ctx).map(|view| view.map(wrap))))
-                .into_iter()
-                .flatten()
-                .next()
-                .unwrap_or_else(|| text("Unknown tab").into()),
+            None => self.areas.iter().find_map(|area| area.view_tab(tab, &self.ctx)).unwrap_or_else(|| text("Unknown tab").into()),
         }
     }
 
@@ -1335,7 +1211,7 @@ impl App {
 
     pub fn subscription(&self) -> Subscription<Message> {
         let busy = self.ctx.sessions.active().is_some_and(|session| session.is_busy());
-        let areas = with_areas!(each_area!(self.areas, ref |area, wrap| area.subscription().map(wrap)));
+        let areas = self.areas.iter().map(|area| area.subscription());
         Subscription::batch(
             [
                 self.ctx.shell.subscription().map(Message::Shell),

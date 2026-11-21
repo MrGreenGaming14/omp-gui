@@ -24,7 +24,7 @@ use loa_ui_shell::SessionSummary;
 use loa_ui_shell::theme::style;
 
 use super::{Message, State};
-use crate::area::{AreaId, Ctx};
+use crate::area::{Area, Ctx};
 
 /// Patches the mirror's feed may hold before it resubscribes.
 const FEED_CAPACITY: usize = 4096;
@@ -221,7 +221,7 @@ impl State {
             }
             RemoteMessage::Card(message) => {
                 // Card keys act only while this screen shows.
-                if matches!(message, cards::Message::Shortcut(_)) && ctx.screen() != Some(AreaId::Peers) {
+                if matches!(message, cards::Message::Shortcut(_)) && ctx.screen() != Some(super::State::ID) {
                     return Task::none();
                 }
                 let (task, event) = remote.cards.update(message);

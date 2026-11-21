@@ -1,5 +1,6 @@
 //! The decisions area driven through `App::update` over the fake harness.
 
+use loa_ui_shell::palette;
 use std::sync::Arc;
 
 use iced::widget::text_editor::{Action, Edit, Motion};
@@ -21,7 +22,7 @@ fn ask(app: &mut App, text: &str) -> (SessionId, loa_bus::Subscription, NodeId) 
     let (_, mut feed) = session.writer().subscribe(Policy::every_patch(1024));
     prompt(app, text);
     deliver(app, &id, &mut feed);
-    let decision = app.areas.decisions.focused().expect("the waiting card takes the keys");
+    let decision = app.areas.get::<crate::areas::decisions::State>().focused().expect("the waiting card takes the keys");
     (id, feed, decision)
 }
 
@@ -29,11 +30,11 @@ fn ask(app: &mut App, text: &str) -> (SessionId, loa_bus::Subscription, NodeId) 
 fn ask_again(app: &mut App, id: &SessionId, feed: &mut loa_bus::Subscription, text: &str) -> NodeId {
     prompt(app, text);
     deliver(app, id, feed);
-    app.areas.decisions.focused().expect("the waiting card takes the keys")
+    app.areas.get::<crate::areas::decisions::State>().focused().expect("the waiting card takes the keys")
 }
 
 fn desk_message(message: desk::Message) -> AppMessage {
-    AppMessage::Decisions(Message::Desk(message))
+    AppMessage::area(Message::Desk(message))
 }
 
 fn card(app: &mut App, id: &SessionId, message: loa_ui_session::decisions::Message) {
@@ -66,10 +67,10 @@ fn an_approval_answered_by_number_key_and_enter_runs_and_records_who_answered() 
     let dir = tempfile::tempdir().unwrap();
     let mut app = fake_app(dir.path(), &["fake-a"]);
     let (id, mut feed, decision) = ask(&mut app, "ask to run ls");
-    assert_eq!(app.areas.decisions.desk.badge(id.as_str()), 1);
+    assert_eq!(app.areas.get::<crate::areas::decisions::State>().desk.badge(id.as_str()), 1);
     assert_eq!(app.ctx.shell.sidebar().session(id.as_str()).map(|s| s.waiting), Some(true), "sidebar badge");
     assert!(app.ctx.shell.breadcrumb().is_some_and(|(session, _)| session.waiting), "top bar badge");
-    assert!(app.areas.decisions.card(id.as_str(), decision).is_some(), "drawn inline");
+    assert!(app.areas.get::<crate::areas::decisions::State>().card(id.as_str(), decision).is_some(), "drawn inline");
 
     key(&mut app, Shortcut::Pick(0));
     assert_eq!(recorded(&app, &id, decision).status, DecisionStatus::Waiting, "a number key only picks");
@@ -78,8 +79,8 @@ fn an_approval_answered_by_number_key_and_enter_runs_and_records_who_answered() 
     let answered = recorded(&app, &id, decision);
     assert_eq!(answered.answer, [loa_core::answer::ALLOW_ONCE]);
     assert_eq!(answered.by.as_deref(), Some(app.ctx.services.node.key.as_str()), "answered by this node");
-    assert!(app.areas.decisions.focused().is_none());
-    assert_eq!(app.areas.decisions.desk.badge(id.as_str()), 0);
+    assert!(app.areas.get::<crate::areas::decisions::State>().focused().is_none());
+    assert_eq!(app.areas.get::<crate::areas::decisions::State>().desk.badge(id.as_str()), 0);
     assert_eq!(app.ctx.shell.sidebar().session(id.as_str()).map(|s| s.waiting), Some(false));
     assert!(!app.ctx.composer.is_busy(), "the call ran and the turn ended");
 }
@@ -110,7 +111,7 @@ fn a_prompt_typed_while_an_approval_waits_is_queued_and_sent_after_it() {
     prompt(&mut app, "and then summarize");
     deliver(&mut app, &id, &mut feed);
     assert_eq!(turns(&app, &id), 1, "queued while the turn waits");
-    assert!(app.areas.decisions.focused().is_some(), "the card still waits");
+    assert!(app.areas.get::<crate::areas::decisions::State>().focused().is_some(), "the card still waits");
 
     card(&mut app, &id, loa_ui_session::decisions::Message::Choose(decision, 0));
     deliver(&mut app, &id, &mut feed);
@@ -193,7 +194,7 @@ fn esc_closes_a_screen_over_the_card_before_it_denies_the_card() {
     let mut app = fake_app(dir.path(), &["fake-a"]);
     let (id, mut feed, decision) = ask(&mut app, "ask to run ls");
     palette(&mut app, "Unattended prompt settings");
-    assert_eq!(app.ctx.screen(), Some(AreaId::Decisions));
+    assert_eq!(app.ctx.screen(), Some(crate::areas::decisions::State::ID));
     key(&mut app, Shortcut::Pick(0));
     key(&mut app, Shortcut::Confirm);
     update(&mut app, AppMessage::Keyboard(escape()));
@@ -221,13 +222,13 @@ fn new_waiting_cards_raise_a_system_notification_only_while_the_window_is_in_the
         while let Ok(event) = feed.try_recv() {
             if let Change::Patch(patch, _) = app.ctx.sessions.feed(id.as_str(), Feed::Event(event)) {
                 let event = SessionEvent::Patch(id.clone(), patch);
-                tasks += app.areas.decisions.on_session_event(&event, &mut app.ctx).units();
+                tasks += app.areas.get_mut::<crate::areas::decisions::State>().on_session_event(&event, &mut app.ctx).units();
             }
         }
         tasks
     };
     assert_eq!(notifications(&mut app, &mut feed, "ask while focused"), 0);
-    let first = app.areas.decisions.focused().unwrap();
+    let first = app.areas.get::<crate::areas::decisions::State>().focused().unwrap();
     update(&mut app, desk_message(desk::Message::Focused(false)));
     let answer = loa_ui_session::decisions::Message::Choose(first, 0);
     update(&mut app, desk_message(desk::Message::Card(id.to_string(), answer)));
@@ -251,7 +252,7 @@ fn a_plan_review_the_app_raised_is_answered_by_the_sessions_area_not_the_harness
         [("kind", loa_core::DecisionKind::Plan.into()), ("status", DecisionStatus::Waiting.into())];
     let plan = writer.commit(loa_core::Draft::insert(root, ElementKind::Decision, attrs, "# Plan")).unwrap().node;
     deliver(&mut app, &id, &mut feed);
-    assert_eq!(app.areas.decisions.focused(), Some(plan));
+    assert_eq!(app.areas.get::<crate::areas::decisions::State>().focused(), Some(plan));
 
     key(&mut app, Shortcut::Pick(0));
     key(&mut app, Shortcut::Confirm);
@@ -265,9 +266,9 @@ fn a_view_only_session_shows_cards_nobody_here_can_answer() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = fake_app(dir.path(), &["fake-a"]);
     let (id, mut feed, decision) = ask(&mut app, "ask to run ls");
-    update(&mut app, AppMessage::Decisions(Message::ViewOnly(id.to_string(), true)));
-    assert!(app.areas.decisions.focused().is_none(), "no keys for a card that can't be answered");
-    assert!(app.areas.decisions.card(id.as_str(), decision).is_some(), "still drawn");
+    update(&mut app, AppMessage::area(Message::ViewOnly(id.to_string(), true)));
+    assert!(app.areas.get::<crate::areas::decisions::State>().focused().is_none(), "no keys for a card that can't be answered");
+    assert!(app.areas.get::<crate::areas::decisions::State>().card(id.as_str(), decision).is_some(), "still drawn");
     card(&mut app, &id, loa_ui_session::decisions::Message::Choose(decision, 0));
     deliver(&mut app, &id, &mut feed);
     assert_eq!(recorded(&app, &id, decision).status, DecisionStatus::Waiting);
@@ -285,17 +286,17 @@ fn unattended_prompts_are_turned_on_in_the_palette_saved_and_answer_after_the_ti
 
     // A shorter timeout on the settings screen.
     palette(&mut app, "Unattended prompt settings");
-    assert_eq!(app.ctx.screen(), Some(AreaId::Decisions));
+    assert_eq!(app.ctx.screen(), Some(crate::areas::decisions::State::ID));
     let _ = app.view();
     let shorter = unattended::Message::Timeout(loa_core::DecisionKind::Approval, unattended::Duration(30));
     update(&mut app, desk_message(desk::Message::Settings(shorter)));
     let saved = app.ctx.services.config.load().unwrap().unattended;
     assert_eq!(saved.approval.map(|d| d.timeout_secs), Some(30));
-    update(&mut app, AppMessage::Decisions(Message::CloseSettings));
+    update(&mut app, AppMessage::area(Message::CloseSettings));
     assert_eq!(app.ctx.screen(), None);
 
     let (id, mut feed, decision) = ask(&mut app, "ask while away");
-    assert!(app.areas.decisions.desk.subscription().units() > 0);
+    assert!(app.areas.get::<crate::areas::decisions::State>().desk.subscription().units() > 0);
     update(&mut app, desk_message(desk::Message::Tick(desk::now_ms() + 29_000)));
     deliver(&mut app, &id, &mut feed);
     assert_eq!(recorded(&app, &id, decision).status, DecisionStatus::Waiting, "not yet");
@@ -310,7 +311,7 @@ fn unattended_prompts_are_turned_on_in_the_palette_saved_and_answer_after_the_ti
     // The setting survives a restart, and turns off from the palette.
     drop(app);
     let mut app = fake_app(dir.path(), &["fake-a"]);
-    assert!(app.areas.decisions.desk.policy().enabled());
+    assert!(app.areas.get::<crate::areas::decisions::State>().desk.policy().enabled());
     palette(&mut app, "Unattended prompts: wait for someone");
     assert_eq!(app.ctx.services.config.load().unwrap().unattended, Default::default());
     assert!(active(&app).is_none());

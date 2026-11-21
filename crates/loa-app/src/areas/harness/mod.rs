@@ -12,10 +12,9 @@ use iced::{Element, Font, Length, Task, Theme};
 use loa_contracts::harness::{Availability, AvailabilityStatus};
 use loa_config::HarnessSettings;
 use loa_ui_kit::icons::Icon;
-use loa_ui_shell::palette;
 use loa_ui_shell::theme::style;
 
-use crate::area::{Area, AreaId, Ctx, PanelTab, Request, SessionEvent};
+use crate::area::{Area, AreaCommand, AreaMessage, Ctx, Listed, PanelTab, Request, SessionEvent};
 use crate::services::Harness;
 
 #[cfg(test)]
@@ -23,8 +22,9 @@ pub(crate) mod tests;
 
 /// Id of the Harnesses panel tab.
 pub const TAB: &str = "harnesses";
-/// Palette command name that probes every harness again.
-const RECHECK: &str = "recheck";
+/// Palette command id that probes every harness again; the others switch to
+/// the harness their id names.
+const RECHECK: &str = "harness.recheck";
 
 /// The tab's text sizes and colors, from the theme like the other panel tabs.
 mod panel_style {
@@ -89,17 +89,6 @@ pub struct State {
 }
 
 impl State {
-    /// Applies `[harness]` from the central config (executables, then the
-    /// default harness) and probes every harness.
-    pub fn new(ctx: &mut Ctx) -> (Self, Task<Message>) {
-        let mut state = Self { probes: HashMap::new(), probing: Vec::new(), next_probe: 0, drafts: HashMap::new(), default: None };
-        if let Some(config) = ctx.read_config("harness settings") {
-            state.apply(&config.harness, ctx);
-        }
-        let task = state.probe_all(ctx);
-        (state, task)
-    }
-
     fn apply(&mut self, settings: &HarnessSettings, ctx: &mut Ctx) {
         let services = &mut ctx.services;
         for (id, executable) in &settings.executables {
@@ -299,8 +288,35 @@ fn status_icon<'a>(status: Option<AvailabilityStatus>) -> Element<'a, Message> {
     loa_ui_kit::icons::icon(icon, 14.0).style(move |theme: &Theme, _| svg::Style { color: Some(color(theme)) }).into()
 }
 
+impl AreaMessage for Message {
+    type Area = State;
+}
+
 impl Area for State {
+    const ID: &'static str = "harness";
+    const COMMANDS: &'static [AreaCommand<Self>] = &[
+        AreaCommand::<Self>::new("harness.", "", "Harness", |state, id, ctx| state.switch(id.to_owned(), ctx)).listed(Listed::Each(|_, ctx| {
+            let available = ctx.services.harnesses.list.iter().filter(|harness| harness.option.available);
+            available.map(|harness| (harness.option.id.clone(), format!("Switch harness: {}", harness.option.label))).collect()
+        })),
+        AreaCommand::<Self>::new(RECHECK, "Recheck harness availability", "Harness", |state, _, ctx| {
+            ctx.open_tab(TAB);
+            state.probe_all(ctx)
+        }),
+    ];
+
     type Message = Message;
+
+    /// Applies `[harness]` from the central config (executables, then the
+    /// default harness) and probes every harness.
+    fn new(ctx: &mut Ctx) -> (Self, Task<Message>) {
+        let mut state = Self { probes: HashMap::new(), probing: Vec::new(), next_probe: 0, drafts: HashMap::new(), default: None };
+        if let Some(config) = ctx.read_config("harness settings") {
+            state.apply(&config.harness, ctx);
+        }
+        let task = state.probe_all(ctx);
+        (state, task)
+    }
 
     fn update(&mut self, message: Message, ctx: &mut Ctx) -> Task<Message> {
         match message {
@@ -322,24 +338,6 @@ impl Area for State {
             }
             Message::SaveExecutable(id) => self.save_executable(id, ctx),
         }
-    }
-
-    fn palette_commands(&self, ctx: &Ctx) -> Vec<palette::Command> {
-        let switch = ctx.services.harnesses.list.iter().filter(|harness| harness.option.available).map(|harness| {
-            let id = AreaId::Harness.command(&harness.option.id);
-            palette::Command::new(id, format!("Switch harness: {}", harness.option.label), "Harness")
-        });
-        let recheck = palette::Command::new(AreaId::Harness.command(RECHECK), "Recheck harness availability", "Harness");
-        switch.chain([recheck]).collect()
-    }
-
-    fn run_command(&mut self, id: &str, ctx: &mut Ctx) -> Option<Task<Message>> {
-        let name = id.strip_prefix(AreaId::Harness.key())?.strip_prefix('.')?;
-        if name == RECHECK {
-            ctx.open_tab(TAB);
-            return Some(self.probe_all(ctx));
-        }
-        Some(self.switch(name.to_owned(), ctx))
     }
 
     fn panel_tabs(&self) -> Vec<PanelTab> {

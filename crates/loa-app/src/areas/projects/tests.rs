@@ -1,3 +1,4 @@
+use loa_ui_shell::palette;
 use std::path::Path;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -121,13 +122,13 @@ fn project_app(dir: &Path) -> (App, Arc<Mutex<Vec<SessionConfig>>>) {
     let (mut app, _) = App::build(services);
     let config = ServiceConfig { debounce: Duration::from_millis(10), ..ServiceConfig::default() };
     let (projects, task) = State::with(&mut app.ctx, Arc::new(FakeSummarizer), config);
-    app.areas.projects = projects;
-    run(&mut app, task.map(AppMessage::Projects));
+    *app.areas.get_mut::<crate::areas::projects::State>() = projects;
+    run(&mut app, task.map(AppMessage::area));
     (app, configs)
 }
 
 fn projects(app: &mut App, message: Message) {
-    update(app, AppMessage::Projects(message));
+    update(app, AppMessage::area(message));
 }
 
 fn on_screen(app: &mut App, message: screen::Local) {
@@ -141,7 +142,7 @@ fn emit(app: &mut App, event: screen::Event) {
 
 /// The screen's "New chat" in the open project.
 fn new_chat(app: &mut App) {
-    let screen = app.areas.projects.screen().expect("a project is open");
+    let screen = app.areas.get::<crate::areas::projects::State>().screen().expect("a project is open");
     let event = screen::Event::NewChat { project: screen.project().to_owned(), cwd: screen.overview().and_then(|o| o.cwd.clone()) };
     emit(app, event);
 }
@@ -191,7 +192,7 @@ fn selecting_a_project_switches_the_active_folder_and_survives_a_restart() {
     assert_eq!(app.ctx.services.cwd, a);
     assert_eq!(app.files.root(), a);
     assert_eq!(app.terminal.new_tab().cwd, a, "new terminals open in the active folder");
-    assert_eq!(app.ctx.screen(), Some(AreaId::Projects), "the project screen lists its chats");
+    assert_eq!(app.ctx.screen(), Some(crate::areas::projects::State::ID), "the project screen lists its chats");
 
     open_from_sidebar(&mut app, "beta");
     assert_eq!(app.ctx.services.project, "beta");
@@ -300,7 +301,7 @@ fn a_project_without_a_folder_only_opens_its_screen() {
     let cwd = app.ctx.services.cwd.clone();
     open_from_sidebar(&mut app, "ghost");
     assert_eq!(app.ctx.services.cwd, cwd);
-    assert_eq!(app.ctx.screen(), Some(AreaId::Projects));
+    assert_eq!(app.ctx.screen(), Some(crate::areas::projects::State::ID));
     assert_eq!(app.ctx.notice(), Some("ghost has no folder yet; start a chat in it first"));
 }
 
@@ -320,7 +321,7 @@ fn project_screen_lists_sessions_saves_settings_and_excludes() {
         assert!(tools.contains(&PROJECT_SEARCH) && tools.contains(&PROJECT_READ), "{tools:?}");
     }
     assert_eq!(app.ctx.shell.sidebar().projects(), ["work", "alpha"], "listed from the session's project");
-    let titles: Vec<String> = app.areas.projects.palette_commands(&app.ctx).into_iter().map(|c| c.title).collect();
+    let titles: Vec<String> = app.areas.iter().flat_map(|area| area.commands(&app.ctx)).collect::<Vec<_>>().into_iter().map(|c| c.title).collect();
     assert!(titles.contains(&"Open project: alpha".to_owned()), "{titles:?}");
     assert!(titles.contains(&"Pin project: alpha".to_owned()), "{titles:?}");
     assert!(app.ctx.app_tools.iter().any(|tool| tool.name == PROJECT_SEARCH), "the Tools panel lists project_search");
@@ -329,8 +330,8 @@ fn project_screen_lists_sessions_saves_settings_and_excludes() {
     for message in [palette::Message::Open, palette::Message::QueryChanged("Open project: alpha".into()), palette::Message::Submit] {
         update(&mut app, AppMessage::Palette(message));
     }
-    assert_eq!(app.ctx.screen(), Some(AreaId::Projects));
-    let rows = &app.areas.projects.screen().unwrap().overview().expect("loaded").sessions;
+    assert_eq!(app.ctx.screen(), Some(crate::areas::projects::State::ID));
+    let rows = &app.areas.get::<crate::areas::projects::State>().screen().unwrap().overview().expect("loaded").sessions;
     assert_eq!(rows.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(), [session.as_str()]);
     assert_eq!(rows[0].turns, 1);
     assert_eq!(rows[0].title.as_deref(), Some("set up iroh"), "titled like Recents: the first prompt");
@@ -341,17 +342,17 @@ fn project_screen_lists_sessions_saves_settings_and_excludes() {
     on_screen(&mut app, screen::Local::PinPath("src/net.rs".into()));
     on_screen(&mut app, screen::Local::AddPin);
     on_screen(&mut app, screen::Local::Save);
-    let screen = app.areas.projects.screen().unwrap();
+    let screen = app.areas.get::<crate::areas::projects::State>().screen().unwrap();
     assert!(!screen.is_dirty(), "saved");
     assert_eq!(screen.overview().unwrap().settings.instructions, "Always use port 31415.");
     let stored = std::fs::read_dir(dir.path().join("work/loa/projects")).unwrap().count();
     assert_eq!(stored, 1, "settings written under <data>/projects");
-    let context = app.areas.projects.context("alpha").expect("context from the settings");
+    let context = app.areas.get::<crate::areas::projects::State>().context("alpha").expect("context from the settings");
     assert!(context.contains("Always use port 31415.") && context.contains("src/net.rs"), "{context}");
 
     // The exclude toggle reaches the session and the screen.
     on_screen(&mut app, screen::Local::SetIncluded { session: session.clone(), included: false });
-    let row = &app.areas.projects.screen().unwrap().overview().unwrap().sessions[0];
+    let row = &app.areas.get::<crate::areas::projects::State>().screen().unwrap().overview().unwrap().sessions[0];
     assert!(row.excluded);
     let dom = app.ctx.sessions.get(&session).unwrap().writer().with_dom(Dom::clone);
     assert!(loa_projects::is_excluded(&dom), "recorded in the session");
@@ -369,7 +370,7 @@ fn project_screen_lists_sessions_saves_settings_and_excludes() {
 fn a_turn_end_digest_reaches_the_next_chat_with_project_search() {
     let dir = tempfile::tempdir().unwrap();
     let (mut app, configs) = project_app(dir.path());
-    let mut outcomes = app.areas.projects.outcomes.take().expect("the subscription hasn't taken them");
+    let mut outcomes = app.areas.get::<crate::areas::projects::State>().outcomes.take().expect("the subscription hasn't taken them");
     let first = chat_in(&mut app, "alpha", "set up iroh");
 
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
@@ -379,7 +380,7 @@ fn a_turn_end_digest_reaches_the_next_chat_with_project_search() {
         .expect("driver runs");
     assert!(matches!(&outcome, RebuildOutcome::Rebuilt { session, .. } if *session == first), "{outcome:?}");
     projects(&mut app, Message::Rebuild(outcome));
-    let context = app.areas.projects.context("alpha").expect("the digest is context now");
+    let context = app.areas.get::<crate::areas::projects::State>().context("alpha").expect("the digest is context now");
     assert!(context.contains("Set up the iroh endpoint on port 31415."), "{context}");
 
     let second = chat_in(&mut app, "alpha", "what port?");

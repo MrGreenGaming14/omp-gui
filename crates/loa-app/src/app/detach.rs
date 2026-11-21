@@ -178,9 +178,9 @@ impl App {
         let owned = session.to_owned();
         chat.view(open.dom(), move |message| Message::DetachedChat(owned.clone(), message), move |slot| {
             self.areas
-                .decisions
+                .get::<crate::areas::decisions::State>()
                 .card(id, slot.node)
-                .map(|card| card.map(Message::Decisions))
+                .map(|card| card.map(Message::area))
                 .unwrap_or_else(|| text("Decision no longer available").into())
         })
     }

@@ -42,10 +42,10 @@ impl Driver {
     /// `app` with its Surfaces area on `hub`.
     fn over(mut app: App, hub: Arc<SurfaceHub>) -> Self {
         let (state, task) = State::with_hub(Arc::clone(&hub), &mut app.ctx);
-        app.areas.surfaces = state;
+        *app.areas.get_mut::<crate::areas::surfaces::State>() = state;
         let (out, messages) = mpsc::unbounded_channel();
         let driver = Self { app, out, messages };
-        driver.spawn(task.map(AppMessage::Surfaces));
+        driver.spawn(task.map(AppMessage::area));
         driver.forward(hub_events(&HubWatch(hub)));
         driver.forward(mcp_events(&McpWatch(driver.app.ctx.services.mcp.clone())));
         driver
@@ -56,7 +56,7 @@ impl Driver {
         tokio::spawn(async move {
             let mut stream = std::pin::pin!(stream);
             while let Some(message) = stream.next().await {
-                if out.send(AppMessage::Surfaces(message)).is_err() {
+                if out.send(AppMessage::area(message)).is_err() {
                     return;
                 }
             }
@@ -83,7 +83,7 @@ impl Driver {
     }
 
     fn surfaces(&mut self, message: panel::Message) {
-        self.update(AppMessage::Surfaces(super::Message::Panel(message)));
+        self.update(AppMessage::area(super::Message::Panel(message)));
     }
 
     /// Delivers messages until `done` holds.
@@ -99,7 +99,7 @@ impl Driver {
     }
 
     fn area(&self) -> &State {
-        &self.app.areas.surfaces
+        self.app.areas.get::<crate::areas::surfaces::State>()
     }
 }
 
@@ -151,12 +151,12 @@ async fn a_document_picked_in_the_tab_renders_and_is_recorded_in_the_session() {
 
     // Opened before any session: recorded in the next one.
     driver.surfaces(panel::Message::Picker(picker::Message::Choose(image.clone())));
-    driver.until("the document is shown", |app| app.areas.surfaces.panel().active().is_some()).await;
+    driver.until("the document is shown", |app| app.areas.get::<crate::areas::surfaces::State>().panel().active().is_some()).await;
     let uri = driver.area().panel().active().unwrap().clone();
     assert_eq!(uri.server(), "docs");
     driver
         .until("the page is rendered", |app| {
-            app.areas.surfaces.panel().surface(&uri).and_then(|s| s.document()).is_some_and(|d| d.page_count() == Some(1))
+            app.areas.get::<crate::areas::surfaces::State>().panel().surface(&uri).and_then(|s| s.document()).is_some_and(|d| d.page_count() == Some(1))
         })
         .await;
 
@@ -168,7 +168,7 @@ async fn a_document_picked_in_the_tab_renders_and_is_recorded_in_the_session() {
 
     // The tab's close button closes it in the hub and in the session.
     driver.surfaces(panel::Message::Close(uri.clone()));
-    driver.until("the surface is closed", |app| app.areas.surfaces.hub().opened(&uri).is_none()).await;
+    driver.until("the surface is closed", |app| app.areas.get::<crate::areas::surfaces::State>().hub().opened(&uri).is_none()).await;
     driver.until("the session says closed", |app| recorded(app)[0].1 == "closed").await;
     assert_eq!(driver.area().panel().open_surfaces().count(), 0);
 }
@@ -187,7 +187,7 @@ async fn a_vm_typed_as_host_and_port_streams_into_the_tab_and_takes_clicks() {
     let uri = SurfaceUri::new("vm", &address).unwrap();
     driver
         .until("the desktop's first frame is drawn", |app| {
-            app.areas.surfaces.panel().surface(&uri).and_then(|s| s.pixel()?.framebuffer()).is_some_and(|fb| fb.width() == 8)
+            app.areas.get::<crate::areas::surfaces::State>().panel().surface(&uri).and_then(|s| s.pixel()?.framebuffer()).is_some_and(|fb| fb.width() == 8)
         })
         .await;
     let session_record = recorded(&driver.app);
@@ -210,7 +210,7 @@ async fn a_vm_typed_as_host_and_port_streams_into_the_tab_and_takes_clicks() {
     // Closed, the endpoint stays listed on the launcher for reconnecting.
     driver.surfaces(panel::Message::Close(uri.clone()));
     driver
-        .until("the endpoint is listed", |app| app.areas.surfaces.panel().available().iter().any(|a| a.info.uri == uri))
+        .until("the endpoint is listed", |app| app.areas.get::<crate::areas::surfaces::State>().panel().available().iter().any(|a| a.info.uri == uri))
         .await;
 }
 
@@ -226,24 +226,24 @@ async fn a_browser_tab_opens_from_a_url_takes_clicks_and_the_agent_drives_it() {
     let page = "data:text/html,<title>Red</title><body style='margin:0;height:100vh;background:rgb(255,0,0)' onmousedown=\"document.body.style.background='rgb(0,0,255)'\"></body>";
     driver.surfaces(panel::Message::Url(page.into()));
     driver.surfaces(panel::Message::OpenUrl);
-    driver.until("the tab is shown", |app| app.areas.surfaces.panel().active().is_some()).await;
+    driver.until("the tab is shown", |app| app.areas.get::<crate::areas::surfaces::State>().panel().active().is_some()).await;
     let uri = driver.area().panel().active().unwrap().clone();
     assert_eq!(uri.server(), "browser");
 
     let size = Size::new(480.0, 320.0);
     driver.surfaces(panel::Message::Surface(uri.clone(), loa_ui_surface::Message::Panel(size)));
-    driver.until("a frame is shown", |app| app.areas.surfaces.panel().surface(&uri).and_then(|s| s.pixel()?.shown_seq()).is_some()).await;
+    driver.until("a frame is shown", |app| app.areas.get::<crate::areas::surfaces::State>().panel().surface(&uri).and_then(|s| s.pixel()?.shown_seq()).is_some()).await;
     let press = PointerInput::Button { at: Point::new(240.0, 160.0), button: MouseButton::Left, pressed: true };
     driver.surfaces(panel::Message::Surface(uri.clone(), loa_ui_surface::Message::Pointer { panel: size, input: press }));
     let blue = |app: &App| {
-        let Some(fb) = app.areas.surfaces.panel().surface(&uri).and_then(|s| s.pixel()?.framebuffer()) else { return false };
+        let Some(fb) = app.areas.get::<crate::areas::surfaces::State>().panel().surface(&uri).and_then(|s| s.pixel()?.framebuffer()) else { return false };
         let i = ((fb.height() / 2) as usize * fb.width() as usize + (fb.width() / 2) as usize) * 4;
         let px = &fb.pixels()[i..i + 3];
         px[2] > 200 && px[0] < 60
     };
     driver
         .until("the click turned the page blue and was measured", |app| {
-            blue(app) && app.areas.surfaces.panel().surface(&uri).and_then(|s| s.latency()).is_some()
+            blue(app) && app.areas.get::<crate::areas::surfaces::State>().panel().surface(&uri).and_then(|s| s.latency()).is_some()
         })
         .await;
 
@@ -259,7 +259,7 @@ async fn a_browser_tab_opens_from_a_url_takes_clicks_and_the_agent_drives_it() {
     let args = json!({ "url": "data:text/html,<title>Agent</title><h1>agent</h1>" }).to_string();
     set.handler.call_content(&session, "surface_open_browser", &args).await.unwrap();
     driver
-        .until("the agent's tab shows in the panel", |app| app.areas.surfaces.panel().open_surfaces().count() == 2)
+        .until("the agent's tab shows in the panel", |app| app.areas.get::<crate::areas::surfaces::State>().panel().open_surfaces().count() == 2)
         .await;
     let rows = recorded(&driver.app);
     assert_eq!(rows.len(), 2, "{rows:?}");
@@ -283,12 +283,12 @@ async fn surfaces_an_mcp_server_declares_are_listed_and_open() {
     driver.app.ctx.services.mcp.add(spec).unwrap();
     driver
         .until("the declared document is listed", |app| {
-            app.areas.surfaces.panel().available().iter().any(|a| a.info.uri == doc.info.uri && a.server == "deck")
+            app.areas.get::<crate::areas::surfaces::State>().panel().available().iter().any(|a| a.info.uri == doc.info.uri && a.server == "deck")
         })
         .await;
 
     driver.surfaces(panel::Message::OpenAvailable(doc.info.uri.clone()));
-    driver.until("it opens in a tab", |app| app.areas.surfaces.panel().active() == Some(&doc.info.uri)).await;
+    driver.until("it opens in a tab", |app| app.areas.get::<crate::areas::surfaces::State>().panel().active() == Some(&doc.info.uri)).await;
     let opened = driver.area().hub().opened(&doc.info.uri).unwrap();
     assert_eq!(opened.origin, Origin::Mcp("deck".into()));
     driver.app.ctx.services.mcp.shutdown().await;
@@ -298,7 +298,7 @@ async fn surfaces_an_mcp_server_declares_are_listed_and_open() {
 async fn sessions_get_the_surface_tools_as_host_tools_or_mcp_servers() {
     let dir = tempfile::tempdir().unwrap();
     let mut driver = Driver::new(dir.path(), hub(dir.path(), false));
-    driver.until("the MCP endpoint runs", |app| app.areas.surfaces.endpoint.is_some()).await;
+    driver.until("the MCP endpoint runs", |app| app.areas.get::<crate::areas::surfaces::State>().endpoint.is_some()).await;
     let ctx = &driver.app.ctx;
     let area = driver.area();
 
@@ -326,7 +326,7 @@ async fn sessions_get_the_surface_tools_as_host_tools_or_mcp_servers() {
 
 /// The stream the tab of `uri` shows, as its header labels it.
 fn stream_label(app: &App, uri: &SurfaceUri) -> Option<String> {
-    app.areas.surfaces.panel().surface(uri).and_then(|s| s.stream()).map(|s| loa_ui_surface::stream_label(&s))
+    app.areas.get::<crate::areas::surfaces::State>().panel().surface(uri).and_then(|s| s.stream()).map(|s| loa_ui_surface::stream_label(&s))
 }
 
 /// The first frame of `frames` in `encoding`, decoded, with `rgb` in the
@@ -362,10 +362,10 @@ async fn a_browser_tab_shows_source_frames_here_and_streams_video_to_peers_when_
     let page = "data:text/html,<body style='margin:0;height:100vh;background:rgb(255,0,0)' onmousedown=\"document.body.style.background='rgb(0,0,255)'\"></body>";
     driver.surfaces(panel::Message::Url(page.into()));
     driver.surfaces(panel::Message::OpenUrl);
-    driver.until("the tab is shown", |app| app.areas.surfaces.panel().active().is_some()).await;
+    driver.until("the tab is shown", |app| app.areas.get::<crate::areas::surfaces::State>().panel().active().is_some()).await;
     let uri = driver.area().panel().active().unwrap().clone();
     let red = |app: &App, blue: bool| {
-        let Some(fb) = app.areas.surfaces.panel().surface(&uri).and_then(|s| s.pixel()?.framebuffer()) else { return false };
+        let Some(fb) = app.areas.get::<crate::areas::surfaces::State>().panel().surface(&uri).and_then(|s| s.pixel()?.framebuffer()) else { return false };
         let i = ((fb.height() / 2) as usize * fb.width() as usize + (fb.width() / 2) as usize) * 4;
         let px = &fb.pixels()[i..i + 3];
         if blue { px[2] > 180 && px[0] < 80 } else { px[0] > 180 && px[2] < 80 }
@@ -389,7 +389,7 @@ async fn a_browser_tab_shows_source_frames_here_and_streams_video_to_peers_when_
 /// it off and on and is saved.
 #[cfg(feature = "remote-video")]
 async fn peer_video(driver: &mut Driver, hub: &SurfaceHub, uri: &SurfaceUri) {
-    driver.until("the encoders were tried", |app| app.areas.surfaces.panel().video().encoder.is_some()).await;
+    driver.until("the encoders were tried", |app| app.areas.get::<crate::areas::surfaces::State>().panel().video().encoder.is_some()).await;
     let video = driver.area().panel().video().clone();
     assert!(video.enabled);
     let encoder = video.encoder.clone().unwrap();
@@ -456,7 +456,7 @@ async fn the_virtual_display_capture_says_why_it_cant_run_and_is_saved_where_it_
 
     driver.surfaces(panel::Message::Url("about:blank".into()));
     driver.surfaces(panel::Message::OpenUrl);
-    driver.until("opening fails on the launcher", |app| app.areas.surfaces.panel().error().is_some()).await;
+    driver.until("opening fails on the launcher", |app| app.areas.get::<crate::areas::surfaces::State>().panel().error().is_some()).await;
     eprintln!("launcher error: {}", driver.area().panel().error().unwrap());
     assert_eq!(driver.area().panel().open_surfaces().count(), 0);
     hub.shutdown().await;

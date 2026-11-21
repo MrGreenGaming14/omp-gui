@@ -12,8 +12,7 @@ use loa_ui_session::decisions as decisions;
 
 use super::*;
 use crate::app::tests::{active, deliver, escape, fake_app, prompt, update};
-use crate::area::Area;
-use crate::areas::with_areas;
+
 
 fn press(key: Key, modifiers: Modifiers) -> keyboard::Event {
     keyboard::Event::KeyPressed {
@@ -122,11 +121,8 @@ fn the_palette_lists_every_area_command_and_the_whole_keymap() {
     let commands = app.palette.commands();
     let has = |id: &str| commands.iter().find(|command| command.id.as_str() == id);
 
-    let ctx = &app.ctx;
-    for area in with_areas!(each_area!(app.areas, ref |area, wrap| area.palette_commands(ctx))) {
-        for command in area {
-            assert!(has(command.id.as_str()).is_some(), "area command {:?} missing", command.id);
-        }
+    for command in app.areas.iter().flat_map(|area| area.commands(&app.ctx)) {
+        assert!(has(command.id.as_str()).is_some(), "area command {:?} missing", command.id);
     }
 
     let keymap = &app.ctx.keymap;
@@ -188,13 +184,13 @@ fn composer_pickers_and_pin_run_from_the_palette() {
     deliver(&mut app, &id, &mut feed);
     assert!(!app.ctx.sessions.active().unwrap().is_busy(), "the turn ended");
     let id = id.to_string();
-    let task = app.command(&CommandId::new(format!("{MODE}plan")));
+    let task = app.command(&CommandId::new("composer.mode.plan"));
     crate::app::tests::run(&mut app, task);
     // The fake harness can't be limited to read-only tools, so the sessions
     // area refuses: proof the command took the composer picker's path.
     let notice = app.ctx.notice().unwrap_or_default();
     assert!(notice.contains("Can't enter plan mode on fake-a"), "{notice}");
-    let _ = app.command(&PIN);
+    let _ = app.command(&CommandId::from_static("sidebar.pin"));
     assert_eq!(app.ctx.shell.sidebar().session(&id).map(|summary| summary.pinned), Some(true));
     assert_eq!(app.session_order().first(), Some(&id), "pinned sessions come first");
 }
@@ -259,16 +255,16 @@ fn decision_keys_answer_and_the_card_names_this_node() {
     let (_, mut feed) = app.ctx.sessions.active().unwrap().writer().subscribe(Policy::every_patch(1024));
     prompt(&mut app, "ask to run ls");
     deliver(&mut app, &id, &mut feed);
-    assert!(app.areas.decisions.focused().is_some());
+    assert!(app.areas.get::<crate::areas::decisions::State>().focused().is_some());
 
     // Number keys and Enter, mapped as the decisions subscription maps them.
     for event in [chord('1', Modifiers::empty()), named(Named::Enter, Modifiers::empty())] {
         let shortcut = decisions::shortcut(&event).expect("a card key");
         let message = areas::decisions::Message::Desk(decisions::desk::Message::Shortcut(shortcut));
-        update(&mut app, Message::Decisions(message));
+        update(&mut app, Message::area(message));
     }
     deliver(&mut app, &id, &mut feed);
-    assert!(app.areas.decisions.focused().is_none(), "answered");
+    assert!(app.areas.get::<crate::areas::decisions::State>().focused().is_none(), "answered");
     assert_eq!(decisions::shortcut(&chord('1', primary())), None, "Ctrl/Cmd+1 switches sessions instead");
 
     let mut ui = Simulator::with_size(Settings::default(), Size::new(1600.0, 1000.0), app.view());

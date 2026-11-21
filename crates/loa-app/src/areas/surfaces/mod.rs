@@ -19,19 +19,14 @@ use loa_bus::SessionId;
 use loa_core::{NodeId, PatchSink, TurnStatus, attr};
 use loa_contracts::surface::SurfaceUri;
 use loa_surfaces::{CaptureMode, HubConfig, HubEvent, Listed, McpEndpoint, Opened, SurfaceHub, SurfaceTools, dom};
-use loa_ui_shell::palette;
 use loa_ui_surface::{Available, BrowserStatus, Capture, CaptureStatus, Options, Panel, panel};
 use tokio::sync::broadcast::error::RecvError;
 
-use crate::area::{Area, AreaId, Ctx, HostToolSet, PanelTab, SessionEvent, Target};
+use crate::area::{Area, AreaCommand, AreaMessage, Ctx, HostToolSet, PanelTab, SessionEvent, Target};
 use crate::session::dom_turns;
 
 /// Id of the Surfaces panel tab.
 pub const TAB: &str = "surfaces";
-
-const OPEN_BROWSER: &str = "browser";
-const OPEN_DOCUMENT: &str = "document";
-const OPEN_VM: &str = "vm";
 
 /// The running loopback MCP endpoint, shared by the sessions that use it.
 #[derive(Clone)]
@@ -84,18 +79,6 @@ pub struct State {
 }
 
 impl State {
-    pub fn new(ctx: &mut Ctx) -> (Self, Task<Message>) {
-        let mut config = HubConfig::discover(&ctx.services.dirs.data.join("surfaces"));
-        if let Some(settings) = ctx.read_config("surface settings").map(|config| config.surfaces) {
-            #[cfg(feature = "remote-video")]
-            video::configure(&mut config, &settings);
-            if settings.browser_capture == loa_config::BrowserCapture::VirtualDisplay && config.virtual_display.is_ok() {
-                config.capture = CaptureMode::VirtualDisplay;
-            }
-        }
-        Self::with_hub(SurfaceHub::new(config), ctx)
-    }
-
     /// The area over `hub`; starts the MCP endpoint and reads the surfaces
     /// the MCP servers declare.
     pub(crate) fn with_hub(hub: Arc<SurfaceHub>, ctx: &mut Ctx) -> (Self, Task<Message>) {
@@ -284,8 +267,31 @@ fn save(ctx: &mut Ctx, change: impl FnOnce(&mut loa_config::SurfaceSettings)) {
     ctx.edit_config("surface settings", |config| change(&mut config.surfaces));
 }
 
+impl AreaMessage for Message {
+    type Area = State;
+}
+
 impl Area for State {
+    const ID: &'static str = "surfaces";
+    const COMMANDS: &'static [AreaCommand<Self>] = &[
+        AreaCommand::<Self>::new("surfaces.browser", "Open browser surface", "Surfaces", |state, _, ctx| state.launcher(ctx)),
+        AreaCommand::<Self>::new("surfaces.document", "Open document surface", "Surfaces", |state, _, ctx| state.launcher(ctx)),
+        AreaCommand::<Self>::new("surfaces.vm", "Open VNC surface", "Surfaces", |state, _, ctx| state.launcher(ctx)),
+    ];
+
     type Message = Message;
+
+    fn new(ctx: &mut Ctx) -> (Self, Task<Message>) {
+        let mut config = HubConfig::discover(&ctx.services.dirs.data.join("surfaces"));
+        if let Some(settings) = ctx.read_config("surface settings").map(|config| config.surfaces) {
+            #[cfg(feature = "remote-video")]
+            video::configure(&mut config, &settings);
+            if settings.browser_capture == loa_config::BrowserCapture::VirtualDisplay && config.virtual_display.is_ok() {
+                config.capture = CaptureMode::VirtualDisplay;
+            }
+        }
+        Self::with_hub(SurfaceHub::new(config), ctx)
+    }
 
     fn update(&mut self, message: Message, ctx: &mut Ctx) -> Task<Message> {
         match message {
@@ -369,18 +375,6 @@ impl Area for State {
                 Task::none()
             }
         }
-    }
-
-    fn palette_commands(&self, _: &Ctx) -> Vec<palette::Command> {
-        [(OPEN_BROWSER, "Open browser surface"), (OPEN_DOCUMENT, "Open document surface"), (OPEN_VM, "Open VNC surface")]
-            .into_iter()
-            .map(|(name, label)| palette::Command::new(AreaId::Surfaces.command(name), label, "Surfaces"))
-            .collect()
-    }
-
-    fn run_command(&mut self, id: &str, ctx: &mut Ctx) -> Option<Task<Message>> {
-        let name = id.strip_prefix(AreaId::Surfaces.key())?.strip_prefix('.')?;
-        [OPEN_BROWSER, OPEN_DOCUMENT, OPEN_VM].contains(&name).then(|| self.launcher(ctx))
     }
 
     fn panel_tabs(&self) -> Vec<PanelTab> {

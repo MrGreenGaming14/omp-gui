@@ -44,37 +44,21 @@ use loa_models::login::UrlOpener;
 use loa_harness::account_support::opener::SystemUrlOpener;
 use loa_ui_session::transcript as chat;
 use loa_ui_session::composer as composer;
-use loa_ui_shell::palette;
 use loa_ui_panel::{agents, session_tree};
 use loa_ui_shell::SessionSummary;
 
-use crate::area::{Area, AreaId, Ctx, PanelTab, Request, SessionEvent, Spawn, SpawnStart, Target};
+use crate::area::{Area, AreaCommand, AreaMessage, Ctx, Listed, PanelTab, Request, SessionEvent, Spawn, SpawnStart, Target};
 use crate::session::new_session_id;
 
 /// Model or omp role of the app's small-model calls: compaction summaries
 /// and advisor notes.
 const SMALL_MODEL: &str = "@smol";
-/// The `/compact` composer command.
-const COMPACT: &str = "compact";
 /// How often the Agents tab advances elapsed times while a job runs.
 const TICK: Duration = Duration::from_secs(1);
-const ROLE_COMMAND: &str = "role.";
-
-/// The app's `/` commands, offered in the composer before the harness's
-/// own. The app runs `/new` and `/model`; this area runs the rest
-/// ([`slash`]).
-const APP_COMMANDS: [(&str, &str); 10] = [
-    ("new", "Start a new session"),
-    ("model", "Switch this session's model: /model <provider/model>"),
-    ("role", "Switch to one of omp's model roles: /role <name>"),
-    (COMPACT, "Summarize the session and continue with the summary"),
-    ("fork", "Fork the session into a new one"),
-    ("plan", "Plan mode: read only until you approve a plan"),
-    ("normal", "Leave plan mode"),
-    ("export", "Export the session as a native file"),
-    ("export-xml", "Export the session as XML for debugging"),
-    ("import", "Import a native session"),
-];
+/// Palette command ids. Every `/` command but the app's `/new` is this
+/// area's; [`State::COMMANDS`] lists them in the composer's order.
+const PLAN: &str = "sessions.plan";
+const ROLE: &str = "sessions.role.";
 
 #[derive(Clone, Debug)]
 pub enum Message {
@@ -86,11 +70,6 @@ pub enum Message {
     Mode(SessionMode),
     /// Delete a session and its journal.
     Delete(String),
-    /// Compact the active session, with optional instructions.
-    Compact(Option<String>),
-    /// Run this area's palette command `name` (without the `sessions.`
-    /// prefix), typed as a `/` command.
-    Command(String),
     /// Answer to a plan review the app raised, from the decision card.
     AnswerPlan { session: SessionId, decision: NodeId, answer: Answer },
     PlanAnswered { session: SessionId, decision: NodeId, result: Result<PlanNext, String> },
@@ -163,31 +142,6 @@ pub struct State {
 }
 
 impl State {
-    pub fn new(ctx: &mut Ctx) -> (Self, Task<Message>) {
-        let home = std::env::var_os("HOME").map_or_else(|| PathBuf::from("."), PathBuf::from);
-        // Unit tests never make model calls; they install a fake.
-        let small = if cfg!(test) {
-            None
-        } else {
-            loa_util::exec::which("omp").map(|omp| Arc::new(loa_projects::OmpSummarizer::new(omp, ctx.services.cwd.clone())) as Arc<dyn loa_projects::Summarizers>)
-        };
-        ctx.composer.set_commands(composer_commands(None));
-        let state = Self {
-            agents: agents::State::from_dom(&Dom::new()),
-            tree: tree::Tree::default(),
-            transfer: transfer::State::default(),
-            gate: PlanGate::new(),
-            plans: HashMap::new(),
-            hooks: Mutex::default(),
-            small,
-            home,
-            compacted: HashMap::new(),
-            opener: Arc::new(SystemUrlOpener),
-            branching: None,
-        };
-        (state, Task::none())
-    }
-
     /// Runs compaction summaries and advisor notes on `model`.
     #[cfg(test)]
     pub(crate) fn set_small_model(&mut self, model: Arc<dyn loa_projects::Summarizers>) {
@@ -213,7 +167,7 @@ impl State {
         self.agents.reset(dom);
         let _ = self.agents.update(agents::Message::Tick(loa_core::now_ms()));
         ctx.composer.set_mode(mode(dom));
-        ctx.composer.set_commands(composer_commands(ctx.sessions.active().map(|session| session.dom())));
+        ctx.composer.set_commands(composer_commands(&ctx.slash, ctx.sessions.active().map(|session| session.dom())));
         self.tree.refresh(ctx);
         self.restore_plan(ctx);
     }
@@ -239,6 +193,13 @@ impl State {
             }
             Err(error) => ctx.notify(format!("Plan mode can't be enforced here: {error}")),
         }
+    }
+
+    /// Switches the active session to `mode`, typed as `/plan` or `/normal`
+    /// or picked; the composer's picker follows.
+    fn pick_mode(&mut self, mode: SessionMode, ctx: &mut Ctx) -> Task<Message> {
+        ctx.composer.set_mode(mode);
+        self.set_mode(mode, ctx)
     }
 
     fn set_mode(&mut self, mode: SessionMode, ctx: &mut Ctx) -> Task<Message> {
@@ -703,36 +664,12 @@ impl State {
     }
 }
 
-/// A `/` command typed in the composer: its name and its trimmed arguments.
-pub fn split_slash(text: &str) -> Option<(&str, &str)> {
-    let rest = text.trim().strip_prefix('/')?;
-    let (name, args) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
-    Some((name, args.trim()))
-}
-
-/// The message for a `/` command typed in the composer, when it is one of
-/// this area's.
-pub fn slash(text: &str) -> Option<Message> {
-    let (name, args) = split_slash(text)?;
-    Some(match name {
-        COMPACT => Message::Compact((!args.is_empty()).then(|| args.to_owned())),
-        "plan" => Message::Mode(SessionMode::Plan),
-        "normal" => Message::Mode(SessionMode::Normal),
-        "role" => Message::Command(format!("{ROLE_COMMAND}{args}")),
-        "fork" | "export" | "export-xml" | "import" => Message::Command(name.to_owned()),
-        _ => return None,
-    })
-}
-
-/// The composer's `/` commands: the app's, then the harness's own from the
-/// latest list its adapter recorded in `dom` (omp's `commands`, ACP's
-/// `availableCommands`). A harness command named like an app command is
-/// left out: the app's runs.
-fn composer_commands(dom: Option<&Dom>) -> Vec<composer::Command> {
-    let mut commands: Vec<composer::Command> = APP_COMMANDS
-        .iter()
-        .map(|(name, description)| composer::Command { name: (*name).to_owned(), description: (*description).to_owned() })
-        .collect();
+/// The composer's `/` commands: the app's (`app`), then the harness's own
+/// from the latest list its adapter recorded in `dom` (omp's `commands`,
+/// ACP's `availableCommands`). A harness command named like an app command
+/// is left out: the app's runs.
+fn composer_commands(app: &[composer::Command], dom: Option<&Dom>) -> Vec<composer::Command> {
+    let mut commands = app.to_vec();
     let listed = dom.and_then(|dom| {
         dom.iter()
             .filter(|node| node.kind == ElementKind::Ext && node.str_attr(attr::TYPE) == Some(chat::COMMANDS_EXT))
@@ -771,7 +708,7 @@ fn mode(dom: &Dom) -> SessionMode {
 /// decisions area shows `error`.
 fn plan_failed(ctx: &mut Ctx, session: &SessionId, decision: NodeId, error: &str) {
     let reopen = crate::areas::decisions::Message::Answered { session: session.to_string(), decision, result: Err(error.to_owned()) };
-    ctx.request(Request::Forward(Box::new(crate::app::Message::Decisions(reopen))));
+    ctx.request(Request::Forward(Box::new(crate::app::Message::area(reopen))));
 }
 
 /// The session's title as the sidebar shows it.
@@ -805,8 +742,111 @@ fn model_roles(home: &Path) -> Result<Vec<(String, Vec<String>)>, String> {
     Ok(roles.into_iter().map(|role| (role.role, role.candidates.iter().map(ToString::to_string).collect())).collect())
 }
 
+impl AreaMessage for Message {
+    type Area = State;
+}
+
 impl Area for State {
+    const ID: &'static str = "sessions";
+    const COMMANDS: &'static [AreaCommand<Self>] = &[
+        AreaCommand::<Self>::new("sessions.model", "", "", |_, model, ctx| {
+            if model.is_empty() {
+                ctx.notify("Name the model: /model <provider/model>, or pick one in the model picker");
+            } else {
+                let option = composer::ModelOption { id: model.to_owned(), name: model.to_owned(), provider: String::new(), role: None };
+                let pick = crate::areas::models::Message::Model(option);
+                ctx.request(Request::Forward(Box::new(crate::app::Message::area(pick))));
+            }
+            Task::none()
+        })
+        .listed(Listed::Never)
+        .slash("model", "Switch this session's model: /model <provider/model>"),
+        AreaCommand::<Self>::new("sessions.role", "", "", |state, role, ctx| state.role(ctx, role.to_owned()))
+            .listed(Listed::Never)
+            .slash("role", "Switch to one of omp's model roles: /role <name>"),
+        AreaCommand::<Self>::new("sessions.compact", "Compact session", "Session", |state, instructions, ctx| {
+            state.compact(ctx, (!instructions.is_empty()).then(|| instructions.to_owned()))
+        })
+        .listed(Listed::Session)
+        .slash("compact", "Summarize the session and continue with the summary"),
+        AreaCommand::<Self>::new("sessions.fork", "Fork session", "Session", |state, _, ctx| {
+            state.fork_active(ctx);
+            Task::none()
+        })
+        .listed(Listed::Session)
+        .slash("fork", "Fork the session into a new one"),
+        AreaCommand::<Self>::new(PLAN, "", "Session", |state, _, ctx| {
+            let active = ctx.sessions.active().map(|session| session.id().to_string());
+            let in_plan = active.as_ref().is_some_and(|id| state.plans.contains_key(id));
+            state.pick_mode(if in_plan { SessionMode::Normal } else { SessionMode::Plan }, ctx)
+        })
+        .listed(Listed::When(|state, ctx| {
+            let session = ctx.sessions.active()?;
+            let plan = state.plans.contains_key(session.id().as_str()) || mode(session.dom()) == SessionMode::Plan;
+            Some(if plan { "Leave plan mode" } else { "Enter plan mode" })
+        })),
+        AreaCommand::<Self>::new("sessions.mode.plan", "", "", |state, _, ctx| state.pick_mode(SessionMode::Plan, ctx))
+            .listed(Listed::Never)
+            .slash("plan", "Plan mode: read only until you approve a plan"),
+        AreaCommand::<Self>::new("sessions.mode.normal", "", "", |state, _, ctx| state.pick_mode(SessionMode::Normal, ctx))
+            .listed(Listed::Never)
+            .slash("normal", "Leave plan mode"),
+        AreaCommand::<Self>::new("sessions.delete", "Delete session", "Session", |state, _, ctx| match ctx.sessions.active_id().map(ToString::to_string) {
+            Some(id) => state.delete(ctx, &id),
+            None => Task::none(),
+        })
+        .listed(Listed::Session),
+        AreaCommand::<Self>::new("sessions.export", "Export session as native file", "Session", |state, _, ctx| {
+            state.export(ctx, false, None);
+            Task::none()
+        })
+        .listed(Listed::Session)
+        .slash("export", "Export the session as a native file"),
+        AreaCommand::<Self>::new("sessions.export-xml", "Export session as XML (debug)", "Session", |state, _, ctx| {
+            state.export(ctx, true, None);
+            Task::none()
+        })
+        .listed(Listed::Session)
+        .slash("export-xml", "Export the session as XML for debugging"),
+        AreaCommand::<Self>::new("sessions.import", "Import native session…", "Session", |state, _, ctx| {
+            state.transfer.refresh(&state.home);
+            state.transfer.status = None;
+            ctx.show_screen(Self::ID);
+            Task::none()
+        })
+        .slash("import", "Import a native session"),
+        AreaCommand::<Self>::new(ROLE, "", "Model roles", |state, role, ctx| state.role(ctx, role.to_owned())).listed(Listed::Each(|state, ctx| {
+            let roles = ctx.sessions.active().and_then(|_| model_roles(&state.home).ok()).unwrap_or_default();
+            let title = |role: &str, models: &[String]| format!("Model role: {role} ({})", models.first().map_or("no model", String::as_str));
+            roles.into_iter().map(|(role, models)| (role.clone(), title(&role, &models))).collect()
+        })),
+    ];
+
     type Message = Message;
+
+    fn new(ctx: &mut Ctx) -> (Self, Task<Message>) {
+        let home = std::env::var_os("HOME").map_or_else(|| PathBuf::from("."), PathBuf::from);
+        // Unit tests never make model calls; they install a fake.
+        let small = if cfg!(test) {
+            None
+        } else {
+            loa_util::exec::which("omp").map(|omp| Arc::new(loa_projects::OmpSummarizer::new(omp, ctx.services.cwd.clone())) as Arc<dyn loa_projects::Summarizers>)
+        };
+        let state = Self {
+            agents: agents::State::from_dom(&Dom::new()),
+            tree: tree::Tree::default(),
+            transfer: transfer::State::default(),
+            gate: PlanGate::new(),
+            plans: HashMap::new(),
+            hooks: Mutex::default(),
+            small,
+            home,
+            compacted: HashMap::new(),
+            opener: Arc::new(SystemUrlOpener),
+            branching: None,
+        };
+        (state, Task::none())
+    }
 
     fn update(&mut self, message: Message, ctx: &mut Ctx) -> Task<Message> {
         match message {
@@ -856,14 +896,8 @@ impl Area for State {
                 }
                 Task::none()
             }
-            Message::Mode(mode) => {
-                // Also typed as `/plan` or `/normal`: the picker follows.
-                ctx.composer.set_mode(mode);
-                self.set_mode(mode, ctx)
-            }
+            Message::Mode(mode) => self.pick_mode(mode, ctx),
             Message::Delete(id) => self.delete(ctx, &id),
-            Message::Compact(instructions) => self.compact(ctx, instructions),
-            Message::Command(name) => self.run_command(AreaId::Sessions.command(&name).as_str(), ctx).unwrap_or_else(Task::none),
             Message::AnswerPlan { session, decision, answer } => self.answer_plan(ctx, session, decision, answer),
             Message::PlanAnswered { session, decision, result } => {
                 let prompt = match result {
@@ -921,75 +955,6 @@ impl Area for State {
                 Task::none()
             }
         }
-    }
-
-    fn palette_commands(&self, ctx: &Ctx) -> Vec<palette::Command> {
-        let mut commands = vec![
-            palette::Command::new(AreaId::Sessions.command("import"), "Import native session…", "Session"),
-        ];
-        if let Some(session) = ctx.sessions.active() {
-            let plan = self.plans.contains_key(session.id().as_str()) || mode(session.dom()) == SessionMode::Plan;
-            commands.extend([
-                palette::Command::new(AreaId::Sessions.command("fork"), "Fork session", "Session"),
-                palette::Command::new(AreaId::Sessions.command("compact"), "Compact session", "Session"),
-                palette::Command::new(
-                    AreaId::Sessions.command("plan"),
-                    if plan { "Leave plan mode" } else { "Enter plan mode" },
-                    "Session",
-                ),
-                palette::Command::new(AreaId::Sessions.command("delete"), "Delete session", "Session"),
-                palette::Command::new(AreaId::Sessions.command("export"), "Export session as native file", "Session"),
-                palette::Command::new(AreaId::Sessions.command("export-xml"), "Export session as XML (debug)", "Session"),
-            ]);
-            if let Ok(roles) = model_roles(&self.home) {
-                commands.extend(roles.into_iter().map(|(role, models)| {
-                    let id = AreaId::Sessions.command(&format!("{ROLE_COMMAND}{role}"));
-                    let first = models.first().map_or("no model", String::as_str);
-                    palette::Command::new(id, format!("Model role: {role} ({first})"), "Model roles")
-                }));
-            }
-        }
-        commands
-    }
-
-    fn run_command(&mut self, id: &str, ctx: &mut Ctx) -> Option<Task<Message>> {
-        let name = id.strip_prefix(AreaId::Sessions.key())?.strip_prefix('.')?;
-        if let Some(role) = name.strip_prefix(ROLE_COMMAND) {
-            return Some(self.role(ctx, role.to_owned()));
-        }
-        Some(match name {
-            "import" => {
-                self.transfer.refresh(&self.home);
-                self.transfer.status = None;
-                ctx.show_screen(AreaId::Sessions);
-                Task::none()
-            }
-            "fork" => {
-                self.fork_active(ctx);
-                Task::none()
-            }
-            "compact" => self.compact(ctx, None),
-            "plan" => {
-                let active = ctx.sessions.active().map(|session| session.id().to_string());
-                let in_plan = active.as_ref().is_some_and(|id| self.plans.contains_key(id));
-                let mode = if in_plan { SessionMode::Normal } else { SessionMode::Plan };
-                ctx.composer.set_mode(mode);
-                self.set_mode(mode, ctx)
-            }
-            "delete" => match ctx.sessions.active_id().map(ToString::to_string) {
-                Some(id) => self.delete(ctx, &id),
-                None => Task::none(),
-            },
-            "export" => {
-                self.export(ctx, false, None);
-                Task::none()
-            }
-            "export-xml" => {
-                self.export(ctx, true, None);
-                Task::none()
-            }
-            _ => return None,
-        })
     }
 
     fn panel_tabs(&self) -> Vec<PanelTab> {
@@ -1062,7 +1027,7 @@ impl Area for State {
                             ElementKind::Ext
                                 if dom.get(patch.node).and_then(|node| node.str_attr(attr::TYPE)) == Some(chat::COMMANDS_EXT) =>
                             {
-                                ctx.composer.set_commands(composer_commands(Some(dom)));
+                                ctx.composer.set_commands(composer_commands(&ctx.slash, Some(dom)));
                             }
                             _ => {}
                         }

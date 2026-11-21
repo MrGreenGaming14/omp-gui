@@ -40,7 +40,7 @@ fn app(dir: &std::path::Path, name: &str) -> App {
     settings.network.port = 0;
     let config = super::node_config(&app.ctx, &settings.network);
     // The startup task (which would start the first node) is dropped; `start` starts this one.
-    app.areas.peers = super::State::with_config(&mut app.ctx, config).0;
+    *app.areas.get_mut::<crate::areas::peers::State>() = super::State::with_config(&mut app.ctx, config).0;
     app
 }
 
@@ -72,19 +72,19 @@ fn update(rt: &Runtime, app: &mut App, message: Message) {
 }
 
 fn panel(rt: &Runtime, app: &mut App, message: Local) {
-    update(rt, app, Message::Peers(Peers::Panel(Msg::Local(message))));
+    update(rt, app, Message::area(Peers::Panel(Msg::Local(message))));
 }
 
 /// What the panel's buttons emit for the app.
 fn emit(rt: &Runtime, app: &mut App, event: panel::Event) {
-    update(rt, app, Message::Peers(Peers::Panel(Msg::Emit(event))));
+    update(rt, app, Message::area(Peers::Panel(Msg::Emit(event))));
 }
 
 /// Starts the app's node, as the startup task does; returns its UDP port.
 fn start(rt: &Runtime, app: &mut App) -> u16 {
-    let node = app.areas.peers.node().expect("node opened").clone();
+    let node = app.areas.get::<crate::areas::peers::State>().node().expect("node opened").clone();
     let started = rt.block_on(node.start()).map_err(|error| error.to_string());
-    update(rt, app, Message::Peers(Peers::Started(started)));
+    update(rt, app, Message::area(Peers::Started(started)));
     match node.status().endpoint {
         Endpoint::Listening { udp, .. } => udp[0].port(),
         other => panic!("not listening: {other:?}"),
@@ -107,7 +107,7 @@ fn add_peer(rt: &Runtime, app: &mut App, other: &App, port: u16) {
 /// Delivers the node events `events` holds as the area's feed would.
 fn pump(rt: &Runtime, app: &mut App, events: &mut tokio::sync::broadcast::Receiver<NodeEvent>) {
     while let Ok(event) = events.try_recv() {
-        update(rt, app, Message::Peers(Peers::Node(event)));
+        update(rt, app, Message::area(Peers::Node(event)));
     }
 }
 
@@ -139,7 +139,7 @@ fn prompt(rt: &Runtime, app: &mut App, text: &str) {
 /// Issues `permission` on `resource` to `holder` through the grant form.
 fn grant(rt: &Runtime, app: &mut App, holder: &str, resource: &str, permission: panel::Permission) {
     // The user opens the Peers tab, which shows the current sessions.
-    update(rt, app, Message::Peers(Peers::Open));
+    update(rt, app, Message::area(Peers::Open));
     panel(rt, app, Local::SelectPeer(holder.to_owned()));
     panel(rt, app, Local::SelectResource(resource.to_owned()));
     panel(rt, app, Local::Permission(permission));
@@ -179,10 +179,10 @@ fn two_apps_share_a_session_view_drive_and_fork_over_loopback() {
     let guest_key = key(&guest);
     grant(&rt, &mut owner, &guest_key, &format!("session:{session}"), panel::Permission::Drive);
     grant(&rt, &mut owner, &guest_key, &format!("session:{session}"), panel::Permission::Fork);
-    let owner_node = owner.areas.peers.node().unwrap().clone();
+    let owner_node = owner.areas.get::<crate::areas::peers::State>().node().unwrap().clone();
     let given: Vec<_> = owner_node.grants().into_iter().filter(|grant| grant.direction == GrantDirection::Given).collect();
     assert_eq!(given.len(), 2, "{:?}", owner.ctx.notice());
-    let guest_node = guest.areas.peers.node().unwrap().clone();
+    let guest_node = guest.areas.get::<crate::areas::peers::State>().node().unwrap().clone();
     eventually("both grants on the guest", || {
         guest_node.grants().iter().filter(|grant| grant.direction == GrantDirection::Received).count() == 2
     });
@@ -192,7 +192,7 @@ fn two_apps_share_a_session_view_drive_and_fork_over_loopback() {
     let mut settings = config.load().unwrap();
     settings.remote_hosts.insert("buildbox".into(), serde_json::from_value(serde_json::json!({"host": "buildbox.lan"})).unwrap());
     config.save(&settings).unwrap();
-    update(&rt, &mut owner, Message::Peers(Peers::Open));
+    update(&rt, &mut owner, Message::area(Peers::Open));
     let ssh = loa_trust::Resource::Ssh { host: "buildbox".into() };
     assert!(owner_node.resources().iter().any(|(resource, _)| *resource == ssh));
     panel(&rt, &mut owner, Local::SelectPeer(guest_key.clone()));
@@ -217,15 +217,15 @@ fn two_apps_share_a_session_view_drive_and_fork_over_loopback() {
 
     // Opening it from Recents shows the owner's transcript in the center.
     update(&rt, &mut guest, Message::Shell(shell::Message::Sidebar(shell::sidebar::Message::OpenSession(recent.clone()))));
-    assert_eq!(guest.ctx.screen(), Some(crate::area::AreaId::Peers));
-    let remote = guest.areas.peers.remote().expect("remote view");
+    assert_eq!(guest.ctx.screen(), Some("peers"));
+    let remote = guest.areas.get::<crate::areas::peers::State>().remote().expect("remote view");
     assert_eq!(messages(remote.dom(), "user"), ["hello"]);
     let view = Arc::clone(remote.view_handle());
 
     // A prompt from the guest is a drive request; the owner's harness runs it.
     let mut owner_events = owner_node.events();
-    update(&rt, &mut guest, Message::Peers(Peers::Remote(RemoteMessage::Input("from the guest".into()))));
-    update(&rt, &mut guest, Message::Peers(Peers::Remote(RemoteMessage::Send)));
+    update(&rt, &mut guest, Message::area(Peers::Remote(RemoteMessage::Input("from the guest".into()))));
+    update(&rt, &mut guest, Message::area(Peers::Remote(RemoteMessage::Send)));
     eventually("the prompt request at the owner", || !owner_events.is_empty());
     pump(&rt, &mut owner, &mut owner_events);
     let owned = owner.ctx.sessions.get(&session).expect("owner session open");
@@ -237,8 +237,8 @@ fn two_apps_share_a_session_view_drive_and_fork_over_loopback() {
     // The guest's mirror follows; its screen copy catches up from the feed.
     eventually("the owner's reply on the mirror", || view.writer().with_dom(|dom| messages(dom, "assistant").len() == 2));
     let mirror = view.writer().with_dom(Dom::clone);
-    update(&rt, &mut guest, Message::Peers(Peers::Remote(RemoteMessage::Feed(Feed::Synced(Arc::new(mirror))))));
-    assert_eq!(messages(guest.areas.peers.remote().unwrap().dom(), "user"), ["hello", "from the guest"]);
+    update(&rt, &mut guest, Message::area(Peers::Remote(RemoteMessage::Feed(Feed::Synced(Arc::new(mirror))))));
+    assert_eq!(messages(guest.areas.get::<crate::areas::peers::State>().remote().unwrap().dom(), "user"), ["hello", "from the guest"]);
 
     // The owner stays the single writer: a drive on an old revision is refused.
     let message = view.writer().with_dom(|dom| dom.iter().find(|node| node.kind == ElementKind::Message).unwrap().id);
@@ -247,7 +247,7 @@ fn two_apps_share_a_session_view_drive_and_fork_over_loopback() {
     owned.writer().with_dom(|dom| assert_eq!(messages(dom, "user")[0], "hello"));
 
     // Fork to the guest's node: a new local session with the transcript.
-    update(&rt, &mut guest, Message::Peers(Peers::Remote(RemoteMessage::Fork)));
+    update(&rt, &mut guest, Message::area(Peers::Remote(RemoteMessage::Fork)));
     let forked = active(&guest).expect("forked session active").to_owned();
     assert_ne!(forked, session);
     let copy = guest.ctx.sessions.get(&forked).unwrap().writer().with_dom(Dom::clone);
@@ -297,13 +297,13 @@ fn a_project_grant_shares_its_sessions_and_peers_are_renamed_and_removed() {
     let writer = Arc::clone(owner.ctx.sessions.get(&session).unwrap().writer());
     let root = writer.with_dom(|dom| dom.root().unwrap().id);
     writer.commit(Draft::set(root, attr::PROJECT, project.as_str())).unwrap();
-    let owner_node = owner.areas.peers.node().unwrap().clone();
+    let owner_node = owner.areas.get::<crate::areas::peers::State>().node().unwrap().clone();
     let resource = loa_trust::Resource::Project { id: project.clone() };
     assert!(owner_node.resources().iter().any(|(listed, label)| *listed == resource && *label == format!("Project {project}")));
     grant(&rt, &mut owner, &key(&guest), &format!("project:{project}"), panel::Permission::View);
     let given: Vec<_> = owner_node.grants().into_iter().filter(|grant| grant.direction == GrantDirection::Given).collect();
     assert!(given.iter().any(|grant| grant.scopes.iter().any(|scope| scope.resource == resource)), "{:?}", owner.ctx.notice());
-    let guest_node = guest.areas.peers.node().unwrap().clone();
+    let guest_node = guest.areas.get::<crate::areas::peers::State>().node().unwrap().clone();
     eventually("the project grant at the guest", || {
         guest_node.grants().iter().any(|grant| grant.direction == GrantDirection::Received)
     });
@@ -356,9 +356,9 @@ fn restart_command_listens_on_the_configured_port_and_keeps_added_protocols() {
     let mut settings = config.load().unwrap();
     settings.network.port = free;
     config.save(&settings).unwrap();
-    let task = app.command(&crate::area::AreaId::Peers.command(super::RESTART));
+    let task = app.command(&loa_ui_shell::palette::CommandId::from_static("peers.restart"));
     run(&rt, &mut app, task);
-    let node = app.areas.peers.node().unwrap().clone();
+    let node = app.areas.get::<crate::areas::peers::State>().node().unwrap().clone();
     match node.status().endpoint {
         Endpoint::Listening { tcp, .. } => assert_eq!(tcp.port(), free),
         other => panic!("not listening: {other:?}"),
@@ -373,12 +373,12 @@ fn restart_command_listens_on_the_configured_port_and_keeps_added_protocols() {
 
 /// The guest's browser messages.
 fn browse(rt: &Runtime, app: &mut App, message: super::FolderMessage) {
-    update(rt, app, Message::Peers(Peers::Folder(message)));
+    update(rt, app, Message::area(Peers::Folder(message)));
 }
 
 /// Grants `folder` to `holder` through the panel's folder field.
 fn grant_folder(rt: &Runtime, app: &mut App, holder: &str, folder: &str, permission: panel::Permission) {
-    update(rt, app, Message::Peers(Peers::Open));
+    update(rt, app, Message::area(Peers::Open));
     panel(rt, app, Local::SelectPeer(holder.to_owned()));
     panel(rt, app, Local::FolderPath(folder.to_owned()));
     panel(rt, app, Local::UseFolder);
@@ -411,7 +411,7 @@ fn a_granted_folder_is_browsed_read_and_written_only_inside_and_only_with_drive(
 
     // N3: the owner types a folder of its own into the grant form and gives view.
     grant_folder(&rt, &mut owner, &guest_key, &format!("{folder}/"), panel::Permission::View);
-    let owner_node = owner.areas.peers.node().unwrap().clone();
+    let owner_node = owner.areas.get::<crate::areas::peers::State>().node().unwrap().clone();
     let resource = loa_trust::Resource::Folder { path: folder.clone() };
     let given: Vec<_> = owner_node.grants().into_iter().filter(|g| g.direction == GrantDirection::Given).collect();
     assert_eq!(given.len(), 1, "{:?}", owner.ctx.notice());
@@ -423,23 +423,23 @@ fn a_granted_folder_is_browsed_read_and_written_only_inside_and_only_with_drive(
     assert_eq!(owner_node.grants().len(), 1);
 
     // The guest sees the folder under Shared folders and browses it in the center.
-    let guest_node = guest.areas.peers.node().unwrap().clone();
+    let guest_node = guest.areas.get::<crate::areas::peers::State>().node().unwrap().clone();
     eventually("the folder grant at the guest", || !guest_node.shared_folders().is_empty());
-    update(&rt, &mut guest, Message::Peers(Peers::Open));
-    let shared = &guest.areas.peers.panel.data.shared_folders;
+    update(&rt, &mut guest, Message::area(Peers::Open));
+    let shared = &guest.areas.get::<crate::areas::peers::State>().panel.data.shared_folders;
     assert_eq!(shared.len(), 1);
     assert_eq!((shared[0].path.as_str(), shared[0].can_write, shared[0].online), (folder.as_str(), false, true));
     emit(&rt, &mut guest, panel::Event::BrowseFolder { peer: owner_key.clone(), folder: folder.clone() });
-    assert_eq!(guest.ctx.screen(), Some(crate::area::AreaId::Peers), "{:?}", guest.ctx.notice());
-    let names = |app: &App| app.areas.peers.folder().unwrap().entries.iter().map(|e| (e.name.clone(), e.dir)).collect::<Vec<_>>();
+    assert_eq!(guest.ctx.screen(), Some("peers"), "{:?}", guest.ctx.notice());
+    let names = |app: &App| app.areas.get::<crate::areas::peers::State>().folder().unwrap().entries.iter().map(|e| (e.name.clone(), e.dir)).collect::<Vec<_>>();
     assert_eq!(names(&guest), [("docs".to_owned(), true), ("logo.bin".to_owned(), false)]);
 
     // Into docs, open the plan: its text shows.
     browse(&rt, &mut guest, F::Enter("docs".into()));
-    assert_eq!(guest.areas.peers.folder().unwrap().path, "docs");
+    assert_eq!(guest.areas.get::<crate::areas::peers::State>().folder().unwrap().path, "docs");
     assert_eq!(names(&guest), [("plan.md".to_owned(), false)]);
     browse(&rt, &mut guest, F::Open("plan.md".into()));
-    let text = |app: &App| match &app.areas.peers.folder().unwrap().file.as_ref().expect("file open").preview {
+    let text = |app: &App| match &app.areas.get::<crate::areas::peers::State>().folder().unwrap().file.as_ref().expect("file open").preview {
         super::folder::Preview::Text(content) => content.text(),
         super::folder::Preview::Binary(_) => panic!("text expected"),
     };
@@ -448,19 +448,19 @@ fn a_granted_folder_is_browsed_read_and_written_only_inside_and_only_with_drive(
     // Outside the folder: refused, nothing opens.
     browse(&rt, &mut guest, F::CloseFile);
     browse(&rt, &mut guest, F::Open("../../secret.txt".into()));
-    assert!(guest.areas.peers.folder().unwrap().file.is_none());
+    assert!(guest.areas.get::<crate::areas::peers::State>().folder().unwrap().file.is_none());
     assert!(guest.ctx.notice().is_some_and(|n| n.contains("outside the shared folder")), "{:?}", guest.ctx.notice());
     browse(&rt, &mut guest, F::Crumb(0));
-    assert_eq!(guest.areas.peers.folder().unwrap().path, "");
+    assert_eq!(guest.areas.get::<crate::areas::peers::State>().folder().unwrap().path, "");
     browse(&rt, &mut guest, F::Open("logo.bin".into()));
-    assert!(matches!(guest.areas.peers.folder().unwrap().file.as_ref().unwrap().preview, super::folder::Preview::Binary(4)));
+    assert!(matches!(guest.areas.get::<crate::areas::peers::State>().folder().unwrap().file.as_ref().unwrap().preview, super::folder::Preview::Binary(4)));
 
     // View only: edits don't apply, Save does nothing, and the node refuses writes.
     browse(&rt, &mut guest, F::Enter("docs".into()));
     browse(&rt, &mut guest, F::Open("plan.md".into()));
     browse(&rt, &mut guest, F::Edit(Action::Edit(Edit::Insert('!'))));
     browse(&rt, &mut guest, F::Save);
-    assert!(!guest.areas.peers.folder().unwrap().file.as_ref().unwrap().dirty);
+    assert!(!guest.areas.get::<crate::areas::peers::State>().folder().unwrap().file.as_ref().unwrap().dirty);
     let refused = rt.block_on(guest_node.write_folder_file(&owner_key, &folder, "docs/plan.md", b"overwritten"));
     assert!(matches!(&refused, Err(loa_p2p::NodeError::Refused(_))), "{refused:?}");
     assert_eq!(std::fs::read_to_string(share.join("docs/plan.md")).unwrap(), "# Plan\nship it\n");
@@ -468,16 +468,16 @@ fn a_granted_folder_is_browsed_read_and_written_only_inside_and_only_with_drive(
     // Drive: the guest edits the plan and saves it on the owner.
     grant_folder(&rt, &mut owner, &guest_key, &folder, panel::Permission::Drive);
     eventually("the drive grant at the guest", || guest_node.shared_folders().first().is_some_and(|f| f.can_write));
-    update(&rt, &mut guest, Message::Peers(Peers::Open));
+    update(&rt, &mut guest, Message::area(Peers::Open));
     emit(&rt, &mut guest, panel::Event::BrowseFolder { peer: owner_key.clone(), folder: folder.clone() });
-    assert!(guest.areas.peers.folder().unwrap().can_write);
+    assert!(guest.areas.get::<crate::areas::peers::State>().folder().unwrap().can_write);
     browse(&rt, &mut guest, F::Enter("docs".into()));
     browse(&rt, &mut guest, F::Open("plan.md".into()));
     browse(&rt, &mut guest, F::Edit(Action::Edit(Edit::Insert('!'))));
-    assert!(guest.areas.peers.folder().unwrap().file.as_ref().unwrap().dirty);
+    assert!(guest.areas.get::<crate::areas::peers::State>().folder().unwrap().file.as_ref().unwrap().dirty);
     browse(&rt, &mut guest, F::Save);
     assert_eq!(std::fs::read_to_string(share.join("docs/plan.md")).unwrap(), "!# Plan\nship it\n", "{:?}", guest.ctx.notice());
-    assert!(!guest.areas.peers.folder().unwrap().file.as_ref().unwrap().dirty);
+    assert!(!guest.areas.get::<crate::areas::peers::State>().folder().unwrap().file.as_ref().unwrap().dirty);
 
     // Revoked: the folder leaves the guest's list and browsing is refused.
     for grant in owner_node.grants().into_iter().filter(|g| g.direction == GrantDirection::Given && !g.ended) {
@@ -488,7 +488,7 @@ fn a_granted_folder_is_browsed_read_and_written_only_inside_and_only_with_drive(
     browse(&rt, &mut guest, F::Refresh);
     assert!(guest.ctx.notice().is_some_and(|n| n.contains("didn't list")), "{:?}", guest.ctx.notice());
     browse(&rt, &mut guest, F::Close);
-    assert!(guest.areas.peers.folder().is_none());
+    assert!(guest.areas.get::<crate::areas::peers::State>().folder().is_none());
     assert_eq!(guest.ctx.screen(), None);
 
     rt.block_on(owner_node.stop());

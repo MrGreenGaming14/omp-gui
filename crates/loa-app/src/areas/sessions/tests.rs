@@ -217,7 +217,7 @@ impl Env {
 
     fn small_model(&mut self, answer: &str) -> Arc<FakeModel> {
         let model = Arc::new(FakeModel { answer: answer.to_owned(), prompts: Mutex::default() });
-        self.app.areas.sessions.set_small_model(Arc::new(Arc::clone(&model) as Arc<dyn loa_projects::Summarizer>));
+        self.app.areas.get_mut::<crate::areas::sessions::State>().set_small_model(Arc::new(Arc::clone(&model) as Arc<dyn loa_projects::Summarizer>));
         model
     }
 
@@ -294,7 +294,7 @@ fn build(dir: &Path, id: &'static str, seen: &Shared, reply: &Arc<Mutex<String>>
     let mut app = App::build(services).0;
     let home = dir.join("home");
     std::fs::create_dir_all(&home).unwrap();
-    app.areas.sessions.set_home(home);
+    app.areas.get_mut::<crate::areas::sessions::State>().set_home(home);
     app
 }
 
@@ -316,10 +316,11 @@ fn root_attr(dom: &Dom, name: &str) -> Option<String> {
 
 #[test]
 fn slash_compact_is_the_areas_command() {
-    assert!(matches!(super::slash("/compact"), Some(SessionsMessage::Compact(None))));
-    assert!(matches!(super::slash("  /compact keep the names "), Some(SessionsMessage::Compact(Some(i))) if i == "keep the names"));
-    assert!(super::slash("/compacted").is_none());
-    assert!(super::slash("compact").is_none());
+    let slash = |text| crate::area::find_slash(<super::State as crate::area::Area>::COMMANDS, text).map(|(spec, args)| (spec.id, args));
+    assert_eq!(slash("/compact"), Some(("sessions.compact", "")));
+    assert_eq!(slash("  /compact keep the names "), Some(("sessions.compact", "keep the names")));
+    assert_eq!(slash("/compacted"), None);
+    assert_eq!(slash("compact"), None);
 }
 
 #[test]
@@ -370,7 +371,7 @@ fn forking_from_the_palette_starts_a_linked_session_with_every_contribution() {
     assert_eq!(env.app.ctx.shell.sidebar().session(&fork).map(|s| s.title.as_str()), Some("Fork of the code word is HERON"));
 
     // The Session tree shows both, the fork under its parent's turn.
-    let rows: Vec<String> = env.app.areas.sessions.tree.view.rows().map(|row| format!("{:?}", row.kind)).collect();
+    let rows: Vec<String> = env.app.areas.get::<crate::areas::sessions::State>().tree.view.rows().map(|row| format!("{:?}", row.kind)).collect();
     assert!(rows.iter().any(|row| row.contains(parent.as_str())), "{rows:?}");
     assert!(rows.iter().any(|row| row.contains(&fork)), "{rows:?}");
 
@@ -401,7 +402,7 @@ fn clicking_a_user_message_rewinds_into_a_branch_before_it() {
 
     // Back on the parent, the tree lists its turns and the branch.
     env.send(Message::Shell(shell::Message::Sidebar(shell::sidebar::Message::OpenSession(parent.to_string()))));
-    let tree = &env.app.areas.sessions.tree.view;
+    let tree = &env.app.areas.get::<crate::areas::sessions::State>().tree.view;
     let rows: Vec<String> = tree.rows().map(|row| format!("{:?}", row.kind)).collect();
     assert!(rows.iter().any(|row| row.contains(&branch)), "{rows:?}");
     let first_turn = tree
@@ -409,7 +410,7 @@ fn clicking_a_user_message_rewinds_into_a_branch_before_it() {
         .find(|row| matches!(row.kind, session_tree::RowKind::Turn { first_line, .. } if first_line == "first HERON"))
         .expect("the parent's turns are listed")
         .index;
-    env.send(Message::Sessions(SessionsMessage::Tree(session_tree::Message::Fork(first_turn))));
+    env.send(Message::area(SessionsMessage::Tree(session_tree::Message::Fork(first_turn))));
     let fork = active(&env.app).unwrap().to_owned();
     assert!(fork != branch && fork != parent.as_str());
     let context = env.last_config().context.unwrap_or_default();
@@ -483,14 +484,14 @@ fn the_agents_tab_lists_jobs_live_and_opens_a_subagent_as_a_linked_child() {
     writer.commit(Draft::insert(turn, ElementKind::Call, wait, "")).unwrap();
     env.pump();
 
-    let agents = &env.app.areas.sessions.agents;
+    let agents = &env.app.areas.get::<crate::areas::sessions::State>().agents;
     assert_eq!(agents.jobs().count(), 1, "listed live");
     assert!(agents.is_awaited(job), "omp's wait is blocked on it");
     let task = env.app.command(&palette::CommandId::new("tab.agents"));
     run(&mut env.app, task);
     assert_eq!(env.app.ctx.shell.active_tab(), Some("agents"));
 
-    env.send(Message::Sessions(SessionsMessage::Agents(agents::Message::Open(job))));
+    env.send(Message::area(SessionsMessage::Agents(agents::Message::Open(job))));
     let child = active(&env.app).expect("the child is open").to_owned();
     assert_ne!(child, parent.as_str());
     let dom = env.active_dom();
@@ -523,11 +524,11 @@ fn plan_mode_blocks_changing_tools_and_raises_a_plan_review() {
         .expect("a plan review under the session");
     assert_eq!(review.text, "1. Write a.txt\n2. Run the tests");
     let review = review.id;
-    assert!(env.app.areas.decisions.card(id.as_str(), review).is_some(), "drawn as a decision card");
+    assert!(env.app.areas.get::<crate::areas::decisions::State>().card(id.as_str(), review).is_some(), "drawn as a decision card");
 
     *env.reply.lock().unwrap() = "done".to_owned();
     let approve = Answer { values: vec![answer::APPROVE.to_owned()], reason: None, by: String::new() };
-    env.send(Message::Sessions(SessionsMessage::AnswerPlan { session: id.clone(), decision: review, answer: approve }));
+    env.send(Message::area(SessionsMessage::AnswerPlan { session: id.clone(), decision: review, answer: approve }));
     let dom = env.active_dom();
     assert_eq!(root_attr(&dom, attr::MODE).as_deref(), Some("normal"));
     let prompts = env.seen.lock().unwrap().prompts.clone();
@@ -569,11 +570,11 @@ fn the_import_screen_imports_native_sessions_and_exports_native_and_xml() {
     std::fs::write(&native, "{\"type\":\"title\",\"title\":\"Old work\"}\nfix the parser\n").unwrap();
 
     env.command("sessions.import");
-    assert_eq!(env.app.ctx.screen(), Some(crate::area::AreaId::Sessions));
-    assert_eq!(env.app.areas.sessions.transfer.found.len(), 1);
-    assert_eq!(env.app.areas.sessions.transfer.found[0].title.as_deref(), Some("Old work"));
+    assert_eq!(env.app.ctx.screen(), Some("sessions"));
+    assert_eq!(env.app.areas.get::<crate::areas::sessions::State>().transfer.found.len(), 1);
+    assert_eq!(env.app.areas.get::<crate::areas::sessions::State>().transfer.found[0].title.as_deref(), Some("Old work"));
 
-    env.send(Message::Sessions(SessionsMessage::Transfer(super::transfer::Message::Import(native.clone()))));
+    env.send(Message::area(SessionsMessage::Transfer(super::transfer::Message::Import(native.clone()))));
     let imported = active(&env.app).expect("the import is open").to_owned();
     assert!(env.app.ctx.screen().is_none());
     let dom = env.active_dom();
@@ -585,8 +586,8 @@ fn the_import_screen_imports_native_sessions_and_exports_native_and_xml() {
     let picked = env.dir.path().join("picked.jsonl");
     std::fs::write(&picked, "{\"type\":\"session\",\"version\":3}\nfrom a path\n").unwrap();
     env.command("sessions.import");
-    env.send(Message::Sessions(SessionsMessage::Transfer(super::transfer::Message::Path(picked.display().to_string()))));
-    env.send(Message::Sessions(SessionsMessage::Transfer(super::transfer::Message::ImportPath)));
+    env.send(Message::area(SessionsMessage::Transfer(super::transfer::Message::Path(picked.display().to_string()))));
+    env.send(Message::area(SessionsMessage::Transfer(super::transfer::Message::ImportPath)));
     assert!(user_messages(&env.active_dom()).iter().any(|(_, text)| text == "from a path"));
 
     let id = active(&env.app).unwrap().to_owned();
@@ -601,7 +602,7 @@ fn the_import_screen_imports_native_sessions_and_exports_native_and_xml() {
     // Unknown files are refused.
     let unknown = env.dir.path().join("notes.txt");
     std::fs::write(&unknown, "hello").unwrap();
-    env.send(Message::Sessions(SessionsMessage::Transfer(super::transfer::Message::Import(unknown))));
+    env.send(Message::area(SessionsMessage::Transfer(super::transfer::Message::Import(unknown))));
     assert!(env.app.ctx.notice().is_some_and(|notice| notice.starts_with("Can't import")));
 }
 
@@ -621,7 +622,7 @@ fn a_spawned_session_that_fails_to_start_leaves_nothing_behind() {
     });
     let spawn = crate::area::Spawn { id: SessionId::from(id.clone()), harness: "fake-s".into(), start, prompt: None };
     env.app.ctx.request(crate::area::Request::Spawn(spawn));
-    update(&mut env.app, Message::Sessions(SessionsMessage::Done(Ok(()))));
+    update(&mut env.app, Message::area(SessionsMessage::Done(Ok(()))));
     assert!(env.app.ctx.sessions.starting().is_none());
     assert_eq!(env.app.ctx.notice(), Some("boom"));
     let dir = env.dir.path().join("loa/sessions").join(&id);
@@ -634,7 +635,7 @@ fn build_native(dir: &Path) -> App {
     let dirs = Dirs::new(dir.join("loa"));
     let harnesses = Harnesses::detect(&node.key, &dirs.omp);
     let mut app = App::build(Services::new(node, dirs, harnesses, dir.to_owned()).unwrap()).0;
-    app.areas.sessions.set_home(dir.join("home"));
+    app.areas.get_mut::<crate::areas::sessions::State>().set_home(dir.join("home"));
     app
 }
 
@@ -646,11 +647,11 @@ fn json_lines(text: &str) -> Vec<serde_json::Value> {
 /// `listed`, else by path), checks the session opened with `first_user`,
 /// exports it from the same screen and returns the exported text.
 fn import_and_export(app: &mut App, dir: &Path, native: &Path, listed: bool, first_user: &str) -> String {
-    let transfer = |message| Message::Sessions(SessionsMessage::Transfer(message));
+    let transfer = |message| Message::area(SessionsMessage::Transfer(message));
     let task = app.command(&palette::CommandId::new("sessions.import"));
     run(app, task);
     if listed {
-        assert!(app.areas.sessions.transfer.found.iter().any(|found| found.path == native), "{} is listed", native.display());
+        assert!(app.areas.get::<crate::areas::sessions::State>().transfer.found.iter().any(|found| found.path == native), "{} is listed", native.display());
         update(app, transfer(super::transfer::Message::Import(native.to_owned())));
     } else {
         update(app, transfer(super::transfer::Message::Path(native.display().to_string())));
@@ -787,12 +788,12 @@ fn slash_commands_run_through_their_areas_and_the_harness_lists_its_own() {
         Some("Can't enter plan mode on fake-s: feature port failed: this harness can't be limited to read-only tools")
     );
     env.say("/normal");
-    assert!(!env.app.areas.sessions.plans.contains_key(first.as_str()), "in normal mode");
+    assert!(!env.app.areas.get::<crate::areas::sessions::State>().plans.contains_key(first.as_str()), "in normal mode");
     env.say("/export-xml");
     let exported = env.dir.path().join(format!("loa/exports/{first}.xml"));
     assert!(exported.is_file(), "notice: {:?}", env.app.ctx.notice());
     env.say("/import");
-    assert_eq!(env.app.ctx.screen(), Some(crate::area::AreaId::Sessions));
+    assert_eq!(env.app.ctx.screen(), Some("sessions"));
     env.app.ctx.close_screen();
     env.say("/fork");
     let fork = active(&env.app).unwrap().to_owned();
@@ -814,10 +815,10 @@ fn slash_plan_and_normal_switch_the_mode() {
     let mut env = Env::new("omp");
     let id = env.start();
     env.say("/plan");
-    assert!(env.app.areas.sessions.plans.contains_key(id.as_str()), "notice: {:?}", env.app.ctx.notice());
+    assert!(env.app.areas.get::<crate::areas::sessions::State>().plans.contains_key(id.as_str()), "notice: {:?}", env.app.ctx.notice());
     assert_eq!(root_attr(&env.active_dom(), attr::MODE).as_deref(), Some("plan"));
     env.say("/normal");
-    assert!(!env.app.areas.sessions.plans.contains_key(id.as_str()));
+    assert!(!env.app.areas.get::<crate::areas::sessions::State>().plans.contains_key(id.as_str()));
     assert_eq!(root_attr(&env.active_dom(), attr::MODE).as_deref(), Some("normal"));
     assert!(env.seen.lock().unwrap().prompts.is_empty(), "not sent to the harness");
 }
@@ -870,7 +871,7 @@ impl loa_models::login::UrlOpener for Browser {
 fn web_links_in_the_transcript_open_in_the_browser() {
     let mut env = Env::new("fake-s");
     let browser = Arc::new(Browser::default());
-    env.app.areas.sessions.set_opener(Arc::clone(&browser) as _);
+    env.app.areas.get_mut::<crate::areas::sessions::State>().set_opener(Arc::clone(&browser) as _);
     env.start();
     env.send(Message::Chat(loa_ui_session::transcript::Message::Link("https://example.com/docs".into())));
     env.send(Message::Chat(loa_ui_session::transcript::Message::Link("file:///etc/passwd".into())));

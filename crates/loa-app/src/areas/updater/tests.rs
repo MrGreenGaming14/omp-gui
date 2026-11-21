@@ -2,6 +2,7 @@
 //! feed and scripted executables: the product `fake` is the fake harness's
 //! own CLI, so a swap changes what its new sessions start.
 
+use loa_ui_shell::palette;
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
@@ -166,22 +167,22 @@ fn respond(served: &Served, stream: TcpStream) {
 fn app_with(dir: &Path, fixture: &Fixture) -> App {
     let mut app = fake_app(dir, &["fake"]);
     let updater = Updater::open(fixture.config.clone()).unwrap();
-    app.areas.updater.replace_updater(updater, &mut app.ctx);
+    app.areas.get_mut::<crate::areas::updater::State>().replace_updater(updater, &mut app.ctx);
     app
 }
 
 /// Starts a step from the screen.
 fn start(app: &mut App, event: Event) {
-    update(app, AppMessage::Updater(Message::Screen(Msg::Local(Local::Start(event)))));
+    update(app, AppMessage::area(Message::Screen(Msg::Local(Local::Start(event)))));
 }
 
 /// A choice or unpin from the screen.
 fn emit(app: &mut App, event: Event) {
-    update(app, AppMessage::Updater(Message::Screen(Msg::Emit(event))));
+    update(app, AppMessage::area(Message::Screen(Msg::Emit(event))));
 }
 
 fn fake(app: &App) -> ProductStatus {
-    app.areas.updater.screen().data.products.iter().find(|p| p.id == "fake").cloned().expect("listed")
+    app.areas.get::<crate::areas::updater::State>().screen().data.products.iter().find(|p| p.id == "fake").cloned().expect("listed")
 }
 
 fn v(version: &str) -> Version {
@@ -212,17 +213,17 @@ fn updates_screen_checks_stages_gates_holds_pins_and_swaps_between_turns() {
     assert_eq!(app.ctx.shell.sidebar().updates(), 0, "nothing checked yet");
 
     palette(&mut app, "Check for updates");
-    assert_eq!(app.ctx.screen(), Some(AreaId::Updater));
+    assert_eq!(app.ctx.screen(), Some(crate::areas::updater::State::ID));
     let product = fake(&app);
     assert_eq!((product.current.clone(), offer(&product)), (Some(v("1.0.0")), Some(v("1.1.0"))));
     assert!(product.changelog.contains("`--fast` flag removed"), "{}", product.changelog);
-    assert!(app.areas.updater.screen().busy("fake").is_none(), "the check finished");
+    assert!(app.areas.get::<crate::areas::updater::State>().screen().busy("fake").is_none(), "the check finished");
     assert_eq!(app.ctx.shell.sidebar().updates(), 1, "the sidebar lists the update");
 
     // The sidebar row opens the screen.
     app.ctx.close_screen();
     update(&mut app, AppMessage::Shell(shell_sidebar(loa_ui_shell::sidebar::Message::Emit(loa_ui_shell::sidebar::Event::OpenUpdates))));
-    assert_eq!(app.ctx.screen(), Some(AreaId::Updater));
+    assert_eq!(app.ctx.screen(), Some(crate::areas::updater::State::ID));
 
     start(&mut app, Event::Stage("fake".into()));
     assert_eq!(fake(&app).staged, vec![v("1.1.0")]);
@@ -252,17 +253,17 @@ fn updates_screen_checks_stages_gates_holds_pins_and_swaps_between_turns() {
     let (_, mut feed) = session.writer().subscribe(Policy::every_patch(1024));
     prompt(&mut app, "ask");
     deliver(&mut app, &id, &mut feed);
-    assert!(app.areas.updater.turn_running());
+    assert!(app.areas.get::<crate::areas::updater::State>().turn_running());
     emit(&mut app, Event::Choose("fake".into(), HoldChoice::UpdateAnyway));
     assert!(notice(&app).contains("swaps in once the running turn ends"), "{}", notice(&app));
     assert_eq!(fake(&app).pending_swap, Some(v("1.1.0")));
     assert_eq!(fake(&app).current, Some(v("1.0.0")));
 
-    let decision = app.areas.decisions.focused().expect("the turn waits on a decision");
+    let decision = app.areas.get::<crate::areas::decisions::State>().focused().expect("the turn waits on a decision");
     let choose = desk::Message::Card(id.to_string(), loa_ui_session::decisions::Message::Choose(decision, 0));
-    update(&mut app, AppMessage::Decisions(crate::areas::decisions::Message::Desk(choose)));
+    update(&mut app, AppMessage::area(crate::areas::decisions::Message::Desk(choose)));
     deliver(&mut app, &id, &mut feed);
-    assert!(!app.areas.updater.turn_running(), "turn ended");
+    assert!(!app.areas.get::<crate::areas::updater::State>().turn_running(), "turn ended");
     assert!(notice(&app).contains("fake is now 1.1.0"), "{}", notice(&app));
     let product = fake(&app);
     assert_eq!((product.current, product.pending_swap), (Some(v("1.1.0")), None));
@@ -271,7 +272,7 @@ fn updates_screen_checks_stages_gates_holds_pins_and_swaps_between_turns() {
     // New sessions of the harness start the swapped in version.
     let capabilities = Capabilities::default();
     let mut config = SessionConfig::default();
-    app.areas.updater.contribute(&mut config, &Target { harness: "fake", capabilities: &capabilities, resume: false }, &app.ctx);
+    app.areas.get::<crate::areas::updater::State>().contribute(&mut config, &Target { harness: "fake", capabilities: &capabilities, resume: false }, &app.ctx);
     assert_eq!(config.executable, Some(managed));
 
     // A clean release swaps in at once; rollback goes back one version.
@@ -321,8 +322,8 @@ fn peers_behind_come_from_the_peers_the_node_knows() {
         peer(3, "never-seen", Some("0.0.1"), &[]),
     ];
 
-    update(&mut app, AppMessage::Updater(Message::Open));
-    let peers = &app.areas.updater.screen().data.peers;
+    update(&mut app, AppMessage::area(Message::Open));
+    let peers = &app.areas.get::<crate::areas::updater::State>().screen().data.peers;
     let names: Vec<_> = peers.iter().map(|p| p.name.as_deref().unwrap_or_default()).collect();
     assert_eq!(names, ["old-box", "same-box"], "only peers whose hello was seen");
     assert!(matches!(peers[0].standing, Standing::Behind { .. }), "{:?}", peers[0].standing);

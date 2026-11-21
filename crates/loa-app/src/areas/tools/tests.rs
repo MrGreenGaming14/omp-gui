@@ -114,9 +114,9 @@ impl Rig {
         };
         let home = dir.path().join("home");
         std::fs::create_dir_all(home.join(".ssh")).unwrap();
-        app.areas.tools.ssh = SshPaths { home: home.clone(), resolver: Arc::new(Static::new("tester")) };
+        app.areas.get_mut::<crate::areas::tools::State>().ssh = SshPaths { home: home.clone(), resolver: Arc::new(Static::new("tester")) };
         let mcp = app.ctx.services.mcp.events();
-        let prompts = app.areas.tools.remote.queue.subscribe();
+        let prompts = app.areas.get::<crate::areas::tools::State>().remote.queue.subscribe();
         let rig = Self { app, runtime, sender, receiver, feeds: Vec::new(), mcp, prompts, configs, home, dir };
         rig.spawn(task);
         rig
@@ -143,7 +143,7 @@ impl Rig {
     }
 
     fn tools(&mut self, message: Message) {
-        self.update(AppMessage::Tools(message));
+        self.update(AppMessage::area(message));
     }
 
     fn panel(&mut self, message: tools::Message) {
@@ -168,11 +168,11 @@ impl Rig {
                 servers = true;
             }
             if servers {
-                messages.push(AppMessage::Tools(Message::ServersChanged));
+                messages.push(AppMessage::area(Message::ServersChanged));
             }
             if self.prompts.has_changed().unwrap_or(false) {
                 self.prompts.mark_unchanged();
-                messages.push(AppMessage::Tools(Message::PromptsChanged));
+                messages.push(AppMessage::area(Message::PromptsChanged));
             }
             if messages.is_empty() {
                 return;
@@ -202,7 +202,7 @@ impl Rig {
     /// Waits for the startup tasks: the servers loaded and `remote` serving.
     fn started(mut self) -> Self {
         self.until("the servers load and remote serves", WAIT, |app| {
-            app.areas.tools.servers.is_some() && app.areas.tools.remote.http.is_some()
+            app.areas.get::<crate::areas::tools::State>().servers.is_some() && app.areas.get::<crate::areas::tools::State>().remote.http.is_some()
         });
         self
     }
@@ -251,7 +251,7 @@ impl Rig {
         let data = self.app.ctx.services.dirs.data.join("remote-test");
         std::fs::create_dir_all(&data).unwrap();
         let (remote, _) = Remote::new(&data, config);
-        let tools = &mut self.app.areas.tools;
+        let tools = self.app.areas.get_mut::<crate::areas::tools::State>();
         tools.terminal = terminal::state::State::new(
             terminal::canvas::Metrics::measure(iced::Font::MONOSPACE, 13.0),
             terminal::LocalShell::login_shell(self.home.clone()),
@@ -260,13 +260,13 @@ impl Rig {
         tools.remote = remote;
         self.prompts = tools.remote.queue.subscribe();
         let app = &mut self.app;
-        app.areas.tools.reload_hosts(&mut app.ctx);
-        let service = self.app.areas.tools.remote.tools.clone();
+        app.areas.get_mut::<crate::areas::tools::State>().reload_hosts(&mut app.ctx);
+        let service = self.app.areas.get::<crate::areas::tools::State>().remote.tools.clone();
         self.spawn(Task::perform(
             async move { RemoteHttp::start(service).await.map(Arc::new).map_err(|error| error.to_string()) },
-            |result| AppMessage::Tools(Message::RemoteServing(result)),
+            |result| AppMessage::area(Message::RemoteServing(result)),
         ));
-        self.until("remote serves again", WAIT, |app| app.areas.tools.remote.http.is_some());
+        self.until("remote serves again", WAIT, |app| app.areas.get::<crate::areas::tools::State>().remote.http.is_some());
     }
 }
 
@@ -321,14 +321,14 @@ fn add_server(rig: &mut Rig, name: &str, command: &str) {
     rig.panel(tools::Message::FormSubmit(tools::FormId::Server));
     let name = name.to_owned();
     rig.until("the server runs", WAIT, |app| {
-        app.areas.tools.panel.catalog().servers.iter().any(|view| {
+        app.areas.get::<crate::areas::tools::State>().panel.catalog().servers.iter().any(|view| {
             view.server.name == name && view.server.status == tools::ServerStatus::Running && !view.server.tools.is_empty()
         })
     });
 }
 
 fn server<'a>(rig: &'a Rig, name: &str) -> Option<&'a tools::McpServer> {
-    rig.app.areas.tools.panel.catalog().servers.into_iter().map(|view| view.server).find(|server| server.name == name)
+    rig.app.areas.get::<crate::areas::tools::State>().panel.catalog().servers.into_iter().map(|view| view.server).find(|server| server.name == name)
 }
 
 #[test]
@@ -343,7 +343,7 @@ fn the_tools_panel_lists_harness_and_app_tools_and_the_app_hosted_servers() {
     rig.app.ctx.set_app_tool(tools::ToolInfo::new("sandbox_task", "Run a task in a sandbox").with_details(vec![detail]));
     rig.tools(Message::Open);
     fn app_tools(rig: &Rig) -> Vec<tools::catalog::ToolRow<'_>> {
-        let catalog = rig.app.areas.tools.panel.catalog();
+        let catalog = rig.app.areas.get::<crate::areas::tools::State>().panel.catalog();
         catalog.builtin.into_iter().find(|group| group.group == tools::BuiltinGroup::App).unwrap().tools
     }
     let listed = app_tools(&rig);
@@ -406,19 +406,19 @@ fn an_mcp_server_added_in_the_panel_runs_is_controlled_and_reaches_every_session
     // Stop, start, restart and remove from the panel.
     rig.panel(tools::Message::Server("vault".into(), tools::ServerAction::Stop));
     rig.until("vault stops", WAIT, |app| {
-        app.areas.tools.panel.catalog().servers.iter().any(|v| v.server.name == "vault" && v.server.status == tools::ServerStatus::Stopped)
+        app.areas.get::<crate::areas::tools::State>().panel.catalog().servers.iter().any(|v| v.server.name == "vault" && v.server.status == tools::ServerStatus::Stopped)
     });
     assert!(!rig.config().mcp_servers["vault"].enabled, "the stop is saved");
     rig.panel(tools::Message::Server("vault".into(), tools::ServerAction::Start));
     rig.until("vault runs again", WAIT, |app| {
-        app.areas.tools.panel.catalog().servers.iter().any(|v| v.server.name == "vault" && v.server.status == tools::ServerStatus::Running)
+        app.areas.get::<crate::areas::tools::State>().panel.catalog().servers.iter().any(|v| v.server.name == "vault" && v.server.status == tools::ServerStatus::Running)
     });
     rig.panel(tools::Message::Server("vault".into(), tools::ServerAction::Restart));
     rig.until("vault runs after the restart", WAIT, |app| {
-        app.areas.tools.panel.catalog().servers.iter().any(|v| v.server.name == "vault" && v.server.status == tools::ServerStatus::Running)
+        app.areas.get::<crate::areas::tools::State>().panel.catalog().servers.iter().any(|v| v.server.name == "vault" && v.server.status == tools::ServerStatus::Running)
     });
     rig.panel(tools::Message::Server("vault".into(), tools::ServerAction::Remove));
-    rig.until("vault is gone", WAIT, |app| !app.areas.tools.panel.catalog().servers.iter().any(|v| v.server.name == "vault"));
+    rig.until("vault is gone", WAIT, |app| !app.areas.get::<crate::areas::tools::State>().panel.catalog().servers.iter().any(|v| v.server.name == "vault"));
     assert!(!rig.config().mcp_servers.contains_key("vault"));
 
     // The app hosted server can't be removed.
@@ -446,8 +446,8 @@ fn servers_import_from_claude_cursor_and_codex_configs() {
     .unwrap();
 
     rig.panel(tools::Message::ImportScan);
-    rig.until("the scan lists the candidates", WAIT, |app| app.areas.tools.panel.imports().is_some_and(|entries| entries.len() == 3));
-    let entries = rig.app.areas.tools.panel.imports().unwrap().to_vec();
+    rig.until("the scan lists the candidates", WAIT, |app| app.areas.get::<crate::areas::tools::State>().panel.imports().is_some_and(|entries| entries.len() == 3));
+    let entries = rig.app.areas.get::<crate::areas::tools::State>().panel.imports().unwrap().to_vec();
     let sources: Vec<_> = entries.iter().map(|entry| entry.candidate.source).collect();
     assert!(sources.contains(&tools::ImportSource::Claude) && sources.contains(&tools::ImportSource::Cursor) && sources.contains(&tools::ImportSource::Codex));
     // Import only the two stdio servers.
@@ -455,13 +455,13 @@ fn servers_import_from_claude_cursor_and_codex_configs() {
     rig.panel(tools::Message::ImportSelect(cursor, false));
     rig.panel(tools::Message::ImportSubmit);
     rig.until("both are imported", WAIT, |app| {
-        app.areas.tools.panel.imports().unwrap().iter().filter(|entry| entry.outcome == Some(tools::ImportOutcome::Imported)).count() == 2
+        app.areas.get::<crate::areas::tools::State>().panel.imports().unwrap().iter().filter(|entry| entry.outcome == Some(tools::ImportOutcome::Imported)).count() == 2
     });
     let saved = rig.config().mcp_servers;
     assert!(saved.contains_key("claude-vault") && saved.contains_key("codex-vault") && !saved.contains_key("cursor-docs"), "{saved:?}");
     rig.until("the imported servers run", WAIT, |app| {
         ["claude-vault", "codex-vault"].iter().all(|name| {
-            app.areas.tools.panel.catalog().servers.iter().any(|v| v.server.name == *name && v.server.status == tools::ServerStatus::Running)
+            app.areas.get::<crate::areas::tools::State>().panel.catalog().servers.iter().any(|v| v.server.name == *name && v.server.status == tools::ServerStatus::Running)
         })
     });
 }
@@ -472,7 +472,7 @@ fn project_toggles_are_saved_and_switch_tools_off_in_new_sessions() {
     let command = vault_server(rig.dir.path(), "5");
     add_server(&mut rig, "vault", &command);
     let project = rig.project();
-    assert_eq!(rig.app.areas.tools.panel.disabled_tools().map(|tools| tools.len()), Some(0), "the current project is selected");
+    assert_eq!(rig.app.areas.get::<crate::areas::tools::State>().panel.disabled_tools().map(|tools| tools.len()), Some(0), "the current project is selected");
 
     rig.panel(tools::Message::ToolToggled(tools::ToolId::builtin("bash"), false));
     rig.panel(tools::Message::ToolToggled(tools::ToolId::mcp("vault", "vault_code"), false));
@@ -497,7 +497,7 @@ fn project_toggles_are_saved_and_switch_tools_off_in_new_sessions() {
     assert!(!rig.config().projects[&project].disabled_mcp_tools.contains_key("vault"));
     // Another project keeps its own toggles.
     rig.panel(tools::Message::ProjectSelected(tools::ProjectRef { id: "other".into(), name: "other".into() }));
-    assert_eq!(rig.app.areas.tools.panel.disabled_tools().map(|tools| tools.len()), Some(0));
+    assert_eq!(rig.app.areas.get::<crate::areas::tools::State>().panel.disabled_tools().map(|tools| tools.len()), Some(0));
 }
 
 #[test]
@@ -521,7 +521,7 @@ fn the_peers_section_shows_what_each_issued_grant_allows() {
 
     rig.tools(Message::Open);
     rig.panel(tools::Message::SectionSelected(tools::Section::Peers));
-    let matrix = rig.app.areas.tools.panel.peer_matrix();
+    let matrix = rig.app.areas.get::<crate::areas::tools::State>().panel.peer_matrix();
     assert_eq!(matrix.peers.len(), 2);
     let column = |key: String| matrix.peers.iter().position(|peer| peer.key == key).unwrap();
     let (driver, viewer) = (column(driver.public_key().to_string()), column(viewer.public_key().to_string()));
@@ -538,12 +538,12 @@ fn the_peers_section_shows_what_each_issued_grant_allows() {
 fn remote_hosts_import_add_limit_and_remove_through_the_central_config() {
     let mut rig = Rig::new().started();
     let ssh = Static::new("tester").with("bastion", "10.0.0.1", 22, None).with("db", "db.internal", 22, Some("bastion"));
-    rig.app.areas.tools.ssh.resolver = Arc::new(ssh);
+    rig.app.areas.get_mut::<crate::areas::tools::State>().ssh.resolver = Arc::new(ssh);
     rig.panel(tools::Message::SectionSelected(tools::Section::Hosts));
     rig.panel(tools::Message::ImportSshHosts);
-    let hosts: Vec<String> = rig.app.areas.tools.panel.hosts().iter().map(|host| host.alias.clone()).collect();
+    let hosts: Vec<String> = rig.app.areas.get::<crate::areas::tools::State>().panel.hosts().iter().map(|host| host.alias.clone()).collect();
     assert_eq!(hosts, ["bastion", "db"]);
-    let db = rig.app.areas.tools.remote.service.hosts().get("db").expect("db resolves");
+    let db = rig.app.areas.get::<crate::areas::tools::State>().remote.service.hosts().get("db").expect("db resolves");
     assert_eq!(db.target.hostname, "db.internal");
     assert_eq!(db.jumps.len(), 1, "ProxyJump bastion");
     assert!(db.limits.read_only && !db.limits.commands, "imported hosts start closed");
@@ -566,12 +566,12 @@ fn remote_hosts_import_add_limit_and_remove_through_the_central_config() {
     rig.panel(tools::Message::FormSubmit(tools::FormId::Limits));
     let build = &rig.config().remote_hosts["build"];
     assert!(!build.read_only && build.commands && build.auto_approve && build.allowed_paths == ["/srv"]);
-    let limits = rig.app.areas.tools.remote.service.hosts().get("build").unwrap().limits;
+    let limits = rig.app.areas.get::<crate::areas::tools::State>().remote.service.hosts().get("build").unwrap().limits;
     assert!(limits.commands && limits.auto_approve_commands && !limits.read_only);
 
     rig.panel(tools::Message::RemoveHost("bastion".into()));
     assert!(!rig.config().remote_hosts.contains_key("bastion"));
-    assert!(rig.app.areas.tools.remote.service.hosts().get("bastion").is_none());
+    assert!(rig.app.areas.get::<crate::areas::tools::State>().remote.service.hosts().get("bastion").is_none());
 
     // One palette command per host opens a shell on it.
     rig.update(AppMessage::Palette(loa_ui_shell::palette::Message::Open));
@@ -636,27 +636,27 @@ fn remote_questions_raise_decision_cards_answered_in_the_chat_or_the_panel() {
     // The command is approved before connecting: an approval card in the
     // chat, answered from the panel.
     rig.until("the approval shows", WAIT, |app| {
-        app.areas.tools.panel.prompts().iter().any(|prompt| prompt.kind == tools::PromptKind::Approval)
+        app.areas.get::<crate::areas::tools::State>().panel.prompts().iter().any(|prompt| prompt.kind == tools::PromptKind::Approval)
     });
     let approval = waiting_card(&rig, &session).expect("an approval card in the session");
     assert_eq!(rig.app.ctx.shell.active_tab(), Some(TAB), "the Tools tab opens on the question");
     assert_eq!(rig.dom(&session).get(approval).unwrap().str_attr(attr::KIND), Some("approval"));
-    let id = rig.app.areas.tools.panel.prompts()[0].id;
+    let id = rig.app.areas.get::<crate::areas::tools::State>().panel.prompts()[0].id;
     rig.panel(tools::Message::AnswerPrompt(id, tools::PromptAnswer::AllowOnce));
     let node = rig.dom(&session).get(approval).cloned().unwrap();
     assert_eq!((node.str_attr(attr::STATUS), node.attr(attr::ANSWER).cloned()), (Some("answered"), Some(loa_core::Value::List(vec!["allow_once".into()]))));
 
     // Then the unknown host key: a card in the chat, answered there.
     rig.until("the host key card shows", WAIT, |app| {
-        app.areas.tools.panel.prompts().iter().any(|prompt| prompt.kind == tools::PromptKind::HostKey)
+        app.areas.get::<crate::areas::tools::State>().panel.prompts().iter().any(|prompt| prompt.kind == tools::PromptKind::HostKey)
     });
     let card = waiting_card(&rig, &session).expect("a host key card in the session");
     let node = rig.dom(&session).get(card).cloned().unwrap();
     assert_eq!(node.str_attr(attr::KIND), Some("question"));
     assert!(node.text.contains("presented"), "{}", node.text);
-    rig.until("the card reaches the desk", WAIT, |app| app.areas.decisions.focused() == Some(card));
+    rig.until("the card reaches the desk", WAIT, |app| app.areas.get::<crate::areas::decisions::State>().focused() == Some(card));
     let choose = desk::Message::Card(session.to_string(), loa_ui_session::decisions::Message::Choose(card, 0));
-    rig.update(AppMessage::Decisions(decisions::Message::Desk(choose)));
+    rig.update(AppMessage::area(decisions::Message::Desk(choose)));
     let node = rig.dom(&session).get(card).cloned().unwrap();
     assert_eq!(node.str_attr(attr::STATUS), Some("answered"));
     let out = rig.runtime.block_on(async { tokio::time::timeout(WAIT, call).await }).unwrap().unwrap().unwrap();
@@ -665,8 +665,8 @@ fn remote_questions_raise_decision_cards_answered_in_the_chat_or_the_panel() {
 
     // The audit view lists the command with its session.
     rig.panel(tools::Message::ShowAudit("box".into()));
-    rig.until("the audit rows load", WAIT, |app| app.areas.tools.panel.audit().is_some_and(|(_, rows)| !rows.is_empty()));
-    let (_, rows) = rig.app.areas.tools.panel.audit().unwrap();
+    rig.until("the audit rows load", WAIT, |app| app.areas.get::<crate::areas::tools::State>().panel.audit().is_some_and(|(_, rows)| !rows.is_empty()));
+    let (_, rows) = rig.app.areas.get::<crate::areas::tools::State>().panel.audit().unwrap();
     let row = rows.iter().find(|row| row.action == tools::AuditAction::Command).unwrap();
     assert_eq!((row.session.as_str(), row.detail.as_str()), (session.as_str(), "echo from-box"));
     assert!(row.outcome.starts_with("ok"), "{}", row.outcome);
@@ -677,10 +677,10 @@ fn remote_questions_raise_decision_cards_answered_in_the_chat_or_the_panel() {
     let call = rig.runtime.spawn(async move {
         handler.call(&config.session_id, "remote_bash", r#"{"host": "box", "command": "rm -rf /tmp/x"}"#).await
     });
-    rig.until("the second approval shows", WAIT, |app| !app.areas.tools.panel.prompts().is_empty());
+    rig.until("the second approval shows", WAIT, |app| !app.areas.get::<crate::areas::tools::State>().panel.prompts().is_empty());
     let card = waiting_card(&rig, &session).unwrap();
-    rig.until("the card reaches the desk", WAIT, |app| app.areas.decisions.focused() == Some(card));
-    rig.update(AppMessage::Decisions(decisions::State::dismiss()));
+    rig.until("the card reaches the desk", WAIT, |app| app.areas.get::<crate::areas::decisions::State>().focused() == Some(card));
+    rig.update(AppMessage::area(decisions::State::dismiss()));
     let denied = rig.runtime.block_on(async { tokio::time::timeout(WAIT, call).await }).unwrap().unwrap();
     assert!(denied.is_err(), "{denied:?}");
     assert_eq!(rig.dom(&session).get(card).unwrap().str_attr(attr::STATUS), Some("answered"));
@@ -689,10 +689,10 @@ fn remote_questions_raise_decision_cards_answered_in_the_chat_or_the_panel() {
     let config = rig.last_config();
     let handler = config.host_tool_handler.clone().unwrap();
     let call = rig.runtime.spawn(async move { handler.call(&config.session_id, "remote_bash", r#"{"host": "box", "command": "echo x"}"#).await });
-    rig.until("the third approval shows", WAIT, |app| !app.areas.tools.panel.prompts().is_empty());
+    rig.until("the third approval shows", WAIT, |app| !app.areas.get::<crate::areas::tools::State>().panel.prompts().is_empty());
     let card = waiting_card(&rig, &session).unwrap();
     call.abort();
-    rig.until("the card is cancelled", WAIT, |app| app.areas.tools.panel.prompts().is_empty());
+    rig.until("the card is cancelled", WAIT, |app| app.areas.get::<crate::areas::tools::State>().panel.prompts().is_empty());
     assert_eq!(rig.dom(&session).get(card).unwrap().str_attr(attr::STATUS), Some("cancelled"));
     assert_eq!(rig.app.ctx.notice(), None, "no stale \"question waiting\" notice once none waits");
 }
@@ -705,12 +705,12 @@ fn a_remote_shell_opens_on_a_host_in_the_remote_shell_tab() {
     rig.panel(tools::Message::OpenTerminal("box".into()));
     assert_eq!(rig.app.ctx.shell.active_tab(), Some(SHELL_TAB));
     rig.until("the shell runs", WAIT, |app| {
-        let terminal = &app.areas.tools.terminal;
+        let terminal = &app.areas.get::<crate::areas::tools::State>().terminal;
         terminal.active().and_then(|tab| terminal.status(tab)) == Some(&terminal::Status::Running)
     });
-    let terminal = &rig.app.areas.tools.terminal;
+    let terminal = &rig.app.areas.get::<crate::areas::tools::State>().terminal;
     assert_eq!(terminal.target(terminal.active().unwrap()), Some(&terminal::Target::Remote { host: "box".into() }));
-    let records = rig.app.areas.tools.remote.service.audit().query(&loa_remote::audit::AuditQuery { host: Some("box".into()), limit: 10, ..Default::default() }).unwrap();
+    let records = rig.app.areas.get::<crate::areas::tools::State>().remote.service.audit().query(&loa_remote::audit::AuditQuery { host: Some("box".into()), limit: 10, ..Default::default() }).unwrap();
     assert!(records.iter().any(|record| record.action == loa_remote::audit::Action::Terminal));
 }
 

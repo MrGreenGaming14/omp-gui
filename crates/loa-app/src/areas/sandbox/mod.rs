@@ -23,13 +23,12 @@ use loa_sandbox::{
     SandboxService,
 };
 use loa_ui_kit::icons::Icon;
-use loa_ui_shell::palette;
 use loa_ui_panel::diff;
 use loa_ui_shell::theme::style;
 use loa_ui_panel::tools::{DetailState, ToolDetail, ToolInfo};
 use tokio::sync::broadcast;
 
-use crate::area::{Area, AreaId, Ctx, HostToolSet, PanelTab, Request, SessionEvent, Target};
+use crate::area::{Area, AreaCommand, AreaMessage, Ctx, HostToolSet, PanelTab, Request, SessionEvent, Target};
 
 #[cfg(test)]
 mod tests;
@@ -37,10 +36,6 @@ mod peer;
 
 /// Id of the Sandbox panel tab.
 pub const TAB: &str = "sandbox";
-/// Palette command name that probes the providers again.
-const REFRESH: &str = "refresh";
-/// Palette command name that shows the settings.
-const SETTINGS: &str = "settings";
 /// The settings file under the data directory.
 const SETTINGS_FILE: &str = "sandbox.json";
 
@@ -205,35 +200,6 @@ pub struct State {
 }
 
 impl State {
-    pub fn new(ctx: &mut Ctx) -> (Self, Task<Message>) {
-        let settings = ctx.services.dirs.data.join(SETTINGS_FILE);
-        let config = SandboxConfig::load(&settings).unwrap_or_else(|error| {
-            ctx.notify(format!("Can't read the sandbox settings {}: {error}; using the defaults", settings.display()));
-            SandboxConfig::default()
-        });
-        let journal = Arc::new(LibraryJournal(Arc::clone(&ctx.services.library)));
-        let service = SandboxService::new(config, journal).with_peers(Arc::new(peer::NodeLink(ctx.node.clone())));
-        let (failures, served) = broadcast::channel(16);
-        peer::register(&ctx.node, Arc::new(peer::ServeStub { stub: service.stub().map(PathBuf::from), failures }));
-        let mut state = Self {
-            events: Arc::new(service.subscribe()),
-            served: Arc::new(served),
-            draft: Draft::of(service.config()),
-            service,
-            runs: RunLog::default(),
-            statuses: None,
-            probing: false,
-            view: View::Runs,
-            selected: None,
-            diff: diff::State::new(),
-            applying: None,
-            settings,
-        };
-        state.publish(ctx);
-        let probe = state.probe();
-        (state, probe)
-    }
-
     /// The runs, oldest first.
     pub fn runs(&self) -> &RunLog {
         &self.runs
@@ -566,8 +532,55 @@ fn kind_label(kind: SandboxKind) -> &'static str {
     }
 }
 
+impl AreaMessage for Message {
+    type Area = State;
+}
+
 impl Area for State {
+    const ID: &'static str = "sandbox";
+    const COMMANDS: &'static [AreaCommand<Self>] = &[
+        AreaCommand::<Self>::new("sandbox.refresh", "Recheck sandbox availability", "Sandbox", |state, _, ctx| {
+            state.view = View::Settings;
+            ctx.open_tab(TAB);
+            state.probe()
+        }),
+        AreaCommand::<Self>::new("sandbox.settings", "Sandbox settings", "Sandbox", |state, _, ctx| {
+            state.view = View::Settings;
+            ctx.open_tab(TAB);
+            Task::none()
+        }),
+    ];
+
     type Message = Message;
+
+    fn new(ctx: &mut Ctx) -> (Self, Task<Message>) {
+        let settings = ctx.services.dirs.data.join(SETTINGS_FILE);
+        let config = SandboxConfig::load(&settings).unwrap_or_else(|error| {
+            ctx.notify(format!("Can't read the sandbox settings {}: {error}; using the defaults", settings.display()));
+            SandboxConfig::default()
+        });
+        let journal = Arc::new(LibraryJournal(Arc::clone(&ctx.services.library)));
+        let service = SandboxService::new(config, journal).with_peers(Arc::new(peer::NodeLink(ctx.node.clone())));
+        let (failures, served) = broadcast::channel(16);
+        peer::register(&ctx.node, Arc::new(peer::ServeStub { stub: service.stub().map(PathBuf::from), failures }));
+        let mut state = Self {
+            events: Arc::new(service.subscribe()),
+            served: Arc::new(served),
+            draft: Draft::of(service.config()),
+            service,
+            runs: RunLog::default(),
+            statuses: None,
+            probing: false,
+            view: View::Runs,
+            selected: None,
+            diff: diff::State::new(),
+            applying: None,
+            settings,
+        };
+        state.publish(ctx);
+        let probe = state.probe();
+        (state, probe)
+    }
 
     fn update(&mut self, message: Message, ctx: &mut Ctx) -> Task<Message> {
         match message {
@@ -616,30 +629,6 @@ impl Area for State {
                 ctx.notify(format!("A sandbox run for peer {} failed on this device: {}", served.peer, served.error));
                 Task::none()
             }
-        }
-    }
-
-    fn palette_commands(&self, _: &Ctx) -> Vec<palette::Command> {
-        vec![
-            palette::Command::new(AreaId::Sandbox.command(REFRESH), "Recheck sandbox availability", "Sandbox"),
-            palette::Command::new(AreaId::Sandbox.command(SETTINGS), "Sandbox settings", "Sandbox"),
-        ]
-    }
-
-    fn run_command(&mut self, id: &str, ctx: &mut Ctx) -> Option<Task<Message>> {
-        let name = id.strip_prefix(AreaId::Sandbox.key())?.strip_prefix('.')?;
-        match name {
-            REFRESH => {
-                self.view = View::Settings;
-                ctx.open_tab(TAB);
-                Some(self.probe())
-            }
-            SETTINGS => {
-                self.view = View::Settings;
-                ctx.open_tab(TAB);
-                Some(Task::none())
-            }
-            _ => None,
         }
     }
 

@@ -1,6 +1,7 @@
 //! The models area driven through `App::update`: a fake harness for the
 //! session side and a backend over a fake omp RPC and a temp agent dir.
 
+use loa_ui_shell::palette;
 use loa_util::LockExt;
 use std::sync::Arc;
 use std::time::Duration;
@@ -236,7 +237,7 @@ fn fixture(adapter: FakeAdapter) -> Fixture {
     let services = Services::new(node, Dirs::new(dir.path().join("loa")), harnesses, dir.path().to_owned()).unwrap();
     let (mut app, _) = App::build(services);
     let opener = Arc::new(Opener::default());
-    app.areas.models.backend = Backend::new(Parts {
+    app.areas.get_mut::<crate::areas::models::State>().backend = Backend::new(Parts {
         rpc: Arc::new(fake_omp()),
         files: OmpFiles::new(&agent),
         validator: Arc::new(Validator),
@@ -275,7 +276,7 @@ fn update(app: &mut App, message: AppMessage) {
 }
 
 fn models(app: &mut App, message: Message) {
-    update(app, AppMessage::Models(message));
+    update(app, AppMessage::area(message));
 }
 
 /// Delivers the writers' changes to the UI copies, as the session feeds do.
@@ -304,7 +305,7 @@ fn composer_models(app: &App) -> (Vec<(String, Option<String>)>, Option<String>)
 }
 
 fn picker(app: &App) -> &picker::State {
-    match &app.areas.models.picker.1 {
+    match &app.areas.get::<crate::areas::models::State>().picker.1 {
         Load::Ready(picker) => &picker.state,
         Load::Loading => panic!("the picker is still loading"),
         Load::Failed(error) => panic!("the picker failed: {error}"),
@@ -365,8 +366,8 @@ fn the_model_screen_opens_from_the_palette_and_the_composer_and_switches_the_ses
     update(&mut f.app, AppMessage::NewSession);
 
     palette(&mut f.app, "Switch model");
-    assert_eq!(f.app.ctx.screen(), Some(AreaId::Models));
-    assert_eq!(f.app.areas.models.page, Page::Model);
+    assert_eq!(f.app.ctx.screen(), Some(crate::areas::models::State::ID));
+    assert_eq!(f.app.areas.get::<crate::areas::models::State>().page, Page::Model);
     let state = picker(&f.app);
     assert_eq!(state.rows(), [picker::Row::Role(0), picker::Row::Model(0), picker::Row::Model(1)]);
 
@@ -381,7 +382,7 @@ fn the_model_screen_opens_from_the_palette_and_the_composer_and_switches_the_ses
     // The composer's "All models…" opens the same page; picking the role row
     // switches to its model and records the role.
     pick(&mut f.app, composer::PickerId::Model, "all");
-    assert_eq!(f.app.ctx.screen(), Some(AreaId::Models));
+    assert_eq!(f.app.ctx.screen(), Some(crate::areas::models::State::ID));
     assert_eq!(picker(&f.app).selected(), Some(2), "the current model is selected first");
     models(&mut f.app, Message::Picker(Msg::Local(picker::Local::Pick(0))));
     sync(&mut f.app);
@@ -405,8 +406,8 @@ fn a_model_picked_without_a_session_starts_the_next_one() {
 fn the_sign_in_screen_lists_providers_and_runs_an_omp_login() {
     let mut f = fixture(FakeAdapter::new("omp", omp_models(), true));
     palette(&mut f.app, "Sign in");
-    assert_eq!(f.app.ctx.screen(), Some(AreaId::Models));
-    let Load::Ready(state) = &f.app.areas.models.signin else { panic!("sign in not loaded") };
+    assert_eq!(f.app.ctx.screen(), Some(crate::areas::models::State::ID));
+    let Load::Ready(state) = &f.app.areas.get::<crate::areas::models::State>().signin else { panic!("sign in not loaded") };
     let rows: Vec<(&str, &str, bool)> = state
         .providers()
         .iter()
@@ -418,7 +419,7 @@ fn the_sign_in_screen_lists_providers_and_runs_an_omp_login() {
     let key = ProviderKey::new("omp", "openai-codex");
     models(&mut f.app, Message::SignIn(Msg::Local(signin::Local::SignIn(key.clone()))));
     assert_eq!(*f.opener.0.locked(), ["https://auth.example/authorize"], "the browser opened on omp's URL");
-    let Load::Ready(state) = &f.app.areas.models.signin else { unreachable!() };
+    let Load::Ready(state) = &f.app.areas.get::<crate::areas::models::State>().signin else { unreachable!() };
     assert!(matches!(state.login_state(&key), LoginState::Succeeded { .. }), "{:?}", state.login_state(&key));
     assert!(matches!(state.providers()[1].auth, Auth::Login { signed_in: true, .. }), "rows were read again");
 }
@@ -428,8 +429,8 @@ fn the_settings_screen_saves_omp_config_through_validation() {
     let mut f = fixture(FakeAdapter::new("omp", omp_models(), true));
     update(&mut f.app, AppMessage::NewSession);
     pick(&mut f.app, composer::PickerId::Model, "settings");
-    assert_eq!(f.app.areas.models.page, Page::Settings);
-    assert!(matches!(f.app.areas.models.settings, Load::Ready(_)));
+    assert_eq!(f.app.areas.get::<crate::areas::models::State>().page, Page::Settings);
+    assert!(matches!(f.app.areas.get::<crate::areas::models::State>().settings, Load::Ready(_)));
 
     let edit = |app: &mut App, local| models(app, Message::Settings(Msg::Local(local)));
     edit(&mut f.app, settings::Local::ChainInput(0, "openai-codex/gpt-y".into()));
@@ -440,7 +441,7 @@ fn the_settings_screen_saves_omp_config_through_validation() {
     assert!(text.starts_with("# mine\n"), "{text}");
     assert!(text.contains("fallbackChains:\n    default:\n      - openai-codex/gpt-y\n"), "{text}");
     assert_eq!(f.app.ctx.notice(), Some("Model settings saved"));
-    let Load::Ready(state) = &f.app.areas.models.settings else { unreachable!() };
+    let Load::Ready(state) = &f.app.areas.get::<crate::areas::models::State>().settings else { unreachable!() };
     assert!(!state.is_dirty());
 
     // omp rejects the new role: the errors show and nothing is written.
@@ -448,7 +449,7 @@ fn the_settings_screen_saves_omp_config_through_validation() {
     edit(&mut f.app, settings::Local::AddRole);
     edit(&mut f.app, settings::Local::AddChain(1, Some("anthropic/claude-x".into())));
     edit(&mut f.app, settings::Local::Save);
-    let Load::Ready(state) = &f.app.areas.models.settings else { unreachable!() };
+    let Load::Ready(state) = &f.app.areas.get::<crate::areas::models::State>().settings else { unreachable!() };
     assert_eq!(state.errors()[0].location, "config.yml");
     assert!(state.is_dirty());
     assert_eq!(std::fs::read_to_string(&config).unwrap(), text);

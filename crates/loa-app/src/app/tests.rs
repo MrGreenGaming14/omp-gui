@@ -244,10 +244,10 @@ fn system_theme_change_updates_decisions_without_session_sync() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = fake_app(dir.path(), &["fake-a"]);
     update(&mut app, Message::Shell(shell::Message::SystemTheme(iced::theme::Mode::Dark)));
-    let dark = app.areas.decisions.theme().clone();
+    let dark = app.areas.get::<crate::areas::decisions::State>().theme().clone();
     update(&mut app, Message::Shell(shell::Message::SystemTheme(iced::theme::Mode::Light)));
-    assert_ne!(&dark, app.areas.decisions.theme());
-    assert_eq!(app.areas.decisions.theme(), &app.ctx.shell.theme());
+    assert_ne!(&dark, app.areas.get::<crate::areas::decisions::State>().theme());
+    assert_eq!(app.areas.get::<crate::areas::decisions::State>().theme(), &app.ctx.shell.theme());
 }
 
 #[test]
@@ -435,15 +435,15 @@ fn session_events_reach_the_areas() {
 
     prompt(&mut app, "ask first");
     deliver(&mut app, &id, &mut feed);
-    let decision = app.areas.decisions.focused().expect("the decisions area shows the waiting card");
+    let decision = app.areas.get::<crate::areas::decisions::State>().focused().expect("the decisions area shows the waiting card");
     assert!(app.ctx.composer.is_busy(), "turn started");
     assert_eq!(app.ctx.shell.sidebar().session(id.as_str()).map(|s| s.waiting), Some(true));
     assert_eq!(app.ctx.shell.sidebar().session(id.as_str()).map(|s| s.title.as_str()), Some("ask first"));
 
     let choose = decisions::desk::Message::Card(id.to_string(), decisions::Message::Choose(decision, 0));
-    update(&mut app, Message::Decisions(areas::decisions::Message::Desk(choose)));
+    update(&mut app, Message::area(areas::decisions::Message::Desk(choose)));
     deliver(&mut app, &id, &mut feed);
-    assert!(app.areas.decisions.focused().is_none(), "answered");
+    assert!(app.areas.get::<crate::areas::decisions::State>().focused().is_none(), "answered");
     assert!(!app.ctx.composer.is_busy(), "turn ended");
     assert_eq!(app.ctx.shell.sidebar().session(id.as_str()).map(|s| s.waiting), Some(false));
 }
@@ -648,7 +648,7 @@ fn models_close_button_closes_configs_it_is_drawn_in() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = fake_app(dir.path(), &["fake-a"]);
     app.configs = Some(super::windows::ConfigsTab::Models);
-    let _ = app.update(Message::Models(areas::models::Message::Close));
+    let _ = app.update(Message::area(areas::models::Message::Close));
     assert_eq!(app.configs, None);
 }
 
