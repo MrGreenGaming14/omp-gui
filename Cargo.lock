@@ -5171,7 +5171,6 @@ dependencies = [
  "loa-contracts",
  "loa-core",
  "loa-ui-kit",
- "loa-ui-shell",
 ]
 
 [[package]]
