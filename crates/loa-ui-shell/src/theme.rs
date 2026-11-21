@@ -21,6 +21,7 @@ pub struct State {
     appearance: Appearance,
     system: Mode,
     theme: Theme,
+    variant: Variant,
     generation: u64,
     errors: Vec<ThemeError>,
 }
@@ -30,7 +31,7 @@ impl State {
 
     /// Resolves through `registry`, which may carry extra sources and loaders.
     pub fn with_registry(registry: ThemeRegistry, appearance: Appearance) -> Self {
-        let mut s = Self { registry: registry.into(), appearance, system: Mode::None, theme: Theme::Dark, generation: 0, errors: vec![] };
+        let mut s = Self { registry: registry.into(), appearance, system: Mode::None, theme: Theme::Dark, variant: Variant::Dark, generation: 0, errors: vec![] };
         s.refresh();
         s
     }
@@ -71,7 +72,7 @@ impl State {
     }
 
     /// The variant in effect; an unknown system mode counts as dark.
-    pub fn variant(&self) -> Variant { if self.theme.extended_palette().is_dark { Variant::Dark } else { Variant::Light } }
+    pub fn variant(&self) -> Variant { self.variant }
 
     /// The `iced` theme to return from the application's `theme` function.
     pub fn theme(&self) -> Theme { self.theme.clone() }
@@ -80,6 +81,7 @@ impl State {
         let preferred = if self.system == Mode::Light { Variant::Light } else { Variant::Dark };
         let (tokens, errors) = self.registry.tokens(&self.appearance, preferred);
         self.theme = tokens.theme();
+        self.variant = tokens.variant;
         self.errors = errors;
         self.generation = set_active(tokens);
         self.generation
@@ -96,46 +98,23 @@ impl Default for State {
     fn default() -> Self { Self::new(Appearance::default()) }
 }
 
-/// Legacy style functions over the kit recipes, kept until each crate is ported to the kit.
+/// Legacy style functions over the kit recipes for loa-app and loa-ui-surface until P28/P30 port them.
 pub mod style {
     use loa_ui_kit::style::{self as kit, ButtonKind as B, Surface as S, Tone};
     use loa_ui_kit::theme::{ColorRole as C, RadiusRole, for_theme};
-    use iced::widget::{button, container, rule, scrollable, text, text_input};
+    use iced::widget::{button, container, rule, text, text_input};
     use iced::{Background, Color, Theme};
 
     pub const RADIUS: f32 = 6.0;
-    pub const CARD_RADIUS: f32 = 12.0;
-
-    /// The colours of one theme by their former field names.
-    #[derive(Debug, Clone, Copy)]
-    pub struct Tokens {
-        pub ground: Color, pub side: Color, pub card: Color, pub raised: Color, pub hover: Color, pub selected: Color,
-        pub line: Color, pub line_strong: Color, pub text: Color, pub text2: Color, pub text3: Color, pub accent: Color,
-        pub on_accent: Color, pub warn: Color, pub ok: Color, pub danger: Color, pub scrim: Color,
-    }
-
-    pub fn tokens(theme: &Theme) -> Tokens {
-        let t = for_theme(theme);
-        let c = |r| t.color(r);
-        Tokens {
-            ground: c(C::Ground), side: c(C::Side), card: c(C::Card), raised: c(C::Raised), hover: c(C::Hover), selected: c(C::Selected),
-            line: c(C::Line), line_strong: c(C::LineStrong), text: c(C::Text), text2: c(C::Text2), text3: c(C::Text3), accent: c(C::Accent),
-            on_accent: c(C::OnAccent), warn: c(C::Warn), ok: c(C::Ok), danger: c(C::Danger), scrim: c(C::Scrim),
-        }
-    }
 
     pub fn surface(t: &Theme) -> container::Style { kit::container(S::Ground)(t) }
-    pub fn chrome(t: &Theme) -> container::Style { surface(t) }
     pub fn side(t: &Theme) -> container::Style { kit::container(S::Side)(t) }
     pub fn card(t: &Theme) -> container::Style { kit::container(S::Card)(t) }
     pub fn window(t: &Theme) -> container::Style { kit::container(S::Popup)(t) }
     pub fn scrim(t: &Theme) -> container::Style { kit::container(S::Scrim)(t) }
     pub fn badge(t: &Theme) -> container::Style { kit::container(S::Badge)(t) }
-    pub fn tooltip(t: &Theme) -> container::Style { kit::container(S::Tooltip)(t) }
-    pub fn waiting_badge(t: &Theme) -> container::Style { container::Style { text_color: Some(Tone::Warn.color(t)), ..Default::default() } }
     pub fn border_color(t: &Theme) -> Color { for_theme(t).color(C::Line) }
     pub fn divider(t: &Theme) -> rule::Style { kit::rule(t) }
-    pub fn tab_scrollbar(t: &Theme, s: scrollable::Status) -> scrollable::Style { kit::scrollbar(true)(t, s) }
     pub fn input(t: &Theme, s: text_input::Status) -> text_input::Style { kit::input(t, s) }
     pub fn muted(t: &Theme) -> text::Style { kit::text(Tone::Muted)(t) }
     pub fn faint(t: &Theme) -> text::Style { kit::text(Tone::Faint)(t) }
@@ -148,14 +127,7 @@ pub mod style {
     pub fn secondary_button(t: &Theme, s: button::Status) -> button::Style { kit::button(B::Secondary)(t, s) }
     pub fn ghost_button(t: &Theme, s: button::Status) -> button::Style { kit::button(B::Ghost)(t, s) }
     pub fn tab(active: bool) -> impl Fn(&Theme, button::Status) -> button::Style { kit::button(B::Tab { active }) }
-    pub fn tab_underline(t: &Theme) -> container::Style { kit::fill(C::Accent, 0.0)(t) }
     pub fn meter_track(t: &Theme) -> container::Style { kit::fill(C::LineStrong, for_theme(t).radius(RadiusRole::Dot))(t) }
-
-    /// Behind a hovered row's action icons: the row's own fill.
-    pub fn row_actions(t: &Theme, selected: bool) -> container::Style { kit::fill(if selected { C::Selected } else { C::Hover }, 0.0)(t) }
-
-    /// A dot: green when online, faint when not.
-    pub fn status_dot(online: bool) -> impl Fn(&Theme) -> container::Style { kit::fill(if online { C::Ok } else { C::Text3 }, 99.0) }
 
     /// The filled part of a meter: accent below half, warn from half, danger from 80%.
     pub fn meter_fill(fraction: f32) -> impl Fn(&Theme) -> container::Style {
@@ -188,6 +160,6 @@ mod tests {
         let mut accent = named("light");
         accent.overrides.insert("color.accent".into(), "#ff0000".into());
         state.set_appearance(accent);
-        assert_eq!(state.theme().palette().primary, iced::Color::from_rgb8(255, 0, 0));
+        assert_eq!(state.theme().palette().primary, iced::color!(0xff0000));
     }
 }

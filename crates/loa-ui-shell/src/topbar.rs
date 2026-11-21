@@ -5,10 +5,12 @@
 //! the breadcrumb names it only for sessions on another machine.
 
 use crate::data::NodeStatus;
-use crate::theme::style;
-use iced::widget::{button, container, row, space, text, tooltip};
+use iced::widget::{button, container, row, space, text};
 use iced::{Alignment, Element, Fill, Task};
-use loa_ui_kit::icons::{Icon, muted};
+use loa_ui_kit::icons::{Icon, tinted};
+use loa_ui_kit::style::{self, ButtonKind, Surface, Tone};
+use loa_ui_kit::theme::{SpaceRole as Sp, TextRole as T, pad_x, sp, tokens};
+use loa_ui_kit::widgets::{icon_button, label};
 
 /// Height of the top bar, shared with the panel tab bar so their bottom
 /// borders line up.
@@ -121,60 +123,45 @@ impl State {
     }
 
     /// Draws the top bar.
-    pub fn view(&self) -> Element<'_, Message> {
-        let mut bar = row![].spacing(8).align_y(Alignment::Center);
+    pub fn view<'a>(&'a self) -> Element<'a, Message> {
+        let mut bar = row![].spacing(sp(Sp::S)).align_y(Alignment::Center);
+        let chevron = || tinted(Icon::ChevronRight, T::Label, Tone::Muted);
+        let strong = |s: &'a str| label(s, T::Body, Tone::Normal).font(iced::Font { weight: iced::font::Weight::Bold, ..tokens().font(T::Body) }).wrapping(text::Wrapping::None);
 
         match (&self.project_page, &self.crumb) {
             (Some(project), _) => {
-                bar = bar.push(text("Projects").size(14).style(style::muted));
-                bar = bar.push(muted(Icon::ChevronRight, 13.0));
-                bar = bar.push(text(project.as_str()).size(14).font(iced::Font { weight: iced::font::Weight::Bold, ..iced::Font::default() }).wrapping(text::Wrapping::None));
+                bar = bar.push(label("Projects", T::Body, Tone::Muted)).push(chevron()).push(strong(project));
             }
-            (None, None) => bar = bar.push(text("New session").size(14).style(style::muted)),
+            (None, None) => bar = bar.push(label("New session", T::Body, Tone::Muted)),
             (None, Some(crumb)) => {
                 if let Some(project) = &crumb.project {
                     let place = if crumb.node.local { project.clone() } else { format!("{project} on {}", crumb.node.name) };
                     bar = bar.push(
-                        button(text(place).size(14).style(style::muted))
+                        button(label(place, T::Body, Tone::Muted))
                             .on_press(Message::OpenProject(project.clone()))
-                            .style(style::ghost_button)
-                            .padding([2, 4]),
+                            .style(style::button(ButtonKind::Ghost))
+                            .padding([sp(Sp::Xs) / 2.0, sp(Sp::Xs)]),
                     );
-                    bar = bar.push(muted(Icon::ChevronRight, 13.0));
+                    bar = bar.push(chevron());
                 } else if !crumb.node.local {
-                    bar = bar.push(text!("on {}", crumb.node.name).size(14).style(style::muted));
-                    bar = bar.push(muted(Icon::ChevronRight, 13.0));
+                    bar = bar.push(label(format!("on {}", crumb.node.name), T::Body, Tone::Muted)).push(chevron());
                 }
-                bar = bar.push(text(crumb.title.as_str()).size(14).font(iced::Font { weight: iced::font::Weight::Bold, ..iced::Font::default() }).wrapping(text::Wrapping::None));
+                bar = bar.push(strong(&crumb.title));
                 if crumb.waiting {
-                    bar = bar.push(
-                        container(text("· Needs you").size(13).style(style::waiting_text)).id(WAITING_BADGE_ID),
-                    );
+                    bar = bar.push(container(label("· Needs you", T::Label, Tone::Warn)).id(WAITING_BADGE_ID));
                 }
             }
         }
 
         bar = bar.push(space().width(Fill));
-
         if let Some(status) = &self.status {
-            bar = bar.push(container(text(status.as_str()).size(12).style(style::faint)).padding([0, 6]));
+            bar = bar.push(container(label(status.as_str(), T::Caption, Tone::Faint)).padding(pad_x(Sp::Xs)));
         }
+        let toggle = icon_button(Icon::PanelRight, if self.panel_open { HIDE_PANEL } else { SHOW_PANEL }, Some(Message::TogglePanel));
+        bar = bar.push(container(toggle).id(PANEL_TOGGLE_ID));
+        let full = if self.full { (Icon::Minimize, "Exit full screen") } else { (Icon::Maximize, "Full screen chat") };
+        bar = bar.push(icon_button(full.0, full.1, Some(Message::ToggleFull)));
 
-        let toggle = button(muted(Icon::PanelRight, 16.0)).on_press(Message::TogglePanel).style(style::ghost_button).padding(7);
-        let label = container(text(if self.panel_open { HIDE_PANEL } else { SHOW_PANEL }).size(12))
-            .style(style::tooltip)
-            .padding([3, 8]);
-        bar = bar.push(container(tooltip(toggle, label, tooltip::Position::Bottom)).id(PANEL_TOGGLE_ID));
-
-        let full = button(muted(if self.full { Icon::Minimize } else { Icon::Maximize }, 15.0))
-            .on_press(Message::ToggleFull)
-            .style(style::ghost_button)
-            .padding(7);
-        let full_label = container(text(if self.full { "Exit full screen" } else { "Full screen chat" }).size(12))
-            .style(style::tooltip)
-            .padding([3, 8]);
-        bar = bar.push(tooltip(full, full_label, tooltip::Position::Bottom));
-
-        container(bar.padding([0, 12])).style(style::chrome).width(Fill).center_y(HEIGHT).into()
+        container(bar.padding(pad_x(Sp::M))).style(style::container(Surface::Ground)).width(Fill).center_y(HEIGHT).into()
     }
 }

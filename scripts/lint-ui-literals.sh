@@ -15,7 +15,7 @@ fi
 
 rules=(
   'Color::from_rgb'
-  'Color \{'
+  '([^>] |[(\[])Color \{'
   'extended_palette\(\)'
   '\.size\([0-9]'
   '\.padding\(\[?[0-9]'

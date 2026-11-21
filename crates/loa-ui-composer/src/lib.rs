@@ -8,14 +8,13 @@
 //! The app feeds it plain data ([`Command`], file paths, [`ModelOption`]s,
 //! turn state) and acts on the [`Event`]s [`State::update`] returns.
 
-mod fuzzy;
+
 mod history;
 mod keys;
 mod mention;
 mod pickers;
 mod popup;
 mod queue;
-mod style;
 
 use std::sync::Arc;
 
@@ -27,7 +26,10 @@ use iced::widget::{button, column, container, row, space, text, text_input};
 use iced::{Element, Length, Subscription, Task};
 use loa_contracts::harness::Prompt;
 use loa_core::SessionMode;
+use iced::{Background, Border, Color, Theme};
 use loa_ui_kit::icons::{Icon, icon, muted};
+use loa_ui_kit::style::{self as kit, ButtonKind, Surface, Tone};
+use loa_ui_kit::theme::{LayoutRole, SpaceRole as Sp, TextRole as T, sp, text_size as ts, width};
 
 use history::{EditKind, History, Snapshot};
 use keys::KeyContext;
@@ -47,18 +49,6 @@ pub const MAX_EDITOR_HEIGHT: f32 = 240.0;
 pub const UNDO_DEPTH: usize = 200;
 /// Popup rows shown at once; the list scrolls with the selection.
 const VISIBLE_POPUP_ROWS: usize = 8;
-/// Diameter of the round send and stop button.
-const SEND_SIZE: f32 = 28.0;
-/// Text size in the editor.
-const EDITOR_TEXT_SIZE: f32 = 15.0;
-/// Size of the ghost controls' icons, labels and chevrons.
-const CONTROL_ICON: f32 = 15.0;
-const CONTROL_TEXT: f32 = 13.0;
-const CHEVRON: f32 = 12.0;
-/// Width of a picker's menu.
-const MENU_WIDTH: f32 = 260.0;
-/// Width of the permission menu, whose rows carry a line of detail.
-const ACCESS_MENU_WIDTH: f32 = 340.0;
 /// Labels of the icon-only buttons, shown as tooltips (and their accessible
 /// names once iced exposes them).
 pub const SEND_LABEL: &str = "Send (Enter)";
@@ -478,7 +468,7 @@ impl State {
             None => "Ask anything. Type / for commands".to_owned(),
         };
         // At least two lines of text (iced adds the padding) before the controls.
-        let line = EDITOR_TEXT_SIZE * 1.3;
+        let line = ts(T::Body) * 1.3;
         let editor = iced::widget::text_editor(&self.content)
             .id(EDITOR_ID)
             .placeholder(placeholder)
@@ -486,37 +476,37 @@ impl State {
             .height(Length::Shrink)
             .min_height(2.0 * line)
             .max_height(MAX_EDITOR_HEIGHT)
-            .padding([6, 8])
-            .size(EDITOR_TEXT_SIZE)
-            .style(style::editor)
+            .padding([sp(Sp::S), sp(Sp::S)])
+            .size(ts(T::Body))
+            .style(editor_style)
             .key_binding(move |press| keys::bind(press, ctx));
 
         let (glyph, size, on_press, label) = if self.is_busy() {
-            (Icon::Square, 12.0, Some(Message::StopPressed), STOP_LABEL)
+            (Icon::Square, ts(T::Caption), Some(Message::StopPressed), STOP_LABEL)
         } else {
             let can_send = !self.content.text().trim().is_empty();
-            (Icon::ArrowUp, 16.0, can_send.then_some(Message::Send), SEND_LABEL)
+            (Icon::ArrowUp, ts(T::Heading), can_send.then_some(Message::Send), SEND_LABEL)
         };
-        let tint = if on_press.is_some() { style::on_accent } else { style::send_idle };
+        let tint = kit::tint(if on_press.is_some() { Tone::OnAccent } else { Tone::Faint });
         let action = labelled(
             button(icon(glyph, size).style(tint))
-                .width(SEND_SIZE)
-                .height(SEND_SIZE)
-                .padding((SEND_SIZE - size) / 2.0)
-                .style(style::send)
+                .width(2.0 * ts(T::Body))
+                .height(2.0 * ts(T::Body))
+                .padding(ts(T::Body) - size / 2.0)
+                .style(kit::button(ButtonKind::Accent))
                 .on_press_maybe(on_press),
             label,
         );
 
         let pickers = &self.pickers;
         let mention = labelled(
-            button(icon(Icon::Plus, 18.0).style(style::ghost_icon))
-                .padding(5)
-                .style(style::ghost(false))
+            button(icon(Icon::Plus, ts(T::Heading)).style(kit::tint(Tone::Muted)))
+                .padding(sp(Sp::Xs))
+                .style(kit::button(ButtonKind::Ghost))
                 .on_press(Message::MentionPressed),
             MENTION_LABEL,
         );
-        let mut controls = row![mention].spacing(2).align_y(Center);
+        let mut controls = row![mention].spacing(sp(Sp::Xs)).align_y(Center);
         if pickers.harnesses.len() > 1 {
             let label = self.harness().map_or("Harness", |h| h.label.as_str());
             controls = controls.push(self.picker(Picker::Harness, Icon::Bot, label.to_owned()));
@@ -543,7 +533,7 @@ impl State {
         // The editor's own padding plus this gives the text ~20px of room at
         // the top and left.
         let editor = container(editor).padding(iced::Padding { top: 12.0, right: 12.0, bottom: 0.0, left: 12.0 });
-        let frame = container(column![editor, controls]).width(Length::Fill).style(style::frame);
+        let frame = container(column![editor, controls]).width(Length::Fill).style(kit::container(Surface::Raised));
 
         // Fixed slots, each an empty space when unused, so the editor keeps
         // its place in the widget tree (and its state) whatever appears
@@ -560,7 +550,7 @@ impl State {
             Some(workspace) => self.folder_bar(workspace),
             None => space().into(),
         };
-        loa_ui_kit::widgets::popover(column![queue, bar, frame].spacing(6), menu).into()
+        loa_ui_kit::widgets::popover(column![queue, bar, frame].spacing(sp(Sp::S)), menu).into()
     }
 
     /// A ghost bottom-row picker: a muted icon, its current choice and a
@@ -569,13 +559,13 @@ impl State {
         let open = self.pickers.open == Some(picker);
         let chevron = if open { Icon::ChevronUp } else { Icon::ChevronDown };
         let content = row![
-            icon(glyph, CONTROL_ICON).style(style::ghost_icon),
-            text(label).size(CONTROL_TEXT),
-            icon(chevron, CHEVRON).style(style::chevron),
+            icon(glyph, ts(T::Body)).style(kit::tint(Tone::Muted)),
+            text(label).size(ts(T::Label)),
+            icon(chevron, ts(T::Caption)).style(kit::tint(Tone::Faint)),
         ]
-        .spacing(6)
+        .spacing(sp(Sp::S))
         .align_y(Center);
-        button(content).padding([5, 8]).style(style::ghost(open)).on_press(Message::PickerToggled(picker)).into()
+        button(content).padding([sp(Sp::Xs), sp(Sp::S)]).style(kit::button(ButtonKind::Tab { active: open })).on_press(Message::PickerToggled(picker)).into()
     }
 
     /// The open picker's choices. The current one carries a check mark;
@@ -632,30 +622,30 @@ impl State {
                 .collect(),
             Picker::Folder => Vec::new(),
         };
-        let width = if picker == Picker::Access { ACCESS_MENU_WIDTH } else { MENU_WIDTH };
-        container(column(rows).spacing(2)).padding(4).width(width).style(style::menu).into()
+        let width = width(if picker == Picker::Access { LayoutRole::ListWidth } else { LayoutRole::NavWidth });
+        container(column(rows).spacing(sp(Sp::Xs))).padding(sp(Sp::Xs)).width(width).style(kit::container(Surface::Popup)).into()
     }
 
     /// The bar above the editor: the session's folder and git branch. A
     /// click opens the folder menu.
     fn folder_bar<'a>(&'a self, workspace: &'a Workspace) -> Element<'a, Message> {
         let open = self.pickers.open == Some(Picker::Folder);
-        let mut chip = row![icon(Icon::Folder, CONTROL_ICON).style(style::ghost_icon), text(workspace.path.as_str()).size(CONTROL_TEXT)]
-            .spacing(6)
+        let mut chip = row![icon(Icon::Folder, ts(T::Body)).style(kit::tint(Tone::Muted)), text(workspace.path.as_str()).size(ts(T::Label))]
+            .spacing(sp(Sp::S))
             .align_y(Center);
         if let Some(branch) = &workspace.branch {
             chip = chip
-                .push(icon(Icon::GitFork, 13.0).style(style::chevron))
-                .push(text(branch.as_str()).size(CONTROL_TEXT).style(style::faint));
+                .push(icon(Icon::GitFork, ts(T::Label)).style(kit::tint(Tone::Faint)))
+                .push(text(branch.as_str()).size(ts(T::Label)).style(kit::text(Tone::Faint)));
         }
-        chip = chip.push(icon(if open { Icon::ChevronUp } else { Icon::ChevronDown }, CHEVRON).style(style::chevron));
-        let chip = button(chip).padding([5, 8]).style(style::ghost(open)).on_press(Message::PickerToggled(Picker::Folder));
+        chip = chip.push(icon(if open { Icon::ChevronUp } else { Icon::ChevronDown }, ts(T::Caption)).style(kit::tint(Tone::Faint)));
+        let chip = button(chip).padding([sp(Sp::Xs), sp(Sp::S)]).style(kit::button(ButtonKind::Tab { active: open })).on_press(Message::PickerToggled(Picker::Folder));
         // The full path on hover, except while the menu is open: the tip
         // would cover the menu's last row.
         let chip: Element<'_, Message> = if open {
             chip.into()
         } else {
-            let tip = container(text(workspace.full.as_str()).size(12)).padding([3, 8]).style(style::menu);
+            let tip = container(text(workspace.full.as_str()).size(ts(T::Caption))).padding([sp(Sp::Xs), sp(Sp::S)]).style(kit::container(Surface::Popup));
             iced::widget::tooltip(chip, tip, iced::widget::tooltip::Position::Top).into()
         };
         container(chip).id(WORKSPACE_CHIP_ID).into()
@@ -676,7 +666,7 @@ impl State {
         }
         rows.push(menu_row("Choose another folder…", None, false, Some(Message::BrowseFolders)));
         rows.push(menu_row("Show in Files", None, false, Some(Message::WorkspacePressed)));
-        container(column(rows).spacing(2)).padding(4).width(MENU_WIDTH.max(360.0)).style(style::menu).into()
+        container(column(rows).spacing(sp(Sp::Xs))).padding(sp(Sp::Xs)).width(width(LayoutRole::ListWidth)).style(kit::container(Surface::Popup)).into()
     }
 
     /// Tracks input method composition so Enter and Esc reach the IME, and
@@ -707,21 +697,21 @@ impl State {
         let rows = self.queue.iter().map(|item| {
             let id = item.id;
             row![
-                text("Queued").size(12).style(style::muted),
+                text("Queued").size(ts(T::Caption)).style(kit::text(Tone::Muted)),
                 text_input("Empty message is skipped", &item.text)
                     .on_input(move |text| Message::QueueEdit(id, text))
-                    .size(13)
+                    .size(ts(T::Label))
                     .width(Length::Fill),
                 labelled(
-                    button(muted(Icon::X, 14.0)).padding(4).style(style::row(false)).on_press(Message::QueueRemove(id)),
+                    button(muted(Icon::X, ts(T::Body))).padding(sp(Sp::Xs)).style(kit_row(false)).on_press(Message::QueueRemove(id)),
                     REMOVE_QUEUED_LABEL,
                 ),
             ]
-            .spacing(8)
+            .spacing(sp(Sp::S))
             .align_y(Center)
             .into()
         });
-        container(column(rows).spacing(4)).padding(6).style(style::menu).width(Length::Fill).into()
+        container(column(rows).spacing(sp(Sp::Xs))).padding(sp(Sp::S)).style(kit::container(Surface::Popup)).width(Length::Fill).into()
     }
 
     fn popup_view<'a>(&'a self, popup: &'a Popup) -> Element<'a, Message> {
@@ -731,21 +721,21 @@ impl State {
                 PopupKind::Command => {
                     let command = &self.commands[index];
                     row![
-                        text(format!("/{}", command.name)).size(14),
-                        text(&command.description).size(12).style(style::muted),
+                        text(format!("/{}", command.name)).size(ts(T::Body)),
+                        text(&command.description).size(ts(T::Caption)).style(kit::text(Tone::Muted)),
                     ]
-                    .spacing(12)
+                    .spacing(sp(Sp::M))
                     .align_y(Center)
                     .into()
                 }
-                PopupKind::File => row![muted(Icon::FileText, 14.0), text(&self.files[index]).size(14)]
-                    .spacing(8)
+                PopupKind::File => row![muted(Icon::FileText, ts(T::Body)), text(&self.files[index]).size(ts(T::Body))]
+                    .spacing(sp(Sp::S))
                     .align_y(Center)
                     .into(),
             };
             button(label)
-                .padding([7, 8])
-                .style(style::row(row == popup.selected))
+                .padding([sp(Sp::S), sp(Sp::S)])
+                .style(kit_row(row == popup.selected))
                 .width(Length::Fill)
                 .on_press(Message::PopupPick(row))
                 .into()
@@ -754,10 +744,10 @@ impl State {
             PopupKind::Command => "Commands",
             PopupKind::File => "Files",
         };
-        let header = container(text(title).size(12).style(style::muted)).padding([4, 8]);
-        container(column![header, column(rows).spacing(2)].spacing(2))
-            .padding(4)
-            .style(style::menu)
+        let header = container(text(title).size(ts(T::Caption)).style(kit::text(Tone::Muted))).padding([sp(Sp::Xs), sp(Sp::S)]);
+        container(column![header, column(rows).spacing(sp(Sp::Xs))].spacing(sp(Sp::Xs)))
+            .padding(sp(Sp::Xs))
+            .style(kit::container(Surface::Popup))
             .width(Length::Fill)
             .into()
     }
@@ -967,9 +957,9 @@ impl State {
     fn matches(&self, trigger: &Trigger) -> Vec<usize> {
         match trigger.kind {
             PopupKind::Command => {
-                fuzzy::filter(&trigger.query, self.commands.iter().map(|c| c.name.as_str()), MAX_ITEMS)
+                loa_ui_kit::text::filter(&trigger.query, self.commands.iter().map(|c| c.name.as_str()), MAX_ITEMS)
             }
-            PopupKind::File => fuzzy::filter(&trigger.query, self.files.iter().map(String::as_str), MAX_ITEMS),
+            PopupKind::File => loa_ui_kit::text::filter(&trigger.query, self.files.iter().map(String::as_str), MAX_ITEMS),
         }
     }
 }
@@ -977,26 +967,26 @@ impl State {
 /// A picker menu row: the choice, a muted note, and a check on the current
 /// one. Without `pick` the row is listed but cannot be pressed.
 fn menu_row(label: &str, detail: Option<String>, current: bool, pick: Option<Message>) -> Element<'_, Message> {
-    let mut content = row![text(label).size(14)].spacing(8).align_y(Center);
+    let mut content = row![text(label).size(ts(T::Body))].spacing(sp(Sp::S)).align_y(Center);
     if let Some(detail) = detail {
-        content = content.push(text(detail).size(12).style(style::muted));
+        content = content.push(text(detail).size(ts(T::Caption)).style(kit::text(Tone::Muted)));
     }
     content = content.push(space::horizontal());
     if current {
-        content = content.push(icon(Icon::Check, 14.0));
+        content = content.push(icon(Icon::Check, ts(T::Body)));
     }
-    button(content).padding([6, 8]).width(Length::Fill).style(style::row(false)).on_press_maybe(pick).into()
+    button(content).padding([sp(Sp::S), sp(Sp::S)]).width(Length::Fill).style(kit_row(false)).on_press_maybe(pick).into()
 }
 
 /// A menu row with a label over a muted line of detail.
 fn two_line_row<'a>(label: &'a str, detail: &'a str, current: bool, pick: Message) -> Element<'a, Message> {
-    let mut content = row![column![text(label).size(14), text(detail).size(12).style(style::muted)].spacing(2).width(Length::Fill)]
-        .spacing(8)
+    let mut content = row![column![text(label).size(ts(T::Body)), text(detail).size(ts(T::Caption)).style(kit::text(Tone::Muted))].spacing(sp(Sp::Xs)).width(Length::Fill)]
+        .spacing(sp(Sp::S))
         .align_y(Center);
     if current {
-        content = content.push(icon(Icon::Check, 14.0));
+        content = content.push(icon(Icon::Check, ts(T::Body)));
     }
-    button(content).padding([6, 8]).width(Length::Fill).style(style::row(false)).on_press(pick).into()
+    button(content).padding([sp(Sp::S), sp(Sp::S)]).width(Length::Fill).style(kit_row(false)).on_press(pick).into()
 }
 
 /// A model name as the picker shows it: `Claude Opus 5.5` reads `Opus 5.5`.
@@ -1023,9 +1013,16 @@ pub const WORKSPACE_CHIP_ID: &str = "loa-composer-workspace";
 
 /// An icon-only button with its label as a tooltip.
 fn labelled<'a>(button: iced::widget::Button<'a, Message>, label: &'static str) -> Element<'a, Message> {
-    let tip = container(text(label).size(12)).padding([3, 8]).style(style::menu);
+    let tip = container(text(label).size(ts(T::Caption))).padding([sp(Sp::Xs), sp(Sp::S)]).style(kit::container(Surface::Popup));
     iced::widget::tooltip(button, tip, iced::widget::tooltip::Position::Top).into()
 }
 
 #[cfg(test)]
 mod tests;
+
+fn kit_row(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style { kit::button(ButtonKind::Row { selected }) }
+
+/// The editor inside the composer box: no fill and no edge of its own.
+fn editor_style(theme: &Theme, status: iced::widget::text_editor::Status) -> iced::widget::text_editor::Style {
+    iced::widget::text_editor::Style { background: Background::Color(Color::TRANSPARENT), border: Border::default(), ..kit::editor(theme, status) }
+}

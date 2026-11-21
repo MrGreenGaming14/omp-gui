@@ -4,6 +4,7 @@
 use iced::widget::text;
 use iced::{Color, Element, Settings, Size, Theme};
 use iced_test::{Simulator, selector};
+use loa_ui_kit::theme::{ColorRole, Variant, for_theme};
 use loa_ui_shell::layout::{PANEL_ID, SIDEBAR_WIDTH, project_tab_close_id, project_tab_id};
 use loa_ui_shell::{Event, Message, NodeFilter, NodeStatus, PanelPrefs, PanelTab, SessionSummary, State, sidebar, topbar};
 
@@ -276,16 +277,16 @@ fn render(state: &State, theme: &Theme, name: &str) -> (u32, Vec<u8>) {
     (info.width, rgba)
 }
 
-/// Color at a logical point of a snapshot taken at scale factor 2.
-fn pixel((width, rgba): &(u32, Vec<u8>), x: f32, y: f32) -> Color {
+/// RGBA at a logical point of a snapshot taken at scale factor 2.
+fn pixel((width, rgba): &(u32, Vec<u8>), x: f32, y: f32) -> [u8; 4] {
     let (px, py) = ((x * 2.0) as usize, (y * 2.0) as usize);
     let at = (py * *width as usize + px) * 4;
-    Color::from_rgba8(rgba[at], rgba[at + 1], rgba[at + 2], f32::from(rgba[at + 3]) / 255.0)
+    [rgba[at], rgba[at + 1], rgba[at + 2], rgba[at + 3]]
 }
 
-fn assert_close(actual: Color, expected: Color, what: &str) {
-    let diff = (actual.r - expected.r).abs().max((actual.g - expected.g).abs()).max((actual.b - expected.b).abs());
-    assert!(diff <= 3.0 / 255.0, "{what}: got {actual:?}, expected {expected:?}");
+fn assert_close(actual: [u8; 4], expected: Color, what: &str) {
+    let diff = actual.iter().zip(expected.into_rgba8()).take(3).map(|(a, e)| a.abs_diff(e)).max();
+    assert!(diff <= Some(3), "{what}: got {actual:?}, expected {expected:?}");
 }
 
 #[test]
@@ -294,20 +295,19 @@ fn both_themes_paint_the_frame_with_their_palettes() {
     let mut centers = Vec::new();
     for (theme, name) in [(loa_ui_shell::theme::dark(), "dark"), (loa_ui_shell::theme::light(), "light")] {
         let shot = render(&state, &theme, name);
-        let palette = theme.extended_palette();
+        let tokens = for_theme(&theme);
 
-        let tokens = loa_ui_shell::theme::style::tokens(&theme);
         let center = pixel(&shot, SIDEBAR_WIDTH + 200.0, 600.0);
-        assert_close(center, palette.background.base.color, &format!("{name} center"));
+        assert_close(center, tokens.color(ColorRole::Ground), &format!("{name} center"));
 
         let sidebar = pixel(&shot, SIDEBAR_WIDTH - 4.0, 400.0);
-        assert_close(sidebar, tokens.side, &format!("{name} sidebar"));
+        assert_close(sidebar, tokens.color(ColorRole::Side), &format!("{name} sidebar"));
 
         let panel = pixel(&shot, WINDOW.width - 20.0, 600.0);
-        assert_close(panel, tokens.side, &format!("{name} panel"));
+        assert_close(panel, tokens.color(ColorRole::Side), &format!("{name} panel"));
 
-        let luminance = 0.2126 * center.r + 0.7152 * center.g + 0.0722 * center.b;
-        assert_eq!(luminance < 0.5, palette.is_dark, "{name} theme has the wrong brightness");
+        let luminance = (0.2126 * f32::from(center[0]) + 0.7152 * f32::from(center[1]) + 0.0722 * f32::from(center[2])) / 255.0;
+        assert_eq!(luminance < 0.5, tokens.variant == Variant::Dark, "{name} theme has the wrong brightness");
         centers.push(center);
     }
     assert_ne!(centers[0], centers[1]);

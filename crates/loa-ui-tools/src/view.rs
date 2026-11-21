@@ -7,11 +7,13 @@
 //! details open inline under its row.
 
 use iced::widget::{
-    button, checkbox, column, container, pick_list, responsive, row, scrollable, space, text,
+    button, checkbox, column, container, pick_list, responsive, row, rule, scrollable, space, text,
     text_input,
 };
-use iced::{Alignment, Element, Fill, Font, Length, Padding, Shrink, font};
-use loa_ui_kit::icons::{Icon, icon, muted};
+use iced::{Alignment, Element, Fill, Font, Padding, font};
+use loa_ui_kit::icons::{Icon, tinted};
+use loa_ui_kit::style::{self, ButtonKind, Surface, Tone};
+use loa_ui_kit::theme::{LayoutRole, RadiusRole, SpaceRole as Sp, TextRole as T, pad_x, pad_y, sp, text_size as ts, tokens, width};
 
 use crate::catalog::{Catalog, GroupView, ServerView, ToolRow};
 use crate::form::FieldError;
@@ -19,26 +21,8 @@ use crate::model::{
     AuditRow, BuiltinGroup, DetailState, PromptAnswer, PromptKind, RemoteHost, RemotePrompt,
     ServerKind, ServerStatus, ToolId, ToolInfo, transport_label,
 };
-use crate::style::{self, Tone};
 use crate::{Message, PeerChoice, Section, ServerAction, State, TransportKind};
 
-const SPACING: f32 = 8.0;
-/// Descriptions, metadata and buttons.
-const SMALL: f32 = 12.0;
-/// Names and field values.
-const BODY: f32 = 13.0;
-/// Notes and empty states.
-const NOTE: f32 = 13.0;
-/// Gap between cards.
-const GAP: f32 = 16.0;
-/// Size of icons drawn next to small text.
-const ICON: f32 = 12.0;
-/// Inner padding of a card around its rows.
-const CARD_PAD: f32 = 4.0;
-/// Padding of one row inside a card.
-const ROW_PAD: Padding = Padding { top: 7.0, right: 10.0, bottom: 7.0, left: 10.0 };
-/// Padding of forms and question cards.
-const FORM_PAD: f32 = 12.0;
 /// From this width, cards sit in two columns.
 const TWO_COLUMNS: f32 = 640.0;
 /// Lists longer than this show only their first rows until opened.
@@ -47,17 +31,26 @@ const COLLAPSE_AT: usize = 8;
 const PREVIEW: usize = 6;
 /// Height of the audit log's own scroll area.
 const AUDIT_HEIGHT: f32 = 260.0;
-/// Width of a peer's column in the peers table.
-const PEER_COLUMN: f32 = 80.0;
-/// Width of a detail's label in an open tool.
-const DETAIL_LABEL: f32 = 110.0;
-/// Left inset of an open tool's details: under its name, past the checkbox.
-const DETAIL_INSET: f32 = 34.0;
 
 const BOLD: Font = Font {
     weight: font::Weight::Bold,
     ..Font::DEFAULT
 };
+
+/// Padding of one row inside a card.
+fn row_pad() -> Padding { Padding::from([sp(Sp::S), sp(Sp::M)]) }
+
+/// Width of a peer's column in the peers table.
+fn peer_column() -> f32 { width(LayoutRole::LabelColumn) / 2.0 }
+
+/// A 1px line between rows and sections.
+fn divider<'a>() -> rule::Rule<'a> { rule::horizontal(1).style(style::rule) }
+
+/// A thin scrollbar kept clear of the content.
+fn thin_scrollbar() -> scrollable::Direction {
+    let w = sp(Sp::Xs);
+    scrollable::Direction::Vertical(scrollable::Scrollbar::new().width(w).scroller_width(w).spacing(w))
+}
 
 impl State {
     pub fn view(&self) -> Element<'_, Message> {
@@ -79,26 +72,26 @@ impl State {
         ]
         .into_iter()
         .map(|(section, label, count)| tab(label, count, section, self.section)))
-        .spacing(GAP);
+        .spacing(sp(Sp::L));
         let tabs = scrollable(tabs)
             .direction(scrollable::Direction::Horizontal(
-                scrollable::Scrollbar::new().width(2).scroller_width(2),
+                scrollable::Scrollbar::new().width(sp(Sp::Xs) / 2.0).scroller_width(sp(Sp::Xs) / 2.0),
             ))
-            .style(style::scrollbar);
+            .style(style::scrollbar(false));
 
         let mut toolbar = row![search("Filter tools, servers and hosts", &self.filter_text, Message::FilterChanged)]
-            .spacing(SPACING)
+            .spacing(sp(Sp::S))
             .align_y(Alignment::Center);
         let toggles = matches!(self.section, Section::Builtin | Section::Servers);
         if toggles {
             toolbar = toolbar.push(self.project_selector());
         }
-        let mut header = column![tabs, toolbar].spacing(10);
+        let mut header = column![tabs, toolbar].spacing(sp(Sp::S));
         if toggles && !self.can_toggle() {
             header = header.push(
                 text("Choose a project to switch tools on or off")
-                    .size(SMALL)
-                    .style(style::faint),
+                    .size(ts(T::Caption))
+                    .style(style::text(Tone::Faint)),
             );
         }
 
@@ -108,17 +101,17 @@ impl State {
             Section::Hosts => self.hosts_view(wide),
             Section::Peers => self.peers_view(),
         };
-        let body = scrollable(container(body).padding(Padding::ZERO.top(4).bottom(12).right(10)))
-            .direction(style::thin_scrollbar())
-            .style(style::scrollbar)
+        let body = scrollable(container(body).padding(Padding::ZERO.top(sp(Sp::Xs)).bottom(sp(Sp::M)).right(sp(Sp::S))))
+            .direction(thin_scrollbar())
+            .style(style::scrollbar(false))
             .height(Fill);
 
         column![
-            container(header).padding(Padding::ZERO.right(10)),
+            container(header).padding(Padding::ZERO.right(sp(Sp::S))),
             body
         ]
-        .spacing(12)
-        .padding(Padding { top: 10.0, right: 2.0, bottom: 0.0, left: 12.0 })
+        .spacing(sp(Sp::M))
+        .padding(Padding::ZERO.top(sp(Sp::S)).right(sp(Sp::Xs) / 2.0).left(sp(Sp::M)))
         .into()
     }
 
@@ -129,9 +122,9 @@ impl State {
             .and_then(|id| self.projects.iter().find(|p| &p.id == id));
         pick_list(self.projects.as_slice(), selected, Message::ProjectSelected)
             .placeholder("Choose a project")
-            .text_size(SMALL)
-            .padding([6.0, 10.0])
-            .width(Length::Fixed(170.0))
+            .text_size(ts(T::Caption))
+            .padding([sp(Sp::Xs), sp(Sp::S)])
+            .width(width(LayoutRole::LabelColumn))
             .style(style::pick)
             .into()
     }
@@ -165,27 +158,24 @@ impl State {
     ) -> Element<'a, Message> {
         let open = self.block_open(key);
         let filtering = !self.filter.is_empty();
-        let mut label = row![].spacing(6).align_y(Alignment::Center);
+        let mut label = row![].spacing(sp(Sp::Xs)).align_y(Alignment::Center);
         if !filtering {
-            label = label.push(muted(
-                if open { Icon::ChevronDown } else { Icon::ChevronRight },
-                ICON,
-            ));
+            label = label.push(tinted(if open { Icon::ChevronDown } else { Icon::ChevronRight }, T::Caption, Tone::Muted));
         }
-        label = label.push(text(title).size(SMALL).wrapping(text::Wrapping::None));
+        label = label.push(text(title).size(ts(T::Caption)).wrapping(text::Wrapping::None));
         if let Some(count) = count {
             label = label.push(
                 text(count.to_string())
-                    .size(SMALL)
-                    .style(style::faint),
+                    .size(ts(T::Caption))
+                    .style(style::text(Tone::Faint)),
             );
         }
         let toggle = button(label)
-            .padding([3.0, 0.0])
-            .style(style::header)
+            .padding([sp(Sp::Xs), 0.0])
+            .style(style::button(ButtonKind::Flat))
             .on_press_maybe((!filtering).then(|| Message::BlockOpen(key.to_owned(), !open)));
         let mut line = row![toggle, space().width(Fill)]
-            .spacing(SPACING)
+            .spacing(sp(Sp::S))
             .align_y(Alignment::Center);
         if let Some(trailing) = trailing {
             line = line.push(trailing);
@@ -249,7 +239,7 @@ impl State {
         } else {
             self.tool_rows(key, group.tools)
         };
-        column![header, card(rows)].spacing(6).into()
+        column![header, card(rows)].spacing(sp(Sp::Xs)).into()
     }
 
     /// One tool: checkbox, name, clipped description and detail dots on a
@@ -263,20 +253,20 @@ impl State {
         });
         let mut line = row![
             checkbox(enabled)
-                .size(14)
+                .size(ts(T::Body))
                 .style(style::check)
                 .on_toggle_maybe(on_toggle),
             text(info.name.as_str())
-                .size(BODY)
+                .size(ts(T::Label))
                 .wrapping(text::Wrapping::None),
             clipped(
                 text(info.description.as_str())
-                    .size(SMALL)
-                    .style(style::muted)
+                    .size(ts(T::Caption))
+                    .style(style::text(Tone::Muted))
                     .wrapping(text::Wrapping::None)
             ),
         ]
-        .spacing(10)
+        .spacing(sp(Sp::S))
         .align_y(Alignment::Center);
         if !info.details.is_empty() {
             line = line.push(
@@ -284,18 +274,15 @@ impl State {
                     .details
                     .iter()
                     .map(|detail| status_dot(detail_tone(detail.state))))
-                .spacing(4)
+                .spacing(sp(Sp::Xs))
                 .align_y(Alignment::Center),
             );
         }
-        line = line.push(muted(
-            if expanded { Icon::ChevronUp } else { Icon::ChevronDown },
-            ICON,
-        ));
+        line = line.push(tinted(if expanded { Icon::ChevronUp } else { Icon::ChevronDown }, T::Caption, Tone::Muted));
         let head = button(line)
-            .padding(ROW_PAD)
+            .padding(row_pad())
             .width(Fill)
-            .style(style::row)
+            .style(style::button(ButtonKind::Row { selected: false }))
             .on_press(Message::ToolExpanded(id));
         if !expanded {
             return head.into();
@@ -306,20 +293,20 @@ impl State {
     fn servers_view<'a>(&'a self, catalog: Catalog<'a>, wide: bool) -> Element<'a, Message> {
         let actions = row![
             flat(with_icon(Icon::Plus, "Add server")).on_press(Message::AddServerOpen),
-            flat(text("Import").size(SMALL)).on_press(Message::ImportScan),
+            flat(text("Import").size(ts(T::Caption))).on_press(Message::ImportScan),
         ]
-        .spacing(2);
+        .spacing(sp(Sp::Xs) / 2.0);
         let header = row![
-            text("Servers").size(SMALL).style(style::muted),
+            text("Servers").size(ts(T::Caption)).style(style::text(Tone::Muted)),
             text(catalog.servers.len().to_string())
-                .size(SMALL)
-                .style(style::faint),
+                .size(ts(T::Caption))
+                .style(style::text(Tone::Faint)),
             space().width(Fill),
             actions,
         ]
-        .spacing(6)
+        .spacing(sp(Sp::Xs))
         .align_y(Alignment::Center);
-        let mut content = column![header].spacing(10);
+        let mut content = column![header].spacing(sp(Sp::S));
         if let Some(form) = self.add_server_form() {
             content = content.push(form);
         }
@@ -351,9 +338,9 @@ impl State {
         let open = self.block_open(&key);
         let (tone, status_label) = match &server.status {
             ServerStatus::Running => (Tone::Ok, "running".to_owned()),
-            ServerStatus::Starting => (Tone::Off, "starting".to_owned()),
-            ServerStatus::Stopped => (Tone::Off, "stopped".to_owned()),
-            ServerStatus::Error(message) => (Tone::Bad, format!("error: {message}")),
+            ServerStatus::Starting => (Tone::Muted, "starting".to_owned()),
+            ServerStatus::Stopped => (Tone::Muted, "stopped".to_owned()),
+            ServerStatus::Error(message) => (Tone::Danger, format!("error: {message}")),
         };
         let kind = match server.kind {
             ServerKind::Surface => "surface",
@@ -364,47 +351,44 @@ impl State {
         let mut title = row![
             status_dot(tone),
             text(name)
-                .size(BODY)
+                .size(ts(T::Label))
                 .font(BOLD)
                 .wrapping(text::Wrapping::None),
-            text(kind).size(SMALL).style(style::faint),
+            text(kind).size(ts(T::Caption)).style(style::text(Tone::Faint)),
             clipped(
                 text(status_label)
-                    .size(SMALL)
-                    .style(style::tone_text(tone))
+                    .size(ts(T::Caption))
+                    .style(style::text(tone))
                     .wrapping(text::Wrapping::None)
                     .width(Fill)
                     .align_x(Alignment::End)
             ),
             text(server.tools.len().to_string())
-                .size(SMALL)
-                .style(style::faint),
+                .size(ts(T::Caption))
+                .style(style::text(Tone::Faint)),
         ]
-        .spacing(SPACING)
+        .spacing(sp(Sp::S))
         .align_y(Alignment::Center);
         if !filtering {
-            title = title.push(muted(
-                if open { Icon::ChevronUp } else { Icon::ChevronDown },
-                ICON,
-            ));
+            title = title.push(tinted(if open { Icon::ChevronUp } else { Icon::ChevronDown }, T::Caption, Tone::Muted));
         }
         let title = button(title)
-            .padding(ROW_PAD)
+            .padding(row_pad())
             .width(Fill)
-            .style(style::row)
+            .style(style::button(ButtonKind::Row { selected: false }))
             .on_press_maybe((!filtering).then(|| Message::BlockOpen(key.clone(), !open)));
 
         let action = |label: &'a str, action: ServerAction, enabled: bool| {
-            flat(text(label).size(SMALL))
+            flat(text(label).size(ts(T::Caption)))
                 .on_press_maybe(enabled.then(|| Message::Server(name.to_owned(), action)))
         };
         let running = matches!(server.status, ServerStatus::Running | ServerStatus::Starting);
-        let toggle = flat(text(format!("Tools: {}", view.toggle.label())).size(SMALL))
+        let toggle = flat(text(format!("Tools: {}", view.toggle.label())).size(ts(T::Caption)))
             .on_press_maybe(
                 self.can_toggle()
                     .then(|| Message::ServerToggled(name.to_owned())),
             );
-        let mut actions = row![toggle].spacing(2);
+        let mut actions = row![toggle].spacing(sp(Sp::Xs) / 2.0);
         // App hosted servers run with the app; only their tools toggle.
         if server.kind != ServerKind::AppHosted {
             actions = actions
@@ -414,28 +398,23 @@ impl State {
         }
         if server.can_remove() {
             actions = actions.push(
-                flat(text("Remove").size(SMALL))
-                    .style(style::danger_flat)
+                flat(text("Remove").size(ts(T::Caption)))
+                    .style(style::button(ButtonKind::Danger))
                     .on_press(Message::Server(name.to_owned(), ServerAction::Remove)),
             );
         }
         let controls = container(
             column![
                 text(transport_label(&server.transport))
-                    .size(SMALL)
-                    .style(style::faint)
+                    .size(ts(T::Caption))
+                    .style(style::text(Tone::Faint))
                     .font(Font::MONOSPACE)
                     .wrapping(text::Wrapping::WordOrGlyph),
                 actions,
             ]
-            .spacing(2),
+            .spacing(sp(Sp::Xs) / 2.0),
         )
-        .padding(Padding {
-            top: 0.0,
-            right: 6.0,
-            bottom: 6.0,
-            left: 10.0,
-        })
+        .padding(Padding::ZERO.right(sp(Sp::Xs)).bottom(sp(Sp::Xs)).left(sp(Sp::M)))
         .width(Fill);
 
         let mut rows: Vec<Element<'a, Message>> =
@@ -453,13 +432,9 @@ impl State {
     fn add_server_form(&self) -> Option<Element<'_, Message>> {
         let (form, errors) = self.add_server.as_ref()?;
         let kind = |label: &'static str, kind: TransportKind| {
-            button(text(label).size(SMALL))
-                .padding([4.0, 10.0])
-                .style(if form.kind == kind {
-                    style::selected
-                } else {
-                    style::flat
-                })
+            button(text(label).size(ts(T::Caption)))
+                .padding([sp(Sp::Xs), sp(Sp::S)])
+                .style(style::button(ButtonKind::Tab { active: form.kind == kind }))
                 .on_press(Message::AddServerKind(kind))
         };
         let target = match form.kind {
@@ -474,13 +449,13 @@ impl State {
         };
         let content = column![
             row![
-                text("Add server").size(BODY).font(BOLD),
+                text("Add server").size(ts(T::Label)).font(BOLD),
                 space().width(Fill),
                 row![
                     kind("stdio", TransportKind::Stdio),
                     kind("HTTP", TransportKind::Http)
                 ]
-                .spacing(2),
+                .spacing(sp(Sp::Xs) / 2.0),
             ]
             .align_y(Alignment::Center),
             field("Name", &form.name, Message::AddServerName).on_submit(Message::AddServerSubmit),
@@ -489,20 +464,20 @@ impl State {
             field_error(errors.target.as_ref()),
             form_buttons("Add", Message::AddServerSubmit, Message::AddServerCancel),
         ]
-        .spacing(6);
+        .spacing(sp(Sp::Xs));
         Some(form_card(content))
     }
 
     fn import_view(&self) -> Option<Element<'_, Message>> {
         let entries = self.imports.as_ref()?;
         let header = row![
-            text("Import from .claude, .cursor, .codex").size(BODY).font(BOLD),
+            text("Import from .claude, .cursor, .codex").size(ts(T::Label)).font(BOLD),
             space().width(Fill),
             flat(with_icon(Icon::X, "Close")).on_press(Message::ImportClose),
         ]
         .align_y(Alignment::Center);
         let mut rows: Vec<Element<'_, Message>> = vec![container(header)
-            .padding(Padding { top: 4.0, right: 2.0, bottom: 4.0, left: 10.0 })
+            .padding(pad_y(Sp::Xs).right(sp(Sp::Xs) / 2.0).left(sp(Sp::M)))
             .into()];
         if self.import_scanning {
             rows.push(note_row("Scanning..."));
@@ -513,41 +488,41 @@ impl State {
             let candidate = &entry.candidate;
             let status: Element<'_, Message> = match &entry.outcome {
                 None if entry.exists => text("already registered")
-                    .size(SMALL)
-                    .style(style::warn_text)
+                    .size(ts(T::Caption))
+                    .style(style::text(Tone::Warn))
                     .into(),
                 None => space().width(0).into(),
                 Some(crate::ImportOutcome::Imported) => {
-                    text("imported").size(SMALL).style(text::success).into()
+                    text("imported").size(ts(T::Caption)).style(style::text(Tone::Ok)).into()
                 }
                 Some(crate::ImportOutcome::Skipped(why)) => text(format!("skipped: {why}"))
-                    .size(SMALL)
-                    .style(style::muted)
+                    .size(ts(T::Caption))
+                    .style(style::text(Tone::Muted))
                     .into(),
                 Some(crate::ImportOutcome::Failed(why)) => text(format!("failed: {why}"))
-                    .size(SMALL)
-                    .style(text::danger)
+                    .size(ts(T::Caption))
+                    .style(style::text(Tone::Danger))
                     .into(),
             };
             let line = row![
                 checkbox(entry.selected)
-                    .size(14)
+                    .size(ts(T::Body))
                     .style(style::check)
                     .on_toggle(move |on| Message::ImportSelect(index, on)),
                 text(candidate.server.name.as_str())
-                    .size(BODY)
+                    .size(ts(T::Label))
                     .wrapping(text::Wrapping::None),
                 clipped(
                     text(format!("{} {}", candidate.source.label(), candidate.path))
-                        .size(SMALL)
-                        .style(style::faint)
+                        .size(ts(T::Caption))
+                        .style(style::text(Tone::Faint))
                         .wrapping(text::Wrapping::None)
                 ),
                 status,
             ]
-            .spacing(10)
+            .spacing(sp(Sp::S))
             .align_y(Alignment::Center);
-            rows.push(container(line).padding(ROW_PAD).width(Fill).into());
+            rows.push(container(line).padding(row_pad()).width(Fill).into());
         }
         let any_selected = entries.iter().any(|e| e.selected);
         rows.push(
@@ -555,7 +530,7 @@ impl State {
                 filled("Import selected")
                     .on_press_maybe(any_selected.then_some(Message::ImportSubmit)),
             )
-            .padding(ROW_PAD)
+            .padding(row_pad())
             .into(),
         );
         Some(card(rows))
@@ -570,18 +545,18 @@ impl State {
     }
 
     fn hosts_view(&self, wide: bool) -> Element<'_, Message> {
-        let mut content = column![].spacing(10);
+        let mut content = column![].spacing(sp(Sp::S));
         if !self.prompts.is_empty() {
             let mut prompts = column![
                 row![
-                    text("Waiting for you").size(SMALL).style(style::warn_text),
+                    text("Waiting for you").size(ts(T::Caption)).style(style::text(Tone::Warn)),
                     text(self.prompts.len().to_string())
-                        .size(SMALL)
-                        .style(style::faint),
+                        .size(ts(T::Caption))
+                        .style(style::text(Tone::Faint)),
                 ]
-                .spacing(6)
+                .spacing(sp(Sp::Xs))
             ]
-            .spacing(6);
+            .spacing(sp(Sp::Xs));
             for prompt in &self.prompts {
                 prompts = prompts.push(prompt_card(prompt));
             }
@@ -589,7 +564,7 @@ impl State {
         }
         if let Some((form, errors)) = &self.add_host {
             let form = column![
-                text("Add host").size(BODY).font(BOLD),
+                text("Add host").size(ts(T::Label)).font(BOLD),
                 pair(
                     column![
                         field("Alias", &form.alias, Message::AddHostAlias)
@@ -616,16 +591,16 @@ impl State {
                 ),
                 form_buttons("Add", Message::AddHostSubmit, Message::AddHostCancel),
             ]
-            .spacing(6);
+            .spacing(sp(Sp::Xs));
             content = content.push(form_card(form));
         }
 
         let hosts = self.visible_hosts();
         let actions = row![
-            flat(text("Import from ssh config").size(SMALL)).on_press(Message::ImportSshHosts),
+            flat(text("Import from ssh config").size(ts(T::Caption))).on_press(Message::ImportSshHosts),
             flat(with_icon(Icon::Plus, "Add host")).on_press(Message::AddHostOpen),
         ]
-        .spacing(2);
+        .spacing(sp(Sp::Xs) / 2.0);
         let header = self.block_header("hosts", "Hosts".to_owned(), Some(hosts.len()), Some(actions.into()));
         content = content.push(header);
         if self.block_open("hosts") {
@@ -686,62 +661,57 @@ impl State {
             paths,
         );
         let actions = row![
-            flat(text("Edit limits").size(SMALL)).on_press(Message::EditLimits(alias.to_owned())),
-            flat(text("Terminal").size(SMALL)).on_press(Message::OpenTerminal(alias.to_owned())),
-            flat(text("Audit log").size(SMALL)).on_press(Message::ShowAudit(alias.to_owned())),
-            flat(text("Remove").size(SMALL))
-                .style(style::danger_flat)
+            flat(text("Edit limits").size(ts(T::Caption))).on_press(Message::EditLimits(alias.to_owned())),
+            flat(text("Terminal").size(ts(T::Caption))).on_press(Message::OpenTerminal(alias.to_owned())),
+            flat(text("Audit log").size(ts(T::Caption))).on_press(Message::ShowAudit(alias.to_owned())),
+            flat(text("Remove").size(ts(T::Caption)))
+                .style(style::button(ButtonKind::Danger))
                 .on_press(Message::RemoveHost(alias.to_owned())),
         ]
-        .spacing(2);
+        .spacing(sp(Sp::Xs) / 2.0);
         let name = row![
             text(alias)
-                .size(BODY)
+                .size(ts(T::Label))
                 .font(BOLD)
                 .wrapping(text::Wrapping::None),
             clipped(
                 text(target)
-                    .size(SMALL)
-                    .style(style::muted)
+                    .size(ts(T::Caption))
+                    .style(style::text(Tone::Muted))
                     .font(Font::MONOSPACE)
                     .wrapping(text::Wrapping::None)
             ),
         ]
-        .spacing(10)
+        .spacing(sp(Sp::S))
         .align_y(Alignment::Center);
         let summary = clipped(
             text(summary)
-                .size(SMALL)
-                .style(style::faint)
+                .size(ts(T::Caption))
+                .style(style::text(Tone::Faint))
                 .wrapping(text::Wrapping::None),
         );
         let head: Element<'a, Message> = if wide {
             column![
-                row![name, actions].spacing(SPACING).align_y(Alignment::Center),
+                row![name, actions].spacing(sp(Sp::S)).align_y(Alignment::Center),
                 summary
             ]
-            .spacing(2)
+            .spacing(sp(Sp::Xs) / 2.0)
             .into()
         } else {
-            column![name, summary, actions].spacing(2).into()
+            column![name, summary, actions].spacing(sp(Sp::Xs) / 2.0).into()
         };
-        let mut content = column![container(head).padding(Padding {
-            top: 6.0,
-            right: 4.0,
-            bottom: 6.0,
-            left: 10.0
-        })];
+        let mut content = column![container(head).padding(pad_y(Sp::Xs).right(sp(Sp::Xs)).left(sp(Sp::M)))];
         if let Some(draft) = self.limits.as_ref().filter(|d| d.host == host.alias) {
-            let mut paths = column![].spacing(2);
+            let mut paths = column![].spacing(sp(Sp::Xs) / 2.0);
             for (index, path) in draft.limits.allowed_paths.iter().enumerate() {
                 paths = paths.push(
                     row![
                         text(path.as_str())
-                            .size(SMALL)
+                            .size(ts(T::Caption))
                             .font(Font::MONOSPACE)
                             .width(Fill),
-                        flat(text("Remove").size(SMALL))
-                            .style(style::danger_flat)
+                        flat(text("Remove").size(ts(T::Caption)))
+                            .style(style::button(ButtonKind::Danger))
                             .on_press(Message::LimitsRemovePath(index)),
                     ]
                     .align_y(Alignment::Center),
@@ -750,9 +720,9 @@ impl State {
             let check = |on: bool, label: &'static str, message: fn(bool) -> Message| {
                 checkbox(on)
                     .label(label)
-                    .size(14)
-                    .text_size(SMALL)
-                    .spacing(SPACING)
+                    .size(ts(T::Body))
+                    .text_size(ts(T::Caption))
+                    .spacing(sp(Sp::S))
                     .style(style::check)
                     .on_toggle(message)
             };
@@ -761,25 +731,25 @@ impl State {
                     check(draft.limits.read_only, "Read only", Message::LimitsReadOnly),
                     check(draft.limits.commands_allowed, "Commands allowed", Message::LimitsCommands),
                 ]
-                .spacing(GAP),
+                .spacing(sp(Sp::L)),
                 check(
                     draft.limits.auto_approve,
                     "Run writes and commands without asking",
                     Message::LimitsAutoApprove
                 ),
-                text("Allowed paths").size(SMALL).style(style::muted),
+                text("Allowed paths").size(ts(T::Caption)).style(style::text(Tone::Muted)),
                 paths,
                 row![
                     field("/path or ~/path", &draft.new_path, Message::LimitsNewPath)
                         .on_submit(Message::LimitsAddPath),
                     flat(with_icon(Icon::Plus, "Add path")).on_press(Message::LimitsAddPath),
                 ]
-                .spacing(4)
+                .spacing(sp(Sp::Xs))
                 .align_y(Alignment::Center),
                 field_error(draft.path_error.as_ref()),
                 form_buttons("Save", Message::LimitsSave, Message::LimitsCancel),
             ]
-            .spacing(8);
+            .spacing(sp(Sp::S));
             content = content.push(inset(editor));
         }
         if let Some((_, rows)) = self.audit.as_ref().filter(|(h, _)| h == alias) {
@@ -804,35 +774,35 @@ impl State {
         };
         let header = row![
             text("Tools each peer's grant allows")
-                .size(SMALL)
-                .style(style::muted)
+                .size(ts(T::Caption))
+                .style(style::text(Tone::Muted))
                 .width(Fill),
             pick_list(choices, selected, Message::PeerFilter)
-                .text_size(SMALL)
-                .padding([5.0, 10.0])
+                .text_size(ts(T::Caption))
+                .padding([sp(Sp::Xs), sp(Sp::S)])
                 .style(style::pick),
         ]
-        .spacing(SPACING)
+        .spacing(sp(Sp::S))
         .align_y(Alignment::Center);
-        let content = column![header].spacing(10);
+        let content = column![header].spacing(sp(Sp::S));
 
         let matrix = self.peer_matrix();
         if matrix.peers.is_empty() {
             return content.push(card(vec![note_row("No peers")])).into();
         }
-        let mut head = row![text("Tool").size(SMALL).style(style::muted).width(Fill)]
-            .spacing(SPACING);
+        let mut head = row![text("Tool").size(ts(T::Caption)).style(style::text(Tone::Muted)).width(Fill)]
+            .spacing(sp(Sp::S));
         for peer in &matrix.peers {
             head = head.push(
                 text(peer.name.as_str())
-                    .size(SMALL)
-                    .style(style::muted)
+                    .size(ts(T::Caption))
+                    .style(style::text(Tone::Muted))
                     .wrapping(text::Wrapping::None)
-                    .width(PEER_COLUMN),
+                    .width(peer_column()),
             );
         }
         let mut rows: Vec<Element<'_, Message>> =
-            vec![container(head).padding(ROW_PAD).width(Fill).into()];
+            vec![container(head).padding(row_pad()).width(Fill).into()];
         if matrix.rows.is_empty() {
             rows.push(note_row("No tools"));
         }
@@ -842,19 +812,19 @@ impl State {
                 ToolId::Mcp { server, tool } => format!("{server} / {tool}"),
             };
             let mut cells = row![clipped(
-                text(label).size(SMALL).wrapping(text::Wrapping::None)
+                text(label).size(ts(T::Caption)).wrapping(text::Wrapping::None)
             )]
-            .spacing(SPACING);
+            .spacing(sp(Sp::S));
             for allowed in line.allowed {
                 cells = cells.push(if allowed {
-                    text("allowed").size(SMALL).width(PEER_COLUMN).style(text::success)
+                    text("allowed").size(ts(T::Caption)).width(peer_column()).style(style::text(Tone::Ok))
                 } else {
-                    text("no").size(SMALL).width(PEER_COLUMN).style(style::faint)
+                    text("no").size(ts(T::Caption)).width(peer_column()).style(style::text(Tone::Faint))
                 });
             }
             rows.push(
                 container(cells)
-                    .padding(Padding { top: 5.0, ..ROW_PAD }.bottom(5.0))
+                    .padding(Padding::from([sp(Sp::Xs), sp(Sp::M)]))
                     .width(Fill)
                     .into(),
             );
@@ -868,72 +838,45 @@ fn all_key(key: &str) -> String {
     format!("{key}:all")
 }
 
-/// A panel tab: label and faint count over a 2px underline when active.
+/// A panel tab: a pill with its label and a faint count.
 fn tab<'a>(label: String, count: usize, section: Section, current: Section) -> Element<'a, Message> {
     let active = section == current;
     let waiting = section == Section::Hosts && label.ends_with(')');
-    let label = text(label)
-        .size(13)
-        .wrapping(text::Wrapping::None)
-        .style(if active {
-            text::base
-        } else if waiting {
-            style::warn_text
-        } else {
-            style::muted
-        });
-    let mut line = row![label].spacing(5).align_y(Alignment::Center);
+    let tone = if active { Tone::Normal } else if waiting { Tone::Warn } else { Tone::Muted };
+    let mut line = row![text(label).size(ts(T::Label)).wrapping(text::Wrapping::None).style(style::text(tone))]
+        .spacing(sp(Sp::Xs))
+        .align_y(Alignment::Center);
     if count > 0 {
-        line = line.push(
-            text(count.to_string())
-                .size(SMALL)
-                .style(style::faint)
-                .wrapping(text::Wrapping::None),
-        );
+        line = line.push(text(count.to_string()).size(ts(T::Caption)).style(style::text(Tone::Faint)).wrapping(text::Wrapping::None));
     }
-    button(
-        column![
-            line,
-            container(space().height(2))
-                .width(Fill)
-                .style(style::underline(active)),
-        ]
-        .width(Shrink)
-        .spacing(6)
-        .align_x(Alignment::Center),
-    )
-    .padding([4.0, 0.0])
-    .style(style::plain)
-    .on_press(Message::SectionSelected(section))
-    .into()
+    button(line)
+        .padding([sp(Sp::Xs), sp(Sp::S)])
+        .style(style::button(ButtonKind::Tab { active }))
+        .on_press(Message::SectionSelected(section))
+        .into()
 }
 
 /// An open tool: its whole description and its details, under its name.
 fn tool_details(info: &ToolInfo) -> Element<'_, Message> {
     let mut content = column![
         text(info.description.as_str())
-            .size(SMALL)
-            .style(style::muted)
+            .size(ts(T::Caption))
+            .style(style::text(Tone::Muted))
     ]
-    .spacing(4);
+    .spacing(sp(Sp::Xs));
     for detail in &info.details {
         content = content.push(
             row![
                 status_dot(detail_tone(detail.state)),
-                text(detail.label.as_str()).size(SMALL).width(DETAIL_LABEL),
-                text(detail.text.as_str()).size(SMALL).style(style::muted),
+                text(detail.label.as_str()).size(ts(T::Caption)).width(width(LayoutRole::LabelColumn) * 0.7),
+                text(detail.text.as_str()).size(ts(T::Caption)).style(style::text(Tone::Muted)),
             ]
-            .spacing(SPACING)
+            .spacing(sp(Sp::S))
             .align_y(Alignment::Center),
         );
     }
     container(content)
-        .padding(Padding {
-            top: 0.0,
-            right: 10.0,
-            bottom: 10.0,
-            left: DETAIL_INSET,
-        })
+        .padding(Padding::ZERO.right(sp(Sp::M)).bottom(sp(Sp::M)).left(sp(Sp::Xl) + sp(Sp::S)))
         .width(Fill)
         .into()
 }
@@ -941,80 +884,80 @@ fn tool_details(info: &ToolInfo) -> Element<'_, Message> {
 fn detail_tone(state: DetailState) -> Tone {
     match state {
         DetailState::Ready => Tone::Ok,
-        DetailState::NotConfigured => Tone::Off,
-        DetailState::Unavailable => Tone::Bad,
+        DetailState::NotConfigured => Tone::Muted,
+        DetailState::Unavailable => Tone::Danger,
     }
 }
 
 /// A host's audit log, newest first, in a scroll area of its own.
 fn audit_log(rows: &[AuditRow]) -> Element<'_, Message> {
     let header = row![
-        text("Audit log").size(SMALL).style(style::muted),
-        text(rows.len().to_string()).size(SMALL).style(style::faint),
+        text("Audit log").size(ts(T::Caption)).style(style::text(Tone::Muted)),
+        text(rows.len().to_string()).size(ts(T::Caption)).style(style::text(Tone::Faint)),
         space().width(Fill),
         flat(with_icon(Icon::X, "Close")).on_press(Message::CloseAudit),
     ]
-    .spacing(6)
+    .spacing(sp(Sp::Xs))
     .align_y(Alignment::Center);
     if rows.is_empty() {
-        return column![header, text("No entries").size(SMALL).style(style::faint)]
-            .spacing(4)
+        return column![header, text("No entries").size(ts(T::Caption)).style(style::text(Tone::Faint))]
+            .spacing(sp(Sp::Xs))
             .into();
     }
-    let mut log = column![].spacing(6);
+    let mut log = column![].spacing(sp(Sp::Xs));
     for (index, entry) in rows.iter().enumerate() {
         if index > 0 {
-            log = log.push(style::divider());
+            log = log.push(divider());
         }
         let ok = entry.outcome == "ok" || entry.outcome.starts_with("ok:");
         log = log.push(
             column![
                 row![
                     text(entry.action.label())
-                        .size(SMALL)
+                        .size(ts(T::Caption))
                         .wrapping(text::Wrapping::None),
                     clipped(
                         text(entry.detail.as_str())
-                            .size(SMALL)
+                            .size(ts(T::Caption))
                             .font(Font::MONOSPACE)
                             .wrapping(text::Wrapping::None)
                     ),
                     text(entry.when.as_str())
-                        .size(SMALL)
-                        .style(style::faint)
+                        .size(ts(T::Caption))
+                        .style(style::text(Tone::Faint))
                         .wrapping(text::Wrapping::None),
                 ]
-                .spacing(SPACING),
+                .spacing(sp(Sp::S)),
                 row![
                     clipped(
                         text(entry.outcome.as_str())
-                            .size(SMALL)
+                            .size(ts(T::Caption))
                             .wrapping(text::Wrapping::None)
-                            .style(if ok { text::success } else { text::danger })
+                            .style(if ok { style::text(Tone::Ok) } else { style::text(Tone::Danger) })
                     ),
                     text(entry.session.as_str())
-                        .size(SMALL)
-                        .style(style::faint)
+                        .size(ts(T::Caption))
+                        .style(style::text(Tone::Faint))
                         .wrapping(text::Wrapping::None),
                 ]
-                .spacing(SPACING),
+                .spacing(sp(Sp::S)),
             ]
-            .spacing(2),
+            .spacing(sp(Sp::Xs) / 2.0),
         );
     }
-    let log = scrollable(container(log).padding(Padding::ZERO.right(10)))
-        .direction(style::thin_scrollbar())
-        .style(style::scrollbar)
-        .height(Length::Shrink);
+    let log = scrollable(container(log).padding(Padding::ZERO.right(sp(Sp::S))))
+        .direction(thin_scrollbar())
+        .style(style::scrollbar(false))
+        .height(iced::Shrink);
     column![header, container(log).max_height(AUDIT_HEIGHT)]
-        .spacing(4)
+        .spacing(sp(Sp::Xs))
         .into()
 }
 
 /// A host key or approval question with its answers.
 fn prompt_card(prompt: &RemotePrompt) -> Element<'_, Message> {
     let answer = |label: &'static str, answer: PromptAnswer| {
-        flat(text(label).size(SMALL)).on_press(Message::AnswerPrompt(prompt.id, answer))
+        flat(text(label).size(ts(T::Caption))).on_press(Message::AnswerPrompt(prompt.id, answer))
     };
     let (accept, reject) = match prompt.kind {
         PromptKind::HostKey => (
@@ -1026,32 +969,28 @@ fn prompt_card(prompt: &RemotePrompt) -> Element<'_, Message> {
                 answer("Allow once", PromptAnswer::AllowOnce),
                 answer("Allow for session", PromptAnswer::AllowSession),
             ]
-            .spacing(2),
+            .spacing(sp(Sp::Xs) / 2.0),
             answer("Deny", PromptAnswer::Deny),
         ),
     };
     let content = column![
         row![
-            icon(Icon::TriangleAlert, ICON).style(|theme: &iced::Theme, _| {
-                iced::widget::svg::Style {
-                    color: Some(theme.extended_palette().warning.base.color),
-                }
-            }),
-            text(prompt.title.as_str()).size(BODY),
+            tinted(Icon::TriangleAlert, T::Caption, Tone::Warn),
+            text(prompt.title.as_str()).size(ts(T::Label)),
         ]
-        .spacing(SPACING)
+        .spacing(sp(Sp::S))
         .align_y(Alignment::Center),
         text(prompt.body.as_str())
-            .size(SMALL)
+            .size(ts(T::Caption))
             .font(Font::MONOSPACE)
-            .style(style::muted),
-        row![accept, reject.style(style::danger_flat)].spacing(2),
+            .style(style::text(Tone::Muted)),
+        row![accept, reject.style(style::button(ButtonKind::Danger))].spacing(sp(Sp::Xs) / 2.0),
     ]
-    .spacing(6);
+    .spacing(sp(Sp::Xs));
     container(content)
-        .padding(FORM_PAD)
+        .padding(sp(Sp::M))
         .width(Fill)
-        .style(style::attention_card)
+        .style(style::container(Surface::Attention))
         .into()
 }
 
@@ -1060,23 +999,23 @@ fn card<'a>(rows: Vec<Element<'a, Message>>) -> Element<'a, Message> {
     let mut content = column![];
     for (index, item) in rows.into_iter().enumerate() {
         if index > 0 {
-            content = content.push(container(style::divider()).padding([0.0, 6.0]));
+            content = content.push(container(divider()).padding(pad_x(Sp::Xs)));
         }
         content = content.push(item);
     }
     container(content)
-        .padding(CARD_PAD)
+        .padding(sp(Sp::Xs))
         .width(Fill)
-        .style(style::card)
+        .style(style::container(Surface::Card))
         .into()
 }
 
 /// A form or editor in a bordered card.
 fn form_card<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
     container(content)
-        .padding(FORM_PAD)
+        .padding(sp(Sp::M))
         .width(Fill)
-        .style(style::card)
+        .style(style::container(Surface::Card))
         .into()
 }
 
@@ -1084,20 +1023,20 @@ fn form_card<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Messag
 fn inset<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
     container(
         container(content)
-            .padding(FORM_PAD)
+            .padding(sp(Sp::M))
             .width(Fill)
-            .style(style::inset),
+            .style(style::container(Surface::Well)),
     )
-    .padding(Padding::ZERO.bottom(4))
+    .padding(Padding::ZERO.bottom(sp(Sp::Xs)))
     .into()
 }
 
 /// Cards in two columns when `wide`, else stacked.
 fn grid<'a>(items: Vec<Element<'a, Message>>, wide: bool) -> Element<'a, Message> {
     if !wide {
-        return column(items).spacing(GAP).into();
+        return column(items).spacing(sp(Sp::L)).into();
     }
-    let mut rows = column![].spacing(GAP);
+    let mut rows = column![].spacing(sp(Sp::L));
     let mut items = items.into_iter();
     while let Some(first) = items.next() {
         let second = items
@@ -1108,7 +1047,7 @@ fn grid<'a>(items: Vec<Element<'a, Message>>, wide: bool) -> Element<'a, Message
                 container(first).width(Fill),
                 container(second).width(Fill)
             ]
-            .spacing(GAP)
+            .spacing(sp(Sp::L))
             .align_y(Alignment::Start),
         );
     }
@@ -1124,21 +1063,21 @@ fn pair<'a>(
         container(left).width(Fill),
         container(right).width(Fill)
     ]
-    .spacing(SPACING)
+    .spacing(sp(Sp::S))
     .into()
 }
 
 /// A muted line inside a card, for empty states and progress.
 fn note_row(label: &str) -> Element<'_, Message> {
-    container(note(label)).padding(ROW_PAD).width(Fill).into()
+    container(note(label)).padding(row_pad()).width(Fill).into()
 }
 
 /// The last row of a cut list: shows all of it, or fewer.
 fn more_row<'a>(label: String, message: Message) -> Element<'a, Message> {
-    button(text(label).size(SMALL).style(style::muted))
-        .padding(ROW_PAD)
+    button(text(label).size(ts(T::Caption)).style(style::text(Tone::Muted)))
+        .padding(row_pad())
         .width(Fill)
-        .style(style::row)
+        .style(style::button(ButtonKind::Row { selected: false }))
         .on_press(message)
         .into()
 }
@@ -1148,10 +1087,11 @@ fn clipped<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message>
     container(content).width(Fill).clip(true).into()
 }
 
-/// A 6px status dot.
+/// A small status dot.
 fn status_dot<'a>(tone: Tone) -> Element<'a, Message> {
-    container(space().width(6).height(6))
-        .style(style::dot(tone))
+    let d = sp(Sp::Xs) * 1.5;
+    container(space().width(d).height(d))
+        .style(style::fill(tone.role(), tokens().radius(RadiusRole::Dot)))
         .into()
 }
 
@@ -1159,28 +1099,28 @@ fn status_dot<'a>(tone: Tone) -> Element<'a, Message> {
 fn form_buttons<'a>(submit: &'a str, on_submit: Message, on_cancel: Message) -> Element<'a, Message> {
     row![
         filled(submit).on_press(on_submit),
-        flat(text("Cancel").size(SMALL)).on_press(on_cancel),
+        flat(text("Cancel").size(ts(T::Caption))).on_press(on_cancel),
     ]
-    .spacing(SPACING)
+    .spacing(sp(Sp::S))
     .into()
 }
 
 /// A small flat button: secondary text, a fill only when hovered.
 fn flat<'a>(content: impl Into<Element<'a, Message>>) -> button::Button<'a, Message> {
-    button(content).padding([4.0, 8.0]).style(style::flat)
+    button(content).padding([sp(Sp::Xs), sp(Sp::S)]).style(style::button(ButtonKind::Ghost))
 }
 
 /// The one filled action of a form: small and neutral.
 fn filled(label: &str) -> button::Button<'_, Message> {
-    button(text(label).size(SMALL))
-        .padding([4.0, 12.0])
+    button(text(label).size(ts(T::Caption)))
+        .padding([sp(Sp::Xs), sp(Sp::M)])
         .style(button::primary)
 }
 
 /// A flat button with a leading icon.
 fn with_icon(glyph: Icon, label: &str) -> Element<'_, Message> {
-    row![icon(glyph, ICON), text(label).size(SMALL)]
-        .spacing(6)
+    row![tinted(glyph, T::Caption, Tone::Normal), text(label).size(ts(T::Caption))]
+        .spacing(sp(Sp::Xs))
         .align_y(Alignment::Center)
         .into()
 }
@@ -1193,45 +1133,36 @@ fn field<'a>(
 ) -> text_input::TextInput<'a, Message> {
     text_input(placeholder, value)
         .on_input(on_input)
-        .size(BODY)
+        .size(ts(T::Label))
         .style(style::input)
-        .padding([6.0, 8.0])
+        .padding([sp(Sp::Xs), sp(Sp::S)])
 }
 
-/// A bordered search box with a magnifier icon and a borderless field.
+/// A full-width filter field.
 fn search<'a>(
     placeholder: &'a str,
     value: &'a str,
     on_input: impl Fn(String) -> Message + 'a,
 ) -> Element<'a, Message> {
-    container(
-        row![
-            muted(Icon::Search, 14.0),
-            text_input(placeholder, value)
-                .on_input(on_input)
-                .size(BODY)
-                .style(style::bare)
-                .padding(0.0),
-        ]
-        .spacing(8)
-        .align_y(Alignment::Center),
-    )
-    .padding([6.0, 10.0])
-    .width(Fill)
-    .style(style::search_box)
-    .into()
+    text_input(placeholder, value)
+        .on_input(on_input)
+        .size(ts(T::Label))
+        .style(style::input)
+        .padding([sp(Sp::Xs), sp(Sp::S)])
+        .width(Fill)
+        .into()
 }
 
 /// A muted line for empty states and progress.
 fn note(label: &str) -> text::Text<'_> {
-    text(label).size(NOTE).style(style::muted)
+    text(label).size(ts(T::Label)).style(style::text(Tone::Muted))
 }
 
 fn field_error(error: Option<&FieldError>) -> Element<'_, Message> {
     match error {
         Some(error) => text(error.to_string())
-            .size(SMALL)
-            .style(text::danger)
+            .size(ts(T::Caption))
+            .style(style::text(Tone::Danger))
             .into(),
         None => space().height(0).into(),
     }

@@ -12,10 +12,11 @@ mod parse;
 pub use model::{CONTEXT, FileDiff, FileStatus, Fold, Hunk, Intra, Line, MIN_FOLD, Row, Tag, intra_line};
 pub use parse::{ParseError, Result, parse_unified};
 
-use crate::style;
+use loa_ui_kit::style::{self as kit, ButtonKind, Tone};
+use loa_ui_kit::theme::{ColorRole as C, SpaceRole as Sp, TextRole as T, sp, text_size as ts};
 use iced::widget::{Id, button, column, container, operation, row, rule, scrollable, space, text};
 use iced::{Element, Font, Length, Task};
-use loa_ui_kit::icons::Icon;
+use loa_ui_kit::icons::{Icon, muted};
 use std::ops::Range;
 
 /// Rows built above and below the viewport so fast scrolling doesn't show
@@ -25,8 +26,15 @@ const OVERSCAN: usize = 20;
 /// Viewport height assumed before the first scroll event reports it.
 const DEFAULT_VIEWPORT: f32 = 1200.0;
 
-/// Width of one monospace character at [`style::TEXT_SIZE`].
-const CHAR_WIDTH: f32 = 8.0;
+/// Width of one monospace character at the mono text size.
+fn char_width() -> f32 { ts(T::Mono) * 0.6 }
+
+/// File rows use label text and include vertical button padding.
+fn file_row_height() -> f32 { ts(T::Label) + 2.0 * sp(Sp::Xs) }
+
+fn file_label<'a>(content: impl text::IntoFragment<'a>) -> text::Text<'a> {
+    text(content).size(ts(T::Label)).line_height(1.0)
+}
 
 /// Height of the file list when a diff has several files.
 const FILE_LIST_HEIGHT: f32 = 140.0;
@@ -129,8 +137,8 @@ impl State {
 
     /// Indices of the rows the view builds for the current scroll position.
     pub fn visible_rows(&self) -> Range<usize> {
-        let first = (self.scroll_offset / style::ROW_HEIGHT).floor().max(0.0) as usize;
-        let shown = (self.viewport_height / style::ROW_HEIGHT).ceil().max(1.0) as usize;
+        let first = (self.scroll_offset / crate::row_height()).floor().max(0.0) as usize;
+        let shown = (self.viewport_height / crate::row_height()).ceil().max(1.0) as usize;
         let start = first.saturating_sub(OVERSCAN).min(self.rows.len());
         let end = (first + shown + OVERSCAN).min(self.rows.len());
         start..end
@@ -146,10 +154,10 @@ impl State {
                 if mode != self.mode {
                     // Keep the same part of the file in view: rows map to a
                     // similar fraction in both modes.
-                    let fraction = self.scroll_offset / (self.rows.len().max(1) as f32 * style::ROW_HEIGHT);
+                    let fraction = self.scroll_offset / (self.rows.len().max(1) as f32 * crate::row_height());
                     self.mode = mode;
                     self.rebuild_rows();
-                    self.scroll_offset = fraction * self.rows.len() as f32 * style::ROW_HEIGHT;
+                    self.scroll_offset = fraction * self.rows.len() as f32 * crate::row_height();
                 }
                 (Task::none(), None)
             }
@@ -196,16 +204,16 @@ impl State {
     pub fn view(&self) -> Element<'_, Message> {
         let Some(file) = self.selected() else {
             let note = self.note.as_deref().unwrap_or("No changes");
-            return container(text(note).style(style::muted)).padding(8).into();
+            return container(text(note).style(kit::text(Tone::Muted))).padding(sp(Sp::S)).into();
         };
-        let mut page = column![self.toolbar(file), rule::horizontal(1).style(style::divider)];
+        let mut page = column![self.toolbar(file), rule::horizontal(1).style(kit::rule)];
         if self.files.len() > 1 {
             page = page.push(self.file_list());
         }
         let body: Element<'_, Message> = if self.collapsed {
             space().into()
         } else if file.binary {
-            container(text("Binary file").style(style::muted)).padding(8).into()
+            container(text("Binary file").style(kit::text(Tone::Muted))).padding(sp(Sp::S)).into()
         } else {
             self.body(file)
         };
@@ -216,32 +224,32 @@ impl State {
     /// and the unified/split switch on the right.
     fn toolbar<'a>(&'a self, file: &'a FileDiff) -> Element<'a, Message> {
         let chevron = if self.collapsed { Icon::ChevronRight } else { Icon::ChevronDown };
-        let collapse = button(loa_ui_kit::icons::muted(chevron, 14.0))
-            .padding(2)
-            .style(style::row_button(false))
+        let collapse = button(muted(chevron, ts(T::Body)))
+            .padding(sp(Sp::Xs))
+            .style(kit::button(ButtonKind::Row { selected: false }))
             .on_press(Message::ToggleCollapsed);
-        let path = button(text(file.path()).size(style::LIST_TEXT_SIZE).wrapping(text::Wrapping::None))
-            .padding([2, 4])
-            .style(style::row_button(false))
+        let path = button(text(file.path()).size(ts(T::Body)).wrapping(text::Wrapping::None))
+            .padding([sp(Sp::Xs), sp(Sp::Xs)])
+            .style(kit::button(ButtonKind::Row { selected: false }))
             .on_press(Message::Open);
         let (other, label) = match self.mode {
             Mode::Unified => (Mode::Split, "Split"),
             Mode::Split => (Mode::Unified, "Unified"),
         };
-        let mode = button(text(label).size(12).style(style::muted))
-            .padding([2, 6])
-            .style(style::row_button(false))
+        let mode = button(text(label).size(ts(T::Caption)).style(kit::text(Tone::Muted)))
+            .padding([sp(Sp::Xs), sp(Sp::S)])
+            .style(kit::button(ButtonKind::Row { selected: false }))
             .on_press(Message::SetMode(other));
         row![
             collapse,
             path,
             space::horizontal(),
-            text(format!("+{}", file.added())).size(12).style(style::success_text),
-            text(format!("-{}", file.removed())).size(12).style(style::danger_text),
+            text(format!("+{}", file.added())).size(ts(T::Caption)).style(kit::text(Tone::Ok)),
+            text(format!("-{}", file.removed())).size(ts(T::Caption)).style(kit::text(Tone::Danger)),
             mode,
         ]
-        .spacing(4)
-        .padding([5, 8])
+        .spacing(sp(Sp::Xs))
+        .padding([sp(Sp::Xs), sp(Sp::S)])
         .align_y(iced::Alignment::Center)
         .into()
     }
@@ -255,29 +263,29 @@ impl State {
                 FileStatus::Renamed => "R",
             };
             let label = row![
-                text(marker).size(style::TEXT_SIZE).font(Font::MONOSPACE).style(style::muted),
-                text(file.path()).size(style::TEXT_SIZE).wrapping(text::Wrapping::None).width(Length::Fill),
-                text(format!("+{}", file.added())).size(style::TEXT_SIZE).style(style::success_text),
-                text(format!("-{}", file.removed())).size(style::TEXT_SIZE).style(style::danger_text),
+                file_label(marker).font(Font::MONOSPACE).style(kit::text(Tone::Muted)),
+                file_label(file.path()).wrapping(text::Wrapping::None).width(Length::Fill),
+                file_label(format!("+{}", file.added())).style(kit::text(Tone::Ok)),
+                file_label(format!("-{}", file.removed())).style(kit::text(Tone::Danger)),
             ]
-            .spacing(6);
+            .spacing(sp(Sp::S));
             button(label)
                 .width(Length::Fill)
-                .height(style::ROW_HEIGHT)
-                .padding([1, 6])
-                .style(style::row_button(index == self.selected))
+                .height(file_row_height())
+                .padding([sp(Sp::Xs), sp(Sp::S)])
+                .style(kit::button(ButtonKind::Row { selected: index == self.selected }))
                 .on_press(Message::SelectFile(index))
                 .into()
         });
-        let list_height = (self.files.len() as f32 * style::ROW_HEIGHT).min(FILE_LIST_HEIGHT);
+        let list_height = (self.files.len() as f32 * file_row_height()).min(FILE_LIST_HEIGHT);
         scrollable(column(entries)).height(list_height).into()
     }
 
     fn body<'a>(&'a self, file: &'a FileDiff) -> Element<'a, Message> {
         let range = self.visible_rows();
         let digits = number_digits(file);
-        let above = range.start as f32 * style::ROW_HEIGHT;
-        let below = (self.rows.len() - range.end) as f32 * style::ROW_HEIGHT;
+        let above = range.start as f32 * crate::row_height();
+        let below = (self.rows.len() - range.end) as f32 * crate::row_height();
         let rows = self.rows[range].iter().map(|row| self.row(file, *row, digits));
         let content = column![space().height(above), column(rows), space().height(below)].width(Length::Fill);
         scrollable(content)
@@ -301,22 +309,22 @@ impl State {
                     hunk.new_len,
                     file.section(&hunk)
                 );
-                container(text(header).size(12).wrapping(text::Wrapping::None).style(style::muted))
+                container(mono(header).style(kit::text(Tone::Muted)))
                     .width(Length::Fill)
                     .height(Length::Fill)
                     .align_y(iced::Center)
-                    .style(style::band)
-                    .padding([0, 10])
+                    .style(kit::fill(C::Raised, 0.0))
+                    .padding(iced::Padding::ZERO.left(sp(Sp::M)).right(sp(Sp::M)))
                     .into()
             }
             Row::Fold { fold, hidden } => {
                 let label = if hidden == 1 { "Expand 1 unchanged line".to_owned() } else {
                     format!("Expand {hidden} unchanged lines")
                 };
-                button(mono(label).style(style::muted))
+                button(mono(label).style(kit::text(Tone::Muted)))
                     .width(Length::Fill)
-                    .padding([0, 6])
-                    .style(style::row_button(false))
+                    .padding(iced::Padding::ZERO.left(sp(Sp::S)).right(sp(Sp::S)))
+                    .style(kit::button(ButtonKind::Row { selected: false }))
                     .on_press(Message::Expand(fold))
                     .into()
             }
@@ -327,7 +335,7 @@ impl State {
             ]
             .into(),
         };
-        container(line).width(Length::Fill).height(style::ROW_HEIGHT).clip(true).into()
+        container(line).width(Length::Fill).height(crate::row_height()).clip(true).into()
     }
 }
 
@@ -338,7 +346,7 @@ enum Side {
 }
 
 fn mono<'a>(content: impl text::IntoFragment<'a>) -> text::Text<'a> {
-    text(content).size(style::TEXT_SIZE).font(Font::MONOSPACE).wrapping(text::Wrapping::None)
+    text(content).size(ts(T::Mono)).line_height(1.0).font(Font::MONOSPACE).wrapping(text::Wrapping::None)
 }
 
 /// Digits needed for the largest line number of the file.
@@ -349,17 +357,17 @@ fn number_digits(file: &FileDiff) -> usize {
 
 fn number<'a>(no: Option<u32>, digits: usize) -> Element<'a, Message> {
     let label = no.map_or_else(String::new, |n| n.to_string());
-    container(mono(label).style(style::muted))
-        .width(digits as f32 * CHAR_WIDTH + 16.0)
+    container(mono(label).style(kit::text(Tone::Muted)))
+        .width(digits as f32 * char_width() + sp(Sp::L))
         .align_x(iced::alignment::Horizontal::Right)
         .into()
 }
 
-fn line_style(tag: Tag) -> Option<fn(&iced::Theme) -> container::Style> {
+fn line_style(tag: Tag) -> Option<C> {
     match tag {
         Tag::Equal => None,
-        Tag::Delete => Some(style::removed_line),
-        Tag::Insert => Some(style::added_line),
+        Tag::Delete => Some(C::RemovedBg),
+        Tag::Insert => Some(C::AddedBg),
     }
 }
 
@@ -373,23 +381,23 @@ fn unified_line(file: &FileDiff, index: usize, digits: usize) -> Element<'_, Mes
     let content = row![
         number(line.old_no, digits),
         number(line.new_no, digits),
-        container(mono(sign).style(sign_style(line.tag))).padding(iced::Padding::ZERO.left(12).right(6)),
+        container(mono(sign).style(kit::text(sign_tone(line.tag)))).padding(iced::Padding::ZERO.left(sp(Sp::M)).right(sp(Sp::S))),
         line_content(file, index),
     ];
     paint(content.into(), line.tag)
 }
 
-fn sign_style(tag: Tag) -> fn(&iced::Theme) -> text::Style {
+fn sign_tone(tag: Tag) -> Tone {
     match tag {
-        Tag::Equal => style::muted,
-        Tag::Delete => style::danger_text,
-        Tag::Insert => style::success_text,
+        Tag::Equal => Tone::Muted,
+        Tag::Delete => Tone::Danger,
+        Tag::Insert => Tone::Ok,
     }
 }
 
 fn split_side(file: &FileDiff, index: Option<usize>, side: Side, digits: usize) -> Element<'_, Message> {
     let Some(index) = index else {
-        return container(space()).width(Length::FillPortion(1)).height(Length::Fill).style(style::band).into();
+        return container(space()).width(Length::FillPortion(1)).height(Length::Fill).style(kit::fill(C::Raised, 0.0)).into();
     };
     let line = &file.lines()[index];
     let no = match side {
@@ -403,7 +411,7 @@ fn split_side(file: &FileDiff, index: Option<usize>, side: Side, digits: usize) 
 fn paint(content: Element<'_, Message>, tag: Tag) -> Element<'_, Message> {
     let painted = container(content).width(Length::Fill).height(Length::Fill);
     match line_style(tag) {
-        Some(style) => painted.style(style).into(),
+        Some(role) => painted.style(kit::fill(role, 0.0)).into(),
         None => painted.into(),
     }
 }
@@ -415,17 +423,14 @@ fn line_content(file: &FileDiff, index: usize) -> Element<'_, Message> {
     if emphasis.is_empty() {
         return mono(content).into();
     }
-    let strong = match file.lines()[index].tag {
-        Tag::Insert => style::added_emphasis,
-        _ => style::removed_emphasis,
-    };
+    let strong = if file.lines()[index].tag == Tag::Insert { C::Ok } else { C::Danger };
     let mut parts = row![];
     let mut at = 0;
     for range in emphasis {
         if range.start > at {
             parts = parts.push(mono(&content[at..range.start]));
         }
-        parts = parts.push(container(mono(&content[range.clone()])).style(strong));
+        parts = parts.push(container(mono(&content[range.clone()])).style(crate::tint(strong)));
         at = range.end;
     }
     if at < content.len() {

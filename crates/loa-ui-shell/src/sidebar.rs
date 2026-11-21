@@ -8,10 +8,12 @@
 use std::collections::BTreeSet;
 
 use crate::data::{NodeFilter, NodeStatus, Nodes, SessionSummary, UsageMeter};
-use crate::theme::style;
-use iced::widget::{Column, button, column, container, hover, row, scrollable, space, text, text_input};
-use iced::{Alignment, Element, Fill, Length, Padding, Task};
-use loa_ui_kit::icons::{Icon, icon, muted};
+use iced::widget::{Column, button, column, container, hover, row, rule, scrollable, space, text, text_input};
+use iced::{Alignment, Element, Fill, Padding, Task};
+use loa_ui_kit::icons::{Icon, tinted};
+use loa_ui_kit::style::{self, ButtonKind, Surface, Tone};
+use loa_ui_kit::theme::{ColorRole as C, RadiusRole, SpaceRole as Sp, TextRole as T, pad_x, sp, text_size as ts, tokens};
+use loa_ui_kit::widgets::{label, meter};
 
 /// Id of the search input, for focusing it from a shortcut.
 pub const SEARCH_ID: &str = "loa-sidebar-search";
@@ -412,23 +414,13 @@ impl State {
         map: impl Fn(Message) -> M + Clone + 'a,
         mut project_files: Option<Element<'a, M>>,
     ) -> Element<'a, M> {
-        let new = button(
-            row![
-                container(icon(Icon::Plus, 13.0)).center(22).style(|theme: &iced::Theme| container::Style {
-                    background: Some(style::tokens(theme).accent.into()),
-                    border: iced::border::rounded(99),
-                    ..container::Style::default()
-                }),
-                text("New session").size(14).width(Fill),
-                text("Ctrl N").size(12).style(style::faint),
-            ]
-            .spacing(10)
-            .align_y(Alignment::Center),
-        )
-        .on_press(Message::New)
-        .style(style::row)
-        .padding([7, 10])
-        .width(Fill);
+        let plus = container(tinted(Icon::Plus, T::Label, Tone::Normal)).center(sp(Sp::Xl)).style(style::fill(C::Accent, tokens().radius(RadiusRole::Pill)));
+        let new = row![plus, label("New session", T::Body, Tone::Normal).width(Fill), label("Ctrl N", T::Caption, Tone::Faint)];
+        let new = button(new.spacing(sp(Sp::S)).align_y(Alignment::Center))
+            .on_press(Message::New)
+            .style(style::button(ButtonKind::Row { selected: false }))
+            .padding(row_pad())
+            .width(Fill);
 
         let search = text_input("Search", &self.query)
             .id(SEARCH_ID)
@@ -436,13 +428,13 @@ impl State {
             .icon(text_input::Icon {
                 font: iced::Font::default(),
                 code_point: '⌕',
-                size: Some(14.0.into()),
-                spacing: 8.0,
+                size: Some(ts(T::Body).into()),
+                spacing: sp(Sp::S),
                 side: text_input::Side::Left,
             })
-            .size(14)
+            .size(ts(T::Body))
             .style(style::input)
-            .padding([6, 10]);
+            .padding(row_pad());
 
         let mut lists = Column::new();
         if self.machines_open {
@@ -462,26 +454,19 @@ impl State {
         }
         for project in projects {
             let is_active = active_project == Some(project);
-            let pinned = self.pinned_projects.contains(project);
-            let mut line = row![muted(Icon::Folder, 15.0), text(project).size(14).width(Fill)].spacing(10).align_y(Alignment::Center);
-            if pinned {
-                line = line.push(muted(Icon::Pin, 12.0));
+            let mut line = row![tinted(Icon::Folder, T::Body, Tone::Muted), label(project, T::Body, Tone::Normal).width(Fill)].spacing(sp(Sp::S)).align_y(Alignment::Center);
+            if self.pinned_projects.contains(project) {
+                line = line.push(tinted(Icon::Pin, T::Caption, Tone::Muted));
             }
             let body = button(line)
                 .on_press(Message::OpenProject(project.to_owned()))
-                .style(style::row_for(is_active))
-                .padding([7, 10])
+                .style(style::button(ButtonKind::Row { selected: is_active }))
+                .padding(row_pad())
                 .width(Fill);
-            let pin = button(muted(Icon::Pin, 13.0))
-                .on_press(Message::ToggleProjectPin(project.to_owned()))
-                .style(style::ghost_button)
-                .padding(4);
-            let pin = container(pin)
-                .padding([0, 2])
-                .style(move |theme| style::row_actions(theme, is_active));
-            lists = lists.push(hover(body, container(pin).align_right(Fill).center_y(Fill).padding([0, 6])));
+            let pin = row_action(Icon::Pin, Message::ToggleProjectPin(project.to_owned()));
+            lists = lists.push(hover(body, row_actions([pin], is_active)));
             if is_active && let Some(files) = project_files.take() {
-                segments.push(Element::from(std::mem::replace(&mut lists, Column::new()).spacing(2)).map(map.clone()));
+                segments.push(Element::from(std::mem::replace(&mut lists, Column::new()).spacing(sp(Sp::Xs) / 2.0)).map(map.clone()));
                 segments.push(files);
             }
         }
@@ -503,7 +488,7 @@ impl State {
             lists = lists.push(self.session_row(session));
         }
 
-        segments.push(Element::from(lists.spacing(2)).map(map.clone()));
+        segments.push(Element::from(lists.spacing(sp(Sp::Xs) / 2.0)).map(map.clone()));
         let content = column![
             Element::from(self.machine_switcher()).map(map.clone()),
             Element::from(new).map(map.clone()),
@@ -511,10 +496,10 @@ impl State {
             scrollable(Column::with_children(segments)).height(Fill),
             Element::from(self.footer()).map(map),
         ]
-        .spacing(4)
-        .padding(Padding { top: 8.0, right: 8.0, bottom: 8.0, left: 8.0 });
+        .spacing(sp(Sp::Xs))
+        .padding(sp(Sp::S));
 
-        container(content).style(style::side).width(Fill).height(Fill).into()
+        container(content).style(style::container(Surface::Side)).width(Fill).height(Fill).into()
     }
 
     fn node_label(node: &NodeStatus) -> &'static str {
@@ -535,25 +520,26 @@ impl State {
             },
         };
         let chevron = if self.machines_open { Icon::ChevronUp } else { Icon::ChevronDown };
+        let bold = iced::Font { weight: iced::font::Weight::Bold, ..tokens().font(T::Body) };
         let body = button(
             row![
-                container(space()).width(8).height(8).style(style::status_dot(online)),
-                column![text(name).size(14).font(bold()), text(sub).size(12).style(style::muted)].width(Fill),
-                muted(chevron, 14.0),
+                status_dot(online),
+                column![label(name, T::Body, Tone::Normal).font(bold), label(sub, T::Caption, Tone::Muted)].width(Fill),
+                tinted(chevron, T::Body, Tone::Muted),
             ]
-            .spacing(10)
+            .spacing(sp(Sp::S))
             .align_y(Alignment::Center),
         )
         .on_press(Message::ToggleMachines)
-        .style(style::row_for(self.machines_open))
-        .padding([6, 10])
+        .style(style::button(ButtonKind::Row { selected: self.machines_open }))
+        .padding(row_pad())
         .width(Fill);
         container(body).id(MACHINE_SWITCHER_ID).into()
     }
 
     fn machine_list(&self) -> Element<'_, Message> {
         let current = self.machine();
-        let mut list = Column::new().spacing(2);
+        let mut list = Column::new().spacing(sp(Sp::Xs) / 2.0);
         let mut options = vec![(NodeFilter::All, "All machines".to_owned(), "Recents from every machine".to_owned(), true)];
         for node in self.nodes.iter() {
             options.push((NodeFilter::Node(node.key.clone()), node.name.clone(), Self::node_label(node).to_owned(), node.local || node.online));
@@ -561,61 +547,45 @@ impl State {
         for (filter, name, sub, online) in options {
             let (count, waiting) = self.counts(&filter);
             let tally = if waiting > 0 {
-                text!("{waiting} need you").size(12).style(style::waiting_text)
+                label(format!("{waiting} need you"), T::Caption, Tone::Warn)
             } else {
-                text!("{count} sessions").size(12).style(style::faint)
+                label(format!("{count} sessions"), T::Caption, Tone::Faint)
             };
             let selected = filter == current;
+            let line = row![status_dot(online), column![label(name, T::Body, Tone::Normal), label(sub, T::Caption, Tone::Faint)].width(Fill), tally];
             list = list.push(
-                button(
-                    row![
-                        container(space()).width(8).height(8).style(style::status_dot(online)),
-                        column![text(name).size(14), text(sub).size(12).style(style::faint)].width(Fill),
-                        tally,
-                    ]
-                    .spacing(10)
-                    .align_y(Alignment::Center),
-                )
-                .on_press(Message::PickMachine(filter))
-                .style(style::row_for(selected))
-                .padding([6, 10])
-                .width(Fill),
+                button(line.spacing(sp(Sp::S)).align_y(Alignment::Center))
+                    .on_press(Message::PickMachine(filter))
+                    .style(style::button(ButtonKind::Row { selected }))
+                    .padding(row_pad())
+                    .width(Fill),
             );
         }
         list = list.push(
-            button(text("Manage peers").size(13)).on_press(Message::OpenPeers).style(style::ghost_button).padding([6, 10]),
+            button(label("Manage peers", T::Label, Tone::Normal)).on_press(Message::OpenPeers).style(style::button(ButtonKind::Ghost)).padding(row_pad()),
         );
-        container(list).style(style::window).padding(6).into()
+        container(list).style(style::container(Surface::Popup)).padding(sp(Sp::Xs)).into()
     }
 
     fn footer(&self) -> Element<'_, Message> {
-        let mut footer = Column::new().spacing(2);
+        let mut footer = Column::new().spacing(sp(Sp::Xs) / 2.0);
         if self.updates > 0 {
-            footer = footer.push(footer_item(
-                Icon::ArrowUp,
-                "Updates",
-                Some(text(self.updates).size(12).style(style::waiting_text).into()),
-                Message::OpenUpdates,
-            ));
+            footer = footer.push(footer_item(Icon::ArrowUp, "Updates", Some(label(self.updates.to_string(), T::Caption, Tone::Warn).into()), Message::OpenUpdates));
         }
         let meter: Option<Element<'_, Message>> = self.usage.as_ref().map(|usage| {
             let fraction = usage.fraction.clamp(0.0, 1.0);
-            let filled = (fraction * 44.0).max(if fraction > 0.0 { 2.0 } else { 0.0 });
             row![
-                container(container(space()).width(filled).height(4).style(style::meter_fill(fraction)))
-                    .width(44)
-                    .height(4)
-                    .style(style::meter_track),
-                text!("{} {:.0}%", usage.label, fraction * 100.0).size(12).style(style::faint),
+                container(meter(fraction)).width(sp(Sp::Xl) * 2.0),
+                label(format!("{} {:.0}%", usage.label, fraction * 100.0), T::Caption, Tone::Faint),
             ]
-            .spacing(8)
+            .spacing(sp(Sp::S))
             .align_y(Alignment::Center)
             .into()
         });
         footer = footer.push(footer_item(Icon::Gauge, "Usage", meter, Message::OpenUsage));
         footer = footer.push(footer_item(Icon::SlidersHorizontal, "Configs", None, Message::OpenConfigs));
         footer = footer.push(footer_item(Icon::Settings, "Settings", None, Message::OpenSettings));
-        column![iced::widget::rule::horizontal(1).style(style::divider), footer].spacing(6).into()
+        column![rule::horizontal(1).style(style::rule), footer].spacing(sp(Sp::Xs)).into()
     }
 
     fn session_row<'a>(&'a self, session: &'a SessionSummary) -> Element<'a, Message> {
@@ -623,62 +593,62 @@ impl State {
 
         // Clipped, so a long title ends at its own edge instead of running
         // under "Needs you" or the machine name.
-        let title = container(text(session.title.as_str()).size(14).wrapping(text::Wrapping::None)).width(Fill).clip(true);
-        let mut line = row![title]
-            .spacing(8)
-            .align_y(Alignment::Center);
+        let title = container(label(session.title.as_str(), T::Body, Tone::Normal).wrapping(text::Wrapping::None)).width(Fill).clip(true);
+        let mut line = row![title].spacing(sp(Sp::S)).align_y(Alignment::Center);
         if session.waiting {
-            line = line.push(
-                container(text("Needs you").size(12).style(style::waiting_text)).id(waiting_badge_id(&session.id)),
-            );
+            line = line.push(container(label("Needs you", T::Caption, Tone::Warn)).id(waiting_badge_id(&session.id)));
         }
         if self.machine() == NodeFilter::All {
-            line = line.push(text(self.nodes.name_of(&session.node)).size(12).style(style::faint));
+            line = line.push(label(self.nodes.name_of(&session.node), T::Caption, Tone::Faint));
         }
 
         let body = button(line)
             .on_press(Message::OpenSession(session.id.clone()))
-            .style(style::row_for(selected))
-            .padding([7, 10])
+            .style(style::button(ButtonKind::Row { selected }))
+            .padding(row_pad())
             .width(Fill);
-
-        let pin = button(muted(Icon::Pin, 13.0))
-            .on_press(Message::TogglePin(session.id.clone()))
-            .style(style::ghost_button)
-            .padding(4);
-
-        let delete = button(muted(Icon::X, 13.0))
-            .on_press(Message::Delete(session.id.clone()))
-            .style(style::ghost_button)
-            .padding(4);
-
-        // On a backing the color of the hovered (or selected) row, so the
-        // icons cover the end of the title instead of mixing with it.
-        let actions = container(row![pin, delete].spacing(2)).padding([0, 2]).style(move |theme| style::row_actions(theme, selected));
-        hover(body, container(actions).align_right(Fill).center_y(Fill).padding([0, 6]))
+        let pin = row_action(Icon::Pin, Message::TogglePin(session.id.clone()));
+        let delete = row_action(Icon::X, Message::Delete(session.id.clone()));
+        hover(body, row_actions([pin, delete], selected))
     }
 }
 
-fn footer_item<'a>(glyph: Icon, label: &'a str, trailing: Option<Element<'a, Message>>, on_press: Message) -> Element<'a, Message> {
-    let mut line = row![muted(glyph, 15.0), text(label).size(14).width(Fill)].spacing(10).align_y(Alignment::Center);
+/// Padding of a sidebar row.
+fn row_pad() -> Padding { Padding::from([sp(Sp::Xs) * 1.75, sp(Sp::S) * 1.25]) }
+
+fn status_dot<'a>(online: bool) -> Element<'a, Message> {
+    let d = sp(Sp::S);
+    container(space()).width(d).height(d).style(style::fill(if online { C::Ok } else { C::Text3 }, tokens().radius(RadiusRole::Dot))).into()
+}
+
+fn row_action<'a>(glyph: Icon, on: Message) -> Element<'a, Message> {
+    button(tinted(glyph, T::Label, Tone::Muted)).on_press(on).style(style::button(ButtonKind::Ghost)).padding(sp(Sp::Xs)).into()
+}
+
+/// Hover actions on a backing the colour of the hovered (or selected) row, so the
+/// icons cover the end of the title instead of mixing with it.
+fn row_actions<'a>(actions: impl IntoIterator<Item = Element<'a, Message>>, selected: bool) -> Element<'a, Message> {
+    let half = sp(Sp::Xs) / 2.0;
+    let actions = container(row(actions).spacing(half))
+        .padding(Padding::ZERO.left(half).right(half))
+        .style(style::fill(if selected { C::Selected } else { C::Hover }, 0.0));
+    container(actions).align_right(Fill).center_y(Fill).padding(pad_x(Sp::Xs)).into()
+}
+
+fn footer_item<'a>(glyph: Icon, text: &'a str, trailing: Option<Element<'a, Message>>, on_press: Message) -> Element<'a, Message> {
+    let mut line = row![tinted(glyph, T::Body, Tone::Muted), label(text, T::Body, Tone::Normal).width(Fill)].spacing(sp(Sp::S)).align_y(Alignment::Center);
     if let Some(trailing) = trailing {
         line = line.push(trailing);
     }
-    button(line).on_press(on_press).style(style::row).padding([7, 10]).width(Length::Fill).into()
+    button(line).on_press(on_press).style(style::button(ButtonKind::Row { selected: false })).padding(row_pad()).width(Fill).into()
 }
 
-fn bold() -> iced::Font {
-    iced::Font { weight: iced::font::Weight::Bold, ..iced::Font::default() }
+fn header(text: &str) -> Element<'_, Message> {
+    container(label(text, T::Caption, Tone::Faint)).padding(Padding::from([sp(Sp::Xs), row_pad().left]).top(sp(Sp::M))).into()
 }
 
-fn header(label: &str) -> Element<'_, Message> {
-    container(text(label).size(12).style(style::faint))
-        .padding(Padding { top: 14.0, right: 10.0, bottom: 4.0, left: 10.0 })
-        .into()
-}
-
-fn hint(label: &str) -> Element<'_, Message> {
-    container(text(label).size(13).style(style::faint)).padding([4, 10]).into()
+fn hint(text: &str) -> Element<'_, Message> {
+    container(label(text, T::Label, Tone::Faint)).padding(Padding::from([sp(Sp::Xs), row_pad().left])).into()
 }
 
 #[cfg(test)]

@@ -239,6 +239,17 @@ pub(crate) fn escape() -> keyboard::Event {
 }
 
 #[test]
+fn system_theme_change_updates_decisions_without_session_sync() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = fake_app(dir.path(), &["fake-a"]);
+    update(&mut app, Message::Shell(shell::Message::SystemTheme(iced::theme::Mode::Dark)));
+    let dark = app.areas.decisions.theme().clone();
+    update(&mut app, Message::Shell(shell::Message::SystemTheme(iced::theme::Mode::Light)));
+    assert_ne!(&dark, app.areas.decisions.theme());
+    assert_eq!(app.areas.decisions.theme(), &app.ctx.shell.theme());
+}
+
+#[test]
 fn panel_command_toggles_without_starting_a_harness() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = fake_app(dir.path(), &["fake-a"]);
