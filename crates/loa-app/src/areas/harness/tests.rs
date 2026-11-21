@@ -14,7 +14,7 @@ use loa_contracts::harness::{
 };
 use loa_core::{Dom, PatchSink};
 use loa_trust::NodeIdentity;
-use loa_ui_composer as composer;
+use loa_ui_session::composer as composer;
 use loa_ui_shell::palette;
 
 use super::{Message as HarnessMessage, TAB};
@@ -143,7 +143,8 @@ fn an_unavailable_harness_cannot_be_picked() {
     let mut app = app(dir.path(), probed_harnesses());
     update(&mut app, Message::Harness(HarnessMessage::Recheck));
     // The composer's picker lists it greyed out and ignores the pick.
-    update(&mut app, Message::Composer(composer::Message::HarnessPicked("gone".into())));
+    let pick = app.ctx.composer.pick_key(composer::PickerId::Harness, "gone").expect("listed");
+    update(&mut app, Message::Composer(pick));
     assert_eq!(app.ctx.sessions.harness.as_deref(), Some("ready"));
     // A switch command for it is refused with a notice.
     update(&mut app, Message::Harness(HarnessMessage::Pick("gone".into())));
@@ -162,7 +163,8 @@ fn the_picked_harness_is_saved_as_the_default_for_the_next_launch() {
     update(&mut first, Message::Harness(HarnessMessage::Recheck));
     assert_eq!(first.ctx.sessions.harness.as_deref(), Some("ready"));
     // Picking starts a session on it; this fake can't run one.
-    update(&mut first, Message::Composer(composer::Message::HarnessPicked("other".into())));
+    let pick = first.ctx.composer.pick_key(composer::PickerId::Harness, "other").expect("listed");
+    update(&mut first, Message::Composer(pick));
     let saved = first.ctx.services.config.load().unwrap().harness;
     assert_eq!(saved.default, "other");
 
@@ -186,7 +188,7 @@ fn an_executable_set_in_the_tab_is_saved_registered_and_probed() {
     let omp = dirs.omp.clone();
     let services = Services::new(this, dirs, Harnesses::detect(&key, &omp), dir.path().to_owned()).unwrap();
     let mut app = App::build(services).0;
-    let id = loa_adapter_codex::HARNESS;
+    let id = loa_harness::codex::HARNESS;
 
     update(&mut app, Message::Harness(HarnessMessage::EditExecutable(id.into(), codex.display().to_string())));
     update(&mut app, Message::Harness(HarnessMessage::SaveExecutable(id.into())));

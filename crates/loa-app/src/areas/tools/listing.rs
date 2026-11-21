@@ -149,7 +149,7 @@ pub(super) fn peer_tools(
                 for server in servers {
                     for tool in &server.tools {
                         let allowed = if server.name == loa_trust::REMOTE_SERVER {
-                            let action = if tool.name == loa_remote::mcp::REMOTE_BASH { Action::Exec } else { Action::Read };
+                            let action = if tool.name == loa_remote::tools::REMOTE_BASH { Action::Exec } else { Action::Read };
                             may(action, &|resource| matches!(resource, Resource::Ssh { host } if hosts.contains(host)))
                         } else if tool.name.starts_with(SURFACE_TOOL_PREFIX) {
                             let action = if tool.name == "surface_screenshot" { Action::View } else { Action::Drive };

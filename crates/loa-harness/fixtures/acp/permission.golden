@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<session nid="1" created.int="1" harness="acp" id="s" mode="plan" node="owner" schema.int="1" title="Cleanup" x-acp-mode="plan">
+  <turn nid="2" ended.int="0" started.int="0" status="done">
+    <message nid="3" by="owner" role="user" status="done">delete build/</message>
+    <call nid="4" call_id="c1" ended.int="0" started.int="0" status="done" title="rm -rf build" tool="execute">
+      <input nid="5" format="json">{"command":"rm -rf build"}</input>
+      <decision nid="6" answer.list="['allow_session']" by="alice" call.int="4" created.int="0" ended.int="0" kind="approval" options.list="['Allow', 'Always allow', 'Reject']" request_id="7" status="answered" x-acp-option="always" x-acp-option-ids.list="['once', 'always', 'no']" x-acp-option-kinds.list="['allow_once', 'allow_always', 'reject_once']"/>
+      <result nid="7" is_error.bool="false"/>
+    </call>
+  </turn>
+  <turn nid="8" ended.int="0" started.int="0" status="done">
+    <message nid="9" by="owner" role="user" status="done">plan it</message>
+  </turn>
+  <todo nid="10" state="done" x-acp-priority="high">Read code</todo>
+  <todo nid="11" state="in_progress" x-acp-priority="medium">Write the fix</todo>
+</session>
+
+--- replies
+{"id":7,"result":{"outcome":{"optionId":"always","outcome":"selected"}}}

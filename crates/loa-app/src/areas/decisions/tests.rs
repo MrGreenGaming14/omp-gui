@@ -5,7 +5,7 @@ use std::sync::Arc;
 use iced::widget::text_editor::{Action, Edit, Motion};
 use loa_bus::Policy;
 use loa_core::{DecisionStatus, PatchSink};
-use loa_ui_decisions::{Decision, FieldInput, Shortcut, desk};
+use loa_ui_session::decisions::{Decision, FieldInput, Shortcut, desk};
 
 use super::*;
 use crate::app::tests::{active, deliver, escape, fake_app, prompt, update};
@@ -36,7 +36,7 @@ fn desk_message(message: desk::Message) -> AppMessage {
     AppMessage::Decisions(Message::Desk(message))
 }
 
-fn card(app: &mut App, id: &SessionId, message: loa_ui_decisions::Message) {
+fn card(app: &mut App, id: &SessionId, message: loa_ui_session::decisions::Message) {
     update(app, desk_message(desk::Message::Card(id.to_string(), message)));
 }
 
@@ -89,15 +89,15 @@ fn a_denied_approval_carries_the_typed_reason() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = fake_app(dir.path(), &["fake-a"]);
     let (id, mut feed, decision) = ask(&mut app, "ask to run rm");
-    card(&mut app, &id, loa_ui_decisions::Message::Text(decision, "touches prod".into()));
-    card(&mut app, &id, loa_ui_decisions::Message::Choose(decision, 2));
+    card(&mut app, &id, loa_ui_session::decisions::Message::Text(decision, "touches prod".into()));
+    card(&mut app, &id, loa_ui_session::decisions::Message::Choose(decision, 2));
     deliver(&mut app, &id, &mut feed);
     let answered = recorded(&app, &id, decision);
     assert_eq!(answered.answer, [loa_core::answer::DENY]);
     assert_eq!(answered.reason.as_deref(), Some("touches prod"));
 
     let next = ask_again(&mut app, &id, &mut feed, "ask again");
-    card(&mut app, &id, loa_ui_decisions::Message::Choose(next, 1));
+    card(&mut app, &id, loa_ui_session::decisions::Message::Choose(next, 1));
     deliver(&mut app, &id, &mut feed);
     assert_eq!(recorded(&app, &id, next).answer, [loa_core::answer::ALLOW_SESSION]);
 }
@@ -112,7 +112,7 @@ fn a_prompt_typed_while_an_approval_waits_is_queued_and_sent_after_it() {
     assert_eq!(turns(&app, &id), 1, "queued while the turn waits");
     assert!(app.areas.decisions.focused().is_some(), "the card still waits");
 
-    card(&mut app, &id, loa_ui_decisions::Message::Choose(decision, 0));
+    card(&mut app, &id, loa_ui_session::decisions::Message::Choose(decision, 0));
     deliver(&mut app, &id, &mut feed);
     deliver(&mut app, &id, &mut feed);
     assert_eq!(turns(&app, &id), 2, "the queued prompt went out once the turn ended");
@@ -128,20 +128,20 @@ fn questions_take_an_option_several_picks_or_typed_text() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = fake_app(dir.path(), &["fake-a"]);
     let (id, mut feed, q) = ask(&mut app, "ask question");
-    card(&mut app, &id, loa_ui_decisions::Message::Choose(q, 1));
+    card(&mut app, &id, loa_ui_session::decisions::Message::Choose(q, 1));
     deliver(&mut app, &id, &mut feed);
     assert_eq!(recorded(&app, &id, q).answer, ["green"]);
 
     let multi = ask_again(&mut app, &id, &mut feed, "ask multi");
     key(&mut app, Shortcut::Pick(0));
     key(&mut app, Shortcut::Pick(2));
-    card(&mut app, &id, loa_ui_decisions::Message::Submit(multi));
+    card(&mut app, &id, loa_ui_session::decisions::Message::Submit(multi));
     deliver(&mut app, &id, &mut feed);
     assert_eq!(recorded(&app, &id, multi).answer, ["rust", "zig"]);
 
     let typed = ask_again(&mut app, &id, &mut feed, "ask question");
-    card(&mut app, &id, loa_ui_decisions::Message::Text(typed, "blue".into()));
-    card(&mut app, &id, loa_ui_decisions::Message::SubmitText(typed));
+    card(&mut app, &id, loa_ui_session::decisions::Message::Text(typed, "blue".into()));
+    card(&mut app, &id, loa_ui_session::decisions::Message::SubmitText(typed));
     deliver(&mut app, &id, &mut feed);
     assert_eq!(recorded(&app, &id, typed).answer, ["blue"]);
 }
@@ -151,23 +151,23 @@ fn plan_reviews_approve_edit_or_reject_with_feedback() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = fake_app(dir.path(), &["fake-a"]);
     let (id, mut feed, approve) = ask(&mut app, "ask plan");
-    card(&mut app, &id, loa_ui_decisions::Message::Choose(approve, 0));
+    card(&mut app, &id, loa_ui_session::decisions::Message::Choose(approve, 0));
     deliver(&mut app, &id, &mut feed);
     assert_eq!(recorded(&app, &id, approve).answer, [loa_core::answer::APPROVE]);
 
     let edit = ask_again(&mut app, &id, &mut feed, "ask plan");
-    card(&mut app, &id, loa_ui_decisions::Message::Choose(edit, 1));
-    card(&mut app, &id, loa_ui_decisions::Message::EditPlan(edit, Action::Move(Motion::DocumentEnd)));
-    card(&mut app, &id, loa_ui_decisions::Message::EditPlan(edit, Action::Edit(Edit::Paste(Arc::new("\n3. Add a test".into())))));
-    card(&mut app, &id, loa_ui_decisions::Message::Submit(edit));
+    card(&mut app, &id, loa_ui_session::decisions::Message::Choose(edit, 1));
+    card(&mut app, &id, loa_ui_session::decisions::Message::EditPlan(edit, Action::Move(Motion::DocumentEnd)));
+    card(&mut app, &id, loa_ui_session::decisions::Message::EditPlan(edit, Action::Edit(Edit::Paste(Arc::new("\n3. Add a test".into())))));
+    card(&mut app, &id, loa_ui_session::decisions::Message::Submit(edit));
     deliver(&mut app, &id, &mut feed);
     let edited = recorded(&app, &id, edit);
     assert_eq!(edited.answer, [loa_core::answer::EDIT]);
     assert!(edited.reason.as_deref().is_some_and(|plan| plan.ends_with("2. Fix the bug\n3. Add a test")), "{:?}", edited.reason);
 
     let reject = ask_again(&mut app, &id, &mut feed, "ask plan");
-    card(&mut app, &id, loa_ui_decisions::Message::Text(reject, "split step 2".into()));
-    card(&mut app, &id, loa_ui_decisions::Message::Choose(reject, 2));
+    card(&mut app, &id, loa_ui_session::decisions::Message::Text(reject, "split step 2".into()));
+    card(&mut app, &id, loa_ui_session::decisions::Message::Choose(reject, 2));
     deliver(&mut app, &id, &mut feed);
     let rejected = recorded(&app, &id, reject);
     assert_eq!((rejected.answer.as_slice(), rejected.reason.as_deref()), ([loa_core::answer::REJECT.to_owned()].as_slice(), Some("split step 2")));
@@ -178,11 +178,11 @@ fn a_form_is_answered_as_one_json_object() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = fake_app(dir.path(), &["fake-a"]);
     let (id, mut feed, form) = ask(&mut app, "ask form");
-    card(&mut app, &id, loa_ui_decisions::Message::Submit(form));
+    card(&mut app, &id, loa_ui_session::decisions::Message::Submit(form));
     assert_eq!(recorded(&app, &id, form).status, DecisionStatus::Waiting, "required fields block submit");
-    card(&mut app, &id, loa_ui_decisions::Message::Field(form, 0, FieldInput::Text("v1.2".into())));
-    card(&mut app, &id, loa_ui_decisions::Message::Field(form, 1, FieldInput::Choice(1)));
-    card(&mut app, &id, loa_ui_decisions::Message::Submit(form));
+    card(&mut app, &id, loa_ui_session::decisions::Message::Field(form, 0, FieldInput::Text("v1.2".into())));
+    card(&mut app, &id, loa_ui_session::decisions::Message::Field(form, 1, FieldInput::Choice(1)));
+    card(&mut app, &id, loa_ui_session::decisions::Message::Submit(form));
     deliver(&mut app, &id, &mut feed);
     assert_eq!(recorded(&app, &id, form).answer, [r#"{"name":"v1.2","channel":"stable"}"#]);
 }
@@ -229,7 +229,7 @@ fn new_waiting_cards_raise_a_system_notification_only_while_the_window_is_in_the
     assert_eq!(notifications(&mut app, &mut feed, "ask while focused"), 0);
     let first = app.areas.decisions.focused().unwrap();
     update(&mut app, desk_message(desk::Message::Focused(false)));
-    let answer = loa_ui_decisions::Message::Choose(first, 0);
+    let answer = loa_ui_session::decisions::Message::Choose(first, 0);
     update(&mut app, desk_message(desk::Message::Card(id.to_string(), answer)));
     deliver(&mut app, &id, &mut feed);
     assert!(!app.ctx.composer.is_busy(), "the first turn ended");
@@ -268,7 +268,7 @@ fn a_view_only_session_shows_cards_nobody_here_can_answer() {
     update(&mut app, AppMessage::Decisions(Message::ViewOnly(id.to_string(), true)));
     assert!(app.areas.decisions.focused().is_none(), "no keys for a card that can't be answered");
     assert!(app.areas.decisions.card(id.as_str(), decision).is_some(), "still drawn");
-    card(&mut app, &id, loa_ui_decisions::Message::Choose(decision, 0));
+    card(&mut app, &id, loa_ui_session::decisions::Message::Choose(decision, 0));
     deliver(&mut app, &id, &mut feed);
     assert_eq!(recorded(&app, &id, decision).status, DecisionStatus::Waiting);
     assert_eq!(app.ctx.shell.sidebar().session(id.as_str()).map(|s| s.waiting), Some(true));

@@ -1,0 +1,5 @@
+{"type":"title","title":"from slot"}
+{"type":"session","version":3,"id":"branch","timestamp":"2026-02-16T10:20:30Z","cwd":"/tmp"}
+{"type":"message","id":"a","parentId":null,"message":{"role":"user","content":"first"}}
+{"type":"message","id":"b","parentId":"a","message":{"role":"assistant","content":[{"type":"text","text":"abandoned"}]}}
+{"type":"message","id":"c","parentId":"a","message":{"role":"assistant","content":[{"type":"text","text":"chosen"}]}}

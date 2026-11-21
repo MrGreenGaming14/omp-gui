@@ -1,0 +1,23 @@
+# Subagent calls and background shells become jobs; compaction covers earlier turns.
+! prompt research
+{"type":"assistant","parent_tool_use_id":null,"uuid":"a-1","message":{"id":"m1","role":"assistant","content":[{"type":"tool_use","id":"toolu_t","name":"Task","input":{"description":"Survey crates","prompt":"look","subagent_type":"Explore"}}]}}
+{"type":"system","subtype":"task_started","task_id":"task-1","tool_use_id":"toolu_t","description":"Survey crates"}
+{"type":"stream_event","parent_tool_use_id":"toolu_t","event":{"type":"message_start","message":{"id":"sub"}}}
+{"type":"assistant","parent_tool_use_id":"toolu_t","uuid":"s-1","message":{"id":"sm","role":"assistant","content":[{"type":"text","text":"Found three."},{"type":"tool_use","id":"x","name":"Grep","input":{}}]}}
+{"type":"user","parent_tool_use_id":"toolu_t","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"x","content":"hit"}]}}
+{"type":"user","parent_tool_use_id":null,"uuid":"u-r","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_t","content":"Summary: three crates","is_error":false}]}}
+{"type":"result","subtype":"success","is_error":false}
+! prompt serve
+{"type":"assistant","parent_tool_use_id":null,"uuid":"a-2","message":{"id":"m2","role":"assistant","content":[{"type":"tool_use","id":"toolu_b","name":"Bash","input":{"command":"cargo watch","run_in_background":true}}]}}
+{"type":"user","parent_tool_use_id":null,"uuid":"u-b","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_b","content":"started bash_1","is_error":false}]}}
+{"type":"system","subtype":"task_started","task_id":"bash_1","tool_use_id":"toolu_b","task_type":"local_bash","description":"cargo watch"}
+{"type":"system","subtype":"task_started","task_id":"agent_2","task_type":"local_agent","description":"free agent"}
+{"type":"result","subtype":"success","is_error":false}
+{"type":"system","subtype":"task_progress","task_id":"bash_1"}
+{"type":"system","subtype":"task_notification","task_id":"bash_1","status":"failed","summary":"exit 101","output_file":"/tmp/o"}
+{"type":"system","subtype":"task_updated","task_id":"agent_2","patch":{"status":"killed"}}
+{"type":"system","subtype":"task_started"}
+! prompt /compact
+{"type":"system","subtype":"compact_boundary","compact_metadata":{"trigger":"manual","pre_tokens":52000}}
+{"type":"user","isCompactSummary":true,"parent_tool_use_id":null,"message":{"role":"user","content":"Summary of the work so far."}}
+{"type":"result","subtype":"success","is_error":false}

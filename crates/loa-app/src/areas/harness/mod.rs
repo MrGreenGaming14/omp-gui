@@ -302,9 +302,9 @@ fn status_icon<'a>(status: Option<AvailabilityStatus>) -> Element<'a, Message> {
 /// The executable field's placeholder: what runs when it is empty.
 fn default_program(id: &str) -> &'static str {
     match id {
-        loa_adapter_claude::HARNESS => "claude (from PATH)",
-        loa_adapter_codex::HARNESS => "codex (from PATH)",
-        loa_adapter_acp::HARNESS => "ACP agent (opencode or gemini from PATH)",
+        loa_harness::claude::HARNESS => "claude (from PATH)",
+        loa_harness::codex::HARNESS => "codex (from PATH)",
+        loa_harness::acp::HARNESS => "ACP agent (opencode or gemini from PATH)",
         _ => "omp (from PATH)",
     }
 }

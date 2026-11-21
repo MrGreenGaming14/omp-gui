@@ -1,0 +1,36 @@
+# A turn streaming thinking, text and a tool call, then a self-started turn and unknown events.
+{"type":"system","subtype":"init","session_id":"cc-1","model":"claude-opus-x","permissionMode":"default","tools":["Bash"]}
+! prompt list the files
+{"type":"stream_event","uuid":"e","session_id":"cc-1","parent_tool_use_id":null,"event":{"type":"message_start","message":{"id":"msg_1","model":"claude-opus-x","usage":{}}}}
+{"type":"stream_event","uuid":"e","session_id":"cc-1","parent_tool_use_id":null,"event":{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}}
+{"type":"stream_event","uuid":"e","session_id":"cc-1","parent_tool_use_id":null,"event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Need to "}}}
+{"type":"stream_event","uuid":"e","session_id":"cc-1","parent_tool_use_id":null,"event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"look."}}}
+{"type":"stream_event","uuid":"e","session_id":"cc-1","parent_tool_use_id":null,"event":{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig"}}}
+! dom
+{"type":"stream_event","uuid":"e","session_id":"cc-1","parent_tool_use_id":null,"event":{"type":"content_block_stop","index":0}}
+{"type":"assistant","parent_tool_use_id":null,"session_id":"cc-1","uuid":"a-1","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-opus-x","content":[{"type":"thinking","thinking":"Need to look.","signature":"sig"}]}}
+{"type":"stream_event","uuid":"e","session_id":"cc-1","parent_tool_use_id":null,"event":{"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}}
+{"type":"stream_event","uuid":"e","session_id":"cc-1","parent_tool_use_id":null,"event":{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Let me "}}}
+{"type":"stream_event","uuid":"e","session_id":"cc-1","parent_tool_use_id":null,"event":{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"check."}}}
+{"type":"stream_event","uuid":"e","session_id":"cc-1","parent_tool_use_id":null,"event":{"type":"content_block_stop","index":1}}
+{"type":"assistant","parent_tool_use_id":null,"session_id":"cc-1","uuid":"a-2","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-opus-x","content":[{"type":"text","text":"Let me check."}]}}
+{"type":"stream_event","uuid":"e","session_id":"cc-1","parent_tool_use_id":null,"event":{"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"toolu_1","name":"Bash","input":{}}}}
+{"type":"stream_event","uuid":"e","session_id":"cc-1","parent_tool_use_id":null,"event":{"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\"command\":"}}}
+{"type":"stream_event","uuid":"e","session_id":"cc-1","parent_tool_use_id":null,"event":{"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"\"ls -la\"}"}}}
+{"type":"stream_event","uuid":"e","session_id":"cc-1","parent_tool_use_id":null,"event":{"type":"content_block_stop","index":2}}
+{"type":"assistant","parent_tool_use_id":null,"session_id":"cc-1","uuid":"a-3","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-opus-x","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"ls -la"}}]}}
+{"type":"stream_event","uuid":"e","session_id":"cc-1","parent_tool_use_id":null,"event":{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":30}}}
+{"type":"stream_event","uuid":"e","session_id":"cc-1","parent_tool_use_id":null,"event":{"type":"message_stop"}}
+{"type":"user","parent_tool_use_id":null,"session_id":"cc-1","uuid":"u-r","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"a.txt\nb.txt","is_error":false}]}}
+{"type":"stream_event","uuid":"e","session_id":"cc-1","parent_tool_use_id":null,"event":{"type":"message_start","message":{"id":"msg_2","model":"claude-opus-x"}}}
+{"type":"stream_event","uuid":"e","session_id":"cc-1","parent_tool_use_id":null,"event":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}}
+{"type":"stream_event","uuid":"e","session_id":"cc-1","parent_tool_use_id":null,"event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Two files."}}}
+{"type":"stream_event","uuid":"e","session_id":"cc-1","parent_tool_use_id":null,"event":{"type":"content_block_stop","index":0}}
+{"type":"assistant","parent_tool_use_id":null,"session_id":"cc-1","uuid":"a-4","message":{"id":"msg_2","type":"message","role":"assistant","model":"claude-opus-x","content":[{"type":"text","text":"Two files."}]}}
+{"type":"result","subtype":"success","is_error":false,"duration_ms":1200,"num_turns":2,"session_id":"cc-1","total_cost_usd":0.25,"terminal_reason":"completed","usage":{"input_tokens":100,"output_tokens":40,"cache_read_input_tokens":7,"cache_creation_input_tokens":3}}
+# Claude starts a turn on its own (a background task finished).
+{"type":"assistant","parent_tool_use_id":null,"session_id":"cc-1","uuid":"a-5","message":{"id":"m5","type":"message","role":"assistant","model":"claude-opus-x","content":[{"type":"text","text":"The build finished."}]}}
+{"type":"result","subtype":"success","is_error":false,"session_id":"cc-1"}
+{"type":"rate_limit_event","rate_limit_info":{"status":"allowed"}}
+{"type":"keep_alive"}
+{"type":"system","subtype":"status","permissionMode":"plan"}

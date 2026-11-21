@@ -74,8 +74,8 @@ pub enum Incoming {
 pub trait Framing: Send + Sync + 'static {
     fn request(&self, id: &Json, method: &str, params: Json) -> Json;
     fn notification(&self, method: &str, params: Json) -> Json;
-    /// The reply to an inbound [`Incoming::Request`].
-    fn response(&self, id: Json, result: Result<Json>) -> Json;
+    /// The reply to an inbound [`Incoming::Request`] for `method`.
+    fn response(&self, id: Json, method: &str, result: Result<Json>) -> Json;
     /// `None` when the line was consumed (a partial chunk) or is not a frame.
     fn classify(&self, msg: Json) -> Option<Incoming>;
 }
@@ -87,6 +87,15 @@ pub trait Inbound: Send + Sync + 'static {
     /// Called in order; the read loop waits, so a slow consumer backpressures the harness.
     async fn on_notification(&self, method: &str, params: Json);
     async fn on_closed(&self, status: Option<ExitStatus>, stderr: &str);
+    /// True when requests go to [`Inbound::on_deferred`] in read order, to be
+    /// answered later with [`StdioRpc::respond`], instead of being served on
+    /// their own task.
+    fn defers_requests(&self) -> bool {
+        false
+    }
+    async fn on_deferred(&self, _id: Json, _method: &str, _params: Json) {}
+    /// Sees every response, in read order, before the request waiting for it does.
+    async fn on_response(&self, _id: &str, _result: &Result<Json>) {}
 }
 
 /// The id as a pending-map key: a string id as is, anything else as JSON text.
@@ -157,11 +166,17 @@ impl<F: Framing> Core<F> {
         };
         match self.framing.classify(msg) {
             None => {}
-            Some(Incoming::Response { id, result }) => match self.state.locked().pending.remove(&id) {
-                Some(tx) => drop(tx.send(result)),
-                None => tracing::debug!(id, "a response nobody waits for"),
-            },
+            Some(Incoming::Response { id, result }) => {
+                inbound.on_response(&id, &result).await;
+                match self.state.locked().pending.remove(&id) {
+                    Some(tx) => drop(tx.send(result)),
+                    None => tracing::debug!(id, "a response nobody waits for"),
+                }
+            }
             Some(Incoming::Notification { method, params }) => inbound.on_notification(&method, params).await,
+            Some(Incoming::Request { id, method, params }) if inbound.defers_requests() => {
+                inbound.on_deferred(id, &method, params).await
+            }
             Some(Incoming::Request { id, method, params }) => self.serve(id, method, params, inbound.clone()),
             Some(Incoming::Cancel { id }) => {
                 if let Some(task) = self.state.locked().tasks.remove(&id_key(&id)) {
@@ -182,7 +197,7 @@ impl<F: Framing> Core<F> {
             async move {
                 let result = inbound.on_request(&method, params).await;
                 core.state.locked().tasks.remove(&key);
-                if let Err(err) = core.send(&core.framing.response(id, result)) {
+                if let Err(err) = core.send(&core.framing.response(id, &method, result)) {
                     tracing::warn!(%err, method, "couldn't answer the harness");
                 }
             }
@@ -288,8 +303,8 @@ impl<F: Framing> StdioRpc<F> {
     }
 
     /// Answers an inbound request the [`Inbound`] port deferred.
-    pub fn respond(&self, id: Json, result: Result<Json>) -> Result<()> {
-        self.core.send(&self.core.framing.response(id, result))
+    pub fn respond(&self, id: Json, method: &str, result: Result<Json>) -> Result<()> {
+        self.core.send(&self.core.framing.response(id, method, result))
     }
 
     /// Writes a frame as is.

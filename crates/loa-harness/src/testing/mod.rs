@@ -71,6 +71,23 @@ pub fn golden(path: &Path, actual: &str) {
     assert_eq!(actual, expected, "{} differs (LOA_BLESS=1 rewrites it)", path.display());
 }
 
+/// The DOM as golden text: its XML without the seq header, timestamps masked.
+pub fn render(dom: &Dom) -> String {
+    let xml = loa_core::xml::to_string(dom);
+    let mut out = String::new();
+    for mut rest in xml.lines().skip(2) {
+        let names = [" started.int=\"", " ended.int=\"", " created.int=\""];
+        while let Some(at) = names.iter().filter_map(|n| rest.find(n).map(|at| at + n.len())).min() {
+            out.push_str(&rest[..at]);
+            out.push('T');
+            rest = &rest[at + rest[at..].find('"').unwrap_or(0)..];
+        }
+        out.push_str(rest);
+        out.push('\n');
+    }
+    out
+}
+
 /// Imports `native`, exports it and imports the export again; both DOMs
 /// must render the same.
 pub fn round_trip<C: NativeCodec>(native: &Path) {

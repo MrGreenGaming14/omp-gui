@@ -1,0 +1,28 @@
+<session nid="1" created.int="T" cwd="/work/demo" harness="claude-code" id="app-session" model="claude-sonnet-x" node="node-key" schema.int="1">
+  <turn nid="2" ended.int="T" id="p1" started.int="T" status="done">
+    <message nid="3" by="alice" id="p1" role="user" status="done">research</message>
+    <call nid="4" call_id="toolu_t" ended.int="T" started.int="T" status="done" title="Survey crates" tool="Task" x-claude-uuid="a-1">
+      <input nid="5" format="json">{"description":"Survey crates","prompt":"look","subagent_type":"Explore"}</input>
+      <job nid="6" agent="Explore" call.int="4" ended.int="T" kind="subagent" started.int="T" status="done" title="Survey crates">Found three.
+</job>
+      <result nid="7" is_error.bool="false" x-claude-uuid="u-r">Summary: three crates</result>
+    </call>
+    <usage nid="8" model="claude-sonnet-x"/>
+  </turn>
+  <turn nid="9" ended.int="T" id="p2" started.int="T" status="done">
+    <message nid="10" by="alice" id="p2" role="user" status="done">serve</message>
+    <call nid="11" call_id="toolu_b" ended.int="T" started.int="T" status="done" title="cargo watch" tool="Bash" x-claude-uuid="a-2">
+      <input nid="12" format="json">{"command":"cargo watch","run_in_background":true}</input>
+      <result nid="13" is_error.bool="false" x-claude-uuid="u-b">started bash_1</result>
+      <job nid="14" call.int="11" ended.int="T" id="bash_1" kind="shell" started.int="T" status="error" title="cargo watch">exit 101</job>
+    </call>
+    <job nid="15" ended.int="T" id="agent_2" kind="subagent" started.int="T" status="cancelled" title="free agent"/>
+    <usage nid="16" model="claude-sonnet-x"/>
+  </turn>
+  <ext nid="17" harness="claude-code" type="system">{"subtype":"task_started","type":"system"}</ext>
+  <turn nid="18" ended.int="T" id="p3" started.int="T" status="done">
+    <message nid="19" by="alice" id="p3" role="user" status="done">/compact</message>
+    <usage nid="21" model="claude-sonnet-x"/>
+  </turn>
+  <compaction nid="20" covers.list="[2, 9]" created.int="T" tokens_before.int="52000">Summary of the work so far.</compaction>
+</session>

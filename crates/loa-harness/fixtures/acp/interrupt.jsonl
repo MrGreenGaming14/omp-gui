@@ -1,0 +1,12 @@
+# An interrupt cancels the waiting permission and the turn; text the call closed stays done.
+{"$":"send","text":"long job"}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Starting"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-1","update":{"sessionUpdate":"tool_call","toolCallId":"c1","title":"deploy","kind":"execute","status":"in_progress"}}}
+{"jsonrpc":"2.0","id":3,"method":"session/request_permission","params":{"sessionId":"s-1","toolCall":{"toolCallId":"c1"},"options":[{"optionId":"ok","name":"Allow","kind":"allow_once"}]}}
+{"$":"interrupt"}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Stopping"}}}}
+{"$":"result","result":{"stopReason":"cancelled"}}
+# The agent exits mid turn: the turn fails and the session closes.
+{"$":"send","text":"work"}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"partial"}}}}
+{"$":"closed"}

@@ -24,7 +24,7 @@ use std::sync::Arc;
 use iced::{Element, Subscription, Task};
 use loa_contracts::harness::{Capabilities, HarnessSession, HostToolSpec, HostTools, Prompt, SessionConfig};
 use loa_bus::SessionId;
-use loa_ui_composer as composer;
+use loa_ui_session::composer as composer;
 use loa_ui_shell::palette;
 use loa_ui_shell as shell;
 

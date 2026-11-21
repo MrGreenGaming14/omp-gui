@@ -373,7 +373,7 @@ impl Area for State {
 
     fn contribute(&self, config: &mut SessionConfig, target: &Target<'_>, _: &Ctx) {
         // The updater names Claude Code's product `claude`.
-        let product = if target.harness == loa_adapter_claude::HARNESS { "claude" } else { target.harness };
+        let product = if target.harness == loa_harness::claude::HARNESS { "claude" } else { target.harness };
         if let Some(path) = self.managed.get(product) {
             config.executable = Some(path.clone());
         }

@@ -17,7 +17,7 @@ use loa_contracts::harness::{AdapterError, HarnessModel, ModelSelection, Session
 use loa_bus::SessionId;
 use loa_core::{Dom, Draft, Op, PatchSink, attr};
 use loa_models::omp::OmpLaunch;
-use loa_ui_composer as composer;
+use loa_ui_session::composer as composer;
 use loa_ui_models::backend::{Backend, SettingsLoad};
 use loa_ui_models::picker::{self, Catalog};
 use loa_ui_models::screen::{self, Page};

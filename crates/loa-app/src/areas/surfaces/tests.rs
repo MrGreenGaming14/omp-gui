@@ -12,11 +12,10 @@ use loa_contracts::harness::{Capabilities, OutputBlock, SessionConfig};
 use loa_core::{Dom, ElementKind, attr};
 use loa_mcp::{HttpSpec, ServerSpec, Transport};
 use loa_contracts::surface::{MouseButton, SurfaceMode, SurfaceUri};
-use loa_surface_hub::{HubConfig, McpEndpoint, Origin, SurfaceHub, SurfaceTools};
+use loa_surfaces::{HubConfig, McpEndpoint, Origin, SurfaceHub, SurfaceTools};
 use loa_ui_shell::palette;
 use loa_ui_surface::{PointerInput, panel, picker};
 use serde_json::json;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 
 use super::{HubWatch, McpWatch, State, TAB, hub_events, mcp_events};
@@ -121,7 +120,7 @@ fn recorded(app: &App) -> Vec<(String, String, loa_core::NodeId)> {
 }
 
 fn png(path: &std::path::Path, color: [u8; 4]) {
-    image::RgbaImage::from_pixel(24, 12, image::Rgba(color)).save(path).unwrap();
+    std::fs::write(path, loa_surfaces::pixels::RgbaImage::filled(24, 12, color).to_png().unwrap()).unwrap();
 }
 
 fn hub(dir: &std::path::Path, browser: bool) -> Arc<SurfaceHub> {
@@ -174,51 +173,6 @@ async fn a_document_picked_in_the_tab_renders_and_is_recorded_in_the_session() {
     assert_eq!(driver.area().panel().open_surfaces().count(), 0);
 }
 
-/// A one-connection RFB 3.8 server: no security, `width` x `height`, one
-/// solid raw update. Collects what the client sends after the setup.
-async fn fake_rfb(width: u16, height: u16, color: [u8; 3]) -> (String, Arc<std::sync::Mutex<Vec<u8>>>) {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap().to_string();
-    let received = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let sink = received.clone();
-    tokio::spawn(async move {
-        let (mut stream, _) = listener.accept().await.unwrap();
-        let mut buf = [0u8; 12];
-        stream.write_all(b"RFB 003.008\n").await.unwrap();
-        stream.read_exact(&mut buf).await.unwrap();
-        stream.write_all(&[1, 1]).await.unwrap();
-        stream.read_exact(&mut buf[..1]).await.unwrap();
-        stream.write_all(&0u32.to_be_bytes()).await.unwrap();
-        stream.read_exact(&mut buf[..1]).await.unwrap();
-        let mut init = Vec::new();
-        init.extend_from_slice(&width.to_be_bytes());
-        init.extend_from_slice(&height.to_be_bytes());
-        init.extend_from_slice(&[32, 24, 1, 1, 0, 255, 0, 255, 0, 255, 16, 8, 0, 0, 0, 0]);
-        init.extend_from_slice(&4u32.to_be_bytes());
-        init.extend_from_slice(b"desk");
-        stream.write_all(&init).await.unwrap();
-        // SetPixelFormat (20), SetEncodings (4 + 7 * 4), FramebufferUpdateRequest (10).
-        let mut setup = vec![0u8; 62];
-        stream.read_exact(&mut setup).await.unwrap();
-        let mut update = vec![0, 0, 0, 1, 0, 0, 0, 0];
-        update.extend_from_slice(&width.to_be_bytes());
-        update.extend_from_slice(&height.to_be_bytes());
-        update.extend_from_slice(&0i32.to_be_bytes());
-        for _ in 0..usize::from(width) * usize::from(height) {
-            update.extend_from_slice(&[color[0], color[1], color[2], 0]);
-        }
-        stream.write_all(&update).await.unwrap();
-        let mut chunk = [0u8; 256];
-        while let Ok(n) = stream.read(&mut chunk).await {
-            if n == 0 {
-                break;
-            }
-            sink.lock().unwrap().extend_from_slice(&chunk[..n]);
-        }
-    });
-    (address, received)
-}
-
 #[tokio::test(flavor = "multi_thread")]
 async fn a_vm_typed_as_host_and_port_streams_into_the_tab_and_takes_clicks() {
     let dir = tempfile::tempdir().unwrap();
@@ -226,7 +180,8 @@ async fn a_vm_typed_as_host_and_port_streams_into_the_tab_and_takes_clicks() {
     driver.update(AppMessage::NewSession);
     driver.until("the session runs", |app| app.ctx.sessions.active().is_some()).await;
 
-    let (address, received) = fake_rfb(8, 4, [0, 200, 0]).await;
+    let (address, received, send_update) = loa_surfaces::testkit::fake_rfb(8, 4, [0, 200, 0]).await;
+    send_update.send(()).unwrap();
     driver.surfaces(panel::Message::Address(address.clone()));
     driver.surfaces(panel::Message::Connect);
     let uri = SurfaceUri::new("vm", &address).unwrap();
@@ -262,11 +217,8 @@ async fn a_vm_typed_as_host_and_port_streams_into_the_tab_and_takes_clicks() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_browser_tab_opens_from_a_url_takes_clicks_and_the_agent_drives_it() {
     let dir = tempfile::tempdir().unwrap();
+    loa_surfaces::chrome_or_skip!();
     let hub = hub(dir.path(), true);
-    if hub.browser_executable().is_none() {
-        eprintln!("SKIPPED: no Chrome or Chromium installed");
-        return;
-    }
     let mut driver = Driver::new(dir.path(), Arc::clone(&hub));
     driver.update(AppMessage::NewSession);
     driver.until("the session runs", |app| app.ctx.sessions.active().is_some()).await;
@@ -385,15 +337,15 @@ async fn decoded(
     encoding: loa_contracts::surface::Encoding,
     rgb: [u8; 3],
 ) {
-    let (mut decoder, mut canvas) = (loa_surface_hub::proto::video::decode::FrameDecoder::new(), loa_surface_hub::proto::video::decode::Canvas::new(0, 0));
+    let (mut decoder, mut canvas) = (loa_surfaces::proto::video::decode::FrameDecoder::new(), loa_surfaces::pixels::RgbaImage::default());
     let wait = async {
         loop {
             let Ok(frame) = frames.recv().await else { continue };
             if decoder.apply(&frame, &mut canvas).is_err() || frame.encoding != encoding {
                 continue;
             }
-            let at = ((canvas.height() / 2 * canvas.width() + canvas.width() / 2) * 4) as usize;
-            if canvas.rgba()[at..at + 3].iter().zip(rgb).all(|(&a, b)| a.abs_diff(b) < 60) {
+            let at = ((canvas.height / 2 * canvas.width + canvas.width / 2) * 4) as usize;
+            if canvas.data[at..at + 3].iter().zip(rgb).all(|(&a, b)| a.abs_diff(b) < 60) {
                 return;
             }
         }
@@ -404,11 +356,8 @@ async fn decoded(
 #[tokio::test(flavor = "multi_thread")]
 async fn a_browser_tab_shows_source_frames_here_and_streams_video_to_peers_when_enabled() {
     let dir = tempfile::tempdir().unwrap();
+    loa_surfaces::chrome_or_skip!();
     let hub = hub(dir.path(), true);
-    if hub.browser_executable().is_none() {
-        eprintln!("SKIPPED: no Chrome or Chromium installed");
-        return;
-    }
     let mut driver = Driver::new(dir.path(), Arc::clone(&hub));
     let page = "data:text/html,<body style='margin:0;height:100vh;background:rgb(255,0,0)' onmousedown=\"document.body.style.background='rgb(0,0,255)'\"></body>";
     driver.surfaces(panel::Message::Url(page.into()));
@@ -463,7 +412,7 @@ async fn peer_video(driver: &mut Driver, hub: &SurfaceHub, uri: &SurfaceUri) {
     };
     driver.surfaces(panel::Message::Video(false));
     switched(false).await;
-    assert_eq!(network.stream().unwrap().encoder, loa_surface_hub::proto::video::SOURCE);
+    assert_eq!(network.stream().unwrap().encoder, loa_surfaces::proto::video::SOURCE);
     decoded(&mut frames, loa_contracts::surface::Encoding::Jpeg, [0, 0, 255]).await;
     assert!(!hub.video().enabled());
     assert!(!driver.app.ctx.services.config.load().unwrap().surfaces.video);
@@ -485,26 +434,23 @@ async fn the_virtual_display_capture_says_why_it_cant_run_and_is_saved_where_it_
     assert_eq!(capture.virtual_display_missing.as_deref(), Some("Xvfb isn't installed (install the xvfb package)"));
     driver.surfaces(panel::Message::Capture(panel::Capture::VirtualDisplay));
     assert_eq!(driver.area().panel().capture().selected, panel::Capture::Screencast);
-    assert_eq!(driver.area().hub().capture(), loa_surface_hub::CaptureMode::Screencast);
+    assert_eq!(driver.area().hub().capture(), loa_surfaces::CaptureMode::Screencast);
 
     // A fake Xvfb that reports a display but serves none: the choice is
     // taken and saved, and opening a tab fails with the browser's reason.
     let dir = tempfile::tempdir().unwrap();
     let mut config = HubConfig::discover(&dir.path().join("hub"));
-    let Some(chrome) = config.browser.as_ref().map(|b| b.executable.clone()) else {
-        eprintln!("SKIPPED: no Chrome or Chromium installed");
-        return;
-    };
+    let chrome = loa_surfaces::chrome_or_skip!();
     let xvfb = dir.path().join("Xvfb");
     // A display number no X server here listens on.
     let free = (6000..7000).find(|n| !std::path::Path::new(&format!("/tmp/.X11-unix/X{n}")).exists()).unwrap();
     loa_util::exec::write_executable(&xvfb, format!("#!/bin/sh\necho {free}\nexec sleep 600\n")).unwrap();
-    config.virtual_display = Ok(loa_surface_hub::VirtualDisplaySetup { xvfb, chrome });
+    config.virtual_display = Ok(loa_surfaces::VirtualDisplaySetup { xvfb, chrome });
     let hub = SurfaceHub::new(config);
     let mut driver = Driver::new(dir.path(), Arc::clone(&hub));
     assert_eq!(driver.area().panel().capture().virtual_display_missing, None);
     driver.surfaces(panel::Message::Capture(panel::Capture::VirtualDisplay));
-    assert_eq!(hub.capture(), loa_surface_hub::CaptureMode::VirtualDisplay);
+    assert_eq!(hub.capture(), loa_surfaces::CaptureMode::VirtualDisplay);
     let saved = driver.app.ctx.services.config.load().unwrap().surfaces;
     assert_eq!(saved.browser_capture, loa_config::BrowserCapture::VirtualDisplay);
 

@@ -8,7 +8,7 @@ use iced::Task;
 use iced::keyboard::{Modifiers, key::Named};
 use iced::widget::operation;
 use loa_core::SessionMode;
-use loa_ui_composer as composer;
+use loa_ui_session::composer as composer;
 use loa_ui_shell::palette::{self, Chord, CommandId, ids};
 use loa_ui_shell as shell;
 
@@ -167,15 +167,16 @@ impl App {
                     });
                 }
                 if let Some(mode) = id.strip_prefix(MODE) {
-                    let mode = SessionMode::ALL.iter().copied().find(|known| known.as_str() == mode)?;
-                    return Some(self.update(Message::Composer(composer::Message::ModePicked(mode))));
+                    let pick = self.ctx.composer.pick_key(composer::PickerId::Mode, mode)?;
+                    return Some(self.update(Message::Composer(pick)));
                 }
                 if let Some(effort) = id.strip_prefix(EFFORT) {
-                    return Some(self.update(Message::Composer(composer::Message::EffortPicked(effort.to_owned()))));
+                    let pick = self.ctx.composer.pick_key(composer::PickerId::Effort, effort)?;
+                    return Some(self.update(Message::Composer(pick)));
                 }
                 let index = id.strip_prefix(MODEL)?.parse::<usize>().ok()?;
-                let model = self.ctx.composer.models().0.get(index).cloned()?;
-                self.update(Message::Composer(composer::Message::ModelPicked(model)))
+                self.ctx.composer.models().0.get(index)?;
+                self.update(Message::Composer(composer::Message::Pick(composer::PickerId::Model, index)))
             }
         };
         Some(task)

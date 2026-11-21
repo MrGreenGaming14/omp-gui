@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use loa_contracts::harness::{Adapter, Availability, AvailabilityStatus, Registry};
 use loa_util::exec::which as find_executable;
-use loa_ui_composer::HarnessOption;
+use loa_ui_session::composer::HarnessOption;
 
 /// Address `opencode serve` listens on by default.
 pub const OPENCODE_URL: &str = "http://127.0.0.1:4096";
@@ -28,10 +28,10 @@ pub const CHECKING: &str = "checking…";
 /// order.
 pub const KNOWN: [(&str, &str); 6] = [
     ("omp", "omp"),
-    (loa_adapter_claude::HARNESS, "Claude Code"),
-    (loa_adapter_codex::HARNESS, "Codex"),
+    (loa_harness::claude::HARNESS, "Claude Code"),
+    (loa_harness::codex::HARNESS, "Codex"),
     (loa_adapter_opencode::mapper::HARNESS, "OpenCode"),
-    (loa_adapter_acp::HARNESS, "ACP"),
+    (loa_harness::acp::HARNESS, "ACP"),
     (loa_adapter_omp2::HARNESS, "omp2"),
 ];
 
@@ -94,28 +94,28 @@ impl Harnesses {
         let Some((id, label)) = KNOWN.into_iter().find(|(known, _)| *known == id) else { return false };
         let (adapter, program): (Arc<dyn Adapter>, Option<PathBuf>) = match id {
             "omp" => {
-                let mut omp = loa_adapter_omp::OmpAdapterConfig::new(node, omp_dir);
+                let mut omp = loa_harness::omp::OmpAdapterConfig::new(node, omp_dir);
                 omp.approval_mode = Some(OMP_APPROVAL_MODE.to_owned());
                 if let Some(executable) = &executable {
                     omp.executable.clone_from(executable);
                 }
                 let program = omp.executable.clone();
-                (Arc::new(loa_adapter_omp::OmpAdapter::new(omp)), Some(program))
+                (Arc::new(loa_harness::omp::OmpAdapter::new(omp)), Some(program))
             }
-            loa_adapter_claude::HARNESS => {
+            loa_harness::claude::HARNESS => {
                 let program = executable.clone().unwrap_or_else(|| "claude".into());
-                (Arc::new(loa_adapter_claude::ClaudeAdapter::with_executable(program.clone())), Some(program))
+                (Arc::new(loa_harness::claude::ClaudeAdapter::with_executable(program.clone())), Some(program))
             }
-            loa_adapter_codex::HARNESS => {
+            loa_harness::codex::HARNESS => {
                 let program = executable.clone().unwrap_or_else(|| "codex".into());
-                (Arc::new(loa_adapter_codex::CodexAdapter::new(node).with_executable(program.clone())), Some(program))
+                (Arc::new(loa_harness::codex::CodexAdapter::new(node).with_executable(program.clone())), Some(program))
             }
             loa_adapter_opencode::mapper::HARNESS => {
                 (Arc::new(loa_adapter_opencode::OpenCodeAdapter::new(OPENCODE_URL.to_owned(), None)), None)
             }
-            loa_adapter_acp::HARNESS => {
+            loa_harness::acp::HARNESS => {
                 let (program, args) = acp_agent(executable.as_deref());
-                (Arc::new(loa_adapter_acp::AcpAdapter::new(program, args.iter().copied())), None)
+                (Arc::new(loa_harness::acp::AcpAdapter::new(program, args.iter().copied())), None)
             }
             _ => {
                 let program = executable.clone().unwrap_or_else(|| loa_adapter_omp2::EXECUTABLE.into());
@@ -136,7 +136,7 @@ impl Harnesses {
     pub fn set_availability(&mut self, id: &str, mut availability: Availability) {
         let Some(harness) = self.list.iter_mut().find(|harness| harness.option.id == id) else { return };
         // Without a configured agent the probe tried only the fallback name.
-        if id == loa_adapter_acp::HARNESS && harness.configured.is_none() && availability.status == AvailabilityStatus::NotInstalled {
+        if id == loa_harness::acp::HARNESS && harness.configured.is_none() && availability.status == AvailabilityStatus::NotInstalled {
             let names: Vec<_> = ACP_AGENTS.iter().map(|(name, _)| *name).collect();
             availability.detail = Some(format!("no ACP agent on PATH (looked for {})", names.join(", ")));
         }
