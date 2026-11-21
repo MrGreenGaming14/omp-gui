@@ -13,6 +13,7 @@ use loa_util::registry::Registry;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::AtomicU64;
 use tokio::sync::broadcast;
 
 /// What the hub starts with.
@@ -191,6 +192,8 @@ pub trait SurfaceProvider: Send + Sync {
 /// The surface service: the providers, the open surfaces and their events.
 pub struct SurfaceHub {
     config: HubConfig,
+    /// Shared input numbering for all tool registrations on this hub.
+    pub(super) tool_input_seq: AtomicU64,
     providers: Registry<dyn SurfaceProvider>,
     browser: Arc<BrowserProvider>,
     docs: Arc<DocsProvider>,
@@ -215,6 +218,7 @@ impl SurfaceHub {
             #[cfg(feature = "remote-video")]
             video: crate::hub::video::RemoteVideo::new(&config.video),
             config,
+            tool_input_seq: AtomicU64::new(0),
             providers,
             browser,
             docs,

@@ -96,6 +96,25 @@ async fn frames_input_documents_and_rejection() {
     assert!(matches!(result, Err(ProtoError::Rejected { code: RejectCode::NotFound, .. })));
 }
 
+#[tokio::test]
+async fn closing_pixel_viewer_ends_session_with_cloned_input_sender() {
+    let (surface, mut probe) = fake("close", None);
+    let (server_end, viewer_end) = memory_pair(None);
+    let server = tokio::spawn(serve(surface.clone(), server_end));
+    let Ok(Opened::Pixel(viewer)) = open(viewer_end, &surface.info.uri, ViewerOptions::new(ALL.to_vec())).await else {
+        panic!("expected a pixel surface");
+    };
+    probe.keyframes.recv().await.unwrap();
+    let input = viewer.input();
+    let event = Input::Text { text: "before close".into() };
+    assert_eq!(input.send(event.clone()).unwrap(), 1);
+    viewer.close();
+    let received = probe.inputs.recv().await.unwrap();
+    assert_eq!(received.input, event);
+    tokio::time::timeout(Duration::from_secs(10), server).await.unwrap().unwrap().unwrap();
+    drop(input);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_viewer_that_decodes_h264_gets_video_and_others_get_source_frames() {
     for (accepted, encoding, encoder) in [(&ALL[..], Encoding::H264, "rusty_h264"), (&ALL[..3], Encoding::Rgba, SOURCE)] {

@@ -14,6 +14,17 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 /// Upper bound for one ZRLE rectangle's compressed data.
 const MAX_ZRLE: u32 = 64 << 20;
 
+/// The remote pointer shape, with transparent pixels wherever the mask is clear.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Cursor {
+    pub hotspot_x: u32,
+    pub hotspot_y: u32,
+    pub width: u32,
+    pub height: u32,
+    /// Eight-bit RGBA pixels in row-major order.
+    pub rgba: Vec<u8>,
+}
+
 pub(crate) type Reader<'a> = dyn AsyncRead + Unpin + Send + 'a;
 
 /// What a decoded rectangle does to the framebuffer.
@@ -25,8 +36,8 @@ pub(crate) enum Update {
     Copy { x: u32, y: u32 },
     /// The desktop is now the rectangle's size.
     Resize,
-    /// Nothing to paint.
-    Skip,
+    /// A new remote pointer shape; it does not alter the framebuffer.
+    Cursor(Cursor),
 }
 
 /// Decodes the rectangles of one encoding.
@@ -226,16 +237,25 @@ impl RectDecoder for Zrle {
     }
 }
 
-/// The pointer shape: pixels, then a 1 bit per pixel mask. The client asks for it only so
-/// that the server leaves the pointer out of the picture, and drops it.
+/// The pointer shape: pixels, then a row-padded 1 bit per pixel mask.
 struct CursorShape;
 
 #[async_trait]
 impl RectDecoder for CursorShape {
-    async fn decode(&mut self, r: Rect, rd: &mut Reader<'_>, _: &mut RgbaImage) -> Result<Update, RfbError> {
-        let (width, height) = (u64::from(r.width), u64::from(r.height));
-        skip(rd, width * height * BPP as u64 + width.div_ceil(8) * height).await?;
-        Ok(Update::Skip)
+    async fn decode(&mut self, r: Rect, rd: &mut Reader<'_>, out: &mut RgbaImage) -> Result<Update, RfbError> {
+        reset(out, r);
+        read_opaque(rd, &mut out.data).await?;
+        let mask_row = (r.width as usize).div_ceil(8);
+        let mut mask = vec![0; mask_row * r.height as usize];
+        rd.read_exact(&mut mask).await?;
+        for (i, px) in out.data.as_chunks_mut::<BPP>().0.iter_mut().enumerate() {
+            let (x, y) = (i % r.width as usize, i / r.width as usize);
+            px[3] = if mask[y * mask_row + x / 8] & (0x80 >> (x % 8)) != 0 { 255 } else { 0 };
+        }
+        Ok(Update::Cursor(Cursor {
+            hotspot_x: r.x, hotspot_y: r.y, width: r.width, height: r.height,
+            rgba: std::mem::take(&mut out.data),
+        }))
     }
 }
 

@@ -4,8 +4,9 @@
 //! is the surface `surface://vm/<name>`; opening it connects an RFB 3.8
 //! client (RFC 6143) that keeps a local copy of the remote framebuffer,
 //! publishes every framebuffer update as an RGBA [`loa_contracts::surface::Frame`] and
-//! turns surface input into RFB pointer and key events. A dropped connection
-//! is re-established with exponential backoff.
+//! turns surface input into RFB pointer and key events. Remote cursor shapes
+//! are available through [`RfbSurface::cursor`]. A dropped connection is
+//! re-established with exponential backoff.
 
 mod decode;
 mod input;
@@ -17,6 +18,7 @@ mod surface;
 #[cfg(all(test, feature = "testkit"))]
 mod tests;
 
+pub use decode::Cursor;
 pub use server::{RfbEndpoint, RfbOptions, RfbServer, SERVER_NAME};
 pub use surface::RfbSurface;
 

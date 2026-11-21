@@ -185,6 +185,16 @@ pub trait Paged: Send + Sync {
     /// Size of page `index` (from 0) at scale 1.
     fn page_size(&self, index: usize) -> Result<PageSize>;
 
+    /// Page count for the supplied rendering options.
+    fn page_count_with_opts(&self, _opts: &RenderOpts) -> usize {
+        self.page_count()
+    }
+
+    /// Page size for the supplied rendering options.
+    fn page_size_with_opts(&self, index: usize, _opts: &RenderOpts) -> Result<PageSize> {
+        self.page_size(index)
+    }
+
     /// Renders page `index` at `scale` (1.0 = one pixel per point) with `opts`.
     fn render(&self, index: usize, scale: f32, fonts: &Fonts, opts: &RenderOpts) -> Result<Rgba>;
 

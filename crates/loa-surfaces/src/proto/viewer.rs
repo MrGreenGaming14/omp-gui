@@ -83,8 +83,12 @@ pub async fn open(transport: Transport, uri: &SurfaceUri, options: ViewerOptions
 
 async fn write_loop(mut writer: MessageWriter, mut rx: mpsc::UnboundedReceiver<StreamMessage>) {
     while let Some(msg) = rx.recv().await {
+        let close = matches!(msg.body, Some(Body::Close(_)));
         if writer.send(msg).await.is_err() {
             return;
+        }
+        if close {
+            break;
         }
     }
     let _ = writer.finish().await;
@@ -147,6 +151,11 @@ impl PixelViewer {
                 return Ok(ViewerEvent::Frame(frame));
             }
         }
+    }
+
+    /// Ends the session, even if input senders are still held elsewhere.
+    pub fn close(self) {
+        let _ = self.input.send_message(Body::Close(Close { reason: "the viewer closed".into() }));
     }
 }
 

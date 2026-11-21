@@ -36,13 +36,11 @@ fn pretty<T: serde::Serialize>(value: &T) -> Result<ToolOutput, String> {
     serde_json::to_string_pretty(value).map(ToolOutput::text).map_err(err)
 }
 
-/// What every tool works on: the hub, the built-in server it is limited to,
-/// and the agent's input numbering (one more input source of the surface).
+/// What every tool works on: the hub and the built-in server it is limited to.
 #[derive(Clone)]
 struct Ctx {
     hub: Arc<SurfaceHub>,
     scope: Option<&'static str>,
-    seq: Arc<AtomicU64>,
 }
 
 impl Ctx {
@@ -73,7 +71,7 @@ impl Ctx {
 
     async fn input(&self, opened: &Opened, inputs: impl IntoIterator<Item = Input>) -> Result<(), String> {
         for input in inputs {
-            let seq = self.seq.fetch_add(1, Ordering::Relaxed) + 1;
+            let seq = self.hub.tool_input_seq.fetch_add(1, Ordering::Relaxed) + 1;
             opened.surface.input(InputEvent { seq, sent_us: now_us(), input }).await.map_err(err)?;
         }
         Ok(())
@@ -282,7 +280,7 @@ tool!(DocumentData, DOCUMENT_DATA, DataArgs, "Structured data of a document surf
 
 /// The tools served for `scope` (a built-in server name), or every tool for `None`.
 pub fn tool_set(hub: &Arc<SurfaceHub>, scope: Option<&'static str>) -> ToolSet {
-    let c = Ctx { hub: hub.clone(), scope, seq: Arc::default() };
+    let c = Ctx { hub: hub.clone(), scope };
     let within = |server: &str| scope.is_none_or(|s| s == server);
     let mut set = ToolSet::new();
     set.register(List(c.clone())).register(Screenshot(c.clone()));
@@ -360,5 +358,41 @@ impl HostTools for SurfaceTools {
 
     async fn call_content(&self, session_id: &str, tool: &str, args: &str) -> Result<Vec<OutputBlock>, String> {
         HostTools::call_content(&self.set, session_id, tool, args).await
+    }
+}
+
+#[cfg(all(test, feature = "testkit"))]
+mod tests {
+    use super::*;
+    use crate::hub::HubConfig;
+    use crate::testkit::fake_rfb;
+
+    #[tokio::test]
+    async fn input_sequence_is_shared_by_host_scoped_and_mcp_tool_sets() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = HubConfig::discover(dir.path());
+        config.browser = None;
+        let hub = SurfaceHub::new(config);
+        let (address, _received, update) = fake_rfb(8, 4, [0, 0, 0]).await;
+        let opened = hub.open_vm(&address, None).await.unwrap();
+        update.send(()).unwrap();
+        let tools = SurfaceTools::new(hub.clone());
+        let args = json!({ "uri": opened.info.uri.as_str(), "x": 1, "y": 1, "dx": 0, "dy": 1 });
+
+        let (_, host) = tools.host_tools();
+        host.call("session", SCROLL, &args.to_string()).await.unwrap();
+        assert_eq!(hub.tool_input_seq.load(Ordering::Relaxed), 1);
+        for expected in 2..=3 {
+            assert!(!tools.run(SCROLL, args.clone(), Some("vm")).await.is_error);
+            assert_eq!(hub.tool_input_seq.load(Ordering::Relaxed), expected);
+        }
+        let mcp_set = tool_set(&hub, Some("vm"));
+        assert!(!mcp_set.call(&CallCtx::default(), SCROLL, args.clone()).await.unwrap().is_error);
+        assert_eq!(hub.tool_input_seq.load(Ordering::Relaxed), 4);
+        let other = SurfaceTools::new(hub.clone());
+        assert!(!other.run(SCROLL, args.clone(), None).await.is_error);
+        assert_eq!(hub.tool_input_seq.load(Ordering::Relaxed), 5);
+        assert!(tools.run(SCROLL, args, Some("browser")).await.is_error);
+        assert_eq!(hub.tool_input_seq.load(Ordering::Relaxed), 5);
     }
 }

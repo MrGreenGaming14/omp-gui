@@ -33,7 +33,7 @@ impl Default for DocPalette {
 /// Default font sizes in points.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DocTypography {
-    /// DOCX body text (laid out at parse time with the default).
+    /// DOCX body text, including table cells; pagination follows this size.
     pub body: f32,
     pub cell: f32,
     pub slide: f32,

@@ -90,13 +90,14 @@ struct Margins {
     left: f32,
 }
 
-/// A parsed DOCX file. Pagination is computed once at parse time with the box metrics of [`Fonts::none`], so
-/// page count and renders agree whatever fonts the viewer passes; real glyphs are narrower than the boxes. A
-/// table row taller than a page is clipped. All pages take the size of the document's final section.
+/// A parsed DOCX file. Pagination uses box metrics from [`Fonts::none`], independent of drawing fonts.
+/// Default pages are cached; other body sizes are laid out using the supplied rendering options.
+/// A table row taller than a page is clipped. All pages take the size of the document's final section.
 #[derive(Clone, Debug)]
 pub struct DocxDoc {
     outline: Outline,
     page: PageSize,
+    margins: Margins,
     pages: Vec<Vec<Op>>,
 }
 
@@ -121,8 +122,8 @@ impl DocxDoc {
         let mut reader = Reader { styles, numberings, counters: HashMap::new(), no_underline };
         let outline = Outline { blocks: reader.blocks(&docx.document.children) };
         let (page, margins) = section_geometry(&docx.document.section_property);
-        let pages = layout(&outline, page, margins, &Fonts::none());
-        Ok(Self { outline, page, pages })
+        let pages = layout(&outline, page, margins, &Fonts::none(), DocTypography::default().body);
+        Ok(Self { outline, page, margins, pages })
     }
 
     /// Plain text: paragraphs joined by `\n`, table cells by `\t`, rows by `\n`.
@@ -181,6 +182,19 @@ impl Paged for DocxDoc {
         page_at(&self.pages, index).map(|_| self.page)
     }
 
+    fn page_count_with_opts(&self, opts: &RenderOpts) -> usize {
+        if opts.typography.body == DocTypography::default().body {
+            self.pages.len()
+        } else {
+            layout(&self.outline, self.page, self.margins, &Fonts::none(), opts.typography.body).len()
+        }
+    }
+
+    fn page_size_with_opts(&self, index: usize, opts: &RenderOpts) -> Result<PageSize> {
+        let count = self.page_count_with_opts(opts);
+        if index < count { Ok(self.page) } else { Err(DocsError::PageRange { index, count }) }
+    }
+
     fn query(&self, query: &DataQuery) -> Option<Result<serde_json::Value>> {
         match query {
             DataQuery::Text { page: None } => Some(json(&self.text())),
@@ -190,7 +204,14 @@ impl Paged for DocxDoc {
     }
 
     fn render(&self, index: usize, scale: f32, fonts: &Fonts, opts: &RenderOpts) -> Result<Rgba> {
-        let ops = page_at(&self.pages, index)?;
+        let custom_pages;
+        let pages = if opts.typography.body == DocTypography::default().body {
+            &self.pages
+        } else {
+            custom_pages = layout(&self.outline, self.page, self.margins, &Fonts::none(), opts.typography.body);
+            &custom_pages
+        };
+        let ops = page_at(pages, index)?;
         let (width, height) = self.page.pixels(scale);
         let mut canvas = Canvas::new(width, height, opts.palette.page);
         for op in ops {
@@ -511,6 +532,7 @@ fn span(source: &str, line: &str) -> (usize, usize) {
 
 struct Layout<'f> {
     fonts: &'f Fonts,
+    body_size: f32,
     pages: Vec<Vec<Op>>,
     margins: Margins,
     /// Width and bottom edge of the text area.
@@ -551,7 +573,7 @@ impl Layout<'_> {
         }
         let heading = p.heading_level.is_some();
         let size = (p.heading_level)
-            .map_or(DocTypography::default().body, |l| HEADING_SIZES.get(usize::from(l)).copied().unwrap_or(12.0));
+            .map_or(self.body_size, |l| HEADING_SIZES.get(usize::from(l)).copied().unwrap_or(12.0));
         if heading && self.y > self.margins.top {
             self.y += size * 0.5;
         }
@@ -582,7 +604,7 @@ impl Layout<'_> {
         }
         let col_width = self.width / cols as f32;
         let text_width = (col_width - 2.0 * CELL_PADDING).max(1.0);
-        let size = DocTypography::default().body;
+        let size = self.body_size;
         let line_height = self.fonts.line_height(size);
         for (r, row) in t.rows.iter().enumerate() {
             let lines: Vec<Vec<&str>> = row.iter().map(|cell| self.fonts.wrap(cell, size, false, text_width)).collect();
@@ -604,10 +626,10 @@ impl Layout<'_> {
 }
 
 /// Lays the outline out on pages; there is always at least one page.
-fn layout(outline: &Outline, page: PageSize, margins: Margins, fonts: &Fonts) -> Vec<Vec<Op>> {
+fn layout(outline: &Outline, page: PageSize, margins: Margins, fonts: &Fonts, body_size: f32) -> Vec<Vec<Op>> {
     let width = (page.width - margins.left - margins.right).max(1.0);
     let bottom = page.height - margins.bottom;
-    let mut layout = Layout { fonts, pages: vec![Vec::new()], margins, width, bottom, y: margins.top };
+    let mut layout = Layout { fonts, body_size, pages: vec![Vec::new()], margins, width, bottom, y: margins.top };
     for (block, content) in outline.blocks.iter().enumerate() {
         match content {
             Block::Paragraph(p) => layout.paragraph(block, p),
@@ -631,6 +653,35 @@ mod tests {
 
     fn para(text: &str) -> docx_rs::Paragraph {
         docx_rs::Paragraph::new().add_run(docx_rs::Run::new().add_text(text))
+    }
+
+    #[test]
+    fn body_typography_changes_layout_and_pagination_without_changing_headings() {
+        let cell = TableCell::new().add_paragraph(para("table text"));
+        let mut source = Docx::new()
+            .page_size(8000, 10000)
+            .page_margin(PageMargin::new().top(1440).left(1440).right(1440).bottom(1440))
+            .add_style(Style::new("Heading1", StyleType::Paragraph).name("heading 1"))
+            .add_paragraph(para("Heading").style("Heading1"))
+            .add_table(docx_rs::Table::new(vec![TableRow::new(vec![cell])]));
+        for _ in 0..25 {
+            source = source.add_paragraph(para("Body text with enough words to wrap at a larger size."));
+        }
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        source.build().pack(&mut bytes).unwrap();
+        let doc = DocxDoc::parse(bytes.get_ref()).unwrap();
+        let mut opts = RenderOpts::default();
+        opts.typography.body = 24.0;
+        let pages = layout(&doc.outline, doc.page, doc.margins, &Fonts::none(), opts.typography.body);
+        assert!(pages.len() > doc.page_count());
+        assert_eq!(doc.page_count_with_opts(&opts), pages.len());
+        assert_eq!(doc.page_size_with_opts(pages.len() - 1, &opts).unwrap(), doc.page);
+        assert!(matches!(doc.page_size_with_opts(pages.len(), &opts), Err(DocsError::PageRange { .. })));
+        assert!(pages.iter().flatten().any(|op| matches!(op, Op::Text { block: 0, size, .. } if *size == HEADING_SIZES[1])));
+        assert!(pages.iter().flatten().any(|op| matches!(op, Op::Text { cell: Some(_), size, .. } if *size == 24.0)));
+        assert!(pages.iter().flatten().any(|op| matches!(op, Op::Text { block: 2, size, .. } if *size == 24.0)));
+        assert_ne!(doc.render_page(0, 1.0, &Fonts::none()).unwrap().data, doc.render(0, 1.0, &Fonts::none(), &opts).unwrap().data);
+        assert!(doc.render(pages.len() - 1, 1.0, &Fonts::none(), &opts).is_ok());
     }
 
     #[test]

@@ -2,7 +2,7 @@
 
 use crate::feed::FrameFeed;
 use crate::pixels::{RgbaImage, encode_png, region_fits};
-use crate::vnc::decode::{Decoders, Update, is_pseudo, read_rect, skip};
+use crate::vnc::decode::{Cursor, Decoders, Update, is_pseudo, read_rect, skip};
 use crate::vnc::input::InputState;
 use crate::vnc::proto::{self, Msg};
 use crate::vnc::{PasswordSource, RfbEndpoint, RfbError, RfbOptions};
@@ -19,7 +19,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch};
 use tokio::task::JoinHandle;
 
 /// The local framebuffer copy and the frame numbering.
@@ -51,6 +51,7 @@ struct Shared {
     link: tokio::sync::Mutex<Link>,
     /// `Link::last_input_seq` when the latest FramebufferUpdateRequest was written.
     requested_input_seq: AtomicU64,
+    cursor: watch::Sender<Option<Arc<Cursor>>>,
 }
 
 /// A connected RFB endpoint. Dropping it closes the connection.
@@ -83,10 +84,16 @@ impl RfbSurface {
             picture: Default::default(),
             link: Default::default(),
             requested_input_seq: AtomicU64::new(0),
+            cursor: watch::Sender::new(None),
         });
         let reader = shared.establish().await?;
         let task = tokio::spawn(Arc::clone(&shared).supervise(reader));
         Ok(Self { shared, task })
+    }
+
+    /// The remote pointer shape, or `None` until the server sends one.
+    pub fn cursor(&self) -> watch::Receiver<Option<Arc<Cursor>>> {
+        self.shared.cursor.subscribe()
     }
 }
 
@@ -251,7 +258,10 @@ impl Shared {
                     dirty = None;
                     continue;
                 }
-                Update::Skip => continue,
+                Update::Cursor(cursor) => {
+                    self.cursor.send_replace(Some(Arc::new(cursor)));
+                    continue;
+                }
                 Update::Copy { x, y } if inside(Rect { x, y, ..r }) => self.picture.locked().fb.copy_rect(x, y, r),
                 Update::Copy { x, y } => return Err(RfbError::Protocol(format!("CopyRect source {x},{y} outside"))),
                 Update::Blit => {

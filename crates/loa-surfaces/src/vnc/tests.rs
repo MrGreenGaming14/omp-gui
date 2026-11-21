@@ -59,12 +59,18 @@ async fn every_encoding_decodes_what_the_reference_encoder_wrote() {
             assert!(wire.is_empty() && scratch.data == img.data, "picture {n}, encoding {encoding}");
         }
     }
-    // The cursor shape (pixels and mask) is read past.
+    // Cursor rows have independently byte-padded, most-significant-bit-first masks.
     let (cursor, scratch) = decoders.get(-239).unwrap();
-    let wire = [rfb::raw(&picture(9, 2, |_, _| W)), vec![0; 4]].concat();
+    let wire = [rfb::raw(&picture(9, 2, |_, _| W)), vec![0x80, 0x80, 0x40, 0]].concat();
     let mut rest = wire.as_slice();
-    assert_eq!(cursor.decode(region(1, 0, 9, 2), &mut rest, scratch).await.unwrap(), Update::Skip);
+    let Update::Cursor(shape) = cursor.decode(region(8, 1, 9, 2), &mut rest, scratch).await.unwrap() else {
+        panic!("expected cursor shape");
+    };
     assert!(rest.is_empty());
+    assert_eq!((shape.hotspot_x, shape.hotspot_y, shape.width, shape.height), (8, 1, 9, 2));
+    for (i, px) in shape.rgba.as_chunks::<4>().0.iter().enumerate() {
+        assert_eq!(px, &[255, 255, 255, if [0, 8, 10].contains(&i) { 255 } else { 0 }]);
+    }
     // A subrectangle outside its rectangle is a protocol error.
     let bad = [&1u32.to_be_bytes()[..], &rfb::pixel(&R), &rfb::pixel(&G), &[0, 1, 0, 0, 0, 1, 0, 1]].concat();
     let (rre, scratch) = decoders.get(2).unwrap();
@@ -148,6 +154,32 @@ async fn updates_become_frames_and_keyframes() {
     let png = crate::pixels::decode_png(&surface.screenshot().await.unwrap()).unwrap();
     assert_eq!((png.width, png.height, png.data), (3, 1, [G, B, W].concat()));
     assert!(matches!(surface.document().await, Err(SurfaceError::Mode { .. })));
+}
+
+#[tokio::test]
+async fn cursor_shapes_are_published_without_changing_the_framebuffer() {
+    let h = Harness::new(None).await;
+    let (surface, mut fake) = h.connect(None, 4, 2).await;
+    let mut frames = surface.frames().unwrap();
+    let mut cursors = surface.cursor();
+    assert!(cursors.borrow().is_none());
+    let payload = [raw(&[R, G, B, W]), vec![0x80, 0x40]].concat();
+    fake.send(&update(&[
+        rect(8, 1, 2, 2, -239, &payload),
+        rect(0, 0, 1, 1, 0, &raw(&[G])),
+    ])).await;
+    let frame = next_frame(&mut frames).await;
+    assert_eq!(frame.data.to_vec(), [G, K, K, K, K, K, K, K].concat());
+    tokio::time::timeout(Duration::from_secs(10), cursors.wait_for(Option::is_some)).await.unwrap().unwrap();
+    let cursor = cursors.borrow_and_update().clone().unwrap();
+    assert_eq!((cursor.hotspot_x, cursor.hotspot_y, cursor.width, cursor.height), (8, 1, 2, 2));
+    assert_eq!(cursor.rgba, [R, [0, 255, 0, 0], [0, 0, 255, 0], W].concat());
+    fake.expect_request(4, 2).await;
+    fake.send(&update(&[rect(0, 0, 0, 0, -239, &[])])).await;
+    tokio::time::timeout(Duration::from_secs(10), cursors.changed()).await.unwrap().unwrap();
+    let cursor = cursors.borrow().clone().unwrap();
+    assert_eq!((cursor.width, cursor.height), (0, 0));
+    assert!(cursor.rgba.is_empty());
 }
 
 #[tokio::test]
