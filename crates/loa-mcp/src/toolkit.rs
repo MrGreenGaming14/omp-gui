@@ -131,7 +131,9 @@ impl ServerHandler for ToolSetMcp {
             return Err(ErrorData::invalid_params(format!("unknown tool: {}", request.name), None));
         }
         let args = serde_json::Value::Object(request.arguments.unwrap_or_default());
-        let ctx = CallCtx { session_id: String::new() };
+        // Over HTTP the transport's auth layer may name the calling session in the request extensions.
+        let parts = context.extensions.get::<http::request::Parts>();
+        let ctx = parts.and_then(|parts| parts.extensions.get::<CallCtx>()).cloned().unwrap_or_default();
         // A cancelled request drops the call.
         let output = tokio::select! {
             output = self.tools.call(&ctx, &request.name, args) => output.unwrap_or_else(ToolOutput::error),

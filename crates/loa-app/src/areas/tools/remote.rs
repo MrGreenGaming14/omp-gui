@@ -13,12 +13,14 @@ use bytes::Bytes;
 use loa_contracts::harness::Answer;
 use loa_bus::SessionId;
 use loa_core::{DecisionKind, DecisionStatus, Draft, ElementKind, NodeId, PatchSink, Value, answer, attr, now_ms};
-use loa_remote::audit::{Action, AuditLog, AuditQuery, AuditRecord};
+use loa_contracts::tools::ToolSet;
+use loa_remote::audit::{Action, AuditQuery, AuditRecord, AuditSink, MemoryAudit, SqliteAudit};
 use loa_remote::hosts::HostRegistry;
 use loa_remote::http::RemoteHttp;
-use loa_remote::ports::{Approval, PendingPrompt, Prompt, PromptQueue};
+use loa_remote::known_hosts::host_name;
+use loa_remote::ports::{Approval, HostKeyChange, Prompt, PromptQueue, PromptView};
 use loa_remote::pty::{ShellRead, ShellReader, ShellWriter};
-use loa_remote::ssh_config::SshConfig;
+use loa_remote::resolve::{OpenSshCli, SshResolver};
 use loa_remote::{RemoteService, RemoteServiceConfig};
 use loa_ui_terminal as terminal;
 use loa_ui_tools as tools;
@@ -46,6 +48,8 @@ struct Card {
 pub(crate) struct Remote {
     pub(crate) service: Arc<RemoteService>,
     pub(crate) queue: Arc<PromptQueue>,
+    /// `remote_bash` and `remote_file` over the service, as host tools and over HTTP.
+    pub(crate) tools: ToolSet,
     /// The loopback HTTP server harnesses with MCP support connect to.
     pub(crate) http: Option<Arc<RemoteHttp>>,
     /// Why the HTTP server isn't serving, once it failed.
@@ -62,23 +66,24 @@ impl Remote {
     /// a warning when the log can't be opened and an in-memory one is used.
     pub(crate) fn new(data: &Path, config: RemoteServiceConfig) -> (Self, Option<String>) {
         let path = data.join("remote-audit.db");
-        let (audit, warning) = match AuditLog::open(&path) {
-            Ok(audit) => (audit, None),
+        let (audit, warning): (Arc<dyn AuditSink>, _) = match SqliteAudit::open(&path) {
+            Ok(audit) => (Arc::new(audit), None),
             Err(error) => {
-                let audit = AuditLog::in_memory().unwrap_or_else(|e| panic!("in-memory audit log: {e}"));
-                (audit, Some(format!("Can't open the remote audit log {} ({error}); this run logs in memory", path.display())))
+                let warning = format!("Can't open the remote audit log {} ({error}); this run logs in memory", path.display());
+                (Arc::new(MemoryAudit::default()), Some(warning))
             }
         };
         let queue = Arc::new(PromptQueue::new());
         let service = RemoteService::new(
             Arc::new(HostRegistry::new()),
-            Arc::new(audit),
+            audit,
             Arc::clone(&queue) as _,
             Arc::clone(&queue) as _,
             config,
         );
-        let remote =
-            Self { service: Arc::new(service), queue, http: None, http_error: None, cards: HashMap::new(), seen: BTreeSet::new() };
+        let service = Arc::new(service);
+        let tools = loa_remote::tools::tool_set(Arc::clone(&service));
+        let remote = Self { service, queue, tools, http: None, http_error: None, cards: HashMap::new(), seen: BTreeSet::new() };
         (remote, warning)
     }
 
@@ -120,13 +125,11 @@ impl Remote {
     /// Answers question `id` from the panel; its card records the answer.
     pub(crate) fn answer_panel(&mut self, id: u64, answer: tools::PromptAnswer, ctx: &Ctx) -> bool {
         let (taken, value) = match answer {
-            tools::PromptAnswer::Trust => (self.queue.answer_host_key(id, true), TRUST),
-            tools::PromptAnswer::Reject => (self.queue.answer_host_key(id, false), REJECT),
-            tools::PromptAnswer::AllowOnce => (self.queue.answer_approval(id, Approval::AllowOnce), answer::ALLOW_ONCE),
-            tools::PromptAnswer::AllowSession => {
-                (self.queue.answer_approval(id, Approval::AllowSession), answer::ALLOW_SESSION)
-            }
-            tools::PromptAnswer::Deny => (self.queue.answer_approval(id, Approval::Deny { reason: None }), answer::DENY),
+            tools::PromptAnswer::Trust => (self.queue.answer(id, true), TRUST),
+            tools::PromptAnswer::Reject => (self.queue.answer(id, false), REJECT),
+            tools::PromptAnswer::AllowOnce => (self.queue.answer(id, Approval::AllowOnce), answer::ALLOW_ONCE),
+            tools::PromptAnswer::AllowSession => (self.queue.answer(id, Approval::AllowSession), answer::ALLOW_SESSION),
+            tools::PromptAnswer::Deny => (self.queue.answer(id, Approval::Deny { reason: None }), answer::DENY),
         };
         if let Some(card) = self.cards.remove(&id) {
             let by = ctx.services.node.key.clone();
@@ -150,11 +153,11 @@ impl Remote {
         let value = answer.values.first().map(String::as_str).unwrap_or_default();
         let kind = self.queue.pending().into_iter().find(|prompt| prompt.id == id).map(|prompt| prompt.prompt);
         let taken = match kind {
-            Some(Prompt::HostKey(_)) => self.queue.answer_host_key(id, value == TRUST),
+            Some(Prompt::HostKey(_)) => self.queue.answer(id, value == TRUST),
             Some(Prompt::Approval(_)) => {
                 let approval =
                     Approval::from_answer(value, answer.reason.clone()).unwrap_or(Approval::Deny { reason: answer.reason.clone() });
-                self.queue.answer_approval(id, approval)
+                self.queue.answer(id, approval)
             }
             None => false,
         };
@@ -215,7 +218,7 @@ fn target_session<'a>(prompt: &'a Prompt, ctx: &'a Ctx) -> Option<&'a crate::are
 
 /// Writes a waiting card for `prompt` into its session, under its latest
 /// turn.
-fn raise(prompt: &PendingPrompt, ctx: &Ctx) -> Option<Card> {
+fn raise(prompt: &PromptView, ctx: &Ctx) -> Option<Card> {
     let session = target_session(&prompt.prompt, ctx)?;
     let parent = session.writer().with_dom(|dom| dom_turns(dom).last().map(|turn| turn.id).or_else(|| dom.root().map(|root| root.id)))?;
     let (kind, options) = match prompt.prompt {
@@ -225,14 +228,14 @@ fn raise(prompt: &PendingPrompt, ctx: &Ctx) -> Option<Card> {
     let mut attrs: Vec<(&str, Value)> = vec![
         (attr::KIND, kind.into()),
         (attr::STATUS, DecisionStatus::Waiting.into()),
-        (attr::TITLE, prompt.prompt.title().into()),
+        (attr::TITLE, title(&prompt.prompt).into()),
         (attr::REQUEST_ID, format!("{REQUEST_PREFIX}{}", prompt.id).into()),
         (attr::CREATED, Value::Int(now_ms())),
     ];
     if let Some(options) = options {
         attrs.push((attr::OPTIONS, options));
     }
-    let committed = session.writer().commit(Draft::insert(parent, ElementKind::Decision, attrs, prompt.prompt.body())).ok()?;
+    let committed = session.writer().commit(Draft::insert(parent, ElementKind::Decision, attrs, body(&prompt.prompt))).ok()?;
     Some(Card { session: session.id().clone(), decision: committed.node })
 }
 
@@ -264,12 +267,47 @@ fn finish(ctx: &Ctx, card: &Card, status: DecisionStatus, answer: Option<&Answer
     }
 }
 
-fn panel_prompt(prompt: &PendingPrompt) -> tools::RemotePrompt {
+/// One line for the card header.
+fn title(prompt: &Prompt) -> String {
+    match prompt {
+        Prompt::HostKey(p) if matches!(p.change, HostKeyChange::New) => format!("Trust the host key of {}?", p.host),
+        Prompt::HostKey(p) => format!("The host key of {} CHANGED", p.host),
+        Prompt::Approval(r) => match r.action {
+            Action::Command => format!("Run a command on {}?", r.host),
+            Action::Write => format!("Write a file on {}?", r.host),
+            Action::Edit => format!("Edit a file on {}?", r.host),
+            other => format!("Allow {other} on {}?", r.host),
+        },
+    }
+}
+
+/// The card body: the fingerprint and keys on file, or the target and its detail.
+fn body(prompt: &Prompt) -> String {
+    match prompt {
+        Prompt::HostKey(p) => {
+            let mut body = format!("{} presented {} key\n{}", host_name(&p.hostname, p.port), p.key_type, p.fingerprint);
+            match &p.change {
+                HostKeyChange::New => body.push_str("\nNo key is on file for it yet."),
+                HostKeyChange::Changed { previous } => {
+                    body.push_str("\nThis may be a man in the middle. Keys on file:");
+                    for key in previous {
+                        body.push_str(&format!("\n{} {} ({}:{})", key.key_type, key.fingerprint, key.file.display(), key.line));
+                    }
+                }
+            }
+            body
+        }
+        Prompt::Approval(r) if r.detail.is_empty() => r.target.clone(),
+        Prompt::Approval(r) => format!("{}\n{}", r.target, r.detail),
+    }
+}
+
+fn panel_prompt(prompt: &PromptView) -> tools::RemotePrompt {
     let kind = match prompt.prompt {
         Prompt::HostKey(_) => tools::PromptKind::HostKey,
         Prompt::Approval(_) => tools::PromptKind::Approval,
     };
-    tools::RemotePrompt { id: prompt.id, kind, title: prompt.prompt.title(), body: prompt.prompt.body() }
+    tools::RemotePrompt { id: prompt.id, kind, title: title(&prompt.prompt), body: body(&prompt.prompt) }
 }
 
 fn audit_row(record: &AuditRecord) -> tools::AuditRow {
@@ -306,28 +344,17 @@ fn utc(at: SystemTime) -> String {
     format!("{year:04}-{month:02}-{day:02} {:02}:{:02}:{:02} UTC", rest / 3_600, rest / 60 % 60, rest % 60)
 }
 
-/// Where `~/.ssh/config` and the user name come from.
-#[derive(Clone, Debug)]
+/// `$HOME` and how Remote hosts resolve (`ssh -G` over `~/.ssh/config`).
+#[derive(Clone)]
 pub(crate) struct SshPaths {
     pub(crate) home: PathBuf,
-    pub(crate) user: String,
+    pub(crate) resolver: Arc<dyn SshResolver>,
 }
 
 impl SshPaths {
     pub(crate) fn from_env() -> Self {
         let home = std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from);
-        let user = std::env::var("USER").or_else(|_| std::env::var("LOGNAME")).unwrap_or_else(|_| "root".to_owned());
-        Self { home, user }
-    }
-
-    pub(crate) fn ssh_config(&self) -> Result<SshConfig, String> {
-        let path = self.home.join(".ssh").join("config");
-        SshConfig::load_or_empty(&path, &self.home).map_err(|error| format!("Can't read {}: {error}", path.display()))
-    }
-
-    /// An empty ssh config, for when `~/.ssh/config` can't be read.
-    pub(crate) fn empty(&self) -> Option<SshConfig> {
-        SshConfig::parse("", &self.home.join(".ssh").join("config"), &self.home).ok()
+        Self { resolver: Arc::new(OpenSshCli::new(home.join(".ssh").join("config"))), home }
     }
 }
 
