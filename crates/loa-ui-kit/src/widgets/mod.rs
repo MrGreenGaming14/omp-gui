@@ -11,7 +11,7 @@ pub use virtual_list::{Heights, scroll_target};
 
 use crate::icons::{Icon, tinted};
 use crate::style::{self, ButtonKind, Surface, Tone};
-use crate::theme::{ColorRole, LayoutRole, RadiusRole, SpaceRole, TextRole, tokens};
+use crate::theme::{ColorRole, LayoutRole, RadiusRole, SpaceRole, TextRole, sp, text_size as size, tokens};
 use iced::widget::{Space, button, column, container, mouse_area, row, rule, text, tooltip};
 use iced::{Alignment, Element, Fill, FillPortion, Padding, Subscription, Task, mouse};
 
@@ -40,8 +40,6 @@ pub enum Msg<L, E> {
     Emit(E),
 }
 
-fn sp(r: SpaceRole) -> f32 { tokens().space(r) }
-fn size(r: TextRole) -> f32 { tokens().text(r) }
 
 /// `s` at text role `r` in `tone`.
 pub fn label<'a>(s: impl text::IntoFragment<'a>, r: TextRole, tone: Tone) -> text::Text<'a> {
