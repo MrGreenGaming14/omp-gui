@@ -16,8 +16,11 @@ use iced::widget::{
     Column, Id, button, column, container, mouse_area, opaque, operation, rich_text, row, rule,
     scrollable, space, span, text, text_input,
 };
-use iced::{Element, Fill, Font, Length, Subscription, Task, Theme, font};
-use loa_ui_kit::icons::Icon;
+use iced::{Element, Fill, Font, Subscription, Task, font};
+use loa_ui_kit::icons::{Icon, tinted};
+use loa_ui_kit::style::{self, ButtonKind, Surface, Tone};
+use loa_ui_kit::theme::{LayoutRole, SpaceRole as Sp, TextRole as T, pad_x, pad_y, sp, text_size as ts, width};
+use loa_ui_kit::widgets::{label, scroll_target};
 
 use crate::CommandId;
 use crate::fuzzy::{Class, Matcher, highlight_runs};
@@ -29,8 +32,7 @@ pub const ROW_HEIGHT: f32 = 35.0;
 pub const HEADER_HEIGHT: f32 = 35.0;
 /// Tallest the result list grows before it scrolls.
 pub const MAX_LIST_HEIGHT: f32 = 360.0;
-/// Width of the palette card.
-pub const WIDTH: f32 = 520.0;
+
 /// How many recently run commands are remembered for ranking.
 pub const MAX_RECENT: usize = 32;
 /// Widget id of the search field, for focus operations and (later)
@@ -341,63 +343,53 @@ impl State {
         let input = text_input(placeholder, &self.query)
             .id(self.input_id.clone())
             .on_input(Message::QueryChanged)
-            .padding([7, 0])
-            .size(14)
-            .style(Self::search_style);
-        let search = container(
-            row![loa_ui_kit::icons::muted(Icon::Search, 14.0), input].spacing(6).align_y(iced::Center),
-        )
-        .padding([0, 13]);
+            .padding(pad_y(Sp::S))
+            .size(ts(T::Body))
+            // No box of its own: the field sits on the card.
+            .style(|theme, status| text_input::Style {
+                background: iced::Color::TRANSPARENT.into(),
+                border: iced::Border::default(),
+                ..style::input(theme, status)
+            });
+        let search = container(row![tinted(Icon::Search, T::Body, Tone::Muted), input].spacing(sp(Sp::S)).align_y(iced::Center))
+            .padding(pad_x(Sp::M));
 
         let results: Element<'_, Message> = if self.rows.is_empty() {
-            container(text("No matching commands").size(14).style(Self::muted_text))
-                .padding(12)
-                .into()
+            container(label("No matching commands", T::Body, Tone::Muted)).padding(sp(Sp::M)).into()
         } else {
             let mut list = Column::with_capacity(self.rows.len() * 2);
             for (i, row) in self.rows.iter().enumerate() {
                 let command = &self.commands[row.command];
                 if row.starts_section {
                     list = list.push(
-                        container(text(&command.section).size(12).style(Self::muted_text))
+                        container(label(&command.section, T::Caption, Tone::Muted))
                             .height(HEADER_HEIGHT)
-                            .padding(iced::Padding::ZERO.left(13).bottom(7))
+                            .padding(iced::Padding::ZERO.left(sp(Sp::M)).bottom(sp(Sp::S)))
                             .align_y(iced::Bottom),
                     );
                 }
-                list = list.push(container(self.row_view(i, row, command)).padding([0, 4]));
+                list = list.push(container(self.row_view(i, row, command)).padding(pad_x(Sp::Xs)));
             }
-            container(
-                scrollable(list)
-                    .id(self.list_id.clone())
-                    .height(Length::Fixed(self.list_height()))
-                    .on_scroll(|viewport| Message::Scrolled(viewport.absolute_offset().y)),
-            )
-            .width(Fill)
-            .padding(iced::Padding::ZERO.bottom(4))
-            .into()
+            let list = scrollable(list)
+                .id(self.list_id.clone())
+                .height(self.list_height())
+                .on_scroll(|viewport| Message::Scrolled(viewport.absolute_offset().y));
+            container(list).width(Fill).padding(iced::Padding::ZERO.bottom(sp(Sp::Xs))).into()
         };
 
         // Inset children past the 1px border so they never paint over it.
-        let card = container(column![search, rule::horizontal(1).style(Self::divider), results])
-            .padding(1)
-            .width(WIDTH)
-            .style(Self::card_style);
+        let card = container(column![search, rule::horizontal(1).style(style::rule), results])
+            .padding(iced::Padding::new(1.0))
+            .width(width(LayoutRole::PopupWidth))
+            .style(style::container(Surface::Popup));
 
-        let backdrop = container(opaque(card))
-            .width(Fill)
-            .height(Fill)
-            .center_x(Fill)
-            .padding(iced::Padding::ZERO.top(120));
+        let backdrop = container(opaque(card)).width(Fill).height(Fill).center_x(Fill).padding(iced::Padding::ZERO.top(sp(Sp::Xl) * 5.0));
 
         opaque(mouse_area(backdrop).on_press(Message::Close))
     }
 
     fn row_view<'a>(&'a self, index: usize, row: &'a Row, command: &'a Command) -> Element<'a, Message> {
-        let bold = Font {
-            weight: font::Weight::Bold,
-            ..Font::DEFAULT
-        };
+        let bold = Font { weight: font::Weight::Bold, ..Font::DEFAULT };
         let spans: Vec<text::Span<'a, (), Font>> = highlight_runs(&command.title, &row.indices)
             .into_iter()
             .map(|(range, hit)| {
@@ -406,79 +398,28 @@ impl State {
             })
             .collect();
 
-        let mut content = row![rich_text(spans).size(14), space::horizontal()]
+        let mut content = row![rich_text(spans).size(ts(T::Body)), space::horizontal()]
             .height(Fill)
             .align_y(iced::Center)
-            .spacing(12);
+            .spacing(sp(Sp::M));
         if let Some(hint) = self.hint(command) {
-            content = content.push(text(hint).size(12).style(Self::muted_text));
+            content = content.push(label(hint, T::Caption, Tone::Muted));
         }
 
         // A row that can't run (e.g. a key listed for reference) is static
         // text, not a disabled button, so it never reads as a broken control.
         if !command.enabled {
-            return container(content).style(Self::muted_row).width(Fill).height(ROW_HEIGHT).padding([0, 8]).into();
+            let muted = container(content).style(|theme| container::Style { text_color: Some(Tone::Muted.color(theme)), ..container::Style::default() });
+            return muted.width(Fill).height(ROW_HEIGHT).padding(pad_x(Sp::S)).into();
         }
         let selected = self.selected == Some(index);
         button(content)
             .width(Fill)
             .height(ROW_HEIGHT)
-            .padding([0, 8])
+            .padding(pad_x(Sp::S))
             .on_press(Message::Activate(index))
-            .style(move |theme: &Theme, status| {
-                let palette = theme.extended_palette();
-                let mut style = button::text(theme, status);
-                style.border.radius = 6.0.into();
-                if selected {
-                    style.background = Some(palette.background.neutral.color.into());
-                    style.text_color = palette.background.neutral.text;
-                } else if matches!(status, button::Status::Hovered) {
-                    style.background = Some(palette.background.weak.color.into());
-                    style.text_color = palette.background.weak.text;
-                }
-                style
-            })
+            .style(style::button(ButtonKind::Row { selected }))
             .into()
-    }
-
-    /// Text of a row listed for reference only.
-    fn muted_row(theme: &Theme) -> container::Style {
-        container::Style { text_color: Some(theme.palette().text.scale_alpha(0.75)), ..container::Style::default() }
-    }
-
-    /// Secondary text: the palette's text at reduced opacity.
-    fn muted_text(theme: &Theme) -> text::Style {
-        text::Style { color: Some(theme.palette().text.scale_alpha(0.55)) }
-    }
-
-    /// The search field: no box of its own, it sits on the card.
-    fn search_style(theme: &Theme, _status: text_input::Status) -> text_input::Style {
-        let palette = theme.extended_palette();
-        let muted = theme.palette().text.scale_alpha(0.55);
-        text_input::Style {
-            background: iced::Color::TRANSPARENT.into(),
-            border: iced::Border::default(),
-            icon: muted,
-            placeholder: muted,
-            value: palette.background.base.text,
-            selection: palette.background.stronger.color,
-        }
-    }
-
-    /// The card: a shade above the window background, with a 1px neutral border.
-    fn card_style(theme: &Theme) -> container::Style {
-        let palette = theme.extended_palette();
-        let raised = iced::theme::palette::mix(palette.background.base.color, palette.background.weakest.color, 0.3);
-        container::Style {
-            background: Some(raised.into()),
-            border: iced::Border { color: palette.background.neutral.color, width: 1.0, radius: 6.0.into() },
-            ..container::Style::default()
-        }
-    }
-
-    /// A 1px rule between the search field and the list.
-    fn divider(theme: &Theme) -> rule::Style {
-        rule::Style { color: theme.extended_palette().background.neutral.color, ..rule::default(theme) }
     }
 
     fn open(&mut self, shortcuts_only: bool) -> Task<Message> {
@@ -637,7 +578,6 @@ fn row_block_height(row: &Row) -> f32 {
     ROW_HEIGHT + if row.starts_section { HEADER_HEIGHT } else { 0.0 }
 }
 
-use loa_ui_kit::widgets::scroll_target;
 
 #[cfg(test)]
 mod tests {

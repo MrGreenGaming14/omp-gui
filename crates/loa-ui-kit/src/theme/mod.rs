@@ -95,6 +95,12 @@ pub fn tokens() -> Arc<TokenSet> { ACTIVE.read().unwrap_or_else(|e| e.into_inner
 /// The active `r` spacing.
 pub fn sp(r: SpaceRole) -> f32 { tokens().space(r) }
 
+/// Left and right padding of the active `r` spacing.
+pub fn pad_x(r: SpaceRole) -> iced::Padding { iced::Padding::ZERO.left(sp(r)).right(sp(r)) }
+
+/// Top and bottom padding of the active `r` spacing.
+pub fn pad_y(r: SpaceRole) -> iced::Padding { iced::Padding::ZERO.top(sp(r)).bottom(sp(r)) }
+
 /// The active `r` text size.
 pub fn text_size(r: TextRole) -> f32 { tokens().text(r) }
 
