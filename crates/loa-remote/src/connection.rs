@@ -1,11 +1,10 @@
-//! SSH connections over `russh`: ProxyJump chains, host key checks through
-//! [`KnownHosts`] and the [`HostKeyDecider`] port, agent authentication, and
-//! one reused connection per host.
+//! SSH connections over `russh`: ProxyJump chains, host key checks through [`KnownHosts`] and the
+//! [`HostKeyDecider`] port, agent authentication, and one pooled connection per host.
 
 use loa_util::LockExt;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use russh::client;
@@ -14,125 +13,77 @@ use tokio::net::TcpStream;
 
 use crate::agent;
 use crate::error::{Error, Result};
-use crate::hosts::Host;
+use crate::hosts::{Endpoint, Host};
 use crate::known_hosts::{HostKeyStatus, KnownHosts, fingerprint};
 use crate::ports::{HostKeyChange, HostKeyDecider, HostKeyPrompt};
 use crate::sftp::Sftp;
-use crate::ssh_config::Endpoint;
 
 /// Connection settings the app passes in.
 #[derive(Debug, Clone)]
 pub struct ConnectorConfig {
     /// Agent socket for hops without `IdentityAgent` (normally `SSH_AUTH_SOCK`).
     pub default_agent: Option<PathBuf>,
-    /// Limit on opening the TCP connection to the first hop.
     pub connect_timeout: Duration,
-    /// Keepalive interval; a connection that misses three is dropped and
-    /// redialled on next use.
+    /// Keepalive interval; a connection that misses three is redialled on next use.
     pub keepalive: Duration,
 }
 
 impl ConnectorConfig {
     /// Defaults with the agent socket taken from `SSH_AUTH_SOCK`.
     pub fn from_env() -> Self {
-        Self {
-            default_agent: std::env::var_os("SSH_AUTH_SOCK").map(PathBuf::from),
-            ..Self::with_agent(None)
-        }
+        Self::with_agent(std::env::var_os("SSH_AUTH_SOCK").map(PathBuf::from))
     }
 
-    /// Defaults with an explicit agent socket.
     pub fn with_agent(default_agent: Option<PathBuf>) -> Self {
-        Self {
-            default_agent,
-            connect_timeout: Duration::from_secs(20),
-            keepalive: Duration::from_secs(30),
-        }
+        Self { default_agent, connect_timeout: Duration::from_secs(20), keepalive: Duration::from_secs(30) }
     }
 }
 
 /// russh client handler: checks the server's host key.
 pub(crate) struct ClientHandler {
     host: String,
-    hostname: String,
-    port: u16,
+    hop: Endpoint,
     known: Arc<KnownHosts>,
     decider: Arc<dyn HostKeyDecider>,
-    rejection: Arc<std::sync::Mutex<Option<String>>>,
+    rejection: Arc<Mutex<Option<String>>>,
 }
 
 impl ClientHandler {
-    fn reject(&self, reason: String) {
-        *self
-            .rejection.locked() = Some(reason);
+    async fn check(&self, presented: &PublicKeyOrCertificate) -> std::result::Result<(), String> {
+        let (hostname, port) = (&self.hop.hostname, self.hop.port);
+        let change = match self.known.check(hostname, port, presented).map_err(|e| e.to_string())? {
+            HostKeyStatus::Trusted => return Ok(()),
+            HostKeyStatus::Revoked { entry: e } => return Err(format!("key {} is marked @revoked in {}:{}", e.fingerprint, e.file.display(), e.line)),
+            HostKeyStatus::Unknown => HostKeyChange::New,
+            HostKeyStatus::Changed { previous } => HostKeyChange::Changed { previous },
+        };
+        let (key_type, key) = match presented {
+            PublicKeyOrCertificate::PublicKey { key, .. } => (key.algorithm().as_str().to_owned(), key.key_data()),
+            PublicKeyOrCertificate::Certificate(c) => (c.algorithm().as_str().to_owned(), c.public_key()),
+        };
+        let changed = matches!(change, HostKeyChange::Changed { .. });
+        let prompt = HostKeyPrompt { host: self.host.clone(), hostname: hostname.clone(), port, key_type, fingerprint: fingerprint(key), change };
+        if !self.decider.decide(prompt).await {
+            return Err(if changed { "the host key CHANGED and the new key was not accepted" } else { "the new host key was not accepted" }.into());
+        }
+        self.known.add(hostname, port, key).map_err(|e| format!("accepted, but saving it failed: {e}"))
     }
 }
 
 impl client::Handler for ClientHandler {
     type Error = russh::Error;
 
-    async fn check_server_key(
-        &mut self,
-        presented: &PublicKeyOrCertificate,
-    ) -> std::result::Result<bool, Self::Error> {
-        let status = match self.known.check(&self.hostname, self.port, presented) {
-            Ok(s) => s,
-            Err(e) => {
-                self.reject(e.to_string());
-                return Ok(false);
-            }
-        };
-        let change = match status {
-            HostKeyStatus::Trusted => return Ok(true),
-            HostKeyStatus::Revoked { entry } => {
-                self.reject(format!(
-                    "key {} is marked @revoked in {}:{}",
-                    entry.fingerprint,
-                    entry.file.display(),
-                    entry.line
-                ));
-                return Ok(false);
-            }
-            HostKeyStatus::Unknown => HostKeyChange::New,
-            HostKeyStatus::Changed { previous } => HostKeyChange::Changed { previous },
-        };
-        let (key_type, key) = match presented {
-            PublicKeyOrCertificate::PublicKey { key, .. } => {
-                (key.algorithm().as_str().to_string(), key.key_data())
-            }
-            PublicKeyOrCertificate::Certificate(c) => {
-                (c.algorithm().as_str().to_string(), c.public_key())
-            }
-        };
-        let changed = matches!(change, HostKeyChange::Changed { .. });
-        let prompt = HostKeyPrompt {
-            host: self.host.clone(),
-            hostname: self.hostname.clone(),
-            port: self.port,
-            key_type,
-            fingerprint: fingerprint(key),
-            change,
-        };
-        if !self.decider.decide(prompt).await {
-            self.reject(if changed {
-                "the host key CHANGED and the new key was not accepted".to_string()
-            } else {
-                "the new host key was not accepted".to_string()
-            });
-            return Ok(false);
-        }
-        if let Err(e) = self.known.add(&self.hostname, self.port, key) {
-            self.reject(format!("accepted, but saving it failed: {e}"));
-            return Ok(false);
-        }
-        Ok(true)
+    async fn check_server_key(&mut self, presented: &PublicKeyOrCertificate) -> std::result::Result<bool, Self::Error> {
+        let checked = self.check(presented).await;
+        let accepted = checked.is_ok();
+        *self.rejection.locked() = checked.err();
+        Ok(accepted)
     }
 }
 
 type SshHandle = client::Handle<ClientHandler>;
 
-/// An authenticated connection to a host, with the jump connections it
-/// tunnels through kept alive alongside it.
+/// An authenticated connection, with the jump connections it tunnels through kept alive.
 pub(crate) struct Session {
     pub(crate) host: String,
     pub(crate) handle: SshHandle,
@@ -158,12 +109,7 @@ impl Session {
     }
 }
 
-struct Pooled {
-    hops: Vec<Endpoint>,
-    session: Arc<Session>,
-}
-
-type Slot = Arc<tokio::sync::Mutex<Option<Pooled>>>;
+type Slot = Arc<tokio::sync::Mutex<Option<(Vec<Endpoint>, Arc<Session>)>>>;
 
 /// Dials hosts and keeps one connection per host for reuse.
 pub struct Connector {
@@ -171,138 +117,70 @@ pub struct Connector {
     decider: Arc<dyn HostKeyDecider>,
     config: ConnectorConfig,
     ssh: Arc<client::Config>,
-    pool: std::sync::Mutex<HashMap<String, Slot>>,
+    pool: Mutex<HashMap<String, Slot>>,
 }
 
 impl Connector {
-    pub fn new(
-        known: Arc<KnownHosts>,
-        decider: Arc<dyn HostKeyDecider>,
-        config: ConnectorConfig,
-    ) -> Self {
-        let ssh = client::Config {
-            keepalive_interval: Some(config.keepalive),
-            keepalive_max: 3,
-            nodelay: true,
-            ..client::Config::default()
-        };
-        Self {
-            known,
-            decider,
-            config,
-            ssh: Arc::new(ssh),
-            pool: std::sync::Mutex::new(HashMap::new()),
-        }
+    pub fn new(known: Arc<KnownHosts>, decider: Arc<dyn HostKeyDecider>, config: ConnectorConfig) -> Self {
+        let ssh = client::Config { keepalive_interval: Some(config.keepalive), keepalive_max: 3, nodelay: true, ..client::Config::default() };
+        Self { known, decider, config, ssh: Arc::new(ssh), pool: Mutex::default() }
     }
 
     /// Closes the pooled connection to `host`, if any.
     pub async fn disconnect(&self, host: &str) {
         let slot = self.pool.locked().remove(host);
         if let Some(slot) = slot
-            && let Some(p) = slot.lock().await.take()
+            && let Some((_, session)) = slot.lock().await.take()
         {
-            let _ = p
-                .session
-                .handle
-                .disconnect(russh::Disconnect::ByApplication, "", "en")
-                .await;
+            let _ = session.handle.disconnect(russh::Disconnect::ByApplication, "", "en").await;
         }
     }
 
-    /// A live connection to `host`: the pooled one, or a new one when there
-    /// is none, it closed, or the host's hops changed.
+    /// A live connection to `host`: the pooled one unless it closed or the host's hops changed.
     pub(crate) async fn session(&self, host: &Host) -> Result<Arc<Session>> {
         let slot = self.pool.locked().entry(host.name.clone()).or_default().clone();
         let mut pooled = slot.lock().await;
-        if let Some(p) = pooled.as_ref()
-            && !p.session.handle.is_closed()
-            && host.hops().eq(p.hops.iter())
+        if let Some((hops, session)) = pooled.as_ref()
+            && !session.handle.is_closed()
+            && host.hops().eq(hops.iter())
         {
-            return Ok(p.session.clone());
+            return Ok(session.clone());
         }
         *pooled = None;
-        let session = Arc::new(self.dial(host).await?);
-        *pooled = Some(Pooled {
-            hops: host.hops().cloned().collect(),
-            session: session.clone(),
-        });
-        Ok(session)
-    }
-
-    async fn dial(&self, host: &Host) -> Result<Session> {
         let mut jumps: Vec<SshHandle> = Vec::with_capacity(host.jumps.len());
-        let mut via: Option<SshHandle> = None;
         for hop in &host.jumps {
-            let next = self.hop(host, hop, via.as_ref()).await?;
-            jumps.extend(via.replace(next));
+            let next = self.hop(host, hop, jumps.last()).await?;
+            jumps.push(next);
         }
-        let handle = self.hop(host, &host.target, via.as_ref()).await?;
-        jumps.extend(via);
-        Ok(Session {
-            host: host.name.clone(),
-            handle,
-            _jumps: jumps,
-            sftp: tokio::sync::Mutex::new(None),
-        })
+        let handle = self.hop(host, &host.target, jumps.last()).await?;
+        let session = Arc::new(Session { host: host.name.clone(), handle, _jumps: jumps, sftp: tokio::sync::Mutex::new(None) });
+        *pooled = Some((host.hops().cloned().collect(), session.clone()));
+        Ok(session)
     }
 
     /// Connects and authenticates one hop, directly or through `via`.
     async fn hop(&self, host: &Host, hop: &Endpoint, via: Option<&SshHandle>) -> Result<SshHandle> {
         let label = format!("{}:{}", hop.hostname, hop.port);
-        let rejection = Arc::new(std::sync::Mutex::new(None));
-        let handler = ClientHandler {
-            host: host.name.clone(),
-            hostname: hop.hostname.clone(),
-            port: hop.port,
-            known: self.known.clone(),
-            decider: self.decider.clone(),
-            rejection: rejection.clone(),
-        };
+        let rejection = Arc::new(Mutex::new(None));
+        let known = self.known.clone();
+        let handler = ClientHandler { host: host.name.clone(), hop: hop.clone(), known, decider: self.decider.clone(), rejection: rejection.clone() };
+        let ssh_err = |source| Error::Ssh { host: label.clone(), source };
         let connected = match via {
             None => {
-                let tcp = tokio::time::timeout(
-                    self.config.connect_timeout,
-                    TcpStream::connect((hop.hostname.as_str(), hop.port)),
-                )
-                .await
-                .map_err(|_| Error::ConnectTimeout {
-                    host: label.clone(),
-                })?
-                .map_err(|source| Error::Connect {
-                    host: label.clone(),
-                    source,
-                })?;
+                let tcp = tokio::time::timeout(self.config.connect_timeout, TcpStream::connect((hop.hostname.as_str(), hop.port)))
+                    .await
+                    .map_err(|_| Error::ConnectTimeout { host: label.clone() })?
+                    .map_err(|source| Error::Connect { host: label.clone(), source })?;
                 client::connect_stream(self.ssh.clone(), tcp, handler).await
             }
             Some(jump) => {
-                let channel = jump
-                    .channel_open_direct_tcpip(
-                        hop.hostname.clone(),
-                        u32::from(hop.port),
-                        "127.0.0.1",
-                        0,
-                    )
-                    .await
-                    .map_err(|source| Error::Ssh {
-                        host: label.clone(),
-                        source,
-                    })?;
+                let channel = jump.channel_open_direct_tcpip(hop.hostname.clone(), u32::from(hop.port), "127.0.0.1", 0).await.map_err(ssh_err)?;
                 client::connect_stream(self.ssh.clone(), channel.into_stream(), handler).await
             }
         };
-        let mut handle = connected.map_err(|source| {
-            let reason = rejection.locked()
-                .take();
-            match reason {
-                Some(reason) => Error::HostKeyRejected {
-                    host: label.clone(),
-                    reason,
-                },
-                None => Error::Ssh {
-                    host: label.clone(),
-                    source,
-                },
-            }
+        let mut handle = connected.map_err(|source| match rejection.locked().take() {
+            Some(reason) => Error::HostKeyRejected { host: label.clone(), reason },
+            None => ssh_err(source),
         })?;
         let socket = agent::socket_for(&hop.agent, self.config.default_agent.as_deref(), &label)?;
         agent::authenticate(&mut handle, &hop.user, &label, &socket).await?;
