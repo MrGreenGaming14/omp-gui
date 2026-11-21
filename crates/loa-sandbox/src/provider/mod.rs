@@ -245,7 +245,10 @@ impl ProviderRegistry {
         self
     }
 
+    /// The factories in [`SandboxKind`] order, as the app lists them.
     pub fn factories(&self) -> impl Iterator<Item = &Arc<dyn ProviderFactory>> {
-        self.0.iter().map(|(_, factory)| factory)
+        let mut factories: Vec<_> = self.0.iter().map(|(_, factory)| factory).collect();
+        factories.sort_by_key(|factory| factory.kind());
+        factories.into_iter()
     }
 }
