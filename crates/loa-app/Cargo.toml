@@ -55,12 +55,12 @@ serde_json.workspace = true
 remote-video = ["loa-surfaces/remote-video", "loa-ui-surface/remote-video"]
 
 [dev-dependencies]
+loa-surfaces = { path = "../loa-surfaces", features = ["testkit"] }
 iced_runtime = "0.14"
 # The iced runtime's subscription tracker, to run the app's subscriptions in tests.
 iced_futures = "0.14"
 tempfile.workspace = true
 iced_test = "0.14"
-image = { version = "0.25", default-features = false, features = ["png"] }
 # The in-process SSH server of loa-remote's tests, for the Remote hosts tests.
 russh = { version = "0.65", default-features = false, features = ["ring", "rsa", "flate2"] }
 russh-sftp = "3.0"

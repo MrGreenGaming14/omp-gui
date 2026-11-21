@@ -330,10 +330,7 @@ async fn frames_older_than_the_shown_one_are_dropped() {
 #[tokio::test]
 async fn png_and_jpeg_frames_are_decoded_into_their_region() {
     let mut h = Harness::pixel(8, 8);
-    let mut png = Vec::new();
-    image::RgbaImage::from_pixel(8, 8, image::Rgba([0, 200, 0, 255]))
-        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
-        .unwrap();
+    let png = loa_surfaces::pixels::RgbaImage::filled(8, 8, [0, 200, 0, 255]).to_png().unwrap();
     h.update(Message::Frame(frame(
         1,
         8,
@@ -764,10 +761,7 @@ async fn paged_documents_scroll_and_zoom_without_touching_the_surface() {
 
 #[tokio::test]
 async fn image_documents_render_without_a_page_renderer() {
-    let mut png = Vec::new();
-    image::RgbaImage::from_pixel(30, 20, image::Rgba([1, 2, 3, 255]))
-        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
-        .unwrap();
+    let png = loa_surfaces::pixels::RgbaImage::filled(30, 20, [1, 2, 3, 255]).to_png().unwrap();
     let doc = Document {
         name: "a.png".into(),
         mime: "image/png".into(),

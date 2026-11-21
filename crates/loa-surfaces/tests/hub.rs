@@ -9,18 +9,16 @@ use loa_mcp::{AllowAll, HttpSpec, Manager, ServerSpec, Status, Transport};
 use loa_contracts::surface::{Encoding, Frame, Input, InputEvent, Modifiers, MouseButton, SurfaceMode, SurfaceUri};
 use loa_surfaces::docs::Fonts;
 use loa_surfaces::pixels::RgbaImage;
-use loa_surfaces::testkit::{PATIENCE, html_data_url as html, next_frame};
+use loa_surfaces::testkit::{PATIENCE, fake_rfb, html_data_url as html, next_frame};
 use loa_surfaces::{
     CaptureMode, HubConfig, HubEvent, McpEndpoint, Origin, SurfaceHub, SurfaceTools, ToolContent,
     VirtualDisplaySetup,
 };
 use serde_json::json;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpListener;
-use tokio::sync::{broadcast, oneshot};
+use tokio::sync::broadcast;
 
 fn config(dir: &Path, browser: bool) -> HubConfig {
     let mut config = HubConfig::discover(dir);
@@ -103,58 +101,6 @@ async fn documents_open_list_answer_tools_and_close() {
     assert!(matches!(events.recv().await.unwrap(), HubEvent::Closed { .. }));
 }
 
-/// A one-connection RFB 3.8 server: no security, `width` x `height`, one
-/// solid raw update after the client's setup once the returned sender fires.
-/// Frames go to whoever is subscribed when they are published, so a test
-/// subscribes first and then lets the update go. Collects what the client
-/// sends after the setup.
-async fn fake_rfb(width: u16, height: u16, color: [u8; 3]) -> (String, Arc<Mutex<Vec<u8>>>, oneshot::Sender<()>) {
-    let (send_update, update_sent) = oneshot::channel();
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap().to_string();
-    let received = Arc::new(Mutex::new(Vec::new()));
-    let sink = received.clone();
-    tokio::spawn(async move {
-        let (mut stream, _) = listener.accept().await.unwrap();
-        let mut buf = [0u8; 12];
-        stream.write_all(b"RFB 003.008\n").await.unwrap();
-        stream.read_exact(&mut buf).await.unwrap();
-        stream.write_all(&[1, 1]).await.unwrap();
-        stream.read_exact(&mut buf[..1]).await.unwrap();
-        stream.write_all(&0u32.to_be_bytes()).await.unwrap();
-        stream.read_exact(&mut buf[..1]).await.unwrap();
-        let mut init = Vec::new();
-        init.extend_from_slice(&width.to_be_bytes());
-        init.extend_from_slice(&height.to_be_bytes());
-        init.extend_from_slice(&[32, 24, 1, 1, 0, 255, 0, 255, 0, 255, 16, 8, 0, 0, 0, 0]);
-        init.extend_from_slice(&4u32.to_be_bytes());
-        init.extend_from_slice(b"desk");
-        stream.write_all(&init).await.unwrap();
-        // SetPixelFormat (20), SetEncodings (4 + 7 * 4), FramebufferUpdateRequest (10).
-        let mut setup = vec![0u8; 62];
-        stream.read_exact(&mut setup).await.unwrap();
-        if update_sent.await.is_err() {
-            return;
-        }
-        let mut update = vec![0, 0, 0, 1, 0, 0, 0, 0];
-        update.extend_from_slice(&width.to_be_bytes());
-        update.extend_from_slice(&height.to_be_bytes());
-        update.extend_from_slice(&0i32.to_be_bytes());
-        for _ in 0..usize::from(width) * usize::from(height) {
-            update.extend_from_slice(&[color[0], color[1], color[2], 0]);
-        }
-        stream.write_all(&update).await.unwrap();
-        let mut chunk = [0u8; 256];
-        while let Ok(n) = stream.read(&mut chunk).await {
-            if n == 0 {
-                break;
-            }
-            sink.lock().unwrap().extend_from_slice(&chunk[..n]);
-        }
-    });
-    (address, received, send_update)
-}
-
 #[tokio::test(flavor = "multi_thread")]
 async fn a_vm_opens_from_host_and_port_streams_and_takes_agent_clicks() {
     let dir = tempfile::tempdir().unwrap();
@@ -225,8 +171,8 @@ async fn a_browser_tab_streams_and_the_agent_drives_and_reads_it() {
     assert!(!typed.is_error, "{typed:?}");
     let shot = tools.run("surface_screenshot", &json!({ "uri": uri }), None).await;
     let png_bytes = shot.image().expect("a screenshot");
-    let decoded = image::load_from_memory(png_bytes).unwrap().to_rgba8();
-    assert_eq!(decoded.get_pixel(400, 300).0[..3], [0, 0, 255], "the page saw the user's press");
+    let decoded = loa_surfaces::pixels::decode_png(png_bytes).unwrap();
+    assert_eq!(decoded.pixel(400, 300).unwrap()[..3], [0, 0, 255], "the page saw the user's press");
     let elements = tools.run("surface_elements", &json!({ "uri": uri }), None).await;
     assert!(elements.joined_text().contains("textbox"), "{elements:?}");
     let navigated = tools.run("surface_navigate", &json!({ "uri": uri, "url": html("<title>Two</title>two") }), None).await;

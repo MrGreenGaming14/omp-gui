@@ -142,6 +142,59 @@ pub fn rgba_frame(seq: u64, width: u32, height: u32, rgba: [u8; 4]) -> Frame {
     }
 }
 
+/// A one-connection RFB 3.8 server: no security, `width` x `height`, one
+/// solid raw update after the client's setup once the returned sender fires.
+/// Frames go to whoever is subscribed when they are published, so a test
+/// subscribes first and then lets the update go. Collects what the client
+/// sends after the setup.
+pub async fn fake_rfb(width: u16, height: u16, color: [u8; 3]) -> (String, Arc<Mutex<Vec<u8>>>, tokio::sync::oneshot::Sender<()>) {
+    let (send_update, update_sent) = tokio::sync::oneshot::channel();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap().to_string();
+    let received = Arc::new(Mutex::new(Vec::new()));
+    let sink = received.clone();
+    tokio::spawn(async move {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut buf = [0u8; 12];
+        stream.write_all(b"RFB 003.008\n").await.unwrap();
+        stream.read_exact(&mut buf).await.unwrap();
+        stream.write_all(&[1, 1]).await.unwrap();
+        stream.read_exact(&mut buf[..1]).await.unwrap();
+        stream.write_all(&0u32.to_be_bytes()).await.unwrap();
+        stream.read_exact(&mut buf[..1]).await.unwrap();
+        let mut init = Vec::new();
+        init.extend_from_slice(&width.to_be_bytes());
+        init.extend_from_slice(&height.to_be_bytes());
+        init.extend_from_slice(&[32, 24, 1, 1, 0, 255, 0, 255, 0, 255, 16, 8, 0, 0, 0, 0]);
+        init.extend_from_slice(&4u32.to_be_bytes());
+        init.extend_from_slice(b"desk");
+        stream.write_all(&init).await.unwrap();
+        // SetPixelFormat (20), SetEncodings (4 + 7 * 4), FramebufferUpdateRequest (10).
+        let mut setup = vec![0u8; 62];
+        stream.read_exact(&mut setup).await.unwrap();
+        if update_sent.await.is_err() {
+            return;
+        }
+        let mut update = vec![0, 0, 0, 1, 0, 0, 0, 0];
+        update.extend_from_slice(&width.to_be_bytes());
+        update.extend_from_slice(&height.to_be_bytes());
+        update.extend_from_slice(&0i32.to_be_bytes());
+        for _ in 0..usize::from(width) * usize::from(height) {
+            update.extend_from_slice(&[color[0], color[1], color[2], 0]);
+        }
+        stream.write_all(&update).await.unwrap();
+        let mut chunk = [0u8; 256];
+        while let Ok(n) = stream.read(&mut chunk).await {
+            if n == 0 {
+                break;
+            }
+            sink.locked().extend_from_slice(&chunk[..n]);
+        }
+    });
+    (address, received, send_update)
+}
+
 /// `data:` URL of an HTML document.
 pub fn html_data_url(body: &str) -> String {
     format!("data:text/html,{}", loa_util::text::percent_encode(body))
