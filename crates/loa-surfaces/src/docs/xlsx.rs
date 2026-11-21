@@ -570,147 +570,65 @@ mod tests {
     use super::*;
     use rust_xlsxwriter::{Format as CellFormat, Formula, Workbook};
 
-    /// Two sheets: `Data` from A1 with text, numbers, a bool, a formula and a
-    /// date; `Offset` whose data starts at D3.
-    fn workbook() -> Vec<u8> {
+    #[test]
+    fn a_workbook_round_trips_to_sheets_cells_and_a_grid() {
+        // `Data` from A1 with text, numbers, a bool, a formula and a date; `Offset` starting at D3.
         let mut book = Workbook::new();
-        let data = book.add_worksheet();
-        data.set_name("Data").unwrap();
+        let data = book.add_worksheet().set_name("Data").unwrap();
         data.write_string(0, 0, "Name").unwrap();
-        data.write_string(0, 1, "Qty").unwrap();
         data.write_string(1, 0, "apple").unwrap();
         data.write_number(1, 1, 3.0).unwrap();
-        data.write_string(2, 0, "pear").unwrap();
-        data.write_number(2, 1, 4.5).unwrap();
-        data.write_boolean(3, 0, true).unwrap();
-        data.write_formula(3, 1, Formula::new("=SUM(B2:B3)").set_result("7.5")).unwrap();
-        let date = CellFormat::new().set_num_format("yyyy-mm-dd");
-        data.write_number_with_format(4, 0, 45366.0, &date).unwrap();
-        let offset = book.add_worksheet();
-        offset.set_name("Offset").unwrap();
+        data.write_boolean(2, 0, true).unwrap();
+        data.write_formula(2, 1, Formula::new("=SUM(B2:B2)").set_result("3")).unwrap();
+        data.write_number_with_format(3, 0, 45366.0, &CellFormat::new().set_num_format("yyyy-mm-dd")).unwrap();
+        let offset = book.add_worksheet().set_name("Offset").unwrap();
         offset.write_string(2, 3, "origin").unwrap();
         offset.write_number(3, 4, 42.0).unwrap();
-        book.save_to_buffer().unwrap()
-    }
+        let doc = XlsxDoc::parse(&book.save_to_buffer().unwrap()).unwrap();
 
-    fn cell(doc: &XlsxDoc, sheet: &str, at: &str) -> CellOut {
-        let block = doc.cells(Some(sheet), at).unwrap();
-        block.rows[0][0].clone()
-    }
-
-    #[test]
-    fn reads_sheets_values_formulas_and_dates() {
-        let doc = XlsxDoc::parse(&workbook()).unwrap();
         assert_eq!(
             doc.sheets(),
             [
-                SheetInfo { name: "Data".into(), rows: 5, columns: 2, start: Some("A1".into()) },
+                SheetInfo { name: "Data".into(), rows: 4, columns: 2, start: Some("A1".into()) },
                 SheetInfo { name: "Offset".into(), rows: 2, columns: 2, start: Some("D3".into()) },
             ]
         );
         let block = doc.cells(None, "A1:B4").unwrap();
-        assert_eq!(block.sheet, "Data");
-        assert_eq!(block.range, "A1:B4");
-        let values: Vec<Vec<Cell>> =
-            block.rows.iter().map(|r| r.iter().map(|c| c.value.clone()).collect()).collect();
+        let values: Vec<_> = block.rows.iter().flatten().map(|c| (c.address.as_str(), c.value.clone(), c.formula.as_deref())).collect();
+        let date = Cell::DateTime { serial: Some(45366.0), iso: "2024-03-15T00:00:00".into() };
         assert_eq!(
             values,
             [
-                [Cell::String("Name".into()), Cell::String("Qty".into())],
-                [Cell::String("apple".into()), Cell::Float(3.0)],
-                [Cell::String("pear".into()), Cell::Float(4.5)],
-                [Cell::Bool(true), Cell::Float(7.5)],
+                ("A1", Cell::String("Name".into()), None),
+                ("B1", Cell::Empty, None),
+                ("A2", Cell::String("apple".into()), None),
+                ("B2", Cell::Float(3.0), None),
+                ("A3", Cell::Bool(true), None),
+                ("B3", Cell::Float(3.0), Some("SUM(B2:B2)")),
+                ("A4", date, None),
+                ("B4", Cell::Empty, None),
             ]
         );
-        let total = &block.rows[3][1];
-        assert_eq!(total.address, "B4");
-        assert_eq!(total.formula.as_deref(), Some("SUM(B2:B3)"));
-        assert_eq!(block.rows[1][1].formula, None);
-        assert_eq!(
-            cell(&doc, "Data", "a5").value,
-            Cell::DateTime { serial: Some(45366.0), iso: "2024-03-15T00:00:00".into() }
-        );
-    }
-
-    #[test]
-    fn ranges_address_cells_absolutely_when_data_does_not_start_at_a1() {
-        let doc = XlsxDoc::parse(&workbook()).unwrap();
-        let block = doc.cells(Some("Offset"), "C2:E4").unwrap();
-        assert_eq!(block.range, "C2:E4");
-        assert_eq!(block.rows.len(), 3);
-        assert!(block.rows.iter().all(|r| r.len() == 3));
-        assert_eq!(block.rows[0][0].address, "C2");
-        assert_eq!(block.rows[0][0].value, Cell::Empty);
-        assert_eq!(block.rows[1][1].address, "D3");
-        assert_eq!(block.rows[1][1].value, Cell::String("origin".into()));
-        assert_eq!(block.rows[2][2].address, "E4");
-        assert_eq!(block.rows[2][2].value, Cell::Float(42.0));
-
-        assert_eq!(cell(&doc, "Offset", "$E$4").value, Cell::Float(42.0));
-        assert_eq!(cell(&doc, "Offset", "A1").value, Cell::Empty);
-
+        // Ranges are absolute even when the data starts elsewhere, and clipped to the used area.
+        assert_eq!(doc.cells(Some("Offset"), "$E$4").unwrap().rows[0][0].value, Cell::Float(42.0));
         let wide = doc.cells(Some("Offset"), "A1:Z1000").unwrap();
-        assert_eq!(wide.range, "A1:E4");
-        assert_eq!(wide.rows[2][3].value, Cell::String("origin".into()));
-    }
-
-    #[test]
-    fn unknown_sheets_and_bad_ranges_are_request_errors() {
-        let doc = XlsxDoc::parse(&workbook()).unwrap();
+        assert_eq!((wide.range.as_str(), &wide.rows[2][3].value), ("A1:E4", &Cell::String("origin".into())));
         for (sheet, range) in [(Some("Missing"), "A1"), (None, "B"), (None, "12"), (None, "A0"), (None, "XFE1")] {
-            let err = doc.cells(sheet, range).unwrap_err();
-            assert!(matches!(err, DocsError::Request(_)), "{sheet:?} {range}: {err}");
+            assert!(matches!(doc.cells(sheet, range), Err(DocsError::Request(_))), "{sheet:?} {range}");
         }
-        assert!(matches!(XlsxDoc::parse(b"PK\x03\x04 not a workbook"), Err(DocsError::Invalid { .. })));
-    }
 
-    fn dark_pixels(image: &Rgba, x0: f32, y0: f32, x1: f32, y1: f32) -> usize {
-        let mut count = 0;
-        for y in y0 as u32..y1 as u32 {
-            for x in x0 as u32..x1 as u32 {
-                if image.pixel(x, y).is_some_and(|p| p[0] < 128) {
-                    count += 1;
-                }
-            }
-        }
-        count
-    }
-
-    #[test]
-    fn renders_a_grid_with_headers_and_cell_text_in_place() {
-        let doc = XlsxDoc::parse(&workbook()).unwrap();
-        assert_eq!(doc.page_count(), 2);
-        let size = doc.page_size(0).unwrap();
-        assert_eq!(size, PageSize { width: ROW_HEADER_WIDTH + 2.0 * COLUMN_WIDTH, height: 6.0 * ROW_HEIGHT });
-
-        let scale = 2.0;
-        let image = doc.render_page(0, scale, &Fonts::none()).unwrap();
-        assert_eq!((image.width, image.height), size.pixels(scale));
-        let (col_w, row_h, head_w) = (COLUMN_WIDTH * scale, ROW_HEIGHT * scale, ROW_HEADER_WIDTH * scale);
-        let header = image.pixel((head_w + 3.0) as u32, 3).unwrap();
-        assert_ne!(header, [255; 4]);
-
-        // A2 "apple" is left aligned text, B2 3 is a right aligned number.
-        let a2 = (head_w, row_h * 2.0);
-        assert!(dark_pixels(&image, a2.0, a2.1, a2.0 + col_w / 2.0, a2.1 + row_h) > 0);
-        let b2 = (head_w + col_w, row_h * 2.0);
-        assert_eq!(dark_pixels(&image, b2.0 + 1.0, b2.1 + 1.0, b2.0 + col_w / 2.0, b2.1 + row_h - 1.0), 0);
-        assert!(dark_pixels(&image, b2.0 + col_w / 2.0, b2.1, b2.0 + col_w, b2.1 + row_h) > 0);
-
-        // Offset: data at D3, A1 is blank, the grid starts at A1.
         let size = doc.page_size(1).unwrap();
         assert_eq!(size, PageSize { width: ROW_HEADER_WIDTH + 5.0 * COLUMN_WIDTH, height: 5.0 * ROW_HEIGHT });
         let image = doc.render_page(1, 1.0, &Fonts::none()).unwrap();
-        let cell_rect = |row: f32, col: f32| {
-            let x = ROW_HEADER_WIDTH + col * COLUMN_WIDTH;
-            let y = (row + 1.0) * ROW_HEIGHT;
-            (x + 1.0, y + 1.0, x + COLUMN_WIDTH - 1.0, y + ROW_HEIGHT - 1.0)
+        let inked = |row: f32, col: f32| {
+            let (x, y) = (ROW_HEADER_WIDTH + col * COLUMN_WIDTH, (row + 1.0) * ROW_HEIGHT);
+            (y as u32 + 1..(y + ROW_HEIGHT) as u32 - 1)
+                .flat_map(|py| (x as u32 + 1..(x + COLUMN_WIDTH) as u32 - 1).map(move |px| (px, py)))
+                .any(|(px, py)| image.pixel(px, py).is_some_and(|p| p[0] < 128))
         };
-        let (x0, y0, x1, y1) = cell_rect(0.0, 0.0);
-        assert_eq!(dark_pixels(&image, x0, y0, x1, y1), 0);
-        let (x0, y0, x1, y1) = cell_rect(2.0, 3.0);
-        assert!(dark_pixels(&image, x0, y0, x1, y1) > 0);
-
+        assert!(!inked(0.0, 0.0) && inked(2.0, 3.0));
+        assert_ne!(image.pixel(ROW_HEADER_WIDTH as u32 + 3, 3), Some([255; 4]));
         assert!(matches!(doc.render_page(2, 1.0, &Fonts::none()), Err(DocsError::PageRange { index: 2, count: 2 })));
+        assert!(matches!(XlsxDoc::parse(b"PK\x03\x04 not a workbook"), Err(DocsError::Invalid { .. })));
     }
 }

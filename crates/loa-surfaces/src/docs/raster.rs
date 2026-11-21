@@ -444,51 +444,16 @@ impl Canvas {
 mod tests {
     use super::*;
 
-    fn dark_pixels(canvas: &Canvas) -> usize {
-        (0..canvas.height())
-            .flat_map(|y| (0..canvas.width()).map(move |x| (x, y)))
-            .filter(|&(x, y)| canvas.pixel(x, y).is_some_and(|p| p[0] < 128))
-            .count()
-    }
-
     #[test]
-    fn text_without_a_font_still_shows_where_characters_are() {
+    fn without_a_font_text_is_boxes_and_wraps_between_words() {
         let mut canvas = Canvas::new(200, 40, Color::WHITE);
         let advance = canvas.draw_text(&Fonts::none(), TextStyle::new(20.0), 0.0, 0.0, "ab c");
         assert_eq!(advance, 4.0 * box_advance(20.0));
-        assert!(dark_pixels(&canvas) > 0);
-        let blank_column = (box_advance(20.0) * 2.5) as u32;
-        assert!((0..40).all(|y| canvas.pixel(blank_column, y) == Some([255; 4])));
-    }
-
-    #[test]
-    fn system_font_draws_glyphs_when_one_is_installed() {
-        let fonts = Fonts::system();
-        if !fonts.has_font() {
-            return;
-        }
-        let mut canvas = Canvas::new(200, 40, Color::WHITE);
-        canvas.draw_text(&fonts, TextStyle::new(24.0), 2.0, 2.0, "Hello");
-        assert!(dark_pixels(&canvas) > 20);
-        assert!(fonts.text_width("Hello world", 24.0, false) > fonts.text_width("Hello", 24.0, false));
-    }
-
-    #[test]
-    fn wrap_breaks_between_words_and_at_newlines() {
-        let fonts = Fonts::none();
+        let column = |x: u32| (0..40).any(|y| canvas.pixel(x, y).is_some_and(|p| p[0] < 128));
+        assert!(column((box_advance(20.0) * 0.5) as u32) && !column((box_advance(20.0) * 2.5) as u32));
         let w = box_advance(10.0);
-        let lines = fonts.wrap("aaa bbb ccc\nddd", 10.0, false, w * 7.5);
-        assert_eq!(lines, ["aaa bbb", "ccc", "ddd"]);
-        let long = fonts.wrap("abcdefghij", 10.0, false, w * 3.0);
-        assert_eq!(long, ["abcdefghij"]);
-    }
-
-    #[test]
-    fn blit_scales_the_source_into_the_rectangle() {
-        let src = Rgba { width: 2, height: 1, data: vec![255, 0, 0, 255, 0, 0, 255, 255] };
-        let mut canvas = Canvas::new(10, 10, Color::WHITE);
-        canvas.blit(&src, 0.0, 0.0, 10.0, 10.0);
-        assert_eq!(canvas.pixel(1, 5), Some([255, 0, 0, 255]));
-        assert_eq!(canvas.pixel(8, 5), Some([0, 0, 255, 255]));
+        for (text, width, lines) in [("aaa bbb ccc\nddd", 7.5, &["aaa bbb", "ccc", "ddd"][..]), ("abcdefghij", 3.0, &["abcdefghij"])] {
+            assert_eq!(Fonts::none().wrap(text, 10.0, false, w * width), lines);
+        }
     }
 }

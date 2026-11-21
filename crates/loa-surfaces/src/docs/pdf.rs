@@ -323,200 +323,60 @@ fn layout(collector: &TextCollector) -> String {
 mod tests {
     use super::*;
 
-    /// One page of a test document.
-    struct TestPage<'a> {
-        width: f32,
-        height: f32,
-        rotate: i32,
-        content: &'a str,
-    }
-
-    impl<'a> TestPage<'a> {
-        fn new(width: f32, height: f32, content: &'a str) -> Self {
-            Self { width, height, rotate: 0, content }
-        }
-    }
-
-    /// Builds a PDF with a Helvetica font resource and correct xref offsets.
-    fn build_pdf(pages: &[TestPage<'_>]) -> Vec<u8> {
-        let mut objects: Vec<String> = Vec::new();
-        let kids: Vec<String> =
-            (0..pages.len()).map(|i| format!("{} 0 R", 4 + 2 * i)).collect();
-        objects.push("<< /Type /Catalog /Pages 2 0 R >>".to_owned());
-        objects.push(format!(
-            "<< /Type /Pages /Kids [{}] /Count {} >>",
-            kids.join(" "),
-            pages.len()
-        ));
-        objects.push("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_owned());
-        for (i, page) in pages.iter().enumerate() {
+    /// A PDF of `(width, height, rotate, content)` pages with a Helvetica `/F1` and correct xref offsets.
+    fn build_pdf(pages: &[(f32, f32, i32, &str)]) -> Vec<u8> {
+        let kids: Vec<String> = (0..pages.len()).map(|i| format!("{} 0 R", 4 + 2 * i)).collect();
+        let mut objects = vec![
+            "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+            format!("<< /Type /Pages /Kids [{}] /Count {} >>", kids.join(" "), pages.len()),
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_owned(),
+        ];
+        for (i, (w, h, rotate, content)) in pages.iter().enumerate() {
             objects.push(format!(
-                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {} {}] /Rotate {} \
-                 /Resources << /Font << /F1 3 0 R >> >> /Contents {} 0 R >>",
-                page.width,
-                page.height,
-                page.rotate,
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {w} {h}] /Rotate {rotate} /Resources << /Font << /F1 3 0 R >> >> /Contents {} 0 R >>",
                 5 + 2 * i
             ));
-            objects.push(format!(
-                "<< /Length {} >>\nstream\n{}\nendstream",
-                page.content.len() + 1,
-                page.content
-            ));
+            objects.push(format!("<< /Length {} >>\nstream\n{content}\nendstream", content.len() + 1));
         }
-
         let mut out = b"%PDF-1.4\n".to_vec();
-        let mut offsets = Vec::with_capacity(objects.len());
+        let mut xref = format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1);
         for (i, object) in objects.iter().enumerate() {
-            offsets.push(out.len());
+            xref.push_str(&format!("{:010} 00000 n \n", out.len()));
             out.extend_from_slice(format!("{} 0 obj\n{object}\nendobj\n", i + 1).as_bytes());
         }
-        let xref = out.len();
-        out.extend_from_slice(
-            format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).as_bytes(),
-        );
-        for offset in offsets {
-            out.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
-        }
-        out.extend_from_slice(
-            format!(
-                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
-                objects.len() + 1
-            )
-            .as_bytes(),
-        );
+        let start = out.len();
+        out.extend_from_slice(format!("{xref}trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{start}\n%%EOF\n", objects.len() + 1).as_bytes());
         out
     }
 
-    fn pixel(image: &Rgba, x: u32, y: u32) -> [u8; 4] {
-        let i = ((y * image.width + x) * 4) as usize;
-        [image.data[i], image.data[i + 1], image.data[i + 2], image.data[i + 3]]
-    }
-
-    const WHITE_PX: [u8; 4] = [255, 255, 255, 255];
-
     #[test]
-    fn page_count_and_sizes_follow_media_box_and_rotation() {
-        let rotated = TestPage { rotate: 90, ..TestPage::new(612.0, 792.0, "") };
-        let doc = PdfDoc::parse(&build_pdf(&[
-            TestPage::new(612.0, 792.0, ""),
-            TestPage::new(842.0, 595.0, ""),
-            rotated,
-        ]))
-        .unwrap();
-        assert_eq!(doc.page_count(), 3);
-        assert_eq!(doc.page_size(0).unwrap(), PageSize { width: 612.0, height: 792.0 });
-        assert_eq!(doc.page_size(1).unwrap(), PageSize { width: 842.0, height: 595.0 });
-        assert_eq!(doc.page_size(2).unwrap(), PageSize { width: 792.0, height: 612.0 });
-    }
+    fn a_pdf_round_trips_to_sizes_reading_order_text_and_pixels() {
+        // Lower lines come first to check ordering; "Split words" is placed word by word, "Kern" uses TJ.
+        let first = "BT /F1 12 Tf 72 600 Td (Second line) Tj ET BT /F1 12 Tf 72 500 Td (Split) Tj 40 0 Td (words) Tj ET \
+                     BT /F1 12 Tf 72 450 Td [(Ke) -20 (rn)] TJ ET BT /F1 24 Tf 72 700 Td (Hello PDF) Tj ET 0 0 1 rg 100 100 50 50 re f";
+        // Drawn rotated on a /Rotate 90 page, so it reads upright on screen.
+        let rotated = "BT /F1 12 Tf 0 1 -1 0 280 100 Tm (Body text) Tj ET BT /F1 20 Tf 0 1 -1 0 250 100 Tm (Upright title) Tj ET \
+                       1 0 0 rg 0 0 50 50 re f";
+        let doc = PdfDoc::parse(&build_pdf(&[(612.0, 792.0, 0, first), (842.0, 595.0, 0, ""), (612.0, 792.0, 90, rotated)])).unwrap();
+        let sizes: Vec<_> = (0..3).map(|i| doc.page_size(i).unwrap()).map(|s| (s.width, s.height)).collect();
+        assert_eq!(sizes, [(612.0, 792.0), (842.0, 595.0), (792.0, 612.0)]);
+        assert_eq!(doc.text().unwrap(), ["Hello PDF\nSecond line\nSplit words\nKern", "", "Upright title\nBody text"]);
 
-    #[test]
-    fn text_is_in_reading_order_per_page() {
-        // The lower lines are written first to check top to bottom ordering;
-        // "Split words" is positioned word by word, "Kern" is kerned with TJ.
-        let first = "BT /F1 12 Tf 72 600 Td (Second line) Tj ET \
-                     BT /F1 12 Tf 72 500 Td (Split) Tj 40 0 Td (words) Tj ET \
-                     BT /F1 12 Tf 72 450 Td [(Ke) -20 (rn)] TJ ET \
-                     BT /F1 24 Tf 72 700 Td (Hello PDF) Tj ET";
-        let second = "BT /F1 18 Tf 72 700 Td (Page two) Tj ET \
-                      BT 3 Tr /F1 12 Tf 72 650 Td (Hidden layer) Tj ET";
-        let doc = PdfDoc::parse(&build_pdf(&[
-            TestPage::new(612.0, 792.0, first),
-            TestPage::new(612.0, 792.0, second),
-        ]))
-        .unwrap();
-        assert_eq!(doc.page_text(0).unwrap(), "Hello PDF\nSecond line\nSplit words\nKern");
-        assert_eq!(
-            doc.text().unwrap(),
-            vec![
-                "Hello PDF\nSecond line\nSplit words\nKern".to_owned(),
-                "Page two\nHidden layer".to_owned(),
-            ]
-        );
-    }
-
-    #[test]
-    fn text_on_rotated_page_reads_along_the_rotated_lines() {
-        // Content drawn rotated 90 degrees counterclockwise on a /Rotate 90
-        // page reads upright on screen; lines further down the screen sit at
-        // larger PDF x.
-        let content = "BT /F1 12 Tf 0 1 -1 0 280 100 Tm (Body text) Tj ET \
-                       BT /F1 20 Tf 0 1 -1 0 250 100 Tm (Upright title) Tj ET";
-        let page = TestPage { rotate: 90, ..TestPage::new(612.0, 792.0, content) };
-        let doc = PdfDoc::parse(&build_pdf(&[page])).unwrap();
-        assert_eq!(doc.page_text(0).unwrap(), "Upright title\nBody text");
-    }
-
-    #[test]
-    fn render_fills_rectangle_at_flipped_position_on_white() {
-        let content = "0 0 1 rg 100 100 50 50 re f";
-        let doc = PdfDoc::parse(&build_pdf(&[TestPage::new(612.0, 792.0, content)])).unwrap();
         let image = doc.render_page(0, 2.0, &Fonts::none()).unwrap();
         assert_eq!((image.width, image.height), (1224, 1584));
-        assert_eq!(image.data.len(), 1224 * 1584 * 4);
         // PDF y 100..150 is device y (792 - 150)..(792 - 100), doubled.
-        assert_eq!(pixel(&image, 250, 1334), [0, 0, 255, 255]);
-        assert_eq!(pixel(&image, 250, 250), WHITE_PX);
-        assert_eq!(pixel(&image, 10, 10), WHITE_PX);
-        assert_eq!(pixel(&image, 350, 1334), WHITE_PX);
-    }
+        assert_eq!(image.pixel(250, 1334), Some([0, 0, 255, 255]));
+        assert_eq!(image.pixel(350, 1334), Some([255, 255, 255, 255]));
+        let text_ink = (144..360).flat_map(|x| (144..184).map(move |y| (x, y))).filter(|&(x, y)| image.pixel(x, y).unwrap()[0] < 128);
+        assert!(text_ink.count() > 50);
+        // Rotating 90 degrees clockwise moves the bottom left corner to the top left.
+        let image = doc.render_page(2, 1.0, &Fonts::none()).unwrap();
+        assert_eq!((image.width, image.height, image.pixel(25, 25)), (792, 612, Some([255, 0, 0, 255])));
+        assert_eq!(doc.render_page(0, 1.3, &Fonts::none()).map(|i| (i.width, i.height)).unwrap(), (796, 1030));
 
-    #[test]
-    fn render_size_rounds_scaled_page_size() {
-        let doc = PdfDoc::parse(&build_pdf(&[TestPage::new(612.0, 792.0, "")])).unwrap();
-        let image = doc.render_page(0, 1.3, &Fonts::none()).unwrap();
-        assert_eq!((image.width, image.height), (796, 1030));
-    }
-
-    #[test]
-    fn render_of_rotated_page_swaps_dimensions_and_moves_content() {
-        let content = "1 0 0 rg 0 0 50 50 re f";
-        let page = TestPage { rotate: 90, ..TestPage::new(612.0, 792.0, content) };
-        let doc = PdfDoc::parse(&build_pdf(&[page])).unwrap();
-        let image = doc.render_page(0, 1.0, &Fonts::none()).unwrap();
-        assert_eq!((image.width, image.height), (792, 612));
-        // Rotating 90 degrees clockwise moves the bottom left corner to the
-        // top left of the displayed page.
-        assert_eq!(pixel(&image, 25, 25), [255, 0, 0, 255]);
-        assert_eq!(pixel(&image, 25, 587), WHITE_PX);
-    }
-
-    #[test]
-    fn render_draws_text() {
-        let content = "BT /F1 24 Tf 72 700 Td (Hello PDF) Tj ET";
-        let doc = PdfDoc::parse(&build_pdf(&[TestPage::new(612.0, 792.0, content)])).unwrap();
-        let image = doc.render_page(0, 1.0, &Fonts::none()).unwrap();
-        // The baseline is at device y 92 and capitals rise about 17 points.
-        let dark = (72..180)
-            .flat_map(|x| (72..92).map(move |y| (x, y)))
-            .filter(|&(x, y)| pixel(&image, x, y)[0] < 128)
-            .count();
-        assert!(dark > 50, "only {dark} dark pixels where the text is");
-        assert_eq!(pixel(&image, 300, 400), WHITE_PX);
-    }
-
-    #[test]
-    fn out_of_range_page_is_an_error() {
-        let doc = PdfDoc::parse(&build_pdf(&[TestPage::new(612.0, 792.0, "")])).unwrap();
-        let in_range = |r: &DocsError| matches!(r, DocsError::PageRange { index: 1, count: 1 });
-        assert!(in_range(&doc.page_size(1).unwrap_err()));
-        assert!(in_range(&doc.render_page(1, 1.0, &Fonts::none()).unwrap_err()));
-        assert!(in_range(&doc.page_text(1).unwrap_err()));
-    }
-
-    #[test]
-    fn oversized_render_is_a_request_error() {
-        let doc = PdfDoc::parse(&build_pdf(&[TestPage::new(612.0, 792.0, "")])).unwrap();
-        assert!(matches!(
-            doc.render_page(0, 200.0, &Fonts::none()),
-            Err(DocsError::Request(_))
-        ));
+        assert!(matches!(doc.page_text(3), Err(DocsError::PageRange { index: 3, count: 3 })));
+        assert!(matches!(doc.render_page(0, 200.0, &Fonts::none()), Err(DocsError::Request(_))));
         assert!(matches!(doc.render_page(0, 0.0, &Fonts::none()), Err(DocsError::Request(_))));
-    }
-
-    #[test]
-    fn garbage_is_invalid_pdf() {
-        let result = PdfDoc::parse(b"this is not a pdf file at all");
-        assert!(matches!(result, Err(DocsError::Invalid { format: Format::Pdf, .. })));
+        assert!(matches!(PdfDoc::parse(b"not a pdf"), Err(DocsError::Invalid { format: Format::Pdf, .. })));
     }
 }

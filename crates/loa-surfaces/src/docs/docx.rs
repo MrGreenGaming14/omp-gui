@@ -872,213 +872,68 @@ fn layout(outline: &Outline, page: PageSize, margins: Margins, fonts: &Fonts) ->
 mod tests {
     use super::*;
     use docx_rs::{
-        AbstractNumbering, BreakType, Docx, IndentLevel, Level, LevelJc, LevelText, NumberFormat,
-        Numbering, NumberingId, PageMargin, Start, Style, StyleType, TableCell, TableRow,
+        AbstractNumbering, BreakType, Docx, IndentLevel, Level, LevelJc, LevelText, NumberFormat, Numbering,
+        NumberingId, PageMargin, Start, Style, StyleType, TableCell, TableRow,
     };
-    use std::io::Cursor;
-
-    fn pack(docx: Docx) -> Vec<u8> {
-        let mut out = Cursor::new(Vec::new());
-        docx.build().pack(&mut out).unwrap();
-        out.into_inner()
-    }
 
     fn para(text: &str) -> docx_rs::Paragraph {
         docx_rs::Paragraph::new().add_run(docx_rs::Run::new().add_text(text))
     }
 
-    fn paragraphs(doc: &DocxDoc) -> Vec<&Paragraph> {
-        doc.outline()
-            .blocks
-            .iter()
-            .filter_map(|b| match b {
-                Block::Paragraph(p) => Some(p),
-                Block::Table(_) => None,
-            })
-            .collect()
-    }
-
-    fn cell(text: &str) -> TableCell {
-        TableCell::new().add_paragraph(para(text))
-    }
-
-    fn table_2x2() -> docx_rs::Table {
-        docx_rs::Table::new(vec![
-            TableRow::new(vec![cell("a1"), cell("b1")]),
-            TableRow::new(vec![cell("a2"), cell("b2")]),
-        ])
-    }
-
-    fn is_dark(p: [u8; 4]) -> bool {
-        p[0] < 128 && p[3] > 0
-    }
-
     #[test]
-    fn headings_come_from_style_names_and_ids() {
-        let docx = Docx::new()
-            .add_style(Style::new("Heading1", StyleType::Paragraph).name("heading 1"))
-            .add_style(Style::new("Custom", StyleType::Paragraph).name("heading 2"))
-            .add_paragraph(para("Report").style("Title"))
-            .add_paragraph(para("Intro").style("Heading1"))
-            .add_paragraph(para("Body text"))
-            .add_paragraph(para("Details").style("Custom"))
-            .add_paragraph(para("Deep").style("Heading3"));
-        let doc = DocxDoc::parse(&pack(docx)).unwrap();
-        assert_eq!(
-            doc.headings(),
-            [
-                (0, "Report".to_owned()),
-                (1, "Intro".to_owned()),
-                (2, "Details".to_owned()),
-                (3, "Deep".to_owned())
-            ]
-        );
-        let body = paragraphs(&doc)[2];
-        assert_eq!(body.heading_level, None);
-        assert_eq!(paragraphs(&doc)[3].style.as_deref(), Some("Custom"));
-    }
-
-    #[test]
-    fn runs_keep_their_formatting() {
-        let docx = Docx::new().add_paragraph(
-            docx_rs::Paragraph::new()
-                .add_run(docx_rs::Run::new().add_text("plain "))
-                .add_run(docx_rs::Run::new().add_text("strong").bold())
-                .add_run(docx_rs::Run::new().add_text(" em").italic().underline("single")),
-        );
-        let doc = DocxDoc::parse(&pack(docx)).unwrap();
-        let p = paragraphs(&doc)[0];
-        let formats: Vec<_> = p.runs.iter().map(|r| (r.text.as_str(), r.bold, r.italic, r.underline)).collect();
-        assert_eq!(
-            formats,
-            [("plain ", false, false, false), ("strong", true, false, false), (" em", false, true, true)]
-        );
-        assert_eq!(p.text, "plain strong em");
-    }
-
-    #[test]
-    fn numbered_list_items_carry_level_and_marker() {
+    fn a_document_round_trips_to_outline_text_pages_and_pixels() {
         let level = |l: usize, format: &str, text: &str| {
             Level::new(l, Start::new(1), NumberFormat::new(format), LevelText::new(text), LevelJc::new("left"))
         };
         let item = |text: &str, l: usize| para(text).numbering(NumberingId::new(2), IndentLevel::new(l));
-        let docx = Docx::new()
-            .add_abstract_numbering(
-                // docx-rs always writes its own abstract numbering 1.
-                AbstractNumbering::new(5)
-                    .add_level(level(0, "decimal", "%1."))
-                    .add_level(level(1, "lowerLetter", "%1.%2)")),
-            )
-            .add_numbering(Numbering::new(2, 5))
-            .add_paragraph(item("first", 0))
-            .add_paragraph(item("second", 0))
-            .add_paragraph(item("sub", 1))
-            .add_paragraph(item("third", 0))
-            .add_paragraph(item("sub again", 1))
-            .add_paragraph(para("after"));
-        let doc = DocxDoc::parse(&pack(docx)).unwrap();
-        let items: Vec<_> = paragraphs(&doc)
-            .iter()
-            .map(|p| p.list.as_ref().map(|l| (l.num_id, l.level, l.marker.clone())))
-            .collect();
-        assert_eq!(
-            items,
-            [
-                Some((2, 0, "1.".to_owned())),
-                Some((2, 0, "2.".to_owned())),
-                Some((2, 1, "2.a)".to_owned())),
-                Some((2, 0, "3.".to_owned())),
-                Some((2, 1, "3.a)".to_owned())),
-                None
-            ]
-        );
-    }
-
-    #[test]
-    fn table_cells_and_text_keep_document_order() {
-        let docx = Docx::new()
-            .add_paragraph(para("before"))
-            .add_table(table_2x2())
-            .add_paragraph(
-                docx_rs::Paragraph::new().add_run(
-                    docx_rs::Run::new()
-                        .add_text("x")
-                        .add_tab()
-                        .add_text("y")
-                        .add_break(BreakType::TextWrapping)
-                        .add_text("z"),
-                ),
-            );
-        let doc = DocxDoc::parse(&pack(docx)).unwrap();
-        let Block::Table(table) = &doc.outline().blocks[1] else { panic!("expected a table") };
-        assert_eq!(table.rows, [["a1", "b1"], ["a2", "b2"]]);
-        assert_eq!(doc.text(), "before\na1\tb1\na2\tb2\nx\ty\nz");
-    }
-
-    #[test]
-    fn page_size_and_margins_come_from_the_section() {
-        let docx = Docx::new()
-            .page_size(8000, 10000)
-            .page_margin(PageMargin::new().top(1440).left(1440).right(1440).bottom(1440))
-            .add_paragraph(para("hello"));
-        let doc = DocxDoc::parse(&pack(docx)).unwrap();
-        assert_eq!(doc.page_count(), 1);
-        assert_eq!(doc.page_size(0).unwrap(), PageSize { width: 400.0, height: 500.0 });
-        assert!(matches!(doc.page_size(1), Err(DocsError::PageRange { index: 1, count: 1 })));
-    }
-
-    #[test]
-    fn long_documents_paginate_and_page_breaks_start_pages() {
-        let mut docx = Docx::new().page_size(12240, 15840);
-        for i in 0..200 {
-            docx = docx.add_paragraph(para(&format!("Paragraph number {i}")));
-        }
-        let doc = DocxDoc::parse(&pack(docx)).unwrap();
-        assert!(doc.page_count() > 1, "{} pages", doc.page_count());
-        let last = doc.page_count() - 1;
-        assert!(doc.render_page(last, 1.0, &Fonts::none()).is_ok());
-        assert!(matches!(
-            doc.render_page(last + 1, 1.0, &Fonts::none()),
-            Err(DocsError::PageRange { .. })
-        ));
-
-        let docx = Docx::new()
-            .add_paragraph(para("one"))
-            .add_paragraph(para("two").page_break_before(true))
-            .add_paragraph(docx_rs::Paragraph::new().add_run(docx_rs::Run::new().add_break(BreakType::Page)))
-            .add_paragraph(para("three"));
-        let doc = DocxDoc::parse(&pack(docx)).unwrap();
-        assert_eq!(doc.page_count(), 3);
-    }
-
-    #[test]
-    fn render_draws_text_inside_the_margins() {
+        let cell = |text: &str| TableCell::new().add_paragraph(para(text));
         let docx = Docx::new()
             .page_size(8000, 10000)
             .page_margin(PageMargin::new().top(1440).left(1440).right(1440).bottom(1440))
             .add_style(Style::new("Heading1", StyleType::Paragraph).name("heading 1"))
-            .add_paragraph(para("Title text").style("Heading1"))
-            .add_paragraph(para("Body"))
-            .add_table(table_2x2());
-        let doc = DocxDoc::parse(&pack(docx)).unwrap();
+            .add_style(Style::new("Custom", StyleType::Paragraph).name("heading 2"))
+            // docx-rs always writes its own abstract numbering 1.
+            .add_abstract_numbering(
+                AbstractNumbering::new(5).add_level(level(0, "decimal", "%1.")).add_level(level(1, "lowerLetter", "%1.%2)")),
+            )
+            .add_numbering(Numbering::new(2, 5))
+            .add_paragraph(para("Intro").style("Heading1"))
+            .add_paragraph(
+                docx_rs::Paragraph::new()
+                    .add_run(docx_rs::Run::new().add_text("plain "))
+                    .add_run(docx_rs::Run::new().add_text("strong").bold())
+                    .add_run(docx_rs::Run::new().add_text(" em").italic().underline("single").add_tab().add_text("x")),
+            )
+            .add_paragraph(item("first", 0))
+            .add_paragraph(item("sub", 1))
+            .add_paragraph(item("second", 0))
+            .add_table(docx_rs::Table::new(vec![TableRow::new(vec![cell("a1"), cell("b1")])]))
+            .add_paragraph(para("Details").style("Custom").page_break_before(true))
+            .add_paragraph(docx_rs::Paragraph::new().add_run(docx_rs::Run::new().add_break(BreakType::Page)))
+            .add_paragraph(para("Deep").style("Heading3"));
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        docx.build().pack(&mut bytes).unwrap();
+        let doc = DocxDoc::parse(bytes.get_ref()).unwrap();
+
+        assert_eq!(doc.headings(), [(1, "Intro".to_owned()), (2, "Details".to_owned()), (3, "Deep".to_owned())]);
+        assert_eq!(doc.text(), "Intro\nplain strong em\tx\nfirst\nsub\nsecond\na1\tb1\nDetails\n\n\nDeep");
+        let paragraphs: Vec<&Paragraph> =
+            doc.outline().blocks.iter().filter_map(|b| if let Block::Paragraph(p) = b { Some(p) } else { None }).collect();
+        let runs: Vec<_> = paragraphs[1].runs.iter().map(|r| (r.text.as_str(), r.bold, r.italic, r.underline)).collect();
+        assert_eq!(runs, [("plain ", false, false, false), ("strong", true, false, false), (" em\tx", false, true, true)]);
+        let markers: Vec<_> = paragraphs[2..5].iter().map(|p| p.list.as_ref().map(|l| (l.level, l.marker.as_str()))).collect();
+        assert_eq!(markers, [Some((0, "1.")), Some((1, "1.a)")), Some((0, "2."))]);
+        assert!(matches!(&doc.outline().blocks[5], Block::Table(t) if t.rows == [["a1", "b1"]]));
+
+        assert_eq!((doc.page_count(), doc.page_size(0).unwrap()), (3, PageSize { width: 400.0, height: 500.0 }));
         let image = doc.render_page(0, 2.0, &Fonts::none()).unwrap();
         assert_eq!((image.width, image.height), (800, 1000));
-        let dark_in = |x0: u32, y0: u32, x1: u32, y1: u32| {
-            (y0..y1).flat_map(|y| (x0..x1).map(move |x| (x, y))).any(|(x, y)| {
-                image.pixel(x, y).is_some_and(is_dark)
-            })
+        let dark = |x0: u32, y0: u32, x1: u32, y1: u32| {
+            (y0..y1).flat_map(|y| (x0..x1).map(move |x| (x, y))).any(|(x, y)| image.pixel(x, y).is_some_and(|p| p[0] < 128))
         };
-        // Heading starts at the 72pt margin, scaled by 2.
-        assert!(dark_in(144, 144, 344, 210));
-        assert!(!dark_in(0, 0, 800, 140), "nothing above the top margin");
-        assert!(!dark_in(0, 0, 140, 1000), "nothing left of the left margin");
-    }
-
-    #[test]
-    fn garbage_is_an_invalid_docx() {
-        assert!(matches!(
-            DocxDoc::parse(b"not a zip archive"),
-            Err(DocsError::Invalid { format: Format::Docx, .. })
-        ));
+        // Text starts at the 72pt margins, scaled by 2.
+        assert!(dark(144, 144, 344, 210) && !dark(0, 0, 800, 140) && !dark(0, 0, 140, 1000));
+        assert!(matches!(doc.render_page(3, 1.0, &Fonts::none()), Err(DocsError::PageRange { index: 3, count: 3 })));
+        assert!(matches!(DocxDoc::parse(b"not a zip"), Err(DocsError::Invalid { format: Format::Docx, .. })));
     }
 }

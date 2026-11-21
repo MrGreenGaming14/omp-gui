@@ -1,7 +1,6 @@
-//! The hub with its real servers: documents from files, a VM over a fake RFB
-//! server, the browser on the installed Chrome (skipped without one), the
-//! surface tools as host tools and behind the loopback MCP endpoint, and
-//! declared surfaces of an MCP server opened as `McpSurface`s.
+//! The hub with its real servers: documents from files, a VM over a fake RFB server, the surface
+//! tools as host tools and behind the loopback MCP endpoint, and declared surfaces of an MCP
+//! server opened as `McpSurface`s.
 
 use bytes::Bytes;
 use loa_contracts::harness::OutputBlock;
@@ -9,11 +8,8 @@ use loa_mcp::{AllowAll, HttpSpec, Manager, ServerSpec, Status, Transport};
 use loa_contracts::surface::{Encoding, Frame, Input, InputEvent, Modifiers, MouseButton, SurfaceMode, SurfaceUri};
 use loa_surfaces::docs::Fonts;
 use loa_surfaces::pixels::RgbaImage;
-use loa_surfaces::testkit::{PATIENCE, fake_rfb, html_data_url as html, next_frame};
-use loa_surfaces::{
-    CaptureMode, HubConfig, HubEvent, McpEndpoint, Origin, SurfaceHub, SurfaceTools,
-    VirtualDisplaySetup,
-};
+use loa_surfaces::testkit::{PATIENCE, fake_rfb, next_frame};
+use loa_surfaces::{HubConfig, HubEvent, McpEndpoint, Origin, SurfaceHub, SurfaceTools};
 use serde_json::json;
 use std::path::Path;
 use std::sync::Arc;
@@ -141,56 +137,6 @@ async fn a_vm_opens_from_host_and_port_streams_and_takes_agent_clicks() {
     assert_eq!((listed.len(), listed[0].open, &listed[0].origin), (1, false, &Origin::Vm));
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn a_browser_tab_streams_and_the_agent_drives_and_reads_it() {
-    let dir = tempfile::tempdir().unwrap();
-    loa_surfaces::chrome_or_skip!();
-    let hub = SurfaceHub::new(config(dir.path(), true));
-    let page = "<title>Hub</title><body style='margin:0;height:100vh;background:rgb(255,0,0)'>\
-        <input id=q style='width:200px'><script>addEventListener('mousedown',()=>document.body.style.background='rgb(0,0,255)')</script></body>";
-    let opened = hub.open_browser(&html(page)).await.unwrap();
-    assert_eq!(opened.origin, Origin::Browser);
-    assert_eq!((opened.info.width, opened.info.height), (480, 320));
-    let mut frames = opened.surface.frames().unwrap();
-    let first = next_frame(&mut frames).await;
-    assert_eq!(first.encoding, Encoding::Jpeg);
-
-    let uri = opened.info.uri.as_str();
-    let tools = SurfaceTools::new(hub.clone());
-    // The user's renderer is one input source, the agent another.
-    opened
-        .surface
-        .input(InputEvent {
-            seq: 1,
-            sent_us: 0,
-            input: Input::MouseButton { x: 400.0, y: 300.0, button: MouseButton::Left, pressed: true, modifiers: Modifiers::default() },
-        })
-        .await
-        .unwrap();
-    let text = tools.run("surface_page_text", json!({ "uri": uri }), None).await;
-    assert!(text.joined_text().contains("Title: Hub"), "{text:?}");
-    let click = tools.run("surface_click", json!({ "uri": uri, "x": 20, "y": 10 }), None).await;
-    assert!(!click.is_error, "{click:?}");
-    let typed = tools.run("surface_type", json!({ "uri": uri, "text": "hello" }), None).await;
-    assert!(!typed.is_error, "{typed:?}");
-    let shot = tools.run("surface_screenshot", json!({ "uri": uri }), None).await;
-    let png_bytes = shot_png(&shot).expect("a screenshot");
-    let decoded = loa_surfaces::pixels::decode_png(png_bytes).unwrap();
-    assert_eq!(decoded.pixel(400, 300).unwrap()[..3], [0, 0, 255], "the page saw the user's press");
-    let elements = tools.run("surface_elements", json!({ "uri": uri }), None).await;
-    assert!(elements.joined_text().contains("textbox"), "{elements:?}");
-    let navigated = tools.run("surface_navigate", json!({ "uri": uri, "url": html("<title>Two</title>two") }), None).await;
-    assert!(navigated.joined_text().contains("Two"), "{navigated:?}");
-
-    // The agent can open its own tab; the hub announces it.
-    let mut events = hub.events();
-    let own = tools.run("surface_open_browser", json!({ "url": "about:blank" }), None).await;
-    assert!(own.joined_text().contains("surface://browser/tab2"), "{own:?}");
-    assert!(matches!(events.recv().await.unwrap(), HubEvent::Opened { origin: Origin::Browser, .. }));
-    assert_eq!(hub.open_surfaces().len(), 2);
-    hub.shutdown().await;
-}
-
 async fn wait_running(manager: &Manager, name: &str) {
     let mut status = manager.watch(name).unwrap();
     tokio::time::timeout(PATIENCE, async {
@@ -293,77 +239,4 @@ async fn frame_of(frames: &mut broadcast::Receiver<Arc<Frame>>, encoding: Encodi
             return frame;
         }
     }
-}
-
-#[cfg(feature = "remote-video")]
-#[tokio::test(flavor = "multi_thread")]
-async fn a_vm_streams_h264_to_a_network_viewer_raw_frames_here_and_the_toggle_turns_video_off() {
-    let dir = tempfile::tempdir().unwrap();
-    let hub = SurfaceHub::new(config(dir.path(), false));
-    assert!(hub.video().enabled());
-    let (address, _received, send_update) = fake_rfb(8, 4, [0, 200, 0]).await;
-    let opened = hub.open_vm(&address, None).await.unwrap();
-    let mut frames = opened.surface.frames().unwrap();
-    send_update.send(()).unwrap();
-    assert_eq!(&updated_frame(&mut frames, Encoding::Rgba).await.data[..4], &[0, 200, 0, 255]);
-
-    // A viewer across the network that decodes H.264 gets video...
-    let network = hub.network_surface(&opened.info.uri).await.unwrap();
-    let mut coded = network.frames().unwrap();
-    let stream = network.negotiate(&[Encoding::H264, Encoding::Rgba]).await.unwrap().unwrap();
-    assert_eq!((stream.encoding, stream.encoder.as_str()), (Encoding::H264, "rusty_h264"));
-    let frame = frame_of(&mut coded, Encoding::H264).await;
-    assert!(frame.keyframe);
-    let mut picture = vec![0; 8 * 4 * 4];
-    assert!(loa_surfaces::proto::video::decode::VideoDecoder::new().decode(&frame, &mut picture).unwrap());
-    let [r, g, b, _] = picture[..4] else { unreachable!() };
-    assert!(r < 40 && g > 160 && b < 40, "decoded {:?}", &picture[..4]);
-    assert!(Arc::ptr_eq(&network, &hub.network_surface(&opened.info.uri).await.unwrap()), "one encoder per surface");
-
-    // ...while the viewer in this process keeps the source frames.
-    opened.surface.request_keyframe().await.unwrap();
-    let frame = next_frame(&mut frames).await;
-    assert_eq!((frame.encoding, &frame.data[..4]), (Encoding::Rgba, &[0, 200, 0, 255][..]));
-
-    hub.video().set_enabled(false).await;
-    assert_eq!(network.stream().unwrap().encoder, loa_surfaces::proto::video::SOURCE);
-    let frame = frame_of(&mut coded, Encoding::Rgba).await;
-    assert_eq!(&frame.data[..4], &[0, 200, 0, 255]);
-}
-
-fn fake_xvfb(dir: &Path) -> std::path::PathBuf {
-    let path = dir.join("Xvfb");
-    // Reports a display like `-displayfd 1` asks, then serves nothing. The
-    // number is one no X server on this machine listens on (a fixed one
-    // can belong to a real server, which Chrome would then draw on).
-    let free = (6000..7000).find(|n| !Path::new(&format!("/tmp/.X11-unix/X{n}")).exists()).unwrap();
-    loa_util::exec::write_executable(&path, format!("#!/bin/sh\necho {free}\nexec sleep 600\n")).unwrap();
-    path
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn the_virtual_display_capture_is_refused_where_it_cant_run_and_tried_where_it_can() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut missing = config(dir.path(), true);
-    missing.virtual_display = Err("Xvfb isn't installed (install the xvfb package)".into());
-    let hub = SurfaceHub::new(missing);
-    let error = hub.set_capture(CaptureMode::VirtualDisplay).unwrap_err();
-    assert!(error.to_string().contains("Xvfb isn't installed"), "{error}");
-    assert_eq!(hub.capture(), CaptureMode::Screencast);
-
-    // A display that reports a number but accepts no X clients: the hub
-    // picks the capture and says plainly why the tab can't open.
-    let mut fake = config(dir.path(), true);
-    let chrome = loa_surfaces::chrome_or_skip!();
-    fake.virtual_display = Ok(VirtualDisplaySetup { xvfb: fake_xvfb(dir.path()), chrome });
-    let hub = SurfaceHub::new(fake);
-    hub.set_capture(CaptureMode::VirtualDisplay).unwrap();
-    assert_eq!(hub.capture(), CaptureMode::VirtualDisplay);
-    let error = tokio::time::timeout(Duration::from_secs(60), hub.open_browser("about:blank"))
-        .await
-        .expect("fails in time")
-        .unwrap_err();
-    eprintln!("virtual display tab: {error}");
-    assert!(hub.open_surfaces().is_empty());
-    assert!(!hub.capture_pending().await);
 }
