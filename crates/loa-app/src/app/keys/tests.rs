@@ -8,7 +8,7 @@ use iced::{Settings, Size, event};
 use iced_runtime::Action as RuntimeAction;
 use iced_test::{Simulator, selector};
 use loa_bus::Policy;
-use loa_ui_decisions as decisions;
+use loa_ui_session::decisions as decisions;
 
 use super::*;
 use crate::app::tests::{active, deliver, escape, fake_app, prompt, update};

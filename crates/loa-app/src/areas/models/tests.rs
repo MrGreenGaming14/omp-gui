@@ -349,24 +349,22 @@ fn the_composer_lists_the_harness_models_and_switches_model_and_effort() {
             Some("anthropic/claude-x".into())
         )
     );
-    assert_eq!(f.app.ctx.composer.efforts(), (&["low".to_owned(), "high".to_owned()][..], None));
+    assert_eq!(f.app.ctx.composer.efforts(), (vec!["low", "high"], None));
 
-    let gpt = f.app.ctx.composer.models().0[1].clone();
-    update(&mut f.app, AppMessage::Composer(composer::Message::ModelPicked(gpt)));
+    update(&mut f.app, AppMessage::Composer(composer::Message::Pick(composer::PickerId::Model, 1)));
     sync(&mut f.app);
     assert_eq!(session_attr(&f.app, attr::MODEL).as_deref(), Some("openai-codex/gpt-y"));
     assert_eq!(composer_models(&f.app).1.as_deref(), Some("openai-codex/gpt-y"));
     // GPT Y has no effort setting.
-    assert_eq!(f.app.ctx.composer.efforts().0, &[] as &[String]);
+    assert!(f.app.ctx.composer.efforts().0.is_empty());
 
     // Picking the role's model records that the session follows the role.
-    let claude = f.app.ctx.composer.models().0[0].clone();
-    update(&mut f.app, AppMessage::Composer(composer::Message::ModelPicked(claude)));
+    update(&mut f.app, AppMessage::Composer(composer::Message::Pick(composer::PickerId::Model, 0)));
     sync(&mut f.app);
     assert_eq!(session_attr(&f.app, attr::MODEL).as_deref(), Some("anthropic/claude-x"));
     assert_eq!(session_attr(&f.app, attr::MODEL_ROLE).as_deref(), Some("default"));
 
-    update(&mut f.app, AppMessage::Composer(composer::Message::EffortPicked("high".into())));
+    pick(&mut f.app, composer::PickerId::Effort, "high");
     sync(&mut f.app);
     assert_eq!(session_attr(&f.app, attr::EFFORT).as_deref(), Some("high"));
     assert_eq!(f.app.ctx.composer.efforts().1, Some("high"));
@@ -376,7 +374,7 @@ fn the_composer_lists_the_harness_models_and_switches_model_and_effort() {
 fn an_effort_the_harness_cannot_change_mid_session_starts_the_next_session() {
     let mut f = fixture(FakeAdapter::new("codex", omp_models(), false));
     update(&mut f.app, AppMessage::NewSession);
-    update(&mut f.app, AppMessage::Composer(composer::Message::EffortPicked("high".into())));
+    pick(&mut f.app, composer::PickerId::Effort, "high");
     assert!(f.app.ctx.notice().is_some_and(|notice| notice.contains("new sessions start with high effort")), "{:?}", f.app.ctx.notice());
     update(&mut f.app, AppMessage::NewSession);
     assert_eq!(f.configs.locked().last().and_then(|config| config.effort.clone()).as_deref(), Some("high"));
@@ -408,7 +406,7 @@ fn the_model_screen_opens_from_the_palette_and_the_composer_and_switches_the_ses
 
     // The composer's "All models…" opens the same page; picking the role row
     // switches to its model and records the role.
-    update(&mut f.app, AppMessage::Composer(composer::Message::ModelActionPicked("all".into())));
+    pick(&mut f.app, composer::PickerId::Model, "all");
     assert_eq!(f.app.ctx.screen(), Some(AreaId::Models));
     assert_eq!(picker(&f.app).selected(), Some(2), "the current model is selected first");
     models(&mut f.app, Message::Picker(picker::Message::Pick(0)));
@@ -455,7 +453,7 @@ fn the_sign_in_screen_lists_providers_and_runs_an_omp_login() {
 fn the_settings_screen_saves_omp_config_through_validation() {
     let mut f = fixture(FakeAdapter::new("omp", omp_models(), true));
     update(&mut f.app, AppMessage::NewSession);
-    update(&mut f.app, AppMessage::Composer(composer::Message::ModelActionPicked("settings".into())));
+    pick(&mut f.app, composer::PickerId::Model, "settings");
     assert_eq!(f.app.areas.models.page, Page::Settings);
     assert!(matches!(f.app.areas.models.settings, Load::Ready(_)));
 
@@ -479,4 +477,10 @@ fn the_settings_screen_saves_omp_config_through_validation() {
     assert_eq!(state.errors()[0].location, "config.yml");
     assert!(state.is_dirty());
     assert_eq!(std::fs::read_to_string(&config).unwrap(), text);
+}
+
+/// Picks the composer row `key` of `picker`.
+fn pick(app: &mut App, picker: composer::PickerId, key: &str) {
+    let message = app.ctx.composer.pick_key(picker, key).unwrap_or_else(|| panic!("{key} is listed"));
+    update(app, AppMessage::Composer(message));
 }

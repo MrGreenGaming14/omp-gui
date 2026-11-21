@@ -123,7 +123,7 @@ fn messages(dom: &Dom, role: &str) -> Vec<String> {
 /// Types `text` into the composer and submits it.
 fn prompt(rt: &Runtime, app: &mut App, text: &str) {
     use iced::widget::text_editor::{Action, Edit};
-    use loa_ui_composer as composer;
+    use loa_ui_session::composer as composer;
     for c in text.chars() {
         update(rt, app, Message::Composer(composer::Message::Edit(Action::Edit(Edit::Insert(c)))));
     }
