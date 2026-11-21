@@ -1,12 +1,13 @@
 //! The `browser` surface server: launches Chrome and keeps its tabs.
 
 use loa_util::LockExt;
-use crate::browser::chrome::{BrowserConfig, Capture, VirtualDisplayConfig};
+use crate::browser::chrome::{BrowserConfig, CaptureConfig, VirtualDisplayConfig};
 use crate::feed::{FrameFeed, InputLog};
-use crate::browser::tab::{Feed, Tab, TabParts, set_viewport};
-use crate::browser::x11::{CaptureTarget, X11Capture, spawn_capture};
+use crate::browser::screencast::{self, Screencast};
+use crate::browser::tab::{Tab, TabParts, set_viewport};
+use crate::browser::x11::{CaptureTarget, X11Capture, X11Display, spawn_capture};
 use crate::browser::xvfb::VirtualDisplay;
-use crate::browser::{BrowserError, Result, SERVER_NAME, screencast};
+use crate::browser::{BrowserError, Result, SERVER_NAME};
 use async_trait::async_trait;
 use chromiumoxide::browser::{Browser, BrowserConfig as CdpConfig};
 use chromiumoxide::cdp::browser_protocol::page::EventScreencastFrame;
@@ -161,8 +162,8 @@ impl BrowserServer {
     /// it opens.
     pub async fn launch(config: BrowserConfig) -> Result<Self> {
         let shared = match config.capture {
-            Capture::Screencast => Some(Instance::launch(&config, None).await?),
-            Capture::VirtualDisplay(_) => None,
+            CaptureConfig::Screencast => Some(Instance::launch(&config, None).await?),
+            CaptureConfig::VirtualDisplay(_) => None,
         };
         Ok(Self { config, shared, tabs: Mutex::default(), next: AtomicU64::new(0), closed: AtomicBool::new(false) })
     }
@@ -179,8 +180,8 @@ impl BrowserServer {
         let id = self.next.fetch_add(1, Ordering::Relaxed) + 1;
         let uri = SurfaceUri::new(SERVER_NAME, &format!("tab{id}")).map_err(|e| BrowserError::Config(e.to_string()))?;
         let tab = Arc::new(match &self.config.capture {
-            Capture::Screencast => self.open_screencast_tab(uri).await?,
-            Capture::VirtualDisplay(display) => self.open_display_tab(uri, display).await?,
+            CaptureConfig::Screencast => self.open_screencast_tab(uri).await?,
+            CaptureConfig::VirtualDisplay(display) => self.open_display_tab(uri, display).await?,
         });
         if let Err(error) = tab.navigate(url).await {
             self.close(&tab).await;
@@ -217,7 +218,7 @@ impl BrowserServer {
             hub,
             log,
             size: Arc::new(Mutex::new((width, height))),
-            feed: Feed::Screencast { pump, quality: self.config.jpeg_quality },
+            capture: Box::new(Screencast { pump, quality: self.config.jpeg_quality }),
         }))
     }
 
@@ -255,7 +256,8 @@ impl BrowserServer {
         });
         // The thread ends when the tab sets `stop` or the display goes away.
         drop(spawn_capture(capture, target.clone()));
-        Ok(Tab::new(TabParts { uri, page, instance, hub, log, size, feed: Feed::Display { target, screen } }))
+        let capture = Box::new(X11Display { target, screen });
+        Ok(Tab::new(TabParts { uri, page, instance, hub, log, size, capture }))
     }
 
     /// The open tab behind `uri`.

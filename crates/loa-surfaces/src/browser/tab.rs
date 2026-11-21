@@ -6,8 +6,7 @@ use loa_util::time::now_us;
 use crate::browser::input::{Command, InputMapper};
 use crate::browser::server::Instance;
 use crate::browser::structured::{self, OutlineNode, PageInfo};
-use crate::browser::x11::CaptureTarget;
-use crate::browser::{BrowserError, Result, screencast};
+use crate::browser::{BrowserError, Result};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use async_trait::async_trait;
@@ -16,16 +15,25 @@ use chromiumoxide::Page;
 use chromiumoxide::cdp::browser_protocol::emulation::SetDeviceMetricsOverrideParams;
 use chromiumoxide::cdp::browser_protocol::page::{CaptureScreenshotFormat, CaptureScreenshotParams};
 use loa_contracts::surface::{Document, Frame, InputEvent, Surface, SurfaceError, SurfaceInfo, SurfaceMode, SurfaceUri};
-use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio::sync::broadcast;
-use tokio::task::JoinHandle;
 
-/// Where a tab's frames come from.
-pub(crate) enum Feed {
-    Screencast { pump: JoinHandle<()>, quality: u8 },
-    Display { target: Arc<CaptureTarget>, screen: (u32, u32) },
+/// Where a tab's frames come from: Chrome's screencast or a virtual display grab.
+#[async_trait]
+pub(crate) trait Capture: Send + Sync {
+    /// The viewport the capture can show for a requested `width` x `height`.
+    fn fit(&self, width: u32, height: u32) -> (u32, u32) {
+        (width, height)
+    }
+
+    /// Sets the page viewport and captures at the new size.
+    async fn resize(&self, page: &Page, width: u32, height: u32) -> Result<()>;
+
+    /// Makes the next frame a whole picture; `subscribe` when a viewer just subscribed.
+    fn keyframe(&self, hub: &FrameFeed, subscribe: bool);
+
+    fn stop(&self);
 }
 
 /// A browser tab: `surface://browser/<tab>`.
@@ -40,7 +48,7 @@ pub struct Tab {
     /// Held while an input is dispatched so inputs reach Chrome in order.
     mapper: tokio::sync::Mutex<InputMapper>,
     label: Mutex<String>,
-    feed: Feed,
+    capture: Box<dyn Capture>,
 }
 
 /// Everything a tab is made of, put together by the server.
@@ -51,7 +59,7 @@ pub(crate) struct TabParts {
     pub hub: Arc<FrameFeed>,
     pub log: Arc<Mutex<InputLog>>,
     pub size: Arc<Mutex<(u32, u32)>>,
-    pub feed: Feed,
+    pub capture: Box<dyn Capture>,
 }
 
 impl Tab {
@@ -65,7 +73,7 @@ impl Tab {
             log: parts.log,
             size: parts.size,
             mapper: tokio::sync::Mutex::new(InputMapper::default()),
-            feed: parts.feed,
+            capture: parts.capture,
         }
     }
 
@@ -126,34 +134,20 @@ impl Tab {
         Ok(())
     }
 
-    /// Sets the page viewport. The screencast restarts at the new size; the
-    /// virtual display keeps its screen and the capture is clipped to it.
+    /// Sets the page viewport, clipped to what the capture can show.
     async fn resize(&self, width: u32, height: u32) -> Result<()> {
-        let (width, height) = match &self.feed {
-            Feed::Display { screen, .. } => (width.min(screen.0), height.min(screen.1)),
-            Feed::Screencast { .. } => (width, height),
-        };
+        let (width, height) = self.capture.fit(width, height);
         if (width, height) == self.size() {
             return Ok(());
         }
-        if let Feed::Screencast { .. } = self.feed {
-            screencast::stop(&self.page).await?;
-        }
-        set_viewport(&self.page, width, height).await?;
+        self.capture.resize(&self.page, width, height).await?;
         *self.size.locked() = (width, height);
-        match &self.feed {
-            Feed::Screencast { quality, .. } => screencast::start(&self.page, width, height, *quality).await?,
-            Feed::Display { target, .. } => target.keyframe.store(true, Ordering::Relaxed),
-        }
         Ok(())
     }
 
     /// Stops the frame feed. The page itself is closed by the server.
     pub(crate) fn stop_feed(&self) {
-        match &self.feed {
-            Feed::Screencast { pump, .. } => pump.abort(),
-            Feed::Display { target, .. } => target.stop.store(true, Ordering::Relaxed),
-        }
+        self.capture.stop();
     }
 }
 
@@ -186,23 +180,12 @@ impl Surface for Tab {
 
     fn frames(&self) -> loa_contracts::surface::Result<broadcast::Receiver<Arc<Frame>>> {
         let receiver = self.hub.subscribe();
-        // Navigation can finish after Chrome's only repaint of a static page.
-        // A subscriber must still receive the current image without an input.
-        if matches!(self.feed, Feed::Screencast { .. }) {
-            self.hub.republish_keyframe();
-        }
+        self.capture.keyframe(&self.hub, true);
         Ok(receiver)
     }
 
     async fn request_keyframe(&self) -> loa_contracts::surface::Result<()> {
-        match &self.feed {
-            // Every screencast frame is a whole JPEG. A static page sends no
-            // new ones, so the last is sent again.
-            Feed::Screencast { .. } => {
-                self.hub.republish_keyframe();
-            }
-            Feed::Display { target, .. } => target.keyframe.store(true, Ordering::Relaxed),
-        }
+        self.capture.keyframe(&self.hub, false);
         Ok(())
     }
 

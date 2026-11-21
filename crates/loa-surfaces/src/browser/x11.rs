@@ -8,6 +8,7 @@ use loa_util::LockExt;
 use crate::feed::{FrameFeed, InputLog, Picture};
 use crate::pixels::changed_rows;
 use loa_util::time::now_us;
+use crate::browser::tab::{Capture, set_viewport};
 use crate::browser::{BrowserError, Result};
 use bytes::Bytes;
 use loa_contracts::surface::{Encoding, Rect};
@@ -157,6 +158,38 @@ pub(crate) struct CaptureTarget {
     pub stop: AtomicBool,
     pub keyframe: AtomicBool,
     pub interval: Duration,
+}
+
+/// The headed [`Capture`] strategy: a tab's virtual display grabbed by [`spawn_capture`].
+pub(crate) struct X11Display {
+    pub target: Arc<CaptureTarget>,
+    /// The display's screen; the viewport can't outgrow it.
+    pub screen: (u32, u32),
+}
+
+#[async_trait::async_trait]
+impl Capture for X11Display {
+    fn fit(&self, width: u32, height: u32) -> (u32, u32) {
+        (width.min(self.screen.0), height.min(self.screen.1))
+    }
+
+    async fn resize(&self, page: &chromiumoxide::Page, width: u32, height: u32) -> Result<()> {
+        set_viewport(page, width, height).await?;
+        *self.target.size.locked() = (width, height);
+        self.target.keyframe.store(true, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Grabs are diffed, so only an explicit request needs a whole picture.
+    fn keyframe(&self, _: &FrameFeed, subscribe: bool) {
+        if !subscribe {
+            self.target.keyframe.store(true, Ordering::Relaxed);
+        }
+    }
+
+    fn stop(&self) {
+        self.target.stop.store(true, Ordering::Relaxed);
+    }
 }
 
 /// Captures on a thread of its own (x11rb is blocking) until `stop` is set

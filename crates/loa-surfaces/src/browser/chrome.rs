@@ -5,9 +5,9 @@ use crate::browser::{BrowserError, Result};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
-/// Where frames come from.
+/// Which capture strategy tabs use.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Capture {
+pub enum CaptureConfig {
     /// Headless Chrome, frames from `Page.startScreencast` as JPEG.
     Screencast,
     /// Headed Chrome on its own Xvfb display per tab, captured as raw RGBA.
@@ -47,7 +47,7 @@ pub struct BrowserConfig {
     pub height: u32,
     /// Screencast JPEG quality, 0 to 100.
     pub jpeg_quality: u8,
-    pub capture: Capture,
+    pub capture: CaptureConfig,
     /// Passed to Chrome after the built in flags.
     pub extra_args: Vec<String>,
 }
@@ -62,7 +62,7 @@ impl BrowserConfig {
             width: 1280,
             height: 720,
             jpeg_quality: 80,
-            capture: Capture::Screencast,
+            capture: CaptureConfig::Screencast,
             extra_args: Vec::new(),
         }
     }

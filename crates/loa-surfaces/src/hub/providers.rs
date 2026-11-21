@@ -1,6 +1,6 @@
 //! The [`SurfaceProvider`] adapters: the browser, documents, VNC endpoints and MCP declared surfaces.
 
-use crate::browser::{BrowserConfig, BrowserServer, Capture, Tab, VirtualDisplayConfig};
+use crate::browser::{BrowserConfig, BrowserServer, CaptureConfig, Tab, VirtualDisplayConfig};
 use crate::docs::{DocSurface, DocsServer, Fonts};
 use crate::hub::mcp_surface::McpSurface;
 use crate::hub::service::{CaptureMode, Listed, OpenRequest, Opened, Origin, SurfaceProvider, VirtualDisplaySetup};
@@ -70,7 +70,7 @@ impl BrowserProvider {
         if mode == CaptureMode::VirtualDisplay {
             let setup = self.display()?;
             config.executable = setup.chrome;
-            config.capture = Capture::VirtualDisplay(VirtualDisplayConfig::new(setup.xvfb));
+            config.capture = CaptureConfig::VirtualDisplay(VirtualDisplayConfig::new(setup.xvfb));
         }
         if let Some(root) = &config.profile_root {
             std::fs::create_dir_all(root).map_err(crate::browser::BrowserError::from)?;
@@ -89,8 +89,8 @@ impl BrowserProvider {
 
 fn mode_of(server: &BrowserServer) -> CaptureMode {
     match server.config().capture {
-        Capture::Screencast => CaptureMode::Screencast,
-        Capture::VirtualDisplay(_) => CaptureMode::VirtualDisplay,
+        CaptureConfig::Screencast => CaptureMode::Screencast,
+        CaptureConfig::VirtualDisplay(_) => CaptureMode::VirtualDisplay,
     }
 }
 
