@@ -8,90 +8,58 @@ use crate::{action, indent, list_row_height};
 use iced::font::{self, Font};
 use iced::widget::text::Wrapping;
 use iced::widget::{button, column, container, row, scrollable, space, text, tooltip};
-use iced::{Center, Element, Fill, Padding, Task};
+use iced::{Center, Element, Fill, Task};
 use loa_core::NodeId;
 use loa_ui_kit::icons::{Icon, muted};
 use loa_ui_kit::style::{self as kit, ButtonKind, Surface, Tone};
-use loa_ui_kit::theme::{SpaceRole as Sp, TextRole as T, sp, text_size as ts};
+use loa_ui_kit::theme::{SpaceRole as Sp, TextRole as T, pad_x, sp, text_size as ts};
 use loa_ui_kit::widgets::{PanelPane, label};
 use std::collections::{HashMap, HashSet};
 
-/// One session of the family.
+/// One session of the family: `parent` is `parent_session` on `<session>`, `forked_at` the
+/// parent's journal sequence the fork starts after, `title` shows instead of the id when not
+/// empty, and `turns` (in journal order) are needed for the current session and sessions with forks.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SessionInfo {
-    pub id: String,
-    /// `parent_session` on `<session>`.
-    pub parent: Option<String>,
-    /// The parent's journal sequence the fork starts after (`forked_at`).
-    pub forked_at: Option<u64>,
-    /// Shown instead of the id when not empty.
-    pub title: String,
-    /// In journal order; needed for the current session and sessions with forks.
-    pub turns: Vec<TurnInfo>,
-}
+pub struct SessionInfo { pub id: String, pub parent: Option<String>, pub forked_at: Option<u64>, pub title: String, pub turns: Vec<TurnInfo> }
 
+/// A turn element, the target of rewind and fork, and the sequence that inserted it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TurnInfo {
-    /// The turn element; the target of rewind and fork.
-    pub node: NodeId,
-    /// The sequence that inserted the turn, ascending along the turns.
-    pub seq: u64,
-    pub first_line: String,
-}
+pub struct TurnInfo { pub node: NodeId, pub seq: u64, pub first_line: String }
 
 /// One visible row; `index` is stable under collapsing and is what messages carry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Row<'a> {
-    pub index: usize,
-    pub depth: u16,
-    pub kind: RowKind<'a>,
-}
+pub struct Row<'a> { pub index: usize, pub depth: u16, pub kind: RowKind<'a> }
 
+/// A session; where the children below forked (the turn's first line, or `at #seq` before any
+/// turn); or a turn of the current session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RowKind<'a> {
     Session { id: &'a str, title: &'a str, current: bool, on_path: bool, collapsed: bool },
-    /// Where the children below forked: the turn's first line, or `at #seq` before any turn.
     ForkPoint { session: &'a str, seq: u64, first_line: Option<&'a str> },
-    /// A turn of the current session.
     Turn { session: &'a str, node: NodeId, first_line: &'a str },
 }
 
 /// Every `usize` is a [`Row::index`].
 #[derive(Debug, Clone)]
-pub enum Message {
-    Toggle(usize),
-    Rewind(usize),
-    Fork(usize),
-    Open(usize),
-    Select(usize),
-}
+pub enum Message { Toggle(usize), Rewind(usize), Fork(usize), Open(usize), Select(usize) }
 
+/// `Rewind` rewinds `session` to just before `turn`.
 #[derive(Debug, Clone, PartialEq)]
-pub enum Event {
-    /// Rewind `session` to just before `turn`.
-    Rewind { session: String, turn: NodeId },
-    Fork { session: String, turn: NodeId },
-    Open(String),
-}
+pub enum Event { Rewind { session: String, turn: NodeId }, Fork { session: String, turn: NodeId }, Open(String) }
 
 /// A layout row as indices into the family.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Slot {
-    Session(usize),
-    ForkPoint { session: usize, seq: u64, turn: Option<usize> },
-    Turn { session: usize, turn: usize },
-}
+enum Slot { Session(usize), ForkPoint { session: usize, seq: u64, turn: Option<usize> }, Turn { session: usize, turn: usize } }
 
+/// The family with, per session, whether it is the current one or an ancestor of it; the
+/// layout and the indices of it no collapsed session hides; collapsed ids, kept across [`State::set_family`].
 #[derive(Debug, Default)]
 pub struct State {
     sessions: Vec<SessionInfo>,
     current: Option<usize>,
-    /// Per session: the current one or an ancestor of it.
     on_path: Vec<bool>,
     layout: Vec<(u16, Slot)>,
-    /// Layout indices not hidden by a collapsed session.
     visible: Vec<usize>,
-    /// Kept across [`State::set_family`].
     collapsed: HashSet<String>,
     selected: Option<usize>,
 }
@@ -101,10 +69,25 @@ impl State {
 
     /// Replaces the family; `current` is the session open in the chat.
     pub fn set_family(&mut self, sessions: Vec<SessionInfo>, current: &str) {
-        let tree = Tree::new(&sessions, current);
+        let mut by_id: HashMap<&str, usize> = HashMap::with_capacity(sessions.len());
+        sessions.iter().enumerate().for_each(|(i, s)| { by_id.entry(&s.id).or_insert(i); });
+        let declared: Vec<_> = sessions.iter().map(|s| s.parent.as_deref().and_then(|p| by_id.get(p).copied())).collect();
+        // A session whose ancestry still continues after more steps than there are sessions reaches a cycle.
+        let parent: Vec<_> = (0..sessions.len()).map(|i| if (0..=sessions.len()).try_fold(i, |at, _| declared[at]).is_some() { None } else { declared[i] }).collect();
+        let mut children = vec![Vec::new(); sessions.len()];
+        (0..sessions.len()).for_each(|i| if let Some(p) = parent[i] { children[p].push(i) });
+        children.iter_mut().for_each(|l| l.sort_by_key(|&c| (sessions[c].forked_at.unwrap_or(0), &sessions[c].id)));
+        let current = by_id.get(current).copied();
+        let mut on_path = vec![false; sessions.len()];
+        let mut cursor = current;
+        while let Some(i) = cursor {
+            on_path[i] = true;
+            cursor = parent[i];
+        }
+        let tree = Tree { sessions: &sessions, children, current };
         let mut layout = Vec::with_capacity(sessions.len());
-        tree.roots.iter().for_each(|&r| tree.emit(&sessions, r, 0, &mut layout));
-        (self.on_path, self.current, self.layout, self.sessions, self.selected) = (tree.on_path, tree.current, layout, sessions, None);
+        (0..sessions.len()).filter(|&i| parent[i].is_none()).for_each(|r| tree.emit(r, 0, &mut layout));
+        (self.on_path, self.current, self.layout, self.sessions, self.selected) = (on_path, current, layout, sessions, None);
         let sessions = &self.sessions;
         self.collapsed.retain(|id| sessions.iter().any(|s| s.id == *id));
         self.refresh_visible();
@@ -115,11 +98,8 @@ impl State {
     pub fn update(&mut self, message: Message) -> (Task<Message>, Option<Event>) {
         let event = match message {
             Message::Toggle(i) => {
-                if let Some(&(_, Slot::Session(s))) = self.layout.get(i) {
-                    let id = &self.sessions[s].id;
-                    if !self.collapsed.remove(id) { self.collapsed.insert(id.clone()); }
-                    self.refresh_visible();
-                }
+                if let Some(&(_, Slot::Session(s))) = self.layout.get(i) && !self.collapsed.remove(&self.sessions[s].id) { self.collapsed.insert(self.sessions[s].id.clone()); }
+                self.refresh_visible();
                 None
             }
             Message::Rewind(i) => self.current_turn(i).map(|(session, turn)| Event::Rewind { session, turn }),
@@ -129,14 +109,14 @@ impl State {
                 _ => None,
             },
             Message::Select(i) => {
-                if i < self.layout.len() { self.selected = Some(i) }
+                self.selected = Some(i).filter(|&i| i < self.layout.len()).or(self.selected);
                 None
             }
         };
         (Task::none(), event)
     }
 
-    pub fn view(&self) -> Element<'_, Message> { scrollable(column(self.rows().map(|r| self.row_view(r))).padding(Padding::ZERO.left(sp(Sp::S)).right(sp(Sp::S)))).height(Fill).into() }
+    pub fn view(&self) -> Element<'_, Message> { scrollable(column(self.rows().map(|r| self.row_view(r))).padding(pad_x(Sp::S))).height(Fill).into() }
 
     fn current_turn(&self, i: usize) -> Option<(String, NodeId)> {
         match self.layout.get(i) {
@@ -157,16 +137,11 @@ impl State {
 
     fn row(&self, index: usize) -> Row<'_> {
         let (depth, slot) = self.layout[index];
+        let s = |i: usize| &self.sessions[i];
         let kind = match slot {
-            Slot::Session(s) => {
-                let i = &self.sessions[s];
-                RowKind::Session { id: &i.id, title: &i.title, current: self.current == Some(s), on_path: self.on_path[s], collapsed: self.collapsed.contains(&i.id) }
-            }
-            Slot::ForkPoint { session, seq, turn } => RowKind::ForkPoint { session: &self.sessions[session].id, seq, first_line: turn.map(|t| self.sessions[session].turns[t].first_line.as_str()) },
-            Slot::Turn { session, turn } => {
-                let (info, t) = (&self.sessions[session], &self.sessions[session].turns[turn]);
-                RowKind::Turn { session: &info.id, node: t.node, first_line: &t.first_line }
-            }
+            Slot::Session(i) => RowKind::Session { id: &s(i).id, title: &s(i).title, current: self.current == Some(i), on_path: self.on_path[i], collapsed: self.collapsed.contains(&s(i).id) },
+            Slot::ForkPoint { session, seq, turn } => RowKind::ForkPoint { session: &s(session).id, seq, first_line: turn.map(|t| s(session).turns[t].first_line.as_str()) },
+            Slot::Turn { session, turn } => RowKind::Turn { session: &s(session).id, node: s(session).turns[turn].node, first_line: &s(session).turns[turn].first_line },
         };
         Row { index, depth, kind }
     }
@@ -209,98 +184,40 @@ impl PanelPane for State {
     fn view(&self) -> Element<'_, Message> { State::view(self) }
 }
 
-/// Resolved fork links: roots, children sorted by `forked_at` then id, and the current path.
-struct Tree {
-    roots: Vec<usize>,
+/// Resolved fork links for laying the family out.
+struct Tree<'a> {
+    sessions: &'a [SessionInfo],
     children: Vec<Vec<usize>>,
     current: Option<usize>,
-    on_path: Vec<bool>,
 }
 
-impl Tree {
-    fn new(sessions: &[SessionInfo], current: &str) -> Self {
-        let mut by_id: HashMap<&str, usize> = HashMap::with_capacity(sessions.len());
-        sessions.iter().enumerate().for_each(|(i, s)| { by_id.entry(&s.id).or_insert(i); });
-        let parent = break_cycles(&sessions.iter().map(|s| s.parent.as_deref().and_then(|p| by_id.get(p).copied())).collect::<Vec<_>>());
-        let (mut roots, mut children) = (Vec::new(), vec![Vec::new(); sessions.len()]);
-        for (i, p) in parent.iter().enumerate() {
-            match p {
-                Some(p) => children[*p].push(i),
-                None => roots.push(i),
-            }
-        }
-        children.iter_mut().for_each(|l| l.sort_by_key(|&c| (sessions[c].forked_at.unwrap_or(0), &sessions[c].id)));
-        let current = by_id.get(current).copied();
-        let mut on_path = vec![false; sessions.len()];
-        let mut cursor = current;
-        while let Some(i) = cursor {
-            on_path[i] = true;
-            cursor = parent[i];
-        }
-        Self { roots, children, current, on_path }
-    }
-
+impl Tree<'_> {
     /// Appends the rows of `session` and its subtree. The current session lists every turn
     /// with the fork point hanging off it (forks before the first turn first); others list
     /// only their fork points.
-    fn emit(&self, sessions: &[SessionInfo], session: usize, depth: u16, out: &mut Vec<(u16, Slot)>) {
+    fn emit(&self, session: usize, depth: u16, out: &mut Vec<(u16, Slot)>) {
         out.push((depth, Slot::Session(session)));
-        let groups = self.fork_points(sessions, session);
-        let group = |g: &(Option<usize>, u64, &[usize]), out: &mut Vec<(u16, Slot)>| {
-            out.push((depth + 1, Slot::ForkPoint { session, seq: g.1, turn: g.0 }));
-            g.2.iter().for_each(|&c| self.emit(sessions, c, depth + 2, out));
-        };
-        if self.current != Some(session) { return groups.iter().for_each(|g| group(g, out)) }
-        let mut pending = groups.iter().peekable();
-        while let Some(g) = pending.next_if(|g| g.0.is_none()) { group(g, out) }
-        for turn in 0..sessions[session].turns.len() {
-            out.push((depth + 1, Slot::Turn { session, turn }));
-            if let Some(g) = pending.next_if(|g| g.0 == Some(turn)) { group(g, out) }
-        }
-    }
-
-    /// Children grouped by the turn they forked from (`None` before the first turn), with
-    /// that turn's sequence, in fork order.
-    fn fork_points<'a>(&'a self, sessions: &[SessionInfo], session: usize) -> Vec<(Option<usize>, u64, &'a [usize])> {
-        let (turns, children) = (&sessions[session].turns, &self.children[session]);
+        let turns = &self.sessions[session].turns;
+        // Children grouped by the turn they forked from (`None` before the first turn), with that turn's sequence.
         let point = |c: usize| {
-            let at = sessions[c].forked_at.unwrap_or(0);
+            let at = self.sessions[c].forked_at.unwrap_or(0);
             match turns.partition_point(|t| t.seq <= at) {
                 0 => (None, at),
                 after => (Some(after - 1), turns[after - 1].seq),
             }
         };
-        children.chunk_by(|&a, &b| point(a) == point(b)).map(|run| { let (t, s) = point(run[0]); (t, s, run) }).collect()
-    }
-}
-
-/// `declared` parents with every session whose ancestry reaches a cycle made a root.
-fn break_cycles(declared: &[Option<usize>]) -> Vec<Option<usize>> {
-    #[derive(Clone, Copy, PartialEq)]
-    enum Mark {
-        Unknown,
-        Walking,
-        Rooted,
-        Cyclic,
-    }
-    let (mut marks, mut chain) = (vec![Mark::Unknown; declared.len()], Vec::new());
-    for start in 0..declared.len() {
-        let mut cursor = Some(start);
-        let verdict = loop {
-            let Some(i) = cursor else { break Mark::Rooted };
-            match marks[i] {
-                Mark::Unknown => {
-                    marks[i] = Mark::Walking;
-                    chain.push(i);
-                    cursor = declared[i];
-                }
-                Mark::Walking => break Mark::Cyclic,
-                known => break known,
-            }
+        let mut groups = self.children[session].chunk_by(|&a, &b| point(a) == point(b)).map(|run| (point(run[0]), run)).peekable();
+        let group = |((turn, seq), run): ((Option<usize>, u64), &[usize]), out: &mut Vec<(u16, Slot)>| {
+            out.push((depth + 1, Slot::ForkPoint { session, seq, turn }));
+            run.iter().for_each(|&c| self.emit(c, depth + 2, out));
         };
-        chain.drain(..).for_each(|i| marks[i] = verdict);
+        if self.current != Some(session) { return groups.for_each(|g| group(g, out)) }
+        while let Some(g) = groups.next_if(|g| g.0.0.is_none()) { group(g, out) }
+        for turn in 0..turns.len() {
+            out.push((depth + 1, Slot::Turn { session, turn }));
+            if let Some(g) = groups.next_if(|g| g.0.0 == Some(turn)) { group(g, out) }
+        }
     }
-    declared.iter().zip(&marks).map(|(&p, &m)| if m == Mark::Cyclic { None } else { p }).collect()
 }
 
 #[cfg(test)]
@@ -308,26 +225,18 @@ mod tests {
     use super::*;
 
     fn turns(list: &[(u64, u64, &str)]) -> Vec<TurnInfo> { list.iter().map(|&(n, seq, l)| TurnInfo { node: NodeId(n), seq, first_line: l.into() }).collect() }
-
-    fn session(id: &str, parent: Option<(&str, u64)>, turns: Vec<TurnInfo>) -> SessionInfo {
-        SessionInfo { id: id.into(), parent: parent.map(|(p, _)| p.into()), forked_at: parent.map(|(_, at)| at), title: String::new(), turns }
-    }
-
+    fn session(id: &str, parent: Option<(&str, u64)>, turns: Vec<TurnInfo>) -> SessionInfo { SessionInfo { id: id.into(), parent: parent.map(|(p, _)| p.into()), forked_at: parent.map(|(_, at)| at), title: String::new(), turns } }
     fn root() -> SessionInfo { session("root", None, turns(&[(10, 1, "one"), (20, 5, "two"), (30, 9, "three")])) }
 
     /// Rows indented by depth: `S id` (`*` current, `+` on path), `F label`, `T line`.
     fn outline(s: &State) -> Vec<String> {
-        s.rows().map(|r| {
-            let body = match r.kind {
-                RowKind::Session { id, current, on_path, .. } => format!("S {id}{}", if current { "*" } else if on_path { "+" } else { "" }),
-                RowKind::ForkPoint { seq, first_line, .. } => format!("F {}", first_line.map_or_else(|| format!("at #{seq}"), str::to_owned)),
-                RowKind::Turn { first_line, .. } => format!("T {first_line}"),
-            };
-            format!("{}{body}", "  ".repeat(usize::from(r.depth)))
-        }).collect()
+        let body = |k| match k {
+            RowKind::Session { id, current, on_path, .. } => format!("S {id}{}", if current { "*" } else if on_path { "+" } else { "" }),
+            RowKind::ForkPoint { seq, first_line, .. } => format!("F {}", first_line.map_or_else(|| format!("at #{seq}"), str::to_owned)),
+            RowKind::Turn { first_line, .. } => format!("T {first_line}"),
+        };
+        s.rows().map(|r| format!("{}{}", "  ".repeat(usize::from(r.depth)), body(r.kind))).collect()
     }
-
-    fn index(s: &State, want: &str) -> usize { s.rows().zip(outline(s)).find(|(_, o)| o.trim_start().trim_end_matches(['*', '+']) == want).unwrap().0.index }
 
     #[test]
     fn forks_hang_under_their_turns_and_cycles_become_roots() {
@@ -345,23 +254,10 @@ mod tests {
             s.set_family(family, current);
             assert_eq!(outline(&s), want);
         }
-    }
-
-    #[test]
-    fn turn_rows_rewind_and_fork_sessions_open_and_toggle() {
         let mut s = State::new();
-        s.set_family(vec![root(), session("a", Some(("root", 5)), turns(&[(40, 12, "a one")])), session("b", Some(("a", 12)), vec![]), session("other", None, vec![])], "root");
-        let two = index(&s, "T two");
-        assert_eq!(s.update(Message::Rewind(two)).1, Some(Event::Rewind { session: "root".into(), turn: NodeId(20) }));
-        assert_eq!(s.update(Message::Fork(two)).1, Some(Event::Fork { session: "root".into(), turn: NodeId(20) }));
-        assert_eq!((s.update(Message::Fork(index(&s, "S a"))).1, s.update(Message::Open(index(&s, "S root"))).1), (None, None));
-        assert_eq!(s.update(Message::Open(index(&s, "S a"))).1, Some(Event::Open("a".into())));
-        let a = index(&s, "S a");
-        let _ = s.update(Message::Toggle(a));
-        assert_eq!(outline(&s), ["S root*", "  T one", "  T two", "  F two", "    S a", "  T three", "S other"]);
-        let _ = s.update(Message::Toggle(a));
-        let _ = s.update(Message::Toggle(index(&s, "S root")));
-        assert_eq!(outline(&s), ["S root*", "S other"]);
-        drop(iced_test::simulator(s.view()));
+        s.set_family(vec![root(), session("orphan", Some(("gone", 3)), vec![])], "root");
+        assert_eq!(s.update(Message::Rewind(2)).1, Some(Event::Rewind { session: "root".into(), turn: NodeId(20) }));
+        let _ = s.update(Message::Toggle(0));
+        assert_eq!(outline(&s), ["S root*", "S orphan"]);
     }
 }

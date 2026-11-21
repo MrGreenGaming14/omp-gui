@@ -452,7 +452,7 @@ impl State {
             }
         } else {
             match ctx.services.library.delete(id) {
-                Ok(()) => ctx.shell.remove_session(id),
+                Ok(()) => ctx.shell.sidebar_mut().remove_session(id),
                 Err(error) => ctx.notify(format!("Can't delete session {id}: {error}")),
             }
             Task::none()
@@ -760,7 +760,7 @@ fn composer_commands(dom: Option<&Dom>) -> Vec<composer::Command> {
 fn unpin(ctx: &mut Ctx, id: &str) {
     if ctx.shell.sidebar().pins().contains(id) {
         let pins: Vec<String> = ctx.shell.sidebar().pins().iter().filter(|pin| *pin != id).cloned().collect();
-        ctx.shell.set_pins(pins);
+        ctx.shell.sidebar_mut().set_pins(pins);
     }
     ctx.edit_config("pins", |config| config.pinned.remove(id));
 }

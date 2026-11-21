@@ -1,38 +1,22 @@
 //! The terminal tab: sub tabs, each a terminal on a PTY its [`PtyBackend`] opened.
 
 use crate::canvas::{CanvasEvent, Metrics, TerminalCanvas};
-use crate::channel::{ChannelRead, ChannelReader, ChannelWriter, LocalPtyBackend, PtyBackend, PtyChannel, RemotePty, RemotePtyBackend};
-use crate::emulator::Emulator;
-use crate::input::{KeyAction, encode_paste, key_action};
-use crate::local::LocalShell;
-use crate::palette::TermPalette;
-use crate::{GridSize, Result};
-use alacritty_terminal::event::{Event as TermEvent, WindowSize};
-use alacritty_terminal::grid::Scroll;
-use alacritty_terminal::term::{ClipboardType, TermMode};
+use crate::{channel::{ChannelRead, ChannelReader, ChannelWriter, LocalPtyBackend, PtyBackend, PtyChannel, RemotePty, RemotePtyBackend}, emulator::Emulator};
+use crate::{input::{KeyAction, encode_paste, key_action}, local::LocalShell, palette::TermPalette, GridSize, Result};
+use alacritty_terminal::{event::{Event as TermEvent, WindowSize}, grid::Scroll, term::{ClipboardType, TermMode}};
 use bytes::Bytes;
-use iced::task::Handle;
-use iced::widget::{button, canvas, center, column, container, row, rule, text};
-use iced::{Element, Fill, Task, clipboard};
-use loa_ui_kit::icons::{Icon, tinted};
-use loa_ui_kit::style::{self as kit, ButtonKind, Tone};
-use loa_ui_kit::theme::{LayoutRole, SpaceRole as Sp, TextRole as T, sp, width};
-use loa_ui_kit::widgets::{PanelPane, label};
+use iced::{task::Handle, widget::{button, canvas, center, column, container, row, rule, text}, Element, Fill, Task, clipboard};
+use loa_ui_kit::{icons::{Icon, tinted}, style::{self as kit, ButtonKind, Tone}, theme::{LayoutRole, SpaceRole as Sp, TextRole as T, sp, width}, widgets::label};
 use loa_util::LockExt;
-use std::cell::Cell as StdCell;
-use std::sync::{Arc, Mutex};
+use std::{cell::Cell as StdCell, sync::{Arc, Mutex}};
 use tokio::sync::mpsc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct TabId(u64);
 
-/// Where a terminal runs.
+/// Where a terminal runs: a local program, or the login shell on a host the SSH layer knows.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Target {
-    Local(LocalShell),
-    /// The login shell on a host the SSH layer knows.
-    Remote { host: String },
-}
+pub enum Target { Local(LocalShell), Remote { host: String } }
 
 impl Target {
     fn title(&self) -> String {
@@ -43,31 +27,9 @@ impl Target {
     }
 }
 
+/// `Failed`: opening or driving the PTY failed; the screen stays for reading.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Status {
-    Connecting,
-    Running,
-    /// Opening or driving the PTY failed; the screen stays for reading.
-    Failed(String),
-}
-
-/// A value moved through a cloneable message exactly once.
-pub struct Handoff<T>(Arc<Mutex<Option<T>>>);
-
-impl<T> Clone for Handoff<T> {
-    fn clone(&self) -> Self { Self(Arc::clone(&self.0)) }
-}
-
-impl<T> std::fmt::Debug for Handoff<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str("Handoff") }
-}
-
-#[derive(Debug, Clone)]
-pub enum Output {
-    Data(Bytes),
-    Closed { exit_code: Option<u32> },
-    Failed(String),
-}
+pub enum Status { Connecting, Running, Failed(String) }
 
 /// The app sends [`Message::NewTab`], [`Message::Select`] and [`Message::Close`]; the rest
 /// come from the tab's widgets and tasks.
@@ -78,27 +40,18 @@ pub enum Message {
     Close(TabId),
     Canvas(TabId, CanvasEvent),
     Paste(TabId, Option<String>),
-    Opened(TabId, Handoff<PtyChannel>),
-    OpenFailed(TabId, String),
-    Output(TabId, Output),
-    /// The write side stopped, with its error if it failed.
-    WriterStopped(TabId, Option<String>),
+    /// The opened channel, moved out of the cloneable message exactly once.
+    Opened(TabId, Arc<Mutex<Option<PtyChannel>>>),
+    /// Program output, or why opening, reading or writing the channel failed. The write side
+    /// reports `Closed` once its tab is gone.
+    Output(TabId, Result<ChannelRead, String>),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Event {
-    /// The program ended and its sub tab was removed.
-    Exited { tab: TabId, exit_code: Option<u32> },
-    Closed { tab: TabId },
-    Failed { tab: TabId, error: String },
-}
+#[cfg_attr(test, derive(Debug, PartialEq))]
+enum Input { Bytes(Bytes), Resize(GridSize) }
 
-enum Input {
-    Bytes(Bytes),
-    Resize(GridSize),
-    Close,
-}
-
+/// A sub tab. Dropping `input` ends the write loop, which hangs up; `pending` is the input queued
+/// before the channel opened; `_reader` aborts the read loop when the tab is dropped.
 struct Tab {
     id: TabId,
     target: Target,
@@ -108,48 +61,97 @@ struct Tab {
     cache: canvas::Cache,
     drawn_with: StdCell<Option<TermPalette>>,
     input: mpsc::UnboundedSender<Input>,
-    /// Input queued before the channel opened, handed to the write loop.
     pending: Option<mpsc::UnboundedReceiver<Input>>,
-    /// Aborts the read loop when the tab is dropped.
     _reader: Option<Handle>,
 }
 
 impl Tab {
     /// Fails only after the write loop ended, when input has nowhere to go.
     fn send(&self, input: Input) { let _ = self.input.send(input); }
-
-    fn scroll(&mut self, scroll: Scroll) {
-        self.emulator.scroll(scroll);
+    /// Messages for this tab; a channel that arrives for a closed tab hangs up as it drops.
+    fn update(&mut self, message: Message) -> Task<Message> {
+        let id = self.id;
+        match message {
+            Message::Opened(_, channel) => {
+                let (Some(PtyChannel { reader, writer }), Some(pending)) = (channel.locked().take(), self.pending.take()) else { return Task::none() };
+                self.status = Status::Running;
+                let (read, handle) = Task::run(read_stream(reader), move |o| Message::Output(id, o)).abortable();
+                self._reader = Some(handle.abort_on_drop());
+                return Task::batch([read, Task::perform(write_loop(writer, pending), move |r| Message::Output(id, r.map(|()| ChannelRead::Closed { exit_code: None }).map_err(|e| e.to_string())))]);
+            }
+            Message::Output(_, Ok(ChannelRead::Data(bytes))) => return self.output(&bytes),
+            // The first failure is the one worth reading.
+            Message::Output(_, Err(error)) if !matches!(self.status, Status::Failed(_)) => self.status = Status::Failed(error),
+            Message::Canvas(_, event) => return self.canvas(event),
+            Message::Paste(_, Some(text)) => {
+                self.send(Input::Bytes(encode_paste(&text, *self.emulator.term.mode()).into()));
+                self.emulator.term.scroll_display(Scroll::Bottom);
+                self.cache.clear();
+            }
+            _ => {}
+        }
+        Task::none()
+    }
+    /// Feeds output and acts on what the program asked for: replies, titles, clipboard.
+    fn output(&mut self, bytes: &[u8]) -> Task<Message> {
+        self.emulator.advance(bytes);
         self.cache.clear();
+        Task::batch(self.emulator.take_events().into_iter().filter_map(|event| {
+            match event {
+                TermEvent::PtyWrite(reply) => self.send(Input::Bytes(reply.into())),
+                TermEvent::Title(title) => self.title = title,
+                TermEvent::ResetTitle => self.title = self.target.title(),
+                TermEvent::ClipboardStore(ClipboardType::Clipboard, t) => return Some(clipboard::write(t)),
+                TermEvent::ClipboardStore(ClipboardType::Selection, t) => return Some(clipboard::write_primary(t)),
+                TermEvent::TextAreaSizeRequest(format) => {
+                    let s = self.emulator.size();
+                    self.send(Input::Bytes(format(WindowSize { num_lines: s.rows, num_cols: s.cols, cell_width: s.cell_width, cell_height: s.cell_height }).into()));
+                }
+                _ => {}
+            }
+            None
+        }))
+    }
+    fn canvas(&mut self, event: CanvasEvent) -> Task<Message> {
+        let (id, mode, emulator) = (self.id, *self.emulator.term.mode(), &mut self.emulator);
+        match event {
+            CanvasEvent::Key { key, modifiers, text } => match key_action(&key, modifiers, text.as_deref(), mode) {
+                Some(KeyAction::Send(bytes)) => {
+                    let _ = self.input.send(Input::Bytes(bytes));
+                    emulator.term.scroll_display(Scroll::Bottom);
+                }
+                Some(KeyAction::Copy) => return emulator.selection_text().map_or_else(Task::none, clipboard::write),
+                Some(KeyAction::Paste) => return clipboard::read().map(move |t| Message::Paste(id, t)),
+                Some(KeyAction::Scroll(scroll)) => emulator.term.scroll_display(scroll),
+                None => {}
+            },
+            // Full screen programs (less, vim) get arrow keys for the wheel.
+            CanvasEvent::Scroll(lines) if mode.contains(TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL) && !mode.intersects(TermMode::MOUSE_MODE) => {
+                let key = [0x1b, if mode.contains(TermMode::APP_CURSOR) { b'O' } else { b'[' }, if lines > 0 { b'A' } else { b'B' }];
+                let _ = self.input.send(Input::Bytes(key.repeat(lines.unsigned_abs() as usize).into()));
+            }
+            CanvasEvent::Scroll(lines) => emulator.term.scroll_display(Scroll::Delta(lines)),
+            CanvasEvent::SelectStart { cell, side, kind } => emulator.select_start(kind, cell, side),
+            CanvasEvent::SelectUpdate { cell, side } => emulator.select_update(cell, side),
+            CanvasEvent::SelectEnd => return emulator.selection_text().map_or_else(Task::none, clipboard::write_primary),
+            CanvasEvent::Resized(_) => {}
+        }
+        self.cache.clear();
+        Task::none()
     }
 }
 
-pub struct State {
-    tabs: Vec<Tab>,
-    active: Option<TabId>,
-    next_id: u64,
-    metrics: Metrics,
-    grid: GridSize,
-    new_tab: LocalShell,
-    backend: Arc<dyn PtyBackend>,
-}
+pub struct State { tabs: Vec<Tab>, active: Option<TabId>, next_id: u64, metrics: Metrics, grid: GridSize, new_tab: LocalShell, backend: Arc<dyn PtyBackend> }
 
 impl State {
     /// An empty tab on local PTYs; `new_tab` is what the + button opens.
     pub fn new(metrics: Metrics, new_tab: LocalShell) -> Self {
         Self { tabs: Vec::new(), active: None, next_id: 1, metrics, grid: GridSize::default(), new_tab, backend: Arc::new(LocalPtyBackend) }
     }
-
     /// Opens remote targets through `remote`, everything else as before.
-    pub fn with_remote(self, remote: Arc<dyn RemotePty>) -> Self {
-        let fallback = Arc::clone(&self.backend);
-        self.with_backend(Arc::new(RemotePtyBackend { remote, fallback }))
-    }
-
-    pub fn with_backend(self, backend: Arc<dyn PtyBackend>) -> Self { Self { backend, ..self } }
+    pub fn with_remote(self, remote: Arc<dyn RemotePty>) -> Self { Self { backend: Arc::new(RemotePtyBackend { remote, fallback: self.backend.clone() }), ..self } }
     pub fn set_new_tab(&mut self, shell: LocalShell) { self.new_tab = shell }
     pub fn new_tab(&self) -> &LocalShell { &self.new_tab }
-
     /// Opens a terminal on `target` in a new sub tab and shows it.
     pub fn open(&mut self, target: Target) -> (TabId, Task<Message>) {
         let id = TabId(self.next_id);
@@ -160,11 +162,10 @@ impl State {
         self.tabs.push(tab);
         self.active = Some(id);
         (id, Task::perform(open, move |r| match r {
-            Ok(channel) => Message::Opened(id, Handoff(Arc::new(Mutex::new(Some(channel))))),
-            Err(e) => Message::OpenFailed(id, e.to_string()),
+            Ok(channel) => Message::Opened(id, Arc::new(Mutex::new(Some(channel)))),
+            Err(e) => Message::Output(id, Err(e.to_string())),
         }))
     }
-
     pub fn tabs(&self) -> impl Iterator<Item = TabId> + '_ { self.tabs.iter().map(|t| t.id) }
     pub fn active(&self) -> Option<TabId> { self.active }
     pub fn is_empty(&self) -> bool { self.tabs.is_empty() }
@@ -175,146 +176,47 @@ impl State {
     pub fn emulator(&self, id: TabId) -> Option<&Emulator> { self.tab(id).map(|t| &t.emulator) }
     fn tab(&self, id: TabId) -> Option<&Tab> { self.tabs.iter().find(|t| t.id == id) }
     fn tab_mut(&mut self, id: TabId) -> Option<&mut Tab> { self.tabs.iter_mut().find(|t| t.id == id) }
-
-    /// Removes a sub tab, hanging up its program; its neighbour becomes active.
-    fn remove(&mut self, id: TabId) -> bool {
-        let Some(index) = self.tabs.iter().position(|t| t.id == id) else { return false };
-        self.tabs.remove(index).send(Input::Close);
-        if self.active == Some(id) {
-            self.active = self.tabs.get(index).or(self.tabs.last()).map(|t| t.id);
-            if let Some(next) = self.active { self.fit(next) }
-        }
-        true
-    }
-
-    /// Brings a sub tab's grid to the pane's size.
-    fn fit(&mut self, id: TabId) {
+    /// Shows a sub tab, bringing its grid to the pane's size.
+    fn show(&mut self, id: TabId) {
         let grid = self.grid;
-        if let Some(tab) = self.tab_mut(id).filter(|t| t.emulator.size() != grid) {
-            tab.emulator.resize(grid);
+        let Some(tab) = self.tabs.iter_mut().find(|t| t.id == id) else { return };
+        self.active = Some(id);
+        if tab.emulator.resize(grid) {
             tab.send(Input::Resize(grid));
             tab.cache.clear();
         }
     }
-
-    fn fail(&mut self, id: TabId, error: String) -> Option<Event> {
-        self.tab_mut(id)?.status = Status::Failed(error.clone());
-        Some(Event::Failed { tab: id, error })
-    }
-
-    pub fn update(&mut self, message: Message) -> (Task<Message>, Option<Event>) {
-        let event = match message {
-            Message::NewTab => return (self.open(Target::Local(self.new_tab.clone())).1, None),
-            Message::Select(id) => {
-                if self.tab(id).is_some() {
-                    self.active = Some(id);
-                    self.fit(id);
+    pub fn update(&mut self, message: Message) -> Task<Message> {
+        match message {
+            Message::NewTab => return self.open(Target::Local(self.new_tab.clone())).1,
+            Message::Select(id) => self.show(id),
+            Message::Canvas(id, CanvasEvent::Resized(grid)) => {
+                self.grid = grid;
+                self.show(id);
+            }
+            // Dropping the tab hangs up its program; its neighbour becomes active.
+            Message::Close(id) | Message::Output(id, Ok(ChannelRead::Closed { .. })) => {
+                let Some(index) = self.tabs.iter().position(|t| t.id == id) else { return Task::none() };
+                self.tabs.remove(index);
+                if self.active == Some(id) {
+                    self.active = None;
+                    if let Some(next) = self.tabs.get(index).or(self.tabs.last()).map(|t| t.id) { self.show(next) }
                 }
-                None
             }
-            Message::Close(id) => self.remove(id).then_some(Event::Closed { tab: id }),
-            Message::Opened(id, channel) => return (self.opened(id, channel), None),
-            Message::OpenFailed(id, error) => self.fail(id, error),
-            Message::Output(id, Output::Data(bytes)) => return (self.output(id, &bytes), None),
-            Message::Output(id, Output::Closed { exit_code }) => self.remove(id).then_some(Event::Exited { tab: id, exit_code }),
-            Message::Output(id, Output::Failed(error)) => self.fail(id, error),
-            Message::WriterStopped(id, error) => error.filter(|_| self.status(id) == Some(&Status::Running)).and_then(|e| self.fail(id, e)),
-            Message::Canvas(id, event) => return (self.canvas(id, event), None),
-            Message::Paste(id, text) => {
-                if let (Some(tab), Some(text)) = (self.tab_mut(id), text) {
-                    tab.send(Input::Bytes(encode_paste(&text, tab.emulator.mode()).into()));
-                    tab.scroll(Scroll::Bottom);
-                }
-                None
+            Message::Canvas(id, _) | Message::Paste(id, _) | Message::Opened(id, _) | Message::Output(id, _) => {
+                return self.tab_mut(id).map_or_else(Task::none, |tab| tab.update(message));
             }
-        };
-        (Task::none(), event)
-    }
-
-    fn opened(&mut self, id: TabId, channel: Handoff<PtyChannel>) -> Task<Message> {
-        let Some(PtyChannel { reader, mut writer }) = channel.0.locked().take() else { return Task::none() };
-        // Closed while connecting.
-        let Some(tab) = self.tab_mut(id) else { return Task::future(async move { let _ = writer.close().await; }).discard() };
-        let Some(pending) = tab.pending.take() else { return Task::none() };
-        tab.status = Status::Running;
-        let (read, handle) = Task::run(read_stream(reader), move |o| Message::Output(id, o)).abortable();
-        tab._reader = Some(handle.abort_on_drop());
-        Task::batch([read, Task::perform(write_loop(writer, pending), move |r| Message::WriterStopped(id, r.err().map(|e| e.to_string())))])
-    }
-
-    /// Feeds output and acts on what the program asked for: replies, titles, clipboard.
-    fn output(&mut self, id: TabId, bytes: &[u8]) -> Task<Message> {
-        let Some(tab) = self.tab_mut(id) else { return Task::none() };
-        tab.emulator.advance(bytes);
-        tab.cache.clear();
-        let events: Vec<TermEvent> = tab.emulator.take_events().collect();
-        let mut tasks = Vec::new();
-        for event in events {
-            match event {
-                TermEvent::PtyWrite(reply) => tab.send(Input::Bytes(reply.into())),
-                TermEvent::Title(title) => tab.title = title,
-                TermEvent::ResetTitle => tab.title = tab.target.title(),
-                TermEvent::ClipboardStore(ClipboardType::Clipboard, t) => tasks.push(clipboard::write(t)),
-                TermEvent::ClipboardStore(ClipboardType::Selection, t) => tasks.push(clipboard::write_primary(t)),
-                TermEvent::TextAreaSizeRequest(format) => {
-                    let s = tab.emulator.size();
-                    tab.send(Input::Bytes(format(WindowSize { num_lines: s.rows, num_cols: s.cols, cell_width: s.cell_width, cell_height: s.cell_height }).into()));
-                }
-                _ => {}
-            }
-        }
-        Task::batch(tasks)
-    }
-
-    fn canvas(&mut self, id: TabId, event: CanvasEvent) -> Task<Message> {
-        if let CanvasEvent::Resized(grid) = event {
-            self.grid = grid;
-            self.fit(id);
-            return Task::none();
-        }
-        let Some(tab) = self.tab_mut(id) else { return Task::none() };
-        let mode = tab.emulator.mode();
-        match event {
-            CanvasEvent::Key { key, modifiers, text } => match key_action(&key, modifiers, text.as_deref(), mode) {
-                Some(KeyAction::Send(bytes)) => {
-                    tab.send(Input::Bytes(Bytes::from(bytes.into_owned())));
-                    if tab.emulator.display_offset() != 0 { tab.scroll(Scroll::Bottom) }
-                }
-                Some(KeyAction::Copy) => return tab.emulator.selection_text().map_or_else(Task::none, clipboard::write),
-                Some(KeyAction::Paste) => return clipboard::read().map(move |t| Message::Paste(id, t)),
-                Some(KeyAction::ScrollPageUp) => tab.scroll(Scroll::PageUp),
-                Some(KeyAction::ScrollPageDown) => tab.scroll(Scroll::PageDown),
-                Some(KeyAction::ScrollTop) => tab.scroll(Scroll::Top),
-                Some(KeyAction::ScrollBottom) => tab.scroll(Scroll::Bottom),
-                None => {}
-            },
-            // Full screen programs (less, vim) get arrow keys for the wheel.
-            CanvasEvent::Scroll(lines) if mode.contains(TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL) && !mode.intersects(TermMode::MOUSE_MODE) => {
-                let key = [0x1b, if mode.contains(TermMode::APP_CURSOR) { b'O' } else { b'[' }, if lines > 0 { b'A' } else { b'B' }];
-                tab.send(Input::Bytes(key.repeat(lines.unsigned_abs() as usize).into()));
-            }
-            CanvasEvent::Scroll(lines) => tab.scroll(Scroll::Delta(lines)),
-            CanvasEvent::SelectStart { cell, side, kind } => {
-                tab.emulator.select_start(kind, cell, side);
-                tab.cache.clear();
-            }
-            CanvasEvent::SelectUpdate { cell, side } => {
-                tab.emulator.select_update(cell, side);
-                tab.cache.clear();
-            }
-            CanvasEvent::SelectEnd => return tab.emulator.selection_text().map_or_else(Task::none, clipboard::write_primary),
-            CanvasEvent::Resized(_) => {}
         }
         Task::none()
     }
-
     /// The sub tab bar and the active terminal.
     pub fn view(&self) -> Element<'_, Message> {
+        let pad = [sp(Sp::Xs), sp(Sp::S)];
         let ghost = |icon, on| button(tinted(icon, T::Caption, Tone::Muted)).padding(sp(Sp::Xs)).style(kit::button(ButtonKind::Ghost)).on_press(on);
         let tabs = self.tabs.iter().map(|tab| {
             let title = container(label(tab.title.as_str(), T::Label, Tone::Normal).wrapping(text::Wrapping::None)).max_width(width(LayoutRole::LabelColumn)).clip(true);
             let style = kit::button(ButtonKind::Tab { active: self.active == Some(tab.id) });
-            button(row![title, ghost(Icon::X, Message::Close(tab.id))].spacing(sp(Sp::Xs)).align_y(iced::Center)).padding([sp(Sp::Xs), sp(Sp::S)]).style(style).on_press(Message::Select(tab.id)).into()
+            button(row![title, ghost(Icon::X, Message::Close(tab.id))].spacing(sp(Sp::Xs)).align_y(iced::Center)).padding(pad).style(style).on_press(Message::Select(tab.id)).into()
         });
         let bar = row(tabs).push(ghost(Icon::Plus, Message::NewTab)).spacing(sp(Sp::Xs)).align_y(iced::Center);
         let body: Element<'_, Message> = match self.active.and_then(|id| self.tab(id)) {
@@ -329,15 +231,14 @@ impl State {
                     Status::Connecting => Some((format!("Connecting to {}…", tab.title), Tone::Muted)),
                     Status::Failed(error) => Some((error.clone(), Tone::Danger)),
                 };
-                column![screen].push(line.map(|(s, tone)| container(label(s, T::Caption, tone)).padding([sp(Sp::Xs), sp(Sp::S)]))).into()
+                column![screen].push(line.map(|(s, tone)| container(label(s, T::Caption, tone)).padding(pad))).into()
             }
         };
-        let bar = container(bar).padding([sp(Sp::Xs), sp(Sp::S)]).width(Fill);
-        container(column![bar, rule::horizontal(1).style(kit::rule), container(body).padding([sp(Sp::Xs), sp(Sp::S)])]).width(Fill).height(Fill).into()
+        container(column![container(bar).padding(pad).width(Fill), rule::horizontal(1).style(kit::rule), container(body).padding(pad)]).width(Fill).height(Fill).into()
     }
 }
 
-impl PanelPane for State {
+impl loa_ui_kit::widgets::PanelPane for State {
     type Message = Message;
     fn id(&self) -> &str { "terminal" }
     fn title(&self) -> &str { "Terminal" }
@@ -345,23 +246,22 @@ impl PanelPane for State {
     fn view(&self) -> Element<'_, Message> { State::view(self) }
 }
 
-fn read_stream(reader: Box<dyn ChannelReader>) -> impl futures::Stream<Item = Output> + Send {
+/// Reads until the program ends or the channel fails.
+fn read_stream(reader: Box<dyn ChannelReader>) -> impl futures::Stream<Item = Result<ChannelRead, String>> + Send {
     futures::stream::unfold(Some(reader), |reader| async move {
         let mut reader = reader?;
-        Some(match reader.read().await {
-            Ok(ChannelRead::Data(bytes)) => (Output::Data(bytes), Some(reader)),
-            Ok(ChannelRead::Closed { exit_code }) => (Output::Closed { exit_code }, None),
-            Err(e) => (Output::Failed(e.to_string()), None),
-        })
+        let read = reader.read().await.map_err(|e| e.to_string());
+        let more = matches!(read, Ok(ChannelRead::Data(_)));
+        Some((read, more.then_some(reader)))
     })
 }
 
+/// Forwards input until the tab drops its sender, then hangs up.
 async fn write_loop(mut writer: Box<dyn ChannelWriter>, mut input: mpsc::UnboundedReceiver<Input>) -> Result<()> {
     while let Some(item) = input.recv().await {
         match item {
             Input::Bytes(b) => writer.write(b).await?,
             Input::Resize(s) => writer.resize(s).await?,
-            Input::Close => break,
         }
     }
     writer.close().await

@@ -1,7 +1,7 @@
 //! The remote hosts section: questions waiting for the user, the add form and the host list
 //! with its limits editor and audit log.
 
-use super::{BOLD, card, clipped, field_error, flat, form_buttons, form_card, inset, note_row};
+use super::{BOLD, card, clipped, flat, form_buttons, form_card, inset, note_row};
 use crate::tools::{AuditRow, FormId, Limit, Message, PromptAnswer, PromptKind, RemoteHost, RemotePrompt, State};
 use iced::widget::{Column, checkbox, column, container, row, rule, scrollable, space, text};
 use iced::{Alignment, Element, Fill, Font, Padding, Shrink};
@@ -21,7 +21,7 @@ impl State {
             let head = row![label("Waiting for you", T::Caption, Tone::Warn), label(self.prompts.len().to_string(), T::Caption, Tone::Faint)].spacing(sp(Sp::Xs));
             Column::new().push(head).extend(self.prompts.iter().map(prompt_card)).spacing(sp(Sp::Xs))
         });
-        let add = self.add_host.as_ref().map(|f| form_card(column![text("Add host").size(ts(T::Label)).font(BOLD), form_view(&f.spec, &f.errors, |k, v| Message::FormEdit(FormId::Host, k, v)), form_buttons("Add", FormId::Host)].spacing(sp(Sp::S))));
+        let add = self.add_host.as_ref().map(|f| form_card("Add host", None, form_view(&f.spec, &f.errors, |k, v| Message::FormEdit(FormId::Host, k, v)), "Add", FormId::Host));
         let hosts = self.visible_hosts();
         let actions = row![flat("Import from ssh config", None).on_press(Message::ImportSshHosts), flat("Add host", Some(Icon::Plus)).on_press(Message::FormOpen(FormId::Host))].spacing(sp(Sp::Xs) / 2.0);
         let header = self.block_header("hosts", "Hosts".to_owned(), hosts.len(), Some(actions.into()));
@@ -46,7 +46,8 @@ impl State {
             let check = |on, s, limit| checkbox(on).label(s).size(ts(T::Body)).text_size(ts(T::Caption)).spacing(sp(Sp::S)).style(style::check).on_toggle(move |v| Message::LimitSet(limit, v));
             let paths = list_editor(&d.limits.allowed_paths, Clone::clone, Message::LimitsRemovePath, &d.new_path, |v| Message::FormEdit(FormId::Limits, "path", v), Message::LimitsAddPath);
             let flags = row![check(d.limits.read_only, "Read only", Limit::ReadOnly), check(d.limits.commands_allowed, "Commands allowed", Limit::Commands)].spacing(sp(Sp::L));
-            inset(column![flags, check(d.limits.auto_approve, "Run writes and commands without asking", Limit::AutoApprove), label("Allowed paths", T::Caption, Tone::Muted), paths, field_error(d.path_error.as_ref()), form_buttons("Save", FormId::Limits)].spacing(sp(Sp::S)))
+            let error = d.path_error.map(|e| label(e, T::Caption, Tone::Danger));
+            inset(column![flags, check(d.limits.auto_approve, "Run writes and commands without asking", Limit::AutoApprove), label("Allowed paths", T::Caption, Tone::Muted), paths, error, form_buttons("Save", FormId::Limits)].spacing(sp(Sp::S)))
         });
         let audit = self.audit.as_ref().filter(|(h, _)| h == alias).map(|(_, rows)| inset(audit_log(rows)));
         column![container(head).padding(pad_y(Sp::Xs).right(sp(Sp::Xs)).left(sp(Sp::M))), editor, audit].into()
@@ -70,9 +71,10 @@ fn audit_log(rows: &[AuditRow]) -> Element<'_, Message> {
 /// A host key or approval question with its answers.
 fn prompt_card(p: &RemotePrompt) -> Element<'_, Message> {
     let answer = |s, a| flat(s, None).on_press(Message::AnswerPrompt(p.id, a));
+    let danger = style::button(ButtonKind::Danger);
     let answers = match p.kind {
-        PromptKind::HostKey => row![answer("Trust", PromptAnswer::Trust), answer("Reject", PromptAnswer::Reject).style(style::button(ButtonKind::Danger))],
-        PromptKind::Approval => row![answer("Allow once", PromptAnswer::AllowOnce), answer("Allow for session", PromptAnswer::AllowSession), answer("Deny", PromptAnswer::Deny).style(style::button(ButtonKind::Danger))],
+        PromptKind::HostKey => row![answer("Trust", PromptAnswer::Trust), answer("Reject", PromptAnswer::Reject).style(danger)],
+        PromptKind::Approval => row![answer("Allow once", PromptAnswer::AllowOnce), answer("Allow for session", PromptAnswer::AllowSession), answer("Deny", PromptAnswer::Deny).style(danger)],
     };
     let title = row![tinted(Icon::TriangleAlert, T::Caption, Tone::Warn), text(p.title.as_str()).size(ts(T::Label))].spacing(sp(Sp::S)).align_y(Alignment::Center);
     let body = text(p.body.as_str()).size(ts(T::Caption)).font(Font::MONOSPACE).style(style::text(Tone::Muted));

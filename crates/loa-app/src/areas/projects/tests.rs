@@ -136,7 +136,7 @@ fn on_screen(app: &mut App, message: screen::Message) {
 /// Opens `project` from the sidebar, starts a chat there with the screen's
 /// "New chat", sends `text` and delivers the turn. Returns the session id.
 fn chat_in(app: &mut App, project: &str, text: &str) -> String {
-    let open = shell::Message::Sidebar(shell::sidebar::Message::OpenProject(project.to_owned()));
+    let open = shell::Message::Emit(shell::Event::Sidebar(shell::sidebar::Event::OpenProject(project.to_owned())));
     update(app, AppMessage::Shell(open));
     on_screen(app, screen::Message::NewChat);
     let session = app.ctx.sessions.active().expect("the new chat runs");
@@ -154,7 +154,7 @@ fn session_cwd(app: &App, id: &str) -> Option<String> {
 }
 
 fn open_from_sidebar(app: &mut App, project: &str) {
-    let open = shell::Message::Sidebar(shell::sidebar::Message::OpenProject(project.to_owned()));
+    let open = shell::Message::Emit(shell::Event::Sidebar(shell::sidebar::Event::OpenProject(project.to_owned())));
     update(app, AppMessage::Shell(open));
 }
 
@@ -269,7 +269,7 @@ fn project_tabs_list_activated_projects_and_the_shortcuts_switch_between_them() 
     assert_eq!(app.ctx.services.project, "beta");
 
     // Closing a tab leaves its session open and the other tab alone.
-    update(&mut app, AppMessage::Shell(shell::Message::CloseProjectTab("alpha".into())));
+    update(&mut app, AppMessage::Shell(shell::Message::Emit(shell::Event::CloseProjectTab("alpha".into()))));
     assert_eq!(app.ctx.shell.open_projects(), ["beta"]);
     assert!(app.ctx.sessions.get(&in_alpha).is_some(), "closing a tab keeps the session");
     open_from_sidebar(&mut app, "alpha");

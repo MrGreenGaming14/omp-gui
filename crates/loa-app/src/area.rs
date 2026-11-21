@@ -300,10 +300,10 @@ impl Ctx {
         }
         let session = session?;
         if delete {
-            self.shell.remove_session(id);
+            self.shell.sidebar_mut().remove_session(id);
         }
         if was_active {
-            self.shell.set_active_session(None);
+            self.shell.sidebar_mut().set_active(None);
             self.shell.set_session_status(None);
             self.events.push(SessionEvent::Activated(None));
         }

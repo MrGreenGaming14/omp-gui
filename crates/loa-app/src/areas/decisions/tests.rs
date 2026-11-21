@@ -68,7 +68,7 @@ fn an_approval_answered_by_number_key_and_enter_runs_and_records_who_answered() 
     let (id, mut feed, decision) = ask(&mut app, "ask to run ls");
     assert_eq!(app.areas.decisions.desk.badge(id.as_str()), 1);
     assert_eq!(app.ctx.shell.sidebar().session(id.as_str()).map(|s| s.waiting), Some(true), "sidebar badge");
-    assert!(app.ctx.shell.topbar().breadcrumb().is_some_and(|crumb| crumb.waiting), "top bar badge");
+    assert!(app.ctx.shell.breadcrumb().is_some_and(|(session, _)| session.waiting), "top bar badge");
     assert!(app.areas.decisions.card(id.as_str(), decision).is_some(), "drawn inline");
 
     key(&mut app, Shortcut::Pick(0));

@@ -8,8 +8,7 @@ use std::time::Duration;
 async fn sh_runs_in_its_cwd_resizes_and_reports_its_exit_status() {
     let dir = tempfile::tempdir().unwrap();
     let cwd = dir.path().canonicalize().unwrap();
-    let mut shell = LocalShell::program("/bin/sh", Vec::<String>::new(), &cwd);
-    shell.env.push(("PS1".into(), "$ ".into()));
+    let mut shell = LocalShell { program: Some("/bin/sh".into()), env: vec![("PS1".into(), "$ ".into())], ..LocalShell::login_shell(&cwd) };
     let mut ch = LocalPtyBackend.open(&Target::Local(shell.clone()), GridSize::new(80, 24)).await.unwrap();
     ch.writer.resize(GridSize::new(132, 43)).await.unwrap();
     ch.writer.write(Bytes::from_static(b"pwd; stty size; echo done-$((40+2)); exit 3\n")).await.unwrap();
@@ -22,8 +21,7 @@ async fn sh_runs_in_its_cwd_resizes_and_reports_its_exit_status() {
             }
         }
     };
-    let exit = tokio::time::timeout(Duration::from_secs(10), drain).await.expect("exits in time");
-    assert_eq!(exit, Some(3));
+    assert_eq!(tokio::time::timeout(Duration::from_secs(10), drain).await.expect("exits in time"), Some(3));
     assert!(out.contains(cwd.to_str().unwrap()) && out.contains("43 132") && out.contains("done-42"), "{out}");
     shell.cwd = cwd.join("missing");
     assert!(matches!(LocalPtyBackend.open(&Target::Local(shell), GridSize::default()).await, Err(Error::NotADirectory(_))));

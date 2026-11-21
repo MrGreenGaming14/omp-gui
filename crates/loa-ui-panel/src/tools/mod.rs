@@ -8,7 +8,7 @@ pub mod model;
 mod view;
 
 pub use catalog::{Catalog, Filter, PeerMatrix, Toggle};
-pub use form::{AddHostForm, AddServerForm, FieldError, FieldId, LimitsDraft, TransportKind};
+pub use form::{AddHostForm, AddServerForm, FieldId, LimitsDraft, TransportKind};
 pub use model::*;
 
 use iced::{Element, Task};
@@ -18,77 +18,47 @@ use loa_ui_kit::widgets::{Form, FormSpec, FormState, PanelPane};
 use std::collections::{BTreeSet, HashMap};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Section {
-    #[default]
-    Builtin,
-    Servers,
-    Hosts,
-    Peers,
-}
+pub enum Section { #[default] Builtin, Servers, Hosts, Peers }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ServerAction {
-    Start,
-    Stop,
-    Restart,
-    Remove,
-}
+pub enum ServerAction { Start, Stop, Restart, Remove }
 
-/// The page's forms.
+/// The page's forms; `Limits` edits the limits of the host being edited.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FormId {
-    Server,
-    Host,
-    /// The limits of the host being edited.
-    Limits,
-}
+pub enum FormId { Server, Host, Limits }
 
 /// A host limit switch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Limit {
-    ReadOnly,
-    Commands,
-    AutoApprove,
-}
+pub enum Limit { ReadOnly, Commands, AutoApprove }
 
+/// What the app acts on. It answers `ProjectSelected` with [`State::set_disabled_tools`],
+/// `ScanImports` (configs in `.claude`, `.cursor`, `.codex`) with [`State::set_import_candidates`],
+/// `ImportServers` with [`State::set_import_outcome`] per entry, `ImportSshHosts` (from
+/// `~/.ssh/config`) with [`State::set_hosts`] and `LoadAudit` with [`State::set_audit`].
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
-    /// The app answers with [`State::set_disabled_tools`].
     ProjectSelected(String),
     SetToolsEnabled { project: String, tools: Vec<ToolId>, enabled: bool },
     Server { name: String, action: ServerAction },
     AddServer(McpServerSpec),
-    /// Look for server configs in `.claude`, `.cursor` and `.codex`; the app answers with
-    /// [`State::set_import_candidates`].
     ScanImports,
-    /// The app answers with [`State::set_import_outcome`] per entry.
     ImportServers(Vec<ImportCandidate>),
-    /// Read hosts from `~/.ssh/config`; the app answers with [`State::set_hosts`].
     ImportSshHosts,
     AddHost(RemoteHost),
     RemoveHost(String),
     SaveHostLimits { host: String, limits: HostLimits },
     OpenTerminal(String),
-    /// The app answers with [`State::set_audit`].
     LoadAudit(String),
     AnswerPrompt { id: u64, answer: PromptAnswer },
 }
 
+/// An import candidate; `exists` when a server with its name is registered already.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ImportEntry {
-    pub candidate: ImportCandidate,
-    pub selected: bool,
-    /// A server with this name is registered already.
-    pub exists: bool,
-    pub outcome: Option<ImportOutcome>,
-}
+pub struct ImportEntry { pub candidate: ImportCandidate, pub selected: bool, pub exists: bool, pub outcome: Option<ImportOutcome> }
 
 /// The peers view's filter.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum PeerChoice {
-    All,
-    Peer { key: String, name: String },
-}
+pub enum PeerChoice { All, Peer { key: String, name: String } }
 
 impl std::fmt::Display for PeerChoice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str(if let Self::Peer { name, .. } = self { name } else { "All peers" }) }
@@ -147,7 +117,7 @@ pub struct State {
     add_host: Option<FormState<AddHostForm>>,
     limits: Option<LimitsDraft>,
     audit: Option<(String, Vec<AuditRow>)>,
-    /// Host key and approval questions waiting for the user.
+    /// Host key and approval questions waiting for the user, oldest first.
     prompts: Vec<RemotePrompt>,
     peers: Vec<PeerTools>,
     peer_filter: Option<String>,
@@ -158,8 +128,14 @@ pub struct State {
 
 impl State {
     pub fn new() -> Self { Self::default() }
-    /// The active harness's tools and the app tools.
     pub fn set_builtin(&mut self, builtin: BuiltinTools) { self.builtin = builtin }
+    pub fn set_hosts(&mut self, hosts: Vec<RemoteHost>) { self.hosts = hosts }
+    pub fn set_audit(&mut self, host: impl Into<String>, rows: Vec<AuditRow>) { self.audit = Some((host.into(), rows)) }
+    pub fn set_prompts(&mut self, prompts: Vec<RemotePrompt>) { self.prompts = prompts }
+    /// Selects a project without emitting [`Event::ProjectSelected`].
+    pub fn select_project(&mut self, id: impl Into<String>) { self.project = Some(id.into()) }
+    /// The tools switched off in a project, as stored in the config.
+    pub fn set_disabled_tools(&mut self, project: impl Into<String>, tools: impl IntoIterator<Item = ToolId>) { self.disabled.insert(project.into(), tools.into_iter().collect()); }
 
     pub fn set_servers(&mut self, servers: Vec<McpServer>) {
         self.servers = servers;
@@ -169,14 +145,9 @@ impl State {
 
     /// Projects for the selector; the selection stays while it exists.
     pub fn set_projects(&mut self, projects: Vec<ProjectRef>) {
-        if self.project.as_ref().is_some_and(|id| !projects.iter().any(|p| &p.id == id)) { self.project = None }
+        self.project = self.project.take().filter(|id| projects.iter().any(|p| &p.id == id));
         self.projects = projects;
     }
-
-    /// Selects a project without emitting [`Event::ProjectSelected`].
-    pub fn select_project(&mut self, id: impl Into<String>) { self.project = Some(id.into()) }
-    /// The tools switched off in a project, as stored in the config.
-    pub fn set_disabled_tools(&mut self, project: impl Into<String>, tools: impl IntoIterator<Item = ToolId>) { self.disabled.insert(project.into(), tools.into_iter().collect()); }
 
     pub fn set_import_candidates(&mut self, candidates: Vec<ImportCandidate>) {
         let exists = |c: &ImportCandidate| self.servers.iter().any(|s| s.name == c.server.name);
@@ -192,28 +163,20 @@ impl State {
         }
     }
 
-    pub fn set_hosts(&mut self, hosts: Vec<RemoteHost>) { self.hosts = hosts }
-    pub fn set_audit(&mut self, host: impl Into<String>, rows: Vec<AuditRow>) { self.audit = Some((host.into(), rows)) }
-    /// The questions the `remote` server waits on, oldest first.
-    pub fn set_prompts(&mut self, prompts: Vec<RemotePrompt>) { self.prompts = prompts }
-    pub fn prompts(&self) -> &[RemotePrompt] { &self.prompts }
-    pub fn hosts(&self) -> &[RemoteHost] { &self.hosts }
-    pub fn audit(&self) -> Option<(&str, &[AuditRow])> { self.audit.as_ref().map(|(h, r)| (h.as_str(), r.as_slice())) }
-
     /// The peer filter resets when its peer disappears.
     pub fn set_peers(&mut self, peers: Vec<PeerTools>) {
-        if self.peer_filter.as_ref().is_some_and(|k| !peers.iter().any(|p| &p.key == k)) { self.peer_filter = None }
+        self.peer_filter = self.peer_filter.take().filter(|k| peers.iter().any(|p| &p.key == k));
         self.peers = peers;
     }
 
+    pub fn prompts(&self) -> &[RemotePrompt] { &self.prompts }
+    pub fn hosts(&self) -> &[RemoteHost] { &self.hosts }
+    pub fn audit(&self) -> Option<(&str, &[AuditRow])> { self.audit.as_ref().map(|(h, r)| (h.as_str(), r.as_slice())) }
+    pub fn imports(&self) -> Option<&[ImportEntry]> { self.imports.as_deref() }
     /// The tools switched off in the selected project.
     pub fn disabled_tools(&self) -> Option<&BTreeSet<ToolId>> { self.project.as_ref().and_then(|id| self.disabled.get(id)) }
     pub fn catalog(&self) -> Catalog<'_> { catalog::catalog(&self.builtin, &self.servers, self.disabled_tools().unwrap_or(&BTreeSet::new()), &self.filter) }
     pub fn peer_matrix(&self) -> PeerMatrix<'_> { catalog::peer_matrix(&self.builtin, &self.servers, &self.peers, self.peer_filter.as_deref(), &self.filter) }
-    pub fn imports(&self) -> Option<&[ImportEntry]> { self.imports.as_deref() }
-    pub fn add_server(&self) -> Option<&FormState<AddServerForm>> { self.add_server.as_ref() }
-    pub fn add_host(&self) -> Option<&FormState<AddHostForm>> { self.add_host.as_ref() }
-    pub fn limits_draft(&self) -> Option<&LimitsDraft> { self.limits.as_ref() }
     pub fn update(&mut self, message: Message) -> (Task<Message>, Option<Event>) { (Task::none(), self.handle(message)) }
 
     fn handle(&mut self, message: Message) -> Option<Event> {
@@ -228,12 +191,12 @@ impl State {
             Message::ToolToggled(tool, on) => return self.set_enabled(vec![tool], on),
             Message::ServerToggled(name) => {
                 let s = self.servers.iter().find(|s| s.name == name)?;
-                let on = catalog::server_toggle(s, self.disabled_tools().unwrap_or(&BTreeSet::new())).next_enabled();
+                let on = catalog::server_toggle(s, self.disabled_tools().unwrap_or(&BTreeSet::new())) != Toggle::On;
                 return self.set_enabled(s.tools.iter().map(|t| ToolId::mcp(&s.name, &t.name)).collect(), on);
             }
             Message::Server(name, action) => {
                 let s = self.servers.iter().find(|s| s.name == name)?;
-                return (action != ServerAction::Remove || s.can_remove()).then_some(Event::Server { name, action });
+                return (action != ServerAction::Remove || s.kind != ServerKind::AppHosted).then_some(Event::Server { name, action });
             }
             Message::FormOpen(FormId::Server) => { self.add_server.get_or_insert_default(); }
             Message::FormOpen(FormId::Host) => { self.add_host.get_or_insert_default(); }
@@ -276,17 +239,13 @@ impl State {
             Message::ImportClose => (self.imports, self.import_scanning) = (None, false),
             Message::ImportSshHosts => return Some(Event::ImportSshHosts),
             Message::RemoveHost(alias) => {
-                if self.limits.as_ref().is_some_and(|d| d.host == alias) { self.limits = None }
+                self.limits = self.limits.take().filter(|d| d.host != alias);
                 return Some(Event::RemoveHost(alias));
             }
             Message::EditLimits(alias) => self.limits = Some(LimitsDraft::new(self.hosts.iter().find(|h| h.alias == alias)?)),
             Message::LimitSet(limit, on) => {
                 let l = &mut self.limits.as_mut()?.limits;
-                *match limit {
-                    Limit::ReadOnly => &mut l.read_only,
-                    Limit::Commands => &mut l.commands_allowed,
-                    Limit::AutoApprove => &mut l.auto_approve,
-                } = on;
+                *[&mut l.read_only, &mut l.commands_allowed, &mut l.auto_approve][limit as usize] = on;
             }
             Message::LimitsAddPath => self.limits.as_mut()?.add_path(),
             Message::LimitsRemovePath(i) => {

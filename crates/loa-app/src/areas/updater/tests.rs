@@ -192,7 +192,7 @@ fn updates_screen_checks_stages_gates_holds_pins_and_swaps_between_turns() {
     let fixture = Fixture::new(dir.path());
     fixture.publish("1.1.0", "- fake: `--fast` flag removed");
     let mut app = app_with(dir.path(), &fixture);
-    assert_eq!(app.ctx.shell.updates(), 0, "nothing checked yet");
+    assert_eq!(app.ctx.shell.sidebar().updates(), 0, "nothing checked yet");
 
     palette(&mut app, "Check for updates");
     assert_eq!(app.ctx.screen(), Some(AreaId::Updater));
@@ -200,11 +200,11 @@ fn updates_screen_checks_stages_gates_holds_pins_and_swaps_between_turns() {
     assert_eq!((product.current.as_deref(), product.offer.as_deref()), (Some("1.0.0"), Some("1.1.0")));
     assert!(product.changelog.contains("`--fast` flag removed"), "{}", product.changelog);
     assert!(app.areas.updater.screen().busy("fake").is_none(), "the check finished");
-    assert_eq!(app.ctx.shell.updates(), 1, "the sidebar lists the update");
+    assert_eq!(app.ctx.shell.sidebar().updates(), 1, "the sidebar lists the update");
 
     // The sidebar row opens the screen.
     app.ctx.close_screen();
-    update(&mut app, AppMessage::Shell(shell_sidebar(loa_ui_shell::sidebar::Message::OpenUpdates)));
+    update(&mut app, AppMessage::Shell(shell_sidebar(loa_ui_shell::sidebar::Message::Emit(loa_ui_shell::sidebar::Event::OpenUpdates))));
     assert_eq!(app.ctx.screen(), Some(AreaId::Updater));
 
     screen(&mut app, updates::Message::Stage("fake".into()));

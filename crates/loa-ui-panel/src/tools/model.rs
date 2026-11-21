@@ -2,12 +2,11 @@
 
 use loa_contracts::harness::{HostToolSpec, McpServerSpec, McpTransport};
 
-/// A tool as listed: a name, what it does, and readiness details shown under it.
+/// A tool as listed: a name, what it does, and readiness details (e.g. one per sandbox provider).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ToolInfo {
     pub name: String,
     pub description: String,
-    /// E.g. one per sandbox provider.
     pub details: Vec<ToolDetail>,
 }
 
@@ -22,27 +21,15 @@ impl From<&HostToolSpec> for ToolInfo {
 
 /// Readiness of one part a tool depends on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DetailState {
-    Ready,
-    NotConfigured,
-    Unavailable,
-}
+pub enum DetailState { Ready, NotConfigured, Unavailable }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ToolDetail {
-    pub label: String,
-    pub state: DetailState,
-    pub text: String,
-}
+pub struct ToolDetail { pub label: String, pub state: DetailState, pub text: String }
 
-/// One tool for toggles and grants; MCP tools are scoped to their server, so they never
-/// collide with built in ones.
+/// One tool for toggles and grants: a harness or app tool, or an MCP tool scoped to its server
+/// so it never collides with a built in one.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum ToolId {
-    /// A harness tool (`bash`, `read`) or an app tool (`project_search`).
-    Builtin(String),
-    Mcp { server: String, tool: String },
-}
+pub enum ToolId { Builtin(String), Mcp { server: String, tool: String } }
 
 impl ToolId {
     pub fn builtin(name: impl Into<String>) -> Self { Self::Builtin(name.into()) }
@@ -55,14 +42,9 @@ impl ToolId {
     }
 }
 
-/// The two groups of the Built in section.
+/// The two groups of the Built in section: the active harness's tools and the app's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum BuiltinGroup {
-    /// Tools the active harness ships.
-    Harness,
-    /// Tools the app adds to every harness.
-    App,
-}
+pub enum BuiltinGroup { Harness, App }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BuiltinTools {
@@ -75,23 +57,11 @@ pub struct BuiltinTools {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ServerStatus {
-    Running,
-    /// Spawning or connecting, at first or after a failure.
-    Starting,
-    Stopped,
-    Error(String),
-}
+pub enum ServerStatus { Running, Starting, Stopped, Error(String) }
 
+/// Who registered a server; app hosted ones (`remote`) can't be removed and have no run controls.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ServerKind {
-    /// Registered by the user or imported.
-    External,
-    /// A surface server exposing `surface_*` tools.
-    Surface,
-    /// Run by the app itself (`remote`); it cannot be removed and has no run controls.
-    AppHosted,
-}
+pub enum ServerKind { External, Surface, AppHosted }
 
 /// A registered MCP server and the tools it declared.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -103,16 +73,9 @@ pub struct McpServer {
     pub tools: Vec<ToolInfo>,
 }
 
-impl McpServer {
-    pub fn can_remove(&self) -> bool { self.kind != ServerKind::AppHosted }
-}
-
 /// A project the toggles are scoped to.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ProjectRef {
-    pub id: String,
-    pub name: String,
-}
+pub struct ProjectRef { pub id: String, pub name: String }
 
 impl std::fmt::Display for ProjectRef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str(&self.name) }
@@ -120,11 +83,7 @@ impl std::fmt::Display for ProjectRef {
 
 /// The tool config an import candidate was found in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum ImportSource {
-    Claude,
-    Cursor,
-    Codex,
-}
+pub enum ImportSource { Claude, Cursor, Codex }
 
 impl ImportSource {
     pub fn label(self) -> &'static str { [".claude", ".cursor", ".codex"][self as usize] }
@@ -132,18 +91,10 @@ impl ImportSource {
 
 /// A server definition found in another tool's config file.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ImportCandidate {
-    pub source: ImportSource,
-    pub path: String,
-    pub server: McpServerSpec,
-}
+pub struct ImportCandidate { pub source: ImportSource, pub path: String, pub server: McpServerSpec }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ImportOutcome {
-    Imported,
-    Skipped(String),
-    Failed(String),
-}
+pub enum ImportOutcome { Imported, Skipped(String), Failed(String) }
 
 /// Limits the agent works under on one SSH host.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -157,10 +108,9 @@ pub struct HostLimits {
     pub auto_approve: bool,
 }
 
-/// An SSH host the `remote` server reaches.
+/// An SSH host the `remote` server reaches by its ssh config `alias`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RemoteHost {
-    /// The ssh config `Host`, the name agent and user use.
     pub alias: String,
     pub hostname: String,
     pub user: Option<String>,
@@ -169,69 +119,39 @@ pub struct RemoteHost {
     pub limits: HostLimits,
 }
 
-/// What a logged remote action did.
+/// What a logged remote action did; `Terminal` is the user opening a terminal to the host.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AuditAction {
-    Read,
-    List,
-    Write,
-    Edit,
-    Command,
-    /// The user opened a terminal to the host.
-    Terminal,
-}
+pub enum AuditAction { Read, List, Write, Edit, Command, Terminal }
 
 impl AuditAction {
     pub fn label(self) -> &'static str { ["read", "list", "write", "edit", "command", "terminal"][self as usize] }
 }
 
+/// One audit log entry; `when` is formatted by the app, `detail` is the path or command and
+/// `outcome` is `ok`, `denied`, `refused`, `error`, ...
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AuditRow {
-    /// Already formatted by the app.
     pub when: String,
     pub session: String,
     pub action: AuditAction,
-    /// The path or command.
     pub detail: String,
-    /// `ok`, `denied`, `refused`, `error`, ...
     pub outcome: String,
 }
 
+/// A host key to trust, or a write or command the agent wants to run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PromptKind {
-    /// A new or changed host key to trust or not.
-    HostKey,
-    /// A write or command the agent wants to run.
-    Approval,
-}
+pub enum PromptKind { HostKey, Approval }
 
 /// A question from the `remote` server waiting for the user.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RemotePrompt {
-    pub id: u64,
-    pub kind: PromptKind,
-    pub title: String,
-    pub body: String,
-}
+pub struct RemotePrompt { pub id: u64, pub kind: PromptKind, pub title: String, pub body: String }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PromptAnswer {
-    Trust,
-    Reject,
-    AllowOnce,
-    AllowSession,
-    Deny,
-}
+pub enum PromptAnswer { Trust, Reject, AllowOnce, AllowSession, Deny }
 
 /// One clause of a peer's grant that allows tools.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ToolRule {
-    All,
-    AllBuiltin,
-    /// Every tool of one MCP server.
-    Server(String),
-    Tool(ToolId),
-}
+pub enum ToolRule { All, AllBuiltin, Server(String), Tool(ToolId) }
 
 impl ToolRule {
     pub fn allows(&self, tool: &ToolId) -> bool {
@@ -246,20 +166,8 @@ impl ToolRule {
 
 /// A peer and its grant's tool clauses; anything no rule allows is denied.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PeerTools {
-    pub key: String,
-    pub name: String,
-    pub rules: Vec<ToolRule>,
-}
+pub struct PeerTools { pub key: String, pub name: String, pub rules: Vec<ToolRule> }
 
 impl PeerTools {
     pub fn allows(&self, tool: &ToolId) -> bool { self.rules.iter().any(|r| r.allows(tool)) }
-}
-
-/// The command line or the URL of a transport.
-pub fn transport_label(t: &McpTransport) -> String {
-    match t {
-        McpTransport::Stdio { command, args, .. } => std::iter::once(command).chain(args).cloned().collect::<Vec<_>>().join(" "),
-        McpTransport::Http { url, .. } => url.clone(),
-    }
 }

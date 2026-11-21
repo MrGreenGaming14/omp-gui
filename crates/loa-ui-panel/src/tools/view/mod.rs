@@ -7,7 +7,7 @@ mod peers;
 mod servers;
 
 use super::catalog::{GroupView, ToolRow};
-use super::{BuiltinGroup, DetailState, FieldError, FormId, Message, Section, State, ToolInfo};
+use super::{BuiltinGroup, FormId, Message, Section, State, ToolInfo};
 use iced::widget::{Column, button, checkbox, column, container, pick_list, responsive, row, rule, scrollable, space, text, text_input};
 use iced::{Alignment, Element, Fill, Font, Padding, font};
 use loa_ui_kit::icons::{Icon, tinted};
@@ -48,7 +48,7 @@ impl State {
             let selected = self.project.as_ref().and_then(|id| self.projects.iter().find(|p| &p.id == id));
             pick_list(self.projects.as_slice(), selected, Message::ProjectSelected).placeholder("Choose a project").text_size(ts(T::Caption)).padding([sp(Sp::Xs), sp(Sp::S)]).width(width(LayoutRole::LabelColumn)).style(style::pick)
         });
-        let search = input("Filter tools, servers and hosts", &self.filter_text, Message::FilterChanged).width(Fill);
+        let search = text_input("Filter tools, servers and hosts", &self.filter_text).on_input(Message::FilterChanged).size(ts(T::Label)).style(style::input).padding([sp(Sp::Xs), sp(Sp::S)]).width(Fill);
         let hint = (toggles && self.project.is_none()).then(|| label("Choose a project to switch tools on or off", T::Caption, Tone::Faint));
         let header = column![tabs, row![search, projects].spacing(sp(Sp::S)).align_y(Alignment::Center), hint].spacing(sp(Sp::S));
         let body = match self.section {
@@ -100,7 +100,7 @@ impl State {
         let mut rows: Vec<_> = tools.into_iter().take(if all { total } else { PREVIEW }).map(|t| self.tool_row(t)).collect();
         if total > COLLAPSE_AT && self.filter.is_empty() {
             let more = if all { "Show fewer".to_owned() } else { format!("Show all {total}") };
-            rows.push(button(label(more, T::Caption, Tone::Muted)).padding(row_pad()).width(Fill).style(style::button(ButtonKind::Row { selected: false })).on_press(Message::BlockOpen(all_key, !all)).into());
+            rows.push(row_button(label(more, T::Caption, Tone::Muted).into(), Some(Message::BlockOpen(all_key, !all))));
         }
         rows
     }
@@ -117,8 +117,7 @@ impl State {
             dots,
             tinted(if expanded { Icon::ChevronUp } else { Icon::ChevronDown }, T::Caption, Tone::Muted),
         ];
-        let head = button(line.spacing(sp(Sp::S)).align_y(Alignment::Center)).padding(row_pad()).width(Fill).style(style::button(ButtonKind::Row { selected: false })).on_press(Message::ToolExpanded(id));
-        column![head, expanded.then(|| tool_details(info))].into()
+        column![row_button(line.spacing(sp(Sp::S)).align_y(Alignment::Center).into(), Some(Message::ToolExpanded(id))), expanded.then(|| tool_details(info))].into()
     }
 }
 
@@ -132,8 +131,10 @@ fn tool_details(info: &ToolInfo) -> Element<'_, Message> {
     container(content).padding(Padding::ZERO.right(sp(Sp::M)).bottom(sp(Sp::M)).left(sp(Sp::Xl) + sp(Sp::S))).width(Fill).into()
 }
 
-fn detail_tone(state: DetailState) -> Tone { [Tone::Ok, Tone::Muted, Tone::Danger][state as usize] }
+fn detail_tone(state: super::DetailState) -> Tone { [Tone::Ok, Tone::Muted, Tone::Danger][state as usize] }
 fn row_pad() -> Padding { Padding::from([sp(Sp::S), sp(Sp::M)]) }
+/// A full-width row button, disabled without `on`.
+fn row_button(content: Element<'_, Message>, on: Option<Message>) -> Element<'_, Message> { button(content).padding(row_pad()).width(Fill).style(style::button(ButtonKind::Row { selected: false })).on_press_maybe(on).into() }
 
 /// Rows in a card with a divider between each two.
 fn card<'a>(rows: impl IntoIterator<Item = Element<'a, Message>>) -> Element<'a, Message> {
@@ -144,8 +145,12 @@ fn card<'a>(rows: impl IntoIterator<Item = Element<'a, Message>>) -> Element<'a,
     container(content).padding(sp(Sp::Xs)).width(Fill).style(style::container(Surface::Card)).into()
 }
 
-/// A form or an editor in a card.
-fn form_card<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> { container(content).padding(sp(Sp::M)).width(Fill).style(style::container(Surface::Card)).into() }
+/// A form in a card: a bold title, the content, then Submit and Cancel.
+fn form_card<'a>(title: &'a str, trailing: Option<Element<'a, Message>>, content: Element<'a, Message>, submit: &'a str, form: FormId) -> Element<'a, Message> {
+    let head = row![text(title).size(ts(T::Label)).font(BOLD), space().width(Fill), trailing].align_y(Alignment::Center);
+    loa_ui_kit::widgets::card(column![head, content, form_buttons(submit, form)].spacing(sp(Sp::S))).width(Fill).into()
+}
+
 /// An editor or log opened under a row.
 fn inset<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> { container(container(content).padding(sp(Sp::M)).width(Fill).style(style::container(Surface::Well))).padding(Padding::ZERO.bottom(sp(Sp::Xs))).into() }
 
@@ -171,20 +176,13 @@ fn status_dot<'a>(tone: Tone) -> Element<'a, Message> {
     container(space().width(d).height(d)).style(style::fill(tone.role(), tokens().radius(RadiusRole::Dot))).into()
 }
 
-/// A small ghost button with caption text, or an icon and text.
+/// A small button with caption text and an optional icon: ghost, or `kind`.
 fn flat<'a>(s: &'a str, icon: Option<Icon>) -> button::Button<'a, Message> {
     let content = row![icon.map(|i| tinted(i, T::Caption, Tone::Normal)), text(s).size(ts(T::Caption))].spacing(sp(Sp::Xs)).align_y(Alignment::Center);
     button(content).padding([sp(Sp::Xs), sp(Sp::S)]).style(style::button(ButtonKind::Ghost))
 }
 
-/// Submit and Cancel of a form.
-fn form_buttons(submit: &str, form: FormId) -> Element<'_, Message> {
-    let primary = button(text(submit).size(ts(T::Caption))).padding([sp(Sp::Xs), sp(Sp::M)]).style(style::button(ButtonKind::Primary)).on_press(Message::FormSubmit(form));
-    row![primary, flat("Cancel", None).on_press(Message::FormCancel(form))].spacing(sp(Sp::S)).into()
-}
+/// A primary caption button.
+fn primary(s: &str, on: Option<Message>) -> button::Button<'_, Message> { button(text(s).size(ts(T::Caption))).padding([sp(Sp::Xs), sp(Sp::M)]).style(style::button(ButtonKind::Primary)).on_press_maybe(on) }
 
-fn input<'a>(placeholder: &'a str, value: &'a str, on: impl Fn(String) -> Message + 'a) -> text_input::TextInput<'a, Message> {
-    text_input(placeholder, value).on_input(on).size(ts(T::Label)).style(style::input).padding([sp(Sp::Xs), sp(Sp::S)])
-}
-
-fn field_error(e: Option<&FieldError>) -> Option<text::Text<'static>> { e.map(|e| label(e.to_string(), T::Caption, Tone::Danger)) }
+fn form_buttons(submit: &str, form: FormId) -> Element<'_, Message> { row![primary(submit, Some(Message::FormSubmit(form))), flat("Cancel", None).on_press(Message::FormCancel(form))].spacing(sp(Sp::S)).into() }

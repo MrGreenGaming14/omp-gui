@@ -137,7 +137,7 @@ impl State {
                 _ => None,
             })
             .collect();
-        ctx.shell.set_updates(waiting(&overview));
+        ctx.shell.sidebar_mut().set_updates(waiting(&overview));
         let peers = self.peers(ctx);
         self.screen.set_data(updates::Data::from_updater(&overview, &peers, self.running > 0, now_secs()));
     }

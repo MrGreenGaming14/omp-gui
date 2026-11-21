@@ -643,7 +643,7 @@ impl Area for State {
                 self.refresh_servers(ctx);
                 Task::none()
             }
-            Message::Terminal(message) => self.terminal.update(message).0.map(Message::Terminal),
+            Message::Terminal(message) => self.terminal.update(message).map(Message::Terminal),
         };
         Task::batch([follow, task])
     }

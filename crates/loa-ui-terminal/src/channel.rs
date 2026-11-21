@@ -2,24 +2,27 @@
 //! any [`Target`], with the [`LocalPtyBackend`] and [`RemotePtyBackend`] adapters, and
 //! [`RemotePty`], which the SSH layer implements.
 
-use crate::state::Target;
-use crate::{Error, GridSize, Result, local};
+use crate::{state::Target, Error, GridSize, Result, local};
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::future::BoxFuture;
 use std::sync::Arc;
+use tokio::sync::mpsc;
 
+/// Output, or the program's end; `exit_code` is `None` when it was killed or the transport didn't say.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ChannelRead {
-    Data(Bytes),
-    /// The program ended; `exit_code` is `None` when it was killed or the transport didn't say.
-    Closed { exit_code: Option<u32> },
-}
+pub enum ChannelRead { Data(Bytes), Closed { exit_code: Option<u32> } }
 
 /// Read half of a PTY channel; not called again after `Closed` or an error.
 #[async_trait]
 pub trait ChannelReader: Send {
     async fn read(&mut self) -> Result<ChannelRead>;
+}
+
+/// Reads queued by another task; a dropped sender reads as [`Error::Closed`].
+#[async_trait]
+impl ChannelReader for mpsc::Receiver<Result<ChannelRead>> {
+    async fn read(&mut self) -> Result<ChannelRead> { self.recv().await.unwrap_or(Err(Error::Closed)) }
 }
 
 /// Write half of a PTY channel. Dropping it must hang up like `close`.
@@ -31,10 +34,7 @@ pub trait ChannelWriter: Send {
 }
 
 /// An open PTY, split so output is read while input is written.
-pub struct PtyChannel {
-    pub reader: Box<dyn ChannelReader>,
-    pub writer: Box<dyn ChannelWriter>,
-}
+pub struct PtyChannel { pub reader: Box<dyn ChannelReader>, pub writer: Box<dyn ChannelWriter> }
 
 impl std::fmt::Debug for PtyChannel {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str("PtyChannel") }
@@ -57,19 +57,13 @@ pub struct LocalPtyBackend;
 
 impl PtyBackend for LocalPtyBackend {
     fn open(&self, target: &Target, size: GridSize) -> BoxFuture<'static, Result<PtyChannel>> {
-        let shell = match target {
-            Target::Local(shell) => Ok(shell.clone()),
-            Target::Remote { .. } => Err(Error::NoRemote),
-        };
+        let shell = if let Target::Local(shell) = target { Ok(shell.clone()) } else { Err(Error::NoRemote) };
         Box::pin(async move { local::spawn(&shell?, size) })
     }
 }
 
 /// Remote targets through a [`RemotePty`]; everything else goes to `fallback`.
-pub struct RemotePtyBackend {
-    pub remote: Arc<dyn RemotePty>,
-    pub fallback: Arc<dyn PtyBackend>,
-}
+pub struct RemotePtyBackend { pub remote: Arc<dyn RemotePty>, pub fallback: Arc<dyn PtyBackend> }
 
 impl PtyBackend for RemotePtyBackend {
     fn open(&self, target: &Target, size: GridSize) -> BoxFuture<'static, Result<PtyChannel>> {

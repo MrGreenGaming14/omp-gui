@@ -252,9 +252,9 @@ impl App {
         };
         ctx.shell.set_project_tabs(saved.project_tabs);
         ctx.shell.set_active_project(restored.map(|active| active.name));
-        ctx.shell.set_pins(saved.pinned);
-        ctx.shell.set_pinned_projects(saved.pinned_projects);
-        ctx.shell.set_sessions(recents);
+        ctx.shell.sidebar_mut().set_pins(saved.pinned);
+        ctx.shell.sidebar_mut().set_pinned_projects(saved.pinned_projects);
+        ctx.shell.sidebar_mut().set_sessions(recents);
         let (areas, area_tasks) = Areas::new(&mut ctx);
         let mut app = Self {
             ctx,
@@ -589,9 +589,9 @@ impl App {
         self.ctx.composer.set_workspace(Some(workspace(&cwd)));
         self.chat.load(session.dom());
         if let Some(summary) = session.summary() {
-            self.ctx.shell.upsert_session(summary);
+            self.ctx.shell.sidebar_mut().upsert_session(summary);
         }
-        self.ctx.shell.set_active_session(Some(session.id().to_string()));
+        self.ctx.shell.sidebar_mut().set_active(Some(session.id().to_string()));
         self.ctx.shell.set_session_status(turn_status(session.dom()).map(str::to_owned));
         self.terminal_follow(cwd)
     }
@@ -608,7 +608,7 @@ impl App {
             Some(id) => terminal::state::Message::Select(id),
             None => terminal::state::Message::NewTab,
         };
-        self.terminal.update(message).0.map(Message::Terminal)
+        self.terminal.update(message).map(Message::Terminal)
     }
 
     /// The app's own reaction to a session event, then every area's.
@@ -620,7 +620,7 @@ impl App {
                 if self.ctx.sessions.is_active(id.as_str()) {
                     presented = self.present();
                 } else if let Some(summary) = self.ctx.sessions.get(id.as_str()).and_then(|session| session.summary()) {
-                    self.ctx.shell.upsert_session(summary);
+                    self.ctx.shell.sidebar_mut().upsert_session(summary);
                 }
             }
             SessionEvent::Patch(id, patch) => {
@@ -634,7 +634,7 @@ impl App {
                     }
                     if changes_summary(session.dom(), patch) {
                         if let Some(summary) = session.summary() {
-                            self.ctx.shell.upsert_session(summary);
+                            self.ctx.shell.sidebar_mut().upsert_session(summary);
                         }
                         if active {
                             self.ctx.shell.set_session_status(turn_status(session.dom()).map(str::to_owned));
@@ -1053,7 +1053,7 @@ impl App {
                 task.map(Message::Files)
             }
             Message::Diff(message) => self.diff.update(message).0.map(Message::Diff),
-            Message::Terminal(message) => self.terminal.update(message).0.map(Message::Terminal),
+            Message::Terminal(message) => self.terminal.update(message).map(Message::Terminal),
             Message::Palette(message) => {
                 if matches!(message, palette::Message::Open | palette::Message::OpenShortcuts)
                     || matches!(message, palette::Message::Toggle) && !self.palette.is_open()
@@ -1111,7 +1111,7 @@ impl App {
                 let (task, event) = self.usage.update(message);
                 match event {
                     Some(usage::Event::Close) => self.overlay = None,
-                    Some(usage::Event::Meter(meter)) => self.ctx.shell.set_usage(meter),
+                    Some(usage::Event::Meter(meter)) => self.ctx.shell.sidebar_mut().set_usage(meter),
                     None => {}
                 }
                 task.map(Message::Usage)

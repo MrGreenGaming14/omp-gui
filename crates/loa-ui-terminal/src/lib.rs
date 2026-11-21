@@ -9,12 +9,9 @@ pub mod local;
 pub mod palette;
 pub mod state;
 
-pub use canvas::{CanvasEvent, Metrics};
 pub use channel::{ChannelRead, ChannelReader, ChannelWriter, LocalPtyBackend, PtyBackend, PtyChannel, RemotePty, RemotePtyBackend};
-pub use emulator::Emulator;
 pub use local::LocalShell;
-pub use palette::TermPalette;
-pub use state::{Event, Message, State, Status, TabId, Target};
+pub use state::{Message, State, Status, TabId, Target};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -36,18 +33,12 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 /// A terminal grid in cells, plus one cell's pixel size (0 when unknown) for programs that ask.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct GridSize {
-    pub cols: u16,
-    pub rows: u16,
-    pub cell_width: u16,
-    pub cell_height: u16,
-}
+pub struct GridSize { pub cols: u16, pub rows: u16, pub cell_width: u16, pub cell_height: u16 }
 
 impl GridSize {
     pub const fn new(cols: u16, rows: u16) -> Self { Self { cols, rows, cell_width: 0, cell_height: 0 } }
 }
 
 impl Default for GridSize {
-    /// 80 by 24, used until the pane is laid out.
     fn default() -> Self { Self::new(80, 24) }
 }

@@ -107,7 +107,7 @@ impl State {
         for spec in &tools.0 {
             ctx.set_app_tool(loa_ui_panel::tools::ToolInfo::from(spec));
         }
-        ctx.shell.set_projects([ctx.services.workspace_project()]);
+        ctx.shell.sidebar_mut().set_projects([ctx.services.workspace_project()]);
         let state = Self {
             service,
             tools,
@@ -263,7 +263,7 @@ impl Area for State {
             Message::Open(project) => self.open(project, ctx),
             Message::Listed(Ok(projects)) => {
                 self.projects = projects;
-                ctx.shell.set_projects(self.names(&ctx.services.workspace_project()));
+                ctx.shell.sidebar_mut().set_projects(self.names(&ctx.services.workspace_project()));
                 let uncached: Vec<String> =
                     self.projects.iter().filter(|p| !self.contexts.contains_key(&p.name)).map(|p| p.name.clone()).collect();
                 Task::batch(uncached.into_iter().map(|project| self.refresh_context(project)))

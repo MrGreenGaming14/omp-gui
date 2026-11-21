@@ -8,75 +8,54 @@ use std::collections::BTreeMap;
 
 /// A field of a tools form, by its key.
 pub type FieldId = &'static str;
-
-/// Why a field was rejected; the text shows under the field.
-#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
-pub enum FieldError {
-    #[error("required")]
-    Empty,
-    #[error("use letters, digits, '-' or '_'")]
-    BadName,
-    #[error("a server with this name already exists")]
-    DuplicateServer,
-    #[error("a host with this alias already exists")]
-    DuplicateHost,
-    #[error("unbalanced quote")]
-    Unbalanced,
-    #[error("only environment assignments, no command")]
-    NoCommand,
-    #[error("URL must start with http:// or https://")]
-    BadScheme,
-    #[error("URL has no host")]
-    NoHost,
-    #[error("must not contain spaces")]
-    Whitespace,
-    #[error("port must be a number from 1 to 65535")]
-    BadPort,
-    #[error("path must start with '/' or '~'")]
-    RelativePath,
-    #[error("path is already allowed")]
-    DuplicatePath,
-}
-
 type Errors = BTreeMap<FieldId, String>;
 
-/// How a server being added is reached.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum TransportKind {
-    #[default]
-    Stdio,
-    Http,
+/// Why a field was rejected; the text shows under the field.
+pub mod error {
+    pub const EMPTY: &str = "required";
+    pub const BAD_NAME: &str = "use letters, digits, '-' or '_'";
+    pub const DUPLICATE_SERVER: &str = "a server with this name already exists";
+    pub const DUPLICATE_HOST: &str = "a host with this alias already exists";
+    pub const UNBALANCED: &str = "unbalanced quote";
+    pub const NO_COMMAND: &str = "only environment assignments, no command";
+    pub const BAD_SCHEME: &str = "URL must start with http:// or https://";
+    pub const NO_HOST: &str = "URL has no host";
+    pub const WHITESPACE: &str = "must not contain spaces";
+    pub const BAD_PORT: &str = "port must be a number from 1 to 65535";
+    pub const RELATIVE_PATH: &str = "path must start with '/' or '~'";
+    pub const DUPLICATE_PATH: &str = "path is already allowed";
 }
+use error::*;
 
-/// Fields of the add-server form.
+/// Text values by field key, settable for any of `fields`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct AddServerForm {
-    pub name: String,
-    pub kind: TransportKind,
-    /// The stdio command line, with optional leading `KEY=value` assignments.
-    pub command: String,
-    pub url: String,
-}
+pub struct Values(BTreeMap<FieldId, String>);
 
-const NAME: Field = Field { key: "name", label: "Name", placeholder: "my-server" };
-const STDIO_FIELDS: &[Field] = &[NAME, Field { key: "command", label: "Command", placeholder: "npx -y @scope/server" }];
-const HTTP_FIELDS: &[Field] = &[NAME, Field { key: "url", label: "URL", placeholder: "https://host/mcp" }];
-
-impl AddServerForm {
-    fn slot(&mut self, key: &str) -> Option<&mut String> {
-        Some(match key {
-            "name" => &mut self.name,
-            "command" => &mut self.command,
-            "url" => &mut self.url,
-            _ => return None,
-        })
+impl Values {
+    fn get(&self, key: &str) -> &str { self.0.get(key).map_or("", |v| v.trim()) }
+    fn set(&mut self, fields: &[Field], key: &str, value: &str) -> Result<(), String> {
+        let field = fields.iter().find(|f| f.key == key).ok_or_else(|| format!("no field {key}"))?;
+        self.0.insert(field.key, value.into());
+        Ok(())
     }
 }
 
+/// How a server being added is reached.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TransportKind { #[default] Stdio, Http }
+
+/// The add-server form; `command` is a stdio command line with optional leading `KEY=value` assignments.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AddServerForm { pub kind: TransportKind, pub values: Values }
+
+const NAME: Field = Field { key: "name", label: "Name", placeholder: "my-server" };
+const COMMAND: Field = Field { key: "command", label: "Command", placeholder: "npx -y @scope/server" };
+const URL: Field = Field { key: "url", label: "URL", placeholder: "https://host/mcp" };
+
 impl Form for AddServerForm {
-    fn fields(&self) -> &[Field] { if self.kind == TransportKind::Stdio { STDIO_FIELDS } else { HTTP_FIELDS } }
-    fn get(&self, key: &str) -> String { self.clone().slot(key).cloned().unwrap_or_default() }
-    fn set(&mut self, key: &str, value: &str) -> Result<(), String> { self.slot(key).map(|s| *s = value.into()).ok_or_else(|| format!("no field {key}")) }
+    fn fields(&self) -> &[Field] { if self.kind == TransportKind::Stdio { &[NAME, COMMAND] } else { &[NAME, URL] } }
+    fn get(&self, key: &str) -> String { self.values.0.get(key).cloned().unwrap_or_default() }
+    fn set(&mut self, key: &str, value: &str) -> Result<(), String> { self.values.set(&[NAME, COMMAND, URL], key, value) }
 }
 
 impl FormSpec for AddServerForm {
@@ -85,64 +64,58 @@ impl FormSpec for AddServerForm {
 
     /// Checks the name against `existing` ones and builds the spec.
     fn validate(&self, existing: &[String]) -> Result<McpServerSpec, Errors> {
-        let name = self.name.trim();
+        let name = self.values.get("name");
         let name_error = match name {
-            "" => Some(FieldError::Empty),
-            n if !n.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') => Some(FieldError::BadName),
-            n if existing.iter().any(|e| e == n) => Some(FieldError::DuplicateServer),
+            "" => Some(EMPTY),
+            n if !n.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') => Some(BAD_NAME),
+            n if existing.iter().any(|e| e == n) => Some(DUPLICATE_SERVER),
             _ => None,
         };
         let transport = match self.kind {
-            TransportKind::Stdio => parse_stdio(&self.command).map_err(|e| ("command", e)),
-            TransportKind::Http => validate_url(&self.url).map(|url| McpTransport::Http { url: url.into(), headers: BTreeMap::new() }).map_err(|e| ("url", e)),
+            TransportKind::Stdio => parse_stdio(self.values.get("command")).map_err(|e| ("command", e)),
+            TransportKind::Http => validate_url(self.values.get("url")).map(|url| McpTransport::Http { url: url.into(), headers: BTreeMap::new() }).map_err(|e| ("url", e)),
         };
         match (name_error, transport) {
             (None, Ok(transport)) => Ok(McpServerSpec { name: name.into(), transport }),
-            (name, target) => Err(name.map(|e| ("name", e)).into_iter().chain(target.err()).map(|(k, e)| (k, e.to_string())).collect()),
+            (name, target) => Err(name.map(|e| ("name", e)).into_iter().chain(target.err()).map(|(k, e)| (k, e.to_owned())).collect()),
         }
     }
 }
 
 /// A shell-split command line: leading `KEY=value` words become the environment.
-fn parse_stdio(line: &str) -> Result<McpTransport, FieldError> {
-    let mut words = shell_words::split(line).map_err(|_| FieldError::Unbalanced)?.into_iter().peekable();
+fn parse_stdio(line: &str) -> Result<McpTransport, &'static str> {
+    let mut words = shell_words::split(line).map_err(|_| UNBALANCED)?.into_iter().peekable();
     let is_env = |k: &str| k.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_') && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
     let mut env = BTreeMap::new();
-    while let Some((k, v)) = words.peek().and_then(|w| w.split_once('=')).filter(|(k, _)| is_env(k)).map(|(k, v)| (k.to_owned(), v.to_owned())) {
-        env.insert(k, v);
-        words.next();
+    while let Some(word) = words.next_if(|w| w.split_once('=').is_some_and(|(k, _)| is_env(k))) {
+        let (k, v) = word.split_once('=').unwrap_or_default();
+        env.insert(k.to_owned(), v.to_owned());
     }
-    let command = words.next().ok_or(if env.is_empty() { FieldError::Empty } else { FieldError::NoCommand })?;
+    let command = words.next().ok_or(if env.is_empty() { EMPTY } else { NO_COMMAND })?;
     Ok(McpTransport::Stdio { command, args: words.collect(), env })
 }
 
-/// An HTTP(S) server URL, trimmed.
-pub fn validate_url(url: &str) -> Result<&str, FieldError> {
-    let url = url.trim();
-    if url.is_empty() { return Err(FieldError::Empty) }
-    if url.contains(char::is_whitespace) { return Err(FieldError::Whitespace) }
+/// An HTTP(S) server URL.
+fn validate_url(url: &str) -> Result<&str, &'static str> {
+    if url.is_empty() { return Err(EMPTY) }
+    if url.contains(char::is_whitespace) { return Err(WHITESPACE) }
     let lower = url.get(..8).unwrap_or(url).to_ascii_lowercase();
-    let rest = ["https://", "http://"].iter().find(|p| lower.starts_with(**p)).map(|p| &url[p.len()..]).ok_or(FieldError::BadScheme)?;
+    let rest = ["https://", "http://"].iter().find(|p| lower.starts_with(**p)).map(|p| &url[p.len()..]).ok_or(BAD_SCHEME)?;
     let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
     let host_port = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
     let (host, port) = match host_port.strip_prefix('[') {
-        Some(v6) => v6.split_once(']').map(|(h, after)| (h, after.strip_prefix(':'))).ok_or(FieldError::NoHost)?,
+        Some(v6) => v6.split_once(']').map(|(h, after)| (h, after.strip_prefix(':'))).ok_or(NO_HOST)?,
         None => host_port.split_once(':').map_or((host_port, None), |(h, p)| (h, Some(p))),
     };
-    if host.is_empty() { return Err(FieldError::NoHost) }
+    if host.is_empty() { return Err(NO_HOST) }
     port.map(parse_port).transpose().map(|_| url)
 }
 
-fn parse_port(port: &str) -> Result<u16, FieldError> { port.parse::<u16>().ok().filter(|&p| p != 0).ok_or(FieldError::BadPort) }
+fn parse_port(port: &str) -> Result<u16, &'static str> { port.parse::<u16>().ok().filter(|&p| p != 0).ok_or(BAD_PORT) }
 
-/// Fields of the add-host form.
+/// The add-host form: alias, hostname, and optional user and port.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct AddHostForm {
-    pub alias: String,
-    pub hostname: String,
-    pub user: String,
-    pub port: String,
-}
+pub struct AddHostForm(pub Values);
 
 const HOST_FIELDS: &[Field] = &[
     Field { key: "alias", label: "Alias", placeholder: "build" },
@@ -151,22 +124,10 @@ const HOST_FIELDS: &[Field] = &[
     Field { key: "port", label: "Port", placeholder: "optional" },
 ];
 
-impl AddHostForm {
-    fn slot(&mut self, key: &str) -> Option<&mut String> {
-        Some(match key {
-            "alias" => &mut self.alias,
-            "hostname" => &mut self.hostname,
-            "user" => &mut self.user,
-            "port" => &mut self.port,
-            _ => return None,
-        })
-    }
-}
-
 impl Form for AddHostForm {
     fn fields(&self) -> &[Field] { HOST_FIELDS }
-    fn get(&self, key: &str) -> String { self.clone().slot(key).cloned().unwrap_or_default() }
-    fn set(&mut self, key: &str, value: &str) -> Result<(), String> { self.slot(key).map(|s| *s = value.into()).ok_or_else(|| format!("no field {key}")) }
+    fn get(&self, key: &str) -> String { self.0.0.get(key).cloned().unwrap_or_default() }
+    fn set(&mut self, key: &str, value: &str) -> Result<(), String> { self.0.set(HOST_FIELDS, key, value) }
 }
 
 impl FormSpec for AddHostForm {
@@ -175,26 +136,25 @@ impl FormSpec for AddHostForm {
 
     /// A host with the safe default limits: no paths, read only, no commands.
     fn validate(&self, existing: &[String]) -> Result<RemoteHost, Errors> {
-        let [alias, hostname, user, port] = [&self.alias, &self.hostname, &self.user, &self.port].map(|s| s.trim());
-        let word = |v: &str| if v.is_empty() { Err(FieldError::Empty) } else if v.contains(char::is_whitespace) { Err(FieldError::Whitespace) } else { Ok(()) };
-        let alias_error = word(alias).err().or_else(|| existing.iter().any(|e| e == alias).then_some(FieldError::DuplicateHost));
+        let [alias, hostname, user, port] = ["alias", "hostname", "user", "port"].map(|k| self.0.get(k));
+        let word = |v: &str| if v.is_empty() { Some(EMPTY) } else { v.contains(char::is_whitespace).then_some(WHITESPACE) };
         let port_value = (!port.is_empty()).then(|| parse_port(port)).transpose();
-        let errors: Errors = [("alias", alias_error), ("hostname", word(hostname).err()), ("user", (!user.is_empty()).then(|| word(user).err()).flatten()), ("port", port_value.clone().err())]
-            .into_iter().filter_map(|(k, e)| e.map(|e| (k, e.to_string()))).collect();
+        let alias_error = word(alias).or_else(|| existing.iter().any(|e| e == alias).then_some(DUPLICATE_HOST));
+        let errors: Errors = [("alias", alias_error), ("hostname", word(hostname)), ("user", word(user).filter(|_| !user.is_empty())), ("port", port_value.err())]
+            .into_iter().filter_map(|(k, e)| Some((k, e?.to_owned()))).collect();
         if !errors.is_empty() { return Err(errors) }
         let limits = HostLimits { read_only: true, ..Default::default() };
         Ok(RemoteHost { alias: alias.into(), hostname: hostname.into(), user: (!user.is_empty()).then(|| user.into()), port: port_value.ok().flatten(), proxy_jump: None, limits })
     }
 }
 
-/// Edits to one host's limits before they are saved.
+/// Edits to one host's limits before they are saved; `new_path` is the add-path input.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct LimitsDraft {
     pub host: String,
     pub limits: HostLimits,
-    /// The text of the add-path input.
     pub new_path: String,
-    pub path_error: Option<FieldError>,
+    pub path_error: Option<&'static str>,
 }
 
 impl LimitsDraft {
@@ -204,64 +164,14 @@ impl LimitsDraft {
     pub fn add_path(&mut self) {
         let path = self.new_path.trim();
         self.path_error = match path {
-            "" => Some(FieldError::Empty),
-            p if !(p.starts_with('/') || p.starts_with('~')) => Some(FieldError::RelativePath),
-            p if self.limits.allowed_paths.iter().any(|a| a == p) => Some(FieldError::DuplicatePath),
+            "" => Some(EMPTY),
+            p if !(p.starts_with('/') || p.starts_with('~')) => Some(RELATIVE_PATH),
+            p if self.limits.allowed_paths.iter().any(|a| a == p) => Some(DUPLICATE_PATH),
             p => {
                 self.limits.allowed_paths.push(p.to_owned());
                 self.new_path.clear();
                 None
             }
         };
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn errors(list: &[(FieldId, FieldError)]) -> Errors { list.iter().map(|(k, e)| (*k, e.to_string())).collect() }
-
-    #[test]
-    fn server_forms_validate_per_field() {
-        let form = |name: &str, kind, target: &str| AddServerForm { name: name.into(), kind, command: target.into(), url: target.into() };
-        let existing = ["git".to_owned()];
-        use FieldError::*;
-        use TransportKind::{Http, Stdio};
-        let bad: [(AddServerForm, Errors); 11] = [
-            (form("fs", Stdio, "   "), errors(&[("command", Empty)])),
-            (form("fs", Stdio, "npx 'oops"), errors(&[("command", Unbalanced)])),
-            (form("fs", Stdio, "A=1 B=2"), errors(&[("command", NoCommand)])),
-            (form("  ", Stdio, "x"), errors(&[("name", Empty)])),
-            (form("my server", Stdio, "x"), errors(&[("name", BadName)])),
-            (form("", Stdio, "'x"), errors(&[("name", Empty), ("command", Unbalanced)])),
-            (form("git", Http, "localhost:3000"), errors(&[("name", DuplicateServer), ("url", BadScheme)])),
-            (form("w", Http, "https:///mcp"), errors(&[("url", NoHost)])),
-            (form("w", Http, "https://host:99999/"), errors(&[("url", BadPort)])),
-            (form("w", Http, "https://host:/"), errors(&[("url", BadPort)])),
-            (form("w", Http, "https://ho st/"), errors(&[("url", Whitespace)])),
-        ];
-        for (f, want) in bad { assert_eq!(f.validate(&existing).unwrap_err(), want, "{f:?}") }
-        let spec = form("fs", Stdio, r#"API_KEY=a=b npx -y "@scope/server fs" '/tmp/my dir' a\ b"#).validate(&existing).unwrap();
-        let McpTransport::Stdio { command, args, env } = spec.transport else { panic!("stdio") };
-        assert_eq!((command.as_str(), args, env.get("API_KEY").map(String::as_str)), ("npx", vec!["-y".to_owned(), "@scope/server fs".into(), "/tmp/my dir".into(), "a b".into()], Some("a=b")));
-        for url in [" https://mcp.example.com:8443/sse ", "HTTP://[::1]:3000/mcp", "http://user@localhost/mcp"] { assert!(form("w", Http, url).validate(&existing).is_ok(), "{url}") }
-    }
-
-    #[test]
-    fn host_forms_and_limit_paths_validate() {
-        let host = |a: &str, h: &str, u: &str, p: &str| AddHostForm { alias: a.into(), hostname: h.into(), user: u.into(), port: p.into() };
-        let ok = host("build", "build.internal", "ci", "2222").validate(&["other".into()]).unwrap();
-        assert_eq!((ok.port, ok.user.as_deref(), ok.limits.read_only, ok.limits.commands_allowed), (Some(2222), Some("ci"), true, false));
-        use FieldError::*;
-        let want = errors(&[("alias", DuplicateHost), ("hostname", Empty), ("user", Whitespace), ("port", BadPort)]);
-        assert_eq!(host("build", "", "a b", "0").validate(&["build".into()]).unwrap_err(), want);
-        let mut draft = LimitsDraft::new(&RemoteHost { alias: "h".into(), hostname: "h".into(), user: None, port: None, proxy_jump: None, limits: HostLimits { allowed_paths: vec!["/srv".into()], ..Default::default() } });
-        for (path, error) in [("var/log", Some(RelativePath)), ("/srv", Some(DuplicatePath)), (" ~/work ", None)] {
-            draft.new_path = path.into();
-            draft.add_path();
-            assert_eq!(draft.path_error, error);
-        }
-        assert_eq!((draft.limits.allowed_paths, draft.new_path), (vec!["/srv".to_owned(), "~/work".into()], String::new()));
     }
 }

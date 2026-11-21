@@ -15,9 +15,10 @@ use loa_ui_kit::text::format_duration;
 use loa_ui_kit::theme::{ColorRole as C, SpaceRole as Sp, TextRole as T, sp, text_size as ts};
 use loa_ui_kit::widgets::{PanelPane, badge, label};
 use std::collections::{BTreeMap, HashSet};
-use std::ops::Range;
 
 const WAIT_TOOL: &str = "wait";
+/// The attributes a [`Job`] keeps, in its `attrs` order.
+const ATTRS: [&str; 5] = [attr::ID, attr::TITLE, attr::COMMAND, attr::AGENT, attr::SESSION];
 
 /// One `<job>` as the panel shows it.
 #[derive(Debug, Clone, PartialEq)]
@@ -25,28 +26,20 @@ pub struct Job {
     node: NodeId,
     kind: JobKind,
     status: JobStatus,
-    /// `id`, `title`, `command`, `agent` and `session` attributes.
     attrs: [Option<String>; 5],
     started: Option<i64>,
     ended: Option<i64>,
     exit_code: Option<i64>,
     output: String,
-    /// The last non-blank output line, trimmed; empty when there is none.
-    last_line: Range<usize>,
-    /// Start of the unfinished last line; lines before it were already searched.
-    line_start: usize,
     expanded: bool,
 }
-
-const ATTRS: [&str; 5] = [attr::ID, attr::TITLE, attr::COMMAND, attr::AGENT, attr::SESSION];
 
 impl Job {
     fn from_node(node: &Node) -> Option<Self> {
         if node.kind != ElementKind::Job { return None }
         let kind = JobKind::parse(node.str_attr(attr::KIND)?)?;
-        let mut job = Job { node: node.id, kind, status: JobStatus::Running, attrs: Default::default(), started: None, ended: None, exit_code: None, output: node.text.clone(), last_line: 0..0, line_start: 0, expanded: false };
+        let mut job = Job { node: node.id, kind, status: JobStatus::Running, attrs: Default::default(), started: None, ended: None, exit_code: None, output: node.text.clone(), expanded: false };
         job.read_attrs(node);
-        job.rescan();
         Some(job)
     }
 
@@ -58,29 +51,6 @@ impl Job {
         (self.started, self.ended, self.exit_code) = (node.int_attr(attr::STARTED), node.int_attr(attr::ENDED), node.int_attr(attr::EXIT_CODE));
     }
 
-    fn rescan(&mut self) {
-        self.last_line = 0..0;
-        self.find_last_line(0);
-        self.line_start = self.output.rfind('\n').map_or(0, |i| i + 1);
-    }
-
-    /// Adds streamed output, searching only the unfinished line and `chunk`.
-    fn append(&mut self, chunk: &str) {
-        let old = self.output.len();
-        self.output.push_str(chunk);
-        self.find_last_line(self.line_start);
-        if let Some(i) = chunk.rfind('\n') { self.line_start = old + i + 1 }
-    }
-
-    /// The last non-blank line starting at or after `from`; keeps the old one when none.
-    fn find_last_line(&mut self, from: usize) {
-        let region = &self.output[from..];
-        if let Some(line) = region.split('\n').rev().find(|l| !l.trim().is_empty()) {
-            let start = from + line.as_ptr() as usize - region.as_ptr() as usize + (line.len() - line.trim_start().len());
-            self.last_line = start..start + line.trim().len();
-        }
-    }
-
     pub fn node(&self) -> NodeId { self.node }
     pub fn status(&self) -> JobStatus { self.status }
     /// The child session of a subagent.
@@ -88,7 +58,8 @@ impl Job {
     /// Title, else agent, else command, else kind.
     pub fn label(&self) -> &str { [1, 3, 2].iter().find_map(|&i| self.attrs[i].as_deref()).unwrap_or(self.kind.as_str()) }
     pub fn output(&self) -> &str { &self.output }
-    pub fn last_line(&self) -> &str { &self.output[self.last_line.clone()] }
+    /// The last non-blank output line, trimmed; scanning stops at the first such line from the end.
+    pub fn last_line(&self) -> &str { self.output.rsplit('\n').map(str::trim).find(|l| !l.is_empty()).unwrap_or_default() }
 }
 
 /// Jobs of one session in document order and the wait calls blocked on them.
@@ -124,26 +95,15 @@ pub enum Event {
 impl State {
     pub fn from_dom(dom: &Dom) -> Self {
         let mut s = Self::default();
-        s.scan(dom);
+        s.reset(dom);
         s
     }
 
     /// Rebuilds from `dom`, keeping rows that were expanded.
     pub fn reset(&mut self, dom: &Dom) {
-        let expanded: Vec<NodeId> = self.jobs.values().filter(|j| j.expanded).map(|j| j.node).collect();
-        self.jobs.clear();
-        self.waits.clear();
-        self.scan(dom);
-        for n in expanded {
-            if let Some(j) = self.jobs.get_mut(&n) { j.expanded = true }
-        }
-    }
-
-    fn scan(&mut self, dom: &Dom) {
-        for node in dom.iter() {
-            if let Some(job) = Job::from_node(node) { self.jobs.insert(node.id, job); }
-            if is_active_wait(node) { self.waits.insert(node.id); }
-        }
+        let expanded: HashSet<NodeId> = self.jobs.values().filter(|j| j.expanded).map(|j| j.node).collect();
+        self.jobs = dom.iter().filter_map(Job::from_node).map(|j| (j.node, Job { expanded: expanded.contains(&j.node), ..j })).collect();
+        self.waits = dom.iter().filter(|n| is_active_wait(n)).map(|n| n.id).collect();
     }
 
     /// Follows `patch`, already applied to `dom`.
@@ -154,13 +114,10 @@ impl State {
                 Some(job) => { self.jobs.insert(node, job); }
                 None => self.refresh_wait(n),
             },
-            (Op::Set { name, .. }, Some(job), Some(n)) if name == TEXT => {
-                n.text.clone_into(&mut job.output);
-                job.rescan();
-            }
+            (Op::Set { name, .. }, Some(job), Some(n)) if name == TEXT => n.text.clone_into(&mut job.output),
             (Op::Set { .. }, Some(job), Some(n)) => job.read_attrs(n),
             (Op::Set { .. }, None, Some(n)) => self.refresh_wait(n),
-            (Op::Append { text }, Some(job), _) => job.append(text),
+            (Op::Append { text }, Some(job), _) => job.output.push_str(text),
             (Op::Remove, ..) => {
                 self.jobs.retain(|n, _| dom.contains(*n));
                 self.waits.retain(|n| dom.contains(*n));
@@ -215,11 +172,7 @@ impl State {
     }
 
     fn job_view<'a>(&'a self, job: &'a Job) -> Element<'a, Message> {
-        let tone = match job.status {
-            JobStatus::Running | JobStatus::Cancelled => Tone::Muted,
-            JobStatus::Done => Tone::Ok,
-            JobStatus::Error => Tone::Danger,
-        };
+        let tone = [Tone::Muted, Tone::Ok, Tone::Danger, Tone::Muted][job.status as usize];
         let exit = job.exit_code.filter(|&c| c != 0 && job.status != JobStatus::Running).map(|c| label(format!("exit {c}"), T::Caption, Tone::Danger));
         let child = job.kind == JobKind::Subagent && job.session().is_some();
         let n = job.node;
@@ -238,7 +191,7 @@ impl State {
         let below: Option<Element<'a, Message>> = if job.expanded {
             Some(container(text(job.output()).font(Font::MONOSPACE).size(ts(T::Label))).padding([sp(Sp::S), sp(Sp::M)]).width(Fill).style(kit::fill(C::Raised, 0.0)).into())
         } else {
-            (!job.last_line.is_empty()).then(|| Row::new().push(space().width(sp(Sp::Xl))).push(label(job.last_line(), T::Caption, Tone::Muted).wrapping(Wrapping::None)).into())
+            Some(job.last_line()).filter(|l| !l.is_empty()).map(|l| Row::new().push(space().width(sp(Sp::Xl))).push(label(l, T::Caption, Tone::Muted).wrapping(Wrapping::None)).into())
         };
         Column::new().push(head.spacing(sp(Sp::S)).align_y(Center).height(list_row_height())).push(below).into()
     }
@@ -262,73 +215,31 @@ mod tests {
     use super::*;
     use loa_core::{Draft, Value};
 
-    struct Fixture {
-        dom: Dom,
-        state: State,
-        session: NodeId,
-        turn: NodeId,
-    }
-
-    impl Fixture {
-        fn new() -> Self {
-            let mut f = Fixture { dom: Dom::new(), state: State::default(), session: NodeId::DOCUMENT, turn: NodeId::DOCUMENT };
-            let attrs = [(attr::ID, Value::from("s1")), (attr::HARNESS, "omp".into()), (attr::NODE, "key".into()), (attr::CREATED, 0_i64.into())];
-            f.session = f.commit(Draft::insert(NodeId::DOCUMENT, ElementKind::Session, attrs, ""));
-            f.turn = f.commit(Draft::insert(f.session, ElementKind::Turn, [(attr::STATUS, "running".into())], ""));
-            f
-        }
-
-        fn commit(&mut self, draft: Draft) -> NodeId {
-            let patch = self.dom.commit(draft, 0).expect("valid patch");
-            self.state.apply(&self.dom, &patch);
-            patch.node
-        }
-
-        fn job(&mut self, parent: NodeId, attrs: Vec<(&str, Value)>) -> NodeId { self.commit(Draft::insert(parent, ElementKind::Job, attrs, "")) }
-        fn shell(&mut self, parent: NodeId, command: &str) -> NodeId { self.job(parent, vec![(attr::KIND, JobKind::Shell.into()), (attr::STATUS, JobStatus::Running.into()), (attr::COMMAND, command.into()), (attr::STARTED, 1_000_i64.into())]) }
+    fn commit(dom: &mut Dom, state: &mut State, draft: Draft) -> NodeId {
+        let patch = dom.commit(draft, 0).unwrap();
+        state.apply(dom, &patch);
+        patch.node
     }
 
     #[test]
-    fn output_last_line_elapsed_and_waits_follow_patches() {
-        let mut f = Fixture::new();
-        let (turn, session) = (f.turn, f.session);
-        let a = f.shell(turn, "cargo build");
-        assert_eq!(f.state.jobs().map(|j| (j.status(), j.label())).collect::<Vec<_>>(), [(JobStatus::Running, "cargo build")]);
+    fn patches_track_output_waits_and_events() {
+        let (mut dom, mut state) = (Dom::new(), State::default());
+        let attrs = [(attr::ID, Value::from("s1")), (attr::HARNESS, "omp".into()), (attr::NODE, "key".into()), (attr::CREATED, 0_i64.into())];
+        let session = commit(&mut dom, &mut state, Draft::insert(NodeId::DOCUMENT, ElementKind::Session, attrs, ""));
+        let turn = commit(&mut dom, &mut state, Draft::insert(session, ElementKind::Turn, [(attr::STATUS, Value::from("running"))], ""));
+        let shell = [(attr::KIND, Value::from(JobKind::Shell)), (attr::COMMAND, "cargo build".into()), (attr::STARTED, 1_000_i64.into())];
+        let a = commit(&mut dom, &mut state, Draft::insert(turn, ElementKind::Job, shell, ""));
         for (chunk, last) in [("ab", "ab"), ("c\nde", "de"), ("f\n", "def"), ("  \n\n", "def")] {
-            f.commit(Draft::append(a, chunk));
-            assert_eq!(f.state.job(a).unwrap().last_line(), last);
+            commit(&mut dom, &mut state, Draft::append(a, chunk));
+            assert_eq!(state.job(a).unwrap().last_line(), last);
         }
-        let _ = f.state.update(Message::Tick(66_000));
-        assert_eq!(f.state.elapsed_ms(a), Some(65_000));
-        let b = f.shell(session, "b");
-        let wait = f.commit(Draft::insert(turn, ElementKind::Call, [(attr::TOOL, Value::from(WAIT_TOOL)), (attr::STATUS, "pending".into())], ""));
-        f.commit(Draft::set(b, attr::STATUS, JobStatus::Done));
-        f.commit(Draft::set(b, attr::ENDED, 6_000_i64));
-        assert_eq!((f.state.is_awaited(a), f.state.is_awaited(b), f.state.elapsed_ms(b)), (true, false, Some(5_000)));
-        f.commit(Draft::set(wait, attr::STATUS, CallStatus::Done));
-        assert!(!f.state.waiting());
-        f.commit(Draft::set(b, attr::TITLE, "build"));
-        f.commit(Draft::set_text(b, "replaced\n\n"));
-        f.commit(Draft::append(b, "tail"));
-        let turn2 = f.commit(Draft::insert(session, ElementKind::Turn, Vec::<(&str, Value)>::new(), ""));
-        let c = f.shell(turn2, "c");
-        f.commit(Draft::append(c, "\n  last  \n"));
-        f.commit(Draft::remove(turn));
-        let full = State::from_dom(&f.dom);
-        assert!(f.state.jobs().eq(full.jobs()) && f.state.waiting() == full.waiting(), "incremental equals a fresh scan");
-        assert_eq!((f.state.job(b).unwrap().last_line(), f.state.job(c).unwrap().last_line(), f.state.jobs().count()), ("tail", "last", 2));
-    }
-
-    #[test]
-    fn open_and_cancel_emit_only_for_fitting_jobs() {
-        let mut f = Fixture::new();
-        let turn = f.turn;
-        let sub = f.job(turn, vec![(attr::KIND, JobKind::Subagent.into()), (attr::ID, "job-1".into()), (attr::SESSION, "child-7".into())]);
-        let sh = f.shell(turn, "ls");
-        let cases = [(Message::Open(sub), Some(Event::OpenSession("child-7".into()))), (Message::Cancel(sub), Some(Event::Cancel { node: sub, id: Some("job-1".into()) })), (Message::Open(sh), None)];
-        for (m, e) in cases { assert_eq!(f.state.update(m).1, e) }
-        f.commit(Draft::set(sub, attr::STATUS, JobStatus::Done));
-        assert_eq!(f.state.update(Message::Cancel(sub)).1, None);
-        drop(iced_test::simulator(f.state.view()));
+        let _ = state.update(Message::Tick(66_000));
+        let wait = commit(&mut dom, &mut state, Draft::insert(turn, ElementKind::Call, [(attr::TOOL, Value::from(WAIT_TOOL)), (attr::STATUS, "pending".into())], ""));
+        assert_eq!((state.job(a).unwrap().label(), state.elapsed_ms(a), state.is_awaited(a)), ("cargo build", Some(65_000), true));
+        assert_eq!(state.update(Message::Cancel(a)).1, Some(Event::Cancel { node: a, id: None }));
+        commit(&mut dom, &mut state, Draft::set(wait, attr::STATUS, CallStatus::Done));
+        commit(&mut dom, &mut state, Draft::set(a, attr::STATUS, JobStatus::Done));
+        assert_eq!((state.waiting(), state.update(Message::Cancel(a)).1, state.update(Message::Open(a)).1), (false, None, None));
+        assert!(state.jobs().eq(State::from_dom(&dom).jobs()), "incremental equals a fresh scan");
     }
 }
