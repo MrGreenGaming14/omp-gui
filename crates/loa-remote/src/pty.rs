@@ -1,8 +1,5 @@
-//! Interactive login shells for the terminal pane: a PTY channel on the
-//! host's pooled connection, split so output is read while input is written.
-//!
-//! The user opens these, not the agent, so host limits and approvals do not
-//! apply. Each open is still written to the audit log.
+//! Interactive login shells for the terminal pane: a PTY channel on the host's pooled connection,
+//! split so output is read while input is written. The user opens these, so limits don't apply.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -20,9 +17,9 @@ pub const TERM: &str = "xterm-256color";
 /// One read from a shell channel.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ShellRead {
-    /// Output of the remote program (stdout and stderr, as a PTY merges them).
+    /// Output (stdout and stderr, as a PTY merges them).
     Data(Bytes),
-    /// The shell ended; nothing more follows.
+    /// The shell ended; every later read returns this again.
     Closed { exit_status: Option<u32> },
 }
 
@@ -37,7 +34,7 @@ pub struct ShellReader {
     _session: Arc<Session>,
 }
 
-/// Input and control side of an interactive shell. Dropping it hangs up.
+/// Input and control side of an interactive shell; dropping it hangs up.
 pub struct ShellWriter {
     host: String,
     half: Option<ChannelWriteHalf<Msg>>,
@@ -61,17 +58,11 @@ pub(crate) async fn open(session: Arc<Session>, cols: u16, rows: u16) -> Result<
     let host = session.host.clone();
     let ssh = |source| Error::Ssh { host: host.clone(), source };
     let channel = session.handle.channel_open_session().await.map_err(ssh)?;
-    channel
-        .request_pty(true, TERM, u32::from(cols), u32::from(rows), 0, 0, &[])
-        .await
-        .map_err(ssh)?;
+    channel.request_pty(true, TERM, u32::from(cols), u32::from(rows), 0, 0, &[]).await.map_err(ssh)?;
     channel.request_shell(true).await.map_err(ssh)?;
     let (mut read, write) = channel.split();
-
-    // Both requests were sent with want_reply: wait for their two answers,
-    // keeping any output that races ahead of the second one.
-    let mut pending = VecDeque::new();
-    let mut answers = 0;
+    // Wait for both answers, keeping any output that races ahead of the second one.
+    let (mut pending, mut answers) = (VecDeque::new(), 0);
     while answers < 2 {
         match read.wait().await {
             Some(ChannelMsg::Success) => answers += 1,
@@ -80,23 +71,12 @@ pub(crate) async fn open(session: Arc<Session>, cols: u16, rows: u16) -> Result<
                 return Err(Error::InvalidRequest(format!("{host} refused to open {what}")));
             }
             Some(ChannelMsg::Data { data } | ChannelMsg::ExtendedData { data, .. }) => pending.push_back(data),
-            Some(ChannelMsg::Close | ChannelMsg::Eof) | None => {
-                return Err(Error::InvalidRequest(format!("{host} closed the shell channel at once")));
-            }
+            Some(ChannelMsg::Close | ChannelMsg::Eof) | None => return Err(Error::InvalidRequest(format!("{host} closed the shell channel at once"))),
             Some(_) => {}
         }
     }
-    Ok(Shell {
-        reader: ShellReader {
-            host: host.clone(),
-            half: read,
-            pending,
-            exit_status: None,
-            done: false,
-            _session: session.clone(),
-        },
-        writer: ShellWriter { host, half: Some(write), _session: session },
-    })
+    let reader = ShellReader { host: host.clone(), half: read, pending, exit_status: None, done: false, _session: session.clone() };
+    Ok(Shell { reader, writer: ShellWriter { host, half: Some(write), _session: session } })
 }
 
 impl ShellReader {
@@ -104,17 +84,14 @@ impl ShellReader {
         &self.host
     }
 
-    /// The next chunk of output. After [`ShellRead::Closed`] it keeps
-    /// returning `Closed`.
+    /// The next chunk of output, or [`ShellRead::Closed`].
     pub async fn read(&mut self) -> ShellRead {
         if let Some(data) = self.pending.pop_front() {
             return ShellRead::Data(data);
         }
         while !self.done {
             match self.half.wait().await {
-                Some(ChannelMsg::Data { data } | ChannelMsg::ExtendedData { data, .. }) => {
-                    return ShellRead::Data(data);
-                }
+                Some(ChannelMsg::Data { data } | ChannelMsg::ExtendedData { data, .. }) => return ShellRead::Data(data),
                 Some(ChannelMsg::ExitStatus { exit_status }) => self.exit_status = Some(exit_status),
                 Some(ChannelMsg::Close) | None => self.done = true,
                 Some(_) => {}
@@ -144,17 +121,12 @@ impl ShellWriter {
 
     /// Tells the remote PTY its new size.
     pub async fn resize(&mut self, cols: u16, rows: u16) -> Result<()> {
-        self.half()?
-            .window_change(u32::from(cols), u32::from(rows), 0, 0)
-            .await
-            .map_err(|e| self.ssh(e))
+        self.half()?.window_change(u32::from(cols), u32::from(rows), 0, 0).await.map_err(|e| self.ssh(e))
     }
 
     /// Hangs up: sends EOF and closes the channel.
     pub async fn close(&mut self) -> Result<()> {
-        let Some(half) = self.half.take() else {
-            return Ok(());
-        };
+        let Some(half) = self.half.take() else { return Ok(()) };
         let _ = half.eof().await;
         half.close().await.map_err(|e| self.ssh(e))
     }
@@ -162,12 +134,8 @@ impl ShellWriter {
 
 impl Drop for ShellWriter {
     fn drop(&mut self) {
-        if let Some(half) = self.half.take()
-            && let Ok(runtime) = tokio::runtime::Handle::try_current()
-        {
-            runtime.spawn(async move {
-                let _ = half.close().await;
-            });
+        if let (Some(half), Ok(runtime)) = (self.half.take(), tokio::runtime::Handle::try_current()) {
+            runtime.spawn(async move { half.close().await });
         }
     }
 }
