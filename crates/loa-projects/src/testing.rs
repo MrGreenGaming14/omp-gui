@@ -49,7 +49,7 @@ impl Builder {
     pub fn digest(&self, summary: &str) {
         let dom = self.dom();
         let content = DigestContent { summary: summary.into(), ..Default::default() };
-        write_drafts(&dom, &content, dom.seq(), None, 0).into_iter().for_each(|d| drop(self.commit(d)));
+        write_drafts(&dom, &content, dom.seq(), None, 0).into_iter().for_each(|d| { self.commit(d); });
     }
 
     pub fn dom(&self) -> Dom {
