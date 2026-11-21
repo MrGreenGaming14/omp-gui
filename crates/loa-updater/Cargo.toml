@@ -7,6 +7,8 @@ publish.workspace = true
 
 [dependencies]
 loa-util.workspace = true
+loa-contracts.workspace = true
+loa-harness = { workspace = true, features = ["omp"] }
 async-trait.workspace = true
 base64 = "0.22"
 ed25519-dalek = { version = "3", default-features = false, features = ["fast", "zeroize"] }

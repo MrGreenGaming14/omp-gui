@@ -1,6 +1,7 @@
 //! The small-model port behind app compaction and advisor notes: one model
 //! call, prompt in and text out, with no tools and no session. The app backs
-//! it with [`loa_projects::OmpSummarizer`] (`omp -p` on a model role).
+//! it with `loa_harness::omp::OneShot` (`omp -p` on a model role) through
+//! the `loa_projects::Summarizer` port.
 
 use crate::{Error, Result, Summarizer};
 use async_trait::async_trait;

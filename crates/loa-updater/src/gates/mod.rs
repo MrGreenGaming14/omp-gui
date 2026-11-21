@@ -13,7 +13,7 @@ pub mod run;
 pub mod tools;
 
 pub use changelog::{
-    ChangelogReview, ChangelogSummarizer, OmpSmolSummarizer, changelog_text, check_changelog,
+    ChangelogReview, ChangelogSummarizer, SmolReviewer, changelog_text, check_changelog,
     parse_review,
 };
 pub use contract::{ContractFailure, ContractRunner, check_contract};
