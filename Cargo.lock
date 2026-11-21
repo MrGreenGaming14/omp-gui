@@ -5060,7 +5060,6 @@ dependencies = [
  "loa-contracts",
  "loa-surfaces",
  "loa-ui-kit",
- "loa-ui-shell",
  "rust_xlsxwriter",
  "tempfile",
  "thiserror 2.0.21",
