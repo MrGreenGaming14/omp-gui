@@ -20,13 +20,22 @@ use loa_ui_session::transcript as chat;
 use loa_ui_shell::sidebar::Event as Nav;
 use loa_ui_shell::theme::style;
 use loa_ui_shell::{self as shell, ThemeRef, palette};
+use loa_bus::SessionId;
+use loa_harness::account_support::opener::SystemUrlOpener;
+use loa_harness::omp::OneShot;
+use loa_harness::omp::account::OmpLaunch;
+use loa_models::login::UrlOpener;
+use loa_models::service::Backend;
+use loa_projects::Summarizers;
 use loa_runtime::harnesses::Harnesses;
+use loa_runtime::lifecycle::Command;
 use loa_runtime::{Runtime, RuntimeParts};
 use loa_session::library::Library;
 use loa_ui_terminal as terminal;
 use loa_util::time::{ago, now_ms};
 
-use crate::area::{Area, AreaMsg, Ctx, Request};
+use crate::adapters::summarizer::OmpSummarizers;
+use crate::area::{Area, AreaMsg, Backends, Ctx, Request};
 use crate::areas::{self, Registry};
 use crate::services::{Services, harness, open_library};
 
@@ -56,6 +65,33 @@ const STARTERS: [(Icon, &str, &str); 3] = [
     (Icon::GitCompare, "Review my uncommitted changes", "Review my uncommitted changes for bugs and anything I missed."),
     (Icon::TriangleAlert, "Find and fix a failing test", "Run the tests, find one that fails, and fix it."),
 ];
+
+/// What [`App::build`] starts from besides the services: the runtime's parts
+/// and the backends areas build on. [`App::new`] makes them from this
+/// machine; tests pass offline ones.
+pub struct AppParts {
+    pub runtime: RuntimeParts,
+    /// The model screens' backend.
+    pub models: loa_models::service::Parts,
+    /// Writes the projects' digests.
+    pub summarizer: Arc<dyn Summarizers>,
+    /// Home directory: native sessions, omp's rules and config.
+    pub home: PathBuf,
+    /// Opens links clicked in the transcript.
+    pub opener: Arc<dyn UrlOpener>,
+}
+
+/// The runtime over `library` and `harnesses`: on the project selected last
+/// run while its folder still exists, else the workspace, and on the saved
+/// approval mode.
+pub(crate) fn runtime_parts(services: &Services, library: Arc<Library>, harnesses: Harnesses) -> RuntimeParts {
+    let saved = services.storage.config.load().unwrap_or_default();
+    let (project, cwd) = match saved.active_project.filter(|active| active.cwd.is_dir()) {
+        Some(active) => (active.name, active.cwd),
+        None => (services.workspace_project(), services.workspace.clone()),
+    };
+    RuntimeParts { library, harnesses, node: services.node.key.clone(), cwd, project, access: saved.harness.approval_mode }
+}
 
 #[derive(Clone)]
 pub enum Message {
@@ -183,31 +219,32 @@ impl App {
         let (services, warnings) = Services::load().unwrap_or_else(|error| panic!("{error}"));
         let library = open_library(&services.storage.dirs, &services.node).unwrap_or_else(|error| panic!("{error}"));
         let harnesses = harness::detect(&services.node.key, &services.storage.dirs.omp);
-        let (mut app, task) = Self::build(services, library, harnesses);
+        let runtime = runtime_parts(&services, library, harnesses);
+        let executable = |id: &str| runtime.harnesses.get(id).and_then(|harness| harness.executable.clone());
+        let launch = OmpLaunch {
+            executable: executable(runtime.harnesses.roles_id()).unwrap_or_else(|| OmpLaunch::default().executable),
+            cwd: Some(runtime.cwd.clone()),
+            env: Vec::new(),
+        };
+        let env = loa_harness::HarnessEnv { node: services.node.key.clone(), omp_dir: services.storage.dirs.omp.clone() };
+        let models = crate::adapters::models::models_parts(launch, &runtime.harnesses, &loa_harness::factories(&env));
+        // Digests come from omp's `smol` role.
+        let summarizer = OmpSummarizers(OneShot::new(executable("omp").unwrap_or_else(|| PathBuf::from("omp")), services.storage.dirs.data.clone()));
+        let home = loa_util::fs::home().unwrap_or_else(|| PathBuf::from("."));
+        let parts = AppParts { runtime, models, summarizer: Arc::new(summarizer), home, opener: Arc::new(SystemUrlOpener) };
+        let (mut app, task) = Self::build(services, parts);
         if !warnings.is_empty() {
             app.ctx.notify(warnings.join("; "));
         }
         (app, task)
     }
 
-    /// The app over `services`, the session `library` and the `harnesses`:
-    /// Recents from the session store, every area registered.
-    pub fn build(services: Services, library: Arc<Library>, harnesses: Harnesses) -> (Self, Task<Message>) {
+    /// The app over `services` and `parts`: Recents from the session store,
+    /// every area registered.
+    pub fn build(services: Services, parts: AppParts) -> (Self, Task<Message>) {
         let saved = services.storage.config.load().unwrap_or_default();
-        // The project selected last run, while its folder still exists, is the active one from the start.
-        let restored = saved.active_project.filter(|active| active.cwd.is_dir());
-        let (project, cwd) = match &restored {
-            Some(active) => (active.name.clone(), active.cwd.clone()),
-            None => (services.workspace_project(), services.workspace.clone()),
-        };
-        let mut runtime = Runtime::new(RuntimeParts {
-            library,
-            harnesses,
-            node: services.node.key.clone(),
-            cwd,
-            project,
-            access: saved.harness.approval_mode.clone(),
-        });
+        let AppParts { runtime, models, summarizer, home, opener } = parts;
+        let mut runtime = Runtime::new(runtime);
         let (shell, setup) = shell::State::new(saved.appearance.clone());
         let theme = shell.theme();
         let mut composer = composer::State::new();
@@ -222,6 +259,7 @@ impl App {
         let mut ctx = Ctx {
             services,
             runtime,
+            backends: Backends { models: Backend::new(models), summarizer, home, opener },
             shell,
             composer,
             keymap: palette::Keymap::defaults(palette::Platform::current()),
@@ -231,11 +269,12 @@ impl App {
             screen: None,
             notice: (!problems.is_empty()).then(|| problems.join("; ")),
             requests: Vec::new(),
-            events: Vec::new(),
+            transitions: Vec::new(),
             slash: Vec::new(),
         };
         ctx.shell.set_project_tabs(saved.project_tabs);
-        ctx.shell.set_active_project(restored.map(|active| active.name));
+        // The project selected last run, while its folder still exists, is the active one from the start.
+        ctx.shell.set_active_project(saved.active_project.filter(|active| active.cwd.is_dir()).map(|active| active.name));
         ctx.shell.sidebar_mut().set_pins(saved.pinned);
         ctx.shell.sidebar_mut().set_pinned_projects(saved.pinned_projects);
         ctx.shell.sidebar_mut().set_sessions(recents);
@@ -337,7 +376,7 @@ impl App {
                 }
                 After::Continue(folder, prompt) => {
                     let moved = folder.map_or_else(Task::none, |folder| self.set_folder(folder));
-                    Task::batch([moved, self.lifecycle(|s, ctx, areas| s.start(ctx, areas, Some(prompt)))])
+                    Task::batch([moved, self.lifecycle(|s, ctx, areas| s.run(ctx, areas, Command::Start { prompt: Some(prompt) }))])
                 }
             });
         }
@@ -349,9 +388,9 @@ impl App {
     fn settle(&mut self) -> Task<Message> {
         let mut tasks = Vec::new();
         loop {
-            if !self.ctx.events.is_empty() {
-                for event in std::mem::take(&mut self.ctx.events) {
-                    tasks.push(self.lifecycle(|s, ctx, areas| s.dispatch(ctx, areas, event)));
+            if !self.ctx.transitions.is_empty() {
+                for transition in std::mem::take(&mut self.ctx.transitions) {
+                    tasks.push(self.lifecycle(|s, ctx, areas| s.apply(ctx, areas, transition)));
                 }
                 continue;
             }
@@ -360,13 +399,13 @@ impl App {
             }
             for request in std::mem::take(&mut self.ctx.requests) {
                 tasks.push(match request {
-                    Request::NewSession => self.lifecycle(|s, ctx, areas| s.start(ctx, areas, None)),
-                    Request::OpenSession(id) => self.lifecycle(|s, ctx, areas| s.open(ctx, areas, &id)),
+                    Request::NewSession => self.lifecycle(|s, ctx, areas| s.run(ctx, areas, Command::Start { prompt: None })),
+                    Request::OpenSession(id) => self.lifecycle(|s, ctx, areas| s.run(ctx, areas, Command::Open(SessionId::from(id)))),
                     Request::DetachSession(id) => self.detach_session(&id),
                     Request::Prompt(prompt) => self.lifecycle(|s, ctx, areas| s.send(ctx, areas, prompt)),
                     Request::OpenTab(id) => self.open_tab(&id),
                     Request::RevealTab(id) => self.reveal_tab(&id),
-                    Request::Spawn(spawn) => self.lifecycle(|s, ctx, areas| s.spawn(ctx, areas, spawn)),
+                    Request::Spawn(spawn) => self.lifecycle(|s, ctx, areas| s.run(ctx, areas, Command::Spawn(spawn))),
                     Request::ActivateProject { project, cwd } => self.activate_project(project, cwd),
                     Request::Forward(message) => self.update(*message),
                 });
@@ -406,19 +445,19 @@ impl App {
 
     fn intent(&mut self, intent: Intent) -> Task<Message> {
         match intent {
-            Intent::Start => self.lifecycle(|s, ctx, areas| s.start(ctx, areas, None)),
-            Intent::OpenSession(id) => self.lifecycle(|s, ctx, areas| s.open(ctx, areas, &id)),
+            Intent::Start => self.lifecycle(|s, ctx, areas| s.run(ctx, areas, Command::Start { prompt: None })),
+            Intent::OpenSession(id) => self.lifecycle(|s, ctx, areas| s.run(ctx, areas, Command::Open(SessionId::from(id)))),
             Intent::Submit(prompt) => match self.slash(&prompt.text) {
                 Some(task) => {
                     // Not a turn: the composer is ready again, and a message queued behind the command goes out now.
                     let next = self.ctx.composer.turn_ended();
                     Task::batch([task, self.composer_event(next)])
                 }
-                None if self.ctx.runtime.sessions().active().is_none() => self.lifecycle(|s, ctx, areas| s.start(ctx, areas, Some(prompt))),
+                None if self.ctx.runtime.sessions().active().is_none() => self.lifecycle(|s, ctx, areas| s.run(ctx, areas, Command::Start { prompt: Some(prompt) })),
                 None => self.lifecycle(|s, ctx, areas| s.send(ctx, areas, prompt)),
             },
-            Intent::Interrupt => self.lifecycle(|s, ctx, _| s.interrupt(ctx)),
-            Intent::Access(id) => self.lifecycle(|s, ctx, _| s.set_access(ctx, id)),
+            Intent::Interrupt => self.lifecycle(|s, ctx, areas| s.run(ctx, areas, Command::Interrupt)),
+            Intent::Access(id) => self.lifecycle(|s, ctx, areas| s.set_access(ctx, areas, id)),
             Intent::Files => {
                 self.files.refresh();
                 self.ctx.composer.set_files(self.files.visible().map(|path| path.to_string_lossy().into_owned()).collect());
@@ -557,7 +596,7 @@ impl App {
                 Some((_, _, prompt)) => self.ctx.composer.set_text(prompt).map(Message::Composer),
                 None => Task::none(),
             },
-            Message::OpenRecent(id) => self.lifecycle(|s, ctx, areas| s.open(ctx, areas, &id)),
+            Message::OpenRecent(id) => self.lifecycle(|s, ctx, areas| s.run(ctx, areas, Command::Open(SessionId::from(id)))),
             Message::Session(message) => self.lifecycle(|s, ctx, areas| s.update(ctx, areas, message)),
             Message::WorkingDiff(patch) => self.show_diff(patch),
             // The models screen's own close button, drawn inside Configs or Settings.
@@ -596,7 +635,7 @@ impl App {
             return Task::none();
         }
         // Interrupt the harness itself, even before the turn-start patch arrives.
-        self.lifecycle(|s, ctx, _| s.interrupt(ctx))
+        self.lifecycle(|s, ctx, areas| s.run(ctx, areas, Command::Interrupt))
     }
 
     /// The decision card at `node` of session `session`.

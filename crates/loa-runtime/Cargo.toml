@@ -13,3 +13,9 @@ loa-bus = { path = "../loa-bus" }
 loa-session = { path = "../loa-session" }
 tokio.workspace = true
 futures.workspace = true
+
+[dev-dependencies]
+# Every adapter compiled in, as in the app: with fewer, loa-harness warns about unused helpers.
+loa-harness = { path = "../loa-harness", features = ["testing"] }
+async-trait.workspace = true
+tempfile.workspace = true

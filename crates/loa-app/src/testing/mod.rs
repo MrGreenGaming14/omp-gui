@@ -23,17 +23,16 @@ use loa_models::error::{Result as CheckResult, SettingsValidator};
 use loa_models::files::OmpFiles;
 use loa_models::keys::EnvironmentPresence;
 use loa_models::login::UrlOpener;
-use loa_models::service::{Backend, FilesSource, Parts};
+use loa_models::service::{FilesSource, Parts};
 use loa_models::testing::{FakeOmp, OfflineOmpAccount};
-use loa_projects::{ServiceConfig, Summarizer, Summarizers};
+use loa_projects::{Summarizer, Summarizers};
 use tempfile::TempDir;
 use tokio::runtime::Runtime;
 
 use crate::app::usage::{Usage, UsageSource, parse};
 use crate::app::workspace::{FolderPicker, GitProbe};
-use crate::app::{App, Message};
+use crate::app::{App, AppParts, Message, runtime_parts};
 use crate::area::Area;
-use crate::areas::{models, projects, sessions};
 use crate::services::{Dirs, Host, NodeServices, Services, open_library};
 use loa_runtime::harnesses::Harnesses;
 
@@ -102,11 +101,8 @@ impl TestApp {
         let host = Host { git: Arc::new(Offline), picker: Arc::new(Offline), usage: usage.clone() };
         let services = Services::new(node, dirs, host, dir.path().to_owned());
         let library = open_library(&services.storage.dirs, &services.node).expect("the session library");
-        let _entered = runtime.enter();
-        // The startup tasks (harness probes, update checks) reach outside the test: dropped.
-        let (mut app, _startup) = App::build(services, library, harnesses);
-        // Nothing reaches omp, a model or the developer's home.
-        let parts = Parts {
+        // Nothing reaches omp, a model, a browser or the developer's home.
+        let models = Parts {
             rpc: Arc::new(FakeOmp::default()),
             omp_account: Arc::new(OfflineOmpAccount),
             files: FilesSource::Fixed(OmpFiles::new(dir.path().join("omp"))),
@@ -115,11 +111,16 @@ impl TestApp {
             harnesses: Vec::new(),
             environment: Arc::new(Offline),
         };
-        *app.areas.get_mut::<models::State>() = models::State::with_backend(Backend::new(parts));
-        let (projects, _rebuilds) = projects::State::with(&mut app.ctx, Arc::new(Offline), ServiceConfig::default());
-        *app.areas.get_mut::<projects::State>() = projects;
-        let sessions = app.areas.get_mut::<sessions::State>();
-        (sessions.home, sessions.opener) = (dir.path().join("home"), Arc::new(Offline));
+        let parts = AppParts {
+            runtime: runtime_parts(&services, library, harnesses),
+            models,
+            summarizer: Arc::new(Offline),
+            home: dir.path().join("home"),
+            opener: Arc::new(Offline),
+        };
+        let _entered = runtime.enter();
+        // The startup tasks (harness probes, update checks, project digests) reach outside the test: dropped.
+        let (app, _startup) = App::build(services, parts);
         Self { app, harness, usage, dir, runtime, tracker: Tracker::new(), feed: mpsc::channel(256) }
     }
 

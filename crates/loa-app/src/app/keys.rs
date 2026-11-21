@@ -28,7 +28,8 @@ const fn command(id: &'static str, title: &'static str, section: &'static str, r
 
 /// Every app command, in palette order. Area commands follow them.
 pub(crate) const APP_COMMANDS: &[AppCommand] = &[
-    command("session.new", "New session", "Commands", |app, _| app.lifecycle(|s, ctx, areas| s.start(ctx, areas, None))).slash("new", "Start a new session"),
+    command("session.new", "New session", "Commands", |app, _| app.lifecycle(|s, ctx, areas| s.run(ctx, areas, loa_runtime::lifecycle::Command::Start { prompt: None })))
+        .slash("new", "Start a new session"),
     command("panel.toggle", "Toggle right panel", "Commands", |app, _| {
         app.ctx.shell.set_panel_open(!app.ctx.shell.panel_open());
         Task::none()

@@ -11,7 +11,6 @@ use iced::{Element, Fill, Subscription, Task};
 use loa_contracts::harness::{AdapterError, HarnessModel, ModelSelection, SessionConfig};
 use loa_bus::SessionId;
 use loa_core::{Dom, Op, PatchSink, attr};
-use loa_harness::omp::account::OmpLaunch;
 use loa_ui_session::composer as composer;
 use loa_models::service::{Backend, SettingsLoad};
 use loa_models::settings::{ModelSettings, ValidationError};
@@ -490,15 +489,7 @@ impl Area for State {
     type Message = Message;
 
     fn new(ctx: &mut Ctx) -> (Self, Task<Message>) {
-        let executable = ctx.runtime.harnesses().get(ctx.runtime.harnesses().roles_id()).and_then(|harness| harness.executable.clone());
-        let launch = OmpLaunch {
-            executable: executable.unwrap_or_else(|| OmpLaunch::default().executable),
-            cwd: Some(ctx.runtime.cwd().to_path_buf()),
-            env: Vec::new(),
-        };
-        let env = loa_harness::HarnessEnv { node: ctx.services.node.key.clone(), omp_dir: ctx.services.storage.dirs.omp.clone() };
-        let backend = crate::adapters::models::models_backend(launch, ctx.runtime.harnesses(), &loa_harness::factories(&env));
-        (Self::with_backend(backend), Task::none())
+        (Self::with_backend(ctx.backends.models.clone()), Task::none())
     }
 
     fn update(&mut self, message: Message, ctx: &mut Ctx) -> Task<Message> {

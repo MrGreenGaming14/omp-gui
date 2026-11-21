@@ -4864,12 +4864,15 @@ dependencies = [
 name = "loa-runtime"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "futures",
  "loa-bus",
  "loa-contracts",
  "loa-core",
+ "loa-harness",
  "loa-session",
  "loa-util",
+ "tempfile",
  "tokio",
 ]
 

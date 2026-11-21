@@ -19,7 +19,6 @@ use iced::{Element, Subscription, Task};
 use loa_bus::{Listing, SessionId};
 use loa_contracts::harness::{Answer, Capabilities, Prompt, SessionConfig};
 use loa_core::{Dom, ElementKind, JobStatus, NodeId, Op, SessionMode, TurnStatus, attr};
-use loa_harness::account_support::opener::SystemUrlOpener;
 use loa_session::hooks::TurnHooks;
 use loa_session::plan::{self as plan_mode, PlanGate};
 use loa_models::login::UrlOpener;
@@ -29,7 +28,7 @@ use loa_ui_session::transcript as chat;
 use loa_contracts::session::SessionSummary;
 
 use crate::area::{Area, AreaCommand, AreaMessage, Ctx, Listed, PanelTab, Request, Target, perform};
-use loa_runtime::session::SessionEvent;
+use loa_runtime::session::{Session, SessionEvent};
 pub use plan::{Held, PlanNext};
 
 /// Model or omp role of the app's small-model calls: compaction summaries and advisor notes.
@@ -99,15 +98,14 @@ impl State {
         self.tree.forget(id);
         self.plans.remove(id);
         self.hooks.locked().remove(id);
-        let task = if ctx.runtime.sessions().get(id).is_some() {
-            ctx.discard_session(id).map_or_else(Task::none, |harness| perform(async move { harness.shutdown().await }, Message::Done))
+        if ctx.runtime.sessions().get(id).is_some() {
+            ctx.discard_session(id);
         } else {
             match ctx.runtime.library().delete(id) {
                 Ok(()) => ctx.shell.sidebar_mut().remove_session(id),
                 Err(error) => ctx.notify(format!("Can't delete session {id}: {error}")),
             }
-            Task::none()
-        };
+        }
         if ctx.shell.sidebar().session(id).is_none() {
             // Drops the session from the sidebar's pins and the saved ones.
             if ctx.shell.sidebar().pins().contains(id) {
@@ -116,7 +114,7 @@ impl State {
             }
             ctx.edit_config("pins", |config| config.pinned.remove(id));
         }
-        task
+        Task::none()
     }
 
     /// Switches the active session to one of omp's model roles.
@@ -315,7 +313,7 @@ impl Area for State {
     type Message = Message;
 
     fn new(ctx: &mut Ctx) -> (Self, Task<Message>) {
-        let home = loa_util::fs::home().unwrap_or_else(|| PathBuf::from("."));
+        let home = ctx.backends.home.clone();
         // Unit tests never make model calls: no small model.
         let small = if cfg!(test) {
             None
@@ -332,7 +330,7 @@ impl Area for State {
             small,
             home,
             compacted: HashMap::new(),
-            opener: Arc::new(SystemUrlOpener),
+            opener: Arc::clone(&ctx.backends.opener),
             branching: None,
         };
         (state, Task::none())
@@ -444,8 +442,9 @@ impl Area for State {
         match event {
             SessionEvent::Activated(id) => {
                 if let Some(old) = id.as_ref().and_then(|id| self.compacted.remove(id.as_str())) {
-                    // The compacted session's harness already stopped.
-                    let _ = ctx.close_session(&old);
+                    // The compacted session's harness already stopped: closing must not stop it again.
+                    drop(ctx.runtime.sessions_mut().get_mut(&old).and_then(Session::detach));
+                    ctx.close_session(&old);
                 }
                 if id.is_some() && id.as_ref().map(SessionId::as_str) == self.branching.as_deref() {
                     self.branching = None;

@@ -15,7 +15,7 @@ use loa_ui_kit::style::{self, ButtonKind, Tone};
 use loa_ui_kit::theme::{SpaceRole, TextRole, sp};
 use loa_ui_kit::widgets::{card, label, section_header, text_button};
 
-use crate::area::{perform, Area, AreaCommand, AreaMessage, Ctx, Listed, PanelTab, Request};
+use crate::area::{Area, AreaCommand, AreaMessage, Ctx, Listed, PanelTab, Request};
 use crate::services::harness::set_executable;
 use loa_runtime::harnesses::Harness;
 use loa_runtime::session::SessionEvent;
@@ -33,8 +33,6 @@ const RECHECK: &str = "harness.recheck";
 pub enum Message {
     /// Route new sessions to the harness with this id.
     Pick(String),
-    /// A discarded session's harness shut down.
-    Closed(Result<(), String>),
     /// Probe every harness again.
     Recheck,
     /// Harness `id`'s probe number `probe` answered.
@@ -133,14 +131,12 @@ impl State {
         if session.harness_id() == Some(id.as_str()) {
             return Task::none();
         }
-        let empty = !session.is_busy() && !session.has_turns();
-        let session = session.id().clone();
-        let close = match empty.then(|| ctx.discard_session(session.as_str())).flatten() {
-            Some(harness) => perform(async move { harness.shutdown().await }, Message::Closed),
-            None => Task::none(),
-        };
+        if !session.is_busy() && !session.has_turns() {
+            let session = session.id().clone();
+            ctx.discard_session(session.as_str());
+        }
         ctx.request(Request::NewSession);
-        close
+        Task::none()
     }
 
     /// Saves harness `id`'s executable field to the config, registers the
@@ -256,12 +252,6 @@ impl Area for State {
     fn update(&mut self, message: Message, ctx: &mut Ctx) -> Task<Message> {
         match message {
             Message::Pick(id) => self.switch(id, ctx),
-            Message::Closed(result) => {
-                if let Err(error) = result {
-                    ctx.notify(error);
-                }
-                Task::none()
-            }
             Message::Recheck => self.probe_all(ctx),
             Message::Probed { id, probe, availability } => {
                 self.probed(&id, probe, availability, ctx);

@@ -4,12 +4,14 @@
 use std::any::Any;
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::pin::Pin;
 use std::sync::Arc;
 
 use iced::{Element, Subscription, Task};
-use loa_contracts::harness::{Capabilities, HarnessSession, HostToolSpec, HostTools, Prompt, SessionConfig};
+use loa_contracts::harness::{Capabilities, HostToolSpec, HostTools, Prompt, SessionConfig};
 use loa_bus::SessionId;
+use loa_models::login::UrlOpener;
+use loa_models::service::Backend;
+use loa_projects::Summarizers;
 use loa_ui_session::composer as composer;
 use loa_ui_shell::palette;
 use loa_ui_shell as shell;
@@ -18,6 +20,7 @@ use crate::app::Message;
 use crate::services::Services;
 use crate::services::harness;
 use loa_runtime::Runtime;
+use loa_runtime::lifecycle::{Command, RuntimeEvent, Spawn, Transition};
 use loa_runtime::session::{Session, SessionEvent};
 
 /// A message of one area; [`AreaMessage::Area`] handles it.
@@ -148,23 +151,17 @@ pub enum Request {
     Forward(Box<crate::app::Message>),
 }
 
-/// Starts a session whose journal the closure creates: it gets the session's
-/// full config (every area's contribution, keyed by [`Spawn::id`]) and
-/// returns the running harness.
-pub type SpawnStart = Arc<
-    dyn Fn(SessionConfig) -> Pin<Box<dyn Future<Output = Result<Arc<dyn HarnessSession>, String>> + Send>> + Send + Sync,
->;
-
-/// A session [`Request::Spawn`] starts.
+/// The backends areas build on, from [`crate::app::AppParts`].
 #[derive(Clone)]
-pub struct Spawn {
-    /// Id of the new session; `start` must create it in the library.
-    pub id: SessionId,
-    /// Harness it runs on.
-    pub harness: String,
-    pub start: SpawnStart,
-    /// Sent once it runs.
-    pub prompt: Option<Prompt>,
+pub struct Backends {
+    /// The model screens' backend.
+    pub models: Backend,
+    /// Writes the projects' digests.
+    pub summarizer: Arc<dyn Summarizers>,
+    /// Home directory: native sessions, omp's rules and config.
+    pub home: PathBuf,
+    /// Opens links clicked in the transcript.
+    pub opener: Arc<dyn UrlOpener>,
 }
 
 /// What every area may read and change: the services, the runtime (sessions,
@@ -173,6 +170,7 @@ pub struct Spawn {
 pub struct Ctx {
     pub services: Services,
     pub runtime: Runtime,
+    pub backends: Backends,
     pub shell: shell::State,
     pub composer: composer::State,
     pub keymap: palette::Keymap,
@@ -188,7 +186,8 @@ pub struct Ctx {
     pub(crate) screen: Option<&'static str>,
     pub(crate) notice: Option<String>,
     pub(crate) requests: Vec<Request>,
-    pub(crate) events: Vec<SessionEvent>,
+    /// What closing sessions asks of the app, applied before the requests.
+    pub(crate) transitions: Vec<Transition>,
 }
 
 impl Ctx {
@@ -272,35 +271,43 @@ impl Ctx {
         self.composer.set_harnesses(harness::options(self.runtime.harnesses()), self.runtime.sessions().harness.as_deref());
     }
 
-    /// Closes session `id`: its writer stops and its journal is released; it
-    /// stays in Recents and reopens from the journal.
-    pub fn close_session(&mut self, id: &str) -> Option<Arc<dyn HarnessSession>> {
-        self.end_session(id, false)
+    /// Closes session `id`: its writer stops, its journal is released and
+    /// its harness shuts down; it stays in Recents and reopens from the
+    /// journal.
+    pub fn close_session(&mut self, id: &str) {
+        self.end_session(id, false);
     }
 
     /// Closes session `id`, deletes its journal and removes it from the
     /// sidebar.
-    pub fn discard_session(&mut self, id: &str) -> Option<Arc<dyn HarnessSession>> {
-        self.end_session(id, true)
+    pub fn discard_session(&mut self, id: &str) {
+        self.end_session(id, true);
     }
 
-    fn end_session(&mut self, id: &str, delete: bool) -> Option<Arc<dyn HarnessSession>> {
+    /// Closes session `id` in the runtime; the session events and harness
+    /// shutdown it causes run once the area returns.
+    fn end_session(&mut self, id: &str, delete: bool) {
+        let open = self.runtime.sessions().get(id).is_some();
         let was_active = self.runtime.sessions().is_active(id);
-        let (session, error) = self.runtime.close_session(id, delete);
-        if let Some(error) = error {
-            self.notify(error);
+        let mut transition = self.runtime.dispatch(Command::Close { id: SessionId::from(id), delete });
+        transition.events.retain(|event| match event {
+            RuntimeEvent::Notice(notice) => {
+                self.notice = Some(notice.clone());
+                false
+            }
+            _ => true,
+        });
+        self.transitions.push(transition);
+        if !open {
+            return;
         }
-        let session = session?;
         if delete {
             self.shell.sidebar_mut().remove_session(id);
         }
         if was_active {
             self.shell.sidebar_mut().set_active(None);
             self.shell.set_session_status(None);
-            self.events.push(SessionEvent::Activated(None));
         }
-        self.events.push(SessionEvent::Closed(session.id().clone()));
-        session.harness().cloned()
     }
 }
 

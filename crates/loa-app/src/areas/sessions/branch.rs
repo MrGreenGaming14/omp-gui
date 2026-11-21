@@ -10,7 +10,8 @@ use loa_session::Compaction;
 use loa_session::library::Library;
 
 use super::{Message, SMALL_MODEL, State, title_of};
-use crate::area::{Ctx, Request, Spawn, SpawnStart, perform};
+use crate::area::{Ctx, Request, perform};
+use loa_runtime::lifecycle::{Spawn, SpawnStart};
 use loa_runtime::session::new_session_id;
 
 /// How a new session branches off its source.

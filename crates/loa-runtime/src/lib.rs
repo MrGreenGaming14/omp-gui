@@ -3,6 +3,7 @@
 
 pub mod feed;
 pub mod harnesses;
+pub mod lifecycle;
 pub mod session;
 
 use std::path::{Path, PathBuf};
@@ -41,12 +42,24 @@ pub struct Runtime {
     /// The approval mode changed while a turn ran: the active session
     /// restarts on it once the turn ends.
     restart_for_access: bool,
+    /// Starts, resumes and spawns in flight.
+    operations: lifecycle::Operations,
 }
 
 impl Runtime {
     pub fn new(parts: RuntimeParts) -> Self {
         let RuntimeParts { library, harnesses, node, cwd, project, access } = parts;
-        Self { library, harnesses, sessions: Sessions::default(), node, cwd, project, access, restart_for_access: false }
+        Self {
+            library,
+            harnesses,
+            sessions: Sessions::default(),
+            node,
+            cwd,
+            project,
+            access,
+            restart_for_access: false,
+            operations: lifecycle::Operations::default(),
+        }
     }
 
     pub fn library(&self) -> &Arc<Library> {

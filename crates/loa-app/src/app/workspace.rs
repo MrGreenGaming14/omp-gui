@@ -119,7 +119,11 @@ impl App {
             return Task::none();
         }
         let moved = self.set_folder(path);
-        let start = if self.ctx.runtime.sessions().active().is_some() { self.lifecycle(|s, ctx, areas| s.start(ctx, areas, None)) } else { Task::none() };
+        let start = if self.ctx.runtime.sessions().active().is_some() {
+            self.lifecycle(|s, ctx, areas| s.run(ctx, areas, loa_runtime::lifecycle::Command::Start { prompt: None }))
+        } else {
+            Task::none()
+        };
         Task::batch([moved, start])
     }
 
