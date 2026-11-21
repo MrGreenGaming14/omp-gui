@@ -34,7 +34,6 @@ Binary files a/logo.png and /dev/null differ
 
 /// A diff, its files (status, path, added, removed, binary), its hunk ranges and folded gaps.
 type Case<'a> = (&'a str, &'a [(FileStatus, &'a str, usize, usize, bool)], Vec<(u32, u32, u32, u32)>, Vec<usize>);
-
 #[test]
 fn parses_unified_diffs() {
     use FileStatus::*;
@@ -65,7 +64,6 @@ fn parses_unified_diffs() {
     ];
     for (input, error) in errors { assert_eq!(parse_unified(input).unwrap_err(), error) }
 }
-
 #[test]
 fn fifty_thousand_line_diff_builds_only_the_rows_in_view() {
     let patch = format!("--- a\n+++ b\n@@ -1,50000 +1,50000 @@\n{}-old\n+new\n{}", context(1..=24_999), context(25_001..=50_000));

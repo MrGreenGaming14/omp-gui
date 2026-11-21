@@ -1,6 +1,4 @@
-//! The tools page: built in tools, MCP servers, remote hosts and what each peer may use, with
-//! per project tool toggles. The app feeds data in through the `set_*` methods and acts on the
-//! [`Event`]s; the page never talks to a server, a host or the config itself.
+//! The tools page: built in tools, MCP servers, remote hosts and peer grants with per project toggles.
 
 pub mod catalog;
 pub mod form;
@@ -11,119 +9,65 @@ pub use catalog::{Catalog, Filter, PeerMatrix, Toggle};
 pub use form::{AddHostForm, AddServerForm, FieldId, LimitsDraft, TransportKind};
 pub use model::*;
 
-use iced::{Element, Task};
+use iced::Task;
 use loa_contracts::harness::McpServerSpec;
-use loa_ui_kit::Icon;
-use loa_ui_kit::widgets::{Form, FormSpec, FormState, PanelPane};
+use loa_ui_kit::widgets::{Form, FormSpec, FormState};
 use std::collections::{BTreeSet, HashMap};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Section { #[default] Builtin, Servers, Hosts, Peers }
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ServerAction { Start, Stop, Restart, Remove }
-
 /// The page's forms; `Limits` edits the limits of the host being edited.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FormId { Server, Host, Limits }
-
 /// A host limit switch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Limit { ReadOnly, Commands, AutoApprove }
-
-/// What the app acts on. It answers `ProjectSelected` with [`State::set_disabled_tools`],
-/// `ScanImports` (configs in `.claude`, `.cursor`, `.codex`) with [`State::set_import_candidates`],
-/// `ImportServers` with [`State::set_import_outcome`] per entry, `ImportSshHosts` (from
-/// `~/.ssh/config`) with [`State::set_hosts`] and `LoadAudit` with [`State::set_audit`].
+/// What the app acts on; it answers through the matching `State::set_*` (disabled tools, imports, hosts, audit).
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
     ProjectSelected(String),
     SetToolsEnabled { project: String, tools: Vec<ToolId>, enabled: bool },
     Server { name: String, action: ServerAction },
     AddServer(McpServerSpec),
-    ScanImports,
-    ImportServers(Vec<ImportCandidate>),
-    ImportSshHosts,
     AddHost(RemoteHost),
-    RemoveHost(String),
     SaveHostLimits { host: String, limits: HostLimits },
-    OpenTerminal(String),
-    LoadAudit(String),
+    ImportServers(Vec<ImportCandidate>),
     AnswerPrompt { id: u64, answer: PromptAnswer },
+    ScanImports, ImportSshHosts, RemoveHost(String), OpenTerminal(String), LoadAudit(String),
 }
 
 /// An import candidate; `exists` when a server with its name is registered already.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ImportEntry { pub candidate: ImportCandidate, pub selected: bool, pub exists: bool, pub outcome: Option<ImportOutcome> }
-
 /// The peers view's filter.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PeerChoice { All, Peer { key: String, name: String } }
-
 impl std::fmt::Display for PeerChoice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str(if let Self::Peer { name, .. } = self { name } else { "All peers" }) }
 }
 
+/// `BlockOpen` opens or closes a block (tool group, server tools, hosts) by key; `ToolExpanded` toggles details.
 #[derive(Clone, Debug)]
 pub enum Message {
-    SectionSelected(Section),
-    FilterChanged(String),
-    ProjectSelected(ProjectRef),
-    ToolToggled(ToolId, bool),
-    ServerToggled(String),
-    Server(String, ServerAction),
-    FormOpen(FormId),
-    FormEdit(FormId, FieldId, String),
-    FormSubmit(FormId),
-    FormCancel(FormId),
-    TransportPicked(TransportKind),
-    ImportScan,
-    ImportSelect(usize, bool),
-    ImportSubmit,
-    ImportClose,
-    ImportSshHosts,
-    RemoveHost(String),
-    /// Open the limits form of this host.
-    EditLimits(String),
-    LimitSet(Limit, bool),
-    LimitsAddPath,
-    LimitsRemovePath(usize),
-    OpenTerminal(String),
-    ShowAudit(String),
-    CloseAudit,
-    AnswerPrompt(u64, PromptAnswer),
-    PeerFilter(PeerChoice),
-    /// Open or close a block (a tool group, a server's tools, the hosts list) by key.
-    BlockOpen(String, bool),
-    /// Show or hide one tool's details.
-    ToolExpanded(ToolId),
+    SectionSelected(Section), FilterChanged(String), ProjectSelected(ProjectRef), ToolToggled(ToolId, bool),
+    ServerToggled(String), Server(String, ServerAction), TransportPicked(TransportKind),
+    FormOpen(FormId), FormEdit(FormId, FieldId, String), FormSubmit(FormId), FormCancel(FormId),
+    ImportScan, ImportSelect(usize, bool), ImportSubmit, ImportClose, ImportSshHosts,
+    RemoveHost(String), EditLimits(String), LimitSet(Limit, bool), LimitsAddPath, LimitsRemovePath(usize),
+    OpenTerminal(String), ShowAudit(String), CloseAudit, AnswerPrompt(u64, PromptAnswer),
+    PeerFilter(PeerChoice), BlockOpen(String, bool), ToolExpanded(ToolId),
 }
 
+/// `open_blocks` holds blocks the user opened or closed; `prompts` wait for the user, oldest first.
 #[derive(Debug, Default)]
 pub struct State {
-    section: Section,
-    filter_text: String,
-    filter: Filter,
-    builtin: BuiltinTools,
-    servers: Vec<McpServer>,
-    projects: Vec<ProjectRef>,
-    project: Option<String>,
-    disabled: HashMap<String, BTreeSet<ToolId>>,
-    add_server: Option<FormState<AddServerForm>>,
-    imports: Option<Vec<ImportEntry>>,
-    /// A scan was asked for and its candidates haven't arrived.
-    import_scanning: bool,
-    hosts: Vec<RemoteHost>,
-    add_host: Option<FormState<AddHostForm>>,
-    limits: Option<LimitsDraft>,
-    audit: Option<(String, Vec<AuditRow>)>,
-    /// Host key and approval questions waiting for the user, oldest first.
-    prompts: Vec<RemotePrompt>,
-    peers: Vec<PeerTools>,
-    peer_filter: Option<String>,
-    /// Blocks opened or closed by the user; others use their default.
-    open_blocks: HashMap<String, bool>,
-    expanded_tool: Option<ToolId>,
+    section: Section, filter_text: String, filter: Filter, builtin: BuiltinTools, servers: Vec<McpServer>,
+    projects: Vec<ProjectRef>, project: Option<String>, disabled: HashMap<String, BTreeSet<ToolId>>,
+    add_server: Option<FormState<AddServerForm>>, imports: Option<Vec<ImportEntry>>, import_scanning: bool,
+    hosts: Vec<RemoteHost>, add_host: Option<FormState<AddHostForm>>, limits: Option<LimitsDraft>, audit: Option<(String, Vec<AuditRow>)>,
+    prompts: Vec<RemotePrompt>, peers: Vec<PeerTools>, peer_filter: Option<String>, open_blocks: HashMap<String, bool>, expanded_tool: Option<ToolId>,
 }
 
 impl State {
@@ -136,25 +80,21 @@ impl State {
     pub fn select_project(&mut self, id: impl Into<String>) { self.project = Some(id.into()) }
     /// The tools switched off in a project, as stored in the config.
     pub fn set_disabled_tools(&mut self, project: impl Into<String>, tools: impl IntoIterator<Item = ToolId>) { self.disabled.insert(project.into(), tools.into_iter().collect()); }
-
     pub fn set_servers(&mut self, servers: Vec<McpServer>) {
         self.servers = servers;
         let servers = &self.servers;
         self.imports.iter_mut().flatten().for_each(|e| e.exists = servers.iter().any(|s| s.name == e.candidate.server.name));
     }
-
     /// Projects for the selector; the selection stays while it exists.
     pub fn set_projects(&mut self, projects: Vec<ProjectRef>) {
         self.project = self.project.take().filter(|id| projects.iter().any(|p| &p.id == id));
         self.projects = projects;
     }
-
     pub fn set_import_candidates(&mut self, candidates: Vec<ImportCandidate>) {
         let exists = |c: &ImportCandidate| self.servers.iter().any(|s| s.name == c.server.name);
         self.imports = Some(candidates.into_iter().map(|c| ImportEntry { selected: !exists(&c), exists: exists(&c), candidate: c, outcome: None }).collect());
         self.import_scanning = false;
     }
-
     /// Records how importing one candidate went; imported ones are deselected.
     pub fn set_import_outcome(&mut self, source: ImportSource, name: &str, outcome: ImportOutcome) {
         if let Some(e) = self.imports.iter_mut().flatten().find(|e| e.candidate.source == source && e.candidate.server.name == name) {
@@ -162,13 +102,11 @@ impl State {
             e.outcome = Some(outcome);
         }
     }
-
     /// The peer filter resets when its peer disappears.
     pub fn set_peers(&mut self, peers: Vec<PeerTools>) {
         self.peer_filter = self.peer_filter.take().filter(|k| peers.iter().any(|p| &p.key == k));
         self.peers = peers;
     }
-
     pub fn prompts(&self) -> &[RemotePrompt] { &self.prompts }
     pub fn hosts(&self) -> &[RemoteHost] { &self.hosts }
     pub fn audit(&self) -> Option<(&str, &[AuditRow])> { self.audit.as_ref().map(|(h, r)| (h.as_str(), r.as_slice())) }
@@ -178,7 +116,6 @@ impl State {
     pub fn catalog(&self) -> Catalog<'_> { catalog::catalog(&self.builtin, &self.servers, self.disabled_tools().unwrap_or(&BTreeSet::new()), &self.filter) }
     pub fn peer_matrix(&self) -> PeerMatrix<'_> { catalog::peer_matrix(&self.builtin, &self.servers, &self.peers, self.peer_filter.as_deref(), &self.filter) }
     pub fn update(&mut self, message: Message) -> (Task<Message>, Option<Event>) { (Task::none(), self.handle(message)) }
-
     fn handle(&mut self, message: Message) -> Option<Event> {
         match message {
             Message::SectionSelected(s) => self.section = s,
@@ -187,7 +124,7 @@ impl State {
                 self.project = Some(p.id.clone());
                 return Some(Event::ProjectSelected(p.id));
             }
-            Message::ProjectSelected(_) => {}
+            Message::ProjectSelected(_) | Message::FormOpen(FormId::Limits) => {}
             Message::ToolToggled(tool, on) => return self.set_enabled(vec![tool], on),
             Message::ServerToggled(name) => {
                 let s = self.servers.iter().find(|s| s.name == name)?;
@@ -200,7 +137,6 @@ impl State {
             }
             Message::FormOpen(FormId::Server) => { self.add_server.get_or_insert_default(); }
             Message::FormOpen(FormId::Host) => { self.add_host.get_or_insert_default(); }
-            Message::FormOpen(FormId::Limits) => {}
             Message::FormEdit(FormId::Server, key, value) => edit(self.add_server.as_mut()?, key, &value),
             Message::FormEdit(FormId::Host, key, value) => edit(self.add_host.as_mut()?, key, &value),
             Message::FormEdit(FormId::Limits, _, value) => {
@@ -220,10 +156,7 @@ impl State {
                 self.add_host = None;
                 return Some(Event::AddHost(host));
             }
-            Message::FormSubmit(FormId::Limits) => {
-                let d = self.limits.take()?;
-                return Some(Event::SaveHostLimits { host: d.host, limits: d.limits });
-            }
+            Message::FormSubmit(FormId::Limits) => return self.limits.take().map(|d| Event::SaveHostLimits { host: d.host, limits: d.limits }),
             Message::FormCancel(FormId::Server) => self.add_server = None,
             Message::FormCancel(FormId::Host) => self.add_host = None,
             Message::FormCancel(FormId::Limits) => self.limits = None,
@@ -269,7 +202,6 @@ impl State {
         }
         None
     }
-
     /// Applies a toggle at once and asks the app to persist it; needs a project.
     fn set_enabled(&mut self, tools: Vec<ToolId>, enabled: bool) -> Option<Event> {
         let project = self.project.clone().filter(|_| !tools.is_empty())?;
@@ -287,13 +219,7 @@ fn edit<F: Form + FormSpec<Field = FieldId>>(form: &mut FormState<F>, key: Field
     form.errors.remove(key);
 }
 
-impl PanelPane for State {
-    type Message = Message;
-    fn id(&self) -> &str { "tools" }
-    fn title(&self) -> &str { "Tools" }
-    fn icon(&self) -> Icon { Icon::Wrench }
-    fn view(&self) -> Element<'_, Message> { State::view(self) }
-}
+panel_pane!("tools", "Tools", Wrench);
 
 #[cfg(test)]
 mod tests;

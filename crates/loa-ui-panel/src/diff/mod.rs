@@ -1,6 +1,4 @@
-//! The diff tab: unified and side by side views of [`FileDiff`]s parsed with [`parse_unified`].
-//! Unchanged runs fold away, and rows have a fixed height so only the ones in view are built:
-//! a 50k line diff costs a frame what a short one does.
+//! The diff tab: unified and split views of [`parse_unified`] output with folds, building only the rows in view.
 
 mod model;
 mod parse;
@@ -14,7 +12,7 @@ use iced::{Element, Fill, Font, Padding, Task};
 use loa_ui_kit::icons::{Icon, muted};
 use loa_ui_kit::style::{self as kit, ButtonKind, Tone};
 use loa_ui_kit::theme::{ColorRole as C, SpaceRole as Sp, TextRole as T, pad_x, sp, text_size as ts};
-use loa_ui_kit::widgets::{PanelPane, label};
+use loa_ui_kit::widgets::label;
 use std::ops::Range;
 
 /// Rows built beyond the viewport so fast scrolling shows no gaps.
@@ -25,63 +23,44 @@ const DEFAULT_VIEWPORT: f32 = 1200.0;
 const FILE_LIST_HEIGHT: f32 = 140.0;
 
 fn file_row_height() -> f32 { ts(T::Label) + 2.0 * sp(Sp::Xs) }
-
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
 pub enum Mode { #[default] Unified, Split }
-
-/// `Expand` opens a fold of the selected file, `Open` opens the file itself and
-/// `ToggleCollapsed` shows or hides its lines.
+/// `Expand` opens a fold of the selected file, `Open` the file itself; `ToggleCollapsed` hides its lines.
 #[derive(Debug, Clone)]
 pub enum Message { SelectFile(usize), SetMode(Mode), Expand(usize), Scrolled { offset: f32, height: f32 }, Open, ToggleCollapsed }
-
 /// Open this path: the new one, or the old one of a deleted file.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event { OpenFile(String) }
-
-/// The files, the selected one's rows in the current mode and fold state, the scroll position
-/// and a note shown instead of "No changes".
+/// The files, the selected one's rows in the current mode, the scroll position and a note replacing "No changes".
 #[derive(Debug)]
 pub struct State {
-    files: Vec<FileDiff>,
-    selected: usize,
-    mode: Mode,
-    rows: Vec<Row>,
-    scroll_offset: f32,
-    viewport_height: f32,
-    scroll_id: Id,
-    collapsed: bool,
-    note: Option<String>,
+    files: Vec<FileDiff>, selected: usize, mode: Mode, rows: Vec<Row>,
+    scroll_offset: f32, viewport_height: f32, scroll_id: Id, collapsed: bool, note: Option<String>,
 }
-
 impl Default for State {
     fn default() -> Self { Self { files: Vec::new(), selected: 0, mode: Mode::Unified, rows: Vec::new(), scroll_offset: 0.0, viewport_height: DEFAULT_VIEWPORT, scroll_id: Id::unique(), collapsed: false, note: None } }
 }
 
 impl State {
     pub fn new() -> Self { Self::default() }
-
     /// Replaces "No changes", e.g. outside a git repository, and clears the files.
     pub fn set_note(&mut self, note: Option<String>) -> Task<Message> {
         self.note = note;
         if self.note.is_some() { self.set_files(Vec::new()) } else { Task::none() }
     }
-
     /// Replaces the files and selects the first.
     pub fn set_files(&mut self, files: Vec<FileDiff>) -> Task<Message> {
         self.files = files;
         self.select(0)
     }
-
     pub fn files(&self) -> &[FileDiff] { &self.files }
     pub fn selected(&self) -> Option<&FileDiff> { self.files.get(self.selected) }
-
     /// The rows the view builds at the current scroll position.
     fn visible_rows(&self) -> Range<usize> {
         let first = (self.scroll_offset / row_height()).floor().max(0.0) as usize;
         let shown = (self.viewport_height / row_height()).ceil().max(1.0) as usize;
         first.saturating_sub(OVERSCAN).min(self.rows.len())..(first + shown + OVERSCAN).min(self.rows.len())
     }
-
     pub fn update(&mut self, message: Message) -> (Task<Message>, Option<Event>) {
         match message {
             Message::SelectFile(i) if i < self.files.len() && i != self.selected => return (self.select(i), None),
@@ -102,15 +81,12 @@ impl State {
         }
         (Task::none(), None)
     }
-
     fn select(&mut self, index: usize) -> Task<Message> {
         (self.selected, self.collapsed, self.scroll_offset) = (index, false, 0.0);
         self.rebuild_rows();
         operation::snap_to(self.scroll_id.clone(), scrollable::RelativeOffset::START)
     }
-
     fn rebuild_rows(&mut self) { self.rows = self.files.get(self.selected).map_or_else(Vec::new, |f| if self.mode == Mode::Unified { f.unified_rows() } else { f.split_rows() }) }
-
     pub fn view(&self) -> Element<'_, Message> {
         let note = |s| container(label(s, T::Body, Tone::Muted)).padding(sp(Sp::S));
         let Some(file) = self.selected() else { return note(self.note.as_deref().unwrap_or("No changes")).into() };
@@ -121,7 +97,6 @@ impl State {
         };
         column![self.toolbar(file), rule::horizontal(1).style(kit::rule), (self.files.len() > 1).then(|| self.file_list()), body].into()
     }
-
     /// Collapse chevron and path, then the change counts and the unified/split switch.
     fn toolbar<'a>(&'a self, file: &'a FileDiff) -> Element<'a, Message> {
         let flat = |content: Element<'a, Message>, on| button(content).padding([sp(Sp::Xs), sp(Sp::S)]).style(kit::button(ButtonKind::Row { selected: false })).on_press(on);
@@ -131,7 +106,6 @@ impl State {
         let head = row![flat(chevron.into(), Message::ToggleCollapsed), flat(text(file.path()).size(ts(T::Body)).wrapping(text::Wrapping::None).into(), Message::Open), space::horizontal()];
         head.extend(counts).push(flat(label(other.1, T::Caption, Tone::Muted).into(), Message::SetMode(other.0))).spacing(sp(Sp::Xs)).padding([sp(Sp::Xs), sp(Sp::S)]).align_y(iced::Alignment::Center).into()
     }
-
     fn file_list(&self) -> Element<'_, Message> {
         let small = |s: String, tone| label(s, T::Label, tone).line_height(1.0);
         let entries = self.files.iter().enumerate().map(|(i, f)| {
@@ -142,7 +116,6 @@ impl State {
         });
         scrollable(column(entries)).height((self.files.len() as f32 * file_row_height()).min(FILE_LIST_HEIGHT)).into()
     }
-
     /// The rows in view between spacers standing in for the rest.
     fn body<'a>(&'a self, file: &'a FileDiff) -> Element<'a, Message> {
         let range = self.visible_rows();
@@ -154,23 +127,13 @@ impl State {
     }
 }
 
-impl PanelPane for State {
-    type Message = Message;
-    fn id(&self) -> &str { "diff" }
-    fn title(&self) -> &str { "Diff" }
-    fn icon(&self) -> Icon { Icon::GitCompare }
-    fn view(&self) -> Element<'_, Message> { State::view(self) }
-}
+panel_pane!("diff", "Diff", GitCompare);
 
 fn mono<'a>(content: impl text::IntoFragment<'a>) -> text::Text<'a> { text(content).size(ts(T::Mono)).line_height(1.0).font(Font::MONOSPACE).wrapping(text::Wrapping::None) }
 fn muted_mono<'a>(content: impl text::IntoFragment<'a>) -> text::Text<'a> { mono(content).style(kit::text(Tone::Muted)) }
-
 fn paint(content: Element<'_, Message>, tag: Tag) -> Element<'_, Message> {
     let painted = container(content).width(Fill).height(Fill);
-    match [None, Some(C::RemovedBg), Some(C::AddedBg)][tag as usize] {
-        Some(role) => painted.style(kit::fill(role, 0.0)).into(),
-        None => painted.into(),
-    }
+    if tag == Tag::Equal { painted.into() } else { painted.style(kit::fill([C::RemovedBg, C::AddedBg][tag as usize - 1], 0.0)).into() }
 }
 
 fn row_view(file: &FileDiff, r: Row, digits: usize) -> Element<'_, Message> {

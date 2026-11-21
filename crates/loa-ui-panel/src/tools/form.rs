@@ -1,5 +1,4 @@
-//! The add-server, add-host and host limits forms: kit [`Form`]s for editing and
-//! [`FormSpec`]s for validation, keyed by field name.
+//! The add-server, add-host and host limits forms: kit [`Form`]s for editing, [`FormSpec`]s for validation.
 
 use super::model::{HostLimits, RemoteHost};
 use loa_contracts::harness::{McpServerSpec, McpTransport};
@@ -10,22 +9,19 @@ use std::collections::BTreeMap;
 pub type FieldId = &'static str;
 type Errors = BTreeMap<FieldId, String>;
 
-/// Why a field was rejected; the text shows under the field.
-pub mod error {
-    pub const EMPTY: &str = "required";
-    pub const BAD_NAME: &str = "use letters, digits, '-' or '_'";
-    pub const DUPLICATE_SERVER: &str = "a server with this name already exists";
-    pub const DUPLICATE_HOST: &str = "a host with this alias already exists";
-    pub const UNBALANCED: &str = "unbalanced quote";
-    pub const NO_COMMAND: &str = "only environment assignments, no command";
-    pub const BAD_SCHEME: &str = "URL must start with http:// or https://";
-    pub const NO_HOST: &str = "URL has no host";
-    pub const WHITESPACE: &str = "must not contain spaces";
-    pub const BAD_PORT: &str = "port must be a number from 1 to 65535";
-    pub const RELATIVE_PATH: &str = "path must start with '/' or '~'";
-    pub const DUPLICATE_PATH: &str = "path is already allowed";
-}
-use error::*;
+// Why a field was rejected; the text shows under the field.
+pub const EMPTY: &str = "required";
+pub const BAD_NAME: &str = "use letters, digits, '-' or '_'";
+pub const DUPLICATE_SERVER: &str = "a server with this name already exists";
+pub const DUPLICATE_HOST: &str = "a host with this alias already exists";
+pub const UNBALANCED: &str = "unbalanced quote";
+pub const NO_COMMAND: &str = "only environment assignments, no command";
+pub const BAD_SCHEME: &str = "URL must start with http:// or https://";
+pub const NO_HOST: &str = "URL has no host";
+pub const WHITESPACE: &str = "must not contain spaces";
+pub const BAD_PORT: &str = "port must be a number from 1 to 65535";
+pub const RELATIVE_PATH: &str = "path must start with '/' or '~'";
+pub const DUPLICATE_PATH: &str = "path is already allowed";
 
 /// Text values by field key, settable for any of `fields`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -43,7 +39,6 @@ impl Values {
 /// How a server being added is reached.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum TransportKind { #[default] Stdio, Http }
-
 /// The add-server form; `command` is a stdio command line with optional leading `KEY=value` assignments.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AddServerForm { pub kind: TransportKind, pub values: Values }
@@ -112,18 +107,13 @@ fn validate_url(url: &str) -> Result<&str, &'static str> {
 }
 
 fn parse_port(port: &str) -> Result<u16, &'static str> { port.parse::<u16>().ok().filter(|&p| p != 0).ok_or(BAD_PORT) }
-
 /// The add-host form: alias, hostname, and optional user and port.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AddHostForm(pub Values);
-
 const HOST_FIELDS: &[Field] = &[
-    Field { key: "alias", label: "Alias", placeholder: "build" },
-    Field { key: "hostname", label: "Hostname", placeholder: "build.internal" },
-    Field { key: "user", label: "User", placeholder: "optional" },
-    Field { key: "port", label: "Port", placeholder: "optional" },
+    Field { key: "alias", label: "Alias", placeholder: "build" }, Field { key: "hostname", label: "Hostname", placeholder: "build.internal" },
+    Field { key: "user", label: "User", placeholder: "optional" }, Field { key: "port", label: "Port", placeholder: "optional" },
 ];
-
 impl Form for AddHostForm {
     fn fields(&self) -> &[Field] { HOST_FIELDS }
     fn get(&self, key: &str) -> String { self.0.0.get(key).cloned().unwrap_or_default() }
@@ -150,16 +140,9 @@ impl FormSpec for AddHostForm {
 
 /// Edits to one host's limits before they are saved; `new_path` is the add-path input.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct LimitsDraft {
-    pub host: String,
-    pub limits: HostLimits,
-    pub new_path: String,
-    pub path_error: Option<&'static str>,
-}
-
+pub struct LimitsDraft { pub host: String, pub limits: HostLimits, pub new_path: String, pub path_error: Option<&'static str> }
 impl LimitsDraft {
     pub fn new(host: &RemoteHost) -> Self { Self { host: host.alias.clone(), limits: host.limits.clone(), ..Default::default() } }
-
     /// Moves `new_path` into the allowed paths, or records why it can't.
     pub fn add_path(&mut self) {
         let path = self.new_path.trim();

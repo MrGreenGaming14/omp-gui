@@ -1,6 +1,4 @@
-//! Rendering of the tools page, one module per section. Every list sits in a card with
-//! dividers under a header that names and counts it; long lists show their first rows until
-//! opened, and a tool's details open inline under its row.
+//! Rendering of the tools page, one module per section; long lists preview their first rows until opened.
 
 mod hosts;
 mod peers;
@@ -8,6 +6,7 @@ mod servers;
 
 use super::catalog::{GroupView, ToolRow};
 use super::{BuiltinGroup, FormId, Message, Section, State, ToolInfo};
+use crate::action;
 use iced::widget::{Column, button, checkbox, column, container, pick_list, responsive, row, rule, scrollable, space, text, text_input};
 use iced::{Alignment, Element, Fill, Font, Padding, font};
 use loa_ui_kit::icons::{Icon, tinted};
@@ -24,7 +23,6 @@ const BOLD: Font = Font { weight: font::Weight::Bold, ..Font::DEFAULT };
 
 impl State {
     pub fn view(&self) -> Element<'_, Message> { responsive(move |size| self.layout(size.width >= TWO_COLUMNS)).into() }
-
     fn layout(&self, wide: bool) -> Element<'_, Message> {
         let catalog = self.catalog();
         let hosts = if self.prompts.is_empty() { "Remote hosts".to_owned() } else { format!("Remote hosts ({})", self.prompts.len()) };
@@ -64,10 +62,8 @@ impl State {
         let body = scrollable(container(body).padding(Padding::ZERO.top(w).bottom(sp(Sp::M)).right(sp(Sp::S)))).direction(scrollable::Direction::Vertical(scrollable::Scrollbar::new().width(w).scroller_width(w).spacing(w)));
         column![container(header).padding(Padding::ZERO.right(sp(Sp::S))), body.style(style::scrollbar(false)).height(Fill)].spacing(sp(Sp::M)).padding(Padding::ZERO.top(sp(Sp::S)).right(thin).left(sp(Sp::M))).into()
     }
-
     /// Whether the card under header `key` shows; every card shows while filtering.
     fn block_open(&self, key: &str) -> bool { !self.filter.is_empty() || self.open_blocks.get(key).copied().unwrap_or(true) }
-
     /// A header that opens and closes its card (not while filtering), with `trailing` actions.
     fn block_header<'a>(&self, key: &str, title: String, count: usize, trailing: Option<Element<'a, Message>>) -> Element<'a, Message> {
         let (open, filtering) = (self.block_open(key), !self.filter.is_empty());
@@ -76,7 +72,6 @@ impl State {
         let toggle = button(name).padding([sp(Sp::Xs), 0.0]).style(style::button(ButtonKind::Flat)).on_press_maybe((!filtering).then(|| Message::BlockOpen(key.to_owned(), !open)));
         row![toggle, space().width(Fill), trailing].spacing(sp(Sp::S)).align_y(Alignment::Center).into()
     }
-
     fn group_view<'a>(&'a self, group: GroupView<'a>) -> Element<'a, Message> {
         let (key, title) = match group.group {
             BuiltinGroup::Harness if group.title.is_empty() => ("harness", "Harness tools".to_owned()),
@@ -92,7 +87,6 @@ impl State {
         };
         column![header, card(rows)].spacing(sp(Sp::Xs)).into()
     }
-
     /// The rows of list `key`, cut to a preview while long, with a show all / fewer row.
     fn tool_rows<'a>(&'a self, key: &str, tools: Vec<ToolRow<'a>>) -> Vec<Element<'a, Message>> {
         let (total, all_key) = (tools.len(), format!("{key}:all"));
@@ -104,7 +98,6 @@ impl State {
         }
         rows
     }
-
     /// Checkbox, name, clipped description and detail dots; a click opens the details.
     fn tool_row<'a>(&'a self, ToolRow { id, info, enabled }: ToolRow<'a>) -> Element<'a, Message> {
         let expanded = self.expanded_tool.as_ref() == Some(&id);
@@ -130,12 +123,10 @@ fn tool_details(info: &ToolInfo) -> Element<'_, Message> {
     let content = Column::new().push(label(info.description.as_str(), T::Caption, Tone::Muted)).extend(details).spacing(sp(Sp::Xs));
     container(content).padding(Padding::ZERO.right(sp(Sp::M)).bottom(sp(Sp::M)).left(sp(Sp::Xl) + sp(Sp::S))).width(Fill).into()
 }
-
 fn detail_tone(state: super::DetailState) -> Tone { [Tone::Ok, Tone::Muted, Tone::Danger][state as usize] }
 fn row_pad() -> Padding { Padding::from([sp(Sp::S), sp(Sp::M)]) }
 /// A full-width row button, disabled without `on`.
 fn row_button(content: Element<'_, Message>, on: Option<Message>) -> Element<'_, Message> { button(content).padding(row_pad()).width(Fill).style(style::button(ButtonKind::Row { selected: false })).on_press_maybe(on).into() }
-
 /// Rows in a card with a divider between each two.
 fn card<'a>(rows: impl IntoIterator<Item = Element<'a, Message>>) -> Element<'a, Message> {
     let mut content = column![];
@@ -144,16 +135,13 @@ fn card<'a>(rows: impl IntoIterator<Item = Element<'a, Message>>) -> Element<'a,
     }
     container(content).padding(sp(Sp::Xs)).width(Fill).style(style::container(Surface::Card)).into()
 }
-
 /// A form in a card: a bold title, the content, then Submit and Cancel.
 fn form_card<'a>(title: &'a str, trailing: Option<Element<'a, Message>>, content: Element<'a, Message>, submit: &'a str, form: FormId) -> Element<'a, Message> {
     let head = row![text(title).size(ts(T::Label)).font(BOLD), space().width(Fill), trailing].align_y(Alignment::Center);
     loa_ui_kit::widgets::card(column![head, content, form_buttons(submit, form)].spacing(sp(Sp::S))).width(Fill).into()
 }
-
 /// An editor or log opened under a row.
 fn inset<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> { container(container(content).padding(sp(Sp::M)).width(Fill).style(style::container(Surface::Well))).padding(Padding::ZERO.bottom(sp(Sp::Xs))).into() }
-
 /// Cards in two columns when `wide`, else stacked.
 fn grid(items: Vec<Element<'_, Message>>, wide: bool) -> Element<'_, Message> {
     if !wide { return column(items).spacing(sp(Sp::L)).into() }
@@ -165,24 +153,14 @@ fn grid(items: Vec<Element<'_, Message>>, wide: bool) -> Element<'_, Message> {
     }
     rows.into()
 }
-
 /// A muted line in a card, for empty states and progress.
 fn note_row(s: &str) -> Element<'_, Message> { container(label(s, T::Label, Tone::Muted)).padding(row_pad()).width(Fill).into() }
 /// Content taking the rest of a line, cut at its edge.
 fn clipped<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> { container(content).width(Fill).clip(true).into() }
-
 fn status_dot<'a>(tone: Tone) -> Element<'a, Message> {
     let d = sp(Sp::Xs) * 1.5;
     container(space().width(d).height(d)).style(style::fill(tone.role(), tokens().radius(RadiusRole::Dot))).into()
 }
-
-/// A small button with caption text and an optional icon: ghost, or `kind`.
-fn flat<'a>(s: &'a str, icon: Option<Icon>) -> button::Button<'a, Message> {
-    let content = row![icon.map(|i| tinted(i, T::Caption, Tone::Normal)), text(s).size(ts(T::Caption))].spacing(sp(Sp::Xs)).align_y(Alignment::Center);
-    button(content).padding([sp(Sp::Xs), sp(Sp::S)]).style(style::button(ButtonKind::Ghost))
-}
-
 /// A primary caption button.
 fn primary(s: &str, on: Option<Message>) -> button::Button<'_, Message> { button(text(s).size(ts(T::Caption))).padding([sp(Sp::Xs), sp(Sp::M)]).style(style::button(ButtonKind::Primary)).on_press_maybe(on) }
-
-fn form_buttons(submit: &str, form: FormId) -> Element<'_, Message> { row![primary(submit, Some(Message::FormSubmit(form))), flat("Cancel", None).on_press(Message::FormCancel(form))].spacing(sp(Sp::S)).into() }
+fn form_buttons(submit: &str, form: FormId) -> Element<'_, Message> { row![primary(submit, Some(Message::FormSubmit(form))), action("Cancel", Message::FormCancel(form))].spacing(sp(Sp::S)).into() }

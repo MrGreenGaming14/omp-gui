@@ -1,6 +1,7 @@
 //! The MCP servers section: the add form, the import list and a card per server.
 
-use super::{BOLD, card, clipped, flat, form_card, grid, note_row, primary, row_button, row_pad, status_dot};
+use super::{BOLD, card, clipped, form_card, grid, note_row, primary, row_button, row_pad, status_dot};
+use crate::{action, ghost};
 use crate::tools::catalog::{Catalog, ServerView};
 use crate::tools::{FormId, ImportOutcome, Message, ServerAction, ServerKind, ServerStatus, State, TransportKind};
 use iced::widget::{button, checkbox, column, container, row, space, text};
@@ -13,7 +14,7 @@ use loa_ui_kit::widgets::{form_view, label};
 
 impl State {
     pub(super) fn servers_view<'a>(&'a self, catalog: Catalog<'a>, wide: bool) -> Element<'a, Message> {
-        let actions = row![flat("Add server", Some(Icon::Plus)).on_press(Message::FormOpen(FormId::Server)), flat("Import", None).on_press(Message::ImportScan)];
+        let actions = row![ghost("Add server", Some(Icon::Plus)).on_press(Message::FormOpen(FormId::Server)), action("Import", Message::ImportScan)];
         let header = row![label("Servers", T::Caption, Tone::Muted), label(catalog.servers.len().to_string(), T::Caption, Tone::Faint), space().width(Fill), actions.spacing(sp(Sp::Xs) / 2.0)];
         let empty = catalog.servers.is_empty().then(|| card([note_row(if self.filter.is_empty() { "No MCP servers" } else { "No server matches the filter" })]));
         let add = self.add_server.as_ref().map(|f| {
@@ -24,7 +25,6 @@ impl State {
         let servers = grid(catalog.servers.into_iter().map(|s| self.server_view(s)).collect(), wide);
         column![header.spacing(sp(Sp::Xs)).align_y(Alignment::Center), add, self.import_view(), empty, servers].spacing(sp(Sp::S)).into()
     }
-
     /// Name and status (which open and close the tools), transport and controls, then tools.
     fn server_view<'a>(&'a self, view: ServerView<'a>) -> Element<'a, Message> {
         let s = view.server;
@@ -41,8 +41,8 @@ impl State {
         let title = row![status_dot(tone), text(name).size(ts(T::Label)).font(BOLD).wrapping(text::Wrapping::None), label(kind, T::Caption, Tone::Faint), clipped(label(status, T::Caption, tone).wrapping(text::Wrapping::None).width(Fill).align_x(Alignment::End)), label(s.tools.len().to_string(), T::Caption, Tone::Faint), chevron];
         let title = row_button(title.spacing(sp(Sp::S)).align_y(Alignment::Center).into(), (!filtering).then(|| Message::BlockOpen(key.clone(), !open)));
         let running = matches!(s.status, ServerStatus::Running | ServerStatus::Starting);
-        let act = |l: &'a str, a: ServerAction, on: bool| flat(l, None).on_press_maybe(on.then(|| Message::Server(name.to_owned(), a)));
-        let toggle = button(text(format!("Tools: {}", view.toggle.label())).size(ts(T::Caption))).padding([sp(Sp::Xs), sp(Sp::S)]).style(style::button(ButtonKind::Ghost)).on_press_maybe(self.project.is_some().then(|| Message::ServerToggled(name.to_owned())));
+        let act = |l: &'a str, a: ServerAction, on: bool| ghost(l, None).on_press_maybe(on.then(|| Message::Server(name.to_owned(), a)));
+        let toggle = ghost(format!("Tools: {}", view.toggle.label()), None).on_press_maybe(self.project.is_some().then(|| Message::ServerToggled(name.to_owned())));
         // App hosted servers run with the app; only their tools toggle.
         let hosted = s.kind == ServerKind::AppHosted;
         let controls = (!hosted).then(|| row![act("Start", ServerAction::Start, !running), act("Stop", ServerAction::Stop, running), act("Restart", ServerAction::Restart, running), act("Remove", ServerAction::Remove, true).style(style::button(ButtonKind::Danger))]);
@@ -60,10 +60,9 @@ impl State {
         };
         card(std::iter::once(head.into()).chain(tools))
     }
-
     fn import_view(&self) -> Option<Element<'_, Message>> {
         let entries = self.imports.as_ref()?;
-        let header = row![text("Import from .claude, .cursor, .codex").size(ts(T::Label)).font(BOLD), space().width(Fill), flat("Close", Some(Icon::X)).on_press(Message::ImportClose)].align_y(Alignment::Center);
+        let header = row![text("Import from .claude, .cursor, .codex").size(ts(T::Label)).font(BOLD), space().width(Fill), ghost("Close", Some(Icon::X)).on_press(Message::ImportClose)].align_y(Alignment::Center);
         let note = match (self.import_scanning, entries.is_empty()) {
             (true, _) => Some(note_row("Scanning...")),
             (false, true) => Some(note_row("No server configs found")),

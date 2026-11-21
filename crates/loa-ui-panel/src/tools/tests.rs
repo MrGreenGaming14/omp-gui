@@ -1,4 +1,4 @@
-use super::form::error::*;
+use super::form::*;
 use super::*;
 use loa_contracts::harness::McpTransport;
 use loa_ui_kit::testkit::click_label;
@@ -13,11 +13,11 @@ fn filled<F: Form + Default>(mut form: F, values: &[(&str, &str)]) -> F {
 }
 fn send(s: &mut State, messages: impl IntoIterator<Item = Message>) -> Vec<Event> { messages.into_iter().filter_map(|m| s.update(m).1).collect() }
 fn errors(list: &[(FieldId, &str)]) -> BTreeMap<FieldId, String> { list.iter().map(|(k, e)| (*k, e.to_string())).collect() }
-fn names<'a>(c: &Catalog<'a>) -> (Vec<Vec<&'a str>>, Vec<Vec<&'a str>>) {
+type Groups<'a> = Vec<Vec<&'a str>>;
+fn names<'a>(c: &Catalog<'a>) -> (Groups<'a>, Groups<'a>) {
     let n = |rows: &[catalog::ToolRow<'a>]| rows.iter().map(|r| r.info.name.as_str()).collect();
     (c.builtin.iter().map(|g| n(&g.tools)).collect(), c.servers.iter().map(|v| n(&v.tools)).collect())
 }
-
 fn panel() -> State {
     let mut s = State::new();
     s.set_builtin(BuiltinTools { harness: "omp".into(), harness_tools: vec![tool("bash"), tool("read")], app_tools: vec![tool("project_search"), tool("sandbox_task")], harness_note: None });
@@ -27,7 +27,6 @@ fn panel() -> State {
     s.set_hosts(vec![host("build"), host("db")]);
     s
 }
-
 #[test]
 fn forms_validate_per_field() {
     use TransportKind::{Http, Stdio};
@@ -59,7 +58,6 @@ fn forms_validate_per_field() {
     }
     assert_eq!(draft.limits.allowed_paths, ["/srv", "~/work"]);
 }
-
 #[test]
 fn messages_emit_events_and_scope_toggles() {
     let mut s = panel();
@@ -87,9 +85,6 @@ fn messages_emit_events_and_scope_toggles() {
     s.set_import_outcome(ImportSource::Cursor, "fetch", ImportOutcome::Imported);
     assert_eq!(send(&mut s, [Message::ImportSubmit]), [], "imported entries aren't imported twice");
 }
-
-type Groups<'a> = Vec<Vec<&'a str>>;
-
 #[test]
 fn catalog_filters_and_peer_matrix_follow_grants() {
     let mut s = panel();
@@ -118,7 +113,6 @@ fn catalog_filters_and_peer_matrix_follow_grants() {
     s.set_peers(vec![peer("carol", vec![])]);
     assert_eq!(s.peer_matrix().peers[0].name, "carol", "a vanished peer resets the filter");
 }
-
 #[test]
 fn every_section_renders_and_its_controls_click() {
     let mut s = panel();

@@ -1,7 +1,7 @@
 //! The peers section: which tools each peer's grant allows.
 
 use super::{card, clipped, note_row, row_pad};
-use crate::tools::{Message, PeerChoice, State, ToolId};
+use crate::tools::{Message, PeerChoice, PeerTools, State, ToolId};
 use iced::widget::{column, container, pick_list, row, text};
 use iced::{Alignment, Element, Fill, Padding};
 use loa_ui_kit::style::{self, Tone};
@@ -10,12 +10,9 @@ use loa_ui_kit::widgets::label;
 
 impl State {
     pub(super) fn peers_view(&self) -> Element<'_, Message> {
-        let choices: Vec<PeerChoice> = std::iter::once(PeerChoice::All).chain(self.peers.iter().map(|p| PeerChoice::Peer { key: p.key.clone(), name: p.name.clone() })).collect();
-        let selected = choices.iter().find(|c| match (c, &self.peer_filter) {
-            (PeerChoice::All, None) => true,
-            (PeerChoice::Peer { key, .. }, Some(k)) => key == k,
-            _ => false,
-        }).cloned();
+        let choice = |p: &PeerTools| PeerChoice::Peer { key: p.key.clone(), name: p.name.clone() };
+        let choices: Vec<PeerChoice> = std::iter::once(PeerChoice::All).chain(self.peers.iter().map(choice)).collect();
+        let selected = Some(self.peers.iter().find(|p| self.peer_filter.as_ref() == Some(&p.key)).map_or(PeerChoice::All, choice));
         let pick = pick_list(choices, selected, Message::PeerFilter).text_size(ts(T::Caption)).padding([sp(Sp::Xs), sp(Sp::S)]).style(style::pick);
         let header = row![label("Tools each peer's grant allows", T::Caption, Tone::Muted).width(Fill), pick].spacing(sp(Sp::S)).align_y(Alignment::Center);
         let matrix = self.peer_matrix();

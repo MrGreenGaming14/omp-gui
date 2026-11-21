@@ -1,6 +1,4 @@
-//! The files tab: a lazy tree over a root directory. Directories are listed through the
-//! [`FileSystem`] port when first expanded; nodes live in a flat arena and the visible rows
-//! are rebuilt only when expansion or a listing changes.
+//! The files tab: a lazy tree listed through the [`FileSystem`] port on first expansion, nodes in a flat arena.
 
 use crate::{indent, list_row_height};
 use iced::widget::{Space, button, column, container, row, scrollable, text};
@@ -8,7 +6,7 @@ use iced::{Alignment, Element, Fill, Task};
 use loa_ui_kit::icons::{Icon, icon, muted};
 use loa_ui_kit::style::{self as kit, ButtonKind, Tone};
 use loa_ui_kit::theme::{SpaceRole as Sp, TextRole as T, pad_x, sp, text_size as ts};
-use loa_ui_kit::widgets::{PanelPane, label};
+use loa_ui_kit::widgets::label;
 use std::collections::HashMap;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -17,19 +15,14 @@ use std::path::{Path, PathBuf};
 const COMPACT_MAX_HEIGHT: f32 = 240.0;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Entry {
-    pub name: String,
-    pub is_dir: bool,
-}
-
+pub struct Entry { pub name: String, pub is_dir: bool }
 /// Port the tree reads directories through.
 pub trait FileSystem: Send + Sync {
     /// The direct children of `dir`, already filtered; the tree sorts them.
     fn list(&self, dir: &Path) -> Result<Vec<Entry>, ignore::Error>;
 }
 
-/// The local disk, honouring `.gitignore`, `.ignore` and git excludes, showing dotfiles and
-/// hiding `.git`.
+/// The local disk, honouring `.gitignore`, `.ignore` and git excludes, showing dotfiles and hiding `.git`.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct LocalFs;
 
@@ -52,48 +45,20 @@ impl FileSystem for LocalFs {
     }
 }
 
+/// `Click` carries the clicked row's node index.
 #[derive(Debug, Clone)]
-pub enum Message {
-    /// A row was clicked: the node index.
-    Click(usize),
-}
-
+pub enum Message { Click(usize) }
+/// `Open` carries the file's absolute path.
 #[derive(Debug, Clone, PartialEq)]
-pub enum Event {
-    /// Open this file (absolute path).
-    Open(PathBuf),
-}
-
-/// A file or directory; node 0 is the hidden root.
+pub enum Event { Open(PathBuf) }
+/// A file or directory, `rel` to the root; node 0 is the hidden root. Listed children are contiguous.
 #[derive(Default)]
-struct Node {
-    depth: usize,
-    name: String,
-    /// Relative to the root.
-    rel: PathBuf,
-    is_dir: bool,
-    expanded: bool,
-    /// Children are pushed contiguously when listed.
-    children: Option<Range<usize>>,
-    error: Option<String>,
-}
-
+struct Node { depth: usize, name: String, rel: PathBuf, is_dir: bool, expanded: bool, children: Option<Range<usize>>, error: Option<String> }
 fn root_node() -> Node { Node { is_dir: true, expanded: true, ..Node::default() } }
-
 /// A visible line: a node, or the load error under a directory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Row {
-    Node(usize),
-    Error(usize),
-}
-
-pub struct State {
-    root: PathBuf,
-    fs: Box<dyn FileSystem>,
-    nodes: Vec<Node>,
-    rows: Vec<Row>,
-    selected: Option<usize>,
-}
+enum Row { Node(usize), Error(usize) }
+pub struct State { root: PathBuf, fs: Box<dyn FileSystem>, nodes: Vec<Node>, rows: Vec<Row>, selected: Option<usize> }
 
 impl State {
     /// The tree with the root's children listed.
@@ -103,13 +68,11 @@ impl State {
         s.rebuild_rows();
         s
     }
-
     pub fn root(&self) -> &Path { &self.root }
     /// Re-roots the tree, forgetting nodes and selection.
     pub fn set_root(&mut self, root: PathBuf) { *self = Self::new(root, std::mem::replace(&mut self.fs, Box::new(LocalFs))) }
     /// Root-relative paths of the visible rows, top to bottom.
     pub fn visible(&self) -> impl Iterator<Item = &Path> { self.rows.iter().filter_map(|r| if let Row::Node(i) = *r { Some(self.nodes[i].rel.as_path()) } else { None }) }
-
     /// Re-lists every loaded directory, keeping expansion and selection where paths remain.
     pub fn refresh(&mut self) {
         let old = std::mem::replace(&mut self.nodes, vec![root_node()]);
@@ -127,7 +90,6 @@ impl State {
         }
         self.rebuild_rows();
     }
-
     /// A click selects a row, toggles a directory and opens a file.
     pub fn update(&mut self, message: Message) -> (Task<Message>, Option<Event>) {
         let Message::Click(i) = message;
@@ -140,11 +102,9 @@ impl State {
         self.rebuild_rows();
         (Task::none(), None)
     }
-
     pub fn view(&self) -> Element<'_, Message> { scrollable(self.list()).width(Fill).height(Fill).into() }
     /// The same rows sized to their content up to [`COMPACT_MAX_HEIGHT`], for the sidebar.
     pub fn view_compact(&self) -> Element<'_, Message> { container(scrollable(self.list()).width(Fill)).max_height(COMPACT_MAX_HEIGHT).width(Fill).into() }
-
     fn list(&self) -> iced::widget::Column<'_, Message> {
         let rows = self.rows.iter().map(|r| match *r {
             Row::Node(i) => self.node_row(i),
@@ -157,7 +117,6 @@ impl State {
         });
         column(rows).width(Fill).padding(pad_x(Sp::S))
     }
-
     fn node_row(&self, i: usize) -> Element<'_, Message> {
         let n = &self.nodes[i];
         let chevron: Element<'_, Message> = match (n.is_dir, n.expanded) {
@@ -169,7 +128,6 @@ impl State {
         let style = kit::button(ButtonKind::Row { selected: self.selected == Some(i) });
         button(content.spacing(sp(Sp::S)).align_y(Alignment::Center).height(Fill)).width(Fill).height(list_row_height()).padding(pad_x(Sp::S)).style(style).on_press(Message::Click(i)).into()
     }
-
     /// Lists a directory node and appends its children, directories first, by name ignoring case.
     fn load(&mut self, dir: usize) {
         let rel = self.nodes[dir].rel.clone();
@@ -183,7 +141,6 @@ impl State {
             Err(e) => (self.nodes[dir].children, self.nodes[dir].error) = (None, Some(e.to_string())),
         }
     }
-
     fn rebuild_rows(&mut self) {
         self.rows.clear();
         let mut stack = vec![0];
@@ -199,13 +156,7 @@ impl State {
     }
 }
 
-impl PanelPane for State {
-    type Message = Message;
-    fn id(&self) -> &str { "files" }
-    fn title(&self) -> &str { "Files" }
-    fn icon(&self) -> Icon { Icon::Folder }
-    fn view(&self) -> Element<'_, Message> { State::view(self) }
-}
+panel_pane!("files", "Files", Folder);
 
 #[cfg(test)]
 pub(crate) mod tests {
@@ -229,7 +180,6 @@ pub(crate) mod tests {
             Ok(d.0.clone())
         }
     }
-
     #[test]
     fn directories_list_lazily_sort_first_and_open_files() {
         let fs = Arc::new(FakeFs::default());

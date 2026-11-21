@@ -1,11 +1,8 @@
-//! The agents tab: live subagents and background shells from one session's `<job>` elements,
-//! and whether omp's `wait` blocks on them. `wait` takes no arguments and blocks on every
-//! running job, so while a `<call tool="wait">` is pending or running, every running job is
-//! awaited.
+//! The agents tab: one session's `<job>`s; a pending or running `<call tool="wait">` awaits every running job.
 
 use crate::{action, list_row_height};
 use iced::widget::text::Wrapping;
-use iced::widget::{Column, Row, container, scrollable, space, text};
+use iced::widget::{Column, container, row, scrollable, space, text};
 use iced::{Center, Element, Fill, Font, Task};
 use loa_core::schema::TEXT;
 use loa_core::{CallStatus, Dom, ElementKind, JobKind, JobStatus, Node, NodeId, Op, Patch, attr};
@@ -13,7 +10,7 @@ use loa_ui_kit::icons::{Icon, icon};
 use loa_ui_kit::style::{self as kit, Tone};
 use loa_ui_kit::text::format_duration;
 use loa_ui_kit::theme::{ColorRole as C, SpaceRole as Sp, TextRole as T, sp, text_size as ts};
-use loa_ui_kit::widgets::{PanelPane, badge, label};
+use loa_ui_kit::widgets::{badge, label};
 use std::collections::{BTreeMap, HashSet};
 
 const WAIT_TOOL: &str = "wait";
@@ -23,15 +20,8 @@ const ATTRS: [&str; 5] = [attr::ID, attr::TITLE, attr::COMMAND, attr::AGENT, att
 /// One `<job>` as the panel shows it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Job {
-    node: NodeId,
-    kind: JobKind,
-    status: JobStatus,
-    attrs: [Option<String>; 5],
-    started: Option<i64>,
-    ended: Option<i64>,
-    exit_code: Option<i64>,
-    output: String,
-    expanded: bool,
+    node: NodeId, kind: JobKind, status: JobStatus, attrs: [Option<String>; 5],
+    started: Option<i64>, ended: Option<i64>, exit_code: Option<i64>, output: String, expanded: bool,
 }
 
 impl Job {
@@ -42,7 +32,6 @@ impl Job {
         job.read_attrs(node);
         Some(job)
     }
-
     /// Copies every attribute; a missing status reads as running.
     fn read_attrs(&mut self, node: &Node) {
         self.kind = node.str_attr(attr::KIND).and_then(JobKind::parse).unwrap_or(self.kind);
@@ -50,7 +39,6 @@ impl Job {
         self.attrs = ATTRS.map(|a| node.str_attr(a).map(str::to_owned));
         (self.started, self.ended, self.exit_code) = (node.int_attr(attr::STARTED), node.int_attr(attr::ENDED), node.int_attr(attr::EXIT_CODE));
     }
-
     pub fn node(&self) -> NodeId { self.node }
     pub fn status(&self) -> JobStatus { self.status }
     /// The child session of a subagent.
@@ -58,39 +46,20 @@ impl Job {
     /// Title, else agent, else command, else kind.
     pub fn label(&self) -> &str { [1, 3, 2].iter().find_map(|&i| self.attrs[i].as_deref()).unwrap_or(self.kind.as_str()) }
     pub fn output(&self) -> &str { &self.output }
-    /// The last non-blank output line, trimmed; scanning stops at the first such line from the end.
+    /// The last non-blank output line, trimmed.
     pub fn last_line(&self) -> &str { self.output.rsplit('\n').map(str::trim).find(|l| !l.is_empty()).unwrap_or_default() }
+    fn running(&self) -> bool { self.status == JobStatus::Running }
 }
 
-/// Jobs of one session in document order and the wait calls blocked on them.
+/// Jobs of one session in document order, the active `wait` calls, and the last tick in unix ms.
 #[derive(Debug, Default)]
-pub struct State {
-    jobs: BTreeMap<NodeId, Job>,
-    /// Pending or running `<call tool="wait">` nodes.
-    waits: HashSet<NodeId>,
-    /// Unix milliseconds of the last tick.
-    now: Option<i64>,
-}
-
+pub struct State { jobs: BTreeMap<NodeId, Job>, waits: HashSet<NodeId>, now: Option<i64> }
+/// `Tick` carries unix ms; `Toggle` shows or hides a job's output; `Detach` opens a subagent's session in a window.
 #[derive(Debug, Clone)]
-pub enum Message {
-    /// The time in unix milliseconds.
-    Tick(i64),
-    /// Show or hide a job's output.
-    Toggle(NodeId),
-    Open(NodeId),
-    /// Open the subagent's session in its own window.
-    Detach(NodeId),
-    Cancel(NodeId),
-}
-
+pub enum Message { Tick(i64), Toggle(NodeId), Open(NodeId), Detach(NodeId), Cancel(NodeId) }
+/// `Cancel` stops a running job; `id` is the harness's job id when known.
 #[derive(Debug, Clone, PartialEq)]
-pub enum Event {
-    OpenSession(String),
-    DetachSession(String),
-    /// Stop a running job; `id` is the harness's job id when known.
-    Cancel { node: NodeId, id: Option<String> },
-}
+pub enum Event { OpenSession(String), DetachSession(String), Cancel { node: NodeId, id: Option<String> } }
 
 impl State {
     pub fn from_dom(dom: &Dom) -> Self {
@@ -98,14 +67,12 @@ impl State {
         s.reset(dom);
         s
     }
-
     /// Rebuilds from `dom`, keeping rows that were expanded.
     pub fn reset(&mut self, dom: &Dom) {
         let expanded: HashSet<NodeId> = self.jobs.values().filter(|j| j.expanded).map(|j| j.node).collect();
         self.jobs = dom.iter().filter_map(Job::from_node).map(|j| (j.node, Job { expanded: expanded.contains(&j.node), ..j })).collect();
         self.waits = dom.iter().filter(|n| is_active_wait(n)).map(|n| n.id).collect();
     }
-
     /// Follows `patch`, already applied to `dom`.
     pub fn apply(&mut self, dom: &Dom, patch: &Patch) {
         let node = patch.node;
@@ -125,85 +92,67 @@ impl State {
             _ => {}
         }
     }
-
     /// Tracks `node` as a blocking wait exactly while it is one.
     fn refresh_wait(&mut self, node: &Node) {
         if is_active_wait(node) { self.waits.insert(node.id); } else { self.waits.remove(&node.id); }
     }
-
     pub fn update(&mut self, message: Message) -> (Task<Message>, Option<Event>) {
-        let session = |s: &Self, n: NodeId| s.jobs.get(&n).and_then(|j| j.session()).map(str::to_owned);
+        let session = |n: NodeId| self.jobs.get(&n).and_then(Job::session).map(str::to_owned);
         let event = match message {
-            Message::Tick(now) => {
-                self.now = Some(now);
-                None
-            }
-            Message::Toggle(n) => {
-                if let Some(j) = self.jobs.get_mut(&n) { j.expanded = !j.expanded }
-                None
-            }
-            Message::Open(n) => session(self, n).map(Event::OpenSession),
-            Message::Detach(n) => session(self, n).map(Event::DetachSession),
-            Message::Cancel(n) => self.jobs.get(&n).filter(|j| j.status == JobStatus::Running).map(|j| Event::Cancel { node: n, id: j.attrs[0].clone() }),
+            Message::Open(n) => session(n).map(Event::OpenSession),
+            Message::Detach(n) => session(n).map(Event::DetachSession),
+            Message::Cancel(n) => self.jobs.get(&n).filter(|j| j.running()).map(|j| Event::Cancel { node: n, id: j.attrs[0].clone() }),
+            Message::Tick(now) => { self.now = Some(now); None }
+            Message::Toggle(n) => { self.jobs.entry(n).and_modify(|j| j.expanded = !j.expanded); None }
         };
         (Task::none(), event)
     }
-
     pub fn jobs(&self) -> impl Iterator<Item = &Job> { self.jobs.values() }
     pub fn job(&self, node: NodeId) -> Option<&Job> { self.jobs.get(&node) }
     /// A `wait` call blocks on the running jobs.
     pub fn waiting(&self) -> bool { !self.waits.is_empty() }
-    pub fn is_awaited(&self, node: NodeId) -> bool { self.waiting() && self.jobs.get(&node).is_some_and(|j| j.status == JobStatus::Running) }
-
+    pub fn is_awaited(&self, node: NodeId) -> bool { self.waiting() && self.jobs.get(&node).is_some_and(Job::running) }
     /// How long the job ran: to `ended`, or to the last tick while it runs.
     pub fn elapsed_ms(&self, node: NodeId) -> Option<i64> {
         let job = self.jobs.get(&node)?;
-        let end = job.ended.or(if job.status == JobStatus::Running { self.now } else { None })?;
+        let end = job.ended.or(self.now.filter(|_| job.running()))?;
         Some((end - job.started?).max(0))
     }
-
     pub fn view(&self) -> Element<'_, Message> {
-        let running = self.jobs.values().filter(|j| j.status == JobStatus::Running).count();
+        let running = self.jobs.values().filter(|j| j.running()).count();
         let blocked = (self.waiting() && running > 0).then(|| badge("wait blocked", Tone::Muted));
-        let header = Row::new().push(label(format!("{running} running"), T::Caption, Tone::Muted)).push(blocked).spacing(sp(Sp::S)).align_y(Center).height(list_row_height());
+        let header = row![label(format!("{running} running"), T::Caption, Tone::Muted), blocked].spacing(sp(Sp::S)).align_y(Center).height(list_row_height());
         let empty = self.jobs.is_empty().then(|| label("No subagents or background jobs", T::Label, Tone::Muted));
         let list = Column::new().push(header).push(empty).extend(self.jobs.values().map(|j| self.job_view(j)));
         scrollable(list.spacing(sp(Sp::Xs)).padding([sp(Sp::Xs), sp(Sp::L)])).height(Fill).into()
     }
-
     fn job_view<'a>(&'a self, job: &'a Job) -> Element<'a, Message> {
         let tone = [Tone::Muted, Tone::Ok, Tone::Danger, Tone::Muted][job.status as usize];
-        let exit = job.exit_code.filter(|&c| c != 0 && job.status != JobStatus::Running).map(|c| label(format!("exit {c}"), T::Caption, Tone::Danger));
-        let child = job.kind == JobKind::Subagent && job.session().is_some();
-        let n = job.node;
-        let head = Row::new()
-            .push(icon(if job.kind == JobKind::Shell { Icon::Terminal } else { Icon::Cpu }, ts(T::Body)))
-            .push(text(job.label()).size(ts(T::Body)).wrapping(Wrapping::None))
-            .push(label(job.status.as_str(), T::Caption, tone))
-            .push(exit)
-            .push(self.is_awaited(n).then(|| badge("waiting on", Tone::Muted)))
-            .push(self.elapsed_ms(n).map(|ms| label(format_duration(ms), T::Caption, Tone::Muted)))
-            .push(space().width(Fill))
-            .push(child.then(|| action("Open", Message::Open(n))))
-            .push(child.then(|| action("Window", Message::Detach(n))))
-            .push((job.status == JobStatus::Running).then(|| action("Cancel", Message::Cancel(n))))
-            .push((!job.output.is_empty()).then(|| action(if job.expanded { "Collapse" } else { "Expand" }, Message::Toggle(n))));
+        let exit = job.exit_code.filter(|&c| c != 0 && !job.running()).map(|c| label(format!("exit {c}"), T::Caption, Tone::Danger));
+        let (child, n) = (job.kind == JobKind::Subagent && job.session().is_some(), job.node);
+        let head = row![
+            icon(if job.kind == JobKind::Shell { Icon::Terminal } else { Icon::Cpu }, ts(T::Body)),
+            text(job.label()).size(ts(T::Body)).wrapping(Wrapping::None),
+            label(job.status.as_str(), T::Caption, tone),
+            exit,
+            self.is_awaited(n).then(|| badge("waiting on", Tone::Muted)),
+            self.elapsed_ms(n).map(|ms| label(format_duration(ms), T::Caption, Tone::Muted)),
+            space().width(Fill),
+            child.then(|| action("Open", Message::Open(n))),
+            child.then(|| action("Window", Message::Detach(n))),
+            job.running().then(|| action("Cancel", Message::Cancel(n))),
+            (!job.output.is_empty()).then(|| action(if job.expanded { "Collapse" } else { "Expand" }, Message::Toggle(n))),
+        ];
         let below: Option<Element<'a, Message>> = if job.expanded {
             Some(container(text(job.output()).font(Font::MONOSPACE).size(ts(T::Label))).padding([sp(Sp::S), sp(Sp::M)]).width(Fill).style(kit::fill(C::Raised, 0.0)).into())
         } else {
-            Some(job.last_line()).filter(|l| !l.is_empty()).map(|l| Row::new().push(space().width(sp(Sp::Xl))).push(label(l, T::Caption, Tone::Muted).wrapping(Wrapping::None)).into())
+            Some(job.last_line()).filter(|l| !l.is_empty()).map(|l| row![space().width(sp(Sp::Xl)), label(l, T::Caption, Tone::Muted).wrapping(Wrapping::None)].into())
         };
         Column::new().push(head.spacing(sp(Sp::S)).align_y(Center).height(list_row_height())).push(below).into()
     }
 }
 
-impl PanelPane for State {
-    type Message = Message;
-    fn id(&self) -> &str { "agents" }
-    fn title(&self) -> &str { "Agents" }
-    fn icon(&self) -> Icon { Icon::Bot }
-    fn view(&self) -> Element<'_, Message> { State::view(self) }
-}
+panel_pane!("agents", "Agents", Bot);
 
 /// A pending or running `<call tool="wait">`.
 fn is_active_wait(n: &Node) -> bool {
@@ -220,7 +169,6 @@ mod tests {
         state.apply(dom, &patch);
         patch.node
     }
-
     #[test]
     fn patches_track_output_waits_and_events() {
         let (mut dom, mut state) = (Dom::new(), State::default());

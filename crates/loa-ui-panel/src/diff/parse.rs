@@ -4,14 +4,10 @@ use super::model::{Builder, FileDiff, Tag};
 
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum ParseError {
-    #[error("line {line}: malformed hunk header")]
-    HunkHeader { line: usize },
-    #[error("line {line}: hunk or file header outside a file")]
-    Orphan { line: usize },
-    #[error("line {line}: hunk has more lines than its header says")]
-    Overflow { line: usize },
-    #[error("line {line}: hunk ends with {old} old and {new} new lines missing")]
-    Truncated { line: usize, old: u32, new: u32 },
+    #[error("line {line}: malformed hunk header")] HunkHeader { line: usize },
+    #[error("line {line}: hunk or file header outside a file")] Orphan { line: usize },
+    #[error("line {line}: hunk has more lines than its header says")] Overflow { line: usize },
+    #[error("line {line}: hunk ends with {old} old and {new} new lines missing")] Truncated { line: usize, old: u32, new: u32 },
 }
 
 pub type Result<T, E = ParseError> = std::result::Result<T, E>;
@@ -19,7 +15,6 @@ pub type Result<T, E = ParseError> = std::result::Result<T, E>;
 /// A file being collected; `git` when `diff --git` started it, so `---`/`+++` belong to it.
 #[derive(Default)]
 struct Pending { old_path: Option<String>, new_path: Option<String>, git: bool, has_hunks: bool, binary: bool, builder: Builder }
-
 impl Pending {
     fn finish(self) -> FileDiff { self.builder.finish(self.old_path, self.new_path, self.binary) }
 }

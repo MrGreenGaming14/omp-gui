@@ -1,7 +1,7 @@
-//! The remote hosts section: questions waiting for the user, the add form and the host list
-//! with its limits editor and audit log.
+//! The remote hosts section: waiting questions, the add form and the hosts with limits editor and audit log.
 
-use super::{BOLD, card, clipped, flat, form_buttons, form_card, inset, note_row};
+use super::{BOLD, card, clipped, form_buttons, form_card, inset, note_row};
+use crate::{action, ghost};
 use crate::tools::{AuditRow, FormId, Limit, Message, PromptAnswer, PromptKind, RemoteHost, RemotePrompt, State};
 use iced::widget::{Column, checkbox, column, container, row, rule, scrollable, space, text};
 use iced::{Alignment, Element, Fill, Font, Padding, Shrink};
@@ -23,14 +23,12 @@ impl State {
         });
         let add = self.add_host.as_ref().map(|f| form_card("Add host", None, form_view(&f.spec, &f.errors, |k, v| Message::FormEdit(FormId::Host, k, v)), "Add", FormId::Host));
         let hosts = self.visible_hosts();
-        let actions = row![flat("Import from ssh config", None).on_press(Message::ImportSshHosts), flat("Add host", Some(Icon::Plus)).on_press(Message::FormOpen(FormId::Host))].spacing(sp(Sp::Xs) / 2.0);
+        let actions = row![action("Import from ssh config", Message::ImportSshHosts), ghost("Add host", Some(Icon::Plus)).on_press(Message::FormOpen(FormId::Host))].spacing(sp(Sp::Xs) / 2.0);
         let header = self.block_header("hosts", "Hosts".to_owned(), hosts.len(), Some(actions.into()));
         let list = self.block_open("hosts").then(|| if hosts.is_empty() { card([note_row("No remote hosts")]) } else { card(hosts.into_iter().map(|h| self.host_view(h, wide))) });
         column![prompts, add, header, list].spacing(sp(Sp::S)).into()
     }
-
-    /// Alias and address, the limits in a line and the actions; the limits editor and the
-    /// audit log open under it.
+    /// Alias and address, the limits in a line and the actions; the limits editor and audit log open under it.
     fn host_view<'a>(&'a self, host: &'a RemoteHost, wide: bool) -> Element<'a, Message> {
         let alias = host.alias.as_str();
         let target = format!("{}{}{}{}", host.user.as_ref().map_or(String::new(), |u| format!("{u}@")), host.hostname, host.port.map_or(String::new(), |p| format!(":{p}")), host.proxy_jump.as_ref().map_or(String::new(), |j| format!(" via {j}")));
@@ -38,8 +36,8 @@ impl State {
         let paths = if l.allowed_paths.is_empty() { "no paths".to_owned() } else { l.allowed_paths.join(", ") };
         let flags = [(l.read_only, "read only", "read write"), (l.commands_allowed, "commands allowed", "no commands"), (l.auto_approve, "runs without asking", "asks first")].map(|(on, yes, no)| if on { yes } else { no });
         let summary = clipped(label(format!("{} · {paths}", flags.join(" · ")), T::Caption, Tone::Faint).wrapping(text::Wrapping::None));
-        let act = |s, m| flat(s, None).on_press(m);
-        let actions = row![act("Edit limits", Message::EditLimits(alias.into())), act("Terminal", Message::OpenTerminal(alias.into())), act("Audit log", Message::ShowAudit(alias.into())), act("Remove", Message::RemoveHost(alias.into())).style(style::button(ButtonKind::Danger))].spacing(sp(Sp::Xs) / 2.0);
+        let actions = row![action("Edit limits", Message::EditLimits(alias.into())), action("Terminal", Message::OpenTerminal(alias.into())), action("Audit log", Message::ShowAudit(alias.into()))];
+        let actions = actions.push(action("Remove", Message::RemoveHost(alias.into())).style(style::button(ButtonKind::Danger))).spacing(sp(Sp::Xs) / 2.0);
         let name = row![text(alias).size(ts(T::Label)).font(BOLD).wrapping(text::Wrapping::None), clipped(text(target).size(ts(T::Caption)).style(style::text(Tone::Muted)).font(Font::MONOSPACE).wrapping(text::Wrapping::None))].spacing(sp(Sp::S)).align_y(Alignment::Center);
         let head: Element<'a, Message> = if wide { column![row![name, actions].spacing(sp(Sp::S)).align_y(Alignment::Center), summary].into() } else { column![name, summary, actions].into() };
         let editor = self.limits.as_ref().filter(|d| d.host == host.alias).map(|d| {
@@ -56,7 +54,7 @@ impl State {
 
 /// A host's audit log, newest first, in a scroll area of its own.
 fn audit_log(rows: &[AuditRow]) -> Element<'_, Message> {
-    let header = row![label("Audit log", T::Caption, Tone::Muted), label(rows.len().to_string(), T::Caption, Tone::Faint), space().width(Fill), flat("Close", Some(Icon::X)).on_press(Message::CloseAudit)].spacing(sp(Sp::Xs)).align_y(Alignment::Center);
+    let header = row![label("Audit log", T::Caption, Tone::Muted), label(rows.len().to_string(), T::Caption, Tone::Faint), space().width(Fill), ghost("Close", Some(Icon::X)).on_press(Message::CloseAudit)].spacing(sp(Sp::Xs)).align_y(Alignment::Center);
     if rows.is_empty() { return column![header, label("No entries", T::Caption, Tone::Faint)].spacing(sp(Sp::Xs)).into() }
     let entries = rows.iter().enumerate().map(|(i, e)| {
         let ok = e.outcome == "ok" || e.outcome.starts_with("ok:");
@@ -70,7 +68,7 @@ fn audit_log(rows: &[AuditRow]) -> Element<'_, Message> {
 
 /// A host key or approval question with its answers.
 fn prompt_card(p: &RemotePrompt) -> Element<'_, Message> {
-    let answer = |s, a| flat(s, None).on_press(Message::AnswerPrompt(p.id, a));
+    let answer = |s, a| action(s, Message::AnswerPrompt(p.id, a));
     let danger = style::button(ButtonKind::Danger);
     let answers = match p.kind {
         PromptKind::HostKey => row![answer("Trust", PromptAnswer::Trust), answer("Reject", PromptAnswer::Reject).style(danger)],

@@ -1,5 +1,17 @@
-//! Right panel panes, each a component with `update`/`view` and a kit `PanelPane`: [`diff`],
-//! [`files`], [`session_tree`], [`agents`] and the [`tools`] page.
+//! Right panel panes with `update`/`view` and a kit `PanelPane`: diff, files, session tree, agents and tools.
+
+/// Implements the kit `PanelPane` for the module's `State` through its inherent `view`.
+macro_rules! panel_pane {
+    ($id:literal, $title:literal, $icon:ident) => {
+        impl loa_ui_kit::widgets::PanelPane for State {
+            type Message = Message;
+            fn id(&self) -> &str { $id }
+            fn title(&self) -> &str { $title }
+            fn icon(&self) -> loa_ui_kit::Icon { loa_ui_kit::Icon::$icon }
+            fn view(&self) -> iced::Element<'_, Message> { State::view(self) }
+        }
+    };
+}
 
 pub mod agents;
 pub mod diff;
@@ -8,8 +20,9 @@ pub mod session_tree;
 pub mod tools;
 
 use iced::Theme;
-use iced::widget::{button, container, text};
-use loa_ui_kit::style::{self, ButtonKind};
+use iced::widget::{button, container, row, text};
+use loa_ui_kit::icons::{Icon, tinted};
+use loa_ui_kit::style::{self, ButtonKind, Tone};
 use loa_ui_kit::theme::{AlphaRole, ColorRole, SpaceRole as Sp, TextRole as T, for_theme, sp, text_size as ts};
 
 /// One diff row: a mono line, uniform so lists virtualize by arithmetic.
@@ -18,7 +31,6 @@ pub(crate) fn row_height() -> f32 { ts(T::Mono) + 2.0 * sp(Sp::Xs) }
 pub(crate) fn list_row_height() -> f32 { 2.0 * ts(T::Body) }
 /// Indentation per tree level.
 pub(crate) fn indent() -> f32 { sp(Sp::M) }
-
 /// `role` at the tint alpha: the changed part inside a diff line.
 pub(crate) fn tint(role: ColorRole) -> impl Fn(&Theme) -> container::Style {
     move |theme| {
@@ -27,10 +39,14 @@ pub(crate) fn tint(role: ColorRole) -> impl Fn(&Theme) -> container::Style {
     }
 }
 
-/// A small ghost button with caption text.
-pub(crate) fn action<'a, M: Clone + 'a>(label: impl text::IntoFragment<'a>, on: M) -> button::Button<'a, M> {
-    button(text(label).size(ts(T::Caption))).padding([sp(Sp::Xs), sp(Sp::S)]).style(style::button(ButtonKind::Ghost)).on_press(on)
+/// A small ghost button with caption text and an optional icon.
+pub(crate) fn ghost<'a, M: Clone + 'a>(label: impl text::IntoFragment<'a>, icon: Option<Icon>) -> button::Button<'a, M> {
+    let content = row![icon.map(|i| tinted(i, T::Caption, Tone::Normal)), text(label).size(ts(T::Caption))].spacing(sp(Sp::Xs)).align_y(iced::Alignment::Center);
+    button(content).padding([sp(Sp::Xs), sp(Sp::S)]).style(style::button(ButtonKind::Ghost))
 }
+
+/// [`ghost`] without icon, pressed for `on`.
+pub(crate) fn action<'a, M: Clone + 'a>(label: impl text::IntoFragment<'a>, on: M) -> button::Button<'a, M> { ghost(label, None).on_press(on) }
 
 #[cfg(test)]
 mod tests {
@@ -42,7 +58,6 @@ mod tests {
         drop(iced_test::Simulator::with_size(iced::Settings::default(), Size::new(360.0, 400.0), pane.view()));
         pane.id().to_owned()
     }
-
     #[test]
     fn every_pane_renders() {
         let mut diff = diff::State::new();

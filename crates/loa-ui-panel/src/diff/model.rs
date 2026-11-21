@@ -1,5 +1,4 @@
-//! Diff model: numbered lines with intra-line ranges, hunks, folds of unchanged lines, and the
-//! row lists the view virtualizes.
+//! Diff model: numbered lines with intra-line ranges, hunks, folds of unchanged lines, and the row lists the view virtualizes.
 
 use similar::{Algorithm, DiffOp, TextDiff};
 use std::ops::Range;
@@ -14,48 +13,32 @@ const MIN_INTRA_RATIO: f32 = 0.4;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Tag { Equal, Delete, Insert }
-
-/// A line with 1-based numbers (`None` on the side it is missing from), its text in the file's
-/// buffer and its range of emphasis ranges.
+/// A line with 1-based numbers (`None` on the side it is missing from), its text range and emphasis range.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Line { pub tag: Tag, pub old_no: Option<u32>, pub new_no: Option<u32>, text: Range<usize>, emph: Range<usize> }
-
 /// A run of unchanged lines hidden behind one row until expanded.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct Fold { lines: Range<usize>, expanded: bool }
-
 /// A `@@` header of the source: `line` starts a new hunk with this section text.
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct Break { line: usize, section: Range<usize> }
-
 /// `@@ -old_start,old_len +new_start,new_len @@ section`.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct Hunk { pub old_start: u32, pub old_len: u32, pub new_start: u32, pub new_len: u32, section: Option<usize> }
-
 /// One rendered row: a hunk header, a collapsed fold, a unified line or a split pair.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Row { Hunk(Hunk), Fold { fold: usize, hidden: usize }, Line(usize), Pair { old: Option<usize>, new: Option<usize> } }
-
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum FileStatus { Added, Deleted, Modified, Renamed }
-
 /// The diff of one file; a `None` path marks an added or deleted file, and a binary one has no lines.
 #[derive(Clone, Debug, Default)]
 pub struct FileDiff {
-    pub old_path: Option<String>,
-    pub new_path: Option<String>,
-    pub binary: bool,
-    text: String,
-    lines: Vec<Line>,
-    emph: Vec<Range<usize>>,
-    folds: Vec<Fold>,
-    breaks: Vec<Break>,
+    pub old_path: Option<String>, pub new_path: Option<String>, pub binary: bool,
+    text: String, lines: Vec<Line>, emph: Vec<Range<usize>>, folds: Vec<Fold>, breaks: Vec<Break>,
 }
-
 impl FileDiff {
     /// The new path, or the old one when deleted.
     pub fn path(&self) -> &str { self.new_path.as_deref().or(self.old_path.as_deref()).unwrap_or_default() }
-
     pub fn status(&self) -> FileStatus {
         match (&self.old_path, &self.new_path) {
             (None, _) => FileStatus::Added,
@@ -64,7 +47,6 @@ impl FileDiff {
             _ => FileStatus::Modified,
         }
     }
-
     pub fn added(&self) -> usize { self.lines.iter().filter(|l| l.tag == Tag::Insert).count() }
     pub fn removed(&self) -> usize { self.lines.iter().filter(|l| l.tag == Tag::Delete).count() }
     pub fn lines(&self) -> &[Line] { &self.lines }
@@ -75,15 +57,12 @@ impl FileDiff {
     pub fn section(&self, h: &Hunk) -> &str { h.section.and_then(|b| self.breaks.get(b)).map_or("", |b| &self.text[b.section.clone()]) }
     /// Opens a fold; false when it was open or doesn't exist.
     pub fn expand(&mut self, fold: usize) -> bool { self.folds.get_mut(fold).is_some_and(|f| !std::mem::replace(&mut f.expanded, true)) }
-
     pub fn unified_rows(&self) -> Vec<Row> {
         let mut rows = Vec::new();
         self.walk(|head, lines| rows.extend(std::iter::once(head).chain(lines.map(Row::Line))));
         rows
     }
-
-    /// Side by side rows: a change run's deleted and inserted lines pair up in order and the
-    /// longer side gets blank partners.
+    /// Side by side rows: a change run's deleted and inserted lines pair up, the longer side gets blank partners.
     pub fn split_rows(&self) -> Vec<Row> {
         let mut rows = Vec::new();
         self.walk(|head, lines| {
@@ -97,9 +76,7 @@ impl FileDiff {
         });
         rows
     }
-
-    /// Feeds the visible structure in order: a hunk header or fold row with the visible lines
-    /// after it (none after a fold). A run never crosses a hunk boundary.
+    /// Feeds a hunk header or fold row with the visible lines after it (none after a fold), runs within hunks.
     fn walk(&self, mut emit: impl FnMut(Row, Range<usize>)) {
         let mut folds = self.folds.iter().enumerate().filter(|(_, f)| !f.expanded).peekable();
         let mut breaks = self.breaks.iter().enumerate().peekable();
@@ -128,15 +105,9 @@ impl FileDiff {
 
 /// Counts above `u32::MAX` saturate; no text the panel shows is that long.
 fn count(n: usize) -> u32 { u32::try_from(n).unwrap_or(u32::MAX) }
-
-/// Collects lines into a [`FileDiff`], pairing each change block's deleted and inserted lines
-/// for intra-line ranges.
+/// Collects lines into a [`FileDiff`], pairing each change block's deleted and inserted lines for intra-line ranges.
 #[derive(Default)]
-pub(crate) struct Builder {
-    file: FileDiff,
-    dels: Vec<usize>,
-    ins: Vec<usize>,
-}
+pub(crate) struct Builder { file: FileDiff, dels: Vec<usize>, ins: Vec<usize> }
 
 impl Builder {
     pub(crate) fn push(&mut self, tag: Tag, old_no: Option<u32>, new_no: Option<u32>, text: &str) {
@@ -147,7 +118,6 @@ impl Builder {
         f.lines.push(Line { tag, old_no, new_no, text: start..f.text.len(), emph: e..e });
         if tag != Tag::Equal { if tag == Tag::Delete { &mut self.dels } else { &mut self.ins }.push(i) }
     }
-
     /// Starts a new hunk at the next line, as a `@@` header does.
     pub(crate) fn hunk_break(&mut self, section: &str) {
         self.flush_block();
@@ -156,13 +126,11 @@ impl Builder {
         f.text.push_str(section);
         f.breaks.push(Break { line: f.lines.len(), section: start..f.text.len() });
     }
-
     pub(crate) fn finish(mut self, old_path: Option<String>, new_path: Option<String>, binary: bool) -> FileDiff {
         self.flush_block();
         let folds = compute_folds(&self.file.lines, &self.file.breaks);
         FileDiff { old_path, new_path, binary, folds, ..self.file }
     }
-
     fn flush_block(&mut self) {
         let f = &mut self.file;
         for (&old, &new) in self.dels.iter().zip(&self.ins) {
@@ -178,8 +146,7 @@ impl Builder {
     }
 }
 
-/// Changed byte ranges of two paired lines, old then new; `None` when too long, too
-/// different, or one side changed entirely.
+/// Changed byte ranges of two paired lines, old then new; `None` when too long, too different or wholly changed.
 fn intra_line(old: &str, new: &str) -> Option<[Vec<Range<usize>>; 2]> {
     if old.len() > MAX_INTRA_LINE || new.len() > MAX_INTRA_LINE || old.is_empty() || new.is_empty() { return None }
     let diff = TextDiff::configure().algorithm(Algorithm::Myers).diff_words(old, new);
