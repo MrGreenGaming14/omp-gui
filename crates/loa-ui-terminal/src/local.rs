@@ -1,7 +1,6 @@
-//! Local programs on a PTY as a [`PtyChannel`]. A thread reads the output into [`Bytes`]
-//! chunks, then reaps the child and reports its exit status.
+//! Local programs on a PTY as a [`PtyChannel`]: a thread reads output chunks, then reaps the child and reports its exit status.
 
-use crate::{channel::{ChannelRead, ChannelWriter, PtyChannel}, Error, GridSize, Result};
+use crate::{ChannelRead, ChannelWriter, Error, GridSize, PtyChannel, Result};
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use loa_util::LockExt;
@@ -15,11 +14,9 @@ const READ_QUEUE: usize = 64;
 /// `EIO`: a PTY master's reads fail with it once every slave descriptor is closed.
 const EIO: i32 = 5;
 
-/// What to run in a local terminal: `program` with `args`, or the user's login shell when `None`,
-/// in `cwd` with `env` added to the app's environment.
+/// `program` with `args` (the user's login shell when `None`) in `cwd`, with `env` added to the app's environment.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocalShell { pub program: Option<PathBuf>, pub args: Vec<OsString>, pub cwd: PathBuf, pub env: Vec<(OsString, OsString)> }
-
 impl LocalShell {
     pub fn login_shell(cwd: impl Into<PathBuf>) -> Self { Self { program: None, args: Vec::new(), cwd: cwd.into(), env: Vec::new() } }
 }
@@ -50,7 +47,7 @@ pub fn spawn(shell: &LocalShell, size: GridSize) -> Result<PtyChannel> {
         let _ = tx.blocking_send(Ok(ChannelRead::Closed { exit_code }));
     };
     std::thread::Builder::new().name("loa-pty".into()).spawn(read).inspect_err(|_| drop(killer.kill()))?;
-    Ok(PtyChannel { reader: Box::new(rx), writer: Box::new(LocalWriter(Some(Live { writer: Arc::new(Mutex::new(writer)), master: pair.master, killer }))) })
+    Ok(PtyChannel { reader: Box::new(rx), writer: Box::new(LocalWriter { writer: Arc::new(Mutex::new(writer)), master: pair.master, killer: Some(killer) }) })
 }
 
 fn read_loop(mut reader: Box<dyn Read + Send>, tx: &mpsc::Sender<Result<ChannelRead>>) {
@@ -69,31 +66,21 @@ fn read_loop(mut reader: Box<dyn Read + Send>, tx: &mpsc::Sender<Result<ChannelR
     }
 }
 
-/// A running child; dropping it hangs up (SIGHUP, like closing a terminal window).
-struct Live { writer: Arc<Mutex<Box<dyn Write + Send>>>, master: Box<dyn MasterPty + Send>, killer: Box<dyn ChildKiller + Send + Sync> }
-
-impl Drop for Live {
-    fn drop(&mut self) { let _ = self.killer.kill(); }
-}
-
-struct LocalWriter(Option<Live>);
+/// A running child's PTY; closing or dropping it hangs up (SIGHUP, like closing a terminal window).
+struct LocalWriter { writer: Arc<Mutex<Box<dyn Write + Send>>>, master: Box<dyn MasterPty + Send>, killer: Option<Box<dyn ChildKiller + Send + Sync>> }
+impl Drop for LocalWriter { fn drop(&mut self) { let _ = self.killer.take().map(|mut killer| killer.kill()); } }
 
 #[async_trait]
 impl ChannelWriter for LocalWriter {
     async fn write(&mut self, bytes: Bytes) -> Result<()> {
-        let writer = Arc::clone(&self.0.as_ref().ok_or(Error::Closed)?.writer);
+        let writer = Arc::clone(&self.writer);
         // A full PTY input buffer blocks, so the write runs off the executor.
-        let write = move || {
-            let mut w = writer.locked();
-            w.write_all(&bytes).and_then(|()| w.flush())
-        };
+        let write = move || { let mut w = writer.locked(); w.write_all(&bytes).and_then(|()| w.flush()) };
         Ok(tokio::task::spawn_blocking(write).await.map_err(io::Error::other)??)
     }
-    async fn resize(&mut self, size: GridSize) -> Result<()> {
-        self.0.as_ref().ok_or(Error::Closed)?.master.resize(pty_size(size)).map_err(|e| Error::Io(io::Error::other(e.to_string())))
-    }
+    async fn resize(&mut self, size: GridSize) -> Result<()> { self.master.resize(pty_size(size)).map_err(|e| Error::Io(io::Error::other(e.to_string()))) }
     async fn close(&mut self) -> Result<()> {
-        self.0 = None;
+        let _ = self.killer.take().map(|mut killer| killer.kill());
         Ok(())
     }
 }

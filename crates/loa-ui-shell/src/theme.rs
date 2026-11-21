@@ -1,5 +1,4 @@
-//! The active theme: the saved [`Appearance`] resolved through the kit's [`ThemeRegistry`]
-//! against the system's light or dark mode. Re-exports the kit token layer.
+//! The active theme: the saved [`Appearance`] resolved via [`ThemeRegistry`] against the system mode; re-exports kit tokens.
 
 pub use loa_ui_kit::theme::*;
 

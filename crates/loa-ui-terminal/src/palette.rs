@@ -1,6 +1,4 @@
-//! Terminal colours from the theme tokens: the 16 ANSI colours are the `term.N` roles, the rest
-//! come from the ground, text, cursor and accent roles; the 256-colour cube and gray ramp are
-//! xterm's.
+//! Terminal colours: ANSI 0..16 from the kit `term.N` roles, the rest from ground/text/cursor/accent, plus xterm's cube and gray ramp.
 
 use alacritty_terminal::{term::color::Colors, vte::ansi::{Color as AnsiColor, NamedColor, Rgb}};
 use iced::{theme::palette::mix, Color, Theme, color};
@@ -9,7 +7,6 @@ use loa_ui_kit::theme::{AlphaRole, ColorRole as C, for_theme};
 /// `ansi` holds the normal (0..8) and bright (8..16) ANSI colours.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TermPalette { pub ansi: [Color; 16], pub foreground: Color, pub background: Color, pub cursor: Color, pub selection: Color }
-
 impl TermPalette {
     /// The colours of the tokens behind `theme`; a new set after a theme change redraws.
     pub fn from_theme(theme: &Theme) -> Self {

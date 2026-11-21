@@ -6,7 +6,6 @@ use iced::keyboard::{Key, Modifiers};
 use iced_runtime::{Action, clipboard::Action as Clip, task::into_stream};
 
 const ID: TabId = TabId(1);
-
 fn state() -> State { State::new(Metrics { font: iced::Font::MONOSPACE, font_size: 14.0, cell: iced::Size::new(8.0, 16.0) }, LocalShell::login_shell(std::env::temp_dir())) }
 fn remote(host: &str) -> Target { Target::Remote { host: host.into() } }
 fn data(id: TabId, b: &'static [u8]) -> Message { Message::Output(id, Ok(ChannelRead::Data(Bytes::from_static(b)))) }
@@ -51,7 +50,7 @@ fn tabs_follow_titles_selection_closing_and_failures() {
     }
     assert_eq!((s.tabs().collect::<Vec<_>>(), s.active(), s.title(b)), (vec![b], Some(b), Some("vim")));
     assert_eq!(s.status(b), Some(&Status::Failed("broken pipe".into())));
-    assert!(s.emulator(b).unwrap().screen_text().contains("last words"), "a failure keeps the screen");
+    assert!(s.tab(b).unwrap().emulator.screen_text().contains("last words"), "a failure keeps the screen");
     let mut ui = iced_test::simulator(s.view());
     ui.click("vim").expect("tab title shown");
     assert!(ui.into_messages().any(|m| matches!(m, Message::Select(id) if id == b)));
@@ -61,7 +60,6 @@ fn tabs_follow_titles_selection_closing_and_failures() {
 
 /// Hands out one channel, then refuses.
 struct Host(Mutex<Option<PtyChannel>>);
-
 #[async_trait::async_trait]
 impl RemotePty for Host {
     async fn open_pty(&self, host: &str, _: GridSize) -> Result<PtyChannel> { self.0.locked().take().ok_or_else(|| Error::Remote { host: host.into(), message: "refused".into() }) }

@@ -1,5 +1,4 @@
-//! The app frame ([`layout::State`]: sidebar, top bar, right panel, theme) and the command
-//! [`palette`] with the keymap.
+//! The app frame ([`layout::State`]: sidebar, top bar, right panel, theme) and the command [`palette`].
 
 pub mod data;
 pub mod layout;

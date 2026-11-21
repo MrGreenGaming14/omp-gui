@@ -20,9 +20,7 @@ pub struct SessionSummary {
 }
 
 impl SessionSummary {
-    /// Reads a summary from a session DOM: the `title` attribute, else the first line of the
-    /// first user prompt; `updated` is the latest `created`/`started`/`ended`. `None` without
-    /// a `<session>` root carrying `id` and `node`.
+    /// Reads a `<session id node>` DOM: title attr or first user prompt line; `updated` is the latest timestamp.
     pub fn from_dom(dom: &Dom, pinned: bool) -> Option<Self> {
         let root = dom.root().filter(|n| n.kind == ElementKind::Session)?;
         let (mut updated, mut waiting, mut prompt) = (root.int_attr(attr::CREATED).unwrap_or(0), false, None);
@@ -51,20 +49,13 @@ fn derived_title(prompt: &str) -> Option<String> {
     })
 }
 
-/// The sidebar footer's usage meter: the used share (0 to 1) of the tightest limit and what it
-/// measures, e.g. "7d".
+/// The sidebar footer's usage meter: the used share (0 to 1) of the tightest limit and its window, e.g. "7d".
 #[derive(Debug, Clone, PartialEq)]
-pub struct UsageMeter {
-    pub fraction: f32,
-    pub label: String,
-}
+pub struct UsageMeter { pub fraction: f32, pub label: String }
 
 /// Which machine's sessions the sidebar lists.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum NodeFilter {
-    All,
-    Node(String),
-}
+pub enum NodeFilter { All, Node(String) }
 
 impl NodeFilter {
     pub fn matches(&self, node: &str) -> bool { if let Self::Node(key) = self { key == node } else { true } }

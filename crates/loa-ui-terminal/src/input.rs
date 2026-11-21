@@ -4,17 +4,14 @@ use alacritty_terminal::{grid::Scroll, term::TermMode};
 use bytes::Bytes;
 use iced::keyboard::{Key, Modifiers, key::Named};
 
-/// What a key press means to the pane.
 #[derive(Debug, Clone)]
 pub enum KeyAction { Send(Bytes), Copy, Paste, Scroll(Scroll) }
 
-/// A named key's encoding: fixed bytes without and with Ctrl, `ESC [ x` (`ESC O x` in application
-/// cursor mode), `ESC O x`, or `ESC [ n ~`; modifiers turn the last three into `ESC [ 1 ; m x` / `ESC [ n ; m ~`.
+/// A named key: fixed bytes (plain, Ctrl), `ESC [ x` (`ESC O x` in app cursor mode), `ESC O x` or `ESC [ n ~`; modifiers add `;m`.
 enum Seq { Text(&'static [u8], &'static [u8]), Cursor(u8), Ss3(u8), Tilde(u8) }
 
 const NAMED: &[(Named, Seq)] = {
-    use Named::*;
-    use Seq::*;
+    use {Named::*, Seq::*};
     &[
         (Enter, Text(b"\r", b"\r")), (Backspace, Text(b"\x7f", b"\x08")), (Tab, Text(b"\t", b"\t")), (Escape, Text(b"\x1b", b"\x1b")), (Space, Text(b" ", b"\0")),
         (ArrowUp, Cursor(b'A')), (ArrowDown, Cursor(b'B')), (ArrowRight, Cursor(b'C')), (ArrowLeft, Cursor(b'D')), (Home, Cursor(b'H')), (End, Cursor(b'F')),
@@ -33,16 +30,13 @@ const SHIFTED: &[(Named, KeyAction)] = {
 /// Ctrl plus these characters send the byte; Ctrl plus a letter sends its alphabet index.
 const CONTROL: &[(&str, u8)] = &[("@ 2", 0), ("[3", 0x1b), ("\\4", 0x1c), ("]5", 0x1d), ("^6", 0x1e), ("_-7", 0x1f), ("?8", 0x7f)];
 
-/// Pane shortcuts first (Ctrl+Shift+C/V or Cmd+C/V, then [`SHIFTED`]), else the bytes for the
-/// program. `text` is what the key typed.
+/// Pane shortcuts first (Ctrl+Shift+C/V or Cmd+C/V, then [`SHIFTED`]), else the bytes for the program; `text` is what the key typed.
 pub fn key_action(key: &Key, m: Modifiers, text: Option<&str>, mode: TermMode) -> Option<KeyAction> {
     let clip = if cfg!(target_os = "macos") { m.logo() && !m.control() } else { m.control() && m.shift() && !m.alt() };
     match key {
         Key::Character(c) if clip && c.eq_ignore_ascii_case("c") => return Some(KeyAction::Copy),
         Key::Character(c) if clip && c.eq_ignore_ascii_case("v") => return Some(KeyAction::Paste),
-        Key::Named(n) if m.shift() && !m.control() && !m.alt() => {
-            if let Some((_, action)) = SHIFTED.iter().find(|(k, _)| k == n) { return Some(action.clone()) }
-        }
+        Key::Named(n) if m.shift() && !m.control() && !m.alt() && let Some((_, action)) = SHIFTED.iter().find(|(k, _)| k == n) => return Some(action.clone()),
         _ => {}
     }
     let text = text.filter(|t| !t.is_empty());
@@ -56,8 +50,7 @@ pub fn key_action(key: &Key, m: Modifiers, text: Option<&str>, mode: TermMode) -
             Seq::Text(plain, ctrl) => alt(Bytes::from_static(if m.control() { ctrl } else { plain })),
             Seq::Cursor(x) => letter(mode.contains(TermMode::APP_CURSOR), x),
             Seq::Ss3(x) => letter(true, x),
-            Seq::Tilde(n) if param == 1 => Bytes::from(format!("\x1b[{n}~")),
-            Seq::Tilde(n) => Bytes::from(format!("\x1b[{n};{param}~")),
+            Seq::Tilde(n) => Bytes::from(if param == 1 { format!("\x1b[{n}~") } else { format!("\x1b[{n};{param}~") }),
         },
         Key::Character(c) => {
             let control = match c.to_ascii_lowercase().as_bytes() {
@@ -72,8 +65,7 @@ pub fn key_action(key: &Key, m: Modifiers, text: Option<&str>, mode: TermMode) -
     Some(KeyAction::Send(bytes))
 }
 
-/// Pasted text: inside `ESC [ 200 ~`/`ESC [ 201 ~` with escape bytes removed when bracketed
-/// paste is on, else with line feeds turned into the carriage returns Enter sends.
+/// Pasted text: bracketed (`ESC [ 200 ~`..`ESC [ 201 ~`, escapes removed) when the mode is on, else with line feeds as Enter's CRs.
 pub fn encode_paste(text: &str, mode: TermMode) -> Vec<u8> {
     if mode.contains(TermMode::BRACKETED_PASTE) {
         return [b"\x1b[200~".to_vec(), text.bytes().filter(|&b| b != 0x1b).collect(), b"\x1b[201~".to_vec()].concat();

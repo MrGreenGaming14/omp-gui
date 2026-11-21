@@ -1,14 +1,10 @@
-//! Keyboard shortcuts as data: chords bound to [`CommandId`]s per [`Scope`], with the defaults
-//! in one table.
+//! Keyboard shortcuts as data: chords bound to [`CommandId`]s per [`Scope`], defaults in one table.
 
 use super::{CommandId, ids};
 use iced::keyboard::{self, Modifiers, key::Named};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Platform {
-    MacOs,
-    Other,
-}
+pub enum Platform { MacOs, Other }
 
 impl Platform {
     pub const fn current() -> Self { if cfg!(target_os = "macos") { Self::MacOs } else { Self::Other } }
@@ -18,17 +14,11 @@ impl Platform {
 
 /// The non-modifier key of a chord; characters are lowercase and latin.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ChordKey {
-    Char(char),
-    Named(Named),
-}
+pub enum ChordKey { Char(char), Named(Named) }
 
 /// A key pressed with exactly these modifiers (only Ctrl, Alt, Shift and Logo count).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Chord {
-    pub key: ChordKey,
-    pub modifiers: Modifiers,
-}
+pub struct Chord { pub key: ChordKey, pub modifiers: Modifiers }
 
 /// Modifier labels as `(modifier, word, macOS glyph)`, in display order.
 const MODIFIERS: [(Modifiers, &str, &str); 4] = [(Modifiers::CTRL, "Ctrl+", "⌃"), (Modifiers::ALT, "Alt+", "⌥"), (Modifiers::SHIFT, "Shift+", "⇧"), (Modifiers::LOGO, "Super+", "⌘")];
@@ -75,14 +65,9 @@ impl Chord {
     }
 }
 
-/// Where a binding applies: everywhere, while the composer has focus (overriding global
-/// bindings), or while the palette is open (modal, so global bindings do not apply).
+/// Where a binding applies: everywhere, in the composer (over global bindings), or in the modal palette.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Scope {
-    Global,
-    Composer,
-    Palette,
-}
+pub enum Scope { Global, Composer, Palette }
 
 /// Stands for the platform's primary modifier in [`DEFAULTS`].
 const P: Modifiers = Modifiers::LOGO;
@@ -104,10 +89,7 @@ const DEFAULTS: &[(ChordKey, Modifiers, Scope, CommandId)] = &[
 ];
 
 #[derive(Debug, Clone)]
-pub struct Keymap {
-    platform: Platform,
-    bindings: Vec<(Chord, Scope, CommandId)>,
-}
+pub struct Keymap { platform: Platform, bindings: Vec<(Chord, Scope, CommandId)> }
 
 impl Keymap {
     pub fn defaults(platform: Platform) -> Self {

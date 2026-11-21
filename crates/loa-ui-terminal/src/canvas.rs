@@ -1,10 +1,9 @@
-//! The terminal grid on an iced canvas, drawn in a background, a decoration and a text pass
-//! over the resolved cells, and the input it captures.
+//! The terminal grid on an iced canvas (background, decoration and text passes over resolved cells) and its input.
 
 use crate::{GridSize, emulator::{Emulator, ViewportCell}, palette::TermPalette, state::{Message, TabId}};
 use alacritty_terminal::{index::Side, selection::SelectionType, term::cell::Flags, vte::ansi::CursorShape};
 use iced::{advanced::graphics::text::Paragraph, advanced::text::{self, Paragraph as _}, alignment, keyboard::{self, Key, Modifiers}, mouse::{self, ScrollDelta}};
-use iced::{theme::palette::mix, widget::canvas::{self, Action, Cache, Event, Frame, Geometry, Stroke}, Color, Font, Pixels, Point, Rectangle, Renderer, Size, Theme};
+use iced::{theme::palette::mix, widget::canvas::{self, Action, Cache, Event, Frame, Geometry, Stroke}, Color, Font, Pixels, Point, Rectangle, Renderer, Size, Theme, Vector};
 use std::{cell::Cell as StdCell, time::{Duration, Instant}};
 
 /// Two clicks on one cell closer than this are a double click.
@@ -14,9 +13,7 @@ const LINE_HEIGHT: f32 = 1.25;
 /// Font (monospaced) and cell geometry of the grid.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Metrics { pub font: Font, pub font_size: f32, pub cell: Size }
-
 impl Metrics {
-    /// Measures `font`'s cell at `font_size` with the text renderer.
     pub fn measure(font: Font, font_size: f32) -> Self {
         const SAMPLE: &str = "MMMMMMMMMMMMMMMMMMMM";
         let (align_x, align_y, line_height) = (text::Alignment::Left, alignment::Vertical::Top, text::LineHeight::Relative(LINE_HEIGHT));
@@ -38,8 +35,7 @@ impl Metrics {
     fn span(&self, cells: usize, height: f32) -> Size { Size::new(cells as f32 * self.cell.width, height) }
 }
 
-/// What the canvas reports to the terminal state: `Scroll` lines are positive up, `SelectStart`
-/// is a simple, semantic (double click) or lines (triple click) selection.
+/// Canvas input for the state: `Scroll` lines are positive up; `SelectStart` is simple, semantic (2 clicks) or lines (3).
 #[derive(Debug, Clone, PartialEq)]
 pub enum CanvasEvent {
     Resized(GridSize),
@@ -52,16 +48,12 @@ pub enum CanvasEvent {
 
 #[derive(Debug, Default)]
 pub struct CanvasState { focused: bool, selecting: bool, grid: Option<GridSize>, last_click: Option<(Instant, ViewportCell, u8)>, scroll_remainder: f32 }
-
 /// One terminal, drawn and turned into [`Message`]s.
 pub struct TerminalCanvas<'a> { pub(crate) tab: TabId, pub(crate) emulator: &'a Emulator, pub(crate) cache: &'a Cache, pub(crate) drawn_with: &'a StdCell<Option<TermPalette>>, pub(crate) metrics: Metrics }
 
-/// A visible cell with its colours resolved (inverse, selection and dim applied) and `c` blank
-/// for spaces, tabs and hidden text. `run` is the text colour and bold/italic flags; blanks
-/// continue the run before them, wide cells (`None`) stand alone.
+/// A visible cell, colours resolved (inverse, selection, dim), `c` blank for spaces/tabs/hidden text; `run` is the text colour
+/// and bold/italic, blanks continue the run before them and wide cells (`None`) stand alone.
 struct Painted<'a> { row: usize, col: usize, width: usize, fg: Color, bg: Color, flags: Flags, c: char, zerowidth: Option<&'a [char]>, run: Option<(Color, Flags)> }
-
-/// Cells next to each other on one row.
 fn adjacent(a: &Painted, b: &Painted) -> bool { a.row == b.row && a.col + a.width == b.col }
 
 impl<'a> TerminalCanvas<'a> {
@@ -82,7 +74,6 @@ impl<'a> TerminalCanvas<'a> {
             Painted { row: (i.point.line.0 + offset) as usize, col: i.point.column.0, width: 1 + usize::from(wide), fg, bg, flags, c, zerowidth: i.cell.zerowidth(), run }
         }).collect()
     }
-    /// Runs of non-default backgrounds.
     fn backgrounds(&self, frame: &mut Frame, cells: &[Painted], palette: &TermPalette) {
         for run in cells.chunk_by(|a, b| adjacent(a, b) && a.bg == b.bg).filter(|r| r[0].bg != palette.background) {
             let (first, last) = (&run[0], &run[run.len() - 1]);
@@ -94,12 +85,10 @@ impl<'a> TerminalCanvas<'a> {
         let (thickness, ch) = ((self.metrics.font_size / 14.0).max(1.0), self.metrics.cell.height);
         for c in cells {
             for (_, y) in [(c.flags.intersects(Flags::ALL_UNDERLINES), ch - thickness), (c.flags.contains(Flags::STRIKEOUT), ch * 0.5)].into_iter().filter(|(on, _)| *on) {
-                let at = self.metrics.origin(c.row, c.col);
-                frame.fill_rectangle(Point::new(at.x, at.y + y), self.metrics.span(c.width, thickness), c.fg);
+                frame.fill_rectangle(self.metrics.origin(c.row, c.col) + Vector::new(0.0, y), self.metrics.span(c.width, thickness), c.fg);
             }
         }
     }
-    /// Text in runs of one colour and style.
     fn text_runs(&self, frame: &mut Frame, cells: &[Painted]) {
         for run in cells.chunk_by(|a, b| adjacent(a, b) && a.run.is_some() && a.run == b.run) {
             let text: String = run.iter().flat_map(|c| std::iter::once(c.c).chain(c.zerowidth.into_iter().flatten().copied())).collect();
@@ -117,8 +106,7 @@ impl<'a> TerminalCanvas<'a> {
         canvas::Text { content, position: self.metrics.origin(row, col), color, size: Pixels(self.metrics.font_size), line_height, font, shaping, ..canvas::Text::default() }
     }
     fn draw_cursor(&self, frame: &mut Frame, palette: &TermPalette, focused: bool) {
-        let (term, metrics) = (&self.emulator.term, self.metrics);
-        let content = term.renderable_content();
+        let (term, metrics, content) = (&self.emulator.term, self.metrics, self.emulator.term.renderable_content());
         let (shape, point) = (content.cursor.shape, content.cursor.point);
         let row = point.line.0 + content.display_offset as i32;
         if shape == CursorShape::Hidden || !(0..i32::from(self.emulator.size().rows.max(1))).contains(&row) { return }
@@ -130,7 +118,7 @@ impl<'a> TerminalCanvas<'a> {
                 if cell.c != ' ' { frame.fill_text(self.text(cell.c.to_string(), row as usize, point.column.0, palette.background, cell.flags)) }
             }
             CursorShape::Beam => frame.fill_rectangle(origin, Size::new(thickness, ch), palette.cursor),
-            CursorShape::Underline => frame.fill_rectangle(Point::new(origin.x, origin.y + ch - thickness), Size::new(size.width, thickness), palette.cursor),
+            CursorShape::Underline => frame.fill_rectangle(origin + Vector::new(0.0, ch - thickness), Size::new(size.width, thickness), palette.cursor),
             _ => frame.stroke_rectangle(origin, size, Stroke::default().with_color(palette.cursor).with_width(thickness / 2.0)),
         }
     }

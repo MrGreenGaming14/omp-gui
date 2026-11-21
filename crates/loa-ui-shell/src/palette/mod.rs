@@ -1,5 +1,4 @@
-//! The Ctrl/Cmd+K command palette and the keymap. The app registers [`Command`]s, stacks
-//! [`State::view`] over its content and runs the id carried by [`Event::Run`].
+//! The Ctrl/Cmd+K command palette over registered [`Command`]s, plus the keymap.
 
 mod keymap;
 
@@ -69,11 +68,7 @@ impl Command {
 
 /// A listed command with its matched title chars, maybe under a section header.
 #[derive(Debug, Clone)]
-struct Row {
-    command: usize,
-    indices: Vec<usize>,
-    starts_section: bool,
-}
+struct Row { command: usize, indices: Vec<usize>, starts_section: bool }
 impl Row {
     fn height(&self) -> f32 { ROW_HEIGHT + if self.starts_section { HEADER_HEIGHT } else { 0.0 } }
 }
@@ -94,18 +89,7 @@ pub struct State {
 }
 
 #[derive(Debug, Clone)]
-pub enum Message {
-    Open,
-    OpenShortcuts,
-    Close,
-    Toggle,
-    QueryChanged(String),
-    SelectNext,
-    SelectPrevious,
-    Submit,
-    Activate(usize),
-    Scrolled(f32),
-}
+pub enum Message { Open, OpenShortcuts, Close, Toggle, QueryChanged(String), SelectNext, SelectPrevious, Submit, Activate(usize), Scrolled(f32) }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {

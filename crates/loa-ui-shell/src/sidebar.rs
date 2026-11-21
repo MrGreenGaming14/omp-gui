@@ -1,5 +1,4 @@
-//! The left sidebar: a machine switcher, New session, Search, Projects, Pinned and Recents for
-//! the chosen machine, and a footer with Updates, Usage, Configs and Settings.
+//! The left sidebar: machine switcher, New session, Search, Projects, Pinned, Recents and a footer.
 
 use crate::data::{NodeFilter, NodeStatus, Nodes, SessionSummary, UsageMeter};
 use iced::widget::{Column, button, column, container, hover, row, rule, scrollable, space, text, text_input};
@@ -32,28 +31,11 @@ pub struct State {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum Message {
-    Emit(Event),
-    Search(String),
-    OpenPeers,
-    ToggleMachines,
-    PickMachine(NodeFilter),
-    OpenSession(String),
-    TogglePin(String),
-    ToggleProjectPin(String),
-}
+pub enum Message { Emit(Event), Search(String), OpenPeers, ToggleMachines, PickMachine(NodeFilter), OpenSession(String), TogglePin(String), ToggleProjectPin(String) }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
-    NewSession,
-    OpenSession(String),
-    OpenProject(String),
-    OpenPeers,
-    OpenTools,
-    OpenUpdates,
-    OpenUsage,
-    OpenConfigs,
-    OpenSettings,
+    NewSession, OpenSession(String), OpenProject(String), OpenPeers, OpenTools, OpenUpdates, OpenUsage, OpenConfigs, OpenSettings,
     SetPinned { id: String, pinned: bool },
     SetProjectPinned { project: String, pinned: bool },
     DeleteSession(String),
@@ -117,38 +99,25 @@ impl State {
     }
 
     pub fn update(&mut self, message: Message) -> (Task<Message>, Option<Event>) {
+        match &message {
+            Message::Search(query) => self.query.clone_from(query),
+            Message::ToggleMachines => self.machines_open = !self.machines_open,
+            Message::PickMachine(filter) => (self.machine, self.machines_open) = (Some(filter.clone()), false),
+            Message::OpenPeers => self.machines_open = false,
+            Message::OpenSession(id) => self.active = Some(id.clone()),
+            _ => {}
+        }
         let event = match message {
             Message::Emit(event) => Some(event),
-            Message::Search(query) => {
-                self.query = query;
-                None
-            }
-            Message::OpenPeers => {
-                self.machines_open = false;
-                Some(Event::OpenPeers)
-            }
-            Message::ToggleMachines => {
-                self.machines_open = !self.machines_open;
-                None
-            }
-            Message::PickMachine(filter) => {
-                (self.machine, self.machines_open) = (Some(filter), false);
-                None
-            }
-            Message::ToggleProjectPin(project) => {
-                let pinned = !self.pinned_projects.remove(&project);
-                if pinned { self.pinned_projects.insert(project.clone()); }
-                Some(Event::SetProjectPinned { project, pinned })
-            }
-            Message::OpenSession(id) => {
-                self.active = Some(id.clone());
-                Some(Event::OpenSession(id))
-            }
+            Message::OpenPeers => Some(Event::OpenPeers),
+            Message::OpenSession(id) => Some(Event::OpenSession(id)),
+            Message::ToggleProjectPin(project) => Some(Event::SetProjectPinned { pinned: self.pinned_projects.insert(project.clone()) || !self.pinned_projects.remove(&project), project }),
             Message::TogglePin(id) => self.sessions.iter_mut().find(|(s, _)| s.id == id).map(|(s, _)| {
                 s.pinned = !s.pinned;
                 if s.pinned { self.pins.insert(id.clone()); } else { self.pins.remove(&id); }
                 Event::SetPinned { id, pinned: s.pinned }
             }),
+            Message::Search(_) | Message::ToggleMachines | Message::PickMachine(_) => None,
         };
         (Task::none(), event)
     }

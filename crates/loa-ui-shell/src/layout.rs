@@ -1,6 +1,4 @@
-//! The app frame: the sidebar, the top bar above a center slot, and a toggleable right panel
-//! with a tab bar. The sidebar and panel resize by their edges, each pane can fill the window,
-//! and the panel keeps its width and tab while closed.
+//! The app frame: sidebar, top bar over a center slot, and a resizable right panel with tabs.
 
 use crate::data::{NodeStatus, SessionSummary};
 use crate::theme::{self, Appearance, ThemeRef};
@@ -28,19 +26,11 @@ const WHEEL_LINE: f32 = 40.0;
 
 /// A pane that can fill the window, or whose edge is dragged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Pane {
-    Sidebar,
-    Center,
-    Panel,
-}
+pub enum Pane { Sidebar, Center, Panel }
 
 /// One tab of the right panel; the app draws the body of the active one by `id`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PanelTab {
-    pub id: String,
-    pub title: String,
-    pub icon: Option<Icon>,
-}
+pub struct PanelTab { pub id: String, pub title: String, pub icon: Option<Icon> }
 
 impl PanelTab {
     pub fn new(id: impl Into<String>, title: impl Into<String>, icon: Option<Icon>) -> Self { Self { id: id.into(), title: title.into(), icon } }
@@ -185,8 +175,7 @@ impl State {
                 let generation = self.theme.set_system_mode(mode);
                 return (Task::none(), (self.theme.variant() != before).then_some(Event::ThemeChanged(generation)));
             }
-            Message::SelectTab(id) if self.tabs.iter().any(|t| t.id == id) => self.active = Some(id),
-            Message::SelectTab(_) => {}
+            Message::SelectTab(id) => if self.tabs.iter().any(|t| t.id == id) { self.active = Some(id) },
             Message::DragStart(pane) => self.dragging = (pane != Pane::Panel || self.panel_open).then_some(pane),
             Message::DragMove(x) => match (self.dragging, self.frame) {
                 (Some(Pane::Panel), Some(f)) => self.panel_width = (f.width - x - splitter_width() / 2.0).min(self.max_panel_width()).max(MIN_PANEL_WIDTH),

@@ -1,5 +1,4 @@
-//! The top bar: the project / session breadcrumb, a needs-you label, the session status, the
-//! panel toggle and the chat full screen button. Its clicks are frame [`Message`]s.
+//! The top bar: breadcrumb, needs-you label, session status, panel toggle and chat full screen; clicks are frame [`Message`]s.
 
 use crate::layout::{Message, Pane, State, open_project};
 use iced::widget::{button, container, row, space, text};
