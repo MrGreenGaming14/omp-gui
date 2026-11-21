@@ -25,7 +25,6 @@ Everything else builds on these three. Their existing public items change only w
 | `loa-bus` | core | Session writer (`PatchSink` impl), publish subscribe with backpressure |
 | `loa-config` | core | Central config schema with version and migrations |
 | `loa-util` | core | Domain-free helpers: poison-tolerant locks, atomic files, executables (`write_executable`, `retry_busy`, `which`, `probe_cli`), time, text, `Registry`, `str_enum!` |
-| `loa-adapter-testkit` | adapters | Contract test suite, golden fixtures, round trip diff |
 | `loa-omp-rpc`, `loa-adapter-omp` | adapters | `omp --mode rpc` client, omp adapter |
 | `loa-adapter-claude`, `-codex`, `-opencode`, `-acp`, `-omp2` | adapters | One crate per harness |
 | `loa-features` | adapters | omp features provided on top of harnesses that lack them |
