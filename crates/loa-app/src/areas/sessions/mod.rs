@@ -40,7 +40,7 @@ use loa_features::hooks::{self, Advisor, TurnHooks};
 use loa_features::plan::{self as plan_mode, Outcome, PlanGate, Verdict};
 use loa_features::smol::OneShot;
 use loa_features::{Compaction, PlanPermit, native};
-use loa_journal::Listing;
+use loa_bus::Listing;
 use loa_models::login::UrlOpener;
 use loa_models::opener::SystemUrlOpener;
 use loa_ui_chat as chat;

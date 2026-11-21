@@ -42,7 +42,7 @@ use loa_util::exec::which;
 use loa_util::LockExt;
 use loa_grants::{Action, GrantId, GrantSpec, GrantStore, NodePublicKey, RenewOutcome, Renewer, Resource, Scope};
 use loa_identity::NodeIdentity;
-use loa_journal::{Journal, Store};
+use loa_bus::{Journal, Store};
 use loa_net::alpn;
 use loa_net::conn::Connection;
 use loa_net::control::{self as wire, control_frame::Kind};

@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 pub type PersistError = Box<dyn std::error::Error + Send + Sync>;
 
 /// Durable storage for a session's patches, normally its journal. A port:
-/// `loa-app` backs it with `loa-journal`.
+/// [`crate::JournalPersist`] backs it with the session's journal.
 pub trait Persist: Send {
     /// Stores `patch`. Called in sequence order, after the patch was checked
     /// against the DOM and before it is applied or published. An error fails
@@ -150,30 +150,22 @@ impl SessionWriter {
     }
 
     /// Orders a change requested by peer `requester`, after [`Authorize`]
-    /// allows it. Requests and local commits are ordered as they arrive.
-    pub fn request(&self, requester: &NodeKey, draft: Draft, ts: i64) -> Result<Patch, RequestError> {
-        let mut inner = self.inner.locked();
-        self.writable(&inner)?;
-        self.authorize.authorize(&self.session, requester, &draft, &inner.dom)?;
-        let patch = inner.dom.prepare(draft, ts);
-        Ok(self.write(&mut inner, patch)?)
-    }
-
-    /// Orders a peer change only if the owner still has the revision the peer
-    /// saw. The revision check and grant check run under the writer lock; a
-    /// local commit cannot slip between them and the write.
-    pub fn request_if_seq(
+    /// allows it. Requests and local commits are ordered as they arrive. With
+    /// `expected_seq`, the change is refused unless the owner still has the
+    /// revision the peer saw. The revision and grant checks run under the
+    /// writer lock, so a local commit cannot slip between them and the write.
+    pub fn request(
         &self,
         requester: &NodeKey,
-        expected_seq: u64,
+        expected_seq: Option<u64>,
         draft: Draft,
         ts: i64,
     ) -> Result<Patch, RequestError> {
         let mut inner = self.inner.locked();
         self.writable(&inner)?;
         let actual = inner.dom.seq();
-        if actual != expected_seq {
-            return Err(RequestError::Conflict { expected: expected_seq, actual });
+        if let Some(expected) = expected_seq.filter(|e| *e != actual) {
+            return Err(RequestError::Conflict { expected, actual });
         }
         self.authorize.authorize(&self.session, requester, &draft, &inner.dom)?;
         let patch = inner.dom.prepare(draft, ts);

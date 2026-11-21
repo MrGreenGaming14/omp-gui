@@ -11,7 +11,7 @@ use loa_config::ConfigStore;
 use loa_core::{Dom, Draft};
 use loa_features::library::Library;
 use loa_identity::{KeySource, NodeIdentity, load_app_identity};
-use loa_journal::{JournalOptions, Store};
+use loa_bus::{JournalOptions, Store};
 
 mod harness;
 mod host;

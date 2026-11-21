@@ -4697,7 +4697,6 @@ dependencies = [
  "loa-features",
  "loa-grants",
  "loa-identity",
- "loa-journal",
  "loa-mcp",
  "loa-models",
  "loa-node",
@@ -4737,8 +4736,12 @@ dependencies = [
 name = "loa-bus"
 version = "0.1.0"
 dependencies = [
+ "crc32fast",
+ "loa-bus",
  "loa-core",
  "loa-util",
+ "prost 0.14.6",
+ "tempfile",
  "thiserror 2.0.21",
  "tokio",
 ]
@@ -4794,7 +4797,6 @@ dependencies = [
  "loa-bus",
  "loa-contracts",
  "loa-core",
- "loa-journal",
  "loa-projects",
  "loa-util",
  "serde_json",
@@ -4835,19 +4837,6 @@ dependencies = [
  "loa-util",
  "thiserror 2.0.21",
  "zeroize",
-]
-
-[[package]]
-name = "loa-journal"
-version = "0.1.0"
-dependencies = [
- "crc32fast",
- "loa-bus",
- "loa-core",
- "loa-util",
- "prost 0.14.6",
- "tempfile",
- "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -4934,7 +4923,6 @@ dependencies = [
  "loa-features",
  "loa-grants",
  "loa-identity",
- "loa-journal",
  "loa-net",
  "loa-share",
  "loa-ui-peers",
@@ -4992,7 +4980,6 @@ dependencies = [
  "loa-bus",
  "loa-contracts",
  "loa-core",
- "loa-journal",
  "loa-util",
  "serde",
  "serde_json",
@@ -5072,7 +5059,6 @@ dependencies = [
  "loa-bus",
  "loa-core",
  "loa-grants",
- "loa-journal",
  "prost 0.14.6",
  "serde_json",
  "tempfile",

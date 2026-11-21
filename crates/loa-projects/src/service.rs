@@ -230,7 +230,7 @@ mod tests {
     use async_trait::async_trait;
     use loa_bus::{Authorize, Bus, Denied, NodeKey, Persist, PersistError, SessionId, SessionWriter, WriterConfig};
     use loa_core::{Draft, NodeId, Patch, PatchSink, Value};
-    use loa_journal::{Journal, JournalOptions, Store};
+    use loa_bus::{Journal, JournalOptions, Store};
 
     struct JournalPersist(Journal);
 

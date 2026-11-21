@@ -1,13 +1,15 @@
 //! Snapshot files: the whole DOM at one sequence, beside the journal.
 //!
-//! Layout: a fixed 52 byte header (magic, version, seq, journal offset of the
-//! next record, offset of the record at `seq`, body length, body crc32,
-//! header crc32) followed by a `proto::Dom` body. The header alone tells the
-//! journal where to resume, so opening reads no DOM.
+//! Layout: a fixed 52 byte header (the [`frame`] preamble, then seq, journal
+//! offset of the next record, offset of the record at `seq`, body length,
+//! body crc32 and header crc32, all LE) followed by a `proto::Dom` body. The
+//! header alone tells the journal where to resume, so opening reads no DOM.
 
-use crate::error::{Error, IoContext, Result};
+use crate::error::{IoContext, JournalError as Error, Result};
+use crate::frame::{self, le_u32, le_u64};
 use crate::proto;
 use loa_core::Dom;
+use prost::Message as _;
 use std::fs::{self, File};
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -63,18 +65,16 @@ fn read_header(path: &Path) -> Result<Option<Meta>> {
         Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
         Err(e) => return Err(Error::Io { path: path.to_owned(), source: e }),
     }
-    let u32_at = |i: usize| u32::from_le_bytes([h[i], h[i + 1], h[i + 2], h[i + 3]]);
-    let u64_at = |i: usize| u64::from_le_bytes([h[i], h[i + 1], h[i + 2], h[i + 3], h[i + 4], h[i + 5], h[i + 6], h[i + 7]]);
-    if h[..8] != MAGIC || u32_at(48) != crc32fast::hash(&h[..48]) || u32_at(8) != VERSION {
+    if h[..frame::PREAMBLE_LEN] != frame::preamble(MAGIC, VERSION) || le_u32(&h, 48) != crc32fast::hash(&h[..48]) {
         return Ok(None);
     }
     let meta = Meta {
         path: path.to_owned(),
-        seq: u64_at(12),
-        offset: u64_at(20),
-        prev_offset: u64_at(28),
-        body_len: u64_at(36),
-        body_crc: u32_at(44),
+        seq: le_u64(&h, 12),
+        offset: le_u64(&h, 20),
+        prev_offset: le_u64(&h, 28),
+        body_len: le_u64(&h, 36),
+        body_crc: le_u32(&h, 44),
     };
     Ok((meta.seq > 0 && meta.prev_offset < meta.offset).then_some(meta))
 }
@@ -107,22 +107,17 @@ fn corrupt(path: &Path, reason: &str) -> Error {
 /// Writes `dom` as the snapshot at `dom.seq()`: temp file, fsync, rename,
 /// fsync of the directory. A crash leaves either no snapshot or a whole one.
 pub(crate) fn write(dir: &Path, dom: &Dom, offset: u64, prev_offset: u64) -> Result<Meta> {
-    let mut buf = vec![0u8; HEADER_LEN];
-    proto::encode_dom(dom, &mut buf);
-    let body = &buf[HEADER_LEN..];
+    let body = proto::Dom::from(dom).encode_to_vec();
     let body_len = body.len() as u64;
-    let body_crc = crc32fast::hash(body);
+    let body_crc = crc32fast::hash(&body);
     let seq = dom.seq();
-    let h = &mut buf[..HEADER_LEN];
-    h[..8].copy_from_slice(&MAGIC);
-    h[8..12].copy_from_slice(&VERSION.to_le_bytes());
-    h[12..20].copy_from_slice(&seq.to_le_bytes());
-    h[20..28].copy_from_slice(&offset.to_le_bytes());
-    h[28..36].copy_from_slice(&prev_offset.to_le_bytes());
-    h[36..44].copy_from_slice(&body_len.to_le_bytes());
-    h[44..48].copy_from_slice(&body_crc.to_le_bytes());
-    let header_crc = crc32fast::hash(&h[..48]);
-    h[48..52].copy_from_slice(&header_crc.to_le_bytes());
+    let mut buf = frame::preamble(MAGIC, VERSION);
+    for field in [seq, offset, prev_offset, body_len] {
+        buf.extend(field.to_le_bytes());
+    }
+    buf.extend(body_crc.to_le_bytes());
+    buf.extend(crc32fast::hash(&buf).to_le_bytes());
+    buf.extend(body);
 
     let path = dir.join(file_name(seq));
     loa_util::fs::write_atomic(&path, &buf, None).at(&path)?;

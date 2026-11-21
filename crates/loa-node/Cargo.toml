@@ -9,7 +9,6 @@ publish.workspace = true
 loa-util.workspace = true
 loa-core.workspace = true
 loa-bus = { path = "../loa-bus" }
-loa-journal = { path = "../loa-journal" }
 loa-features = { path = "../loa-features" }
 loa-grants = { path = "../loa-grants" }
 loa-share = { path = "../loa-share" }

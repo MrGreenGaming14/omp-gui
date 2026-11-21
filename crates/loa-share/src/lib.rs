@@ -8,7 +8,7 @@
 use loa_bus::{NodeKey, SessionId, SessionWriter};
 use loa_core::{attr, Dom, Draft, ElementKind, NodeId, Op, Patch, Value};
 use loa_grants::Action;
-use loa_journal::{Journal, Store};
+use loa_bus::{Journal, Store};
 use prost::Message;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -30,7 +30,7 @@ pub enum Error {
     #[error("wire message is invalid: {0}")]
     Wire(String),
     #[error("journal: {0}")]
-    Journal(#[from] loa_journal::Error),
+    Journal(#[from] loa_bus::JournalError),
     #[error("DOM: {0}")]
     Apply(#[from] loa_core::ApplyError),
     #[error("request: {0}")]
@@ -77,7 +77,7 @@ impl Owner<'_> {
         })?;
         // The writer's Authorize port must recheck the verified grant against
         // its locked DOM. Both revision and authorization are checked atomically.
-        match self.writer.request_if_seq(&peer, base_seq, draft, ts) {
+        match self.writer.request(&peer, Some(base_seq), draft, ts) {
             Err(loa_bus::RequestError::Conflict { expected, actual }) => {
                 Err(Error::Conflict { expected, current: actual })
             }
@@ -328,7 +328,7 @@ pub fn fork_mirror_to_own_node(store: &Store, patches: &[Patch], at_seq: u64, ne
     if built.is_err() {
         // Leave no half made session behind; a store that refuses the id
         // (already present, invalid) is left untouched by `create` itself.
-        if !matches!(built, Err(Error::Journal(loa_journal::Error::InvalidSessionId(_) | loa_journal::Error::Exists(_)))) {
+        if !matches!(built, Err(Error::Journal(loa_bus::JournalError::InvalidSessionId(_) | loa_bus::JournalError::Exists(_)))) {
             let _ = store.delete(new_id);
         }
     }
@@ -447,7 +447,7 @@ pub struct Seed {
     #[prost(uint64, tag = "1")]
     pub source_seq: u64,
     #[prost(message, repeated, tag = "2")]
-    pub patches: Vec<loa_journal::proto::Patch>,
+    pub patches: Vec<loa_bus::proto::Patch>,
     /// Actions the requester's grants allow on the whole session.
     #[prost(string, repeated, tag = "3")]
     pub actions: Vec<String>,
@@ -463,7 +463,7 @@ impl Seed {
     }
 
     pub fn patches(self) -> Result<Vec<Patch>, Error> {
-        self.patches.into_iter().map(TryInto::try_into).collect::<Result<_, loa_journal::proto::ProtoError>>()
+        self.patches.into_iter().map(TryInto::try_into).collect::<Result<_, loa_bus::proto::ProtoError>>()
             .map_err(|e| Error::Wire(e.to_string()))
     }
 }
@@ -472,7 +472,7 @@ impl Seed {
 #[derive(Clone, PartialEq, Message)]
 pub struct DriveResult {
     #[prost(message, optional, tag = "1")]
-    pub patch: Option<loa_journal::proto::Patch>,
+    pub patch: Option<loa_bus::proto::Patch>,
     /// The owner's sequence when the request's base was stale.
     #[prost(uint64, optional, tag = "2")]
     pub conflict_current: Option<u64>,
@@ -526,7 +526,7 @@ pub struct WireUpdate {
     #[prost(uint64, tag = "1")]
     pub source_seq: u64,
     #[prost(message, optional, tag = "2")]
-    pub patch: Option<loa_journal::proto::Patch>,
+    pub patch: Option<loa_bus::proto::Patch>,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -550,7 +550,7 @@ impl From<&Update> for WireUpdate {
 impl TryFrom<WireUpdate> for Update {
     type Error = Error;
     fn try_from(wire: WireUpdate) -> Result<Self, Error> {
-        Ok(Self { source_seq: wire.source_seq, patch: wire.patch.map(TryInto::try_into).transpose().map_err(|e: loa_journal::proto::ProtoError| Error::Wire(e.to_string()))? })
+        Ok(Self { source_seq: wire.source_seq, patch: wire.patch.map(TryInto::try_into).transpose().map_err(|e: loa_bus::proto::ProtoError| Error::Wire(e.to_string()))? })
     }
 }
 
@@ -677,7 +677,7 @@ mod tests {
         let (source, _, _) = source_session();
         let (_, seed) = Projection::seeded(NodeKey([1; 32]), &source, &WholeAccess).unwrap();
         let dir = tempfile::tempdir().unwrap();
-        let store = Store::new(dir.path(), loa_journal::JournalOptions::default()).unwrap();
+        let store = Store::new(dir.path(), loa_bus::JournalOptions::default()).unwrap();
         let journal = fork_mirror_to_own_node(&store, &seed, seed.len() as u64, "forked", "me").unwrap();
         let dom = journal.load().unwrap();
         let root = dom.root().unwrap();
@@ -688,6 +688,6 @@ mod tests {
         drop(journal);
         assert!(matches!(fork_mirror_to_own_node(&store, &seed, 99, "short", "me"), Err(Error::Sequence { .. })));
         assert_eq!(store.list().unwrap().len(), 1, "a failed fork leaves nothing behind");
-        assert!(matches!(fork_mirror_to_own_node(&store, &seed, 1, "forked", "me"), Err(Error::Journal(loa_journal::Error::Exists(_)))));
+        assert!(matches!(fork_mirror_to_own_node(&store, &seed, 1, "forked", "me"), Err(Error::Journal(loa_bus::JournalError::Exists(_)))));
     }
 }

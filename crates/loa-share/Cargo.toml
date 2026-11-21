@@ -8,7 +8,6 @@ publish.workspace = true
 [dependencies]
 loa-core.workspace = true
 loa-bus = { path = "../loa-bus" }
-loa-journal = { path = "../loa-journal" }
 loa-grants = { path = "../loa-grants" }
 prost.workspace = true
 thiserror.workspace = true

@@ -36,7 +36,7 @@ pub enum Error {
     #[error("feature port failed: {0}")]
     Port(String),
     #[error(transparent)]
-    Journal(#[from] loa_journal::Error),
+    Journal(#[from] loa_bus::JournalError),
     #[error(transparent)]
     Bus(#[from] loa_bus::BusError),
 }

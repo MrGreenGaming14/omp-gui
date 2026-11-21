@@ -1,12 +1,109 @@
-//! The journal side of a session writer: shared, cheap appends with a
-//! configurable fsync policy.
+//! All sessions under one root directory, one subdirectory per session, and
+//! the journal side of a session writer: shared, cheap appends with a
+//! pluggable fsync strategy.
 
-use loa_util::LockExt;
-use crate::error::{Error, Result};
-use crate::journal::{Journal, Patches};
+use crate::error::{IoContext, JournalError as Error, Result};
+use crate::journal::{JOURNAL_FILE, Journal, JournalOptions, Patches, SessionInfo, Truncation, lock, validate_session_id};
+use crate::{Persist, PersistError};
 use loa_core::{Dom, Patch};
+use loa_util::LockExt;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
+
+/// One entry of [`Store::list`].
+#[derive(Debug)]
+pub enum Listing {
+    Session(SessionInfo),
+    /// A session directory whose journal can't be read.
+    Unreadable { id: String, error: Error },
+}
+
+/// The session journals under a root directory.
+#[derive(Clone, Debug)]
+pub struct Store {
+    root: PathBuf,
+    options: JournalOptions,
+}
+
+impl Store {
+    /// A store over `root`, created when missing. `options` apply to every
+    /// journal it opens or creates.
+    pub fn new(root: impl Into<PathBuf>, options: JournalOptions) -> Result<Self> {
+        let root = root.into();
+        fs::create_dir_all(&root).at(&root)?;
+        Ok(Self { root, options })
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    fn dir(&self, id: &str) -> Result<PathBuf> {
+        validate_session_id(id)?;
+        Ok(self.root.join(id))
+    }
+
+    /// Every session, sorted by id. Reads only each journal's tail after its
+    /// newest snapshot and never repairs anything.
+    pub fn list(&self) -> Result<Vec<Listing>> {
+        let mut out = Vec::new();
+        for entry in fs::read_dir(&self.root).at(&self.root)? {
+            let entry = entry.at(&self.root)?;
+            let dir = entry.path();
+            if !dir.join(JOURNAL_FILE).is_file() {
+                continue;
+            }
+            let id = entry.file_name().to_string_lossy().into_owned();
+            out.push(match Journal::inspect(&dir) {
+                Ok(info) => Listing::Session(info),
+                Err(error) => Listing::Unreadable { id, error },
+            });
+        }
+        out.sort_by(|a, b| listing_id(a).cmp(listing_id(b)));
+        Ok(out)
+    }
+
+    /// Creates a new empty session.
+    pub fn create(&self, id: &str) -> Result<Journal> {
+        Journal::create(&self.dir(id)?, id, self.options.clone())
+    }
+
+    /// Opens a session for writing; see [`Journal::open`].
+    pub fn open(&self, id: &str) -> Result<(Journal, Option<Truncation>)> {
+        let dir = self.dir(id)?;
+        if !dir.join(JOURNAL_FILE).is_file() {
+            return Err(Error::NotFound(id.to_owned()));
+        }
+        Journal::open(&dir, self.options.clone())
+    }
+
+    /// Deletes a session and its snapshots. Fails with [`Error::Locked`]
+    /// while a journal has it open. Forks of it keep working: they hold their
+    /// own copy of the shared patches.
+    pub fn delete(&self, id: &str) -> Result<()> {
+        let dir = self.dir(id)?;
+        if !dir.join(JOURNAL_FILE).is_file() {
+            return Err(Error::NotFound(id.to_owned()));
+        }
+        // Released before removal: some platforms can't delete an open file.
+        drop(lock(&dir)?);
+        fs::remove_dir_all(&dir).at(&dir)
+    }
+}
+
+fn listing_id(listing: &Listing) -> &str {
+    match listing {
+        Listing::Session(info) => &info.id,
+        Listing::Unreadable { id, .. } => id,
+    }
+}
+/// Decides after each append whether the pending patches are fsynced now.
+pub trait SyncStrategy: Send {
+    /// `pending` patches are unsynced, the oldest appended at `oldest`.
+    fn after_append(&mut self, pending: usize, oldest: Instant) -> bool;
+}
 
 /// When appended patches are fsynced.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -18,6 +115,18 @@ pub enum SyncPolicy {
     Batch { max_patches: u32, max_delay: Duration },
     /// Only on [`JournalWriter::sync`], a snapshot, or drop.
     Manual,
+}
+
+impl SyncStrategy for SyncPolicy {
+    fn after_append(&mut self, pending: usize, oldest: Instant) -> bool {
+        match *self {
+            SyncPolicy::EveryPatch => true,
+            SyncPolicy::Batch { max_patches, max_delay } => {
+                pending >= max_patches as usize || oldest.elapsed() >= max_delay
+            }
+            SyncPolicy::Manual => false,
+        }
+    }
 }
 
 impl Default for SyncPolicy {
@@ -40,16 +149,17 @@ struct State {
     journal: Option<Journal>,
     /// Last sequence, kept for after the close.
     last_seq: u64,
-    policy: SyncPolicy,
-    pending: u32,
+    strategy: Box<dyn SyncStrategy>,
+    pending: usize,
     oldest_pending: Option<Instant>,
 }
 
 impl JournalWriter {
-    pub fn new(journal: Journal, policy: SyncPolicy) -> Self {
+    pub fn new(journal: Journal, strategy: impl SyncStrategy + 'static) -> Self {
         let session_id = journal.session_id().to_owned();
         let last_seq = journal.last_seq();
-        Self { session_id, state: Mutex::new(State { journal: Some(journal), last_seq, policy, pending: 0, oldest_pending: None }) }
+        let strategy = Box::new(strategy);
+        Self { session_id, state: Mutex::new(State { journal: Some(journal), last_seq, strategy, pending: 0, oldest_pending: None }) }
     }
 
     /// Journals `patch`, which the writer has already applied to `dom`, writes
@@ -61,7 +171,7 @@ impl JournalWriter {
     }
 
     /// Journals `patch` before it is applied, for writers that persist first
-    /// (a [`loa_bus::SessionWriter`]). Follow up with
+    /// (a [`crate::SessionWriter`]). Follow up with
     /// [`JournalWriter::snapshot_if_due`] once the patch is applied.
     pub fn append_patch(&self, patch: &Patch) -> Result<()> {
         let mut state = self.state.locked();
@@ -70,7 +180,7 @@ impl JournalWriter {
     }
 
     /// Writes a snapshot of `dom`, which must be at the last journaled patch,
-    /// when [`crate::JournalOptions::snapshot_every`] patches followed the
+    /// when [`JournalOptions::snapshot_every`] patches followed the
     /// last one.
     pub fn snapshot_if_due(&self, dom: &Dom) -> Result<()> {
         let mut state = self.state.locked();
@@ -100,7 +210,7 @@ impl JournalWriter {
     }
 
     /// Patches appended but not fsynced yet.
-    pub fn pending(&self) -> u32 {
+    pub fn pending(&self) -> usize {
         self.state.locked().pending
     }
 
@@ -164,32 +274,24 @@ impl State {
             self.oldest_pending = None;
             return Ok(());
         }
-        let now = Instant::now();
         self.pending += 1;
-        let oldest = *self.oldest_pending.get_or_insert(now);
-        let due = match self.policy {
-            SyncPolicy::EveryPatch => true,
-            SyncPolicy::Batch { max_patches, max_delay } => {
-                self.pending >= max_patches || now.duration_since(oldest) >= max_delay
-            }
-            SyncPolicy::Manual => false,
-        };
-        if due {
+        let oldest = *self.oldest_pending.get_or_insert_with(Instant::now);
+        if self.strategy.after_append(self.pending, oldest) {
             self.sync()?;
         }
         Ok(())
     }
 }
 
-/// The [`loa_bus::Persist`] port of a live session backed by its journal.
+/// The [`Persist`] adapter of a live session backed by its journal.
 /// Patches are journaled before the writer applies them; snapshots are
 /// written after, from the writer's own DOM, so nothing keeps a second copy.
 /// Clone the inner writer first to fork or read the journal while the
 /// session is live.
 pub struct JournalPersist(pub Arc<JournalWriter>);
 
-impl loa_bus::Persist for JournalPersist {
-    fn append(&mut self, patch: &Patch) -> std::result::Result<(), loa_bus::PersistError> {
+impl Persist for JournalPersist {
+    fn append(&mut self, patch: &Patch) -> std::result::Result<(), PersistError> {
         Ok(self.0.append_patch(patch)?)
     }
 

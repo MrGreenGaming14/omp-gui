@@ -2,20 +2,19 @@
 //!
 //! A session lives in its own directory:
 //!
-//! - `journal.loaj`: header, then one framed record per patch (see [`crate::record`])
+//! - `journal.loaj`: header, then one framed record per patch (see [`crate::frame`])
 //! - `snap-<seq>.loas`: DOM snapshots, written atomically every N patches
 //! - `lock`: held while a [`Journal`] has the session open, so it has one writer
 //!
-//! Header: `LOAJRNL\0`, format version (u32 LE), header length (u32 LE),
-//! header crc32 (u32 LE), then the prost `Header` message with the session id
-//! and, for forks, the parent session id and fork sequence.
+//! Header: `LOAJRNL\0` and the format version, then one record holding the
+//! prost `Header` message with the session id and, for forks, the parent
+//! session id and fork sequence.
 
-use crate::error::{Error, IoContext, Result};
-use crate::record::{self, CHECKPOINT_EVERY, Reader};
+use crate::error::{IoContext, JournalError as Error, Result};
+use crate::frame::{self, CHECKPOINT_EVERY, FramedHeader, Reader};
 use crate::snapshot;
 use loa_core::{Dom, Draft, Patch, Value, attr, now_ms};
 use loa_util::fs::sync_dir;
-use prost::Message as _;
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -24,11 +23,8 @@ use std::path::{Path, PathBuf};
 /// File name of the journal inside a session directory.
 pub const JOURNAL_FILE: &str = "journal.loaj";
 const LOCK_FILE: &str = "lock";
-const MAGIC: [u8; 8] = *b"LOAJRNL\0";
 /// Version of the journal file layout. Bumped with a migration.
 pub const FORMAT_VERSION: u32 = 1;
-const FIXED_HEADER: usize = 20;
-const MAX_HEADER: u32 = 64 * 1024;
 
 #[derive(Clone, PartialEq, prost::Message)]
 struct Header {
@@ -38,6 +34,11 @@ struct Header {
     parent_session: Option<String>,
     #[prost(uint64, optional, tag = "3")]
     forked_at: Option<u64>,
+}
+
+impl FramedHeader for Header {
+    const MAGIC: [u8; 8] = *b"LOAJRNL\0";
+    const VERSION: u32 = FORMAT_VERSION;
 }
 
 /// The session a fork was made from.
@@ -137,13 +138,7 @@ impl Journal {
             parent_session: parent.as_ref().map(|p| p.session_id.clone()),
             forked_at: parent.as_ref().map(|p| p.forked_at),
         };
-        let mut bytes = header.encode_to_vec();
-        let len = bytes.len() as u32;
-        let crc = crc32fast::hash(&bytes);
-        bytes.splice(
-            0..0,
-            MAGIC.iter().copied().chain(FORMAT_VERSION.to_le_bytes()).chain(len.to_le_bytes()).chain(crc.to_le_bytes()),
-        );
+        let bytes = frame::write_framed(&header);
         let mut file = OpenOptions::new().read(true).append(true).create_new(true).open(&path).at(&path)?;
         file.write_all(&bytes).at(&path)?;
         file.sync_all().at(&path)?;
@@ -261,7 +256,7 @@ impl Journal {
         if patch.seq != self.last_seq + 1 {
             return Err(Error::SequenceGap { last: self.last_seq, got: patch.seq });
         }
-        record::encode(patch, &mut self.buf)?;
+        frame::encode(patch, &mut self.buf)?;
         if let Err(source) = self.file.write_all(&self.buf) {
             // Cut a partial record so the file ends on a record boundary. If
             // that fails too, refuse further appends: they would land after
@@ -371,11 +366,7 @@ impl Journal {
     fn replay(&self, mut dom: Dom, offset: u64, target: u64) -> Result<Dom> {
         let mut reader = Reader::new(&self.path, offset, self.end, dom.seq() + 1)?;
         while dom.seq() < target {
-            let patch = reader.next_patch()?.ok_or_else(|| Error::Corrupt {
-                path: self.path.clone(),
-                offset: reader.offset(),
-                reason: format!("journal ends before seq {target}"),
-            })?;
+            let patch = reader.expect_patch(target)?;
             dom.apply(&patch).map_err(|source| Error::Apply { seq: patch.seq, source })?;
         }
         Ok(dom)
@@ -398,7 +389,7 @@ impl Journal {
             .ok_or(Error::OutOfRange { seq, last: self.last_seq })?;
         let mut reader = Reader::new(&self.path, from, self.end, from_seq)?;
         while reader.next_seq() < seq {
-            reader.skip()?;
+            reader.expect_patch(seq)?;
         }
         Ok(reader.offset())
     }
@@ -561,19 +552,19 @@ struct Recovered {
 
 fn recover(dir: &Path) -> Result<Recovered> {
     let path = dir.join(JOURNAL_FILE);
-    let (header, data_start) = read_header(&path)?;
+    let (header, data_start) = frame::read_framed::<Header>(&path)?;
     let file_len = fs::metadata(&path).at(&path)?.len();
     let mut snapshots = Vec::new();
     for meta in snapshot::list(dir)? {
         // A snapshot counts only when the record it says it follows is
         // really there and ends where the snapshot resumes.
-        if meta.prev_offset >= data_start && record::probe(&path, meta.prev_offset, file_len)? == Some((meta.seq, meta.offset))
+        if meta.prev_offset >= data_start && frame::probe(&path, meta.prev_offset, file_len)? == Some((meta.seq, meta.offset))
         {
             snapshots.push(meta);
         }
     }
     let (start, next_seq) = snapshots.last().map_or((data_start, 1), |m| (m.offset, m.seq + 1));
-    let scan = record::scan(&path, file_len, start, next_seq)?;
+    let scan = frame::scan(&path, file_len, start, next_seq)?;
     let mut checkpoints = BTreeMap::from([(1, data_start)]);
     checkpoints.extend(snapshots.iter().map(|m| (m.seq + 1, m.offset)));
     checkpoints.extend(scan.checkpoints);
@@ -593,33 +584,4 @@ fn recover(dir: &Path) -> Result<Recovered> {
         checkpoints,
         snapshots,
     })
-}
-
-fn read_header(path: &Path) -> Result<(Header, u64)> {
-    let mut file = File::open(path).at(path)?;
-    let mut fixed = [0u8; FIXED_HEADER];
-    match file.read_exact(&mut fixed) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Err(Error::NotAJournal(path.to_owned())),
-        Err(e) => return Err(Error::Io { path: path.to_owned(), source: e }),
-    }
-    if fixed[..8] != MAGIC {
-        return Err(Error::NotAJournal(path.to_owned()));
-    }
-    let u32_at = |i: usize| u32::from_le_bytes([fixed[i], fixed[i + 1], fixed[i + 2], fixed[i + 3]]);
-    let version = u32_at(8);
-    if version != FORMAT_VERSION {
-        return Err(Error::UnsupportedVersion { path: path.to_owned(), found: version, supported: FORMAT_VERSION });
-    }
-    let len = u32_at(12);
-    if len > MAX_HEADER {
-        return Err(Error::CorruptHeader(path.to_owned()));
-    }
-    let mut bytes = vec![0; len as usize];
-    file.read_exact(&mut bytes).map_err(|_| Error::CorruptHeader(path.to_owned()))?;
-    if crc32fast::hash(&bytes) != u32_at(16) {
-        return Err(Error::CorruptHeader(path.to_owned()));
-    }
-    let header = Header::decode(bytes.as_slice()).map_err(|_| Error::CorruptHeader(path.to_owned()))?;
-    Ok((header, (FIXED_HEADER + bytes.len()) as u64))
 }
