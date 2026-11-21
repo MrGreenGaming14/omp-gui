@@ -234,7 +234,7 @@ impl OmpRpc for OmpClient {
         }
         let result = self
             .client
-            .request_raw(wire::Command::Login { provider_id: provider_id.to_owned() })
+            .request::<serde_json::Value>(wire::Command::Login { provider_id: provider_id.to_owned() })
             .await
             .map_err(rpc_error);
         self.login.locked().take();

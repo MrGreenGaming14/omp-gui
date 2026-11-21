@@ -73,16 +73,6 @@ pub struct HostToolDefinition {
     pub load_mode: Option<String>,
 }
 
-/// A URL scheme the host serves; omp calls it back with `host_uri_request`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HostUriScheme {
-    pub scheme: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub writable: Option<bool>,
-}
-
 /// The commands of `rpc.md` the app uses. The client adds the `id`.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", rename_all_fields = "camelCase")]
@@ -94,11 +84,7 @@ pub enum Command {
         #[serde(skip_serializing_if = "Option::is_none")]
         streaming_behavior: Option<StreamingBehavior>,
     },
-    Steer {
-        message: String,
-        #[serde(skip_serializing_if = "Vec::is_empty")]
-        images: Vec<ImageContent>,
-    },
+    Steer { message: String },
     Abort,
     NewSession,
     /// Withdraws queued user input and aborts, atomically.
@@ -108,7 +94,6 @@ pub enum Command {
     GetEntries,
     SetAskDialog { enabled: bool },
     SetHostTools { tools: Vec<HostToolDefinition> },
-    SetHostUriSchemes { schemes: Vec<HostUriScheme> },
     SetSubagentSubscription { level: SubagentLevel },
     SetEventFilter {
         /// `None` forwards every event type.
@@ -139,8 +124,6 @@ pub struct Ready {
     /// Version of the ready frame itself; absent on old servers (v1).
     pub protocol_version: Option<u32>,
     pub supported_protocol_versions: Option<Vec<u32>>,
-    pub max_frame_bytes: Option<u64>,
-    pub max_reassembled_frame_bytes: Option<u64>,
     pub supports_bash_exclude_from_context: bool,
 }
 
@@ -159,7 +142,6 @@ impl Ready {
 #[serde(rename_all = "camelCase")]
 pub struct PromptAck {
     /// `Some(false)`: the prompt finished locally and no `prompt_result` follows.
-    #[serde(default)]
     pub agent_invoked: Option<bool>,
 }
 
@@ -184,11 +166,17 @@ impl ModelInfo {
     }
 }
 
+/// `data` of `get_available_models`.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct ModelList {
+    #[serde(default)]
+    pub models: Vec<ModelInfo>,
+}
+
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CompactionResult {
     pub summary: String,
-    #[serde(default)]
     pub tokens_before: Option<i64>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -198,13 +186,10 @@ pub struct CompactionResult {
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionState {
-    #[serde(default)]
     pub model: Option<ModelInfo>,
-    #[serde(default)]
     pub thinking_level: Option<String>,
     #[serde(default)]
     pub is_streaming: bool,
-    #[serde(default)]
     pub session_file: Option<String>,
     #[serde(default)]
     pub session_id: String,

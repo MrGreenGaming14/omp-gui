@@ -2,19 +2,16 @@
 //! the `ready` handshake and protocol negotiation, host callbacks, and
 //! everything else delivered in order as [`Incoming`].
 
-use super::command::{
-    CancellationResult, Command, CompactionResult, HostToolDefinition, HostUriScheme, ImageContent, MessageUpdates,
-    ModelInfo, PromptAck, Ready, SessionState, StreamingBehavior, SubagentLevel,
-};
-use super::event::{Frame, HostToolCall, HostUriRequest, Response, UiRequest};
+use super::command::{Command, Ready};
+use super::event::{Frame, HostToolCall, UiRequest};
 use super::frames::OmpFrames;
-use super::inbound::{HostToolOutput, HostUriOutput, UiResponse};
+use super::inbound::{HostToolOutput, UiResponse};
 use super::Event;
 use crate::kit::rpc::{self, Inbound, Result, RpcError, StdioRpc};
 use async_trait::async_trait;
 use loa_util::LockExt;
 use serde::de::DeserializeOwned;
-use serde::Deserialize;
+use serde::Deserialize as _;
 use serde_json::Value;
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -44,11 +41,6 @@ pub enum Mode {
 pub trait HostHandler: Send + Sync {
     /// Runs a host tool registered with `set_host_tools`.
     async fn tool_call(&self, call: HostToolCall) -> HostToolOutput;
-
-    /// Reads or writes a URL of a scheme registered with `set_host_uri_schemes`.
-    async fn uri_request(&self, request: HostUriRequest) -> HostUriOutput {
-        HostUriOutput::Error(format!("no host handler for {}", request.url))
-    }
 }
 
 /// How to start omp.
@@ -134,24 +126,13 @@ pub enum Incoming {
     Event(Event),
     /// A UI request. Dialogs need [`RpcClient::respond_ui`].
     Ui(UiRequest),
-    /// A response no command waits for, such as a `parse` failure.
-    Response(Response),
     /// omp is gone. Always the last item.
     Exited { status: Option<ExitStatus>, stderr: String },
 }
 
-/// The stream of [`Incoming`] frames, in the order omp wrote them.
-#[derive(Debug)]
-pub struct Events {
-    rx: mpsc::Receiver<Incoming>,
-}
-
-impl Events {
-    /// The next frame; `None` after [`Incoming::Exited`] was delivered.
-    pub async fn recv(&mut self) -> Option<Incoming> {
-        self.rx.recv().await
-    }
-}
+/// The stream of [`Incoming`] frames, in the order omp wrote them; it ends
+/// after [`Incoming::Exited`].
+pub type Events = mpsc::Receiver<Incoming>;
 
 /// omp's side of the kit: the ready handshake, host callbacks and in-order delivery.
 struct OmpInbound {
@@ -162,21 +143,14 @@ struct OmpInbound {
 
 #[async_trait]
 impl Inbound for OmpInbound {
+    /// Host URI requests fail: this client registers no schemes.
     async fn on_request(&self, method: &str, params: Value) -> Result<Value> {
-        let id = params["id"].as_str().unwrap_or_default().to_owned();
-        let host = self.host.as_ref();
-        Ok(match method {
-            "host_tool_call" => match host {
-                Some(host) => host.tool_call(HostToolCall::deserialize(&params)?).await,
-                None => HostToolOutput::error("this host serves no tools"),
-            }
-            .result_json(&id),
-            _ => match host {
-                Some(host) => host.uri_request(HostUriRequest::deserialize(&params)?).await,
-                None => HostUriOutput::Error("this host serves no URI schemes".to_owned()),
-            }
-            .result_json(&id),
-        })
+        let output = match (method, &self.host) {
+            ("host_tool_call", Some(host)) => host.tool_call(HostToolCall::deserialize(&params)?).await,
+            ("host_tool_call", None) => HostToolOutput::error("this host serves no tools"),
+            _ => return Err(RpcError::Protocol("this host serves no URI schemes".to_owned())),
+        };
+        Ok(output.result_json(params["id"].as_str().unwrap_or_default()))
     }
 
     async fn on_notification(&self, method: &str, params: Value) {
@@ -189,10 +163,8 @@ impl Inbound for OmpInbound {
                 }
                 return;
             }
-            "response" => match Response::deserialize(&params) {
-                Ok(response) => Incoming::Response(response),
-                Err(_) => Incoming::Event(Event::Unknown(params)),
-            },
+            // A response no command waits for, such as a `parse` failure.
+            "response" => Incoming::Event(Event::Unknown(params)),
             _ => match Frame::from_json(params) {
                 Frame::Event(event) => Incoming::Event(event),
                 Frame::Ui(request) => Incoming::Ui(request),
@@ -267,10 +239,10 @@ impl RpcClient {
         };
         let chosen = if chosen >= 2 && !opts.negotiate { 1 } else { chosen };
         if chosen >= 2 {
-            client.request_unit(Command::NegotiateProtocol { protocol_version: chosen }).await?;
+            client.request::<Value>(Command::NegotiateProtocol { protocol_version: chosen }).await?;
         }
         client.inner.protocol.store(chosen, Ordering::Release);
-        Ok((client, Events { rx }))
+        Ok((client, rx))
     }
 
     /// The `ready` frame omp sent at startup.
@@ -294,27 +266,17 @@ impl RpcClient {
         format!("c{}", self.inner.rpc.next_id())
     }
 
-    /// Sends `command` under `id` and returns the response `data`.
-    pub async fn request_as(&self, id: String, command: Command) -> Result<Value> {
+    /// Sends `command` under `id` and decodes the response `data` as `T`; a
+    /// missing `data` decodes like an empty object.
+    pub async fn request_as<T: DeserializeOwned>(&self, id: String, command: Command) -> Result<T> {
         let frame = serde_json::to_value(&command)?;
         let method = frame["type"].as_str().unwrap_or_default().to_owned();
-        self.inner.rpc.request_as(Value::String(id), &method, frame).await
+        rpc::decode(self.inner.rpc.request_as(Value::String(id), &method, frame).await?)
     }
 
-    /// Sends `command` and returns the response `data`.
-    pub async fn request_raw(&self, command: Command) -> Result<Value> {
-        self.request_as(self.reserve_id(), command).await
-    }
-
-    /// Sends `command` and decodes the response `data` as `T`; a missing
-    /// `data` decodes like an empty object.
+    /// [`RpcClient::request_as`] under a fresh id.
     pub async fn request<T: DeserializeOwned>(&self, command: Command) -> Result<T> {
-        rpc::decode(self.request_raw(command).await?)
-    }
-
-    /// Sends `command` and ignores the response `data`.
-    pub async fn request_unit(&self, command: Command) -> Result<()> {
-        self.request_raw(command).await.map(drop)
+        self.request_as(self.reserve_id(), command).await
     }
 
     /// Answers a dialog UI request.
@@ -328,85 +290,6 @@ impl RpcClient {
         UiResponder(self.inner.rpc.writer())
     }
 
-    pub async fn prompt(
-        &self,
-        message: impl Into<String>,
-        images: Vec<ImageContent>,
-        streaming_behavior: Option<StreamingBehavior>,
-    ) -> Result<PromptAck> {
-        self.prompt_as(self.reserve_id(), message, images, streaming_behavior).await
-    }
-
-    /// [`RpcClient::prompt`] under an id from [`RpcClient::reserve_id`]; the
-    /// prompt's `prompt_result` carries `id`.
-    pub async fn prompt_as(
-        &self,
-        id: String,
-        message: impl Into<String>,
-        images: Vec<ImageContent>,
-        streaming_behavior: Option<StreamingBehavior>,
-    ) -> Result<PromptAck> {
-        rpc::decode(self.request_as(id, Command::Prompt { message: message.into(), images, streaming_behavior }).await?)
-    }
-
-    /// Queues `message` as steering for the running turn.
-    pub async fn steer(&self, message: impl Into<String>) -> Result<()> {
-        self.request_unit(Command::Steer { message: message.into(), images: Vec::new() }).await
-    }
-
-    /// Withdraws queued user input and aborts, atomically. Unlike `abort`,
-    /// which leaves queued follow-ups waiting, every withdrawn prompt then
-    /// completes `aborted`.
-    pub async fn abort_and_restore_queue(&self) -> Result<()> {
-        self.request_unit(Command::AbortAndRestoreQueue).await
-    }
-
-    pub async fn fork(&self, entry_id: Option<String>) -> Result<CancellationResult> {
-        self.request(Command::Fork { entry_id }).await
-    }
-
-    pub async fn set_model(&self, provider: impl Into<String>, model_id: impl Into<String>) -> Result<ModelInfo> {
-        self.request(Command::SetModel { provider: provider.into(), model_id: model_id.into() }).await
-    }
-
-    pub async fn get_available_models(&self) -> Result<Vec<ModelInfo>> {
-        Ok(self.request::<List<ModelInfo>>(Command::GetAvailableModels).await?.models)
-    }
-
-    /// Replaces the host tools. Returns the registered names.
-    pub async fn set_host_tools(&self, tools: Vec<HostToolDefinition>) -> Result<Vec<String>> {
-        Ok(self.request::<List<String>>(Command::SetHostTools { tools }).await?.tool_names)
-    }
-
-    /// Replaces the host URI schemes. Returns the registered schemes.
-    pub async fn set_host_uri_schemes(&self, schemes: Vec<HostUriScheme>) -> Result<Vec<String>> {
-        Ok(self.request::<List<String>>(Command::SetHostUriSchemes { schemes }).await?.schemes)
-    }
-
-    pub async fn get_state(&self) -> Result<SessionState> {
-        self.request(Command::GetState).await
-    }
-
-    pub async fn compact(&self, custom_instructions: Option<String>) -> Result<CompactionResult> {
-        self.request(Command::Compact { custom_instructions }).await
-    }
-
-    pub async fn set_subagent_subscription(&self, level: SubagentLevel) -> Result<()> {
-        self.request_unit(Command::SetSubagentSubscription { level }).await
-    }
-
-    pub async fn set_event_filter(&self, events: Option<Vec<String>>, message_updates: Option<MessageUpdates>) -> Result<()> {
-        self.request_unit(Command::SetEventFilter { events, message_updates }).await
-    }
-
-    pub async fn set_ask_dialog(&self, enabled: bool) -> Result<()> {
-        self.request_unit(Command::SetAskDialog { enabled }).await
-    }
-
-    pub async fn set_thinking_level(&self, level: impl Into<String>) -> Result<()> {
-        self.request_unit(Command::SetThinkingLevel { level: level.into() }).await
-    }
-
     /// Kills omp without waiting.
     pub fn kill(&self) {
         self.inner.rpc.kill();
@@ -417,16 +300,4 @@ impl RpcClient {
     pub async fn shutdown(&self, grace: Duration) -> Result<Option<ExitStatus>> {
         Ok(self.inner.rpc.shutdown(grace).await)
     }
-}
-
-/// The list fields of `get_available_models`, `set_host_tools` and `set_host_uri_schemes`.
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct List<T> {
-    #[serde(default = "Vec::new")]
-    models: Vec<T>,
-    #[serde(default = "Vec::new")]
-    tool_names: Vec<T>,
-    #[serde(default = "Vec::new")]
-    schemes: Vec<T>,
 }
