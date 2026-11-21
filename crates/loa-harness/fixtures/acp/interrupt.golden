@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<session nid="1" created.int="1" harness="acp" id="s" node="owner" schema.int="1">
+  <turn nid="2" ended.int="0" started.int="0" status="cancelled" x-acp-stop-reason="cancelled">
+    <message nid="3" by="owner" role="user" status="done">long job</message>
+    <message nid="4" model="fake-model" role="assistant" status="done">Starting</message>
+    <call nid="5" call_id="c1" ended.int="0" started.int="0" status="cancelled" title="deploy" tool="execute">
+      <decision nid="6" call.int="5" created.int="0" ended.int="0" kind="approval" options.list="['Allow']" request_id="3" status="cancelled" x-acp-option-ids.list="['ok']" x-acp-option-kinds.list="['allow_once']"/>
+    </call>
+    <message nid="7" model="fake-model" role="assistant" status="cancelled">Stopping</message>
+  </turn>
+  <turn nid="8" ended.int="0" started.int="0" status="error">
+    <message nid="9" by="owner" role="user" status="done">work</message>
+    <message nid="10" model="fake-model" role="assistant" status="error">partial</message>
+    <ext nid="11" harness="acp" type="error">the agent exited</ext>
+  </turn>
+</session>
+
+--- replies
+{"id":3,"result":{"outcome":{"outcome":"cancelled"}}}
+notify session/cancel

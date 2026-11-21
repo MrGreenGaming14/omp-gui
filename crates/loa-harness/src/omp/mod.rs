@@ -1,6 +1,18 @@
-//! The omp harness: its RPC client and one-shot model calls.
+//! The omp harness: its RPC client, the session adapter on it, native
+//! session files and one-shot model calls.
 
+pub mod launch;
+pub mod mapper;
+pub mod native;
 pub mod rpc;
+mod session;
+
+pub use launch::{MemoryMode, OmpAdapterConfig};
+pub use native::OmpNative;
+pub use session::{OmpAdapter, OmpSession};
+
+/// Harness id written to `<session harness>` and `<ext harness>`.
+pub const HARNESS: &str = "omp";
 
 use async_trait::async_trait;
 use loa_contracts::Summarizer;

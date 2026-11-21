@@ -1,0 +1,18 @@
+{"type":"session","version":3,"id":"session-1","timestamp":"2026-02-16T10:20:30.000Z","cwd":"/work"}
+{"type":"model_change","role":"default","model":"provider/model","id":"entry-0","parentId":null,"timestamp":"2026-02-16T10:20:31.000Z"}
+{"type":"model_change","role":"fast","model":"ignored","id":"entry-1","parentId":"entry-0","timestamp":"2026-02-16T10:20:32.000Z"}
+{"type":"thinking_level_change","thinkingLevel":"high","id":"entry-2","parentId":"entry-1","timestamp":"2026-02-16T10:20:33.000Z"}
+{"type":"mode_change","mode":"plan","id":"entry-3","parentId":"entry-2","timestamp":"2026-02-16T10:20:34.000Z"}
+{"type":"title_change","title":"new title","id":"entry-4","parentId":"entry-3","timestamp":"2026-02-16T10:20:35.000Z"}
+{"type":"message","message":{"role":"toolResult","toolCallId":"missing","content":"orphan"},"id":"entry-5","parentId":"entry-4","timestamp":"2026-02-16T10:20:36.000Z"}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"failed"}],"stopReason":"error"},"id":"entry-6","parentId":"entry-5","timestamp":"2026-02-16T10:20:37.000Z"}
+{"type":"message","message":{"role":"user","content":[{"type":"text","text":"hello"},{"type":"text","text":"world"}]},"id":"entry-7","parentId":"entry-6","timestamp":"2026-02-16T10:20:38.000Z"}
+{"type":"message","message":{"role":"assistant","provider":"acme","model":"large","content":[{"type":"thinking","thinking":"reason"},{"type":"text","text":"answer"},{"type":"toolCall","id":"call-1","name":"bash","intent":"list","arguments":{"command":"pwd"}}],"usage":{"input":12,"output":5,"cacheRead":3,"cacheWrite":2,"cost":{"total":0.25}},"stopReason":"toolUse"},"id":"entry-8","parentId":"entry-7","timestamp":"2026-02-16T10:20:39.000Z"}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call-1","content":[{"type":"text","text":"/work"}],"isError":false},"id":"entry-9","parentId":"entry-8","timestamp":"2026-02-16T10:20:40.000Z"}
+{"type":"compaction","summary":"compressed","firstKeptEntryId":"entry-9","tokensBefore":900,"id":"entry-10","parentId":"entry-9","timestamp":"2026-02-16T10:20:41.000Z"}
+{"type":"message","message":{"role":"custom","content":"hook"},"id":"entry-11","parentId":"entry-10","timestamp":"2026-02-16T10:20:42.000Z"}
+{"type":"custom","data":{"nested":true},"id":"entry-12","parentId":"entry-11","timestamp":"2026-02-16T10:20:43.000Z"}
+{"type":"message","message":{"role":"user","synthetic":true,"content":"hidden"},"id":"entry-13","parentId":"entry-12","timestamp":"2026-02-16T10:20:44.000Z"}
+{"type":"message","message":{"role":"user","content":"next"},"id":"entry-14","parentId":"entry-13","timestamp":"2026-02-16T10:20:45.000Z"}
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"c","name":"shell","arguments":{}}],"stopReason":"aborted"},"id":"entry-15","parentId":"entry-14","timestamp":"2026-02-16T10:20:46.000Z"}
+{"type":"message","message":{"role":"toolResult","toolCallId":"c","content":"oops","isError":true},"id":"entry-16","parentId":"entry-15","timestamp":"2026-02-16T10:20:47.000Z"}

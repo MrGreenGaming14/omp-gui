@@ -74,8 +74,8 @@ pub enum Incoming {
 pub trait Framing: Send + Sync + 'static {
     fn request(&self, id: &Json, method: &str, params: Json) -> Json;
     fn notification(&self, method: &str, params: Json) -> Json;
-    /// The reply to an inbound [`Incoming::Request`].
-    fn response(&self, id: Json, result: Result<Json>) -> Json;
+    /// The reply to an inbound [`Incoming::Request`] for `method`.
+    fn response(&self, id: Json, method: &str, result: Result<Json>) -> Json;
     /// `None` when the line was consumed (a partial chunk) or is not a frame.
     fn classify(&self, msg: Json) -> Option<Incoming>;
 }
@@ -197,7 +197,7 @@ impl<F: Framing> Core<F> {
             async move {
                 let result = inbound.on_request(&method, params).await;
                 core.state.locked().tasks.remove(&key);
-                if let Err(err) = core.send(&core.framing.response(id, result)) {
+                if let Err(err) = core.send(&core.framing.response(id, &method, result)) {
                     tracing::warn!(%err, method, "couldn't answer the harness");
                 }
             }
@@ -303,8 +303,8 @@ impl<F: Framing> StdioRpc<F> {
     }
 
     /// Answers an inbound request the [`Inbound`] port deferred.
-    pub fn respond(&self, id: Json, result: Result<Json>) -> Result<()> {
-        self.core.send(&self.core.framing.response(id, result))
+    pub fn respond(&self, id: Json, method: &str, result: Result<Json>) -> Result<()> {
+        self.core.send(&self.core.framing.response(id, method, result))
     }
 
     /// Writes a frame as is.
