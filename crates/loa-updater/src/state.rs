@@ -1,7 +1,6 @@
 //! Persisted updater decisions in `<root>/state.json`.
 
-pub use crate::model::HeldUpdate;
-use crate::gates::GateReport;
+use loa_settings::updates::{GateReport, HeldUpdate};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;

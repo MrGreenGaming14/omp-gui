@@ -25,10 +25,10 @@
 
 use std::path::Path;
 
-use crate::error::{Error, Result, SettingsValidator, load_snapshot, save_snapshot};
+use crate::models::error::{Error, Result, SettingsValidator, load_snapshot, save_snapshot};
 use loa_util::fs::Snapshot;
-use crate::rpc::ModelCost;
-use crate::yaml::{Yaml, YamlDocument, ymap, ystr, ystrs};
+use crate::models::rpc::ModelCost;
+use crate::models::yaml::{Yaml, YamlDocument, ymap, ystr, ystrs};
 
 /// The `api` values omp accepts for providers and models.
 pub const APIS: [&str; 14] = [

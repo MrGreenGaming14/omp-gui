@@ -6,7 +6,7 @@ use loa_util::fs::Snapshot;
 use serde_json::{Map, Value};
 use toml_edit::{DocumentMut, Item, Table, value};
 
-use loa_models::error::{Error, Result, save_snapshot};
+use loa_settings::models::error::{Error, Result, save_snapshot};
 
 pub trait ConfigDoc: Sized {
     fn parse(text: &str, what: &str) -> Result<Self>;

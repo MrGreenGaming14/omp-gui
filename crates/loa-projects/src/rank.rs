@@ -192,7 +192,7 @@ pub fn rank_and_pack(mut candidates: Vec<Candidate>, query: &str, params: &RankP
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::digest::DigestContent;
+    use loa_settings::projects::DigestContent;
     use loa_core::NodeId;
 
     fn candidate(session: &str, summary: &str) -> Candidate {

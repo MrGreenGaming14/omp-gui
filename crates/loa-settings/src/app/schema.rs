@@ -1,7 +1,7 @@
 //! The typed config schema. Defaults live in serde attributes; the non-derivable
 //! `Default`s deserialize an empty table, so the two can't drift apart.
 
-use crate::codec::UnknownKey;
+use super::codec::UnknownKey;
 use loa_contracts::harness::{McpServerSpec, McpTransport, SessionConfig};
 use loa_core::DecisionKind;
 use serde::{Deserialize, Serialize};

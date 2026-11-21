@@ -4,7 +4,7 @@
 
 use super::card::kind_for;
 use super::model::Decision;
-use loa_config::{DecisionDefault, UnattendedSettings};
+use loa_settings::app::{DecisionDefault, UnattendedSettings};
 use loa_contracts::harness::Answer;
 use loa_core::{DecisionKind, answer};
 use std::fmt;

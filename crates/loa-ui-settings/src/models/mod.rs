@@ -8,7 +8,7 @@ pub mod session;
 pub mod settings;
 pub mod signin;
 
-pub use loa_models::selector::{Catalog, ModelInfo, ModelRef, RoleAssignment};
+pub use loa_settings::models::selector::{Catalog, ModelInfo, ModelRef, RoleAssignment};
 pub use session::{SessionModel, SessionModelChange, role_draft};
 
 use iced::widget::{Space, center, column, container, row, rule};

@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use iced::widget::{column, row, scrollable, space, text_input};
 use iced::{Alignment, Element, Fill, Task};
-use loa_config::HarnessSettings;
+use loa_settings::app::HarnessSettings;
 use loa_contracts::harness::{Availability, AvailabilityStatus};
 use loa_ui_kit::icons::{Icon, tinted};
 use loa_ui_kit::style::{self, ButtonKind, Tone};

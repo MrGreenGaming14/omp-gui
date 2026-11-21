@@ -2,13 +2,13 @@
 //! catalog and settings writes. Logins through the real harness accounts are tested in
 //! `loa-harness/tests/models_service.rs`.
 
-use crate::files::OmpFiles;
-use crate::keys::EnvironmentPresence;
-use crate::login::UrlOpener;
-use crate::rpc::{self, LoginProvider};
-use crate::selector::ModelRef;
+use loa_settings::models::files::OmpFiles;
+use loa_settings::models::keys::EnvironmentPresence;
+use loa_settings::models::login::UrlOpener;
+use loa_settings::models::rpc::{self, LoginProvider};
+use loa_settings::models::selector::ModelRef;
 use crate::service::{Backend, FilesSource, Parts};
-use crate::settings::{RoleChain, SettingsValidator};
+use loa_settings::models::settings::{RoleChain, SettingsValidator};
 use crate::testing::{FakeOmp, OfflineOmpAccount};
 use async_trait::async_trait;
 use std::path::Path;
@@ -19,13 +19,13 @@ struct Validator;
 
 #[async_trait]
 impl SettingsValidator for Validator {
-    async fn check_config(&self, text: &str, _: &[(String, serde_json::Value)]) -> crate::settings::Result<()> {
+    async fn check_config(&self, text: &str, _: &[(String, serde_json::Value)]) -> loa_settings::models::settings::Result<()> {
         match text.contains("reject-me") {
-            true => Err(crate::settings::Error::Rejected { what: "config.yml".into(), message: "bad role".into() }),
+            true => Err(loa_settings::models::settings::Error::Rejected { what: "config.yml".into(), message: "bad role".into() }),
             false => Ok(()),
         }
     }
-    async fn check_models(&self, _: &str) -> crate::settings::Result<()> { Ok(()) }
+    async fn check_models(&self, _: &str) -> loa_settings::models::settings::Result<()> { Ok(()) }
 }
 
 struct NoBrowser;

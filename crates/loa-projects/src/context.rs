@@ -2,7 +2,8 @@
 
 use crate::Result;
 use crate::rank::{Candidate, RankParams, Ranked, estimate_tokens, rank_and_pack};
-use crate::settings::{ProjectSettings, SettingsStore};
+use crate::settings::SettingsStore;
+use loa_settings::projects::ProjectSettings;
 use crate::source::{Access, SessionSource, visible_sessions};
 use std::fmt::Write as _;
 

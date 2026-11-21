@@ -1,16 +1,17 @@
 //! The projects service `loa-app` holds: listing, the project screen, rebuilds, chat context and tools.
 
 use crate::context::{ContextRequest, build_context, render_markdown};
-use crate::digest::{DigestContent, DigestState, digest_of, digest_state};
+use crate::digest::{digest_of, digest_state};
 use crate::digester::{Digester, PromptLimits, Summarizers};
 use crate::rank::last_active;
 use crate::rebuild::{RebuildDriver, RebuildOutcome};
 use crate::sessions::LiveSessions;
-use crate::settings::{ProjectSettings, SettingsStore, exclude_draft, is_excluded};
+use crate::settings::{SettingsStore, exclude_draft, is_excluded};
 use crate::source::{Access, SessionInfo, SessionSource, visible_sessions};
 use crate::{Error, Result};
 use loa_contracts::harness::{HostToolSpec, HostTools};
 use loa_core::{Dom, ElementKind, attr};
+use loa_settings::projects::{ProjectOverview, ProjectSettings, SessionRow};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -39,47 +40,22 @@ pub struct ProjectSummary {
     pub last_active: i64,
 }
 
-/// One session on the project screen.
-#[derive(Clone, Debug, PartialEq)]
-pub struct SessionRow {
-    pub id: String,
-    pub title: Option<String>,
-    pub harness: Option<String>,
-    pub created: i64,
-    pub last_active: i64,
-    pub turns: usize,
-    pub excluded: bool,
-    pub digest_state: DigestState,
-    pub digest: Option<DigestContent>,
-    pub digest_model: Option<String>,
-}
-
-impl SessionRow {
-    fn of(info: &SessionInfo, dom: &Dom) -> Self {
-        let root = dom.root();
-        let digest = digest_of(dom);
-        Self {
-            id: info.id.clone(),
-            title: info.title.clone(),
-            harness: root.and_then(|r| r.str_attr(attr::HARNESS)).map(str::to_owned),
-            created: info.created,
-            last_active: last_active(dom),
-            turns: root.map_or(0, |r| dom.children_of_kind(r.id, ElementKind::Turn).count()),
-            excluded: is_excluded(dom),
-            digest_state: digest_state(dom),
-            digest_model: digest.as_ref().and_then(|d| d.model.clone()),
-            digest: digest.map(|d| d.content),
-        }
+/// The project screen's row for one session.
+fn session_row(info: &SessionInfo, dom: &Dom) -> SessionRow {
+    let root = dom.root();
+    let digest = digest_of(dom);
+    SessionRow {
+        id: info.id.clone(),
+        title: info.title.clone(),
+        harness: root.and_then(|r| r.str_attr(attr::HARNESS)).map(str::to_owned),
+        created: info.created,
+        last_active: last_active(dom),
+        turns: root.map_or(0, |r| dom.children_of_kind(r.id, ElementKind::Turn).count()),
+        excluded: is_excluded(dom),
+        digest_state: digest_state(dom),
+        digest_model: digest.as_ref().and_then(|d| d.model.clone()),
+        digest: digest.map(|d| d.content),
     }
-}
-
-/// Everything the project screen shows; sessions newest activity first.
-#[derive(Clone, Debug, PartialEq)]
-pub struct ProjectOverview {
-    pub name: String,
-    pub cwd: Option<String>,
-    pub settings: ProjectSettings,
-    pub sessions: Vec<SessionRow>,
 }
 
 /// Cheap to clone; every clone feeds the same rebuild driver.
@@ -138,7 +114,7 @@ impl ProjectService {
         let (mut sessions, mut cwd) = (Vec::new(), None::<(i64, String)>);
         for info in visible_sessions(&self.sessions, &*self.access, project).await? {
             let Some(dom) = SessionSource::load(&self.sessions, &info.id).await? else { continue };
-            let row = SessionRow::of(&info, &dom);
+            let row = session_row(&info, &dom);
             if let Some(dir) = dom.root().and_then(|r| r.str_attr(attr::CWD))
                 && cwd.as_ref().is_none_or(|(at, _)| row.last_active >= *at)
             {

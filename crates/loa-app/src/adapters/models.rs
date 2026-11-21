@@ -7,7 +7,7 @@ use loa_harness::account_support::opener::SystemUrlOpener;
 use loa_harness::account_support::process::TokioProcessRunner;
 use loa_harness::omp::account::{OmpAccount, OmpLaunch, OmpService};
 use loa_harness::omp::validate::OmpSettingsValidator;
-use loa_models::keys::ProcessEnvironment;
+use loa_settings::models::keys::ProcessEnvironment;
 use loa_models::service::{FilesSource, OMP, Parts};
 use loa_runtime::harnesses::Harnesses;
 

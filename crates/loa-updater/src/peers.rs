@@ -3,57 +3,13 @@
 //! Nodes talk over exact ALPN labels (`omp/<family>/<n>`): a family is shared
 //! only when both sides announce the same label.
 
+use loa_settings::updates::{PeerInfo, PeerStanding, ProtocolStatus, Standing};
 use semver::Version;
-use serde::{Deserialize, Serialize};
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Families a node must share with a peer to talk at all.
 const REQUIRED_FAMILIES: [&str; 2] = ["control", "session"];
-
-/// What this node knows about a peer.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PeerInfo {
-    pub node: String,
-    pub name: Option<String>,
-    pub app_version: Option<Version>,
-    pub alpns: Vec<String>,
-}
-
-/// A peer's app version relative to this node's; `Behind` counts only the most significant differing part.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum Standing {
-    Current,
-    Behind { majors: u64, minors: u64, patches: u64 },
-    Ahead,
-    Unknown,
-}
-
-/// One protocol family as both sides speak it.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ProtocolStatus {
-    pub family: String,
-    /// The highest version with an exact label announced by both sides.
-    pub shared: Option<u32>,
-    /// The highest version this node announces, if any.
-    pub local: Option<u32>,
-    /// The highest version the peer announces, if any.
-    pub peer: Option<u32>,
-}
-
-/// One row of the Peers list.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PeerStanding {
-    pub node: String,
-    pub name: Option<String>,
-    pub app_version: Option<Version>,
-    pub standing: Standing,
-    pub protocols: Vec<ProtocolStatus>,
-    /// True when every family this node speaks, and at least control and
-    /// session, has the same label on both sides.
-    pub can_talk: bool,
-}
 
 /// Splits an `omp/<family>/<n>` label into family and version.
 pub fn parse_alpn(label: &str) -> Option<(&str, u32)> {

@@ -1,8 +1,8 @@
 //! Hold decisions over the persisted state and peer standing by version and shared ALPNs.
 
-use loa_updater::decision::{HoldChoice, apply_choice, offer_allowed, record};
-use loa_updater::gates::{CheckResult, GateCheck, GateReport};
-use loa_updater::peers::{PeerInfo, Standing, classify, parse_alpn};
+use loa_settings::updates::{CheckResult, GateCheck, GateReport, HoldChoice, PeerInfo, Standing};
+use loa_updater::decision::{apply_choice, offer_allowed, record};
+use loa_updater::peers::{classify, parse_alpn};
 use loa_updater::state::UpdaterState;
 use semver::Version;
 

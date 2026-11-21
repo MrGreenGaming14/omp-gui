@@ -9,12 +9,12 @@
 
 
 use std::collections::{BTreeMap, HashMap};
-use crate::config::{ChainKey, OmpConfig, ScopedEntry, ScopedList};
-use crate::selector::{Selector, ModelRef};
-use crate::models_yml::{self, ApiKeySetting, ApiKeyWrite, KeyReference, ModelsYml, OverrideKey};
-pub use crate::models_yml::{AuthMode, is_env_var_name, is_provider_id};
-pub use crate::error::{Error, Result, SettingsValidator};
-use crate::rpc;
+use crate::models::config::{ChainKey, OmpConfig, ScopedEntry, ScopedList};
+use crate::models::selector::{Selector, ModelRef};
+use crate::models::models_yml::{self, ApiKeySetting, ApiKeyWrite, KeyReference, ModelsYml, OverrideKey};
+pub use crate::models::models_yml::{AuthMode, is_env_var_name, is_provider_id};
+pub use crate::models::error::{Error, Result, SettingsValidator};
+use crate::models::rpc;
 
 /// Everything the screen edits, as the app reads it from omp's config files.
 #[derive(Clone, Debug, PartialEq, Default)]

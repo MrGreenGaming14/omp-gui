@@ -7,12 +7,12 @@ use loa_harness::account_support::process::TokioProcessRunner;
 use loa_harness::claude::account::ClaudeCode;
 use loa_harness::codex::account::Codex;
 use loa_harness::omp::account::{OmpAccount, OmpLaunch};
-use loa_models::files::OmpFiles;
-use loa_models::keys::EnvironmentPresence;
-use loa_models::login::{Auth, LoginUpdate, ProviderKey, UrlOpener};
-use loa_models::rpc::{self, LoginProvider, LoginUiRequest, UiResponse};
+use loa_settings::models::files::OmpFiles;
+use loa_settings::models::keys::EnvironmentPresence;
+use loa_settings::models::login::{Auth, LoginUpdate, ProviderKey, UrlOpener};
+use loa_settings::models::rpc::{self, LoginProvider, LoginUiRequest, UiResponse};
 use loa_models::service::{Backend, FilesSource, OMP, Parts};
-use loa_models::settings::SettingsValidator;
+use loa_settings::models::settings::SettingsValidator;
 use loa_models::testing::{FakeOmp, LoginScript};
 use loa_util::LockExt;
 use std::collections::HashSet;
@@ -23,8 +23,8 @@ struct Validator;
 
 #[async_trait]
 impl SettingsValidator for Validator {
-    async fn check_config(&self, _: &str, _: &[(String, serde_json::Value)]) -> loa_models::settings::Result<()> { Ok(()) }
-    async fn check_models(&self, _: &str) -> loa_models::settings::Result<()> { Ok(()) }
+    async fn check_config(&self, _: &str, _: &[(String, serde_json::Value)]) -> loa_settings::models::settings::Result<()> { Ok(()) }
+    async fn check_models(&self, _: &str) -> loa_settings::models::settings::Result<()> { Ok(()) }
 }
 
 #[derive(Default)]

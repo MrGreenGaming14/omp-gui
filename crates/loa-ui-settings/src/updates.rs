@@ -11,10 +11,9 @@ use loa_ui_kit::icons::tinted;
 use loa_ui_kit::style::{self, ButtonKind, Surface, Tone};
 use loa_ui_kit::theme::{SpaceRole, TextRole, sp};
 use loa_ui_kit::widgets::{Msg, Screen, badge, label};
-use loa_updater::decision::HoldChoice;
-use loa_updater::gates::{GateReport, Verdict};
-use loa_updater::peers::{PeerStanding, Standing};
-use loa_updater::{InstalledStatus, ProductKind, ProductStatus, SignatureStatus};
+use loa_settings::updates::{
+    GateReport, HoldChoice, InstalledStatus, PeerStanding, ProductKind, ProductStatus, SignatureStatus, Standing, Verdict,
+};
 use std::collections::BTreeMap;
 
 /// Detail lines shown per gate check before the rest is folded.
@@ -319,9 +318,7 @@ impl Screen for State {
 mod tests {
     use super::*;
     use loa_ui_kit::testkit::click_label;
-    use loa_updater::gates::{CheckResult, GateCheck};
-    use loa_updater::model::{Active, HeldUpdate, Release};
-    use loa_updater::peers::{PeerInfo, classify};
+    use loa_settings::updates::{Active, CheckResult, GateCheck, HeldUpdate, ProtocolStatus, Release};
     use semver::Version;
 
     fn v(s: &str) -> Version { Version::parse(s).unwrap() }
@@ -351,7 +348,11 @@ mod tests {
         codex.active = Some(Active { current: v("1.0.0"), previous: Some(v("0.9.0")) });
         let mut claude = product("claude", ProductKind::Harness("claude".into()), None);
         (claude.installed, claude.newest, claude.offer) = (InstalledStatus::Missing("not on PATH".into()), Some(v("2.0.14")), Some(release("claude", "2.0.14")));
-        let peers = classify(&v("0.2.0"), &["omp/control/1", "omp/session/1"], &[PeerInfo { node: "laptop".into(), name: Some("laptop".into()), app_version: Some(v("0.1.0")), alpns: vec!["omp/control/1".into(), "omp/session/1".into()] }]);
+        let protocol = |family: &str| ProtocolStatus { family: family.into(), shared: Some(1), local: Some(1), peer: Some(1) };
+        let peers = vec![PeerStanding {
+            node: "laptop".into(), name: Some("laptop".into()), app_version: Some(v("0.1.0")), standing: Standing::Behind { majors: 0, minors: 1, patches: 0 },
+            protocols: vec![protocol("control"), protocol("session")], can_talk: true,
+        }];
         Data { products: vec![omp, app, codex, claude], github_requests_left: Some(42), peers, turn_running: false, now_unix: 400 }
     }
 

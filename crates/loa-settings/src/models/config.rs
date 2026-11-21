@@ -17,10 +17,10 @@
 
 use std::path::Path;
 
-use crate::error::{Error, Result, SettingsValidator, load_snapshot, save_snapshot};
+use crate::models::error::{Error, Result, SettingsValidator, load_snapshot, save_snapshot};
 use loa_util::fs::Snapshot;
-use crate::yaml::{Yaml, YamlDocument, ymap, ystr, ystrs};
-use crate::selector::{Selector, validate_role_name};
+use crate::models::yaml::{Yaml, YamlDocument, ymap, ystr, ystrs};
+use crate::models::selector::{Selector, validate_role_name};
 
 
 /// Built in chat roles, in the order omp's model picker lists them.
@@ -209,7 +209,7 @@ impl OmpConfig {
                 let value = self
                     .doc
                     .get(&refs)
-                    .map_or(serde_json::Value::Null, crate::yaml::to_json);
+                    .map_or(serde_json::Value::Null, crate::models::yaml::to_json);
                 (path.join("."), value)
             })
             .collect();

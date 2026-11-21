@@ -4,7 +4,7 @@ use crate::decisions::*;
 use iced::Theme;
 use iced::keyboard::{self, Modifiers, key::Named};
 use iced::widget::text_editor::{Action, Edit, Motion};
-use loa_config::{DecisionDefault, UnattendedSettings};
+use loa_settings::app::{DecisionDefault, UnattendedSettings};
 use loa_contracts::harness::Answer;
 use loa_core::testkit::DomFixture;
 use loa_core::{Attrs, DecisionKind, Draft, ElementKind, NodeId, Value, answer, attrs};

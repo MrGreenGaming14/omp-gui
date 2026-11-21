@@ -2,7 +2,7 @@
 //! older ones abbreviated, tool output clipped) goes to a [`Summarizer`]; its strict JSON
 //! answer is validated and its turn labels mapped back to node ids.
 
-use crate::digest::{DigestContent, FileNote};
+use loa_settings::projects::{DigestContent, FileNote};
 use crate::{Error, Result};
 use loa_core::{CallStatus, DecisionStatus, Dom, ElementKind as K, MessageKind, Node, NodeId, Role, TodoState, attr};
 use loa_util::text::{clip, clip_marked};

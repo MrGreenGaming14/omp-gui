@@ -6,6 +6,7 @@ mod checks;
 pub use checks::*;
 
 use async_trait::async_trait;
+use loa_settings::updates::{CheckResult, GateCheck, GateReport};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -13,97 +14,6 @@ use std::fmt;
 use std::ops::RangeInclusive;
 use std::path::Path;
 use std::time::Duration;
-
-/// Which gate check a result belongs to.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum GateCheck {
-    ToolSchemas,
-    SessionFormat,
-    ConfigSchema,
-    RpcProtocol,
-    ContractTests,
-    Changelog,
-}
-
-impl GateCheck {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::ToolSchemas => "Tool schemas",
-            Self::SessionFormat => "Session format version",
-            Self::ConfigSchema => "Config schema",
-            Self::RpcProtocol => "RPC protocol version",
-            Self::ContractTests => "Adapter contract tests",
-            Self::Changelog => "Changelog",
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Verdict {
-    Pass,
-    Harmful,
-}
-
-/// Outcome of one check with readable lines explaining it.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CheckResult {
-    pub check: GateCheck,
-    pub verdict: Verdict,
-    pub details: Vec<String>,
-}
-
-impl CheckResult {
-    pub fn pass(check: GateCheck, details: Vec<String>) -> Self {
-        Self { check, verdict: Verdict::Pass, details }
-    }
-
-    pub fn harmful(check: GateCheck, details: Vec<String>) -> Self {
-        Self { check, verdict: Verdict::Harmful, details }
-    }
-
-    /// Harmful when `details` is not empty.
-    pub fn flag(check: GateCheck, details: Vec<String>) -> Self {
-        if details.is_empty() { Self::pass(check, details) } else { Self::harmful(check, details) }
-    }
-
-    /// The check's port failed; counts as harmful.
-    pub fn failed_to_run(check: GateCheck, error: impl fmt::Display) -> Self {
-        Self::harmful(check, vec![format!("check could not run: {error}")])
-    }
-}
-
-/// All gate results for one staged update.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct GateReport {
-    pub product: String,
-    pub from: Version,
-    pub to: Version,
-    pub checks: Vec<CheckResult>,
-}
-
-impl GateReport {
-    pub fn is_clean(&self) -> bool {
-        self.checks.iter().all(|c| c.verdict == Verdict::Pass)
-    }
-
-    pub fn harmful(&self) -> impl Iterator<Item = &CheckResult> {
-        self.checks.iter().filter(|c| c.verdict == Verdict::Harmful)
-    }
-}
-
-impl fmt::Display for GateReport {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "{} {} -> {}", self.product, self.from, self.to)?;
-        for check in &self.checks {
-            let verdict = if check.verdict == Verdict::Pass { "pass" } else { "HARMFUL" };
-            writeln!(f, "  {}: {verdict}", check.check.label())?;
-            check.details.iter().try_for_each(|line| writeln!(f, "    {line}"))?;
-        }
-        Ok(())
-    }
-}
 
 /// Lists the tools an installed version offers.
 #[async_trait]

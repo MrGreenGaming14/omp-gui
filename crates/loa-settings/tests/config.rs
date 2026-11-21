@@ -1,4 +1,4 @@
-use loa_config::{Config, ConfigError, ConfigStore, Relay, ThemeRef};
+use loa_settings::app::{Config, ConfigError, ConfigStore, Relay, ThemeRef};
 use loa_contracts::harness::{McpTransport, SessionConfig};
 use loa_core::DecisionKind;
 use std::fs;

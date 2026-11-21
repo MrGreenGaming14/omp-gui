@@ -29,5 +29,5 @@ impl OmpFiles {
 /// `PI_CODING_AGENT_DIR`).
 #[async_trait::async_trait]
 pub trait OmpFilesResolver: Send + Sync {
-    async fn resolve(&self) -> crate::error::Result<OmpFiles>;
+    async fn resolve(&self) -> crate::models::error::Result<OmpFiles>;
 }

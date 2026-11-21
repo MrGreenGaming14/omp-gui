@@ -131,8 +131,8 @@ impl State {
         }
         save(ctx, |settings| {
             settings.browser_capture = match capture {
-                CaptureMode::Screencast => loa_config::BrowserCapture::Screencast,
-                CaptureMode::VirtualDisplay => loa_config::BrowserCapture::VirtualDisplay,
+                CaptureMode::Screencast => loa_settings::app::BrowserCapture::Screencast,
+                CaptureMode::VirtualDisplay => loa_settings::app::BrowserCapture::VirtualDisplay,
             };
         });
         self.list()
@@ -248,7 +248,7 @@ fn capture_status(hub: &SurfaceHub, pending: bool) -> CaptureStatus {
 }
 
 /// Changes the `[surfaces]` table of the central config.
-fn save(ctx: &mut Ctx, change: impl FnOnce(&mut loa_config::SurfaceSettings)) {
+fn save(ctx: &mut Ctx, change: impl FnOnce(&mut loa_settings::app::SurfaceSettings)) {
     ctx.edit_config("surface settings", |config| change(&mut config.surfaces));
 }
 
@@ -271,7 +271,7 @@ impl Area for State {
         if let Some(settings) = ctx.read_config("surface settings").map(|config| config.surfaces) {
             #[cfg(feature = "remote-video")]
             video::configure(&mut config, &settings);
-            if settings.browser_capture == loa_config::BrowserCapture::VirtualDisplay && config.virtual_display.is_ok() {
+            if settings.browser_capture == loa_settings::app::BrowserCapture::VirtualDisplay && config.virtual_display.is_ok() {
                 config.capture = CaptureMode::VirtualDisplay;
             }
         }

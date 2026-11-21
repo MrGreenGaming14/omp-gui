@@ -18,12 +18,11 @@ mod testing;
 #[cfg(test)]
 mod tests;
 
-pub use digest::{DigestContent, DigestState};
 pub use digester::{Summarizer, Summarizers};
 pub use rebuild::RebuildOutcome;
-pub use service::{ProjectOverview, ProjectService, ProjectSummary, ServiceConfig, SessionRow};
+pub use service::{ProjectService, ProjectSummary, ServiceConfig};
 pub use sessions::LiveSessions;
-pub use settings::{FileSettingsStore, PinnedFile, ProjectSettings, is_excluded};
+pub use settings::{FileSettingsStore, is_excluded};
 pub use source::LocalOnly;
 pub use tools::{PROJECT_READ, PROJECT_SEARCH};
 

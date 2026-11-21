@@ -12,7 +12,7 @@ testkit = ["dep:iced_test", "dep:iced_runtime"]
 iced.workspace = true
 iced_runtime = { version = "0.14", optional = true }
 iced_test = { version = "0.14", optional = true }
-loa-config = { path = "../loa-config" }
+loa-settings = { path = "../loa-settings" }
 loa-util.workspace = true
 thiserror.workspace = true
 toml = "1.2"

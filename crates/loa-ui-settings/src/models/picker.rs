@@ -210,7 +210,7 @@ impl Screen for State {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use loa_models::selector::{ModelInfo, RoleAssignment};
+    use loa_settings::models::selector::{ModelInfo, RoleAssignment};
     use loa_ui_kit::testkit::click_label;
 
     fn catalog() -> Catalog {

@@ -4619,7 +4619,6 @@ dependencies = [
  "iced_futures",
  "iced_runtime",
  "loa-bus",
- "loa-config",
  "loa-contracts",
  "loa-core",
  "loa-harness",
@@ -4631,6 +4630,7 @@ dependencies = [
  "loa-runtime",
  "loa-sandbox",
  "loa-session",
+ "loa-settings",
  "loa-surfaces",
  "loa-trust",
  "loa-ui-kit",
@@ -4660,23 +4660,6 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
-]
-
-[[package]]
-name = "loa-config"
-version = "0.1.0"
-dependencies = [
- "loa-contracts",
- "loa-core",
- "loa-util",
- "serde",
- "serde_ignored",
- "serde_json",
- "serde_path_to_error",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
- "toml",
 ]
 
 [[package]]
@@ -4717,6 +4700,7 @@ dependencies = [
  "loa-core",
  "loa-harness",
  "loa-models",
+ "loa-settings",
  "loa-util",
  "reqwest",
  "serde",
@@ -4743,9 +4727,9 @@ dependencies = [
  "hyper",
  "hyper-util",
  "libtest-mimic",
- "loa-config",
  "loa-contracts",
  "loa-harness",
+ "loa-settings",
  "loa-util",
  "process-wrap",
  "reqwest",
@@ -4771,13 +4755,11 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "loa-contracts",
+ "loa-settings",
  "loa-util",
- "serde",
  "serde_json",
  "tempfile",
- "thiserror 2.0.21",
  "tokio",
- "yaml-rust2",
 ]
 
 [[package]]
@@ -4789,9 +4771,9 @@ dependencies = [
  "futures",
  "iroh",
  "loa-bus",
- "loa-config",
  "loa-core",
  "loa-session",
+ "loa-settings",
  "loa-trust",
  "loa-util",
  "mdns-sd",
@@ -4817,6 +4799,7 @@ dependencies = [
  "loa-bus",
  "loa-contracts",
  "loa-core",
+ "loa-settings",
  "loa-util",
  "schemars",
  "serde",
@@ -4838,10 +4821,10 @@ dependencies = [
  "futures",
  "hmac 0.12.1",
  "http",
- "loa-config",
  "loa-contracts",
  "loa-core",
  "loa-mcp",
+ "loa-settings",
  "loa-util",
  "rand 0.10.4",
  "rmcp",
@@ -4918,6 +4901,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "loa-settings"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "loa-contracts",
+ "loa-core",
+ "loa-util",
+ "semver",
+ "serde",
+ "serde_ignored",
+ "serde_json",
+ "serde_path_to_error",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "toml",
+ "yaml-rust2",
+]
+
+[[package]]
 name = "loa-surfaces"
 version = "0.1.0"
 dependencies = [
@@ -4986,7 +4989,7 @@ dependencies = [
  "iced",
  "iced_runtime",
  "iced_test",
- "loa-config",
+ "loa-settings",
  "loa-util",
  "thiserror 2.0.21",
  "toml",
@@ -5013,9 +5016,9 @@ version = "0.1.0"
 dependencies = [
  "iced",
  "iced_test",
- "loa-config",
  "loa-contracts",
  "loa-core",
+ "loa-settings",
  "loa-ui-kit",
  "loa-ui-panel",
  "loa-util",
@@ -5031,10 +5034,8 @@ dependencies = [
  "iced",
  "iced_test",
  "loa-core",
- "loa-models",
- "loa-projects",
+ "loa-settings",
  "loa-ui-kit",
- "loa-updater",
  "loa-util",
  "semver",
 ]
@@ -5099,6 +5100,7 @@ dependencies = [
  "flate2",
  "futures",
  "hex",
+ "loa-settings",
  "loa-util",
  "reqwest",
  "rustls",

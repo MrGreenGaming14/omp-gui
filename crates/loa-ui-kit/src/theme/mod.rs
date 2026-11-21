@@ -9,7 +9,7 @@ mod tests;
 mod tokens;
 
 pub use builtin::BuiltinTheme;
-pub use loa_config::{Appearance, ThemeRef};
+pub use loa_settings::app::{Appearance, ThemeRef};
 pub use source::{ThemeLoader, ThemeRegistry, ThemeSource, pick_variant};
 pub use tokens::{Look, Paint, StyleKey, StyleSpec, StyleStates, TokenSet, TokenValue};
 

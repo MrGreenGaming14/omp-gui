@@ -6,7 +6,7 @@
 use crate::{action, check, field, scroll, section};
 use iced::widget::{Column, Space, button, column, container, row, text_editor};
 use iced::{Alignment, Element, Fill};
-use loa_projects::{DigestState, PinnedFile, ProjectOverview, ProjectSettings, SessionRow};
+use loa_settings::projects::{DigestState, PinnedFile, ProjectOverview, ProjectSettings, SessionRow};
 use loa_ui_kit::icons::{Icon, tinted};
 use loa_ui_kit::style::{self, ButtonKind, Surface, Tone};
 use loa_ui_kit::theme::{LayoutRole, SpaceRole, TextRole, sp, text_size, width};
@@ -237,7 +237,7 @@ impl Screen for State {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use loa_projects::DigestContent;
+    use loa_settings::projects::DigestContent;
     use loa_ui_kit::testkit::click_label;
 
     fn overview() -> ProjectOverview {

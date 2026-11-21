@@ -19,10 +19,10 @@ use loa_harness::testing::ScriptedAdapter;
 use loa_trust::NodeIdentity;
 use loa_ui_session::composer;
 use loa_ui_shell::palette;
-use loa_models::error::{Result as CheckResult, SettingsValidator};
-use loa_models::files::OmpFiles;
-use loa_models::keys::EnvironmentPresence;
-use loa_models::login::UrlOpener;
+use loa_settings::models::error::{Result as CheckResult, SettingsValidator};
+use loa_settings::models::files::OmpFiles;
+use loa_settings::models::keys::EnvironmentPresence;
+use loa_settings::models::login::UrlOpener;
 use loa_models::service::{FilesSource, Parts};
 use loa_models::testing::{FakeOmp, OfflineOmpAccount};
 use loa_projects::{Summarizer, Summarizers};
@@ -66,7 +66,7 @@ impl TestApp {
     }
 
     /// An app on `runtime` whose central config `setup` edits first.
-    pub fn on(runtime: Arc<Runtime>, harness: FakeHarness, name: &str, setup: impl FnOnce(&mut loa_config::Config)) -> Self {
+    pub fn on(runtime: Arc<Runtime>, harness: FakeHarness, name: &str, setup: impl FnOnce(&mut loa_settings::app::Config)) -> Self {
         Self::open(runtime, harness, name, tempfile::tempdir().expect("a temp dir"), setup)
     }
 
@@ -83,9 +83,9 @@ impl TestApp {
         Self::open(runtime, harness, &name, dir, |_| {})
     }
 
-    fn open(runtime: Arc<Runtime>, harness: FakeHarness, name: &str, dir: TempDir, setup: impl FnOnce(&mut loa_config::Config)) -> Self {
+    fn open(runtime: Arc<Runtime>, harness: FakeHarness, name: &str, dir: TempDir, setup: impl FnOnce(&mut loa_settings::app::Config)) -> Self {
         let dirs = Dirs::new(dir.path().join("loa"));
-        let config = loa_config::ConfigStore::in_dir(&dirs.data);
+        let config = loa_settings::app::ConfigStore::in_dir(&dirs.data);
         let mut settings = config.load().expect("the default config");
         settings.network.discovery.mdns = false;
         settings.network.discovery.tailscale = false;

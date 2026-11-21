@@ -172,7 +172,7 @@ impl App {
         self.ctx.runtime.set_active(project.clone(), cwd.clone());
         self.files.set_root(cwd.clone());
         self.remember(&cwd);
-        let saved = loa_config::ActiveProject { name: project.clone(), cwd: cwd.clone() };
+        let saved = loa_settings::app::ActiveProject { name: project.clone(), cwd: cwd.clone() };
         self.ctx.edit_config("settings", |config| config.active_project = Some(saved));
         let tasks: Vec<_> = self.areas.iter_mut().map(|area| area.project_activated(&project, &cwd, &mut self.ctx)).collect();
         Task::batch(tasks.into_iter().chain([self.follow(cwd), self.working_diff(), self.settle()]))

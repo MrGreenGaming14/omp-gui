@@ -11,13 +11,11 @@ testing = ["tokio/time"]
 [dependencies]
 loa-util.workspace = true
 loa-contracts.workspace = true
+loa-settings = { path = "../loa-settings" }
 async-trait.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-thiserror.workspace = true
 tokio = { workspace = true, features = ["process", "sync", "macros", "io-util", "rt"] }
-yaml-rust2 = "0.13"
 
 [dev-dependencies]
+serde_json.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["full"] }

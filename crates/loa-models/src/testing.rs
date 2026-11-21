@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use std::sync::Mutex;
 use std::time::Duration;
 use tokio::sync::{Notify, mpsc};
-use crate::rpc::{LoginProvider, LoginUiRequest, ModelInfo, OmpRpc, RpcError, UiResponse};
+use loa_settings::models::rpc::{LoginProvider, LoginUiRequest, ModelInfo, OmpRpc, RpcError, UiResponse};
 use loa_contracts::harness::{
     AdapterError, CommandSpec, HarnessAccount, LoginKind, LoginStrategy, ModelSettings, SignInState,
 };
@@ -103,7 +103,7 @@ impl HarnessAccount for OfflineOmpAccount {
         Err(AdapterError::Unsupported { harness: "omp", what: "login without a provider" })
     }
     fn logout_command(&self) -> Option<CommandSpec> { None }
-    fn efforts(&self) -> &'static [&'static str] { &crate::selector::THINKING_LEVELS }
+    fn efforts(&self) -> &'static [&'static str] { &loa_settings::models::selector::THINKING_LEVELS }
     fn config_path(&self) -> Option<PathBuf> { None }
     fn read_model(&self) -> Result<ModelSettings, AdapterError> { Ok(ModelSettings::default()) }
     fn write_model(&self, _: &ModelSettings) -> Result<(), AdapterError> {
@@ -111,7 +111,7 @@ impl HarnessAccount for OfflineOmpAccount {
     }
 }
 
-impl crate::login::OmpProviderAccount for OfflineOmpAccount {
+impl loa_settings::models::login::OmpProviderAccount for OfflineOmpAccount {
     fn login_provider(&self, _: LoginProvider) -> Result<Box<dyn LoginStrategy>, AdapterError> {
         Err(AdapterError::Unsupported { harness: "omp", what: "provider login offline" })
     }

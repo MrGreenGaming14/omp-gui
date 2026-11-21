@@ -8,7 +8,7 @@ use iced::{Alignment, Element, Fill, Subscription, Task, Theme};
 use loa_bus::{Event, Policy};
 use loa_core::{Dom, NodeId, Op, attr};
 use loa_trust::Action;
-use loa_models::login::UrlOpener;
+use loa_settings::models::login::UrlOpener;
 use loa_harness::account_support::opener::SystemUrlOpener;
 use loa_p2p::RemoteView;
 use loa_ui_session::transcript as chat;

@@ -24,7 +24,7 @@ use loa_bus::SessionId;
 use loa_harness::account_support::opener::SystemUrlOpener;
 use loa_harness::omp::OneShot;
 use loa_harness::omp::account::OmpLaunch;
-use loa_models::login::UrlOpener;
+use loa_settings::models::login::UrlOpener;
 use loa_models::service::Backend;
 use loa_projects::Summarizers;
 use loa_runtime::harnesses::Harnesses;

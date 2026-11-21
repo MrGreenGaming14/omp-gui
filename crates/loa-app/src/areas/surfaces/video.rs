@@ -10,7 +10,7 @@ use loa_ui_surface::{H264Decoder, NewDecoder, Options, Panel, VideoStatus};
 use super::{Message, save};
 use crate::area::Ctx;
 
-pub(super) fn configure(config: &mut HubConfig, settings: &loa_config::SurfaceSettings) {
+pub(super) fn configure(config: &mut HubConfig, settings: &loa_settings::app::SurfaceSettings) {
     config.video.enabled = settings.video;
 }
 

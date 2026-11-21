@@ -1,7 +1,8 @@
 //! Release feeds behind the [`FeedSource`] port: GitHub releases and npm packages, read with
 //! conditional requests so an unchanged feed costs nothing.
 
-use crate::model::{ArchiveFormat, Artifact, CachedFeed, Checksum, Feed, PrereleasePolicy, Product, RateLimit, Release};
+use crate::model::{CachedFeed, Feed, PrereleasePolicy, Product};
+use loa_settings::updates::{ArchiveFormat, Artifact, Checksum, RateLimit, Release};
 use crate::{Error, Result};
 use async_trait::async_trait;
 use base64::Engine as _;

@@ -1,7 +1,8 @@
 //! Rebuilds missing or stale digests, debounced per session so a burst of turns costs one
 //! rebuild. A failed rebuild keeps the old digest, flagged stale.
 
-use crate::digest::{DigestState, digest_state, mark_stale_draft, write_drafts};
+use crate::digest::{digest_state, mark_stale_draft, write_drafts};
+use loa_settings::projects::DigestState;
 use crate::digester::Digester;
 use crate::settings::{SettingsStore, is_excluded};
 use crate::source::{SessionSource, session_project};

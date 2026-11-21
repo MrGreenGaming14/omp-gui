@@ -13,7 +13,7 @@ use loa_bus::SessionId;
 use loa_core::{Dom, Op, PatchSink, attr};
 use loa_ui_session::composer as composer;
 use loa_models::service::{Backend, SettingsLoad};
-use loa_models::settings::{ModelSettings, ValidationError};
+use loa_settings::models::settings::{ModelSettings, ValidationError};
 use loa_ui_kit::widgets::{Msg, Screen};
 use loa_ui_settings::models::{self as screen, Catalog, ModelInfo, ModelRef, Page, RoleAssignment, SessionModel, picker, role_draft, settings, signin};
 use loa_ui_settings::models::signin::{LoginUpdate, ProviderEntry, ProviderKey};

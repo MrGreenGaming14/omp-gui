@@ -1,6 +1,6 @@
 //! Conversion between the raw TOML document and [`Config`], keeping unknown keys.
 
-use crate::{CURRENT_VERSION, Config, ConfigError, Result, invalid};
+use super::{CURRENT_VERSION, Config, ConfigError, Result, invalid};
 use toml::{Table, Value};
 
 /// A key the schema doesn't know, by its table path, kept for the next save.

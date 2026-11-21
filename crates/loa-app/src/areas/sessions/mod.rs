@@ -21,7 +21,7 @@ use loa_contracts::harness::{Answer, Capabilities, Prompt, SessionConfig};
 use loa_core::{Dom, ElementKind, JobStatus, NodeId, Op, SessionMode, TurnStatus, attr};
 use loa_session::hooks::TurnHooks;
 use loa_session::plan::{self as plan_mode, PlanGate};
-use loa_models::login::UrlOpener;
+use loa_settings::models::login::UrlOpener;
 use loa_ui_panel::{agents, session_tree};
 use loa_ui_session::composer;
 use loa_ui_session::transcript as chat;
@@ -224,7 +224,7 @@ fn asks_first(ctx: &Ctx, harness: &str) -> bool {
 /// omp's model roles (`modelRoles` in `~/.omp/agent/config.yml`) with their candidate models in order.
 fn model_roles(home: &Path) -> Result<Vec<(String, Vec<String>)>, String> {
     let path = home.join(".omp/agent/config.yml");
-    let config = loa_models::config::OmpConfig::load(&path).map_err(|error| format!("Can't read {}: {error}", path.display()))?;
+    let config = loa_settings::models::config::OmpConfig::load(&path).map_err(|error| format!("Can't read {}: {error}", path.display()))?;
     let roles = config.model_roles().map_err(|error| format!("Can't read the model roles in {}: {error}", path.display()))?;
     Ok(roles.into_iter().map(|role| (role.role, role.candidates.iter().map(ToString::to_string).collect())).collect())
 }

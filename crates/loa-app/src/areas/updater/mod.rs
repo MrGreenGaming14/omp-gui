@@ -18,9 +18,10 @@ use loa_ui_kit::style::Tone;
 use loa_ui_kit::theme::{LayoutRole, SpaceRole, TextRole, sp, width};
 use loa_ui_kit::widgets::{self as kit, Msg, Screen};
 use loa_ui_settings::updates;
-use loa_updater::peers::{self, PeerInfo, PeerStanding};
+use loa_settings::updates::{InstalledStatus, Overview, PeerInfo, PeerStanding, ProductKind};
+use loa_updater::peers;
 use loa_updater::swap::SwapOutcome;
-use loa_updater::{Error as UpdaterError, InstalledStatus, Overview, ProductKind, TurnGate, Updater, UpdaterConfig, default_products};
+use loa_updater::{Error as UpdaterError, TurnGate, Updater, UpdaterConfig, default_products};
 use semver::Version;
 
 use crate::area::{Area, AreaCommand, AreaMessage, Ctx, Target};
@@ -269,7 +270,7 @@ impl Area for State {
             Ok(config) => config.updater,
             Err(error) => {
                 problems.push(format!("Update settings unreadable ({error}); using defaults"));
-                loa_config::UpdaterSettings::default()
+                loa_settings::app::UpdaterSettings::default()
             }
         };
         let mut config = UpdaterConfig::new(root, default_products(version.clone()));

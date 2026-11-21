@@ -12,6 +12,7 @@ service = ["dep:base64", "dep:ed25519-dalek", "dep:flate2", "dep:hex", "dep:reqw
 
 [dependencies]
 loa-util.workspace = true
+loa-settings = { path = "../loa-settings" }
 async-trait.workspace = true
 semver = { version = "1", features = ["serde"] }
 serde.workspace = true

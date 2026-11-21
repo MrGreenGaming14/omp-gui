@@ -21,9 +21,9 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use tokio::sync::mpsc::UnboundedSender;
 
-use loa_models::files::{OmpFiles, OmpFilesResolver};
-use loa_models::rpc::{LoginProvider, LoginUiRequest, ModelInfo, OmpRpc, RpcError, UiResponse};
-use loa_models::error::{Error, Result};
+use loa_settings::models::files::{OmpFiles, OmpFilesResolver};
+use loa_settings::models::rpc::{LoginProvider, LoginUiRequest, ModelInfo, OmpRpc, RpcError, UiResponse};
+use loa_settings::models::error::{Error, Result};
 
 /// How to start omp: the executable, its working directory and extra
 /// environment (for example `PI_CODING_AGENT_DIR` to point it at another agent
@@ -343,13 +343,13 @@ impl loa_contracts::harness::HarnessAccount for OmpAccount {
     }
     fn logout_command(&self) -> Option<loa_contracts::harness::CommandSpec> { None }
     fn efforts(&self) -> &'static [&'static str] {
-        &loa_models::selector::THINKING_LEVELS
+        &loa_settings::models::selector::THINKING_LEVELS
     }
     fn config_path(&self) -> Option<PathBuf> { self.config_path_result().ok() }
     fn read_model(&self) -> std::result::Result<loa_contracts::harness::ModelSettings, loa_contracts::harness::AdapterError> {
         use loa_contracts::harness::{AdapterError, ModelSettings};
-        use loa_models::selector::Selector;
-        let config = loa_models::config::OmpConfig::load(&self.config_path_result()?)
+        use loa_settings::models::selector::Selector;
+        let config = loa_settings::models::config::OmpConfig::load(&self.config_path_result()?)
             .map_err(|error| AdapterError::Protocol(error.to_string()))?;
         let Some(selector) = config.model_role("default").map_err(|error| AdapterError::Protocol(error.to_string()))?
             .and_then(|role| role.candidates.into_iter().next()) else {
@@ -364,8 +364,8 @@ impl loa_contracts::harness::HarnessAccount for OmpAccount {
     }
     fn write_model(&self, settings: &loa_contracts::harness::ModelSettings) -> std::result::Result<(), loa_contracts::harness::AdapterError> {
         use loa_contracts::harness::AdapterError;
-        use loa_models::selector::Selector;
-        let mut config = loa_models::config::OmpConfig::load(&self.config_path_result()?)
+        use loa_settings::models::selector::Selector;
+        let mut config = loa_settings::models::config::OmpConfig::load(&self.config_path_result()?)
             .map_err(|error| AdapterError::Protocol(error.to_string()))?;
         if let Some(model) = &settings.model {
             let mut selector = Selector::parse(model).map_err(|error| AdapterError::Protocol(error.to_string()))?;
@@ -383,7 +383,7 @@ impl loa_contracts::harness::HarnessAccount for OmpAccount {
     }
 }
 
-impl loa_models::login::OmpProviderAccount for OmpAccount {
+impl loa_settings::models::login::OmpProviderAccount for OmpAccount {
     fn login_provider(&self, provider: LoginProvider) -> std::result::Result<Box<dyn loa_contracts::harness::LoginStrategy>, loa_contracts::harness::AdapterError> {
         Ok(Box::new(super::oauth::OmpOAuthLogin { rpc: self.rpc.clone(), opener: self.opener.clone(), provider }))
     }

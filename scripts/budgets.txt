@@ -8,7 +8,7 @@ budget loa-util          650
 budget loa-core         1300
 budget loa-contracts     700
 budget loa-bus          1300
-budget loa-config        550
+budget loa-settings      550
 budget loa-harness      8800
 budget loa-mcp          1500
 budget loa-remote       1800

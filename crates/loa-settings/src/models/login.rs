@@ -88,5 +88,5 @@ pub struct LoginPrompt {
 /// omp's sign-in account: a [`HarnessAccount`] that also logs in to one of
 /// the OAuth providers omp lists.
 pub trait OmpProviderAccount: HarnessAccount {
-    fn login_provider(&self, provider: crate::rpc::LoginProvider) -> Result<Box<dyn LoginStrategy>, AdapterError>;
+    fn login_provider(&self, provider: crate::models::rpc::LoginProvider) -> Result<Box<dyn LoginStrategy>, AdapterError>;
 }

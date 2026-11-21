@@ -3,27 +3,8 @@
 use crate::{Error, Result};
 use async_trait::async_trait;
 use loa_core::{Dom, Draft, attr};
-use serde::{Deserialize, Serialize};
+use loa_settings::projects::ProjectSettings;
 use std::path::PathBuf;
-
-/// A file every chat of the project should know about, with why it is pinned.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PinnedFile {
-    pub path: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub note: Option<String>,
-}
-
-/// Settings shared by every session of a project; `digest_model` `None` uses the summarizer's default.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ProjectSettings {
-    #[serde(default)]
-    pub instructions: String,
-    #[serde(default)]
-    pub pinned: Vec<PinnedFile>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub digest_model: Option<String>,
-}
 
 /// Stores project settings; a project without any gets defaults.
 #[async_trait]

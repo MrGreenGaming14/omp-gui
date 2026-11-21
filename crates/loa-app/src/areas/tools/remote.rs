@@ -354,7 +354,7 @@ impl SshPaths {
 }
 
 /// The Remote hosts of the central config as the panel lists them.
-pub(crate) fn panel_hosts(entries: &BTreeMap<String, loa_config::RemoteHost>) -> Vec<tools::RemoteHost> {
+pub(crate) fn panel_hosts(entries: &BTreeMap<String, loa_settings::app::RemoteHost>) -> Vec<tools::RemoteHost> {
     entries
         .iter()
         .map(|(name, entry)| tools::RemoteHost {
@@ -374,8 +374,8 @@ pub(crate) fn panel_hosts(entries: &BTreeMap<String, loa_config::RemoteHost>) ->
 }
 
 /// A host typed into the panel's add form as a config entry.
-pub(crate) fn config_host(host: &tools::RemoteHost) -> loa_config::RemoteHost {
-    loa_config::RemoteHost {
+pub(crate) fn config_host(host: &tools::RemoteHost) -> loa_settings::app::RemoteHost {
+    loa_settings::app::RemoteHost {
         host: host.hostname.clone(),
         user: host.user.clone(),
         port: host.port,

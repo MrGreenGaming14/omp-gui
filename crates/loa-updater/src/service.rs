@@ -3,10 +3,14 @@
 //! side, [`Updater::gate`] records swap or hold, [`Updater::choose`] answers a hold,
 //! [`Updater::apply_pending`] swaps between turns and [`Updater::rollback`] goes back one.
 
-use crate::decision::{self, HoldChoice};
+use crate::decision;
 use crate::feeds::{self, FeedResponse, FeedSource};
-use crate::gates::{self, CheckResult, GateCheck, GateInputs, GatePorts, GateReport, OmpGates};
+use crate::gates::{self, GateInputs, GatePorts, OmpGates};
 use crate::model::*;
+use loa_settings::updates::{
+    CheckResult, GateCheck, GateReport, HoldChoice, InstalledStatus, Overview, ProductKind, ProductStatus, RateLimit, Release,
+    SignatureStatus,
+};
 use crate::stage::{self, MANIFEST_FILE, Staged, Stager};
 use crate::state::UpdaterState;
 use crate::swap::{Activity, Swapper};

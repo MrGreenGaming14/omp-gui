@@ -16,16 +16,16 @@ use loa_util::LockExt;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use crate::config::OmpConfig;
-use crate::keys::{self, EnvironmentPresence, KeySource};
+use loa_settings::models::config::OmpConfig;
+use loa_settings::models::keys::{self, EnvironmentPresence, KeySource};
 use loa_contracts::harness::{HarnessAccount, LoginKind, SignInState};
-use crate::files::{OmpFiles, OmpFilesResolver};
-use crate::login::{Auth, LoginControl, LoginStrategy, OmpProviderAccount, ProviderEntry, ProviderKey, UrlOpener};
-use crate::models_yml::ModelsYml;
-use crate::rpc::{self, LoginProvider, OmpRpc};
-use crate::selector::{Catalog, ModelInfo, ModelRef, RoleAssignment, Selector};
-use crate::settings::{self, HarnessModel, ModelSettings, ValidationError};
-use crate::error::SettingsValidator;
+use loa_settings::models::files::{OmpFiles, OmpFilesResolver};
+use loa_settings::models::login::{Auth, LoginControl, LoginStrategy, OmpProviderAccount, ProviderEntry, ProviderKey, UrlOpener};
+use loa_settings::models::models_yml::ModelsYml;
+use loa_settings::models::rpc::{self, LoginProvider, OmpRpc};
+use loa_settings::models::selector::{Catalog, ModelInfo, ModelRef, RoleAssignment, Selector};
+use loa_settings::models::settings::{self, HarnessModel, ModelSettings, ValidationError};
+use loa_settings::models::error::SettingsValidator;
 use loa_contracts::harness::LoginUpdate;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
@@ -527,7 +527,7 @@ fn catalog(available: &[rpc::ModelInfo], config: &OmpConfig, names: &HashMap<Str
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::keys::ProcessEnvironment;
+    use loa_settings::models::keys::ProcessEnvironment;
     use crate::testing::OfflineOmpAccount;
     use loa_contracts::harness::{AdapterError, CommandSpec, ModelSettings as AccountModel, SignInMethod};
     use std::path::PathBuf;
@@ -568,8 +568,8 @@ mod tests {
 
     #[async_trait::async_trait]
     impl SettingsValidator for NoValidation {
-        async fn check_config(&self, _: &str, _: &[(String, serde_json::Value)]) -> crate::settings::Result<()> { Ok(()) }
-        async fn check_models(&self, _: &str) -> crate::settings::Result<()> { Ok(()) }
+        async fn check_config(&self, _: &str, _: &[(String, serde_json::Value)]) -> loa_settings::models::settings::Result<()> { Ok(()) }
+        async fn check_models(&self, _: &str) -> loa_settings::models::settings::Result<()> { Ok(()) }
     }
 
     struct NoBrowser;
@@ -599,9 +599,9 @@ mod tests {
 
     #[async_trait::async_trait]
     impl OmpFilesResolver for Resolver {
-        async fn resolve(&self) -> crate::error::Result<OmpFiles> {
+        async fn resolve(&self) -> loa_settings::models::error::Result<OmpFiles> {
             match self.calls.fetch_add(1, Ordering::SeqCst) < self.failures {
-                true => Err(crate::error::Error::Process { program: "omp".into(), message: "`config path` failed: boom".into() }),
+                true => Err(loa_settings::models::error::Error::Process { program: "omp".into(), message: "`config path` failed: boom".into() }),
                 false => Ok(OmpFiles::new(&self.dir)),
             }
         }

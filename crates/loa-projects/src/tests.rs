@@ -11,6 +11,7 @@ use crate::*;
 use loa_bus::{Bus, JournalOptions, Store};
 use loa_core::{ElementKind as K, NodeId};
 use loa_contracts::harness::HostTools;
+use loa_settings::projects::DigestState;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;

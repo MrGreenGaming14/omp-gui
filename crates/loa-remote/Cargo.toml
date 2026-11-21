@@ -12,7 +12,7 @@ axum = { version = "0.8", default-features = false, features = ["tokio", "http1"
 bytes.workspace = true
 http = "1"
 loa-contracts.workspace = true
-loa-config = { path = "../loa-config" }
+loa-settings = { path = "../loa-settings" }
 loa-core.workspace = true
 loa-mcp = { path = "../loa-mcp" }
 rusqlite.workspace = true

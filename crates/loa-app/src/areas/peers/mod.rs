@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use iced::{Element, Subscription, Task};
 use loa_contracts::harness::{Answer, Prompt};
-use loa_config::{NetworkSettings, Relay};
+use loa_settings::app::{NetworkSettings, Relay};
 use loa_trust::Resource;
 use adapter::{self as ui, Outcome};
 use loa_p2p::{Endpoint, Node, NodeConfig, NodeEvent, RelayConfig};

@@ -8,10 +8,8 @@ publish.workspace = true
 [dependencies]
 iced.workspace = true
 loa-core.workspace = true
-loa-models = { path = "../loa-models" }
-loa-projects = { path = "../loa-projects" }
+loa-settings = { path = "../loa-settings" }
 loa-ui-kit.workspace = true
-loa-updater = { path = "../loa-updater", default-features = false }
 loa-util.workspace = true
 
 [dev-dependencies]

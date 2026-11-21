@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use loa_config::RemoteHost;
+use loa_settings::app::RemoteHost;
 
 use crate::error::{Error, Result};
 use crate::hosts::{AgentSocket, Endpoint, Host};

@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use async_trait::async_trait;
-use loa_config::{ConfigStore, McpServer, ProjectSettings};
+use loa_settings::app::{ConfigStore, McpServer, ProjectSettings};
 use loa_contracts::harness::{McpServerSpec, McpTransport};
 
 use crate::ToolFilter;

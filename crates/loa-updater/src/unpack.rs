@@ -1,6 +1,6 @@
 //! [`Unpacker`] strategies writing into one [`EntrySink`] that keeps every entry inside the payload.
 
-use crate::model::ArchiveFormat;
+use loa_settings::updates::ArchiveFormat;
 use crate::{Error, Result, io_at};
 use std::fs;
 use std::io::{self, Read};

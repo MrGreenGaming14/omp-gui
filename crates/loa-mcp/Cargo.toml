@@ -13,7 +13,7 @@ bytes.workspace = true
 futures.workspace = true
 http = "1"
 loa-contracts.workspace = true
-loa-config = { path = "../loa-config" }
+loa-settings = { path = "../loa-settings" }
 loa-harness = { workspace = true, features = ["omp"] }
 http-body-util = "0.1"
 hyper = { version = "1", features = ["server", "http1"] }

@@ -12,10 +12,8 @@ use std::sync::{Arc, Mutex};
 
 use iced::{Element, Subscription, Task};
 use loa_contracts::harness::{HostToolSpec, HostTools, SessionConfig};
-use loa_projects::{
-    FileSettingsStore, LiveSessions, LocalOnly, ProjectOverview, ProjectService, ProjectSettings,
-    ProjectSummary, RebuildOutcome, ServiceConfig, Summarizers,
-};
+use loa_projects::{FileSettingsStore, LiveSessions, LocalOnly, ProjectService, ProjectSummary, RebuildOutcome, ServiceConfig, Summarizers};
+use loa_settings::projects::{ProjectOverview, ProjectSettings};
 use loa_ui_kit::widgets::Screen;
 use loa_ui_settings::projects as screen;
 use tokio::sync::mpsc::UnboundedReceiver;

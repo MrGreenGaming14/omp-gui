@@ -1,7 +1,7 @@
 //! Loading, editing and saving the config file.
 
-use crate::codec::{decode, encode, version_of};
-use crate::{CURRENT_VERSION, Config, ConfigError, Result};
+use super::codec::{decode, encode, version_of};
+use super::{CURRENT_VERSION, Config, ConfigError, Result};
 use std::path::{Path, PathBuf};
 use std::{fs, io, sync::Arc};
 use tokio::sync::watch;

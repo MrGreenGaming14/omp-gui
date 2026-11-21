@@ -7,7 +7,7 @@ use iced::{Element, Fill, Subscription, Task, Theme};
 use loa_contracts::harness::Answer;
 use loa_bus::SessionId;
 use loa_core::{ElementKind, NodeId, Op};
-use loa_models::login::UrlOpener;
+use loa_settings::models::login::UrlOpener;
 use loa_harness::account_support::opener::SystemUrlOpener;
 use loa_ui_session::decisions::{self as decisions, Desk, DesktopNotifier, TIMEOUT_BY, Unattended, desk, unattended};
 use loa_ui_kit::style::{ButtonKind, Tone};

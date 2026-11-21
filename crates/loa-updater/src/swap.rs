@@ -1,7 +1,8 @@
 //! Switches a product's active version between turns, keeping the previous one for rollback.
 //! `<root>/versions/<product>/active.json` is replaced atomically.
 
-pub use crate::model::{Active, SwapOutcome};
+pub use crate::model::SwapOutcome;
+use loa_settings::updates::Active;
 use crate::signature;
 use crate::stage::{self, Staged};
 use crate::{Error, Result};

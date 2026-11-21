@@ -4,11 +4,10 @@
 mod support;
 
 use flate2::write::GzEncoder;
-use loa_updater::decision::HoldChoice;
-use loa_updater::gates::{GateCheck, Verdict};
+use loa_settings::updates::{GateCheck, HoldChoice, InstalledStatus, ProductKind, SignatureStatus, Verdict};
 use loa_updater::swap::{SwapOutcome, Swapper};
 use loa_updater::unpack::{TarGz, Unpacker};
-use loa_updater::{Error, Feed, Gates, Installed, InstalledStatus, PrereleasePolicy, Product, ProductKind, ProductSpec, SignatureStatus};
+use loa_updater::{Error, Feed, Gates, Installed, PrereleasePolicy, Product, ProductSpec};
 use loa_updater::{TurnGate, Updater, UpdaterConfig};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

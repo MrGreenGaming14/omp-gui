@@ -2,7 +2,7 @@
 //! (`payload/`, `artifact/`, `staged.json`). Work happens in a temporary directory renamed into
 //! place with `staged.json` written last, so a failed staging leaves nothing behind.
 
-use crate::model::{Artifact, Checksum, Release};
+use loa_settings::updates::{Artifact, Checksum, Release};
 use crate::{Error, Result, io_at, unpack};
 use semver::Version;
 use serde::{Deserialize, Serialize};

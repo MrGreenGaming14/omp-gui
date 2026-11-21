@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 use loa_bus::{Authorize, Bus, Denied, JournalOptions, NodeKey, SessionId, Store};
-use loa_config::ConfigStore;
+use loa_settings::app::ConfigStore;
 use loa_core::{Dom, Draft};
 use loa_session::library::Library;
 use loa_trust::{KeySource, NodeIdentity, load_app_identity};

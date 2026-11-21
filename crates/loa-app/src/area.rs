@@ -9,7 +9,7 @@ use std::sync::Arc;
 use iced::{Element, Subscription, Task};
 use loa_contracts::harness::{Capabilities, HostToolSpec, HostTools, Prompt, SessionConfig};
 use loa_bus::SessionId;
-use loa_models::login::UrlOpener;
+use loa_settings::models::login::UrlOpener;
 use loa_models::service::Backend;
 use loa_projects::Summarizers;
 use loa_ui_session::composer as composer;
@@ -203,12 +203,12 @@ impl Ctx {
     }
 
     /// The central config; on failure a `Can't read the {what}` notice and `None`.
-    pub fn read_config(&mut self, what: &str) -> Option<loa_config::Config> {
+    pub fn read_config(&mut self, what: &str) -> Option<loa_settings::app::Config> {
         self.services.storage.config.load().inspect_err(|error| self.notify(format!("Can't read the {what}: {error}"))).ok()
     }
 
     /// Edits the central config; on failure a `Can't save the {what}` notice and `None`.
-    pub fn edit_config<R>(&mut self, what: &str, change: impl FnOnce(&mut loa_config::Config) -> R) -> Option<R> {
+    pub fn edit_config<R>(&mut self, what: &str, change: impl FnOnce(&mut loa_settings::app::Config) -> R) -> Option<R> {
         self.services.storage.config.edit(change).inspect_err(|error| self.notify(format!("Can't save the {what}: {error}"))).ok()
     }
 

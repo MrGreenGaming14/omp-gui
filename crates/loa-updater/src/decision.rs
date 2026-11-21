@@ -1,18 +1,8 @@
 //! Turns a gate report into swap or hold, and applies the user's choice for a held update.
 
-use crate::gates::GateReport;
-use crate::state::{HeldUpdate, UpdaterState};
+use crate::state::UpdaterState;
+use loa_settings::updates::{GateReport, HeldUpdate, HoldChoice};
 use semver::Version;
-
-/// The user's answer to a held update.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum HoldChoice {
-    UpdateAnyway,
-    /// Stay on the current version until unpinned.
-    PinCurrent,
-    /// Skip the held version and offer the next newer one.
-    Wait,
-}
 
 /// Records `report`: a clean one becomes a pending swap, a harmful one a hold. Returns whether it was clean.
 pub fn record(state: &mut UpdaterState, report: &GateReport, now_unix: u64) -> bool {

@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::account_support::process::{CommandSpec, ProcessRunner};
-use loa_models::error::{Error, Result, SettingsValidator};
+use loa_settings::models::error::{Error, Result, SettingsValidator};
 
 /// Calls omp CLI with its agent directory redirected to a temp directory.
 /// It never sends a prompt; catalog listing may still discover local models.

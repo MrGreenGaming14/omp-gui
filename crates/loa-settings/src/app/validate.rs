@@ -1,7 +1,7 @@
 //! The rules serde can't express, as one table. A rule's key may hold `*`,
 //! which its check fills with the map key it failed on.
 
-use crate::{Config, DecisionDefault, Relay, Result, invalid};
+use super::{Config, DecisionDefault, Relay, Result, invalid};
 use loa_contracts::harness::McpTransport;
 use loa_core::answer;
 

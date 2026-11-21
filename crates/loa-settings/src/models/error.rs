@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use loa_util::fs::{self, Snapshot};
 
-use crate::rpc::RpcError;
+use crate::models::rpc::RpcError;
 
 /// Errors from reading, editing and validating model settings.
 #[derive(Debug, thiserror::Error)]

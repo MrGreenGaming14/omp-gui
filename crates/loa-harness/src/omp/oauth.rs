@@ -2,7 +2,7 @@
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use loa_contracts::harness::{LoginControl, LoginStrategy, LoginUpdate, UrlOpener};
-use loa_models::rpc::{LoginProvider, LoginUiRequest, OmpRpc, UiResponse};
+use loa_settings::models::rpc::{LoginProvider, LoginUiRequest, OmpRpc, UiResponse};
 
 /// Runs omp's OAuth protocol and publishes the same updates as CLI logins.
 pub struct OmpOAuthLogin {

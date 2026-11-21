@@ -1,6 +1,7 @@
 //! The crate's one set of test fixtures: DOM builder, in-memory sessions, fake summarizer, live sessions.
 
-use crate::digest::{DigestContent, write_drafts};
+use crate::digest::write_drafts;
+use loa_settings::projects::DigestContent;
 use crate::digester::{Summarizer, Summarizers};
 use crate::rebuild::SessionWriter;
 use crate::source::{Access, SessionInfo, SessionSource};

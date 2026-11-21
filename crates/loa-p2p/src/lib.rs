@@ -13,7 +13,7 @@ pub mod wire;
 
 pub use auth::{GrantAccess, GrantDirection, GrantGate, GrantInfo};
 pub use discovery::{Availability, Discoverer, NearbyPeer, NearbySource};
-pub use loa_config::DEFAULT_PORT;
+pub use loa_settings::app::DEFAULT_PORT;
 pub use loa_trust::KeySource;
 pub use node::{Endpoint, Node, NodeConfig, NodeEvent, NodeStatus, SANDBOX_LABEL, data_dir, local_protocols};
 pub use peers_db::{DiscoverySource, PeerInfo};

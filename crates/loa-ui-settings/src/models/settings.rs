@@ -6,8 +6,8 @@
 use crate::{action, check, errors, field, labeled, pick, section};
 use iced::widget::{Column, column, container, row};
 use iced::{Alignment, Element, Fill};
-use loa_models::models_yml::OverrideKey;
-use loa_models::settings::{AuthMode, CustomProvider, FieldValue, ModelOverride, ModelSettings, OVERRIDE_FIELDS, OverrideField, RoleChain, ValidationError, is_env_var_name, is_provider_id};
+use loa_settings::models::models_yml::OverrideKey;
+use loa_settings::models::settings::{AuthMode, CustomProvider, FieldValue, ModelOverride, ModelSettings, OVERRIDE_FIELDS, OverrideField, RoleChain, ValidationError, is_env_var_name, is_provider_id};
 use loa_ui_kit::style::{self, ButtonKind, Surface, Tone};
 use loa_ui_kit::theme::{SpaceRole, TextRole, sp};
 use loa_ui_kit::widgets::{Field, Form, Msg, Screen, form_view, label, list_editor, reorder};
@@ -456,7 +456,7 @@ impl Screen for State {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use loa_models::settings::{HarnessModel, ModelToggle, ProviderToggle};
+    use loa_settings::models::settings::{HarnessModel, ModelToggle, ProviderToggle};
     use loa_ui_kit::testkit::click_label;
 
     fn settings() -> ModelSettings {

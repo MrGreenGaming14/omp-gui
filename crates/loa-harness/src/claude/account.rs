@@ -10,9 +10,9 @@ use serde_json::{Map, Value};
 
 use crate::account_support::configdoc::{ConfigDoc, JsonDoc, edit_file};
 use crate::account_support::{LoginKind, SignInMethod, SignInState, validate_model_name};
-use loa_models::error::{load_snapshot, read_optional};
+use loa_settings::models::error::{load_snapshot, read_optional};
 use crate::account_support::process::{CommandSpec, ProcessRunner};
-use loa_models::error::{Error, Result};
+use loa_settings::models::error::{Error, Result};
 
 /// Key of the default model in `settings.json`.
 const MODEL_KEY: &str = "model";

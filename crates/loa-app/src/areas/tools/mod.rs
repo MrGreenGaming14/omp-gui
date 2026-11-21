@@ -15,7 +15,7 @@ use std::sync::Arc;
 use iced::{Element, Font, Subscription, Task};
 use loa_contracts::harness::{Answer, HostToolRouter, McpTransport, SessionConfig};
 use loa_bus::SessionId;
-use loa_config::ProjectSettings;
+use loa_settings::app::ProjectSettings;
 use loa_core::{Dom, ElementKind, NodeId, attr};
 use loa_mcp::central::{self, ConfigServers, ProjectFilter};
 use loa_mcp::host_tools::McpHostTools;
@@ -275,7 +275,7 @@ impl State {
     fn edit_hosts(
         &mut self,
         ctx: &mut Ctx,
-        change: impl FnOnce(&mut std::collections::BTreeMap<String, loa_config::RemoteHost>) -> Result<Option<String>, String>,
+        change: impl FnOnce(&mut std::collections::BTreeMap<String, loa_settings::app::RemoteHost>) -> Result<Option<String>, String>,
     ) {
         match ctx.edit_config("Remote hosts", |config| change(&mut config.remote_hosts)) {
             Some(Ok(notice)) => {

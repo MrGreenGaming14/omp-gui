@@ -1,6 +1,7 @@
 //! The pure gate checks, table driven, and `run_gates` over fake ports.
 
 use async_trait::async_trait;
+use loa_settings::updates::{GateCheck, Verdict};
 use loa_updater::gates::*;
 use semver::Version;
 use serde_json::{Value, json};

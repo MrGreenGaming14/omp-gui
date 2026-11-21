@@ -3,41 +3,10 @@
 //! is stale when the session has patches beyond those or `stale` is set.
 
 use loa_core::{Dom, Draft, ElementKind, Node, NodeId, Value, attr};
+use loa_settings::projects::{DigestContent, DigestState, FileNote};
 
 /// Extension attribute: patches the digest's own write committed (old removed, new inserted).
 pub const OWN_PATCHES: &str = "x-own_patches";
-
-/// One touched file and a one line note.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct FileNote {
-    pub path: String,
-    #[serde(default)]
-    pub note: String,
-}
-
-impl FileNote {
-    /// Parses the schema's `"path: note"` form.
-    pub fn parse(text: &str) -> Self {
-        let (path, note) = text.split_once(": ").unwrap_or((text, ""));
-        Self { path: path.to_owned(), note: note.to_owned() }
-    }
-
-    pub fn encode(&self) -> String {
-        if self.note.is_empty() { self.path.clone() } else { format!("{}: {}", self.path, self.note) }
-    }
-}
-
-/// What a digest says about its session.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct DigestContent {
-    pub summary: String,
-    pub decisions: Vec<String>,
-    pub files: Vec<FileNote>,
-    /// Unfinished todos and unanswered questions.
-    pub open_items: Vec<String>,
-    /// The turns the digest came from.
-    pub pointers: Vec<NodeId>,
-}
 
 /// A digest read from a session DOM.
 #[derive(Clone, Debug, PartialEq)]
@@ -48,13 +17,6 @@ pub struct Digest {
     /// Flagged stale, or the session moved on.
     pub stale: bool,
     pub model: Option<String>,
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum DigestState {
-    Missing,
-    Fresh,
-    Stale,
 }
 
 fn digest_node(dom: &Dom) -> Option<&Node> {

@@ -23,9 +23,9 @@ Everything else builds on these three. Their existing public items change only w
 | `loa-xml`, `loa-rewind` | core | XML debug export, DOM diff and rewind plans |
 | `loa-journal` | core | Append only prost journal, replay, snapshots, fork |
 | `loa-bus` | core | Session writer (`PatchSink` impl), publish subscribe with backpressure |
-| `loa-config` | core | Central config schema with version and migrations |
+| `loa-settings` | settings | The settings hub: every app and harness setting in one place. `app` is the central config (schema with version, `ConfigStore`, theme reference); `models` holds the model settings and the omp `config.yml`/`models.yml` editors on a comment-preserving YAML editor, the model selector grammar, the omp RPC types, the shared settings error type and the ports the omp side implements: the omp RPC (`rpc::OmpRpc`), provider logins (`login::OmpProviderAccount`), the agent directory (`files::OmpFilesResolver`) and validation (`error::SettingsValidator`); `projects` holds the project settings, digest and overview types; `updates` holds the updater's release, gate, hold and peer status types. Depends only on `loa-util`, `loa-core` and `loa-contracts`. Claude JSON edits normalize whitespace while preserving key order; omp YAML edits retain untouched comments |
 | `loa-util` | core | Domain-free helpers: poison-tolerant locks, atomic files, executables (`write_executable`, `retry_busy`, `which`, `probe_cli`, captured `output`), time, text, `Registry`, `str_enum!` |
-| `loa-harness` | adapters | Harness adapters and account implementations, factory registry, CLI and omp OAuth login strategies, shared configuration editors for Claude and Codex, and the omp implementations of the `loa-models` ports (`OmpService` RPC, `OmpAccount` provider logins, `OmpLaunch` files resolver, `OmpSettingsValidator`) |
+| `loa-harness` | adapters | Harness adapters and account implementations, factory registry, CLI and omp OAuth login strategies, shared configuration editors for Claude and Codex, and the omp implementations of the `loa-settings` ports (`OmpService` RPC, `OmpAccount` provider logins, `OmpLaunch` files resolver, `OmpSettingsValidator`) |
 | `loa-session` | sessions | The session domain on any harness: the journal-backed `Library`, `SessionStore`, fork, rewind and compaction, plan mode (`PlanGate`), rules and advisor hooks, transcript helpers. Native session discovery stays in `loa-harness::native` |
 | `loa-runtime` | sessions | The headless app runtime: `Runtime` owns the session `Library`, the live `Sessions` (single-writer feeds, `SessionEvent`s), the harness registry (`Harnesses`), the active project and folder and the approval mode; `feed::Source` reads channel and writer feeds. `lifecycle` is the headless lifecycle facade: `Runtime::dispatch(Command)` (start, open, send, spawn, interrupt, close, approval mode, feeds, completions) returns a `Transition` of async `Effect`s (harness calls resolving to a `Completion`) and `RuntimeEvent`s; new sessions get their base config and wait for a `Prepared` config before the harness starts. No `iced`, UI crates or concrete adapters |
 | `loa-mcp` | tools | rmcp client, server registry, config import |
@@ -34,14 +34,14 @@ Everything else builds on these three. Their existing public items change only w
 | `loa-surface-proto` | surfaces | `omp/surface/1` framing and datagrams, live H.264/HEVC video (app feature `remote-video`, off by default) |
 | `loa-surface-browser`, `-docs`, `-rfb` | surfaces | Built in surface servers |
 | `loa-surface-hub` | surfaces | The app's surface service: built-in servers, MCP declared surfaces, `surface_*` agent tools as host tools and a loopback MCP endpoint, `<surface>` drafts |
-| `loa-models` | models | Model catalog, settings service, the omp `config.yml` and `models.yml` editors on a comment-preserving YAML editor, the model selector grammar, the shared settings error type, and the ports the omp side implements: the omp RPC (`rpc::OmpRpc`), provider logins (`login::OmpProviderAccount`), the agent directory (`files::OmpFilesResolver`) and validation (`error::SettingsValidator`). `Backend` is built only from injected `Parts`; `loa-app` composes the real ones from `loa-harness`. Claude JSON edits normalize whitespace while preserving key order; omp YAML edits retain untouched comments. |
-| `loa-projects` | projects | Digests, context ranking, `project_search`, `project_read`, project settings, `ProjectService` over the bus and journal; summaries through the `Summarizers` port, which `loa-app` backs with omp one-shot calls |
+| `loa-models` | models | The model settings service (`service::Backend`: catalog, sign-in, settings load and save over the `loa-settings` ports) and its offline `testing` fakes. `Backend` is built only from injected `Parts`; `loa-app` composes the real ones from `loa-harness` |
+| `loa-projects` | projects | Digests, context ranking, `project_search`, `project_read`, the project settings store, `ProjectService` over the bus and journal; the data types live in `loa_settings::projects`; summaries through the `Summarizers` port, which `loa-app` backs with omp one-shot calls |
 | `loa-trust` | p2p | One ed25519 node key (`PublicKey` converts to iroh, Biscuit and bus keys) behind the `KeyStore` port (OS keychain, falling back to a `0600` key file); Biscuit grants whose scope kinds (sessions, prompts, projects, future sessions, SSH hosts, surfaces, sandbox, folders) come from one `KINDS` table; renewal, narrowing |
 | `loa-net` | p2p | iroh endpoint on 31415, ALPNs, TCP fallback, relay, discovery |
 | `loa-share` | p2p | Session replication, view and drive, fork to own node |
 | `loa-node` | p2p | The app's peer service: identity, endpoint, mDNS and tailnet discovery, presence, grant issue/renew/revoke over `omp/control/1`, session sharing over `omp/session/1`, shared folders over `omp/folder/1` (list, read, and with a write grant write, confined to the granted folder), protocols other areas add (e.g. `loa-sandbox/1`, served only to peers proving a covering grant, registered through the app's `NodeSlot`), the Peers panel snapshot and its events |
 | `loa-sandbox`, `loa-sandbox-stub` | sandbox | `sandbox_task`, providers, exec stub |
-| `loa-updater` | updater | Release feeds, staging, gate checks against the installed omp, swap and rollback; `Updater` service for the Updates screen |
+| `loa-updater` | updater | Release feeds, staging, gate checks against the installed omp, swap and rollback; `Updater` service for the Updates screen. Its status types live in `loa_settings::updates` |
 
 ### UI
 
@@ -56,7 +56,7 @@ Everything else builds on these three. Their existing public items change only w
 | `loa-ui-palette` | Command palette |
 | `loa-ui-tools` | Tools panel |
 | `loa-ui-surface` | Surfaces tab: tab shell over `PixelMode`/`DocumentMode` strategies, `FrameDecoder` chain (stills, H.264 behind `remote-video`), launcher for browser, documents, VNC and MCP surfaces, document pages through `loa-surfaces` docs with `RenderOpts` from kit tokens |
-| `loa-ui-settings` | Settings-style screens on kit `Screen` (`Msg<Local, Event>` + guard): `models` (sign in reducer over `LoginUpdate`, picker, chip, session model, model settings via kit `form_view`/`list_editor` over `OVERRIDE_FIELDS`), `projects` (project screen), `peers` (peers, grants with a typed folder, shared sessions and folders), `updates` (renders `loa_updater` status with a `STATUS_RULES` table, `HoldChoice` choices) |
+| `loa-ui-settings` | Settings-style screens on kit `Screen` (`Msg<Local, Event>` + guard): `models` (sign in reducer over `LoginUpdate`, picker, chip, session model, model settings via kit `form_view`/`list_editor` over `OVERRIDE_FIELDS`), `projects` (project screen), `peers` (peers, grants with a typed folder, shared sessions and folders), `updates` (renders `loa_settings::updates` status with a `STATUS_RULES` table, `HoldChoice` choices). Depends only on `loa-settings`, `loa-ui-kit` and the foundation crates |
 | `loa-ui-icons` | Lucide line icons as theme-tinted SVG widgets, shared by every UI crate |
 | `loa-app` | The binary: wires every crate together |
 
@@ -66,6 +66,11 @@ Everything else builds on these three. Their existing public items change only w
 - A library depends on contracts. When it needs something another library owns, it declares a trait for it (a port) and `loa-app` passes the implementation in. Example: `loa-projects` declares the access check it needs and `loa-app` backs it with `loa-trust`
 - A UI crate depends on contracts, `iced` and `loa-ui-icons`. It takes plain data in and gives events out. It never spawns a harness, opens a socket or reads the journal
 - Only `loa-app`, `loa-session`, `loa-share` and `loa-node` depend on several libraries
+- `loa-settings` depends only on `loa-util`, `loa-core` and `loa-contracts`; it never depends on `loa-models`, `loa-projects`, `loa-updater`, `loa-harness` or a UI crate. `loa-ui-settings` reaches settings and status only through `loa-settings` (plus `loa-ui-kit`), never through `loa-models`, `loa-projects`, `loa-updater` or `loa-harness`
+
+### Settings hub
+
+`loa-settings` is the central place for app and harness settings: the central config, the model and provider settings with the omp file editors, the project settings and the updater status. The settings UI (`loa-ui-settings`) only displays these types and emits events; the services that change them (`loa-models`, `loa-projects`, `loa-updater`) import their types from the hub. Harness-specific work goes through the hub's ports (`OmpRpc`, `OmpProviderAccount`, `OmpFilesResolver`, `SettingsValidator`), which the adapters in `loa-harness` implement and `loa-app` wires in
 
 ## Sessions
 

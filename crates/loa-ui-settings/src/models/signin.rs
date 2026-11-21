@@ -10,7 +10,7 @@ use loa_ui_kit::theme::{SpaceRole, TextRole, sp};
 use loa_ui_kit::widgets::{Msg, Screen, label, mono_block};
 use std::collections::HashMap;
 
-pub use loa_models::login::{Auth, LoginPrompt, LoginState, LoginUpdate, ProviderEntry, ProviderKey};
+pub use loa_settings::models::login::{Auth, LoginPrompt, LoginState, LoginUpdate, ProviderEntry, ProviderKey};
 
 #[derive(Clone, Debug)]
 pub enum Local {
