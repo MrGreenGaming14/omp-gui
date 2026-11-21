@@ -38,8 +38,6 @@ webpki-roots = "1"
 [dev-dependencies]
 axum = "0.8"
 libtest-mimic = "0.8"
-loa-adapter-omp = { path = "../loa-adapter-omp" }
-loa-core.workspace = true
 rmcp = { version = "3.11", features = ["server", "macros", "transport-io", "transport-streamable-http-server"] }
 schemars = "1"
 tempfile.workspace = true

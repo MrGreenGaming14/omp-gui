@@ -21,4 +21,3 @@ thiserror.workspace = true
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 tempfile.workspace = true
-loa-adapter-omp = { path = "../loa-adapter-omp" }

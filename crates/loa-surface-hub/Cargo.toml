@@ -28,6 +28,5 @@ base64 = "0.22"
 rmcp = { version = "3.11", default-features = false, features = ["server", "transport-streamable-http-server"] }
 
 [dev-dependencies]
-loa-adapter-omp = { path = "../loa-adapter-omp" }
 image = { version = "0.25", default-features = false, features = ["png"] }
 tempfile.workspace = true

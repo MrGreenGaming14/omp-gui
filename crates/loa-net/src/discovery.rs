@@ -189,19 +189,4 @@ mod tests {
         assert!(!discovery.enabled());
     }
 
-    #[tokio::test]
-    #[ignore = "uses LAN multicast on the host's interfaces"]
-    async fn two_daemons_find_each_other_over_multicast() {
-        let a = announce(11, 40001, 40002);
-        let b = announce(12, 40003, 40004);
-        let found_by_a = Discovery::new(&a, true).unwrap();
-        let found_by_b = Discovery::new(&b, true).unwrap();
-        let seen = tokio::time::timeout(std::time::Duration::from_secs(10), found_by_a.next_peer()).await.unwrap().unwrap();
-        assert_eq!(seen.node, b.node);
-        assert_eq!((seen.port, seen.tcp_port), (40003, 40004));
-        assert_eq!(seen.name.as_deref(), Some("node-12"));
-        assert!(!seen.addresses.is_empty());
-        let seen = tokio::time::timeout(std::time::Duration::from_secs(10), found_by_b.next_peer()).await.unwrap().unwrap();
-        assert_eq!(seen.node, a.node);
-    }
 }

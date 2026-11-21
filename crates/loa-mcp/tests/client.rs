@@ -48,8 +48,6 @@ fn main() {
         trial("registry_edits_and_removes_servers", registry_edits_and_removes_servers),
         trial("registry_import_starts_new_servers_once", registry_import_starts_new_servers_once),
         trial("host_tools_route_calls_through_the_filter", host_tools_route_calls_through_the_filter),
-        trial("live_omp_session_calls_a_registered_mcp_tool", live_omp_session_calls_a_registered_mcp_tool)
-            .with_ignored_flag(true),
     ];
     libtest_mimic::run(&args, tests).exit();
 }
@@ -312,64 +310,6 @@ async fn host_tools_route_calls_through_the_filter() {
     assert!(matches!(&blocks[1], HostToolContent::Image { mime, data } if mime == "image/png" && data.as_ref() == PNG));
     assert!(tools.call("s", "fake__crash", "{}").await.unwrap_err().contains("unknown MCP tool"), "filtered out");
     assert!(tools.call("s", "fake__echo", "[1]").await.is_err());
-    manager.shutdown().await;
-}
-
-/// A real omp session (installed omp, real model) gets a registered stdio
-/// MCP server's tools as host tools and calls one. `LOA_LIVE_MODEL` picks
-/// the model; default `anthropic/claude-haiku-5-5`.
-async fn live_omp_session_calls_a_registered_mcp_tool() {
-    use loa_adapter::{Adapter, HostToolRouter, Prompt, SessionConfig};
-    use loa_adapter_omp::{OmpAdapter, OmpAdapterConfig};
-    use loa_core::{ElementKind, MemorySink, attr};
-    use loa_mcp::host_tools::McpHostTools;
-
-    let dir = tempfile::tempdir().unwrap();
-    let manager = Manager::new(options()).unwrap();
-    manager.add(fake_spec("fake")).unwrap();
-    wait_status(&manager, "fake", running).await;
-    let tools = Arc::new(McpHostTools::new(manager.clone(), Arc::new(AllowAll)));
-    let mut router = HostToolRouter::new();
-    router.add_all(tools.specs().to_vec(), tools.clone()).unwrap();
-
-    let model = std::env::var("LOA_LIVE_MODEL").unwrap_or_else(|_| "anthropic/claude-haiku-5-5".into());
-    let mut config = SessionConfig {
-        session_id: "mcp-live".into(),
-        node: "live-test".into(),
-        cwd: dir.path().to_owned(),
-        model: Some(model),
-        ..Default::default()
-    };
-    router.install(&mut config);
-    let adapter = OmpAdapter::new(OmpAdapterConfig::new("live-test", dir.path().join("state")));
-    let sink = Arc::new(MemorySink::new());
-    let session = adapter.start(config, sink.clone()).await.expect("omp starts");
-    session
-        .send(Prompt {
-            text: "Call your fake__vault_code tool and reply with exactly what it returned.".into(),
-            by: "live-test".into(),
-            ..Default::default()
-        })
-        .await
-        .unwrap();
-    tokio::time::timeout(Duration::from_secs(240), session.wait_idle()).await.expect("turn ended in time").unwrap();
-    let dom = sink.dom();
-    let call = dom
-        .iter()
-        .find(|n| n.kind == ElementKind::Call && n.str_attr(attr::TOOL) == Some("fake__vault_code"))
-        .unwrap_or_else(|| {
-            let seen: Vec<_> = dom.iter().map(|n| (n.kind, n.attrs.clone(), n.text.clone())).collect();
-            panic!("omp did not call the MCP tool; the session holds {seen:#?}")
-        });
-    let result = dom.children_of_kind(call.id, ElementKind::Result).next().expect("the call has a result");
-    assert!(result.text.contains(VAULT_CODE), "result {:?}", result.text);
-    let said: String = dom
-        .iter()
-        .filter(|n| n.kind == ElementKind::Message && n.str_attr(attr::ROLE) == Some("assistant"))
-        .map(|n| n.text.as_str())
-        .collect();
-    assert!(said.contains("7731-QZ"), "assistant said {said:?}");
-    session.shutdown().await.unwrap();
     manager.shutdown().await;
 }
 
