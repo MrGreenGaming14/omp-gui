@@ -579,7 +579,7 @@ impl Updater {
 
 /// Runs `<executable> --version` and reads the first semantic version it prints.
 pub async fn executable_version(executable: &Path, timeout: Duration) -> std::result::Result<Version, String> {
-    let text = loa_util::exec::probe_cli(executable, &["--version"], timeout).await.map_err(|e| e.to_string())?;
+    let text = loa_util::exec::probe_cli(&loa_util::exec::resolve(executable), &["--version"], timeout).await.map_err(|e| e.to_string())?;
     loa_util::exec::parse_version(&text).and_then(|v| Version::parse(&v).ok()).ok_or_else(|| format!("no version in {:?}", text.trim()))
 }
 

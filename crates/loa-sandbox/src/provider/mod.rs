@@ -198,6 +198,10 @@ pub(crate) fn status(kind: SandboxKind, availability: Availability, detail: impl
 
 pub(crate) const NO_STUB: &str = "loa-sandbox-stub was not found next to the app or on PATH (set LOA_SANDBOX_STUB)";
 
+/// Why a Windows host offers neither Docker nor SSH: they run the stub inside
+/// a Linux guest, and the stub the host has is a Windows binary.
+pub(crate) const REMOTE_STUB_UNSUPPORTED: &str = "the sandbox stub on Windows runs only on the local provider";
+
 /// Probes one kind of provider and builds it from the settings.
 #[async_trait]
 pub trait ProviderFactory: Send + Sync {

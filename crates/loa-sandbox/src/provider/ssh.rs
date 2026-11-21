@@ -97,17 +97,18 @@ impl ProviderFactory for Factory {
     fn kind(&self) -> SandboxKind { SandboxKind::Ssh }
     async fn probe(&self, machine: &Machine, config: &SandboxConfig) -> ProviderStatus {
         use Availability::*;
-        match (machine.which("ssh"), &machine.stub, &Self::hosts(config)[..]) {
-            (None, ..) => status(self.kind(), Unavailable, "No ssh client is installed"),
-            (Some(_), None, _) => status(self.kind(), Unavailable, super::NO_STUB),
-            (Some(_), Some(_), []) => status(self.kind(), NotConfigured, "Add a host to ~/.ssh/config or the sandbox settings"),
-            (Some(_), Some(_), hosts) => status(self.kind(), Ready, format!(
+        match (cfg!(windows), machine.which("ssh"), &machine.stub, &Self::hosts(config)[..]) {
+            (true, ..) => status(self.kind(), Unavailable, super::REMOTE_STUB_UNSUPPORTED),
+            (_, None, ..) => status(self.kind(), Unavailable, "No ssh client is installed"),
+            (_, Some(_), None, _) => status(self.kind(), Unavailable, super::NO_STUB),
+            (_, Some(_), Some(_), []) => status(self.kind(), NotConfigured, "Add a host to ~/.ssh/config or the sandbox settings"),
+            (_, Some(_), Some(_), hosts) => status(self.kind(), Ready, format!(
                 "{}; hosts must run {} on {}", hosts.join(", "), std::env::consts::OS, std::env::consts::ARCH
             )),
         }
     }
     fn build(&self, machine: &Machine, config: &SandboxConfig) -> Option<Arc<dyn SandboxProvider>> {
-        let (ssh, local_stub) = (machine.which("ssh")?, machine.stub.clone()?);
+        let (ssh, local_stub) = (machine.which("ssh").filter(|_| !cfg!(windows))?, machine.stub.clone()?);
         Some(Arc::new(SshProvider { ssh, hosts: Self::hosts(config), local_stub }))
     }
 }

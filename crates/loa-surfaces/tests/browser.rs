@@ -28,7 +28,14 @@ async fn a_tab_streams_reads_takes_input_resizes_and_shuts_down() {
     assert_eq!((save.bounds.x, save.bounds.y, save.bounds.width, save.bounds.height), (20.0, 30.0, 100.0, 40.0));
 
     let mut frames = tab.frames().unwrap();
-    let first = next_frame(&mut frames).await;
+    // Chrome may paint once before the viewport override takes effect; the
+    // keyframe is asked for after the page settles.
+    let first = loop {
+        let frame = next_frame(&mut frames).await;
+        if (frame.width, frame.height) == (640, 480) {
+            break frame;
+        }
+    };
     tab.request_keyframe().await.unwrap();
     assert!(next_frame(&mut frames).await.seq > first.seq);
 
@@ -52,8 +59,30 @@ async fn a_tab_streams_reads_takes_input_resizes_and_shuts_down() {
     assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
 
     let pids = server.process_ids().await;
+    #[cfg(any(target_os = "linux", windows))]
+    assert!(process_running(pids[0]));
     server.shutdown().await.unwrap();
-    assert!(!std::path::Path::new(&format!("/proc/{}", pids[0])).exists(), "chrome still running");
+    #[cfg(any(target_os = "linux", windows))]
+    assert!(!process_running(pids[0]), "chrome still running");
+    #[cfg(not(any(target_os = "linux", windows)))]
+    let _ = pids;
     assert!(matches!(server.open_tab("about:blank").await, Err(BrowserError::Closed)));
     assert!(server.list().await.unwrap().is_empty());
+}
+
+#[cfg(target_os = "linux")]
+fn process_running(pid: u32) -> bool {
+    std::path::Path::new(&format!("/proc/{pid}")).exists()
+}
+
+#[cfg(windows)]
+fn process_running(pid: u32) -> bool {
+    let out = std::process::Command::new("tasklist.exe")
+        .args(["/fi", &format!("PID eq {pid}"), "/fo", "csv", "/nh"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .any(|line| line.split("\",\"").nth(1).and_then(|value| value.parse::<u32>().ok()) == Some(pid))
 }

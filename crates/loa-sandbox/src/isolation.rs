@@ -7,7 +7,6 @@
 
 use crate::{Result, SandboxError};
 use std::fs;
-use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -36,7 +35,27 @@ fn git(dir: &Path) -> Command {
 
 fn toplevel(dir: &Path) -> Result<PathBuf> {
     let out = output(git(dir).args(["rev-parse", "--show-toplevel"]))?;
-    Ok(PathBuf::from(String::from_utf8_lossy(&out).trim_end()))
+    canonical(Path::new(String::from_utf8_lossy(&out).trim_end()))
+}
+
+/// Canonical form of `path`. Windows' `\\?\` verbatim prefix is dropped so
+/// the result compares with the plain paths Git reports and prints.
+fn canonical(path: &Path) -> Result<PathBuf> {
+    Ok(loa_util::fs::canonicalize(path)?)
+}
+
+/// Whether `meta` describes a link: a symlink anywhere, and on Windows also
+/// a junction or any other reparse point, which `is_symlink` does not report.
+pub(crate) fn is_link(meta: &fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        if meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return true;
+        }
+    }
+    meta.file_type().is_symlink()
 }
 
 /// Makes and removes checkouts of a repository's HEAD.
@@ -94,10 +113,11 @@ impl CheckoutBackend for Ovnfs {
 }
 
 /// The backends to try, in order. An installed ovnfs is authoritative: its
-/// failure must not silently degrade to another isolation mechanism.
+/// failure must not silently degrade to another isolation mechanism. ovnfs
+/// is a Linux filesystem: Windows always isolates with a worktree.
 fn backends() -> &'static [&'static dyn CheckoutBackend] {
     #[cfg(feature = "ovnfs")]
-    if loa_util::exec::which("ovnfs").is_some() {
+    if cfg!(unix) && loa_util::exec::which("ovnfs").is_some() {
         return &[&Ovnfs];
     }
     &[&GitWorktree, &GitClone]
@@ -121,7 +141,7 @@ pub struct IsolatedCheckout {
 
 impl IsolatedCheckout {
     pub fn create(workspace: &Path) -> Result<Self> {
-        let source = workspace.canonicalize()?;
+        let source = canonical(workspace)?;
         let repo = toplevel(&source)?;
         let relative = source.strip_prefix(&repo).map_err(|e| error(e.to_string()))?.to_path_buf();
         let name = format!("loa-sandbox-{}-{:x}-{}", std::process::id(), loa_util::time::now_ms(), NEXT.fetch_add(1, Ordering::Relaxed));
@@ -163,19 +183,40 @@ impl Drop for IsolatedCheckout {
 }
 
 /// Replaces `dst` with a copy of `src` (a file, symlink or directory tree).
-fn copy_entry(src: &Path, dst: &Path) -> Result<()> {
+/// `boundary` is the canonical source workspace: on Windows, where symlinks
+/// can't be recreated, a link is copied as the file it points to when that
+/// file is inside the workspace and refused otherwise.
+fn copy_entry(src: &Path, dst: &Path, boundary: &Path) -> Result<()> {
     let meta = fs::symlink_metadata(src)?;
     remove_entry(dst)?;
     if let Some(parent) = dst.parent() {
         fs::create_dir_all(parent)?;
     }
-    if meta.file_type().is_symlink() {
-        std::os::unix::fs::symlink(fs::read_link(src)?, dst)?;
+    if is_link(&meta) {
+        #[cfg(unix)]
+        {
+            let _ = boundary;
+            std::os::unix::fs::symlink(fs::read_link(src)?, dst)?;
+        }
+        #[cfg(not(unix))]
+        {
+            // Only a link to a file inside the workspace is copied, as that
+            // file. A directory link (symlink or junction) could lead back
+            // into the tree, so it is never followed.
+            let resolved = canonical(src).map_err(|e| error(format!("link {} can't be resolved: {e}", src.display())))?;
+            if !resolved.starts_with(boundary) {
+                return Err(error(format!("link {} points outside the workspace; refusing to copy it", src.display())));
+            }
+            if !fs::metadata(&resolved)?.is_file() {
+                return Err(error(format!("link {} points to a directory or special file; only links to files are copied on Windows", src.display())));
+            }
+            fs::copy(&resolved, dst)?;
+        }
     } else if meta.is_dir() {
         fs::create_dir(dst)?;
         for entry in fs::read_dir(src)? {
             let entry = entry?;
-            copy_entry(&entry.path(), &dst.join(entry.file_name()))?;
+            copy_entry(&entry.path(), &dst.join(entry.file_name()), boundary)?;
         }
     } else if meta.is_file() {
         fs::copy(src, dst)?;
@@ -197,10 +238,18 @@ pub(crate) fn remove_entry(path: &Path) -> std::io::Result<()> {
 /// Overlays the tracked and untracked source files onto the clean checkout;
 /// files Git lists but the source deleted are removed from it.
 fn overlay(source: &Path, checkout: &Path) -> Result<()> {
+    let boundary = canonical(source)?;
     let files = output(git(source).args(["ls-files", "--cached", "--others", "--exclude-standard", "-z"]))?;
-    for path in files.split(|b| *b == 0).filter(|path| !path.is_empty()).map(|p| Path::new(std::ffi::OsStr::from_bytes(p))) {
+    for path in files.split(|b| *b == 0).filter(|path| !path.is_empty()) {
+        #[cfg(unix)]
+        let path = {
+            use std::os::unix::ffi::OsStrExt;
+            Path::new(std::ffi::OsStr::from_bytes(path))
+        };
+        #[cfg(not(unix))]
+        let path = Path::new(std::str::from_utf8(path).map_err(|e| error(e.to_string()))?);
         let (from, to) = (source.join(path), checkout.join(path));
-        if fs::symlink_metadata(&from).is_ok() { copy_entry(&from, &to)? } else { remove_entry(&to)? }
+        if fs::symlink_metadata(&from).is_ok() { copy_entry(&from, &to, &boundary)? } else { remove_entry(&to)? }
     }
     Ok(())
 }

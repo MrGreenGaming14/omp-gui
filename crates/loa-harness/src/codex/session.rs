@@ -243,7 +243,7 @@ impl CodexSession {
         if !config.host_tools.is_empty() && config.host_tool_handler.is_none() {
             return Err(AdapterError::Protocol("host tools need a host tool handler".to_owned()));
         }
-        let mut command = Command::new(config.executable.as_deref().unwrap_or(&adapter.executable));
+        let mut command = Command::new(loa_util::exec::resolve(config.executable.as_deref().unwrap_or(&adapter.executable)));
         command.args(&adapter.args).args(mcp_overrides(&config)).args(["app-server", "--listen", "stdio://"]).current_dir(&config.cwd).envs(&config.env);
         let shared = Arc::new(Shared {
             mapper: Mutex::new(None),

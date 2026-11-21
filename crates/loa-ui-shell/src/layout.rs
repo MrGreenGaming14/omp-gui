@@ -173,14 +173,14 @@ impl State {
     }
 
     /// The frame around `center`; `panel_body` draws the active tab's body and `map` lifts frame messages into the app's.
-    pub fn view<'a, M: Clone + 'a>(&'a self, center: impl Into<Element<'a, M>>, panel_body: impl FnOnce(&'a str) -> Element<'a, M>, project_files: Option<Element<'a, M>>, map: fn(Message) -> M) -> Element<'a, M> {
+    pub fn view<'a, M: Clone + 'a>(&'a self, center: impl Into<Element<'a, M>>, panel_body: impl FnOnce(&'a str) -> Element<'a, M>, map: fn(Message) -> M) -> Element<'a, M> {
         let full = self.full;
         let show = |pane| full.is_none() || full == Some(pane);
         let edge = |pane| full.is_none().then(|| Element::from(splitter_edge(Message::DragStart(pane))).map(map));
         let mut frame = row![];
         if show(Pane::Sidebar) {
             let width = if full == Some(Pane::Sidebar) { Length::Fill } else { Length::Fixed(self.sidebar_width) };
-            frame = frame.push(container(self.sidebar.view_with(move |m| map(Message::Sidebar(m)), project_files)).width(width).height(Fill));
+            frame = frame.push(container(self.sidebar.view_with(move |m| map(Message::Sidebar(m)))).width(width).height(Fill));
         }
         frame = frame.push(edge(Pane::Sidebar));
         if show(Pane::Center) {
@@ -288,7 +288,7 @@ mod tests {
         assert_eq!(send(&mut state, [Message::Sidebar(sidebar::Message::OpenSession("s1".into()))]), [Intent::Sidebar(SidebarIntent::OpenSession("s1".into()))]);
         let (crumb, node) = state.breadcrumb().unwrap();
         assert_eq!((crumb.title.as_str(), node.name.as_str(), crumb.waiting), ("Ship it", "buildbox", true));
-        let view = state.view(iced::widget::space(), |_| iced::widget::space().into(), None, |m| m);
+        let view = state.view(iced::widget::space(), |_| iced::widget::space().into(), |m| m);
         assert!(iced_test::Simulator::with_size(iced::Settings::default(), Size::new(700.0, 500.0), view).find("Ship it").is_ok());
         state.sidebar.remove_session("s1");
         assert!(state.breadcrumb().is_none());

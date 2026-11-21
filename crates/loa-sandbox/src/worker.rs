@@ -92,7 +92,7 @@ pub struct SandboxList(pub Arc<StubClient>);
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct BashArgs {
-    /// Script for /bin/sh -c
+    /// Script for /bin/sh -c (cmd /C on Windows)
     pub command: String,
     /// Directory relative to the workspace
     pub cwd: Option<String>,

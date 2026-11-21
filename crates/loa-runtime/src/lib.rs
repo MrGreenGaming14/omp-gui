@@ -22,10 +22,10 @@ pub struct RuntimeParts {
     pub harnesses: Harnesses,
     /// Public key of this node, written to `<session node>`.
     pub node: String,
-    /// Directory new sessions run in; the active project's folder.
+    /// Directory new sessions run in.
     pub cwd: PathBuf,
-    /// Name of the active project.
-    pub project: String,
+    /// The active project, which new sessions join; `None` for no project.
+    pub project: Option<String>,
     /// Approval mode new sessions run in; `None` for the harness default.
     pub access: Option<String>,
 }
@@ -37,7 +37,7 @@ pub struct Runtime {
     sessions: Sessions,
     node: String,
     cwd: PathBuf,
-    project: String,
+    project: Option<String>,
     access: Option<String>,
     /// The approval mode changed while a turn ran: the active session
     /// restarts on it once the turn ends.
@@ -87,20 +87,33 @@ impl Runtime {
         &self.node
     }
 
-    /// Directory new sessions run in; the active project's folder.
+    /// Directory new sessions run in.
     pub fn cwd(&self) -> &Path {
         &self.cwd
     }
 
-    /// Name of the active project.
-    pub fn project(&self) -> &str {
-        &self.project
+    /// The active project, which new sessions join; `None` for no project.
+    /// Projects group sessions; they are not folders.
+    pub fn project(&self) -> Option<&str> {
+        self.project.as_deref()
     }
 
-    /// Makes `project` and its folder `cwd` the active ones.
-    pub fn set_active(&mut self, project: String, cwd: PathBuf) {
-        self.project = project;
+    /// Makes `project` the active one, and `cwd`, when given, the folder new sessions run in.
+    pub fn set_active(&mut self, project: String, cwd: Option<PathBuf>) {
+        self.project = Some(project);
+        if let Some(cwd) = cwd {
+            self.cwd = cwd;
+        }
+    }
+
+    /// Makes `cwd` the folder new sessions run in; the active project stays.
+    pub fn set_cwd(&mut self, cwd: PathBuf) {
         self.cwd = cwd;
+    }
+
+    /// No project is active: new sessions join none.
+    pub fn clear_project(&mut self) {
+        self.project = None;
     }
 
     /// Approval mode new sessions run in; `None` for the harness default.
@@ -135,5 +148,12 @@ impl Runtime {
     /// journal too when `delete` is set.
     pub fn close_session(&mut self, id: &str, delete: bool) -> (Option<Session>, Option<String>) {
         self.sessions.close(&self.library, id, delete)
+    }
+
+    /// Deletes the journals of the empty sessions [`session::recents`] found, unless they
+    /// were opened since; returns a note per one that couldn't be deleted.
+    pub fn delete_empty(&self, empty: Vec<String>) -> Vec<String> {
+        let closed = empty.into_iter().filter(|id| self.sessions.get(id).is_none());
+        closed.filter_map(|id| self.library.delete(&id).err().map(|error| format!("Can't delete empty session {id}: {error}"))).collect()
     }
 }

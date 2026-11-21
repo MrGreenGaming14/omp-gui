@@ -187,7 +187,9 @@ impl RowRenderer for Assistant {
         col.push((status == Some(MessageStatus::Error)).then(|| text("Failed").size(ts(T::Label)).style(text::danger))).into()
     }
     fn estimate(&self, _: &Item, cx: &RowCtx<'_>) -> f32 {
-        cx.streamed.map_or(LINE * text_lines(cx.node), |s| LINE * (s.lines + s.fed / CHARS_PER_LINE + 1) as f32)
+        // Constant time for a drawn reply, so streaming can refresh it on every append.
+        let unparsed = || LINE * (cx.node.text.bytes().filter(|b| *b == b'\n').count() + cx.node.text.len() / CHARS_PER_LINE + 1) as f32;
+        cx.streamed.map_or_else(unparsed, |s| LINE * (s.lines + s.fed / CHARS_PER_LINE + 1) as f32)
     }
 }
 

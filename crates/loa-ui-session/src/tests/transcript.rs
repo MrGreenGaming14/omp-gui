@@ -54,6 +54,8 @@ fn streaming_feeds_each_chunk_to_the_parser_once() {
     let mut s = S::new();
     let t = s.turn();
     let reply = s.msg(t, "assistant", "");
+    // The reply is parsed when it is first drawn, then fed each chunk.
+    drop(s.view());
     let mut full = String::new();
     for i in 0..200 {
         let chunk = ["## Part\n\n", "Some **bold** and `code` ", "- one\n- two\n\n", "```rust\nfn main() {}\n```\n\n"][i % 4];
@@ -64,12 +66,16 @@ fn streaming_feeds_each_chunk_to_the_parser_once() {
             s.commit(Draft::insert_at(t, 0, K::Ext, attrs! { HARNESS: "omp" }, "x"));
         }
     }
-    let streamed = &s.chat.streamed[&reply];
+    let streamed = s.chat.streamed[&reply].get().expect("drawn, so parsed");
     assert_eq!(streamed.fed, full.len(), "re-parsing per token would feed ~N²/2 bytes");
     let whole = markdown::Content::parse(&full.replace('\n', "  \n"));
     assert_eq!(format!("{:?}", streamed.items()), format!("{:?}", whole.items()));
     s.commit(Draft::set_text(reply, "# Final"));
-    assert!(matches!(s.chat.streamed[&reply].items(), [markdown::Item::Heading(..)]));
+    assert!(s.chat.streamed[&reply].get().is_none(), "the old parse is dropped");
+    drop(s.view());
+    let streamed = s.chat.streamed[&reply].get().expect("drawn, so parsed");
+    assert_eq!(streamed.fed, "# Final".len());
+    assert!(matches!(streamed.items(), [markdown::Item::Heading(..)]));
 }
 
 #[test]
@@ -203,6 +209,65 @@ fn scrolling_up_pins_the_view_and_jump_to_latest_follows_again() {
     assert_eq!(loa_ui_kit::testkit::click_label(s.view(), "Jump to latest ↓"), [Message::JumpToLatest]);
     s.send(Message::JumpToLatest);
     assert!(s.chat.is_following() && s.shows("new prompt"));
+}
+
+#[test]
+fn another_session_starts_following_and_its_first_scroll_report_keeps_it() {
+    let mut s = long(300);
+    let content = s.chat.heights.total() as f32;
+    let at = |offset| Message::Scrolled(ScrollMetrics { offset, viewport: 600.0, content });
+    s.send(at(content - 600.0));
+    s.send(at(1_000.0));
+    assert!(!s.chat.is_following());
+    // Reloading the same session (a resync) keeps the reading position.
+    s.chat.load(&s.dom);
+    assert!(!s.chat.is_following());
+    // Another session follows its newest rows, even when the scrollable then reports a smaller
+    // offset left over from the first one.
+    s.commit(Draft::set(s.session, "id", "s2"));
+    s.chat.load(&s.dom);
+    assert!(s.chat.is_following());
+    s.send(Message::Scrolled(ScrollMetrics { offset: 200.0, viewport: 600.0, content }));
+    assert!(s.chat.is_following(), "the old offset is not a scroll up");
+    assert!(!s.shows("Jump to latest ↓"));
+}
+
+#[test]
+fn window_shift_keeps_row_state() {
+    // Rows keep their widget state when the window of built rows slides, so only rows new to
+    // the window report a size. Paired by position, every row took another row's state and
+    // every sensor reported again.
+    let mut s = long(300);
+    let content = s.chat.heights.total() as f32;
+    // Pinned at the top, where the scrollable starts too.
+    s.send(Message::Scrolled(ScrollMetrics { offset: 1_000.0, viewport: 700.0, content }));
+    s.send(Message::Scrolled(ScrollMetrics { offset: 0.0, viewport: 700.0, content }));
+    assert!(!s.chat.is_following());
+
+    let mut frames = loa_ui_kit::testkit::Frames::new();
+    let mut frame = |s: &mut S, events: &[iced::Event]| -> Vec<NodeId> {
+        let messages = frames.frame(s.view(), events);
+        let keys = messages.iter().filter_map(|m| if let Message::Measured { key, .. } = m { Some(*key) } else { None }).collect();
+        messages.into_iter().for_each(|m| drop(s.send(m)));
+        keys
+    };
+    let mut reported = std::collections::HashSet::new();
+    for _ in 0..3 {
+        reported.extend(frame(&mut s, &[]));
+    }
+    assert!(!reported.is_empty(), "the first rows report their size");
+    let before = s.chat.window();
+
+    let wheel = iced::Event::Mouse(iced::mouse::Event::WheelScrolled { delta: iced::mouse::ScrollDelta::Pixels { x: 0.0, y: -1_500.0 } });
+    let mut after_shift = frame(&mut s, &[wheel]);
+    for _ in 0..3 {
+        after_shift.extend(frame(&mut s, &[]));
+    }
+    let after = s.chat.window();
+    assert!(after.start > before.start, "the window slid down: {before:?} -> {after:?}");
+    assert!(!after_shift.is_empty(), "rows new to the window report their size");
+    let again: Vec<_> = after_shift.iter().filter(|key| reported.contains(*key)).collect();
+    assert!(again.is_empty(), "rows that stayed in the window reported again: {again:?}");
 }
 
 #[test]

@@ -247,7 +247,7 @@ impl Omp2Adapter {
         if config.model_role.is_some() || config.mode.is_some_and(|mode| mode != SessionMode::Normal) {
             return refuse("model roles or mode over omp2 RPC");
         }
-        let mut command = Command::new(config.executable.as_ref().unwrap_or(&self.executable));
+        let mut command = Command::new(loa_util::exec::resolve(config.executable.as_ref().unwrap_or(&self.executable)));
         command.args(["--mode", "rpc"]).current_dir(&config.cwd).envs(&config.env);
         for (flag, value) in [("--resume", resume), ("--model", config.model.as_deref()), ("--thinking", config.effort.as_deref())] {
             command.args(value.map(|value| [flag, value]).into_iter().flatten());

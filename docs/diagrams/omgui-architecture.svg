@@ -24,7 +24,7 @@
 <rect x="55" y="306" width="1160" height="46" rx="6" fill="#dfeafb" stroke="#3b6fb6" stroke-width="1.8"/>
 <text x="635.0" y="325.0" text-anchor="middle" font-size="12.5" font-weight="bold" fill="#1d1d1f">View API — loa-view  ·  stable, versioned contract</text>
 <text x="635.0" y="341.0" text-anchor="middle" font-size="11.0" font-weight="normal" fill="#555">view models · Intent enums · transcript reads the session DOM · media via decoder ports</text>
-<rect x="590" y="376" width="300" height="560" rx="4" fill="#fff" stroke="#6b7c93" stroke-width="1.2"/>
+<rect x="590" y="376" width="300" height="612" rx="4" fill="#fff" stroke="#6b7c93" stroke-width="1.2"/>
 <rect x="590" y="376" width="300" height="28" rx="4" fill="#e8edf3" stroke="#6b7c93" stroke-width="1.2"/>
 <text x="602" y="395.0" font-size="13" font-weight="bold" fill="#1d1d1f">Feature controllers · loa-app/areas</text>
 <rect x="605" y="414" width="270" height="54" rx="6" fill="#e8edf3" stroke="#6b7c93" stroke-width="1"/>
@@ -49,14 +49,17 @@
 <text x="740.0" y="782.0" text-anchor="middle" font-size="12.5" font-weight="bold" fill="#1d1d1f">updater</text>
 <text x="868" y="782.0" text-anchor="end" font-size="9.5" fill="#6b7c93">+ peer network</text>
 <rect x="605" y="802" width="270" height="32" rx="6" fill="#e8edf3" stroke="#6b7c93" stroke-width="1"/>
-<text x="740.0" y="822.0" text-anchor="middle" font-size="12.5" font-weight="bold" fill="#1d1d1f">harness</text>
+<text x="740.0" y="822.0" text-anchor="middle" font-size="12.5" font-weight="bold" fill="#1d1d1f">agents</text>
+<text x="868" y="822.0" text-anchor="end" font-size="9.5" fill="#6b7c93">+ omp agent files, mcp</text>
 <rect x="605" y="842" width="270" height="32" rx="6" fill="#e8edf3" stroke="#6b7c93" stroke-width="1"/>
-<text x="740.0" y="862.0" text-anchor="middle" font-size="12.5" font-weight="bold" fill="#1d1d1f">sessions</text>
-<text x="868" y="862.0" text-anchor="end" font-size="9.5" fill="#6b7c93">+ projects, plan</text>
+<text x="740.0" y="862.0" text-anchor="middle" font-size="12.5" font-weight="bold" fill="#1d1d1f">harness</text>
 <rect x="605" y="882" width="270" height="32" rx="6" fill="#e8edf3" stroke="#6b7c93" stroke-width="1"/>
-<text x="740.0" y="902.0" text-anchor="middle" font-size="12.5" font-weight="bold" fill="#1d1d1f">decisions</text>
-<text x="868" y="902.0" text-anchor="end" font-size="9.5" fill="#6b7c93">+ plan check</text>
-<text x="740" y="928" text-anchor="middle" font-size="10" fill="#6b7c93">each area: own folder + one AREAS entry — expected to change</text>
+<text x="740.0" y="902.0" text-anchor="middle" font-size="12.5" font-weight="bold" fill="#1d1d1f">sessions</text>
+<text x="868" y="902.0" text-anchor="end" font-size="9.5" fill="#6b7c93">+ projects, plan</text>
+<rect x="605" y="922" width="270" height="32" rx="6" fill="#e8edf3" stroke="#6b7c93" stroke-width="1"/>
+<text x="740.0" y="942.0" text-anchor="middle" font-size="12.5" font-weight="bold" fill="#1d1d1f">decisions</text>
+<text x="868" y="942.0" text-anchor="end" font-size="9.5" fill="#6b7c93">+ plan check</text>
+<text x="740" y="982" text-anchor="middle" font-size="10" fill="#6b7c93">each area: own folder + one AREAS entry — expected to change</text>
 <rect x="55" y="376" width="505" height="200" rx="4" fill="#fff" stroke="#2d8a6a" stroke-width="1.2"/>
 <rect x="55" y="376" width="505" height="28" rx="4" fill="#d6f1e8" stroke="#2d8a6a" stroke-width="1.2"/>
 <text x="67" y="395.0" font-size="13" font-weight="bold" fill="#1d1d1f">Central settings  ·  loa-settings</text>
@@ -69,7 +72,7 @@
 <text x="427.5" y="463.0" text-anchor="middle" font-size="11.0" font-weight="normal" fill="#555">Config · ConfigStore</text>
 <rect x="75" y="496" width="225" height="66" rx="6" fill="#d6f1e8" stroke="#2d8a6a" stroke-width="1"/>
 <text x="187.5" y="525.0" text-anchor="middle" font-size="12.5" font-weight="normal" fill="#1d1d1f">Model &amp; provider settings</text>
-<text x="187.5" y="541.0" text-anchor="middle" font-size="11.0" font-weight="normal" fill="#555">models.yml · omp config · sign-in</text>
+<text x="187.5" y="541.0" text-anchor="middle" font-size="11.0" font-weight="normal" fill="#555">models.yml · omp config · agents · sign-in</text>
 <rect x="315" y="496" width="225" height="66" rx="6" fill="#d6f1e8" stroke="#2d8a6a" stroke-width="1"/>
 <text x="427.5" y="525.0" text-anchor="middle" font-size="12.5" font-weight="normal" fill="#1d1d1f">Project &amp; updater settings</text>
 <text x="427.5" y="541.0" text-anchor="middle" font-size="11.0" font-weight="normal" fill="#555">pins · digests · release status</text>
@@ -92,7 +95,7 @@
 <path d="M603,778 L542,778" fill="none" stroke="#c26a00" stroke-width="1.4"  marker-end="url(#mctl)"/>
 <path d="M300,594 L300,578" fill="none" stroke="#1f8a70" stroke-width="1.4"  marker-end="url(#mdata)"/>
 <rect x="346" y="579" width="131.9" height="15" rx="3" fill="#fff"/><text x="350" y="590" text-anchor="start" font-size="9.5" fill="#1f8a70" font-weight="bold">persist · calls ports</text>
-<rect x="920" y="446" width="295" height="490" rx="4" fill="#fff" stroke="#c9a227" stroke-width="1.2"/>
+<rect x="920" y="446" width="295" height="530" rx="4" fill="#fff" stroke="#c9a227" stroke-width="1.2"/>
 <rect x="920" y="446" width="295" height="28" rx="4" fill="#fff3c4" stroke="#c9a227" stroke-width="1.2"/>
 <text x="932" y="465.0" font-size="13" font-weight="bold" fill="#1d1d1f">Integration adapters</text>
 <rect x="935" y="482" width="265" height="32" rx="6" fill="#fff3c4" stroke="#c9a227" stroke-width="1"/>
@@ -105,7 +108,7 @@
 <text x="1067.5" y="622.0" text-anchor="middle" font-size="11.5" font-weight="normal" fill="#1d1d1f">Sandbox · loa-sandbox</text>
 <rect x="935" y="642" width="265" height="32" rx="6" fill="#fff3c4" stroke="#c9a227" stroke-width="1"/>
 <text x="1067.5" y="662.0" text-anchor="middle" font-size="11.5" font-weight="normal" fill="#1d1d1f">Peer network · loa-p2p</text>
-<rect x="935" y="682" width="265" height="232" rx="6" fill="#fff3c4" stroke="#c9a227"/>
+<rect x="935" y="682" width="265" height="272" rx="6" fill="#fff3c4" stroke="#c9a227"/>
 <text x="1067" y="700" text-anchor="middle" font-size="12.5" font-weight="bold">Harness adapters · loa-harness</text>
 <rect x="948" y="712" width="116" height="22" rx="6" fill="#fff3c4" stroke="#c9a227" stroke-width="1"/>
 <text x="1006.0" y="727.0" text-anchor="middle" font-size="11" font-weight="normal" fill="#1d1d1f">omp</text>
@@ -127,10 +130,10 @@
 <path d="M877,578 L933,578" fill="none" stroke="#c26a00" stroke-width="1.4"  marker-end="url(#mctl)"/>
 <rect x="883.3" y="522" width="43.400000000000006" height="15" rx="3" fill="#fff"/><text x="905" y="533" text-anchor="middle" font-size="9" fill="#c26a00" font-weight="bold">remote</text>
 <rect x="880.35" y="562" width="49.300000000000004" height="15" rx="3" fill="#fff"/><text x="905" y="573" text-anchor="middle" font-size="9" fill="#c26a00" font-weight="bold">servers</text>
-<path d="M877,818 L933,818" fill="none" stroke="#c26a00" stroke-width="1.4"  marker-end="url(#mctl)"/>
-<rect x="886.25" y="802" width="37.5" height="15" rx="3" fill="#fff"/><text x="905" y="813" text-anchor="middle" font-size="9" fill="#c26a00" font-weight="bold">probe</text>
 <path d="M877,858 L933,858" fill="none" stroke="#c26a00" stroke-width="1.4"  marker-end="url(#mctl)"/>
-<rect x="847.9" y="842" width="114.2" height="15" rx="3" fill="#fff"/><text x="905" y="853" text-anchor="middle" font-size="9" fill="#c26a00" font-weight="bold">import · summarize</text>
+<rect x="886.25" y="842" width="37.5" height="15" rx="3" fill="#fff"/><text x="905" y="853" text-anchor="middle" font-size="9" fill="#c26a00" font-weight="bold">probe</text>
+<path d="M877,898 L933,898" fill="none" stroke="#c26a00" stroke-width="1.4"  marker-end="url(#mctl)"/>
+<rect x="847.9" y="882" width="114.2" height="15" rx="3" fill="#fff"/><text x="905" y="893" text-anchor="middle" font-size="9" fill="#c26a00" font-weight="bold">import · summarize</text>
 <path d="M1200,578 L1208,578 L1208,692 L1202,692" fill="none" stroke="#c26a00" stroke-width="1.4"  marker-end="url(#mctl)"/>
 <text x="1204" y="630.0" text-anchor="end" font-size="9" font-weight="bold" fill="#c26a00">host tools</text>
 <rect x="1262" y="482" width="200" height="32" rx="6" fill="#d9ecd0" stroke="#5a8f3c" stroke-width="1"/>
@@ -153,10 +156,10 @@
 <text x="1362.0" y="662.0" text-anchor="middle" font-size="12" font-weight="bold" fill="#1d1d1f">Peer omgui nodes</text>
 <path d="M1200,658 L1260,658" fill="none" stroke="#4d8a2f" stroke-width="1.4"  marker-end="url(#mext)"/>
 <rect x="1216.2" y="642" width="31.6" height="15" rx="3" fill="#fff"/><text x="1232" y="653" text-anchor="middle" font-size="9" fill="#4d8a2f" font-weight="bold">QUIC</text>
-<rect x="1262" y="782.0" width="200" height="32" rx="6" fill="#d9ecd0" stroke="#5a8f3c" stroke-width="1"/>
-<text x="1362.0" y="802.0" text-anchor="middle" font-size="12" font-weight="bold" fill="#1d1d1f">Agent CLIs</text>
-<path d="M1200,798.0 L1260,798.0" fill="none" stroke="#4d8a2f" stroke-width="1.4"  marker-end="url(#mext)"/>
-<rect x="1195.55" y="782.0" width="72.9" height="15" rx="3" fill="#fff"/><text x="1232" y="793.0" text-anchor="middle" font-size="9" fill="#4d8a2f" font-weight="bold">stdio / RPC</text>
+<rect x="1262" y="802.0" width="200" height="32" rx="6" fill="#d9ecd0" stroke="#5a8f3c" stroke-width="1"/>
+<text x="1362.0" y="822.0" text-anchor="middle" font-size="12" font-weight="bold" fill="#1d1d1f">Agent CLIs</text>
+<path d="M1200,818.0 L1260,818.0" fill="none" stroke="#4d8a2f" stroke-width="1.4"  marker-end="url(#mext)"/>
+<rect x="1195.55" y="802.0" width="72.9" height="15" rx="3" fill="#fff"/><text x="1232" y="813.0" text-anchor="middle" font-size="9" fill="#4d8a2f" font-weight="bold">stdio / RPC</text>
 <rect x="55" y="818" width="505" height="200" rx="4" fill="#fff" stroke="#d38b1f" stroke-width="1.2"/>
 <rect x="55" y="818" width="505" height="28" rx="4" fill="#fde7cf" stroke="#d38b1f" stroke-width="1.2"/>
 <text x="67" y="837.0" font-size="13" font-weight="bold" fill="#1d1d1f">Headless runtime  ·  no Iced</text>
@@ -175,11 +178,11 @@
 <rect x="550.35" y="907" width="49.300000000000004" height="15" rx="3" fill="#fff"/><text x="575" y="918" text-anchor="middle" font-size="9" fill="#c26a00" font-weight="bold">Command</text>
 <path d="M530,878 L603,878" fill="none" stroke="#c26a00" stroke-width="1.4" stroke-dasharray="5 3" marker-end="url(#mctl)"/>
 <rect x="541.5" y="861" width="67.0" height="15" rx="3" fill="#fff"/><text x="575" y="872" text-anchor="middle" font-size="9" fill="#c26a00" font-weight="bold">Transition</text>
-<path d="M640,914 L640,962 L455,962 L455,941" fill="none" stroke="#c26a00" stroke-width="1.4"  marker-end="url(#mctl)"/>
+<path d="M640,954 L640,962 L455,962 L455,941" fill="none" stroke="#c26a00" stroke-width="1.4"  marker-end="url(#mctl)"/>
 <rect x="502.9" y="951" width="114.2" height="15" rx="3" fill="#fff"/><text x="560" y="962" text-anchor="middle" font-size="9.5" fill="#c26a00" font-weight="bold">answer via session</text>
-<path d="M505,928 L505,1000 L1000,1000 L1000,916" fill="none" stroke="#c26a00" stroke-width="1.4"  marker-end="url(#mctl)"/>
+<path d="M505,928 L505,1000 L1000,1000 L1000,956" fill="none" stroke="#c26a00" stroke-width="1.4"  marker-end="url(#mctl)"/>
 <rect x="685.2" y="984" width="149.60000000000002" height="15" rx="3" fill="#fff"/><text x="760" y="995" text-anchor="middle" font-size="10" fill="#c26a00" font-weight="bold">start · send · interrupt</text>
-<path d="M1100,916 L1100,1024 L470,1024 L470,941" fill="none" stroke="#c26a00" stroke-width="1.4" stroke-dasharray="5 3" marker-end="url(#mctl)"/>
+<path d="M1100,956 L1100,1024 L470,1024 L470,941" fill="none" stroke="#c26a00" stroke-width="1.4" stroke-dasharray="5 3" marker-end="url(#mctl)"/>
 <rect x="714.7" y="1025" width="90.60000000000001" height="15" rx="3" fill="#fff"/><text x="760" y="1036" text-anchor="middle" font-size="10" fill="#c26a00" font-weight="bold">session events</text>
 <rect x="935" y="1050" width="265" height="32" rx="6" fill="#fff3c4" stroke="#c9a227" stroke-width="1"/>
 <text x="1067.5" y="1070.0" text-anchor="middle" font-size="11.5" font-weight="normal" fill="#1d1d1f">DOM journal store · loa-bus</text>
@@ -193,7 +196,7 @@
 <text x="1362.0" y="1112.0" text-anchor="middle" font-size="12" font-weight="bold" fill="#1d1d1f">Release feeds · GitHub</text>
 <path d="M75,778 L48,778 L48,1108 L1260,1108" fill="none" stroke="#4d8a2f" stroke-width="1.4"  marker-end="url(#mext)"/>
 <rect x="681.25" y="1093" width="37.5" height="15" rx="3" fill="#fff"/><text x="700" y="1104" text-anchor="middle" font-size="10" fill="#4d8a2f" font-weight="bold">HTTPS</text>
-<path d="M1200,902 L1226,902 L1226,1124 L36,1124 L36,451 L73,451" fill="none" stroke="#3b6fb6" stroke-width="1.4" stroke-dasharray="5 3" marker-end="url(#hport)"/>
+<path d="M1200,942 L1226,942 L1226,1124 L36,1124 L36,451 L73,451" fill="none" stroke="#3b6fb6" stroke-width="1.4" stroke-dasharray="5 3" marker-end="url(#hport)"/>
 <rect x="622.25" y="1117" width="155.5" height="15" rx="3" fill="#fff"/><text x="700" y="1128" text-anchor="middle" font-size="10" fill="#3b6fb6" font-weight="bold">implements settings ports</text>
 <path d="M635,86 L635,146" fill="none" stroke="#7e57c2" stroke-width="1.4"  marker-end="url(#mui)"/>
 <rect x="639" y="87" width="37.5" height="15" rx="3" fill="#fff"/><text x="643" y="98" text-anchor="start" font-size="11" fill="#7e57c2" font-weight="bold">input</text>

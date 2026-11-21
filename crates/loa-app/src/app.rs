@@ -13,7 +13,6 @@ use loa_core::NodeId;
 use loa_ui_kit::style::{ButtonKind, Surface, Tone};
 use loa_ui_kit::theme::{LayoutRole, SpaceRole, TextRole, pad_x, sp, width};
 use loa_ui_kit::widgets::label;
-use loa_ui_kit::icons::tinted;
 use loa_ui_panel::{diff, files};
 use loa_ui_session::composer;
 use loa_ui_session::transcript as chat;
@@ -34,8 +33,8 @@ use loa_ui_terminal as terminal;
 use loa_util::time::{ago, now_ms};
 use loa_view::session::composer::Intent as ComposerIntent;
 use loa_view::session::transcript::Intent as ChatIntent;
-use loa_view::shell::{Intent as ShellIntent, PanelTab, SidebarIntent as Nav};
-use loa_view::theme::{Icon, ThemeRef};
+use loa_view::shell::{Intent as ShellIntent, PanelTab, SessionSummary, SidebarIntent as Nav};
+use loa_view::theme::ThemeRef;
 
 use crate::adapters::summarizer::OmpSummarizers;
 use crate::area::{Area, AreaMsg, Backends, Ctx, Request};
@@ -44,6 +43,7 @@ use crate::services::{Services, harness, open_library};
 
 mod keys;
 pub(crate) mod lifecycle;
+mod media;
 mod panes;
 pub(crate) mod usage;
 mod windows;
@@ -62,12 +62,6 @@ const USAGE_REFRESH: Duration = Duration::from_secs(300);
 const TICK: Duration = Duration::from_secs(1);
 /// How many recent sessions the start screen lists.
 const RECENTS: usize = 4;
-/// The start screen's starters: an icon, a label and the prompt it puts in the composer.
-const STARTERS: [(Icon, &str, &str); 3] = [
-    (Icon::Files, "Explain how this project is laid out", "Explain how this project is laid out: the main parts, how they fit together, and where to start reading."),
-    (Icon::GitCompare, "Review my uncommitted changes", "Review my uncommitted changes for bugs and anything I missed."),
-    (Icon::TriangleAlert, "Find and fix a failing test", "Run the tests, find one that fails, and fix it."),
-];
 
 /// What [`App::build`] starts from besides the services: the runtime's parts
 /// and the backends areas build on. [`App::new`] makes them from this
@@ -85,13 +79,13 @@ pub struct AppParts {
 }
 
 /// The runtime over `library` and `harnesses`: on the project selected last
-/// run while its folder still exists, else the workspace, and on the saved
-/// approval mode.
+/// run while its folder still exists, else on no project in the workspace,
+/// and on the saved approval mode.
 pub(crate) fn runtime_parts(services: &Services, library: Arc<Library>, harnesses: Harnesses) -> RuntimeParts {
     let saved = services.storage.config.load().unwrap_or_default();
     let (project, cwd) = match saved.active_project.filter(|active| active.cwd.is_dir()) {
-        Some(active) => (active.name, active.cwd),
-        None => (services.workspace_project(), services.workspace.clone()),
+        Some(active) => (Some(active.name), active.cwd),
+        None => (None, services.workspace.clone()),
     };
     RuntimeParts { library, harnesses, node: services.node.key.clone(), cwd, project, access: saved.harness.approval_mode }
 }
@@ -134,7 +128,8 @@ pub enum Message {
     /// Redraw while a turn runs.
     Tick,
     Session(lifecycle::Message),
-    WorkingDiff(Option<String>),
+    /// The working tree's changes against HEAD, already parsed off the UI thread.
+    WorkingDiff(Option<Result<Vec<diff::FileDiff>, String>>),
     /// A message for area `.0` ([`Message::area`]).
     Area(&'static str, AreaMsg),
     Usage(usage::Message),
@@ -143,10 +138,14 @@ pub enum Message {
     DetachedChat(String, chat::Message),
     /// The folder dialog closed with this folder, or none when cancelled.
     FolderChosen(Result<Option<PathBuf>, String>),
-    /// A start screen starter, by index in [`STARTERS`].
-    Starter(usize),
     /// A recent session picked on the start screen.
     OpenRecent(String),
+    /// Sessions read from disk at startup. `empty` lists sessions with no turns.
+    Recents { summaries: Vec<SessionSummary>, problems: Vec<String>, empty: Vec<String> },
+    /// The clipboard image a paste asked for, saved to disk, or none.
+    ImagePasted(Result<Option<media::Pasted>, String>),
+    /// A file was dropped on a window.
+    FileDropped(PathBuf),
 }
 
 /// What a shell or composer event asks of the app.
@@ -162,6 +161,10 @@ enum Intent {
     Browse,
     Usage,
     Notice(&'static str),
+    /// Paste the clipboard's image into the composer.
+    PasteImage,
+    /// The composer's project chip: moves the shown session, or picks the next one's project.
+    ProjectPicked(Option<String>),
     CloseProjectTab(String),
     /// A theme was picked (saved) or the active one changed.
     Theme(Option<ThemeRef>),
@@ -189,6 +192,10 @@ fn route(event: ShellIntent) -> Option<Intent> {
         }
         ShellIntent::Sidebar(Nav::DeleteSession(id)) => Intent::Forward(Message::area(areas::sessions::Message::Delete(id))),
         ShellIntent::Sidebar(Nav::OpenProject(project)) => Intent::Forward(Message::area(areas::projects::Message::Open(project))),
+        ShellIntent::Sidebar(Nav::NewProject) => Intent::Forward(Message::area(areas::projects::Message::New)),
+        ShellIntent::Sidebar(Nav::NewSessionIn(project)) => Intent::Forward(Message::area(areas::projects::Message::NewChatIn(project))),
+        ShellIntent::Sidebar(Nav::DeleteProject(project)) => Intent::Forward(Message::area(areas::projects::Message::AskDelete(project))),
+        ShellIntent::Sidebar(Nav::MoveSession { id, project }) => Intent::Forward(Message::area(areas::projects::Message::Move { session: id, project })),
         ShellIntent::Sidebar(Nav::SetPinned { .. }) => Intent::SavePins,
         ShellIntent::Sidebar(Nav::SetProjectPinned { .. }) => Intent::SaveProjectPins,
         ShellIntent::DetachTab(tab) => window(WindowMessage::Detach(tab)),
@@ -216,6 +223,8 @@ fn compose(event: ComposerIntent) -> Option<Intent> {
         ComposerIntent::OpenWorkspace => Some(Intent::Tab("files")),
         ComposerIntent::FolderPicked(path) => Some(Intent::Folder(PathBuf::from(path))),
         ComposerIntent::BrowseFolders => Some(Intent::Browse),
+        ComposerIntent::PasteImage => Some(Intent::PasteImage),
+        ComposerIntent::ProjectPicked(project) => Some(Intent::ProjectPicked(project)),
         ComposerIntent::QueueChanged(_) => None,
     }
 }
@@ -265,8 +274,7 @@ impl App {
         let mut composer = composer::State::new();
         runtime.sessions_mut().harness = runtime.harnesses().default_id();
         composer.set_harnesses(harness::options(runtime.harnesses()), runtime.sessions().harness.as_deref());
-        let (recents, mut problems) = loa_runtime::session::recents(runtime.library());
-        problems.extend(shell.theme_state().errors().iter().map(|e| format!("Theme: {e}")));
+        let problems: Vec<_> = shell.theme_state().errors().iter().map(|e| format!("Theme: {e}")).collect();
         let metrics = terminal::canvas::Metrics::measure(Font::MONOSPACE, loa_ui_kit::theme::text_size(TextRole::Label));
         let terminal = terminal::state::State::new(metrics, terminal::local::LocalShell::login_shell(runtime.cwd().to_path_buf()));
         let files = files::State::new(runtime.cwd().to_path_buf(), Box::new(files::LocalFs));
@@ -279,7 +287,7 @@ impl App {
             composer,
             keymap: palette::Keymap::defaults(palette::Platform::current()),
             app_tools: Vec::new(),
-            peers: Vec::new(),
+            app_tools_rev: 0,
             node: loa_p2p::NodeSlot::default(),
             screen: None,
             notice: (!problems.is_empty()).then(|| problems.join("; ")),
@@ -292,7 +300,7 @@ impl App {
         ctx.shell.set_active_project(saved.active_project.filter(|active| active.cwd.is_dir()).map(|active| active.name));
         ctx.shell.sidebar_mut().set_pins(saved.pinned);
         ctx.shell.sidebar_mut().set_pinned_projects(saved.pinned_projects);
-        ctx.shell.sidebar_mut().set_sessions(recents);
+        let library = Arc::clone(ctx.runtime.library());
         let (areas, area_tasks) = Registry::new(&mut ctx);
         ctx.slash = crate::area::slash_rows(keys::APP_COMMANDS).chain(areas.slash_rows()).collect();
         ctx.composer.set_commands(ctx.slash.clone());
@@ -317,7 +325,16 @@ impl App {
         let settle = app.settle();
         let usage = app.usage.refresh().map(Message::Usage);
         let diff = app.working_diff();
-        (app, Task::batch([setup.map(Message::Shell), area_tasks, diff, settle, usage]))
+        // The sidebar fills in once the sessions on disk have been read.
+        let recents = Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || loa_runtime::session::recents(&library))
+                    .await
+                    .unwrap_or_else(|error| (Vec::new(), vec![format!("Can't read sessions: {error}")], Vec::new()))
+            },
+            |(summaries, problems, empty)| Message::Recents { summaries, problems, empty },
+        );
+        (app, Task::batch([setup.map(Message::Shell), area_tasks, diff, recents, settle, usage]))
     }
 
     /// Every panel tab: the built-in ones, then each area's.
@@ -422,6 +439,7 @@ impl App {
                     Request::RevealTab(id) => self.reveal_tab(&id),
                     Request::Spawn(spawn) => self.lifecycle(|s, ctx, areas| s.run(ctx, areas, Command::Spawn(spawn))),
                     Request::ActivateProject { project, cwd } => self.activate_project(project, cwd),
+                    Request::ForgetProject(project) => self.forget_project(&project),
                     Request::Forward(message) => self.update(*message),
                 });
             }
@@ -489,6 +507,8 @@ impl App {
                 self.ctx.notify(notice);
                 Task::none()
             }
+            Intent::PasteImage => self.paste_image(),
+            Intent::ProjectPicked(project) => self.project_picked(project),
             Intent::CloseProjectTab(project) => {
                 self.close_project_tab(&project);
                 Task::none()
@@ -532,7 +552,7 @@ impl App {
             Message::Shell(message) => {
                 let (task, event) = self.ctx.shell.update(message);
                 if matches!(event, Some(ShellIntent::Sidebar(Nav::NewSession | Nav::OpenSession(_) | Nav::OpenProject(_)))) {
-                    (self.windows.configs, self.windows.overlay) = (None, None);
+                    self.windows.overlay = None;
                 }
                 let action = event.and_then(route).map_or_else(Task::none, |intent| self.intent(intent));
                 Task::batch([task.map(Message::Shell), action])
@@ -607,19 +627,21 @@ impl App {
                 };
                 Task::batch([task, action])
             }
-            Message::Starter(index) => match STARTERS.get(index) {
-                Some((_, _, prompt)) => self.ctx.composer.set_text(prompt).map(Message::Composer),
-                None => Task::none(),
-            },
             Message::OpenRecent(id) => self.lifecycle(|s, ctx, areas| s.run(ctx, areas, Command::Open(SessionId::from(id)))),
+            Message::Recents { summaries, problems, empty } => {
+                self.sessions.recents_loaded(&mut self.ctx, summaries, problems, empty);
+                Task::none()
+            }
+            Message::ImagePasted(pasted) => self.image_pasted(pasted),
+            Message::FileDropped(path) => self.file_dropped(path),
             Message::Session(message) => self.lifecycle(|s, ctx, areas| s.update(ctx, areas, message)),
-            Message::WorkingDiff(patch) => self.show_diff(patch),
+            Message::WorkingDiff(diff) => self.show_diff(diff),
             // The models screen's own close button, drawn inside Configs or Settings.
             Message::Area(_, message)
                 if matches!(message.downcast_ref(), Some(areas::models::Message::Close))
-                    && (self.windows.configs.is_some() || matches!(self.windows.overlay, Some(Overlay::Settings(_)))) =>
+                    && matches!(self.windows.overlay, Some(Overlay::Settings(_) | Overlay::Configs(_))) =>
             {
-                (self.windows.configs, self.windows.overlay) = (None, None);
+                self.windows.overlay = None;
                 self.ctx.close_screen();
                 Task::none()
             }
@@ -636,7 +658,12 @@ impl App {
             return self.update(Message::Palette(palette::Message::Close));
         }
         let windows = &mut self.windows;
-        if windows.overlay.take().is_some() || std::mem::take(&mut windows.docs.full) || windows.configs.take().is_some() {
+        // A file's full screen leaves before the Configs window it is drawn in.
+        if windows.docs.full && matches!(windows.overlay, Some(Overlay::Configs(_))) {
+            windows.docs.full = false;
+            return Task::none();
+        }
+        if windows.overlay.take().is_some() {
             return Task::none();
         }
         if let Some(pane) = self.ctx.shell.full() {
@@ -662,9 +689,7 @@ impl App {
     pub fn view(&self) -> Element<'_, Message> {
         let ctx = &self.ctx;
         let screen = ctx.screen().and_then(|screen| self.areas.iter().find(|area| area.id() == screen)?.view_screen(ctx));
-        let center = if let Some(tab) = self.windows.configs {
-            self.configs_view(tab)
-        } else if let Some(screen) = screen {
+        let center = if let Some(screen) = screen {
             screen
         } else if let Some(session) = ctx.runtime.sessions().active() {
             let transcript = self.sessions.chat.view(session.dom(), Message::Chat, |slot| self.decision_card(session.id().as_str(), slot.node));
@@ -679,16 +704,15 @@ impl App {
             Some(notice) => column![center, container(label(notice, TextRole::Caption, Tone::Muted)).padding([sp(SpaceRole::Xs), sp(SpaceRole::Xl)])].into(),
             None => center,
         };
-        // A peer's project never lists its files: its disk is only reached through the grant-checked folder path.
-        let project_files = (!areas::peers::is_remote(ctx.runtime.project())).then(|| self.files.view_compact().map(Message::Files));
-        let frame = ctx.shell.view(center, |tab| self.view_tab(tab), project_files, Message::Shell);
+        let frame = ctx.shell.view(center, |tab| self.view_tab(tab), Message::Shell);
         let frame: Element<'_, Message> = match self.windows.overlay {
             Some(overlay) => {
                 let window = match overlay {
                     Overlay::Usage => self.usage.view().map(Message::Usage),
                     Overlay::Settings(tab) => self.settings_view(tab),
+                    Overlay::Configs(tab) => self.configs_view(tab),
                 };
-                let scrim = mouse_area(container(space()).style(style::scrim).width(Fill).height(Fill)).on_press(Message::Window(WindowMessage::CloseSettings));
+                let scrim = mouse_area(container(space()).style(style::scrim).width(Fill).height(Fill)).on_press(Message::Window(WindowMessage::CloseOverlay));
                 let top = Padding::from(sp(SpaceRole::Xl)).top(width(LayoutRole::NavWidth) / 4.0);
                 stack![frame, scrim, container(opaque(window)).center_x(Fill).padding(top)].into()
             }
@@ -697,25 +721,26 @@ impl App {
         if self.palette.is_open() { stack![frame, self.palette.view().map(Message::Palette)].into() } else { frame }
     }
 
-    /// The center with no session open: a heading, the composer, starters and recent sessions here.
+    /// The center with no session open: a heading, the composer and the recent sessions of the
+    /// active project (of every project without one).
     fn start_view(&self) -> Element<'_, Message> {
         let ctx = &self.ctx;
         let starting = ctx.runtime.sessions().starting().is_some();
         let project = ctx.runtime.project();
-        let starters = STARTERS.iter().enumerate().map(|(index, (icon, title, _))| {
-            let content = row![tinted(*icon, TextRole::Body, Tone::Muted), label(*title, TextRole::Body, Tone::Normal).width(Fill), tinted(Icon::ChevronRight, TextRole::Body, Tone::Muted)];
-            list_row(content, (!starting).then_some(Message::Starter(index)))
-        });
+        // Where new sessions go: the active project, else the folder.
+        let place = project.map_or_else(|| workspace::chip(ctx.services.host.git.as_ref(), ctx.runtime.cwd()).path, str::to_owned);
         let now = now_ms();
-        let recents = ctx.shell.sidebar().recents().into_iter().filter(|summary| summary.project.as_deref() == Some(project)).take(RECENTS).map(|summary| {
+        let recents = ctx.shell.sidebar().recents().into_iter().filter(|summary| project.is_none_or(|project| summary.project.as_deref() == Some(project)));
+        let recents = recents.take(RECENTS).map(|summary| {
             let content = row![label(summary.title.as_str(), TextRole::Body, Tone::Normal).width(Fill).wrapping(text::Wrapping::None), label(ago(now, summary.updated), TextRole::Caption, Tone::Muted)];
             list_row(content, Some(Message::OpenRecent(summary.id.clone())))
         });
         let recents: Vec<_> = recents.collect();
-        let recent = (!recents.is_empty()).then(|| column![label(format!("Recent in {project}"), TextRole::Caption, Tone::Muted), divided(recents)].spacing(sp(SpaceRole::S)));
-        let status = if starting { format!("Starting a session in {project}…") } else { format!("in {project}") };
+        let header = if project.is_some() { format!("Recent in {place}") } else { "Recent".to_owned() };
+        let recent = (!recents.is_empty()).then(|| column![label(header, TextRole::Caption, Tone::Muted), divided(recents)].spacing(sp(SpaceRole::S)));
+        let status = if starting { format!("Starting a session in {place}…") } else { format!("in {place}") };
         let heading = column![label("What should we work on?", TextRole::Title, Tone::Normal), label(status, TextRole::Body, Tone::Muted)];
-        let body = column![heading.spacing(sp(SpaceRole::Xs)).width(Fill).align_x(Alignment::Center), ctx.composer.view().map(Message::Composer), divided(starters.collect())];
+        let body = column![heading.spacing(sp(SpaceRole::Xs)).width(Fill).align_x(Alignment::Center), ctx.composer.view().map(Message::Composer)];
         let body = body.push(recent).spacing(sp(SpaceRole::L)).width(Fill).max_width(width(LayoutRole::ComposerWidth));
         container(scrollable(container(body).center_x(Fill).padding(pad_x(SpaceRole::Xl))).height(iced::Length::Shrink)).center(Fill).into()
     }
@@ -737,13 +762,31 @@ impl App {
         let own = [
             self.ctx.shell.subscription().map(Message::Shell),
             self.ctx.composer.subscription().map(Message::Composer),
-            iced::keyboard::listen().map(Message::Keyboard),
+            iced::event::listen_with(key_press),
+            iced::event::listen_with(file_drop),
             crate::watch::sessions(self.ctx.runtime.sessions()).map(|(id, feed)| Message::Session(lifecycle::Message::Feed(id, feed))),
             if busy { iced::time::every(TICK).map(|_| Message::Tick) } else { Subscription::none() },
             iced::time::every(USAGE_REFRESH).map(|_| Message::Usage(usage::Message::Refresh)),
             iced::window::close_events().map(|id| Message::Window(WindowMessage::Closed(id))),
         ];
         Subscription::batch(own.into_iter().chain(areas))
+    }
+}
+
+/// Keeps only key presses that no widget captured. Releases and modifier changes would each cost a
+/// full update and view.
+fn key_press(event: iced::Event, status: iced::event::Status, _: iced::window::Id) -> Option<Message> {
+    match (event, status) {
+        (iced::Event::Keyboard(event @ keyboard::Event::KeyPressed { .. }), iced::event::Status::Ignored) => Some(Message::Keyboard(event)),
+        _ => None,
+    }
+}
+
+/// Files dropped on a window go to the composer.
+fn file_drop(event: iced::Event, _: iced::event::Status, _: iced::window::Id) -> Option<Message> {
+    match event {
+        iced::Event::Window(iced::window::Event::FileDropped(path)) => Some(Message::FileDropped(path)),
+        _ => None,
     }
 }
 

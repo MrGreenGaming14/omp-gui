@@ -134,7 +134,7 @@ fn runtime(library: Arc<Library>, adapter: &Counted, cwd: &Path) -> Runtime {
         harnesses,
         node: "node".to_owned(),
         cwd: cwd.to_path_buf(),
-        project: "project".to_owned(),
+        project: Some("project".to_owned()),
         access: None,
     });
     runtime.sessions_mut().harness = Some(HARNESS.to_owned());
@@ -312,7 +312,7 @@ async fn resume_errors_continue_or_notify() {
     run_one(closed).await;
     runtime.dispatch(Command::Open(id.clone()));
     assert!(runtime.sessions().active().unwrap().harness().is_none());
-    runtime.set_active("other".to_owned(), new.clone());
+    runtime.set_active("other".to_owned(), Some(new.clone()));
 
     let (operation, config) = prepared(&runtime.dispatch(Command::Send(prompt("again"))));
     assert_eq!(config.cwd, old, "a resume runs in the session's own folder");
@@ -370,15 +370,17 @@ async fn feed_skips_stale_patches_merges_appends_resyncs_and_ends() {
     for text in ["one ", "two ", "three"] {
         writer.commit(Draft::append(message, text)).unwrap();
     }
-    let inserted = feed.next().await.unwrap();
-    let events = dispatch(&mut runtime, inserted.clone());
-    assert!(matches!(events.as_slice(), [RuntimeEvent::Session(SessionEvent::Patch(..))]));
-    assert!(dispatch(&mut runtime, inserted).is_empty(), "a stale patch is ignored");
-
-    let appended = feed.next().await.unwrap();
-    assert!(matches!(&appended, Feed::Event(Event::Appends(appends)) if appends.last_seq > appends.first_seq));
-    let events = dispatch(&mut runtime, appended);
-    assert!(matches!(events.as_slice(), [RuntimeEvent::Session(SessionEvent::Patch(..))]));
+    // What arrived within a frame comes as one batch; the appends merged in the bus queue.
+    let batch = feed.next().await.unwrap();
+    let Feed::Events(events) = &batch else { panic!("a batch of events") };
+    assert!(matches!(events.as_slice(), [Event::Patch(_), Event::Appends(appends)] if appends.last_seq > appends.first_seq));
+    let events = dispatch(&mut runtime, batch.clone());
+    assert!(matches!(
+        events.as_slice(),
+        [RuntimeEvent::Session(SessionEvent::Patch(_, inserted)), RuntimeEvent::Session(SessionEvent::Patch(_, appended))]
+            if inserted.node == message && appended.node == message
+    ), "each patch in order");
+    assert!(dispatch(&mut runtime, batch).is_empty(), "stale patches are ignored");
     let dom = runtime.sessions().get(id.as_str()).unwrap().dom();
     assert_eq!(dom.get(message).unwrap().text, "one two three");
     assert_eq!(dom.seq(), writer.with_dom(Dom::seq));
@@ -407,4 +409,106 @@ async fn feed_skips_stale_patches_merges_appends_resyncs_and_ends() {
     assert!(dispatch(&mut runtime, ended).is_empty());
     assert!(feed.next().await.is_none(), "nothing follows the end");
     assert_eq!(*runtime.sessions().get(id.as_str()).unwrap().dom(), writer.with_dom(Dom::clone));
+}
+
+/// Appends committed while the feed waits reach the runtime in a few batches, and applying
+/// them gives the writer's text.
+#[tokio::test]
+async fn streamed_appends_arrive_in_few_batches() {
+    let dir = tempfile::tempdir().unwrap();
+    let adapter = Counted::new(ScriptedAdapter::new(HARNESS));
+    let mut runtime = runtime(library(dir.path()), &adapter, dir.path());
+    let (id, _) = start(&mut runtime, None).await;
+    let writer = writer(&runtime, &id);
+    let root = writer.with_dom(|dom| dom.root().unwrap().id);
+    let turn = writer.commit(Draft::insert(root, ElementKind::Turn, Vec::<(&str, Value)>::new(), "")).unwrap().node;
+    let message = writer.commit(Draft::insert(turn, ElementKind::Message, [(attr::ROLE, Value::from("assistant"))], "")).unwrap().node;
+
+    let mut feed = WriterFeed::new(Arc::clone(&writer), Policy::coalescing(4096));
+    let Some(Feed::Synced(synced)) = feed.next().await else { panic!("the feed opens with the writer's DOM") };
+    let mut mirror = Arc::unwrap_or_clone(synced);
+
+    for _ in 0..500 {
+        writer.commit(Draft::append(message, "token ")).unwrap();
+    }
+    let mut batches = 0;
+    while mirror.seq() < writer.with_dom(Dom::seq) {
+        let Some(Feed::Events(events)) = feed.next().await else { panic!("the feed delivers the writer's patches") };
+        batches += 1;
+        for event in events {
+            event.apply_to(&mut mirror).unwrap();
+        }
+    }
+    assert!(batches <= 3, "{batches} batches for 500 appends");
+    let expected = writer.with_dom(|dom| dom.get(message).unwrap().text.clone());
+    assert_eq!(mirror.get(message).unwrap().text, expected);
+}
+
+/// A batch is applied event by event, each patch right before the event it stands for, with
+/// the sidebar entry and status ahead of it; the active session's turn reaction comes once,
+/// after the batch.
+#[tokio::test]
+async fn a_batch_keeps_each_patch_before_its_event_and_reacts_to_the_turn_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let adapter = Counted::new(ScriptedAdapter::new(HARNESS));
+    let mut runtime = runtime(library(dir.path()), &adapter, dir.path());
+    let (id, _) = start(&mut runtime, None).await;
+    let writer = writer(&runtime, &id);
+    let root = writer.with_dom(|dom| dom.root().unwrap().id);
+    let mut feed = WriterFeed::new(Arc::clone(&writer), Policy::coalescing(4096));
+    let synced = feed.next().await.unwrap();
+    runtime.dispatch(Command::Feed { id: id.clone(), feed: synced });
+
+    let turn = writer.commit(Draft::insert(root, ElementKind::Turn, [(attr::STATUS, Value::from(TurnStatus::Running))], "")).unwrap().node;
+    writer.commit(Draft::insert(turn, ElementKind::Message, [(attr::ROLE, Value::from(Role::User))], "Plan the release")).unwrap();
+    let batch = feed.next().await.unwrap();
+    let events = runtime.dispatch(Command::Feed { id: id.clone(), feed: batch }).events;
+    let names: Vec<&str> = events
+        .iter()
+        .map(|event| match event {
+            RuntimeEvent::StatusChanged(_) => "status",
+            RuntimeEvent::SummaryChanged(_) => "summary",
+            RuntimeEvent::Session(SessionEvent::Patch(..)) => "patch",
+            RuntimeEvent::Session(SessionEvent::TurnStarted { .. }) => "turn inserted",
+            RuntimeEvent::TurnStarted(_) => "turn started",
+            _ => "other",
+        })
+        .collect();
+    assert_eq!(names, ["status", "patch", "turn inserted", "summary", "patch", "turn started"]);
+    let summary = runtime.sessions().get(id.as_str()).unwrap().summary().unwrap();
+    assert_eq!(summary.title, "Plan the release");
+    assert!(runtime.sessions().active().unwrap().is_busy());
+
+    writer.commit(Draft::set(turn, attr::ENDED, Value::Int(5))).unwrap();
+    writer.commit(Draft::set(turn, attr::STATUS, Value::from(TurnStatus::Done))).unwrap();
+    let batch = feed.next().await.unwrap();
+    let events = runtime.dispatch(Command::Feed { id: id.clone(), feed: batch }).events;
+    let ended = events.iter().filter(|event| matches!(event, RuntimeEvent::TurnEnded(_))).count();
+    assert_eq!(ended, 1);
+    assert!(matches!(events.last(), Some(RuntimeEvent::TurnEnded(session)) if *session == id), "the turn reaction comes last");
+    assert!(!runtime.sessions().active().unwrap().is_busy());
+}
+
+#[tokio::test]
+async fn a_prompt_that_cannot_start_a_session_comes_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let adapter = Counted::new(ScriptedAdapter::new(HARNESS));
+    let mut runtime = runtime(library(dir.path()), &adapter, dir.path());
+    // A start is on its way: a second one gives its prompt back.
+    let _ = prepared(&runtime.dispatch(Command::Start { prompt: None }));
+    let again = runtime.dispatch(Command::Start { prompt: Some(prompt("second")) });
+    match again.events.as_slice() {
+        [RuntimeEvent::Notice(notice), RuntimeEvent::PromptReturned(returned)] => {
+            assert_eq!(notice, "A session is already starting");
+            assert_eq!(returned.text, "second");
+        }
+        _ => panic!("expected a notice and the prompt back"),
+    }
+    // A new session without a prompt leaves the composer alone.
+    assert!(matches!(runtime.dispatch(Command::Start { prompt: None }).events.as_slice(), [RuntimeEvent::Notice(_)]));
+
+    let mut runtime = self::runtime(library(&dir.path().join("other")), &adapter, dir.path());
+    runtime.sessions_mut().harness = None;
+    let none = runtime.dispatch(Command::Start { prompt: Some(prompt("hello")) });
+    assert!(matches!(none.events.as_slice(), [RuntimeEvent::Notice(_), RuntimeEvent::PromptReturned(p)] if p.text == "hello"));
 }

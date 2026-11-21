@@ -152,6 +152,13 @@ pub enum RuntimeEvent {
     TurnStarted(SessionId),
     /// The active session's turn ended.
     TurnEnded(SessionId),
+    /// A session's sidebar entry changed ([`crate::session::Session::summary`]).
+    SummaryChanged(SessionId),
+    /// A turn of the active session changed status: the top bar follows.
+    StatusChanged(SessionId),
+    /// A prompt that couldn't be sent goes back to the composer, which stops waiting for its
+    /// turn.
+    PromptReturned(Prompt),
 }
 
 /// Launches a prepared operation with its full config.
@@ -202,7 +209,7 @@ impl Runtime {
             session_id: session_id.to_owned(),
             node: self.node.clone(),
             cwd: attr(attr::CWD).map_or_else(|| self.cwd.clone(), PathBuf::from),
-            project: Some(attr(attr::PROJECT).unwrap_or(&self.project).to_owned()),
+            project: attr(attr::PROJECT).map(str::to_owned).or_else(|| self.project.clone()),
             mode: Some(attr(attr::MODE).and_then(SessionMode::parse).unwrap_or(SessionMode::Normal)),
             executable: self.harnesses.get(harness).and_then(|entry| entry.executable.clone()),
             approval_mode: self.access.clone(),
@@ -220,22 +227,17 @@ impl Runtime {
 
     fn start(&mut self, prompt: Option<Prompt>, out: &mut Transition) {
         if self.sessions.starting().is_some() {
-            return;
+            return give_back("A session is already starting".to_owned(), prompt, out);
         }
         let Some(harness) = self.sessions.harness.clone() else {
-            out.events.push(RuntimeEvent::Notice("No harness is available on this machine".to_owned()));
-            return;
+            return give_back("No harness is available on this machine".to_owned(), prompt, out);
         };
         let Some(adapter) = self.harnesses.runnable(&harness) else {
-            out.events.push(RuntimeEvent::Notice(format!("{} is unavailable", self.harnesses.label(&harness))));
-            return;
+            return give_back(format!("{} is unavailable", self.harnesses.label(&harness)), prompt, out);
         };
         let (id, writer) = match self.create_session() {
             Ok(created) => created,
-            Err(error) => {
-                out.events.push(RuntimeEvent::Notice(error));
-                return;
-            }
+            Err(error) => return give_back(error, prompt, out),
         };
         self.sessions.set_starting(Some(id.clone()));
         let config = self.base_config(id.as_str(), &harness, None);
@@ -254,8 +256,7 @@ impl Runtime {
     /// continues in a new session.
     fn resume(&mut self, prompt: Prompt, out: &mut Transition) {
         if self.sessions.starting().is_some() {
-            out.events.push(RuntimeEvent::Notice("A session is already starting".to_owned()));
-            return;
+            return give_back("A session is already starting".to_owned(), Some(prompt), out);
         }
         let Some(session) = self.sessions.active() else { return };
         let id = session.id().clone();
@@ -280,7 +281,7 @@ impl Runtime {
         self.prepare(session, harness, true, config, launch, out);
     }
 
-    /// The active session's folder when it still exists and isn't the active project's.
+    /// The active session's folder when it still exists and isn't the folder new sessions run in.
     fn continue_in_new_session(&self, prompt: Prompt, out: &mut Transition) {
         let folder = self.sessions.active().and_then(|session| session_cwd(session.dom())).filter(|folder| folder.is_dir() && *folder != self.cwd);
         out.events.push(RuntimeEvent::ContinueRequested { folder, prompt });
@@ -350,18 +351,25 @@ impl Runtime {
         }
     }
 
-    /// Applies a session feed and reacts to the active session starting or finishing a turn.
+    /// Applies a session feed. Every event of a batch is applied and reacted to in order (a
+    /// patch before the event it stands for); the reactions to the active session starting or
+    /// finishing a turn come once, after the batch.
     fn feed(&mut self, id: SessionId, feed: Feed, out: &mut Transition) {
         let active = self.sessions.is_active(id.as_str());
         let busy = |runtime: &Self| active && runtime.sessions.active().is_some_and(|session| session.is_busy());
         let was_busy = busy(self);
-        match self.sessions.feed(id.as_str(), feed) {
-            Change::None => return,
-            Change::Loaded => out.events.push(RuntimeEvent::Session(SessionEvent::Loaded(id.clone()))),
-            Change::Patch(patch, derived) => {
-                out.events.push(RuntimeEvent::Session(SessionEvent::Patch(id.clone(), patch)));
-                out.events.extend(derived.map(RuntimeEvent::Session));
+        match feed {
+            Feed::Synced(dom) => {
+                let change = self.sessions.sync(id.as_str(), dom);
+                self.changed(&id, change, out);
             }
+            Feed::Events(events) => {
+                for event in events {
+                    let change = self.sessions.apply(id.as_str(), event);
+                    self.changed(&id, change, out);
+                }
+            }
+            Feed::Ended => return,
         }
         let now_busy = busy(self);
         if now_busy && !was_busy {
@@ -372,6 +380,25 @@ impl Runtime {
                 self.restart(out);
             }
             out.events.push(RuntimeEvent::TurnEnded(id));
+        }
+    }
+
+    /// The events of one change of session `id`: its sidebar entry and status first, then the
+    /// patch, then the event it stands for.
+    fn changed(&self, id: &SessionId, change: Change, out: &mut Transition) {
+        match change {
+            Change::None => {}
+            Change::Loaded => out.events.push(RuntimeEvent::Session(SessionEvent::Loaded(id.clone()))),
+            Change::Patch { patch, derived, summary_changed, turn_changed } => {
+                if summary_changed {
+                    out.events.push(RuntimeEvent::SummaryChanged(id.clone()));
+                }
+                if turn_changed && self.sessions.is_active(id.as_str()) {
+                    out.events.push(RuntimeEvent::StatusChanged(id.clone()));
+                }
+                out.events.push(RuntimeEvent::Session(SessionEvent::Patch(id.clone(), patch)));
+                out.events.extend(derived.map(RuntimeEvent::Session));
+            }
         }
     }
 
@@ -499,6 +526,13 @@ impl Runtime {
         self.restart_for_access = false;
         out.effects.extend(self.sessions.active_mut().and_then(|session| session.detach()).map(shutdown));
     }
+}
+
+/// Says why a start or resume can't happen and gives its prompt back to the composer. Without
+/// a prompt (a new session) the composer is left as it is: a turn may run elsewhere.
+fn give_back(notice: String, prompt: Option<Prompt>, out: &mut Transition) {
+    out.events.push(RuntimeEvent::Notice(notice));
+    out.events.extend(prompt.map(RuntimeEvent::PromptReturned));
 }
 
 /// Stops the active session's harness; a failure ends its turn.

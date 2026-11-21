@@ -1,4 +1,4 @@
-version = 1.0.0
+version = 2.0.0
 #[derive(Clone)] struct loa_view::surface::port::Decoders
   extra: Option<NewDecoder>
   still: NewDecoder
@@ -85,6 +85,7 @@ version = 1.0.0
   GitCompare
   GitFork
   Globe
+  Image
   Maximize
   Minimize
   Monitor
@@ -109,6 +110,10 @@ version = 1.0.0
 #[derive(Clone, Debug, Default, PartialEq)] struct loa_view::theme::Appearance
   theme: ThemeRef
   overrides: toml::Table
+#[derive(Clone, Debug, Default, PartialEq, Eq)] enum loa_view::shell::NodeFilter
+  All
+  Node
+    0: String
 #[derive(Clone, Debug, Default, PartialEq, Eq)] struct loa_view::panel::BuiltinTools
   harness: String
   harness_tools: Vec<ToolInfo>
@@ -144,6 +149,23 @@ version = 1.0.0
   question: Option<DecisionDefaultView>
   plan: Option<DecisionDefaultView>
   form: Option<DecisionDefaultView>
+#[derive(Clone, Debug, Default, PartialEq, Eq)] struct loa_view::settings::agents::AgentFields
+  name: String
+  description: String
+  model: Option<ModelSpec>
+  thinking_level: Option<String>
+  tools: Option<Vec<String>>
+  spawns: Option<Vec<String>>
+  body: String
+#[derive(Clone, Debug, Default, PartialEq, Eq)] struct loa_view::settings::agents::Choices
+  models: Vec<String>
+  thinking_levels: Vec<String>
+  tools: Vec<String>
+  tools_note: Option<String>
+#[derive(Clone, Debug, Default, PartialEq, Eq)] struct loa_view::settings::agents::Draft
+  fields: AgentFields
+  base: Option<PathBuf>
+  editing: Option<PathBuf>
 #[derive(Clone, Debug, Default, PartialEq, Eq)] struct loa_view::settings::models::Catalog
   models: Vec<ModelInfo>
   roles: Vec<RoleAssignment>
@@ -160,6 +182,7 @@ version = 1.0.0
   instructions: String
   pinned: Vec<PinnedFile>
   digest_model: Option<String>
+  folder: Option<String>
 #[derive(Clone, Debug, Default, PartialEq, Eq)] struct loa_view::settings::updates::Data
   products: Vec<Product>
   github_requests_left: Option<u64>
@@ -247,6 +270,9 @@ version = 1.0.0
   FolderPicked
     0: String
   BrowseFolders
+  PasteImage
+  ProjectPicked
+    0: Option<String>
 #[derive(Clone, Debug, PartialEq)] enum loa_view::session::transcript::Intent
   Rewind
     0: NodeId
@@ -265,6 +291,13 @@ version = 1.0.0
   Save
     0: ModelSettings
   Reverted
+#[derive(Clone, Debug, PartialEq)] enum loa_view::settings::projects::CreateIntent
+  ChooseFolder
+    0: String
+  Create
+    name: String
+    settings: ProjectSettings
+  Cancel
 #[derive(Clone, Debug, PartialEq)] enum loa_view::settings::projects::Intent
   SaveSettings
     project: String
@@ -277,6 +310,11 @@ version = 1.0.0
   NewChat
     project: String
     cwd: Option<String>
+  ChangeFolder
+    project: String
+    current: Option<String>
+  Delete
+    project: String
 #[derive(Clone, Debug, PartialEq)] enum loa_view::shell::Intent
   Sidebar
     0: SidebarIntent
@@ -364,6 +402,24 @@ version = 1.0.0
     answer: Answer
   OpenLink
     0: String
+#[derive(Clone, Debug, PartialEq, Eq)] enum loa_view::settings::agents::Intent
+  Check
+    0: Draft
+  Save
+    0: Draft
+  Replace
+    0: Draft
+    1: PathBuf
+  Toggle
+    0: PathBuf
+  Delete
+    0: PathBuf
+  Close
+#[derive(Clone, Debug, PartialEq, Eq)] enum loa_view::settings::agents::ModelSpec
+  One
+    0: String
+  Chain
+    0: Vec<String>
 #[derive(Clone, Debug, PartialEq, Eq)] enum loa_view::settings::models::Auth
   Login
     signed_in: bool
@@ -473,10 +529,6 @@ version = 1.0.0
     patches: u64
   Ahead
   Unknown
-#[derive(Clone, Debug, PartialEq, Eq)] enum loa_view::shell::NodeFilter
-  All
-  Node
-    0: String
 #[derive(Clone, Debug, PartialEq, Eq)] enum loa_view::shell::SidebarIntent
   NewSession
   OpenSession
@@ -497,6 +549,14 @@ version = 1.0.0
     pinned: bool
   DeleteSession
     0: String
+  NewProject
+  NewSessionIn
+    0: String
+  DeleteProject
+    0: String
+  MoveSession
+    id: String
+    project: Option<String>
 #[derive(Clone, Debug, PartialEq, Eq)] enum loa_view::surface::BrowserStatus
   Ready
     executable: PathBuf
@@ -566,6 +626,9 @@ version = 1.0.0
 #[derive(Clone, Debug, PartialEq, Eq)] struct loa_view::session::composer::Command
   name: String
   description: String
+#[derive(Clone, Debug, PartialEq, Eq)] struct loa_view::session::composer::PastedImage
+  path: PathBuf
+  size: Option<(u32, u32)>
 #[derive(Clone, Debug, PartialEq, Eq)] struct loa_view::session::composer::PickerAction
   id: String
   label: String
@@ -582,6 +645,14 @@ version = 1.0.0
   summary: String
 #[derive(Clone, Debug, PartialEq, Eq)] struct loa_view::session::port::NotifyError
   0: String
+#[derive(Clone, Debug, PartialEq, Eq)] struct loa_view::settings::agents::AgentEntry
+  path: PathBuf
+  source: AgentSource
+  enabled: bool
+  fields: AgentFields
+#[derive(Clone, Debug, PartialEq, Eq)] struct loa_view::settings::agents::FieldError
+  field: &'static str
+  message: String
 #[derive(Clone, Debug, PartialEq, Eq)] struct loa_view::settings::models::HarnessModel
   harness: String
   name: String
@@ -723,6 +794,9 @@ version = 1.0.0
   Mcp
     server: String
     tool: String
+#[derive(Copy, Clone, Debug, PartialEq, Eq)] enum loa_view::settings::agents::AgentSource
+  User
+  Project
 #[derive(Copy, Clone, Debug, PartialEq, Eq)] enum loa_view::settings::projects::DigestState
   Missing
   Fresh
@@ -890,6 +964,8 @@ impl loa_view::panel::ToolRule
 impl loa_view::session::decisions::UnattendedView
   fn for_kind(&self, _: DecisionKind) -> Option<&DecisionDefaultView>
   fn for_kind_mut(&mut self, _: DecisionKind) -> &mut Option<DecisionDefaultView>
+impl loa_view::settings::agents::ModelSpec
+  fn entries(&self) -> &[String]
 impl loa_view::settings::models::LoginState
   fn is_running(&self) -> bool
 impl loa_view::settings::models::ModelInfo
@@ -939,6 +1015,7 @@ mod loa_view::session::decisions
 mod loa_view::session::port
 mod loa_view::session::transcript
 mod loa_view::settings
+mod loa_view::settings::agents
 mod loa_view::settings::models
 mod loa_view::settings::models::picker
 mod loa_view::settings::models::settings

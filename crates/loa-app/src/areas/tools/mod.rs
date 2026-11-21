@@ -107,8 +107,8 @@ pub struct State {
     harness_tools: HashMap<String, Result<Vec<panel::ToolInfo>, String>>,
     /// omp's tools are being read.
     omp_loading: bool,
-    /// The harness and app tools the Built in section shows.
-    shown: (Option<String>, Vec<panel::ToolInfo>),
+    /// The harness and app tools revision the Built in section shows.
+    shown: (Option<String>, u64),
     /// Entries of the last import scan.
     found: Vec<Found>,
     /// Project the toggles apply to.
@@ -125,7 +125,11 @@ impl State {
     /// The harness the Built in section describes: the active session's,
     /// else the one new sessions start on.
     fn harness(ctx: &Ctx) -> Option<String> {
-        ctx.runtime.sessions().active().and_then(|session| session.harness_id()).map(str::to_owned).or_else(|| ctx.runtime.sessions().harness.clone())
+        Self::harness_id(ctx).map(str::to_owned)
+    }
+
+    fn harness_id(ctx: &Ctx) -> Option<&str> {
+        ctx.runtime.sessions().active().and_then(|session| session.harness_id()).or(ctx.runtime.sessions().harness.as_deref())
     }
 
     /// The omp executable, when omp runs here.
@@ -138,7 +142,7 @@ impl State {
     /// when they haven't been read.
     fn refresh_builtin(&mut self, ctx: &Ctx) -> Task<Message> {
         let harness = Self::harness(ctx);
-        self.shown = (harness.clone(), ctx.app_tools.clone());
+        self.shown = (harness.clone(), ctx.app_tools_rev());
         let label = harness.as_deref().map(|id| ctx.runtime.harnesses().label(id).to_owned()).unwrap_or_default();
         let (harness_tools, harness_note, load) = match harness.as_deref() {
             None => (Vec::new(), Some("No harness is available".to_owned()), None),
@@ -179,7 +183,7 @@ impl State {
     /// Refreshes the Built in section when the harness or the app tools
     /// other areas publish changed.
     fn follow_builtin(&mut self, ctx: &Ctx) -> Task<Message> {
-        if self.shown.0 != Self::harness(ctx) || self.shown.1 != ctx.app_tools {
+        if self.shown.0.as_deref() != Self::harness_id(ctx) || self.shown.1 != ctx.app_tools_rev() {
             self.refresh_builtin(ctx)
         } else {
             Task::none()
@@ -251,8 +255,9 @@ impl State {
     fn refresh_projects(&mut self, ctx: &Ctx) {
         let config = ctx.services.storage.config.load().unwrap_or_default();
         let mut ids: BTreeSet<String> = config.projects.keys().cloned().collect();
-        ids.insert(ctx.runtime.project().to_owned());
+        ids.extend(ctx.runtime.project().map(str::to_owned));
         ids.insert(self.project.clone());
+        ids.remove("");
         self.panel.set_projects(ids.into_iter().map(|id| panel::ProjectRef { name: id.clone(), id }).collect());
         self.panel.select_project(self.project.clone());
         let settings = config.projects.get(&self.project).cloned().unwrap_or_default();
@@ -541,9 +546,10 @@ impl Area for State {
             ssh,
             harness_tools: HashMap::new(),
             omp_loading: false,
-            shown: (None, Vec::new()),
+            shown: (None, 0),
             found: Vec::new(),
-            project: ctx.runtime.project().to_owned(),
+            // No active project: toggles apply to the empty project key, the defaults.
+            project: ctx.runtime.project().map(str::to_owned).unwrap_or_default(),
             terminal,
         };
         state.reload_hosts(ctx);
@@ -686,7 +692,7 @@ impl Area for State {
         if !capabilities.mcp_servers && !capabilities.host_tools {
             return;
         }
-        let project = config.project.clone().unwrap_or_else(|| ctx.runtime.project().to_owned());
+        let project = config.project.clone().or_else(|| ctx.runtime.project().map(str::to_owned)).unwrap_or_default();
         let settings = Self::settings(&project, ctx);
         for name in central::session_disabled_tools(&settings) {
             if !config.disabled_tools.contains(&name) {
@@ -712,7 +718,7 @@ impl Area for State {
         if !target.capabilities.host_tools || target.capabilities.mcp_servers {
             return None;
         }
-        let project = config.project.clone().unwrap_or_else(|| ctx.runtime.project().to_owned());
+        let project = config.project.clone().or_else(|| ctx.runtime.project().map(str::to_owned)).unwrap_or_default();
         let settings = Self::settings(&project, ctx);
         let mut router = HostToolRouter::new();
         let mcp = Arc::new(McpHostTools::new(self.mcp.clone(), Arc::new(ProjectFilter::new(settings.clone()))));
@@ -734,7 +740,10 @@ impl Area for State {
             SessionEvent::Closed(id) => self.remote.forget(id.as_str()),
             _ => {}
         }
-        self.follow_builtin(ctx)
+        match event {
+            SessionEvent::Activated(_) | SessionEvent::Loaded(_) | SessionEvent::Closed(_) => self.follow_builtin(ctx),
+            _ => Task::none(),
+        }
     }
 
     fn project_activated(&mut self, project: &str, cwd: &Path, ctx: &mut Ctx) -> Task<Message> {

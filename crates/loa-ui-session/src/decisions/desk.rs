@@ -16,7 +16,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
 
-pub use loa_util::time::now_ms;
+use loa_util::time::now_ms;
 
 /// How often pending unattended timeouts are checked.
 const TICK: Duration = Duration::from_millis(500);

@@ -10,7 +10,12 @@ fn key(byte: u8) -> NodeIdentity { NodeIdentity::from_secret_bytes(&[byte; 32]) 
 fn scope(resource: Resource, action: Action) -> Scope { Scope::new(resource, [action]).unwrap() }
 fn store() -> GrantStore { GrantStore::with_connection(rusqlite::Connection::open_in_memory().unwrap()).unwrap() }
 fn session(id: &str, project: Option<&str>, created_ms: i64) -> SessionFacts { SessionFacts { id: id.into(), project: project.map(str::to_owned), created_ms } }
-fn folder(path: &str) -> Resource { Resource::Folder { path: path.into() } }
+/// An absolute path for the platform: `/srv/share` stays as is on Unix and
+/// becomes `C:\srv\share` on Windows. Relative paths pass through.
+fn abs(path: &str) -> String {
+    if cfg!(windows) && path.starts_with('/') { format!("C:{}", path.replace('/', "\\")) } else { path.to_owned() }
+}
+fn folder(path: &str) -> Resource { Resource::Folder { path: abs(path) } }
 fn verify(root: &NodeIdentity, store: &GrantStore, holder: &NodeIdentity, token: &[u8], now: i64) -> Result<VerifiedGrant, Denied> {
     let challenge = Challenge([19; 32]);
     let proof = prove(holder, &challenge, token);
@@ -41,6 +46,7 @@ fn authorize_matrix_covers_every_kind_and_prefix_traps() {
     let grant = verify(&root, &store, &alice, &issued.token, NOW).unwrap();
     let (one, two, onex) = (session("one", None, 0), session("two", None, 0), session("one-more", None, 0));
     let (work, new, old) = (session("w", Some("work"), 0), session("n", None, NOW), session("o", Some("workshop"), NOW - 1));
+    let paths = ["/srv/share/docs/deep", "/srv/share", "/srv/shared", "/srv", "srv/share", "/srv/share/../etc"].map(abs);
     let rows = [
         (Request::session(Suggest, &one), true),
         (Request::session(View, &one), true),
@@ -60,12 +66,12 @@ fn authorize_matrix_covers_every_kind_and_prefix_traps() {
         (Request::surface(Drive, "surface://browser/tab"), false),
         (Request::surface(View, "surface://browser/tab2"), false),
         (Request::sandbox(Exec), true),
-        (Request::folder(Write, "/srv/share/docs/deep"), true),
-        (Request::folder(Read, "/srv/share"), true),
-        (Request::folder(Read, "/srv/shared"), false),
-        (Request::folder(Read, "/srv"), false),
-        (Request::folder(Read, "srv/share"), false),
-        (Request::folder(Read, "/srv/share/../etc"), false),
+        (Request::folder(Write, &paths[0]), true),
+        (Request::folder(Read, &paths[1]), true),
+        (Request::folder(Read, &paths[2]), false),
+        (Request::folder(Read, &paths[3]), false),
+        (Request::folder(Read, &paths[4]), false),
+        (Request::folder(Read, &paths[5]), false),
         (Request::ssh(Read, "/srv/share"), false),
     ];
     for (request, allowed) in rows {
@@ -105,8 +111,8 @@ fn reshare_chain_narrows_needs_the_holder_key_and_stops_at_revocation() {
     assert_eq!(grant.chain().len(), 2);
     let s1 = session("one", None, NOW);
     assert!(grant.authorize(&Request::session(View, &s1), NOW).is_ok());
-    assert!(grant.authorize(&Request::folder(Read, "/srv/docs/x"), NOW).is_ok());
-    for denied in [Request::session(Drive, &s1), Request::folder(Read, "/srv"), Request::folder(Write, "/srv/docs")] {
+    assert!(grant.authorize(&Request::folder(Read, &abs("/srv/docs/x")), NOW).is_ok());
+    for denied in [Request::session(Drive, &s1), Request::folder(Read, &abs("/srv")), Request::folder(Write, &abs("/srv/docs"))] {
         assert!(matches!(grant.authorize(&denied, NOW), Err(Denied::Narrowed { block: 1, .. })), "{denied:?}");
     }
 
@@ -114,7 +120,7 @@ fn reshare_chain_narrows_needs_the_holder_key_and_stops_at_revocation() {
     let last = Narrowing { scopes: Some(vec![scope(folder("/srv/docs"), Read)]), ttl_ms: TTL, reshare: false };
     let grandchild = bob_store.reshare(&bob, &child.id, carol.public_key(), last, NOW).unwrap();
     let carols = verify(&root, &issuer, &carol, &grandchild.token, NOW).unwrap();
-    assert!(carols.authorize(&Request::folder(Read, "/srv/docs"), NOW).is_ok());
+    assert!(carols.authorize(&Request::folder(Read, &abs("/srv/docs")), NOW).is_ok());
     assert!(carols.authorize(&Request::session(View, &s1), NOW).is_err());
     carol_store.receive(&carol.public_key(), &root.public_key(), &grandchild.token).unwrap();
     let again = Narrowing { scopes: None, ttl_ms: TTL, reshare: false };
@@ -185,6 +191,23 @@ fn keystore_fallback_migrates_and_never_switches_on_bad_values() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[cfg(windows)]
+#[test]
+fn persisted_key_does_not_inherit_access() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = FileKeyStore::in_dir(dir.path());
+    file.store(&[7; 32]).unwrap();
+    file.store(&[8; 32]).unwrap();
+    assert_eq!(file.load().unwrap().unwrap().as_slice(), &[8; 32]);
+
+    let out = std::process::Command::new("icacls.exe").arg(file.path().unwrap()).output().unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let text = String::from_utf8_lossy(&out.stdout);
+    let entries = text.lines().take_while(|line| !line.trim().is_empty()).count();
+    assert_eq!(entries, 1, "{text}");
+    assert!(!text.contains("(I)"), "{text}");
+}
+
 #[test]
 fn one_key_for_iroh_biscuit_and_the_bus() {
     let id = key(42);
@@ -210,7 +233,10 @@ fn tokens_minted_before_the_kind_table_still_verify() {
     assert_eq!(grant.chain().len(), 2);
     let one = session("one", None, 0);
     assert!(grant.authorize(&Request::session(View, &one), NOW).is_ok());
-    assert!(grant.authorize(&Request::folder(Read, "/srv/share/docs/a"), NOW).is_ok());
+    // The fixture's folder is a Unix path, absolute only there.
+    if cfg!(unix) {
+        assert!(grant.authorize(&Request::folder(Read, "/srv/share/docs/a"), NOW).is_ok());
+    }
     assert!(matches!(grant.authorize(&Request::session(Drive, &one), NOW), Err(Denied::Narrowed { .. })));
     assert!(matches!(grant.authorize(&Request::sandbox(Exec), NOW), Err(Denied::Narrowed { .. })));
     let scopes = token_scopes(token, &root.public_key()).unwrap();

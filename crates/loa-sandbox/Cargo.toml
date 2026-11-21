@@ -18,6 +18,7 @@ host = [
     "dep:tokio",
     "dep:tokio-util",
     "dep:tempfile",
+    "dep:tar",
 ]
 # Firecracker and qemu providers.
 vm = ["host"]
@@ -37,6 +38,7 @@ thiserror = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
 tokio-util = { version = "0.7", features = ["io-util"], optional = true }
 tempfile = { workspace = true, optional = true }
+tar = { version = "0.4.46", default-features = false, optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true

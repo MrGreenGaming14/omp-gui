@@ -109,7 +109,7 @@ fn resolve(covered: &dyn Fn(&str) -> bool, write: bool, folder: &str, path: &str
     if !covered(folder) {
         return Err(format!("no grant lets this node {verb} {folder}"));
     }
-    let root = std::fs::canonicalize(folder).map_err(|e| format!("{folder} can't be opened: {e}"))?;
+    let root = loa_util::fs::canonicalize(folder).map_err(|e| format!("{folder} can't be opened: {e}"))?;
     if !root.to_str().is_some_and(covered) {
         return Err(format!("{folder} leads outside the shared folder"));
     }

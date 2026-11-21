@@ -109,7 +109,7 @@ impl Adapter for ScriptedAdapter {
     }
 
     async fn start(&self, config: SessionConfig, sink: Arc<dyn PatchSink>) -> Result<Box<dyn HarnessSession>> {
-        let attrs: [(&str, Value); 6] = [
+        let mut attrs: Vec<(&str, Value)> = vec![
             (attr::ID, config.session_id.as_str().into()),
             (attr::NODE, config.node.as_str().into()),
             (attr::HARNESS, self.id.into()),
@@ -117,6 +117,8 @@ impl Adapter for ScriptedAdapter {
             (attr::CWD, config.cwd.display().to_string().into()),
             (attr::NATIVE_ID, format!("native-{}", config.session_id).into()),
         ];
+        // As the real adapters do through `kit::ledger::insert_root`.
+        attrs.extend(config.project.as_deref().map(|project| (attr::PROJECT, Value::from(project))));
         let root = sink.commit(Draft::insert(NodeId::DOCUMENT, ElementKind::Session, attrs, ""))?.node;
         Ok(self.session(config, sink, root))
     }

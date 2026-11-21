@@ -40,25 +40,55 @@ pub fn deliver<S, M, E>(state: &mut S, messages: impl IntoIterator<Item = M>, mu
 /// A change applied to the state between frames.
 pub type Step<S> = Box<dyn Fn(&mut S)>;
 
-/// Renders `state` frame after frame through one `UserInterface` cache, as the app does, and
-/// applies `steps` between frames. Catches widget-state mix-ups a fresh simulator never sees.
-pub fn run_frames<S, M>(state: &mut S, view: impl Fn(&S) -> Element<'_, M>, mut update: impl FnMut(&mut S, M), steps: Vec<Step<S>>) {
-    use iced::advanced::{clipboard, renderer::Headless};
-    let mut renderer = iced::futures::executor::block_on(<iced::Renderer as Headless>::new(Font::DEFAULT, Pixels(16.0), None)).expect("headless renderer");
-    let at = Point::new(400.0, 300.0);
-    let events = [Event::Mouse(mouse::Event::CursorMoved { position: at }), Event::Window(iced::window::Event::RedrawRequested(std::time::Instant::now()))];
-    let mut frame = |state: &mut S, cache: Cache| {
+/// Draws frames one after another through one `UserInterface` cache, sending each frame events,
+/// as the running app does. `iced_test`'s simulator builds every view from scratch, so it never
+/// diffs one frame against the last and misses widget-state mix-ups between frames.
+pub struct Frames {
+    renderer: iced::Renderer,
+    cache: Option<Cache>,
+}
+
+impl Frames {
+    const CURSOR: Point = Point::new(400.0, 300.0);
+
+    pub fn new() -> Self {
+        use iced::advanced::renderer::Headless;
+        let renderer = iced::futures::executor::block_on(<iced::Renderer as Headless>::new(Font::DEFAULT, Pixels(16.0), None)).expect("headless renderer");
+        Self { renderer, cache: Some(Cache::default()) }
+    }
+
+    /// Draws `view` after `events` (the cursor moves to the middle first) and returns the
+    /// messages it published.
+    pub fn frame<M>(&mut self, view: Element<'_, M>, events: &[Event]) -> Vec<M> {
+        use iced::advanced::clipboard;
+        let events: Vec<Event> = std::iter::once(Event::Mouse(mouse::Event::CursorMoved { position: Self::CURSOR }))
+            .chain(events.iter().cloned())
+            .chain(std::iter::once(Event::Window(iced::window::Event::RedrawRequested(std::time::Instant::now()))))
+            .collect();
         let mut messages = Vec::new();
-        let mut ui = UserInterface::build(view(state), Size::new(900.0, 700.0), cache, &mut renderer);
-        let _ = ui.update(&events, mouse::Cursor::Available(at), &mut renderer, &mut clipboard::Null, &mut messages);
-        let cache = ui.into_cache();
+        let mut ui = UserInterface::build(view, Size::new(900.0, 700.0), self.cache.take().unwrap_or_default(), &mut self.renderer);
+        let _ = ui.update(&events, mouse::Cursor::Available(Self::CURSOR), &mut self.renderer, &mut clipboard::Null, &mut messages);
+        self.cache = Some(ui.into_cache());
+        messages
+    }
+}
+
+impl Default for Frames {
+    fn default() -> Self { Self::new() }
+}
+
+/// Renders `state` frame after frame through one cache, applying `steps` between frames and two
+/// frames after each. Catches widget-state mix-ups a fresh simulator never sees.
+pub fn run_frames<S, M>(state: &mut S, view: impl Fn(&S) -> Element<'_, M>, mut update: impl FnMut(&mut S, M), steps: Vec<Step<S>>) {
+    let mut frames = Frames::new();
+    let mut frame = |state: &mut S| {
+        let messages = frames.frame(view(state), &[]);
         messages.into_iter().for_each(|m| update(state, m));
-        cache
     };
-    let mut cache = frame(state, Cache::default());
+    frame(state);
     for step in steps {
         step(state);
-        cache = frame(state, cache);
-        cache = frame(state, cache);
+        frame(state);
+        frame(state);
     }
 }

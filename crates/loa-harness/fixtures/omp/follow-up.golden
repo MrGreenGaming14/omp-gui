@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <session nid="1" created.int="1" harness="omp" id="s" node="owner" schema.int="1">
-  <turn nid="2" status="done">
+  <turn nid="2" ended.int="0" started.int="0" status="done">
     <message nid="3" by="owner" role="user" status="done">prompt p</message>
     <message nid="4" id="msg-2" kind="text" role="assistant" status="done">1
 2
@@ -9,7 +9,7 @@
 5
 6</message>
   </turn>
-  <turn nid="5" status="done">
+  <turn nid="5" ended.int="0" started.int="0" status="done">
     <message nid="6" by="owner" role="user" status="done">prompt p2</message>
     <message nid="7" id="msg-4" kind="text" role="assistant" status="done">second</message>
   </turn>

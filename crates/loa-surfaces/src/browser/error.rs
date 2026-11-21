@@ -38,18 +38,21 @@ impl From<BrowserError> for SurfaceError {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl From<x11rb::errors::ConnectError> for BrowserError {
     fn from(error: x11rb::errors::ConnectError) -> Self {
         BrowserError::X11(error.to_string())
     }
 }
 
+#[cfg(target_os = "linux")]
 impl From<x11rb::errors::ConnectionError> for BrowserError {
     fn from(error: x11rb::errors::ConnectionError) -> Self {
         BrowserError::X11(error.to_string())
     }
 }
 
+#[cfg(target_os = "linux")]
 impl From<x11rb::errors::ReplyError> for BrowserError {
     fn from(error: x11rb::errors::ReplyError) -> Self {
         BrowserError::X11(error.to_string())

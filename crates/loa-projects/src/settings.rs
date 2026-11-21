@@ -11,6 +11,10 @@ use std::path::PathBuf;
 pub trait SettingsStore: Send + Sync {
     async fn load(&self, project: &str) -> Result<ProjectSettings>;
     async fn save(&self, project: &str, settings: &ProjectSettings) -> Result<()>;
+    /// The projects that have settings, sorted by name.
+    async fn names(&self) -> Result<Vec<String>>;
+    /// Forgets the project's settings; nothing happens when it has none.
+    async fn remove(&self, project: &str) -> Result<()>;
 }
 
 /// One JSON file per project in `dir`, written atomically, named by the project percent encoded.
@@ -48,6 +52,47 @@ impl SettingsStore for FileSettingsStore {
         let write = tokio::task::spawn_blocking(move || loa_util::fs::write_atomic(&path, &json, None));
         Ok(write.await.map_err(|e| Error::Port(e.to_string()))??)
     }
+
+    async fn names(&self) -> Result<Vec<String>> {
+        let mut entries = match tokio::fs::read_dir(&self.dir).await {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(e.into()),
+        };
+        let mut names = Vec::new();
+        while let Some(entry) = entries.next_entry().await? {
+            let file = entry.file_name();
+            let Some(name) = file.to_str().and_then(|f| f.strip_suffix(".json")).and_then(decode_name) else { continue };
+            // Only the file `path` writes for a name counts, so strays are skipped.
+            if self.path(&name).file_name() == Some(file.as_os_str()) && entry.file_type().await?.is_file() {
+                names.push(name);
+            }
+        }
+        names.sort();
+        Ok(names)
+    }
+
+    async fn remove(&self, project: &str) -> Result<()> {
+        match tokio::fs::remove_file(self.path(project)).await {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
+            _ => Ok(()),
+        }
+    }
+}
+
+/// Undoes the percent encoding of [`FileSettingsStore::path`]; `None` for a malformed escape or bytes that aren't UTF-8.
+fn decode_name(stem: &str) -> Option<String> {
+    let mut out = Vec::with_capacity(stem.len());
+    let mut bytes = stem.bytes();
+    while let Some(byte) = bytes.next() {
+        if byte == b'%' {
+            let hex = [bytes.next()?, bytes.next()?];
+            out.push(u8::from_str_radix(std::str::from_utf8(&hex).ok()?, 16).ok()?);
+        } else {
+            out.push(byte);
+        }
+    }
+    String::from_utf8(out).ok()
 }
 
 pub fn is_excluded(dom: &Dom) -> bool {

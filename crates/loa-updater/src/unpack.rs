@@ -188,6 +188,7 @@ impl EntrySink {
         if target.as_os_str().is_empty() {
             return Err(unsafe_entry(shown, "symlink without target"));
         }
+        #[cfg_attr(not(unix), expect(unused_variables))]
         let dest = self.leaf(rel, shown)?;
         #[cfg(unix)]
         return std::os::unix::fs::symlink(target, &dest).map_err(io_at(&dest));

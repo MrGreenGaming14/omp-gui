@@ -27,7 +27,7 @@ impl<P: NodeProbe> Tailnet<P> {
     pub fn new(executable: PathBuf, port: u16, probe: P) -> Self { Self { executable, port, probe, found: None } }
 
     async fn scan(&self) -> Result<Vec<NearbyPeer>> {
-        let output = Command::new(&self.executable).args(["status", "--json"]).output().await?;
+        let output = Command::new(loa_util::exec::resolve(&self.executable)).args(["status", "--json"]).output().await?;
         if !output.status.success() {
             return Err(NodeError::Net(format!("tailscale status exited with {}: {}", output.status, String::from_utf8_lossy(&output.stderr).trim())));
         }

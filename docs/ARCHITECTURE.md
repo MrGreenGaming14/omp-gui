@@ -23,8 +23,8 @@ Everything else builds on these three. Their existing public items change only w
 | `loa-xml`, `loa-rewind` | core | XML debug export, DOM diff and rewind plans |
 | `loa-journal` | core | Append only prost journal, replay, snapshots, fork |
 | `loa-bus` | core | Session writer (`PatchSink` impl), publish subscribe with backpressure |
-| `loa-settings` | settings | The settings hub: every app and harness setting in one place. `app` is the central config (schema with version, `ConfigStore`, theme reference); `models` holds the model settings and the omp `config.yml`/`models.yml` editors on a comment-preserving YAML editor, the model selector grammar, the omp RPC types, the shared settings error type and the ports the omp side implements: the omp RPC (`rpc::OmpRpc`), provider logins (`login::OmpProviderAccount`), the agent directory (`files::OmpFilesResolver`) and validation (`error::SettingsValidator`); `projects` holds the project settings, digest and overview types; `updates` holds the updater's release, gate, hold and peer status types. Depends only on `loa-util`, `loa-core` and `loa-contracts`. Claude JSON edits normalize whitespace while preserving key order; omp YAML edits retain untouched comments |
-| `loa-util` | core | Domain-free helpers: poison-tolerant locks, atomic files, executables (`write_executable`, `retry_busy`, `which`, `probe_cli`, captured `output`), time, text, `Registry`, `str_enum!` |
+| `loa-settings` | settings | The settings hub: every app and harness setting in one place. `app` is the central config (schema with version, `ConfigStore`, theme reference); `models` holds the model settings and the omp `config.yml`/`models.yml` editors on a comment-preserving YAML editor, the omp agent definition files (`models::agents`: read, validate, write, enable/disable and delete), the model selector grammar, the omp RPC types, the shared settings error type and the ports the omp side implements: the omp RPC (`rpc::OmpRpc`), provider logins (`login::OmpProviderAccount`), the agent directory (`files::OmpFilesResolver`) and validation (`error::SettingsValidator`); `projects` holds the project settings, digest and overview types; `updates` holds the updater's release, gate, hold and peer status types. Depends only on `loa-util`, `loa-core` and `loa-contracts`. Claude JSON edits normalize whitespace while preserving key order; omp YAML edits retain untouched comments |
+| `loa-util` | core | Domain-free helpers: poison-tolerant locks, atomic files, executables (`write_executable`, `retry_busy`, `which` with `PATHEXT` matching on Windows, `resolve`, `probe_cli`, captured `output`), the real home directory and `canonicalize` without Windows verbatim prefixes, time, text, `Registry`, `str_enum!` |
 | `loa-harness` | adapters | Harness adapters and account implementations, factory registry, CLI and omp OAuth login strategies, shared configuration editors for Claude and Codex, and the omp implementations of the `loa-settings` ports (`OmpService` RPC, `OmpAccount` provider logins, `OmpLaunch` files resolver, `OmpSettingsValidator`) |
 | `loa-session` | sessions | The session domain on any harness: the journal-backed `Library`, `SessionStore`, fork, rewind and compaction, plan mode (`PlanGate`), rules and advisor hooks, transcript helpers. Native session discovery stays in `loa-harness::native` |
 | `loa-runtime` | sessions | The headless app runtime: `Runtime` owns the session `Library`, the live `Sessions` (single-writer feeds, `SessionEvent`s), the harness registry (`Harnesses`), the active project and folder and the approval mode; `feed::Source` reads channel and writer feeds. `lifecycle` is the headless lifecycle facade: `Runtime::dispatch(Command)` (start, open, send, spawn, interrupt, close, approval mode, feeds, completions) returns a `Transition` of async `Effect`s (harness calls resolving to a `Completion`) and `RuntimeEvent`s; new sessions get their base config and wait for a `Prepared` config before the harness starts. No `iced`, UI crates or concrete adapters |
@@ -36,7 +36,7 @@ Everything else builds on these three. Their existing public items change only w
 | `loa-surface-hub` | surfaces | The app's surface service: built-in servers, MCP declared surfaces, `surface_*` agent tools as host tools and a loopback MCP endpoint, `<surface>` drafts |
 | `loa-models` | models | The model settings service (`service::Backend`: catalog, sign-in, settings load and save over the `loa-settings` ports) and its offline `testing` fakes. `Backend` is built only from injected `Parts`; `loa-app` composes the real ones from `loa-harness` |
 | `loa-projects` | projects | Digests, context ranking, `project_search`, `project_read`, the project settings store, `ProjectService` over the bus and journal; the data types live in `loa_settings::projects`; summaries through the `Summarizers` port, which `loa-app` backs with omp one-shot calls |
-| `loa-trust` | p2p | One ed25519 node key (`PublicKey` converts to iroh, Biscuit and bus keys) behind the `KeyStore` port (OS keychain, falling back to a `0600` key file); Biscuit grants whose scope kinds (sessions, prompts, projects, future sessions, SSH hosts, surfaces, sandbox, folders) come from one `KINDS` table; renewal, narrowing |
+| `loa-trust` | p2p | One ed25519 node key (`PublicKey` converts to iroh, Biscuit and bus keys) behind the `KeyStore` port (OS keychain, with a private key file fallback: `0600` on Unix, a protected current-user DACL on Windows); Biscuit grants whose scope kinds (sessions, prompts, projects, future sessions, SSH hosts, surfaces, sandbox, folders) come from one `KINDS` table; renewal, narrowing |
 | `loa-net` | p2p | iroh endpoint on 31415, ALPNs, TCP fallback, relay, discovery |
 | `loa-share` | p2p | Session replication, view and drive, fork to own node |
 | `loa-node` | p2p | The app's peer service: identity, endpoint, mDNS and tailnet discovery, presence, grant issue/renew/revoke over `omp/control/1`, session sharing over `omp/session/1`, shared folders over `omp/folder/1` (list, read, and with a write grant write, confined to the granted folder), protocols other areas add (e.g. `loa-sandbox/1`, served only to peers proving a covering grant, registered through the app's `NodeSlot`), the Peers panel snapshot and its events |
@@ -47,7 +47,7 @@ Everything else builds on these three. Their existing public items change only w
 
 | Crate | Holds |
 | --- | --- |
-| `loa-view` | The stable, versioned presentation API (`loa_view::VERSION`, snapshot in `crates/loa-view/api.txt`). One module per screen family: `theme` (`Appearance`, `ThemeRef`, `Icon`), `settings::{models, projects, peers, updates}`, `session`, `shell`, `panel`, `terminal`, `surface`. Each holds plain view models (`Clone + Debug + PartialEq`, public fields), the screen's `Intent` (what the UI emits to the app) and, under `port`, the traits the UI needs and the app implements (decoders, document renderer, PTY, file system, notifier, surface transport). Foundation values the UI needs as they are (`Prompt`, `Answer`, `SessionSummary`, surface protocol values, …) are re-exported from the matching module. Depends only on `loa-util`, `loa-core` and `loa-contracts` |
+| `loa-view` | The stable, versioned presentation API (`loa_view::VERSION`, snapshot in `crates/loa-view/api.txt`). One module per screen family: `theme` (`Appearance`, `ThemeRef`, `Icon`), `settings::{models, projects, peers, updates, agents}`, `session`, `shell`, `panel`, `terminal`, `surface`. Each holds plain view models (`Clone + Debug + PartialEq`, public fields), the screen's `Intent` (what the UI emits to the app) and, under `port`, the traits the UI needs and the app implements (decoders, document renderer, PTY, file system, notifier, surface transport). Foundation values the UI needs as they are (`Prompt`, `Answer`, `SessionSummary`, surface protocol values, …) are re-exported from the matching module. Depends only on `loa-util`, `loa-core` and `loa-contracts` |
 
 ### UI
 
@@ -59,7 +59,7 @@ Everything else builds on these three. Their existing public items change only w
 | `loa-ui-panel` | Diff view, file tree, session tree, agents panel, tools pane (`tools`) |
 | `loa-ui-terminal` | Terminal tab, local and SSH |
 | `loa-ui-surface` | Surfaces tab: tab shell over `PixelMode`/`DocumentMode` strategies, a `FrameDecoder` chain and a `DocumentRenderer` it receives through `loa_view::surface::port` (the app supplies the still/H.264 decoders and document rendering from `loa-surfaces`), launcher for browser, documents, VNC and MCP surfaces |
-| `loa-ui-settings` | Settings-style screens on kit `Screen` (`Msg<Local, Intent>` + guard): `models` (sign in reducer over `LoginUpdate`, picker, model settings via kit `form_view`/`list_editor` over `OVERRIDE_FIELDS`), `projects` (project screen), `peers` (peers, grants with a typed folder, shared sessions and folders), `updates` (renders `loa_view::settings::updates` status with a `STATUS_RULES` table, `HoldChoice` choices). Depends only on `loa-view`, `loa-ui-kit` and `loa-util`; the session model chip is derived from the DOM in `loa-app` (`areas/models/session.rs`) |
+| `loa-ui-settings` | Settings-style screens on kit `Screen` (`Msg<Local, Intent>` + guard): `models` (sign in reducer over `LoginUpdate`, picker, model settings via kit `form_view`/`list_editor` over `OVERRIDE_FIELDS`), `projects` (project screen), `peers` (peers, grants with a typed folder, shared sessions and folders), `updates` (renders `loa_view::settings::updates` status with a `STATUS_RULES` table, `HoldChoice` choices), `agents` (omp agents: the form with templates, model and thinking pickers, tool and spawn checkboxes, prompt body and field errors). Depends only on `loa-view`, `loa-ui-kit` and `loa-util`; the session model chip is derived from the DOM in `loa-app` (`areas/models/session.rs`) |
 | `loa-app` | The binary: wires every crate together |
 
 ## Dependency rules
@@ -171,7 +171,7 @@ impl State {
 | --- | --- | --- |
 | Element schema | `loa_core::SCHEMA_VERSION` (1) | `loa-core` |
 | Adapter interface | `loa_adapter::INTERFACE_VERSION` | `loa-adapter` |
-| Presentation API | `loa_view::VERSION` (1.0.0), listed in `crates/loa-view/api.txt` | `loa-view` |
+| Presentation API | `loa_view::VERSION` (2.0.0), listed in `crates/loa-view/api.txt` | `loa-view` |
 | Control ALPN | `omp/control/1` | `loa-net` |
 | Session ALPN | `omp/session/1` | `loa-net`, `loa-share` |
 | Surface ALPN | `omp/surface/1` | `loa-surface` |
@@ -185,6 +185,6 @@ SQLite through `rusqlite` with the bundled library. Each crate owns its tables a
 
 ## Secrets
 
-- The node's private key lives in the OS keychain
-- SSH private keys are never read. Authentication goes through `ssh-agent`
+- The node's private key lives in the OS keychain when usable; the private file fallback is under the app data directory
+- SSH private keys are never read. Authentication goes through `ssh-agent` (the OpenSSH agent pipe by default on Windows)
 - Provider credentials stay in each harness's own store. The app never sees them

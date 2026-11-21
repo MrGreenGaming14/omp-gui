@@ -16,6 +16,8 @@ use loa_ui_kit::widgets::{badge, label};
 use std::collections::{BTreeMap, HashSet};
 
 const WAIT_TOOL: &str = "wait";
+/// Output lines a job shows while not in full; longer output shows only its tail.
+const TAIL_LINES: usize = 200;
 /// The attributes a [`Job`] keeps, in its `attrs` order.
 const ATTRS: [&str; 5] = [attr::ID, attr::TITLE, attr::COMMAND, attr::AGENT, attr::SESSION];
 
@@ -24,13 +26,17 @@ const ATTRS: [&str; 5] = [attr::ID, attr::TITLE, attr::COMMAND, attr::AGENT, att
 pub struct Job {
     node: NodeId, kind: JobKind, status: JobStatus, attrs: [Option<String>; 5],
     started: Option<i64>, ended: Option<i64>, exit_code: Option<i64>, output: String, expanded: bool,
+    /// Newlines in `output`, kept in step with it.
+    newlines: usize,
 }
 
 impl Job {
     fn from_node(node: &Node) -> Option<Self> {
         if node.kind != ElementKind::Job { return None }
         let kind = JobKind::parse(node.str_attr(attr::KIND)?)?;
-        let mut job = Job { node: node.id, kind, status: JobStatus::Running, attrs: Default::default(), started: None, ended: None, exit_code: None, output: node.text.clone(), expanded: false };
+        let output = node.text.clone();
+        let newlines = output.matches('\n').count();
+        let mut job = Job { node: node.id, kind, status: JobStatus::Running, attrs: Default::default(), started: None, ended: None, exit_code: None, output, expanded: false, newlines };
         job.read_attrs(node);
         Some(job)
     }
@@ -51,14 +57,39 @@ impl Job {
     /// The last non-blank output line, trimmed.
     pub fn last_line(&self) -> &str { self.output.rsplit('\n').map(str::trim).find(|l| !l.is_empty()).unwrap_or_default() }
     fn running(&self) -> bool { self.status == JobStatus::Running }
+    /// Byte offset where the last [`TAIL_LINES`] lines of the output start; walks back over at
+    /// most `TAIL_LINES` newlines.
+    fn tail_start(&self) -> usize {
+        let body = self.output.strip_suffix('\n').unwrap_or(&self.output);
+        let mut end = body.len();
+        for _ in 0..TAIL_LINES {
+            match body[..end].rfind('\n') {
+                Some(newline) => end = newline,
+                None => return 0,
+            }
+        }
+        end + 1
+    }
+    /// Lines in the output, counting an unterminated last line.
+    fn line_count(&self) -> usize { self.newlines + usize::from(!self.output.is_empty() && !self.output.ends_with('\n')) }
+    fn set_output(&mut self, text: &str) {
+        text.clone_into(&mut self.output);
+        self.newlines = text.matches('\n').count();
+    }
+    fn append_output(&mut self, chunk: &str) {
+        self.output.push_str(chunk);
+        self.newlines += chunk.matches('\n').count();
+    }
 }
 
-/// Jobs of one session in document order, the active `wait` calls, and the last tick in unix ms.
+/// Jobs of one session in document order, the active `wait` calls, the jobs shown in full and
+/// the last tick in unix ms.
 #[derive(Debug, Default)]
-pub struct State { jobs: BTreeMap<NodeId, Job>, waits: HashSet<NodeId>, now: Option<i64> }
-/// `Tick` carries unix ms; `Toggle` shows or hides a job's output; `Detach` opens a subagent's session in a window.
+pub struct State { jobs: BTreeMap<NodeId, Job>, waits: HashSet<NodeId>, full: HashSet<NodeId>, now: Option<i64> }
+/// `Tick` carries unix ms; `Toggle` shows or hides a job's output; `ToggleFull` shows all of
+/// it or only its last lines; `Detach` opens a subagent's session in a window.
 #[derive(Debug, Clone)]
-pub enum Message { Tick(i64), Toggle(NodeId), Open(NodeId), Detach(NodeId), Cancel(NodeId) }
+pub enum Message { Tick(i64), Toggle(NodeId), ToggleFull(NodeId), Open(NodeId), Detach(NodeId), Cancel(NodeId) }
 
 impl State {
     pub fn from_dom(dom: &Dom) -> Self {
@@ -71,6 +102,7 @@ impl State {
         let expanded: HashSet<NodeId> = self.jobs.values().filter(|j| j.expanded).map(|j| j.node).collect();
         self.jobs = dom.iter().filter_map(Job::from_node).map(|j| (j.node, Job { expanded: expanded.contains(&j.node), ..j })).collect();
         self.waits = dom.iter().filter(|n| is_active_wait(n)).map(|n| n.id).collect();
+        self.full.retain(|n| self.jobs.contains_key(n));
     }
     /// Follows `patch`, already applied to `dom`.
     pub fn apply(&mut self, dom: &Dom, patch: &Patch) {
@@ -80,13 +112,14 @@ impl State {
                 Some(job) => { self.jobs.insert(node, job); }
                 None => self.refresh_wait(n),
             },
-            (Op::Set { name, .. }, Some(job), Some(n)) if name == TEXT => n.text.clone_into(&mut job.output),
+            (Op::Set { name, .. }, Some(job), Some(n)) if name == TEXT => job.set_output(&n.text),
             (Op::Set { .. }, Some(job), Some(n)) => job.read_attrs(n),
             (Op::Set { .. }, None, Some(n)) => self.refresh_wait(n),
-            (Op::Append { text }, Some(job), _) => job.output.push_str(text),
+            (Op::Append { text }, Some(job), _) => job.append_output(text),
             (Op::Remove, ..) => {
                 self.jobs.retain(|n, _| dom.contains(*n));
                 self.waits.retain(|n| dom.contains(*n));
+                self.full.retain(|n| dom.contains(*n));
             }
             _ => {}
         }
@@ -103,6 +136,12 @@ impl State {
             Message::Cancel(n) => self.jobs.get(&n).filter(|j| j.running()).map(|j| AgentsIntent::Cancel { node: n, id: j.attrs[0].clone() }),
             Message::Tick(now) => { self.now = Some(now); None }
             Message::Toggle(n) => { self.jobs.entry(n).and_modify(|j| j.expanded = !j.expanded); None }
+            Message::ToggleFull(n) => {
+                if !self.full.remove(&n) && self.jobs.contains_key(&n) {
+                    self.full.insert(n);
+                }
+                None
+            }
         };
         (Task::none(), event)
     }
@@ -143,7 +182,14 @@ impl State {
             (!job.output.is_empty()).then(|| action(if job.expanded { "Collapse" } else { "Expand" }, Message::Toggle(n))),
         ];
         let below: Option<Element<'a, Message>> = if job.expanded {
-            Some(container(text(job.output()).font(Font::MONOSPACE).size(ts(T::Label))).padding([sp(Sp::S), sp(Sp::M)]).width(Fill).style(kit::fill(C::Raised, 0.0)).into())
+            let full = self.full.contains(&n);
+            let shown = if full { job.output() } else { &job.output()[job.tail_start()..] };
+            let toggle = (job.line_count() > TAIL_LINES).then(|| {
+                let label = if full { format!("Show last {TAIL_LINES} lines") } else { format!("Show all {} lines", job.line_count()) };
+                action(label, Message::ToggleFull(n))
+            });
+            let body = Column::new().push(text(shown).font(Font::MONOSPACE).size(ts(T::Label))).push(toggle).spacing(sp(Sp::S));
+            Some(container(body).padding([sp(Sp::S), sp(Sp::M)]).width(Fill).style(kit::fill(C::Raised, 0.0)).into())
         } else {
             Some(job.last_line()).filter(|l| !l.is_empty()).map(|l| row![space().width(sp(Sp::Xl)), label(l, T::Caption, Tone::Muted).wrapping(Wrapping::None)].into())
         };
@@ -188,5 +234,23 @@ mod tests {
         commit(&mut dom, &mut state, Draft::set(a, attr::STATUS, JobStatus::Done));
         assert_eq!((state.waiting(), state.update(Message::Cancel(a)).1, state.update(Message::Open(a)).1), (false, None, None));
         assert!(state.jobs().eq(State::from_dom(&dom).jobs()), "incremental equals a fresh scan");
+    }
+
+    #[test]
+    fn long_output_shows_only_its_tail_until_expanded_in_full() {
+        let (mut dom, mut state) = (Dom::new(), State::default());
+        let attrs = [(attr::ID, Value::from("s1")), (attr::HARNESS, "omp".into()), (attr::NODE, "key".into()), (attr::CREATED, 0_i64.into())];
+        let session = commit(&mut dom, &mut state, Draft::insert(NodeId::DOCUMENT, ElementKind::Session, attrs, ""));
+        let turn = commit(&mut dom, &mut state, Draft::insert(session, ElementKind::Turn, [(attr::STATUS, Value::from("running"))], ""));
+        let job = commit(&mut dom, &mut state, Draft::insert(turn, ElementKind::Job, [(attr::KIND, Value::from(JobKind::Shell)), (attr::COMMAND, "make".into())], ""));
+        let text: String = (1..=250).map(|i| format!("line {i}\n")).collect();
+        commit(&mut dom, &mut state, Draft::append(job, text.as_str()));
+        assert_eq!(state.job(job).unwrap().line_count(), 250);
+        let shown = &state.job(job).unwrap().output()[state.job(job).unwrap().tail_start()..];
+        assert_eq!(shown.lines().next(), Some("line 51"));
+        assert_eq!(shown.lines().count(), TAIL_LINES);
+
+        let _ = state.update(Message::ToggleFull(job));
+        assert!(state.full.contains(&job));
     }
 }

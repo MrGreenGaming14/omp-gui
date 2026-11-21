@@ -43,9 +43,11 @@ impl EnvironmentPresence for Env {
     fn contains(&self, name: &str) -> bool { self.0.contains(name) }
 }
 
-/// A `claude` that is signed out until its login (URL, pasted code) ran.
+/// A `claude` that is signed out until its login (URL, pasted code) ran. `@DIR@` is its own
+/// folder, spelled with forward slashes so Git Bash on Windows reads it; `$0` isn't reliable
+/// behind the `.cmd` launcher.
 const CLAUDE: &str = r#"#!/bin/sh
-dir=$(dirname "$0")
+dir='@DIR@'
 if [ "$1 $2" = "auth status" ]; then
   if [ -f "$dir/signed-in" ]; then echo '{"loggedIn":true,"authMethod":"claude.ai"}'; exit 0; fi
   echo '{"loggedIn":false}'; exit 1
@@ -73,9 +75,9 @@ fn fixture(rpc: FakeOmp, config: &str, models: &str) -> Fixture {
     let path = |name: &str| dir.path().join(name);
     std::fs::write(path("config.yml"), config).unwrap();
     std::fs::write(path("models.yml"), models).unwrap();
-    loa_util::exec::write_executable(&path("claude"), CLAUDE).unwrap();
+    loa_util::exec::write_executable(&path("claude"), CLAUDE.replace("@DIR@", &dir.path().display().to_string().replace('\\', "/"))).unwrap();
     let (rpc, opener) = (Arc::new(rpc), Arc::new(Opener::default()));
-    let claude = ClaudeCode::new(path("claude"), path("claude-settings.json"), Arc::new(TokioProcessRunner));
+    let claude = ClaudeCode::new(loa_util::exec::resolve(&path("claude")), path("claude-settings.json"), Arc::new(TokioProcessRunner));
     let codex = Codex::new(path("no-codex-here"), path("config.toml"), Arc::new(TokioProcessRunner));
     let omp = OmpAccount { rpc: rpc.clone(), opener: opener.clone(), launch: OmpLaunch::default() };
     let backend = Backend::new(Parts {

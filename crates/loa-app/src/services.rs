@@ -117,16 +117,6 @@ impl Services {
     pub fn new(node: NodeServices, dirs: Dirs, host: Host, workspace: PathBuf) -> Self {
         Self { node, storage: Storage::new(dirs), host, workspace }
     }
-
-    /// Name of the workspace project.
-    pub fn workspace_project(&self) -> String {
-        folder_name(&self.workspace)
-    }
-}
-
-/// The last component of `path`, the whole path when it has none.
-pub fn folder_name(path: &Path) -> String {
-    path.file_name().map_or_else(|| path.display().to_string(), |name| name.to_string_lossy().into_owned())
 }
 
 /// The access check every session writer asks about peer requests; refuses all until [`PeerAccess::set`].

@@ -12,8 +12,9 @@ pub struct UsageMeter {
 }
 
 /// Which machine's sessions the sidebar lists.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum NodeFilter {
+    #[default]
     All,
     Node(String),
 }
@@ -65,7 +66,7 @@ pub enum Intent {
     ThemeChanged(u64),
 }
 
-/// Navigation and pin changes from the sidebar.
+/// Navigation, pin and project changes from the sidebar.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SidebarIntent {
     NewSession,
@@ -80,4 +81,12 @@ pub enum SidebarIntent {
     SetPinned { id: String, pinned: bool },
     SetProjectPinned { project: String, pinned: bool },
     DeleteSession(String),
+    /// Open the New project screen: the `+` in the Projects header.
+    NewProject,
+    /// Start a new session in this project, in its folder: the `+` on its row.
+    NewSessionIn(String),
+    /// Ask to delete this project; its sessions are kept.
+    DeleteProject(String),
+    /// Move a session to a project, or out of every project with `None`.
+    MoveSession { id: String, project: Option<String> },
 }

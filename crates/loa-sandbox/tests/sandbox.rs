@@ -27,10 +27,46 @@ static STUB: LazyLock<PathBuf> = LazyLock::new(|| {
     assert!(status.success(), "building the stub");
     // Tests run from <target>/<profile>/deps.
     let exe = std::env::current_exe().unwrap();
-    exe.parent().and_then(Path::parent).unwrap().join("loa-sandbox-stub")
+    exe.parent().and_then(Path::parent).unwrap().join(format!("loa-sandbox-stub{}", std::env::consts::EXE_SUFFIX))
 });
 
 fn stub() -> PathBuf { STUB.clone() }
+
+// A Windows stub runs shell requests without positional arguments through cmd.
+#[cfg(unix)]
+const BUSY_LOOP: &str = "while :; do :; done";
+#[cfg(windows)]
+const BUSY_LOOP: &str = "ping -n 60 127.0.0.1 > nul";
+
+/// Prints `out` to stdout and `err` to stderr, without newlines, and exits 7.
+#[cfg(unix)]
+fn stdout_stderr_exit_7() -> ExecRequest {
+    ExecRequest::shell("printf \"$1\"; printf err >&2; exit 7", &["out"])
+}
+
+/// cmd has no printf: `set /p` fed from nul prints its text without a newline.
+#[cfg(windows)]
+fn stdout_stderr_exit_7() -> ExecRequest {
+    ExecRequest::shell("<nul set /p =out& <nul 1>&2 set /p =err& exit 7", &[])
+}
+
+/// Deletes `gone.txt` and writes `new` to `new/file`.
+#[cfg(unix)]
+const CHANGE_FILES: &str = "rm gone.txt && mkdir new && echo new > new/file";
+#[cfg(windows)]
+const CHANGE_FILES: &str = r"del gone.txt && mkdir new && echo new> new\file";
+
+/// The `sandbox_bash` call that prints the host key, or `unset` without it.
+#[cfg(unix)]
+const PRINT_HOST_KEY: &str = r#"{"command":"printf '%s' \"${HOST_API_KEY-unset}\""}"#;
+#[cfg(windows)]
+const PRINT_HOST_KEY: &str = r#"{"command":"if defined HOST_API_KEY (echo %HOST_API_KEY%) else (echo unset)"}"#;
+
+/// The `sandbox_bash` call that overwrites `tracked.txt` with `changed`.
+#[cfg(unix)]
+const OVERWRITE_TRACKED: &str = r#"{"command":"printf 'changed\\n' > tracked.txt"}"#;
+#[cfg(windows)]
+const OVERWRITE_TRACKED: &str = r#"{"command":"echo changed> tracked.txt"}"#;
 
 struct Journal;
 
@@ -148,11 +184,11 @@ async fn connect(root: &Path) -> (StubClient, Box<dyn Sandbox>) {
 async fn the_stub_streams_output_and_reports_the_exit_status() {
     let root = tempfile::tempdir().unwrap();
     let (client, sandbox) = connect(root.path()).await;
-    let output = client.exec(ExecRequest::shell("printf \"$1\"; printf err >&2; exit 7", &["out"])).await.unwrap();
+    let output = client.exec(stdout_stderr_exit_7()).await.unwrap();
     assert_eq!((output.stdout.as_slice(), output.stderr.as_slice(), output.status.code), (&b"out"[..], &b"err"[..], Some(7)));
     let error = client.run(ExecRequest { argv: vec!["missing-program".into()], ..ExecRequest::default() }).await.unwrap_err();
     assert!(error.to_string().contains("spawn"), "{error}");
-    let output = client.exec(ExecRequest { timeout_ms: Some(30), ..ExecRequest::shell("while :; do :; done", &[]) }).await.unwrap();
+    let output = client.exec(ExecRequest { timeout_ms: Some(30), ..ExecRequest::shell(BUSY_LOOP, &[]) }).await.unwrap();
     assert!(output.status.timed_out && !output.status.success());
     client.shutdown().await.unwrap();
     sandbox.stop().await.unwrap();
@@ -167,12 +203,13 @@ async fn copied_workspaces_go_in_and_come_back_without_git_data() {
     let (client, sandbox) = connect(root.path()).await;
     loa_sandbox::sync::copy_in(&client, workspace.path()).await.unwrap();
     assert!(!root.path().join(".git").exists() && root.path().join("kept.txt").exists());
-    client.run(ExecRequest::shell("rm gone.txt && mkdir new && echo new > new/file", &[])).await.unwrap();
+    client.run(ExecRequest::shell(CHANGE_FILES, &[])).await.unwrap();
     loa_sandbox::sync::copy_out(&client, workspace.path()).await.unwrap();
     let mut names: Vec<_> = std::fs::read_dir(workspace.path()).unwrap().map(|entry| entry.unwrap().file_name()).collect();
     names.sort();
     assert_eq!(names, [".git", "kept.txt", "new"]);
-    assert_eq!(std::fs::read_to_string(workspace.path().join("new/file")).unwrap(), "new\n");
+    // cmd's `echo` ends lines with CRLF.
+    assert_eq!(std::fs::read_to_string(workspace.path().join("new/file")).unwrap().replace("\r\n", "\n"), "new\n");
     client.shutdown().await.unwrap();
     sandbox.stop().await.unwrap();
 }
@@ -189,9 +226,9 @@ async fn an_isolated_run_keeps_secrets_on_the_host_and_returns_the_patch() {
     template.env.insert("HOST_API_KEY".into(), "host-only-value".into());
     let adapter = Arc::new(Scripted {
         calls: &[
-            ("sandbox_bash", r#"{"command":"printf '%s' \"${HOST_API_KEY-unset}\""}"#),
+            ("sandbox_bash", PRINT_HOST_KEY),
             ("sandbox_write", r#"{"path":"notes/hello.txt","content":"from the sandbox\n"}"#),
-            ("sandbox_bash", r#"{"command":"printf 'changed\\n' > tracked.txt"}"#),
+            ("sandbox_bash", OVERWRITE_TRACKED),
             ("sandbox_list", r#"{"path":"notes"}"#),
             ("sandbox_read", r#"{"path":"notes/hello.txt","limit":4}"#),
         ],
@@ -233,8 +270,9 @@ async fn an_isolated_run_keeps_secrets_on_the_host_and_returns_the_patch() {
     assert_eq!((finished, &sent), (run.run, &patch));
 
     apply_patch(repo.path(), patch.as_bytes()).unwrap();
-    assert_eq!(std::fs::read_to_string(repo.path().join("notes/hello.txt")).unwrap(), "from the sandbox\n");
-    assert_eq!(std::fs::read_to_string(repo.path().join("tracked.txt")).unwrap(), "changed\n");
+    assert_eq!(std::fs::read_to_string(repo.path().join("notes/hello.txt")).unwrap().replace("\r\n", "\n"), "from the sandbox\n");
+    // cmd's `echo` ends lines with CRLF.
+    assert_eq!(std::fs::read_to_string(repo.path().join("tracked.txt")).unwrap().replace("\r\n", "\n"), "changed\n");
 }
 
 #[tokio::test(flavor = "multi_thread")]

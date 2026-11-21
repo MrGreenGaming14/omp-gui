@@ -170,3 +170,106 @@ fn pickers_emit_changes_once_and_skip_unavailable_options() {
         assert!(iced_test::simulator(state.view()).find(label).is_ok(), "{label}");
     }
 }
+
+#[test]
+fn pasted_images_become_numbered_tokens_and_are_sent_while_their_token_stays() {
+    let mut state = State::new();
+    type_text(&mut state, "compare");
+    let _ = state.attach_image(pasted("/tmp/one.png".into(), Some((1414, 281))));
+    let _ = state.attach_image(pasted("/tmp/two.png".into(), Some((578, 200))));
+    assert_eq!(state.text(), "compare [Image #1] [Image #2] ");
+    assert_eq!(state.images.iter().filter(|image| image.shown).count(), 2, "both cards show");
+
+    // The × on a card takes its token out of the text too; undo brings both back.
+    act(&mut state, Message::RemoveImage(1));
+    assert_eq!(state.text(), "compare [Image #2] ");
+    act(&mut state, Message::Undo);
+    assert_eq!(state.text(), "compare [Image #1] [Image #2] ");
+    assert_eq!(state.images.iter().filter(|image| image.shown).count(), 2, "the card is back");
+    act(&mut state, Message::RemoveImage(1));
+    let prompt = submitted(act(&mut state, Message::Submit));
+    assert_eq!(prompt.text, "compare [Image #2]");
+    assert_eq!(prompt.attachments, vec![Attachment { path: "/tmp/two.png".into(), mime: Some("image/png".into()) }]);
+
+    // The next message numbers its images from 1 again.
+    let _ = state.attach_image(pasted("/tmp/three.png".into(), None));
+    assert_eq!(state.text(), "[Image #1] ");
+}
+
+#[test]
+fn a_cursor_just_before_a_mention_opens_no_popup() {
+    let mut state = State::new();
+    type_text(&mut state, "see @");
+    act(&mut state, Message::Edit(Action::Move(Motion::Left)));
+    assert_eq!(state.popup_kind(), None);
+}
+
+#[test]
+fn leaving_a_running_session_brings_its_queue_back_and_a_failed_send_returns_the_text() {
+    let mut state = State::new();
+    type_text(&mut state, "first");
+    let _ = submitted(act(&mut state, Message::Submit));
+    state.turn_started();
+    type_text(&mut state, "queued");
+    assert!(matches!(act(&mut state, Message::Submit), Some(Intent::QueueChanged(_))));
+
+    // Another, idle session is shown: nothing stays queued for the old one.
+    state.follow_session(false);
+    assert!(!state.is_busy());
+    assert_eq!(state.text(), "queued");
+    // Showing a running session makes the composer queue again.
+    state.follow_session(true);
+    assert!(state.is_busy());
+    state.follow_session(false);
+
+    // A send that could not start a session gives its text back.
+    let prompt = submitted(act(&mut state, Message::Submit));
+    assert!(state.is_busy(), "starting");
+    state.follow_session(false);
+    assert!(state.is_busy(), "a send on its way is left alone");
+    let _ = state.give_back(&prompt.text);
+    assert!(!state.is_busy());
+    assert_eq!(state.text(), "queued");
+}
+
+#[test]
+fn a_magic_keyword_starts_the_shimmer_and_removing_it_stops_it() {
+    let mut state = State::new();
+    type_text(&mut state, "please workflowz");
+    assert!(state.keyword);
+    act(&mut state, Message::Shimmer);
+    act(&mut state, Message::WindowFocused(false));
+    assert!(!state.focused, "an unfocused window stops the shimmer");
+    for _ in 0.."workflowz".len() {
+        act(&mut state, Message::Edit(Action::Edit(Edit::Backspace)));
+    }
+    assert!(!state.keyword);
+    assert_eq!(state.shimmer, 0);
+}
+
+#[test]
+fn the_project_chip_picks_a_project_or_none() {
+    let mut state = State::new();
+    state.set_projects(vec!["alpha".into(), "beta".into()], None);
+    act(&mut state, Message::Toggle(PickerId::Project));
+    assert_eq!(state.pickers.open, Some(PickerId::Project));
+    let beta = state.pick_key(PickerId::Project, "beta").expect("listed");
+    assert_eq!(act(&mut state, beta.clone()), Some(Intent::ProjectPicked(Some("beta".into()))));
+    assert_eq!(state.pickers.open, None, "picking closes the menu");
+    assert_eq!(act(&mut state, beta), None, "the same project again changes nothing");
+    assert_eq!(act(&mut state, Message::Pick(PickerId::Project, 0)), Some(Intent::ProjectPicked(None)));
+    let _ = state.view();
+}
+
+#[test]
+fn the_effort_slider_applies_its_level_when_let_go() {
+    let mut state = State::new();
+    state.set_efforts(vec!["low".into(), "medium".into(), "high".into()], Some("low".into()));
+    act(&mut state, Message::Toggle(PickerId::Effort));
+    assert_eq!(act(&mut state, Message::EffortSlid(2)), None, "dragging only previews");
+    assert_eq!(act(&mut state, Message::EffortReleased), Some(Intent::EffortChanged("high".into())));
+    assert_eq!(state.pickers.open, Some(PickerId::Effort), "the card stays open");
+    act(&mut state, Message::EffortSlid(2));
+    assert_eq!(act(&mut state, Message::EffortReleased), None, "the same level again changes nothing");
+    let _ = state.view();
+}

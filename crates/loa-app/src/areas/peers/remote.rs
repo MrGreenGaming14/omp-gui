@@ -92,7 +92,19 @@ impl Remote {
                     self.reload(Arc::unwrap_or_clone(dom));
                 }
             }
-            Feed::Event(Event::Patch(patch)) => {
+            Feed::Events(events) => events.into_iter().for_each(|event| self.event(event)),
+            Feed::Ended => {
+                self.ended = Some(self.view.ended().unwrap_or_else(|| "the owner closed the session".to_owned()));
+                self.cards.set_viewer(cards::Viewer { by: String::new(), view_only: true });
+                self.cards.sync(&self.dom);
+            }
+        }
+    }
+
+    /// One event of a feed batch, oldest first.
+    fn event(&mut self, event: Event) {
+        match event {
+            Event::Patch(patch) => {
                 if patch.seq <= self.dom.seq() {
                     return;
                 }
@@ -108,12 +120,7 @@ impl Remote {
                 }
             }
             // Merged appends only reach coalescing feeds; take the DOM.
-            Feed::Event(_) => self.reload(self.view.writer().with_dom(Dom::clone)),
-            Feed::Ended => {
-                self.ended = Some(self.view.ended().unwrap_or_else(|| "the owner closed the session".to_owned()));
-                self.cards.set_viewer(cards::Viewer { by: String::new(), view_only: true });
-                self.cards.sync(&self.dom);
-            }
+            _ => self.reload(self.view.writer().with_dom(Dom::clone)),
         }
     }
 

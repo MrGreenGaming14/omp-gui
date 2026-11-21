@@ -1,8 +1,11 @@
 name: ci
 on:
   push:
-    branches: [main]
+    branches: [main, tai-dev]
   pull_request:
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   test:
     runs-on: ubuntu-24.04
@@ -12,6 +15,9 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci
+          cache-on-failure: true
       - run: sudo apt-get update && sudo apt-get install -y xvfb libxkbcommon-dev libwayland-dev libvulkan1 mesa-vulkan-drivers
       - name: Install OMP for bridge integration tests
         shell: bash
@@ -24,10 +30,41 @@ jobs:
           echo 'c7cc5c8d505053c8ffaf180417e5d5c781235b9d936f286810560151120109bf  omp' | sha256sum --check
           chmod +x omp
           echo "$dir" >> "$GITHUB_PATH"
-      - run: cargo build --workspace --all-targets
-      - run: xvfb-run -a cargo test --workspace
+      - run: cargo build --workspace --all-targets --profile ci
+      - run: xvfb-run -a cargo test --workspace --profile ci
       - name: Remote video (default-off feature)
         run: |
-          cargo test -p loa-surfaces --features remote-video
-          cargo test -p loa-ui-surface --features remote-video
-          xvfb-run -a cargo test -p loa-app --features remote-video surfaces
+          cargo test -p loa-surfaces --features remote-video --profile ci
+          cargo test -p loa-ui-surface --features remote-video --profile ci
+          xvfb-run -a cargo test -p loa-app --features remote-video --profile ci surfaces
+  windows:
+    runs-on: windows-latest
+    env:
+      # Hosted runners have no reliable GPU; keep the headless pixel assertions.
+      ICED_TEST_BACKEND: tiny-skia
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci
+          cache-on-failure: true
+      - name: Add Git for Windows Bash for test fixtures
+        shell: pwsh
+        run: |
+          $git = (Get-Command git.exe).Source
+          $bin = Join-Path (Split-Path (Split-Path $git)) 'bin'
+          if (-not (Test-Path (Join-Path $bin 'bash.exe'))) { throw "Git for Windows Bash not found at $bin" }
+          Add-Content $env:GITHUB_PATH $bin
+      - name: Install OMP for bridge integration tests
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'loa-ci-omp'
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          $omp = Join-Path $dir 'omp.exe'
+          Invoke-WebRequest https://github.com/can1357/oh-my-pi/releases/download/v19.0.0/omp-windows-x64.exe -OutFile $omp
+          $hash = (Get-FileHash $omp -Algorithm SHA256).Hash.ToLower()
+          if ($hash -ne '36ac685c7b932f4bb81ccc5a7116abee90575d32110e74dd2a066e082690d941') { throw "omp.exe checksum mismatch: $hash" }
+          Add-Content $env:GITHUB_PATH $dir
+      - run: cargo build --workspace --all-targets --profile ci
+      - run: cargo test --workspace --no-fail-fast --profile ci

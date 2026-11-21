@@ -35,6 +35,12 @@ Binary files a/logo.png and /dev/null differ
 /// A diff, its files (status, path, added, removed, binary), its hunk ranges and folded gaps.
 type Case<'a> = (&'a str, &'a [(FileStatus, &'a str, usize, usize, bool)], Vec<(u32, u32, u32, u32)>, Vec<usize>);
 #[test]
+fn max_line_no_is_the_largest_numbered_line() {
+    let patch = format!("--- a\n+++ b\n@@ -1,9 +1,12 @@\n{}+x\n+y\n+z\n", context(1..=9));
+    let file = &parse_unified(&patch).unwrap()[0];
+    assert_eq!(file.max_line_no(), 12);
+}
+#[test]
 fn parses_unified_diffs() {
     use FileStatus::*;
     let folded = format!("--- a\n+++ b\n@@ -1,12 +1,12 @@\n-x\n+y\n{}", context(2..=12));

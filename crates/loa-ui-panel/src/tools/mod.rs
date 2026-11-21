@@ -46,7 +46,8 @@ pub enum Message {
     PeerFilter(PeerChoice), BlockOpen(String, bool), ToolExpanded(ToolId),
 }
 
-/// `open_blocks` holds blocks the user opened or closed; `prompts` wait for the user, oldest first.
+/// `open_blocks` holds blocks the user opened or closed; `prompts` wait for the user, oldest
+/// first; `search` and `rows` cache the lowercased tool texts and the shown rows.
 #[derive(Debug, Default)]
 pub struct State {
     section: Section, filter_text: String, filter: Filter, builtin: BuiltinTools, servers: Vec<McpServer>,
@@ -54,27 +55,39 @@ pub struct State {
     add_server: Option<FormState<AddServerForm>>, imports: Option<Vec<ImportEntry>>, import_scanning: bool,
     hosts: Vec<RemoteHost>, add_host: Option<FormState<AddHostForm>>, limits: Option<LimitsDraft>, audit: Option<(String, Vec<AuditRow>)>,
     prompts: Vec<RemotePrompt>, peers: Vec<PeerTools>, peer_filter: Option<String>, open_blocks: HashMap<String, bool>, expanded_tool: Option<ToolId>,
+    search: catalog::Search, rows: catalog::Rows,
 }
 
 impl State {
     pub fn new() -> Self { Self::default() }
-    pub fn set_builtin(&mut self, builtin: BuiltinTools) { self.builtin = builtin }
+    pub fn set_builtin(&mut self, builtin: BuiltinTools) {
+        self.builtin = builtin;
+        self.rebuild_search();
+    }
     pub fn set_hosts(&mut self, hosts: Vec<RemoteHost>) { self.hosts = hosts }
     pub fn set_audit(&mut self, host: impl Into<String>, rows: Vec<AuditRow>) { self.audit = Some((host.into(), rows)) }
     pub fn set_prompts(&mut self, prompts: Vec<RemotePrompt>) { self.prompts = prompts }
     /// Selects a project without emitting [`ToolsIntent::ProjectSelected`].
-    pub fn select_project(&mut self, id: impl Into<String>) { self.project = Some(id.into()) }
+    pub fn select_project(&mut self, id: impl Into<String>) {
+        self.project = Some(id.into());
+        self.rebuild();
+    }
     /// The tools switched off in a project, as stored in the config.
-    pub fn set_disabled_tools(&mut self, project: impl Into<String>, tools: impl IntoIterator<Item = ToolId>) { self.disabled.insert(project.into(), tools.into_iter().collect()); }
+    pub fn set_disabled_tools(&mut self, project: impl Into<String>, tools: impl IntoIterator<Item = ToolId>) {
+        self.disabled.insert(project.into(), tools.into_iter().collect());
+        self.rebuild();
+    }
     pub fn set_servers(&mut self, servers: Vec<McpServer>) {
         self.servers = servers;
         let servers = &self.servers;
         self.imports.iter_mut().flatten().for_each(|e| e.exists = servers.iter().any(|s| s.name == e.candidate.server.name));
+        self.rebuild_search();
     }
     /// Projects for the selector; the selection stays while it exists.
     pub fn set_projects(&mut self, projects: Vec<ProjectRef>) {
         self.project = self.project.take().filter(|id| projects.iter().any(|p| &p.id == id));
         self.projects = projects;
+        self.rebuild();
     }
     pub fn set_import_candidates(&mut self, candidates: Vec<ImportCandidate>) {
         let exists = |c: &ImportCandidate| self.servers.iter().any(|s| s.name == c.server.name);
@@ -99,15 +112,30 @@ impl State {
     pub fn imports(&self) -> Option<&[ImportEntry]> { self.imports.as_deref() }
     /// The tools switched off in the selected project.
     pub fn disabled_tools(&self) -> Option<&BTreeSet<ToolId>> { self.project.as_ref().and_then(|id| self.disabled.get(id)) }
-    pub fn catalog(&self) -> Catalog<'_> { catalog::catalog(&self.builtin, &self.servers, self.disabled_tools().unwrap_or(&BTreeSet::new()), &self.filter) }
+    /// Built in and MCP sections as currently shown.
+    pub fn catalog(&self) -> Catalog<'_> { self.rows.catalog(&self.builtin, &self.servers) }
+    /// Lowercases the tool texts again after the builtin or server lists changed.
+    fn rebuild_search(&mut self) {
+        self.search = catalog::Search::new(&self.builtin, &self.servers);
+        self.rebuild();
+    }
+    /// Refilters and retoggles the rows after the filter, the project or its disabled tools changed.
+    fn rebuild(&mut self) {
+        let empty = BTreeSet::new();
+        self.rows = catalog::Rows::new(&self.builtin, &self.servers, &self.search, self.disabled_tools().unwrap_or(&empty), &self.filter);
+    }
     pub fn peer_matrix(&self) -> PeerMatrix<'_> { catalog::peer_matrix(&self.builtin, &self.servers, &self.peers, self.peer_filter.as_deref(), &self.filter) }
     pub fn update(&mut self, message: Message) -> (Task<Message>, Option<ToolsIntent>) { (Task::none(), self.handle(message)) }
     fn handle(&mut self, message: Message) -> Option<ToolsIntent> {
         match message {
             Message::SectionSelected(s) => self.section = s,
-            Message::FilterChanged(text) => (self.filter, self.filter_text) = (Filter::new(&text), text),
+            Message::FilterChanged(text) => {
+                (self.filter, self.filter_text) = (Filter::new(&text), text);
+                self.rebuild();
+            }
             Message::ProjectSelected(p) if self.project.as_ref() != Some(&p.id) => {
                 self.project = Some(p.id.clone());
+                self.rebuild();
                 return Some(ToolsIntent::ProjectSelected(p.id));
             }
             Message::ProjectSelected(_) | Message::FormOpen(FormId::Limits) => {}
@@ -195,6 +223,7 @@ impl State {
         for t in &tools {
             if enabled { disabled.remove(t); } else { disabled.insert(t.clone()); }
         }
+        self.rebuild();
         Some(ToolsIntent::SetToolsEnabled { project, tools, enabled })
     }
 }

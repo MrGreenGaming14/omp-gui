@@ -3,7 +3,6 @@
 use crate::{Error, Result};
 use async_trait::async_trait;
 use loa_core::{Dom, ElementKind, Role, attr};
-use std::path::Path;
 use std::sync::Arc;
 
 /// What a project listing knows about a session.
@@ -33,15 +32,11 @@ impl SessionInfo {
     }
 }
 
-/// The session's `<session project>`, else the last component of its `<session cwd>` (`/` stays whole).
+/// The session's `<session project>`, trimmed. A session without one belongs to no project; its working directory
+/// does not name one.
 pub fn session_project(dom: &Dom) -> Option<String> {
-    let root = dom.root()?;
-    if let Some(project) = root.str_attr(attr::PROJECT).filter(|p| !p.trim().is_empty()) {
-        return Some(project.to_owned());
-    }
-    let cwd = root.str_attr(attr::CWD)?.trim();
-    let name = Path::new(cwd).file_name().map_or_else(|| cwd.to_owned(), |n| n.to_string_lossy().into_owned());
-    (!cwd.is_empty()).then_some(name)
+    let project = dom.root()?.str_attr(attr::PROJECT)?.trim();
+    (!project.is_empty()).then(|| project.to_owned())
 }
 
 /// Loads the sessions of a project.

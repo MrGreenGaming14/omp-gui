@@ -123,9 +123,14 @@ impl FilePicker {
 }
 
 fn expand_home(path: &str) -> PathBuf {
-    match path.strip_prefix("~/") {
-        Some(rest) => std::env::var_os("HOME").map_or_else(|| PathBuf::from(path), |home| PathBuf::from(home).join(rest)),
-        None => PathBuf::from(path),
+    expand_with(path, loa_util::fs::home())
+}
+
+/// `~/rest` or `~\rest` under `home`; anything else, or no home, unchanged.
+fn expand_with(path: &str, home: Option<PathBuf>) -> PathBuf {
+    match (path.strip_prefix("~/").or_else(|| path.strip_prefix("~\\")), home) {
+        (Some(rest), Some(home)) => home.join(rest),
+        _ => PathBuf::from(path),
     }
 }
 
@@ -176,5 +181,19 @@ mod tests {
         assert!(picker.error().is_some_and(|e| e.contains("isn't a PDF")));
         picker.update(Message::PathChanged(dir.path().join("b.PDF").display().to_string()));
         assert_eq!(picker.update(Message::PathSubmitted), Some(dir.path().join("b.PDF")));
+    }
+}
+
+#[cfg(test)]
+mod expand_tests {
+    use super::*;
+
+    #[test]
+    fn expands_both_separators_under_home() {
+        let home = Some(PathBuf::from("/h"));
+        assert_eq!(expand_with("~/docs/a.pdf", home.clone()), PathBuf::from("/h").join("docs/a.pdf"));
+        assert_eq!(expand_with("~\\docs\\a.pdf", home.clone()), PathBuf::from("/h").join("docs\\a.pdf"));
+        assert_eq!(expand_with("/abs/~/x", home.clone()), PathBuf::from("/abs/~/x"));
+        assert_eq!(expand_with("~/x", None), PathBuf::from("~/x"));
     }
 }

@@ -19,6 +19,12 @@ fn load_err(text: &str) -> ConfigError {
     store_with(text).1.load().expect_err("config should be rejected")
 }
 
+/// Reads the file through a new store, so the answer comes from disk and
+/// not from the store's read cache.
+fn load_from_disk(store: &ConfigStore) -> Config {
+    ConfigStore::new(store.path()).load().unwrap()
+}
+
 #[test]
 fn full_config_loads_into_typed_settings_and_round_trips() {
     let (_dir, store) = store_with(FULL);
@@ -45,7 +51,7 @@ fn full_config_loads_into_typed_settings_and_round_trips() {
     assert!(project.mcp_tool_enabled("files", "read"));
 
     store.save(&c).unwrap();
-    assert_eq!(store.load().unwrap(), c);
+    assert_eq!(load_from_disk(&store), c);
     let raw: toml::Table = fs::read_to_string(store.path()).unwrap().parse().unwrap();
     assert_eq!(raw, FULL.parse::<toml::Table>().unwrap(), "every key survives a round trip unchanged");
 }
@@ -88,7 +94,7 @@ fn unknown_keys_survive_load_edit_save() {
     assert!(raw["mcp_servers"].get("drop").is_none(), "deleted server came back: {raw}");
     assert_eq!(raw["projects"]["p"]["future_digest_mode"].as_str(), Some("dense"));
 
-    let again = store.load().unwrap();
+    let again = load_from_disk(&store);
     store.save(&again).unwrap();
     assert_eq!(raw, fs::read_to_string(store.path()).unwrap().parse::<toml::Table>().unwrap());
 }
@@ -153,7 +159,7 @@ fn saved_files_hold_only_what_is_set() {
         store.save(&c).unwrap();
         let saved = fs::read_to_string(store.path()).unwrap();
         assert_eq!(saved.contains(needle), *present, "{needle:?} after loading {snippet:?}:\n{saved}");
-        assert_eq!(store.load().unwrap(), c);
+        assert_eq!(load_from_disk(&store), c);
     }
 }
 
@@ -168,6 +174,20 @@ fn refused_files_are_left_alone() {
     let err = store.edit(|c| c.network.port = 0).unwrap_err();
     assert!(matches!(err, ConfigError::Invalid { key, .. } if key == "network.port"));
     assert_eq!(fs::read_to_string(store.path()).unwrap(), FULL);
+}
+
+#[test]
+fn load_sees_external_edit() {
+    let (_dir, store) = store_with(FULL);
+    let c = store.load().unwrap();
+    store.save(&c).unwrap();
+    assert_eq!(store.load().unwrap(), c);
+
+    // A longer file, so the length alone shows the edit.
+    let saved = fs::read_to_string(store.path()).unwrap();
+    let edited = format!("version = 1\ntheme = \"light\"\n# {}\n", "x".repeat(saved.len()));
+    fs::write(store.path(), edited).unwrap();
+    assert_eq!(store.load().unwrap().appearance.theme, ThemeRef("light".into()));
 }
 
 #[test]

@@ -14,7 +14,11 @@ const MOUNTED_STUB: &str = "/opt/loa/loa-sandbox-stub";
 
 /// Variables of the host the Docker CLI itself needs to find its daemon and
 /// configuration. They reach the `docker` client process only, never the container.
-const CLIENT_ENV: &[&str] = &["PATH", "HOME", "XDG_RUNTIME_DIR", "DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG", "DOCKER_CERT_PATH", "DOCKER_TLS_VERIFY"];
+const CLIENT_ENV: &[&str] = &[
+    "PATH", "HOME", "XDG_RUNTIME_DIR", "DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG", "DOCKER_CERT_PATH", "DOCKER_TLS_VERIFY",
+    // Windows: where processes find the system, and the user profile that holds `.docker`.
+    "SystemRoot", "windir", "ComSpec", "PATHEXT", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "ProgramData", "ProgramFiles",
+];
 
 pub struct DockerProvider {
     pub docker: PathBuf,
@@ -80,17 +84,18 @@ impl ProviderFactory for Factory {
     fn kind(&self) -> SandboxKind { SandboxKind::Docker }
     async fn probe(&self, machine: &Machine, config: &SandboxConfig) -> ProviderStatus {
         use Availability::*;
-        match (machine.which("docker"), &machine.stub) {
-            (None, _) => status(self.kind(), Unavailable, "Docker is not installed"),
-            (Some(_), None) => status(self.kind(), Unavailable, super::NO_STUB),
-            (Some(docker), Some(_)) => match server_version(&docker).await {
+        match (cfg!(windows), machine.which("docker"), &machine.stub) {
+            (true, ..) => status(self.kind(), Unavailable, super::REMOTE_STUB_UNSUPPORTED),
+            (_, None, _) => status(self.kind(), Unavailable, "Docker is not installed"),
+            (_, Some(_), None) => status(self.kind(), Unavailable, super::NO_STUB),
+            (_, Some(docker), Some(_)) => match server_version(&docker).await {
                 Ok(version) => status(self.kind(), Ready, format!("Docker {version}, default image {}", config.docker_image)),
                 Err(error) => status(self.kind(), Unavailable, format!("The Docker daemon is not reachable: {error}")),
             },
         }
     }
     fn build(&self, machine: &Machine, config: &SandboxConfig) -> Option<Arc<dyn SandboxProvider>> {
-        let (docker, stub) = (machine.which("docker")?, machine.stub.clone()?);
+        let (docker, stub) = (machine.which("docker").filter(|_| !cfg!(windows))?, machine.stub.clone()?);
         Some(Arc::new(DockerProvider { docker, stub, image: config.docker_image.clone(), network: config.docker_network }))
     }
 }

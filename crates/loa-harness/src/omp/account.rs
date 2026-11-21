@@ -49,7 +49,7 @@ impl OmpLaunch {
     }
 
     fn command(&self, args: &[&str]) -> tokio::process::Command {
-        let mut command = tokio::process::Command::new(&self.executable);
+        let mut command = tokio::process::Command::new(loa_util::exec::resolve(&self.executable));
         command
             .args(args)
             .envs(self.env.iter().map(|(k, v)| (k, v)))
@@ -313,7 +313,7 @@ pub struct OmpAccount {
 
 impl OmpAccount {
     fn config_path_result(&self) -> std::result::Result<PathBuf, loa_contracts::harness::AdapterError> {
-        let mut command = std::process::Command::new(&self.launch.executable);
+        let mut command = std::process::Command::new(loa_util::exec::resolve(&self.launch.executable));
         command.args(["config", "path"]).envs(self.launch.env.iter().cloned());
         if let Some(cwd) = &self.launch.cwd { command.current_dir(cwd); }
         let output = command.output().map_err(loa_contracts::harness::AdapterError::Io)?;

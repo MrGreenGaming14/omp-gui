@@ -46,6 +46,7 @@ pub enum Icon {
     GitCompare,
     GitFork,
     Globe,
+    Image,
     Maximize,
     Minimize,
     Monitor,

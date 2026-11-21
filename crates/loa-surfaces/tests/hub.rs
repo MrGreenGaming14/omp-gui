@@ -183,3 +183,10 @@ async fn the_mcp_endpoint_declares_surfaces_and_a_second_hub_opens_them() {
     assert!(shot_png(&shot).is_some_and(|png| png.starts_with(b"\x89PNG")), "{shot:?}");
     manager.shutdown().await;
 }
+
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn the_virtual_display_says_it_needs_linux_elsewhere() {
+    let error = loa_surfaces::VirtualDisplaySetup::find(None, None).unwrap_err();
+    assert_eq!(error, "needs Linux (Xvfb)");
+}

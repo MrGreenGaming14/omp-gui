@@ -174,7 +174,7 @@ impl FormatProbe for OmpProbe {
 
     async fn config_keys(&self, executable: &Path) -> Result<ConfigSchema, String> {
         let dir = workdir()?;
-        let mut cmd = tokio::process::Command::new(executable);
+        let mut cmd = tokio::process::Command::new(loa_util::exec::resolve(executable));
         cmd.args(["config", "list", "--json"]).current_dir(dir.path());
         let stdout = self.timed(loa_util::exec::run_checked(cmd)).await.map_err(|e| format!("config list: {e}"))?;
         parse_config_list(stdout.as_bytes())
@@ -361,7 +361,8 @@ mod tests {
         for (i, versions) in ["[1,2]", "[3]"].into_iter().enumerate() {
             let (exe, seen) = (dir.path().join(format!("omp{i}")), dir.path().join(format!("args{i}")));
             let ready = format!(r#"{{"type":"ready","protocolVersion":1,"supportedProtocolVersions":{versions}}}"#);
-            let body = format!("#!/bin/sh\necho \"$@\" > '{}'\necho '{ready}'\nread ignored\n", seen.display());
+            // Forward slashes: Git Bash on Windows needs them, every Unix shell accepts them.
+            let body = format!("#!/bin/sh\necho \"$@\" > '{}'\necho '{ready}'\nread ignored\n", seen.display().to_string().replace('\\', "/"));
             loa_util::exec::write_executable(&exe, body).unwrap();
             let offered = probe.protocol_versions(&exe).await.unwrap();
             assert_eq!(serde_json::to_string(&offered).unwrap(), versions);

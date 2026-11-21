@@ -57,6 +57,10 @@ pub fn stage_fixture(root: &Path, product: &str, version: &str, bytes: &[u8], si
     std::fs::write(dir.join("staged.json"), serde_json::to_vec(&manifest).unwrap()).unwrap();
 }
 
+/// Extension of a staged release asset: a raw file is launched as is, and Windows only launches batch files and
+/// `.exe`s, so the fixture is a `.cmd` there.
+pub const ASSET_EXT: &str = if cfg!(windows) { ".cmd" } else { "" };
+
 /// GitHub releases per repo and npm packuments per package, with ETags, served on localhost.
 #[derive(Clone, Default)]
 pub struct FakeFeed {
@@ -99,9 +103,10 @@ impl FakeFeed {
         format!("{}/files/{name}", self.base)
     }
 
-    /// Publishes GitHub release `version` of `repo` with asset `<repo>-<version>` and optional extra assets.
+    /// Publishes GitHub release `version` of `repo` with asset `<repo>-<version>` (plus [`ASSET_EXT`]) and optional
+    /// extra assets.
     pub fn release(&self, repo: &str, version: &str, notes: &str, bytes: &[u8], extra: &[(&str, Vec<u8>)]) {
-        let name = format!("{repo}-{version}");
+        let name = format!("{repo}-{version}{ASSET_EXT}");
         let digest = format!("sha256:{}", hex::encode(Sha256::digest(bytes)));
         let mut assets = vec![json!({"name": name, "browser_download_url": self.file(name.clone(), bytes.to_vec()), "size": bytes.len(), "digest": digest})];
         assets.extend(extra.iter().map(|(n, b)| json!({"name": n, "browser_download_url": self.file(format!("{version}-{n}"), b.clone())})));

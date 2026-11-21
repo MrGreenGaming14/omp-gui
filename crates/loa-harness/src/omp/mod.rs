@@ -76,7 +76,7 @@ impl OneShot {
     pub async fn ask(&self, model: &str, prompt: &str) -> Result<String, String> {
         let mut overlay = tempfile::Builder::new().prefix("loa-oneshot-").suffix(".yml").tempfile().map_err(|e| e.to_string())?;
         std::io::Write::write_all(&mut overlay, MEMORY_OFF.as_bytes()).map_err(|e| e.to_string())?;
-        let mut cmd = tokio::process::Command::new(&self.executable);
+        let mut cmd = tokio::process::Command::new(loa_util::exec::resolve(&self.executable));
         cmd.args(self.args(model, overlay.path())).current_dir(&self.cwd).kill_on_drop(true);
         cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
         let shown = self.executable.display();
@@ -113,14 +113,15 @@ mod tests {
     #[tokio::test]
     async fn one_shot_runs_smol_without_session_or_memory_and_reports_failures() {
         let dir = tempfile::tempdir().unwrap();
-        let (exe, d) = (dir.path().join("omp"), dir.path().display());
+        // Forward slashes: Git Bash on Windows reads them, every Unix shell accepts them.
+        let (exe, d) = (dir.path().join("omp"), dir.path().display().to_string().replace('\\', "/"));
         let script = format!(
             "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{d}/args'\ncat > '{d}/stdin'\n\
              while [ $# -gt 0 ]; do if [ \"$1\" = --config ]; then cp \"$2\" '{d}/overlay'; fi; shift; done\n\
              if grep -q fail '{d}/stdin'; then echo 'no smol model configured' >&2; exit 2; fi\nprintf answer\n"
         );
         loa_util::exec::write_executable(&exe, script).unwrap();
-        let omp = OneShot::new(&exe, dir.path());
+        let omp = OneShot::new(loa_util::exec::resolve(&exe), dir.path());
         assert_eq!(omp.summarize("Summarize: ", "the input").await.unwrap(), "answer");
         let args = std::fs::read_to_string(dir.path().join("args")).unwrap();
         let args: Vec<&str> = args.lines().collect();

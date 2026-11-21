@@ -84,31 +84,15 @@ impl State {
             })
             .collect();
         ctx.shell.sidebar_mut().set_updates(waiting(&overview));
+        let known = ctx.node.get().map(|node| node.peers()).unwrap_or_default();
         let data = Data {
             github_requests_left: overview.github_rate_limit.map(|limit| limit.remaining),
             products: overview.products.iter().map(product_to_view).collect(),
-            peers: self.peers(ctx).iter().map(peer_to_view).collect(),
+            peers: standings(&self.version, &known).iter().map(peer_to_view).collect(),
             turn_running: self.running > 0,
             now_unix: now_secs(),
         };
         self.screen.set_data(data);
-    }
-
-    /// The peers whose hello this node has seen, against this app.
-    fn peers(&self, ctx: &Ctx) -> Vec<PeerStanding> {
-        let known: Vec<PeerInfo> = ctx
-            .peers
-            .iter()
-            // Without a hello there is nothing to compare.
-            .filter(|peer| !peer.protocols.is_empty())
-            .map(|peer| PeerInfo {
-                node: peer.key.to_string(),
-                name: peer.name.clone(),
-                app_version: peer.app_version.as_deref().and_then(|v| Version::parse(v.trim_start_matches('v')).ok()),
-                alpns: peer.protocols.clone(),
-            })
-            .collect();
-        peers::classify(&self.version, &loa_p2p::local_protocols(), &known)
     }
 
     /// Checks every feed, as the screen's "Check all" does.
@@ -244,6 +228,22 @@ impl State {
         }
         self.refresh(ctx);
     }
+}
+
+/// The peers whose hello this node has seen, against an app at `version`.
+fn standings(version: &Version, known: &[loa_p2p::PeerInfo]) -> Vec<PeerStanding> {
+    let known: Vec<PeerInfo> = known
+        .iter()
+        // Without a hello there is nothing to compare.
+        .filter(|peer| !peer.protocols.is_empty())
+        .map(|peer| PeerInfo {
+            node: peer.key.to_string(),
+            name: peer.name.clone(),
+            app_version: peer.app_version.as_deref().and_then(|v| Version::parse(v.trim_start_matches('v')).ok()),
+            alpns: peer.protocols.clone(),
+        })
+        .collect();
+    peers::classify(version, &loa_p2p::local_protocols(), &known)
 }
 
 impl AreaMessage for Message {

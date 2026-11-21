@@ -40,6 +40,9 @@ tracing.workspace = true
 url = "2"
 webpki-roots = "1"
 
+[target.'cfg(windows)'.dependencies]
+process-wrap = { version = "10", default-features = false, features = ["tokio1", "job-object", "kill-on-drop"] }
+
 [dev-dependencies]
 axum = "0.8"
 libtest-mimic = "0.8"
@@ -47,6 +50,9 @@ loa-harness = { workspace = true, features = ["omp", "testing"] }
 rmcp = { version = "3.11", features = ["server", "transport-io", "transport-streamable-http-server"] }
 schemars.workspace = true
 tempfile.workspace = true
+
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }
 
 [[test]]
 name = "mcp"

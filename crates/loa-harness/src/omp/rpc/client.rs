@@ -90,7 +90,7 @@ impl SpawnOptions {
     }
 
     fn command(&self) -> tokio::process::Command {
-        let mut command = tokio::process::Command::new(&self.executable);
+        let mut command = tokio::process::Command::new(loa_util::exec::resolve(&self.executable));
         command.arg("--mode").arg(if self.mode == Mode::RpcUi { "rpc-ui" } else { "rpc" });
         if self.no_ui {
             command.arg("--no-ui");
@@ -210,7 +210,7 @@ impl std::fmt::Debug for RpcClient {
 
 /// Runs `<executable> --version` and returns what it printed, trimmed.
 pub async fn omp_version(executable: impl Into<PathBuf>) -> Result<String> {
-    let out = loa_util::exec::probe_cli(&executable.into(), &["--version"], Duration::from_secs(30)).await?;
+    let out = loa_util::exec::probe_cli(&loa_util::exec::resolve(&executable.into()), &["--version"], Duration::from_secs(30)).await?;
     Ok(out.trim().to_owned())
 }
 

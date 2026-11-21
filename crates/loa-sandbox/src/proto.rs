@@ -33,6 +33,8 @@ pub struct ExecRequest {
 
 impl ExecRequest {
     /// `/bin/sh -c script sh args…`: the script sees `args` as `$1`, `$2`, ….
+    /// A Windows stub runs a script without `args` through `cmd /C`, and one
+    /// with `args` through the POSIX `sh` on its `PATH`.
     pub fn shell(script: &str, args: &[&str]) -> Self {
         let argv = ["/bin/sh", "-c", script, "sh"].iter().chain(args).map(|arg| (*arg).to_owned()).collect();
         Self { argv, ..Self::default() }

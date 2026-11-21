@@ -16,5 +16,8 @@ tempfile.workspace = true
 time = { version = "0.3", features = ["formatting", "parsing", "macros"] }
 tokio.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+dunce = "1"
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

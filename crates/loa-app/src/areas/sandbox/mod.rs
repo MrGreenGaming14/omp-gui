@@ -324,7 +324,7 @@ impl State {
                 (Icon::Check, Tone::Ok, summary)
             }
         };
-        let session = ctx.runtime.sessions().get(&run.parent).and_then(|session| session.summary()).map_or_else(|| run.parent.clone(), |summary| summary.title);
+        let session = ctx.runtime.sessions().get(&run.parent).and_then(|session| session.summary()).map_or(run.parent.as_str(), |summary| summary.title.as_str());
         let title = row![tinted(icon, TextRole::Body, tone), badge(kind_label(run.kind), Tone::Normal), label(loa_util::text::first_line(&run.task, 72), TextRole::Label, Tone::Normal)];
         let meta = label(format!("{summary} · {session}"), TextRole::Caption, Tone::Muted);
         let content = column![title.spacing(sp(SpaceRole::S)).align_y(Alignment::Center), meta];

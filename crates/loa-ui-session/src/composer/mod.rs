@@ -1,9 +1,12 @@
 //! Message composer: an iced `text_editor` with Enter to send and Shift+Enter for a newline,
-//! undo and redo, growth up to a maximum height, `/` command and `@` file popups, six kit
-//! [`Picker`]s (harness, model, effort, permissions, mode, folder), and a stop button with a
-//! queue for messages written mid turn. The app feeds it plain [`loa_view::session::composer`]
-//! rows and acts on its [`Intent`]s.
+//! undo and redo, word deletes, growth up to a maximum height, `/` command and `@` file popups,
+//! token highlighting (commands, mentions, `[Image #n]` and omp's shimmering magic keywords),
+//! pasted or dropped images shown as cards and sent as attachments, kit [`Picker`]s (harness,
+//! model, effort slider, permissions, mode, project, folder) anchored to their buttons, and a
+//! stop button with a queue for messages written mid turn. The app feeds it plain
+//! [`loa_view::session::composer`] rows and acts on its [`Intent`]s.
 
+mod highlight;
 mod input;
 
 pub use input::{PopupKind, QueuedMessage};
@@ -12,17 +15,18 @@ use iced::Alignment::Center;
 use iced::advanced::input_method;
 use iced::keyboard::{self, Key, key::Named};
 use iced::widget::text_editor::{self, Action, Content, Cursor, Edit, Position};
-use iced::widget::{button, column, container, row, space, text, text_input, tooltip};
-use iced::{Background, Border, Color, Element, Length, Padding, Subscription, Task, Theme};
+use iced::widget::{button, column, container, row, slider, space, stack, text, text_input, tooltip};
+use iced::{Background, Border, Color, ContentFit, Element, Length, Padding, Subscription, Task, Theme};
 use input::{EditKind, History, KeyContext, Popup, Queue, Snapshot, Trigger};
-use loa_ui_kit::icons::{icon, muted};
+use loa_ui_kit::icons::{colored, icon, muted};
 use loa_ui_kit::style::{self as kit, ButtonKind, Surface, Tone};
-use loa_ui_kit::theme::{LayoutRole, SpaceRole as Sp, TextRole as T, sp, text_size as ts, width};
+use loa_ui_kit::theme::{ColorRole, LayoutRole, SpaceRole as Sp, TextRole as T, for_theme, sp, text_size as ts, width};
 use loa_ui_kit::widgets::{Picker, popover};
-use loa_view::session::composer::{AccessOption, Command, HarnessOption, Intent, Label, ModelOption, PickerAction, Workspace};
-use loa_view::session::{Prompt, SessionMode};
+use loa_view::session::composer::{AccessOption, Command, HarnessOption, Intent, Label, ModelOption, PastedImage, PickerAction, Workspace};
+use loa_view::session::{Attachment, Prompt, SessionMode};
 use loa_view::theme::Icon;
 use std::borrow::Cow;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// Widget ids of the editor and the folder chip.
@@ -39,6 +43,8 @@ pub const SEND_LABEL: &str = "Send (Enter)";
 pub const STOP_LABEL: &str = "Stop (Esc)";
 pub const REMOVE_QUEUED_LABEL: &str = "Remove queued message";
 pub const MENTION_LABEL: &str = "Mention a file (@)";
+/// The project chip's label and menu row for a session in no project.
+pub const NO_PROJECT: &str = "No project";
 const FOLDER_ACTIONS: [&str; 2] = ["Choose another folder…", "Show in Files"];
 
 /// A listed picker option: its label and note, an id for [`State::pick_key`] and whether it can
@@ -69,7 +75,7 @@ opt!(Label, |s| &s.0, &s.0, None, true);
 
 /// One of the composer's pickers.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum PickerId { Harness, Model, Effort, Access, Mode, Folder }
+pub enum PickerId { Harness, Model, Effort, Access, Mode, Folder, Project }
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Message {
@@ -95,13 +101,25 @@ pub enum Message {
     Composing(bool),
     /// The `+` button: starts an `@` mention at the cursor.
     MentionPressed,
+    /// Ctrl+V was pressed; the editor pastes any text itself.
+    PasteImage,
+    /// The × on a pasted image's card.
+    RemoveImage(u32),
+    /// A shimmer step of the magic keyword gradient.
+    Shimmer,
+    /// The window gained or lost focus; the shimmer runs only while focused.
+    WindowFocused(bool),
+    /// The effort slider moved to this level index.
+    EffortSlid(u8),
+    /// The effort slider was let go: its level applies.
+    EffortReleased,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum Phase { Idle, Starting, Running }
 
 #[derive(Debug, Default)]
-struct Pickers {
+pub(crate) struct Pickers {
     harness: Picker<HarnessOption>,
     model: Picker<ModelOption>,
     model_actions: Vec<PickerAction>,
@@ -110,7 +128,9 @@ struct Pickers {
     mode: Picker<Label>,
     folder: Picker<Workspace>,
     folders: Vec<Workspace>,
-    open: Option<PickerId>,
+    /// [`NO_PROJECT`], then the project names; the chip shows even with none.
+    project: Picker<Label>,
+    pub(crate) open: Option<PickerId>,
 }
 
 /// What the view needs of any picker.
@@ -143,22 +163,46 @@ fn select_by<T: Opt>(options: Vec<T>, current: Option<&str>) -> Picker<T> {
 /// The selected option of `p`.
 fn chosen<T>(p: &Picker<T>) -> Option<&T> { p.options.get(p.selected?) }
 
+/// An image pasted or dropped since the last send, shown as `[Image #n]` in the text and as a
+/// card above it.
+#[derive(Clone, Debug)]
+pub(crate) struct Image {
+    n: u32,
+    image: PastedImage,
+    /// Its token is in the text, so its card shows and it is sent.
+    pub(crate) shown: bool,
+}
+
 /// The composer.
 pub struct State {
     content: Content,
     history: History,
     composing: bool,
+    /// The editor holds text the send button can send; kept in step with the editor, so `view`
+    /// does not read the text.
+    can_send: bool,
     phase: Phase,
     queue: Queue,
     commands: Vec<Command>,
     files: Vec<String>,
-    /// Paths picked from the `@` popup since the last send, resolved even if the file list moves on.
+    /// Paths picked from the `@` popup or dropped since the last send, resolved even if the file list moves on.
     mentions: Vec<String>,
     popup: Option<Popup>,
     /// A popup closed with Esc stays closed while its word is edited.
     dismissed: Option<Trigger>,
-    pickers: Pickers,
+    pub(crate) pickers: Pickers,
     author: String,
+    /// The text holds a magic keyword, so its gradient shimmers.
+    pub(crate) keyword: bool,
+    /// Shimmer step, see [`highlight::Settings::phase`].
+    pub(crate) shimmer: u8,
+    /// The window has focus.
+    pub(crate) focused: bool,
+    pub(crate) images: Vec<Image>,
+    /// Number of the last image added since the last send.
+    next_image: u32,
+    /// The effort level index under the slider while it is dragged.
+    effort_drag: Option<u8>,
 }
 
 impl Default for State {
@@ -168,9 +212,30 @@ impl Default for State {
 impl State {
     pub fn new() -> Self {
         let mode = SessionMode::ALL.iter().map(|m| Label(m.as_str().to_owned())).collect();
-        let pickers = Pickers { mode: Picker { options: mode, selected: Some(0), open: false }, ..Pickers::default() };
+        let project = Picker { options: vec![Label(NO_PROJECT.to_owned())], selected: Some(0), open: false };
+        let pickers = Pickers { mode: Picker { options: mode, selected: Some(0), open: false }, project, ..Pickers::default() };
         let (content, history, queue) = (Content::new(), History::new(UNDO_DEPTH), Queue::default());
-        Self { content, history, composing: false, phase: Phase::Idle, queue, commands: Vec::new(), files: Vec::new(), mentions: Vec::new(), popup: None, dismissed: None, pickers, author: String::new() }
+        Self {
+            content,
+            history,
+            composing: false,
+            can_send: false,
+            phase: Phase::Idle,
+            queue,
+            commands: Vec::new(),
+            files: Vec::new(),
+            mentions: Vec::new(),
+            popup: None,
+            dismissed: None,
+            pickers,
+            author: String::new(),
+            keyword: false,
+            shimmer: 0,
+            focused: true,
+            images: Vec::new(),
+            next_image: 0,
+            effort_drag: None,
+        }
     }
 
     /// Folders the folder menu offers besides the current one.
@@ -232,6 +297,13 @@ impl State {
     pub fn set_harnesses(&mut self, harnesses: Vec<HarnessOption>, current: Option<&str>) { self.pickers.harness = select_by(harnesses, current) }
     pub fn harness(&self) -> Option<&HarnessOption> { chosen(&self.pickers.harness) }
 
+    /// The projects the project chip offers, and the current one (`None`: no project).
+    pub fn set_projects(&mut self, projects: Vec<String>, current: Option<String>) {
+        let options: Vec<Label> = std::iter::once(NO_PROJECT.to_owned()).chain(projects).map(Label).collect();
+        let selected = current.map_or(Some(0), |current| options.iter().skip(1).position(|o| o.0 == current).map(|i| i + 1));
+        self.pickers.project = Picker { options, selected, open: false };
+    }
+
     /// The message picking the option or action row with id `key`, if listed.
     pub fn pick_key(&self, picker: PickerId, key: &str) -> Option<Message> {
         let menu = self.menu(picker);
@@ -251,6 +323,29 @@ impl State {
     /// Whether a turn runs or is starting.
     pub fn is_busy(&self) -> bool { self.phase != Phase::Idle }
 
+    /// Follows the session now shown: busy while it runs a turn. Leaving a running session for
+    /// an idle one puts the messages queued for it back into the editor, so none goes to the
+    /// wrong session. A send on its way ([`Phase::Starting`]) is left alone.
+    pub fn follow_session(&mut self, busy: bool) {
+        match (busy, self.phase) {
+            (true, _) => self.phase = Phase::Running,
+            (false, Phase::Running) => {
+                self.phase = Phase::Idle;
+                self.unqueue();
+            }
+            (false, _) => {}
+        }
+    }
+
+    /// The app could not start a turn for `text`, the last [`Intent::Submit`]: it goes back
+    /// into the editor, ahead of anything typed since, and the composer is idle again.
+    pub fn give_back(&mut self, text: &str) -> Task<Message> {
+        self.phase = Phase::Idle;
+        let typed = self.content.text();
+        let text = if typed.trim().is_empty() { text.to_owned() } else { format!("{text}\n\n{}", typed.trim_end()) };
+        self.set_text(&text)
+    }
+
     /// Replaces the text, cursor at the end, and focuses the editor; undo brings back the old text.
     pub fn set_text(&mut self, text: &str) -> Task<Message> {
         self.history.break_group();
@@ -264,6 +359,26 @@ impl State {
         let line = self.content.line_count().saturating_sub(1);
         let column = self.content.line(line).map_or(0, |l| l.text.len());
         self.content.move_to(Cursor { position: Position { line, column }, selection: None });
+        self.text_changed();
+    }
+
+    /// Adds a pasted or dropped image: `[Image #n]` goes in at the cursor and its card above
+    /// the text. It is sent with the message while its token is in it.
+    pub fn attach_image(&mut self, image: PastedImage) -> Task<Message> {
+        self.next_image += 1;
+        let n = self.next_image;
+        self.images.push(Image { n, image, shown: false });
+        self.insert_word(&highlight::image_token(n));
+        iced::widget::operation::focus(EDITOR_ID)
+    }
+
+    /// Mentions a dropped file by its path, as the `@` popup would.
+    pub fn mention_path(&mut self, path: &str) -> Task<Message> {
+        if !self.mentions.iter().any(|known| known == path) {
+            self.mentions.push(path.to_owned());
+        }
+        self.insert_word(&input::token(path));
+        iced::widget::operation::focus(EDITOR_ID)
     }
 
     pub fn text(&self) -> String { self.content.text() }
@@ -308,6 +423,25 @@ impl State {
                 None
             }
             Message::MentionPressed => self.start_mention(),
+            Message::PasteImage => Some(Intent::PasteImage),
+            Message::RemoveImage(n) => self.remove_image(n),
+            Message::Shimmer => {
+                self.shimmer = shimmer_phase();
+                None
+            }
+            Message::WindowFocused(focused) => {
+                self.focused = focused;
+                None
+            }
+            Message::EffortSlid(level) => {
+                self.effort_drag = Some(level);
+                None
+            }
+            Message::EffortReleased => {
+                // The card stays open, so the level can be moved again.
+                let level = self.effort_drag.take().map(usize::from);
+                level.and_then(|i| select(&mut self.pickers.effort, i)).map(|e| Intent::EffortChanged(e.0))
+            }
         };
         (if focus { iced::widget::operation::focus(EDITOR_ID) } else { Task::none() }, event)
     }
@@ -322,6 +456,7 @@ impl State {
             PickerId::Effort => select(&mut p.effort, i).map(|e| Intent::EffortChanged(e.0)),
             PickerId::Access => select(&mut p.access, i).map(|a| Intent::AccessChanged(a.id)),
             PickerId::Mode => select(&mut p.mode, i).map(|_| Intent::ModeChanged(SessionMode::ALL[i])),
+            PickerId::Project => select(&mut p.project, i).map(|l| Intent::ProjectPicked((i > 0).then_some(l.0))),
             PickerId::Folder => match i.checked_sub(p.folder.options.len()) {
                 None => Some(Intent::FolderPicked(p.folder.options[i].full.clone())),
                 Some(0) => Some(Intent::BrowseFolders),
@@ -340,11 +475,13 @@ impl State {
             PickerId::Access => &p.access,
             PickerId::Mode => &p.mode,
             PickerId::Folder => &p.folder,
+            PickerId::Project => &p.project,
         }
     }
 
     pub fn view(&self) -> Element<'_, Message> {
-        let ctx = KeyContext { popup_open: self.visible_popup().is_some(), composing: self.composing, busy: self.is_busy() };
+        let selection = self.content.cursor().selection.is_some();
+        let ctx = KeyContext { popup_open: self.visible_popup().is_some(), composing: self.composing, busy: self.is_busy(), selection };
         let placeholder = match self.harness() {
             _ if self.is_busy() => "Queue a message…".to_owned(),
             Some(harness) => format!("Ask {} anything. Type / for commands", harness.label),
@@ -352,9 +489,10 @@ impl State {
         };
         let editor = iced::widget::text_editor(&self.content).id(EDITOR_ID).placeholder(placeholder).on_action(Message::Edit).height(Length::Shrink);
         let editor = editor.min_height(2.6 * ts(T::Body)).max_height(MAX_EDITOR_HEIGHT).padding(sp(Sp::S)).size(ts(T::Body)).style(editor_style).key_binding(move |press| input::bind(press, ctx));
+        let editor = editor.highlight_with::<highlight::Highlighter>(highlight::Settings { phase: self.shimmer }, highlight::format);
         let (glyph, size, on_press, label) = match self.is_busy() {
             true => (Icon::Square, ts(T::Caption), Some(Message::Interrupt), STOP_LABEL),
-            false => (Icon::ArrowUp, ts(T::Heading), (!self.content.text().trim().is_empty()).then_some(Message::Send), SEND_LABEL),
+            false => (Icon::ArrowUp, ts(T::Heading), self.can_send.then_some(Message::Send), SEND_LABEL),
         };
         let tint = kit::tint(if on_press.is_some() { Tone::OnAccent } else { Tone::Faint });
         let action = button(icon(glyph, size).style(tint)).width(2.0 * ts(T::Body)).height(2.0 * ts(T::Body)).padding(ts(T::Body) - size / 2.0);
@@ -365,39 +503,51 @@ impl State {
             (PickerId::Model, Icon::Sparkles, p.model.len() + p.model_actions.len() > 0, chosen(&p.model).map_or("Model".into(), |m| short_model_name(&m.name))),
             (PickerId::Effort, Icon::Brain, p.effort.len() > 0, capitalized(chosen(&p.effort).map_or("Effort", |e| e.0.as_str()))),
             (PickerId::Access, Icon::Shield, p.access.len() > 0, chosen(&p.access).map_or("Permissions".into(), |a| a.label.clone())),
-            (PickerId::Mode, Icon::FileText, true, capitalized(chosen(&p.mode).map_or("", |m| m.0.as_str()))),
         ];
         let controls = row![tip(mention.on_press(Message::MentionPressed), MENTION_LABEL)].spacing(sp(Sp::Xs)).align_y(Center);
-        let controls = controls.extend(chips.into_iter().filter(|c| c.2).map(|(id, glyph, _, label)| self.chip(id, glyph, label)));
+        let controls = controls.extend(chips.into_iter().filter(|c| c.2).map(|(id, glyph, _, label)| self.chip(id, glyph, label, false)));
         let controls = controls.push(space::horizontal()).push(tip(action.style(kit::button(ButtonKind::Accent)).on_press_maybe(on_press), label));
         let controls = container(controls).padding(Padding { top: sp(Sp::Xs), ..Padding::new(sp(Sp::M)) });
         let editor = container(editor).padding(Padding { bottom: 0.0, ..Padding::new(sp(Sp::M)) });
-        let frame = container(column![editor, controls]).width(Length::Fill).style(kit::container(Surface::Raised));
         // Fixed slots (empty spaces when unused) keep the editor's place and state in the tree;
         // menus float over the page instead of taking room.
+        let images = self.images.iter().any(|image| image.shown).then(|| self.image_cards());
+        let frame = container(column![slot(images), editor, controls]).width(Length::Fill).style(kit::container(Surface::Raised));
         let queue = (!self.queue.items.is_empty()).then(|| self.queue_view());
-        let menu = p.open.map(|picker| self.menu_view(picker)).or_else(|| self.visible_popup().map(|popup| self.popup_view(popup)));
-        let bar = self.workspace().map(|w| self.folder_bar(w));
-        popover(column![slot(queue), slot(bar), frame].spacing(sp(Sp::S)), menu).into()
+        // Picker menus open from their own button; the `/` and `@` popups span the composer.
+        let popup = self.visible_popup().filter(|_| p.open.is_none()).map(|popup| self.popup_view(popup));
+        // The project and session mode sit left of the folder, small: they are set rarely.
+        let project = self.chip(PickerId::Project, Icon::Files, chosen(&p.project).map_or(NO_PROJECT.to_owned(), |l| l.0.clone()), true);
+        let mode = self.chip(PickerId::Mode, Icon::FileText, capitalized(chosen(&p.mode).map_or("", |m| m.0.as_str())), true);
+        let bar = row![project, mode].push(self.workspace().map(|w| self.folder_bar(w))).spacing(sp(Sp::Xs)).align_y(Center);
+        popover(column![slot(queue), bar, frame].spacing(sp(Sp::S)), popup).into()
     }
 
-    /// A ghost picker chip: a muted icon, the current choice and a chevron.
-    fn chip<'a>(&self, picker: PickerId, glyph: Icon, label: String) -> Element<'a, Message> {
-        let content = row![icon(glyph, ts(T::Body)).style(kit::tint(Tone::Muted)), text(label).size(ts(T::Label))].spacing(sp(Sp::S)).align_y(Center);
-        self.toggle(picker, content.into())
+    /// A ghost picker chip: a muted icon, the current choice and a chevron, smaller when
+    /// `compact`; its menu opens from it.
+    fn chip<'a>(&'a self, picker: PickerId, glyph: Icon, label: String, compact: bool) -> Element<'a, Message> {
+        let size = if compact { ts(T::Caption) } else { ts(T::Body) };
+        let content = row![icon(glyph, size).style(kit::tint(Tone::Muted)), text(label).size(if compact { ts(T::Caption) } else { ts(T::Label) })].spacing(sp(Sp::S)).align_y(Center);
+        self.toggle(picker, content.into(), compact)
     }
 
-    /// A toggle for `picker`'s menu around `content`, with an open/closed chevron.
-    fn toggle<'a>(&self, picker: PickerId, content: Element<'a, Message>) -> Element<'a, Message> {
+    /// A toggle for `picker`'s menu around `content`, with an open/closed chevron; the open menu
+    /// floats from it and closes on a press outside.
+    fn toggle<'a>(&'a self, picker: PickerId, content: Element<'a, Message>, compact: bool) -> Element<'a, Message> {
         let open = self.pickers.open == Some(picker);
         let chevron = icon(if open { Icon::ChevronUp } else { Icon::ChevronDown }, ts(T::Caption)).style(kit::tint(Tone::Faint));
-        let content = row![content, chevron].spacing(sp(Sp::S)).align_y(Center);
-        button(content).padding([sp(Sp::Xs), sp(Sp::S)]).style(kit::button(ButtonKind::Tab { active: open })).on_press(Message::Toggle(picker)).into()
+        let content = row![content, chevron].spacing(if compact { sp(Sp::Xs) } else { sp(Sp::S) }).align_y(Center);
+        let padding = if compact { [sp(Sp::Xs) / 2.0, sp(Sp::Xs)] } else { [sp(Sp::Xs), sp(Sp::S)] };
+        let button = button(content).padding(padding).style(kit::button(ButtonKind::Tab { active: open })).on_press(Message::Toggle(picker));
+        popover(button, open.then(|| self.menu_view(picker))).own_width().on_dismiss(Message::PickerClosed).into()
     }
 
     /// The open picker's rows: its options (the current one checked, disabled ones inert), then
-    /// its action rows.
+    /// its action rows. Effort is a slider card instead.
     fn menu_view(&self, picker: PickerId) -> Element<'_, Message> {
+        if picker == PickerId::Effort {
+            return self.effort_card();
+        }
         let menu = self.menu(picker);
         let actions: Vec<&str> = match picker {
             PickerId::Model => self.pickers.model_actions.iter().map(|a| a.label.as_str()).collect(),
@@ -409,35 +559,98 @@ impl State {
             option_row(label, detail, menu.current() == Some(i), picker == PickerId::Access, enabled.then_some(Message::Pick(picker, i)))
         });
         let actions = actions.into_iter().enumerate().map(|(n, a)| option_row(a.into(), None, false, false, Some(Message::Pick(picker, menu.len() + n))));
-        let wide = matches!(picker, PickerId::Access | PickerId::Folder);
+        let menu_width = match picker {
+            PickerId::Access | PickerId::Folder => width(LayoutRole::ListWidth),
+            PickerId::Mode => width(LayoutRole::NavWidth) / 1.5,
+            _ => width(LayoutRole::NavWidth),
+        };
         let rows = container(column(options.chain(actions)).spacing(sp(Sp::Xs))).padding(sp(Sp::Xs));
-        rows.width(width(if wide { LayoutRole::ListWidth } else { LayoutRole::NavWidth })).style(kit::container(Surface::Popup)).into()
+        rows.width(menu_width).style(kit::container(Surface::Popup)).into()
     }
 
-    /// The bar above the editor: the folder and git branch; opens the folder menu.
+    /// The effort picker: the level in large type over the model, and a slider with a mark per
+    /// level. Dragging previews; letting go applies.
+    fn effort_card(&self) -> Element<'_, Message> {
+        const TRACK: f32 = 30.0;
+        const KNOB: f32 = 17.0;
+        const DOT: f32 = 6.0;
+        let p = &self.pickers;
+        let levels = p.effort.options.len();
+        let shown = self.effort_drag.map(usize::from).or(p.effort.selected);
+        let title = shown.and_then(|i| p.effort.options.get(i)).map_or_else(|| "Effort".to_owned(), |level| capitalized(&level.0));
+        let mut heading = column![text(title).size(ts(T::Heading)).style(kit::text(Tone::Accent))].spacing(sp(Sp::Xs) / 2.0).align_x(Center).width(Length::Fill);
+        if let Some(model) = chosen(&p.model) {
+            let name = row![text(short_model_name(&model.name)).size(ts(T::Caption)).style(kit::text(Tone::Muted)), icon(Icon::ChevronRight, ts(T::Caption)).style(kit::tint(Tone::Faint))].spacing(sp(Sp::Xs) / 2.0).align_y(Center);
+            heading = heading.push(button(name).padding([1.0, sp(Sp::Xs)]).style(kit::button(ButtonKind::Ghost)).on_press(Message::Toggle(PickerId::Model)));
+        }
+        let header = row![icon(Icon::Brain, ts(T::Body)).style(kit::tint(Tone::Muted)), heading, space().width(ts(T::Body))].align_y(Center);
+        let value = u8::try_from(shown.unwrap_or(0)).unwrap_or(u8::MAX);
+        let last = u8::try_from(levels.saturating_sub(1)).unwrap_or(u8::MAX);
+        let slider = slider(0..=last, value, Message::EffortSlid).step(1u8).on_release(Message::EffortReleased).height(TRACK + 6.0).style(effort_slider(TRACK, KNOB));
+        // A mark at each level, centered where the knob stops; the knob's own level has none.
+        let mut dots = row![].align_y(Center);
+        for index in 0..levels {
+            if index > 0 {
+                dots = dots.push(space::horizontal());
+            }
+            let dot: Element<'_, Message> = if index == usize::from(value) { space().width(DOT).into() } else { container(space()).width(DOT).height(DOT).style(effort_dot(index < usize::from(value))).into() };
+            dots = dots.push(dot);
+        }
+        let dots = container(dots).padding([0.0, KNOB - DOT / 2.0]).height(TRACK + 6.0).center_y(TRACK + 6.0).width(Length::Fill);
+        let card = column![header, stack![slider, dots]].spacing(sp(Sp::M));
+        container(card).padding(sp(Sp::M)).width(width(LayoutRole::NavWidth) * 1.2).style(kit::container(Surface::Popup)).into()
+    }
+
+    /// The folder chip above the editor: the folder and git branch; opens the folder menu.
     fn folder_bar<'a>(&'a self, workspace: &'a Workspace) -> Element<'a, Message> {
         let mut chip = row![icon(Icon::Folder, ts(T::Body)).style(kit::tint(Tone::Muted)), text(workspace.path.as_str()).size(ts(T::Label))].spacing(sp(Sp::S)).align_y(Center);
         if let Some(branch) = &workspace.branch {
             chip = chip.push(icon(Icon::GitFork, ts(T::Label)).style(kit::tint(Tone::Faint))).push(text(branch.as_str()).size(ts(T::Label)).style(kit::text(Tone::Faint)));
         }
-        let chip = self.toggle(PickerId::Folder, chip.into());
+        let chip = self.toggle(PickerId::Folder, chip.into(), false);
         // The full path on hover, except while the menu is open: the tip would cover its last row.
         let chip = if self.pickers.open == Some(PickerId::Folder) { chip } else { tip(chip, workspace.full.as_str()) };
         container(chip).id(WORKSPACE_CHIP_ID).into()
     }
 
-    /// Tracks input method composition so Enter and Esc reach the IME; Esc closes a menu.
+    /// The cards of the images whose token is in the text.
+    fn image_cards(&self) -> Element<'_, Message> {
+        let bold = iced::Font { weight: iced::font::Weight::Bold, ..iced::Font::DEFAULT };
+        let cards = self.images.iter().filter(|image| image.shown).map(|image| {
+            let color = highlight::image_color(image.n);
+            let remove = button(muted(Icon::X, ts(T::Caption))).padding(2).style(kit::button(ButtonKind::Ghost)).on_press(Message::RemoveImage(image.n));
+            let header = row![colored(Icon::Image, ts(T::Body), color), text(format!("#{}", image.n)).size(ts(T::Caption)).font(bold).color(color), space::horizontal(), remove].spacing(sp(Sp::Xs)).align_y(Center);
+            let thumbnail = iced::widget::image(iced::widget::image::Handle::from_path(&image.image.path)).width(Length::Fill).height(56).content_fit(ContentFit::Contain);
+            let size = image.image.size.map_or_else(String::new, |(w, h)| format!("{w}x{h}"));
+            let card = column![header, thumbnail, text(size).size(ts(T::Caption)).color(color)].spacing(sp(Sp::Xs)).align_x(Center);
+            container(card).width(116).padding(sp(Sp::S)).style(move |_: &Theme| container::Style { border: Border { color, width: 1.0, radius: 8.0.into() }, ..container::Style::default() }).into()
+        });
+        container(row(cards).spacing(sp(Sp::S))).padding(Padding { bottom: 0.0, ..Padding::new(sp(Sp::M)) }).into()
+    }
+
+    /// Tracks input method composition so Enter and Esc reach the IME, closes an open menu on
+    /// Esc, and runs the keyword shimmer while the window has focus.
     pub fn subscription(&self) -> Subscription<Message> {
-        let ime = iced::event::listen_with(|event, _, _| match event {
+        let events = iced::event::listen_with(|event, _, _| match event {
             iced::Event::InputMethod(input_method::Event::Preedit(content, _)) => Some(Message::Composing(!content.is_empty())),
-            iced::Event::InputMethod(input_method::Event::Commit(_) | input_method::Event::Closed | input_method::Event::Opened) => Some(Message::Composing(false)),
+            // winit sends an empty preedit right before a commit, so commits need no arm.
+            iced::Event::InputMethod(input_method::Event::Closed) => Some(Message::Composing(false)),
+            iced::Event::Window(iced::window::Event::Focused) => Some(Message::WindowFocused(true)),
+            iced::Event::Window(iced::window::Event::Unfocused) => Some(Message::WindowFocused(false)),
             _ => None,
         });
-        let escape = iced::event::listen_with(|event, _, _| match event {
-            iced::Event::Keyboard(keyboard::Event::KeyPressed { key: Key::Named(Named::Escape), .. }) => Some(Message::PickerClosed),
-            _ => None,
-        });
-        if self.pickers.open.is_none() { ime } else { Subscription::batch([ime, escape]) }
+        let mut subscriptions = vec![events];
+        if self.pickers.open.is_some() {
+            subscriptions.push(iced::event::listen_with(|event, _, _| match event {
+                iced::Event::Keyboard(keyboard::Event::KeyPressed { key: Key::Named(Named::Escape), .. }) => Some(Message::PickerClosed),
+                _ => None,
+            }));
+        }
+        if self.keyword && self.focused {
+            let step = std::time::Duration::from_millis(highlight::SHIMMER_MS / u64::from(highlight::PHASES));
+            subscriptions.push(iced::time::every(step).map(|_| Message::Shimmer));
+        }
+        Subscription::batch(subscriptions)
     }
 
     fn queue_view(&self) -> Element<'_, Message> {
@@ -479,9 +692,7 @@ impl State {
         }
         let kind = match &action {
             Action::Scroll { .. } => return (self.content.perform(action), self.refresh_popup()).1,
-            Action::Edit(Edit::Insert(c)) => EditKind::Insert { whitespace: c.is_whitespace() },
-            Action::Edit(Edit::Backspace | Edit::Delete) => EditKind::Delete,
-            Action::Edit(_) => EditKind::Other,
+            Action::Edit(edit) => edit_kind(edit),
             _ => {
                 self.history.break_group();
                 self.content.perform(action);
@@ -493,9 +704,13 @@ impl State {
             self.history.extend(kind);
         } else {
             let before = self.snapshot();
+            let line_count = self.content.line_count();
             self.content.perform(action);
-            if self.content.text() == before.text { self.history.break_group() } else { self.history.begin(kind, before) }
+            // The text is compared only when the cursor and line count stay put.
+            let moved = self.content.cursor() != before.cursor || self.content.line_count() != line_count;
+            if !moved && self.content.text() == before.text { self.history.break_group() } else { self.history.begin(kind, before) }
         }
+        self.text_changed();
         self.refresh_popup()
     }
 
@@ -504,20 +719,64 @@ impl State {
         let target = step(&mut self.history, current)?;
         self.content = Content::with_text(&target.text);
         self.content.move_to(target.cursor);
+        self.text_changed();
         self.refresh_popup()
     }
 
     /// Types an `@` at the cursor, after a space when it follows a word.
     fn start_mention(&mut self) -> Option<Intent> {
+        let mention = if self.after_word() { " @" } else { "@" };
+        self.edit(Action::Edit(Edit::Paste(Arc::new(mention.to_owned()))))
+    }
+
+    /// Whether the cursor sits right after a word, with nothing selected.
+    fn after_word(&self) -> bool {
         let cursor = self.content.cursor();
         let line = self.content.line(cursor.position.line);
-        let after_word = cursor.selection.is_none() && line.and_then(|l| l.text.get(..cursor.position.column)?.chars().next_back()).is_some_and(|c| !c.is_whitespace());
-        self.edit(Action::Edit(Edit::Paste(Arc::new(if after_word { " @" } else { "@" }.to_owned()))))
+        cursor.selection.is_none() && line.and_then(|l| l.text.get(..cursor.position.column)?.chars().next_back()).is_some_and(|c| !c.is_whitespace())
+    }
+
+    /// Inserts `word` at the cursor as a word of its own, as one undo step.
+    fn insert_word(&mut self, word: &str) {
+        let text = if self.after_word() { format!(" {word} ") } else { format!("{word} ") };
+        self.history.break_group();
+        let _ = self.edit(Action::Edit(Edit::Paste(Arc::new(text))));
+        self.history.break_group();
+    }
+
+    /// Drops image `n`'s token from the text, so its card hides. The image itself stays known,
+    /// so undo brings back token, card and attachment.
+    fn remove_image(&mut self, n: u32) -> Option<Intent> {
+        let token = highlight::image_token(n);
+        let before = self.snapshot();
+        if before.text.contains(&token) {
+            let text = before.text.replace(&format!("{token} "), "").replace(&token, "");
+            self.history.break_group();
+            self.history.begin(EditKind::Other, before);
+            self.replace(&text);
+        }
+        // The text moved under any open popup's word.
+        self.refresh_popup()
+    }
+
+    /// Brings what depends on the text in step with it: the send button, the keyword shimmer
+    /// and which image cards show.
+    fn text_changed(&mut self) {
+        self.can_send = !self.content.is_empty() && self.content.lines().any(|line| !line.text.trim().is_empty());
+        self.keyword = self.content.lines().any(|line| highlight::has_keyword(&line.text));
+        if !self.keyword {
+            self.shimmer = 0;
+        }
+        for image in &mut self.images {
+            let token = highlight::image_token(image.n);
+            image.shown = self.content.lines().any(|line| line.text.contains(&token));
+        }
     }
 
     fn submit(&mut self) -> Option<Intent> {
         let message = Some(self.content.text().trim().to_owned()).filter(|m| !m.is_empty())?;
         self.content = Content::new();
+        self.text_changed();
         self.history.clear();
         (self.popup, self.dismissed) = (None, None);
         if self.is_busy() {
@@ -527,11 +786,20 @@ impl State {
         Some(self.send(&message))
     }
 
-    /// Builds the prompt for `message` and marks the turn as starting.
+    /// Builds the prompt for `message` and marks the turn as starting. Mentioned files and the
+    /// images whose token it holds are attached.
     fn send(&mut self, message: &str) -> Intent {
-        let attachments = input::resolve(message, |path| self.mentions.iter().chain(&self.files).any(|m| m == path));
+        let mut attachments = input::resolve(message, |path| self.mentions.iter().chain(&self.files).any(|m| m == path));
+        for image in &self.images {
+            if message.contains(&highlight::image_token(image.n)) && !attachments.iter().any(|a| a.path == image.image.path) {
+                let mime = loa_util::text::mime_of(&image.image.path).map(str::to_owned);
+                attachments.push(Attachment { path: image.image.path.clone(), mime });
+            }
+        }
         if self.queue.items.is_empty() && self.content.is_empty() {
             self.mentions.clear();
+            self.images.clear();
+            self.next_image = 0;
         }
         self.phase = Phase::Starting;
         Intent::Submit(Prompt { text: message.to_owned(), attachments, by: self.author.clone() })
@@ -542,16 +810,22 @@ impl State {
         if !self.is_busy() {
             return None;
         }
-        let queued: Vec<String> = self.queue.items.drain(..).map(|m| m.text).collect();
-        if !queued.is_empty() {
-            let before = self.snapshot();
-            let text = queued.into_iter().chain((!before.text.trim().is_empty()).then(|| before.text.clone())).collect::<Vec<_>>().join("\n\n");
-            self.history.break_group();
-            self.history.begin(EditKind::Other, before);
-            self.replace(&text);
-            self.popup = None;
-        }
+        self.unqueue();
         Some(Intent::Stop)
+    }
+
+    /// Moves queued messages back into the editor, ahead of what is typed.
+    fn unqueue(&mut self) {
+        let queued: Vec<String> = self.queue.items.drain(..).map(|m| m.text).collect();
+        if queued.is_empty() {
+            return;
+        }
+        let before = self.snapshot();
+        let text = queued.into_iter().chain((!before.text.trim().is_empty()).then(|| before.text.clone())).collect::<Vec<_>>().join("\n\n");
+        self.history.break_group();
+        self.history.begin(EditKind::Other, before);
+        self.replace(&text);
+        self.popup = None;
     }
 
     fn queue_changed(&self) -> Intent { Intent::QueueChanged(self.queue.items.iter().map(|m| m.text.clone()).collect()) }
@@ -577,6 +851,7 @@ impl State {
         let at = |column| Position { line: trigger.line, column };
         self.content.move_to(Cursor { position: at(trigger.end), selection: Some(at(trigger.start)) });
         self.content.perform(Action::Edit(Edit::Paste(Arc::new(replacement))));
+        self.text_changed();
         self.history.begin(EditKind::Other, before);
         (self.popup, self.dismissed) = (None, None);
         None
@@ -620,6 +895,35 @@ impl State {
     }
 }
 
+/// Whether a dropped file is an image the composer attaches as a card.
+pub fn is_image(path: &Path) -> bool { loa_util::text::mime_of(path).is_some_and(|mime| mime.starts_with("image/") && mime != "image/svg+xml") }
+
+/// The pasted image at `path`, `size` pixels when known.
+pub fn pasted(path: PathBuf, size: Option<(u32, u32)>) -> PastedImage { PastedImage { path, size } }
+
+/// How an edit groups with its neighbours. An IME commit arrives as a paste; a single typed
+/// character is an insert.
+fn edit_kind(edit: &Edit) -> EditKind {
+    match edit {
+        Edit::Insert(c) => EditKind::Insert { whitespace: c.is_whitespace() },
+        Edit::Paste(text) => {
+            let mut chars = text.chars();
+            match (chars.next(), chars.next()) {
+                (Some(c), None) if c != '\n' && c != '\r' => EditKind::Insert { whitespace: c.is_whitespace() },
+                _ => EditKind::Other,
+            }
+        }
+        Edit::Backspace | Edit::Delete => EditKind::Delete,
+        _ => EditKind::Other,
+    }
+}
+
+/// The shimmer step for the current time, so every keyword moves in step.
+fn shimmer_phase() -> u8 {
+    let ms = u64::try_from(loa_util::time::now_ms()).unwrap_or_default() % highlight::SHIMMER_MS;
+    u8::try_from(ms * u64::from(highlight::PHASES) / highlight::SHIMMER_MS).unwrap_or_default()
+}
+
 /// `content`, or an empty space holding its place in the widget tree.
 fn slot(content: Option<Element<'_, Message>>) -> Element<'_, Message> { content.unwrap_or_else(|| space().into()) }
 
@@ -651,4 +955,27 @@ fn tip<'a>(content: impl Into<Element<'a, Message>>, label: &'a str) -> Element<
 /// The editor inside the composer box: no fill and no edge of its own.
 fn editor_style(theme: &Theme, status: text_editor::Status) -> text_editor::Style {
     text_editor::Style { background: Background::Color(Color::TRANSPARENT), border: Border::default(), ..kit::editor(theme, status) }
+}
+
+/// The effort slider: a thick rounded track, filled with the accent up to a large white knob.
+fn effort_slider(rail: f32, knob: f32) -> impl Fn(&Theme, slider::Status) -> slider::Style {
+    move |theme, _| {
+        let t = for_theme(theme);
+        slider::Style {
+            rail: slider::Rail {
+                backgrounds: (Background::Color(t.color(ColorRole::Accent)), Background::Color(t.color(ColorRole::Raised))),
+                width: rail,
+                border: Border { color: t.color(ColorRole::Line), width: 1.0, radius: (rail / 2.0).into() },
+            },
+            handle: slider::Handle { shape: slider::HandleShape::Circle { radius: knob }, background: Background::Color(Color::WHITE), border_width: 0.0, border_color: Color::TRANSPARENT },
+        }
+    }
+}
+
+/// A level mark on the effort track: light on the filled part, faint on the rest.
+fn effort_dot(filled: bool) -> impl Fn(&Theme) -> container::Style {
+    move |theme| {
+        let color = if filled { Color::WHITE.scale_alpha(0.6) } else { for_theme(theme).color(ColorRole::Text3) };
+        container::Style { background: Some(Background::Color(color)), border: Border { radius: 99.0.into(), ..Border::default() }, ..container::Style::default() }
+    }
 }

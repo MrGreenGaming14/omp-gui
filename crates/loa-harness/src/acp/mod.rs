@@ -115,7 +115,7 @@ impl AcpAdapter {
             models: Mutex::new(None),
         });
         let program = config.executable.as_ref().unwrap_or(&self.program);
-        let mut command = Command::new(program);
+        let mut command = Command::new(loa_util::exec::resolve(program));
         command.args(&self.args).current_dir(&config.cwd).envs(&config.env);
         let rpc = Arc::new(StdioRpc::spawn(command, JsonRpc2 { header: true }, shared.clone())?);
         let _ = shared.writer.set(rpc.writer());

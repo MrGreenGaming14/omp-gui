@@ -113,6 +113,8 @@ printf '%s\n' "$@" > "$dir/args"
 declare -A ids
 exec 3< "$dir/script"
 while IFS= read -r step <&3 || [[ -n "$step" ]]; do
+  # Transcript fixtures may have CRLF when checked out on Windows.
+  step="${step%$'\r'}"
   case "$step" in
     '' | '#'*) ;;
     '> '*)
@@ -159,7 +161,11 @@ impl FakeProcess {
         std::fs::write(dir.join("version"), "19.0.0\n")?;
         // Written by a separate process so no fork of this one can hold it
         // open for writing when it runs ("Text file busy").
-        loa_util::exec::write_executable(&executable, SCRIPT.replace("@DIR@", &dir.display().to_string()))?;
+        // Forward slashes: Git Bash on Windows reads them where backslashes
+        // would need escaping, and every other platform is unaffected.
+        loa_util::exec::write_executable(&executable, SCRIPT.replace("@DIR@", &dir.display().to_string().replace('\\', "/")))?;
+        // What to spawn: on Windows the `.cmd` launcher written beside the script.
+        let executable = loa_util::exec::resolve(&executable);
         Ok(Self { dir: dir.to_path_buf(), executable })
     }
 

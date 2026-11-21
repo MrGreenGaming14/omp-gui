@@ -31,12 +31,20 @@ pub struct ConnectorConfig {
 impl ConnectorConfig {
     /// Defaults with the agent socket taken from `SSH_AUTH_SOCK`.
     pub fn from_env() -> Self {
-        Self::with_agent(std::env::var_os("SSH_AUTH_SOCK").map(PathBuf::from))
+        Self::with_agent(default_agent_from_env())
     }
 
     pub fn with_agent(default_agent: Option<PathBuf>) -> Self {
         Self { default_agent, connect_timeout: Duration::from_secs(20), keepalive: Duration::from_secs(30) }
     }
+}
+
+/// `SSH_AUTH_SOCK`; on Windows, falling back to the OpenSSH agent pipe.
+fn default_agent_from_env() -> Option<PathBuf> {
+    let env = std::env::var_os("SSH_AUTH_SOCK").map(PathBuf::from);
+    #[cfg(windows)]
+    let env = env.or_else(|| Some(PathBuf::from(r"\\.\pipe\openssh-ssh-agent")));
+    env
 }
 
 /// russh client handler: checks the server's host key.

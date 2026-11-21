@@ -83,6 +83,8 @@ pub enum Message {
     Field(NodeId, usize, FieldInput),
     Shortcut(Shortcut),
     Link(markdown::Uri),
+    /// Expands or collapses the whole diff of an approval card.
+    ToggleDiff(NodeId),
 }
 
 /// The decision cards of one session.
@@ -139,6 +141,12 @@ impl State {
     pub fn update(&mut self, message: Message) -> (Task<Message>, Option<Intent>) {
         let id = match &message {
             Message::Link(uri) => return (Task::none(), Some(Intent::OpenLink(uri.clone()))),
+            Message::ToggleDiff(id) => {
+                if let Some(card) = self.cards.get_mut(id) {
+                    card.show_full = !card.show_full;
+                }
+                return (Task::none(), None);
+            }
             Message::Shortcut(_) => self.focused(),
             Message::Choose(id, _) | Message::Submit(id) | Message::Skip(id) | Message::Text(id, _) | Message::SubmitText(id) | Message::EditPlan(id, _) | Message::CancelEdit(id) | Message::Field(id, ..) => {
                 (!self.viewer.view_only).then_some(*id)
@@ -173,7 +181,7 @@ impl State {
                 card.set_field(index, input);
                 None
             }
-            Message::Link(_) => None,
+            Message::Link(_) | Message::ToggleDiff(_) => None,
         };
         let Some(Reply { values, reason }) = reply else { return (Task::none(), None) };
         card.pending = true;

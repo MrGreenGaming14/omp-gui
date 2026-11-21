@@ -399,7 +399,7 @@ pub fn chrome() -> Option<std::path::PathBuf> {
     if path.is_file() {
         return Some(path);
     }
-    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    let home = loa_util::fs::home();
     let found = crate::browser::find_chrome(std::env::var_os("PATH").as_deref(), home.as_deref(), false);
     assert!(found.is_some(), "LOA_CHROME is set but no Chrome or Chromium is installed");
     found

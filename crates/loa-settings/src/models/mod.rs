@@ -13,6 +13,7 @@
 //! - [`selector`] is the model and role selector grammar shared with the
 //!   harness adapters.
 //! - [`settings`] is the model settings screen's view of both files.
+//! - [`agents`] lists, validates and writes omp agent definition Markdown files.
 //!
 //! # API keys never pass through the app
 //!
@@ -22,6 +23,7 @@
 //! Reading reports a [`models_yml::ApiKeySetting::Literal`] with no payload when
 //! the file holds an inline key, and [`keys`] reports sources by name only.
 
+pub mod agents;
 pub mod config;
 pub mod error;
 pub mod files;

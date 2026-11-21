@@ -139,9 +139,9 @@ fn shell_events_route_to_intents_and_windows() {
     test.send(nav(Nav::OpenSettings));
     assert_eq!(test.app.windows.overlay, Some(Overlay::Settings(SettingsTab::General)));
     test.send(nav(Nav::OpenConfigs));
-    assert_eq!((test.app.windows.configs, test.app.windows.overlay), (Some(ConfigsTab::Models), None));
+    assert_eq!(test.app.windows.overlay, Some(Overlay::Configs(ConfigsTab::Models)));
     test.key(Key::Named(Named::Escape), Modifiers::empty());
-    assert_eq!(test.app.windows.configs, None, "Esc closes Configs");
+    assert_eq!(test.app.windows.overlay, None, "Esc closes Configs");
     let browse = test.app.intent(Intent::Browse);
     test.run(browse);
     assert_eq!(test.notice(), "no folder dialog in tests");
@@ -161,11 +161,11 @@ fn usage_reads_its_source_and_spends_a_saved_reset() {
 
 #[test]
 fn the_backends_run_the_configured_harness_executables() {
-    use std::os::unix::fs::PermissionsExt;
     let bin = tempfile::tempdir().unwrap();
     let omp = bin.path().join("my-omp");
-    std::fs::write(&omp, "#!/bin/sh\n").unwrap();
-    std::fs::set_permissions(&omp, std::fs::Permissions::from_mode(0o755)).unwrap();
+    loa_util::exec::write_executable(&omp, "#!/bin/sh\n").unwrap();
+    // On Windows the script lands next to a launcher; the harness runs whichever `resolve` finds.
+    let omp = loa_util::exec::resolve(&omp);
     let runtime = Arc::new(tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap());
     let configured = omp.clone();
     let test = TestApp::on(runtime, crate::testing::FakeHarness::new("fake"), "testhost", move |config| {

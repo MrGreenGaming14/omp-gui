@@ -17,14 +17,17 @@ mod screencast;
 mod server;
 mod structured;
 mod tab;
+#[cfg(target_os = "linux")]
 mod x11;
+#[cfg(target_os = "linux")]
 mod xvfb;
 
-pub use chrome::{BrowserConfig, CaptureConfig, VirtualDisplayConfig, find_chrome, find_xvfb};
+pub use chrome::{BrowserConfig, CaptureConfig, VIRTUAL_DISPLAY_UNAVAILABLE, VirtualDisplayConfig, find_chrome, find_xvfb};
 pub use error::{BrowserError, Result};
 pub use server::BrowserServer;
 pub use structured::{Bounds, OutlineNode, PageInfo};
 pub use tab::Tab;
+#[cfg(target_os = "linux")]
 pub use x11::X11Capture;
 
 /// Frames a slow viewer may fall behind before it loses the oldest.

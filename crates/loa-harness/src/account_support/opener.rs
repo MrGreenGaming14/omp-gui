@@ -5,26 +5,47 @@ use std::process::{Command, Stdio};
 use loa_contracts::harness::UrlOpener;
 
 /// [`UrlOpener`] over the platform's own opener: `xdg-open` on Linux and the
-/// BSDs, `open` on macOS, `start` on Windows. Returns as soon as the opener
-/// started; it is reaped on a background thread.
+/// BSDs, `open` on macOS, `rundll32 url.dll,FileProtocolHandler` on Windows
+/// (no shell, so `&` in the URL is not interpreted). Returns as soon as the
+/// opener started; it is reaped on a background thread.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SystemUrlOpener;
 
+/// Platform families with distinct opener commands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Os {
+    Windows,
+    Mac,
+    Other,
+}
+
+impl Os {
+    fn current() -> Self {
+        if cfg!(target_os = "macos") {
+            Os::Mac
+        } else if cfg!(windows) {
+            Os::Windows
+        } else {
+            Os::Other
+        }
+    }
+}
+
+/// Program and arguments that open `url`; the URL is always one argument.
+fn command_for(os: Os, url: &str) -> (&'static str, Vec<String>) {
+    match os {
+        Os::Mac => ("open", vec![url.to_string()]),
+        Os::Windows => ("rundll32.exe", vec!["url.dll,FileProtocolHandler".to_string(), url.to_string()]),
+        Os::Other => ("xdg-open", vec![url.to_string()]),
+    }
+}
+
 impl SystemUrlOpener {
     fn command(url: &str) -> Command {
-        if cfg!(target_os = "macos") {
-            let mut command = Command::new("open");
-            command.arg(url);
-            command
-        } else if cfg!(windows) {
-            let mut command = Command::new("cmd");
-            command.args(["/C", "start", ""]).arg(url);
-            command
-        } else {
-            let mut command = Command::new("xdg-open");
-            command.arg(url);
-            command
-        }
+        let (program, args) = command_for(Os::current(), url);
+        let mut command = Command::new(program);
+        command.args(args);
+        command
     }
 }
 
@@ -49,5 +70,21 @@ mod tests {
     fn only_web_urls_are_opened() {
         assert!(SystemUrlOpener.open_url("file:///etc/passwd").is_err());
         assert!(SystemUrlOpener.open_url("javascript:alert(1)").is_err());
+    }
+
+    #[test]
+    fn windows_uses_rundll32_with_one_url_argument() {
+        let url = "https://example.com/a?x=1&y=2";
+        let (program, args) = command_for(Os::Windows, url);
+        assert_eq!(program, "rundll32.exe");
+        assert_eq!(args, ["url.dll,FileProtocolHandler", url]);
+        assert!(!args.iter().any(|a| a.eq_ignore_ascii_case("cmd") || a == "/C" || a == "start"));
+    }
+
+    #[test]
+    fn unix_openers_are_unchanged() {
+        let url = "https://example.com/a?x=1&y=2";
+        assert_eq!(command_for(Os::Mac, url), ("open", vec![url.to_string()]));
+        assert_eq!(command_for(Os::Other, url), ("xdg-open", vec![url.to_string()]));
     }
 }

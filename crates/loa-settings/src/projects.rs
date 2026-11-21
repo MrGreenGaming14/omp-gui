@@ -2,6 +2,7 @@
 
 use loa_core::NodeId;
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 /// A file every chat of the project should know about, with why it is pinned.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -20,6 +21,9 @@ pub struct ProjectSettings {
     pub pinned: Vec<PinnedFile>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub digest_model: Option<String>,
+    /// Working directory of the project, set when it is created or its folder changed; `None` when it has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder: Option<PathBuf>,
 }
 
 /// One touched file and a one line note.

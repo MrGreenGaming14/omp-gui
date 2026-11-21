@@ -35,6 +35,9 @@ pub enum FileStatus { Added, Deleted, Modified, Renamed }
 pub struct FileDiff {
     pub old_path: Option<String>, pub new_path: Option<String>, pub binary: bool,
     text: String, lines: Vec<Line>, emph: Vec<Range<usize>>, folds: Vec<Fold>, breaks: Vec<Break>,
+    /// Added and removed lines, and the largest line number on either side (sizes the number
+    /// column); counted once when the diff is built.
+    added: usize, removed: usize, max_line_no: u32,
 }
 impl FileDiff {
     /// The new path, or the old one when deleted.
@@ -47,8 +50,10 @@ impl FileDiff {
             _ => FileStatus::Modified,
         }
     }
-    pub fn added(&self) -> usize { self.lines.iter().filter(|l| l.tag == Tag::Insert).count() }
-    pub fn removed(&self) -> usize { self.lines.iter().filter(|l| l.tag == Tag::Delete).count() }
+    pub fn added(&self) -> usize { self.added }
+    pub fn removed(&self) -> usize { self.removed }
+    /// Largest line number on either side; zero when no line is numbered.
+    pub fn max_line_no(&self) -> u32 { self.max_line_no }
     pub fn lines(&self) -> &[Line] { &self.lines }
     pub fn line_text(&self, i: usize) -> &str { self.lines.get(i).map_or("", |l| &self.text[l.text.clone()]) }
     /// Byte ranges of the changed words in line `i`, relative to its text.
@@ -128,8 +133,12 @@ impl Builder {
     }
     pub(crate) fn finish(mut self, old_path: Option<String>, new_path: Option<String>, binary: bool) -> FileDiff {
         self.flush_block();
-        let folds = compute_folds(&self.file.lines, &self.file.breaks);
-        FileDiff { old_path, new_path, binary, folds, ..self.file }
+        let lines = &self.file.lines;
+        let folds = compute_folds(lines, &self.file.breaks);
+        let added = lines.iter().filter(|l| l.tag == Tag::Insert).count();
+        let removed = lines.iter().filter(|l| l.tag == Tag::Delete).count();
+        let max_line_no = lines.iter().flat_map(|l| l.old_no.max(l.new_no)).max().unwrap_or(0);
+        FileDiff { old_path, new_path, binary, folds, added, removed, max_line_no, ..self.file }
     }
     fn flush_block(&mut self) {
         let f = &mut self.file;

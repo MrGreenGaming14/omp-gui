@@ -1,4 +1,5 @@
-//! The projects service `loa-app` holds: listing, the project screen, rebuilds, chat context and tools.
+//! The projects service `loa-app` holds: listing, creating, moving and deleting projects, the project screen,
+//! rebuilds, chat context and tools.
 
 use crate::context::{ContextRequest, build_context, render_markdown};
 use crate::digest::{digest_of, digest_state};
@@ -10,9 +11,10 @@ use crate::settings::{SettingsStore, exclude_draft, is_excluded};
 use crate::source::{Access, SessionInfo, SessionSource, visible_sessions};
 use crate::{Error, Result};
 use loa_contracts::harness::{HostToolSpec, HostTools};
-use loa_core::{Dom, ElementKind, attr};
+use loa_core::{Dom, Draft, ElementKind, attr};
 use loa_settings::projects::{ProjectOverview, ProjectSettings, SessionRow};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -31,7 +33,8 @@ impl Default for ServiceConfig {
     }
 }
 
-/// A project as the sidebar lists it: `cwd` of its latest session, `last_active` in Unix ms.
+/// A project as the sidebar lists it: `cwd` is its folder when set, else that of its latest session;
+/// `last_active` in Unix ms.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProjectSummary {
     pub name: String,
@@ -56,6 +59,40 @@ fn session_row(info: &SessionInfo, dom: &Dom) -> SessionRow {
         digest_model: digest.as_ref().and_then(|d| d.model.clone()),
         digest: digest.map(|d| d.content),
     }
+}
+
+/// A project's folder as a path string, when one is set.
+fn folder_of(settings: &ProjectSettings) -> Option<String> {
+    settings.folder.as_ref().map(|dir| dir.to_string_lossy().into_owned())
+}
+
+/// Updates the `.omgui` links in `folder` when it exists. A failure is logged: the listing matters more.
+fn sync_links(project: &str, folder: &Path, dirs: &BTreeSet<PathBuf>) {
+    if folder.is_dir()
+        && let Err(error) = crate::links::sync(folder, dirs)
+    {
+        tracing::warn!(project, folder = %folder.display(), %error, "can't update the .omgui links");
+    }
+}
+
+/// Removes the `.omgui` links of `folder` when it exists, logging a failure.
+fn remove_links(project: &str, folder: &Path) {
+    if folder.is_dir()
+        && let Err(error) = crate::links::remove(folder)
+    {
+        tracing::warn!(project, folder = %folder.display(), %error, "can't remove the .omgui links");
+    }
+}
+
+/// `folder`, unless it is the system temp folder itself (`/tmp`): then a new directory inside it, named like
+/// `/tmp/.tmpAbC123`, so the project's files and `.omgui` links don't mix with everything else there.
+pub fn isolated(folder: PathBuf) -> Result<PathBuf> {
+    let temp = std::env::temp_dir();
+    let same = |a: &Path, b: &Path| a == b || a.canonicalize().ok().is_some_and(|a| b.canonicalize().is_ok_and(|b| a == b));
+    if !same(&folder, &temp) {
+        return Ok(folder);
+    }
+    Ok(tempfile::Builder::new().tempdir_in(&folder)?.keep())
 }
 
 /// Cheap to clone; every clone feeds the same rebuild driver.
@@ -89,12 +126,25 @@ impl ProjectService {
         self.rebuild.send(session.to_owned()).is_ok()
     }
 
-    /// Every project that has sessions, most recently active first.
+    /// Every project: each stored one and each a session names, most recently active first. A project's folder is
+    /// its stored one when set, else the cwd of its most recent session. Also brings each stored folder's `.omgui`
+    /// links up to date with its sessions' directories.
     pub async fn projects(&self) -> Result<Vec<ProjectSummary>> {
+        let mut folders = BTreeMap::new();
         let mut projects: BTreeMap<String, (ProjectSummary, i64)> = BTreeMap::new();
+        for name in self.settings.names().await? {
+            if let Some(folder) = folder_of(&self.settings.load(&name).await?) {
+                folders.insert(name.clone(), folder);
+            }
+            projects.insert(name.clone(), (ProjectSummary { name, cwd: None, sessions: 0, last_active: 0 }, i64::MIN));
+        }
+        let mut dirs: BTreeMap<String, BTreeSet<PathBuf>> = BTreeMap::new();
         for (info, dom) in self.sessions.all().await? {
             let active = last_active(&dom);
             let cwd = dom.root().and_then(|r| r.str_attr(attr::CWD)).map(str::to_owned);
+            if let Some(cwd) = &cwd {
+                dirs.entry(info.project.clone()).or_default().insert(PathBuf::from(cwd));
+            }
             let fresh = || (ProjectSummary { name: info.project.clone(), cwd: None, sessions: 0, last_active: active }, i64::MIN);
             let (summary, cwd_at) = projects.entry(info.project.clone()).or_insert_with(fresh);
             summary.sessions += 1;
@@ -104,11 +154,93 @@ impl ProjectService {
                 *cwd_at = active;
             }
         }
-        let mut projects: Vec<ProjectSummary> = projects.into_values().map(|(p, _)| p).collect();
+        for (name, folder) in &folders {
+            sync_links(name, Path::new(folder), &dirs.remove(name).unwrap_or_default());
+        }
+        let mut projects: Vec<ProjectSummary> = projects
+            .into_iter()
+            .map(|(name, (mut summary, _))| {
+                if let Some(folder) = folders.remove(&name) {
+                    summary.cwd = Some(folder);
+                }
+                summary
+            })
+            .collect();
         projects.sort_by(|a, b| b.last_active.cmp(&a.last_active).then_with(|| a.name.cmp(&b.name)));
         Ok(projects)
     }
 
+    /// Creates a project with `settings` and returns the folder it stored, which [`isolated`] may have replaced.
+    /// Fails on a blank name or one a stored project already has.
+    pub async fn create(&self, name: &str, settings: &ProjectSettings) -> Result<Option<PathBuf>> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(Error::EmptyName);
+        }
+        if self.settings.names().await?.iter().any(|stored| stored == name) {
+            return Err(Error::ProjectExists(name.to_owned()));
+        }
+        let mut settings = settings.clone();
+        settings.folder = settings.folder.map(isolated).transpose()?;
+        self.settings.save(name, &settings).await?;
+        Ok(settings.folder)
+    }
+
+    /// Makes `folder` the project's folder, or a new one inside it per [`isolated`], and returns it. Its `.omgui`
+    /// links move with it on the next listing; the old folder's are removed now.
+    pub async fn set_folder(&self, project: &str, folder: PathBuf) -> Result<PathBuf> {
+        let mut settings = self.settings.load(project).await?;
+        if settings.folder.as_ref() == Some(&folder) {
+            return Ok(folder);
+        }
+        let folder = isolated(folder)?;
+        let old = settings.folder.replace(folder.clone());
+        self.settings.save(project, &settings).await?;
+        if let Some(old) = old {
+            remove_links(project, &old);
+        }
+        Ok(folder)
+    }
+
+    /// Deletes `project`: its settings and its folder's `.omgui` links go, and its sessions are kept, in no
+    /// project. Returns how many sessions it had.
+    pub async fn delete(&self, project: &str) -> Result<usize> {
+        let settings = self.settings.load(project).await?;
+        let mut moved = 0;
+        for (info, dom) in self.sessions.all().await? {
+            if info.project != project {
+                continue;
+            }
+            if let Some(root) = dom.root() {
+                self.sessions.commit(&info.id, Draft::clear(root.id, attr::PROJECT)).await?;
+                moved += 1;
+            }
+        }
+        self.settings.remove(project).await?;
+        if let Some(folder) = settings.folder {
+            remove_links(project, &folder);
+        }
+        Ok(moved)
+    }
+
+    /// Puts `session` into `project`, or out of every project when `None`; a blank name counts as `None`.
+    pub async fn move_session(&self, session: &str, project: Option<&str>) -> Result<()> {
+        let project = project.map(str::trim).filter(|name| !name.is_empty());
+        let not_found = || Error::SessionNotFound(session.to_owned());
+        let dom = SessionSource::load(&self.sessions, session).await?.ok_or_else(not_found)?;
+        let root = dom.root().ok_or_else(not_found)?;
+        if root.str_attr(attr::PROJECT).map(str::trim).filter(|name| !name.is_empty()) == project {
+            return Ok(());
+        }
+        let draft = match project {
+            Some(name) => Draft::set(root.id, attr::PROJECT, name),
+            None => Draft::clear(root.id, attr::PROJECT),
+        };
+        self.sessions.commit(session, draft).await?;
+        Ok(())
+    }
+
+    /// The project screen's data; `cwd` is the project's folder when set, else its latest session's.
     pub async fn overview(&self, project: &str) -> Result<ProjectOverview> {
         let settings = self.settings.load(project).await?;
         let (mut sessions, mut cwd) = (Vec::new(), None::<(i64, String)>);
@@ -123,7 +255,8 @@ impl ProjectService {
             sessions.push(row);
         }
         sessions.sort_by(|a, b| b.last_active.cmp(&a.last_active).then_with(|| a.id.cmp(&b.id)));
-        Ok(ProjectOverview { name: project.to_owned(), cwd: cwd.map(|(_, dir)| dir), settings, sessions })
+        let cwd = folder_of(&settings).or_else(|| cwd.map(|(_, dir)| dir));
+        Ok(ProjectOverview { name: project.to_owned(), cwd, settings, sessions })
     }
 
     pub async fn save_settings(&self, project: &str, settings: &ProjectSettings) -> Result<()> {

@@ -2,8 +2,11 @@
 
 use super::codec::{decode, encode, version_of};
 use super::{CURRENT_VERSION, Config, ConfigError, Result};
+use loa_util::LockExt;
 use std::path::{Path, PathBuf};
-use std::{fs, io, sync::Arc};
+use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
+use std::{fs, io};
 use tokio::sync::watch;
 
 /// File name of the config inside the app's config directory.
@@ -14,16 +17,28 @@ pub fn config_path(config_dir: &Path) -> PathBuf {
     config_dir.join(CONFIG_FILE_NAME)
 }
 
-/// Reads and writes one config file. Clones share the save counter.
+/// Modification time and length of the config file: the read cache's key.
+type Stamp = (SystemTime, u64);
+
+/// `None` when the file is missing or its metadata can't be read.
+fn stamp(path: &Path) -> Option<Stamp> {
+    let meta = fs::metadata(path).ok()?;
+    Some((meta.modified().ok()?, meta.len()))
+}
+
+/// Reads and writes one config file. Clones share the save counter and the
+/// read cache.
 #[derive(Clone, Debug)]
 pub struct ConfigStore {
     path: PathBuf,
     saves: Arc<watch::Sender<u64>>,
+    /// The file as last read or written, with its stamp.
+    cache: Arc<Mutex<Option<(Stamp, Config)>>>,
 }
 
 impl ConfigStore {
     pub fn new(path: impl Into<PathBuf>) -> Self {
-        Self { path: path.into(), saves: Arc::new(watch::Sender::new(0)) }
+        Self { path: path.into(), saves: Arc::new(watch::Sender::new(0)), cache: Arc::default() }
     }
 
     /// A store for [`config_path`] in `config_dir`.
@@ -35,28 +50,43 @@ impl ConfigStore {
         &self.path
     }
 
-    /// Loads the file, or the defaults when it doesn't exist yet. A file of
-    /// another schema version is refused ([`ConfigError::TooNew`] or
+    /// Loads the file, or the defaults when it doesn't exist yet. A file that
+    /// is unchanged since this store last read or wrote it, judged by its
+    /// modification time and length, comes from memory. A file of another
+    /// schema version is refused ([`ConfigError::TooNew`] or
     /// [`ConfigError::MissingMigration`]; no migrations exist yet).
     pub fn load(&self) -> Result<Config> {
+        let on_disk = stamp(&self.path);
+        if let Some((cached, config)) = self.cache.locked().as_ref()
+            && Some(*cached) == on_disk
+        {
+            return Ok(config.clone());
+        }
         let text = match fs::read_to_string(&self.path) {
             Ok(text) => text,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Config::default()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                *self.cache.locked() = None;
+                return Ok(Config::default());
+            }
             Err(source) => return Err(ConfigError::Read { path: self.path.clone(), source }),
         };
         let doc: toml::Table = text.parse().map_err(|e| ConfigError::Parse(Box::new(e)))?;
-        match version_of(&doc)? {
-            found if found > CURRENT_VERSION => Err(ConfigError::TooNew { found, supported: CURRENT_VERSION }),
-            from if from < CURRENT_VERSION => Err(ConfigError::MissingMigration { from }),
-            _ => decode(doc),
-        }
+        let config = match version_of(&doc)? {
+            found if found > CURRENT_VERSION => return Err(ConfigError::TooNew { found, supported: CURRENT_VERSION }),
+            from if from < CURRENT_VERSION => return Err(ConfigError::MissingMigration { from }),
+            _ => decode(doc)?,
+        };
+        *self.cache.locked() = on_disk.map(|at| (at, config.clone()));
+        Ok(config)
     }
 
     /// Validates `config` and replaces the file with it atomically.
     pub fn save(&self, config: &Config) -> Result<()> {
         config.validate()?;
+        *self.cache.locked() = None;
         loa_util::fs::write_atomic(&self.path, encode(config)?.as_bytes(), None)
             .map_err(|source| ConfigError::Write { path: self.path.clone(), source })?;
+        *self.cache.locked() = stamp(&self.path).map(|at| (at, config.clone()));
         self.saves.send_modify(|n| *n += 1);
         Ok(())
     }

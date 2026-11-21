@@ -71,7 +71,7 @@ impl State {
         if theme != self.theme {
             self.set_theme(&theme);
         }
-        let notices = self.desk.sync(session.dom(), desk::now_ms());
+        let notices = self.desk.sync(session.dom(), loa_util::time::now_ms());
         self.desk.notify(notices).map(Message::Desk)
     }
 

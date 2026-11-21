@@ -39,6 +39,9 @@ semver = "1"
 loa-sandbox = { path = "../loa-sandbox" }
 serde_json.workspace = true
 notify-rust = "4.19"
+# Images pasted into the composer: read from the clipboard and saved as PNG.
+arboard = "3"
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 [features]
 # Live video for peers: the "Live video" launcher toggle and in-process H.264.
@@ -54,5 +57,6 @@ iced_runtime = "0.14"
 # The iced runtime's subscription tracker, to run the app's subscriptions in tests.
 iced_futures = "0.14"
 toml = "1.2"
+# JPEG on top of the app's PNG, for the surface fixtures.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 rust_xlsxwriter = "0.103"

@@ -8,6 +8,7 @@ use loa_view::session::composer;
 use crate::app::Message;
 use crate::area::{Area, AreaDyn, AreaMsg, Ctx, Typed};
 
+pub mod agents;
 pub mod decisions;
 pub mod harness;
 pub mod models;
@@ -39,6 +40,7 @@ pub const AREAS: &[Boot] = &[
     boot::<peers::State>,
     boot::<updater::State>,
     boot::<sandbox::State>,
+    boot::<agents::State>,
 ];
 
 /// Every area's state, in [`AREAS`] order.

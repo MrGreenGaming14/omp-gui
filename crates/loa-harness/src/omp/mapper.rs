@@ -174,6 +174,7 @@ impl Mapper {
         self.finish(w, TurnStatus::Done)?;
         let prompt = self.queued.pop_front();
         let turn = self.ledger.begin_with(w, prompt.as_ref().map(|(_, p)| p))?;
+        w.set(turn, attr::STARTED, w.now())?;
         self.turns.push(turn);
         self.open.echo = prompt.is_some();
         self.open.prompt = prompt.map(|(id, _)| id);
@@ -549,6 +550,7 @@ impl Mapper {
             // from omp's queue, or it was handled locally.
             let (_, prompt) = self.queued.remove(index).expect("position is in the queue");
             let turn = w.insert(self.session(), K::Turn, [(attr::STATUS, status.as_str())], "")?;
+            w.set(turn, attr::ENDED, w.now())?;
             self.turns.push(turn);
             w.insert(turn, K::Message, [(attr::ROLE, "user"), (attr::STATUS, MessageStatus::Done.as_str()), (attr::BY, prompt.by.as_str())], prompt.text.as_str())?;
         } else if id.is_none() || self.open.prompt.is_none() || self.open.prompt.as_deref() == id {
@@ -577,8 +579,8 @@ impl Mapper {
             still(&open.jobs).into_iter().try_for_each(|id| w.set(id, attr::STATUS, JobStatus::Cancelled))?;
         }
         open.requests.keys().try_for_each(|id| w.set(*id, attr::STATUS, DecisionStatus::Cancelled))?;
-        w.set(turn, attr::STATUS, status)?;
-        // omp's turns close without `ended`, so the ledger starts over instead of ending it.
+        w.close(turn, status)?;
+        // The turn closed here, so the ledger starts over instead of ending it.
         self.ledger = TurnLedger::new(self.session());
         Ok(())
     }

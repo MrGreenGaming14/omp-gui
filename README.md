@@ -1,10 +1,30 @@
 # OMP GUI
 
-A proposed desktop workspace for OMP and other coding-agent harnesses. The goal is to keep project chats, files, terminals, and agent tools in one place instead of opening a separate terminal for every project.
+Loa is a desktop workspace for OMP and other coding-agent harnesses. It brings project chats, files, terminals, and agent tools into one app.
 
-**Status: design proposal only.** This repository does not yet contain a runnable app. The [OMP app design artifact](https://claude.ai/artifact/4nPNTWD7iG2bp6yuHuKYkL#f6baca39-b36f) contains the working notes and diagrams behind this proposal.
+The app is in development and does not have a packaged release. The [design artifact](https://claude.ai/artifact/4nPNTWD7iG2bp6yuHuKYkL#f6baca39-b36f) and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) describe the design and crate layout.
 
-## Proposed experience
+## Run from source on Windows
+
+Install stable Rust with the MSVC toolchain, Visual Studio Build Tools with the C++ workload and Windows SDK, and Git for Windows. Install [OMP](https://github.com/can1357/oh-my-pi/releases) and make sure `omp --version` works in PowerShell.
+
+```powershell
+cargo build --workspace --all-targets
+cargo run -p loa-app
+```
+
+The workspace build also places `loa-sandbox-stub.exe` alongside the app. To test on Windows, install Python 3 (`python.exe` on `PATH`) and put Git for Windows' Bash ahead of the WSL launcher:
+
+```powershell
+$git = (Get-Command git.exe).Source
+$env:Path = "$(Split-Path (Split-Path $git))\bin;$env:Path"
+$env:ICED_TEST_BACKEND = 'tiny-skia'
+cargo test --workspace --no-fail-fast
+```
+
+For a desktop smoke check, open a project, start an OMP chat, run `cd` in the Terminal tab, and use the Files tab to open a project file. Browser virtual-display mode requires Linux; Windows can use headed Chrome or Chromium.
+
+## Experience and roadmap
 
 - **Projects and chat.** Pin projects in a left sidebar. Selecting one switches the working folder and opens its chats, with project files accessible from the same dashboard. Tabs for open projects are an optional addition. A Claude Code–style layout puts streaming chat and inline approvals in the center, with files, diffs, terminals, and running subagents in a side panel.
 - **Multiple harnesses.** Use OMP, omp², Claude Code, Codex, OpenCode, or another ACP-compatible harness through adapters. The app can preserve a common session history across harnesses and let chats search relevant context from other sessions in the same project.

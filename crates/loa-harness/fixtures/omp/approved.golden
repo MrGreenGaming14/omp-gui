@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <session nid="1" created.int="1" harness="omp" id="s" node="owner" schema.int="1">
-  <turn nid="2" status="done">
+  <turn nid="2" ended.int="0" started.int="0" status="done">
     <message nid="3" by="owner" role="user" status="done">prompt p</message>
     <call nid="4" call_id="toolu_1" status="done" tool="bash">
       <input nid="6" format="json">{"command":"echo loa-approved-7731"}</input>

@@ -80,7 +80,8 @@ fn keychain_error(e: keyring::Error) -> TrustError {
     }
 }
 
-/// `node.key` in the data directory, readable only by the user (0600 on Unix).
+/// `node.key` in the data directory, readable only by the user (0600 on Unix,
+/// a protected owner-only DACL on Windows).
 #[derive(Debug, Clone)]
 pub struct FileKeyStore(PathBuf);
 
@@ -91,7 +92,7 @@ impl FileKeyStore {
 
 impl KeyStore for FileKeyStore {
     fn load(&self) -> Result<Option<SecretBytes>> { Ok(loa_util::fs::read_optional(&self.0).map_err(|e| self.error(&e))?.map(Zeroizing::new)) }
-    fn store(&self, secret: &[u8]) -> Result<()> { loa_util::fs::write_atomic(&self.0, secret, Some(0o600)).map_err(|e| self.error(&e)) }
+    fn store(&self, secret: &[u8]) -> Result<()> { store_private(&self.0, secret).map_err(|e| self.error(&e)) }
     fn delete(&self) -> Result<()> {
         match std::fs::remove_file(&self.0) {
             Err(e) if e.kind() != io::ErrorKind::NotFound => Err(self.error(&e)),
@@ -99,6 +100,28 @@ impl KeyStore for FileKeyStore {
         }
     }
     fn path(&self) -> Option<&Path> { Some(&self.0) }
+}
+
+#[cfg(windows)]
+#[path = "private_file.rs"]
+mod private_file;
+
+/// Publishes only a fully written, synced key. The Windows file gets its
+/// private DACL before another process can open it.
+#[cfg(windows)]
+fn store_private(path: &Path, secret: &[u8]) -> io::Result<()> {
+    let dir = path.parent().filter(|dir| !dir.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    std::fs::create_dir_all(dir)?;
+    let mut file = tempfile::Builder::new().prefix(".node-key-").make_in(dir, private_file::create)?;
+    io::Write::write_all(file.as_file_mut(), secret)?;
+    file.as_file().sync_all()?;
+    file.persist(path).map_err(|e| e.error)?;
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn store_private(path: &Path, secret: &[u8]) -> io::Result<()> {
+    loa_util::fs::write_atomic(path, secret, Some(0o600))
 }
 
 /// Where the loaded node key lives.

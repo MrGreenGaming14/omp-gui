@@ -41,8 +41,7 @@ impl FfmpegConfig {
     /// `ffmpeg` on `$PATH`.
     pub fn discover() -> Option<Self> {
         std::env::split_paths(&std::env::var_os("PATH")?)
-            .map(|dir| dir.join("ffmpeg"))
-            .find(|path| loa_util::exec::is_executable(path))
+            .find_map(|dir| loa_util::exec::which(dir.join("ffmpeg")))
             .map(|binary| Self { binary })
     }
 }

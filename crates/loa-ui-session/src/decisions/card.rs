@@ -11,7 +11,7 @@ use loa_core::{DecisionKind, DecisionStatus, NodeId};
 use loa_ui_kit::icons::icon;
 use loa_ui_kit::style::{self as kit, ButtonKind, Surface, Tone};
 use loa_ui_kit::theme::{ColorRole as C, SpaceRole as Sp, TextRole as T, sp, text_size as ts};
-use loa_ui_panel::diff::{Tag, parse_unified};
+use loa_ui_panel::diff::{FileDiff, Tag, parse_unified};
 use loa_view::theme::Icon;
 
 /// Values and reason of an answer, before the answering user is added.
@@ -52,7 +52,15 @@ pub struct Card {
     plan: Vec<markdown::Item>,
     pub editor: Option<text_editor::Content>,
     pub form: Option<Result<Form, FormError>>,
+    /// The approval body parsed as a unified diff, with its line count; parsed when the body
+    /// changes, not per frame.
+    diff: Option<(Vec<FileDiff>, usize)>,
+    /// Whether an approval diff longer than the preview is shown in full.
+    pub show_full: bool,
 }
+
+/// Lines of a diff shown before the rest waits behind a button.
+pub const PREVIEW_LINES: usize = 300;
 
 /// How a card is drawn.
 pub struct CardCtx<'a> {
@@ -65,7 +73,8 @@ pub struct CardCtx<'a> {
 
 impl Card {
     pub fn new(decision: Decision) -> Self {
-        let mut card = Self { picked: Vec::new(), plan: Vec::new(), form: None, decision, pending: false, selected: None, text: String::new(), editor: None };
+        let (plan, form, diff) = (Vec::new(), None, None);
+        let mut card = Self { picked: Vec::new(), plan, form, diff, show_full: false, decision, pending: false, selected: None, text: String::new(), editor: None };
         card.parse(true, true, true);
         card
     }
@@ -74,6 +83,7 @@ impl Card {
         let d = &self.decision;
         if body {
             self.plan = if d.kind == DecisionKind::Plan { markdown::parse(&d.body).collect() } else { Vec::new() };
+            self.diff = (d.kind == DecisionKind::Approval).then(|| parse_diff(&d.body)).flatten().map(|files| (files, d.body.lines().count()));
         }
         if fields {
             self.form = d.fields.as_deref().filter(|_| d.kind == DecisionKind::Form).map(Form::parse);
@@ -250,7 +260,16 @@ impl CardKind for Approval {
     fn submit_text(&self, c: &mut Card) -> Option<Reply> { Self::reply(c, ApprovalChoice::Deny) }
     fn body<'a>(&self, c: &'a Card, active: bool, _: &CardCtx) -> Element<'a, Message> {
         let body = c.decision.body.as_str();
-        let preview = diff_view(body).unwrap_or_else(|| container(text(body).size(ts(T::Label)).font(Font::MONOSPACE)).padding([sp(Sp::Xs), sp(Sp::S)]).width(Fill).style(kit::container(Surface::Raised)).into());
+        let preview: Element<'a, Message> = match &c.diff {
+            Some((files, lines)) => {
+                let toggle = (*lines > PREVIEW_LINES).then(|| {
+                    let label = if c.show_full { "Show fewer lines".to_owned() } else { format!("Show all {lines} lines") };
+                    button(text(label).size(ts(T::Label))).style(kit::button(ButtonKind::Ghost)).on_press(Message::ToggleDiff(c.decision.id))
+                });
+                column![diff_view(files, c.show_full)].push(toggle).spacing(sp(Sp::S)).into()
+            }
+            None => container(text(body).size(ts(T::Label)).font(Font::MONOSPACE)).padding([sp(Sp::Xs), sp(Sp::S)]).width(Fill).style(kit::container(Surface::Raised)).into(),
+        };
         let waiting = c.decision.is_waiting().then(|| column![choices(c, active, |k: ApprovalChoice| k != ApprovalChoice::Deny), text_field(c, "Reason for denying (optional)", active)].spacing(sp(Sp::M)));
         column![preview].push(waiting).spacing(sp(Sp::M)).into()
     }
@@ -448,12 +467,15 @@ fn form_view<'a>(id: NodeId, form: &'a Form, active: bool) -> Element<'a, Messag
     column(fields).spacing(sp(Sp::M)).into()
 }
 
-/// A compact view of a unified diff body: each file's path, then its lines on a well with
-/// added and removed lines tinted. `None` when `body` is no parseable diff.
-fn diff_view<'a>(body: &str) -> Option<Element<'a, Message>> {
-    let files = parse_unified(body).ok().filter(|f| !f.is_empty() && f.iter().any(|f| !f.lines().is_empty()))?;
+/// `body` parsed as a unified diff; `None` when it is no parseable diff with lines.
+fn parse_diff(body: &str) -> Option<Vec<FileDiff>> { parse_unified(body).ok().filter(|f| !f.is_empty() && f.iter().any(|f| !f.lines().is_empty())) }
+
+/// A compact view of a parsed diff: each file's path, then its lines on a well with added and
+/// removed lines tinted. Unless `full`, only the first [`PREVIEW_LINES`] rows render.
+fn diff_view(files: &[FileDiff], full: bool) -> Element<'_, Message> {
+    let limit = if full { usize::MAX } else { PREVIEW_LINES };
     let lines = files.iter().flat_map(|file| {
-        let head = text(file.path().to_owned()).font(Font::MONOSPACE).size(ts(T::Label)).style(kit::text(Tone::Muted)).into();
+        let head = text(file.path()).font(Font::MONOSPACE).size(ts(T::Label)).style(kit::text(Tone::Muted)).into();
         std::iter::once(head).chain(file.lines().iter().enumerate().map(|(i, line)| {
             let (mark, tone, tint) = match line.tag {
                 Tag::Insert => ('+', Tone::Ok, Some(C::AddedBg)),
@@ -467,5 +489,5 @@ fn diff_view<'a>(body: &str) -> Option<Element<'a, Message>> {
             }
         }))
     });
-    Some(container(column(lines.collect::<Vec<_>>())).padding([sp(Sp::Xs), sp(Sp::S)]).width(Fill).style(kit::container(Surface::Well)).into())
+    container(column(lines.take(limit).collect::<Vec<_>>())).padding([sp(Sp::Xs), sp(Sp::S)]).width(Fill).style(kit::container(Surface::Well)).into()
 }

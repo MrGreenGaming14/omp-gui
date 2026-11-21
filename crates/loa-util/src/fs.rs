@@ -69,14 +69,14 @@ impl Snapshot {
 /// `rel` under `root`, refusing `..`, absolute parts and symlinks that lead outside `root`.
 pub fn confine(root: &Path, rel: &Path) -> io::Result<PathBuf> {
     let escape = || io::Error::new(io::ErrorKind::PermissionDenied, format!("{} is outside {}", rel.display(), root.display()));
-    let root = fs::canonicalize(root)?;
+    let root = canonicalize(root)?;
     if rel.components().any(|part| !matches!(part, Component::Normal(_) | Component::CurDir)) {
         return Err(escape());
     }
     let joined = root.join(rel.components().filter(|part| *part != Component::CurDir).collect::<PathBuf>());
     let (mut existing, mut missing) = (joined.as_path(), Vec::new());
     let real = loop {
-        match fs::canonicalize(existing) {
+        match canonicalize(existing) {
             Ok(real) => break real,
             Err(err) if err.kind() == io::ErrorKind::NotFound && fs::symlink_metadata(existing).is_err() => {
                 missing.extend(existing.file_name());
@@ -92,16 +92,55 @@ pub fn confine(root: &Path, rel: &Path) -> io::Result<PathBuf> {
     Ok(missing.into_iter().rev().fold(real, |path, name| path.join(name)))
 }
 
-/// The user's home directory (`HOME`, else `USERPROFILE`), when absolute.
-pub fn home() -> Option<PathBuf> { env_dir("HOME").or_else(|| env_dir("USERPROFILE")) }
+/// The user's home directory: `$HOME` when set and non-empty, else the
+/// platform's real home (`std::env::home_dir`, which is the profile directory
+/// on Windows, where `$HOME` is normally unset).
+///
+/// Honouring `$HOME` first keeps Unix behaviour unchanged and lets tests and
+/// sandboxes redirect it.
+pub fn home() -> Option<PathBuf> { resolve_home(std::env::var_os("HOME")) }
+
+fn resolve_home(home_var: Option<std::ffi::OsString>) -> Option<PathBuf> {
+    home_var.filter(|h| !h.is_empty()).map(PathBuf::from).or_else(std::env::home_dir)
+}
+
+/// Canonicalizes a path without a Windows verbatim prefix when an equivalent
+/// DOS path exists. Use for paths passed to programs that reject that prefix.
+pub fn canonicalize(path: impl AsRef<Path>) -> io::Result<PathBuf> {
+    #[cfg(windows)]
+    return dunce::canonicalize(path);
+    #[cfg(not(windows))]
+    path.as_ref().canonicalize()
+}
+
+/// Uses the ordinary Windows spelling only when it refers to the same path.
+#[cfg(windows)]
+pub use dunce::simplified as simplify;
 
 /// `$XDG_DATA_HOME/<app>`, else `~/.local/share/<app>`, else `%APPDATA%\<app>`. Not created.
 pub fn data_dir(app: &str) -> Option<PathBuf> {
-    let local = || env_dir("HOME").map(|home| home.join(".local").join("share"));
+    let local = || home().map(|home| home.join(".local").join("share"));
     Some(env_dir("XDG_DATA_HOME").or_else(local).or_else(|| env_dir("APPDATA"))?.join(app))
 }
 
 fn env_dir(key: &str) -> Option<PathBuf> { std::env::var_os(key).map(PathBuf::from).filter(|path| path.is_absolute()) }
+
+#[cfg(test)]
+mod home_tests {
+    use super::*;
+
+    #[test]
+    fn home_variable_wins() {
+        assert_eq!(resolve_home(Some("/somewhere/else".into())), Some(PathBuf::from("/somewhere/else")));
+    }
+
+    #[test]
+    fn empty_or_unset_falls_back_to_the_platform_home() {
+        let platform = std::env::home_dir();
+        assert_eq!(resolve_home(Some("".into())), platform);
+        assert_eq!(resolve_home(None), platform);
+    }
+}
 
 #[cfg(all(test, unix))]
 mod tests {

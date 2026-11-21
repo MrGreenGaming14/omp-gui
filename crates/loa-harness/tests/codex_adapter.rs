@@ -3,7 +3,6 @@ use loa_core::{ElementKind, MemorySink, attr};
 use loa_harness::{codex::CodexAdapter, testing::FakeProcess};
 use std::sync::Arc;
 
-#[cfg(unix)]
 #[tokio::test]
 async fn fake_codex_process_drives_turn_and_receives_session_overrides() {
     let dir = tempfile::tempdir().unwrap();

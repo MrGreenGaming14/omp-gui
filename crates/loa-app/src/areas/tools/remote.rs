@@ -344,7 +344,7 @@ pub(crate) struct SshPaths {
 
 impl SshPaths {
     pub(crate) fn from_env() -> Self {
-        let home = std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from);
+        let home = loa_util::fs::home().unwrap_or_else(|| PathBuf::from("/"));
         Self { resolver: Arc::new(OpenSshCli::new(home.join(".ssh").join("config"))), home }
     }
 }

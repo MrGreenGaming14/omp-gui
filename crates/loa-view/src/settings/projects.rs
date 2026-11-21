@@ -8,12 +8,14 @@ pub struct PinnedFile {
     pub note: Option<String>,
 }
 
-/// Settings shared by every session of a project; `digest_model` `None` uses the summarizer's default.
+/// Settings shared by every session of a project; `digest_model` `None` uses the summarizer's default. `folder`,
+/// where the project's new chats start, isn't edited with the rest and is kept as stored.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ProjectSettings {
     pub instructions: String,
     pub pinned: Vec<PinnedFile>,
     pub digest_model: Option<String>,
+    pub folder: Option<String>,
 }
 
 /// Whether a session's digest is written and current.
@@ -64,4 +66,19 @@ pub enum Intent {
     OpenSession(String),
     /// Start a chat in this project, in its working directory when known.
     NewChat { project: String, cwd: Option<String> },
+    /// Show a folder dialog for the project's folder, starting at the current one; the app stores the choice and
+    /// sends a fresh overview.
+    ChangeFolder { project: String, current: Option<String> },
+    /// Delete the project, confirmed; its sessions are kept.
+    Delete { project: String },
+}
+
+/// What the New project screen asks the app to do.
+#[derive(Clone, Debug, PartialEq)]
+pub enum CreateIntent {
+    /// Show a folder dialog starting at this folder; the app answers with the folder picked.
+    ChooseFolder(String),
+    /// Create the project; the app answers a failure on the screen.
+    Create { name: String, settings: ProjectSettings },
+    Cancel,
 }

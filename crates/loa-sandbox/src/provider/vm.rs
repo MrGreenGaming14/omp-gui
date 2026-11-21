@@ -1,81 +1,94 @@
-//! VM providers (feature `vm`): Firecracker through its API socket, and a
-//! generic qemu VM. The guest init must run the stub on the first serial port.
+//! VM providers (feature `vm`): Firecracker through its API socket (Linux
+//! only), and a generic qemu VM. The guest init must run the stub on the
+//! first serial port.
 
-use super::{Availability, Machine, ProviderFactory, ProviderStatus, Sandbox, SandboxKind, SandboxProvider, SandboxSpec, Teardown, WorkspaceMode, process, status};
+use super::{Availability, Machine, ProviderFactory, ProviderStatus, Sandbox, SandboxKind, SandboxProvider, SandboxSpec, WorkspaceMode, process, status};
+use crate::Result;
 use crate::service::SandboxConfig;
-use crate::{Result, SandboxError};
 use async_trait::async_trait;
-use serde_json::json;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
+
+#[cfg(target_os = "linux")]
+pub use firecracker::FirecrackerProvider;
 
 const QEMU: &str = if cfg!(target_arch = "aarch64") { "qemu-system-aarch64" } else { "qemu-system-x86_64" };
 
-pub struct FirecrackerProvider {
-    pub firecracker: PathBuf,
-    pub kernel: PathBuf,
-    pub rootfs: PathBuf,
-    pub memory_mib: u32,
-    pub cpus: u32,
-}
+#[cfg(target_os = "linux")]
+mod firecracker {
+    use super::super::{Sandbox, SandboxKind, SandboxProvider, SandboxSpec, Teardown, WorkspaceMode, process};
+    use crate::{Result, SandboxError};
+    use async_trait::async_trait;
+    use serde_json::json;
+    use std::path::{Path, PathBuf};
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::process::Command;
 
-fn error(message: impl Into<String>) -> SandboxError {
-    SandboxError::Provider { provider: "firecracker", message: message.into() }
-}
-
-async fn api(socket: &Path, path: &str, body: serde_json::Value) -> Result<()> {
-    let mut connection = tokio::net::UnixStream::connect(socket).await?;
-    let body = body.to_string();
-    let request = format!("PUT {path} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
-    connection.write_all(request.as_bytes()).await?;
-    let mut response = String::new();
-    connection.read_to_string(&mut response).await?;
-    match response.starts_with("HTTP/1.1 2") || response.starts_with("HTTP/1.0 2") {
-        true => Ok(()),
-        false => Err(error(format!("{path}: {response}"))),
+    pub struct FirecrackerProvider {
+        pub firecracker: PathBuf,
+        pub kernel: PathBuf,
+        pub rootfs: PathBuf,
+        pub memory_mib: u32,
+        pub cpus: u32,
     }
-}
 
-/// Removes the run directory with the API socket and the private rootfs copy.
-struct RemoveDir(PathBuf);
-
-impl Teardown for RemoveDir {
-    fn command(&self) -> std::process::Command {
-        let mut cmd = std::process::Command::new("rm");
-        cmd.arg("-rf").arg("--").arg(&self.0);
-        cmd
+    fn error(message: impl Into<String>) -> SandboxError {
+        SandboxError::Provider { provider: "firecracker", message: message.into() }
     }
-}
 
-#[async_trait]
-impl SandboxProvider for FirecrackerProvider {
-    fn kind(&self) -> SandboxKind { SandboxKind::Firecracker }
-    fn describe(&self) -> String { "a Firecracker microVM without network; the workspace is copied in and out".into() }
-    async fn start(&self, spec: &SandboxSpec) -> Result<Box<dyn Sandbox>> {
-        if spec.options.network == Some(true) {
-            return Err(error("network access requires a configured guest TAP device"));
+    async fn api(socket: &Path, path: &str, body: serde_json::Value) -> Result<()> {
+        let mut connection = tokio::net::UnixStream::connect(socket).await?;
+        let body = body.to_string();
+        let request = format!("PUT {path} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+        connection.write_all(request.as_bytes()).await?;
+        let mut response = String::new();
+        connection.read_to_string(&mut response).await?;
+        match response.starts_with("HTTP/1.1 2") || response.starts_with("HTTP/1.0 2") {
+            true => Ok(()),
+            false => Err(error(format!("{path}: {response}"))),
         }
-        // Runs never change the configured image and leave nothing behind.
-        let run_dir = tempfile::Builder::new().prefix("loa-fc-").tempdir()?.keep();
-        let (socket, rootfs) = (run_dir.join("api.sock"), run_dir.join("rootfs"));
-        let teardown = Box::new(RemoveDir(run_dir));
-        tokio::fs::copy(&self.rootfs, &rootfs).await.map_err(|e| error(format!("copying {}: {e}", self.rootfs.display())))?;
-        let mut cmd = Command::new(&self.firecracker);
-        cmd.arg("--api-sock").arg(&socket);
-        let sandbox = process("firecracker", cmd, WorkspaceMode::Copied, Some(teardown))?;
-        for _ in 0..100 {
-            if socket.exists() { break; }
-            tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    /// Removes the run directory with the API socket and the private rootfs copy.
+    struct RemoveDir(PathBuf);
+
+    impl Teardown for RemoveDir {
+        fn command(&self) -> std::process::Command {
+            let mut cmd = std::process::Command::new("rm");
+            cmd.arg("-rf").arg("--").arg(&self.0);
+            cmd
         }
-        let cpus = spec.options.cpus.unwrap_or(self.cpus);
-        api(&socket, "/machine-config", json!({ "vcpu_count": cpus, "mem_size_mib": spec.options.memory_mib.unwrap_or(self.memory_mib) })).await?;
-        api(&socket, "/boot-source", json!({ "kernel_image_path": self.kernel, "boot_args": "console=ttyS0 reboot=k panic=1 pci=off" })).await?;
-        api(&socket, "/drives/rootfs", json!({ "drive_id": "rootfs", "path_on_host": rootfs, "is_root_device": true, "is_read_only": false })).await?;
-        api(&socket, "/actions", json!({ "action_type": "InstanceStart" })).await?;
-        Ok(Box::new(sandbox))
+    }
+
+    #[async_trait]
+    impl SandboxProvider for FirecrackerProvider {
+        fn kind(&self) -> SandboxKind { SandboxKind::Firecracker }
+        fn describe(&self) -> String { "a Firecracker microVM without network; the workspace is copied in and out".into() }
+        async fn start(&self, spec: &SandboxSpec) -> Result<Box<dyn Sandbox>> {
+            if spec.options.network == Some(true) {
+                return Err(error("network access requires a configured guest TAP device"));
+            }
+            // Runs never change the configured image and leave nothing behind.
+            let run_dir = tempfile::Builder::new().prefix("loa-fc-").tempdir()?.keep();
+            let (socket, rootfs) = (run_dir.join("api.sock"), run_dir.join("rootfs"));
+            let teardown = Box::new(RemoveDir(run_dir));
+            tokio::fs::copy(&self.rootfs, &rootfs).await.map_err(|e| error(format!("copying {}: {e}", self.rootfs.display())))?;
+            let mut cmd = Command::new(&self.firecracker);
+            cmd.arg("--api-sock").arg(&socket);
+            let sandbox = process("firecracker", cmd, WorkspaceMode::Copied, Some(teardown))?;
+            for _ in 0..100 {
+                if socket.exists() { break; }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            let cpus = spec.options.cpus.unwrap_or(self.cpus);
+            api(&socket, "/machine-config", json!({ "vcpu_count": cpus, "mem_size_mib": spec.options.memory_mib.unwrap_or(self.memory_mib) })).await?;
+            api(&socket, "/boot-source", json!({ "kernel_image_path": self.kernel, "boot_args": "console=ttyS0 reboot=k panic=1 pci=off" })).await?;
+            api(&socket, "/drives/rootfs", json!({ "drive_id": "rootfs", "path_on_host": rootfs, "is_root_device": true, "is_read_only": false })).await?;
+            api(&socket, "/actions", json!({ "action_type": "InstanceStart" })).await?;
+            Ok(Box::new(sandbox))
+        }
     }
 }
 
@@ -118,6 +131,9 @@ impl ProviderFactory for Firecracker {
     fn kind(&self) -> SandboxKind { SandboxKind::Firecracker }
     async fn probe(&self, m: &Machine, c: &SandboxConfig) -> ProviderStatus {
         use Availability::*;
+        if !cfg!(target_os = "linux") {
+            return status(self.kind(), Unavailable, "Firecracker needs Linux (KVM)");
+        }
         match (m.which("firecracker"), m.kvm(), &c.firecracker_kernel, &c.firecracker_rootfs) {
             (None, ..) => status(self.kind(), Unavailable, "Firecracker is not installed"),
             (Some(_), false, ..) => status(self.kind(), Unavailable, "/dev/kvm is not accessible"),
@@ -125,9 +141,14 @@ impl ProviderFactory for Firecracker {
             _ => status(self.kind(), NotConfigured, "Set a guest kernel and a rootfs whose init runs loa-sandbox-stub on ttyS0"),
         }
     }
+    #[cfg(target_os = "linux")]
     fn build(&self, m: &Machine, c: &SandboxConfig) -> Option<Arc<dyn SandboxProvider>> {
         let (kernel, rootfs) = (c.firecracker_kernel.clone()?, c.firecracker_rootfs.clone()?);
         Some(Arc::new(FirecrackerProvider { firecracker: m.which("firecracker")?, kernel, rootfs, memory_mib: 512, cpus: 1 }))
+    }
+    #[cfg(not(target_os = "linux"))]
+    fn build(&self, _: &Machine, _: &SandboxConfig) -> Option<Arc<dyn SandboxProvider>> {
+        None
     }
 }
 

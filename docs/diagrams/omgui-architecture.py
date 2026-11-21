@@ -81,7 +81,7 @@ box(55, 306, 1160, 46, ["View API — loa-view  ·  stable, versioned contract",
                         "view models · Intent enums · transcript reads the session DOM · media via decoder ports"], "view", bold=True, sw=1.8)
 
 # Feature controllers: one row per area, aligned with what it drives
-ROWS = ["surfaces", "tools", "sandbox", "peers", "models", "projects", "updater", "harness", "sessions", "decisions"]
+ROWS = ["surfaces", "tools", "sandbox", "peers", "models", "projects", "updater", "agents", "harness", "sessions", "decisions"]
 R = lambda i: 482 + i * 40
 
 
@@ -90,23 +90,23 @@ def ry(n):
     return R(i) if i <= 1 else R(i) + 40
 
 
-container(590, 376, 300, 560, "Feature controllers · loa-app/areas", "ctl")
+container(590, 376, 300, 612, "Feature controllers · loa-app/areas", "ctl")
 box(605, 414, 270, 54, ["Ctx — shared context", "runtime · services · requests · Area trait"], "ctl", fs=12)
 # Secondary dependencies confirmed by the call graph (rust-analyzer LSIF), beyond the row's own adapter/service.
 ALSO = {"surfaces": "+ mcp", "tools": "+ trust", "peers": "+ mcp", "updater": "+ peer network",
-        "sessions": "+ projects, plan", "decisions": "+ plan check"}
+        "agents": "+ omp agent files, mcp", "sessions": "+ projects, plan", "decisions": "+ plan check"}
 for n in ROWS:
     h = 72 if n == "tools" else 32
     box(605, ry(n), 270, h, [n], "ctl", bold=True)
     if n in ALSO:
         A(f'<text x="868" y="{ry(n) + h / 2 + 4}" text-anchor="end" font-size="9.5" fill="#6b7c93">{ALSO[n]}</text>')
-A('<text x="740" y="928" text-anchor="middle" font-size="10" fill="#6b7c93">each area: own folder + one AREAS entry — expected to change</text>')
+A('<text x="740" y="982" text-anchor="middle" font-size="10" fill="#6b7c93">each area: own folder + one AREAS entry — expected to change</text>')
 
 # Central settings
 container(55, 376, 505, 200, "Central settings  ·  loa-settings", "set")
 box(75, 414, 225, 74, ["Harness config ports", "OmpRpc · account", "files · validator"], "set", bold=True)
 box(315, 414, 225, 74, ["App config", "Config · ConfigStore"], "set")
-box(75, 496, 225, 66, ["Model &amp; provider settings", "models.yml · omp config · sign-in"], "set")
+box(75, 496, 225, 66, ["Model &amp; provider settings", "models.yml · omp config · agents · sign-in"], "set")
 box(315, 496, 225, 66, ["Project &amp; updater settings", "pins · digests · release status"], "set")
 arrow([(603, 441), (542, 441)], "data")
 lab(572, 435, "load · save", "data", size=9.5)
@@ -122,7 +122,7 @@ arrow([(300, 594), (300, 578)], "data")
 lab(350, 590, "persist · calls ports", "data", anchor="start", size=9.5)
 
 # Integration adapters + externals
-container(920, 446, 295, 490, "Integration adapters", "adp")
+container(920, 446, 295, 530, "Integration adapters", "adp")
 for t, y in [("Remote surfaces · loa-surfaces", ry("surfaces")), ("Remote hosts · loa-remote", R(1)),
              ("MCP client + tool server · loa-mcp", R(1) + 40), ("Sandbox · loa-sandbox", ry("sandbox")),
              ("Peer network · loa-p2p", ry("peers"))]:

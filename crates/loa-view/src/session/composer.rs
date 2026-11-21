@@ -1,6 +1,17 @@
 //! Composer rows the app feeds the pickers and popups with, and what the composer asks of it.
 
+use std::path::PathBuf;
+
 use super::{Prompt, SessionMode};
+
+/// An image pasted or dropped into the composer, saved at `path`: shown as `[Image #n]` and a
+/// card, and sent as an [`Attachment`](super::Attachment) while its token is in the text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PastedImage {
+    pub path: PathBuf,
+    /// Width and height in pixels, when known.
+    pub size: Option<(u32, u32)>,
+}
 
 /// A `/` command offered in the popup; `name` has no slash.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -85,4 +96,10 @@ pub enum Intent {
     OpenWorkspace,
     FolderPicked(String),
     BrowseFolders,
+    /// Ctrl+V was pressed. When the clipboard holds an image, save it and hand it back with
+    /// the composer's `attach_image`; the editor pastes any text itself.
+    PasteImage,
+    /// A project was picked in the project chip: the shown session moves there, or new
+    /// sessions join it. `None` is "No project".
+    ProjectPicked(Option<String>),
 }

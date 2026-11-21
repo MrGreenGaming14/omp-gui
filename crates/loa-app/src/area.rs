@@ -144,9 +144,13 @@ pub enum Request {
     /// rewind, compaction), with every area's contribution; it becomes the
     /// active session.
     Spawn(Spawn),
-    /// Make `project` and its folder `cwd` the active ones: the Files tab,
-    /// new terminals, the Diff tab and new sessions follow.
-    ActivateProject { project: String, cwd: PathBuf },
+    /// Make `project` the active one and, when it has one, its folder `cwd`
+    /// the active folder: Files, new terminals, Diff and new sessions follow.
+    /// Running sessions keep their folder.
+    ActivateProject { project: String, cwd: Option<PathBuf> },
+    /// `project` was deleted: drop its tab and pin, and stop it being the
+    /// active project.
+    ForgetProject(String),
     /// Run this message through the app's `update`, e.g. to hand a decision
     /// answer to the area that owns it.
     Forward(Box<crate::app::Message>),
@@ -177,8 +181,9 @@ pub struct Ctx {
     pub keymap: palette::Keymap,
     /// App tools areas serve to sessions, as the Tools panel lists them.
     pub app_tools: Vec<loa_view::panel::ToolInfo>,
-    /// Peers the peers area knows; refreshed by it.
-    pub peers: Vec<loa_p2p::PeerInfo>,
+    /// Bumped whenever an app tool is added or changed. Views that list the tools compare it to
+    /// know when to rebuild.
+    pub(crate) app_tools_rev: u64,
     /// The running peer node, set by the peers area each time it opens one;
     /// clones of the slot see the current node.
     pub node: loa_p2p::NodeSlot,
@@ -222,12 +227,19 @@ impl Ctx {
     }
 
     /// Lists `info` among the app tools, replacing the entry of the same
-    /// name.
+    /// name. An unchanged entry leaves the revision alone.
     pub fn set_app_tool(&mut self, info: loa_view::panel::ToolInfo) {
         match self.app_tools.iter_mut().find(|tool| tool.name == info.name) {
+            Some(tool) if *tool == info => return,
             Some(tool) => *tool = info,
             None => self.app_tools.push(info),
         }
+        self.app_tools_rev += 1;
+    }
+
+    /// Changes whenever `app_tools` does.
+    pub fn app_tools_rev(&self) -> u64 {
+        self.app_tools_rev
     }
 
     pub fn request(&mut self, request: Request) {
@@ -368,8 +380,8 @@ pub trait Area: Sized + 'static {
         Task::none()
     }
 
-    /// Called for every area after `project` became the active project and
-    /// `cwd` the active folder ([`Request::ActivateProject`]).
+    /// Called for every area after `project` became the active project;
+    /// `cwd` is the active folder ([`Request::ActivateProject`]).
     fn project_activated(&mut self, project: &str, cwd: &Path, ctx: &mut Ctx) -> Task<Self::Message> {
         let _ = (project, cwd, ctx);
         Task::none()

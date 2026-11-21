@@ -77,7 +77,7 @@ impl ChannelWriter for Sent {
 #[tokio::test]
 async fn remote_channel_streams_both_ways_until_the_program_ends() {
     let ((out, reader), (writer, mut sent)) = (tokio::sync::mpsc::channel(4), mpsc::unbounded_channel());
-    let mut s = state().with_remote(Arc::new(Host(Mutex::new(Some(PtyChannel { reader: Box::new(QueueReader(reader)), writer: Box::new(Sent(writer)) })))));
+    let mut s = state().with_remote(Arc::new(Host(Mutex::new(Some(PtyChannel { reader: Box::new(QueueReader::new(reader)), writer: Box::new(Sent(writer)) })))));
     let ((first, open), (down, refused)) = (s.open(remote("box")), s.open(remote("down")));
     let _ = s.update(key("l", Modifiers::empty()));
     out.send(Ok(ChannelRead::Data(Bytes::from_static(b"\x1b[6n")))).await.unwrap();

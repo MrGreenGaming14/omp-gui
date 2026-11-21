@@ -33,6 +33,10 @@ toml_edit = "0.25"
 tokio.workspace = true
 tracing.workspace = true
 
+# ACP terminals run in a job object so killing one ends what it spawned.
+[target.'cfg(windows)'.dependencies]
+process-wrap = { version = "10", default-features = false, features = ["tokio1", "job-object", "kill-on-drop"] }
+
 [dev-dependencies]
 loa-harness = { path = ".", default-features = false, features = ["testing"] }
 loa-models = { path = "../loa-models", features = ["testing"] }

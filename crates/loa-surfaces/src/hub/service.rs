@@ -47,6 +47,9 @@ pub struct VirtualDisplaySetup {
 impl VirtualDisplaySetup {
     /// Xvfb on `path_var` and a headed Chrome, or what is missing.
     pub fn find(path_var: Option<&std::ffi::OsStr>, home: Option<&Path>) -> Result<Self, String> {
+        if !cfg!(target_os = "linux") {
+            return Err(crate::browser::VIRTUAL_DISPLAY_UNAVAILABLE.to_owned());
+        }
         let xvfb = crate::browser::find_xvfb(path_var).ok_or("Xvfb isn't installed (install the xvfb package)")?;
         let chrome = crate::browser::find_chrome(path_var, home, true)
             .ok_or("no Chrome or Chromium that runs headed (the headless shell can't)")?;
@@ -63,7 +66,7 @@ impl HubConfig {
             config
         });
         let path = std::env::var_os("PATH");
-        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let home = loa_util::fs::home();
         Self {
             browser,
             fonts: Fonts::system(),

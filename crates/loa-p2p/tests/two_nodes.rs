@@ -366,7 +366,7 @@ async fn added_protocols_serve_only_peers_with_a_covering_grant() {
 async fn folder_grants_list_read_and_write_only_inside_the_folder() {
     let (owner, guest) = pair("owner-box", "guest-box").await;
     let files = tempfile::tempdir().unwrap();
-    let base = std::fs::canonicalize(files.path()).unwrap();
+    let base = loa_util::fs::canonicalize(files.path()).unwrap();
     let share = base.join("share");
     std::fs::create_dir_all(share.join("docs")).unwrap();
     std::fs::write(base.join("secret.txt"), "outside").unwrap();

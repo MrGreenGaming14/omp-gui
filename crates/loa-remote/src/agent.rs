@@ -23,7 +23,11 @@ pub fn socket_for(agent: &AgentSocket, default: Option<&Path>, host: &str) -> Re
 /// Authenticates `handle` as `user` with the identities of the agent on `socket`.
 pub async fn authenticate<H: client::Handler>(handle: &mut client::Handle<H>, user: &str, host: &str, socket: &Path) -> Result<()> {
     let agent_err = |e: russh::keys::Error| Error::Agent { path: socket.to_path_buf(), message: e.to_string() };
-    let mut agent = AgentClient::connect_uds(socket).await.map_err(agent_err)?;
+    #[cfg(unix)]
+    let connected = AgentClient::connect_uds(socket).await;
+    #[cfg(windows)]
+    let connected = AgentClient::connect_named_pipe(socket).await;
+    let mut agent = connected.map_err(agent_err)?;
     let identities = agent.request_identities().await.map_err(agent_err)?;
     let tried = identities.len();
     for identity in identities {

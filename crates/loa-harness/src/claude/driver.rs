@@ -291,7 +291,7 @@ struct ClaudeSession {
 impl ClaudeSession {
     /// Spawns the CLI and completes the `initialize` handshake.
     async fn launch(config: SessionConfig, mapper: Mapper, resume: &[String]) -> Result<Self> {
-        let mut command = Command::new(config.executable.as_deref().unwrap_or(Path::new(EXECUTABLE)));
+        let mut command = Command::new(loa_util::exec::resolve(config.executable.as_deref().unwrap_or(Path::new(EXECUTABLE))));
         command.args(command_args(&config, resume)).current_dir(&config.cwd).envs(&config.env);
         // Set inside a Claude Code shell; the child must not think it is nested.
         command.env_remove("CLAUDECODE");

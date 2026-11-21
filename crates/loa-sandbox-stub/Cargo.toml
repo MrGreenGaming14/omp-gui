@@ -8,4 +8,10 @@ publish.workspace = true
 [dependencies]
 loa-util.workspace = true
 loa-sandbox = { path = "../loa-sandbox", default-features = false }
+
+[target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+# Job Objects: ending a command ends everything it started.
+process-wrap = { version = "10", default-features = false, features = ["std", "job-object"] }

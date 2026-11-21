@@ -2,7 +2,7 @@
 <session nid="1" created.int="1" effort="high" harness="omp" id="s" native_id="native-2" node="owner" schema.int="1" title="Parser fix">
   <ext nid="2" harness="omp" type="notice">{"level":"info","message":"Index rebuilt","source":"extension"}</ext>
   <ext nid="3" harness="omp" type="open_url">{"instructions":"Sign in","launchUrl":null,"url":"https://example.com/login"}</ext>
-  <turn nid="4" status="error">
+  <turn nid="4" ended.int="0" started.int="0" status="error">
     <message nid="5" by="owner" role="user" status="done">pick</message>
     <decision nid="6" answer.list="['Approve File']" by="owner" kind="approval" multi.bool="false" options.list="['allow_once', 'deny']" request_id="g1" status="answered" title="Allow tool: read">Allow tool: read</decision>
     <decision nid="7" answer.list="['DuckDB']" by="owner" kind="question" multi.bool="true" options.list="['Postgres', 'SQLite']" request_id="ask-1" status="answered" title="Database">Which database?</decision>

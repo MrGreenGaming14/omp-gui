@@ -12,15 +12,60 @@ pub mod state;
 pub use local::LocalShell;
 pub use state::{Message, State, Status, TabId, Target};
 use async_trait::async_trait;
+use bytes::{Bytes, BytesMut};
 use futures::future::BoxFuture;
 use loa_view::terminal::port::{ChannelRead, ChannelReader, Error, GridSize, PtyChannel, RemotePty, Result};
 use std::sync::Arc;
+use tokio::sync::mpsc;
 
-/// Reads queued by another task; a dropped sender reads as [`Error::Closed`].
-pub(crate) struct QueueReader(pub(crate) tokio::sync::mpsc::Receiver<Result<ChannelRead>>);
+/// Output joined into one read. Gathering stops once a burst reaches this size, so a flood still reaches the
+/// pane in bounded pieces.
+const BURST_LIMIT: usize = 256 * 1024;
+
+/// Reads queued by another task; a dropped sender reads as [`Error::Closed`]. Output already queued when the pane
+/// reads is joined into one chunk (up to [`BURST_LIMIT`]), so a burst takes a single read.
+pub(crate) struct QueueReader {
+    queue: mpsc::Receiver<Result<ChannelRead>>,
+    /// What ended the last burst (an error or the close), returned by the next read.
+    pending: Option<Result<ChannelRead>>,
+}
+impl QueueReader {
+    pub(crate) fn new(queue: mpsc::Receiver<Result<ChannelRead>>) -> Self { Self { queue, pending: None } }
+
+    /// Joins `first` with the output chunks already queued.
+    fn coalesce(&mut self, first: Bytes) -> Bytes {
+        let mut rest = Vec::new();
+        let mut len = first.len();
+        while len < BURST_LIMIT {
+            match self.queue.try_recv() {
+                Ok(Ok(ChannelRead::Data(bytes))) => {
+                    len += bytes.len();
+                    rest.push(bytes);
+                }
+                Ok(other) => {
+                    self.pending = Some(other);
+                    break;
+                }
+                // Empty or closed: the next `recv` says which.
+                Err(_) => break,
+            }
+        }
+        if rest.is_empty() { return first }
+        let mut burst = BytesMut::with_capacity(len);
+        burst.extend_from_slice(&first);
+        rest.iter().for_each(|chunk| burst.extend_from_slice(chunk));
+        burst.freeze()
+    }
+}
 #[async_trait]
 impl ChannelReader for QueueReader {
-    async fn read(&mut self) -> Result<ChannelRead> { self.0.recv().await.unwrap_or(Err(Error::Closed)) }
+    async fn read(&mut self) -> Result<ChannelRead> {
+        let next = match self.pending.take() { Some(next) => next, None => self.queue.recv().await.unwrap_or(Err(Error::Closed)) };
+        match next {
+            Ok(ChannelRead::Data(bytes)) => Ok(ChannelRead::Data(self.coalesce(bytes))),
+            other => other,
+        }
+    }
 }
 
 /// Port: opens a PTY for a target. The terminal state holds one and never matches on targets.

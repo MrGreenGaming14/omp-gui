@@ -10,15 +10,16 @@ mod tree;
 mod tests;
 
 use loa_util::LockExt;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use iced::{Element, Subscription, Task};
 use loa_bus::{Listing, SessionId};
 use loa_contracts::harness::{Answer, Capabilities, Prompt, SessionConfig};
-use loa_core::{Dom, ElementKind, JobStatus, NodeId, Op, SessionMode, TurnStatus, attr};
+use loa_core::{Dom, ElementKind, JobStatus, NodeId, Op, Patch, SessionMode, TurnStatus, attr};
 use loa_session::hooks::TurnHooks;
 use loa_session::plan::{self as plan_mode, PlanGate};
 use loa_settings::models::login::UrlOpener;
@@ -60,6 +61,8 @@ pub enum Message {
     Tick(i64),
     /// A harness call returned.
     Done(Result<(), String>),
+    /// A Session tree read off the UI thread finished.
+    TreeLoaded(Box<tree::Loaded>),
 }
 
 pub struct State {
@@ -81,19 +84,47 @@ pub struct State {
     pub(crate) opener: Arc<dyn UrlOpener>,
     /// The fork or rewind being started, to show the Session tab once it is active.
     branching: Option<String>,
+    /// omp's model roles, cached by the mtime of the config file they came from.
+    roles: RefCell<Option<(SystemTime, Roles)>>,
 }
+
+/// omp's model roles with their candidate models in order.
+type Roles = Vec<(String, Vec<String>)>;
 
 impl State {
     /// Rebuilds from the active session.
-    fn reload(&mut self, ctx: &mut Ctx) {
+    fn reload(&mut self, ctx: &mut Ctx) -> Task<Message> {
         let empty = Dom::new();
         let dom = ctx.runtime.sessions().active().map_or(&empty, |session| session.dom());
         self.agents.reset(dom);
         let _ = self.agents.update(agents::Message::Tick(loa_core::now_ms()));
         ctx.composer.set_mode(mode(dom));
         ctx.composer.set_commands(composer_commands(&ctx.slash, ctx.runtime.sessions().active().map(|session| session.dom())));
-        self.tree.refresh(ctx);
+        let task = self.tree.refresh(ctx);
         self.restore_plan(ctx);
+        task
+    }
+
+    /// A streamed append to session `id`; only the Agents tab follows those.
+    pub(crate) fn on_append(&mut self, id: &SessionId, patch: &Patch, ctx: &Ctx) {
+        if let Some(session) = ctx.runtime.sessions().get(id.as_str()).filter(|_| ctx.runtime.sessions().is_active(id.as_str())) {
+            self.agents.apply(session.dom(), patch);
+        }
+    }
+
+    /// omp's model roles, read again only when its config file changed.
+    fn roles(&self) -> Result<Roles, String> {
+        let mtime = std::fs::metadata(model_roles_path(&self.home)).and_then(|meta| meta.modified()).ok();
+        if let (Some(mtime), Some((cached, roles))) = (mtime, self.roles.borrow().as_ref())
+            && *cached == mtime
+        {
+            return Ok(roles.clone());
+        }
+        let roles = model_roles(&self.home)?;
+        if let Some(mtime) = mtime {
+            *self.roles.borrow_mut() = Some((mtime, roles.clone()));
+        }
+        Ok(roles)
     }
 
     fn delete(&mut self, ctx: &mut Ctx, id: &str) -> Task<Message> {
@@ -131,7 +162,7 @@ impl State {
         };
         let Some(root) = session.dom().root().map(|root| root.id) else { return Task::none() };
         let writer = Arc::clone(session.writer());
-        let roles = match model_roles(&self.home) {
+        let roles = match self.roles() {
             Ok(roles) => roles,
             Err(error) => {
                 ctx.notify(error);
@@ -223,9 +254,14 @@ fn asks_first(ctx: &Ctx, harness: &str) -> bool {
     !ctx.runtime.harnesses().traits(harness).approval_modes.is_empty()
 }
 
+/// Where omp keeps its config, `modelRoles` included.
+fn model_roles_path(home: &Path) -> PathBuf {
+    home.join(".omp/agent/config.yml")
+}
+
 /// omp's model roles (`modelRoles` in `~/.omp/agent/config.yml`) with their candidate models in order.
-fn model_roles(home: &Path) -> Result<Vec<(String, Vec<String>)>, String> {
-    let path = home.join(".omp/agent/config.yml");
+fn model_roles(home: &Path) -> Result<Roles, String> {
+    let path = model_roles_path(home);
     let config = loa_settings::models::config::OmpConfig::load(&path).map_err(|error| format!("Can't read {}: {error}", path.display()))?;
     let roles = config.model_roles().map_err(|error| format!("Can't read the model roles in {}: {error}", path.display()))?;
     Ok(roles.into_iter().map(|role| (role.role, role.candidates.iter().map(ToString::to_string).collect())).collect())
@@ -306,7 +342,7 @@ impl Area for State {
         .listed(Listed::Never)
         .slash("import", "Import a native session"),
         AreaCommand::<Self>::new("sessions.role.", "", "Model roles", |state, role, ctx| state.role(ctx, role.to_owned())).listed(Listed::Each(|state, ctx| {
-            let roles = ctx.runtime.sessions().active().and_then(|_| model_roles(&state.home).ok()).unwrap_or_default();
+            let roles = ctx.runtime.sessions().active().and_then(|_| state.roles().ok()).unwrap_or_default();
             let title = |role: &str, models: &[String]| format!("Model role: {role} ({})", models.first().map_or("no model", String::as_str));
             roles.into_iter().map(|(role, models)| (role.clone(), title(&role, &models))).collect()
         })),
@@ -334,6 +370,7 @@ impl Area for State {
             compacted: HashMap::new(),
             opener: Arc::clone(&ctx.backends.opener),
             branching: None,
+            roles: RefCell::new(None),
         };
         (state, Task::none())
     }
@@ -406,6 +443,10 @@ impl Area for State {
                 }
                 Task::none()
             }
+            Message::TreeLoaded(loaded) => {
+                self.tree.merge(*loaded);
+                self.tree.refresh(ctx)
+            }
         }
     }
 
@@ -452,11 +493,17 @@ impl Area for State {
                     self.branching = None;
                     ctx.reveal_tab("session");
                 }
-                self.reload(ctx);
+                return self.reload(ctx);
             }
-            SessionEvent::Loaded(id) if ctx.runtime.sessions().is_active(id.as_str()) => self.reload(ctx),
-            SessionEvent::Patch(id, patch) if ctx.runtime.sessions().is_active(id.as_str()) => {
-                let Some(dom) = ctx.runtime.sessions().get(id.as_str()).map(|session| session.dom()) else { return Task::none() };
+            SessionEvent::Loaded(id) if ctx.runtime.sessions().is_active(id.as_str()) => return self.reload(ctx),
+            SessionEvent::Patch(id, patch) => {
+                let sessions = ctx.runtime.sessions();
+                if let Op::Insert { parent, kind: ElementKind::Turn, .. } = &patch.op
+                    && sessions.get(id.as_str()).and_then(|session| session.dom().root()).is_some_and(|root| root.id == *parent)
+                {
+                    self.tree.record_turn(id.as_str(), patch.node, patch.seq);
+                }
+                let Some(dom) = sessions.get(id.as_str()).filter(|_| sessions.is_active(id.as_str())).map(|session| session.dom()) else { return Task::none() };
                 self.agents.apply(dom, patch);
                 let ext = |node| dom.get(node).and_then(|node| node.str_attr(attr::TYPE)) == Some(chat::COMMANDS_EXT);
                 match &patch.op {
@@ -466,7 +513,7 @@ impl Area for State {
                     _ => {}
                 }
             }
-            SessionEvent::TurnStarted { session, .. } if ctx.runtime.sessions().is_active(session.as_str()) => self.tree.refresh(ctx),
+            SessionEvent::TurnStarted { session, .. } if ctx.runtime.sessions().is_active(session.as_str()) => return self.tree.refresh(ctx),
             SessionEvent::DecisionWaiting { session, decision } => {
                 let Some(open) = ctx.runtime.sessions().get(session.as_str()) else { return Task::none() };
                 let (Some(node), Some(harness)) = (open.dom().get(*decision), open.harness().cloned()) else { return Task::none() };

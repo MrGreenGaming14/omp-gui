@@ -127,14 +127,15 @@ impl Summarizers for Arc<Fake> {
     }
 }
 
-/// A live session on `bus`, journaled in `store`, with a `<session>` root in `cwd`.
-pub fn live(bus: &Bus, store: &Store, id: &str, cwd: &str) -> Arc<loa_bus::SessionWriter> {
+/// A live session on `bus`, journaled in `store`, created at `at` in `cwd`, in `project` when given.
+pub fn live(bus: &Bus, store: &Store, id: &str, project: Option<&str>, cwd: &str, at: i64) -> Arc<loa_bus::SessionWriter> {
     let journal = JournalWriter::new(store.create(id).unwrap(), SyncPolicy::default());
     let key = NodeKey([1; 32]);
     let persist = Box::new(JournalPersist(Arc::new(journal)));
     let config = WriterConfig { session: SessionId::new(id), owner: key, local: key, dom: Dom::new(), persist, authorize: Arc::new(loa_core::testkit::AllowAll) };
     let writer = bus.open(config).unwrap();
-    let attrs = [(attr::ID, Value::from(id)), (attr::HARNESS, "omp".into()), (attr::NODE, "n".into()), (attr::CREATED, 1.into()), (attr::CWD, cwd.into())];
-    writer.commit_at(Draft::insert(NodeId::DOCUMENT, K::Session, attrs, ""), 1).unwrap();
+    let mut attrs = vec![(attr::ID, Value::from(id)), (attr::HARNESS, "omp".into()), (attr::NODE, "n".into()), (attr::CREATED, at.into()), (attr::CWD, cwd.into())];
+    attrs.extend(project.map(|project| (attr::PROJECT, Value::from(project))));
+    writer.commit_at(Draft::insert(NodeId::DOCUMENT, K::Session, attrs, ""), at).unwrap();
     writer
 }

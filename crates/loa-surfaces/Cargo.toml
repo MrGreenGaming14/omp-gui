@@ -42,7 +42,6 @@ axum = { version = "0.8", default-features = false, features = ["http1", "tokio"
 rmcp = { version = "3.11", default-features = false, features = ["server", "transport-streamable-http-server"], optional = true }
 # browser
 chromiumoxide = { version = "0.9", default-features = false, features = ["bytes", "rustls", "zip8"], optional = true }
-x11rb = { version = "0.13", optional = true }
 # docs
 hayro = { version = "0.9", optional = true }
 calamine = { version = "0.38", optional = true }
@@ -59,6 +58,10 @@ prost = { workspace = true, optional = true }
 # Pure Rust H.264. The `global-alloc` default feature installs a process wide
 # allocator, so defaults stay off.
 rusty_h264 = { version = "0.17.3", default-features = false, features = ["std", "asm"], optional = true }
+
+# browser: the Xvfb virtual display capture runs only on Linux.
+[target.'cfg(target_os = "linux")'.dependencies]
+x11rb = { version = "0.13", optional = true }
 
 [dev-dependencies]
 loa-surfaces = { path = ".", features = ["testkit"] }

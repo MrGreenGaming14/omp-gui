@@ -1,5 +1,5 @@
-//! Configs (a center screen), Settings (a window over the app) and detached OS windows: a panel
-//! tab or a subagent's session in a window of its own.
+//! Configs and Settings, each a window over the app, and detached OS windows: a panel tab or a
+//! subagent's session in a window of its own.
 
 use std::path::{Path, PathBuf};
 
@@ -148,6 +148,7 @@ pub fn scan(tab: ConfigsTab, project: &Path, home: Option<&Path>) -> Vec<DocFile
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Overlay {
     Usage,
+    Configs(ConfigsTab),
     Settings(SettingsTab),
 }
 
@@ -169,11 +170,10 @@ impl Detached {
     }
 }
 
-/// The app's windows: the overlay, Configs and the detached ones.
+/// The app's windows: the overlay and the detached ones.
 #[derive(Default)]
 pub(crate) struct Windows {
     pub overlay: Option<Overlay>,
-    pub configs: Option<ConfigsTab>,
     pub docs: Docs,
     main: Option<window::Id>,
     detached: Vec<(window::Id, Detached)>,
@@ -182,11 +182,11 @@ pub(crate) struct Windows {
 #[derive(Debug, Clone)]
 pub enum WindowMessage {
     OpenConfigs(ConfigsTab),
-    CloseConfigs,
     PickDoc(usize),
     ToggleDocFull,
     OpenSettings(SettingsTab),
-    CloseSettings,
+    /// Closes Configs, Settings or Usage.
+    CloseOverlay,
     SetTheme(ThemeRef),
     /// Shows a panel tab in its own window.
     Detach(String),
@@ -205,6 +205,11 @@ fn settings(size: Size) -> window::Settings {
     window::Settings { size, min_size: Some(Size::new(width(LayoutRole::MinWidth), width(LayoutRole::MinHeight))), ..window::Settings::default() }
 }
 
+/// The frame Configs and Settings draw their content in.
+fn window_frame<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+    container(content).style(style::container(Surface::Popup)).width(width(LayoutRole::WindowWidth)).height(width(LayoutRole::WindowHeight)).clip(true).into()
+}
+
 impl App {
     /// Opens the main window, once, when the daemon boots.
     pub fn open_main(&mut self) -> Task<Message> {
@@ -217,19 +222,16 @@ impl App {
         let windows = &mut self.windows;
         match message {
             WindowMessage::OpenConfigs(tab) => {
-                (windows.configs, windows.overlay) = (Some(tab), None);
+                windows.overlay = Some(Overlay::Configs(tab));
                 windows.docs = Docs { files: scan(tab, self.ctx.runtime.cwd(), loa_util::fs::home().as_deref()), selected: 0, full: false };
                 let load = match tab {
                     ConfigsTab::Models => self.update(Message::area(areas::models::Message::Show(Page::Settings))),
+                    ConfigsTab::Agents => self.update(Message::area(areas::agents::Message::Open)),
                     _ => Task::none(),
                 };
                 // Areas open their own screen when they load; Configs draws them instead.
                 self.ctx.close_screen();
                 load
-            }
-            WindowMessage::CloseConfigs => {
-                windows.configs = None;
-                Task::none()
             }
             WindowMessage::PickDoc(index) => {
                 windows.docs.selected = index.min(windows.docs.files.len().saturating_sub(1));
@@ -250,7 +252,7 @@ impl App {
                 self.ctx.close_screen();
                 load
             }
-            WindowMessage::CloseSettings => {
+            WindowMessage::CloseOverlay => {
                 windows.overlay = None;
                 Task::none()
             }
@@ -361,21 +363,22 @@ impl App {
         chat.view(open.dom(), move |message| Message::DetachedChat(owned.clone(), message), |slot| self.decision_card(open.id().as_str(), slot.node))
     }
 
-    /// The Configs screen, drawn in the center.
+    /// The Configs window, drawn over the app.
     pub(super) fn configs_view(&self, tab: ConfigsTab) -> Element<'_, Message> {
         let documents = matches!(tab, ConfigsTab::Agents | ConfigsTab::Skills | ConfigsTab::Rules);
         if self.windows.docs.full && documents {
-            return self.docs_view(tab);
+            return window_frame(self.docs_view(tab));
         }
         let ctx = &self.ctx;
         let content = match tab {
             ConfigsTab::Models => self.areas.get::<areas::models::State>().page_body(Page::Settings).map(Message::area),
             ConfigsTab::Tools => self.areas.get::<areas::tools::State>().view_tab("tools", ctx).map_or_else(|| text("").into(), |view| view.map(Message::area)),
+            ConfigsTab::Agents => self.areas.get::<areas::agents::State>().configs_body(ctx).map_or_else(|| self.docs_view(tab), |view| view.map(Message::area)),
             _ => self.docs_view(tab),
         };
-        let close = icon_button(Icon::X, "Close", Some(Message::Window(WindowMessage::CloseConfigs)));
+        let close = icon_button(Icon::X, "Close", Some(Message::Window(WindowMessage::CloseOverlay)));
         let body = column![section_header(tab.label(), [close]), label(tab.blurb(), TextRole::Label, Tone::Muted), container(content).height(Fill)];
-        side_nav(None, &ConfigsTab::ALL, tab, |tab| Message::Window(WindowMessage::OpenConfigs(tab)), body.spacing(sp(SpaceRole::M)).into())
+        window_frame(side_nav(None, &ConfigsTab::ALL, tab, |tab| Message::Window(WindowMessage::OpenConfigs(tab)), body.spacing(sp(SpaceRole::M)).into()))
     }
 
     fn docs_view(&self, tab: ConfigsTab) -> Element<'_, Message> {
@@ -408,10 +411,10 @@ impl App {
             SettingsTab::Harnesses => self.areas.get::<areas::models::State>().page_body(Page::SignIn).map(Message::area),
             SettingsTab::Updates => self.areas.get::<areas::updater::State>().view_screen(ctx).map_or_else(missing, |view| view.map(Message::area)),
         };
-        let close = icon_button(Icon::X, "Close", Some(Message::Window(WindowMessage::CloseSettings)));
+        let close = icon_button(Icon::X, "Close", Some(Message::Window(WindowMessage::CloseOverlay)));
         let body = column![section_header(tab.label(), [close]), container(content).height(Fill)].spacing(sp(SpaceRole::M));
         let nav = side_nav(Some("Settings"), &SettingsTab::ALL, tab, |tab| Message::Window(WindowMessage::OpenSettings(tab)), body.into());
-        container(nav).style(style::container(Surface::Popup)).width(width(LayoutRole::WindowWidth)).height(width(LayoutRole::WindowHeight)).clip(true).into()
+        window_frame(nav)
     }
 
     fn general_settings(&self) -> Element<'_, Message> {

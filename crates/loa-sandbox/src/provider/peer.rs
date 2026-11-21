@@ -63,12 +63,13 @@ impl Sandbox for PeerSandbox {
 }
 
 /// The peer side of a sandbox stream: runs `stub` with an empty environment
-/// in a new temporary directory and pipes the stream to it until either side
-/// ends. The directory is removed afterwards.
+/// (on Windows, just the system variables it needs) in a new temporary
+/// directory and pipes the stream to it until either side ends. The
+/// directory is removed afterwards.
 pub async fn serve_stub(channel: Channel, stub: &Path) -> Result<()> {
     let root = tempfile::tempdir()?;
     let mut command = Command::new(stub);
-    command.arg(root.path()).current_dir(root.path()).env_clear();
+    command.arg(root.path()).current_dir(root.path()).env_clear().envs(super::local::system_env());
     let mut sandbox = Box::new(super::process("peer", command, WorkspaceMode::Copied, None)?);
     let (Channel { mut reader, mut writer }, Channel { reader: mut stdout, writer: mut stdin }) = (channel, sandbox.take_channel().expect("a new sandbox"));
     // Closing the stub's stdin ends it, which ends the outbound copy.

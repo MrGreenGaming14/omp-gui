@@ -61,7 +61,7 @@ impl Terminal {
 
 impl Host {
     pub fn new(cwd: &Path) -> io::Result<Self> {
-        Ok(Self { root: cwd.canonicalize()?, terminals: Mutex::default(), next: AtomicU64::new(1) })
+        Ok(Self { root: loa_util::fs::canonicalize(cwd)?, terminals: Mutex::default(), next: AtomicU64::new(1) })
     }
 
     pub fn root(&self) -> &Path {
@@ -129,16 +129,47 @@ impl Host {
             Some(cwd) => self.resolve(cwd).map_err(|e| io_error(cwd, &e))?,
             None => self.root.clone(),
         };
-        let mut command = tokio::process::Command::new(&request.command);
+        let mut command = tokio::process::Command::new(loa_util::exec::resolve(Path::new(&request.command)));
         command.args(request.args.unwrap_or_default()).current_dir(&cwd).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
         command.envs(request.env.unwrap_or_default().into_iter().map(|var| (var.name, var.value)));
-        let mut child = command.spawn().map_err(|e| fail(INTERNAL, format!("can't run `{}`: {e}", request.command)))?;
+        let start_failed = |e| fail(INTERNAL, format!("can't run `{}`: {e}", request.command));
+        // Windows: a job object, so a kill also ends what the command spawned.
+        #[cfg(windows)]
+        let (mut child, stdout, stderr) = {
+            use process_wrap::tokio::{CommandWrap, JobObject, KillOnDrop};
+            let mut command = CommandWrap::from(command);
+            command.wrap(KillOnDrop).wrap(JobObject);
+            let mut child = command.spawn().map_err(start_failed)?;
+            let (stdout, stderr) = (child.stdout().take(), child.stderr().take());
+            (child, stdout, stderr)
+        };
+        #[cfg(not(windows))]
+        let (mut child, stdout, stderr) = {
+            let mut child = command.spawn().map_err(start_failed)?;
+            let (stdout, stderr) = (child.stdout.take(), child.stderr.take());
+            (child, stdout, stderr)
+        };
         let limit = request.output_byte_limit.map(|l| usize::try_from(l).unwrap_or(usize::MAX));
         let output = Arc::new(Mutex::new(TailBuffer::new(limit)));
-        let readers = [child.stdout.take().map(|out| pump(out, &output)), child.stderr.take().map(|err| pump(err, &output))];
+        let readers = [stdout.map(|out| pump(out, &output)), stderr.map(|err| pump(err, &output))];
         let (exit_tx, exit) = watch::channel(None);
         let (kill, killed) = oneshot::channel::<()>();
         tokio::spawn(async move {
+            // Windows: the job's own wait would also wait for background
+            // helpers, so wait for the command itself and end the job after.
+            #[cfg(windows)]
+            let status = {
+                let status = tokio::select! {
+                    status = child.inner_mut().wait() => status,
+                    _ = killed => {
+                        let _ = child.start_kill();
+                        child.inner_mut().wait().await
+                    }
+                };
+                drop(child);
+                status
+            };
+            #[cfg(not(windows))]
             let status = tokio::select! {
                 status = child.wait() => status,
                 _ = killed => {

@@ -4,7 +4,7 @@
 use super::Message;
 use iced::keyboard::Key;
 use iced::keyboard::key::Named;
-use iced::widget::text_editor::{Binding, Cursor, KeyPress, Status};
+use iced::widget::text_editor::{Binding, Cursor, KeyPress, Motion, Status};
 use loa_view::session::Attachment;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -116,7 +116,9 @@ pub(crate) fn detect(index: usize, line: &str, column: usize) -> Option<Trigger>
         _ => return None,
     };
     let end = line[column..].find(char::is_whitespace).map_or(line.len(), |i| column + i);
-    Some(Trigger { kind, line: index, start, end, query: before[start + 1..].to_owned() })
+    // The cursor right before the `@` or `/` is not inside the word yet.
+    let query = before.get(start + 1..)?.to_owned();
+    Some(Trigger { kind, line: index, start, end, query })
 }
 
 /// An open popup: its trigger, the matching candidate indices and the highlighted row.
@@ -218,9 +220,12 @@ pub(crate) struct KeyContext {
     /// An input method is composing; its keys must reach the IME.
     pub composing: bool,
     pub busy: bool,
+    /// Text is selected; a word delete then deletes just the selection.
+    pub selection: bool,
 }
 
-/// Enter sends and Shift+Enter breaks the line, undo and redo, popup navigation, Esc interrupts.
+/// Enter sends and Shift+Enter breaks the line, undo and redo, word deletes, popup navigation,
+/// Esc interrupts.
 pub(crate) fn bind(press: KeyPress, ctx: KeyContext) -> Option<Binding<Message>> {
     if !matches!(press.status, Status::Focused { .. }) {
         return None;
@@ -238,7 +243,9 @@ pub(crate) fn bind(press: KeyPress, ctx: KeyContext) -> Option<Binding<Message>>
             Some('z') if m.shift() => return Some(Binding::Custom(Message::Redo)),
             Some('z') => return Some(Binding::Custom(Message::Undo)),
             Some('y') => return Some(Binding::Custom(Message::Redo)),
-            Some('c' | 'x' | 'v' | 'a') => {}
+            // A paste also asks the app whether the clipboard holds an image.
+            Some('v') => return Some(Binding::Sequence(vec![Binding::Paste, Binding::Custom(Message::PasteImage)])),
+            Some('c' | 'x' | 'a') => {}
             // Other Ctrl/Cmd chords are app shortcuts. On Windows AltGr arrives as Ctrl+Alt and types.
             Some(_) if !(cfg!(windows) && m.alt()) => return None,
             _ => {}
@@ -253,7 +260,44 @@ pub(crate) fn bind(press: KeyPress, ctx: KeyContext) -> Option<Binding<Message>>
         Some(Named::ArrowDown) if ctx.popup_open => Message::PopupStep(1),
         Some(Named::Escape) if ctx.popup_open => Message::PopupClose,
         Some(Named::Escape) if ctx.busy => Message::Interrupt,
+        // Ctrl+Backspace / Ctrl+Delete (Alt on macOS) delete a word, or just the selection; on
+        // macOS Cmd+Backspace deletes to the start of the line.
+        Some(Named::Backspace | Named::Delete) if ctx.selection && (m.jump() || m.macos_command()) => {
+            return Some(if named == Some(Named::Backspace) { Binding::Backspace } else { Binding::Delete });
+        }
+        Some(Named::Backspace) if m.macos_command() => return Some(Binding::Sequence(vec![Binding::Select(Motion::Home), Binding::Backspace])),
+        Some(Named::Backspace) if m.jump() => return Some(Binding::Sequence(vec![Binding::Select(Motion::WordLeft), Binding::Backspace])),
+        Some(Named::Delete) if m.jump() => return Some(Binding::Sequence(vec![Binding::Select(Motion::WordRight), Binding::Delete])),
         _ => return Binding::from_key_press(press),
     };
     Some(Binding::Custom(message))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use iced::keyboard::Modifiers;
+    use iced::keyboard::key::{NativeCode, Physical};
+
+    fn press(key: Key, modifiers: Modifiers) -> KeyPress {
+        KeyPress { key: key.clone(), modified_key: key, physical_key: Physical::Unidentified(NativeCode::Unidentified), modifiers, text: None, status: Status::Focused { is_hovered: false } }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn ctrl_edit_keys_delete_and_move_by_word() {
+        let ctx = KeyContext::default();
+        let ctrl = |named| bind(press(Key::Named(named), Modifiers::CTRL), ctx);
+        assert_eq!(ctrl(Named::Backspace), Some(Binding::Sequence(vec![Binding::Select(Motion::WordLeft), Binding::Backspace])));
+        assert_eq!(ctrl(Named::Delete), Some(Binding::Sequence(vec![Binding::Select(Motion::WordRight), Binding::Delete])));
+        assert_eq!(ctrl(Named::ArrowLeft), Some(Binding::Move(Motion::WordLeft)));
+        assert_eq!(ctrl(Named::ArrowRight), Some(Binding::Move(Motion::WordRight)));
+        assert_eq!(ctrl(Named::Home), Some(Binding::Move(Motion::DocumentStart)));
+        assert_eq!(ctrl(Named::End), Some(Binding::Move(Motion::DocumentEnd)));
+        let select = bind(press(Key::Named(Named::ArrowLeft), Modifiers::CTRL | Modifiers::SHIFT), ctx);
+        assert_eq!(select, Some(Binding::Select(Motion::WordLeft)));
+        // With a selection, the word delete takes just the selection.
+        let selected = KeyContext { selection: true, ..ctx };
+        assert_eq!(bind(press(Key::Named(Named::Backspace), Modifiers::CTRL), selected), Some(Binding::Backspace));
+    }
 }

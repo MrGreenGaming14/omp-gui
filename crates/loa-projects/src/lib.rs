@@ -4,6 +4,7 @@
 pub mod context;
 pub mod digest;
 pub mod digester;
+pub mod links;
 pub mod rank;
 pub mod read;
 pub mod rebuild;
@@ -44,6 +45,10 @@ pub enum Error {
     NothingToDigest,
     #[error("invalid tool arguments: {0}")]
     Arguments(String),
+    #[error("the project name is empty")]
+    EmptyName,
+    #[error("a project named {0} already exists")]
+    ProjectExists(String),
     #[error(transparent)]
     Commit(#[from] loa_core::CommitError),
     #[error(transparent)]

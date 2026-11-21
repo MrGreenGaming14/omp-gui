@@ -1,5 +1,6 @@
 //! The X11 capture against an in-process X server that answers connection
 //! setup and `GetImage` from a shared framebuffer, speaking the real wire protocol.
+#![cfg(target_os = "linux")]
 
 use loa_contracts::surface::Rect;
 use loa_surfaces::browser::X11Capture;

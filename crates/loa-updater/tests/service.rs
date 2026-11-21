@@ -11,15 +11,21 @@ use loa_updater::{Error, Feed, Gates, Installed, PrereleasePolicy, Product, Prod
 use loa_updater::{TurnGate, Updater, UpdaterConfig};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use support::{FakeFeed, FilePorts, key, sign_digest, stage_fixture, v};
+use support::{ASSET_EXT, FakeFeed, FilePorts, key, sign_digest, stage_fixture, v};
 
 fn script(path: PathBuf, body: &str) -> PathBuf {
     loa_util::exec::write_executable(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
     path
 }
 
+/// A tool that reports `version`: a shell script, or on Windows a self-contained batch file (release assets are
+/// plain bytes, not fixtures the shell bridge of `write_executable` can wrap).
 fn tool(version: &str) -> Vec<u8> {
-    format!("#!/bin/sh\necho \"tool {version}\"\n").into_bytes()
+    if cfg!(windows) {
+        format!("@echo off\r\necho tool {version}\r\n").into_bytes()
+    } else {
+        format!("#!/bin/sh\necho \"tool {version}\"\n").into_bytes()
+    }
 }
 
 /// A tar entry: its path and a symlink target (`Ok`) or file contents (`Err`).
@@ -61,7 +67,7 @@ async fn setup(dir: &Path) -> (FakeFeed, UpdaterConfig) {
     let review = dir.join("review.json");
     std::fs::write(&review, r#"{"breaking": [], "removed": []}"#).unwrap();
     let products = vec![
-        spec("tool", ProductKind::Harness("tool".into()), github("tool"), Some("tool-{version}"), Installed::Executable(script(dir.join("tool"), "echo 'tool 1.0.0'")), Gates::Changelog),
+        spec("tool", ProductKind::Harness("tool".into()), github("tool"), Some(&format!("tool-{{version}}{ASSET_EXT}")), Installed::Executable(script(dir.join("tool"), "echo 'tool 1.0.0'")), Gates::Changelog),
         spec("omp", ProductKind::Omp, github("omp"), None, Installed::Executable(script(dir.join("omp"), "echo omp/9.0.0")), Gates::Changelog),
         spec("pkg", ProductKind::Harness("pkg".into()), Feed::Npm { package: "pkg".into() }, None, Installed::Executable(dir.join("absent")), Gates::None),
     ];

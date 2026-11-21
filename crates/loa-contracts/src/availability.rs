@@ -65,9 +65,28 @@ mod tests {
         loa_util::exec::write_executable(&bad, "#!/bin/sh\necho 'bad flag' >&2\nexit 3\n").unwrap();
         assert_eq!(Availability::probe(Path::new("loa-no-such-harness"), &[]).await.status, AvailabilityStatus::NotInstalled);
         let ready = Availability::probe(&ok, &["--version"]).await;
-        assert_eq!((ready.version.as_deref(), ready.executable.as_deref()), (Some("4.5.6"), Some(ok.as_path())));
+        let resolved = loa_util::exec::resolve(&ok);
+        assert_eq!((ready.version.as_deref(), ready.executable.as_deref()), (Some("4.5.6"), Some(resolved.as_path())));
         let failed = Availability::probe(&bad, &["--version"]).await;
         assert_eq!(failed.status, AvailabilityStatus::Failed);
         assert!(failed.detail.unwrap().contains("bad flag"));
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn probe_finds_and_runs_a_cmd_shim_on_path() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("fake-npm-cli.cmd"), "@echo off\r\necho fake-npm-cli 7.8.9\r\n").unwrap();
+        let path = std::env::join_paths([dir.path()]).unwrap();
+        let found = loa_util::exec::which_in(Path::new("fake-npm-cli"), Some(&path), None).unwrap();
+        assert_eq!(found, dir.path().join("fake-npm-cli.cmd"));
+        let ready = Availability::probe(&found, &["--version"]).await;
+        assert!(ready.is_ready(), "{ready:?}");
+        assert_eq!(ready.version.as_deref(), Some("7.8.9"));
+    }
+
+    #[test]
+    fn missing_program_stays_unresolved() {
+        assert_eq!(loa_util::exec::which(Path::new("loa-no-such-harness")), None);
     }
 }

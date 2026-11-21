@@ -118,10 +118,20 @@ impl TestApp {
             home: dir.path().join("home"),
             opener: Arc::new(Offline),
         };
-        let _entered = runtime.enter();
+        let entered = runtime.enter();
         // The startup tasks (harness probes, update checks, project digests) reach outside the test: dropped.
-        let (app, _startup) = App::build(services, parts);
-        Self { app, harness, usage, dir, runtime, tracker: Tracker::new(), feed: mpsc::channel(256) }
+        let (app, startup) = App::build(services, parts);
+        drop((startup, entered));
+        let mut test = Self { app, harness, usage, dir, runtime, tracker: Tracker::new(), feed: mpsc::channel(256) };
+        test.list_recents();
+        test
+    }
+
+    /// Lists the stored sessions in Recents, as the journal scan `App::build` starts does once it
+    /// finishes.
+    pub fn list_recents(&mut self) {
+        let (summaries, problems, empty) = loa_runtime::session::recents(self.app.ctx.runtime.library());
+        self.send(Message::Recents { summaries, problems, empty });
     }
 
     pub fn area<A: Area>(&self) -> &A {

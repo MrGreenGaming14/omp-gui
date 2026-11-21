@@ -118,7 +118,7 @@ impl State {
     /// The rows in view between spacers standing in for the rest.
     fn body<'a>(&'a self, file: &'a FileDiff) -> Element<'a, Message> {
         let range = self.visible_rows();
-        let digits = file.lines().iter().flat_map(|l| l.old_no.max(l.new_no)).max().unwrap_or(0).max(1).ilog10() as usize + 1;
+        let digits = file.max_line_no().max(1).ilog10() as usize + 1;
         let (above, below) = (range.start as f32 * row_height(), (self.rows.len() - range.end) as f32 * row_height());
         let rows = self.rows[range].iter().map(|r| container(row_view(file, *r, digits)).width(Fill).height(row_height()).clip(true).into());
         let content = column![space().height(above), column(rows), space().height(below)].width(Fill);

@@ -1,11 +1,12 @@
 //! Settings-style screens the app composes: sign in, the model picker and model settings
-//! ([`models`]), a project ([`projects`]), peers and grants ([`peers`]) and updates
-//! ([`updates`]). Each is a kit [`Screen`](loa_ui_kit::widgets::Screen) over
+//! ([`models`]), a project ([`projects`]), peers and grants ([`peers`]), updates
+//! ([`updates`]) and omp agent definitions ([`agents`]). Each is a kit [`Screen`](loa_ui_kit::widgets::Screen) over
 //! `Msg<Local, Intent>`, reading the view models of [`loa_view::settings`] and emitting its
 //! screen's `Intent`: the view emits intents the app acts on directly, guarded against the
 //! current state, and local messages go through the screen's reducer. Screens show data the app
 //! hands them and never load or store anything themselves.
 
+pub mod agents;
 pub mod models;
 pub mod peers;
 pub mod projects;

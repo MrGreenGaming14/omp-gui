@@ -11,7 +11,7 @@ use crate::*;
 use loa_bus::{Bus, JournalOptions, Store};
 use loa_core::{ElementKind as K, NodeId};
 use loa_contracts::harness::HostTools;
-use loa_settings::projects::DigestState;
+use loa_settings::projects::{DigestState, ProjectSettings};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -237,13 +237,17 @@ async fn live_sessions_read_and_write_live_and_stored_sessions() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::new(dir.path(), JournalOptions::default()).unwrap();
     let bus = Arc::new(Bus::new());
-    drop(live(&bus, &store, "closed", "/home/u/loa"));
+    drop(live(&bus, &store, "closed", Some("loa"), "/home/u/loa", 1));
     drop(bus.close("closed"));
-    let open = live(&bus, &store, "open", "/home/u/loa");
+    let open = live(&bus, &store, "open", Some("loa"), "/home/u/loa", 1);
+    // A session without a PROJECT attr belongs to no project, whatever its cwd.
+    let _stray = live(&bus, &store, "stray", None, "/home/u/loa", 1);
+    let _web = live(&bus, &store, "web", None, "/home/u/web", 1);
     let sessions = LiveSessions::new(bus, store.clone());
     let mut listed: Vec<String> = sessions.list("loa").await.unwrap().into_iter().map(|i| i.id).collect();
     listed.sort();
     assert_eq!(listed, ["closed", "open"]);
+    assert!(sessions.list("web").await.unwrap().is_empty());
     assert!(sessions.load("../etc").await.unwrap().is_none());
     let dom = sessions.load("closed").await.unwrap().unwrap();
     SessionWriter::commit(&sessions, "closed", exclude_draft(&dom, true).unwrap()).unwrap();
@@ -251,4 +255,226 @@ async fn live_sessions_read_and_write_live_and_stored_sessions() {
     let dom = sessions.load("open").await.unwrap().unwrap();
     sessions.commit("open", exclude_draft(&dom, true).unwrap()).await.unwrap();
     assert!(open.with_dom(is_excluded));
+}
+
+#[tokio::test]
+async fn file_store_names_lists_projects_and_skips_strays() {
+    use crate::settings::SettingsStore;
+    let dir = tempfile::tempdir().unwrap();
+    let projects = dir.path().join("projects");
+    let store = FileSettingsStore::new(&projects);
+    assert!(store.names().await.unwrap().is_empty());
+    let saved = ["my/proj", "with space", "a.b", ".", "héllo", "loa"];
+    for name in saved {
+        store.save(name, &ProjectSettings::default()).await.unwrap();
+    }
+    let mut expected = saved.to_vec();
+    expected.sort();
+    assert_eq!(store.names().await.unwrap(), expected);
+    // Strays: no `.json` suffix, a bad escape, a non-canonical escape, a directory.
+    std::fs::write(projects.join("notes.txt"), "x").unwrap();
+    std::fs::write(projects.join("bad%zz.json"), "{}").unwrap();
+    std::fs::write(projects.join("my%2fproj.json"), "{}").unwrap();
+    std::fs::create_dir(projects.join("dir.json")).unwrap();
+    assert_eq!(store.names().await.unwrap(), expected);
+    // The folder round-trips; removing forgets a project and tolerates a missing one.
+    let settings = ProjectSettings { folder: Some("/work/my-proj".into()), ..ProjectSettings::default() };
+    store.save("my/proj", &settings).await.unwrap();
+    assert_eq!(FileSettingsStore::new(&projects).load("my/proj").await.unwrap(), settings);
+    store.remove("my/proj").await.unwrap();
+    store.remove("my/proj").await.unwrap();
+    assert_eq!(store.load("my/proj").await.unwrap(), ProjectSettings::default());
+}
+
+/// A project service over live sessions and file settings in a temp dir.
+struct Env {
+    _dir: tempfile::TempDir,
+    bus: Arc<Bus>,
+    store: Store,
+    service: ProjectService,
+}
+
+fn env() -> Env {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path().join("sessions"), JournalOptions::default()).unwrap();
+    let bus = Arc::new(Bus::new());
+    let sessions = LiveSessions::new(bus.clone(), store.clone());
+    let settings = Arc::new(FileSettingsStore::new(dir.path().join("projects")));
+    let (service, _) = ProjectService::start(sessions, settings, Arc::new(LocalOnly), Arc::new(Arc::new(Fake::default())), ServiceConfig::default());
+    Env { _dir: dir, bus, store, service }
+}
+
+fn open(env: &Env, id: &str, project: &str, cwd: &str, at: i64) -> Arc<loa_bus::SessionWriter> {
+    live(&env.bus, &env.store, id, Some(project), cwd, at)
+}
+
+fn in_folder(folder: &str) -> ProjectSettings {
+    ProjectSettings { folder: Some(std::path::PathBuf::from(folder)), ..ProjectSettings::default() }
+}
+
+fn rows(projects: &[ProjectSummary]) -> Vec<(&str, usize, Option<&str>)> {
+    projects.iter().map(|p| (p.name.as_str(), p.sessions, p.cwd.as_deref())).collect()
+}
+
+#[tokio::test]
+async fn sessions_without_a_project_belong_to_no_project() {
+    let env = env();
+    let _a = open(&env, "a", "loa", "/home/u/loa", 10);
+    let _b = open(&env, "b", "loa", "/home/u/scratch", 20);
+    env.service.move_session("b", None).await.unwrap();
+    assert_eq!(rows(&env.service.projects().await.unwrap()), [("loa", 1, Some("/home/u/loa"))]);
+}
+
+#[tokio::test]
+async fn created_projects_list_with_their_folder() {
+    let env = env();
+    let _a = open(&env, "a", "loa", "/home/u/loa", 10);
+    env.service.create("  docs  ", &in_folder("/home/u/docs")).await.unwrap();
+    env.service.create("empty", &ProjectSettings::default()).await.unwrap();
+    // A project only sessions named until now becomes a stored one.
+    env.service.create("loa", &in_folder("/srv/loa")).await.unwrap();
+    let projects = env.service.projects().await.unwrap();
+    assert_eq!(rows(&projects), [("loa", 1, Some("/srv/loa")), ("docs", 0, Some("/home/u/docs")), ("empty", 0, None)]);
+}
+
+#[tokio::test]
+async fn create_rejects_a_blank_or_taken_name() {
+    let env = env();
+    assert!(matches!(env.service.create("  ", &ProjectSettings::default()).await, Err(Error::EmptyName)));
+    assert!(env.service.projects().await.unwrap().is_empty());
+    env.service.create("docs", &in_folder("/home/u/docs")).await.unwrap();
+    let again = env.service.create(" docs ", &ProjectSettings::default()).await;
+    assert!(matches!(again, Err(Error::ProjectExists(name)) if name == "docs"));
+    assert_eq!(env.service.overview("docs").await.unwrap().cwd.as_deref(), Some("/home/u/docs"), "left as it was");
+}
+
+#[tokio::test]
+async fn move_session_sets_and_clears_the_project() {
+    let env = env();
+    let _a = open(&env, "a", "loa", "/home/u/loa", 10);
+    env.service.move_session("a", Some("web")).await.unwrap();
+    let moved = env.service.projects().await.unwrap();
+    let names: Vec<(&str, usize)> = moved.iter().map(|p| (p.name.as_str(), p.sessions)).collect();
+    assert_eq!(names, [("web", 1)]);
+    env.service.move_session("a", None).await.unwrap();
+    assert!(env.service.projects().await.unwrap().is_empty());
+    assert!(matches!(env.service.move_session("nope", Some("web")).await, Err(Error::SessionNotFound(_))));
+}
+
+#[tokio::test]
+async fn a_project_in_the_temp_folder_gets_its_own_folder_inside_it() {
+    let env = env();
+    let temp = std::env::temp_dir();
+    let folder = env.service.create("scratch", &in_folder(temp.to_str().unwrap())).await.unwrap().unwrap();
+    assert_eq!(folder.parent(), Some(temp.as_path()));
+    assert!(folder.is_dir(), "the isolated folder is made");
+    assert_eq!(env.service.overview("scratch").await.unwrap().settings.folder.as_ref(), Some(&folder), "and stored");
+
+    // Choosing the temp folder again isolates again; any other folder is kept as is.
+    let again = env.service.set_folder("scratch", temp.clone()).await.unwrap();
+    assert_ne!(again, folder);
+    assert_eq!(again.parent(), Some(temp.as_path()));
+    let elsewhere = tempfile::tempdir().unwrap();
+    let kept = env.service.set_folder("scratch", elsewhere.path().to_path_buf()).await.unwrap();
+    assert_eq!(kept, elsewhere.path());
+    for dir in [folder, again] {
+        std::fs::remove_dir(dir).unwrap();
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn the_project_folder_links_to_its_sessions_directories_and_moves() {
+    use std::collections::BTreeSet;
+    use std::path::{Path, PathBuf};
+    let env = env();
+    let root = tempfile::tempdir().unwrap();
+    let dir = |name: &str| {
+        let dir = root.path().join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    };
+    let (home, api, web, moved) = (dir("home"), dir("api"), dir("web"), dir("moved"));
+    let linked = |folder: &Path| -> BTreeSet<PathBuf> {
+        let Ok(entries) = std::fs::read_dir(folder.join(links::LINKS_DIR)) else { return BTreeSet::new() };
+        entries.filter_map(|entry| std::fs::read_link(entry.unwrap().path()).ok()).collect()
+    };
+    env.service.create("launch", &ProjectSettings { folder: Some(home.clone()), ..ProjectSettings::default() }).await.unwrap();
+    let _a = open(&env, "a", "launch", api.to_str().unwrap(), 10);
+    let _b = open(&env, "b", "launch", web.to_str().unwrap(), 20);
+    let _c = open(&env, "c", "launch", home.to_str().unwrap(), 30);
+
+    env.service.projects().await.unwrap();
+    assert_eq!(linked(&home), BTreeSet::from([api.clone(), web.clone()]));
+
+    env.service.move_session("b", None).await.unwrap();
+    env.service.projects().await.unwrap();
+    assert_eq!(linked(&home), BTreeSet::from([api.clone()]), "a session leaving takes its link");
+
+    env.service.set_folder("launch", moved.clone()).await.unwrap();
+    assert!(!home.join(links::LINKS_DIR).exists(), "the old folder's links are removed");
+    env.service.projects().await.unwrap();
+    assert_eq!(linked(&moved), BTreeSet::from([api, home]), "the old folder is now a session directory like any");
+
+    // Deleting keeps the sessions, in no project, and takes the links.
+    assert_eq!(env.service.delete("launch").await.unwrap(), 2);
+    assert!(!moved.join(links::LINKS_DIR).exists());
+    assert!(env.service.projects().await.unwrap().is_empty(), "neither stored nor named by a session");
+    assert_eq!(env.service.overview("launch").await.unwrap().sessions.len(), 0);
+    let sessions = LiveSessions::new(env.bus.clone(), env.store.clone());
+    assert!(SessionSource::load(&sessions, "a").await.unwrap().is_some(), "sessions are kept");
+}
+
+#[cfg(unix)]
+mod link_folders {
+    use crate::links::*;
+    use std::collections::BTreeSet;
+    use std::path::{Path, PathBuf};
+
+    fn names(folder: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(folder.join(LINKS_DIR)).unwrap().map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn links_follow_the_session_directories() {
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("project");
+        let (api, other_api, web) = (root.path().join("a/api"), root.path().join("b/api"), root.path().join("web"));
+        for dir in [&project, &api, &other_api, &web] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let missing = root.path().join("gone");
+
+        let dirs = BTreeSet::from([project.clone(), api.clone(), other_api.clone(), missing]);
+        sync(&project, &dirs).unwrap();
+        assert_eq!(names(&project), [".gitignore", "api", "api-2"], "no self link, no missing dir, clashes numbered");
+        assert_eq!(std::fs::read_to_string(project.join(LINKS_DIR).join(".gitignore")).unwrap(), "*\n");
+        let api_link = std::fs::read_link(project.join(LINKS_DIR).join("api")).unwrap();
+        assert!(api_link == api || api_link == other_api);
+
+        sync(&project, &BTreeSet::from([api.clone(), web.clone()])).unwrap();
+        assert_eq!(names(&project).len(), 3, "{:?}", names(&project));
+        assert!(names(&project).contains(&"web".to_owned()));
+        let linked: BTreeSet<PathBuf> =
+            std::fs::read_dir(project.join(LINKS_DIR)).unwrap().filter_map(|entry| std::fs::read_link(entry.unwrap().path()).ok()).collect();
+        assert_eq!(linked, BTreeSet::from([api, web]), "the dropped directory's link is gone");
+
+        sync(&project, &BTreeSet::new()).unwrap();
+        assert!(!project.join(LINKS_DIR).exists(), "no sessions left: no folder");
+    }
+
+    #[test]
+    fn remove_keeps_the_users_own_files() {
+        let root = tempfile::tempdir().unwrap();
+        let (project, api) = (root.path().join("project"), root.path().join("api"));
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::create_dir_all(&api).unwrap();
+        sync(&project, &BTreeSet::from([api.clone()])).unwrap();
+        std::fs::write(project.join(LINKS_DIR).join("notes.md"), "mine").unwrap();
+        remove(&project).unwrap();
+        assert_eq!(names(&project), ["notes.md"]);
+        assert!(api.is_dir(), "the linked directory itself is untouched");
+    }
 }

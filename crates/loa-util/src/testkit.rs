@@ -12,9 +12,10 @@ pub async fn eventually(mut f: impl FnMut() -> bool, t: Duration) {
     }
 }
 
-/// Writes an executable `/bin/sh` script `dir/name` running `sh` and returns its path.
+/// Writes an executable `/bin/sh` script `dir/name` running `sh` and returns the path to spawn
+/// (on Windows its `.cmd` launcher, see [`crate::exec::write_executable`]).
 pub fn fake_program(dir: &Path, name: &str, sh: &str) -> PathBuf {
     let path = dir.join(name);
     crate::exec::write_executable(&path, format!("#!/bin/sh\n{sh}\n")).expect("write fake program");
-    path
+    crate::exec::resolve(&path)
 }

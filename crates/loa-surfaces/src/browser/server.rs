@@ -5,7 +5,9 @@ use crate::browser::chrome::{BrowserConfig, CaptureConfig, VirtualDisplayConfig}
 use crate::feed::{FrameFeed, InputLog};
 use crate::browser::screencast::{self, Screencast};
 use crate::browser::tab::{Tab, TabParts, set_viewport};
+#[cfg(target_os = "linux")]
 use crate::browser::x11::{CaptureTarget, X11Capture, X11Display, spawn_capture};
+#[cfg(target_os = "linux")]
 use crate::browser::xvfb::VirtualDisplay;
 use crate::browser::{BrowserError, Result, SERVER_NAME};
 use async_trait::async_trait;
@@ -20,6 +22,21 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tempfile::TempDir;
 use tokio::task::JoinHandle;
+
+/// Xvfb exists only on Linux; no instance of this is ever made elsewhere.
+#[cfg(not(target_os = "linux"))]
+enum VirtualDisplay {}
+
+#[cfg(not(target_os = "linux"))]
+impl VirtualDisplay {
+    fn display(&self) -> String {
+        match *self {}
+    }
+
+    async fn stop(self) -> Result<()> {
+        match self {}
+    }
+}
 
 /// How long Chrome gets to exit after `Browser.close` before it is killed.
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -219,6 +236,7 @@ impl BrowserServer {
         }))
     }
 
+    #[cfg(target_os = "linux")]
     async fn open_display_tab(&self, uri: SurfaceUri, config: &VirtualDisplayConfig) -> Result<Tab> {
         let (width, height) = (self.config.width, self.config.height);
         let display = VirtualDisplay::start(&config.xvfb, &config.socket_dir, width, height).await?;
@@ -255,6 +273,11 @@ impl BrowserServer {
         drop(spawn_capture(capture, target.clone()));
         let capture = Box::new(X11Display { target, screen });
         Ok(Tab::new(TabParts { uri, page, instance, hub, log, size, capture }))
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    async fn open_display_tab(&self, _uri: SurfaceUri, _config: &VirtualDisplayConfig) -> Result<Tab> {
+        Err(BrowserError::Display(crate::browser::chrome::VIRTUAL_DISPLAY_UNAVAILABLE.into()))
     }
 
     /// The open tab behind `uri`.

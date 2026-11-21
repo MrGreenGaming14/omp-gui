@@ -64,7 +64,7 @@ async fn host_refuses_paths_outside_the_session_directory() {
     assert_eq!(std::fs::read_to_string(outside).unwrap(), "secret");
 }
 
-
+#[cfg(unix)]
 #[tokio::test]
 async fn host_terminal_runs_and_releases_inside_the_session() {
     let dir = tempfile::tempdir().unwrap();
@@ -80,6 +80,32 @@ async fn host_terminal_runs_and_releases_inside_the_session() {
     host.serve("terminal/release", terminal.clone()).await.unwrap();
     assert!(host.serve("terminal/output", terminal).await.is_err());
 }
+
+#[cfg(windows)]
+#[tokio::test]
+async fn terminals_run_in_a_plain_non_verbatim_cwd() {
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().join("project");
+    std::fs::create_dir(&cwd).unwrap();
+    let cwd = loa_util::fs::canonicalize(&cwd).unwrap();
+    assert!(!cwd.to_string_lossy().starts_with(r"\\?\"));
+    let host = Host::new(&cwd).unwrap();
+
+    let request = json!({ "command": "cmd", "args": ["/C", "cd & echo %GREETING% 1>&2 & exit 3"], "env": [{ "name": "GREETING", "value": "hi" }] });
+    let terminal = json!({ "terminalId": host.serve("terminal/create", request).await.unwrap()["terminalId"].clone() });
+    let exit = tokio::time::timeout(Duration::from_secs(20), host.serve("terminal/wait_for_exit", terminal.clone())).await.unwrap().unwrap();
+    assert_eq!(exit["exitCode"], 3);
+    let output = host.serve("terminal/output", terminal).await.unwrap();
+    let text = output["output"].as_str().unwrap();
+    assert!(text.contains(cwd.to_str().unwrap()), "{text}");
+    assert!(text.contains("hi"), "{text}");
+
+    let request = json!({ "command": "ping", "args": ["-n", "600", "127.0.0.1"] });
+    let terminal = json!({ "terminalId": host.serve("terminal/create", request).await.unwrap()["terminalId"].clone() });
+    host.serve("terminal/kill", terminal.clone()).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(20), host.serve("terminal/wait_for_exit", terminal)).await.unwrap().unwrap();
+}
+
 #[tokio::test]
 async fn session_streams_and_settles_against_a_fake_agent() {
     let script = concat!(

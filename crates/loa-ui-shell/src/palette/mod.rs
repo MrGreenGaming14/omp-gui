@@ -13,7 +13,7 @@ use loa_ui_kit::style::{self, ButtonKind, Surface, Tone};
 use loa_ui_kit::text::fuzzy::{Matcher, highlight_runs};
 use loa_ui_kit::theme::{LayoutRole, SpaceRole as Sp, TextRole as T, pad_x, pad_y, sp, text_size as ts, width};
 use loa_ui_kit::widgets::{label, scroll_target};
-use std::{borrow::Cow, cmp::Reverse};
+use std::{borrow::Cow, cmp::Reverse, ops::Range};
 
 const ROW_HEIGHT: f32 = 35.0;
 const HEADER_HEIGHT: f32 = 35.0;
@@ -67,9 +67,10 @@ impl Command {
     pub fn enabled(self, enabled: bool) -> Self { Self { enabled, ..self } }
 }
 
-/// A listed command with its matched title chars, maybe under a section header.
+/// A listed command, maybe under a section header, with its title runs (matched or not) and hint computed when the
+/// rows are built, so drawing does no per-row work.
 #[derive(Debug, Clone)]
-struct Row { command: usize, indices: Vec<usize>, starts_section: bool }
+struct Row { command: usize, starts_section: bool, runs: Vec<(Range<usize>, bool)>, hint: Option<String> }
 impl Row {
     fn height(&self) -> f32 { ROW_HEIGHT + if self.starts_section { HEADER_HEIGHT } else { 0.0 } }
 }
@@ -178,9 +179,9 @@ impl State {
     }
     fn row_view<'a>(&'a self, index: usize, r: &'a Row, command: &'a Command) -> Element<'a, Message> {
         let bold = Font { weight: font::Weight::Bold, ..Font::DEFAULT };
-        let spans: Vec<text::Span<'a, (), Font>> = highlight_runs(&command.title, &r.indices).into_iter().map(|(range, hit)| if hit { span(&command.title[range]).font(bold) } else { span(&command.title[range]) }).collect();
+        let spans: Vec<text::Span<'a, (), Font>> = r.runs.iter().map(|(range, hit)| if *hit { span(&command.title[range.clone()]).font(bold) } else { span(&command.title[range.clone()]) }).collect();
         let content = row![rich_text(spans).size(ts(T::Body)), space::horizontal()].height(Fill).align_y(iced::Center).spacing(sp(Sp::M));
-        let content = content.push(self.hint(command).map(|h| label(h, T::Caption, Tone::Muted)));
+        let content = content.push(r.hint.as_deref().map(|h| label(h, T::Caption, Tone::Muted)));
         // A row that can't run is static text, so it never reads as a broken control.
         if !command.enabled {
             return container(content).style(|t| container::Style { text_color: Some(Tone::Muted.color(t)), ..Default::default() }).width(Fill).height(ROW_HEIGHT).padding(pad_x(Sp::S)).into();
@@ -238,7 +239,13 @@ impl State {
         }).collect();
         keyed.sort_by_key(|(rank, ..)| *rank);
         let mut previous = None;
-        self.rows = keyed.into_iter().map(|(rank, command, indices)| Row { command, indices, starts_section: previous.replace(rank) != Some(rank) }).collect();
+        self.rows = keyed
+            .into_iter()
+            .map(|(rank, command, indices)| {
+                let entry = &self.commands[command];
+                Row { runs: highlight_runs(&entry.title, &indices), hint: self.hint(entry), command, starts_section: previous.replace(rank) != Some(rank) }
+            })
+            .collect();
         self.selected = self.rows.iter().position(|r| self.commands[r.command].enabled);
     }
 }
@@ -275,7 +282,8 @@ mod tests {
         ];
         for (messages, want) in cases { assert_eq!(listed(&mut state, messages), want) }
         listed(&mut state, vec![Message::Open, q("tp")]);
-        assert_eq!(state.rows[0].indices, [0, 7]);
+        let matched: Vec<usize> = state.rows[0].runs.iter().filter(|(_, hit)| *hit).map(|(range, _)| range.start).collect();
+        assert_eq!(matched, [0, 7]);
     }
 
     #[test]

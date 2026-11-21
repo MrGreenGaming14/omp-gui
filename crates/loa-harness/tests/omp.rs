@@ -46,6 +46,30 @@ fn native_sessions_round_trip() {
     }
 }
 
+#[test]
+fn a_turn_records_when_it_started_and_when_it_ended() {
+    use loa_harness::kit::EventMapper as _;
+    use loa_harness::omp::mapper::Input;
+    let sink = MemorySink::new();
+    let attrs = vec![(attr::ID, "s".into()), (attr::HARNESS, "omp".into()), (attr::NODE, "owner".into()), (attr::CREATED, 1_i64.into()), (attr::SCHEMA, 1_i64.into())];
+    let root = sink.commit(Draft::insert(NodeId::DOCUMENT, ElementKind::Session, attrs, "")).unwrap().node;
+    let mut mapper = Mapper::new(root);
+    let w = loa_core::DomWriter::new(&sink);
+    let mut feed = |line: serde_json::Value| mapper.apply(serde_json::from_value::<Input>(line).unwrap(), &w).unwrap();
+    feed(json!({"$": "send", "id": "p", "text": "read a.rs"}));
+    feed(json!({"type": "agent_start"}));
+    let times = |sink: &MemorySink| {
+        let dom = sink.dom();
+        let turn = dom.iter().find(|n| n.kind == ElementKind::Turn).expect("turn");
+        (turn.int_attr(attr::STARTED), turn.int_attr(attr::ENDED))
+    };
+    let (started, ended) = times(&sink);
+    assert!(started.is_some() && ended.is_none(), "a running turn has started but not ended");
+    feed(json!({"type": "prompt_result", "id": "p", "agentInvoked": true, "status": "completed", "sessionSettled": true}));
+    let (started, ended) = times(&sink);
+    assert!(started.is_some() && ended.is_some(), "a finished turn records when it ended");
+}
+
 fn reply(command: &str, data: &str) -> String {
     format!("< {command} {command}\n> {{\"type\":\"response\",\"id\":\"{{{{{command}}}}}\",\"command\":\"{command}\",\"success\":true,\"data\":{data}}}\n")
 }

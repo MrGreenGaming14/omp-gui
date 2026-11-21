@@ -9,7 +9,8 @@ use std::sync::Arc;
 use iced::{Task, Theme};
 use loa_bus::SessionId;
 use loa_contracts::harness::{HostToolRouter, Prompt, SessionConfig};
-use loa_core::{Dom, ElementKind, Op, TurnStatus, attr};
+use loa_contracts::session::SessionSummary;
+use loa_core::{Dom, Op, Patch, TurnStatus, attr};
 use loa_runtime::lifecycle::{ACCESS, ACCESS_DEFAULT, Command, Completion, Effect, RuntimeEvent, Transition, session_cwd};
 use loa_runtime::session::{Feed, SessionEvent, dom_turns};
 use loa_ui_session::transcript as chat;
@@ -141,60 +142,97 @@ impl SessionController {
                 self.after.extend([After::Diff, After::TurnEnded]);
                 Task::none()
             }
+            RuntimeEvent::SummaryChanged(id) => {
+                if let Some(summary) = ctx.runtime.sessions().get(id.as_str()).and_then(|session| session.summary()) {
+                    ctx.shell.sidebar_mut().upsert_session(summary.clone());
+                }
+                Task::none()
+            }
+            RuntimeEvent::StatusChanged(id) => {
+                if let Some(session) = ctx.runtime.sessions().get(id.as_str()) {
+                    ctx.shell.set_session_status(turn_status(session.dom()).map(str::to_owned));
+                }
+                Task::none()
+            }
+            RuntimeEvent::PromptReturned(prompt) => ctx.composer.give_back(&prompt.text).map(AppMessage::Composer),
             RuntimeEvent::SendRequested { prompt, .. } => self.send(ctx, areas, prompt),
         }
     }
 
-    /// Loads the active session's DOM into the chat and the frame.
+    /// Loads the active session's DOM into the chat and the frame; the composer follows
+    /// whether it runs a turn.
     fn present(&mut self, ctx: &mut Ctx) {
         let Some(session) = ctx.runtime.sessions().active() else {
+            ctx.composer.follow_session(false);
             self.chat.load(&Dom::new());
             self.after.push(After::Present(ctx.runtime.cwd().to_path_buf()));
             return;
         };
+        ctx.composer.follow_session(session.is_busy());
         self.chat.load(session.dom());
         let sidebar = ctx.shell.sidebar_mut();
         if let Some(summary) = session.summary() {
-            sidebar.upsert_session(summary);
+            sidebar.upsert_session(summary.clone());
         }
         sidebar.set_active(Some(session.id().to_string()));
         ctx.shell.set_session_status(turn_status(session.dom()).map(str::to_owned));
         self.after.push(After::Present(session_cwd(session.dom()).unwrap_or_else(|| ctx.runtime.cwd().to_path_buf())));
     }
 
-    /// The app's own reaction to a session event, then every area's.
+    /// The app's own reaction to a session event, then every area's. A streamed append only
+    /// reaches the transcripts and the sessions area's Agents tab.
     pub fn dispatch(&mut self, ctx: &mut Ctx, areas: &mut Registry, event: SessionEvent) -> Task<AppMessage> {
         match &event {
             SessionEvent::Activated(_) => self.present(ctx),
             SessionEvent::Loaded(id) if ctx.runtime.sessions().is_active(id.as_str()) => self.present(ctx),
             SessionEvent::Loaded(id) => {
                 if let Some(summary) = ctx.runtime.sessions().get(id.as_str()).and_then(|session| session.summary()) {
-                    ctx.shell.sidebar_mut().upsert_session(summary);
+                    ctx.shell.sidebar_mut().upsert_session(summary.clone());
                 }
             }
             SessionEvent::Patch(id, patch) => {
-                let active = ctx.runtime.sessions().is_active(id.as_str());
-                if let Some(session) = ctx.runtime.sessions().get(id.as_str()) {
-                    if active {
-                        self.chat.apply(patch, session.dom());
-                    }
-                    if let Some(chat) = self.detached.get_mut(id.as_str()) {
-                        chat.apply(patch, session.dom());
-                    }
-                    if changes_summary(session.dom(), patch) {
-                        if let Some(summary) = session.summary() {
-                            ctx.shell.sidebar_mut().upsert_session(summary);
-                        }
-                        if active {
-                            ctx.shell.set_session_status(turn_status(session.dom()).map(str::to_owned));
-                        }
-                    }
+                self.apply_to_chats(ctx, id, patch);
+                if matches!(patch.op, Op::Append { .. }) {
+                    areas.get_mut::<crate::areas::sessions::State>().on_append(id, patch, ctx);
+                    return Task::none();
                 }
             }
             _ => {}
         }
         let tasks: Vec<_> = areas.iter_mut().map(|area| area.on_session_event(&event, ctx)).collect();
         Task::batch(tasks)
+    }
+
+    /// Applies a patch to the session's transcript when it is active, and to its detached
+    /// window's transcript when it has one.
+    fn apply_to_chats(&mut self, ctx: &Ctx, id: &SessionId, patch: &Patch) {
+        let Some(session) = ctx.runtime.sessions().get(id.as_str()) else { return };
+        if ctx.runtime.sessions().is_active(id.as_str()) {
+            self.chat.apply(patch, session.dom());
+        }
+        if let Some(chat) = self.detached.get_mut(id.as_str()) {
+            chat.apply(patch, session.dom());
+        }
+    }
+
+    /// The sessions read from disk at startup. Empty sessions that are not open are deleted;
+    /// open sessions show their live summary. Rows other areas listed meanwhile (peers'
+    /// sessions) stay.
+    pub fn recents_loaded(&mut self, ctx: &mut Ctx, mut summaries: Vec<SessionSummary>, mut problems: Vec<String>, empty: Vec<String>) {
+        problems.extend(ctx.runtime.delete_empty(empty));
+        for summary in ctx.runtime.sessions().iter().filter_map(|session| session.summary()) {
+            match summaries.iter_mut().find(|each| each.id == summary.id) {
+                Some(each) => each.clone_from(summary),
+                None => summaries.push(summary.clone()),
+            }
+        }
+        let sidebar = ctx.shell.sidebar_mut();
+        for summary in summaries {
+            sidebar.upsert_session(summary);
+        }
+        if !problems.is_empty() {
+            ctx.notify(problems.join("; "));
+        }
     }
 
     /// Shows the permission picker for harnesses with approval modes, with the current level.
@@ -237,19 +275,6 @@ fn prepare(ctx: &mut Ctx, areas: &Registry, config: &mut SessionConfig, harness:
     router.install(config);
     if !duplicates.is_empty() {
         ctx.notify(format!("Host tools offered twice, first one kept: {}", duplicates.join(", ")));
-    }
-}
-
-/// Whether `patch` may change the session's sidebar entry or status.
-fn changes_summary(dom: &Dom, patch: &loa_core::Patch) -> bool {
-    match &patch.op {
-        Op::Insert { kind, .. } => matches!(kind, ElementKind::Session | ElementKind::Turn | ElementKind::Message | ElementKind::Decision),
-        Op::Set { name, .. } => {
-            matches!(name.as_str(), attr::TITLE | attr::PROJECT | attr::STATUS | attr::STARTED | attr::ENDED)
-                && dom.get(patch.node).is_some_and(|node| node.kind != ElementKind::Call)
-        }
-        Op::Remove => true,
-        Op::Append { .. } => false,
     }
 }
 

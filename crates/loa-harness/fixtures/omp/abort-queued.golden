@@ -1,13 +1,13 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <session nid="1" created.int="1" harness="omp" id="s" node="owner" schema.int="1">
-  <turn nid="2" status="cancelled">
+  <turn nid="2" ended.int="0" started.int="0" status="cancelled">
     <message nid="3" by="owner" role="user" status="done">prompt p</message>
     <message nid="4" id="msg-2" kind="text" role="assistant" status="cancelled">1
 2
 3
 4</message>
   </turn>
-  <turn nid="5" status="cancelled">
+  <turn nid="5" ended.int="0" status="cancelled">
     <message nid="6" by="owner" role="user" status="done">prompt p2</message>
   </turn>
 </session>

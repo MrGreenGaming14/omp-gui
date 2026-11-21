@@ -107,7 +107,7 @@ fn endpoint(alias: &str, r: ResolvedHost) -> Endpoint {
     let agent = match r.identity_agent.as_deref() {
         None | Some("SSH_AUTH_SOCK" | "$SSH_AUTH_SOCK") => AgentSocket::Default,
         Some(v) if v.eq_ignore_ascii_case("none") => AgentSocket::Disabled,
-        Some(v) => AgentSocket::Path(match v.strip_prefix("~/") {
+        Some(v) => AgentSocket::Path(match v.strip_prefix("~/").or_else(|| v.strip_prefix(r"~\").filter(|_| cfg!(windows))) {
             Some(rest) => loa_util::fs::home().unwrap_or_default().join(rest),
             None => PathBuf::from(v),
         }),
@@ -165,5 +165,11 @@ mod tests {
         for bad in ["", "h:0", "[::1", "[::1]x"] {
             assert!(parse_jump(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn identity_agent_keeps_the_named_pipe_path() {
+        let resolved = ResolvedHost { identity_agent: Some(r"\\.\pipe\openssh-ssh-agent".into()), ..ResolvedHost::default() };
+        assert_eq!(endpoint("a", resolved).agent, AgentSocket::Path(PathBuf::from(r"\\.\pipe\openssh-ssh-agent")));
     }
 }

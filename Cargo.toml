@@ -29,6 +29,32 @@ thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 
-# Surface frame decoding is on the latency path even in debug builds.
-[profile.dev.package.jpeg-decoder]
+# Smooth `cargo run`: iced/wgpu/cosmic-text code is generic and monomorphizes
+# into our crates, so workspace crates get opt-level 1 and dependencies 3.
+[profile.dev]
+opt-level = 1
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+opt-level = 3
+debug = false
+debug-assertions = false
+overflow-checks = false
+
+[profile.dev.build-override]
+opt-level = 0
+
+# CI compiles everything at opt-level 0. With the optimised dependencies above a
+# cold cache took ~18 minutes, and the workspace crates, rebuilt on every run,
+# compile ~3.5x faster than at opt-level 1. jpeg-decoder stays optimised:
+# surface frame decoding is on the latency path, and at opt-level 0 a 1280x720
+# screencast frame takes ~80 ms instead of ~4 ms.
+[profile.ci]
+inherits = "dev"
+opt-level = 0
+
+[profile.ci.package."*"]
+opt-level = 0
+
+[profile.ci.package.jpeg-decoder]
 opt-level = 3

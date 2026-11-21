@@ -166,7 +166,10 @@ fn forks_copy_their_history_and_link_their_parent() {
     let (patches, dom) = history("src", 50);
     let mut src = store.create("src").unwrap();
     write(&mut src, &patches);
-    let contents = |dir: &Path| fs::read_dir(dir).unwrap().map(|e| fs::read(e.unwrap().path()).unwrap()).collect::<Vec<_>>();
+    // The store holds a byte-range lock on `lock`; Windows refuses reads of it.
+    let contents = |dir: &Path| {
+        fs::read_dir(dir).unwrap().map(|e| e.unwrap()).filter(|e| e.file_name() != "lock").map(|e| fs::read(e.path()).unwrap()).collect::<Vec<_>>()
+    };
     let before = contents(src.dir());
 
     let mut b = src.fork(20, "b").unwrap();

@@ -14,9 +14,6 @@ use std::collections::HashMap;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
-/// Tallest the sidebar's compact list grows before it scrolls.
-const COMPACT_MAX_HEIGHT: f32 = 240.0;
-
 /// The local disk, honouring `.gitignore`, `.ignore` and git excludes, showing dotfiles and hiding `.git`; errors read as the walker words them.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct LocalFs;
@@ -95,8 +92,6 @@ impl State {
         (Task::none(), None)
     }
     pub fn view(&self) -> Element<'_, Message> { scrollable(self.list()).width(Fill).height(Fill).into() }
-    /// The same rows sized to their content up to [`COMPACT_MAX_HEIGHT`], for the sidebar.
-    pub fn view_compact(&self) -> Element<'_, Message> { container(scrollable(self.list()).width(Fill)).max_height(COMPACT_MAX_HEIGHT).width(Fill).into() }
     fn list(&self) -> iced::widget::Column<'_, Message> {
         let rows = self.rows.iter().map(|r| match *r {
             Row::Node(i) => self.node_row(i),
@@ -162,9 +157,13 @@ pub(crate) mod tests {
     #[derive(Clone, Default)]
     pub(crate) struct FakeFs(Arc<Mutex<Dirs>>);
 
+    /// An absolute path for the platform: `/r` is `C:/r` on Windows, where a path with no drive
+    /// is relative.
+    pub(crate) fn abs(path: &str) -> PathBuf { if cfg!(windows) { PathBuf::from(format!("C:{path}")) } else { PathBuf::from(path) } }
+
     impl FakeFs {
-        pub(crate) fn put(&self, dir: &str, entries: &[(&str, bool)]) { self.0.lock().unwrap().entry(dir.into()).or_default().0 = entries.iter().map(|&(n, d)| Entry { name: n.into(), is_dir: d }).collect() }
-        fn calls(&self, dir: &str) -> usize { self.0.lock().unwrap().get(Path::new(dir)).map_or(0, |d| d.1) }
+        pub(crate) fn put(&self, dir: &str, entries: &[(&str, bool)]) { self.0.lock().unwrap().entry(abs(dir)).or_default().0 = entries.iter().map(|&(n, d)| Entry { name: n.into(), is_dir: d }).collect() }
+        fn calls(&self, dir: &str) -> usize { self.0.lock().unwrap().get(&abs(dir)).map_or(0, |d| d.1) }
     }
 
     impl FileSystem for FakeFs {
@@ -179,17 +178,18 @@ pub(crate) mod tests {
     fn directories_list_lazily_sort_first_and_open_files() {
         let fs = FakeFs::default();
         for (dir, entries) in [("/r", &[("b.txt", false), ("src", true), ("a", true), ("Z.md", false)][..]), ("/r/src", &[("main.rs", false), ("lib", true)]), ("/r/a", &[])] { fs.put(dir, entries) }
-        let mut s = State::new("/r".into(), Box::new(fs.clone()));
+        let mut s = State::new(abs("/r"), Box::new(fs.clone()));
         let click = |s: &mut State, rel: &str| s.update(Message::Click(s.nodes.iter().position(|n| n.rel == Path::new(rel)).unwrap())).1;
-        fn visible(s: &State) -> Vec<&str> { s.visible().map(|p| p.to_str().unwrap()).collect() }
-        assert_eq!((visible(&s), fs.calls("/r"), fs.calls("/r/src")), (vec!["a", "src", "b.txt", "Z.md"], 1, 0));
+        // Relative paths shown with `/` so expectations read the same on every platform.
+        fn visible(s: &State) -> Vec<String> { s.visible().map(|p| p.to_str().unwrap().replace(std::path::MAIN_SEPARATOR, "/")).collect() }
+        assert_eq!((visible(&s), fs.calls("/r"), fs.calls("/r/src")), (["a", "src", "b.txt", "Z.md"].map(String::from).to_vec(), 1, 0));
         let steps: [(&str, Option<FilesIntent>, &[&str], usize); 4] = [
             ("src", None, &["a", "src", "src/lib", "src/main.rs", "b.txt", "Z.md"], 1),
             ("src", None, &["a", "src", "b.txt", "Z.md"], 1),
             ("src", None, &["a", "src", "src/lib", "src/main.rs", "b.txt", "Z.md"], 1),
-            ("src/main.rs", Some(FilesIntent::Open("/r/src/main.rs".into())), &["a", "src", "src/lib", "src/main.rs", "b.txt", "Z.md"], 1),
+            ("src/main.rs", Some(FilesIntent::Open(abs("/r/src/main.rs"))), &["a", "src", "src/lib", "src/main.rs", "b.txt", "Z.md"], 1),
         ];
-        for (rel, event, want, calls) in steps { assert_eq!((click(&mut s, rel), visible(&s), fs.calls("/r/src")), (event, want.to_vec(), calls), "{rel}") }
+        for (rel, event, want, calls) in steps { assert_eq!((click(&mut s, rel), visible(&s), fs.calls("/r/src")), (event, want.iter().map(|w| w.to_string()).collect::<Vec<_>>(), calls), "{rel}") }
         fs.put("/r/src", &[("main.rs", false), ("new.rs", false)]);
         s.refresh();
         assert_eq!((visible(&s).len(), s.selected.map(|i| s.nodes[i].rel.clone())), (6, Some("src/main.rs".into())), "the selection and expansion survive a refresh");
