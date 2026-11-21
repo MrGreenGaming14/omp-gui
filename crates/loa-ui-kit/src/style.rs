@@ -2,7 +2,7 @@
 //! active tokens at draw time, so overrides and future theme scripts restyle every widget.
 
 use crate::theme::{ColorRole as C, StyleKey, StyleState, TokenSet, for_theme};
-use iced::widget::{self as w, pick_list, scrollable, svg, text_editor, text_input};
+use iced::widget::{self as w, checkbox, pick_list, scrollable, svg, text_editor, text_input};
 use iced::{Background, Border, Color, Shadow, Theme, Vector, border};
 use loa_util::Semantic;
 
@@ -146,6 +146,23 @@ pub fn editor(theme: &Theme, status: text_editor::Status) -> text_editor::Style 
     let focused = matches!(status, text_editor::Status::Focused { .. });
     let i = input(theme, if focused { text_input::Status::Focused { is_hovered: false } } else { text_input::Status::Active });
     text_editor::Style { background: i.background, border: i.border, placeholder: i.placeholder, value: i.value, selection: i.selection }
+}
+
+/// A checkbox: outlined when off, accent filled when on, faded while disabled.
+pub fn check(theme: &Theme, status: checkbox::Status) -> checkbox::Style {
+    let t = for_theme(theme);
+    let (on, hovered, a) = match status {
+        checkbox::Status::Active { is_checked } => (is_checked, false, 1.0),
+        checkbox::Status::Hovered { is_checked } => (is_checked, true, 1.0),
+        checkbox::Status::Disabled { is_checked } => (is_checked, false, t.alpha(crate::theme::AlphaRole::Disabled)),
+    };
+    let line = if on { C::Accent } else if hovered { C::Text3 } else { C::LineStrong };
+    checkbox::Style {
+        background: if on { t.color(C::Accent).scale_alpha(a) } else { Color::TRANSPARENT }.into(),
+        icon_color: t.color(C::OnAccent),
+        border: Border { color: t.color(line).scale_alpha(a), width: 1.0, radius: t.radius(crate::theme::RadiusRole::Chip).into() },
+        text_color: Some(t.color(C::Text).scale_alpha(a)),
+    }
 }
 
 pub fn pick(theme: &Theme, status: pick_list::Status) -> pick_list::Style {
