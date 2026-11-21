@@ -109,6 +109,7 @@ pub(crate) fn node_config(ctx: &Ctx, network: &NetworkSettings) -> NodeConfig {
     // loa-p2p reaches peers through relays the user runs; it has no public ones.
     config.relay = match &network.relay {
         Relay::Url(url) => RelayConfig::SelfHosted(url.clone()),
+        // TODO(relay): `Relay::Default` maps to Off (no public relays); kept as is pending a product decision (#292).
         Relay::Default | Relay::Off => RelayConfig::Off,
     };
     config.mdns = network.discovery.mdns;

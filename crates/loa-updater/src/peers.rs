@@ -1,9 +1,7 @@
-//! Classifies peers by app version and shared protocol versions for the
-//! Peers list.
+//! Classifies peers by app version and shared protocol labels for the Peers list.
 //!
-//! Nodes talk over versioned ALPNs (`omp/<family>/<n>`) and use the highest
-//! version of each family they share, so a peer on an older app still
-//! talks as long as every family has a common version.
+//! Nodes talk over exact ALPN labels (`omp/<family>/<n>`): a family is shared
+//! only when both sides announce the same label.
 
 use semver::Version;
 use serde::{Deserialize, Serialize};
@@ -44,12 +42,12 @@ pub enum Standing {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProtocolStatus {
     pub family: String,
-    /// Highest version both sides speak.
+    /// The version when both sides announce the same label.
     pub shared: Option<u32>,
-    /// Highest version this node speaks, if any.
-    pub local_max: Option<u32>,
-    /// Highest version the peer speaks, if any.
-    pub peer_max: Option<u32>,
+    /// The version this node announces, if any.
+    pub local: Option<u32>,
+    /// The version the peer announces, if any.
+    pub peer: Option<u32>,
 }
 
 /// One row of the Peers list.
@@ -62,7 +60,7 @@ pub struct PeerStanding {
     /// Every family either side speaks, sorted by family.
     pub protocols: Vec<ProtocolStatus>,
     /// True when every family this node speaks, and at least control and
-    /// session, has a version both sides speak.
+    /// session, has the same label on both sides.
     pub can_talk: bool,
 }
 
@@ -114,34 +112,15 @@ pub fn classify(
     rows
 }
 
-fn families<'a>(labels: impl Iterator<Item = &'a str>) -> BTreeMap<&'a str, BTreeSet<u32>> {
-    let mut map: BTreeMap<&str, BTreeSet<u32>> = BTreeMap::new();
-    for (family, version) in labels.filter_map(parse_alpn) {
-        map.entry(family).or_default().insert(version);
-    }
-    map
-}
+fn families<'a>(labels: impl Iterator<Item = &'a str>) -> BTreeMap<&'a str, u32> { labels.filter_map(parse_alpn).collect() }
 
-fn protocols(
-    local: &BTreeMap<&str, BTreeSet<u32>>,
-    remote: &BTreeMap<&str, BTreeSet<u32>>,
-) -> Vec<ProtocolStatus> {
+fn protocols(local: &BTreeMap<&str, u32>, remote: &BTreeMap<&str, u32>) -> Vec<ProtocolStatus> {
     let names: BTreeSet<&str> = local.keys().chain(remote.keys()).copied().collect();
     names
         .into_iter()
         .map(|family| {
-            let ours = local.get(family);
-            let theirs = remote.get(family);
-            let shared = match (ours, theirs) {
-                (Some(a), Some(b)) => a.iter().rev().find(|version| b.contains(version)).copied(),
-                _ => None,
-            };
-            ProtocolStatus {
-                family: family.to_owned(),
-                shared,
-                local_max: ours.and_then(|v| v.last().copied()),
-                peer_max: theirs.and_then(|v| v.last().copied()),
-            }
+            let (ours, theirs) = (local.get(family).copied(), remote.get(family).copied());
+            ProtocolStatus { family: family.to_owned(), shared: ours.filter(|v| theirs == Some(*v)), local: ours, peer: theirs }
         })
         .collect()
 }

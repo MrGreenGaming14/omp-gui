@@ -72,10 +72,11 @@ pub(crate) async fn serve(node: Node, conn: Connection, mut stream: Stream, prot
     let (resource, action) = &protocol.required;
     let error = (!node.0.grants.covers(peer, resource, *action)).then(|| format!("no grant for {} on this node", protocol.name));
     wire::ack::<Frame>(&mut stream.send, error.clone()).await?;
-    match error {
-        Some(error) => Err(NodeError::Refused(error)),
-        None => Ok(protocol.handler.serve(peer, stream).await),
+    if let Some(error) = error {
+        return Err(NodeError::Refused(error));
     }
+    protocol.handler.serve(peer, stream).await;
+    Ok(())
 }
 
 /// The requester side: a stream past the grant handshake; its halves keep the connection open.

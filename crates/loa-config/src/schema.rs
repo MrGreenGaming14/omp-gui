@@ -12,7 +12,7 @@ use toml::Table;
 
 /// Schema version this build reads and writes.
 pub const CURRENT_VERSION: u32 = 1;
-/// The p2p port (UDP for iroh, TCP fallback). The one definition; loa-net and loa-node re-export it.
+/// The p2p port (UDP for iroh, TCP fallback). The one definition; loa-p2p re-exports it.
 pub const DEFAULT_PORT: u16 = 31415;
 
 macro_rules! serde_default {
