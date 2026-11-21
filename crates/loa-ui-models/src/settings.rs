@@ -14,10 +14,9 @@ use loa_ui_kit::icons::Icon;
 use crate::style::{self, BODY, NOTE, SMALL};
 
 use loa_models::settings::{
-    CustomProvider, FieldValue, HarnessModel, ModelOverride, ModelSettings, ModelToggle,
-    OverrideField, ProviderToggle, RoleChain, ValidationError,
+    AuthMode, CustomProvider, FieldValue, HarnessModel, ModelOverride, ModelSettings, ModelToggle,
+    OverrideField, ProviderToggle, RoleChain, ValidationError, is_env_var_name, is_provider_id,
 };
-use loa_harness::omp::models::AuthMode;
 
 
 /// The effort pick list's entry for "no effort set".
@@ -101,14 +100,14 @@ pub fn validate_custom_provider(provider: &CustomProvider, others: &[CustomProvi
     let id = provider.id.trim();
     if id.is_empty() {
         messages.push("Provider id is empty".to_owned());
-    } else if !id.chars().all(|c| matches!(c, 'a'..='z' | '0'..='9' | '-' | '_' | '.')) {
+    } else if !is_provider_id(id) || id.chars().any(|c| c.is_ascii_uppercase()) {
         messages.push("Provider id may only contain a-z, 0-9, -, _ and .".to_owned());
     } else if others.iter().any(|other| other.id.trim() == id) {
         messages.push(format!("Another custom provider already uses the id \"{id}\""));
     }
 
     let api_key_env = provider.api_key_env.trim();
-    if !api_key_env.is_empty() && !loa_harness::omp::models::is_env_var_name(api_key_env) {
+    if !api_key_env.is_empty() && !is_env_var_name(api_key_env) {
         messages.push(
             "API key must be the name of an environment variable (A-Z, 0-9, _), not the key itself".to_owned(),
         );

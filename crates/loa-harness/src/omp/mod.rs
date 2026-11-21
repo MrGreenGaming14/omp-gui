@@ -3,7 +3,6 @@
 
 pub mod account;
 pub mod config;
-pub mod models;
 pub mod oauth;
 pub mod launch;
 pub mod mapper;

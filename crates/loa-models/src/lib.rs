@@ -11,7 +11,7 @@
 //! - [`service`] and [`login`] list providers and drive login flows.
 //! - [`keys`] reports where omp would read a provider's API key from, without ever
 //!   reading or returning a key value.
-//! - `loa_harness::omp::{config, models}` edit omp's `config.yml` and
+//! - `loa_harness::omp::config` and [`models_yml`] edit omp's `config.yml` and
 //!   `models.yml` in place, keeping comments and ordering of untouched keys.
 //! - [`validate`] checks edited files with omp itself, without a model call.
 //! - Harness accounts and process execution live in `loa-harness`.
@@ -19,16 +19,20 @@
 //! # API keys never pass through the app
 //!
 //! No function in this crate accepts, stores or returns an API key value. The only
-//! way to write a provider's `apiKey` in `models.yml` is a `KeyReference`,
+//! way to write a provider's `apiKey` in `models.yml` is a [`models_yml::KeyReference`],
 //! which can only be built from an environment variable name or a `!command`.
-//! Reading reports an `ApiKeySetting::Literal` with no payload when
+//! Reading reports a [`models_yml::ApiKeySetting::Literal`] with no payload when
 //! the file holds an inline key, and [`keys`] reports sources by name only.
 
 pub mod keys;
 pub mod login;
+pub mod models_yml;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 pub mod settings;
 pub mod service;
 pub mod validate;
+
+/// The model and role selector grammar shared with the harness adapters.
+pub use loa_contracts::harness::selector;
 

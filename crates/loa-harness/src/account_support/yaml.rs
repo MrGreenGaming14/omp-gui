@@ -92,27 +92,6 @@ impl YamlDocument {
     }
 }
 
-impl super::configdoc::ConfigDoc for YamlDocument {
-    fn parse(text: &str, what: &str) -> Result<Self> {
-        YamlDocument::parse(text, what)
-    }
-
-    fn get(&self, path: &[&str]) -> Option<String> {
-        YamlDocument::get(self, path).and_then(Yaml::as_str).map(str::to_owned)
-    }
-
-    fn set(&mut self, path: &[&str], value: Option<&str>) -> Result<()> {
-        match value {
-            Some(value) => YamlDocument::set(self, path, Yaml::String(value.to_owned())),
-            None => YamlDocument::remove(self, path).map(|_| ()),
-        }
-    }
-
-    fn render(&self) -> String {
-        self.text.clone()
-    }
-}
-
 fn load_root(text: &str, what: &str) -> Result<Yaml> {
     let docs = YamlLoader::load_from_str(text).map_err(|e| Error::Parse {
         what: what.to_owned(),

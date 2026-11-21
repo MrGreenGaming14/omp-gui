@@ -16,7 +16,7 @@ mod tests {
     use loa_models::service::{Backend, Parts, OMP};
     use loa_models::settings::RoleChain;
     use loa_models::testing::{FakeOmp as FakeRpc, LoginScript};
-    use loa_contracts::harness::model_error::SettingsValidator;
+    use loa_models::settings::SettingsValidator;
     use crate::ModelRef;
     use crate::signin;
 
@@ -34,13 +34,13 @@ mod tests {
     struct Validator;
     #[async_trait]
     impl SettingsValidator for Validator {
-        async fn check_config(&self, text: &str, _: &[(String, serde_json::Value)]) -> loa_contracts::harness::model_error::Result<()> {
+        async fn check_config(&self, text: &str, _: &[(String, serde_json::Value)]) -> loa_models::settings::Result<()> {
             if text.contains("reject-me") {
-                return Err(loa_contracts::harness::model_error::Error::Rejected { what: "config.yml".into(), message: "bad role".into() });
+                return Err(loa_models::settings::Error::Rejected { what: "config.yml".into(), message: "bad role".into() });
             }
             Ok(())
         }
-        async fn check_models(&self, _: &str) -> loa_contracts::harness::model_error::Result<()> {
+        async fn check_models(&self, _: &str) -> loa_models::settings::Result<()> {
             Ok(())
         }
     }
@@ -170,7 +170,7 @@ exit 64"#,
                 ("omp", "google-antigravity", "unavailable"),
                 ("omp API keys", "gw", "key set"),
                 ("omp API keys", "openai", "key set"),
-                ("Claude Code", "claude", "signed out"),
+                ("Claude Code", "claude-code", "signed out"),
                 ("Codex", "codex", "unavailable"),
             ]
         );
@@ -246,7 +246,7 @@ exit 64"#,
     #[tokio::test]
     async fn a_harness_login_runs_its_cli_and_checks_the_sign_in_again() {
         let f = fixture(omp_rpc(), "", "");
-        let key = ProviderKey::new("claude", "claude");
+        let key = ProviderKey::new("claude-code", "claude-code");
         let mut updates = f.backend.login(key.clone());
         let mut seen = Vec::new();
         while let Some(update) = updates.recv().await {

@@ -23,7 +23,7 @@ pub mod settings;
 pub mod signin;
 mod style;
 
-pub use loa_contracts::harness::selector::{ModelInfo, ModelRef, RoleAssignment};
+pub use loa_models::selector::{ModelInfo, ModelRef, RoleAssignment};
 pub use session::{SessionModel, SessionModelChange, model_change_drafts};
 
 /// Errors of this crate's non-UI functions.

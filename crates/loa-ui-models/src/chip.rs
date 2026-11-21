@@ -80,7 +80,7 @@ impl State {
         let Some(model) = self.current.model.as_deref() else {
             return "Model".to_owned();
         };
-        let short = loa_contracts::harness::selector::ModelRef::split(model).map_or(model, |(_, id)| id);
+        let short = loa_models::selector::ModelRef::split(model).map_or(model, |(_, id)| id);
         match self.current.role.as_deref() {
             Some(role) => format!("{role}{SEPARATOR}{short}"),
             None => short.to_owned(),

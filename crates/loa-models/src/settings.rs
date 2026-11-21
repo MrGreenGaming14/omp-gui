@@ -11,7 +11,9 @@
 use std::collections::{BTreeMap, HashMap};
 use loa_harness::omp::config::{ChainKey, OmpConfig, ScopedEntry, ScopedList};
 use loa_contracts::harness::selector::{Selector, ModelRef};
-use loa_harness::omp::models::{self as models_yml, ApiKeySetting, ApiKeyWrite, AuthMode, KeyReference, ModelsYml, OverrideKey};
+use crate::models_yml::{self, ApiKeySetting, ApiKeyWrite, KeyReference, ModelsYml, OverrideKey};
+pub use crate::models_yml::{AuthMode, is_env_var_name, is_provider_id};
+pub use loa_contracts::harness::model_error::{Error, Result, SettingsValidator};
 use loa_contracts::harness::model_rpc as rpc;
 
 /// Everything the screen edits, as the app reads it from omp's config files.

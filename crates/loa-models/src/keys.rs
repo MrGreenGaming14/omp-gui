@@ -1,7 +1,7 @@
 //! Reports credential *sources* without exposing their values. Omp owns all
 //! credential resolution and login storage; this module never handles keys.
 
-use loa_harness::omp::models::{ApiKeySetting, ModelsYml};
+use crate::models_yml::{ApiKeySetting, ModelsYml};
 
 /// A source omp is configured to consult for a provider key.
 #[derive(Debug, Clone, PartialEq, Eq)]

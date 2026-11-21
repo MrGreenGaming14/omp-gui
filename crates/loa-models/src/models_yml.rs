@@ -25,12 +25,12 @@
 
 use std::path::Path;
 
-use crate::account_support::error::{load_snapshot, save_snapshot};
+use loa_contracts::harness::model_error::{load_snapshot, save_snapshot};
 use loa_util::fs::Snapshot;
 use loa_contracts::harness::model_rpc::ModelCost;
 use loa_contracts::harness::model_error::SettingsValidator;
-use crate::account_support::yaml::{Yaml, YamlDocument, ymap, ystr, ystrs};
-use crate::account_support::{Error, Result};
+use loa_harness::account_support::yaml::{Yaml, YamlDocument, ymap, ystr, ystrs};
+use loa_contracts::harness::model_error::{Error, Result};
 
 /// The `api` values omp accepts for providers and models.
 pub const APIS: [&str; 14] = [
@@ -412,12 +412,13 @@ fn check_api(api: &str) -> Result<()> {
     }
 }
 
+/// Whether `id` is a provider id omp accepts: letters, digits, `-`, `_` or `.`.
+pub fn is_provider_id(id: &str) -> bool {
+    !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+}
+
 fn check_provider_id(id: &str) -> Result<()> {
-    if id.is_empty()
-        || !id
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
-    {
+    if !is_provider_id(id) {
         return Err(Error::invalid(
             "provider id",
             format!("`{id}` must be letters, digits, `-`, `_` or `.`"),

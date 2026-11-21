@@ -4730,8 +4730,10 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
+ "toml_edit",
  "tracing",
  "uuid",
+ "yaml-rust2",
 ]
 
 [[package]]
@@ -4783,8 +4785,6 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
- "toml_edit",
- "yaml-rust2",
 ]
 
 [[package]]
@@ -4976,7 +4976,9 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "iced",
+ "loa-contracts",
  "loa-core",
+ "loa-harness",
  "loa-models",
  "loa-ui-kit",
  "loa-util",
