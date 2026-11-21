@@ -71,12 +71,6 @@ pub struct WriterConfig {
     pub authorize: Arc<dyn Authorize>,
 }
 
-/// Firehose subscribers shared by every writer opened on one bus.
-#[derive(Default)]
-pub(crate) struct Hub {
-    pub(crate) subs: Mutex<Vec<Arc<Queue<SessionId>>>>,
-}
-
 /// The [`PatchSink`] of one live session.
 ///
 /// On the owner node it orders local drafts ([`PatchSink::commit_at`]) and
@@ -90,25 +84,20 @@ pub struct SessionWriter {
     owner: NodeKey,
     local: NodeKey,
     authorize: Arc<dyn Authorize>,
-    hub: Arc<Hub>,
     inner: Mutex<Inner>,
 }
 
 struct Inner {
     dom: Dom,
     persist: Box<dyn Persist>,
-    subs: Vec<Arc<Queue<()>>>,
+    subs: Vec<Arc<Queue>>,
     closed: bool,
 }
 
 impl SessionWriter {
     pub fn new(config: WriterConfig) -> Self {
-        Self::with_hub(config, Arc::default())
-    }
-
-    pub(crate) fn with_hub(config: WriterConfig, hub: Arc<Hub>) -> Self {
         let WriterConfig { session, owner, local, dom, persist, authorize } = config;
-        Self { session, owner, local, authorize, hub, inner: Mutex::new(Inner { dom, persist, subs: Vec::new(), closed: false }) }
+        Self { session, owner, local, authorize, inner: Mutex::new(Inner { dom, persist, subs: Vec::new(), closed: false }) }
     }
 
     pub fn session(&self) -> &SessionId {
@@ -246,14 +235,11 @@ impl SessionWriter {
     }
 
     fn publish(&self, inner: &mut Inner, patch: Patch) -> Patch {
-        let mut hub = self.hub.subs.locked();
-        if inner.subs.is_empty() && hub.is_empty() {
+        if inner.subs.is_empty() {
             return patch;
         }
         let shared = Arc::new(patch);
-        inner.subs.retain(|queue| queue.push(&(), &shared));
-        hub.retain(|queue| queue.push(&self.session, &shared));
-        drop(hub);
+        inner.subs.retain(|queue| queue.push(&shared));
         Arc::try_unwrap(shared).unwrap_or_else(|shared| Patch::clone(&shared))
     }
 }

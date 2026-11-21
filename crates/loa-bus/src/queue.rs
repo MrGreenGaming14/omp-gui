@@ -5,7 +5,6 @@
 //! writer or the other readers.
 
 use loa_util::LockExt;
-use crate::SessionId;
 use loa_core::{ApplyError, Dom, NodeId, Op, Patch};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -95,24 +94,22 @@ pub enum TryRecvError {
     Closed,
 }
 
-/// One subscriber's queue. `K` tags each event with its source: `()` for a
-/// session subscription, the session id for the firehose.
-pub(crate) struct Queue<K> {
-    state: Mutex<State<K>>,
+/// One subscriber's queue.
+pub(crate) struct Queue {
+    state: Mutex<State>,
     notify: Notify,
     policy: Policy,
 }
 
-struct State<K> {
-    items: VecDeque<(K, Event)>,
-    /// Set when the queue overflowed: the source and sequence of the first
-    /// patch not delivered.
-    lagged: Option<(K, u64)>,
+struct State {
+    items: VecDeque<Event>,
+    /// Set when the queue overflowed: the sequence of the first patch not delivered.
+    lagged: Option<u64>,
     closed: bool,
     receiver_gone: bool,
 }
 
-impl<K: Clone + PartialEq> Queue<K> {
+impl Queue {
     pub(crate) fn new(policy: Policy) -> Arc<Self> {
         let policy = Policy { capacity: policy.capacity.max(1), ..policy };
         Arc::new(Self {
@@ -127,30 +124,29 @@ impl<K: Clone + PartialEq> Queue<K> {
         })
     }
 
-    /// Offers `patch` from `source`. Never waits. Returns `false` once the
-    /// queue no longer takes patches (lagged, closed or receiver dropped), so
-    /// the publisher can forget it.
-    pub(crate) fn push(&self, source: &K, patch: &Arc<Patch>) -> bool {
+    /// Offers `patch`. Never waits. Returns `false` once the queue no longer
+    /// takes patches (lagged, closed or receiver dropped), so the publisher
+    /// can forget it.
+    pub(crate) fn push(&self, patch: &Arc<Patch>) -> bool {
         let mut state = self.state.locked();
         if state.receiver_gone || state.closed || state.lagged.is_some() {
             return false;
         }
         if self.policy.coalesce_appends
             && let Op::Append { text } = &patch.op
-            && let Some((last_source, last)) = state.items.back_mut()
-            && last_source == source
+            && let Some(last) = state.items.back_mut()
             && coalesce(last, patch.node, patch.seq, patch.ts, text)
         {
             // The receiver was already woken for the event this merged into.
             return true;
         }
         if state.items.len() >= self.policy.capacity {
-            state.lagged = Some((source.clone(), patch.seq));
+            state.lagged = Some(patch.seq);
             drop(state);
             self.notify.notify_one();
             return false;
         }
-        state.items.push_back((source.clone(), Event::Patch(Arc::clone(patch))));
+        state.items.push_back(Event::Patch(Arc::clone(patch)));
         drop(state);
         self.notify.notify_one();
         true
@@ -162,20 +158,16 @@ impl<K: Clone + PartialEq> Queue<K> {
         self.notify.notify_one();
     }
 
-    fn take(&self) -> Result<(K, Event), TryRecvError> {
+    fn take(&self) -> Result<Event, TryRecvError> {
         let mut state = self.state.locked();
         if let Some(item) = state.items.pop_front() {
             return Ok(item);
         }
-        if let Some((source, resync_from)) = state.lagged.take() {
+        if let Some(resync_from) = state.lagged.take() {
             state.closed = true;
-            return Ok((source, Event::Lagged { resync_from }));
+            return Ok(Event::Lagged { resync_from });
         }
         if state.closed { Err(TryRecvError::Closed) } else { Err(TryRecvError::Empty) }
-    }
-
-    fn len(&self) -> usize {
-        self.state.locked().items.len()
     }
 }
 
@@ -203,17 +195,25 @@ fn coalesce(last: &mut Event, node: NodeId, seq: u64, ts: i64, text: &str) -> bo
     }
 }
 
-/// The receiving end of a [`Queue`]. Dropping it detaches the subscriber.
-struct Receiver<K: Clone + PartialEq> {
-    queue: Arc<Queue<K>>,
+/// A subscriber to one session. Works with any async runtime; `try_recv`
+/// works without one. Dropping it detaches the subscriber.
+pub struct Subscription {
+    queue: Arc<Queue>,
 }
 
-impl<K: Clone + PartialEq> Receiver<K> {
-    fn try_recv(&mut self) -> Result<(K, Event), TryRecvError> {
+impl Subscription {
+    pub(crate) fn new(queue: Arc<Queue>) -> Self {
+        Self { queue }
+    }
+
+    /// The next event without waiting.
+    pub fn try_recv(&mut self) -> Result<Event, TryRecvError> {
         self.queue.take()
     }
 
-    async fn recv(&mut self) -> Option<(K, Event)> {
+    /// Waits for the next event. `None` once the session closed and
+    /// everything queued was delivered, or after [`Event::Lagged`].
+    pub async fn recv(&mut self) -> Option<Event> {
         loop {
             match self.queue.take() {
                 Ok(item) => return Some(item),
@@ -224,68 +224,17 @@ impl<K: Clone + PartialEq> Receiver<K> {
             }
         }
     }
+
+    /// Events waiting in the queue.
+    pub fn pending(&self) -> usize {
+        self.queue.state.locked().items.len()
+    }
 }
 
-impl<K: Clone + PartialEq> Drop for Receiver<K> {
+impl Drop for Subscription {
     fn drop(&mut self) {
         let mut state = self.queue.state.locked();
         state.receiver_gone = true;
         state.items.clear();
-    }
-}
-
-/// A subscriber to one session. Works with any async runtime; `try_recv`
-/// works without one.
-pub struct Subscription {
-    rx: Receiver<()>,
-}
-
-impl Subscription {
-    pub(crate) fn new(queue: Arc<Queue<()>>) -> Self {
-        Self { rx: Receiver { queue } }
-    }
-
-    /// The next event without waiting.
-    pub fn try_recv(&mut self) -> Result<Event, TryRecvError> {
-        self.rx.try_recv().map(|((), event)| event)
-    }
-
-    /// Waits for the next event. `None` once the session closed and
-    /// everything queued was delivered, or after [`Event::Lagged`].
-    pub async fn recv(&mut self) -> Option<Event> {
-        self.rx.recv().await.map(|((), event)| event)
-    }
-
-    /// Events waiting in the queue.
-    pub fn pending(&self) -> usize {
-        self.rx.queue.len()
-    }
-}
-
-/// A subscriber to every session on a [`crate::Bus`], for the sidebar. Each
-/// event is tagged with its session. A lag notice names the session and
-/// sequence of the first patch that was not delivered; the subscriber then
-/// resubscribes and rereads every session it shows.
-pub struct Firehose {
-    rx: Receiver<SessionId>,
-}
-
-impl Firehose {
-    pub(crate) fn new(queue: Arc<Queue<SessionId>>) -> Self {
-        Self { rx: Receiver { queue } }
-    }
-
-    pub fn try_recv(&mut self) -> Result<(SessionId, Event), TryRecvError> {
-        self.rx.try_recv()
-    }
-
-    /// Waits for the next event. `None` once the bus is gone or after a lag
-    /// notice.
-    pub async fn recv(&mut self) -> Option<(SessionId, Event)> {
-        self.rx.recv().await
-    }
-
-    pub fn pending(&self) -> usize {
-        self.rx.queue.len()
     }
 }
