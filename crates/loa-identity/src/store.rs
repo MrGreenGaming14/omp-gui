@@ -10,6 +10,10 @@ use zeroize::Zeroizing;
 
 use crate::{IdentityError, NodeIdentity, Result, SECRET_KEY_LENGTH};
 
+#[cfg(windows)]
+#[path = "private_file.rs"]
+mod private_file;
+
 /// Secret bytes read from a [`KeyStore`]; wiped from memory when dropped.
 pub type SecretBytes = Zeroizing<Vec<u8>>;
 
@@ -193,18 +197,32 @@ impl KeyStore for FileKeyStore {
     fn store(&self, secret: &[u8]) -> Result<()> {
         let dir = self.path.parent().unwrap_or(Path::new("."));
         fs::create_dir_all(dir).map_err(|e| file_error(dir, &e))?;
-        // Written to a private temporary file and renamed into place, so a
-        // crash never leaves a truncated key behind.
-        let tmp = self.path.with_extension("key.tmp");
-        let mut options = fs::OpenOptions::new();
-        options.write(true).create(true).truncate(true);
-        #[cfg(unix)]
-        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-        let mut file = options.open(&tmp).map_err(|e| file_error(&tmp, &e))?;
-        io::Write::write_all(&mut file, secret).map_err(|e| file_error(&tmp, &e))?;
-        file.sync_all().map_err(|e| file_error(&tmp, &e))?;
-        drop(file);
-        fs::rename(&tmp, &self.path).map_err(|e| file_error(&self.path, &e))
+        // Publish only a fully written, synced key. The Windows file gets
+        // its private DACL before it can be opened by another process.
+        #[cfg(windows)]
+        {
+            let mut file = tempfile::Builder::new()
+                .prefix(".node-key-")
+                .make_in(dir, private_file::create)
+                .map_err(|e| file_error(dir, &e))?;
+            io::Write::write_all(file.as_file_mut(), secret).map_err(|e| file_error(file.path(), &e))?;
+            file.as_file().sync_all().map_err(|e| file_error(file.path(), &e))?;
+            file.persist(&self.path).map_err(|e| file_error(&self.path, &e.error))?;
+            Ok(())
+        }
+        #[cfg(not(windows))]
+        {
+            let tmp = self.path.with_extension("key.tmp");
+            let mut options = fs::OpenOptions::new();
+            options.write(true).create(true).truncate(true);
+            #[cfg(unix)]
+            std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+            let mut file = options.open(&tmp).map_err(|e| file_error(&tmp, &e))?;
+            io::Write::write_all(&mut file, secret).map_err(|e| file_error(&tmp, &e))?;
+            file.sync_all().map_err(|e| file_error(&tmp, &e))?;
+            drop(file);
+            fs::rename(&tmp, &self.path).map_err(|e| file_error(&self.path, &e))
+        }
     }
 }
 
@@ -297,6 +315,23 @@ mod tests {
             assert_eq!(mode, 0o600);
         }
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn persisted_key_does_not_inherit_access() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = FileKeyStore::in_dir(dir.path());
+        file.store(&[7; 32]).unwrap();
+        file.store(&[8; 32]).unwrap();
+        assert_eq!(file.load().unwrap().unwrap().as_slice(), &[8; 32]);
+
+        let out = std::process::Command::new("icacls.exe").arg(file.path()).output().unwrap();
+        assert!(out.status.success(), "{out:?}");
+        let text = String::from_utf8_lossy(&out.stdout);
+        let entries = text.lines().take_while(|line| !line.trim().is_empty()).count();
+        assert_eq!(entries, 1, "{text}");
+        assert!(!text.contains("(I)"), "{text}");
     }
 
     #[test]

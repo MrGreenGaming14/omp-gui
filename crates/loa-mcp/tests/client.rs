@@ -20,6 +20,8 @@ use loa_mcp::{
 };
 
 const ROLE_ENV: &str = "LOA_MCP_FAKE_SERVER";
+#[cfg(windows)]
+const DESCENDANT_ENV: &str = "LOA_MCP_TEST_DESCENDANT_PID_FILE";
 /// Upper bound for anything a test waits on; never a synchronization sleep.
 const LIMIT: Duration = Duration::from_secs(20);
 /// What the fake's `vault_code` tool returns; a model can't guess it.
@@ -33,6 +35,24 @@ const PNG: &[u8] = &[
 ];
 
 fn main() {
+    #[cfg(windows)]
+    if let Some(pid_file) = std::env::var_os(DESCENDANT_ENV) {
+        use std::process::{Command, Stdio};
+        if pid_file == "leaf" {
+            // A deadline leaves no permanent orphan even on a regression.
+            std::thread::sleep(Duration::from_secs(60));
+            return;
+        }
+        let child = Command::new(std::env::current_exe().unwrap())
+            .env(DESCENDANT_ENV, "leaf")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        std::fs::write(pid_file, child.id().to_string()).unwrap();
+        // Leave the child running when the fake MCP server exits.
+    }
     if std::env::var_os(ROLE_ENV).is_some() {
         fake::serve_stdio();
         return;
@@ -48,6 +68,8 @@ fn main() {
         trial("registry_edits_and_removes_servers", registry_edits_and_removes_servers),
         trial("registry_import_starts_new_servers_once", registry_import_starts_new_servers_once),
         trial("host_tools_route_calls_through_the_filter", host_tools_route_calls_through_the_filter),
+        #[cfg(windows)]
+        trial("stdio_shutdown_kills_the_server_descendant", stdio_shutdown_kills_the_server_descendant),
         trial("live_omp_session_calls_a_registered_mcp_tool", live_omp_session_calls_a_registered_mcp_tool)
             .with_ignored_flag(true),
     ];
@@ -146,6 +168,30 @@ async fn stdio_server_lists_calls_and_reads_resources() {
         manager.call_tool("fake", "echo", None, &AllowAll).await,
         Err(Error::NotRunning(_))
     ));
+}
+
+#[cfg(windows)]
+async fn stdio_shutdown_kills_the_server_descendant() {
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+    use windows_sys::Win32::Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT};
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject};
+
+    let dir = tempfile::tempdir().unwrap();
+    let pid_file = dir.path().join("descendant.pid");
+    let mut stdio = fake_stdio();
+    stdio.env.insert(DESCENDANT_ENV.into(), pid_file.to_str().unwrap().into());
+    let manager = Manager::new(options()).unwrap();
+    manager.add(ServerSpec::new("tree", Transport::Stdio(stdio)).unwrap()).unwrap();
+    wait_status(&manager, "tree", running).await;
+
+    let pid = std::fs::read_to_string(pid_file).unwrap().parse::<u32>().unwrap();
+    // Keep the process handle across shutdown so a reused PID can't affect the check.
+    let process = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
+    assert!(!process.is_null(), "opening descendant: {}", std::io::Error::last_os_error());
+    let process = unsafe { OwnedHandle::from_raw_handle(process) };
+    assert_eq!(unsafe { WaitForSingleObject(process.as_raw_handle(), 0) }, WAIT_TIMEOUT);
+    tokio::time::timeout(LIMIT, manager.shutdown()).await.unwrap();
+    assert_eq!(unsafe { WaitForSingleObject(process.as_raw_handle(), 5_000) }, WAIT_OBJECT_0, "MCP descendant survived shutdown");
 }
 
 async fn filter_hides_and_refuses_tools() {

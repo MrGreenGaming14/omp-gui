@@ -32,6 +32,12 @@ struct Scripted {
 /// The peer a scripted parent session runs its task on, if any.
 type Peer = Arc<Mutex<Option<String>>>;
 
+/// The `sandbox_bash` call that overwrites `tracked.txt` with `changed`.
+#[cfg(unix)]
+const OVERWRITE_TRACKED: &str = r#"{"command":"printf 'changed\\n' > tracked.txt"}"#;
+#[cfg(windows)]
+const OVERWRITE_TRACKED: &str = r#"{"command":"echo changed> tracked.txt"}"#;
+
 #[async_trait::async_trait]
 impl Adapter for Scripted {
     fn harness(&self) -> &'static str {
@@ -77,7 +83,7 @@ impl ScriptedSession {
     async fn work(&self, task: &str) -> Result<String, String> {
         if self.worker {
             self.tools.call(&self.id, "sandbox_write", r#"{"path":"notes/hello.txt","content":"from the sandbox\n"}"#).await?;
-            self.tools.call(&self.id, "sandbox_bash", r#"{"command":"printf 'changed\\n' > tracked.txt"}"#).await?;
+            self.tools.call(&self.id, "sandbox_bash", OVERWRITE_TRACKED).await?;
             Ok("Wrote the notes".into())
         } else {
             let peer = self.peer.lock().unwrap().clone();
@@ -208,8 +214,9 @@ fn a_session_runs_sandbox_task_and_the_patch_is_reviewed_and_applied() {
     assert!(app.ctx.services.library.load(&worker).unwrap().root().is_some(), "the worker session is journaled");
 
     sandbox(&mut app, Message::Apply(entry.run.run));
-    assert_eq!(std::fs::read_to_string(repo.join("notes/hello.txt")).unwrap(), "from the sandbox\n");
-    assert_eq!(std::fs::read_to_string(repo.join("tracked.txt")).unwrap(), "changed\n");
+    assert_eq!(std::fs::read_to_string(repo.join("notes/hello.txt")).unwrap().replace("\r\n", "\n"), "from the sandbox\n");
+    // cmd's `echo` ends lines with CRLF.
+    assert_eq!(std::fs::read_to_string(repo.join("tracked.txt")).unwrap().replace("\r\n", "\n"), "changed\n");
     let applied = app.areas.sandbox.runs().get(entry.run.run).unwrap();
     assert!(matches!(applied.state, loa_sandbox::RunState::Finished { applied: true, .. }));
     assert_eq!(applied.pending_patch(), None);
@@ -428,7 +435,7 @@ mod peer {
         assert!(!repo.join("notes").exists(), "the workspace is untouched until the patch is applied");
         assert_eq!(guest.ctx.shell.active_tab(), Some(TAB));
         update(&rt, &mut guest, AppMessage::Sandbox(Message::Apply(entry.run.run)));
-        assert_eq!(std::fs::read_to_string(repo.join("notes/hello.txt")).unwrap(), "from the sandbox\n");
+        assert_eq!(std::fs::read_to_string(repo.join("notes/hello.txt")).unwrap().replace("\r\n", "\n"), "from the sandbox\n");
         assert!(owner.ctx.notice().is_none_or(|notice| !notice.contains("sandbox run")), "{:?}", owner.ctx.notice());
     }
 }

@@ -25,6 +25,8 @@ printf '%s\n' "$@" > "$dir/args"
 declare -A ids
 exec 3< "$dir/script"
 while IFS= read -r step <&3 || [[ -n "$step" ]]; do
+  # Transcript fixtures may have CRLF when checked out on Windows.
+  step="${step%$'\r'}"
   case "$step" in
     '' | '#'*) ;;
     '> '*)
@@ -68,12 +70,16 @@ impl FakeOmp {
     pub fn install(dir: &Path, script: &str) -> io::Result<Self> {
         let dir = dir.to_path_buf();
         let executable = dir.join("omp");
-        let body = SCRIPT.replace("@DIR@", &dir.display().to_string());
+        // Forward slashes: Git Bash on Windows reads them where backslashes
+        // would need escaping, and every other platform is unaffected.
+        let body = SCRIPT.replace("@DIR@", &dir.display().to_string().replace('\\', "/"));
         std::fs::write(dir.join("script"), script)?;
         std::fs::write(dir.join("version"), "19.0.0\n")?;
         // Written by a separate process so no fork of this one can hold it
         // open for writing when it runs ("Text file busy").
         loa_exec::write_executable(&executable, body)?;
+        // What to spawn: on Windows the `.cmd` launcher written beside the script.
+        let executable = loa_exec::resolve(&executable);
         Ok(Self { dir, executable })
     }
 

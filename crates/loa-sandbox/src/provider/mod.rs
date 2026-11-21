@@ -2,6 +2,7 @@
 //! and hands back a byte channel to it.
 
 pub mod docker;
+#[cfg(target_os = "linux")]
 pub mod firecracker;
 pub mod local;
 pub mod peer;

@@ -1,8 +1,13 @@
 //! What the app holds: the sandbox settings, which providers this machine can
 //! run (and why not), and the `sandbox_task` host tool for each new session.
 
+/// Why a Windows host offers neither Docker nor SSH: they run the stub inside
+/// a Linux guest, and the stub the host has is a Windows binary.
+const REMOTE_STUB_UNSUPPORTED: &str = "the sandbox stub on Windows runs only on the local provider";
+
 use crate::isolation;
 use crate::provider::docker::{DockerProvider, DockerStub};
+#[cfg(target_os = "linux")]
 use crate::provider::firecracker::FirecrackerProvider;
 use crate::provider::local::{LocalProvider, find_stub};
 use crate::provider::peer::{PeerLink, PeerProvider};
@@ -101,7 +106,7 @@ struct Machine {
 
 impl Machine {
     fn this() -> Self {
-        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let home = loa_core::home_dir();
         Self {
             path: std::env::var_os("PATH"),
             kvm_device: "/dev/kvm".into(),
@@ -110,11 +115,8 @@ impl Machine {
     }
 
     fn which(&self, name: &str) -> Option<PathBuf> {
-        use std::os::unix::fs::PermissionsExt;
         let paths = self.path.as_ref()?;
-        std::env::split_paths(paths)
-            .map(|dir| dir.join(name))
-            .find(|file| file.metadata().is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0))
+        std::env::split_paths(paths).find_map(|dir| loa_exec::find_executable(&dir.join(name)))
     }
 
     fn kvm(&self) -> bool {
@@ -215,24 +217,27 @@ impl SandboxService {
         let mut providers: Vec<Arc<dyn SandboxProvider>> = Vec::new();
         if let Some(stub) = &self.stub {
             providers.push(Arc::new(LocalProvider::new(stub)));
-            if let Some(docker) = self.machine.which("docker") {
+            if let Some(docker) = self.machine.which("docker").filter(|_| !cfg!(windows)) {
                 let mut provider = DockerProvider::new(&self.config.docker_image, DockerStub::Mount(stub.clone()));
                 provider.docker = docker;
                 provider.network = self.config.docker_network;
                 providers.push(Arc::new(provider));
             }
-            if let Some(ssh) = self.machine.which("ssh") {
+            if let Some(ssh) = self.machine.which("ssh").filter(|_| !cfg!(windows)) {
                 let mut provider = SshProvider::new(stub, self.ssh_hosts());
                 provider.ssh = ssh;
                 providers.push(Arc::new(provider));
             }
         }
-        if let (Some(firecracker), Some(kernel), Some(rootfs)) =
-            (self.machine.which("firecracker"), &self.config.firecracker_kernel, &self.config.firecracker_rootfs)
+        #[cfg(target_os = "linux")]
         {
-            let mut provider = FirecrackerProvider::new(kernel, rootfs);
-            provider.firecracker = firecracker;
-            providers.push(Arc::new(provider));
+            if let (Some(firecracker), Some(kernel), Some(rootfs)) =
+                (self.machine.which("firecracker"), &self.config.firecracker_kernel, &self.config.firecracker_rootfs)
+            {
+                let mut provider = FirecrackerProvider::new(kernel, rootfs);
+                provider.firecracker = firecracker;
+                providers.push(Arc::new(provider));
+            }
         }
         if let (Some(qemu), Some(disk)) = (self.machine.which(QEMU), &self.config.vm_disk) {
             let mut provider = QemuProvider::new(disk);
@@ -296,21 +301,25 @@ impl SandboxService {
                 None => status(SandboxKind::Local, Unavailable, no_stub()),
             });
 
-            statuses.push(match (machine.which("docker"), &stub) {
-                (None, _) => status(SandboxKind::Docker, Unavailable, "Docker is not installed".into()),
-                (Some(_), None) => status(SandboxKind::Docker, Unavailable, no_stub()),
-                (Some(docker), Some(_)) => match docker_server_version(&docker).await {
+            statuses.push(match (cfg!(windows), machine.which("docker"), &stub) {
+                (true, ..) => status(SandboxKind::Docker, Unavailable, REMOTE_STUB_UNSUPPORTED.into()),
+                (_, None, _) => status(SandboxKind::Docker, Unavailable, "Docker is not installed".into()),
+                (_, Some(_), None) => status(SandboxKind::Docker, Unavailable, no_stub()),
+                (_, Some(docker), Some(_)) => match docker_server_version(&docker).await {
                     Ok(version) => status(SandboxKind::Docker, Ready, format!("Docker {version}, default image {}", config.docker_image)),
                     Err(error) => status(SandboxKind::Docker, Unavailable, format!("The Docker daemon is not reachable: {error}")),
                 },
             });
 
+            #[cfg(target_os = "linux")]
             statuses.push(match (machine.which("firecracker"), kvm, &config.firecracker_kernel, &config.firecracker_rootfs) {
                 (None, ..) => status(SandboxKind::Firecracker, Unavailable, "Firecracker is not installed".into()),
                 (Some(_), false, ..) => status(SandboxKind::Firecracker, Unavailable, format!("{} is not accessible", machine.kvm_device.display())),
                 (Some(_), true, Some(kernel), Some(rootfs)) => status(SandboxKind::Firecracker, Ready, format!("Kernel {}, rootfs {}", kernel.display(), rootfs.display())),
                 (Some(_), true, ..) => status(SandboxKind::Firecracker, NotConfigured, "Set a guest kernel and a rootfs whose init runs loa-sandbox-stub on ttyS0".into()),
             });
+            #[cfg(not(target_os = "linux"))]
+            statuses.push(status(SandboxKind::Firecracker, Unavailable, "Firecracker needs Linux (KVM)".into()));
 
             statuses.push(match (machine.which(QEMU), &config.vm_disk) {
                 (None, _) => status(SandboxKind::Vm, Unavailable, format!("{QEMU} is not installed")),
@@ -318,11 +327,12 @@ impl SandboxService {
                 (Some(_), Some(disk)) => status(SandboxKind::Vm, Ready, format!("Disk {}, {}", disk.display(), if kvm { "KVM accelerated" } else { "without KVM (slow)" })),
             });
 
-            statuses.push(match (machine.which("ssh"), &stub, ssh_hosts.as_slice()) {
-                (None, ..) => status(SandboxKind::Ssh, Unavailable, "No ssh client is installed".into()),
-                (Some(_), None, _) => status(SandboxKind::Ssh, Unavailable, no_stub()),
-                (Some(_), Some(_), []) => status(SandboxKind::Ssh, NotConfigured, "Add a host to ~/.ssh/config or the sandbox settings".into()),
-                (Some(_), Some(_), hosts) => status(SandboxKind::Ssh, Ready, format!(
+            statuses.push(match (cfg!(windows), machine.which("ssh"), &stub, ssh_hosts.as_slice()) {
+                (true, ..) => status(SandboxKind::Ssh, Unavailable, REMOTE_STUB_UNSUPPORTED.into()),
+                (_, None, ..) => status(SandboxKind::Ssh, Unavailable, "No ssh client is installed".into()),
+                (_, Some(_), None, _) => status(SandboxKind::Ssh, Unavailable, no_stub()),
+                (_, Some(_), Some(_), []) => status(SandboxKind::Ssh, NotConfigured, "Add a host to ~/.ssh/config or the sandbox settings".into()),
+                (_, Some(_), Some(_), hosts) => status(SandboxKind::Ssh, Ready, format!(
                     "{}; hosts must run {} on {}",
                     hosts.join(", "),
                     std::env::consts::OS,
@@ -364,6 +374,32 @@ mod tests {
         loa_exec::write_executable(path, body).unwrap();
     }
 
+    /// Firecracker needs Linux (KVM); Docker and SSH need a stub the guest can run.
+    fn supported(kind: SandboxKind) -> bool {
+        match kind {
+            SandboxKind::Firecracker => cfg!(target_os = "linux"),
+            // A Windows host's stub is a Windows binary a Linux guest can't run.
+            SandboxKind::Docker | SandboxKind::Ssh => !cfg!(windows),
+            _ => true,
+        }
+    }
+
+    fn supported_kinds() -> Vec<SandboxKind> {
+        SandboxKind::ALL.iter().copied().filter(|kind| supported(*kind)).collect()
+    }
+
+    /// The kind a `sandbox_task` schema names.
+    fn kind_of(name: &str) -> SandboxKind {
+        match name {
+            "local" => SandboxKind::Local,
+            "docker" => SandboxKind::Docker,
+            "firecracker" => SandboxKind::Firecracker,
+            "vm" => SandboxKind::Vm,
+            "ssh" => SandboxKind::Ssh,
+            _ => SandboxKind::Peer,
+        }
+    }
+
     fn service(dir: &Path, config: SandboxConfig, stub: Option<PathBuf>) -> SandboxService {
         SandboxService::new(config, Arc::new(MemoryJournal::default()))
             .with_stub(stub)
@@ -399,7 +435,8 @@ mod tests {
         assert_eq!(statuses.iter().map(|status| status.kind).collect::<Vec<_>>(), SandboxKind::ALL);
         assert!(statuses.iter().all(|status| status.availability == Availability::Unavailable), "{statuses:#?}");
         assert!(by_kind(&statuses, SandboxKind::Local).detail.contains("loa-sandbox-stub was not found"));
-        assert_eq!(by_kind(&statuses, SandboxKind::Docker).detail, "Docker is not installed");
+        let docker_detail = if cfg!(windows) { REMOTE_STUB_UNSUPPORTED } else { "Docker is not installed" };
+        assert_eq!(by_kind(&statuses, SandboxKind::Docker).detail, docker_detail);
         assert_eq!(by_kind(&statuses, SandboxKind::Peer).detail, "Peer networking is not running");
         assert!(service.providers().is_empty());
         let template = SessionConfig::default();
@@ -433,20 +470,28 @@ mod tests {
         }
         let service = service(dir.path(), config, Some(stub)).with_peers(Arc::new(Peers));
         let statuses = service.probe().await;
-        assert!(statuses.iter().all(|status| status.availability == Availability::Ready), "{statuses:#?}");
-        assert_eq!(by_kind(&statuses, SandboxKind::Docker).detail, "Docker 27.1.0, default image debian:stable-slim");
-        assert!(by_kind(&statuses, SandboxKind::Ssh).detail.starts_with("build; hosts must run linux"));
+        assert!(statuses.iter().filter(|status| supported(status.kind)).all(|status| status.availability == Availability::Ready), "{statuses:#?}");
+        if cfg!(windows) {
+            for kind in [SandboxKind::Docker, SandboxKind::Ssh] {
+                let status = by_kind(&statuses, kind);
+                assert_eq!((status.availability, status.detail.as_str()), (Availability::Unavailable, REMOTE_STUB_UNSUPPORTED), "{kind:?}");
+            }
+        } else {
+            assert_eq!(by_kind(&statuses, SandboxKind::Docker).detail, "Docker 27.1.0, default image debian:stable-slim");
+            assert!(by_kind(&statuses, SandboxKind::Ssh).detail.starts_with(&format!("build; hosts must run {}", std::env::consts::OS)));
+        }
         assert_eq!(by_kind(&statuses, SandboxKind::Peer).detail, "studio");
         let mut kinds: Vec<_> = service.providers().iter().map(|provider| provider.kind()).collect();
         kinds.sort();
-        assert_eq!(kinds, SandboxKind::ALL);
+        assert_eq!(kinds, supported_kinds());
 
         let template = SessionConfig { session_id: "parent".into(), cwd: dir.path().into(), ..SessionConfig::default() };
         let (spec, _) = service.host_tool(Arc::new(crate::tests::NoAdapter), &template).unwrap();
         assert_eq!(spec.name, "sandbox_task");
         let schema: serde_json::Value = serde_json::from_str(&spec.input_schema).unwrap();
-        assert_eq!(schema["properties"]["kind"]["enum"], serde_json::json!(["local", "docker", "firecracker", "vm", "ssh", "peer"]));
-        assert!(spec.description.contains("- ssh: the SSH host build"), "{}", spec.description);
+        let expected_kinds: Vec<_> = ["local", "docker", "firecracker", "vm", "ssh", "peer"].into_iter().filter(|kind| supported(kind_of(kind))).collect();
+        assert_eq!(schema["properties"]["kind"]["enum"], serde_json::json!(expected_kinds));
+        assert_eq!(spec.description.contains("- ssh: the SSH host build"), !cfg!(windows), "{}", spec.description);
         assert!(spec.description.contains("- peer: a peer node; set options.peer to one of studio"), "{}", spec.description);
     }
 
@@ -465,12 +510,23 @@ mod tests {
         let service = service(dir.path(), SandboxConfig::default(), Some(stub));
         let statuses = service.probe().await;
         let docker = by_kind(&statuses, SandboxKind::Docker);
-        assert_eq!((docker.availability, docker.detail.as_str()), (Availability::Unavailable, "The Docker daemon is not reachable: Cannot connect to the Docker daemon at unix:///var/run/docker.sock."));
+        if cfg!(windows) {
+            assert_eq!((docker.availability, docker.detail.as_str()), (Availability::Unavailable, REMOTE_STUB_UNSUPPORTED));
+        } else {
+            assert_eq!((docker.availability, docker.detail.as_str()), (Availability::Unavailable, "The Docker daemon is not reachable: Cannot connect to the Docker daemon at unix:///var/run/docker.sock."));
+        }
         for kind in [SandboxKind::Firecracker, SandboxKind::Vm, SandboxKind::Ssh] {
-            assert_eq!(by_kind(&statuses, kind).availability, Availability::NotConfigured, "{kind:?}");
+            // Firecracker needs Linux: elsewhere it is unavailable, not unconfigured.
+            let expected = match kind {
+                SandboxKind::Firecracker if !cfg!(target_os = "linux") => Availability::Unavailable,
+                SandboxKind::Ssh if cfg!(windows) => Availability::Unavailable,
+                _ => Availability::NotConfigured,
+            };
+            assert_eq!(by_kind(&statuses, kind).availability, expected, "{kind:?}");
         }
         let mut kinds: Vec<_> = service.providers().iter().map(|provider| provider.kind()).collect();
         kinds.sort();
-        assert_eq!(kinds, [SandboxKind::Local, SandboxKind::Docker, SandboxKind::Ssh]);
+        let local_providers = if cfg!(windows) { vec![SandboxKind::Local] } else { vec![SandboxKind::Local, SandboxKind::Docker, SandboxKind::Ssh] };
+        assert_eq!(kinds, local_providers);
     }
 }

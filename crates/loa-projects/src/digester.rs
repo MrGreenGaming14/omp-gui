@@ -395,7 +395,7 @@ impl Summarizer for OmpSummarizer {
         let model = model.map(str::trim).filter(|m| !m.is_empty()).unwrap_or(&self.model);
         let mut overlay = tempfile::Builder::new().prefix("loa-digest-").suffix(".yml").tempfile()?;
         std::io::Write::write_all(&mut overlay, MEMORY_OFF.as_bytes())?;
-        let mut child = tokio::process::Command::new(&self.executable)
+        let mut child = tokio::process::Command::new(loa_exec::resolve(&self.executable))
             .args(self.args(model, overlay.path()))
             .current_dir(&self.cwd)
             .stdin(Stdio::piped())
@@ -528,10 +528,10 @@ mod tests {
         let script = format!(
             "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"{d}/args\"\ncat > \"{d}/stdin\"\n\
              while [ $# -gt 0 ]; do if [ \"$1\" = --config ]; then cp \"$2\" \"{d}/overlay\"; fi; shift; done\n{body}\n",
-            d = dir.display()
+            d = dir.display().to_string().replace('\\', "/")
         );
         loa_exec::write_executable(&path, script).unwrap();
-        path
+        loa_exec::resolve(&path)
     }
 
     #[tokio::test]

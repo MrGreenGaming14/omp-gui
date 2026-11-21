@@ -80,7 +80,6 @@ fn rollout_roundtrips_every_native_line_and_preserves_unknown_fields() {
     assert_eq!(actual, original, "native JSONL must survive import/export structurally");
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn fake_codex_process_drives_turn_and_receives_session_overrides() {
     let dir = tempfile::tempdir().expect("temp dir");
@@ -108,7 +107,7 @@ done
 "#).expect("fake script");
     let mut cfg = config();
     cfg.cwd = dir.path().to_path_buf();
-    cfg.env.insert("TRACE_FILE".into(), trace.to_string_lossy().into_owned());
+    cfg.env.insert("TRACE_FILE".into(), trace.to_string_lossy().replace('\\', "/"));
     cfg.mcp_servers.push(loa_adapter::McpServerSpec { name: "inventory".into(), transport: loa_adapter::McpTransport::Stdio { command: "inventory-mcp".into(), args: vec!["--stdio".into()], env: Default::default() } });
     let adapter = CodexAdapter::new("local-node").with_executable(script);
     let sink = Arc::new(MemorySink::new());

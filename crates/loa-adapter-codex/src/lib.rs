@@ -56,11 +56,11 @@ impl CodexAdapter {
     }
 }
 
-/// Codex's home directory from the environment: `$CODEX_HOME`, else `$HOME/.codex`.
+/// Codex's home directory from the environment: `$CODEX_HOME`, else `.codex` under the user's home.
 pub fn codex_home_from_env() -> Option<PathBuf> {
     match std::env::var_os("CODEX_HOME") {
         Some(home) if !home.is_empty() => Some(PathBuf::from(home)),
-        _ => std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".codex")),
+        _ => loa_core::home_dir().map(|home| home.join(".codex")),
     }
 }
 

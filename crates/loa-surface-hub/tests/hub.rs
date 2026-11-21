@@ -409,6 +409,7 @@ async fn a_vm_streams_h264_to_a_network_viewer_raw_frames_here_and_the_toggle_tu
     assert_eq!(&frame.data[..4], &[0, 200, 0, 255]);
 }
 
+#[cfg(target_os = "linux")]
 fn fake_xvfb(dir: &Path) -> std::path::PathBuf {
     let path = dir.join("Xvfb");
     // Reports a display like `-displayfd 1` asks, then serves nothing. The
@@ -419,6 +420,14 @@ fn fake_xvfb(dir: &Path) -> std::path::PathBuf {
     path
 }
 
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn the_virtual_display_says_it_needs_linux_elsewhere() {
+    let error = VirtualDisplaySetup::find(None, None).unwrap_err();
+    assert_eq!(error, "needs Linux (Xvfb)");
+}
+
+#[cfg(target_os = "linux")]
 #[tokio::test(flavor = "multi_thread")]
 async fn the_virtual_display_capture_is_refused_where_it_cant_run_and_tried_where_it_can() {
     let dir = tempfile::tempdir().unwrap();

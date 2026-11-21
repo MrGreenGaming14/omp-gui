@@ -16,9 +16,23 @@
 //! it and launches through [`retry_busy`], which waits out the short window
 //! in which a concurrently forked child still holds it.
 
+use std::ffi::OsStr;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
+
+/// Canonicalizes a path without a Windows verbatim prefix when an equivalent
+/// DOS path exists. Use for paths passed to programs that reject that prefix.
+pub fn canonicalize(path: impl AsRef<Path>) -> io::Result<PathBuf> {
+    #[cfg(windows)]
+    return dunce::canonicalize(path);
+    #[cfg(not(windows))]
+    path.as_ref().canonicalize()
+}
+
+/// Uses the ordinary Windows spelling only when it refers to the same path.
+#[cfg(windows)]
+pub use dunce::simplified as simplify;
 
 /// Calls `spawn` and, while it fails with `ETXTBSY` ("Text file busy"),
 /// calls it again after a short doubling backoff (2 ms up to 50 ms, about
@@ -63,10 +77,302 @@ pub fn write_executable(path: &Path, contents: impl AsRef<[u8]>) -> io::Result<(
     }
 }
 
-/// Writes `contents` to `path`. Without fork there is no race to avoid.
-#[cfg(not(unix))]
+/// Writes a shell-script fixture and a Windows launcher next to it.
+///
+/// Callers spawn [`resolve`]`(path)`, which finds the `.cmd` launcher through
+/// `PATHEXT`. The launcher uses Bash from Git for Windows; a checkout's CRLF
+/// line endings must not reach Bash.
+#[cfg(windows)]
 pub fn write_executable(path: &Path, contents: impl AsRef<[u8]>) -> io::Result<()> {
-    std::fs::write(path, contents)
+    let sidecar = |suffix: &str| {
+        let mut name = path.as_os_str().to_owned();
+        name.push(suffix);
+        PathBuf::from(name)
+    };
+    let contents = contents.as_ref();
+    let mut script = Vec::with_capacity(contents.len());
+    for (i, &byte) in contents.iter().enumerate() {
+        if byte != b'\r' || contents.get(i + 1) != Some(&b'\n') {
+            script.push(byte);
+        }
+    }
+    std::fs::write(sidecar(".sh"), script)?;
+    std::fs::write(sidecar(".cmd"), b"@bash.exe --noprofile --norc \"%~dpn0.sh\" %*\r\n")
+}
+
+/// Whether `path` names an executable file. Unix: a regular file with any
+/// execute bit set. Windows has no execute bit, so any existing regular
+/// file counts; [`find_executable`] decides by extension via `PATHEXT`.
+pub fn is_executable(path: &Path) -> bool {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return false;
+    };
+    if !meta.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        meta.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
+/// Resolves `program` to an executable file, like a shell would.
+///
+/// A bare name is searched in every directory of `PATH`; a path with
+/// separators is checked as given. On Windows the name is also tried with
+/// each `PATHEXT` extension (default `.COM;.EXE;.BAT;.CMD`) appended, never
+/// substituted, so `omp-1.2` stays intact. See [`find_executable_in`].
+pub fn find_executable(program: &Path) -> Option<PathBuf> {
+    find_executable_in(
+        program,
+        std::env::var_os("PATH").as_deref(),
+        std::env::var_os("PATHEXT").as_deref(),
+    )
+}
+
+/// The path to spawn for `program`: what [`find_executable`] resolves, else
+/// `program` unchanged so the spawn fails with its usual "not found" error.
+/// Spawning the resolved path is what makes npm `.cmd` shims run on Windows.
+pub fn resolve(program: &Path) -> PathBuf {
+    find_executable(program).unwrap_or_else(|| program.to_path_buf())
+}
+
+/// Testable core of [`find_executable`] with the `PATH` and `PATHEXT` values
+/// passed in. `pathext` is ignored outside Windows.
+pub fn find_executable_in(
+    program: &Path,
+    path_var: Option<&OsStr>,
+    pathext: Option<&OsStr>,
+) -> Option<PathBuf> {
+    if program.as_os_str().is_empty() {
+        return None;
+    }
+    if program.components().count() > 1 || program.has_root() {
+        return first_executable(program, pathext, false);
+    }
+    std::env::split_paths(path_var?)
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .find_map(|dir| first_executable(&dir.join(program), pathext, true))
+}
+
+/// Candidates for `base`: itself, then (Windows) with each extension appended.
+/// `searched` (bare-name search) tries `base` only when it already has
+/// an extension; an explicit path is always tried as given, and gets
+/// extensions appended only when it has none.
+#[cfg_attr(not(windows), allow(unused_variables))]
+fn first_executable(base: &Path, pathext: Option<&OsStr>, searched: bool) -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        let has_ext = base.extension().is_some();
+        if (has_ext || !searched) && is_executable(base) {
+            return Some(base.to_path_buf());
+        }
+        if searched || !has_ext {
+            let exts = pathext
+                .map(|p| p.to_string_lossy().into_owned())
+                .filter(|p| !p.trim().is_empty())
+                .unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".to_owned());
+            for ext in exts.split(';').map(str::trim).filter(|e| !e.is_empty()) {
+                let mut name = base.as_os_str().to_owned();
+                if !ext.starts_with('.') {
+                    name.push(".");
+                }
+                // PATHEXT is upper case; files are almost always lower case
+                // and Windows matches names case-insensitively, so report
+                // the path the way the file is usually spelled.
+                name.push(ext.to_ascii_lowercase());
+                let candidate = PathBuf::from(name);
+                if is_executable(&candidate) {
+                    return Some(candidate);
+                }
+            }
+        }
+        None
+    }
+    #[cfg(not(windows))]
+    {
+        is_executable(base).then(|| base.to_path_buf())
+    }
+}
+
+#[cfg(test)]
+mod find_tests {
+    use super::*;
+    use std::ffi::OsString;
+
+    fn make(dir: &Path, name: &str) -> PathBuf {
+        let path = dir.join(name);
+        std::fs::write(&path, "x").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        path
+    }
+
+    fn path_of(dirs: &[&Path]) -> OsString {
+        std::env::join_paths(dirs).unwrap()
+    }
+
+    /// `name` as a launchable file: unchanged on Unix, with `.exe` on Windows,
+    /// where a file without a PATHEXT extension isn't an executable.
+    fn exe(name: &str) -> String {
+        if cfg!(windows) { format!("{name}.exe") } else { name.to_owned() }
+    }
+
+    /// Paths compared the way the filesystem does: Windows matches names
+    /// case-insensitively, so `tool.CMD` from PATHEXT is the file `tool.cmd`.
+    fn norm(path: Option<PathBuf>) -> Option<String> {
+        path.map(|p| {
+            let text = p.to_string_lossy().into_owned();
+            if cfg!(windows) { text.to_lowercase() } else { text }
+        })
+    }
+
+    #[test]
+    fn is_executable_rejects_missing_and_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!is_executable(&dir.path().join("nope")));
+        assert!(!is_executable(dir.path()));
+        assert!(is_executable(&make(dir.path(), "tool.exe")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn is_executable_needs_exec_bit_on_unix() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let file = make(dir.path(), "tool");
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(!is_executable(&file));
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o100)).unwrap();
+        assert!(is_executable(&file));
+    }
+
+    #[test]
+    fn bare_name_found_on_path() {
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        let want = make(b.path(), &exe("omp-tool"));
+        let var = path_of(&[a.path(), b.path()]);
+        assert_eq!(norm(find_executable_in(Path::new("omp-tool"), Some(&var), None)), norm(Some(want)));
+        assert_eq!(find_executable_in(Path::new("missing"), Some(&var), None), None);
+        assert_eq!(find_executable_in(Path::new("omp-tool"), None, None), None);
+    }
+
+    #[test]
+    fn first_path_entry_wins() {
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        let want = make(a.path(), &exe("dup"));
+        make(b.path(), &exe("dup"));
+        let var = path_of(&[a.path(), b.path()]);
+        assert_eq!(norm(find_executable_in(Path::new("dup"), Some(&var), None)), norm(Some(want)));
+    }
+
+    #[test]
+    fn path_with_separator_is_not_searched() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        let want = make(&sub, "tool");
+        let var = path_of(&[dir.path()]);
+        assert_eq!(find_executable_in(&want, Some(&var), None), Some(want.clone()));
+        // "sub/tool" relative to PATH dir must not be resolved via PATH.
+        assert_eq!(find_executable_in(Path::new("sub/tool"), Some(&var), None), None);
+        assert_eq!(find_executable_in(&sub.join("absent"), Some(&var), None), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_executable_file_skipped_on_unix() {
+        use std::os::unix::fs::PermissionsExt;
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        let plain = make(a.path(), "tool");
+        std::fs::set_permissions(&plain, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let want = make(b.path(), "tool");
+        let var = path_of(&[a.path(), b.path()]);
+        assert_eq!(find_executable_in(Path::new("tool"), Some(&var), None), Some(want));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pathext_ignored_on_unix() {
+        let dir = tempfile::tempdir().unwrap();
+        make(dir.path(), "tool.exe");
+        let var = path_of(&[dir.path()]);
+        let ext = OsString::from(".EXE");
+        assert_eq!(find_executable_in(Path::new("tool"), Some(&var), Some(&ext)), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn pathext_appended_on_windows() {
+        let dir = tempfile::tempdir().unwrap();
+        let want = make(dir.path(), "tool.cmd");
+        let var = path_of(&[dir.path()]);
+        let ext = OsString::from(".EXE;.CMD");
+        assert_eq!(norm(find_executable_in(Path::new("tool"), Some(&var), Some(&ext))), norm(Some(want)));
+        // Default PATHEXT when unset.
+        assert!(find_executable_in(Path::new("tool"), Some(&var), None).is_some());
+        // Extension not in PATHEXT is not found.
+        let only_exe = OsString::from(".EXE");
+        assert_eq!(find_executable_in(Path::new("tool"), Some(&var), Some(&only_exe)), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn dotted_names_keep_their_suffix_on_windows() {
+        let dir = tempfile::tempdir().unwrap();
+        let want = make(dir.path(), "omp-1.2.exe");
+        make(dir.path(), "omp-1.exe");
+        let var = path_of(&[dir.path()]);
+        let ext = OsString::from(".EXE");
+        assert_eq!(norm(find_executable_in(Path::new("omp-1.2"), Some(&var), Some(&ext))), norm(Some(want)));
+        // A name that exists as-is with an extension wins over appending.
+        let exact = make(dir.path(), "run.bat");
+        assert_eq!(norm(find_executable_in(Path::new("run.bat"), Some(&var), Some(&ext))), norm(Some(exact)));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn explicit_path_gets_pathext_when_extensionless_on_windows() {
+        let dir = tempfile::tempdir().unwrap();
+        let want = make(dir.path(), "tool.exe");
+        let ext = OsString::from(".EXE");
+        assert_eq!(norm(find_executable_in(&dir.path().join("tool"), None, Some(&ext))), norm(Some(want)));
+    }
+
+    #[test]
+    fn resolve_keeps_an_unfound_program_as_given() {
+        assert_eq!(resolve(Path::new("loa-surely-missing-program")), PathBuf::from("loa-surely-missing-program"));
+        let dir = tempfile::tempdir().unwrap();
+        let tool = make(dir.path(), "tool.exe");
+        assert_eq!(resolve(&tool), tool);
+    }
+}
+
+#[cfg(all(test, windows))]
+#[test]
+fn windows_script_fixture_preserves_args_streams_and_exit_code() {
+    let dir = tempfile::tempdir().unwrap();
+    let script = dir.path().join("fake tool");
+    write_executable(
+        &script,
+        "#!/usr/bin/env bash\r\nprintf '%s' \"$1\"\r\nprintf 'diagnostic' >&2\r\nexit 3\r\n",
+    )
+    .unwrap();
+    let result = std::process::Command::new(resolve(&script)).arg("two words").output().unwrap();
+    assert_eq!(result.stdout, b"two words");
+    assert_eq!(result.stderr, b"diagnostic");
+    assert_eq!(result.status.code(), Some(3));
 }
 
 #[cfg(all(test, unix))]

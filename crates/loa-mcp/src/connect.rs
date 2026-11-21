@@ -103,17 +103,22 @@ pub(crate) async fn connect<H: ClientHandler>(
 }
 
 fn spawn(stdio: &StdioSpec) -> std::io::Result<(TokioChildProcess, Option<ChildStderr>)> {
-    let mut command = tokio::process::Command::new(&stdio.command);
+    let mut command = tokio::process::Command::new(loa_exec::resolve(std::path::Path::new(&stdio.command)));
     command.args(&stdio.args).envs(&stdio.env);
     if let Some(cwd) = &stdio.cwd {
+        #[cfg(windows)]
+        command.current_dir(loa_exec::simplify(cwd));
+        #[cfg(not(windows))]
         command.current_dir(cwd);
     }
-    #[cfg_attr(not(unix), expect(unused_mut))]
+    #[cfg_attr(not(any(unix, windows)), expect(unused_mut))]
     let mut command = process_wrap::tokio::CommandWrap::from(command);
     // Its own process group, so shutdown also reaches what the server
     // spawned (`npx` runs the real server as a grandchild).
     #[cfg(unix)]
     command.wrap(process_wrap::tokio::ProcessGroup::leader());
+    #[cfg(windows)]
+    command.wrap(process_wrap::tokio::KillOnDrop).wrap(process_wrap::tokio::JobObject);
     TokioChildProcess::builder(command).stderr(Stdio::piped()).spawn()
 }
 

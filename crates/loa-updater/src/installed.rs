@@ -1,37 +1,18 @@
 //! Finds a product's executable and asks it for its version.
 
 use semver::Version;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 use tokio::process::Command;
 
-/// `name` resolved against `PATH` when it is a bare name; paths are kept as
-/// they are when they exist.
-pub fn find_executable(name: &Path) -> Option<PathBuf> {
-    if name.components().count() > 1 {
-        return is_executable(name).then(|| name.to_path_buf());
-    }
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path).map(|dir| dir.join(name)).find(|candidate| is_executable(candidate))
-}
-
-#[cfg(unix)]
-fn is_executable(path: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-}
-
-#[cfg(not(unix))]
-fn is_executable(path: &Path) -> bool {
-    path.is_file()
-}
+pub use loa_exec::find_executable;
 
 /// Runs `<executable> --version` and reads the first semantic version in
 /// its output: `omp/19.0.0`, `2.0.14 (Claude Code)`, `codex-cli 0.46.0`.
 pub async fn executable_version(executable: &Path, timeout: Duration) -> Result<Version, String> {
     let child = loa_exec::retry_busy(|| {
-        Command::new(executable)
+        Command::new(loa_exec::resolve(executable))
             .arg("--version")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -75,7 +56,9 @@ mod tests {
 
     #[test]
     fn bare_names_resolve_on_path_and_paths_must_exist() {
-        let sh = find_executable(Path::new("sh")).expect("sh on PATH");
+        // The shell every platform ships: `sh` is not on a Windows PATH, `cmd` is.
+        let shell = if cfg!(windows) { "cmd" } else { "sh" };
+        let sh = find_executable(Path::new(shell)).unwrap_or_else(|| panic!("{shell} on PATH"));
         assert!(sh.is_absolute());
         assert_eq!(find_executable(&sh), Some(sh.clone()));
         assert_eq!(find_executable(Path::new("/nonexistent/loa-updater-test")), None);

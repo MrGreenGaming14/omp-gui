@@ -155,23 +155,24 @@ fn remote_state() -> (State, tokio::sync::mpsc::UnboundedReceiver<LoopbackSessio
 
 #[tokio::test]
 async fn local_shell_tab_runs_typed_commands_resizes_and_exits() {
+    use crate::local::testing::{EXIT_7, PWD, SIZE, printed, shell};
+
     let dir = tempfile::tempdir().unwrap();
     let cwd = dir.path().canonicalize().unwrap();
-    let mut shell = LocalShell::program("/bin/sh", Vec::<std::ffi::OsString>::new(), &cwd);
-    shell.env.push(("PS1".into(), "$ ".into()));
+    let shell = shell(&cwd);
     let mut h = Harness::new(State::new(metrics(), shell.clone()));
     let id = h.open(Target::Local(shell));
     // Typed before the shell is up: must not be lost.
-    h.type_text(id, "pwd\r");
-    h.until_screen(id, cwd.to_str().unwrap()).await;
+    h.type_text(id, &format!("{PWD}\r"));
+    h.until_screen(id, &printed(&cwd)).await;
     assert_eq!(h.state.status(id), Some(&Status::Running));
 
     // The pane is laid out at 50x10 cells.
     h.canvas(id, CanvasEvent::Resized(metrics().grid_for(Size::new(400.0, 160.0))));
-    h.type_text(id, "stty size\r");
+    h.type_text(id, &format!("{SIZE}\r"));
     h.until_screen(id, "10 50").await;
 
-    h.type_text(id, "exit 7\r");
+    h.type_text(id, &format!("{EXIT_7}\r"));
     h.until("exit event", |h| !h.events.is_empty()).await;
     assert_eq!(h.events, [Event::Exited { tab: id, exit_code: Some(7) }]);
     assert!(h.state.is_empty());

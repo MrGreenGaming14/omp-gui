@@ -84,7 +84,7 @@ impl CommandConnector {
 impl Connector for CommandConnector {
     async fn connect(&self, config: &SessionConfig) -> Result<Transport> {
         let program = config.executable.as_ref().unwrap_or(&self.program);
-        let mut child = Command::new(program)
+        let mut child = Command::new(loa_exec::resolve(program))
             .args(&self.args)
             .current_dir(&config.cwd)
             .envs(&config.env)
@@ -172,7 +172,7 @@ impl AcpAdapter {
         if !config.host_tools.is_empty() {
             return Err(AdapterError::Unsupported { harness: HARNESS, what: "host tools" });
         }
-        let cwd = config.cwd.canonicalize()?;
+        let cwd = loa_exec::canonicalize(&config.cwd)?;
         let transport = self.connector.connect(config).await?;
         let rpc = Rpc::new(transport.to_agent);
         let projector = Projector::new(sink, root, model);

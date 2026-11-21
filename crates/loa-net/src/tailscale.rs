@@ -36,7 +36,7 @@ pub trait NodeProbe: Send + Sync {
 
 /// Runs the given executable as `tailscale status --json`; never invokes a shell.
 pub async fn status(executable: &Path) -> Result<Vec<TailnetPeer>> {
-    let output = Command::new(executable)
+    let output = Command::new(loa_exec::resolve(executable))
         .args(["status", "--json"])
         .output()
         .await
@@ -170,7 +170,6 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn fake_executable_supplies_status_without_tailnet() {
         let dir = tempfile::tempdir().unwrap();

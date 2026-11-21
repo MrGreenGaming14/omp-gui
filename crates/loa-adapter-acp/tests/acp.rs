@@ -230,7 +230,7 @@ async fn start_negotiates_and_hands_mcp_servers_to_session_new() {
     assert_eq!(init["protocolVersion"], 1);
     assert_eq!(init["clientCapabilities"]["fs"], json!({ "readTextFile": true, "writeTextFile": true }));
     assert_eq!(init["clientCapabilities"]["terminal"], true);
-    let cwd = dir.path().canonicalize().unwrap();
+    let cwd = loa_exec::canonicalize(dir.path()).unwrap();
     assert_eq!(new["cwd"], cwd.to_str().unwrap());
     assert_eq!(
         new["mcpServers"],
@@ -579,7 +579,7 @@ async fn file_requests_stay_inside_the_session_cwd() {
     let dir = tempfile::tempdir().unwrap();
     let cwd = dir.path().join("project");
     std::fs::create_dir(&cwd).unwrap();
-    let cwd = cwd.canonicalize().unwrap();
+    let cwd = loa_exec::canonicalize(&cwd).unwrap();
     std::fs::write(cwd.join("notes.txt"), "a\nb\nc\n").unwrap();
     let (_adapter, mut agent, _session, _sink) = started(&cwd).await;
 
@@ -610,12 +610,13 @@ async fn file_requests_stay_inside_the_session_cwd() {
     assert_eq!(agent.expect_response(6).await["error"]["code"], -32002);
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn terminals_run_inside_the_session_cwd() {
     let dir = tempfile::tempdir().unwrap();
     let cwd = dir.path().join("project");
     std::fs::create_dir(&cwd).unwrap();
-    let cwd = cwd.canonicalize().unwrap();
+    let cwd = loa_exec::canonicalize(&cwd).unwrap();
     let (_adapter, mut agent, _session, _sink) = started(&cwd).await;
 
     agent
@@ -653,6 +654,34 @@ async fn terminals_run_inside_the_session_cwd() {
 
     agent.request(12, "terminal/create", json!({ "command": "true", "cwd": dir.path() })).await;
     assert!(agent.expect_response(12).await.get("error").is_some());
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn terminals_run_in_a_plain_non_verbatim_cwd() {
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().join("project");
+    std::fs::create_dir(&cwd).unwrap();
+    let cwd = loa_exec::canonicalize(&cwd).unwrap();
+    assert!(!cwd.to_string_lossy().starts_with(r"\\?\"));
+    let (_adapter, mut agent, _session, _sink) = started(&cwd).await;
+
+    agent.request(1, "terminal/create", json!({ "command": "cmd", "args": ["/C", "cd & echo %GREETING% 1>&2 & exit 3"], "env": [{ "name": "GREETING", "value": "hi" }] })).await;
+    let id = agent.expect_response(1).await["result"]["terminalId"].clone();
+    agent.request(2, "terminal/wait_for_exit", json!({ "terminalId": id })).await;
+    assert_eq!(agent.expect_response(2).await["result"]["exitCode"], 3);
+    agent.request(3, "terminal/output", json!({ "terminalId": id })).await;
+    let output = agent.expect_response(3).await["result"].clone();
+    let text = output["output"].as_str().unwrap();
+    assert!(text.contains(cwd.to_str().unwrap()), "{text}");
+    assert!(text.contains("hi"), "{text}");
+
+    agent.request(4, "terminal/create", json!({ "command": "ping", "args": ["-n", "600", "127.0.0.1"] })).await;
+    let id = agent.expect_response(4).await["result"]["terminalId"].clone();
+    agent.request(5, "terminal/kill", json!({ "terminalId": id })).await;
+    agent.expect_response(5).await;
+    agent.request(6, "terminal/wait_for_exit", json!({ "terminalId": id })).await;
+    agent.expect_response(6).await;
 }
 
 #[tokio::test]
@@ -750,11 +779,10 @@ async fn agent_exit_mid_turn_fails_the_turn_and_closes_the_session() {
     assert!(matches!(session.send(prompt("more")).await, Err(AdapterError::Closed)));
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn command_connector_runs_the_agent_process() {
     let dir = tempfile::tempdir().unwrap();
-    let script = dir.path().join("agent.sh");
+    let script = dir.path().join("agent");
     loa_exec::write_executable(
         &script,
         "#!/bin/sh\n\

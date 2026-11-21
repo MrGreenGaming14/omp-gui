@@ -68,11 +68,19 @@ impl DesktopNotifier {
             .summary(&notice.heading())
             .body(&notice.summary);
         async move {
-            notification
-                .show_async()
-                .await
-                .map(drop)
-                .map_err(|e| NotifyError(e.to_string()))
+            #[cfg(not(windows))]
+            let shown = notification.show_async().await;
+            // `show_async` does not exist on Windows: run the blocking
+            // `show` on its own thread so the UI never waits on it.
+            #[cfg(windows)]
+            let shown = {
+                let (sender, receiver) = iced::futures::channel::oneshot::channel();
+                std::thread::spawn(move || {
+                    let _ = sender.send(notification.show());
+                });
+                receiver.await.map_err(|e| NotifyError(e.to_string()))?
+            };
+            shown.map(drop).map_err(|e| NotifyError(e.to_string()))
         }
     }
 }

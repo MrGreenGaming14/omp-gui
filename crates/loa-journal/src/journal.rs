@@ -180,14 +180,13 @@ impl Journal {
         let lock = lock(dir)?;
         let found = recover(dir)?;
         let path = dir.join(JOURNAL_FILE);
-        let file = OpenOptions::new().read(true).append(true).open(&path).at(&path)?;
         let truncation = if found.end < found.file_len {
-            file.set_len(found.end).at(&path)?;
-            file.sync_all().at(&path)?;
+            truncate_file(&path, found.end).at(&path)?;
             Some(Truncation { offset: found.end, dropped_bytes: found.file_len - found.end, last_seq: found.last_seq })
         } else {
             None
         };
+        let file = OpenOptions::new().read(true).append(true).open(&path).at(&path)?;
         remove_temp_files(dir)?;
         let journal = Self {
             dir: dir.to_owned(),
@@ -265,7 +264,7 @@ impl Journal {
             // Cut a partial record so the file ends on a record boundary. If
             // that fails too, refuse further appends: they would land after
             // the partial bytes and turn a torn tail into mid-file damage.
-            self.damaged = self.file.set_len(self.end).is_err();
+            self.damaged = truncate_file(&self.path, self.end).is_err();
             return Err(Error::Io { path: self.path.clone(), source });
         }
         if (patch.seq - 1).is_multiple_of(CHECKPOINT_EVERY) {
@@ -533,6 +532,14 @@ pub(crate) fn lock(dir: &Path) -> Result<File> {
             Err(std::fs::TryLockError::Error(e)) => return Err(Error::Io { path, source: e }),
         }
     }
+}
+
+/// Truncate `path` to `len` through a dedicated write handle: an append-only
+/// handle lacks the write-data access `set_len` needs on Windows.
+fn truncate_file(path: &Path, len: u64) -> std::io::Result<()> {
+    let file = OpenOptions::new().write(true).open(path)?;
+    file.set_len(len)?;
+    file.sync_all()
 }
 
 fn remove_temp_files(dir: &Path) -> Result<()> {

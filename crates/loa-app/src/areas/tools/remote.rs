@@ -315,7 +315,7 @@ pub(crate) struct SshPaths {
 
 impl SshPaths {
     pub(crate) fn from_env() -> Self {
-        let home = std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from);
+        let home = loa_core::home_dir().unwrap_or_else(|| PathBuf::from("/"));
         let user = std::env::var("USER").or_else(|_| std::env::var("LOGNAME")).unwrap_or_else(|_| "root".to_owned());
         Self { home, user }
     }

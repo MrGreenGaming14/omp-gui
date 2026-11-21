@@ -175,7 +175,7 @@ type Roles = Vec<(String, Vec<String>)>;
 
 impl State {
     pub fn new(ctx: &mut Ctx) -> (Self, Task<Message>) {
-        let home = std::env::var_os("HOME").map_or_else(|| PathBuf::from("."), PathBuf::from);
+        let home = loa_core::home_dir().unwrap_or_else(|| PathBuf::from("."));
         // Unit tests never make model calls; they install a fake.
         let small = if cfg!(test) {
             None
@@ -853,7 +853,7 @@ fn model_roles(home: &Path) -> Result<Roles, String> {
 
 /// `name` on `PATH`.
 fn on_path(name: &str) -> Option<PathBuf> {
-    std::env::split_paths(&std::env::var_os("PATH")?).map(|dir| dir.join(name)).find(|path| path.is_file())
+    loa_exec::find_executable(Path::new(name))
 }
 
 impl Area for State {

@@ -113,6 +113,18 @@ impl InputLog {
     }
 }
 
+/// What a raw-capture thread needs from its tab.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) struct CaptureTarget {
+    pub hub: Arc<FrameHub>,
+    pub log: Arc<Mutex<InputLog>>,
+    /// Surface size; the capture is clipped to it.
+    pub size: Arc<Mutex<(u32, u32)>>,
+    pub stop: std::sync::atomic::AtomicBool,
+    pub keyframe: std::sync::atomic::AtomicBool,
+    pub interval: std::time::Duration,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
