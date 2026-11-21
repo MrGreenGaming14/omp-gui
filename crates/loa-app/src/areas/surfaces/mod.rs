@@ -1,13 +1,6 @@
 //! The Surfaces panel tab: browser tabs, documents, VMs and surfaces MCP
 //! servers declare, drawn by the generic surface renderer, and the
 //! `surface_*` tools sessions drive them with.
-//!
-//! - The [`SurfaceHub`] opens and keeps the surfaces, whoever opened them
-//!   (the launcher in the tab, or an agent tool call).
-//! - Sessions get the tools as host tools when their harness takes them,
-//!   else as the loopback [`McpEndpoint`]'s MCP servers.
-//! - Every surface opened is recorded as a `<surface>` element in the active
-//!   session, under its running turn, and marked closed when it closes.
 
 use std::collections::HashMap;
 use std::sync::Arc;

@@ -1,24 +1,4 @@
-//! Session features around the chat:
-//!
-//! - Recents: delete a session from its sidebar row or the palette
-//! - fork (palette, Session tree) and rewind (a user message in the chat, the
-//!   Session tree): a new session branched off through loa-features, natively
-//!   when the harness forks, else a fresh session seeded with the history
-//! - compaction (`/compact`, palette): native, else a small-model summary
-//!   carried into a fresh session
-//! - `/` commands in the composer: the app's (this area's, plus `/new` and
-//!   `/model`, which the app runs) and the harness's own, listed from the
-//!   commands its adapter records in the session
-//! - model roles (palette, `/role`): switch the running session to a role's
-//!   model
-//! - the Agents tab (jobs, live, with omp's `wait`) and opening a subagent's
-//!   linked child session; the tab shows up when a job starts, and the
-//!   Session tree when a fork or rewind makes a branch
-//! - links in the transcript open in the system browser
-//! - plan mode on harnesses without it: read-only through the harness's tool
-//!   approvals, then a plan review card
-//! - rules and advisor around each turn on harnesses without them
-//! - import of native sessions and export as native file or debugging XML
+//! Session features around the chat.
 
 mod transfer;
 mod tree;
@@ -55,8 +35,7 @@ use crate::session::new_session_id;
 const SMALL_MODEL: &str = "@smol";
 /// How often the Agents tab advances elapsed times while a job runs.
 const TICK: Duration = Duration::from_secs(1);
-/// Palette command ids. Every `/` command but the app's `/new` is this
-/// area's; [`State::COMMANDS`] lists them in the composer's order.
+/// Palette command ids.
 const PLAN: &str = "sessions.plan";
 const ROLE: &str = "sessions.role.";
 
@@ -257,7 +236,7 @@ impl State {
     }
 
     /// Branches the session `source` at `target`: a fork when `current` is
-    /// `None`, else a rewind from `current`. The branch becomes active.
+    /// `None`, else a rewind from `current`.
     fn branch(&mut self, ctx: &mut Ctx, source: &str, target: loa_harness::features::Result<Dom>, current: Option<Dom>) {
         let verb = if current.is_some() { "rewind" } else { "fork" };
         let target = match target {
@@ -660,8 +639,7 @@ impl State {
 
 /// The composer's `/` commands: the app's (`app`), then the harness's own
 /// from the latest list its adapter recorded in `dom` (omp's `commands`,
-/// ACP's `availableCommands`). A harness command named like an app command
-/// is left out: the app's runs.
+/// ACP's `availableCommands`).
 fn composer_commands(app: &[composer::Command], dom: Option<&Dom>) -> Vec<composer::Command> {
     let mut commands = app.to_vec();
     let listed = dom.and_then(|dom| {
@@ -715,7 +693,6 @@ fn capabilities(ctx: &Ctx, harness: &str) -> Capabilities {
 }
 
 /// Titles the new session `id`.
-/// Whether `harness` runs on an app approval mode, asking before each tool that writes or executes.
 fn asks_first(ctx: &Ctx, harness: &str) -> bool {
     !ctx.services.harnesses.traits(harness).approval_modes.is_empty()
 }

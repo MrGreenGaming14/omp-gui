@@ -3,16 +3,6 @@
 //! user), feed checks at startup and every `[updater].check_interval_secs`,
 //! staging, gate checks, hold choices, swaps between turns, rollback and the
 //! peers that are behind.
-//!
-//! Swaps never happen mid turn: the area counts running turns from session
-//! events and swaps cleared versions once none runs. New sessions of omp and
-//! the harnesses start the version the updater made current; running
-//! sessions keep theirs.
-//!
-//! Pins live in the central config (`[updater].pins`); the updater's own
-//! state mirrors them. `[updater].github_token` raises GitHub's rate limit
-//! and `[updater].trusted_keys` are the keys app releases must be signed
-//! with.
 
 use loa_util::time::now_secs;
 use std::collections::BTreeMap;

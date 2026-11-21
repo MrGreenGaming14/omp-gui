@@ -1,22 +1,5 @@
 //! The contract every feature area implements, and the context the app hands
 //! each one.
-//!
-//! An area lives in `src/areas/<area>/` and owns its state, its `Message`
-//! type and its behavior. The app holds every area in one
-//! [`Registry`](crate::areas::Registry), built from the `AREAS` table, and
-//! calls it through [`AreaDyn`]:
-//!
-//! - its own messages travel as [`Message::Area`] (build them with
-//!   [`Message::area`]) and reach [`Area::update`]
-//! - its [`Area::COMMANDS`] are listed in the palette, run by their ids and,
-//!   with a `slash` name, typed as `/` commands in the composer
-//! - panel tabs it declares ([`Area::panel_tabs`]) are drawn by
-//!   [`Area::view_tab`] and opened with [`Ctx::open_tab`]
-//! - a full-center screen is drawn by [`Area::view_screen`] while
-//!   [`Ctx::show_screen`] points at the area
-//! - every new or resumed session gets [`Area::contribute`] and
-//!   [`Area::host_tools`]
-//! - every session change arrives at [`Area::on_session_event`]
 
 use std::any::Any;
 use std::fmt;
@@ -99,8 +82,7 @@ pub struct PanelTab {
     pub id: String,
     pub title: String,
     pub icon: Option<loa_ui_kit::Icon>,
-    /// Listed in the panel from the start. Other tabs are added when opened
-    /// (palette "Open … tab" or [`Ctx::open_tab`]).
+    /// Listed in the panel from the start.
     pub shown: bool,
 }
 
@@ -135,8 +117,7 @@ pub struct HostToolSet {
     pub handler: Arc<dyn HostTools>,
 }
 
-/// App-level actions an area asks for. Run by the app right after the area
-/// call returns.
+/// App-level actions an area asks for.
 #[derive(Clone)]
 pub enum Request {
     /// Start a session on `Sessions::harness`, with every area's
@@ -158,8 +139,7 @@ pub enum Request {
     /// active session.
     Spawn(Spawn),
     /// Make `project` and its folder `cwd` the active ones: the Files tab,
-    /// new terminals, the Diff tab and new sessions follow. Running sessions
-    /// keep their folder.
+    /// new terminals, the Diff tab and new sessions follow.
     ActivateProject { project: String, cwd: PathBuf },
     /// Run this message through the app's `update`, e.g. to hand a decision
     /// answer to the area that owns it.
@@ -194,13 +174,11 @@ pub struct Ctx {
     pub composer: composer::State,
     pub keymap: palette::Keymap,
     /// App tools areas serve to sessions, as the Tools panel lists them.
-    /// Each area replaces its own entries by name ([`Ctx::set_app_tool`]).
     pub app_tools: Vec<loa_ui_panel::tools::ToolInfo>,
     /// Peers the peers area knows; refreshed by it.
     pub peers: Vec<loa_p2p::PeerInfo>,
     /// The running peer node, set by the peers area each time it opens one;
-    /// clones of the slot see the current node. Areas add protocols to it
-    /// before it starts (`loa_p2p::Node::add_protocol`).
+    /// clones of the slot see the current node.
     pub node: loa_p2p::NodeSlot,
     /// The app's `/` commands, from every [`Area::COMMANDS`].
     pub slash: Vec<composer::Command>,
@@ -292,14 +270,13 @@ impl Ctx {
     }
 
     /// Closes session `id`: its writer stops and its journal is released; it
-    /// stays in Recents and reopens from the journal. Returns its harness
-    /// for the caller to shut down.
+    /// stays in Recents and reopens from the journal.
     pub fn close_session(&mut self, id: &str) -> Option<Arc<dyn HarnessSession>> {
         self.end_session(id, false)
     }
 
     /// Closes session `id`, deletes its journal and removes it from the
-    /// sidebar. Returns its harness for the caller to shut down.
+    /// sidebar.
     pub fn discard_session(&mut self, id: &str) -> Option<Arc<dyn HarnessSession>> {
         self.end_session(id, true)
     }
@@ -357,16 +334,12 @@ pub trait Area: Sized + 'static {
     }
 
     /// Adds to the config of every session started or resumed on `target`:
-    /// MCP servers, context, disabled tools, env. Host tools go through
-    /// [`Area::host_tools`]; the app sets `host_tools` and
-    /// `host_tool_handler` after every area contributed.
+    /// MCP servers, context, disabled tools, env.
     fn contribute(&self, config: &mut SessionConfig, target: &Target<'_>, ctx: &Ctx) {
         let _ = (config, target, ctx);
     }
 
-    /// Host tools for a session on `target`. `config` is the session's
-    /// config after every area's `contribute`. The app routes every area's
-    /// tools through one `HostToolRouter` by tool name.
+    /// Host tools for a session on `target`.
     fn host_tools(&self, config: &SessionConfig, target: &Target<'_>, ctx: &Ctx) -> Option<HostToolSet> {
         let _ = (config, target, ctx);
         None

@@ -1,7 +1,6 @@
 //! A peer's shared folder opened on this node: its files listed over
 //! `omp/folder/1`, folders entered, a file opened in a preview, and with a
-//! write grant edited and saved back to the peer. The peer checks every
-//! request against its grant and keeps it inside the folder.
+//! write grant edited and saved back to the peer.
 
 use iced::widget::{button, column, container, row, scrollable, space, text, text_editor};
 use iced::{Alignment, Element, Fill, Length, Task};

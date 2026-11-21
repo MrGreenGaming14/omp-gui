@@ -1,6 +1,5 @@
 //! The Peers panel (`loa_ui_settings::peers`) over a [`Node`]: the snapshot it shows
-//! and the effects of its events. The app area only forwards: it puts
-//! [`data`] into the panel and runs [`apply`] for each panel event.
+//! and the effects of its events.
 
 use loa_p2p::{
     Availability, DiscoverySource, Endpoint, GrantDirection, GrantInfo, KeySource, NearbySource, Node, NodeError,

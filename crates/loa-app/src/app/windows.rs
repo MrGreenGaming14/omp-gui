@@ -1,9 +1,5 @@
 //! Configs (a center screen) and Settings (a window), each a side menu over
 //! existing area screens plus the agent, skill and rule files omp reads.
-//!
-//! Configs is for what shapes the agents: model roles, tools and MCP
-//! servers, agent definitions, skills and rules, at project or global scope.
-//! Settings is for the app itself: theme, peers, harness sign-in, updates.
 
 use loa_util::fs::home;
 use std::path::{Path, PathBuf};

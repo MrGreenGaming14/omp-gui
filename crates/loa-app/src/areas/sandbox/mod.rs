@@ -1,10 +1,5 @@
 //! `sandbox_task`: every session on a harness that takes host tools gets the
 //! tool from [`SandboxService`], with the providers this machine can run.
-//! The Tools panel lists each provider's availability and why not; the
-//! Sandbox tab lists the runs, shows the patch an isolated run returns,
-//! applies it to the workspace and holds the provider settings
-//! (`<data>/sandbox.json`). Worker sessions are journaled in the session
-//! library like any other session and open from their run.
 
 use std::path::PathBuf;
 use std::sync::Arc;

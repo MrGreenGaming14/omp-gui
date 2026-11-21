@@ -24,8 +24,7 @@ pub(super) fn short_description(text: &str) -> String {
     }
 }
 
-/// A server the manager runs, as a panel row. Servers whose tools are
-/// `surface_*` tools are marked as surface servers.
+/// A server the manager runs, as a panel row.
 pub(super) fn server(view: &ServerView) -> tools::McpServer {
     let status = match &view.status {
         Status::Starting => tools::ServerStatus::Starting,
@@ -112,12 +111,7 @@ pub(super) fn outcomes(report: &ImportReport) -> Vec<(tools::ImportSource, Strin
 }
 
 /// Per peer, the tools its live grants let it have the agent use, as the
-/// grant checks decide them:
-/// - every tool needs drive on a session (or a turn, project, future sessions)
-/// - `remote` tools also need an SSH grant on a known host: exec for
-///   `remote_bash`, read for the others
-/// - `surface_*` tools need a grant on a surface of their server: view for
-///   `surface_screenshot`, drive otherwise
+/// grant checks decide them.
 pub(super) fn peer_tools(
     issued: &[IssuedRecord],
     servers: &[tools::McpServer],

@@ -16,7 +16,7 @@ pub fn hostname() -> String {
 }
 
 /// The app's data directory: `$XDG_DATA_HOME/loa`, else `~/.local/share/loa`,
-/// else `%APPDATA%\loa`, else under the temp directory. Not created here.
+/// else `%APPDATA%\loa`, else under the temp directory.
 pub fn data_dir() -> PathBuf {
     loa_util::fs::data_dir("loa").unwrap_or_else(|| std::env::temp_dir().join("loa"))
 }

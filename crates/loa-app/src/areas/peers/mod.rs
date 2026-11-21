@@ -4,10 +4,6 @@
 //! folders), peers' sessions in Recents tagged by node, a peer's session
 //! opened in the center to watch, prompt, answer or fork, and a peer's shared
 //! folder browsed in the center, its files opened and (with drive) saved.
-//!
-//! The node checks every peer request on this node's sessions against the
-//! grants in `Services::grants`; peers' prompts and decision answers run
-//! through this app's harness like the user's own.
 
 mod adapter;
 mod folder;

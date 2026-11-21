@@ -1,10 +1,5 @@
 //! Detached windows: a panel tab (browser surface, terminal, changes, files,
 //! agents, tools) or a subagent's session shown in its own OS window.
-//!
-//! The app runs as an iced daemon: one main window plus any number of
-//! detached ones. A detached tab leaves a placeholder in the panel with Show
-//! window and Reattach here. Closing a detached window, or its Reattach
-//! button, puts the view back; closing the main window quits.
 
 use iced::widget::{button, column, container, row, rule, text};
 use iced::{Alignment, Element, Fill, Size, Task, window};

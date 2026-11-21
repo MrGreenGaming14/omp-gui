@@ -1,7 +1,4 @@
-//! The start screen: what the center shows with no session open. A heading
-//! naming the folder, the composer in the middle (sending starts a session
-//! there), a few starters that fill the composer, and the folder's recent
-//! sessions.
+//! The start screen: what the center shows with no session open.
 
 use loa_util::time::{ago, now_ms};
 

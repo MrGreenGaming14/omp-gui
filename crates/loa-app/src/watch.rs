@@ -1,6 +1,5 @@
 //! Subscriptions over shared feeds: broadcast and watch channels, queues and
-//! session writers. A [`watch`] runs while its key is in the app's
-//! subscription list; the feed it opened is dropped once the key is gone.
+//! session writers.
 
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::{Arc, Mutex};
@@ -71,8 +70,7 @@ impl<S: Source> Source for Option<S> {
 }
 
 /// The items of the feed `open` returns, as `map` turns them into messages
-/// (`None` skips one). `open` runs once, when `key` first shows up among the
-/// subscriptions; the feed is dropped when it no longer does.
+/// (`None` skips one).
 pub fn watch<S: Source, M: Send + 'static>(
     key: impl Hash,
     open: impl FnOnce() -> S + Send + 'static,

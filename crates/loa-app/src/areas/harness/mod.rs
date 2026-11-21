@@ -1,8 +1,7 @@
 //! Harness switching and availability: the composer's harness picker, the
 //! palette's "Switch harness" commands and the Harnesses tab, which shows
 //! what each adapter's probe found and lets the user point a harness at
-//! another executable. The choice of harness and the executables are the
-//! `[harness]` table of the central config.
+//! another executable.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -90,9 +89,7 @@ impl State {
         Task::perform(async move { adapter.availability().await }, move |availability| Message::Probed { id, probe, availability })
     }
 
-    /// Records a probe's answer and refreshes the picker. When the harness
-    /// new sessions would start on can't run, the configured default or the
-    /// first runnable one takes its place.
+    /// Records a probe's answer and refreshes the picker.
     fn probed(&mut self, id: &str, probe: u64, availability: Availability, ctx: &mut Ctx) {
         if self.probes.get(id) != Some(&probe) {
             return;
@@ -107,9 +104,7 @@ impl State {
         ctx.composer.set_harnesses(ctx.services.harnesses.options(), ctx.sessions.harness.as_deref());
     }
 
-    /// Routes new sessions to harness `id` and makes it the default. An
-    /// active session without turns is restarted on it; one with turns
-    /// stays in Recents beside a new one.
+    /// Routes new sessions to harness `id` and makes it the default.
     fn switch(&mut self, id: String, ctx: &mut Ctx) -> Task<Message> {
         let harnesses = &ctx.services.harnesses;
         if !harnesses.get(&id).is_some_and(|harness| harness.option.available) {

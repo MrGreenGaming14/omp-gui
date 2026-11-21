@@ -4,12 +4,6 @@
 //! files, sessions with their digests and exclude toggle), digest rebuilds
 //! at turn end and compaction, the project context new chats receive, and
 //! the `project_search` / `project_read` host tools.
-//!
-//! [`ProjectService`] does the work. Its rebuild driver runs on the app's
-//! tokio runtime when there is one, otherwise on a small runtime of its own;
-//! its outcomes arrive through [`Area::subscription`]. `contribute` is
-//! synchronous, so the context of each project is kept in a cache that is
-//! refreshed after listing, rebuilds, settings saves and exclude toggles.
 
 use loa_util::LockExt;
 use std::collections::HashMap;
@@ -401,8 +395,7 @@ impl Area for State {
 }
 
 /// A runtime of the area's own, made only when the app has none (tests,
-/// tools that build the app headless). Shut down without waiting on drop,
-/// which is allowed from inside another runtime.
+/// tools that build the app headless).
 struct OwnRuntime(Option<tokio::runtime::Runtime>);
 
 impl OwnRuntime {

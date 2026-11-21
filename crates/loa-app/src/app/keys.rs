@@ -1,8 +1,6 @@
 //! The app's own commands (#78, #82): session and view actions, panel tabs,
 //! themes, the shortcuts the keymap binds and a palette command for every
-//! sidebar and composer control, so nothing needs a pointer. Reference rows
-//! list the keys which aren't commands (Esc, Enter, number keys on prompt
-//! cards…), so the palette shows the whole keymap.
+//! sidebar and composer control, so nothing needs a pointer.
 
 use iced::Task;
 use iced::keyboard::{Modifiers, key::Named};

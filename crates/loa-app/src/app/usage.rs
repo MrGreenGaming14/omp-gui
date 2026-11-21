@@ -1,9 +1,5 @@
 //! The Usage window: provider limits and saved resets from `omp usage --json`,
 //! the same data omp's `/usage` prints.
-//!
-//! Providers start collapsed, each summarized by its tightest limit; a click
-//! expands its accounts. The tightest limit across providers also feeds the
-//! sidebar's usage meter.
 
 use loa_util::time::{ago, now_ms, until};
 use std::collections::BTreeSet;

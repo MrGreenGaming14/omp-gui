@@ -71,7 +71,6 @@ pub struct Services {
     pub node: Node,
     pub dirs: Dirs,
     /// Session journals under `dirs.sessions`, opened as writers on one bus.
-    /// Also the `SessionStore` fork, rewind, compaction and subagents use.
     pub library: Arc<Library>,
     /// Decides peer requests on sessions this node owns.
     pub peer_access: Arc<PeerAccess>,
@@ -82,23 +81,18 @@ pub struct Services {
     pub project: String,
     /// The folder the app was launched in, the workspace project's folder.
     pub workspace: PathBuf,
-    /// The central config file, `<data>/config.toml`. Each area reads it
-    /// and saves only the table it owns.
+    /// The central config file, `<data>/config.toml`.
     pub config: ConfigStore,
     /// The MCP servers the app runs (registered in the `mcp_servers`
-    /// table, plus the app-hosted ones). The Tools area registers and
-    /// controls them; other areas read their tools and resources.
+    /// table, plus the app-hosted ones).
     pub mcp: loa_mcp::Manager,
-    /// The grants this node issued and received, `<data>/grants.db`. The
-    /// peers area issues and revokes into it; the Tools area reads what each
-    /// peer may use.
+    /// The grants this node issued and received, `<data>/grants.db`.
     pub grants: Arc<loa_trust::GrantStore>,
 }
 
 impl Services {
     /// Builds the services of this machine: the node key from the OS
-    /// keychain, the data directory and the installed harnesses. Returns
-    /// the services and warnings to show the user.
+    /// keychain, the data directory and the installed harnesses.
     pub fn load() -> Result<(Self, Vec<String>), String> {
         let mut warnings = Vec::new();
         let dirs = Dirs::new(host::data_dir());
@@ -116,8 +110,7 @@ impl Services {
         Ok((Self::new(node, dirs, harnesses, cwd)?, warnings))
     }
 
-    /// Services over explicit parts; creates the session store. Peer
-    /// requests on this node's sessions are refused until grants exist.
+    /// Services over explicit parts; creates the session store.
     pub fn new(node: Node, dirs: Dirs, harnesses: Harnesses, cwd: PathBuf) -> Result<Self, String> {
         let store = Store::new(&dirs.sessions, JournalOptions::default())
             .map_err(|error| format!("Can't open the session store {}: {error}", dirs.sessions.display()))?;
@@ -153,15 +146,14 @@ impl Services {
     }
 
     /// Makes `project` and its folder `cwd` the active ones: new sessions
-    /// start there. Running sessions keep their own folder.
+    /// start there.
     pub fn set_active(&mut self, project: String, cwd: PathBuf) {
         self.project = project;
         self.cwd = cwd;
     }
 }
 
-/// The access check every session writer asks about peer requests. Refuses
-/// everything until [`PeerAccess::set`] installs a grants-backed check.
+/// The access check every session writer asks about peer requests.
 pub struct PeerAccess(RwLock<Arc<dyn Authorize>>);
 
 impl PeerAccess {

@@ -1,7 +1,5 @@
 //! A peer's session opened on this node: a live, read-only mirror kept
-//! current over `omp/session/1`. Drive grants prompt the owner's harness and
-//! answer its decision cards; fork grants copy the session to this node. The
-//! owner stays the single writer: nothing here writes the mirror.
+//! current over `omp/session/1`.
 
 use std::sync::Arc;
 
@@ -123,8 +121,7 @@ impl Remote {
     }
 
     /// The mirror's DOM, then each patch; resubscribes after falling behind
-    /// and reports the end when the view stops following the owner. Another
-    /// view gets a new feed.
+    /// and reports the end when the view stops following the owner.
     pub fn subscription(&self) -> Subscription<RemoteMessage> {
         let writer = Arc::clone(self.view.writer());
         watch(PtrKey(self.view.writer()), move || WriterFeed::new(writer, Policy::every_patch(FEED_CAPACITY)), |feed| Some(RemoteMessage::Feed(feed)))

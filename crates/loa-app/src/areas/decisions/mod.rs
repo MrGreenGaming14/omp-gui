@@ -1,8 +1,6 @@
 //! Decision cards: approvals, questions, plan reviews and forms of every open
 //! session, drawn inline in the transcript and answered through the session's
 //! harness (or the sessions area, for plan reviews the app raised itself).
-//! Also the waiting notifications while the window is in the background, the
-//! unattended timeouts and their settings screen.
 
 use iced::widget::{button, column, container, row, scrollable, space, text};
 use iced::{Element, Fill, Subscription, Task, Theme};

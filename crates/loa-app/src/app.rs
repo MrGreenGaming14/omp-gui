@@ -1,7 +1,6 @@
 //! The application: the shell frame, the chat, composer and decision cards of
 //! the active session, the palette, the built-in panel tabs (Diff, Files,
-//! Terminal) and the areas. Sessions start, resume and stream here; the
-//! areas react through the [`Area`] contract.
+//! Terminal) and the areas.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -32,8 +31,7 @@ const USAGE_REFRESH: Duration = Duration::from_secs(300);
 
 /// Width of the composer: the transcript's column width.
 pub(crate) const COMPOSER_WIDTH: f32 = 700.0;
-/// The permission picker's choices: omp's approval modes. Sessions start on
-/// [`ACCESS_DEFAULT`] until another is picked (the adapter's own default).
+/// The permission picker's choices: omp's approval modes.
 const ACCESS: [(&str, &str, &str); 4] = [
     ("always-ask", "Ask first", "Reads run; edits and commands ask"),
     ("always-ask-cached", "Ask and remember", "Asks before file reads and writes, remembers answers"),
@@ -133,9 +131,7 @@ pub struct App {
     /// The active session restarts on the new approval mode once its turn
     /// ends.
     restart_for_access: bool,
-    /// The projects with a tab in the project strip, in order. Not saved:
-    /// projects selected this run plus the project of every session opened
-    /// this run. Closing a tab only removes the entry here.
+    /// The projects with a tab in the project strip, in order.
     pub(crate) open_projects: Vec<String>,
     /// Sessions whose project was already offered a tab, so a closed tab
     /// stays closed until its project is activated again.
@@ -370,8 +366,7 @@ impl App {
         )
     }
 
-    /// Resumes the active session on its harness, then sends `prompt`. A
-    /// harness that can't resume it, or isn't here, gets a new session.
+    /// Resumes the active session on its harness, then sends `prompt`.
     fn resume(&mut self, prompt: Prompt) -> Task<Message> {
         if self.ctx.sessions.starting().is_some() {
             self.ctx.notify("A session is already starting");
@@ -641,8 +636,7 @@ impl App {
 
     /// Makes `project` and its folder `cwd` the active ones: new sessions,
     /// new terminals, the Files and Diff tabs follow, every area is told and
-    /// the choice is saved. Running sessions and open terminals keep their
-    /// folder.
+    /// the choice is saved.
     fn activate_project(&mut self, project: String, cwd: PathBuf) -> Task<Message> {
         self.ctx.shell.set_active_project(Some(project.clone()));
         self.add_project_tab(&project);
@@ -674,16 +668,14 @@ impl App {
         }
     }
 
-    /// Drops the tab of `project`. Its sessions stay open, and it gets a tab
-    /// again only when it is activated again.
+    /// Drops the tab of `project`.
     fn close_project_tab(&mut self, project: &str) {
         self.open_projects.retain(|open| open != project);
         self.ctx.shell.set_open_projects(self.open_projects.clone());
     }
 
     /// Gives a tab to the project of every session opened since the last
-    /// call. A session whose journal has no root yet is looked at again next
-    /// time.
+    /// call.
     fn sync_project_tabs(&mut self) {
         let mut seen = Vec::new();
         for session in self.ctx.sessions.iter() {
@@ -747,8 +739,7 @@ impl App {
     }
 
     /// Runs a `/` command typed in the composer when it is one of the
-    /// app's or an area's. `None` for anything else, which goes to the
-    /// harness as typed, its own commands included.
+    /// app's or an area's.
     fn slash(&mut self, text: &str) -> Option<Task<Message>> {
         if let Some((spec, args)) = crate::area::find_slash(keys::APP_COMMANDS, text) {
             return Some((spec.run)(self, args));
@@ -1230,7 +1221,7 @@ impl App {
 }
 
 /// Asks for a folder with the desktop's folder dialog: zenity (GNOME), else
-/// kdialog (KDE). `Ok(None)` when the dialog was cancelled.
+/// kdialog (KDE).
 async fn choose_folder(start: PathBuf) -> Result<Option<PathBuf>, String> {
     let start = format!("{}/", start.display());
     let dialogs: [(&str, Vec<&str>); 2] = [
@@ -1313,8 +1304,7 @@ fn turn_status(dom: &Dom) -> Option<&'static str> {
     }
 }
 
-/// Reads `git diff HEAD` of `cwd` for the Diff tab. `None` when `cwd` isn't a
-/// git work tree or git isn't installed.
+/// Reads `git diff HEAD` of `cwd` for the Diff tab.
 fn working_diff(cwd: PathBuf) -> Task<Message> {
     Task::perform(async move { git_diff(&cwd).await }, Message::WorkingDiff)
 }
