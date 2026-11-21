@@ -3,28 +3,23 @@
 //! The worker runs on the host through a harness [`Adapter`], so its model
 //! calls, API keys and journal never leave the host. Its harness gets no file
 //! or exec tools of its own and no MCP servers; the only way it can act is
-//! through the `sandbox_*` host tools here, each of which is one request to
-//! the stub inside the sandbox.
+//! through the `sandbox_*` tools here, each of which is one request to the
+//! stub inside the sandbox.
 
-use loa_util::LockExt;
+use crate::Result;
+use crate::tool::SandboxTaskArgs;
 use crate::client::StubClient;
-use crate::proto::{Command, ExecRequest, FileKind};
-use crate::{Result, SandboxError};
+use crate::proto::ExecRequest;
 use async_trait::async_trait;
-use loa_contracts::harness::{Adapter, Answer, HostToolSpec, HostTools, Prompt, SessionConfig};
-use loa_core::{
-    CommitError, DecisionKind, DecisionStatus, Dom, Draft, ElementKind, MemorySink, MessageKind, NodeId, Op, Patch, PatchSink, Role,
-    answer, attr,
-};
+use loa_contracts::harness::{Adapter, Answer, Prompt, SessionConfig};
+use loa_contracts::tools::{CallCtx, Tool, ToolOutput, ToolSet};
+use loa_core::{CommitError, DecisionKind, DecisionStatus, Dom, Draft, ElementKind, MessageKind, NodeId, Op, Patch, PatchSink, Role, answer, attr};
+use loa_util::LockExt;
+use schemars::JsonSchema;
 use serde::Deserialize;
-use std::path::PathBuf;
+use std::fmt::Write;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
-
-/// Names of the tools offered to the worker.
-pub const SANDBOX_BASH: &str = "sandbox_bash";
-pub const SANDBOX_READ: &str = "sandbox_read";
-pub const SANDBOX_WRITE: &str = "sandbox_write";
-pub const SANDBOX_LIST: &str = "sandbox_list";
 
 /// Tools of the harness itself that act on the host. They are switched off
 /// for a worker so everything it does goes through the sandbox.
@@ -33,42 +28,21 @@ pub const HOST_TOOLS_TO_DISABLE: &[&str] = &[
     "computer", "task", "fetch", "notebook", "ssh", "ask",
 ];
 
-/// Where a worker's session is journaled. A port: `loa-app` backs it with the
-/// bus and journal, so the worker's journal lives on the host like any other
-/// session's.
+/// Most bytes of output returned to the model per stream.
+const OUTPUT_LIMIT: usize = 64 * 1024;
+
+/// Where a worker's session is journaled. `loa-app` backs it with the
+/// session library, so the worker's journal lives on the host like any other.
 pub trait WorkerJournal: Send + Sync {
     /// The sink of a new, empty session.
     fn open(&self, session_id: &str) -> Result<Arc<dyn PatchSink>>;
 }
 
-/// Keeps worker sessions in memory, for tests and previews.
-#[derive(Default)]
-pub struct MemoryJournal {
-    sessions: Mutex<Vec<(String, Arc<MemorySink>)>>,
-}
-
-impl MemoryJournal {
-    /// The sink of a session opened earlier.
-    pub fn session(&self, session_id: &str) -> Option<Arc<MemorySink>> {
-        let sessions = self.sessions.locked();
-        sessions.iter().find(|(id, _)| id == session_id).map(|(_, sink)| Arc::clone(sink))
-    }
-}
-
-impl WorkerJournal for MemoryJournal {
-    fn open(&self, session_id: &str) -> Result<Arc<dyn PatchSink>> {
-        let sink = Arc::new(MemorySink::new());
-        let mut sessions = self.sessions.locked();
-        sessions.push((session_id.to_owned(), Arc::clone(&sink)));
-        Ok(sink)
-    }
-}
-
 /// Forwards commits to the journal sink and keeps a copy of the DOM, so the
 /// worker's final message can be read whatever the journal is. Approval
-/// requests the worker's harness raises are handed to `approvals`: nobody
-/// watches a worker, and its tools only reach the sandbox the user already
-/// approved with the `sandbox_task` call.
+/// requests the worker's harness raises go to `approvals`: nobody watches a
+/// worker, and its tools only reach the sandbox the user already approved
+/// with the `sandbox_task` call.
 struct Mirror {
     inner: Arc<dyn PatchSink>,
     dom: Mutex<Dom>,
@@ -81,11 +55,8 @@ impl PatchSink for Mirror {
         let mut dom = self.dom.locked();
         let patch = self.inner.commit_at(draft, ts)?;
         dom.apply(&patch)?;
-        let touches_status = match &patch.op {
-            Op::Insert { kind, .. } => *kind == ElementKind::Decision,
-            Op::Set { name, .. } => name == attr::STATUS,
-            _ => false,
-        };
+        let touches_status = matches!(&patch.op, Op::Insert { kind: ElementKind::Decision, .. })
+            || matches!(&patch.op, Op::Set { name, .. } if name == attr::STATUS);
         let waiting_approval = touches_status
             && dom.get(patch.node).is_some_and(|n| {
                 n.kind == ElementKind::Decision
@@ -101,215 +72,125 @@ impl PatchSink for Mirror {
 
 /// The text of the last assistant message that isn't thinking.
 pub fn final_message(dom: &Dom) -> Option<String> {
-    dom.iter()
-        .filter(|n| {
-            n.kind == ElementKind::Message
-                && n.str_attr(attr::ROLE) == Some(Role::Assistant.as_str())
-                && n.str_attr(attr::KIND) != Some(MessageKind::Thinking.as_str())
-        })
-        .last()
-        .map(|n| n.text.clone())
+    let assistant = |n: &&loa_core::Node| {
+        n.kind == ElementKind::Message
+            && n.str_attr(attr::ROLE) == Some(Role::Assistant.as_str())
+            && n.str_attr(attr::KIND) != Some(MessageKind::Thinking.as_str())
+    };
+    dom.iter().filter(assistant).last().map(|n| n.text.clone())
 }
 
-/// The `sandbox_*` tools, each answered by the stub.
-pub struct SandboxTools {
-    client: Arc<StubClient>,
-    /// Sent with every command: providers that boot a VM can't set the
-    /// stub's own environment.
-    env: Vec<(String, String)>,
-    /// Most bytes of output returned to the model per stream.
-    output_limit: usize,
-}
+/// `sandbox_bash`: one shell command in the stub.
+pub struct SandboxBash(pub Arc<StubClient>);
+/// `sandbox_read`
+pub struct SandboxRead(pub Arc<StubClient>);
+/// `sandbox_write`
+pub struct SandboxWrite(pub Arc<StubClient>);
+/// `sandbox_list`
+pub struct SandboxList(pub Arc<StubClient>);
 
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct BashArgs {
-    command: String,
-    #[serde(default)]
-    cwd: Option<String>,
-    #[serde(default)]
-    timeout_ms: Option<u64>,
+pub struct BashArgs {
+    /// Script for /bin/sh -c
+    pub command: String,
+    /// Directory relative to the workspace
+    pub cwd: Option<String>,
+    pub timeout_ms: Option<u64>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct ReadArgs {
-    path: String,
-    #[serde(default)]
-    limit: Option<u64>,
+pub struct ReadArgs {
+    pub path: String,
+    /// Most bytes to read
+    pub limit: Option<u64>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct WriteArgs {
-    path: String,
-    content: String,
+pub struct WriteArgs {
+    pub path: String,
+    pub content: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct ListArgs {
-    #[serde(default)]
-    path: Option<String>,
+pub struct ListArgs {
+    /// Defaults to the workspace root
+    pub path: Option<String>,
 }
 
-fn parse<'a, T: Deserialize<'a>>(args: &'a str) -> Result<T, String> {
-    serde_json::from_str(args).map_err(|e| format!("invalid arguments: {e}"))
-}
+fn failed(e: crate::SandboxError) -> String { e.to_string() }
 
-impl SandboxTools {
-    pub fn new(client: Arc<StubClient>, env: Vec<(String, String)>) -> Self {
-        Self { client, env, output_limit: 64 * 1024 }
-    }
-
-    /// The tool declarations for the worker's harness.
-    pub fn specs() -> Vec<HostToolSpec> {
-        let spec = |name: &str, description: &str, schema: serde_json::Value| HostToolSpec {
-            name: name.to_owned(),
-            description: description.to_owned(),
-            input_schema: schema.to_string(),
-        };
-        vec![
-            spec(
-                SANDBOX_BASH,
-                "Runs a shell command inside the sandbox, in the workspace. Returns stdout, stderr and the exit code.",
-                serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "command": { "type": "string", "description": "Script for /bin/sh -c" },
-                        "cwd": { "type": "string", "description": "Directory relative to the workspace" },
-                        "timeout_ms": { "type": "integer", "minimum": 1 }
-                    },
-                    "required": ["command"],
-                    "additionalProperties": false
-                }),
-            ),
-            spec(
-                SANDBOX_READ,
-                "Reads a file in the sandbox workspace.",
-                serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "path": { "type": "string" },
-                        "limit": { "type": "integer", "minimum": 0, "description": "Most bytes to read" }
-                    },
-                    "required": ["path"],
-                    "additionalProperties": false
-                }),
-            ),
-            spec(
-                SANDBOX_WRITE,
-                "Writes a file in the sandbox workspace, creating parent directories.",
-                serde_json::json!({
-                    "type": "object",
-                    "properties": { "path": { "type": "string" }, "content": { "type": "string" } },
-                    "required": ["path", "content"],
-                    "additionalProperties": false
-                }),
-            ),
-            spec(
-                SANDBOX_LIST,
-                "Lists a directory in the sandbox workspace.",
-                serde_json::json!({
-                    "type": "object",
-                    "properties": { "path": { "type": "string", "description": "Defaults to the workspace root" } },
-                    "additionalProperties": false
-                }),
-            ),
-        ]
-    }
-
-    fn clip<'a>(&self, bytes: &'a [u8]) -> (std::borrow::Cow<'a, str>, bool) {
-        let cut = bytes.len().min(self.output_limit);
-        (String::from_utf8_lossy(&bytes[..cut]), cut < bytes.len())
-    }
-
-    async fn bash(&self, args: BashArgs) -> Result<String, String> {
-        let exec = ExecRequest {
-            command: Command::Shell(args.command),
-            cwd: args.cwd,
-            env: self.env.clone(),
-            stdin: None,
-            timeout_ms: args.timeout_ms,
-        };
-        let out = self.client.exec(exec).await.map_err(|e| e.to_string())?;
+#[async_trait]
+impl Tool for SandboxBash {
+    type Args = BashArgs;
+    const NAME: &'static str = "sandbox_bash";
+    fn description(&self) -> &str { "Runs a shell command inside the sandbox, in the workspace. Returns stdout, stderr and the exit code." }
+    async fn run(&self, _: &CallCtx, args: BashArgs) -> Result<ToolOutput, String> {
+        let exec = ExecRequest { cwd: args.cwd, timeout_ms: args.timeout_ms, ..ExecRequest::shell(&args.command, &[]) };
+        let out = self.0.exec(exec).await.map_err(failed)?;
         let mut text = String::new();
-        for (name, bytes) in [("stdout", &out.stdout), ("stderr", &out.stderr)] {
-            if bytes.is_empty() {
-                continue;
-            }
-            let (body, clipped) = self.clip(bytes);
-            text.push_str(&format!("<{name}>\n{body}\n</{name}>\n"));
-            if clipped {
-                text.push_str(&format!("[{name} cut at {} of {} bytes]\n", self.output_limit, bytes.len()));
+        for (name, bytes) in [("stdout", &out.stdout), ("stderr", &out.stderr)].into_iter().filter(|(_, b)| !b.is_empty()) {
+            let cut = bytes.len().min(OUTPUT_LIMIT);
+            let _ = writeln!(text, "<{name}>\n{}\n</{name}>", String::from_utf8_lossy(&bytes[..cut]));
+            if cut < bytes.len() {
+                let _ = writeln!(text, "[{name} cut at {OUTPUT_LIMIT} of {} bytes]", bytes.len());
             }
         }
-        match (out.status.code, out.status.signal) {
-            _ if out.status.timed_out => text.push_str("killed: timed out"),
-            (Some(code), _) => text.push_str(&format!("exit code: {code}")),
-            (None, Some(signal)) => text.push_str(&format!("killed by signal {signal}")),
-            (None, None) => text.push_str("exit status unknown"),
-        }
-        Ok(text)
-    }
-
-    async fn read(&self, args: ReadArgs) -> Result<String, String> {
-        let data = self.client.read_file(&args.path, args.limit).await.map_err(|e| e.to_string())?;
-        Ok(String::from_utf8_lossy(&data).into_owned())
-    }
-
-    async fn write(&self, args: WriteArgs) -> Result<String, String> {
-        let len = args.content.len();
-        self.client.write_file(&args.path, args.content.into_bytes(), None).await.map_err(|e| e.to_string())?;
-        Ok(format!("wrote {len} bytes to {}", args.path))
-    }
-
-    async fn list(&self, args: ListArgs) -> Result<String, String> {
-        let path = args.path.as_deref().unwrap_or(".");
-        let entries = self.client.list_dir(path).await.map_err(|e| e.to_string())?;
-        let mut text = String::new();
-        for entry in entries {
-            let suffix = match entry.meta.kind {
-                FileKind::Dir => "/",
-                FileKind::Symlink => "@",
-                FileKind::File | FileKind::Other => "",
-            };
-            text.push_str(&format!("{}{suffix}\t{}\n", entry.name, entry.meta.size));
-        }
-        Ok(text)
+        let _ = match (out.status.code, out.status.signal) {
+            _ if out.status.timed_out => write!(text, "killed: timed out"),
+            (Some(code), _) => write!(text, "exit code: {code}"),
+            (None, Some(signal)) => write!(text, "killed by signal {signal}"),
+            (None, None) => write!(text, "exit status unknown"),
+        };
+        Ok(ToolOutput::text(text))
     }
 }
 
 #[async_trait]
-impl HostTools for SandboxTools {
-    async fn call(&self, _session_id: &str, tool: &str, args: &str) -> Result<String, String> {
-        match tool {
-            SANDBOX_BASH => self.bash(parse(args)?).await,
-            SANDBOX_READ => self.read(parse(args)?).await,
-            SANDBOX_WRITE => self.write(parse(args)?).await,
-            SANDBOX_LIST => self.list(parse(args)?).await,
-            other => Err(format!("unknown tool {other}")),
-        }
+impl Tool for SandboxRead {
+    type Args = ReadArgs;
+    const NAME: &'static str = "sandbox_read";
+    fn description(&self) -> &str { "Reads a file in the sandbox workspace." }
+    async fn run(&self, _: &CallCtx, args: ReadArgs) -> Result<ToolOutput, String> {
+        let script = args.limit.map_or_else(|| "cat -- \"$1\"".to_owned(), |limit| format!("head -c {limit} -- \"$1\""));
+        let data = self.0.run(ExecRequest::shell(&script, &[&args.path])).await.map_err(failed)?;
+        Ok(ToolOutput::text(String::from_utf8_lossy(&data)))
     }
 }
 
-/// One worker run.
-pub struct WorkerRequest {
-    pub session_id: String,
-    pub task: String,
-    /// Instructions of the agent the worker plays, if one was asked for.
-    pub agent: Option<String>,
-    pub model_role: Option<String>,
-    /// Host directory the harness runs in. Kept empty: the worker sees the
-    /// workspace only through the sandbox.
-    pub harness_cwd: PathBuf,
+#[async_trait]
+impl Tool for SandboxWrite {
+    type Args = WriteArgs;
+    const NAME: &'static str = "sandbox_write";
+    fn description(&self) -> &str { "Writes a file in the sandbox workspace, creating parent directories." }
+    async fn run(&self, _: &CallCtx, args: WriteArgs) -> Result<ToolOutput, String> {
+        let len = args.content.len();
+        let script = ExecRequest::shell(r#"mkdir -p -- "$(dirname -- "$1")" && cat > "$1""#, &[&args.path]);
+        self.0.run(ExecRequest { stdin: Some(args.content.into_bytes()), ..script }).await.map_err(failed)?;
+        Ok(ToolOutput::text(format!("wrote {len} bytes to {}", args.path)))
+    }
 }
 
-/// What the worker said at the end.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct WorkerReport {
-    pub session_id: String,
-    pub final_message: Option<String>,
+#[async_trait]
+impl Tool for SandboxList {
+    type Args = ListArgs;
+    const NAME: &'static str = "sandbox_list";
+    fn description(&self) -> &str { "Lists a directory in the sandbox workspace." }
+    async fn run(&self, _: &CallCtx, args: ListArgs) -> Result<ToolOutput, String> {
+        let listing = self.0.run(ExecRequest::shell(r#"ls -Al -- "$1""#, &[args.path.as_deref().unwrap_or(".")])).await.map_err(failed)?;
+        Ok(ToolOutput::text(String::from_utf8_lossy(&listing)))
+    }
+}
+
+/// The `sandbox_*` tools, each answered by the stub behind `client`.
+pub fn sandbox_tools(client: &Arc<StubClient>) -> ToolSet {
+    let mut tools = ToolSet::new();
+    tools.register(SandboxBash(Arc::clone(client))).register(SandboxRead(Arc::clone(client)));
+    tools.register(SandboxWrite(Arc::clone(client))).register(SandboxList(Arc::clone(client)));
+    tools
 }
 
 /// Instructions every worker gets ahead of its task.
@@ -317,34 +198,26 @@ const PREAMBLE: &str = "You are working inside a sandbox. Use sandbox_bash, sand
 sandbox_list for every command and file operation; paths are relative to the workspace root. End with a short \
 report of what you did.";
 
-/// Runs the worker session to the end of its first turn.
+/// Runs the worker session `session_id` to the end of its first turn and
+/// returns its final message.
 ///
 /// `template` carries the host side settings (node, model, harness env and
-/// executable); the worker keeps them, gets the sandbox tools in place of
-/// any host tools and MCP servers, and has the harness's own host tools
-/// switched off.
-pub async fn run_worker(
-    adapter: &dyn Adapter,
-    template: &SessionConfig,
-    journal: &dyn WorkerJournal,
-    tools: Arc<SandboxTools>,
-    request: WorkerRequest,
-) -> Result<WorkerReport> {
-    let WorkerRequest { session_id, task, agent, model_role, harness_cwd } = request;
+/// executable); the worker keeps them, gets `tools` in place of any host
+/// tools and MCP servers, and has the harness's own host tools switched off.
+/// Its harness runs in `harness_cwd`, an empty directory: the worker sees the
+/// workspace only through the sandbox.
+pub async fn run_worker(adapter: &dyn Adapter, template: &SessionConfig, journal: &dyn WorkerJournal, tools: ToolSet, session_id: &str, harness_cwd: &Path, args: SandboxTaskArgs) -> Result<Option<String>> {
     let mut config = template.clone();
-    config.session_id.clone_from(&session_id);
-    config.cwd = harness_cwd;
-    if model_role.is_some() {
-        config.model_role = model_role;
-    }
-    config.context = Some(match (&template.context, agent) {
-        (_, Some(agent)) => format!("{PREAMBLE}\n\n{agent}"),
-        (Some(context), None) => format!("{PREAMBLE}\n\n{context}"),
-        (None, None) => PREAMBLE.to_owned(),
+    config.session_id = session_id.to_owned();
+    config.cwd = harness_cwd.to_owned();
+    config.model_role = args.model_role.or(config.model_role);
+    config.context = Some(match args.agent.or(template.context.clone()) {
+        Some(extra) => format!("{PREAMBLE}\n\n{extra}"),
+        None => PREAMBLE.to_owned(),
     });
     config.mcp_servers.clear();
-    config.host_tools = SandboxTools::specs();
-    config.host_tool_handler = Some(tools);
+    config.host_tools = tools.specs();
+    config.host_tool_handler = Some(Arc::new(tools));
     for tool in HOST_TOOLS_TO_DISABLE {
         if !config.disabled_tools.iter().any(|t| t == tool) {
             config.disabled_tools.push((*tool).to_owned());
@@ -352,18 +225,17 @@ pub async fn run_worker(
     }
 
     let (approvals, mut waiting) = tokio::sync::mpsc::unbounded_channel();
-    let mirror = Arc::new(Mirror { inner: journal.open(&session_id)?, dom: Mutex::new(Dom::new()), approvals });
+    let mirror = Arc::new(Mirror { inner: journal.open(session_id)?, dom: Mutex::new(Dom::new()), approvals });
     let session = adapter.start(config, Arc::clone(&mirror) as Arc<dyn PatchSink>).await?;
     let by = template.node.clone();
     let run = async {
-        session.send(Prompt { text: task, attachments: Vec::new(), by: by.clone() }).await?;
+        session.send(Prompt { text: args.task, attachments: Vec::new(), by: by.clone() }).await?;
         session.wait_idle().await
     };
     // The mirror keeps the sender, so this only ends on a failed answer.
     let allow = async {
         while let Some(decision) = waiting.recv().await {
-            let allow = Answer { values: vec![answer::ALLOW_ONCE.to_owned()], reason: None, by: by.clone() };
-            session.answer(decision, allow).await?;
+            session.answer(decision, Answer { values: vec![answer::ALLOW_ONCE.to_owned()], reason: None, by: by.clone() }).await?;
         }
         Ok(())
     };
@@ -374,12 +246,5 @@ pub async fn run_worker(
     let shutdown = session.shutdown().await;
     result?;
     shutdown?;
-    let final_message = final_message(&mirror.dom.locked());
-    Ok(WorkerReport { session_id, final_message })
-}
-
-impl From<serde_json::Error> for SandboxError {
-    fn from(e: serde_json::Error) -> Self {
-        SandboxError::Args(e.to_string())
-    }
+    Ok(final_message(&mirror.dom.locked()))
 }

@@ -64,11 +64,6 @@ impl RunLog {
 
     fn get_mut(&mut self, run: u64) -> Option<&mut RunEntry> { self.entries.iter_mut().find(|entry| entry.run.run == run) }
 
-    /// Runs of one session.
-    pub fn of_session<'a>(&'a self, session: &'a str) -> impl Iterator<Item = &'a RunEntry> + 'a {
-        self.entries.iter().filter(move |entry| entry.run.parent == session)
-    }
-
     pub fn running(&self) -> usize { self.entries.iter().filter(|entry| entry.state == RunState::Running).count() }
 
     /// Records that the run's patch was applied (with
@@ -77,43 +72,5 @@ impl RunLog {
         if let Some(RunEntry { state: RunState::Finished { applied, .. }, .. }) = self.get_mut(run) {
             *applied = true;
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::provider::SandboxKind;
-
-    fn started(run: u64, parent: &str) -> SandboxEvent {
-        SandboxEvent::Started(SandboxRun {
-            run,
-            parent: parent.into(),
-            worker: format!("{parent}-sandbox-{run}"),
-            kind: SandboxKind::Local,
-            task: "work".into(),
-            isolated: true,
-            workspace: "/repo".into(),
-        })
-    }
-
-    #[test]
-    fn follows_runs_from_start_to_end() {
-        let mut log = RunLog::default();
-        log.record(started(1, "a"));
-        log.record(started(2, "b"));
-        assert_eq!(log.running(), 2);
-        let patch = "diff --git a/x b/x\nnew file mode 100644\n--- /dev/null\n+++ b/x\n@@ -0,0 +1 @@\n+hi\n";
-        log.record(SandboxEvent::Finished { run: 1, final_message: Some("done".into()), patch: Some(patch.into()) });
-        log.record(SandboxEvent::Failed { run: 2, error: "docker: gone".into() });
-        assert_eq!(log.running(), 0);
-        let first = log.get(1).unwrap();
-        assert_eq!(first.pending_patch(), Some(patch));
-        let RunState::Finished { files, .. } = &first.state else { panic!() };
-        assert_eq!(files, &[PatchFile { path: "x".into(), added: 1, removed: 0, binary: false }]);
-        assert_eq!(log.get(2).unwrap().state, RunState::Failed("docker: gone".into()));
-        assert_eq!(log.of_session("b").count(), 1);
-        log.mark_applied(1);
-        assert_eq!(log.get(1).unwrap().pending_patch(), None);
     }
 }

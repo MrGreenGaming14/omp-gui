@@ -249,9 +249,10 @@ fn the_tools_panel_lists_each_provider_with_its_availability() {
     sandbox(&mut app, Message::Refresh);
     let tool = app.ctx.app_tools.iter().find(|tool| tool.name == "sandbox_task").unwrap();
     let labels: Vec<_> = tool.details.iter().map(|detail| detail.label.as_str()).collect();
-    assert_eq!(labels, ["Local", "Docker", "Firecracker", "VM (qemu)", "SSH host", "Peer"]);
+    let vm: &[&str] = if cfg!(feature = "sandbox-vm") { &["Firecracker", "VM (qemu)"] } else { &[] };
+    assert_eq!(labels, [&["Local", "Docker"][..], vm, &["SSH host", "Peer"]].concat());
     assert_eq!(tool.details[0].state, DetailState::Ready, "the stub is here: {:?}", tool.details[0]);
-    let peer = &tool.details[5];
+    let peer = tool.details.last().unwrap();
     assert_eq!((peer.state, peer.text.as_str()), (DetailState::Unavailable, "Peer networking is not running"), "the node isn't started");
     assert!(tool.details.iter().all(|detail| !detail.text.is_empty()), "every state says why");
 }
