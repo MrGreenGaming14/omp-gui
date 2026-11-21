@@ -104,6 +104,7 @@ impl Fixture {
             vec![spec("fake", system, Some("fake-{version}".into())), spec("omp", reviewer, None)],
         );
         config.github_api = base.clone();
+        config.ports = Some(Arc::new(OmpPorts));
         Self { served, base, review, config }
     }
 
@@ -281,13 +282,13 @@ fn peers_behind_come_from_the_peers_the_node_knows() {
     let mut app = app_with(dir.path(), &fixture);
     let key = |seed: u8| {
         let identity = loa_trust::NodeIdentity::from_secret_bytes(&[seed; 32]);
-        loa_node::NodeId::from_bytes(identity.public_key().as_bytes()).unwrap()
+        loa_p2p::NodeId::from_bytes(identity.public_key().as_bytes()).unwrap()
     };
-    let peer = |seed: u8, name: &str, version: Option<&str>, protocols: &[&str]| loa_node::PeerInfo {
+    let peer = |seed: u8, name: &str, version: Option<&str>, protocols: &[&str]| loa_p2p::PeerInfo {
         key: key(seed),
         name: Some(name.into()),
         addresses: Vec::new(),
-        source: loa_node::DiscoverySource::Manual,
+        source: loa_p2p::DiscoverySource::Manual,
         online: true,
         last_seen_ms: None,
         app_version: version.map(str::to_owned),
@@ -295,7 +296,7 @@ fn peers_behind_come_from_the_peers_the_node_knows() {
         shared_protocol: None,
         protocols: protocols.iter().map(|p| (*p).to_owned()).collect(),
     };
-    let ours = loa_node::local_protocols();
+    let ours = loa_p2p::local_protocols();
     let ours: Vec<&str> = ours.iter().map(String::as_str).collect();
     app.ctx.peers = vec![
         peer(1, "old-box", Some("0.0.1-alpha"), &ours),

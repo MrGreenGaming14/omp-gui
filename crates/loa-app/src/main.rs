@@ -8,7 +8,7 @@ fn main() -> ExitCode {
     // harness; sessions launch the app binary this way.
     if std::env::args().nth(1).as_deref() == Some("omp-bridge") {
         return match tokio::runtime::Runtime::new() {
-            Ok(runtime) => runtime.block_on(loa_omp_bridge::cli::run(std::env::args().skip(2))),
+            Ok(runtime) => runtime.block_on(loa_mcp::bridge::run_cli(std::env::args().skip(2))),
             Err(error) => {
                 eprintln!("omp-bridge: can't start the async runtime: {error}");
                 ExitCode::FAILURE

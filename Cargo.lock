@@ -4639,6 +4639,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "bytes",
+ "futures",
  "iced",
  "iced_futures",
  "iced_runtime",
@@ -4656,8 +4657,7 @@ dependencies = [
  "loa-harness",
  "loa-mcp",
  "loa-models",
- "loa-node",
- "loa-omp-bridge",
+ "loa-p2p",
  "loa-projects",
  "loa-remote",
  "loa-sandbox",
@@ -4790,9 +4790,13 @@ dependencies = [
  "bytes",
  "futures",
  "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "libtest-mimic",
  "loa-config",
  "loa-contracts",
+ "loa-harness",
  "loa-util",
  "process-wrap",
  "reqwest",
@@ -4829,22 +4833,24 @@ dependencies = [
 ]
 
 [[package]]
-name = "loa-net"
+name = "loa-p2p"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "bytes",
  "ed25519-dalek 2.2.0",
  "futures",
  "iroh",
+ "loa-bus",
  "loa-config",
+ "loa-core",
+ "loa-features",
+ "loa-trust",
  "loa-util",
  "mdns-sd",
  "prost 0.14.6",
  "rcgen",
  "rusqlite",
  "rustls",
- "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
@@ -4853,48 +4859,6 @@ dependencies = [
  "tokio-util",
  "tracing",
  "yamux",
-]
-
-[[package]]
-name = "loa-node"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "loa-bus",
- "loa-core",
- "loa-features",
- "loa-net",
- "loa-share",
- "loa-trust",
- "loa-ui-peers",
- "loa-util",
- "prost 0.14.6",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "loa-omp-bridge"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "base64 0.22.1",
- "bytes",
- "http-body-util",
- "hyper",
- "hyper-util",
- "loa-contracts",
- "loa-util",
- "rmcp",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
- "tokio-util",
- "tracing",
 ]
 
 [[package]]
@@ -4907,6 +4871,7 @@ dependencies = [
  "loa-core",
  "loa-harness",
  "loa-util",
+ "schemars",
  "serde",
  "serde_json",
  "tempfile",
@@ -4976,19 +4941,6 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
-]
-
-[[package]]
-name = "loa-share"
-version = "0.1.0"
-dependencies = [
- "loa-bus",
- "loa-core",
- "loa-trust",
- "prost 0.14.6",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -5136,7 +5088,6 @@ dependencies = [
  "loa-contracts",
  "loa-core",
  "loa-ui-kit",
- "loa-ui-shell",
 ]
 
 [[package]]
@@ -5319,8 +5270,6 @@ dependencies = [
  "flate2",
  "futures",
  "hex",
- "loa-contracts",
- "loa-harness",
  "loa-util",
  "reqwest",
  "rustls",

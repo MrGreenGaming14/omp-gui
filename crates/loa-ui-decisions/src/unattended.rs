@@ -4,6 +4,7 @@
 //! and an answer; a kind without an entry waits for someone. A decision that
 //! carries its own `default` and `timeout_ms` keeps those.
 
+use loa_ui_kit::theme::{SpaceRole as Sp, sp, TextRole as T, text_size as ts};
 use crate::decision::{ApprovalChoice, Decision, PlanChoice};
 use crate::form::Form;
 use iced::alignment::Vertical;
@@ -133,20 +134,20 @@ impl Unattended {
     pub fn view(&self) -> Element<'_, Message> {
         let mut section = column![
             row![
-                text("Answer waiting prompts after a timeout").size(13).width(Fill),
-                toggler(self.enabled()).on_toggle(Message::Enabled).size(16),
+                text("Answer waiting prompts after a timeout").size(ts(T::Label)).width(Fill),
+                toggler(self.enabled()).on_toggle(Message::Enabled).size(ts(T::Heading)),
             ]
-            .spacing(12)
+            .spacing(sp(Sp::M))
             .align_y(Vertical::Center),
             text(
                 "For unattended runs: a prompt nobody answers in time gets the \
                  default set for its kind, recorded as answered by timeout. \
                  A kind set to wait is never answered for you."
             )
-            .size(12)
-            .style(crate::style::muted),
+            .size(ts(T::Caption))
+            .style(loa_ui_kit::style::text(loa_ui_kit::Tone::Muted)),
         ]
-        .spacing(10);
+        .spacing(sp(Sp::M));
         for kind in KINDS {
             section = section.push(self.kind_row(kind));
         }
@@ -158,9 +159,9 @@ impl Unattended {
         let control: Element<'_, Message> = if kind == DecisionKind::Question {
             text_input("Option or typed answer; empty waits", default.map_or("", |d| d.answer.as_str()))
                 .on_input(|typed| Message::Answer(DecisionKind::Question, (!typed.trim().is_empty()).then_some(typed)))
-                .size(13)
-                .padding([4, 8])
-                .style(crate::style::field)
+                .size(ts(T::Label))
+                .padding([sp(Sp::Xs), sp(Sp::S)])
+                .style(loa_ui_kit::style::input)
                 .width(Length::Fixed(CONTROL_WIDTH))
                 .into()
         } else {
@@ -172,12 +173,12 @@ impl Unattended {
             });
             pick_list(choices, Some(current), move |choice: Choice| Message::Answer(kind, choice.answer))
                 .text_size(13)
-                .style(crate::style::select)
+                .style(loa_ui_kit::style::pick)
                 .width(Length::Fixed(CONTROL_WIDTH))
                 .into()
         };
-        let mut line = row![text(kind_label(kind)).size(13).width(Fill), control]
-            .spacing(12)
+        let mut line = row![text(kind_label(kind)).size(ts(T::Label)).width(Fill), control]
+            .spacing(sp(Sp::M))
             .align_y(Vertical::Center);
         if let Some(default) = default {
             let mut timeouts: Vec<Duration> = TIMEOUTS.map(Duration).to_vec();
@@ -187,7 +188,7 @@ impl Unattended {
             line = line.push(
                 pick_list(timeouts, Some(Duration(default.timeout_secs)), move |d| Message::Timeout(kind, d))
                     .text_size(13)
-                    .style(crate::style::select)
+                    .style(loa_ui_kit::style::pick)
                     .width(Length::Fixed(TIMEOUT_WIDTH)),
             );
         } else {

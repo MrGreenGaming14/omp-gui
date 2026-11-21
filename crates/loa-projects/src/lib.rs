@@ -1,20 +1,5 @@
-//! Session digests, project context, `project_search` and `project_read`.
-//!
-//! - [`digest`]: the `<digest>` element as typed data, its drafts and stale tracking
-//! - [`digester`]: builds a digest of a session with omp's `smol` role
-//! - [`rebuild`]: rebuilds stale digests at turn end or compaction, debounced
-//! - [`rank`]: ranks a project's digests and packs them into a token budget
-//! - [`context`]: renders project context
-//! - [`search`], [`read`], [`tools`]: `project_search` and `project_read` host tools
-//! - [`settings`]: shared instructions, pinned files and the per session exclude toggle
-//! - [`source`]: the ports for loading sessions and checking access
-//! - [`sessions`]: the app's live and stored sessions behind those ports
-//! - [`service`]: [`ProjectService`], what the app holds: project listing,
-//!   the project screen's data, rebuilds, new chat context and host tools
-//!
-//! Every path that shows other sessions to a requester goes through
-//! [`source::visible_sessions`], so a session the requester can't open never
-//! influences results, counts, snippets or digests.
+//! Session digests, project context, and the `project_search` / `project_read` tools.
+//! Every path that shows sessions starts at [`source::visible_sessions`], so a denied session never leaks.
 
 pub mod context;
 pub mod digest;
@@ -28,44 +13,35 @@ pub mod sessions;
 pub mod settings;
 pub mod source;
 pub mod tools;
-mod text;
+#[cfg(test)]
+mod testing;
+#[cfg(test)]
+mod tests;
 
-pub use context::{ContextRequest, PackedContext, build_context, render_markdown};
-pub use digest::{Digest, DigestContent, DigestState, FileNote, digest_of, digest_state, mark_stale_draft, write_drafts};
-pub use digester::{Digester, OmpSummarizer, PromptLimits, Summarizer, SummaryAnswer};
-pub use rank::{Candidate, RankParams, Ranked, estimate_tokens, rank_and_pack};
-pub use read::{ReadPage, ReadRequest, read_subtree};
-pub use rebuild::{Decision, RebuildDriver, RebuildHandle, RebuildOutcome, SessionWriter, Trigger, decide};
-pub use search::{AttrFilter, PathStep, SearchHit, SearchPage, SearchQuery, TextMode, search};
+pub use digest::{DigestContent, DigestState};
+pub use digester::{Summarizer, Summarizers};
+pub use loa_harness::omp::OneShot as OmpSummarizer;
+pub use rebuild::RebuildOutcome;
 pub use service::{ProjectOverview, ProjectService, ProjectSummary, ServiceConfig, SessionRow};
 pub use sessions::LiveSessions;
-pub use settings::{
-    FileSettingsStore, MemorySettingsStore, PinnedFile, ProjectSettings, SettingsStore, exclude_draft, is_excluded,
-};
-pub use source::{
-    Access, LocalOnly, Requester, SessionInfo, SessionSource, project_name, session_project, visible_sessions,
-};
-pub use tools::{PROJECT_READ, PROJECT_SEARCH, ProjectTools};
+pub use settings::{FileSettingsStore, PinnedFile, ProjectSettings, is_excluded};
+pub use source::LocalOnly;
+pub use tools::{PROJECT_READ, PROJECT_SEARCH};
 
-/// Errors of this crate.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// A port (session source, settings store, writer) failed.
     #[error("{0}")]
     Port(String),
-    /// The session doesn't exist, isn't in the project, or the requester
-    /// can't open it. The three are not told apart so access isn't revealed.
+    /// Missing, in another project or denied: not told apart, so access isn't revealed.
     #[error("session {0} not found")]
     SessionNotFound(String),
     #[error("node {node} not found in session {session}")]
     NodeNotFound { session: String, node: u64 },
-    /// The summarizer failed to answer.
     #[error("summarizer failed: {0}")]
     Summarizer(String),
-    /// The summarizer answered, but not with a valid digest.
     #[error("invalid digest answer: {0}")]
     InvalidAnswer(String),
-    /// The session has nothing to digest yet.
     #[error("the session has no turns to digest")]
     NothingToDigest,
     #[error("invalid tool arguments: {0}")]

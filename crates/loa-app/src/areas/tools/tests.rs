@@ -363,7 +363,7 @@ fn the_tools_panel_lists_harness_and_app_tools_and_the_app_hosted_servers() {
     assert!(url.starts_with("http://127.0.0.1:"), "{url}");
     let bridge = server(&rig, "omp").expect("the omp bridge is listed");
     assert_eq!(bridge.kind, tools::ServerKind::AppHosted);
-    assert_eq!(bridge.tools.len(), loa_omp_bridge::DEFAULT_TOOLS.len());
+    assert_eq!(bridge.tools.len(), loa_mcp::bridge::DEFAULT_TOOLS.len());
 }
 
 #[test]

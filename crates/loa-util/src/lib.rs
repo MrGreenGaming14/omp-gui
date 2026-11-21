@@ -1,5 +1,6 @@
 //! Domain-free helpers shared by every loa crate. No domain types, no iced.
 
+pub mod async_util;
 pub mod exec;
 pub mod fs;
 pub mod registry;

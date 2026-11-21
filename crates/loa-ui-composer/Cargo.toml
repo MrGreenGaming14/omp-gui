@@ -10,7 +10,6 @@ iced.workspace = true
 loa-core.workspace = true
 loa-contracts.workspace = true
 loa-ui-kit.workspace = true
-loa-ui-shell = { path = "../loa-ui-shell" }
 
 [dev-dependencies]
 iced_test = "0.14"

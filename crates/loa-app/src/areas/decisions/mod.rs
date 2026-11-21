@@ -55,6 +55,16 @@ impl State {
         (Self { desk, theme, notify_failed: false }, Task::none())
     }
 
+    pub(crate) fn set_theme(&mut self, theme: &Theme) {
+        self.desk.set_theme(theme);
+        self.theme = theme.clone();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn theme(&self) -> &Theme {
+        &self.theme
+    }
+
     /// The inline card of `decision` in the active session, for the
     /// transcript slot it sits in.
     pub fn card(&self, session: &str, decision: NodeId) -> Option<Element<'_, Message>> {
@@ -79,8 +89,7 @@ impl State {
         let Some(session) = ctx.sessions.get(session.as_str()) else { return Task::none() };
         let theme = ctx.shell.theme();
         if theme != self.theme {
-            self.desk.set_theme(&theme);
-            self.theme = theme;
+            self.set_theme(&theme);
         }
         let notices = self.desk.sync(session.dom(), desk::now_ms());
         self.desk.notify(notices).map(Message::Desk)

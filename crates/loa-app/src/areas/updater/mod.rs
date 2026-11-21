@@ -28,10 +28,13 @@ use loa_ui_palette as palette;
 use loa_ui_updates as updates;
 use loa_updater::peers::{self, PeerInfo, PeerStanding};
 use loa_updater::swap::SwapOutcome;
-use loa_updater::{InstalledStatus, Overview, ProductKind, TurnGate, Updater, UpdaterConfig, UpdaterError, default_products};
+use loa_updater::{Error as UpdaterError, InstalledStatus, Overview, ProductKind, TurnGate, Updater, UpdaterConfig, default_products};
 use semver::Version;
 
 use crate::area::{Area, AreaId, Ctx, SessionEvent, Target};
+
+mod omp_gates;
+pub use omp_gates::OmpPorts;
 
 /// Widest the Updates screen grows.
 const MAX_WIDTH: f32 = 920.0;
@@ -77,6 +80,7 @@ impl State {
         };
         let mut config = UpdaterConfig::new(root, default_products(version.clone()));
         config.github_token = settings.github_token.clone().filter(|token| !token.is_empty());
+        config.ports = Some(Arc::new(OmpPorts));
         for key in &settings.trusted_keys {
             match loa_updater::signature::parse_public_key(key) {
                 Ok(key) => config.trusted_keys.push(key),
@@ -152,7 +156,7 @@ impl State {
                 alpns: peer.protocols.clone(),
             })
             .collect();
-        peers::classify(&self.version, &loa_node::local_protocols(), &known)
+        peers::classify(&self.version, &loa_p2p::local_protocols(), &known)
     }
 
     /// Checks every feed, as the screen's "Check all" does.

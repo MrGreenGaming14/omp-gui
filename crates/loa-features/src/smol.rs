@@ -10,11 +10,11 @@ use std::sync::Arc;
 /// A [`Summarizer`] over any one-shot model call.
 #[derive(Clone)]
 pub struct OneShot {
-    model: Arc<dyn loa_projects::Summarizer>,
+    model: Arc<dyn loa_projects::Summarizers>,
 }
 
 impl OneShot {
-    pub fn new(model: Arc<dyn loa_projects::Summarizer>) -> Self {
+    pub fn new(model: Arc<dyn loa_projects::Summarizers>) -> Self {
         Self { model }
     }
 
@@ -22,8 +22,7 @@ impl OneShot {
     /// returns the answer text.
     pub async fn ask(&self, model: &str, prompt: &str) -> Result<String> {
         let model = Some(model).filter(|m| !m.trim().is_empty());
-        let answer = self.model.summarize(prompt, model).await.map_err(|e| Error::Port(e.to_string()))?;
-        Ok(answer.text)
+        self.model.on(model).0.summarize("", prompt).await.map_err(Error::Port)
     }
 }
 

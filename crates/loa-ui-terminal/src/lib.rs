@@ -15,7 +15,6 @@ pub mod local;
 mod loopback;
 pub mod palette;
 pub mod state;
-mod style;
 
 pub use canvas::{CanvasEvent, Metrics};
 pub use channel::{ChannelRead, ChannelReader, ChannelWriter, PtyChannel, RemotePty};

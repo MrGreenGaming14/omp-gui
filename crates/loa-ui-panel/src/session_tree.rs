@@ -22,9 +22,10 @@ use iced::widget::text::Wrapping;
 use iced::widget::{button, column, container, row, scrollable, space, text};
 use iced::{Center, Element, Fill, Task};
 use loa_core::NodeId;
-use loa_ui_kit::icons::Icon;
+use loa_ui_kit::icons::{Icon, muted};
 
-use crate::style;
+use loa_ui_kit::style::{self as kit, ButtonKind, Tone};
+use loa_ui_kit::theme::{ColorRole as C, SpaceRole as Sp, TextRole as T, sp, text_size as ts};
 
 /// One session of the family as the app knows it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -210,7 +211,7 @@ impl State {
     }
 
     pub fn view(&self) -> Element<'_, Message> {
-        scrollable(column(self.rows().map(|row| self.row_view(row))).padding([0, 6])).height(Fill).into()
+        scrollable(column(self.rows().map(|row| self.row_view(row))).padding(iced::Padding::ZERO.left(sp(Sp::S)).right(sp(Sp::S)))).height(Fill).into()
     }
 
     /// Session id and turn node of a turn row of the current session.
@@ -282,30 +283,30 @@ impl State {
     }
 
     fn row_view<'a>(&'a self, row: Row<'a>) -> Element<'a, Message> {
-        let indent = space().width(style::INDENT * f32::from(row.depth));
+        let indent = space().width(crate::indent() * f32::from(row.depth));
         let selected = self.selected == Some(row.index);
         let content: Element<'a, Message> = match row.kind {
             RowKind::Session { id, title, current, on_path, collapsed } => {
                 let chevron: Element<'a, Message> = if self.has_subtree(row.index) {
                     let (icon, label) = if collapsed { (Icon::ChevronRight, "Expand") } else { (Icon::ChevronDown, "Collapse") };
-                    let toggle = button(loa_ui_kit::icons::muted(icon, 12.0))
+                    let toggle = button(muted(icon, ts(T::Caption)))
                         .on_press(Message::Toggle(row.index))
-                        .style(style::action_button)
-                        .padding(1);
-                    let tip = container(text(label).size(12)).padding([3, 8]).style(style::band);
+                        .style(kit::button(ButtonKind::Ghost))
+                        .padding(sp(Sp::Xs));
+                    let tip = container(text(label).size(ts(T::Caption))).padding([sp(Sp::Xs), sp(Sp::S)]).style(kit::fill(C::Raised, 0.0));
                     iced::widget::tooltip(toggle, tip, iced::widget::tooltip::Position::Right).into()
                 } else {
-                    space().width(style::INDENT).into()
+                    space().width(crate::indent()).into()
                 };
                 let mut label = text(if title.is_empty() { id } else { title });
                 if current {
                     label = label.font(Font { weight: font::Weight::Bold, ..Font::DEFAULT });
                 }
                 if on_path {
-                    label = label.style(style::primary_text);
+                    label = label.style(kit::text(Tone::Accent));
                 }
                 let open = (!current).then(|| action("Open", Message::Open(row.index)));
-                row![indent, chevron, row_label(label, selected, row.index), open].spacing(4).align_y(Center).into()
+                row![indent, chevron, row_label(label, selected, row.index), open].spacing(sp(Sp::Xs)).align_y(Center).into()
             }
             RowKind::ForkPoint { seq, first_line, .. } => {
                 let label = match first_line {
@@ -314,12 +315,12 @@ impl State {
                 };
                 row![
                     indent,
-                    loa_ui_kit::icons::muted(Icon::GitCompare, 12.0),
-                    container(label.size(style::TEXT_SIZE).wrapping(Wrapping::None).style(style::muted))
+                    muted(Icon::GitCompare, ts(T::Caption)),
+                    container(label.size(ts(T::Label)).wrapping(Wrapping::None).style(kit::text(Tone::Muted)))
                         .width(Fill)
                         .clip(true),
                 ]
-                .spacing(6)
+                .spacing(sp(Sp::S))
                 .align_y(Center)
                 .into()
             }
@@ -329,27 +330,27 @@ impl State {
                 action("Rewind", Message::Rewind(row.index)),
                 action("Fork", Message::Fork(row.index)),
             ]
-            .spacing(4)
+            .spacing(sp(Sp::Xs))
             .align_y(Center)
             .into(),
         };
-        container(content).height(style::LIST_ROW_HEIGHT).align_y(Center).into()
+        container(content).height(crate::list_row_height()).align_y(Center).into()
     }
 }
 
 /// A selectable one line label filling the rest of the row.
 fn row_label<'a>(label: text::Text<'a>, selected: bool, index: usize) -> Element<'a, Message> {
-    button(container(label.size(style::LIST_TEXT_SIZE).wrapping(Wrapping::None)).width(Fill).clip(true))
+    button(container(label.size(ts(T::Body)).wrapping(Wrapping::None)).width(Fill).clip(true))
         .on_press(Message::Select(index))
-        .style(style::row_button(selected))
-        .padding([4, 8])
+        .style(kit::button(ButtonKind::Row { selected }))
+        .padding([sp(Sp::Xs), sp(Sp::S)])
         .width(Fill)
         .into()
 }
 
 /// A small action button inside a row.
 fn action<'a>(label: &'static str, message: Message) -> Element<'a, Message> {
-    button(text(label).size(style::TEXT_SIZE)).on_press(message).style(style::action_button).padding([2, 6]).into()
+    button(text(label).size(ts(T::Label))).on_press(message).style(kit::button(ButtonKind::Ghost)).padding([sp(Sp::Xs), sp(Sp::S)]).into()
 }
 
 /// Resolved fork links of a family: effective parents, children, roots.

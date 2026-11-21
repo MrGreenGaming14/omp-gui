@@ -1,14 +1,14 @@
 //! Running registered servers.
 
-use loa_util::LockExt;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use loa_contracts::surface::SurfaceUri;
+use loa_util::LockExt;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, ClientCapabilities, ClientConfig, Implementation, JsonObject,
-    ReadResourceRequestParams, Resource, ResourceContents, Tool,
+    CallToolRequestParams, CallToolResult, ClientCapabilities, ClientConfig, Implementation, JsonObject, ReadResourceRequestParams, Resource,
+    ResourceContents, Tool,
 };
 use rmcp::service::NotificationContext;
 use rmcp::{ClientHandler, Peer, RoleClient};
@@ -20,16 +20,11 @@ use crate::connect::{self, Connection};
 use crate::spec::ServerSpec;
 use crate::{Error, Result, ToolFilter};
 
-/// Events buffered per subscriber before the oldest are dropped.
-const EVENT_CAPACITY: usize = 256;
-
-/// Delay between restarts of a server that keeps failing.
+/// Delay between restarts of a server that keeps failing: doubles per
+/// failure up to `max`; a connection that stayed up `max` resets it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Backoff {
-    /// Wait before the first restart.
     pub initial: Duration,
-    /// The wait doubles per failure up to this. A connection that stayed up
-    /// this long resets it.
     pub max: Duration,
 }
 
@@ -39,7 +34,6 @@ impl Backoff {
     }
 }
 
-/// How the manager runs servers.
 #[derive(Clone, Debug)]
 pub struct Options {
     pub backoff: Backoff,
@@ -49,23 +43,19 @@ pub struct Options {
 
 impl Default for Options {
     fn default() -> Self {
-        Self {
-            backoff: Backoff { initial: Duration::from_millis(500), max: Duration::from_secs(30) },
-            connect_timeout: Duration::from_secs(30),
-        }
+        let backoff = Backoff { initial: Duration::from_millis(500), max: Duration::from_secs(30) };
+        Self { backoff, connect_timeout: Duration::from_secs(30) }
     }
 }
 
 /// What the Tools panel shows next to a server.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Status {
-    /// Spawning or connecting, at first or after a failure.
     Starting,
     Running,
     /// Disabled, stopped by the user, or shut down.
     Stopped,
-    /// The last start failed or the server went away. A restart is pending
-    /// unless the server is stopped.
+    /// The last start failed or the server went away; a restart is pending unless stopped.
     Error(String),
 }
 
@@ -73,9 +63,7 @@ pub enum Status {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Event {
     Status { server: String, status: Status },
-    /// The server's tool list changed; read it again with [`Manager::tools`].
     ToolsChanged { server: String },
-    /// The server's resources (surfaces among them) changed.
     ResourcesChanged { server: String },
     Removed { server: String },
 }
@@ -85,7 +73,6 @@ pub enum Event {
 pub struct ServerView {
     pub spec: ServerSpec,
     pub status: Status,
-    /// Its tools, never mixed with another server's.
     pub tools: Vec<ToolView>,
 }
 
@@ -117,13 +104,8 @@ struct Inner {
 struct Entry {
     spec: ServerSpec,
     shared: Arc<Shared>,
-    run: Option<Run>,
-}
-
-/// A supervisor task keeping one server connected.
-struct Run {
-    stop: CancellationToken,
-    task: JoinHandle<()>,
+    /// The supervisor task keeping the server connected.
+    run: Option<(CancellationToken, JoinHandle<()>)>,
 }
 
 /// State a supervisor publishes and calls read.
@@ -135,15 +117,10 @@ struct Shared {
     events: broadcast::Sender<Event>,
 }
 
-
 impl Shared {
     fn set_status(&self, status: Status) {
         self.status.send_replace(status.clone());
         let _ = self.events.send(Event::Status { server: self.name.clone(), status });
-    }
-
-    fn set_tools(&self, tools: Vec<Tool>) {
-        *self.tools.locked() = tools.into();
     }
 
     fn peer(&self) -> Result<Peer<RoleClient>> {
@@ -152,9 +129,7 @@ impl Shared {
 }
 
 /// The client side handler of one connection: keeps the tool list fresh.
-struct Client {
-    shared: Arc<Shared>,
-}
+struct Client(Arc<Shared>);
 
 impl ClientHandler for Client {
     fn get_info(&self) -> ClientConfig {
@@ -164,26 +139,28 @@ impl ClientHandler for Client {
     async fn on_tool_list_changed(&self, context: NotificationContext<RoleClient>) {
         match context.peer.list_all_tools().await {
             Ok(tools) => {
-                self.shared.set_tools(tools);
-                let _ = self.shared.events.send(Event::ToolsChanged { server: self.shared.name.clone() });
+                *self.0.tools.locked() = tools.into();
+                let _ = self.0.events.send(Event::ToolsChanged { server: self.0.name.clone() });
             }
-            Err(e) => tracing::warn!(server = self.shared.name, "relisting tools: {e}"),
+            Err(e) => tracing::warn!(server = self.0.name, "relisting tools: {e}"),
         }
     }
 
     async fn on_resource_list_changed(&self, _context: NotificationContext<RoleClient>) {
-        let _ = self.shared.events.send(Event::ResourcesChanged { server: self.shared.name.clone() });
+        let _ = self.0.events.send(Event::ResourcesChanged { server: self.0.name.clone() });
     }
+}
+
+fn unknown(name: &str) -> Error {
+    Error::UnknownServer(name.to_owned())
 }
 
 impl Manager {
     pub fn new(options: Options) -> Result<Self> {
-        let (events, _) = broadcast::channel(EVENT_CAPACITY);
-        let inner = Inner { servers: Mutex::default(), events, options, http: connect::http_client()? };
-        Ok(Self { inner: Arc::new(inner) })
+        let (events, _) = broadcast::channel(256);
+        Ok(Self { inner: Arc::new(Inner { servers: Mutex::default(), events, options, http: connect::http_client()? }) })
     }
 
-    /// Status changes, tool and resource list changes of every server.
     pub fn events(&self) -> broadcast::Receiver<Event> {
         self.inner.events.subscribe()
     }
@@ -212,31 +189,30 @@ impl Manager {
 
     /// Stops a server and forgets it.
     pub async fn remove(&self, name: &str) -> Result<ServerSpec> {
-        let entry = self.inner.servers.locked().remove(name).ok_or_else(|| Error::UnknownServer(name.to_owned()))?;
-        if let Some(run) = entry.run {
-            finish(run).await;
-        }
+        let entry = self.inner.servers.locked().remove(name).ok_or_else(|| unknown(name))?;
+        finish(entry.run).await;
         let _ = self.inner.events.send(Event::Removed { server: name.to_owned() });
         Ok(entry.spec)
     }
 
-    /// Swaps the server registered as `name` for `spec`, which may carry a
-    /// new name. The old one is stopped first.
+    /// Swaps the server registered as `name` (or none) for `spec`, which may carry a new name.
     pub async fn replace(&self, name: &str, spec: ServerSpec) -> Result<()> {
         spec.validate()?;
         if spec.name != name && self.inner.servers.locked().contains_key(&spec.name) {
             return Err(Error::NameTaken(spec.name));
         }
-        self.remove(name).await?;
-        self.add(spec)
+        match self.remove(name).await {
+            Ok(_) | Err(Error::UnknownServer(_)) => self.add(spec),
+            Err(e) => Err(e),
+        }
     }
 
     /// Starts a stopped server (and marks it enabled in the running set).
     pub fn start(&self, name: &str) -> Result<()> {
         let mut servers = self.inner.servers.locked();
-        let entry = servers.get_mut(name).ok_or_else(|| Error::UnknownServer(name.to_owned()))?;
+        let entry = servers.get_mut(name).ok_or_else(|| unknown(name))?;
         entry.spec.enabled = true;
-        if entry.run.as_ref().is_none_or(|run| run.task.is_finished()) {
+        if entry.run.as_ref().is_none_or(|(_, task)| task.is_finished()) {
             entry.run = Some(self.spawn(entry));
         }
         Ok(())
@@ -246,13 +222,11 @@ impl Manager {
     pub async fn stop(&self, name: &str) -> Result<()> {
         let run = {
             let mut servers = self.inner.servers.locked();
-            let entry = servers.get_mut(name).ok_or_else(|| Error::UnknownServer(name.to_owned()))?;
+            let entry = servers.get_mut(name).ok_or_else(|| unknown(name))?;
             entry.spec.enabled = false;
             entry.run.take()
         };
-        if let Some(run) = run {
-            finish(run).await;
-        }
+        finish(run).await;
         Ok(())
     }
 
@@ -264,12 +238,10 @@ impl Manager {
 
     /// Stops every server and waits for their children to exit.
     pub async fn shutdown(&self) {
-        let runs: Vec<Run> = self.inner.servers.locked().values_mut().filter_map(|entry| entry.run.take()).collect();
-        for run in &runs {
-            run.stop.cancel();
-        }
-        for run in runs {
-            let _ = run.task.await;
+        let runs: Vec<_> = self.inner.servers.locked().values_mut().filter_map(|entry| entry.run.take()).collect();
+        runs.iter().for_each(|(stop, _)| stop.cancel());
+        for (_, task) in runs {
+            let _ = task.await;
         }
     }
 
@@ -279,74 +251,52 @@ impl Manager {
     }
 
     pub fn status(&self, name: &str) -> Option<Status> {
-        self.inner.servers.locked().get(name).map(|entry| entry.shared.status.borrow().clone())
+        self.shared(name).ok().map(|shared| shared.status.borrow().clone())
     }
 
-    /// Follows one server's status.
     pub fn watch(&self, name: &str) -> Option<watch::Receiver<Status>> {
-        self.inner.servers.locked().get(name).map(|entry| entry.shared.status.subscribe())
+        self.shared(name).ok().map(|shared| shared.status.subscribe())
     }
 
-    /// Every server with its status and its tools, each marked with what
-    /// `filter` allows.
+    /// Every server with its status and tools, each marked with what `filter` allows.
     pub fn view(&self, filter: &dyn ToolFilter) -> Vec<ServerView> {
-        self.inner.servers.locked()
-            .values()
-            .map(|entry| {
-                let tools = entry.shared.tools.locked().clone();
-                let tools = tools
-                    .iter()
-                    .map(|tool| ToolView { allowed: filter.allows(&entry.spec.name, &tool.name), tool: tool.clone() })
-                    .collect();
-                ServerView { spec: entry.spec.clone(), status: entry.shared.status.borrow().clone(), tools }
-            })
-            .collect()
+        let servers = self.inner.servers.locked();
+        let view = |entry: &Entry| {
+            let tools = entry.shared.tools.locked().clone();
+            let tools = tools.iter().map(|tool| ToolView { allowed: filter.allows(&entry.spec.name, &tool.name), tool: tool.clone() });
+            ServerView { spec: entry.spec.clone(), status: entry.shared.status.borrow().clone(), tools: tools.collect() }
+        };
+        servers.values().map(view).collect()
     }
 
-    /// The tools of a running server that `filter` allows. Empty while the
-    /// server isn't running.
+    /// The tools of a running server that `filter` allows.
     pub fn tools(&self, server: &str, filter: &dyn ToolFilter) -> Result<Vec<Tool>> {
-        let shared = self.shared(server)?;
-        let tools = shared.tools.locked().clone();
+        let tools = self.shared(server)?.tools.locked().clone();
         Ok(tools.iter().filter(|tool| filter.allows(server, &tool.name)).cloned().collect())
     }
 
-    /// Calls a tool. Refused without contacting the server when `filter`
-    /// doesn't allow it.
-    pub async fn call_tool(
-        &self,
-        server: &str,
-        tool: &str,
-        arguments: Option<JsonObject>,
-        filter: &dyn ToolFilter,
-    ) -> Result<CallToolResult> {
+    /// Calls a tool; refused without contacting the server when `filter` doesn't allow it.
+    pub async fn call_tool(&self, server: &str, tool: &str, arguments: Option<JsonObject>, filter: &dyn ToolFilter) -> Result<CallToolResult> {
         if !filter.allows(server, tool) {
             return Err(Error::NotAllowed { server: server.to_owned(), tool: tool.to_owned() });
         }
-        let peer = self.shared(server)?.peer()?;
         let mut params = CallToolRequestParams::new(tool.to_owned());
         params.arguments = arguments;
-        peer.call_tool(params).await.map_err(|source| Error::Service { server: server.to_owned(), source: Box::new(source) })
+        self.shared(server)?.peer()?.call_tool(params).await.map_err(Error::service(server))
     }
 
-    /// The resources a running server declares. Empty when it has no
-    /// resources capability.
+    /// The resources a running server declares; empty without the resources capability.
     pub async fn list_resources(&self, server: &str) -> Result<Vec<Resource>> {
         let peer = self.shared(server)?.peer()?;
-        let declares = peer.peer_info().is_none_or(|info| info.capabilities.resources.is_some());
-        if !declares {
+        if peer.peer_info().is_some_and(|info| info.capabilities.resources.is_none()) {
             return Ok(Vec::new());
         }
-        peer.list_all_resources().await.map_err(|source| Error::Service { server: server.to_owned(), source: Box::new(source) })
+        peer.list_all_resources().await.map_err(Error::service(server))
     }
 
     pub async fn read_resource(&self, server: &str, uri: &str) -> Result<Vec<ResourceContents>> {
-        let peer = self.shared(server)?.peer()?;
-        let result = peer
-            .read_resource(ReadResourceRequestParams::new(uri))
-            .await
-            .map_err(|source| Error::Service { server: server.to_owned(), source: Box::new(source) })?;
-        Ok(result.contents)
+        let read = self.shared(server)?.peer()?.read_resource(ReadResourceRequestParams::new(uri)).await;
+        Ok(read.map_err(Error::service(server))?.contents)
     }
 
     /// The `surface://` resources a running server declares.
@@ -355,25 +305,20 @@ impl Manager {
         Ok(resources.into_iter().filter_map(|resource| Some((surface_uri(&resource)?, resource))).collect())
     }
 
-    /// Connects to `spec` once, lists its tools and disconnects: the check
-    /// run before a server is saved.
+    /// Connects to `spec` once and lists its tools: the check run before a server is saved.
     pub async fn probe(&self, spec: &ServerSpec) -> Result<Vec<Tool>> {
         spec.validate()?;
-        let Connection { mut service, .. } =
-            connect::connect(spec, (), &self.inner.http, self.inner.options.connect_timeout).await?;
+        let Connection { mut service, .. } = connect::connect(spec, (), &self.inner.http, self.inner.options.connect_timeout).await?;
         let tools = service.list_all_tools().await;
         let _ = service.close().await;
-        tools.map_err(|source| Error::Service { server: spec.name.clone(), source: Box::new(source) })
+        tools.map_err(Error::service(&spec.name))
     }
 
     fn shared(&self, server: &str) -> Result<Arc<Shared>> {
-        self.inner.servers.locked()
-            .get(server)
-            .map(|entry| entry.shared.clone())
-            .ok_or_else(|| Error::UnknownServer(server.to_owned()))
+        self.inner.servers.locked().get(server).map(|entry| entry.shared.clone()).ok_or_else(|| unknown(server))
     }
 
-    fn spawn(&self, entry: &Entry) -> Run {
+    fn spawn(&self, entry: &Entry) -> (CancellationToken, JoinHandle<()>) {
         let stop = CancellationToken::new();
         let supervisor = Supervisor {
             spec: entry.spec.clone(),
@@ -382,24 +327,21 @@ impl Manager {
             options: self.inner.options.clone(),
             stop: stop.clone(),
         };
-        Run { stop, task: tokio::spawn(supervisor.run()) }
+        (stop, tokio::spawn(supervisor.run()))
     }
 }
 
-async fn finish(run: Run) {
-    run.stop.cancel();
-    let _ = run.task.await;
+async fn finish(run: Option<(CancellationToken, JoinHandle<()>)>) {
+    if let Some((stop, task)) = run {
+        stop.cancel();
+        let _ = task.await;
+    }
 }
 
 impl Drop for Inner {
-    /// Without [`Manager::shutdown`], supervisors still close their children,
-    /// just without anyone waiting for it.
+    /// Without [`Manager::shutdown`], supervisors still close their children, unawaited.
     fn drop(&mut self) {
-        for entry in self.servers.locked().values() {
-            if let Some(run) = &entry.run {
-                run.stop.cancel();
-            }
-        }
+        self.servers.locked().values().filter_map(|entry| entry.run.as_ref()).for_each(|(stop, _)| stop.cancel());
     }
 }
 
@@ -417,25 +359,23 @@ impl Supervisor {
         let mut attempt = 0;
         loop {
             self.shared.set_status(Status::Starting);
-            let handler = Client { shared: self.shared.clone() };
-            let connecting = connect::connect(&self.spec, handler, &self.http, self.options.connect_timeout);
+            let connecting = connect::connect(&self.spec, Client(self.shared.clone()), &self.http, self.options.connect_timeout);
             let connected = tokio::select! {
                 () = self.stop.cancelled() => break,
                 connected = connecting => connected,
             };
-            match connected {
+            let failure = match connected {
                 Ok(connection) => {
                     let started = Instant::now();
-                    match self.serve(connection).await {
-                        Ended::Stopped => break,
-                        Ended::Failed(message) => self.shared.set_status(Status::Error(message)),
-                    }
+                    let Some(message) = self.serve(connection).await else { break };
                     if started.elapsed() >= self.options.backoff.max {
                         attempt = 0;
                     }
+                    message
                 }
-                Err(e) => self.shared.set_status(Status::Error(e.to_string())),
-            }
+                Err(e) => e.to_string(),
+            };
+            self.shared.set_status(Status::Error(failure));
             let delay = self.options.backoff.delay(attempt);
             attempt = attempt.saturating_add(1);
             tracing::info!(server = self.spec.name, "restarting in {delay:?}");
@@ -447,13 +387,12 @@ impl Supervisor {
         self.shared.set_status(Status::Stopped);
     }
 
-    /// Runs one connection until it ends.
-    async fn serve(&self, connection: Connection<Client>) -> Ended {
-        let Connection { mut service, stderr } = connection;
+    /// Runs one connection until it ends: `None` when stopped, else why it failed.
+    async fn serve(&self, Connection { mut service, stderr }: Connection<Client>) -> Option<String> {
         let listed = tokio::select! {
             () = self.stop.cancelled() => {
                 let _ = service.close().await;
-                return Ended::Stopped;
+                return None;
             }
             listed = service.list_all_tools() => listed,
         };
@@ -461,10 +400,10 @@ impl Supervisor {
             Ok(tools) => tools,
             Err(e) => {
                 let _ = service.close().await;
-                return Ended::Failed(format!("listing tools: {e}"));
+                return Some(format!("listing tools: {e}"));
             }
         };
-        self.shared.set_tools(tools);
+        *self.shared.tools.locked() = tools.into();
         *self.shared.peer.locked() = Some(service.peer().clone());
         self.shared.set_status(Status::Running);
 
@@ -480,24 +419,15 @@ impl Supervisor {
             }
         };
         *self.shared.peer.locked() = None;
-        self.shared.set_tools(Vec::new());
+        *self.shared.tools.locked() = Arc::new([]);
         if stopped {
-            return Ended::Stopped;
+            return None;
         }
-        let last = match stderr {
-            Some(stderr) => stderr.last_line().await,
-            None => None,
-        };
-        Ended::Failed(match last {
+        Some(match connect::last_line(stderr).await {
             Some(line) => format!("the server exited: {line}"),
             None => "the server closed the connection".to_owned(),
         })
     }
-}
-
-enum Ended {
-    Stopped,
-    Failed(String),
 }
 
 #[cfg(test)]

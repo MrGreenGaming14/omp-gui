@@ -6,7 +6,7 @@ use iced::widget::text_editor::{Action, Edit};
 use loa_contracts::harness::{Adapter, AdapterError, Answer, Capabilities, HarnessSession, Prompt, SessionState};
 use loa_bus::Policy;
 use loa_core::{Dom, Draft, ElementKind, NodeId, PatchSink, Role, TurnStatus, Value, attr, now_ms};
-use loa_projects::{PROJECT_READ, PROJECT_SEARCH, SummaryAnswer};
+use loa_projects::{PROJECT_READ, PROJECT_SEARCH, Summarizer};
 use loa_ui_shell as shell;
 
 use super::*;
@@ -98,9 +98,14 @@ struct FakeSummarizer;
 
 #[async_trait::async_trait]
 impl Summarizer for FakeSummarizer {
-    async fn summarize(&self, _: &str, _: Option<&str>) -> loa_projects::Result<SummaryAnswer> {
-        let text = r#"{"summary":"Set up the iroh endpoint on port 31415.","decisions":["port 31415"],"files":[{"path":"src/net.rs","note":"endpoint"}],"open_items":[],"pointers":["T1"]}"#;
-        Ok(SummaryAnswer { text: text.to_owned(), model: Some("smol".into()) })
+    async fn summarize(&self, _: &str, _: &str) -> Result<String, String> {
+        Ok(r#"{"summary":"Set up the iroh endpoint on port 31415.","decisions":["port 31415"],"files":[{"path":"src/net.rs","note":"endpoint"}],"open_items":[],"pointers":["T1"]}"#.into())
+    }
+}
+
+impl Summarizers for FakeSummarizer {
+    fn on(&self, _: Option<&str>) -> (Arc<dyn Summarizer>, Option<String>) {
+        (Arc::new(FakeSummarizer), Some("smol".into()))
     }
 }
 

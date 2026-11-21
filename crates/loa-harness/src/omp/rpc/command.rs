@@ -100,10 +100,12 @@ pub enum Command {
         images: Vec<ImageContent>,
     },
     Abort,
+    NewSession,
     /// Withdraws queued user input and aborts, atomically.
     AbortAndRestoreQueue,
     NegotiateProtocol { protocol_version: u32 },
     GetState,
+    GetEntries,
     SetAskDialog { enabled: bool },
     SetHostTools { tools: Vec<HostToolDefinition> },
     SetHostUriSchemes { schemes: Vec<HostUriScheme> },
