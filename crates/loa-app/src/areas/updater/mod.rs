@@ -14,10 +14,11 @@
 //! and `[updater].trusted_keys` are the keys app releases must be signed
 //! with.
 
+use loa_util::time::now_secs;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use iced::widget::{container, text};
 use iced::{Element, Fill, Subscription, Task};
@@ -134,7 +135,7 @@ impl State {
             .collect();
         ctx.shell.set_updates(waiting(&overview));
         let peers = self.peers(ctx);
-        self.screen.set_data(updates::Data::from_updater(&overview, &peers, self.running > 0, now_unix()));
+        self.screen.set_data(updates::Data::from_updater(&overview, &peers, self.running > 0, now_secs()));
     }
 
     /// The peers whose hello this node has seen, against this app.
@@ -433,10 +434,6 @@ fn swap_note(updater: &Updater, id: &str, outcome: &Result<SwapOutcome, UpdaterE
         Ok(SwapOutcome::Swapped { to, .. }) if app => Some(format!("{name} {to} is installed; restart Loa to use it")),
         Ok(SwapOutcome::Swapped { to, .. }) => Some(format!("{name} is now {to}; new sessions use it")),
     }
-}
-
-fn now_unix() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
 #[cfg(test)]

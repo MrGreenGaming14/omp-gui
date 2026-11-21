@@ -5281,6 +5281,7 @@ dependencies = [
  "loa-config",
  "loa-core",
  "loa-ui-icons",
+ "loa-util",
  "notify-rust",
  "serde",
  "serde_json",

@@ -10,6 +10,7 @@
 //! versions while no turn runs, and [`Updater::rollback`] goes back one
 //! version. [`Updater::overview`] is a cheap snapshot for the screen.
 
+use loa_util::time::now_secs;
 use loa_util::LockExt;
 use crate::decision::{self, HoldChoice};
 use crate::feeds::{self, FeedError, FeedResponse, GitHubFeed, NpmFeed, RateLimit};
@@ -396,10 +397,6 @@ impl std::fmt::Debug for Updater {
 }
 
 
-fn now_unix() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
-}
-
 impl Updater {
     /// Opens the updater under `config.root`, loading its state and feed
     /// cache. Nothing is fetched or run.
@@ -566,7 +563,7 @@ impl Updater {
                 self.save_cache()?;
             }
         }
-        self.inner.state.locked().last_check_unix.insert(id.to_owned(), now_unix());
+        self.inner.state.locked().last_check_unix.insert(id.to_owned(), now_secs());
         self.save_state()?;
         self.offered(spec).await
     }
@@ -661,7 +658,7 @@ impl Updater {
             }
         };
         let mut state = self.inner.state.locked();
-        decision::record(&mut state, &report, now_unix());
+        decision::record(&mut state, &report, now_secs());
         state.reports.insert(id.to_owned(), report.clone());
         state.save(&self.inner.config.root)?;
         Ok(report)

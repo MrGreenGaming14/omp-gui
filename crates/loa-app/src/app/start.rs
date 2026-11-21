@@ -3,7 +3,7 @@
 //! there), a few starters that fill the composer, and the folder's recent
 //! sessions.
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use loa_util::time::now_ms;
 
 use iced::widget::{Column, button, column, container, row, rule, space, text};
 use iced::{Alignment, Element, Fill, Length, Padding};
@@ -114,10 +114,6 @@ impl App {
         .height(Length::Shrink);
         container(page).center(Fill).into()
     }
-}
-
-fn now_ms() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |elapsed| i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX))
 }
 
 /// "just now", "5m", "3h", "2d" since `then`, both in Unix milliseconds.

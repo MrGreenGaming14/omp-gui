@@ -1,5 +1,6 @@
 //! One RFB connection as a pixel [`Surface`], with reconnect.
 
+use loa_util::time::now_us;
 use loa_util::LockExt;
 use crate::decode::{self, Cursor, Decoder, Framebuffer};
 use crate::input::InputState;
@@ -16,7 +17,6 @@ use loa_surface::{
 use std::convert::Infallible;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, MutexGuard};
-use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
@@ -192,12 +192,6 @@ fn encode_png(width: u32, height: u32, rgba: &[u8]) -> Result<Vec<u8>, png::Enco
     writer.write_image_data(rgba)?;
     writer.finish()?;
     Ok(out)
-}
-
-fn now_us() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_micros() as u64)
 }
 
 /// `a` grown to cover `b`.

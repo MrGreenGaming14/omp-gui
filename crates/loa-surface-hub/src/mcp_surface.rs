@@ -8,6 +8,7 @@
 //! Mouse moves, drags and keys other than Enter have no tool and are not
 //! sent. Document surfaces are read once with `resources/read`.
 
+use loa_util::time::now_us;
 use loa_util::LockExt;
 use crate::tools::{ToolResult, png_size};
 use async_trait::async_trait;
@@ -194,12 +195,6 @@ async fn poll(shared: std::sync::Weak<Shared>) {
         let woken = async { strong.wake.notified().await };
         let _ = tokio::time::timeout(POLL, woken).await;
     }
-}
-
-fn now_us() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| u64::try_from(d.as_micros()).unwrap_or(u64::MAX))
 }
 
 #[async_trait]

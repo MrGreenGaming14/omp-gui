@@ -334,9 +334,7 @@ fn node_id(key: &NodePublicKey) -> Option<NodeId> {
     NodeId::from_bytes(&key.0).ok()
 }
 
-pub(crate) fn now_ms() -> i64 {
-    loa_core::now_ms()
-}
+pub(crate) use loa_util::time::now_ms;
 
 impl Node {
     /// Opens the node's stores under `config.data_dir`, grants included.

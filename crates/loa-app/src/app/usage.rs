@@ -5,8 +5,8 @@
 //! expands its accounts. The tightest limit across providers also feeds the
 //! sidebar's usage meter.
 
+use loa_util::time::now_ms;
 use std::collections::BTreeSet;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use iced::widget::{Column, button, column, container, row, scrollable, space, text};
 use iced::{Alignment, Element, Fill, Length, Task};
@@ -369,10 +369,6 @@ fn meter<'a>(fraction: f32, width: f32) -> Element<'a, Message> {
     let bar = iced::widget::stack![track(Length::Fill), row![fill, rest]];
     let width = if width.is_finite() { Length::Fixed(width) } else { Length::Fill };
     container(bar).width(width).height(6).into()
-}
-
-fn now_ms() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|elapsed| elapsed.as_millis() as i64).unwrap_or_default()
 }
 
 fn semibold() -> iced::Font {

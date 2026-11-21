@@ -8,7 +8,6 @@ use loa_util::LockExt;
 use crate::dom::{ApplyError, Dom};
 use crate::patch::{Draft, Patch};
 use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Clone, Debug, PartialEq, thiserror::Error)]
 pub enum CommitError {
@@ -37,11 +36,7 @@ pub trait PatchSink: Send + Sync {
 }
 
 /// Unix milliseconds.
-pub fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
-}
+pub use loa_util::time::now_ms;
 
 /// A sink that keeps the DOM and every patch in memory. For tests and for
 /// building a DOM without a journal (imports, previews).
