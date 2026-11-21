@@ -3,7 +3,7 @@
 use loa_util::LockExt;
 use loa_bus::{Authorize, Denied, NodeKey, SessionId};
 use loa_core::{Dom, Draft, NodeId, now_ms};
-use loa_grants::{Action, GrantStore, Request, Revocations, SessionFacts, VerifiedGrant, turn_of};
+use loa_trust::{Action, GrantStore, Request, Revocations, SessionFacts, VerifiedGrant, turn_of};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 

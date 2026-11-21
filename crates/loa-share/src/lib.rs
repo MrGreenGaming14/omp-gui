@@ -7,7 +7,7 @@
 
 use loa_bus::{NodeKey, SessionId, SessionWriter};
 use loa_core::{attr, Dom, Draft, ElementKind, NodeId, Op, Patch, Value};
-use loa_grants::Action;
+use loa_trust::Action;
 use loa_bus::{Journal, Store};
 use prost::Message;
 use std::collections::HashMap;
@@ -41,7 +41,7 @@ pub enum Error {
 
 /// Holder proof and revocation checks must occur before constructing this port.
 /// The implementation rechecks expiry, revocation and scopes on every call;
-/// `loa-grants::VerifiedGrant::visibility` supplies subtree selection.
+/// grant checks in `loa-node` supply subtree selection.
 pub trait Access: Send + Sync {
     fn allows(&self, peer: NodeKey, dom: &Dom, action: Action, node: Option<NodeId>) -> bool;
 }

@@ -7,7 +7,7 @@ use crate::{
     RemoteView, Transport,
 };
 use loa_core::NodeId as DomNodeId;
-use loa_grants::{Action, GrantId, Resource, Scope};
+use loa_trust::{Action, GrantId, Resource, Scope};
 use loa_ui_peers as panel;
 use std::sync::Arc;
 

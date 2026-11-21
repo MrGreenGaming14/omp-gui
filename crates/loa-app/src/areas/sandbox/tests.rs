@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use loa_contracts::harness::{Adapter, AdapterError, Answer, Capabilities, HarnessSession, HostTools, Prompt, Registry, SessionConfig, SessionState};
 use loa_core::{Dom, Draft, ElementKind, NodeId, PatchSink, Role, TurnStatus, Value, now_ms};
-use loa_identity::NodeIdentity;
+use loa_trust::NodeIdentity;
 use loa_sandbox::provider::local::find_stub;
 use loa_ui_palette as palette;
 use loa_ui_tools::DetailState;

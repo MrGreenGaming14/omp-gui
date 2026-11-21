@@ -11,7 +11,7 @@ use iced::Task;
 use iced::futures::StreamExt;
 use iced_runtime::Action as RuntimeAction;
 use loa_core::{Dom, Draft, ElementKind, PatchSink as _, attr};
-use loa_identity::NodeIdentity;
+use loa_trust::NodeIdentity;
 use loa_node::{DriveOutcome, Endpoint, GrantDirection, NodeEvent};
 use loa_ui_peers as panel;
 use loa_ui_shell as shell;
@@ -187,7 +187,7 @@ fn two_apps_share_a_session_view_drive_and_fork_over_loopback() {
     settings.remote_hosts.insert("buildbox".into(), serde_json::from_value(serde_json::json!({"host": "buildbox.lan"})).unwrap());
     config.save(&settings).unwrap();
     update(&rt, &mut owner, Message::Peers(Peers::Open));
-    let ssh = loa_grants::Resource::Ssh { host: "buildbox".into() };
+    let ssh = loa_trust::Resource::Ssh { host: "buildbox".into() };
     assert!(owner_node.resources().iter().any(|(resource, _)| *resource == ssh));
     panel(&rt, &mut owner, panel::Message::SelectPeer(guest_key.clone()));
     panel(&rt, &mut owner, panel::Message::SelectResource("ssh:buildbox".into()));
@@ -248,7 +248,7 @@ fn two_apps_share_a_session_view_drive_and_fork_over_loopback() {
     assert_eq!(messages(&copy, "user"), ["hello", "from the guest"]);
 
     // N3: renew and revoke from the owner's panel; the guest loses the session.
-    let drive = given.iter().find(|grant| grant.scopes.iter().any(|scope| scope.actions.contains(&loa_grants::Action::Drive))).unwrap();
+    let drive = given.iter().find(|grant| grant.scopes.iter().any(|scope| scope.actions.contains(&loa_trust::Action::Drive))).unwrap();
     let until = drive.until_ms.expect("a timed grant");
     std::thread::sleep(Duration::from_millis(5));
     panel(&rt, &mut owner, panel::Message::RenewGrant(drive.id.to_string()));
@@ -292,7 +292,7 @@ fn a_project_grant_shares_its_sessions_and_peers_are_renamed_and_removed() {
     let root = writer.with_dom(|dom| dom.root().unwrap().id);
     writer.commit(Draft::set(root, attr::PROJECT, project.as_str())).unwrap();
     let owner_node = owner.areas.peers.node().unwrap().clone();
-    let resource = loa_grants::Resource::Project { id: project.clone() };
+    let resource = loa_trust::Resource::Project { id: project.clone() };
     assert!(owner_node.resources().iter().any(|(listed, label)| *listed == resource && *label == format!("Project {project}")));
     grant(&rt, &mut owner, &key(&guest), &format!("project:{project}"), panel::Permission::View);
     let given: Vec<_> = owner_node.grants().into_iter().filter(|grant| grant.direction == GrantDirection::Given).collect();
@@ -340,7 +340,7 @@ fn restart_command_listens_on_the_configured_port_and_keeps_added_protocols() {
     slot.add_protocol(loa_node::AddedProtocol {
         name: "loa-sandbox",
         version: 1,
-        required: (loa_grants::Resource::Sandbox, loa_grants::Action::Exec),
+        required: (loa_trust::Resource::Sandbox, loa_trust::Action::Exec),
         handler: Arc::new(Idle),
     });
     assert_eq!(first.added_protocols().len(), 1);
@@ -361,7 +361,7 @@ fn restart_command_listens_on_the_configured_port_and_keeps_added_protocols() {
     // offers the sandbox as a grant resource.
     assert_eq!(slot.get().unwrap().status().endpoint, node.status().endpoint);
     assert_eq!(node.added_protocols().iter().map(|added| added.name).collect::<Vec<_>>(), ["loa-sandbox"]);
-    assert!(node.resources().iter().any(|(resource, _)| *resource == loa_grants::Resource::Sandbox));
+    assert!(node.resources().iter().any(|(resource, _)| *resource == loa_trust::Resource::Sandbox));
     rt.block_on(node.stop());
 }
 
@@ -406,11 +406,11 @@ fn a_granted_folder_is_browsed_read_and_written_only_inside_and_only_with_drive(
     // N3: the owner types a folder of its own into the grant form and gives view.
     grant_folder(&rt, &mut owner, &guest_key, &format!("{folder}/"), panel::Permission::View);
     let owner_node = owner.areas.peers.node().unwrap().clone();
-    let resource = loa_grants::Resource::Folder { path: folder.clone() };
+    let resource = loa_trust::Resource::Folder { path: folder.clone() };
     let given: Vec<_> = owner_node.grants().into_iter().filter(|g| g.direction == GrantDirection::Given).collect();
     assert_eq!(given.len(), 1, "{:?}", owner.ctx.notice());
     assert_eq!(given[0].scopes[0].resource, resource);
-    assert_eq!(given[0].scopes[0].actions, [loa_grants::Action::Read].into());
+    assert_eq!(given[0].scopes[0].actions, [loa_trust::Action::Read].into());
     // A missing folder is refused with a notice.
     grant_folder(&rt, &mut owner, &guest_key, "/no/such/folder", panel::Permission::View);
     assert!(owner.ctx.notice().is_some_and(|notice| notice.contains("/no/such/folder")), "{:?}", owner.ctx.notice());

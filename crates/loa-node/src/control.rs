@@ -1,9 +1,9 @@
 //! `omp/control/1` for the node: presence, grant delivery, renewal and
 //! revocation; LAN browsing and tailnet probing.
 
-use crate::{Inner, Node, NodeError, Result, grant_key, now_ms};
+use crate::{Inner, Node, NodeError, Result, now_ms};
 use async_trait::async_trait;
-use loa_grants::{GrantId, NodePublicKey, RenewFailure, RenewTransport};
+use loa_trust::{GrantId, PublicKey, RenewFailure, RenewTransport};
 use loa_net::NodeId;
 use loa_net::alpn;
 use loa_net::conn::{Connection, Stream};
@@ -58,7 +58,7 @@ async fn serve(node: &Node, conn: &Connection, mut stream: Stream) -> Result<()>
         Kind::GrantDelivery(delivery) => ack(&receive_grant(node, peer, delivery).err().map(|e| e.to_string()).unwrap_or_default()),
         Kind::GrantRenewal(renewal) => {
             let id = GrantId(String::from_utf8_lossy(&renewal.grant_id).into_owned());
-            match node.grant_store().renew(node.grant_signer(), &id, &grant_key(&peer), now_ms()) {
+            match node.grant_store().renew(node.identity(), &id, &PublicKey::from(peer), now_ms()) {
                 Ok(issued) => Kind::GrantRenewalResult(GrantRenewalResult { token: Some(issued.token), refusal: String::new() }),
                 Err(error) => Kind::GrantRenewalResult(GrantRenewalResult { token: None, refusal: error.to_string() }),
             }
@@ -80,12 +80,12 @@ fn ack(error: &str) -> Kind {
 
 fn receive_grant(node: &Node, sender: NodeId, delivery: wire::GrantDelivery) -> Result<()> {
     let root = if delivery.root.is_empty() {
-        grant_key(&sender)
+        PublicKey::from(sender)
     } else {
-        NodePublicKey(delivery.root.as_slice().try_into().map_err(|_| NodeError::Protocol("root key is not 32 bytes".into()))?)
+        PublicKey(delivery.root.as_slice().try_into().map_err(|_| NodeError::Protocol("root key is not 32 bytes".into()))?)
     };
-    let received = node.grant_store().receive(&grant_key(&node.key()), &root, &delivery.token)?;
-    if received.issuer != grant_key(&sender) {
+    let received = node.grant_store().receive(&PublicKey::from(node.key()), &root, &delivery.token)?;
+    if received.issuer != PublicKey::from(sender) {
         return Err(NodeError::Refused("only a grant's issuer may deliver it".into()));
     }
     node.changed();
@@ -95,7 +95,7 @@ fn receive_grant(node: &Node, sender: NodeId, delivery: wire::GrantDelivery) -> 
 fn revoked_by_issuer(node: &Node, sender: NodeId, id: &GrantId) -> Result<()> {
     let store = node.grant_store();
     let Some(held) = store.received(id)? else { return Ok(()) };
-    if held.issuer != grant_key(&sender) {
+    if held.issuer != PublicKey::from(sender) {
         return Err(NodeError::Refused("only a grant's issuer may revoke it".into()));
     }
     let now = now_ms();
@@ -134,7 +134,7 @@ impl NodeProbe for Probe {
 pub(crate) struct RenewVia(pub(crate) Node);
 
 impl RenewTransport for RenewVia {
-    fn renew(&self, issuer: NodePublicKey, grant: GrantId) -> impl Future<Output = Result<Vec<u8>, RenewFailure>> + Send {
+    fn renew(&self, issuer: PublicKey, grant: GrantId) -> impl Future<Output = Result<Vec<u8>, RenewFailure>> + Send {
         let node = self.0.clone();
         async move {
             let issuer = NodeId::from_bytes(&issuer.0).map_err(|e| RenewFailure::Refused(format!("issuer key: {e}")))?;

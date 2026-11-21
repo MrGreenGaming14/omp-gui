@@ -13,7 +13,7 @@ use loa_contracts::harness::{
     SessionConfig,
 };
 use loa_core::{Dom, PatchSink};
-use loa_identity::NodeIdentity;
+use loa_trust::NodeIdentity;
 use loa_ui_composer as composer;
 use loa_ui_palette as palette;
 

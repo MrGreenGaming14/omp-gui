@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 
 use loa_contracts::harness::McpTransport;
-use loa_grants::{Action, IssuedRecord, Resource};
+use loa_trust::{Action, IssuedRecord, Resource};
 use loa_mcp::import::{App, Found, ImportReport, Outcome};
 use loa_mcp::{ServerView, Status, central};
 use loa_ui_tools as tools;
@@ -112,7 +112,7 @@ pub(super) fn outcomes(report: &ImportReport) -> Vec<(tools::ImportSource, Strin
 }
 
 /// Per peer, the tools its live grants let it have the agent use, as the
-/// grant checks decide them (`loa_grants::ToolAccess`):
+/// grant checks decide them:
 /// - every tool needs drive on a session (or a turn, project, future sessions)
 /// - `remote` tools also need an SSH grant on a known host: exec for
 ///   `remote_bash`, read for the others
@@ -124,11 +124,11 @@ pub(super) fn peer_tools(
     hosts: &[String],
     now_ms: i64,
 ) -> Vec<tools::PeerTools> {
-    let mut scopes: BTreeMap<String, Vec<&loa_grants::Scope>> = BTreeMap::new();
+    let mut scopes: BTreeMap<String, Vec<&loa_trust::Scope>> = BTreeMap::new();
     for record in issued {
         let live = record.revoked_ms.is_none() && record.until_ms.is_none_or(|until| until > now_ms);
         if let (true, Some(granted)) = (live, &record.scopes) {
-            scopes.entry(record.holder.to_hex()).or_default().extend(granted);
+            scopes.entry(record.holder.to_string()).or_default().extend(granted);
         }
     }
     scopes
@@ -148,7 +148,7 @@ pub(super) fn peer_tools(
                 rules.push(tools::ToolRule::AllBuiltin);
                 for server in servers {
                     for tool in &server.tools {
-                        let allowed = if server.name == loa_grants::REMOTE_SERVER {
+                        let allowed = if server.name == loa_trust::REMOTE_SERVER {
                             let action = if tool.name == loa_remote::mcp::REMOTE_BASH { Action::Exec } else { Action::Read };
                             may(action, &|resource| matches!(resource, Resource::Ssh { host } if hosts.contains(host)))
                         } else if tool.name.starts_with(SURFACE_TOOL_PREFIX) {

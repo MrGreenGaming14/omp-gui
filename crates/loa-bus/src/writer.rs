@@ -31,7 +31,7 @@ pub trait Persist: Send {
 pub struct Denied(pub String);
 
 /// Decides whether a peer may make a change to a session this node owns. A
-/// port: `loa-app` backs it with `loa-grants`.
+/// port: `loa-app` backs it with `loa-trust`.
 pub trait Authorize: Send + Sync {
     /// Called at the point the request is ordered, with the DOM it would apply
     /// to, so subtree scoped grants see the current tree.

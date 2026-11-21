@@ -12,7 +12,7 @@
 use crate::share::{challenge_grants, present_grants};
 use crate::{Inner, Node, NodeError, Result, now_ms};
 use async_trait::async_trait;
-use loa_grants::{Action, Request, Revocations, VerifiedGrant};
+use loa_trust::{Action, Request, Revocations, VerifiedGrant};
 use loa_net::NodeId;
 use loa_net::conn::{Connection, RecvHalf, Stream};
 use loa_net::control::{recv_message, send_message};

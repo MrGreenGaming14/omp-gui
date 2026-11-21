@@ -22,7 +22,7 @@ pub enum Decision {
 
 /// Port: decides whether a peer may open a protocol, consulted for every
 /// incoming connection before a handler sees it. `loa-app` backs it with the
-/// grant check of `loa-grants`.
+/// grant check of `loa-trust`.
 #[async_trait]
 pub trait Authorizer: Send + Sync {
     async fn authorize(&self, peer: &NodeId, alpn: &Alpn) -> Decision;

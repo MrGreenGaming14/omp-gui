@@ -10,7 +10,7 @@ use iced_runtime::Action as RuntimeAction;
 use loa_contracts::harness::{Adapter, AdapterError, Answer, Capabilities, HarnessSession, Prompt, Registry, SessionState};
 use loa_bus::Policy;
 use loa_core::{ElementKind, NodeId, Value, now_ms};
-use loa_identity::NodeIdentity;
+use loa_trust::NodeIdentity;
 use loa_models::harness::codex::Codex;
 use loa_models::keys::EnvironmentPresence;
 use loa_models::login::UrlOpener;

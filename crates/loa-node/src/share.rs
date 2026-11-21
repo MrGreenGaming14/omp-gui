@@ -3,11 +3,11 @@
 
 use loa_util::LockExt;
 use crate::access::Refuse;
-use crate::{Inner, Node, NodeError, NodeEvent, RemoteSession, Result, bus_key, grant_key, now_ms};
+use crate::{Inner, Node, NodeError, NodeEvent, RemoteSession, Result, now_ms};
 use async_trait::async_trait;
 use loa_bus::{Event, Persist, PersistError, Policy, SessionId, SessionWriter, WriterConfig};
 use loa_core::{DecisionStatus, Dom, Draft, ElementKind, NodeId as DomNodeId, Patch, attr};
-use loa_grants::{Action, Challenge, Presented, Proof, SessionFacts, Verifier, prove};
+use loa_trust::{Action, Challenge, Presented, Proof, PublicKey, SessionFacts, Verifier, prove};
 use loa_net::NodeId;
 use loa_net::alpn;
 use loa_net::conn::{Connection, RecvHalf, SendHalf, Stream};
@@ -81,20 +81,20 @@ async fn serve(node: &Node, peer: NodeId, mut stream: Stream) -> Result<()> {
 /// Challenges the requester and records the grants it proves it holds.
 async fn authenticate(node: &Node, peer: NodeId, stream: &mut Stream) -> Result<()> {
     let verified = challenge_grants(node, peer, stream).await?;
-    node.access().set(bus_key(&peer), verified);
+    node.access().set(PublicKey::from(peer).into(), verified);
     Ok(())
 }
 
 /// Challenges the requester on `stream` and returns the grants it proves it
 /// holds from this node.
-pub(crate) async fn challenge_grants(node: &Node, peer: NodeId, stream: &mut Stream) -> Result<Vec<loa_grants::VerifiedGrant>> {
+pub(crate) async fn challenge_grants(node: &Node, peer: NodeId, stream: &mut Stream) -> Result<Vec<loa_trust::VerifiedGrant>> {
     let challenge = Challenge::random()?;
     send(&mut stream.send, Body::Challenge(loa_share::Challenge { nonce: challenge.0.to_vec() })).await?;
     let Body::Present(present) = expect(&mut stream.recv).await? else {
         return Err(NodeError::Protocol("expected the requester's grants".into()));
     };
-    let requester = grant_key(&peer);
-    let verifier = Verifier::new(grant_key(&node.key()), Arc::clone(node.grant_store()));
+    let requester = PublicKey::from(peer);
+    let verifier = Verifier::new(PublicKey::from(node.key()), &**node.grant_store());
     let now = now_ms();
     Ok(present
         .grants
@@ -111,7 +111,7 @@ pub(crate) async fn challenge_grants(node: &Node, peer: NodeId, stream: &mut Str
 
 fn visible_sessions(node: &Node, peer: NodeId) -> Vec<SessionEntry> {
     let access = node.access();
-    let key = bus_key(&peer);
+    let key = PublicKey::from(peer).into();
     node.local_sessions()
         .sessions()
         .into_iter()
@@ -133,7 +133,7 @@ fn visible_sessions(node: &Node, peer: NodeId) -> Vec<SessionEntry> {
 
 fn requested_prompt(node: &Node, peer: NodeId, prompt: Prompt) -> Result<()> {
     let writer = node.local_sessions().writer(&prompt.session).ok_or_else(|| NodeError::Refused("no such session".into()))?;
-    let allowed = writer.with_dom(|dom| loa_share::Access::allows(&**node.access(), bus_key(&peer), dom, Action::Drive, None));
+    let allowed = writer.with_dom(|dom| loa_share::Access::allows(&**node.access(), PublicKey::from(peer).into(), dom, Action::Drive, None));
     if !allowed {
         return Err(NodeError::Refused("the grant does not allow driving this session".into()));
     }
@@ -154,7 +154,7 @@ fn requested_answer(node: &Node, peer: NodeId, session: &str, projection: &Proje
         .source_node(DomNodeId(answer.decision))
         .ok_or_else(|| NodeError::Refused("the decision is outside the grant".into()))?;
     let (allowed, waiting) = writer.with_dom(|dom| {
-        let allowed = loa_share::Access::allows(&**node.access(), bus_key(&peer), dom, Action::Drive, Some(decision));
+        let allowed = loa_share::Access::allows(&**node.access(), PublicKey::from(peer).into(), dom, Action::Drive, Some(decision));
         let waiting = dom.get(decision).is_some_and(|n| {
             n.kind == ElementKind::Decision && n.str_attr(attr::STATUS) == Some(DecisionStatus::Waiting.as_str())
         });
@@ -184,7 +184,7 @@ async fn subscription(node: &Node, peer: NodeId, subscribe: Subscribe, stream: S
         return send(&mut tx, refused("no such session")).await;
     };
     let access = Arc::clone(node.access());
-    let key = bus_key(&peer);
+    let key = PublicKey::from(peer).into();
     let owner = Owner { writer: &writer, access: &*access };
     if let Err(error) = owner.stream(key) {
         return send(&mut tx, refused(error)).await;
@@ -285,14 +285,14 @@ pub(crate) async fn present_grants(node: &Node, peer: NodeId, stream: &mut Strea
         return Err(NodeError::Protocol("expected a challenge".into()));
     };
     let challenge = Challenge(challenge.nonce.as_slice().try_into().map_err(|_| NodeError::Protocol("challenge is not 32 bytes".into()))?);
-    let root = grant_key(&peer);
+    let root = PublicKey::from(peer);
     let now = now_ms();
     let grants = node
         .grant_store()
         .received_all()?
         .into_iter()
         .filter(|g| g.root == root && g.refused_ms.is_none() && g.expires_ms > now)
-        .map(|g| PresentedGrant { proof: prove(node.grant_signer(), &challenge, &g.token).0.to_vec(), token: g.token })
+        .map(|g| PresentedGrant { proof: prove(node.identity(), &challenge, &g.token).0.to_vec(), token: g.token })
         .collect();
     send(&mut stream.send, Body::Present(Present { grants })).await
 }
@@ -399,8 +399,8 @@ pub(crate) async fn open(node: &Node, peer: NodeId, session: &str) -> Result<Rem
     let patches = Arc::new(Mutex::new(Vec::new()));
     let writer = Arc::new(SessionWriter::new(WriterConfig {
         session: SessionId::from(session),
-        owner: bus_key(&peer),
-        local: bus_key(&node.key()),
+        owner: PublicKey::from(peer).into(),
+        local: PublicKey::from(node.key()).into(),
         dom: Dom::new(),
         persist: Box::new(Recorder(Arc::clone(&patches))),
         authorize: Arc::new(Refuse),

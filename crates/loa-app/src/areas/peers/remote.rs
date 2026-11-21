@@ -11,7 +11,7 @@ use iced::widget::{button, column, container, row, text, text_input};
 use iced::{Alignment, Element, Fill, Padding, Subscription, Task, Theme};
 use loa_bus::{Event, Policy, SessionWriter};
 use loa_core::{Dom, NodeId, Op, Patch, attr};
-use loa_grants::Action;
+use loa_trust::Action;
 use loa_models::login::UrlOpener;
 use loa_models::opener::SystemUrlOpener;
 use loa_node::RemoteView;
