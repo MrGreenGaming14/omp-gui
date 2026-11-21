@@ -8,8 +8,7 @@ use loa_trust::{Action, GrantId, GrantStore, Resource, Scope};
 use loa_trust::{KeySource, NodeIdentity};
 use loa_bus::{JournalOptions, Store};
 use loa_features::library::Library;
-use loa_node::{BusSessions, DriveOutcome, GrantDirection, LibrarySessions, Node, NodeConfig, NodeEvent, Transport, ui};
-use loa_ui_peers as panel;
+use loa_p2p::{BusSessions, DriveOutcome, GrantDirection, LibrarySessions, Node, NodeConfig, NodeError, NodeEvent, TransportKind};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -50,9 +49,23 @@ async fn peer_with(name: &str, configure: impl FnOnce(&mut NodeConfig)) -> Peer 
     Peer { node, bus, store, _dir: dir }
 }
 
+/// Two started nodes that know each other by their QUIC addresses.
+async fn pair(owner: &str, guest: &str) -> (Peer, Peer) {
+    let (owner, guest) = (peer(owner).await, peer(guest).await);
+    meet(&owner, &guest).await;
+    (owner, guest)
+}
+
+async fn meet(owner: &Peer, guest: &Peer) {
+    let (owner_udp, _) = addresses(&owner.node);
+    let (guest_udp, _) = addresses(&guest.node);
+    guest.node.add_peer(&owner.node.key().to_string(), Some(&owner_udp.to_string())).await.unwrap();
+    owner.node.add_peer(&guest.node.key().to_string(), Some(&guest_udp.to_string())).await.unwrap();
+}
+
 fn addresses(node: &Node) -> (SocketAddr, SocketAddr) {
     match node.status().endpoint {
-        loa_node::Endpoint::Listening { udp, tcp } => (udp[0], tcp),
+        loa_p2p::Endpoint::Listening { udp, tcp } => (udp[0], tcp),
         other => panic!("not listening: {other:?}"),
     }
 }
@@ -112,38 +125,26 @@ fn text_of(dom: &Dom, role: &str) -> Option<String> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn two_nodes_share_view_drive_fork_and_revoke_a_session() {
-    let owner = peer("owner-box").await;
-    let guest = peer("guest-box").await;
-    let (owner_udp, _) = addresses(&owner.node);
-    let (guest_udp, _) = addresses(&guest.node);
-
-    // N1/N2: add by key; the probe records presence, transport, version and name.
-    guest.node.add_peer(&owner.node.key().to_string(), Some(&owner_udp.to_string())).await.unwrap();
-    owner.node.add_peer(&guest.node.key().to_string(), Some(&guest_udp.to_string())).await.unwrap();
+    // Added by key: the probe records presence, transport, version and name.
+    let (owner, guest) = pair("owner-box", "guest-box").await;
     let seen = guest.node.peers();
     assert_eq!(seen.len(), 1);
     assert!(seen[0].online);
-    assert_eq!(seen[0].transport, Some(Transport::Quic));
+    assert_eq!(seen[0].transport, Some(TransportKind::Quic));
     assert_eq!(seen[0].app_version.as_deref(), Some("0.4.2"));
     assert_eq!(seen[0].name.as_deref(), Some("owner-box"));
     assert_eq!(seen[0].shared_protocol, Some(true));
-    assert_eq!(seen[0].protocols, loa_node::local_protocols());
-    assert_eq!(loa_node::local_protocols(), ["omp/control/1", "omp/session/1", "omp/folder/1"]);
+    assert_eq!(seen[0].protocols, loa_p2p::local_protocols());
+    assert_eq!(loa_p2p::local_protocols(), ["omp/control/1", "omp/session/1", "omp/folder/1"]);
 
     let (writer, answer) = session(&owner, "s-shared");
     let mut owner_events = owner.node.events();
 
-    // N3: the owner grants drive (and fork) on the session through the panel path.
-    let input = panel::GrantInput {
-        peer_key: guest.node.key().to_string(),
-        resource: panel::GrantResource { id: "session:s-shared".into(), label: "Fix the parser".into(), scope: panel::GrantScope::Session, future_sessions: false },
-        permission: panel::Permission::Drive,
-        ttl_seconds: 3600,
-        reshare: false,
-    };
-    ui::apply(owner.node.clone(), panel::Event::CreateGrant(input)).await.unwrap();
-    let fork = Scope::new(Resource::Session { id: "s-shared".into() }, [Action::Fork]).unwrap();
-    owner.node.issue_grant(&guest.node.key().to_string(), vec![fork], Some(now_ms() + 3_600_000), false).await.unwrap();
+    // The owner grants drive, then fork, on the session.
+    for action in [Action::Drive, Action::Fork] {
+        let scope = Scope::new(Resource::Session { id: "s-shared".into() }, [action]).unwrap();
+        owner.node.issue_grant(&guest.node.key().to_string(), vec![scope], Some(now_ms() + 3_600_000), false).await.unwrap();
+    }
     let received: Vec<_> = guest.node.grants().into_iter().filter(|g| g.direction == GrantDirection::Received).collect();
     assert_eq!(received.len(), 2, "both grants were delivered over omp/control/1");
     assert!(received.iter().all(|g| g.peer == owner.node.key() && g.renews_at_ms.is_some()));
@@ -211,14 +212,6 @@ async fn two_nodes_share_view_drive_fork_and_revoke_a_session() {
     assert_eq!(text_of(&dom, "user").as_deref(), Some("Why does it fail?"));
     drop(journal);
 
-    // The panel snapshot shows the shared session and the online peer.
-    let data = ui::data(&guest.node, now_ms());
-    assert_eq!(data.remote_sessions.len(), 1);
-    assert!(data.remote_sessions[0].online && data.remote_sessions[0].can_drive && data.remote_sessions[0].can_fork);
-    assert_eq!(data.peers[0].presence, panel::Presence::Online);
-    assert_eq!(data.peers[0].transport, panel::Transport::Direct);
-    assert!(data.node.endpoint_ok);
-
     // Revoking every grant stops the view at the owner's next patch and tells the guest.
     let given: Vec<GrantId> = owner.node.grants().into_iter().filter(|g| g.direction == GrantDirection::Given).map(|g| g.id).collect();
     for id in &given {
@@ -236,10 +229,7 @@ async fn two_nodes_share_view_drive_fork_and_revoke_a_session() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn view_only_grants_refuse_drive_and_hide_other_prompts() {
-    let owner = peer("owner").await;
-    let guest = peer("guest").await;
-    let (owner_udp, _) = addresses(&owner.node);
-    guest.node.add_peer(&owner.node.key().to_string(), Some(&owner_udp.to_string())).await.unwrap();
+    let (owner, guest) = pair("owner", "guest").await;
     let (writer, _) = session(&owner, "s-view");
     let root = writer.with_dom(|dom| dom.root().unwrap().id);
     let ts = now_ms();
@@ -272,9 +262,7 @@ async fn udp_blocked_peer_is_reached_over_tcp_fallback() {
     guest.node.add_peer(&owner.node.key().to_string(), Some(&owner_tcp.to_string())).await.unwrap();
     let seen = guest.node.peers();
     assert!(seen[0].online);
-    assert_eq!(seen[0].transport, Some(Transport::Tcp));
-    let data = ui::data(&guest.node, now_ms());
-    assert_eq!(data.peers[0].transport, panel::Transport::TcpFallback);
+    assert_eq!(seen[0].transport, Some(TransportKind::Tcp));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -308,10 +296,7 @@ async fn held_grants_renew_from_their_issuer_and_stop_after_revocation() {
     // A margin wider than the 10 min token life: every held token is due at once,
     // as it is for the background loop 3 min before expiry.
     let guest = peer_with("guest", |config| config.renew_margin_ms = 20 * 60_000).await;
-    let (owner_udp, _) = addresses(&owner.node);
-    let (guest_udp, _) = addresses(&guest.node);
-    guest.node.add_peer(&owner.node.key().to_string(), Some(&owner_udp.to_string())).await.unwrap();
-    owner.node.add_peer(&guest.node.key().to_string(), Some(&guest_udp.to_string())).await.unwrap();
+    meet(&owner, &guest).await;
     let scope = Scope::new(Resource::Session { id: "s".into() }, [Action::View]).unwrap();
     owner.node.issue_grant(&guest.node.key().to_string(), vec![scope], None, false).await.unwrap();
     let first = guest.node.grants()[0].expires_ms.unwrap();
@@ -405,8 +390,8 @@ async fn journaled_library_sessions_are_listed_viewed_and_driven_by_peers() {
 struct Echo;
 
 #[async_trait::async_trait]
-impl loa_node::PeerProtocol for Echo {
-    async fn serve(&self, _peer: loa_net::NodeId, mut stream: loa_node::Stream) {
+impl loa_p2p::PeerProtocol for Echo {
+    async fn serve(&self, _peer: loa_p2p::NodeId, mut stream: loa_p2p::Stream) {
         let _ = tokio::io::copy(&mut stream.recv, &mut stream.send).await;
         let _ = tokio::io::AsyncWriteExt::shutdown(&mut stream.send).await;
     }
@@ -421,16 +406,13 @@ async fn added_protocols_serve_only_peers_with_a_covering_grant() {
     owner.node.add_protocol("loa-echo", 1, required.clone(), Arc::new(Echo));
     owner.node.stop().await;
     owner.node.start().await.unwrap();
-    assert!(owner.node.resources().iter().any(|(resource, label)| *resource == Resource::Sandbox && label == loa_node::SANDBOX_LABEL));
-    let (owner_udp, _) = addresses(&owner.node);
-    let (guest_udp, _) = addresses(&guest.node);
-    guest.node.add_peer(&owner.node.key().to_string(), Some(&owner_udp.to_string())).await.unwrap();
-    owner.node.add_peer(&guest.node.key().to_string(), Some(&guest_udp.to_string())).await.unwrap();
+    assert!(owner.node.resources().iter().any(|(resource, label)| *resource == Resource::Sandbox && label == loa_p2p::SANDBOX_LABEL));
+    meet(&owner, &guest).await;
 
     // Without a grant the owner refuses the stream.
     assert!(guest.node.granting_peers(&required).is_empty());
     let refused = guest.node.open_stream(owner.node.key(), "loa-echo", 1).await;
-    assert!(matches!(refused, Err(loa_node::NodeError::Refused(_))), "{:?}", refused.err());
+    assert!(matches!(refused, Err(NodeError::Refused(_))), "{:?}", refused.err());
 
     // A grant on another resource doesn't cover it either.
     let ssh = Scope::new(Resource::Ssh { host: "box".into() }, [Action::Exec]).unwrap();
@@ -457,12 +439,7 @@ async fn added_protocols_serve_only_peers_with_a_covering_grant() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn folder_grants_list_read_and_write_only_inside_the_folder() {
-    let owner = peer("owner-box").await;
-    let guest = peer("guest-box").await;
-    let (owner_udp, _) = addresses(&owner.node);
-    let (guest_udp, _) = addresses(&guest.node);
-    guest.node.add_peer(&owner.node.key().to_string(), Some(&owner_udp.to_string())).await.unwrap();
-    owner.node.add_peer(&guest.node.key().to_string(), Some(&guest_udp.to_string())).await.unwrap();
+    let (owner, guest) = pair("owner-box", "guest-box").await;
     let files = tempfile::tempdir().unwrap();
     let base = std::fs::canonicalize(files.path()).unwrap();
     let share = base.join("share");
@@ -476,14 +453,14 @@ async fn folder_grants_list_read_and_write_only_inside_the_folder() {
     let owner_key = owner.node.key().to_string();
 
     // No grant: refused.
-    assert!(matches!(guest.node.list_folder(&owner_key, &folder, "").await, Err(loa_node::NodeError::Refused(_))));
+    assert!(matches!(guest.node.list_folder(&owner_key, &folder, "").await, Err(NodeError::Refused(_))));
 
     // A read grant: list, read (several frames), no writes, nothing outside.
     let read = Scope::new(Resource::Folder { path: folder.clone() }, [Action::Read]).unwrap();
     let id = owner.node.issue_grant(&guest.node.key().to_string(), vec![read], None, false).await.unwrap();
     eventually("the folder grant at the guest", || !guest.node.shared_folders().is_empty()).await;
     let shared = guest.node.shared_folders();
-    assert_eq!(shared, [loa_node::SharedFolder { peer: owner.node.key(), path: folder.clone(), can_write: false }]);
+    assert_eq!(shared, [loa_p2p::SharedFolder { peer: owner.node.key(), path: folder.clone(), can_write: false }]);
     let entries = guest.node.list_folder(&owner_key, &folder, "").await.unwrap();
     let names: Vec<(&str, bool)> = entries.iter().map(|e| (e.name.as_str(), e.dir)).collect();
     assert_eq!(names, [("docs", true), ("notes.txt", false)]);
@@ -494,7 +471,7 @@ async fn folder_grants_list_read_and_write_only_inside_the_folder() {
     }
     assert!(guest.node.list_folder(&owner_key, base.to_str().unwrap(), "").await.is_err(), "the folder above");
     let write = guest.node.write_folder_file(&owner_key, &folder, "notes.txt", b"changed").await;
-    assert!(matches!(&write, Err(loa_node::NodeError::Refused(error)) if error.contains("no grant")), "{write:?}");
+    assert!(matches!(&write, Err(NodeError::Refused(error)) if error.contains("no grant")), "{write:?}");
     assert_eq!(std::fs::read_to_string(share.join("notes.txt")).unwrap(), "hello");
 
     // A write grant writes, in several frames too.

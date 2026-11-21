@@ -263,7 +263,7 @@ mod tests {
         };
         let none = || std::iter::empty::<(&str, Value)>();
         let root = add(&mut source, Draft::insert(NodeId::DOCUMENT, ElementKind::Session, [
-            (attr::ID, Value::from("s")), (attr::NODE, Value::from("owner")), (attr::CREATED, Value::Int(1)), (attr::PROJECT, Value::from("private")),
+            (attr::ID, Value::from("s")), (attr::HARNESS, Value::from("omp")), (attr::SCHEMA, Value::Int(1)), (attr::NODE, Value::from("owner")), (attr::CREATED, Value::Int(1)), (attr::PROJECT, Value::from("private")),
         ], ""));
         add(&mut source, Draft::set(root.node, attr::TITLE, "Plan"));
         let hidden = add(&mut source, Draft::insert(root.node, ElementKind::Turn, none(), ""));

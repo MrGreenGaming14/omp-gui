@@ -2,9 +2,9 @@
 //! and the effects of its events. The app area only forwards: it puts
 //! [`data`] into the panel and runs [`apply`] for each panel event.
 
-use crate::{
+use loa_p2p::{
     Availability, DiscoverySource, Endpoint, GrantDirection, GrantInfo, KeySource, NearbySource, Node, NodeError,
-    RemoteView, Transport,
+    RemoteView, TransportKind as Transport,
 };
 use loa_core::NodeId as DomNodeId;
 use loa_trust::{Action, GrantId, Resource, Scope};
@@ -143,7 +143,7 @@ fn resource_label(resource: &Resource, labels: &[(Resource, String)]) -> String 
         Resource::FutureSessions { .. } => "Every future session".to_owned(),
         Resource::Ssh { host } => format!("SSH {host}"),
         Resource::Surface { uri } => uri.clone(),
-        Resource::Sandbox => crate::SANDBOX_LABEL.to_owned(),
+        Resource::Sandbox => loa_p2p::SANDBOX_LABEL.to_owned(),
         Resource::Folder { path } => format!("Folder {path}"),
     }
 }
@@ -337,7 +337,7 @@ pub enum Outcome {
     /// A fork of a peer's session, now a local session with this id.
     Forked(String),
     /// A peer's shared folder, listed, to browse in the center.
-    Folder { peer: String, folder: String, entries: Vec<crate::FolderEntry>, can_write: bool },
+    Folder { peer: String, folder: String, entries: Vec<loa_p2p::FolderEntry>, can_write: bool },
 }
 
 /// Carries out a panel event on `node`.
@@ -370,7 +370,7 @@ async fn run(node: &Node, event: panel::Event) -> Result<Outcome, NodeError> {
             Outcome::Done
         }
         E::CreateGrant(input) => {
-            let (scopes, until) = grant_request(&input, crate::now_ms())?;
+            let (scopes, until) = grant_request(&input, loa_util::time::now_ms())?;
             node.issue_grant(&input.peer_key, scopes, until, input.reshare).await?;
             Outcome::Notice("Grant created".to_owned())
         }
@@ -387,7 +387,7 @@ async fn run(node: &Node, event: panel::Event) -> Result<Outcome, NodeError> {
                 .find(|g| g.id == id)
                 .ok_or_else(|| NodeError::Refused("unknown grant".into()))?;
             // Renewing gives the grant its original length again from now.
-            let until = record.until_ms.map(|until| crate::now_ms() + (until - record.created_ms).max(60_000));
+            let until = record.until_ms.map(|until| loa_util::time::now_ms() + (until - record.created_ms).max(60_000));
             node.renew_grant(&id, until).await?;
             Outcome::Notice("Grant renewed".to_owned())
         }

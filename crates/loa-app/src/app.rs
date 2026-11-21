@@ -246,7 +246,7 @@ impl App {
             keymap: palette::Keymap::defaults(palette::Platform::current()),
             app_tools: Vec::new(),
             peers: Vec::new(),
-            node: loa_node::NodeSlot::default(),
+            node: loa_p2p::NodeSlot::default(),
             screen: None,
             notice: (!problems.is_empty()).then(|| problems.join("; ")),
             requests: Vec::new(),
