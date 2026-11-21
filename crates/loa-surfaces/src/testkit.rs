@@ -195,6 +195,191 @@ pub async fn fake_rfb(width: u16, height: u16, color: [u8; 3]) -> (String, Arc<M
     (address, received, send_update)
 }
 
+/// A tiny reference RFB encoder: pictures to wire rectangles, for codec tests.
+#[cfg(feature = "vnc")]
+pub mod rfb {
+    use crate::pixels::RgbaImage;
+    use flate2::{Compress, FlushCompress};
+
+    /// ZRLE tile subencodings the encoder picks (single colour tiles are always solid).
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Zrle {
+        Raw,
+        Packed,
+        PlainRle,
+        PaletteRle,
+    }
+
+    /// A wire pixel `R G B X` with a junk padding byte.
+    pub fn pixel(p: &[u8]) -> [u8; 4] {
+        [p[0], p[1], p[2], 0x77]
+    }
+
+    fn pixels(img: &RgbaImage) -> impl Iterator<Item = &[u8]> {
+        img.data.chunks_exact(4)
+    }
+
+    pub fn raw(img: &RgbaImage) -> Vec<u8> {
+        pixels(img).flat_map(pixel).collect()
+    }
+
+    /// The first pixel as background, every other pixel a 1x1 subrectangle.
+    pub fn rre(img: &RgbaImage) -> Vec<u8> {
+        let bg = &img.data[..4];
+        let subs: Vec<(usize, &[u8])> = pixels(img).enumerate().filter(|(_, p)| *p != bg).collect();
+        let mut out = (subs.len() as u32).to_be_bytes().to_vec();
+        out.extend(pixel(bg));
+        for (i, p) in subs {
+            out.extend(pixel(p));
+            for f in [i as u32 % img.width, i as u32 / img.width, 1, 1] {
+                out.extend((f as u16).to_be_bytes());
+            }
+        }
+        out
+    }
+
+    fn tile(img: &RgbaImage, x0: u32, y0: u32, size: u32) -> RgbaImage {
+        let (w, h) = (size.min(img.width - x0), size.min(img.height - y0));
+        RgbaImage { width: w, height: h, data: img.crop(loa_contracts::surface::Rect { x: x0, y: y0, width: w, height: h }).to_vec() }
+    }
+
+    fn tiles(img: &RgbaImage, size: u32) -> impl Iterator<Item = RgbaImage> + '_ {
+        (0..img.height).step_by(size as usize).flat_map(move |y| (0..img.width).step_by(size as usize).map(move |x| tile(img, x, y, size)))
+    }
+
+    fn colours(img: &RgbaImage) -> Vec<&[u8]> {
+        let mut seen: Vec<&[u8]> = Vec::new();
+        for p in pixels(img) {
+            if !seen.contains(&p) {
+                seen.push(p);
+            }
+        }
+        seen
+    }
+
+    /// Solid tiles send only a changed background; two-colour tiles use foreground subrects,
+    /// others alternate between raw and coloured subrects.
+    pub fn hextile(img: &RgbaImage) -> Vec<u8> {
+        let (mut out, mut bg): (Vec<u8>, Option<Vec<u8>>) = (Vec::new(), None);
+        for (n, t) in tiles(img, 16).enumerate() {
+            let c = colours(&t);
+            let subs: Vec<(usize, &[u8])> = pixels(&t).enumerate().filter(|(_, p)| *p != c[0]).collect();
+            if c.len() > 2 && (n % 2 == 0 || subs.len() > 255) {
+                out.push(1);
+                out.extend(raw(&t));
+                bg = None;
+                continue;
+            }
+            let mut flags = if bg.as_deref() == Some(c[0]) { 0 } else { 2 };
+            flags |= match c.len() {
+                1 => 0,
+                2 => 4 | 8,
+                _ => 8 | 16,
+            };
+            out.push(flags);
+            if flags & 2 != 0 {
+                out.extend(pixel(c[0]));
+            }
+            if flags & 4 != 0 {
+                out.extend(pixel(c[1]));
+            }
+            if flags & 8 != 0 {
+                out.push(subs.len() as u8);
+                for (i, p) in subs {
+                    if flags & 16 != 0 {
+                        out.extend(pixel(p));
+                    }
+                    out.extend([((i as u32 % t.width) << 4 | i as u32 / t.width) as u8, 0]);
+                }
+            }
+            bg = Some(c[0].to_vec());
+        }
+        out
+    }
+
+    fn run(out: &mut Vec<u8>, len: usize) {
+        out.extend(std::iter::repeat_n(255, (len - 1) / 255));
+        out.push(((len - 1) % 255) as u8);
+    }
+
+    /// 64x64 tiles with subencoding `mode`, compressed on the connection's stream `z`.
+    pub fn zrle(img: &RgbaImage, mode: Zrle, z: &mut Compress) -> Vec<u8> {
+        let mut tiles_out = Vec::new();
+        for t in tiles(img, 64) {
+            let c = colours(&t);
+            let index = |p: &[u8]| c.iter().position(|q| *q == p).unwrap();
+            let cpixels = |out: &mut Vec<u8>, ps: &[&[u8]]| ps.iter().for_each(|p| out.extend(&p[..3]));
+            let runs: Vec<(&[u8], usize)> = pixels(&t).fold(Vec::new(), |mut runs, p| {
+                match runs.last_mut() {
+                    Some((q, n)) if *q == p => *n += 1,
+                    _ => runs.push((p, 1)),
+                }
+                runs
+            });
+            match mode {
+                _ if c.len() == 1 => {
+                    tiles_out.push(1);
+                    cpixels(&mut tiles_out, &c);
+                }
+                Zrle::Packed if c.len() <= 16 => {
+                    tiles_out.push(c.len() as u8);
+                    cpixels(&mut tiles_out, &c);
+                    let bits = match c.len() {
+                        2 => 1,
+                        3..=4 => 2,
+                        _ => 4,
+                    };
+                    for row in t.data.chunks_exact(t.width as usize * 4) {
+                        let mut packed = vec![0u8; (t.width as usize * bits).div_ceil(8)];
+                        for (x, p) in row.chunks_exact(4).enumerate() {
+                            packed[x * bits / 8] |= (index(p) as u8) << (8 - bits - x * bits % 8);
+                        }
+                        tiles_out.extend(packed);
+                    }
+                }
+                Zrle::PaletteRle if c.len() <= 127 => {
+                    tiles_out.push(128 + c.len() as u8);
+                    cpixels(&mut tiles_out, &c);
+                    for (p, n) in runs {
+                        if n == 1 {
+                            tiles_out.push(index(p) as u8);
+                        } else {
+                            tiles_out.push(index(p) as u8 | 0x80);
+                            run(&mut tiles_out, n);
+                        }
+                    }
+                }
+                Zrle::PlainRle => {
+                    tiles_out.push(128);
+                    for (p, n) in runs {
+                        tiles_out.extend(&p[..3]);
+                        run(&mut tiles_out, n);
+                    }
+                }
+                _ => {
+                    tiles_out.push(0);
+                    cpixels(&mut tiles_out, &pixels(&t).collect::<Vec<_>>());
+                }
+            }
+        }
+        let mut compressed = Vec::with_capacity(tiles_out.len() * 2 + 64);
+        z.compress_vec(&tiles_out, &mut compressed, FlushCompress::Sync).unwrap();
+        assert!(compressed.len() < compressed.capacity(), "compressed output was cut short");
+        [(compressed.len() as u32).to_be_bytes().to_vec(), compressed].concat()
+    }
+
+    /// A rectangle header and its payload.
+    pub fn rect(x: u16, y: u16, w: u16, h: u16, encoding: i32, payload: &[u8]) -> Vec<u8> {
+        let head = [x, y, w, h].into_iter().flat_map(u16::to_be_bytes).chain(encoding.to_be_bytes());
+        head.chain(payload.iter().copied()).collect()
+    }
+
+    /// A FramebufferUpdate of `rects`.
+    pub fn update(rects: &[Vec<u8>]) -> Vec<u8> {
+        [vec![0, 0], (rects.len() as u16).to_be_bytes().to_vec(), rects.concat()].concat()
+    }
+}
+
 /// `data:` URL of an HTML document.
 pub fn html_data_url(body: &str) -> String {
     format!("data:text/html,{}", loa_util::text::percent_encode(body))

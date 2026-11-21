@@ -1,11 +1,12 @@
-//! End to end tests against an in-process fake RFB server on loopback.
+//! Codec tests against the testkit reference encoder, and the client against a fake RFB server on loopback.
 
-use crate::vnc::{ConnectionState, RfbEndpoint, RfbOptions, RfbServer, RfbSurface, proto::vnc_response};
-use flate2::{Compress, Compression, FlushCompress};
-use loa_contracts::surface::{
-    Encoding, Frame, Input, InputEvent, Modifiers, MouseButton, Rect, Surface, SurfaceError,
-    SurfaceServer, SurfaceUri,
-};
+use crate::pixels::RgbaImage;
+use crate::testkit::rfb::{self, Zrle, rect, update};
+use crate::vnc::decode::{Decoders, Update};
+use crate::vnc::proto::{Msg, vnc_response};
+use crate::vnc::{ConnectionState, RfbEndpoint, RfbOptions, RfbServer, RfbSurface};
+use flate2::{Compress, Compression};
+use loa_contracts::surface::{Encoding, Frame, Input, InputEvent, Modifiers, MouseButton, Rect, Surface, SurfaceError, SurfaceServer, SurfaceUri};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
@@ -20,35 +21,73 @@ const W: [u8; 4] = [255, 255, 255, 255];
 const K: [u8; 4] = [0, 0, 0, 255];
 const LIMIT: Duration = Duration::from_secs(10);
 
+fn picture(width: u32, height: u32, px: impl Fn(u32, u32) -> [u8; 4]) -> RgbaImage {
+    let px = &px;
+    RgbaImage { width, height, data: (0..height).flat_map(|y| (0..width).flat_map(move |x| px(x, y))).collect() }
+}
+
+fn flat(pixels: &[[u8; 4]]) -> Vec<u8> {
+    pixels.concat()
+}
+
+#[tokio::test]
+async fn every_encoding_decodes_what_the_reference_encoder_wrote() {
+    let palette = [R, G, B, W, K, [9, 9, 9, 255]];
+    let pictures = [
+        picture(70, 20, |x, y| [x as u8 * 3, y as u8 * 12, 7, 255]),
+        picture(70, 5, |x, y| palette[((x + y) % 2) as usize]),
+        picture(18, 17, |x, y| palette[((x / 3 + y) % 3) as usize]),
+        picture(9, 3, |x, y| palette[((x + y) % 5) as usize]),
+        picture(300, 2, |x, _| if x < 290 { R } else { G }),
+        picture(5, 4, |_, _| B),
+    ];
+    let mut decoders = Decoders::new();
+    let mut z = Compress::new(Compression::default(), true);
+    for (n, img) in pictures.iter().enumerate() {
+        let r = img.full();
+        let mut cases = vec![(0, rfb::raw(img)), (2, rfb::rre(img)), (5, rfb::hextile(img))];
+        for mode in [Zrle::Raw, Zrle::Packed, Zrle::PlainRle, Zrle::PaletteRle] {
+            cases.push((16, rfb::zrle(img, mode, &mut z)));
+        }
+        for (encoding, payload) in cases {
+            let (decoder, scratch) = decoders.get(encoding).unwrap();
+            let mut wire = payload.as_slice();
+            assert_eq!(decoder.decode(r, &mut wire, scratch).await.unwrap(), Update::Blit);
+            assert!(wire.is_empty(), "picture {n}, encoding {encoding}: bytes left over");
+            assert!(scratch.data == img.data, "picture {n}, encoding {encoding}");
+        }
+    }
+    let (cursor, scratch) = decoders.get(-239).unwrap();
+    let wire = [rfb::raw(&picture(2, 2, |x, y| [R, G, B, W][(y * 2 + x) as usize])), vec![0b1000_0000, 0b0100_0000]].concat();
+    let Update::Cursor(c) = cursor.decode(Rect { x: 1, y: 0, width: 2, height: 2 }, &mut wire.as_slice(), scratch).await.unwrap() else { panic!() };
+    assert_eq!((c.hotspot_x, c.hotspot_y, c.width, c.height), (1, 0, 2, 2));
+    assert_eq!(c.rgba, flat(&[R, [0, 255, 0, 0], [0, 0, 255, 0], W]));
+    // A subrectangle outside its rectangle is a protocol error.
+    let bad = [&1u32.to_be_bytes()[..], &rfb::pixel(&R), &rfb::pixel(&G), &[0, 1, 0, 0, 0, 1, 0, 1]].concat();
+    let (rre, scratch) = decoders.get(2).unwrap();
+    assert!(rre.decode(Rect { x: 0, y: 0, width: 1, height: 1 }, &mut bad.as_slice(), scratch).await.is_err());
+}
+
 enum Security {
     None,
     Vnc(&'static str),
 }
 
 /// The server side of one connection.
-struct Fake {
-    stream: TcpStream,
-}
+struct Fake(TcpStream);
 
 impl Fake {
     async fn accept(listener: &TcpListener) -> Self {
-        let (stream, _) = tokio::time::timeout(LIMIT, listener.accept())
-            .await
-            .unwrap()
-            .unwrap();
-        Self { stream }
+        Self(tokio::time::timeout(LIMIT, listener.accept()).await.unwrap().unwrap().0)
     }
 
     async fn send(&mut self, bytes: &[u8]) {
-        self.stream.write_all(bytes).await.unwrap();
+        self.0.write_all(bytes).await.unwrap();
     }
 
     async fn read(&mut self, n: usize) -> Vec<u8> {
         let mut buf = vec![0u8; n];
-        tokio::time::timeout(LIMIT, self.stream.read_exact(&mut buf))
-            .await
-            .unwrap()
-            .unwrap();
+        tokio::time::timeout(LIMIT, self.0.read_exact(&mut buf)).await.unwrap().unwrap();
         buf
     }
 
@@ -56,8 +95,11 @@ impl Fake {
         assert_eq!(self.read(want.len()).await, want);
     }
 
-    /// RFB 3.8 up to ServerInit. Returns false when the client's VNC
-    /// response was wrong (the failure has been sent).
+    async fn expect_request(&mut self, width: u16, height: u16) {
+        self.expect(&Msg::UpdateRequest { incremental: true, width, height }.bytes()).await;
+    }
+
+    /// RFB 3.8 up to ServerInit; false when the client's VNC response was wrong.
     async fn handshake(&mut self, security: Security, width: u16, height: u16) -> bool {
         self.send(b"RFB 003.008\n").await;
         self.expect(b"RFB 003.008\n").await;
@@ -65,124 +107,47 @@ impl Fake {
             Security::None => {
                 self.send(&[1, 1]).await;
                 self.expect(&[1]).await;
-                self.send(&0u32.to_be_bytes()).await;
             }
             Security::Vnc(password) => {
                 self.send(&[2, 16, 2]).await;
                 self.expect(&[2]).await;
                 let challenge: [u8; 16] = std::array::from_fn(|i| (i as u8).wrapping_mul(37));
                 self.send(&challenge).await;
-                let response = self.read(16).await;
-                if response != vnc_response(password.as_bytes(), &challenge) {
-                    let reason = b"bad password";
-                    self.send(&1u32.to_be_bytes()).await;
-                    self.send(&(reason.len() as u32).to_be_bytes()).await;
-                    self.send(reason).await;
+                if self.read(16).await != vnc_response(password.as_bytes(), &challenge) {
+                    self.send(&[&1u32.to_be_bytes()[..], &12u32.to_be_bytes(), b"bad password"].concat()).await;
                     return false;
                 }
-                self.send(&0u32.to_be_bytes()).await;
             }
         }
+        self.send(&0u32.to_be_bytes()).await;
         self.expect(&[1]).await; // ClientInit, shared
-        let mut init = Vec::new();
-        init.extend_from_slice(&width.to_be_bytes());
-        init.extend_from_slice(&height.to_be_bytes());
-        // Server native format: 32 bpp big endian, blue in the low byte.
-        init.extend_from_slice(&[32, 24, 1, 1, 0, 255, 0, 255, 0, 255, 16, 8, 0, 0, 0, 0]);
-        let name = b"fake desk";
-        init.extend_from_slice(&(name.len() as u32).to_be_bytes());
-        init.extend_from_slice(name);
-        self.send(&init).await;
+        self.server_init(width, height, b"fake desk").await;
         true
     }
 
-    /// SetPixelFormat, SetEncodings and the full update request.
-    async fn expect_setup(&mut self, width: u16, height: u16) {
-        self.expect(&[
-            0, 0, 0, 0, 32, 24, 0, 1, 0, 255, 0, 255, 0, 255, 0, 8, 16, 0, 0, 0,
-        ])
-        .await;
-        let mut enc = vec![2, 0, 0, 7];
-        for e in [1i32, 16, 5, 2, 0, -239, -223] {
-            enc.extend_from_slice(&e.to_be_bytes());
-        }
-        self.expect(&enc).await;
-        self.expect(&request(false, width, height)).await;
+    async fn server_init(&mut self, width: u16, height: u16, name: &[u8]) {
+        // Server native format: 32 bpp big endian, blue in the low byte.
+        let format = [32, 24, 1, 1, 0, 255, 0, 255, 0, 255, 16, 8, 0, 0, 0, 0];
+        let init = [&width.to_be_bytes()[..], &height.to_be_bytes(), &format, &(name.len() as u32).to_be_bytes(), name].concat();
+        self.send(&init).await;
+        let encodings = [1i32, 16, 5, 2, 0, -239, -223];
+        let setup = [Msg::SetPixelFormat, Msg::SetEncodings(&encodings), Msg::UpdateRequest { incremental: false, width, height }];
+        self.expect(&setup.iter().flat_map(|m| m.bytes()).collect::<Vec<_>>()).await;
     }
-}
-
-fn request(incremental: bool, width: u16, height: u16) -> Vec<u8> {
-    let mut v = vec![3, u8::from(incremental), 0, 0, 0, 0];
-    v.extend_from_slice(&width.to_be_bytes());
-    v.extend_from_slice(&height.to_be_bytes());
-    v
-}
-
-fn rect(x: u16, y: u16, w: u16, h: u16, encoding: i32, payload: &[u8]) -> Vec<u8> {
-    let mut v = Vec::new();
-    for f in [x, y, w, h] {
-        v.extend_from_slice(&f.to_be_bytes());
-    }
-    v.extend_from_slice(&encoding.to_be_bytes());
-    v.extend_from_slice(payload);
-    v
-}
-
-fn update(rects: &[Vec<u8>]) -> Vec<u8> {
-    let mut v = vec![0, 0];
-    v.extend_from_slice(&(rects.len() as u16).to_be_bytes());
-    for r in rects {
-        v.extend_from_slice(r);
-    }
-    v
-}
-
-/// A pixel in the client's requested format, with a junk padding byte.
-fn wire(px: [u8; 4]) -> [u8; 4] {
-    [px[0], px[1], px[2], 0x77]
-}
-
-fn raw(pixels: &[[u8; 4]]) -> Vec<u8> {
-    pixels.iter().flat_map(|&p| wire(p)).collect()
-}
-
-fn cpixel(px: [u8; 4]) -> [u8; 3] {
-    [px[0], px[1], px[2]]
-}
-
-/// A ZRLE payload: the tiles through the connection's zlib stream.
-fn zrle(z: &mut Compress, tiles: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(tiles.len() * 2 + 64);
-    z.compress_vec(tiles, &mut out, FlushCompress::Sync)
-        .unwrap();
-    assert!(
-        out.len() < out.capacity(),
-        "compressed output was cut short"
-    );
-    let mut v = (out.len() as u32).to_be_bytes().to_vec();
-    v.extend_from_slice(&out);
-    v
-}
-
-fn flat(pixels: &[[u8; 4]]) -> Vec<u8> {
-    pixels.concat()
 }
 
 async fn next(rx: &mut broadcast::Receiver<Arc<Frame>>) -> Arc<Frame> {
-    tokio::time::timeout(LIMIT, rx.recv())
-        .await
-        .unwrap()
-        .unwrap()
+    tokio::time::timeout(LIMIT, rx.recv()).await.unwrap().unwrap()
+}
+
+fn uri() -> SurfaceUri {
+    SurfaceUri::new("vm", "desk").unwrap()
 }
 
 struct Harness {
     listener: TcpListener,
     server: Arc<RfbServer>,
     password_calls: Arc<AtomicUsize>,
-}
-
-fn uri() -> SurfaceUri {
-    SurfaceUri::new("vm", "desk").unwrap()
 }
 
 impl Harness {
@@ -196,572 +161,154 @@ impl Harness {
             calls.fetch_add(1, Ordering::SeqCst);
             password.map(str::to_owned)
         };
-        let options = RfbOptions {
-            backoff_initial: Duration::from_millis(1),
-            backoff_max: Duration::from_millis(20),
-            ..RfbOptions::default()
-        };
-        let endpoints = vec![RfbEndpoint {
-            name: "desk".into(),
-            address,
-        }];
-        let server = Arc::new(RfbServer::new(endpoints, Arc::new(passwords), options));
-        Self {
-            listener,
-            server,
-            password_calls,
-        }
+        let options = RfbOptions { backoff_initial: Duration::from_millis(1), backoff_max: Duration::from_millis(20), ..RfbOptions::default() };
+        let server = Arc::new(RfbServer::new(vec![RfbEndpoint { name: "desk".into(), address }], Arc::new(passwords), options));
+        Self { listener, server, password_calls }
+    }
+
+    async fn open(&self) -> tokio::task::JoinHandle<crate::vnc::Result<Arc<RfbSurface>, SurfaceError>> {
+        let server = Arc::clone(&self.server);
+        tokio::spawn(async move { server.open_rfb(&uri()).await })
     }
 
     /// Opens `surface://vm/desk` against a fake that completes the handshake.
-    async fn connect(
-        &self,
-        security: Security,
-        width: u16,
-        height: u16,
-    ) -> (Arc<RfbSurface>, Fake) {
-        let server = Arc::clone(&self.server);
-        let open = tokio::spawn(async move { server.open_rfb(&uri()).await });
+    async fn connect(&self, security: Security, width: u16, height: u16) -> (Arc<RfbSurface>, Fake) {
+        let open = self.open().await;
         let mut fake = Fake::accept(&self.listener).await;
         assert!(fake.handshake(security, width, height).await);
-        fake.expect_setup(width, height).await;
         (open.await.unwrap().unwrap(), fake)
     }
 }
 
-/// A 4x2 surface showing `FIRST` after its first (raw) update.
-const FIRST: [[u8; 4]; 8] = [R, G, B, W, K, R, G, B];
-
-async fn connected_4x2() -> (
-    Harness,
-    Arc<RfbSurface>,
-    Fake,
-    broadcast::Receiver<Arc<Frame>>,
-) {
-    let h = Harness::new(None).await;
-    let (surface, mut fake) = h.connect(Security::None, 4, 2).await;
-    let mut rx = surface.frames().unwrap();
-    fake.send(&update(&[rect(0, 0, 4, 2, 0, &raw(&FIRST))]))
-        .await;
-    let frame = next(&mut rx).await;
-    assert_eq!(frame.data, flat(&FIRST));
-    fake.expect(&request(true, 4, 2)).await;
-    (h, surface, fake, rx)
+fn region(x: u32, y: u32, width: u32, height: u32) -> Rect {
+    Rect { x, y, width, height }
 }
 
 #[tokio::test]
-async fn first_raw_update_is_a_full_keyframe() {
+async fn updates_become_frames_keyframes_and_cursor_shapes() {
     let h = Harness::new(None).await;
     let (surface, mut fake) = h.connect(Security::None, 4, 2).await;
     let info = surface.info();
-    assert_eq!(
-        (info.name.as_str(), info.width, info.height),
-        ("fake desk", 4, 2)
-    );
+    assert_eq!((info.name.as_str(), info.width, info.height), ("fake desk", 4, 2));
     let mut rx = surface.frames().unwrap();
+    let raw = |px: &[[u8; 4]]| rfb::raw(&RgbaImage { width: px.len() as u32, height: 1, data: flat(px) });
+
     // Only part of the screen arrives, yet the first frame is the whole picture.
-    fake.send(&update(&[rect(1, 0, 2, 1, 0, &raw(&[R, G]))]))
-        .await;
+    fake.send(&update(&[rect(1, 0, 2, 1, 0, &raw(&[R, G]))])).await;
     let frame = next(&mut rx).await;
-    assert!(frame.keyframe);
-    assert_eq!(
-        (frame.seq, frame.width, frame.height, frame.encoding),
-        (1, 4, 2, Encoding::Rgba)
-    );
-    assert_eq!(
-        frame.region,
-        Rect {
-            x: 0,
-            y: 0,
-            width: 4,
-            height: 2
-        }
-    );
-    assert_eq!(frame.data, flat(&[K, R, G, K, K, K, K, K]));
-    fake.expect(&request(true, 4, 2)).await;
-}
+    assert_eq!((frame.keyframe, frame.seq, frame.width, frame.height, frame.encoding), (true, 1, 4, 2, Encoding::Rgba));
+    assert_eq!((frame.region, frame.data.to_vec()), (region(0, 0, 4, 2), flat(&[K, R, G, K, K, K, K, K])));
+    fake.expect_request(4, 2).await;
 
-#[tokio::test]
-async fn raw_then_copy_rect_with_overlap() {
-    let (_h, _surface, mut fake, mut rx) = connected_4x2().await;
-    // Shift the right three columns one pixel right, source overlapping target.
-    fake.send(&update(&[rect(1, 0, 3, 2, 1, &[0, 0, 0, 0])]))
-        .await;
+    // CopyRect overlapping its source, after cut text, a bell and a colour map are skipped.
+    let skipped = [&[3, 0, 0, 0, 0, 0, 0, 5][..], b"hello", &[2], &[1, 0, 0, 0, 0, 1], &[0; 6]].concat();
+    fake.send(&[skipped, update(&[rect(1, 0, 3, 2, 1, &[0, 0, 0, 0])])].concat()).await;
     let frame = next(&mut rx).await;
-    assert!(!frame.keyframe);
-    assert_eq!(frame.seq, 2);
-    assert_eq!(
-        frame.region,
-        Rect {
-            x: 1,
-            y: 0,
-            width: 3,
-            height: 2
-        }
-    );
-    assert_eq!(frame.data, flat(&[R, G, B, K, R, G]));
-}
-
-#[tokio::test]
-async fn rre_background_and_subrects() {
-    let (_h, surface, mut fake, mut rx) = connected_4x2().await;
-    let mut payload = 2u32.to_be_bytes().to_vec();
-    payload.extend_from_slice(&wire(W));
-    for (px, [x, y, w, h]) in [(B, [0u16, 0, 1, 2]), (G, [2, 1, 1, 1])] {
-        payload.extend_from_slice(&wire(px));
-        for f in [x, y, w, h] {
-            payload.extend_from_slice(&f.to_be_bytes());
-        }
-    }
-    fake.send(&update(&[rect(1, 0, 3, 2, 2, &payload)])).await;
-    let frame = next(&mut rx).await;
-    assert_eq!(frame.data, flat(&[B, W, W, B, W, G]));
+    assert_eq!((frame.keyframe, frame.region, frame.data.to_vec()), (false, region(1, 0, 3, 2), flat(&[K, R, G, K, K, K])));
+    fake.expect_request(4, 2).await;
     surface.request_keyframe().await.unwrap();
-    let key = next(&mut rx).await;
-    assert!(key.keyframe);
-    assert_eq!(key.data, flat(&[R, B, W, W, K, B, W, G]));
+    assert_eq!(next(&mut rx).await.data, flat(&[K, K, R, G, K, K, K, K]));
+
+    // A cursor-only update changes no pixels, so no frame; a resize is a keyframe.
+    let mut cursor = surface.cursor();
+    fake.send(&update(&[rect(0, 0, 1, 1, -239, &[raw(&[W]), vec![0x80]].concat())])).await;
+    tokio::time::timeout(LIMIT, cursor.wait_for(Option::is_some)).await.unwrap().unwrap();
+    fake.expect_request(4, 2).await;
+    fake.send(&update(&[rect(0, 0, 3, 1, -223, &[]), rect(0, 0, 3, 1, 0, &raw(&[G, B, W]))])).await;
+    let frame = next(&mut rx).await;
+    assert_eq!((frame.keyframe, frame.width, frame.height, frame.data.to_vec()), (true, 3, 1, flat(&[G, B, W])));
+    assert_eq!((surface.info().width, surface.info().height), (3, 1));
+    fake.expect_request(3, 1).await;
+
+    let png = crate::pixels::decode_png(&surface.screenshot().await.unwrap()).unwrap();
+    assert_eq!((png.width, png.height, png.data), (3, 1, flat(&[G, B, W])));
+    assert!(matches!(surface.document().await, Err(SurfaceError::Mode { .. })));
 }
 
 #[tokio::test]
-async fn hextile_all_subencodings() {
+async fn input_goes_out_as_rfb_messages_and_stamps_the_next_frame() {
     let h = Harness::new(None).await;
-    let (surface, mut fake) = h.connect(Security::None, 18, 17).await;
+    let (surface, mut fake) = h.connect(Security::None, 4, 2).await;
     let mut rx = surface.frames().unwrap();
-    let gradient = |x: u32, y: u32| [x as u8 * 10, y as u8 * 10, 7, 255];
-
-    let mut p = Vec::new();
-    // Tile (0,0) 16x16: raw.
-    p.push(1);
-    for y in 0..16 {
-        for x in 0..16 {
-            p.extend_from_slice(&wire(gradient(x, y)));
-        }
-    }
-    // Tile (16,0) 2x16: background red, foreground green, one subrect.
-    p.push(2 | 4 | 8);
-    p.extend_from_slice(&wire(R));
-    p.extend_from_slice(&wire(G));
-    p.extend_from_slice(&[1, 0x12, 0x02]); // at (1,2), 1x3
-    // Tile (0,16) 16x1: background and foreground carried over.
-    p.push(8);
-    p.extend_from_slice(&[1, 0x30, 0x10]); // at (3,0), 2x1
-    // Tile (16,16) 2x1: coloured subrect.
-    p.push(8 | 16);
-    p.push(1);
-    p.extend_from_slice(&wire(B));
-    p.extend_from_slice(&[0x00, 0x10]); // at (0,0), 2x1
-    fake.send(&update(&[rect(0, 0, 18, 17, 5, &p)])).await;
-
-    let frame = next(&mut rx).await;
-    let want = |x: u32, y: u32| match (x, y) {
-        (0..16, 0..16) => gradient(x, y),
-        (17, 2..5) => G,
-        (16.., 0..16) => R,
-        (3 | 4, 16) => G,
-        (0..16, 16) => R,
-        _ => B,
-    };
-    let expected: Vec<u8> = (0..17)
-        .flat_map(|y| (0..18).flat_map(move |x| want(x, y)))
-        .collect();
-    assert_eq!(frame.data, expected);
-}
-
-#[tokio::test]
-async fn zrle_tiles_across_one_zlib_stream() {
-    let h = Harness::new(None).await;
-    let (surface, mut fake) = h.connect(Security::None, 70, 5).await;
-    let mut rx = surface.frames().unwrap();
-    let mut z = Compress::new(Compression::default(), true);
-
-    // Update 1: a 64x5 plain RLE tile (runs of 300 and 20) and a 6x5 packed
-    // palette tile with 1 bit indices.
-    let mut t = vec![128];
-    t.extend_from_slice(&cpixel(R));
-    t.extend_from_slice(&[255, 44]); // 1 + 255 + 44 = 300
-    t.extend_from_slice(&cpixel(G));
-    t.push(19);
-    t.push(2);
-    t.extend_from_slice(&cpixel(B));
-    t.extend_from_slice(&cpixel(W));
-    t.extend_from_slice(&[0b1010_1000, 0b0101_0100, 0b1111_1100, 0, 0b1000_0100]);
-    fake.send(&update(&[rect(0, 0, 70, 5, 16, &zrle(&mut z, &t))]))
-        .await;
-    let frame = next(&mut rx).await;
-    let mut want = Vec::new();
-    for y in 0..5usize {
-        for x in 0..64usize {
-            want.push(if y * 64 + x < 300 { R } else { G });
-        }
-        let bits = [0b101010, 0b010101, 0b111111, 0, 0b100001][y];
-        for x in 0..6 {
-            want.push(if bits & (0b100000 >> x) != 0 { W } else { B });
-        }
-    }
-    assert_eq!(frame.data, flat(&want));
-    fake.expect(&request(true, 70, 5)).await;
-
-    // Update 2, same zlib stream: solid, raw, palette RLE, 2 and 4 bit packed palettes.
-    let solid = [&[1u8][..], &cpixel(B)].concat();
-    let raw_tile = [&[0u8][..], &cpixel(R), &cpixel(G), &cpixel(W), &cpixel(K)].concat();
-    let palette_rle = [&[130u8][..], &cpixel(R), &cpixel(G), &[0x80, 2, 1, 0x81, 1]].concat();
-    let packed4 = [
-        &[5u8][..],
-        &cpixel(R),
-        &cpixel(G),
-        &cpixel(B),
-        &cpixel(W),
-        &cpixel(K),
-        &[0x01, 0x23, 0x40],
-    ]
-    .concat();
-    let packed2 = [
-        &[3u8][..],
-        &cpixel(R),
-        &cpixel(G),
-        &cpixel(B),
-        &[0b1001_0000],
-    ]
-    .concat();
-    fake.send(&update(&[
-        rect(0, 0, 2, 2, 16, &zrle(&mut z, &solid)),
-        rect(2, 0, 2, 2, 16, &zrle(&mut z, &raw_tile)),
-        rect(4, 0, 3, 2, 16, &zrle(&mut z, &palette_rle)),
-        rect(7, 0, 5, 1, 16, &zrle(&mut z, &packed4)),
-        rect(0, 2, 3, 1, 16, &zrle(&mut z, &packed2)),
-    ]))
-    .await;
-    let frame = next(&mut rx).await;
-    assert_eq!(
-        frame.region,
-        Rect {
-            x: 0,
-            y: 0,
-            width: 12,
-            height: 3
-        }
-    );
-    let rows = [
-        [B, B, R, G, R, R, R, R, G, B, W, K],
-        [B, B, W, K, G, G, G, R, R, R, R, R],
-        [B, G, R, R, R, R, R, R, R, R, R, R],
-    ];
-    assert_eq!(frame.data, flat(&rows.concat()));
-}
-
-#[tokio::test]
-async fn desktop_size_resizes_and_publishes_a_keyframe() {
-    let (_h, surface, mut fake, mut rx) = connected_4x2().await;
-    fake.send(&update(&[
-        rect(0, 0, 3, 1, -223, &[]),
-        rect(0, 0, 3, 1, 0, &raw(&[G, B, W])),
-    ]))
-    .await;
-    let frame = next(&mut rx).await;
-    assert!(frame.keyframe);
-    assert_eq!((frame.width, frame.height), (3, 1));
-    assert_eq!(frame.data, flat(&[G, B, W]));
-    let info = surface.info();
-    assert_eq!((info.width, info.height), (3, 1));
-    // Later requests cover the new size.
-    fake.expect(&request(true, 3, 1)).await;
-}
-
-#[tokio::test]
-async fn cursor_shape_uses_the_mask_as_alpha() {
-    let (_h, surface, mut fake, mut rx) = connected_4x2().await;
-    let mut cursor_rx = surface.cursor();
-    let mut payload = raw(&[R, G, B, W]);
-    payload.extend_from_slice(&[0b1000_0000, 0b0100_0000]);
-    fake.send(&update(&[rect(1, 0, 2, 2, -239, &payload)]))
-        .await;
-    tokio::time::timeout(LIMIT, cursor_rx.wait_for(Option::is_some))
-        .await
-        .unwrap()
-        .unwrap();
-    let cursor = cursor_rx.borrow().clone().unwrap();
-    assert_eq!(
-        (
-            cursor.hotspot_x,
-            cursor.hotspot_y,
-            cursor.width,
-            cursor.height
-        ),
-        (1, 0, 2, 2)
-    );
-    assert_eq!(cursor.rgba, flat(&[R, [0, 255, 0, 0], [0, 0, 255, 0], W]));
-    // A cursor-only update changes no pixels, so no frame; the next one does.
-    fake.expect(&request(true, 4, 2)).await;
-    fake.send(&update(&[rect(0, 0, 1, 1, 0, &raw(&[W]))])).await;
-    assert_eq!(next(&mut rx).await.seq, 2);
-}
-
-#[tokio::test]
-async fn cut_text_bell_and_colour_map_are_skipped() {
-    let (_h, _surface, mut fake, mut rx) = connected_4x2().await;
-    let mut msgs = vec![3, 0, 0, 0, 0, 0, 0, 5];
-    msgs.extend_from_slice(b"hello");
-    msgs.push(2);
-    msgs.extend_from_slice(&[1, 0, 0, 0, 0, 1]);
-    msgs.extend_from_slice(&[0; 6]);
-    msgs.extend(update(&[rect(3, 1, 1, 1, 0, &raw(&[G]))]));
-    fake.send(&msgs).await;
-    let frame = next(&mut rx).await;
-    assert_eq!(
-        frame.region,
-        Rect {
-            x: 3,
-            y: 1,
-            width: 1,
-            height: 1
-        }
-    );
-    assert_eq!(frame.data, flat(&[G]));
-}
-
-#[tokio::test]
-async fn input_bytes_on_the_wire_and_input_seq_in_frames() {
-    let (_h, surface, mut fake, mut rx) = connected_4x2().await;
     let none = Modifiers::default();
-    let event = |seq, input| InputEvent {
-        seq,
-        sent_us: 0,
-        input,
-    };
-
-    surface
-        .input(event(
-            7,
-            Input::MouseButton {
-                x: 2.0,
-                y: 1.0,
-                button: MouseButton::Left,
-                pressed: true,
-                modifiers: none,
-            },
-        ))
-        .await
-        .unwrap();
-    fake.expect(&[5, 1, 0, 2, 0, 1]).await;
-    fake.expect(&request(true, 4, 2)).await;
-
-    surface
-        .input(event(
-            8,
-            Input::Key {
-                key: "Enter".into(),
-                code: "Enter".into(),
-                pressed: true,
-                modifiers: none,
-            },
-        ))
-        .await
-        .unwrap();
-    fake.expect(&[4, 1, 0, 0, 0, 0, 0xff, 0x0d]).await;
-    fake.expect(&request(true, 4, 2)).await;
-
-    fake.send(&update(&[rect(0, 0, 1, 1, 0, &raw(&[B]))])).await;
-    assert_eq!(next(&mut rx).await.input_seq, 8);
-    fake.expect(&request(true, 4, 2)).await;
-
-    surface
-        .input(event(9, Input::Text { text: "Hi".into() }))
-        .await
-        .unwrap();
-    fake.expect(&[4, 1, 0, 0, 0, 0, 0, 0x48, 4, 0, 0, 0, 0, 0, 0, 0x48])
-        .await;
-    fake.expect(&[4, 1, 0, 0, 0, 0, 0, 0x69, 4, 0, 0, 0, 0, 0, 0, 0x69])
-        .await;
-    fake.expect(&request(true, 4, 2)).await;
-
-    surface
-        .input(event(
-            10,
-            Input::Scroll {
-                x: 3.0,
-                y: 0.0,
-                dx: 0.0,
-                dy: -40.0,
-                modifiers: none,
-            },
-        ))
-        .await
-        .unwrap();
-    fake.expect(&[5, 1, 0, 3, 0, 0, 5, 1 | 8, 0, 3, 0, 0, 5, 1, 0, 3, 0, 0])
-        .await;
-    fake.expect(&request(true, 4, 2)).await;
-
-    // Resize has no RFB message and writes nothing.
-    surface
-        .input(event(
-            11,
-            Input::Resize {
-                width: 10,
-                height: 10,
-            },
-        ))
-        .await
-        .unwrap();
-    fake.send(&update(&[rect(0, 0, 1, 1, 0, &raw(&[G]))])).await;
+    let enter = Input::Key { key: "Enter".into(), code: "Enter".into(), pressed: true, modifiers: none };
+    let key = |down, keysym| Msg::Key { down, keysym }.bytes();
+    let ptr = |mask, x, y| Msg::Pointer { mask, x, y }.bytes();
+    let cases: [(u64, Input, Vec<u8>); 4] = [
+        (7, Input::MouseButton { x: 2.0, y: 1.0, button: MouseButton::Left, pressed: true, modifiers: none }, ptr(1, 2, 1)),
+        (8, enter, key(true, 0xff0d)),
+        (9, Input::Text { text: "Hi".into() }, [key(true, 0x48), key(false, 0x48), key(true, 0x69), key(false, 0x69)].concat()),
+        (10, Input::Scroll { x: 3.0, y: 0.0, dx: 0.0, dy: -40.0, modifiers: none }, [ptr(1, 3, 0), ptr(1 | 8, 3, 0), ptr(1, 3, 0)].concat()),
+    ];
+    for (seq, input, wire) in cases {
+        surface.input(InputEvent { seq, sent_us: 0, input }).await.unwrap();
+        fake.expect(&wire).await;
+        fake.expect_request(4, 2).await;
+    }
+    // Resize has no RFB message; the next update carries the last input's number.
+    surface.input(InputEvent { seq: 11, sent_us: 0, input: Input::Resize { width: 10, height: 10 } }).await.unwrap();
+    fake.send(&update(&[rect(0, 0, 1, 1, 0, &[1, 2, 3, 0])])).await;
     assert_eq!(next(&mut rx).await.input_seq, 10);
 }
 
 #[tokio::test]
-async fn screenshot_is_a_png_of_the_framebuffer() {
-    let (_h, surface, _fake, _rx) = connected_4x2().await;
-    let png = surface.screenshot().await.unwrap();
-    let picture = crate::pixels::decode_png(&png).unwrap();
-    assert_eq!((picture.width, picture.height), (4, 2));
-    assert_eq!(picture.data, flat(&FIRST));
-    assert!(matches!(
-        surface.document().await,
-        Err(SurfaceError::Mode { .. })
-    ));
-}
-
-#[tokio::test]
-async fn vnc_auth_and_reconnect_after_a_drop() {
+async fn vnc_auth_reconnects_after_a_drop_and_wrong_passwords_fail() {
     let h = Harness::new(Some("hunter2")).await;
-    let (surface, mut fake) = h.connect(Security::Vnc("hunter2"), 2, 1).await;
+    let (surface, fake) = h.connect(Security::Vnc("hunter2"), 2, 1).await;
     let mut rx = surface.frames().unwrap();
     let mut state = surface.state();
-    fake.send(&update(&[rect(0, 0, 2, 1, 0, &raw(&[R, G]))]))
-        .await;
-    assert_eq!(next(&mut rx).await.data, flat(&[R, G]));
     assert_eq!(h.password_calls.load(Ordering::SeqCst), 1);
-
     drop(fake);
-    tokio::time::timeout(
-        LIMIT,
-        state.wait_for(|s| matches!(s, ConnectionState::Reconnecting { .. })),
-    )
-    .await
-    .unwrap()
-    .unwrap();
+    tokio::time::timeout(LIMIT, state.wait_for(|s| matches!(s, ConnectionState::Reconnecting { .. }))).await.unwrap().unwrap();
     let mut fake = Fake::accept(&h.listener).await;
     assert!(fake.handshake(Security::Vnc("hunter2"), 2, 1).await);
-    fake.expect_setup(2, 1).await;
     // The password was asked for again, not kept from the first handshake.
     assert_eq!(h.password_calls.load(Ordering::SeqCst), 2);
-    tokio::time::timeout(LIMIT, state.wait_for(|s| *s == ConnectionState::Connected))
-        .await
-        .unwrap()
-        .unwrap();
-
-    // The first update after reconnecting is a keyframe again.
-    fake.send(&update(&[rect(1, 0, 1, 1, 0, &raw(&[B]))])).await;
+    tokio::time::timeout(LIMIT, state.wait_for(|s| *s == ConnectionState::Connected)).await.unwrap().unwrap();
+    // The first update after reconnecting is a keyframe again; input goes to the new connection.
+    fake.send(&update(&[rect(1, 0, 1, 1, 0, &[0, 0, 255, 0])])).await;
     let frame = next(&mut rx).await;
-    assert!(frame.keyframe);
-    assert_eq!(frame.data, flat(&[R, B]));
+    assert_eq!((frame.keyframe, frame.data.to_vec()), (true, flat(&[K, B])));
+    fake.expect_request(2, 1).await;
+    surface.input(InputEvent { seq: 1, sent_us: 0, input: Input::MouseMove { x: 1.0, y: 0.0 } }).await.unwrap();
+    fake.expect(&Msg::Pointer { mask: 0, x: 1, y: 0 }.bytes()).await;
 
-    // Input goes to the new connection.
-    let move_to = InputEvent {
-        seq: 1,
-        sent_us: 0,
-        input: Input::MouseMove { x: 1.0, y: 0.0 },
-    };
-    fake.expect(&request(true, 2, 1)).await;
-    surface.input(move_to).await.unwrap();
-    fake.expect(&[5, 0, 0, 1, 0, 0]).await;
-}
-
-#[tokio::test]
-async fn wrong_password_fails_the_open() {
     let h = Harness::new(Some("wrong")).await;
-    let server = Arc::clone(&h.server);
-    let open = tokio::spawn(async move { server.open_rfb(&uri()).await });
-    let mut fake = Fake::accept(&h.listener).await;
-    assert!(!fake.handshake(Security::Vnc("right"), 2, 1).await);
-    let Err(err) = open.await.unwrap() else {
-        panic!("open succeeded")
-    };
+    let open = h.open().await;
+    assert!(!Fake::accept(&h.listener).await.handshake(Security::Vnc("right"), 2, 1).await);
+    let err = open.await.unwrap().err().expect("open fails");
     assert!(err.to_string().contains("bad password"), "{err}");
 }
 
 #[tokio::test]
-async fn rfb_3_3_server_with_no_auth() {
+async fn an_rfb_3_3_server_with_no_auth_and_no_desktop_name() {
     let h = Harness::new(None).await;
-    let server = Arc::clone(&h.server);
-    let open = tokio::spawn(async move { server.open_rfb(&uri()).await });
+    let open = h.open().await;
     let mut fake = Fake::accept(&h.listener).await;
     fake.send(b"RFB 003.003\n").await;
     fake.expect(b"RFB 003.003\n").await;
     fake.send(&1u32.to_be_bytes()).await;
     fake.expect(&[1]).await;
-    let mut init = vec![0, 1, 0, 1];
-    init.extend_from_slice(&[32, 24, 0, 1, 0, 255, 0, 255, 0, 255, 16, 8, 0, 0, 0, 0]);
-    init.extend_from_slice(&0u32.to_be_bytes());
-    fake.send(&init).await;
-    fake.expect_setup(1, 1).await;
-    let surface = open.await.unwrap().unwrap();
-    // No desktop name: the tab shows the endpoint name.
-    assert_eq!(surface.info().name, "desk");
+    fake.server_init(1, 1, b"").await;
+    assert_eq!(open.await.unwrap().unwrap().info().name, "desk");
 }
 
 #[tokio::test]
-async fn server_lists_and_opens_endpoints() {
+async fn endpoints_are_listed_opened_once_and_removed() {
     let h = Harness::new(None).await;
     let listed = h.server.list().await.unwrap();
-    assert_eq!(listed.len(), 1);
-    assert_eq!(
-        (listed[0].uri.as_str(), listed[0].width),
-        ("surface://vm/desk", 0)
-    );
-
-    let missing = SurfaceUri::new("vm", "nope").unwrap();
-    assert!(matches!(
-        h.server.open(&missing).await,
-        Err(SurfaceError::NotFound(_))
-    ));
-    let other = SurfaceUri::new("browser", "desk").unwrap();
-    assert!(matches!(
-        h.server.open(&other).await,
-        Err(SurfaceError::NotFound(_))
-    ));
-
+    assert_eq!((listed.len(), listed[0].uri.as_str(), listed[0].width), (1, "surface://vm/desk", 0));
+    for missing in [SurfaceUri::new("vm", "nope").unwrap(), SurfaceUri::new("browser", "desk").unwrap()] {
+        assert!(matches!(h.server.open(&missing).await, Err(SurfaceError::NotFound(_))));
+    }
     let (surface, _fake) = h.connect(Security::None, 4, 2).await;
     // A second open reuses the live connection instead of dialing again.
-    let again = h.server.open_rfb(&uri()).await.unwrap();
-    assert!(Arc::ptr_eq(&surface, &again));
+    assert!(Arc::ptr_eq(&surface, &h.server.open_rfb(&uri()).await.unwrap()));
     let listed = h.server.list().await.unwrap();
-    assert_eq!(
-        (listed[0].width, listed[0].height, listed[0].name.as_str()),
-        (4, 2, "fake desk")
-    );
-}
-
-#[tokio::test]
-async fn endpoints_added_at_runtime_are_listed_opened_and_removed() {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap().to_string();
-    let server = Arc::new(RfbServer::new(
-        Vec::new(),
-        Arc::new(|_: &str| -> Option<String> { None }),
-        RfbOptions::default(),
-    ));
-    assert!(server.list().await.unwrap().is_empty());
-    let added = server
-        .add_endpoint(RfbEndpoint {
-            name: "desk".into(),
-            address,
-        })
-        .unwrap();
-    assert_eq!(added, uri());
-    assert_eq!(server.list().await.unwrap().len(), 1);
-
-    let opener = Arc::clone(&server);
-    let open = tokio::spawn(async move { opener.open_rfb(&uri()).await });
-    let mut fake = Fake::accept(&listener).await;
-    assert!(fake.handshake(Security::None, 4, 2).await);
-    fake.expect_setup(4, 2).await;
-    let surface = open.await.unwrap().unwrap();
-    assert_eq!((surface.info().width, surface.info().height), (4, 2));
-
-    assert!(server.remove_endpoint("desk"));
-    assert!(!server.remove_endpoint("desk"));
-    assert!(server.list().await.unwrap().is_empty());
-    assert!(matches!(
-        server.open(&uri()).await,
-        Err(SurfaceError::NotFound(_))
-    ));
+    assert_eq!((listed[0].width, listed[0].height, listed[0].name.as_str()), (4, 2, "fake desk"));
+    let other = RfbEndpoint { name: "other".into(), address: "127.0.0.1:1".into() };
+    assert_eq!(h.server.add_endpoint(other).unwrap().as_str(), "surface://vm/other");
+    assert_eq!(h.server.list().await.unwrap().len(), 2);
+    assert!(h.server.remove_endpoint("desk") && !h.server.remove_endpoint("desk"));
+    assert!(matches!(h.server.open(&uri()).await, Err(SurfaceError::NotFound(_))));
 }

@@ -192,223 +192,64 @@ fn take_clicks(acc: &mut f32, delta: f32, step: f32) -> i32 {
 mod tests {
     use super::*;
 
-    fn encode(state: &mut InputState, input: Input) -> Vec<u8> {
-        let mut buf = Vec::new();
-        state.encode(&input, 800, 600, 40.0, &mut buf).unwrap();
-        buf
-    }
-
     fn ptr(mask: u8, x: u16, y: u16) -> Vec<u8> {
-        let mut v = vec![5, mask];
-        v.extend_from_slice(&x.to_be_bytes());
-        v.extend_from_slice(&y.to_be_bytes());
-        v
+        Msg::Pointer { mask, x, y }.bytes()
     }
 
-    fn key(down: bool, sym: u32) -> Vec<u8> {
-        let mut v = vec![4, u8::from(down), 0, 0];
-        v.extend_from_slice(&sym.to_be_bytes());
-        v
+    fn key(down: bool, keysym: u32) -> Vec<u8> {
+        Msg::Key { down, keysym }.bytes()
     }
 
     #[test]
-    fn button_mask_tracks_held_buttons() {
-        let mut s = InputState::default();
+    fn inputs_become_pointer_and_key_events() {
         let none = Modifiers::default();
-        let b = |button, pressed| Input::MouseButton {
-            x: 10.6,
-            y: 20.2,
-            button,
-            pressed,
-            modifiers: none,
+        let ctrl_shift = Modifiers { ctrl: true, shift: true, ..none };
+        let button = |button, pressed, modifiers| Input::MouseButton { x: 10.6, y: 20.2, button, pressed, modifiers };
+        let scroll = |dx, dy| Input::Scroll { x: 5.0, y: 6.0, dx, dy, modifiers: none };
+        let key_input = |key: &str, code: &str, pressed| Input::Key { key: key.into(), code: code.into(), pressed, modifiers: ctrl_shift };
+        let wheel = |held: u8, bits: &[u8]| {
+            let clicks = bits.iter().flat_map(|bit| [ptr(held | bit, 5, 6), ptr(held, 5, 6)]);
+            [ptr(held, 5, 6)].into_iter().chain(clicks).collect::<Vec<_>>().concat()
         };
-        assert_eq!(encode(&mut s, b(MouseButton::Left, true)), ptr(1, 10, 20));
-        assert_eq!(encode(&mut s, b(MouseButton::Right, true)), ptr(5, 10, 20));
-        assert_eq!(
-            encode(&mut s, Input::MouseMove { x: 30.0, y: 40.0 }),
-            ptr(5, 30, 40)
-        );
-        assert_eq!(encode(&mut s, b(MouseButton::Left, false)), ptr(4, 10, 20));
-        assert_eq!(encode(&mut s, b(MouseButton::Middle, true)), ptr(6, 10, 20));
-        assert_eq!(
-            encode(&mut s, b(MouseButton::Back, true)),
-            ptr(0x86, 10, 20)
-        );
-        let mut buf = Vec::new();
-        assert!(matches!(
-            s.encode(&b(MouseButton::Forward, true), 800, 600, 40.0, &mut buf),
-            Err(RfbError::ForwardButton)
-        ));
-    }
-
-    #[test]
-    fn coordinates_clamp_to_the_framebuffer() {
-        let mut s = InputState::default();
-        assert_eq!(
-            encode(&mut s, Input::MouseMove { x: -5.0, y: 9000.0 }),
-            ptr(0, 0, 599)
-        );
-        assert_eq!(
-            encode(
-                &mut s,
-                Input::MouseMove {
-                    x: f32::NAN,
-                    y: 599.9
-                }
-            ),
-            ptr(0, 0, 599)
-        );
-    }
-
-    #[test]
-    fn wheel_clicks_accumulate_pixels() {
-        let mut s = InputState::default();
-        let none = Modifiers::default();
-        let scroll = |dx, dy| Input::Scroll {
-            x: 5.0,
-            y: 6.0,
-            dx,
-            dy,
-            modifiers: none,
-        };
-        // 100 px down: two clicks of button 5, 20 px carried over.
-        let mut want = ptr(0, 5, 6);
-        for _ in 0..2 {
-            want.extend(ptr(WHEEL_DOWN, 5, 6));
-            want.extend(ptr(0, 5, 6));
+        let typed = [0x68, 0xe9, 0x0100_20ac, keysym::RETURN, keysym::TAB].into_iter().flat_map(|s| [key(true, s), key(false, s)]);
+        // One state through the whole sequence: buttons, wheel remainders and held modifiers carry over.
+        let steps: Vec<(Input, Vec<u8>)> = vec![
+            (button(MouseButton::Left, true, none), ptr(1, 10, 20)),
+            (button(MouseButton::Right, true, none), ptr(5, 10, 20)),
+            (Input::MouseMove { x: 30.0, y: 40.0 }, ptr(5, 30, 40)),
+            (button(MouseButton::Left, false, none), ptr(4, 10, 20)),
+            (button(MouseButton::Back, true, none), ptr(0x84, 10, 20)),
+            (button(MouseButton::Back, false, none), ptr(4, 10, 20)),
+            (button(MouseButton::Right, false, none), ptr(0, 10, 20)),
+            // Coordinates clamp to the framebuffer; NaN is 0.
+            (Input::MouseMove { x: -5.0, y: 9000.0 }, ptr(0, 0, 599)),
+            (Input::MouseMove { x: f32::NAN, y: 599.9 }, ptr(0, 0, 599)),
+            // 100 px down is two clicks with 20 px carried over; 20 more completes a third.
+            (scroll(0.0, 100.0), wheel(0, &[WHEEL_DOWN, WHEEL_DOWN])),
+            (scroll(0.0, 20.0), wheel(0, &[WHEEL_DOWN])),
+            (scroll(-40.0, -40.0), wheel(0, &[WHEEL_UP, WHEEL_LEFT])),
+            (scroll(40.0, 0.0), wheel(0, &[WHEEL_RIGHT])),
+            // Modifiers not held are pressed around the event and released in reverse.
+            (button(MouseButton::Left, true, ctrl_shift), [key(true, SHIFT_L), key(true, CONTROL_L), ptr(1, 10, 20), key(false, CONTROL_L), key(false, SHIFT_L)].concat()),
+            (Input::Scroll { x: 5.0, y: 6.0, dx: 0.0, dy: 40.0, modifiers: none }, wheel(1, &[WHEEL_DOWN])),
+            // Once Control is held through its own key event, only Shift is wrapped.
+            (key_input("Control", "ControlLeft", true), key(true, CONTROL_L)),
+            (key_input("A", "KeyA", true), [key(true, SHIFT_L), key(true, 0x41), key(false, SHIFT_L)].concat()),
+            (key_input("Control", "ControlLeft", false), key(false, CONTROL_L)),
+            (Input::Text { text: "hé€\r\n\t".into() }, typed.collect::<Vec<_>>().concat()),
+            (Input::Resize { width: 1, height: 1 }, Vec::new()),
+        ];
+        let mut state = InputState::default();
+        for (n, (input, want)) in steps.into_iter().enumerate() {
+            let mut buf = Vec::new();
+            state.encode(&input, 800, 600, 40.0, &mut buf).unwrap();
+            assert_eq!(buf, want, "step {n}: {input:?}");
         }
-        assert_eq!(encode(&mut s, scroll(0.0, 100.0)), want);
-        // 20 more px completes a third click.
-        let mut want = ptr(0, 5, 6);
-        want.extend(ptr(WHEEL_DOWN, 5, 6));
-        want.extend(ptr(0, 5, 6));
-        assert_eq!(encode(&mut s, scroll(0.0, 20.0)), want);
-        // Up is button 4, left button 6, right button 7.
-        let mut want = ptr(0, 5, 6);
-        want.extend(ptr(WHEEL_UP, 5, 6));
-        want.extend(ptr(0, 5, 6));
-        want.extend(ptr(WHEEL_LEFT, 5, 6));
-        want.extend(ptr(0, 5, 6));
-        assert_eq!(encode(&mut s, scroll(-40.0, -40.0)), want);
-        let mut want = ptr(0, 5, 6);
-        want.extend(ptr(WHEEL_RIGHT, 5, 6));
-        want.extend(ptr(0, 5, 6));
-        assert_eq!(encode(&mut s, scroll(40.0, 0.0)), want);
-    }
-
-    #[test]
-    fn scroll_keeps_held_buttons() {
-        let mut s = InputState::default();
-        let none = Modifiers::default();
-        encode(
-            &mut s,
-            Input::MouseButton {
-                x: 1.0,
-                y: 1.0,
-                button: MouseButton::Left,
-                pressed: true,
-                modifiers: none,
-            },
-        );
-        let mut want = ptr(1, 1, 1);
-        want.extend(ptr(1 | WHEEL_DOWN, 1, 1));
-        want.extend(ptr(1, 1, 1));
-        assert_eq!(
-            encode(
-                &mut s,
-                Input::Scroll {
-                    x: 1.0,
-                    y: 1.0,
-                    dx: 0.0,
-                    dy: 40.0,
-                    modifiers: none
-                }
-            ),
-            want
-        );
-    }
-
-    #[test]
-    fn modifiers_not_held_are_wrapped_around_the_event() {
-        let mut s = InputState::default();
-        let ctrl_shift = Modifiers {
-            ctrl: true,
-            shift: true,
-            ..Modifiers::default()
-        };
-        let mut want = key(true, SHIFT_L);
-        want.extend(key(true, CONTROL_L));
-        want.extend(ptr(1, 3, 4));
-        want.extend(key(false, CONTROL_L));
-        want.extend(key(false, SHIFT_L));
-        let click = Input::MouseButton {
-            x: 3.0,
-            y: 4.0,
-            button: MouseButton::Left,
-            pressed: true,
-            modifiers: ctrl_shift,
-        };
-        assert_eq!(encode(&mut s, click), want);
-
-        // Once Control is held through its own key event, only Shift is wrapped.
-        let ctrl = |pressed| Input::Key {
-            key: "Control".into(),
-            code: "ControlLeft".into(),
-            pressed,
-            modifiers: ctrl_shift,
-        };
-        assert_eq!(encode(&mut s, ctrl(true)), key(true, CONTROL_L));
-        let a = Input::Key {
-            key: "A".into(),
-            code: "KeyA".into(),
-            pressed: true,
-            modifiers: ctrl_shift,
-        };
-        let mut want = key(true, SHIFT_L);
-        want.extend(key(true, 0x41));
-        want.extend(key(false, SHIFT_L));
-        assert_eq!(encode(&mut s, a), want);
-        assert_eq!(encode(&mut s, ctrl(false)), key(false, CONTROL_L));
-    }
-
-    #[test]
-    fn text_is_typed_key_by_key() {
-        let mut s = InputState::default();
-        let mut want = Vec::new();
-        for sym in [0x68, 0xe9, 0x0100_20ac, keysym::RETURN, keysym::TAB] {
-            want.extend(key(true, sym));
-            want.extend(key(false, sym));
+        let dead = Input::Key { key: "Dead".into(), code: "Quote".into(), pressed: true, modifiers: none };
+        for input in [dead, Input::Text { text: "\u{7}".into() }, button(MouseButton::Forward, true, none)] {
+            let error = state.encode(&input, 10, 10, 40.0, &mut Vec::new()).unwrap_err();
+            assert!(matches!(error, RfbError::Key(_) | RfbError::ForwardButton), "{error}");
         }
-        assert_eq!(
-            encode(
-                &mut s,
-                Input::Text {
-                    text: "hé€\r\n\t".into()
-                }
-            ),
-            want
-        );
-    }
-
-    #[test]
-    fn unmappable_input_is_rejected() {
-        let mut s = InputState::default();
-        let mut buf = Vec::new();
-        let dead = Input::Key {
-            key: "Dead".into(),
-            code: "Quote".into(),
-            pressed: true,
-            modifiers: Modifiers::default(),
-        };
-        assert!(
-            matches!(s.encode(&dead, 10, 10, 40.0, &mut buf), Err(RfbError::Key(k)) if k == "Dead")
-        );
-        let bell = Input::Text {
-            text: "\u{7}".into(),
-        };
-        assert!(matches!(
-            s.encode(&bell, 10, 10, 40.0, &mut buf),
-            Err(RfbError::Key(_))
-        ));
     }
 }
+

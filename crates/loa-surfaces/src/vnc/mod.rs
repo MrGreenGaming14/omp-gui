@@ -14,7 +14,7 @@ mod proto;
 mod server;
 mod surface;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "testkit"))]
 mod tests;
 
 pub use decode::Cursor;
