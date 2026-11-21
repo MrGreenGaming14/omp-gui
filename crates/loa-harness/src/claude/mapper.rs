@@ -1,18 +1,14 @@
-//! Claude Code's decoded stream lines as DOM writes; turn bookkeeping is a
+//! Claude Code's stream JSON lines as DOM writes; turn bookkeeping is a
 //! [`TurnLedger`]. Whatever goes back to the CLI comes out as an [`Output`].
+//! Lines are read field by field: a field of unexpected type counts as absent.
 
-use crate::claude::HARNESS;
-use crate::claude::protocol::{
-    Block, Content, StreamDelta as Delta, Line as Event, Message, Permission, Request, Stream, System, TurnResult, control_error,
-    control_success,
-};
-use crate::kit::{EndEvent, TurnLedger};
+use crate::claude::{HARNESS, USAGE};
+use crate::kit::{EndEvent, TurnLedger, insert_root};
 use loa_contracts::harness::{AdapterError, Answer, Result, SessionConfig, SessionState};
 use loa_core::{
-    CallStatus, DecisionKind, DecisionStatus, Dom, DomWriter, Draft, ElementKind as E, JobKind, JobStatus, MessageKind,
-    MessageStatus, NodeId, PatchSink, Role, SCHEMA_VERSION, SessionMode, TurnStatus, Value as V, answer, attr, now_ms,
+    CallStatus, DecisionKind, DecisionStatus, Dom, DomWriter, ElementKind as E, JobKind, JobStatus, MessageKind,
+    MessageStatus, NodeId, PatchSink, Role, SessionMode, TurnStatus, Value as V, answer, attr, now_ms,
 };
-use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -38,30 +34,22 @@ enum Key {
     Call(String),
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-enum Kind {
-    Text,
-    Thinking,
-    ToolUse,
-    Other,
-}
-
-/// A streamed content block: its `<message>` or `<call>` and the call's `<input>`.
+/// A streamed `text`, `thinking` or `tool_use` block: its `<message>` or
+/// `<call>`, and the node its deltas append to (a call's `<input>`).
 #[derive(Clone, Copy)]
 struct StreamBlock {
-    kind: Kind,
-    node: Option<NodeId>,
-    input: Option<NodeId>,
+    kind: &'static str,
+    node: NodeId,
+    target: NodeId,
     streamed: bool,
 }
-
-const NO_BLOCK: StreamBlock = StreamBlock { kind: Kind::Other, node: None, input: None, streamed: false };
 
 /// The API message whose stream events are arriving.
 struct Streaming {
     message_id: String,
     model: Option<String>,
-    blocks: Vec<StreamBlock>,
+    /// `None` for blocks the stream made no element for (signatures, redactions).
+    blocks: Vec<Option<StreamBlock>>,
     /// Blocks already matched to a complete `assistant` message.
     finalized: usize,
 }
@@ -72,17 +60,10 @@ struct Call {
     job: Option<NodeId>,
 }
 
-#[derive(Copy, Clone, PartialEq, Eq)]
-enum PendingKind {
-    Approval,
-    Question,
-    Plan,
-}
-
 /// A `can_use_tool` request waiting for the user; a question request has one decision per question.
 struct Pending {
     request_id: String,
-    kind: PendingKind,
+    kind: DecisionKind,
     tool: String,
     input: Value,
     suggestions: Option<Value>,
@@ -108,44 +89,53 @@ pub struct Mapper {
     draining: u32,
 }
 
-fn kind_of(block: &Block) -> Kind {
-    match block {
-        Block::Text { .. } => Kind::Text,
-        Block::Thinking { .. } => Kind::Thinking,
-        Block::ToolUse { .. } => Kind::ToolUse,
-        _ => Kind::Other,
+/// A content block's kind: `text`, `thinking`, `tool_use` (server and MCP tool uses too), or "" for any other.
+fn block_kind(block: &Value) -> &'static str {
+    match block["type"].as_str() {
+        Some("text") => "text",
+        Some("thinking") => "thinking",
+        Some("tool_use" | "server_tool_use" | "mcp_tool_use") => "tool_use",
+        _ => "",
     }
+}
+
+/// The text of a string, or of blocks that are all text, joined by lines.
+fn content_text(content: &Value) -> Option<String> {
+    match content {
+        Value::String(text) => Some(text.clone()),
+        Value::Array(blocks) => {
+            let texts = blocks.iter().map(|b| (b["type"] == "text").then(|| b["text"].as_str().unwrap_or_default()));
+            texts.collect::<Option<Vec<_>>>().map(|texts| texts.join("\n"))
+        }
+        _ => None,
+    }
+}
+
+/// A `control_response` line answering `request_id`.
+pub(crate) fn control_response(request_id: &str, outcome: std::result::Result<Value, String>) -> Value {
+    let mut response = match outcome {
+        Ok(response) => json!({"subtype": "success", "response": response}),
+        Err(error) => json!({"subtype": "error", "error": error}),
+    };
+    response["request_id"] = request_id.into();
+    let mut line = json!({"type": "control_response", "response": response});
+    line.sort_all_objects();
+    line
 }
 
 impl Mapper {
     /// Inserts the `<session>` root for a new session.
     pub fn create(sink: Arc<dyn PatchSink>, config: &SessionConfig) -> Result<Self> {
-        let mut attrs = vec![
-            (attr::ID, V::from(config.session_id.as_str())),
-            (attr::HARNESS, V::from(HARNESS)),
-            (attr::NODE, V::from(config.node.as_str())),
-            (attr::CREATED, V::Int(now_ms())),
-            (attr::SCHEMA, V::Int(i64::from(SCHEMA_VERSION))),
-            (attr::CWD, V::from(config.cwd.to_string_lossy().into_owned())),
-        ];
-        let optional = [
-            (attr::PROJECT, &config.project),
-            (attr::MODEL, &config.model),
-            (attr::MODEL_ROLE, &config.model_role),
-            (attr::EFFORT, &config.effort),
-        ];
-        attrs.extend(optional.into_iter().filter_map(|(name, value)| Some((name, V::from(value.clone()?)))));
-        attrs.extend(config.mode.map(|mode| (attr::MODE, mode.into())));
-        let session = sink.commit(Draft::insert(NodeId::DOCUMENT, E::Session, attrs, ""))?.node;
+        let session = insert_root(&DomWriter::new(&*sink), HARNESS, config)?;
         Ok(Self::new(sink, TurnLedger::new(session), None, config.model.clone(), config.mode))
     }
 
-    /// Continues a session from its journal; a turn left open by a process that is gone is cancelled.
+    /// Continues a session from its journal; turns left open by a process that is gone are cancelled.
     pub fn attach(sink: Arc<dyn PatchSink>, dom: &Dom) -> Result<Self> {
         let root = dom.root().ok_or_else(|| AdapterError::Format("the session DOM has no root".into()))?;
         let text = |name| root.str_attr(name).map(str::to_owned);
         let mode = root.str_attr(attr::MODE).and_then(SessionMode::parse);
-        let mut mapper = Self::new(sink, TurnLedger::from_dom(dom), text(attr::NATIVE_ID), text(attr::MODEL), mode);
+        let mut mapper = Self::new(sink, TurnLedger::new(root.id), text(attr::NATIVE_ID), text(attr::MODEL), mode);
         for child in dom.children(root.id) {
             match child.kind {
                 E::Turn => mapper.uncompacted.push(child.id),
@@ -154,10 +144,7 @@ impl Mapper {
             }
         }
         // Journals can contain more than one stale turn, including before a closed last turn.
-        let tracked = mapper.turn();
-        for turn in dom.children_of_kind(root.id, E::Turn).filter(|t| {
-            Some(t.id) != tracked && matches!(t.str_attr(attr::STATUS), Some("running" | "waiting"))
-        }) {
+        for turn in dom.children_of_kind(root.id, E::Turn).filter(|t| matches!(t.str_attr(attr::STATUS), Some("running" | "waiting"))) {
             for node in dom.descendants(turn.id) {
                 match (node.kind, node.str_attr(attr::STATUS)) {
                     (E::Message, Some("streaming")) => mapper.w().set(node.id, attr::STATUS, MessageStatus::Cancelled)?,
@@ -167,22 +154,6 @@ impl Mapper {
                 }
             }
             mapper.w().close(turn.id, TurnStatus::Cancelled)?;
-        }
-        if let Some(turn) = mapper.ledger.turn().map(|t| t.node) {
-            for node in dom.descendants(turn) {
-                let status = node.str_attr(attr::STATUS).unwrap_or_default();
-                match node.kind {
-                    E::Message if status == MessageStatus::Streaming.as_str() => {
-                        mapper.ledger.open(Key::Message(node.id), node.id);
-                    }
-                    E::Call if [CallStatus::Running.as_str(), CallStatus::Pending.as_str()].contains(&status) => {
-                        let id = node.str_attr(attr::CALL_ID).map_or_else(|| node.id.0.to_string(), str::to_owned);
-                        mapper.ledger.open(Key::Call(id), node.id);
-                    }
-                    _ => {}
-                }
-            }
-            mapper.end_turn(TurnStatus::Cancelled)?;
         }
         Ok(mapper)
     }
@@ -268,21 +239,16 @@ impl Mapper {
                 self.w().set(node, attr::STATUS, MessageStatus::Done)?;
             }
         }
-        let mut children = Vec::new();
+        let mut calls = Vec::new();
         self.ledger.end_turn(&DomWriter::new(&*self.sink), status, |ev| {
-            if let EndEvent::Child { key, node } = ev {
-                children.push((key.clone(), node));
+            if let EndEvent::Child { key: Key::Call(id), node } = ev {
+                calls.push((id.clone(), node));
             }
         })?;
-        for (key, node) in children {
-            match key {
-                Key::Message(_) => {}
-                Key::Call(id) => {
-                    // A result that still arrives belongs to a dead turn.
-                    self.calls.remove(&id);
-                    self.w().set(node, attr::ENDED, now_ms())?;
-                }
-            }
+        for (id, node) in calls {
+            // A result that still arrives belongs to a dead turn.
+            self.calls.remove(&id);
+            self.w().set(node, attr::ENDED, now_ms())?;
         }
         self.pending.clear();
         self.stream = None;
@@ -324,103 +290,94 @@ impl Mapper {
         Ok(())
     }
 
-    /// Maps one stdout line; lines of unexpected shape are kept as `<ext>`.
+    /// Maps one stdout line; lines of unknown `type` are kept as `<ext>`.
     pub fn handle(&mut self, mut raw: Value) -> Result<Option<Output>> {
         raw.sort_all_objects();
-        let kind = raw.get("type").and_then(Value::as_str).unwrap_or_default();
-        let normalized;
-        let event = match Event::deserialize(&raw) {
-            Ok(event) => event,
-            Err(_) => {
-                normalized = crate::claude::normalize::normalize(&raw);
-                match Event::deserialize(&normalized) {
-                    Ok(event) => event,
-                    Err(_) => return self.ext(kind, &raw).map(|()| None),
-                }
-            }
-        };
-        match event {
-            Event::System(system) => self.on_system(&system, &raw),
-            Event::StreamEvent { parent_tool_use_id: Some(_), .. } => Ok(()),
-            Event::StreamEvent { event, .. } => self.on_stream(event),
-            Event::Assistant(msg) => self.on_assistant(&msg, &raw),
-            Event::User(msg) => self.on_user(&msg, &raw),
-            Event::Result(result) => self.on_result(&result),
-            Event::ControlRequest { request_id, request } => return self.on_control(request_id, request, &raw),
-            Event::ControlCancelRequest { request_id } => request_id.map_or(Ok(()), |id| self.on_cancel(id)),
-            Event::KeepAlive | Event::ToolProgress => Ok(()),
-            Event::Other => self.ext(kind, &raw),
+        let kind = raw["type"].as_str().unwrap_or_default();
+        match kind {
+            "system" => self.on_system(&raw),
+            // A subagent's stream is summarized from its complete messages.
+            "stream_event" if raw["parent_tool_use_id"].is_null() => self.on_stream(&raw["event"]),
+            "assistant" => self.on_assistant(&raw),
+            "user" => self.on_user(&raw),
+            "result" => self.on_result(&raw),
+            "control_request" => return self.on_control(&raw),
+            "control_cancel_request" => raw["request_id"].as_str().map_or(Ok(()), |id| self.on_cancel(id)),
+            "stream_event" | "keep_alive" | "tool_progress" => Ok(()),
+            _ => self.ext(kind, &raw),
         }
         .map(|()| None)
     }
 
-    fn on_system(&mut self, msg: &System, raw: &Value) -> Result<()> {
-        let mode = |m: &str| if m == "plan" { SessionMode::Plan } else { SessionMode::Normal };
-        match msg.subtype {
+    fn on_system(&mut self, raw: &Value) -> Result<()> {
+        let mode = raw["permissionMode"].as_str().map(|m| if m == "plan" { SessionMode::Plan } else { SessionMode::Normal });
+        let task = raw["task_id"].as_str();
+        match raw["subtype"].as_str().unwrap_or_default() {
             "init" => {
-                if let Some(id) = msg.session_id.filter(|id| self.native_id.as_deref() != Some(id)) {
+                if let Some(id) = raw["session_id"].as_str().filter(|id| self.native_id.as_deref() != Some(id)) {
                     self.native_id = Some(id.to_owned());
                     self.w().set(self.ledger.session, attr::NATIVE_ID, id)?;
                 }
-                if let Some(model) = msg.model {
+                if let Some(model) = raw["model"].as_str() {
                     self.record_model(model)?;
                 }
-                msg.permission_mode.map_or(Ok(()), |m| self.record_mode(mode(m)))
+                mode.map_or(Ok(()), |m| self.record_mode(m))
             }
-            "status" => msg.permission_mode.map_or(Ok(()), |m| self.record_mode(mode(m))),
+            "status" => mode.map_or(Ok(()), |m| self.record_mode(m)),
             "compact_boundary" => {
                 let open = self.turn();
                 let covers = self.uncompacted.iter().filter(|t| Some(**t) != open).map(|t| V::from(*t)).collect();
                 let mut attrs = vec![(attr::COVERS, V::List(covers)), (attr::CREATED, V::Int(now_ms()))];
-                attrs.extend(msg.compact_metadata.as_ref().and_then(|m| m.pre_tokens).map(|t| (attr::TOKENS_BEFORE, V::Int(t))));
+                attrs.extend(raw["compact_metadata"]["pre_tokens"].as_i64().map(|t| (attr::TOKENS_BEFORE, V::Int(t))));
                 self.open_compaction = Some(self.w().insert(self.ledger.session, E::Compaction, attrs, "")?);
                 self.uncompacted.retain(|t| Some(*t) == open);
                 Ok(())
             }
-            "task_started" => match msg.task_id {
-                Some(task) => self.on_task_started(task, msg),
+            "task_started" => match task {
+                Some(task) => self.on_task_started(task, raw),
                 None => self.ext("system", raw),
             },
             "task_notification" => {
-                let status = match msg.status {
+                let status = match raw["status"].as_str() {
                     Some("completed") => JobStatus::Done,
                     Some("failed") => JobStatus::Error,
                     _ => JobStatus::Cancelled,
                 };
-                self.end_task(msg.task_id, status, msg.summary)
+                self.end_task(task, status, raw["summary"].as_str())
             }
             "task_updated" => {
-                let status = match msg.patch.as_ref().and_then(|p| p.status) {
+                let status = match raw["patch"]["status"].as_str() {
                     Some("completed") => JobStatus::Done,
                     Some("failed") => JobStatus::Error,
                     Some("killed" | "stopped") => JobStatus::Cancelled,
                     _ => return Ok(()),
                 };
-                self.end_task(msg.task_id, status, None)
+                self.end_task(task, status, None)
             }
             "task_progress" => Ok(()),
             _ => self.ext("system", raw),
         }
     }
 
-    fn on_task_started(&mut self, task: &str, msg: &System) -> Result<()> {
+    fn on_task_started(&mut self, task: &str, raw: &Value) -> Result<()> {
+        let tool_use_id = raw["tool_use_id"].as_str();
         // A subagent call already made its job; the task id now names it too.
-        if let Some(job) = msg.tool_use_id.and_then(|id| self.jobs.get(id)).copied() {
+        if let Some(job) = tool_use_id.and_then(|id| self.jobs.get(id)).copied() {
             self.jobs.insert(task.to_owned(), job);
             return Ok(());
         }
-        let kind = match msg.task_type {
+        let kind = match raw["task_type"].as_str() {
             Some(t) if t.contains("bash") || t.contains("shell") => JobKind::Shell,
             _ => JobKind::Subagent,
         };
-        let call = msg.tool_use_id.and_then(|id| self.calls.get(id)).map(|c| c.node);
+        let call = tool_use_id.and_then(|id| self.calls.get(id)).map(|c| c.node);
         let mut attrs = vec![(attr::KIND, V::from(kind)), (attr::STATUS, JobStatus::Running.into()), (attr::ID, task.into()), (attr::STARTED, V::Int(now_ms()))];
-        attrs.extend(msg.description.map(|d| (attr::TITLE, d.into())));
+        attrs.extend(raw["description"].as_str().map(|d| (attr::TITLE, d.into())));
         attrs.extend(call.map(|call| (attr::CALL, V::from(call))));
         let parent = call.or(self.turn()).unwrap_or(self.ledger.session);
         let job = self.w().insert(parent, E::Job, attrs, "")?;
         self.jobs.insert(task.to_owned(), job);
-        if let Some(id) = msg.tool_use_id {
+        if let Some(id) = tool_use_id {
             self.jobs.insert(id.to_owned(), job);
         }
         Ok(())
@@ -434,59 +391,66 @@ impl Mapper {
         Ok(self.w().close(job, status)?)
     }
 
-    fn on_stream(&mut self, event: Stream) -> Result<()> {
-        match event {
-            Stream::MessageStart { message } => {
+    /// A Messages API stream event.
+    fn on_stream(&mut self, event: &Value) -> Result<()> {
+        let index = event["index"].as_u64().and_then(|i| usize::try_from(i).ok());
+        match (event["type"].as_str().unwrap_or_default(), index) {
+            ("message_start", _) => {
                 if self.current_turn()?.is_some() {
-                    let (message_id, model) = (message.id.to_owned(), message.model.map(str::to_owned));
+                    let message_id = event["message"]["id"].as_str().unwrap_or_default().to_owned();
+                    let model = event["message"]["model"].as_str().map(str::to_owned);
                     self.stream = Some(Streaming { message_id, model, blocks: Vec::new(), finalized: 0 });
                 }
             }
-            Stream::ContentBlockStart { index, content_block } => {
+            ("content_block_start", Some(index)) if event.get("content_block").is_some() => {
                 let (Some(turn), Some(stream)) = (self.turn(), &self.stream) else { return Ok(()) };
-                let model = stream.model.clone();
-                let block = match content_block {
-                    Block::Text { text } => self.open_message(turn, MessageKind::Text, model, text)?,
-                    Block::Thinking { thinking } => self.open_message(turn, MessageKind::Thinking, model, thinking)?,
-                    Block::ToolUse { id, name, .. } => self.open_call(turn, id, name, "")?,
-                    _ => NO_BLOCK,
+                let (block, model) = (&event["content_block"], stream.model.clone());
+                let kind = block_kind(block);
+                let block = match kind {
+                    "" => None,
+                    "tool_use" => Some(self.open_call(turn, block["id"].as_str().unwrap_or_default(), block["name"].as_str().unwrap_or_default(), "")?),
+                    _ => Some(self.open_message(turn, kind, model, block[kind].as_str().unwrap_or_default())?),
                 };
                 if let Some(stream) = &mut self.stream {
-                    stream.blocks.resize(stream.blocks.len().max(index), NO_BLOCK);
+                    stream.blocks.resize(stream.blocks.len().max(index), None);
                     stream.blocks.push(block);
                 }
             }
-            Stream::ContentBlockDelta { index, delta } => {
-                let Some(block) = self.stream.as_mut().and_then(|s| s.blocks.get_mut(index)) else { return Ok(()) };
-                let (target, text) = match (delta, block.kind) {
-                    (Delta::TextDelta { text }, Kind::Text) | (Delta::ThinkingDelta { thinking: text }, Kind::Thinking) => (block.node, text),
-                    (Delta::InputJsonDelta { partial_json }, Kind::ToolUse) => (block.input, partial_json),
+            ("content_block_delta", Some(index)) => {
+                let Some(Some(block)) = self.stream.as_mut().and_then(|s| s.blocks.get_mut(index)) else { return Ok(()) };
+                let delta = &event["delta"];
+                let field = match (delta["type"].as_str(), block.kind) {
+                    (Some("text_delta"), "text") => "text",
+                    (Some("thinking_delta"), "thinking") => "thinking",
+                    (Some("input_json_delta"), "tool_use") => "partial_json",
                     _ => return Ok(()),
                 };
-                if let Some(target) = target.filter(|_| !text.is_empty()) {
+                let text = delta[field].as_str().unwrap_or_default();
+                if !text.is_empty() {
                     block.streamed = true;
+                    let target = block.target;
                     self.w().append(target, text)?;
                 }
             }
-            Stream::ContentBlockStop { index } => {
-                let block = self.stream.as_ref().and_then(|s| s.blocks.get(index));
-                if let Some(StreamBlock { kind: Kind::Text | Kind::Thinking, node: Some(node), .. }) = block.copied() {
-                    self.finish_message(node)?;
+            ("content_block_stop", Some(index)) => {
+                let block = self.stream.as_ref().and_then(|s| s.blocks.get(index)).copied().flatten();
+                if let Some(block) = block.filter(|b| b.kind != "tool_use") {
+                    self.finish_message(block.node)?;
                 }
             }
-            Stream::Other => {}
+            _ => {}
         }
         Ok(())
     }
 
-    fn open_message(&mut self, turn: NodeId, kind: MessageKind, model: Option<String>, text: &str) -> Result<StreamBlock> {
+    /// Inserts a streaming assistant `<message>` for a `text` or `thinking` block.
+    fn open_message(&mut self, turn: NodeId, kind: &'static str, model: Option<String>, text: &str) -> Result<StreamBlock> {
         let mut attrs = vec![(attr::ROLE, V::from(Role::Assistant)), (attr::STATUS, MessageStatus::Streaming.into())];
-        attrs.extend((kind == MessageKind::Thinking).then(|| (attr::KIND, kind.into())));
+        attrs.extend((kind == "thinking").then(|| (attr::KIND, MessageKind::Thinking.into())));
         attrs.extend(model.map(|m| (attr::MODEL, m.into())));
         let node = self.w().insert(turn, E::Message, attrs, text)?;
         self.ledger.open(Key::Message(node), node);
-        let kind = if kind == MessageKind::Thinking { Kind::Thinking } else { Kind::Text };
-        Ok(StreamBlock { kind, node: Some(node), input: None, streamed: false })
+        Ok(StreamBlock { kind, node, target: node, streamed: false })
     }
 
     fn finish_message(&mut self, node: NodeId) -> Result<()> {
@@ -503,11 +467,12 @@ impl Mapper {
         let input = self.w().insert(call, E::Input, [(attr::FORMAT, "json")], input)?;
         self.ledger.open(Key::Call(id.to_owned()), call);
         self.calls.insert(id.to_owned(), Call { node: call, job: None });
-        Ok(StreamBlock { kind: Kind::ToolUse, node: Some(call), input: Some(input), streamed: false })
+        Ok(StreamBlock { kind: "tool_use", node: call, target: input, streamed: false })
     }
 
     /// A call's arguments are complete: title it and start the job a subagent call runs.
-    fn complete_call(&mut self, call: NodeId, id: &str, tool: &str, input: &Value, uuid: Option<&str>) -> Result<()> {
+    fn complete_call(&mut self, call: NodeId, block: &Value, uuid: Option<&str>) -> Result<()> {
+        let (id, tool, input) = (block["id"].as_str().unwrap_or_default(), block["name"].as_str().unwrap_or_default(), &block["input"]);
         if let Some(uuid) = uuid {
             self.w().set(call, UUID_ATTR, uuid)?;
         }
@@ -517,13 +482,12 @@ impl Mapper {
         if !SUBAGENT_TOOLS.contains(&tool) || self.jobs.contains_key(id) {
             return Ok(());
         }
-        let text = |key| input.get(key).and_then(Value::as_str);
         let mut attrs = vec![(attr::KIND, V::from(JobKind::Subagent)), (attr::STATUS, JobStatus::Running.into()), (attr::CALL, call.into()), (attr::STARTED, V::Int(now_ms()))];
-        attrs.extend(text("subagent_type").map(|a| (attr::AGENT, a.into())));
-        attrs.extend(text("description").map(|d| (attr::TITLE, d.into())));
+        attrs.extend(input["subagent_type"].as_str().map(|a| (attr::AGENT, a.into())));
+        attrs.extend(input["description"].as_str().map(|d| (attr::TITLE, d.into())));
         let job = self.w().insert(call, E::Job, attrs, "")?;
         self.jobs.insert(id.to_owned(), job);
-        if input.get("run_in_background").and_then(Value::as_bool) != Some(true)
+        if input["run_in_background"] != true
             && let Some(entry) = self.calls.get_mut(id)
         {
             entry.job = Some(job);
@@ -531,104 +495,93 @@ impl Mapper {
         Ok(())
     }
 
-    fn on_assistant(&mut self, msg: &Message, raw: &Value) -> Result<()> {
-        let blocks = match msg.message.as_ref().and_then(|m| m.content.as_ref()) {
-            Some(Content::Blocks(blocks)) => blocks.as_slice(),
-            _ => &[],
-        };
-        if let Some(parent) = msg.parent_tool_use_id {
+    /// A complete API message: settles what its stream made, or writes what it didn't stream.
+    fn on_assistant(&mut self, raw: &Value) -> Result<()> {
+        let body = &raw["message"];
+        let blocks = body["content"].as_array().map_or(&[][..], Vec::as_slice);
+        if let Some(parent) = raw["parent_tool_use_id"].as_str() {
             // Subagent messages are summarized on their job.
             let Some(job) = self.jobs.get(parent).copied() else { return Ok(()) };
-            for block in blocks {
-                if let Block::Text { text } = block
-                    && !text.is_empty()
-                {
+            for text in blocks.iter().filter(|b| b["type"] == "text").filter_map(|b| b["text"].as_str()) {
+                if !text.is_empty() {
                     self.w().append(job, format!("{text}\n"))?;
                 }
             }
             return Ok(());
         }
         let Some(turn) = self.current_turn()? else { return Ok(()) };
-        let Some(body) = &msg.message else { return Ok(()) };
-        let model = body.model.map(str::to_owned);
-        for (at, block) in blocks.iter().enumerate() {
-            let kind = kind_of(block);
-            match (self.next_streamed(body.id, kind), block) {
-                (Some(StreamBlock { node: Some(node), streamed, .. }), Block::Text { text } | Block::Thinking { thinking: text }) => {
-                    if !streamed && !text.is_empty() {
-                        self.sink.commit(Draft::set_text(node, *text))?;
+        if !body.is_object() {
+            return Ok(());
+        }
+        let (message_id, uuid) = (body["id"].as_str().unwrap_or_default(), raw["uuid"].as_str());
+        for block in blocks {
+            let kind = block_kind(block);
+            if kind.is_empty() {
+                let kind = format!("block:{}", block["type"].as_str().unwrap_or_default());
+                self.w().ext(turn, HARNESS, &kind, block)?;
+                continue;
+            }
+            let text = match kind {
+                "tool_use" => block["input"].to_string(),
+                _ => block[kind].as_str().unwrap_or_default().to_owned(),
+            };
+            let node = match self.next_streamed(message_id, kind) {
+                Some(streamed) => {
+                    if !streamed.streamed && !text.is_empty() {
+                        self.w().set_text(streamed.target, text)?;
                     }
-                    self.finish_assistant_message(node, msg.uuid)?;
+                    streamed.node
                 }
-                (Some(StreamBlock { node: Some(node), input, streamed, .. }), Block::ToolUse { id, name, input: args }) => {
-                    if !streamed && let Some(input) = input {
-                        self.sink.commit(Draft::set_text(input, args.to_string()))?;
-                    }
-                    self.complete_call(node, id, name, args, msg.uuid)?;
+                None if kind == "tool_use" => {
+                    let (id, name) = (block["id"].as_str().unwrap_or_default(), block["name"].as_str().unwrap_or_default());
+                    self.open_call(turn, id, name, &text)?.node
                 }
-                (Some(_), _) => {}
-                (None, Block::Text { text }) => {
-                    let block = self.open_message(turn, MessageKind::Text, model.clone(), text)?;
-                    self.finish_assistant_message(block.node.unwrap_or(turn), msg.uuid)?;
+                None => self.open_message(turn, kind, body["model"].as_str().map(str::to_owned), &text)?.node,
+            };
+            if kind == "tool_use" {
+                self.complete_call(node, block, uuid)?;
+            } else {
+                if let Some(uuid) = uuid {
+                    self.w().set(node, attr::ID, uuid)?;
                 }
-                (None, Block::Thinking { thinking }) => {
-                    let block = self.open_message(turn, MessageKind::Thinking, model.clone(), thinking)?;
-                    self.finish_assistant_message(block.node.unwrap_or(turn), msg.uuid)?;
-                }
-                (None, Block::ToolUse { id, name, input }) => {
-                    let call = self.open_call(turn, id, name, &input.to_string())?.node.unwrap_or(turn);
-                    self.complete_call(call, id, name, input, msg.uuid)?;
-                }
-                (None, _) => {
-                    let raw = &raw["message"]["content"][at];
-                    let kind = format!("block:{}", raw["type"].as_str().unwrap_or_default());
-                    self.w().ext(turn, HARNESS, &kind, raw)?;
-                }
+                self.finish_message(node)?;
             }
         }
         Ok(())
     }
 
-    fn finish_assistant_message(&mut self, node: NodeId, uuid: Option<&str>) -> Result<()> {
-        if let Some(uuid) = uuid {
-            self.w().set(node, attr::ID, uuid)?;
-        }
-        self.finish_message(node)
-    }
-
     /// Takes the next streamed block of `message_id` when it has `kind`.
-    fn next_streamed(&mut self, message_id: &str, kind: Kind) -> Option<StreamBlock> {
+    fn next_streamed(&mut self, message_id: &str, kind: &str) -> Option<StreamBlock> {
         let stream = self.stream.as_mut().filter(|s| s.message_id == message_id)?;
-        // Blocks the stream made no element for (signatures, redactions) are skipped.
-        while stream.blocks.get(stream.finalized).is_some_and(|b| b.kind == Kind::Other && kind != Kind::Other) {
+        while stream.blocks.get(stream.finalized).is_some_and(Option::is_none) {
             stream.finalized += 1;
         }
-        let block = *stream.blocks.get(stream.finalized).filter(|b| b.kind == kind && kind != Kind::Other)?;
+        let block = stream.blocks.get(stream.finalized).copied().flatten().filter(|b| b.kind == kind)?;
         stream.finalized += 1;
         Some(block)
     }
 
-    fn on_user(&mut self, msg: &Message, raw: &Value) -> Result<()> {
+    fn on_user(&mut self, raw: &Value) -> Result<()> {
         // Tool results of an interrupted turn arrive after it was cancelled.
-        if msg.parent_tool_use_id.is_some() || self.draining > 0 || msg.is_replay {
+        if !raw["parent_tool_use_id"].is_null() || self.draining > 0 || raw["isReplay"] == true {
             return Ok(());
         }
-        let Some(content) = msg.message.as_ref().and_then(|m| m.content.as_ref()) else { return Ok(()) };
-        if let Some(compaction) = self.open_compaction.filter(|_| msg.is_compact_summary) {
+        let content = &raw["message"]["content"];
+        if content.is_null() {
+            return Ok(());
+        }
+        if let Some(compaction) = self.open_compaction.filter(|_| raw["isCompactSummary"] == true) {
             self.open_compaction = None;
-            let text = content.text().unwrap_or_else(|| raw["message"]["content"].to_string());
-            self.sink.commit(Draft::set_text(compaction, text))?;
-            return Ok(());
+            let text = content_text(content).unwrap_or_else(|| content.to_string());
+            return Ok(self.w().set_text(compaction, text)?);
         }
-        let Content::Blocks(blocks) = content else { return self.ext("user", raw) };
+        let Some(blocks) = content.as_array() else { return self.ext("user", raw) };
         let mut rest = Vec::new();
-        for (at, block) in blocks.iter().enumerate() {
-            let raw_block = &raw["message"]["content"][at];
-            match block {
-                Block::ToolResult { tool_use_id, content, is_error } => {
-                    self.on_tool_result(tool_use_id, content.as_ref(), *is_error, raw_block, msg.uuid)?;
-                }
-                _ => rest.push(raw_block.clone()),
+        for block in blocks {
+            if block["type"] == "tool_result" {
+                self.on_tool_result(block, raw["uuid"].as_str())?;
+            } else {
+                rest.push(block.clone());
             }
         }
         if rest.is_empty() {
@@ -639,16 +592,16 @@ impl Mapper {
         self.ext("user", &raw)
     }
 
-    fn on_tool_result(&mut self, id: &str, content: Option<&Content>, is_error: bool, raw: &Value, uuid: Option<&str>) -> Result<()> {
-        let Some(&Call { node, job }) = self.calls.get(id) else {
-            let parent = self.turn().unwrap_or(self.ledger.session);
-            return Ok(self.w().ext(parent, HARNESS, "tool_result", raw).map(drop)?);
+    fn on_tool_result(&mut self, block: &Value, uuid: Option<&str>) -> Result<()> {
+        let id = block["tool_use_id"].as_str().unwrap_or_default();
+        let Some(&Call { node, job }) = self.calls.get(id) else { return self.ext("tool_result", block) };
+        let content = &block["content"];
+        let (text, json) = match content_text(content) {
+            _ if content.is_null() => (String::new(), false),
+            Some(text) => (text, false),
+            None => (content.to_string(), true),
         };
-        let (text, json) = match content.map(Content::text) {
-            None => (String::new(), false),
-            Some(Some(text)) => (text, false),
-            Some(None) => (raw["content"].to_string(), true),
-        };
+        let is_error = block["is_error"] == true;
         let mut attrs = vec![(attr::IS_ERROR, V::Bool(is_error))];
         attrs.extend(uuid.map(|uuid| (UUID_ATTR, uuid.into())));
         attrs.extend(json.then(|| (attr::FORMAT, "json".into())));
@@ -661,30 +614,24 @@ impl Mapper {
         Ok(())
     }
 
-    fn on_result(&mut self, msg: &TurnResult) -> Result<()> {
+    fn on_result(&mut self, raw: &Value) -> Result<()> {
         if self.draining > 0 {
             // The result of an interrupted turn, already closed as cancelled.
             self.draining -= 1;
             return Ok(());
         }
         let Some(turn) = self.turn() else { return Ok(()) };
-        let usage = msg.usage.as_ref();
-        let tokens = [
-            (attr::INPUT_TOKENS, usage.and_then(|u| u.input_tokens)),
-            (attr::OUTPUT_TOKENS, usage.and_then(|u| u.output_tokens)),
-            (attr::CACHE_READ_TOKENS, usage.and_then(|u| u.cache_read_input_tokens)),
-            (attr::CACHE_WRITE_TOKENS, usage.and_then(|u| u.cache_creation_input_tokens)),
-            (attr::DURATION_MS, msg.duration_ms),
-        ];
-        let mut attrs: Vec<(&str, V)> = tokens.into_iter().filter_map(|(name, n)| Some((name, V::Int(n?)))).collect();
-        attrs.extend(msg.total_cost_usd.map(|cost| (attr::COST, V::Float(cost))));
+        let tokens = USAGE.iter().map(|&(name, key)| (name, raw["usage"][key].as_i64()));
+        let tokens = tokens.chain([(attr::DURATION_MS, raw["duration_ms"].as_i64())]);
+        let mut attrs: Vec<(&str, V)> = tokens.filter_map(|(name, n)| Some((name, V::Int(n?)))).collect();
+        attrs.extend(raw["total_cost_usd"].as_f64().map(|cost| (attr::COST, V::Float(cost))));
         attrs.extend(self.model.as_deref().map(|model| (attr::MODEL, model.into())));
         if !attrs.is_empty() {
             self.w().insert(turn, E::Usage, attrs, "")?;
         }
-        let status = if msg.terminal_reason.is_some_and(|r| r.starts_with("aborted")) {
+        let status = if raw["terminal_reason"].as_str().is_some_and(|r| r.starts_with("aborted")) {
             TurnStatus::Cancelled
-        } else if msg.is_error || msg.subtype.is_some_and(|s| s != "success") {
+        } else if raw["is_error"] == true || raw["subtype"].as_str().is_some_and(|s| s != "success") {
             TurnStatus::Error
         } else {
             TurnStatus::Done
@@ -692,60 +639,56 @@ impl Mapper {
         self.end_turn(status)
     }
 
-    fn on_control(&mut self, request_id: &str, request: Option<Request>, raw: &Value) -> Result<Option<Output>> {
-        let error = |e: &str| Ok(Some(Output::Write(control_error(request_id, e))));
-        match request {
-            None => error("missing request"),
-            Some(Request::CanUseTool(permission)) => self.on_can_use_tool(request_id, permission),
-            Some(Request::McpMessage { server_name, message }) => {
-                Ok(Some(Output::Mcp { request_id: request_id.to_owned(), server: server_name.to_owned(), message }))
+    fn on_control(&mut self, raw: &Value) -> Result<Option<Output>> {
+        let (request_id, request) = (raw["request_id"].as_str().unwrap_or_default(), &raw["request"]);
+        let error = |e: String| Ok(Some(Output::Write(control_response(request_id, Err(e)))));
+        match request["subtype"].as_str().unwrap_or_default() {
+            _ if request.is_null() => error("missing request".to_owned()),
+            "can_use_tool" => self.on_can_use_tool(request_id, request),
+            "mcp_message" => {
+                let server = request["server_name"].as_str().unwrap_or_default().to_owned();
+                Ok(Some(Output::Mcp { request_id: request_id.to_owned(), server, message: request["message"].clone() }))
             }
-            Some(Request::Other) => {
-                error(&format!("unsupported control request `{}`", raw["request"]["subtype"].as_str().unwrap_or_default()))
-            }
+            other => error(format!("unsupported control request `{other}`")),
         }
     }
 
-    fn on_can_use_tool(&mut self, request_id: &str, request: Permission) -> Result<Option<Output>> {
+    fn on_can_use_tool(&mut self, request_id: &str, request: &Value) -> Result<Option<Output>> {
         let Some(turn) = self.current_turn()? else {
             // The turn it belongs to was interrupted.
             let deny = json!({"behavior": "deny", "message": "The turn was interrupted."});
-            return Ok(Some(Output::Write(control_success(request_id, deny))));
+            return Ok(Some(Output::Write(control_response(request_id, Ok(deny)))));
         };
-        let input = request.input;
-        let call = request.tool_use_id.and_then(|id| self.calls.get(id)).map(|c| c.node);
+        let (tool, input) = (request["tool_name"].as_str().unwrap_or_default(), &request["input"]);
+        let call = request["tool_use_id"].as_str().and_then(|id| self.calls.get(id)).map(|c| c.node);
+        let kind = match tool {
+            "AskUserQuestion" => DecisionKind::Question,
+            "ExitPlanMode" => DecisionKind::Plan,
+            _ => DecisionKind::Approval,
+        };
         let now = V::Int(now_ms());
-        let base = |kind: DecisionKind, title: Option<String>| {
+        let base = |title: Option<String>| {
             let mut attrs = vec![(attr::KIND, V::from(kind)), (attr::STATUS, DecisionStatus::Waiting.into()), (attr::REQUEST_ID, request_id.into()), (attr::CREATED, now.clone())];
             attrs.extend(call.map(|call| (attr::CALL, V::from(call))));
             attrs.extend(title.map(|t| (attr::TITLE, t.into())));
             attrs
         };
-        let mut asks = Vec::new();
-        let kind = match request.tool_name {
-            "AskUserQuestion" => {
-                for q in input.get("questions").and_then(Value::as_array).into_iter().flatten() {
-                    let mut attrs = base(DecisionKind::Question, q.get("header").and_then(Value::as_str).map(str::to_owned));
-                    let options = q.get("options").and_then(Value::as_array).into_iter().flatten();
-                    attrs.push((attr::OPTIONS, V::List(options.filter_map(|o| o.get("label")?.as_str()).map(V::from).collect())));
-                    attrs.push((attr::MULTI, V::Bool(q.get("multiSelect").and_then(Value::as_bool).unwrap_or(false))));
-                    asks.push((attrs, q.get("question").and_then(Value::as_str).unwrap_or_default().to_owned()));
-                }
-                PendingKind::Question
-            }
-            "ExitPlanMode" => {
-                let plan = input.get("plan").and_then(Value::as_str).unwrap_or_default().to_owned();
-                asks.push((base(DecisionKind::Plan, Some("Plan".to_owned())), plan));
-                PendingKind::Plan
-            }
-            tool => {
-                let title = request.title.map_or_else(|| format!("Allow {tool}?"), str::to_owned);
-                let mut attrs = base(DecisionKind::Approval, Some(title));
-                attrs.extend(request.decision_reason.map(|r| ("x-claude-decision-reason", r.into())));
-                attrs.extend(request.blocked_path.map(|p| ("x-claude-blocked-path", p.into())));
-                let text = request.description.map_or_else(|| serde_json::to_string_pretty(&input).unwrap_or_default(), str::to_owned);
-                asks.push((attrs, text));
-                PendingKind::Approval
+        let asks: Vec<_> = match kind {
+            DecisionKind::Question => input["questions"].as_array().into_iter().flatten().map(|q| {
+                let mut attrs = base(q["header"].as_str().map(str::to_owned));
+                let options = q["options"].as_array().into_iter().flatten();
+                attrs.push((attr::OPTIONS, V::List(options.filter_map(|o| o["label"].as_str()).map(V::from).collect())));
+                attrs.push((attr::MULTI, V::Bool(q["multiSelect"] == true)));
+                (attrs, q["question"].as_str().unwrap_or_default().to_owned())
+            }).collect(),
+            DecisionKind::Plan => vec![(base(Some("Plan".to_owned())), input["plan"].as_str().unwrap_or_default().to_owned())],
+            _ => {
+                let title = request["title"].as_str().map_or_else(|| format!("Allow {tool}?"), str::to_owned);
+                let mut attrs = base(Some(title));
+                attrs.extend(request["decision_reason"].as_str().map(|r| ("x-claude-decision-reason", r.into())));
+                attrs.extend(request["blocked_path"].as_str().map(|p| ("x-claude-blocked-path", p.into())));
+                let text = request["description"].as_str().map_or_else(|| serde_json::to_string_pretty(input).unwrap_or_default(), str::to_owned);
+                vec![(attrs, text)]
             }
         };
         let parent = call.unwrap_or(turn);
@@ -755,11 +698,11 @@ impl Mapper {
             self.ledger.wait(decision);
             decisions.push((decision, None));
         }
-        let tool = request.tool_name.to_owned();
-        let pending = Pending { request_id: request_id.to_owned(), kind, tool, input, suggestions: request.permission_suggestions, decisions };
+        let suggestions = request.get("permission_suggestions").filter(|s| !s.is_null()).cloned();
+        let pending = Pending { request_id: request_id.to_owned(), kind, tool: tool.to_owned(), input: input.clone(), suggestions, decisions };
         if pending.decisions.is_empty() {
             // A question call with no questions has nothing to ask.
-            return Ok(Some(Output::Write(control_success(request_id, permission_response(&pending)))));
+            return Ok(Some(Output::Write(control_response(request_id, Ok(permission_response(&pending))))));
         }
         self.pending.push(pending);
         self.w().set(turn, attr::STATUS, TurnStatus::Waiting)?;
@@ -794,9 +737,9 @@ impl Mapper {
             .find_map(|(at, p)| p.decisions.iter().position(|(d, a)| *d == decision && a.is_none()).map(|slot| (at, slot)))
             .ok_or(AdapterError::UnknownDecision(decision))?;
         let allowed: &[&str] = match self.pending[at].kind {
-            PendingKind::Approval => &[answer::ALLOW_ONCE, answer::ALLOW_SESSION, answer::DENY],
-            PendingKind::Plan => &[answer::APPROVE, answer::EDIT, answer::REJECT],
-            PendingKind::Question => &[],
+            DecisionKind::Approval => &[answer::ALLOW_ONCE, answer::ALLOW_SESSION, answer::DENY],
+            DecisionKind::Plan => &[answer::APPROVE, answer::EDIT, answer::REJECT],
+            _ => &[],
         };
         if !allowed.is_empty() && !answer.values.first().is_some_and(|v| allowed.contains(&v.as_str())) {
             return Err(AdapterError::Protocol(format!("the answer must be one of {allowed:?}, got {:?}", answer.values)));
@@ -815,11 +758,11 @@ impl Mapper {
         }
         let pending = self.pending.remove(at);
         let response = permission_response(&pending);
-        if pending.kind == PendingKind::Plan && response["behavior"] == "allow" {
+        if pending.kind == DecisionKind::Plan && response["behavior"] == "allow" {
             self.record_mode(SessionMode::Normal)?;
         }
         self.resume_turn()?;
-        Ok(Some(control_success(&pending.request_id, response)))
+        Ok(Some(control_response(&pending.request_id, Ok(response))))
     }
 
     fn ext(&mut self, kind: &str, raw: &Value) -> Result<()> {
@@ -837,26 +780,26 @@ fn permission_response(pending: &Pending) -> Value {
     let allow = |input: &Value| json!({"behavior": "allow", "updatedInput": input});
     let mut input = pending.input.clone();
     match (pending.kind, value) {
-        (PendingKind::Approval, answer::ALLOW_SESSION) => {
+        (DecisionKind::Approval, answer::ALLOW_SESSION) => {
             let rules = pending.suggestions.clone().unwrap_or_else(|| {
                 json!([{"type": "addRules", "rules": [{"toolName": pending.tool}], "behavior": "allow", "destination": "session"}])
             });
             json!({"behavior": "allow", "updatedInput": input, "updatedPermissions": rules})
         }
-        (PendingKind::Approval, answer::ALLOW_ONCE) | (PendingKind::Plan, answer::APPROVE) => allow(&input),
-        (PendingKind::Approval, _) => json!({"behavior": "deny", "message": reason.unwrap_or("The user denied this tool call.")}),
-        (PendingKind::Plan, answer::EDIT) => {
+        (DecisionKind::Approval, answer::ALLOW_ONCE) | (DecisionKind::Plan, answer::APPROVE) => allow(&input),
+        (DecisionKind::Approval, _) => json!({"behavior": "deny", "message": reason.unwrap_or("The user denied this tool call.")}),
+        (DecisionKind::Plan, answer::EDIT) => {
             if let (Some(plan), Some(object)) = (reason, input.as_object_mut()) {
                 object.insert("plan".into(), plan.into());
             }
             allow(&input)
         }
-        (PendingKind::Plan, _) => json!({"behavior": "deny", "message": reason.unwrap_or("The user rejected the plan.")}),
-        (PendingKind::Question, _) => {
-            let questions = pending.input.get("questions").and_then(Value::as_array);
+        (DecisionKind::Plan, _) => json!({"behavior": "deny", "message": reason.unwrap_or("The user rejected the plan.")}),
+        _ => {
+            let questions = pending.input["questions"].as_array();
             let mut answers = serde_json::Map::new();
             for (at, (_, answer)) in pending.decisions.iter().enumerate() {
-                let question = questions.and_then(|q| q.get(at)?.get("question")?.as_str());
+                let question = questions.and_then(|q| q.get(at)?["question"].as_str());
                 if let (Some(question), Some(answer)) = (question, answer) {
                     answers.insert(question.to_owned(), answer.values.join(", ").into());
                 }
@@ -872,7 +815,7 @@ fn permission_response(pending: &Pending) -> Value {
 /// One line for the collapsed call row, from the argument that best names what the call does.
 fn call_title(input: &Value) -> Option<String> {
     const KEYS: [&str; 8] = ["command", "file_path", "path", "pattern", "url", "query", "description", "prompt"];
-    let text = KEYS.iter().find_map(|k| input.get(k)?.as_str())?;
+    let text = KEYS.iter().find_map(|k| input[k].as_str())?;
     let line = text.lines().next().unwrap_or_default();
     Some(match line.char_indices().nth(120) {
         Some((cut, _)) => format!("{}…", &line[..cut]),
