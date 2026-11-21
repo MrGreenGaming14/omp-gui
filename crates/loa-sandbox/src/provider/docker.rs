@@ -97,14 +97,7 @@ impl ProviderFactory for Factory {
 
 async fn server_version(program: &Path) -> Result<String, String> {
     let mut command = tokio::process::Command::from(docker(program));
-    command.args(["version", "--format", "{{.Server.Version}}"]).stdin(std::process::Stdio::null()).kill_on_drop(true);
-    let output = tokio::time::timeout(Duration::from_secs(5), command.output()).await
-        .map_err(|_| "no answer within 5 s".to_owned())?
-        .map_err(|error| error.to_string())?;
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    if output.status.success() && !stdout.is_empty() {
-        return Ok(stdout);
-    }
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    Err(stderr.lines().find(|line| !line.trim().is_empty()).unwrap_or("docker version failed").trim().to_owned())
+    command.args(["version", "--format", "{{.Server.Version}}"]);
+    let version = tokio::time::timeout(Duration::from_secs(5), loa_util::exec::run_checked(command)).await.map_err(|_| "no answer within 5 s".to_owned())??;
+    Ok(version.trim().to_owned())
 }

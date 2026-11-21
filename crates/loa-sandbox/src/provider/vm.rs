@@ -120,7 +120,7 @@ impl ProviderFactory for Firecracker {
         use Availability::*;
         match (m.which("firecracker"), m.kvm(), &c.firecracker_kernel, &c.firecracker_rootfs) {
             (None, ..) => status(self.kind(), Unavailable, "Firecracker is not installed"),
-            (Some(_), false, ..) => status(self.kind(), Unavailable, format!("{} is not accessible", super::KVM)),
+            (Some(_), false, ..) => status(self.kind(), Unavailable, "/dev/kvm is not accessible"),
             (Some(_), true, Some(k), Some(r)) => status(self.kind(), Ready, format!("Kernel {}, rootfs {}", k.display(), r.display())),
             _ => status(self.kind(), NotConfigured, "Set a guest kernel and a rootfs whose init runs loa-sandbox-stub on ttyS0"),
         }

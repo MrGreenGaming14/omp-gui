@@ -213,7 +213,7 @@ async fn an_isolated_run_keeps_secrets_on_the_host_and_returns_the_patch() {
     let call = handler.call("parent", "sandbox_task", r#"{"task":"Write the notes","kind":"local","isolation":true}"#);
     let answer = tokio::time::timeout(std::time::Duration::from_secs(30), call).await.expect("the worker doesn't wait on nobody").unwrap();
     let result: SandboxTaskResult = serde_json::from_str(&answer).unwrap();
-    let log = log.lock().unwrap();
+    let log = log.lock().unwrap().clone();
     assert_eq!(log[0], "allow_once by host", "the worker answers its one approval");
     assert!(log[1].contains("unset"), "the sandbox inherited the host environment: {}", log[1]);
     assert!(log[4].contains("hello.txt") && log[5] == "from" && log.len() == 6, "{log:?}");

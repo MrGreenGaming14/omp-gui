@@ -44,21 +44,11 @@ mod host {
     pub type Result<T, E = SandboxError> = std::result::Result<T, E>;
 }
 
+/// Declares the modules only the host has.
+macro_rules! host_modules {
+    ($($module:ident),*) => { $(#[cfg(feature = "host")] pub mod $module;)* };
+}
+
 #[cfg(feature = "host")]
 pub use host::*;
-#[cfg(feature = "host")]
-pub mod client;
-#[cfg(feature = "host")]
-pub mod isolation;
-#[cfg(feature = "host")]
-pub mod provider;
-#[cfg(feature = "host")]
-pub mod runs;
-#[cfg(feature = "host")]
-pub mod service;
-#[cfg(feature = "host")]
-pub mod sync;
-#[cfg(feature = "host")]
-pub mod tool;
-#[cfg(feature = "host")]
-pub mod worker;
+host_modules!(client, isolation, provider, runs, service, sync, tool, worker);

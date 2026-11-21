@@ -14,7 +14,7 @@ use crate::service::SandboxConfig;
 use crate::{Result, SandboxError};
 use async_trait::async_trait;
 use loa_util::registry::Registry;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -37,24 +37,18 @@ impl schemars::JsonSchema for SandboxKind {
 
 /// Per call options from the `sandbox_task` arguments. Each provider reads
 /// the ones that apply to it and falls back to its own configuration.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
+#[serde(default, deny_unknown_fields)]
 pub struct SandboxOptions {
     /// Container image (docker).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
     /// SSH host alias or `user@host` (ssh).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host: Option<String>,
     /// Node key or name of the peer (peer).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub peer: Option<String>,
     /// Allow network access from inside the sandbox (docker, firecracker, vm).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub network: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory_mib: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cpus: Option<u32>,
 }
 
@@ -143,13 +137,11 @@ impl Sandbox for ProcessSandbox {
     fn take_channel(&mut self) -> Option<Channel> { self.channel.take() }
     fn workspace_mode(&self) -> WorkspaceMode { self.mode }
     async fn stop(mut self: Box<Self>) -> Result<()> {
-        if let Some(teardown) = self.teardown.take() {
-            let output = Command::from(teardown.command()).stdin(Stdio::null()).output().await?;
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            if !output.status.success() && !teardown.gone(&stderr) {
-                let message = format!("teardown failed ({}): {}", output.status, stderr.trim());
-                return Err(SandboxError::Provider { provider: self.provider, message });
-            }
+        if let Some(teardown) = self.teardown.take()
+            && let Err(error) = loa_util::exec::run_checked(Command::from(teardown.command())).await
+            && !teardown.gone(&error)
+        {
+            return Err(SandboxError::Provider { provider: self.provider, message: format!("teardown failed ({error})") });
         }
         self.channel.take();
         if self.child.try_wait()?.is_none() {
@@ -178,11 +170,9 @@ impl Machine {
     }
 
     pub fn kvm(&self) -> bool {
-        std::fs::OpenOptions::new().read(true).write(true).open(KVM).is_ok()
+        loa_util::exec::kvm_available()
     }
 }
-
-pub(crate) const KVM: &str = "/dev/kvm";
 
 /// Whether a provider can be used on this machine now.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
