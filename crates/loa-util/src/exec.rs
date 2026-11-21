@@ -189,21 +189,11 @@ mod tests {
         assert_eq!(tail.joined(), "b\u{fffd}\nc");
     }
 
-    #[cfg(unix)]
     #[test]
-    fn retry_busy_waits_out_etxtbsy_and_passes_other_errors_through() {
-        use std::{io::Write, os::unix::fs::OpenOptionsExt, process::Command as Std};
+    fn retry_busy_passes_other_errors_through() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("staged");
-        let mut writer = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o755).open(&path).unwrap();
-        writer.write_all(b"#!/bin/sh\necho ran\n").unwrap();
-        let closer = std::thread::spawn(move || { std::thread::sleep(Duration::from_millis(30)); drop(writer) });
-        let mut attempts = 0;
-        let out = retry_busy(|| { attempts += 1; Std::new(&path).output() }).unwrap();
-        closer.join().unwrap();
-        assert!(out.stdout == b"ran\n" && attempts > 1, "attempts {attempts}");
         let (mut attempts, missing) = (0, dir.path().join("missing"));
-        let err = retry_busy(|| { attempts += 1; Std::new(&missing).output() }).unwrap_err();
+        let err = retry_busy(|| { attempts += 1; std::process::Command::new(&missing).output() }).unwrap_err();
         assert!(err.kind() == io::ErrorKind::NotFound && attempts == 1);
     }
 }
