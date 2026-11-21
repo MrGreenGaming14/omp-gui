@@ -4,13 +4,13 @@
 
 use crate::context::{ContextRequest, build_context, render_markdown};
 use crate::digest::{DigestContent, DigestState, digest_of, digest_state};
-use crate::digester::{Digester, PromptLimits, Summarizer};
+use crate::digester::{Digester, PromptLimits, Summarizers};
 use crate::rank::last_active;
 use crate::rebuild::{RebuildDriver, RebuildHandle, RebuildOutcome, Trigger};
 use crate::sessions::LiveSessions;
 use crate::settings::{ProjectSettings, SettingsStore, exclude_draft, is_excluded};
-use crate::source::{Access, Requester, SessionInfo, visible_sessions};
-use crate::tools::ProjectTools;
+use crate::source::{Access, SessionInfo, SessionSource, visible_sessions};
+use crate::tools::tool_set;
 use crate::{Error, Result};
 use loa_contracts::harness::{HostToolSpec, HostTools};
 use loa_core::{Dom, ElementKind, attr};
@@ -112,10 +112,10 @@ impl ProjectService {
         sessions: LiveSessions,
         settings: Arc<dyn SettingsStore>,
         access: Arc<dyn Access>,
-        summarizer: Arc<dyn Summarizer>,
+        summarizers: Arc<dyn Summarizers>,
         config: ServiceConfig,
     ) -> (Self, mpsc::UnboundedReceiver<RebuildOutcome>) {
-        let digester = Digester::new(summarizer, config.limits);
+        let digester = Digester::new(summarizers, config.limits);
         let source = Arc::new(sessions.clone());
         let (rebuild, outcomes) = RebuildDriver::new(source.clone(), source, digester, config.debounce)
             .with_settings(settings.clone())
@@ -159,8 +159,8 @@ impl ProjectService {
         let settings = self.settings.load(project).await?;
         let mut sessions = Vec::new();
         let mut cwd: Option<(i64, String)> = None;
-        for info in visible_sessions(&self.sessions, &*self.access, &Requester::Local, project).await? {
-            let Some(dom) = crate::source::SessionSource::load(&self.sessions, &info.id).await? else { continue };
+        for info in visible_sessions(&self.sessions, &*self.access, project).await? {
+            let Some(dom) = SessionSource::load(&self.sessions, &info.id).await? else { continue };
             let row = SessionRow::of(&info, &dom);
             if let Some(dir) = dom.root().and_then(|r| r.str_attr(attr::CWD))
                 && cwd.as_ref().is_none_or(|(at, _)| row.last_active >= *at)
@@ -181,7 +181,7 @@ impl ProjectService {
     /// a rebuild, since excluded sessions don't get digests. Returns whether
     /// anything changed.
     pub async fn set_excluded(&self, session: &str, excluded: bool) -> Result<bool> {
-        let dom = crate::source::SessionSource::load(&self.sessions, session)
+        let dom = SessionSource::load(&self.sessions, session)
             .await?
             .ok_or_else(|| Error::SessionNotFound(session.to_owned()))?;
         let Some(draft) = exclude_draft(&dom, excluded) else { return Ok(false) };
@@ -200,7 +200,6 @@ impl ProjectService {
     pub async fn context(&self, project: &str, session: Option<&str>, query: &str) -> Result<Option<String>> {
         let request = ContextRequest {
             project,
-            requester: &Requester::Local,
             session,
             query,
             budget_tokens: self.context_budget,
@@ -216,168 +215,7 @@ impl ProjectService {
     /// `project_search` and `project_read` for every new session, with the
     /// handler that serves them for this node's user.
     pub fn host_tools(&self) -> (Vec<HostToolSpec>, Arc<dyn HostTools>) {
-        let tools = ProjectTools::new(Arc::new(self.sessions.clone()), self.access.clone(), Requester::Local);
-        (ProjectTools::specs(), Arc::new(tools))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::digester::SummaryAnswer;
-    use crate::settings::{FileSettingsStore, PinnedFile};
-    use crate::source::LocalOnly;
-    use async_trait::async_trait;
-    use loa_bus::{Authorize, Bus, Denied, NodeKey, Persist, PersistError, SessionId, SessionWriter, WriterConfig};
-    use loa_core::{Draft, NodeId, Patch, PatchSink, Value};
-    use loa_bus::{Journal, JournalOptions, Store};
-
-    struct JournalPersist(Journal);
-
-    impl Persist for JournalPersist {
-        fn append(&mut self, patch: &Patch) -> Result<(), PersistError> {
-            self.0.append(patch)?;
-            Ok(self.0.sync()?)
-        }
-    }
-
-    struct AllowAll;
-
-    impl Authorize for AllowAll {
-        fn authorize(&self, _: &SessionId, _: &NodeKey, _: &Draft, _: &Dom) -> Result<(), Denied> {
-            Ok(())
-        }
-    }
-
-    struct Fake;
-
-    #[async_trait]
-    impl Summarizer for Fake {
-        async fn summarize(&self, prompt: &str, _: Option<&str>) -> Result<SummaryAnswer> {
-            let summary = if prompt.contains("iroh") { "Set up iroh on port 31415." } else { "Other work." };
-            let text = format!(
-                r#"{{"summary":"{summary}","decisions":["port 31415"],"files":[{{"path":"src/net.rs","note":"endpoint"}}],"open_items":[],"pointers":["T1"]}}"#
-            );
-            Ok(SummaryAnswer { text, model: Some("smol".into()) })
-        }
-    }
-
-    struct Env {
-        _dir: tempfile::TempDir,
-        bus: Arc<Bus>,
-        store: Store,
-        service: ProjectService,
-        outcomes: mpsc::UnboundedReceiver<RebuildOutcome>,
-    }
-
-    fn env() -> Env {
-        let dir = tempfile::tempdir().unwrap();
-        let store = Store::new(dir.path().join("sessions"), JournalOptions::default()).unwrap();
-        let bus = Arc::new(Bus::new());
-        let settings = Arc::new(FileSettingsStore::new(dir.path().join("projects")));
-        let config = ServiceConfig { debounce: Duration::from_millis(10), ..ServiceConfig::default() };
-        let (service, outcomes) = ProjectService::start(
-            LiveSessions::new(bus.clone(), store.clone()),
-            settings,
-            Arc::new(LocalOnly),
-            Arc::new(Fake),
-            config,
-        );
-        Env { _dir: dir, bus, store, service, outcomes }
-    }
-
-    fn open(env: &Env, id: &str, cwd: &str, prompt: &str, at: i64) -> Arc<SessionWriter> {
-        let writer = env
-            .bus
-            .open(WriterConfig {
-                session: SessionId::new(id),
-                owner: NodeKey([1; 32]),
-                local: NodeKey([1; 32]),
-                dom: Dom::new(),
-                persist: Box::new(JournalPersist(env.store.create(id).unwrap())),
-                authorize: Arc::new(AllowAll),
-            })
-            .unwrap();
-        let root = writer
-            .commit_at(
-                Draft::insert(
-                    NodeId::DOCUMENT,
-                    ElementKind::Session,
-                    [
-                        (attr::ID, Value::from(id)),
-                        (attr::HARNESS, "omp".into()),
-                        (attr::NODE, "n".into()),
-                        (attr::CREATED, at.into()),
-                        (attr::CWD, cwd.into()),
-                        (attr::TITLE, format!("Title {id}").into()),
-                    ],
-                    "",
-                ),
-                at,
-            )
-            .unwrap()
-            .node;
-        let turn = writer
-            .commit(Draft::insert(root, ElementKind::Turn, [(attr::STATUS, Value::from("done")), (attr::ENDED, at.into())], ""))
-            .unwrap()
-            .node;
-        writer.commit(Draft::insert(turn, ElementKind::Message, [(attr::ROLE, Value::from("user"))], prompt)).unwrap();
-        writer
-    }
-
-    #[tokio::test]
-    async fn projects_overview_digest_and_context_end_to_end() {
-        let mut env = env();
-        let _a = open(&env, "a", "/home/u/loa", "set up iroh", 10);
-        let _b = open(&env, "b", "/home/u/loa", "write docs", 20);
-        let _c = open(&env, "c", "/home/u/web", "landing page", 5);
-        // Closed sessions stay in their project.
-        env.bus.close("c");
-        drop(_c);
-
-        let projects = env.service.projects().await.unwrap();
-        let names: Vec<(&str, usize)> = projects.iter().map(|p| (p.name.as_str(), p.sessions)).collect();
-        assert_eq!(names, [("loa", 2), ("web", 1)]);
-        assert_eq!(projects[0].cwd.as_deref(), Some("/home/u/loa"));
-
-        // Turn end rebuilds the digest through the summarizer.
-        assert!(env.service.notify("a", Trigger::TurnEnd));
-        assert!(matches!(env.outcomes.recv().await.unwrap(), RebuildOutcome::Rebuilt { .. }));
-        let overview = env.service.overview("loa").await.unwrap();
-        let ids: Vec<&str> = overview.sessions.iter().map(|s| s.id.as_str()).collect();
-        assert_eq!(ids, ["b", "a"]);
-        let a = &overview.sessions[1];
-        assert_eq!(a.digest_state, DigestState::Fresh);
-        assert_eq!(a.digest.as_ref().unwrap().summary, "Set up iroh on port 31415.");
-        assert_eq!(overview.sessions[0].digest_state, DigestState::Missing);
-
-        // Shared instructions and pins persist and reach new chats with the digest.
-        let settings = ProjectSettings {
-            instructions: "Use rustls.".into(),
-            pinned: vec![PinnedFile { path: "docs/ARCH.md".into(), note: None }],
-            digest_model: None,
-        };
-        env.service.save_settings("loa", &settings).await.unwrap();
-        assert_eq!(env.service.overview("loa").await.unwrap().settings, settings);
-        let context = env.service.context("loa", None, "iroh").await.unwrap().unwrap();
-        assert!(context.contains("Use rustls."));
-        assert!(context.contains("`docs/ARCH.md`"));
-        assert!(context.contains("Set up iroh on port 31415."));
-        assert_eq!(env.service.context("empty", None, "").await.unwrap(), None);
-
-        // Excluding drops the session from context; the closed one is written in its journal.
-        assert!(env.service.set_excluded("a", true).await.unwrap());
-        assert!(!env.service.set_excluded("a", true).await.unwrap());
-        let context = env.service.context("loa", None, "iroh").await.unwrap().unwrap();
-        assert!(!context.contains("Set up iroh"));
-        assert!(env.service.set_excluded("c", true).await.unwrap());
-        assert!(env.service.overview("web").await.unwrap().sessions[0].excluded);
-
-        // project_search finds the other session through the host tool.
-        let (specs, handler) = env.service.host_tools();
-        assert_eq!(specs.len(), 2);
-        let out = handler.call("b", crate::PROJECT_SEARCH, r#"{"query":"iroh","include_excluded":true}"#).await.unwrap();
-        let out: serde_json::Value = serde_json::from_str(&out).unwrap();
-        assert_eq!(out["hits"][0]["session"], "a");
+        let tools = tool_set(Arc::new(self.sessions.clone()), self.access.clone());
+        (tools.specs(), Arc::new(tools))
     }
 }

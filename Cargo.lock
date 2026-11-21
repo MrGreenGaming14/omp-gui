@@ -4942,6 +4942,7 @@ dependencies = [
  "loa-core",
  "loa-harness",
  "loa-util",
+ "schemars",
  "serde",
  "serde_json",
  "tempfile",
