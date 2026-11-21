@@ -610,6 +610,58 @@ fn usage_window_expands_a_provider_without_closing() {
 }
 
 #[test]
+fn usage_window_counts_unreported_codex_accounts_without_misattributing_resets() {
+    use iced_test::Simulator;
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = fake_app(dir.path(), &["fake-a"]);
+    app.overlay = Some(super::windows::Overlay::Usage);
+    let snapshot = super::usage::parse(r#"{
+        "reports": [
+            {"provider": "openai-codex", "metadata": {"email": "first@example.com", "credentialId": "c1"},
+             "limits": [{"label": "5 hours", "window": {"id": "5h"}, "amount": {"usedFraction": 0.25}}],
+             "resetCredits": {"availableCount": 2, "redeemableCount": 1}}
+        ],
+        "accountsWithoutUsage": [
+            {"provider": "openai-codex", "type": "oauth", "email": "second@example.com"}
+        ]
+    }"#).unwrap();
+    let _ = app.update(Message::Usage(super::usage::Message::Loaded(Ok(snapshot))));
+    assert!(shows(&app, "2 accounts"));
+    click_through(&mut app, "OpenAI Codex");
+    assert!(shows(&app, "first@example.com"));
+    assert!(shows(&app, "second@example.com"));
+    let messages: Vec<Message> = {
+        let mut ui = Simulator::with_size(iced::Settings::default(), iced::Size::new(1600.0, 1000.0), app.view());
+        ui.click("Use a reset").expect("only the reported account offers a reset");
+        ui.into_messages().collect()
+    };
+    assert!(matches!(messages.as_slice(),
+        [Message::Usage(super::usage::Message::Spend(target))] if target == "openai-codex/c1"
+    ));
+}
+
+#[test]
+fn usage_window_keeps_an_unreported_provider_without_claiming_zero_usage() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = fake_app(dir.path(), &["fake-a"]);
+    app.overlay = Some(super::windows::Overlay::Usage);
+    let snapshot = super::usage::parse(r#"{
+        "reports": [],
+        "accountsWithoutUsage": [
+            {"provider": "openai-codex", "type": "oauth", "email": "first@example.com"},
+            {"provider": "openai-codex", "type": "oauth", "email": "second@example.com"}
+        ]
+    }"#).unwrap();
+    let _ = app.update(Message::Usage(super::usage::Message::Loaded(Ok(snapshot))));
+    assert!(shows(&app, "2 accounts"));
+    assert!(!shows(&app, "Highest 0% used"));
+    click_through(&mut app, "OpenAI Codex");
+    assert!(shows(&app, "first@example.com"));
+    assert!(shows(&app, "second@example.com"));
+    assert!(!shows(&app, "Use a reset"));
+}
+
+#[test]
 fn settings_window_switches_sections_and_sidebar_opens_it() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = fake_app(dir.path(), &["fake-a"]);

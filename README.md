@@ -24,6 +24,12 @@ cargo test --workspace --no-fail-fast
 
 For a desktop smoke check, open a project, start an OMP chat, run `cd` in the Terminal tab, and use the Files tab to open a project file. Browser virtual-display mode requires Linux; Windows can use headed Chrome or Chromium.
 
+## Provider usage
+
+The Usage window reads `omp usage --json`, including connected accounts in `accountsWithoutUsage` as well as successful `reports`. An account without a report remains in its provider's account count and shows unavailable usage, not 0% used. Account labels retain email/account and workspace identity. Saved-reset actions are offered only for accounts whose reports include a credential ID and redeemable resets; unavailable accounts never reuse another account's reset target.
+
+Capacity summaries and the sidebar meter use reported limits only; accounts without usage data do not contribute known capacity.
+
 ## Experience and roadmap
 
 - **Projects and chat.** Pin projects in a left sidebar. Selecting one switches the working folder and opens its chats, with project files accessible from the same dashboard. Tabs for open projects are an optional addition. A Claude Code–style layout puts streaming chat and inline approvals in the center, with files, diffs, terminals, and running subagents in a side panel.

@@ -31,15 +31,15 @@ pub struct Limit {
     pub resets_at: Option<i64>,
 }
 
-/// One signed-in account of a provider.
+/// One connected account of a provider, including accounts without usage data.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Account {
     pub label: String,
     /// `<provider>/<credential id>`, what `omp usage reset` takes.
     pub reset_target: Option<String>,
     pub limits: Vec<Limit>,
-    /// Saved resets left, and how many of them can be spent now.
-    pub resets: (u64, u64),
+    /// Saved resets left and usable now; `None` when omp did not report them.
+    pub resets: Option<(u64, u64)>,
 }
 
 /// A provider with its accounts.
@@ -85,13 +85,9 @@ pub fn parse(json: &str) -> Result<Usage, String> {
     let generated_at = root["generatedAt"].as_i64().unwrap_or_default();
     let mut providers: Vec<Provider> = Vec::new();
     for report in root["reports"].as_array().into_iter().flatten() {
-        let id = report["provider"].as_str().unwrap_or("unknown").to_owned();
+        let id = report["provider"].as_str().unwrap_or("unknown");
         let metadata = &report["metadata"];
-        let label = ["orgName", "email", "accountId"]
-            .iter()
-            .find_map(|key| metadata[*key].as_str().filter(|value| !value.is_empty()))
-            .unwrap_or("Account")
-            .to_owned();
+        let label = account_label(metadata);
         let reset_target = metadata["credentialId"].as_str().map(|credential| format!("{id}/{credential}"));
         let limits = report["limits"]
             .as_array()
@@ -104,13 +100,18 @@ pub fn parse(json: &str) -> Result<Usage, String> {
                 resets_at: limit["window"]["resetsAt"].as_i64(),
             })
             .collect();
-        let credits = &report["resetCredits"];
-        let resets = (credits["availableCount"].as_u64().unwrap_or(0), credits["redeemableCount"].as_u64().unwrap_or(0));
-        let account = Account { label, reset_target, limits, resets };
-        match providers.iter_mut().find(|provider| provider.id == id) {
-            Some(provider) => provider.accounts.push(account),
-            None => providers.push(Provider { name: provider_name(&id), id, accounts: vec![account], capacity: None }),
-        }
+        let resets = report["resetCredits"].as_object().map(|credits| {
+            (credits["availableCount"].as_u64().unwrap_or(0), credits["redeemableCount"].as_u64().unwrap_or(0))
+        });
+        push_account(&mut providers, id, Account { label, reset_target, limits, resets });
+    }
+    for account in root["accountsWithoutUsage"].as_array().into_iter().flatten() {
+        let id = account["provider"].as_str().unwrap_or("unknown");
+        push_account(
+            &mut providers,
+            id,
+            Account { label: account_label(account), reset_target: None, limits: Vec::new(), resets: None },
+        );
     }
     if let Some(capacity) = root["capacity"].as_object() {
         for provider in &mut providers {
@@ -131,6 +132,29 @@ pub fn parse(json: &str) -> Result<Usage, String> {
         }
     }
     Ok(Usage { generated_at, providers })
+}
+
+fn push_account(providers: &mut Vec<Provider>, id: &str, account: Account) {
+    match providers.iter_mut().find(|provider| provider.id == id) {
+        Some(provider) => provider.accounts.push(account),
+        None => providers.push(Provider { name: provider_name(id), id: id.to_owned(), accounts: vec![account], capacity: None }),
+    }
+}
+
+fn account_label(identity: &Value) -> String {
+    let value = |key: &str| identity[key].as_str().filter(|value| !value.is_empty());
+    let base = if value("type") == Some("api_key") {
+        "API key"
+    } else {
+        ["email", "accountId", "projectId", "enterpriseUrl", "orgName", "orgId"]
+            .iter()
+            .find_map(|key| value(key))
+            .unwrap_or("Account")
+    };
+    match value("orgName").or_else(|| value("orgId")) {
+        Some(org) if org != base => format!("{base} · {org}"),
+        _ => base.to_owned(),
+    }
 }
 
 fn provider_name(id: &str) -> String {
@@ -257,7 +281,7 @@ impl State {
             None => body = body.push(container(text("Reading usage from omp…").style(style::muted)).padding(20)),
             Some(Err(error)) => body = body.push(container(text(error.as_str()).style(style::muted)).padding(20)),
             Some(Ok(usage)) if usage.providers.is_empty() => {
-                body = body.push(container(text("No signed-in providers report usage.").style(style::muted)).padding(20))
+                body = body.push(container(text("No connected providers report usage.").style(style::muted)).padding(20))
             }
             Some(Ok(usage)) => {
                 for provider in &usage.providers {
@@ -281,7 +305,18 @@ impl State {
 
     fn provider<'a>(&'a self, provider: &'a Provider, now: i64) -> Element<'a, Message> {
         let open = self.open.contains(&provider.id);
-        let peak = provider.peak().unwrap_or(0.0);
+        let summary: Element<'_, Message> = match provider.peak() {
+            Some(peak) => row![
+                meter(peak, 90.0),
+                container(text!("Highest {:.0}% used", peak * 100.0).size(13).style(if peak >= 0.5 { style::waiting_text } else { style::muted }))
+                    .width(130)
+                    .align_right(130),
+            ]
+            .spacing(12)
+            .align_y(Alignment::Center)
+            .into(),
+            None => text("Usage unavailable").size(13).style(style::faint).into(),
+        };
         let accounts = match provider.accounts.len() {
             1 => "1 account".to_owned(),
             n => format!("{n} accounts"),
@@ -291,10 +326,7 @@ impl State {
                 muted(if open { Icon::ChevronDown } else { Icon::ChevronRight }, 14.0),
                 column![text(provider.name.as_str()).size(14).font(semibold()), text(accounts).size(12).style(style::faint)]
                     .width(Fill),
-                meter(peak, 90.0),
-                container(text!("Highest {:.0}% used", peak * 100.0).size(13).style(if peak >= 0.5 { style::waiting_text } else { style::muted }))
-                    .width(130)
-                    .align_right(130),
+                summary,
             ]
             .spacing(12)
             .align_y(Alignment::Center),
@@ -319,17 +351,17 @@ impl State {
     }
 
     fn account<'a>(&'a self, account: &'a Account, now: i64) -> Element<'a, Message> {
-        let (left, now_usable) = account.resets;
-        let resets = match (left, now_usable) {
-            (0, _) => "No saved resets".to_owned(),
-            (1, 0) => "1 saved reset".to_owned(),
-            (n, 0) => format!("{n} saved resets"),
-            (n, usable) => format!("{n} saved resets, {usable} usable now"),
+        let resets = match account.resets {
+            None => "Saved resets not reported".to_owned(),
+            Some((0, _)) => "No saved resets".to_owned(),
+            Some((1, 0)) => "1 saved reset".to_owned(),
+            Some((n, 0)) => format!("{n} saved resets"),
+            Some((n, usable)) => format!("{n} saved resets, {usable} usable now"),
         };
         let mut head = row![text(account.label.as_str()).size(14).width(Fill), text(resets).size(12).style(style::muted)]
             .spacing(10)
             .align_y(Alignment::Center);
-        if now_usable > 0
+        if account.resets.is_some_and(|(_, usable)| usable > 0)
             && let Some(target) = &account.reset_target
         {
             let busy = self.spending.as_deref() == Some(target.as_str());
@@ -341,6 +373,9 @@ impl State {
             );
         }
         let mut limits = Column::new().spacing(12);
+        if account.limits.is_empty() {
+            limits = limits.push(text("No usage data reported by omp.").size(13).style(style::faint));
+        }
         for limit in &account.limits {
             let (pct, color): (String, fn(&iced::Theme) -> text::Style) = match limit.fraction {
                 Some(fraction) => (format!("{:.0}% used", fraction * 100.0), if fraction >= 0.5 { style::waiting_text } else { style::muted }),
@@ -426,10 +461,82 @@ mod tests {
         assert_eq!(anthropic.accounts.len(), 2);
         assert_eq!(anthropic.accounts[0].label, "Personal");
         assert_eq!(anthropic.accounts[0].reset_target.as_deref(), Some("anthropic/c1"));
-        assert_eq!(anthropic.accounts[0].resets, (3, 1));
+        assert_eq!(anthropic.accounts[0].resets, Some((3, 1)));
         assert_eq!(anthropic.accounts[1].limits[0].fraction, None, "unreported limits stay unknown");
         assert_eq!(anthropic.capacity.as_deref(), Some("7d 0.70 of 2 used"));
         assert_eq!(anthropic.peak(), Some(0.51));
+    }
+
+    #[test]
+    fn usage_keeps_codex_accounts_without_reports_and_their_identity() {
+        let usage = parse(r#"{
+            "reports": [
+                {"provider": "openai-codex",
+                 "metadata": {"email": "first@example.com", "orgName": "Team", "credentialId": "c1"},
+                 "limits": [{"label": "5 hours", "window": {"id": "5h"}, "amount": {"usedFraction": 0.25}}],
+                 "resetCredits": {"availableCount": 2, "redeemableCount": 1}}
+            ],
+            "accountsWithoutUsage": [
+                {"provider": "openai-codex", "type": "oauth", "email": "second@example.com", "orgName": "Team"}
+            ]
+        }"#).unwrap();
+        let provider = &usage.providers[0];
+        assert_eq!(provider.accounts.len(), 2);
+        let first = &provider.accounts[0];
+        assert_eq!(first.label, "first@example.com · Team");
+        assert_eq!(first.reset_target.as_deref(), Some("openai-codex/c1"));
+        assert_eq!(first.resets, Some((2, 1)));
+        assert_eq!(first.limits[0].fraction, Some(0.25));
+        let second = &provider.accounts[1];
+        assert_eq!(second.label, "second@example.com · Team");
+        assert_eq!(second.reset_target, None);
+        assert_eq!(second.resets, None);
+        assert!(second.limits.is_empty(), "missing usage must not inherit another account's limits");
+        assert_eq!(usage.meter(), Some(UsageMeter { fraction: 0.25, label: "5h".into() }));
+    }
+
+    #[test]
+    fn usage_keeps_providers_when_none_of_their_accounts_report_usage() {
+        let usage = parse(r#"{
+            "reports": [],
+            "accountsWithoutUsage": [
+                {"provider": "openai-codex", "type": "oauth", "email": "me@example.com", "orgId": "personal"},
+                {"provider": "openai-codex", "type": "oauth", "email": "me@example.com", "orgId": "work"},
+                {"provider": "custom", "type": "api_key"}
+            ]
+        }"#).unwrap();
+        assert_eq!(usage.providers.len(), 2);
+        let codex = &usage.providers[0];
+        assert_eq!(codex.id, "openai-codex");
+        assert_eq!(codex.accounts.len(), 2);
+        assert_eq!(codex.accounts[0].label, "me@example.com · personal");
+        assert_eq!(codex.accounts[1].label, "me@example.com · work");
+        assert_eq!(codex.peak(), None);
+        assert_eq!(usage.meter(), None, "unknown quota is not 0% usage");
+        assert_eq!(usage.providers[1].accounts[0].label, "API key");
+    }
+
+    #[test]
+    fn usage_preserves_separate_codex_reports_in_the_same_workspace() {
+        let usage = parse(r#"{
+            "reports": [
+                {"provider": "openai-codex",
+                 "metadata": {"email": "first@example.com", "orgName": "Team", "credentialId": "c1"},
+                 "limits": [{"window": {"id": "5h"}, "amount": {"usedFraction": 0.2}}]},
+                {"provider": "openai-codex",
+                 "metadata": {"email": "second@example.com", "orgName": "Team", "credentialId": "c2"},
+                 "limits": [{"window": {"id": "5h"}, "amount": {"usedFraction": 0.8}}]}
+            ]
+        }"#).unwrap();
+        let accounts = &usage.providers[0].accounts;
+        assert_eq!(accounts.len(), 2);
+        assert_eq!(accounts[0].label, "first@example.com · Team");
+        assert_eq!(accounts[0].reset_target.as_deref(), Some("openai-codex/c1"));
+        assert_eq!(accounts[0].limits[0].fraction, Some(0.2));
+        assert_eq!(accounts[1].label, "second@example.com · Team");
+        assert_eq!(accounts[1].reset_target.as_deref(), Some("openai-codex/c2"));
+        assert_eq!(accounts[1].limits[0].fraction, Some(0.8));
+        assert_eq!(usage.meter(), Some(UsageMeter { fraction: 0.8, label: "5h".into() }));
     }
 
     #[test]
