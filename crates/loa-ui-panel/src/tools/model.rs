@@ -106,28 +106,3 @@ pub struct PeerTools { pub key: String, pub name: String, pub rules: Vec<ToolRul
 impl PeerTools {
     pub fn allows(&self, tool: &ToolId) -> bool { self.rules.iter().any(|r| r.allows(tool)) }
 }
-
-impl From<loa_mcp::import::App> for ImportSource {
-    fn from(app: loa_mcp::import::App) -> Self {
-        use loa_mcp::import::App;
-        match app { App::Claude => Self::Claude, App::Cursor => Self::Cursor, App::Codex => Self::Codex }
-    }
-}
-
-impl From<&loa_mcp::Status> for ServerStatus {
-    fn from(status: &loa_mcp::Status) -> Self {
-        use loa_mcp::Status;
-        match status { Status::Starting => Self::Starting, Status::Running => Self::Running, Status::Stopped => Self::Stopped, Status::Error(message) => Self::Error(message.clone()) }
-    }
-}
-
-impl From<&loa_mcp::import::Outcome> for ImportOutcome {
-    fn from(outcome: &loa_mcp::import::Outcome) -> Self {
-        use loa_mcp::import::Outcome;
-        match outcome {
-            Outcome::Imported(_) => Self::Imported,
-            Outcome::Duplicate { existing } => Self::Skipped(format!("already registered as {existing}")),
-            Outcome::Unsupported { reason } => Self::Failed(reason.clone()),
-        }
-    }
-}

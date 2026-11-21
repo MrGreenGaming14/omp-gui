@@ -8,7 +8,6 @@ publish.workspace = true
 [dependencies]
 loa-contracts.workspace = true
 loa-core.workspace = true
-loa-mcp = { path = "../loa-mcp" }
 iced.workspace = true
 loa-ui-kit.workspace = true
 similar = { version = "3.2", features = ["inline"] }

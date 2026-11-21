@@ -4971,7 +4971,6 @@ dependencies = [
  "ignore",
  "loa-contracts",
  "loa-core",
- "loa-mcp",
  "loa-ui-kit",
  "shell-words",
  "similar",

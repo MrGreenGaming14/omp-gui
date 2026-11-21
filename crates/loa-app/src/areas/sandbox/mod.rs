@@ -365,7 +365,7 @@ impl State {
     fn settings_view(&self) -> Element<'_, Message> {
         let errors = BTreeMap::new();
         let sections = self.draft.sections.iter().filter(|section| cfg!(feature = "sandbox-vm") || !matches!(section.kind, SandboxKind::Firecracker | SandboxKind::Vm)).map(|section| {
-            let fields = (!section.fields.is_empty()).then(|| form_view(section, &errors, Message::Edit));
+            let fields = (!section.fields.is_empty()).then(|| form_view(section, &errors, Message::Edit, Some(Message::Save)));
             let network = (section.kind == SandboxKind::Docker).then(|| {
                 toggler(self.draft.network).label("Containers may use the network").text_size(text_size(TextRole::Label)).on_toggle(Message::Network)
             });

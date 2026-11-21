@@ -313,7 +313,7 @@ impl State {
     fn overrides(&self) -> Element<'_, Message> {
         let overrides = self.draft.overrides.iter().enumerate().map(|(i, o)| {
             let head = row![label(o.selector.as_str(), TextRole::Mono, Tone::Normal).width(Fill), action("Remove override", ButtonKind::Danger, Some(Msg::Local(Local::RemoveOverride(i))))];
-            card(column![head.align_y(Alignment::Center), form_view(o, &o.parsed().1, move |k, v| Msg::Local(Local::OverrideEdit(i, k, v)))])
+            card(column![head.align_y(Alignment::Center), form_view(o, &o.parsed().1, move |k, v| Msg::Local(Local::OverrideEdit(i, k, v)), None)])
         });
         let add = row![
             pick(self.known.as_slice(), None, "Override a model", |s| Msg::Local(Local::AddOverride(Some(s)))),
@@ -326,7 +326,7 @@ impl State {
     fn custom_providers(&self) -> Element<'_, Message> {
         let errors = self.draft.provider_errors();
         let providers = self.draft.custom.iter().zip(errors).enumerate().map(|(i, (p, errors))| {
-            let form = form_view(p, &errors, move |k, v| Msg::Local(Local::ProviderEdit(i, k, v)));
+            let form = form_view(p, &errors, move |k, v| Msg::Local(Local::ProviderEdit(i, k, v)), None);
             let auth = labeled("Auth", pick(AuthMode::ALL, Some(p.auth), "", move |a| Msg::Local(Local::ProviderAuth(i, a))));
             card(column![form, auth, action("Remove provider", ButtonKind::Danger, Some(Msg::Local(Local::RemoveProvider(i))))])
         });

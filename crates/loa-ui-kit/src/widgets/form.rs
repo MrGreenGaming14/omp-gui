@@ -25,12 +25,12 @@ pub trait Form {
     fn set(&mut self, key: &str, value: &str) -> Result<(), String>;
 }
 
-/// Labelled inputs for every field of `form`, with `errors` under their fields.
-pub fn form_view<'a, M: Clone + 'a>(form: &'a dyn Form, errors: &BTreeMap<&'static str, String>, on_edit: impl Fn(&'static str, String) -> M + 'a) -> Element<'a, M> {
+/// Labelled inputs for every field of `form`, with `errors` under their fields; Enter sends `on_submit`.
+pub fn form_view<'a, M: Clone + 'a>(form: &'a dyn Form, errors: &BTreeMap<&'static str, String>, on_edit: impl Fn(&'static str, String) -> M + 'a, on_submit: Option<M>) -> Element<'a, M> {
     let (t, on_edit) = (tokens(), std::rc::Rc::new(on_edit));
     let rows = form.fields().iter().map(|f| {
         let on_edit = on_edit.clone();
-        let input = text_input(f.placeholder, &form.get(f.key)).on_input(move |v| on_edit(f.key, v)).style(style::input);
+        let input = text_input(f.placeholder, &form.get(f.key)).on_input(move |v| on_edit(f.key, v)).on_submit_maybe(on_submit.clone()).style(style::input);
         let mut field = column![input.padding(t.space(SpaceRole::S))];
         if let Some(e) = errors.get(f.key) { field = field.push(label(e.clone(), TextRole::Caption, Tone::Danger)) }
         let name = container(label(f.label, TextRole::Label, Tone::Muted)).width(t.layout(LayoutRole::LabelColumn));
