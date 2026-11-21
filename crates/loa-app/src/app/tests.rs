@@ -7,6 +7,7 @@ use loa_ui_shell::palette::{Platform, Scope};
 
 use super::keys::APP_COMMANDS;
 use super::*;
+use super::lifecycle::turn_status;
 use crate::area::{Area, AreaMsg, find_command, find_slash};
 use crate::areas::{decisions, harness, models, peers, projects, sandbox, sessions, surfaces, tools, updater};
 use crate::testing::TestApp;
@@ -121,4 +122,39 @@ fn sessions_run_on_the_harness_stream_their_feed_and_survive_a_restart() {
     let test = test.reopen();
     let recents: Vec<_> = test.app.ctx.shell.sidebar().recents().iter().map(|summary| summary.id.clone()).collect();
     assert!(recents.contains(&id), "Recents reload the session: {recents:?} {}", test.notice());
+}
+
+/// A sidebar event, as its row emits it.
+fn nav(event: Nav) -> Message {
+    Message::Shell(shell::Message::Sidebar(shell::sidebar::Message::Emit(event)))
+}
+
+#[test]
+fn shell_events_route_to_intents_and_windows() {
+    let mut test = TestApp::new();
+    let remote = "peer:node/session".to_owned();
+    assert!(matches!(route(shell::Event::Sidebar(Nav::DeleteSession(remote.clone()))), Some(Intent::Notice(_))));
+    assert!(matches!(route(shell::Event::Sidebar(Nav::OpenSession(remote))), Some(Intent::Forward(Message::Area("peers", _)))));
+    assert!(matches!(route(shell::Event::Sidebar(Nav::DeleteSession("s1".into()))), Some(Intent::Forward(Message::Area("sessions", _)))));
+    test.send(nav(Nav::OpenSettings));
+    assert_eq!(test.app.windows.overlay, Some(Overlay::Settings(SettingsTab::General)));
+    test.send(nav(Nav::OpenConfigs));
+    assert_eq!((test.app.windows.configs, test.app.windows.overlay), (Some(ConfigsTab::Models), None));
+    test.key(Key::Named(Named::Escape), Modifiers::empty());
+    assert_eq!(test.app.windows.configs, None, "Esc closes Configs");
+    let browse = test.app.intent(Intent::Browse);
+    test.run(browse);
+    assert_eq!(test.notice(), "no folder dialog in tests");
+}
+
+#[test]
+fn usage_reads_its_source_and_spends_a_saved_reset() {
+    let mut test = TestApp::new();
+    test.send(nav(Nav::OpenUsage));
+    assert_eq!(test.app.windows.overlay, Some(Overlay::Usage));
+    test.send(Message::Usage(usage::Message::Toggle("anthropic".into())));
+    test.click("Use a reset");
+    assert_eq!(*test.usage.spent.lock().unwrap(), ["anthropic/c1"]);
+    test.send(Message::Usage(usage::Message::Close));
+    assert_eq!(test.app.windows.overlay, None);
 }

@@ -97,7 +97,7 @@ impl Tree {
 
     /// Reads the links of every stored session.
     fn scan(&mut self, ctx: &Ctx) {
-        let library = &ctx.services.library;
+        let library = &ctx.services.storage.library;
         if let Ok(listings) = library.store().list() {
             for listing in listings {
                 let Listing::Session(info) = listing else { continue };
@@ -115,7 +115,7 @@ impl Tree {
 
 /// The turns of session `id` with the journal sequence that started each.
 fn turns(ctx: &Ctx, id: &str) -> Vec<TurnInfo> {
-    let library = &ctx.services.library;
+    let library = &ctx.services.storage.library;
     let Ok(seqs) = library.turn_seqs(id) else { return Vec::new() };
     let loaded;
     let dom = match ctx.sessions.get(id) {

@@ -202,12 +202,12 @@ impl Ctx {
 
     /// The central config; on failure a `Can't read the {what}` notice and `None`.
     pub fn read_config(&mut self, what: &str) -> Option<loa_config::Config> {
-        self.services.config.load().inspect_err(|error| self.notify(format!("Can't read the {what}: {error}"))).ok()
+        self.services.storage.config.load().inspect_err(|error| self.notify(format!("Can't read the {what}: {error}"))).ok()
     }
 
     /// Edits the central config; on failure a `Can't save the {what}` notice and `None`.
     pub fn edit_config<R>(&mut self, what: &str, change: impl FnOnce(&mut loa_config::Config) -> R) -> Option<R> {
-        self.services.config.edit(change).inspect_err(|error| self.notify(format!("Can't save the {what}: {error}"))).ok()
+        self.services.storage.config.edit(change).inspect_err(|error| self.notify(format!("Can't save the {what}: {error}"))).ok()
     }
 
     pub fn clear_notice(&mut self) {

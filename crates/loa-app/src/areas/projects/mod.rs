@@ -84,9 +84,9 @@ impl State {
 
     /// The projects of this node with digests from `summarizer`.
     pub fn with(ctx: &mut Ctx, summarizer: Arc<dyn Summarizers>, config: ServiceConfig) -> (Self, Task<Message>) {
-        let library = &ctx.services.library;
+        let library = &ctx.services.storage.library;
         let sessions = LiveSessions::new(Arc::clone(library.bus()), library.store().clone());
-        let settings = Arc::new(FileSettingsStore::new(ctx.services.dirs.data.join("projects")));
+        let settings = Arc::new(FileSettingsStore::new(ctx.services.storage.dirs.data.join("projects")));
         let (runtime, handle) = OwnRuntime::current_or_new();
         let _entered = handle.enter();
         let (service, outcomes) = ProjectService::start(sessions, settings, Arc::new(LocalOnly), summarizer, config);
@@ -272,7 +272,7 @@ impl Area for State {
     /// The projects of this node, digests built by omp's `smol` role.
     fn new(ctx: &mut Ctx) -> (Self, Task<Message>) {
         let omp = ctx.services.harnesses.get("omp").and_then(|harness| harness.executable.clone());
-        let summarizer = OmpSummarizer::new(omp.unwrap_or_else(|| PathBuf::from("omp")), ctx.services.dirs.data.clone());
+        let summarizer = OmpSummarizer::new(omp.unwrap_or_else(|| PathBuf::from("omp")), ctx.services.storage.dirs.data.clone());
         Self::with(ctx, Arc::new(summarizer), ServiceConfig::default())
     }
 

@@ -263,7 +263,7 @@ impl State {
             ctx.notify("The earlier branch keeps running; stop it from its own session if it should end");
         }
         let id = new_session_id();
-        let library = Arc::clone(&ctx.services.library);
+        let library = Arc::clone(&ctx.services.storage.library);
         let target = Arc::new(target);
         let current = current.map(Arc::new);
         let new_id = id.clone();
@@ -289,20 +289,20 @@ impl State {
             ctx.notify("Open a session to fork it");
             return;
         };
-        let target = ctx.services.library.load(&id);
+        let target = ctx.services.storage.library.load(&id);
         self.branch(ctx, &id, target, None);
     }
 
     /// Rewinds session `id` to before the turn holding `node`.
     fn rewind(&mut self, ctx: &mut Ctx, id: &str, node: NodeId) {
-        let current = match ctx.services.library.load(id) {
+        let current = match ctx.services.storage.library.load(id) {
             Ok(current) => current,
             Err(error) => {
                 ctx.notify(format!("Can't rewind this session: {error}"));
                 return;
             }
         };
-        let target = ctx.services.library.before_turn(id, node);
+        let target = ctx.services.storage.library.before_turn(id, node);
         self.branch(ctx, id, target, Some(current));
     }
 
@@ -335,7 +335,7 @@ impl State {
         let title = format!("{} (compacted)", title_of(&source));
         let id = new_session_id();
         self.compacted.insert(id.clone(), old);
-        let library = Arc::clone(&ctx.services.library);
+        let library = Arc::clone(&ctx.services.storage.library);
         let new_id = id.clone();
         let start: SpawnStart = Arc::new(move |config: SessionConfig| {
             let (adapter, library, small, running, source, writer, instructions, title, id) = (
@@ -383,7 +383,7 @@ impl State {
                 None => Task::none(),
             }
         } else {
-            match ctx.services.library.delete(id) {
+            match ctx.services.storage.library.delete(id) {
                 Ok(()) => ctx.shell.sidebar_mut().remove_session(id),
                 Err(error) => ctx.notify(format!("Can't delete session {id}: {error}")),
             }
@@ -456,6 +456,7 @@ impl State {
     fn child_session(&mut self, ctx: &mut Ctx, child: String) -> Option<String> {
         let stored = ctx
             .services
+            .storage
             .library
             .store()
             .list()
@@ -475,7 +476,7 @@ impl State {
             return None;
         };
         let job = self.agents.jobs().find(|job| job.session() == Some(child.as_str())).map_or(NodeId::DOCUMENT, agents::Job::node);
-        match ctx.services.library.import_child(adapter.as_ref(), &parent_id, job, &path, &ctx.services.node.key) {
+        match ctx.services.storage.library.import_child(adapter.as_ref(), &parent_id, job, &path, &ctx.services.node.key) {
             Ok(id) => Some(id),
             Err(error) => {
                 ctx.notify(format!("Can't open the subagent's session: {error}"));
@@ -514,7 +515,7 @@ impl State {
                 .filter(|adapter| adapter.capabilities().import)
                 .ok_or_else(|| format!("This app can't import {harness} sessions"))?;
             let id = new_session_id();
-            ctx.services.library.import(adapter.as_ref(), path, &id, &ctx.services.node.key).map_err(|error| error.to_string())?;
+            ctx.services.storage.library.import(adapter.as_ref(), path, &id, &ctx.services.node.key).map_err(|error| error.to_string())?;
             Ok::<_, String>(id)
         })();
         match result {
@@ -539,13 +540,13 @@ impl State {
         let id = session.id().to_string();
         let harness = session.harness_id().unwrap_or_default().to_owned();
         let extension = if xml { "xml" } else { transfer::extension(&harness) };
-        let path = path.unwrap_or_else(|| ctx.services.dirs.data.join("exports").join(format!("{id}.{extension}")));
+        let path = path.unwrap_or_else(|| ctx.services.storage.dirs.data.join("exports").join(format!("{id}.{extension}")));
         let result = (|| {
             if let Some(dir) = path.parent() {
                 std::fs::create_dir_all(dir).map_err(|error| format!("{}: {error}", dir.display()))?;
             }
             if xml {
-                return ctx.services.library.export_xml(&id, &path).map_err(|error| error.to_string());
+                return ctx.services.storage.library.export_xml(&id, &path).map_err(|error| error.to_string());
             }
             let adapter = ctx
                 .services
@@ -554,7 +555,7 @@ impl State {
                 .get(&harness)
                 .filter(|adapter| adapter.capabilities().export)
                 .ok_or_else(|| format!("{} sessions can't be exported", ctx.services.harnesses.label(&harness)))?;
-            ctx.services.library.export(adapter.as_ref(), &id, &path).map_err(|error| error.to_string())
+            ctx.services.storage.library.export(adapter.as_ref(), &id, &path).map_err(|error| error.to_string())
         })();
         let status = match result {
             Ok(()) => format!("Exported to {}", path.display()),
@@ -845,7 +846,7 @@ impl Area for State {
                 match event {
                     Some(session_tree::Event::Open(id)) => ctx.request(Request::OpenSession(id)),
                     Some(session_tree::Event::Fork { session, turn }) => {
-                        let target = ctx.services.library.through_turn(&session, turn);
+                        let target = ctx.services.storage.library.through_turn(&session, turn);
                         self.branch(ctx, &session, target, None);
                     }
                     Some(session_tree::Event::Rewind { session, turn }) => self.rewind(ctx, &session, turn),

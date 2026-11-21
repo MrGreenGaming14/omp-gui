@@ -91,7 +91,7 @@ impl State {
         let state = Self {
             hub,
             endpoint: None,
-            mcp: ctx.services.mcp.clone(),
+            mcp: ctx.services.node.mcp.clone(),
             panel,
             recorded: HashMap::new(),
             unrecorded: Vec::new(),
@@ -274,7 +274,7 @@ impl Area for State {
     type Message = Message;
 
     fn new(ctx: &mut Ctx) -> (Self, Task<Message>) {
-        let mut config = HubConfig::discover(&ctx.services.dirs.data.join("surfaces"));
+        let mut config = HubConfig::discover(&ctx.services.storage.dirs.data.join("surfaces"));
         if let Some(settings) = ctx.read_config("surface settings").map(|config| config.surfaces) {
             #[cfg(feature = "remote-video")]
             video::configure(&mut config, &settings);

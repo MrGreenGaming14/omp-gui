@@ -51,6 +51,10 @@ roles! {
     "layout" LayoutRole {
         ComposerWidth = "composer.width", NavWidth = "nav.width", ListWidth = "list.width",
         PopupWidth = "popup.width", ContentWidth = "content.width", LabelColumn = "label.column",
+        ComposerInset = "composer.inset", MainWidth = "main.width", MainHeight = "main.height",
+        WindowWidth = "window.width", WindowHeight = "window.height", DialogWidth = "dialog.width",
+        DetachWidth = "detach.width", DetachHeight = "detach.height", TallHeight = "tall.height",
+        MinWidth = "min.width", MinHeight = "min.height",
     }
 }
 

@@ -267,7 +267,7 @@ impl Sessions {
     /// Creates a new session's journal and writer.
     pub(crate) fn create(&mut self, services: &Services) -> Result<(SessionId, Arc<SessionWriter>), String> {
         let id = new_session_id();
-        let live = services.library.create(&id).map_err(|error| format!("Can't create session {id}: {error}"))?;
+        let live = services.storage.library.create(&id).map_err(|error| format!("Can't create session {id}: {error}"))?;
         let writer = Arc::clone(&live.writer);
         let id = SessionId::from(id);
         self.open.insert(id.clone(), Session::new(id.clone(), live, Dom::new()));
@@ -279,7 +279,7 @@ impl Sessions {
         if self.open.contains_key(id) {
             return Ok(());
         }
-        let live = services.library.open(id).map_err(|error| format!("Can't open session {id}: {error}"))?;
+        let live = services.storage.library.open(id).map_err(|error| format!("Can't open session {id}: {error}"))?;
         let dom = live.writer.with_dom(Dom::clone);
         let id = SessionId::from(id);
         self.open.insert(id.clone(), Session::new(id, live, dom));
@@ -296,7 +296,7 @@ impl Sessions {
         if self.starting.as_ref().is_some_and(|starting| starting.as_str() == id) {
             self.starting = None;
         }
-        let closed = if delete { services.library.delete(id) } else { services.library.close(id).map(drop) };
+        let closed = if delete { services.storage.library.delete(id) } else { services.storage.library.close(id).map(drop) };
         (session, closed.err().map(|error| format!("Can't close session {id}: {error}")))
     }
 

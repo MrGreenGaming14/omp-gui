@@ -28,7 +28,7 @@ const fn command(id: &'static str, title: &'static str, section: &'static str, r
 
 /// Every app command, in palette order. Area commands follow them.
 pub(crate) const APP_COMMANDS: &[AppCommand] = &[
-    command("session.new", "New session", "Commands", |app, _| app.start(None)).slash("new", "Start a new session"),
+    command("session.new", "New session", "Commands", |app, _| app.lifecycle(|s, ctx, areas| s.start(ctx, areas, None))).slash("new", "Start a new session"),
     command("panel.toggle", "Toggle right panel", "Commands", |app, _| {
         app.ctx.shell.set_panel_open(!app.ctx.shell.panel_open());
         Task::none()
@@ -37,7 +37,7 @@ pub(crate) const APP_COMMANDS: &[AppCommand] = &[
     command("project.tabs.toggle", "", "Commands", |app, _| {
         let enabled = !app.ctx.shell.project_tabs();
         app.ctx.shell.set_project_tabs(enabled);
-        app.save_ui(|config| config.project_tabs = enabled);
+        app.ctx.edit_config("settings", |config| config.project_tabs = enabled);
         Task::none()
     })
     .listed(Listed::When(|app, _| Some(if app.ctx.shell.project_tabs() { "Hide project tabs" } else { "Show project tabs" }))),

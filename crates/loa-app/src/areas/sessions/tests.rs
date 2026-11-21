@@ -18,5 +18,5 @@ fn slash_commands_fork_switch_mode_and_delete_sessions() {
 
     test.send(Message::area(super::Message::Delete(fork.clone())));
     assert!(test.app.ctx.shell.sidebar().session(&fork).is_none(), "deleted from Recents");
-    assert!(test.app.ctx.services.library.store().list().unwrap().len() <= 1);
+    assert!(test.app.ctx.services.storage.library.store().list().unwrap().len() <= 1);
 }

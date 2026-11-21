@@ -60,7 +60,7 @@ impl State {
     fn apply(&mut self, settings: &HarnessSettings, ctx: &mut Ctx) {
         let services = &mut ctx.services;
         for (id, executable) in &settings.executables {
-            if services.harnesses.set_executable(id, Some(executable.clone()), &services.node.key, &services.dirs.omp) {
+            if services.harnesses.set_executable(id, Some(executable.clone()), &services.node.key, &services.storage.dirs.omp) {
                 self.drafts.insert(id.clone(), executable.display().to_string());
             }
         }
@@ -154,7 +154,7 @@ impl State {
             return Task::none();
         }
         let services = &mut ctx.services;
-        if !services.harnesses.set_executable(&id, executable, &services.node.key, &services.dirs.omp) {
+        if !services.harnesses.set_executable(&id, executable, &services.node.key, &services.storage.dirs.omp) {
             return Task::none();
         }
         ctx.composer.set_harnesses(ctx.services.harnesses.options(), ctx.sessions.harness.as_deref());

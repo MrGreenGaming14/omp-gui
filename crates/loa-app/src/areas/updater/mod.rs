@@ -262,9 +262,9 @@ impl Area for State {
     /// Opens the updater under `<data>/updates` and checks every feed.
     fn new(ctx: &mut Ctx) -> (Self, Task<Message>) {
         let version = Version::parse(env!("CARGO_PKG_VERSION")).expect("the crate version is semver");
-        let root = ctx.services.dirs.data.join("updates");
+        let root = ctx.services.storage.dirs.data.join("updates");
         let mut problems = Vec::new();
-        let settings = match ctx.services.config.load() {
+        let settings = match ctx.services.storage.config.load() {
             Ok(config) => config.updater,
             Err(error) => {
                 problems.push(format!("Update settings unreadable ({error}); using defaults"));

@@ -208,7 +208,7 @@ impl State {
         let (run, worker) = (entry.run.run, entry.run.worker.clone());
         // The worker is done: release its journal unless the user opened it.
         if ctx.sessions.get(&worker).is_none()
-            && let Err(error) = ctx.services.library.close(&worker)
+            && let Err(error) = ctx.services.storage.library.close(&worker)
         {
             ctx.notify(format!("Can't close the worker session {worker}: {error}"));
         }
@@ -518,12 +518,12 @@ impl Area for State {
     type Message = Message;
 
     fn new(ctx: &mut Ctx) -> (Self, Task<Message>) {
-        let settings = ctx.services.dirs.data.join(SETTINGS_FILE);
+        let settings = ctx.services.storage.dirs.data.join(SETTINGS_FILE);
         let config = SandboxConfig::load(&settings).unwrap_or_else(|error| {
             ctx.notify(format!("Can't read the sandbox settings {}: {error}; using the defaults", settings.display()));
             SandboxConfig::default()
         });
-        let journal = Arc::new(LibraryJournal(Arc::clone(&ctx.services.library)));
+        let journal = Arc::new(LibraryJournal(Arc::clone(&ctx.services.storage.library)));
         let service = SandboxService::new(config, journal).with_peers(Arc::new(peer::NodeLink(ctx.node.clone())));
         let (failures, served) = broadcast::channel(16);
         peer::register(&ctx.node, Arc::new(peer::ServeStub { stub: service.stub().map(PathBuf::from), failures }));
