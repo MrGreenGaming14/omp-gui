@@ -1,10 +1,6 @@
-//! Diff view with unified and side by side modes.
-//!
-//! Feed it [`FileDiff`]s built from old and new text
-//! ([`FileDiff::from_texts`]) or parsed from a unified diff
-//! ([`parse_unified`]). Unchanged runs fold away and expand on click. Rows have
-//! a fixed height and only the ones in the viewport are built, so a 50k line
-//! diff costs the same per frame as a short one.
+//! The diff tab: unified and side by side views of [`FileDiff`]s built from two texts or
+//! parsed with [`parse_unified`]. Unchanged runs fold away, and rows have a fixed height so
+//! only the ones in view are built: a 50k line diff costs a frame what a short one does.
 
 mod model;
 mod parse;
@@ -12,34 +8,27 @@ mod parse;
 pub use model::{CONTEXT, FileDiff, FileStatus, Fold, Hunk, Intra, Line, MIN_FOLD, Row, Tag, intra_line};
 pub use parse::{ParseError, Result, parse_unified};
 
+use crate::{row_height, tint};
+use iced::widget::{Id, button, column, container, operation, row, rule, scrollable, space, text};
+use iced::{Element, Fill, Font, Padding, Task};
+use loa_ui_kit::icons::{Icon, muted};
 use loa_ui_kit::style::{self as kit, ButtonKind, Tone};
 use loa_ui_kit::theme::{ColorRole as C, SpaceRole as Sp, TextRole as T, sp, text_size as ts};
-use iced::widget::{Id, button, column, container, operation, row, rule, scrollable, space, text};
-use iced::{Element, Font, Length, Task};
-use loa_ui_kit::icons::{Icon, muted};
+use loa_ui_kit::widgets::{PanelPane, label};
 use std::ops::Range;
 
-/// Rows built above and below the viewport so fast scrolling doesn't show
-/// gaps before the next frame.
+/// Rows built beyond the viewport so fast scrolling shows no gaps.
 const OVERSCAN: usize = 20;
-
-/// Viewport height assumed before the first scroll event reports it.
+/// Viewport height assumed until the first scroll event reports it.
 const DEFAULT_VIEWPORT: f32 = 1200.0;
-
-/// Width of one monospace character at the mono text size.
-fn char_width() -> f32 { ts(T::Mono) * 0.6 }
-
-/// File rows use label text and include vertical button padding.
-fn file_row_height() -> f32 { ts(T::Label) + 2.0 * sp(Sp::Xs) }
-
-fn file_label<'a>(content: impl text::IntoFragment<'a>) -> text::Text<'a> {
-    text(content).size(ts(T::Label)).line_height(1.0)
-}
-
-/// Height of the file list when a diff has several files.
+/// Tallest the file list grows when a diff has several files.
 const FILE_LIST_HEIGHT: f32 = 140.0;
 
-/// Unified (one column with `-`/`+` lines) or split (old left, new right).
+fn char_width() -> f32 { ts(T::Mono) * 0.6 }
+
+/// File rows: label text plus vertical button padding.
+fn file_row_height() -> f32 { ts(T::Label) + 2.0 * sp(Sp::Xs) }
+
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
 pub enum Mode {
     #[default]
@@ -54,20 +43,18 @@ pub enum Message {
     /// Expand a fold of the selected file.
     Expand(usize),
     Scrolled { offset: f32, height: f32 },
-    /// Open the selected file in the editor or files tab.
+    /// Open the selected file.
     Open,
-    /// Show or hide the lines of the selected file under its header.
+    /// Show or hide the selected file's lines.
     ToggleCollapsed,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
-    /// The user asked to open this path (the new path, or the old one for a
-    /// deleted file).
+    /// Open this path (the new path, or the old one of a deleted file).
     OpenFile(String),
 }
 
-/// State of the diff tab.
 #[derive(Debug)]
 pub struct State {
     files: Vec<FileDiff>,
@@ -78,117 +65,71 @@ pub struct State {
     scroll_offset: f32,
     viewport_height: f32,
     scroll_id: Id,
-    /// The selected file's lines are hidden; only its header shows.
     collapsed: bool,
-    /// Shown instead of "No changes" when set.
+    /// Shown instead of "No changes".
     note: Option<String>,
 }
 
 impl Default for State {
-    fn default() -> Self {
-        Self::new()
-    }
+    fn default() -> Self { Self::new() }
 }
 
 impl State {
     pub fn new() -> Self {
-        Self {
-            files: Vec::new(),
-            selected: 0,
-            mode: Mode::Unified,
-            rows: Vec::new(),
-            scroll_offset: 0.0,
-            viewport_height: DEFAULT_VIEWPORT,
-            scroll_id: Id::unique(),
-            collapsed: false,
-            note: None,
-        }
+        Self { files: Vec::new(), selected: 0, mode: Mode::Unified, rows: Vec::new(), scroll_offset: 0.0, viewport_height: DEFAULT_VIEWPORT, scroll_id: Id::unique(), collapsed: false, note: None }
     }
 
-    /// Replaces the "No changes" text, e.g. when the folder isn't a git
-    /// repository. Clears the files shown.
+    /// Replaces "No changes", e.g. outside a git repository, and clears the files.
     pub fn set_note(&mut self, note: Option<String>) -> Task<Message> {
         self.note = note;
         if self.note.is_some() { self.set_files(Vec::new()) } else { Task::none() }
     }
 
-    /// Replaces the files shown and selects the first.
+    /// Replaces the files and selects the first.
     pub fn set_files(&mut self, files: Vec<FileDiff>) -> Task<Message> {
         self.files = files;
         self.select(0)
     }
 
-    pub fn files(&self) -> &[FileDiff] {
-        &self.files
-    }
+    pub fn files(&self) -> &[FileDiff] { &self.files }
 
-    pub fn selected(&self) -> Option<&FileDiff> {
-        self.files.get(self.selected)
-    }
+    pub fn selected(&self) -> Option<&FileDiff> { self.files.get(self.selected) }
 
-    pub fn mode(&self) -> Mode {
-        self.mode
-    }
+    pub fn mode(&self) -> Mode { self.mode }
 
-    /// Every row of the selected file.
-    pub fn rows(&self) -> &[Row] {
-        &self.rows
-    }
+    pub fn rows(&self) -> &[Row] { &self.rows }
 
-    /// Indices of the rows the view builds for the current scroll position.
+    /// The rows the view builds at the current scroll position.
     pub fn visible_rows(&self) -> Range<usize> {
-        let first = (self.scroll_offset / crate::row_height()).floor().max(0.0) as usize;
-        let shown = (self.viewport_height / crate::row_height()).ceil().max(1.0) as usize;
-        let start = first.saturating_sub(OVERSCAN).min(self.rows.len());
-        let end = (first + shown + OVERSCAN).min(self.rows.len());
-        start..end
+        let first = (self.scroll_offset / row_height()).floor().max(0.0) as usize;
+        let shown = (self.viewport_height / row_height()).ceil().max(1.0) as usize;
+        first.saturating_sub(OVERSCAN).min(self.rows.len())..(first + shown + OVERSCAN).min(self.rows.len())
     }
 
     pub fn update(&mut self, message: Message) -> (Task<Message>, Option<Event>) {
         match message {
-            Message::SelectFile(index) if index < self.files.len() && index != self.selected => {
-                (self.select(index), None)
+            Message::SelectFile(i) if i < self.files.len() && i != self.selected => return (self.select(i), None),
+            Message::SelectFile(_) => {}
+            Message::SetMode(mode) if mode != self.mode => {
+                // Rows map to a similar fraction in both modes, so the same part stays in view.
+                let fraction = self.scroll_offset / (self.rows.len().max(1) as f32 * row_height());
+                self.mode = mode;
+                self.rebuild_rows();
+                self.scroll_offset = fraction * self.rows.len() as f32 * row_height();
             }
-            Message::SelectFile(_) => (Task::none(), None),
-            Message::SetMode(mode) => {
-                if mode != self.mode {
-                    // Keep the same part of the file in view: rows map to a
-                    // similar fraction in both modes.
-                    let fraction = self.scroll_offset / (self.rows.len().max(1) as f32 * crate::row_height());
-                    self.mode = mode;
-                    self.rebuild_rows();
-                    self.scroll_offset = fraction * self.rows.len() as f32 * crate::row_height();
-                }
-                (Task::none(), None)
-            }
+            Message::SetMode(_) => {}
             Message::Expand(fold) => {
-                if let Some(file) = self.files.get_mut(self.selected)
-                    && file.expand(fold)
-                {
-                    self.rebuild_rows();
-                }
-                (Task::none(), None)
+                if self.files.get_mut(self.selected).is_some_and(|f| f.expand(fold)) { self.rebuild_rows() }
             }
-            Message::Scrolled { offset, height } => {
-                self.scroll_offset = offset;
-                self.viewport_height = height;
-                (Task::none(), None)
-            }
-            Message::Open => {
-                let event = self.selected().map(|file| Event::OpenFile(file.path().to_owned()));
-                (Task::none(), event)
-            }
-            Message::ToggleCollapsed => {
-                self.collapsed = !self.collapsed;
-                (Task::none(), None)
-            }
+            Message::Scrolled { offset, height } => (self.scroll_offset, self.viewport_height) = (offset, height),
+            Message::Open => return (Task::none(), self.selected().map(|f| Event::OpenFile(f.path().to_owned()))),
+            Message::ToggleCollapsed => self.collapsed = !self.collapsed,
         }
+        (Task::none(), None)
     }
 
     fn select(&mut self, index: usize) -> Task<Message> {
-        self.selected = index;
-        self.collapsed = false;
-        self.scroll_offset = 0.0;
+        (self.selected, self.collapsed, self.scroll_offset) = (index, false, 0.0);
         self.rebuild_rows();
         operation::snap_to(self.scroll_id.clone(), scrollable::RelativeOffset::START)
     }
@@ -196,247 +137,121 @@ impl State {
     fn rebuild_rows(&mut self) {
         self.rows = match (self.files.get(self.selected), self.mode) {
             (None, _) => Vec::new(),
-            (Some(file), Mode::Unified) => file.unified_rows(),
-            (Some(file), Mode::Split) => file.split_rows(),
+            (Some(f), Mode::Unified) => f.unified_rows(),
+            (Some(f), Mode::Split) => f.split_rows(),
         };
     }
 
     pub fn view(&self) -> Element<'_, Message> {
-        let Some(file) = self.selected() else {
-            let note = self.note.as_deref().unwrap_or("No changes");
-            return container(text(note).style(kit::text(Tone::Muted))).padding(sp(Sp::S)).into();
+        let Some(file) = self.selected() else { return container(label(self.note.as_deref().unwrap_or("No changes"), T::Body, Tone::Muted)).padding(sp(Sp::S)).into() };
+        let list = (self.files.len() > 1).then(|| self.file_list());
+        let body: Element<'_, Message> = match (self.collapsed, file.binary) {
+            (true, _) => space().into(),
+            (_, true) => container(label("Binary file", T::Body, Tone::Muted)).padding(sp(Sp::S)).into(),
+            _ => self.body(file),
         };
-        let mut page = column![self.toolbar(file), rule::horizontal(1).style(kit::rule)];
-        if self.files.len() > 1 {
-            page = page.push(self.file_list());
-        }
-        let body: Element<'_, Message> = if self.collapsed {
-            space().into()
-        } else if file.binary {
-            container(text("Binary file").style(kit::text(Tone::Muted))).padding(sp(Sp::S)).into()
-        } else {
-            self.body(file)
-        };
-        page.push(body).into()
+        column![self.toolbar(file), rule::horizontal(1).style(kit::rule), list, body].into()
     }
 
-    /// The file header: collapse chevron and path on the left, change counts
-    /// and the unified/split switch on the right.
+    /// Collapse chevron and path, then the change counts and the unified/split switch.
     fn toolbar<'a>(&'a self, file: &'a FileDiff) -> Element<'a, Message> {
-        let chevron = if self.collapsed { Icon::ChevronRight } else { Icon::ChevronDown };
-        let collapse = button(muted(chevron, ts(T::Body)))
-            .padding(sp(Sp::Xs))
-            .style(kit::button(ButtonKind::Row { selected: false }))
-            .on_press(Message::ToggleCollapsed);
-        let path = button(text(file.path()).size(ts(T::Body)).wrapping(text::Wrapping::None))
-            .padding([sp(Sp::Xs), sp(Sp::Xs)])
-            .style(kit::button(ButtonKind::Row { selected: false }))
-            .on_press(Message::Open);
-        let (other, label) = match self.mode {
-            Mode::Unified => (Mode::Split, "Split"),
-            Mode::Split => (Mode::Unified, "Unified"),
-        };
-        let mode = button(text(label).size(ts(T::Caption)).style(kit::text(Tone::Muted)))
-            .padding([sp(Sp::Xs), sp(Sp::S)])
-            .style(kit::button(ButtonKind::Row { selected: false }))
-            .on_press(Message::SetMode(other));
-        row![
-            collapse,
-            path,
-            space::horizontal(),
-            text(format!("+{}", file.added())).size(ts(T::Caption)).style(kit::text(Tone::Ok)),
-            text(format!("-{}", file.removed())).size(ts(T::Caption)).style(kit::text(Tone::Danger)),
-            mode,
-        ]
-        .spacing(sp(Sp::Xs))
-        .padding([sp(Sp::Xs), sp(Sp::S)])
-        .align_y(iced::Alignment::Center)
-        .into()
+        let flat = |content: Element<'a, Message>, on| button(content).padding([sp(Sp::Xs), sp(Sp::S)]).style(kit::button(ButtonKind::Row { selected: false })).on_press(on);
+        let chevron = muted(if self.collapsed { Icon::ChevronRight } else { Icon::ChevronDown }, ts(T::Body));
+        let other = if self.mode == Mode::Unified { (Mode::Split, "Split") } else { (Mode::Unified, "Unified") };
+        let counts = [label(format!("+{}", file.added()), T::Caption, Tone::Ok), label(format!("-{}", file.removed()), T::Caption, Tone::Danger)].map(Element::from);
+        let head = row![flat(chevron.into(), Message::ToggleCollapsed), flat(text(file.path()).size(ts(T::Body)).wrapping(text::Wrapping::None).into(), Message::Open), space::horizontal()];
+        head.extend(counts).push(flat(label(other.1, T::Caption, Tone::Muted).into(), Message::SetMode(other.0))).spacing(sp(Sp::Xs)).padding([sp(Sp::Xs), sp(Sp::S)]).align_y(iced::Alignment::Center).into()
     }
 
     fn file_list(&self) -> Element<'_, Message> {
-        let entries = self.files.iter().enumerate().map(|(index, file)| {
-            let marker = match file.status() {
-                FileStatus::Added => "A",
-                FileStatus::Deleted => "D",
-                FileStatus::Modified => "M",
-                FileStatus::Renamed => "R",
-            };
-            let label = row![
-                file_label(marker).font(Font::MONOSPACE).style(kit::text(Tone::Muted)),
-                file_label(file.path()).wrapping(text::Wrapping::None).width(Length::Fill),
-                file_label(format!("+{}", file.added())).style(kit::text(Tone::Ok)),
-                file_label(format!("-{}", file.removed())).style(kit::text(Tone::Danger)),
-            ]
-            .spacing(sp(Sp::S));
-            button(label)
-                .width(Length::Fill)
-                .height(file_row_height())
-                .padding([sp(Sp::Xs), sp(Sp::S)])
-                .style(kit::button(ButtonKind::Row { selected: index == self.selected }))
-                .on_press(Message::SelectFile(index))
-                .into()
+        fn small<'a>(s: impl text::IntoFragment<'a>) -> text::Text<'a> { text(s).size(ts(T::Label)).line_height(1.0) }
+        let entries = self.files.iter().enumerate().map(|(i, f)| {
+            let marker = ["A", "D", "M", "R"][f.status() as usize];
+            let line = row![small(marker).font(Font::MONOSPACE).style(kit::text(Tone::Muted)), small(f.path()).wrapping(text::Wrapping::None).width(Fill), small(format!("+{}", f.added())).style(kit::text(Tone::Ok)), small(format!("-{}", f.removed())).style(kit::text(Tone::Danger))];
+            let style = kit::button(ButtonKind::Row { selected: i == self.selected });
+            button(line.spacing(sp(Sp::S))).width(Fill).height(file_row_height()).padding([sp(Sp::Xs), sp(Sp::S)]).style(style).on_press(Message::SelectFile(i)).into()
         });
-        let list_height = (self.files.len() as f32 * file_row_height()).min(FILE_LIST_HEIGHT);
-        scrollable(column(entries)).height(list_height).into()
+        scrollable(column(entries)).height((self.files.len() as f32 * file_row_height()).min(FILE_LIST_HEIGHT)).into()
     }
 
+    /// The rows in view between spacers standing in for the rest.
     fn body<'a>(&'a self, file: &'a FileDiff) -> Element<'a, Message> {
         let range = self.visible_rows();
-        let digits = number_digits(file);
-        let above = range.start as f32 * crate::row_height();
-        let below = (self.rows.len() - range.end) as f32 * crate::row_height();
-        let rows = self.rows[range].iter().map(|row| self.row(file, *row, digits));
-        let content = column![space().height(above), column(rows), space().height(below)].width(Length::Fill);
-        scrollable(content)
-            .id(self.scroll_id.clone())
-            .height(Length::Fill)
-            .on_scroll(|viewport| Message::Scrolled {
-                offset: viewport.absolute_offset().y,
-                height: viewport.bounds().height,
-            })
-            .into()
-    }
-
-    fn row<'a>(&'a self, file: &'a FileDiff, row: Row, digits: usize) -> Element<'a, Message> {
-        let line = match row {
-            Row::Hunk(hunk) => {
-                let header = format!(
-                    "@@ -{},{} +{},{} @@ {}",
-                    hunk.old_start,
-                    hunk.old_len,
-                    hunk.new_start,
-                    hunk.new_len,
-                    file.section(&hunk)
-                );
-                container(mono(header).style(kit::text(Tone::Muted)))
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-                    .align_y(iced::Center)
-                    .style(kit::fill(C::Raised, 0.0))
-                    .padding(iced::Padding::ZERO.left(sp(Sp::M)).right(sp(Sp::M)))
-                    .into()
-            }
-            Row::Fold { fold, hidden } => {
-                let label = if hidden == 1 { "Expand 1 unchanged line".to_owned() } else {
-                    format!("Expand {hidden} unchanged lines")
-                };
-                button(mono(label).style(kit::text(Tone::Muted)))
-                    .width(Length::Fill)
-                    .padding(iced::Padding::ZERO.left(sp(Sp::S)).right(sp(Sp::S)))
-                    .style(kit::button(ButtonKind::Row { selected: false }))
-                    .on_press(Message::Expand(fold))
-                    .into()
-            }
-            Row::Line(index) => unified_line(file, index, digits),
-            Row::Pair { old, new } => row![
-                split_side(file, old, Side::Old, digits),
-                split_side(file, new, Side::New, digits)
-            ]
-            .into(),
-        };
-        container(line).width(Length::Fill).height(crate::row_height()).clip(true).into()
+        let digits = file.lines().iter().flat_map(|l| l.old_no.max(l.new_no)).max().unwrap_or(0).max(1).ilog10() as usize + 1;
+        let (above, below) = (range.start as f32 * row_height(), (self.rows.len() - range.end) as f32 * row_height());
+        let rows = self.rows[range].iter().map(|r| container(row_view(file, *r, digits)).width(Fill).height(row_height()).clip(true).into());
+        let content = column![space().height(above), column(rows), space().height(below)].width(Fill);
+        scrollable(content).id(self.scroll_id.clone()).height(Fill).on_scroll(|v| Message::Scrolled { offset: v.absolute_offset().y, height: v.bounds().height }).into()
     }
 }
 
-#[derive(Copy, Clone)]
-enum Side {
-    Old,
-    New,
+impl PanelPane for State {
+    type Message = Message;
+    fn id(&self) -> &str { "diff" }
+    fn title(&self) -> &str { "Diff" }
+    fn icon(&self) -> Icon { Icon::GitCompare }
+    fn view(&self) -> Element<'_, Message> { State::view(self) }
 }
 
-fn mono<'a>(content: impl text::IntoFragment<'a>) -> text::Text<'a> {
-    text(content).size(ts(T::Mono)).line_height(1.0).font(Font::MONOSPACE).wrapping(text::Wrapping::None)
-}
+fn mono<'a>(content: impl text::IntoFragment<'a>) -> text::Text<'a> { text(content).size(ts(T::Mono)).line_height(1.0).font(Font::MONOSPACE).wrapping(text::Wrapping::None) }
 
-/// Digits needed for the largest line number of the file.
-fn number_digits(file: &FileDiff) -> usize {
-    let max = file.lines().iter().flat_map(|l| l.old_no.max(l.new_no)).max().unwrap_or(0);
-    max.max(1).ilog10() as usize + 1
+fn row_view(file: &FileDiff, r: Row, digits: usize) -> Element<'_, Message> {
+    let pad = |s| Padding::ZERO.left(sp(s)).right(sp(s));
+    match r {
+        Row::Hunk(h) => {
+            let header = format!("@@ -{},{} +{},{} @@ {}", h.old_start, h.old_len, h.new_start, h.new_len, file.section(&h));
+            container(mono(header).style(kit::text(Tone::Muted))).width(Fill).height(Fill).align_y(iced::Center).style(kit::fill(C::Raised, 0.0)).padding(pad(Sp::M)).into()
+        }
+        Row::Fold { fold, hidden } => {
+            let s = if hidden == 1 { "Expand 1 unchanged line".to_owned() } else { format!("Expand {hidden} unchanged lines") };
+            button(mono(s).style(kit::text(Tone::Muted))).width(Fill).padding(pad(Sp::S)).style(kit::button(ButtonKind::Row { selected: false })).on_press(Message::Expand(fold)).into()
+        }
+        Row::Line(i) => {
+            let l = &file.lines()[i];
+            let (sign, tone) = match l.tag {
+                Tag::Equal => (" ", Tone::Muted),
+                Tag::Delete => ("-", Tone::Danger),
+                Tag::Insert => ("+", Tone::Ok),
+            };
+            let sign = container(mono(sign).style(kit::text(tone))).padding(Padding::ZERO.left(sp(Sp::M)).right(sp(Sp::S)));
+            paint(row![number(l.old_no, digits), number(l.new_no, digits), sign, line_content(file, i)].into(), l.tag)
+        }
+        Row::Pair { old, new } => {
+            let side = |i: Option<usize>, no: fn(&Line) -> Option<u32>| -> Element<'_, Message> {
+                let Some(i) = i else { return container(space()).width(Fill).height(Fill).style(kit::fill(C::Raised, 0.0)).into() };
+                let l = &file.lines()[i];
+                container(paint(row![number(no(l), digits), line_content(file, i)].into(), l.tag)).width(Fill).clip(true).into()
+            };
+            row![side(old, |l| l.old_no), side(new, |l| l.new_no)].into()
+        }
+    }
 }
 
 fn number<'a>(no: Option<u32>, digits: usize) -> Element<'a, Message> {
-    let label = no.map_or_else(String::new, |n| n.to_string());
-    container(mono(label).style(kit::text(Tone::Muted)))
-        .width(digits as f32 * char_width() + sp(Sp::L))
-        .align_x(iced::alignment::Horizontal::Right)
-        .into()
-}
-
-fn line_style(tag: Tag) -> Option<C> {
-    match tag {
-        Tag::Equal => None,
-        Tag::Delete => Some(C::RemovedBg),
-        Tag::Insert => Some(C::AddedBg),
-    }
-}
-
-fn unified_line(file: &FileDiff, index: usize, digits: usize) -> Element<'_, Message> {
-    let line = &file.lines()[index];
-    let sign = match line.tag {
-        Tag::Equal => " ",
-        Tag::Delete => "-",
-        Tag::Insert => "+",
-    };
-    let content = row![
-        number(line.old_no, digits),
-        number(line.new_no, digits),
-        container(mono(sign).style(kit::text(sign_tone(line.tag)))).padding(iced::Padding::ZERO.left(sp(Sp::M)).right(sp(Sp::S))),
-        line_content(file, index),
-    ];
-    paint(content.into(), line.tag)
-}
-
-fn sign_tone(tag: Tag) -> Tone {
-    match tag {
-        Tag::Equal => Tone::Muted,
-        Tag::Delete => Tone::Danger,
-        Tag::Insert => Tone::Ok,
-    }
-}
-
-fn split_side(file: &FileDiff, index: Option<usize>, side: Side, digits: usize) -> Element<'_, Message> {
-    let Some(index) = index else {
-        return container(space()).width(Length::FillPortion(1)).height(Length::Fill).style(kit::fill(C::Raised, 0.0)).into();
-    };
-    let line = &file.lines()[index];
-    let no = match side {
-        Side::Old => line.old_no,
-        Side::New => line.new_no,
-    };
-    let content = row![number(no, digits), line_content(file, index)];
-    container(paint(content.into(), line.tag)).width(Length::FillPortion(1)).clip(true).into()
+    container(mono(no.map_or_else(String::new, |n| n.to_string())).style(kit::text(Tone::Muted))).width(digits as f32 * char_width() + sp(Sp::L)).align_x(iced::alignment::Horizontal::Right).into()
 }
 
 fn paint(content: Element<'_, Message>, tag: Tag) -> Element<'_, Message> {
-    let painted = container(content).width(Length::Fill).height(Length::Fill);
-    match line_style(tag) {
-        Some(role) => painted.style(kit::fill(role, 0.0)).into(),
-        None => painted.into(),
+    let painted = container(content).width(Fill).height(Fill);
+    match tag {
+        Tag::Equal => painted.into(),
+        Tag::Delete => painted.style(kit::fill(C::RemovedBg, 0.0)).into(),
+        Tag::Insert => painted.style(kit::fill(C::AddedBg, 0.0)).into(),
     }
 }
 
-/// The line text, with the intra-line changed parts on a stronger background.
-fn line_content(file: &FileDiff, index: usize) -> Element<'_, Message> {
-    let content = file.line_text(index);
-    let emphasis = file.emphasis(index);
-    if emphasis.is_empty() {
-        return mono(content).into();
-    }
-    let strong = if file.lines()[index].tag == Tag::Insert { C::Ok } else { C::Danger };
+/// The line text with its changed words on a stronger background.
+fn line_content(file: &FileDiff, i: usize) -> Element<'_, Message> {
+    let (content, emphasis) = (file.line_text(i), file.emphasis(i));
+    if emphasis.is_empty() { return mono(content).into() }
+    let strong = if file.lines()[i].tag == Tag::Insert { C::Ok } else { C::Danger };
     let mut parts = row![];
     let mut at = 0;
-    for range in emphasis {
-        if range.start > at {
-            parts = parts.push(mono(&content[at..range.start]));
-        }
-        parts = parts.push(container(mono(&content[range.clone()])).style(crate::tint(strong)));
-        at = range.end;
+    for r in emphasis {
+        parts = parts.push((r.start > at).then(|| mono(&content[at..r.start]))).push(container(mono(&content[r.clone()])).style(tint(strong)));
+        at = r.end;
     }
-    if at < content.len() {
-        parts = parts.push(mono(&content[at..]));
-    }
-    parts.into()
+    parts.push((at < content.len()).then(|| mono(&content[at..]))).into()
 }
 
 #[cfg(test)]

@@ -26,7 +26,7 @@ use loa_ui_kit::icons::Icon;
 use loa_ui_shell::palette;
 use loa_ui_panel::diff;
 use loa_ui_shell::theme::style;
-use loa_ui_tools::{DetailState, ToolDetail, ToolInfo};
+use loa_ui_panel::tools::{DetailState, ToolDetail, ToolInfo};
 use tokio::sync::broadcast;
 
 use crate::area::{Area, AreaId, Ctx, HostToolSet, PanelTab, Request, SessionEvent, Target};

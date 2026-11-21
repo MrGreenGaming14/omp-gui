@@ -1,17 +1,20 @@
 [package]
 name = "loa-ui-panel"
-description = "Right panel tabs: diff, files, session tree, agents"
+description = "Right panel panes: diff, files, session tree, agents and tools"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+loa-contracts.workspace = true
 loa-core.workspace = true
 iced.workspace = true
 loa-ui-kit.workspace = true
 similar = { version = "3.2", features = ["inline"] }
 ignore = "0.4.34"
+shell-words = "1.1"
 thiserror.workspace = true
 
 [dev-dependencies]
+iced_test = "0.14"
 tempfile.workspace = true

@@ -101,7 +101,7 @@ impl State {
     pub(crate) fn with_hub(hub: Arc<SurfaceHub>, ctx: &mut Ctx) -> (Self, Task<Message>) {
         let tools = SurfaceTools::new(Arc::clone(&hub));
         for spec in tools.host_tools().0 {
-            ctx.set_app_tool(loa_ui_tools::ToolInfo::from(&spec));
+            ctx.set_app_tool(loa_ui_panel::tools::ToolInfo::from(&spec));
         }
         let documents = DocsRenderers::new(hub.config().fonts.clone());
         #[allow(unused_mut)]

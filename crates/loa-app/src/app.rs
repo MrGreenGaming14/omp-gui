@@ -31,8 +31,6 @@ use crate::session::{self, Change, Feed, dom_turns};
 /// How often the sidebar's usage meter re-reads `omp usage`.
 const USAGE_REFRESH: Duration = Duration::from_secs(300);
 
-const BUILTIN_TABS: [(&str, &str); 3] = [("diff", "Diff"), ("files", "Files"), ("terminal", "Terminal")];
-
 const TAB_COMMAND: &str = "tab.";
 const THEME_COMMAND: &str = "theme.";
 const NEW_SESSION: palette::CommandId = palette::CommandId::from_static("session.new");
@@ -293,8 +291,7 @@ impl App {
 
     /// Every panel tab: the built-in ones, then each area's.
     fn tabs(&self) -> Vec<crate::area::PanelTab> {
-        let mut tabs: Vec<_> =
-            BUILTIN_TABS.into_iter().map(|(id, title)| crate::area::PanelTab::new(id, title, true)).collect();
+        let mut tabs: Vec<_> = panes::REGISTRY.iter().map(|pane| pane.tab(self)).collect();
         for area_tabs in with_areas!(each_area!(self.areas, ref |area, wrap| area.panel_tabs())) {
             tabs.extend(area_tabs);
         }
@@ -1320,11 +1317,9 @@ impl App {
     }
 
     fn view_tab<'a>(&'a self, tab: &'a str) -> Element<'a, Message> {
-        match tab {
-            "files" => self.files.view().map(Message::Files),
-            "diff" => self.diff.view().map(Message::Diff),
-            "terminal" => self.terminal.view().map(Message::Terminal),
-            _ => with_areas!(each_area!(self.areas, ref |area, wrap| area.view_tab(tab, &self.ctx).map(|view| view.map(wrap))))
+        match panes::find(self, tab) {
+            Some(pane) => pane.view(self),
+            None => with_areas!(each_area!(self.areas, ref |area, wrap| area.view_tab(tab, &self.ctx).map(|view| view.map(wrap))))
                 .into_iter()
                 .flatten()
                 .next()
@@ -1456,6 +1451,7 @@ async fn git_diff(cwd: &Path) -> Option<String> {
 }
 
 mod detach;
+mod panes;
 mod start;
 mod keys;
 mod usage;

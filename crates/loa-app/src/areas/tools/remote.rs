@@ -21,7 +21,7 @@ use loa_remote::pty::{ShellRead, ShellReader, ShellWriter};
 use loa_remote::ssh_config::SshConfig;
 use loa_remote::{RemoteService, RemoteServiceConfig};
 use loa_ui_terminal as terminal;
-use loa_ui_tools as tools;
+use loa_ui_panel::tools;
 
 use crate::area::Ctx;
 use crate::session::dom_turns;

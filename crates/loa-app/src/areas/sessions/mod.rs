@@ -991,7 +991,7 @@ impl Area for State {
     }
 
     fn panel_tabs(&self) -> Vec<PanelTab> {
-        vec![PanelTab::new("agents", "Agents", false), PanelTab::new("session", "Session tree", false)]
+        vec![PanelTab::of(&self.agents, false), PanelTab::of(&self.tree.view, false)]
     }
 
     fn view_tab<'a>(&'a self, id: &str, _: &'a Ctx) -> Option<Element<'a, Message>> {

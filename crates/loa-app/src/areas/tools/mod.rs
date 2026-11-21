@@ -30,7 +30,7 @@ use loa_remote::ports::PromptQueue;
 use loa_remote::RemoteServiceConfig;
 use loa_ui_shell::palette;
 use loa_ui_terminal as terminal;
-use loa_ui_tools as tools;
+use loa_ui_panel::tools;
 
 use self::remote::{Remote, SshPaths, SshPty};
 use crate::area::{Area, AreaId, Ctx, HostToolSet, PanelTab, SessionEvent, Target};
@@ -678,7 +678,7 @@ impl Area for State {
             HOSTS => self.show(tools::Section::Hosts, ctx),
             ADD_SERVER => {
                 let task = self.show(tools::Section::Servers, ctx);
-                let _ = self.panel.update(tools::Message::AddServerOpen);
+                let _ = self.panel.update(tools::Message::FormOpen(tools::FormId::Server));
                 task
             }
             IMPORT_SERVERS => {
@@ -696,7 +696,7 @@ impl Area for State {
     }
 
     fn panel_tabs(&self) -> Vec<PanelTab> {
-        vec![PanelTab::new(TAB, "Tools", true), PanelTab::new(SHELL_TAB, "Remote shell", false)]
+        vec![PanelTab::of(&self.panel, true), PanelTab::new(SHELL_TAB, "Remote shell", false).icon(loa_ui_kit::Icon::Terminal)]
     }
 
     fn view_tab<'a>(&'a self, id: &str, _: &'a Ctx) -> Option<Element<'a, Message>> {

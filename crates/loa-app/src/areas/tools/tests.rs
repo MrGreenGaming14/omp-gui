@@ -312,11 +312,11 @@ for line in sys.stdin:
 /// Adds a stdio server through the panel's add form.
 fn add_server(rig: &mut Rig, name: &str, command: &str) {
     rig.panel(tools::Message::SectionSelected(tools::Section::Servers));
-    rig.panel(tools::Message::AddServerOpen);
-    rig.panel(tools::Message::AddServerName(name.into()));
-    rig.panel(tools::Message::AddServerKind(tools::TransportKind::Stdio));
-    rig.panel(tools::Message::AddServerCommand(command.into()));
-    rig.panel(tools::Message::AddServerSubmit);
+    rig.panel(tools::Message::FormOpen(tools::FormId::Server));
+    rig.panel(tools::Message::FormEdit(tools::FormId::Server, "name", name.into()));
+    rig.panel(tools::Message::TransportPicked(tools::TransportKind::Stdio));
+    rig.panel(tools::Message::FormEdit(tools::FormId::Server, "command", command.into()));
+    rig.panel(tools::Message::FormSubmit(tools::FormId::Server));
     let name = name.to_owned();
     rig.until("the server runs", WAIT, |app| {
         app.areas.tools.panel.catalog().servers.iter().any(|view| {
@@ -501,10 +501,10 @@ fn project_toggles_are_saved_and_switch_tools_off_in_new_sessions() {
 #[test]
 fn the_peers_section_shows_what_each_issued_grant_allows() {
     let mut rig = Rig::new().started();
-    rig.panel(tools::Message::AddHostOpen);
-    rig.panel(tools::Message::AddHostAlias("box".into()));
-    rig.panel(tools::Message::AddHostHostname("10.0.0.5".into()));
-    rig.panel(tools::Message::AddHostSubmit);
+    rig.panel(tools::Message::FormOpen(tools::FormId::Host));
+    rig.panel(tools::Message::FormEdit(tools::FormId::Host, "alias", "box".into()));
+    rig.panel(tools::Message::FormEdit(tools::FormId::Host, "hostname", "10.0.0.5".into()));
+    rig.panel(tools::Message::FormSubmit(tools::FormId::Host));
     let issuer = NodeIdentity::from_secret_bytes(&[9; 32]);
     let driver = NodeIdentity::from_secret_bytes(&[21; 32]);
     let viewer = NodeIdentity::from_secret_bytes(&[22; 32]);
@@ -549,22 +549,22 @@ fn remote_hosts_import_add_limit_and_remove_through_the_central_config() {
     assert_eq!(db.jumps.len(), 1, "ProxyJump bastion");
     assert!(db.limits.read_only && !db.limits.commands, "imported hosts start closed");
 
-    rig.panel(tools::Message::AddHostOpen);
-    rig.panel(tools::Message::AddHostAlias("build".into()));
-    rig.panel(tools::Message::AddHostHostname("build.example".into()));
-    rig.panel(tools::Message::AddHostUser("ci".into()));
-    rig.panel(tools::Message::AddHostPort("2222".into()));
-    rig.panel(tools::Message::AddHostSubmit);
+    rig.panel(tools::Message::FormOpen(tools::FormId::Host));
+    rig.panel(tools::Message::FormEdit(tools::FormId::Host, "alias", "build".into()));
+    rig.panel(tools::Message::FormEdit(tools::FormId::Host, "hostname", "build.example".into()));
+    rig.panel(tools::Message::FormEdit(tools::FormId::Host, "user", "ci".into()));
+    rig.panel(tools::Message::FormEdit(tools::FormId::Host, "port", "2222".into()));
+    rig.panel(tools::Message::FormSubmit(tools::FormId::Host));
     let build = &rig.config().remote_hosts["build"];
     assert_eq!((build.host.as_str(), build.user.as_deref(), build.port), ("build.example", Some("ci"), Some(2222)));
 
     rig.panel(tools::Message::EditLimits("build".into()));
-    rig.panel(tools::Message::LimitsReadOnly(false));
-    rig.panel(tools::Message::LimitsCommands(true));
-    rig.panel(tools::Message::LimitsNewPath("/srv".into()));
+    rig.panel(tools::Message::LimitSet(tools::Limit::ReadOnly, false));
+    rig.panel(tools::Message::LimitSet(tools::Limit::Commands, true));
+    rig.panel(tools::Message::FormEdit(tools::FormId::Limits, "path", "/srv".into()));
     rig.panel(tools::Message::LimitsAddPath);
-    rig.panel(tools::Message::LimitsAutoApprove(true));
-    rig.panel(tools::Message::LimitsSave);
+    rig.panel(tools::Message::LimitSet(tools::Limit::AutoApprove, true));
+    rig.panel(tools::Message::FormSubmit(tools::FormId::Limits));
     let build = &rig.config().remote_hosts["build"];
     assert!(!build.read_only && build.commands && build.auto_approve && build.allowed_paths == ["/srv"]);
     let limits = rig.app.areas.tools.remote.service.hosts().get("build").unwrap().limits;
@@ -594,18 +594,18 @@ fn ssh_box(rig: &mut Rig, commands: bool) -> (ssh::FakeAgent, ssh::TestServer, P
         known_hosts_write: known_hosts.clone(),
         connector: ConnectorConfig::with_agent(Some(agent.socket.clone())),
     });
-    rig.panel(tools::Message::AddHostOpen);
-    rig.panel(tools::Message::AddHostAlias("box".into()));
-    rig.panel(tools::Message::AddHostHostname("127.0.0.1".into()));
-    rig.panel(tools::Message::AddHostUser(ssh::USER.into()));
-    rig.panel(tools::Message::AddHostPort(server.port().to_string()));
-    rig.panel(tools::Message::AddHostSubmit);
+    rig.panel(tools::Message::FormOpen(tools::FormId::Host));
+    rig.panel(tools::Message::FormEdit(tools::FormId::Host, "alias", "box".into()));
+    rig.panel(tools::Message::FormEdit(tools::FormId::Host, "hostname", "127.0.0.1".into()));
+    rig.panel(tools::Message::FormEdit(tools::FormId::Host, "user", ssh::USER.into()));
+    rig.panel(tools::Message::FormEdit(tools::FormId::Host, "port", server.port().to_string()));
+    rig.panel(tools::Message::FormSubmit(tools::FormId::Host));
     rig.panel(tools::Message::EditLimits("box".into()));
-    rig.panel(tools::Message::LimitsReadOnly(false));
-    rig.panel(tools::Message::LimitsCommands(commands));
-    rig.panel(tools::Message::LimitsNewPath("/".into()));
+    rig.panel(tools::Message::LimitSet(tools::Limit::ReadOnly, false));
+    rig.panel(tools::Message::LimitSet(tools::Limit::Commands, commands));
+    rig.panel(tools::Message::FormEdit(tools::FormId::Limits, "path", "/".into()));
     rig.panel(tools::Message::LimitsAddPath);
-    rig.panel(tools::Message::LimitsSave);
+    rig.panel(tools::Message::FormSubmit(tools::FormId::Limits));
     (agent, server, known_hosts)
 }
 

@@ -192,7 +192,7 @@ pub struct Ctx {
     pub keymap: palette::Keymap,
     /// App tools areas serve to sessions, as the Tools panel lists them.
     /// Each area replaces its own entries by name ([`Ctx::set_app_tool`]).
-    pub app_tools: Vec<loa_ui_tools::ToolInfo>,
+    pub app_tools: Vec<loa_ui_panel::tools::ToolInfo>,
     /// Peers the peers area knows; refreshed by it.
     pub peers: Vec<loa_p2p::PeerInfo>,
     /// The running peer node, set by the peers area each time it opens one;
@@ -231,7 +231,7 @@ impl Ctx {
 
     /// Lists `info` among the app tools, replacing the entry of the same
     /// name.
-    pub fn set_app_tool(&mut self, info: loa_ui_tools::ToolInfo) {
+    pub fn set_app_tool(&mut self, info: loa_ui_panel::tools::ToolInfo) {
         match self.app_tools.iter_mut().find(|tool| tool.name == info.name) {
             Some(tool) => *tool = info,
             None => self.app_tools.push(info),

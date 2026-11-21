@@ -105,7 +105,7 @@ impl State {
         let (service, outcomes) = ProjectService::start(sessions, settings, Arc::new(LocalOnly), summarizer, config);
         let tools = service.host_tools();
         for spec in &tools.0 {
-            ctx.set_app_tool(loa_ui_tools::ToolInfo::from(spec));
+            ctx.set_app_tool(loa_ui_panel::tools::ToolInfo::from(spec));
         }
         ctx.shell.set_projects([ctx.services.workspace_project()]);
         let state = Self {

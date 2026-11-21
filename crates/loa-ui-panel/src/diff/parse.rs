@@ -1,5 +1,4 @@
-//! Parser for unified diffs, plain (`diff -u`) or git style, with one or many
-//! files.
+//! Parser for unified diffs, plain (`diff -u`) or git style, with one or many files.
 
 use super::model::{Builder, FileDiff, Tag};
 
@@ -17,11 +16,10 @@ pub enum ParseError {
 
 pub type Result<T, E = ParseError> = std::result::Result<T, E>;
 
-/// A file being collected.
+/// A file being collected; `git` when `diff --git` started it, so `---`/`+++` belong to it.
 struct Pending {
     old_path: Option<String>,
     new_path: Option<String>,
-    /// Started by `diff --git`, so `---`/`+++` belong to it.
     git: bool,
     has_hunks: bool,
     binary: bool,
@@ -29,173 +27,113 @@ struct Pending {
 }
 
 impl Pending {
-    fn new(old_path: Option<String>, new_path: Option<String>, git: bool) -> Self {
-        Self { old_path, new_path, git, has_hunks: false, binary: false, builder: Builder::default() }
-    }
-
-    fn finish(self) -> FileDiff {
-        self.builder.finish(self.old_path, self.new_path, self.binary)
-    }
+    fn new(old_path: Option<String>, new_path: Option<String>, git: bool) -> Self { Self { old_path, new_path, git, has_hunks: false, binary: false, builder: Builder::default() } }
+    fn finish(self) -> FileDiff { self.builder.finish(self.old_path, self.new_path, self.binary) }
 }
 
-/// Lines still expected in the current hunk and the next line numbers.
+/// Lines still expected in the current hunk, and the next line numbers.
 #[derive(Copy, Clone)]
-struct HunkState {
+struct Hunk {
     old_left: u32,
     new_left: u32,
     old_no: u32,
     new_no: u32,
 }
 
-/// Parses a unified diff into one [`FileDiff`] per file. Text before the
-/// first file header (a commit message, say) is skipped.
+/// One [`FileDiff`] per file; text before the first file header (a commit message) is skipped.
 pub fn parse_unified(input: &str) -> Result<Vec<FileDiff>> {
-    let mut files = Vec::new();
-    let mut current: Option<Pending> = None;
-    let mut hunk: Option<HunkState> = None;
-    let mut last_line = 0;
+    let (mut files, mut current, mut hunk, mut last) = (Vec::new(), None::<Pending>, None::<Hunk>, 0);
     for (index, raw) in input.split_inclusive('\n').enumerate() {
-        let number = index + 1;
-        last_line = number;
-        let line = raw.strip_suffix('\n').unwrap_or(raw);
-        let line = line.strip_suffix('\r').unwrap_or(line);
-        if let Some(state) = hunk.as_mut() {
-            if state.old_left > 0 || state.new_left > 0 {
-                let Some(file) = current.as_mut() else { return Err(ParseError::Orphan { line: number }) };
-                hunk_line(file, state, line, number)?;
-                continue;
-            }
-            hunk = None;
-        }
-        if line.starts_with('\\') {
-            // "\ No newline at end of file"
+        let (number, line) = (index + 1, raw.trim_end_matches('\n').trim_end_matches('\r'));
+        last = number;
+        if let Some(h) = hunk.as_mut().filter(|h| h.old_left > 0 || h.new_left > 0) {
+            hunk_line(current.as_mut().ok_or(ParseError::Orphan { line: number })?, h, line, number)?;
             continue;
         }
+        hunk = None;
         if let Some(rest) = line.strip_prefix("diff --git ") {
             files.extend(current.take().map(Pending::finish));
-            let (old, new) = git_paths(rest);
+            let rest = rest.trim_end();
+            let (old, new) = rest.strip_prefix("a/").and_then(|r| r.rsplit_once(" b/")).unwrap_or_else(|| rest.split_once(' ').unwrap_or((rest, rest)));
             current = Some(Pending::new(Some(old.to_owned()), Some(new.to_owned()), true));
         } else if let Some(rest) = line.strip_prefix("--- ") {
-            let path = header_path(rest, "a/");
             match current.as_mut() {
-                Some(file) if file.git && !file.has_hunks => file.old_path = path,
-                _ => {
-                    files.extend(current.take().map(Pending::finish));
-                    current = Some(Pending::new(path, None, false));
-                }
+                Some(f) if f.git && !f.has_hunks => f.old_path = header_path(rest, "a/"),
+                _ => files.extend(current.replace(Pending::new(header_path(rest, "a/"), None, false)).map(Pending::finish)),
             }
         } else if let Some(rest) = line.strip_prefix("+++ ") {
-            let file = current.as_mut().ok_or(ParseError::Orphan { line: number })?;
-            file.new_path = header_path(rest, "b/");
+            current.as_mut().ok_or(ParseError::Orphan { line: number })?.new_path = header_path(rest, "b/");
         } else if let Some(rest) = line.strip_prefix("@@ ") {
-            let file = current.as_mut().ok_or(ParseError::Orphan { line: number })?;
-            let (state, section) = hunk_header(rest).ok_or(ParseError::HunkHeader { line: number })?;
-            file.builder.hunk_break(section);
-            file.has_hunks = true;
-            hunk = Some(state);
-        } else if let Some(file) = current.as_mut() {
-            git_extended_header(file, line);
+            let f = current.as_mut().ok_or(ParseError::Orphan { line: number })?;
+            let (h, section) = hunk_header(rest).ok_or(ParseError::HunkHeader { line: number })?;
+            f.builder.hunk_break(section);
+            (f.has_hunks, hunk) = (true, Some(h));
+        } else if let Some(f) = current.as_mut() {
+            extended_header(f, line);
         }
     }
-    if let Some(state) = hunk
-        && (state.old_left > 0 || state.new_left > 0)
-    {
-        return Err(ParseError::Truncated { line: last_line, old: state.old_left, new: state.new_left });
-    }
+    if let Some(h) = hunk.filter(|h| h.old_left > 0 || h.new_left > 0) { return Err(ParseError::Truncated { line: last, old: h.old_left, new: h.new_left }) }
     files.extend(current.map(Pending::finish));
     Ok(files)
 }
 
-/// Adds one line of a hunk body.
-fn hunk_line(file: &mut Pending, state: &mut HunkState, line: &str, number: usize) -> Result<()> {
-    let overflow = ParseError::Overflow { line: number };
-    let (marker, text) = match line.char_indices().nth(1) {
-        Some((at, _)) => (&line[..at], &line[at..]),
-        None => (line, ""),
-    };
+fn hunk_line(f: &mut Pending, h: &mut Hunk, line: &str, number: usize) -> Result<()> {
+    let overflow = || ParseError::Overflow { line: number };
+    let (marker, text) = line.char_indices().nth(1).map_or((line, ""), |(at, _)| (&line[..at], &line[at..]));
     match marker {
         // Some tools strip the space of empty context lines.
         " " | "" => {
-            state.old_left = state.old_left.checked_sub(1).ok_or(overflow.clone())?;
-            state.new_left = state.new_left.checked_sub(1).ok_or(overflow)?;
-            file.builder.push(Tag::Equal, Some(state.old_no), Some(state.new_no), text);
-            state.old_no += 1;
-            state.new_no += 1;
+            (h.old_left, h.new_left) = (h.old_left.checked_sub(1).ok_or_else(overflow)?, h.new_left.checked_sub(1).ok_or_else(overflow)?);
+            f.builder.push(Tag::Equal, Some(h.old_no), Some(h.new_no), text);
+            (h.old_no, h.new_no) = (h.old_no + 1, h.new_no + 1);
         }
         "-" => {
-            state.old_left = state.old_left.checked_sub(1).ok_or(overflow)?;
-            file.builder.push(Tag::Delete, Some(state.old_no), None, text);
-            state.old_no += 1;
+            h.old_left = h.old_left.checked_sub(1).ok_or_else(overflow)?;
+            f.builder.push(Tag::Delete, Some(h.old_no), None, text);
+            h.old_no += 1;
         }
         "+" => {
-            state.new_left = state.new_left.checked_sub(1).ok_or(overflow)?;
-            file.builder.push(Tag::Insert, None, Some(state.new_no), text);
-            state.new_no += 1;
+            h.new_left = h.new_left.checked_sub(1).ok_or_else(overflow)?;
+            f.builder.push(Tag::Insert, None, Some(h.new_no), text);
+            h.new_no += 1;
         }
-        // "\ No newline at end of file" sits between hunk lines too.
+        // "\ No newline at end of file"
         "\\" => {}
-        _ => return Err(ParseError::Truncated { line: number, old: state.old_left, new: state.new_left }),
+        _ => return Err(ParseError::Truncated { line: number, old: h.old_left, new: h.new_left }),
     }
     Ok(())
 }
 
-/// Parses `-a[,b] +c[,d] @@ section` (the text after the opening `@@ `).
-fn hunk_header(rest: &str) -> Option<(HunkState, &str)> {
+/// Parses `-a[,b] +c[,d] @@ section`; a zero length side names the line before the hunk.
+fn hunk_header(rest: &str) -> Option<(Hunk, &str)> {
     let (ranges, section) = rest.split_once("@@")?;
-    let mut parts = ranges.split_whitespace();
-    let (old_start, old_len) = range(parts.next()?.strip_prefix('-')?)?;
-    let (new_start, new_len) = range(parts.next()?.strip_prefix('+')?)?;
-    if parts.next().is_some() {
-        return None;
-    }
-    // A zero length side names the line before the hunk.
-    let first = |start: u32, len: u32| if len == 0 { start + 1 } else { start };
-    let state = HunkState {
-        old_left: old_len,
-        new_left: new_len,
-        old_no: first(old_start, old_len),
-        new_no: first(new_start, new_len),
+    let range = |t: &str| match t.split_once(',') {
+        Some((s, l)) => Some((s.parse().ok()?, l.parse().ok()?)),
+        None => Some((t.parse().ok()?, 1)),
     };
-    Some((state, section.trim_start()))
+    let mut parts = ranges.split_whitespace();
+    let ((os, ol), (ns, nl)) = (range(parts.next()?.strip_prefix('-')?)?, range(parts.next()?.strip_prefix('+')?)?);
+    let first = |s: u32, l: u32| if l == 0 { s + 1 } else { s };
+    parts.next().is_none().then(|| (Hunk { old_left: ol, new_left: nl, old_no: first(os, ol), new_no: first(ns, nl) }, section.trim_start()))
 }
 
-fn range(text: &str) -> Option<(u32, u32)> {
-    match text.split_once(',') {
-        Some((start, len)) => Some((start.parse().ok()?, len.parse().ok()?)),
-        None => Some((text.parse().ok()?, 1)),
-    }
-}
-
-/// Path of a `---`/`+++` line: drops a trailing timestamp and the `a/` or `b/`
-/// prefix. `/dev/null` means the file doesn't exist on that side.
+/// The path of a `---`/`+++` line without timestamp or `a/`/`b/`; `/dev/null` is no file.
 fn header_path(rest: &str, prefix: &str) -> Option<String> {
     let path = rest.split('\t').next().unwrap_or(rest).trim_end();
-    if path == "/dev/null" {
-        return None;
-    }
-    Some(path.strip_prefix(prefix).unwrap_or(path).to_owned())
+    (path != "/dev/null").then(|| path.strip_prefix(prefix).unwrap_or(path).to_owned())
 }
 
-/// Paths of `diff --git a/old b/new`.
-fn git_paths(rest: &str) -> (&str, &str) {
-    let rest = rest.trim_end();
-    match rest.strip_prefix("a/").and_then(|r| r.rsplit_once(" b/")) {
-        Some((old, new)) => (old, new),
-        None => rest.split_once(' ').unwrap_or((rest, rest)),
-    }
-}
-
-/// Applies git's extended header lines between `diff --git` and the hunks.
-fn git_extended_header(file: &mut Pending, line: &str) {
-    if let Some(path) = line.strip_prefix("rename from ") {
-        file.old_path = Some(path.to_owned());
-    } else if let Some(path) = line.strip_prefix("rename to ") {
-        file.new_path = Some(path.to_owned());
+/// Git's extended header lines between `diff --git` and the hunks.
+fn extended_header(f: &mut Pending, line: &str) {
+    if let Some(p) = line.strip_prefix("rename from ") {
+        f.old_path = Some(p.to_owned());
+    } else if let Some(p) = line.strip_prefix("rename to ") {
+        f.new_path = Some(p.to_owned());
     } else if line.starts_with("new file mode") {
-        file.old_path = None;
+        f.old_path = None;
     } else if line.starts_with("deleted file mode") {
-        file.new_path = None;
+        f.new_path = None;
     } else if line.starts_with("Binary files ") || line == "GIT binary patch" {
-        file.binary = true;
+        f.binary = true;
     }
 }

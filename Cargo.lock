@@ -4710,7 +4710,6 @@ dependencies = [
  "loa-ui-shell",
  "loa-ui-surface",
  "loa-ui-terminal",
- "loa-ui-tools",
  "loa-ui-updates",
  "loa-updater",
  "loa-util",
@@ -5178,9 +5177,12 @@ name = "loa-ui-panel"
 version = "0.1.0"
 dependencies = [
  "iced",
+ "iced_test",
  "ignore",
+ "loa-contracts",
  "loa-core",
  "loa-ui-kit",
+ "shell-words",
  "similar",
  "tempfile",
  "thiserror 2.0.21",
@@ -5257,17 +5259,6 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
-]
-
-[[package]]
-name = "loa-ui-tools"
-version = "0.1.0"
-dependencies = [
- "iced",
- "iced_test",
- "loa-contracts",
- "loa-ui-kit",
- "thiserror 2.0.21",
 ]
 
 [[package]]

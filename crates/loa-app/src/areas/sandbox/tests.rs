@@ -12,7 +12,7 @@ use loa_core::{Dom, Draft, ElementKind, NodeId, PatchSink, Role, TurnStatus, Val
 use loa_trust::NodeIdentity;
 use loa_sandbox::provider::local::find_stub;
 use loa_ui_shell::palette;
-use loa_ui_tools::DetailState;
+use loa_ui_panel::tools::DetailState;
 
 use super::{Field, Message, TAB, View};
 use crate::app::tests::{prompt, update};
@@ -359,7 +359,7 @@ mod peer {
         panel(rt, app, panel::Message::AddPeer);
     }
 
-    fn peer_detail(app: &App) -> loa_ui_tools::ToolDetail {
+    fn peer_detail(app: &App) -> loa_ui_panel::tools::ToolDetail {
         let tool = app.ctx.app_tools.iter().find(|tool| tool.name == "sandbox_task").unwrap();
         tool.details.iter().find(|detail| detail.label == "Peer").unwrap().clone()
     }

@@ -1,29 +1,20 @@
-//! Lazy file tree over a root directory.
-//!
-//! Directories are listed through the [`FileSystem`] port only when first
-//! expanded. Nodes live in a flat arena; the visible rows are cached and
-//! rebuilt only when expansion or the listing changes.
+//! The files tab: a lazy tree over a root directory. Directories are listed through the
+//! [`FileSystem`] port when first expanded; nodes live in a flat arena and the visible rows
+//! are rebuilt only when expansion or a listing changes.
 
-use std::cmp::Ordering;
+use iced::widget::{Space, button, column, container, row, scrollable, text};
+use iced::{Alignment, Element, Fill, Padding, Task};
+use loa_ui_kit::icons::{Icon, icon, muted};
+use loa_ui_kit::style::{self as kit, ButtonKind, Tone};
+use loa_ui_kit::theme::{SpaceRole as Sp, TextRole as T, sp, text_size as ts};
+use loa_ui_kit::widgets::{PanelPane, label};
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
-use iced::keyboard::Key;
-use iced::keyboard::key::Named;
-use iced::widget::operation::{self, AbsoluteOffset};
-use iced::widget::scrollable::Viewport;
-use iced::widget::{Id, Space, button, column, container, row, scrollable, text};
-use iced::{Alignment, Element, Length, Task};
-use loa_ui_kit::icons::{Icon, icon, muted};
-
-use loa_ui_kit::style::{self as kit, ButtonKind, Tone};
-use loa_ui_kit::theme::{SpaceRole as Sp, TextRole as T, sp, text_size as ts};
-
-/// Tallest the sidebar's compact file list grows before it scrolls.
+/// Tallest the sidebar's compact list grows before it scrolls.
 pub const COMPACT_MAX_HEIGHT: f32 = 240.0;
 
-/// Failure to list a directory.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error(transparent)]
@@ -34,7 +25,6 @@ pub enum Error {
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
-/// One child of a listed directory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entry {
     pub name: String,
@@ -43,80 +33,38 @@ pub struct Entry {
 
 /// Port the tree reads directories through.
 pub trait FileSystem: Send + Sync {
-    /// Lists the direct children of `dir`, already filtered (ignore rules,
-    /// `.git`). Order does not matter; the tree sorts.
+    /// The direct children of `dir`, already filtered; the tree sorts them.
     fn list(&self, dir: &Path) -> Result<Vec<Entry>>;
 }
 
-/// [`FileSystem`] on the local disk honoring `.gitignore`, `.ignore` and the
-/// git exclude files, showing dotfiles and always hiding `.git`.
+/// The local disk, honouring `.gitignore`, `.ignore` and git excludes, showing dotfiles and
+/// hiding `.git`.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct LocalFs;
 
 impl FileSystem for LocalFs {
     fn list(&self, dir: &Path) -> Result<Vec<Entry>> {
-        let walk = ignore::WalkBuilder::new(dir)
-            .max_depth(Some(1))
-            .hidden(false)
-            .require_git(false)
-            .parents(true)
-            .filter_entry(|entry| entry.file_name() != ".git")
-            .build();
+        let walk = ignore::WalkBuilder::new(dir).max_depth(Some(1)).hidden(false).require_git(false).parents(true).filter_entry(|e| e.file_name() != ".git").build();
         let mut entries = Vec::new();
         for item in walk {
             let entry = match item {
-                Ok(entry) => entry,
-                // A bad glob in an ignore file or one unreadable child does
-                // not make the rest of the directory unlistable.
-                Err(err) if err.is_partial() || err.depth().is_some_and(|depth| depth > 0) => continue,
-                Err(err) => return Err(err.into()),
+                // A bad glob or one unreadable child leaves the rest listable.
+                Err(e) if e.is_partial() || e.depth().is_some_and(|d| d > 0) => continue,
+                Err(e) => return Err(e.into()),
+                Ok(e) if e.depth() == 0 => continue,
+                Ok(e) => e,
             };
-            if entry.depth() == 0 {
-                continue;
-            }
-            let is_dir = match entry.file_type() {
-                Some(kind) if kind.is_symlink() => entry.path().is_dir(),
-                Some(kind) => kind.is_dir(),
-                None => false,
-            };
+            let is_dir = entry.file_type().is_some_and(|k| if k.is_symlink() { entry.path().is_dir() } else { k.is_dir() });
             entries.push(Entry { name: entry.file_name().to_string_lossy().into_owned(), is_dir });
         }
         Ok(entries)
     }
 }
 
-/// Keyboard navigation commands, routed by the app while the tree has focus.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Nav {
-    Up,
-    Down,
-    Left,
-    Right,
-    Activate,
-    Home,
-    End,
-}
-
-/// Maps a key to a tree navigation command: arrows, Enter, Home, End.
-pub fn nav_for_key(key: &Key) -> Option<Nav> {
-    match key {
-        Key::Named(Named::ArrowUp) => Some(Nav::Up),
-        Key::Named(Named::ArrowDown) => Some(Nav::Down),
-        Key::Named(Named::ArrowLeft) => Some(Nav::Left),
-        Key::Named(Named::ArrowRight) => Some(Nav::Right),
-        Key::Named(Named::Enter) => Some(Nav::Activate),
-        Key::Named(Named::Home) => Some(Nav::Home),
-        Key::Named(Named::End) => Some(Nav::End),
-        _ => None,
-    }
-}
-
 #[derive(Debug, Clone)]
 pub enum Message {
-    Nav(Nav),
-    /// A row was clicked; carries the node index.
+    /// A row was clicked: the node index.
     Click(usize),
-    Scrolled(Viewport),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -125,7 +73,7 @@ pub enum Event {
     Open(PathBuf),
 }
 
-/// Session touch marker of a node.
+/// How a node relates to the files the session touched.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mark {
     None,
@@ -134,474 +82,189 @@ enum Mark {
     Touched,
 }
 
-/// One file or directory. Index 0 is the root, which is never shown.
+/// A file or directory; node 0 is the hidden root.
 struct Node {
-    /// Parent node index; the root points at itself.
-    parent: usize,
-    /// Root is 0, its children 1.
     depth: usize,
     name: String,
-    /// Path relative to the root; empty for the root.
+    /// Relative to the root.
     rel: PathBuf,
     is_dir: bool,
     expanded: bool,
-    /// Children are pushed contiguously when the directory is listed.
+    /// Children are pushed contiguously when listed.
     children: Option<Range<usize>>,
     error: Option<String>,
     mark: Mark,
 }
 
 impl Node {
-    fn root() -> Self {
-        Self {
-            parent: 0,
-            depth: 0,
-            name: String::new(),
-            rel: PathBuf::new(),
-            is_dir: true,
-            expanded: true,
-            children: None,
-            error: None,
-            mark: Mark::None,
-        }
-    }
+    fn root() -> Self { Self { depth: 0, name: String::new(), rel: PathBuf::new(), is_dir: true, expanded: true, children: None, error: None, mark: Mark::None } }
 }
 
-/// One visible line.
+/// A visible line: a node, or the load error under a directory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Row {
     Node(usize),
-    /// Load error line under this directory node.
     Error(usize),
 }
 
-/// File tree tab.
 pub struct State {
     root: PathBuf,
     fs: Box<dyn FileSystem>,
     nodes: Vec<Node>,
     rows: Vec<Row>,
-    /// Selected node index; always a visible node.
     selected: Option<usize>,
-    /// Position of the selected node in `rows`.
-    selected_row: Option<usize>,
-    /// Root-relative touched paths.
     touched: HashSet<PathBuf>,
     /// Every proper ancestor of a touched path.
     touched_dirs: HashSet<PathBuf>,
-    scroll_id: Id,
-    scroll_offset: f32,
-    viewport_height: f32,
 }
 
 impl State {
-    /// Creates the tree and lists the root's children.
+    /// The tree with the root's children listed.
     pub fn new(root: PathBuf, fs: Box<dyn FileSystem>) -> Self {
-        let mut state = Self {
-            root,
-            fs,
-            nodes: vec![Node::root()],
-            rows: Vec::new(),
-            selected: None,
-            selected_row: None,
-            touched: HashSet::new(),
-            touched_dirs: HashSet::new(),
-            scroll_id: Id::unique(),
-            scroll_offset: 0.0,
-            viewport_height: 0.0,
-        };
-        state.load(0);
-        state.rebuild_rows();
-        state
+        let mut s = Self { root, fs, nodes: vec![Node::root()], rows: Vec::new(), selected: None, touched: HashSet::new(), touched_dirs: HashSet::new() };
+        s.load(0);
+        s.rebuild_rows();
+        s
     }
 
-    /// Root directory of the tree.
-    pub fn root(&self) -> &Path {
-        &self.root
-    }
+    pub fn root(&self) -> &Path { &self.root }
 
-    /// Roots the tree at `root`: forgets every loaded node, the selection
-    /// and the touched files, and lists the new root's children.
-    pub fn set_root(&mut self, root: PathBuf) {
-        self.root = root;
-        self.nodes = vec![Node::root()];
-        self.selected = None;
-        self.selected_row = None;
-        self.touched.clear();
-        self.touched_dirs.clear();
-        self.scroll_offset = 0.0;
-        self.load(0);
-        self.rebuild_rows();
-    }
+    /// Re-roots the tree, forgetting nodes, selection and touched files.
+    pub fn set_root(&mut self, root: PathBuf) { *self = Self::new(root, std::mem::replace(&mut self.fs, Box::new(LocalFs))) }
 
     /// Root-relative paths of the visible rows, top to bottom.
-    pub fn visible(&self) -> impl Iterator<Item = &Path> {
-        self.rows.iter().filter_map(|row| match *row {
-            Row::Node(index) => Some(self.nodes[index].rel.as_path()),
-            Row::Error(_) => None,
-        })
-    }
+    pub fn visible(&self) -> impl Iterator<Item = &Path> { self.rows.iter().filter_map(|r| if let Row::Node(i) = *r { Some(self.nodes[i].rel.as_path()) } else { None }) }
 
-    /// Root-relative path of the selected row.
-    pub fn selected_path(&self) -> Option<&Path> {
-        self.selected.map(|index| self.nodes[index].rel.as_path())
-    }
+    pub fn selected_path(&self) -> Option<&Path> { self.selected.map(|i| self.nodes[i].rel.as_path()) }
 
-    /// Replaces the set of files the session touched. Absolute paths outside
-    /// the root are ignored.
+    /// Replaces the files the session touched; absolute paths outside the root are ignored.
     pub fn set_touched(&mut self, paths: impl IntoIterator<Item = PathBuf>) {
         self.touched.clear();
         self.touched_dirs.clear();
         for path in paths {
-            let rel = if path.is_absolute() {
-                match path.strip_prefix(&self.root) {
-                    Ok(rel) => rel.to_path_buf(),
-                    Err(_) => continue,
-                }
-            } else {
-                path
-            };
-            for ancestor in rel.ancestors().skip(1) {
-                // Ancestors of a recorded dir are recorded too.
-                if self.touched_dirs.contains(ancestor) {
-                    break;
-                }
-                self.touched_dirs.insert(ancestor.to_path_buf());
-            }
+            let Some(rel) = (if path.is_absolute() { path.strip_prefix(&self.root).ok().map(Path::to_path_buf) } else { Some(path) }) else { continue };
+            // Ancestors of a recorded dir are recorded too.
+            for a in rel.ancestors().skip(1) { if !self.touched_dirs.insert(a.to_path_buf()) { break } }
             self.touched.insert(rel);
         }
-        for node in &mut self.nodes {
-            node.mark = mark_for(&self.touched, &self.touched_dirs, &node.rel, node.is_dir);
-        }
+        let marks: Vec<_> = self.nodes.iter().map(|n| self.mark(&n.rel, n.is_dir)).collect();
+        self.nodes.iter_mut().zip(marks).for_each(|(n, m)| n.mark = m);
     }
 
-    /// Re-lists every loaded directory, keeping expansion and the selection
-    /// where the paths still exist.
+    fn mark(&self, rel: &Path, is_dir: bool) -> Mark {
+        if self.touched.contains(rel) { Mark::Touched } else if is_dir && self.touched_dirs.contains(rel) { Mark::Contains } else { Mark::None }
+    }
+
+    /// Re-lists every loaded directory, keeping expansion and selection where paths remain.
     pub fn refresh(&mut self) {
-        let old = std::mem::take(&mut self.nodes);
-        let mut dirs: HashMap<PathBuf, bool> = HashMap::new();
-        let mut selected_path = None;
-        for (index, node) in old.into_iter().enumerate().skip(1) {
-            if Some(index) == self.selected {
-                selected_path = Some(node.rel.clone());
-            }
-            if node.is_dir && (node.expanded || node.children.is_some()) {
-                dirs.insert(node.rel, node.expanded);
-            }
-        }
-        self.nodes.push(Node::root());
+        let old = std::mem::replace(&mut self.nodes, vec![Node::root()]);
+        let selected = self.selected.take().map(|i| old[i].rel.clone());
+        let mut dirs: HashMap<PathBuf, bool> = old.into_iter().skip(1).filter(|n| n.is_dir && (n.expanded || n.children.is_some())).map(|n| (n.rel, n.expanded)).collect();
         self.load(0);
-        self.selected = None;
-        let mut index = 1;
-        while index < self.nodes.len() {
-            if self.nodes[index].is_dir
-                && let Some(expanded) = dirs.remove(&self.nodes[index].rel)
-            {
-                self.nodes[index].expanded = expanded;
-                self.load(index);
+        let mut i = 1;
+        while i < self.nodes.len() {
+            if let Some(expanded) = self.nodes[i].is_dir.then(|| dirs.remove(&self.nodes[i].rel)).flatten() {
+                self.nodes[i].expanded = expanded;
+                self.load(i);
             }
-            if selected_path.as_deref() == Some(self.nodes[index].rel.as_path()) {
-                self.selected = Some(index);
-            }
-            index += 1;
+            if selected.as_deref() == Some(self.nodes[i].rel.as_path()) { self.selected = Some(i) }
+            i += 1;
         }
         self.rebuild_rows();
     }
 
+    /// A click selects a row, toggles a directory and opens a file.
     pub fn update(&mut self, message: Message) -> (Task<Message>, Option<Event>) {
-        match message {
-            Message::Nav(nav) => {
-                let event = self.navigate(nav);
-                (self.reveal_selected(), event)
+        let Message::Click(i) = message;
+        if i == 0 || !self.rows.contains(&Row::Node(i)) { return (Task::none(), None) }
+        self.selected = Some(i);
+        let node = &self.nodes[i];
+        if !node.is_dir { return (Task::none(), Some(Event::Open(self.root.join(&node.rel)))) }
+        if !node.expanded && node.children.is_none() { self.load(i) }
+        self.nodes[i].expanded = !self.nodes[i].expanded;
+        self.rebuild_rows();
+        (Task::none(), None)
+    }
+
+    pub fn view(&self) -> Element<'_, Message> { scrollable(self.list()).width(Fill).height(Fill).into() }
+
+    /// The same rows sized to their content up to [`COMPACT_MAX_HEIGHT`], for the sidebar.
+    pub fn view_compact(&self) -> Element<'_, Message> { container(scrollable(self.list()).width(Fill)).max_height(COMPACT_MAX_HEIGHT).width(Fill).into() }
+
+    fn list(&self) -> iced::widget::Column<'_, Message> {
+        let rows = self.rows.iter().map(|r| match *r {
+            Row::Node(i) => self.node_row(i),
+            Row::Error(i) => {
+                let n = &self.nodes[i];
+                let gap = Space::new().width((n.depth + 1) as f32 * crate::indent() + sp(Sp::Xl) + sp(Sp::S));
+                let line = row![gap, label(n.error.as_deref().unwrap_or_default(), T::Body, Tone::Danger).wrapping(text::Wrapping::None)];
+                container(line.align_y(Alignment::Center).height(Fill)).width(Fill).height(crate::list_row_height()).padding(pad()).into()
             }
-            Message::Click(index) => {
-                if index == 0 || index >= self.nodes.len() || !self.select_node(index) {
-                    return (Task::none(), None);
-                }
-                (Task::none(), self.activate(index))
-            }
-            Message::Scrolled(viewport) => {
-                self.scroll_offset = viewport.absolute_offset().y;
-                self.viewport_height = viewport.bounds().height;
-                (Task::none(), None)
-            }
-        }
+        });
+        column(rows).width(Fill).padding(pad())
     }
 
-    pub fn view(&self) -> Element<'_, Message> {
-        scrollable(column(self.row_elements()).width(Length::Fill).padding(iced::Padding::ZERO.left(sp(Sp::S)).right(sp(Sp::S))))
-            .id(self.scroll_id.clone())
-            .on_scroll(Message::Scrolled)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into()
-    }
-
-    /// The same rows and messages as [`State::view`], sized to its content up
-    /// to [`COMPACT_MAX_HEIGHT`], for embedding in a sidebar. Its scrollable
-    /// has no id and does not report scrolling, so it never disturbs the
-    /// keyboard reveal of the Files tab.
-    pub fn view_compact(&self) -> Element<'_, Message> {
-        let rows = column(self.row_elements()).width(Length::Fill).padding(iced::Padding::ZERO.left(sp(Sp::S)).right(sp(Sp::S)));
-        container(scrollable(rows).width(Length::Fill)).max_height(COMPACT_MAX_HEIGHT).width(Length::Fill).into()
-    }
-
-    fn row_elements(&self) -> impl Iterator<Item = Element<'_, Message>> {
-        self.rows.iter().map(|row| match *row {
-            Row::Node(index) => self.node_row(index),
-            Row::Error(index) => self.error_row(index),
-        })
-    }
-
-    fn node_row(&self, index: usize) -> Element<'_, Message> {
-        let node = &self.nodes[index];
-        let chevron: Element<'_, Message> = match (node.is_dir, node.expanded) {
+    fn node_row(&self, i: usize) -> Element<'_, Message> {
+        let n = &self.nodes[i];
+        let small = |i| muted(i, ts(T::Caption)).width(crate::indent()).into();
+        let chevron: Element<'_, Message> = match (n.is_dir, n.expanded) {
             (false, _) => Space::new().width(crate::indent()).into(),
-            (true, false) => muted(Icon::ChevronRight, ts(T::Caption)).width(crate::indent()).into(),
-            (true, true) => muted(Icon::ChevronDown, ts(T::Caption)).width(crate::indent()).into(),
+            (true, false) => small(Icon::ChevronRight),
+            (true, true) => small(Icon::ChevronDown),
         };
-        let kind = if node.is_dir { Icon::Folder } else { Icon::FileText };
-        let marker: Element<'_, Message> = match node.mark {
+        let marker: Element<'_, Message> = match n.mark {
             Mark::None => Space::new().into(),
             Mark::Contains => muted(Icon::CircleDot, ts(T::Caption)).into(),
             Mark::Touched => icon(Icon::CircleDot, ts(T::Caption)).into(),
         };
-        let content = row![
-            Space::new().width((node.depth - 1) as f32 * crate::indent()),
-            chevron,
-            icon(kind, ts(T::Body)),
-            text(node.name.as_str())
-                .size(ts(T::Body))
-                .wrapping(text::Wrapping::None)
-                .width(Length::Fill),
-            marker,
-        ]
-        .spacing(sp(Sp::S))
-        .align_y(Alignment::Center)
-        .height(Length::Fill);
-        button(content)
-            .width(Length::Fill)
-            .height(crate::list_row_height())
-            .padding(iced::Padding::ZERO.left(sp(Sp::S)).right(sp(Sp::S)))
-            .style(kit::button(ButtonKind::Row { selected: self.selected == Some(index) }))
-            .on_press(Message::Click(index))
-            .into()
+        let name = text(n.name.as_str()).size(ts(T::Body)).wrapping(text::Wrapping::None).width(Fill);
+        let content = row![Space::new().width((n.depth - 1) as f32 * crate::indent()), chevron, icon(if n.is_dir { Icon::Folder } else { Icon::FileText }, ts(T::Body)), name, marker];
+        let style = kit::button(ButtonKind::Row { selected: self.selected == Some(i) });
+        button(content.spacing(sp(Sp::S)).align_y(Alignment::Center).height(Fill)).width(Fill).height(crate::list_row_height()).padding(pad()).style(style).on_press(Message::Click(i)).into()
     }
 
-    fn error_row(&self, index: usize) -> Element<'_, Message> {
-        let node = &self.nodes[index];
-        let message = node.error.as_deref().unwrap_or_default();
-        let content = row![
-            Space::new().width(node.depth as f32 * crate::indent() + crate::indent() + sp(Sp::Xl) + sp(Sp::S)),
-            text(message)
-                .size(ts(T::Body))
-                .wrapping(text::Wrapping::None)
-                .style(kit::text(Tone::Danger)),
-        ]
-        .align_y(Alignment::Center)
-        .height(Length::Fill);
-        container(content)
-            .width(Length::Fill)
-            .height(crate::list_row_height())
-            .padding(iced::Padding::ZERO.left(sp(Sp::S)).right(sp(Sp::S)))
-            .into()
-    }
-
-    /// Lists a directory node and appends its children to the arena.
+    /// Lists a directory node and appends its children, directories first, by name ignoring case.
     fn load(&mut self, dir: usize) {
-        let rel = &self.nodes[dir].rel;
-        let listed = if rel.as_os_str().is_empty() {
-            self.fs.list(&self.root)
-        } else {
-            self.fs.list(&self.root.join(rel))
-        };
-        match listed {
+        let rel = self.nodes[dir].rel.clone();
+        match self.fs.list(&if rel.as_os_str().is_empty() { self.root.clone() } else { self.root.join(&rel) }) {
             Ok(mut entries) => {
-                entries.sort_unstable_by(compare_entries);
-                let depth = self.nodes[dir].depth + 1;
-                let first = self.nodes.len();
-                self.nodes.reserve(entries.len());
+                entries.sort_unstable_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())).then_with(|| a.name.cmp(&b.name)));
+                let (first, depth) = (self.nodes.len(), self.nodes[dir].depth + 1);
                 for Entry { name, is_dir } in entries {
-                    let rel = self.nodes[dir].rel.join(&name);
-                    let mark = mark_for(&self.touched, &self.touched_dirs, &rel, is_dir);
-                    self.nodes.push(Node {
-                        parent: dir,
-                        depth,
-                        name,
-                        rel,
-                        is_dir,
-                        expanded: false,
-                        children: None,
-                        error: None,
-                        mark,
-                    });
+                    let rel = rel.join(&name);
+                    let mark = self.mark(&rel, is_dir);
+                    self.nodes.push(Node { depth, name, rel, is_dir, expanded: false, children: None, error: None, mark });
                 }
-                let end = self.nodes.len();
-                let node = &mut self.nodes[dir];
-                node.children = Some(first..end);
-                node.error = None;
+                (self.nodes[dir].children, self.nodes[dir].error) = (Some(first..self.nodes.len()), None);
             }
-            Err(err) => {
-                let node = &mut self.nodes[dir];
-                node.children = None;
-                node.error = Some(err.to_string());
-            }
+            Err(e) => (self.nodes[dir].children, self.nodes[dir].error) = (None, Some(e.to_string())),
         }
     }
 
     fn rebuild_rows(&mut self) {
         self.rows.clear();
         let mut stack = vec![0];
-        while let Some(index) = stack.pop() {
-            let node = &self.nodes[index];
-            if index != 0 {
-                self.rows.push(Row::Node(index));
-            }
-            if node.is_dir && node.expanded {
-                if node.error.is_some() {
-                    self.rows.push(Row::Error(index));
-                }
-                if let Some(children) = &node.children {
-                    stack.extend(children.clone().rev());
-                }
+        while let Some(i) = stack.pop() {
+            let n = &self.nodes[i];
+            if i != 0 { self.rows.push(Row::Node(i)) }
+            if n.is_dir && n.expanded {
+                if n.error.is_some() { self.rows.push(Row::Error(i)) }
+                stack.extend(n.children.clone().into_iter().flatten().rev());
             }
         }
-        self.selected_row =
-            self.selected.and_then(|selected| self.rows.iter().position(|row| *row == Row::Node(selected)));
-        if self.selected_row.is_none() {
-            self.selected = None;
-        }
-    }
-
-    fn set_expanded(&mut self, index: usize, expanded: bool) {
-        if expanded && self.nodes[index].children.is_none() {
-            self.load(index);
-        }
-        self.nodes[index].expanded = expanded;
-        self.rebuild_rows();
-    }
-
-    /// Toggles a directory or opens a file.
-    fn activate(&mut self, index: usize) -> Option<Event> {
-        let node = &self.nodes[index];
-        if node.is_dir {
-            let expanded = node.expanded;
-            self.set_expanded(index, !expanded);
-            None
-        } else {
-            Some(Event::Open(self.root.join(&node.rel)))
-        }
-    }
-
-    fn navigate(&mut self, nav: Nav) -> Option<Event> {
-        let len = self.rows.len();
-        match nav {
-            Nav::Down => {
-                let from = self.selected_row.map_or(0, |row| row + 1);
-                self.select_first_node_row(from..len);
-            }
-            Nav::Up => match self.selected_row {
-                Some(row) => self.select_first_node_row((0..row).rev()),
-                None => self.select_first_node_row((0..len).rev()),
-            },
-            Nav::Home => self.select_first_node_row(0..len),
-            Nav::End => self.select_first_node_row((0..len).rev()),
-            Nav::Right => {
-                let index = self.selected?;
-                let node = &self.nodes[index];
-                if !node.is_dir {
-                    return None;
-                }
-                if !node.expanded {
-                    self.set_expanded(index, true);
-                } else if let Some(children) = &node.children
-                    && !children.is_empty()
-                {
-                    let first = children.start;
-                    self.select_node(first);
-                }
-            }
-            Nav::Left => {
-                let index = self.selected?;
-                let node = &self.nodes[index];
-                if node.is_dir && node.expanded {
-                    self.set_expanded(index, false);
-                } else if node.parent != 0 {
-                    let parent = node.parent;
-                    self.select_node(parent);
-                }
-            }
-            Nav::Activate => return self.activate(self.selected?),
-        }
-        None
-    }
-
-    /// Selects the first node row among `rows`, keeping the selection when
-    /// there is none.
-    fn select_first_node_row(&mut self, mut rows: impl Iterator<Item = usize>) {
-        let found = rows.find_map(|row| match self.rows[row] {
-            Row::Node(index) => Some((row, index)),
-            Row::Error(_) => None,
-        });
-        if let Some((row, index)) = found {
-            self.selected = Some(index);
-            self.selected_row = Some(row);
-        }
-    }
-
-    /// Selects a node if it is visible; returns whether it is.
-    fn select_node(&mut self, index: usize) -> bool {
-        match self.rows.iter().position(|row| *row == Row::Node(index)) {
-            Some(row) => {
-                self.selected = Some(index);
-                self.selected_row = Some(row);
-                true
-            }
-            None => false,
-        }
-    }
-
-    /// Scrolls so the selected row is inside the viewport.
-    fn reveal_selected(&mut self) -> Task<Message> {
-        let Some(row) = self.selected_row else {
-            return Task::none();
-        };
-        let top = row as f32 * crate::list_row_height();
-        let bottom = top + crate::list_row_height();
-        let target = if top < self.scroll_offset {
-            top
-        } else if self.viewport_height > 0.0 && bottom > self.scroll_offset + self.viewport_height {
-            bottom - self.viewport_height
-        } else {
-            return Task::none();
-        };
-        self.scroll_offset = target;
-        operation::scroll_to(self.scroll_id.clone(), AbsoluteOffset { x: None, y: Some(target) })
+        if self.selected.is_some_and(|s| !self.rows.contains(&Row::Node(s))) { self.selected = None }
     }
 }
 
-/// Directories first, then by name ignoring case.
-fn compare_entries(a: &Entry, b: &Entry) -> Ordering {
-    b.is_dir
-        .cmp(&a.is_dir)
-        .then_with(|| {
-            a.name
-                .chars()
-                .flat_map(char::to_lowercase)
-                .cmp(b.name.chars().flat_map(char::to_lowercase))
-        })
-        .then_with(|| a.name.cmp(&b.name))
+impl PanelPane for State {
+    type Message = Message;
+    fn id(&self) -> &str { "files" }
+    fn title(&self) -> &str { "Files" }
+    fn icon(&self) -> Icon { Icon::Folder }
+    fn view(&self) -> Element<'_, Message> { State::view(self) }
 }
 
-fn mark_for(touched: &HashSet<PathBuf>, touched_dirs: &HashSet<PathBuf>, rel: &Path, is_dir: bool) -> Mark {
-    if touched.contains(rel) {
-        Mark::Touched
-    } else if is_dir && touched_dirs.contains(rel) {
-        Mark::Contains
-    } else {
-        Mark::None
-    }
-}
+fn pad() -> Padding { Padding::ZERO.left(sp(Sp::S)).right(sp(Sp::S)) }
 
 #[cfg(test)]
 mod tests {
@@ -615,25 +278,14 @@ mod tests {
     }
 
     impl FakeFs {
-        fn put(&self, dir: &str, entries: &[(&str, bool)]) {
-            let entries = entries.iter().map(|&(name, is_dir)| Entry { name: name.to_owned(), is_dir }).collect();
-            self.tree.lock().unwrap().insert(PathBuf::from(dir), entries);
-        }
-
-        fn calls(&self, dir: &str) -> usize {
-            self.calls.lock().unwrap().get(Path::new(dir)).copied().unwrap_or(0)
-        }
+        fn put(&self, dir: &str, entries: &[(&str, bool)]) { self.tree.lock().unwrap().insert(dir.into(), entries.iter().map(|&(n, d)| Entry { name: n.into(), is_dir: d }).collect()); }
+        fn calls(&self, dir: &str) -> usize { self.calls.lock().unwrap().get(Path::new(dir)).copied().unwrap_or(0) }
     }
 
     impl FileSystem for Arc<FakeFs> {
         fn list(&self, dir: &Path) -> Result<Vec<Entry>> {
             *self.calls.lock().unwrap().entry(dir.to_path_buf()).or_default() += 1;
-            self.tree
-                .lock()
-                .unwrap()
-                .get(dir)
-                .cloned()
-                .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound).into())
+            self.tree.lock().unwrap().get(dir).cloned().ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound).into())
         }
     }
 
@@ -643,198 +295,64 @@ mod tests {
         fs.put("/r/src", &[("main.rs", false), ("lib", true)]);
         fs.put("/r/src/lib", &[("x.rs", false)]);
         fs.put("/r/a", &[]);
-        let state = State::new(PathBuf::from("/r"), Box::new(Arc::clone(&fs)));
-        (state, fs)
+        (State::new("/r".into(), Box::new(Arc::clone(&fs))), fs)
     }
 
-    fn visible(state: &State) -> Vec<&str> {
-        state.visible().map(|path| path.to_str().unwrap()).collect()
+    fn visible(s: &State) -> Vec<&str> { s.visible().map(|p| p.to_str().unwrap()).collect() }
+
+    fn click(s: &mut State, rel: &str) -> Option<Event> {
+        let i = s.nodes.iter().position(|n| n.rel == Path::new(rel)).unwrap();
+        s.update(Message::Click(i)).1
     }
 
-    fn selected(state: &State) -> Option<&str> {
-        state.selected_path().map(|path| path.to_str().unwrap())
-    }
-
-    fn nav(state: &mut State, nav: Nav) -> Option<Event> {
-        state.update(Message::Nav(nav)).1
-    }
-
-    fn index_of(state: &State, rel: &str) -> usize {
-        state.nodes.iter().position(|node| node.rel == Path::new(rel)).unwrap()
-    }
-
-    fn click(state: &mut State, rel: &str) -> Option<Event> {
-        let index = index_of(state, rel);
-        state.update(Message::Click(index)).1
-    }
-
-    fn mark(state: &State, rel: &str) -> Mark {
-        state.nodes[index_of(state, rel)].mark
-    }
+    fn mark(s: &State, rel: &str) -> Mark { s.nodes.iter().find(|n| n.rel == Path::new(rel)).unwrap().mark }
 
     #[test]
-    fn view_compact_draws_the_visible_rows() {
-        let (mut state, _) = fixture();
-        assert_eq!(state.row_elements().count(), state.visible().count());
-        click(&mut state, "src");
-        assert_eq!(state.row_elements().count(), state.visible().count());
-        let _ = state.view_compact();
-    }
-
-    #[test]
-    fn set_root_replaces_the_tree() {
-        let (mut state, fs) = fixture();
-        click(&mut state, "src");
-        fs.put("/q", &[("only.txt", false)]);
-        state.set_root(PathBuf::from("/q"));
-        assert_eq!(state.root(), Path::new("/q"));
-        assert_eq!(visible(&state), ["only.txt"]);
-        assert_eq!(selected(&state), None);
-        assert_eq!(fs.calls("/q"), 1);
-    }
-
-    #[test]
-    fn dirs_sort_before_files_case_insensitively() {
-        let (state, _) = fixture();
-        assert_eq!(visible(&state), ["a", "src", "b.txt", "Z.md"]);
-    }
-
-    #[test]
-    fn child_dir_is_listed_on_first_expand_only() {
-        let (mut state, fs) = fixture();
-        assert_eq!(fs.calls("/r"), 1);
-        assert_eq!(fs.calls("/r/src"), 0);
-
-        click(&mut state, "src");
-        assert_eq!(fs.calls("/r/src"), 1);
-        assert_eq!(visible(&state), ["a", "src", "src/lib", "src/main.rs", "b.txt", "Z.md"]);
-        assert_eq!(fs.calls("/r/src/lib"), 0);
-
-        click(&mut state, "src");
-        assert_eq!(visible(&state), ["a", "src", "b.txt", "Z.md"]);
-        click(&mut state, "src");
-        assert_eq!(fs.calls("/r/src"), 1);
-        assert_eq!(visible(&state), ["a", "src", "src/lib", "src/main.rs", "b.txt", "Z.md"]);
-    }
-
-    #[test]
-    fn keyboard_navigation_follows_tree_semantics() {
-        let (mut state, _) = fixture();
-        nav(&mut state, Nav::Down);
-        assert_eq!(selected(&state), Some("a"));
-        nav(&mut state, Nav::Down);
-        assert_eq!(selected(&state), Some("src"));
-
-        nav(&mut state, Nav::Right);
-        assert_eq!(selected(&state), Some("src"));
-        assert_eq!(visible(&state), ["a", "src", "src/lib", "src/main.rs", "b.txt", "Z.md"]);
-        nav(&mut state, Nav::Right);
-        assert_eq!(selected(&state), Some("src/lib"));
-        nav(&mut state, Nav::Right);
-        nav(&mut state, Nav::Down);
-        assert_eq!(selected(&state), Some("src/lib/x.rs"));
-
-        nav(&mut state, Nav::Left);
-        assert_eq!(selected(&state), Some("src/lib"));
-        nav(&mut state, Nav::Left);
-        assert_eq!(visible(&state), ["a", "src", "src/lib", "src/main.rs", "b.txt", "Z.md"]);
-        nav(&mut state, Nav::Down);
-        assert_eq!(selected(&state), Some("src/main.rs"));
-        nav(&mut state, Nav::Left);
-        assert_eq!(selected(&state), Some("src"));
-        nav(&mut state, Nav::Left);
-        assert_eq!(visible(&state), ["a", "src", "b.txt", "Z.md"]);
-
-        nav(&mut state, Nav::Up);
-        assert_eq!(selected(&state), Some("a"));
-        nav(&mut state, Nav::Up);
-        assert_eq!(selected(&state), Some("a"));
-        nav(&mut state, Nav::End);
-        assert_eq!(selected(&state), Some("Z.md"));
-        nav(&mut state, Nav::Down);
-        assert_eq!(selected(&state), Some("Z.md"));
-        nav(&mut state, Nav::Home);
-        assert_eq!(selected(&state), Some("a"));
-    }
-
-    #[test]
-    fn activate_opens_file_by_absolute_path_and_toggles_dir() {
-        let (mut state, _) = fixture();
-        nav(&mut state, Nav::Down);
-        nav(&mut state, Nav::Down);
-        assert_eq!(nav(&mut state, Nav::Activate), None);
-        assert_eq!(visible(&state), ["a", "src", "src/lib", "src/main.rs", "b.txt", "Z.md"]);
-
-        nav(&mut state, Nav::Down);
-        nav(&mut state, Nav::Down);
-        assert_eq!(nav(&mut state, Nav::Activate), Some(Event::Open(PathBuf::from("/r/src/main.rs"))));
-        assert_eq!(click(&mut state, "Z.md"), Some(Event::Open(PathBuf::from("/r/Z.md"))));
-        assert_eq!(selected(&state), Some("Z.md"));
-    }
-
-    #[test]
-    fn touched_marks_file_and_its_ancestor_dirs() {
-        let (mut state, _) = fixture();
-        state.set_touched([PathBuf::from("/r/src/lib/x.rs"), PathBuf::from("b.txt"), PathBuf::from("/elsewhere/a")]);
-        assert_eq!(mark(&state, "b.txt"), Mark::Touched);
-        assert_eq!(mark(&state, "src"), Mark::Contains);
-        assert_eq!(mark(&state, "a"), Mark::None);
-        assert_eq!(mark(&state, "Z.md"), Mark::None);
-
-        click(&mut state, "src");
-        click(&mut state, "src/lib");
-        assert_eq!(mark(&state, "src/lib"), Mark::Contains);
-        assert_eq!(mark(&state, "src/lib/x.rs"), Mark::Touched);
-        assert_eq!(mark(&state, "src/main.rs"), Mark::None);
-
-        state.set_touched([PathBuf::from("src/main.rs")]);
-        assert_eq!(mark(&state, "src/lib"), Mark::None);
-        assert_eq!(mark(&state, "src/lib/x.rs"), Mark::None);
-        assert_eq!(mark(&state, "b.txt"), Mark::None);
-        assert_eq!(mark(&state, "src"), Mark::Contains);
-    }
-
-    #[test]
-    fn refresh_picks_up_new_file_and_keeps_expansion_and_selection() {
-        let (mut state, fs) = fixture();
-        click(&mut state, "src");
-        click(&mut state, "src/main.rs");
+    fn directories_list_lazily_sort_first_and_open_files() {
+        let (mut s, fs) = fixture();
+        assert_eq!((visible(&s), fs.calls("/r"), fs.calls("/r/src")), (vec!["a", "src", "b.txt", "Z.md"], 1, 0));
+        assert_eq!(click(&mut s, "src"), None);
+        assert_eq!((visible(&s), fs.calls("/r/src"), fs.calls("/r/src/lib")), (vec!["a", "src", "src/lib", "src/main.rs", "b.txt", "Z.md"], 1, 0));
+        click(&mut s, "src");
+        click(&mut s, "src");
+        assert_eq!((visible(&s).len(), fs.calls("/r/src")), (6, 1), "a re-expanded directory isn't listed again");
+        assert_eq!(click(&mut s, "src/main.rs"), Some(Event::Open("/r/src/main.rs".into())));
+        assert_eq!(s.selected_path(), Some(Path::new("src/main.rs")));
         fs.put("/r/src", &[("main.rs", false), ("lib", true), ("new.rs", false)]);
-
-        state.refresh();
-        assert_eq!(visible(&state), ["a", "src", "src/lib", "src/main.rs", "src/new.rs", "b.txt", "Z.md"]);
-        assert_eq!(selected(&state), Some("src/main.rs"));
-
+        s.refresh();
+        assert_eq!((visible(&s), s.selected_path()), (vec!["a", "src", "src/lib", "src/main.rs", "src/new.rs", "b.txt", "Z.md"], Some(Path::new("src/main.rs"))));
         fs.put("/r/src", &[("lib", true)]);
-        state.refresh();
-        assert_eq!(visible(&state), ["a", "src", "src/lib", "b.txt", "Z.md"]);
-        assert_eq!(selected(&state), None);
+        s.refresh();
+        assert_eq!((visible(&s).len(), s.selected_path()), (5, None));
+        fs.put("/q", &[("only.txt", false)]);
+        s.set_root("/q".into());
+        assert_eq!((visible(&s), s.selected_path()), (vec!["only.txt"], None));
+        let _ = s.view_compact();
+    }
+
+    #[test]
+    fn touched_marks_files_and_their_ancestors() {
+        let (mut s, _) = fixture();
+        s.set_touched(["/r/src/lib/x.rs".into(), "b.txt".into(), "/elsewhere/a".into()]);
+        click(&mut s, "src");
+        click(&mut s, "src/lib");
+        let marks = [("b.txt", Mark::Touched), ("src", Mark::Contains), ("src/lib", Mark::Contains), ("src/lib/x.rs", Mark::Touched), ("a", Mark::None), ("src/main.rs", Mark::None)];
+        for (rel, m) in marks { assert_eq!(mark(&s, rel), m, "{rel}") }
+        s.set_touched(["src/main.rs".into()]);
+        assert_eq!([mark(&s, "src/lib"), mark(&s, "b.txt"), mark(&s, "src")], [Mark::None, Mark::None, Mark::Contains]);
     }
 
     #[test]
     fn local_fs_honors_gitignore_and_hides_dot_git() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        std::fs::write(root.join(".gitignore"), "ignored.txt\nbuild/\n").unwrap();
-        std::fs::write(root.join("ignored.txt"), "").unwrap();
-        std::fs::write(root.join("keep.txt"), "").unwrap();
-        std::fs::write(root.join(".dotfile"), "").unwrap();
-        std::fs::create_dir_all(root.join("build")).unwrap();
-        std::fs::write(root.join("build/out"), "").unwrap();
-        std::fs::create_dir_all(root.join(".git")).unwrap();
-        std::fs::write(root.join(".git/HEAD"), "").unwrap();
-        std::fs::create_dir_all(root.join("sub")).unwrap();
-        std::fs::write(root.join("sub/ignored.txt"), "").unwrap();
-        std::fs::write(root.join("sub/kept.rs"), "").unwrap();
-
-        let mut top = LocalFs.list(root).unwrap();
-        top.sort_unstable_by(|a, b| a.name.cmp(&b.name));
-        let expected = [(".dotfile", false), (".gitignore", false), ("keep.txt", false), ("sub", true)];
-        let expected: Vec<Entry> =
-            expected.iter().map(|&(name, is_dir)| Entry { name: name.to_owned(), is_dir }).collect();
-        assert_eq!(top, expected);
-
-        let sub = LocalFs.list(&root.join("sub")).unwrap();
-        assert_eq!(sub, [Entry { name: "kept.rs".to_owned(), is_dir: false }]);
+        for d in ["build", ".git", "sub"] { std::fs::create_dir_all(root.join(d)).unwrap() }
+        for (f, body) in [(".gitignore", "ignored.txt\nbuild/\n"), ("ignored.txt", ""), ("keep.txt", ""), (".dotfile", ""), ("build/out", ""), (".git/HEAD", ""), ("sub/ignored.txt", ""), ("sub/kept.rs", "")] {
+            std::fs::write(root.join(f), body).unwrap();
+        }
+        let mut top: Vec<_> = LocalFs.list(root).unwrap().into_iter().map(|e| (e.name, e.is_dir)).collect();
+        top.sort();
+        assert_eq!(top, [(".dotfile".into(), false), (".gitignore".into(), false), ("keep.txt".into(), false), ("sub".into(), true)]);
+        assert_eq!(LocalFs.list(&root.join("sub")).unwrap(), [Entry { name: "kept.rs".into(), is_dir: false }]);
     }
 }
