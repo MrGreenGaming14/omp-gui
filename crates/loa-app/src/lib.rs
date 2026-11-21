@@ -15,3 +15,6 @@ pub mod areas;
 pub mod services;
 pub mod session;
 pub mod watch;
+
+#[cfg(test)]
+mod testing;

@@ -142,24 +142,6 @@ pub struct State {
 }
 
 impl State {
-    /// Runs compaction summaries and advisor notes on `model`.
-    #[cfg(test)]
-    pub(crate) fn set_small_model(&mut self, model: Arc<dyn loa_projects::Summarizers>) {
-        self.small = Some(model);
-    }
-
-    /// Reads rules, omp's config and native sessions under `home`.
-    #[cfg(test)]
-    pub(crate) fn set_home(&mut self, home: PathBuf) {
-        self.home = home;
-    }
-
-    /// Opens transcript links with `opener`.
-    #[cfg(test)]
-    pub(crate) fn set_opener(&mut self, opener: Arc<dyn UrlOpener>) {
-        self.opener = opener;
-    }
-
     /// Rebuilds from the active session.
     fn reload(&mut self, ctx: &mut Ctx) {
         let empty = Dom::new();

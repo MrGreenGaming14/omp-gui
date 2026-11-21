@@ -88,7 +88,8 @@ impl ScriptedAdapter {
     }
 
     fn session(&self, config: SessionConfig, sink: Arc<dyn PatchSink>, root: NodeId) -> Box<dyn HarnessSession> {
-        self.seen.locked().configs.push(config.clone());
+        // Without the handler: what it routes to may hold the session open.
+        self.seen.locked().configs.push(SessionConfig { host_tool_handler: None, ..config.clone() });
         Box::new(ScriptedSession { adapter: self.clone(), config, sink, root, waiting: Mutex::new(None) })
     }
 }

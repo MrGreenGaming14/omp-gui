@@ -251,26 +251,6 @@ impl State {
         }
         self.refresh(ctx);
     }
-
-    /// The test updater in place of the real one.
-    #[cfg(test)]
-    pub(crate) fn replace_updater(&mut self, updater: Updater, ctx: &mut Ctx) {
-        // The startup check of the real updater never runs in tests.
-        self.screen = updates::State::default();
-        self.updater = Ok(updater);
-        self.refresh(ctx);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn screen(&self) -> &updates::State {
-        &self.screen
-    }
-
-    #[cfg(test)]
-    pub(crate) fn turn_running(&self) -> bool {
-        use loa_updater::swap::Activity;
-        self.turns.turn_running()
-    }
 }
 
 impl AreaMessage for Message {

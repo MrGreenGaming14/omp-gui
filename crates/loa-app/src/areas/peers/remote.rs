@@ -74,16 +74,6 @@ impl Remote {
         self.view.peer().to_string() == peer && self.view.session() == session
     }
 
-    #[cfg(test)]
-    pub fn dom(&self) -> &Dom {
-        &self.dom
-    }
-
-    #[cfg(test)]
-    pub fn view_handle(&self) -> &Arc<RemoteView> {
-        &self.view
-    }
-
     /// The title Recents shows: the `title` attribute, else the first prompt.
     pub fn title(&self) -> String {
         SessionSummary::from_dom(&self.dom, false)

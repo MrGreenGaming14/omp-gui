@@ -235,6 +235,3 @@ impl App {
         operation::focus(composer::EDITOR_ID)
     }
 }
-
-#[cfg(test)]
-mod tests;

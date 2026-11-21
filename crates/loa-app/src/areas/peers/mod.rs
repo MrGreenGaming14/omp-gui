@@ -160,24 +160,6 @@ impl State {
         }
     }
 
-    /// The running node, if it opened.
-    #[cfg(test)]
-    pub(crate) fn node(&self) -> Option<&Node> {
-        self.node.as_ref()
-    }
-
-    /// The peer's session shown in the center.
-    #[cfg(test)]
-    pub(crate) fn remote(&self) -> Option<&remote::Remote> {
-        self.remote.as_ref()
-    }
-
-    /// The peer's shared folder shown in the center.
-    #[cfg(test)]
-    pub(crate) fn folder(&self) -> Option<&folder::Browser> {
-        self.folder.as_ref()
-    }
-
     /// Brings the panel, the sidebar's nodes and peers' sessions, and
     /// `ctx.peers` in line with the node.
     fn refresh(&mut self, ctx: &mut Ctx) {

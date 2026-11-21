@@ -47,11 +47,6 @@ impl State {
         self.theme = theme.clone();
     }
 
-    #[cfg(test)]
-    pub(crate) fn theme(&self) -> &Theme {
-        &self.theme
-    }
-
     /// The inline card of `decision` in the active session, for the
     /// transcript slot it sits in.
     pub fn card(&self, session: &str, decision: NodeId) -> Option<Element<'_, Message>> {
