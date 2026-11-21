@@ -5,27 +5,9 @@
 use loa_contracts::harness::{Answer, SessionConfig};
 use loa_core::{Dom, ElementKind, MemorySink};
 use loa_harness::claude::events::{Mapper, Output};
-use loa_harness::testing::golden;
+use loa_harness::testing::{golden, render};
 use std::path::Path;
 use std::sync::Arc;
-
-/// The DOM as XML without the seq header and with timestamps masked.
-pub fn render(dom: &Dom) -> String {
-    let xml = loa_core::xml::to_string(dom);
-    let mut out = String::new();
-    for line in xml.lines().skip(2) {
-        let mut rest = line;
-        let names = [" started.int=\"", " ended.int=\"", " created.int=\""];
-        while let Some(at) = names.iter().filter_map(|n| rest.find(n).map(|at| at + n.len())).min() {
-            out.push_str(&rest[..at]);
-            out.push('T');
-            rest = &rest[at + rest[at..].find('"').unwrap_or(0)..];
-        }
-        out.push_str(rest);
-        out.push('\n');
-    }
-    out
-}
 
 fn run(name: &str) {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/claude");
