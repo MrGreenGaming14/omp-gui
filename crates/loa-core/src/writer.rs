@@ -27,7 +27,8 @@ impl<'a> DomWriter<'a> {
         self.ts.unwrap_or_else(now_ms)
     }
 
-    fn commit(&self, draft: Draft) -> Result<NodeId, CommitError> {
+    /// Commits any draft, for writes the helpers below don't cover.
+    pub fn commit(&self, draft: Draft) -> Result<NodeId, CommitError> {
         Ok(self.sink.commit_at(draft, self.now())?.node)
     }
 

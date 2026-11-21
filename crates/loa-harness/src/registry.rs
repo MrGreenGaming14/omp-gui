@@ -91,8 +91,8 @@ pub fn factories(env: &HarnessEnv) -> Vec<Arc<dyn HarnessFactory>> {
     #[cfg(feature = "acp")]
     out.push(entry(crate::acp::HARNESS, "ACP", "harness.acp", "ACP agent (opencode or gemini from PATH)", HarnessTraits::default(), acp));
     #[cfg(feature = "omp2")]
-    out.push(entry(loa_adapter_omp2::HARNESS, "omp2", "harness.omp", "omp (from PATH)", HarnessTraits::default(), |_, exe| {
-        Arc::new(loa_adapter_omp2::Omp2Adapter::with_executable(exe.unwrap_or_else(|| loa_adapter_omp2::EXECUTABLE.into())))
+    out.push(entry(crate::omp2::HARNESS, "omp2", "harness.omp", "omp (from PATH)", HarnessTraits::default(), |_, exe| {
+        Arc::new(crate::omp2::Omp2Adapter::with_executable(exe.unwrap_or_else(|| crate::omp2::EXECUTABLE.into())))
     }));
     let _ = entry;
     out
