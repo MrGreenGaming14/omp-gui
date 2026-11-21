@@ -4,7 +4,7 @@
 
 use crate::client::StubClient;
 use crate::isolation::remove_entry;
-use crate::proto::{Command, ExecRequest};
+use crate::proto::ExecRequest;
 use crate::{Result, SandboxError};
 use std::path::Path;
 use std::process::Stdio;
@@ -16,10 +16,6 @@ const PART: usize = 16 << 20;
 const ARCHIVE: &str = ".loa-sandbox-in.tar";
 const PACK: &[&str] = &["-cf", "-", "--exclude=./.git", "."];
 
-fn failed(what: &str, stderr: &[u8]) -> SandboxError {
-    SandboxError::Isolation(format!("{what} failed: {}", String::from_utf8_lossy(stderr).trim()))
-}
-
 /// Runs the host's tar in `dir` with `input` on its stdin.
 async fn tar(dir: &Path, args: &[&str], input: &[u8]) -> Result<Vec<u8>> {
     let mut child = tokio::process::Command::new("tar").args(args).current_dir(dir).kill_on_drop(true)
@@ -29,18 +25,9 @@ async fn tar(dir: &Path, args: &[&str], input: &[u8]) -> Result<Vec<u8>> {
     let (fed, output) = tokio::join!(feed, child.wait_with_output());
     let output = output?;
     if !output.status.success() {
-        return Err(failed("tar", &output.stderr));
+        return Err(SandboxError::Isolation(format!("tar failed: {}", String::from_utf8_lossy(&output.stderr).trim())));
     }
     fed?;
-    Ok(output.stdout)
-}
-
-/// Runs `script` in the stub root with `stdin`.
-async fn remote(client: &StubClient, script: String, stdin: Vec<u8>) -> Result<Vec<u8>> {
-    let output = client.exec(ExecRequest { stdin: Some(stdin), ..ExecRequest::new(Command::Shell(script)) }).await?;
-    if !output.status.success() {
-        return Err(failed("the sandbox's tar", &output.stderr));
-    }
     Ok(output.stdout)
 }
 
@@ -49,15 +36,15 @@ pub async fn copy_in(client: &StubClient, workspace: &Path) -> Result<()> {
     let archive = tar(workspace, PACK, &[]).await?;
     for (index, part) in archive.chunks(PART).enumerate() {
         let redirect = if index == 0 { ">" } else { ">>" };
-        remote(client, format!("cat {redirect} {ARCHIVE}"), part.to_vec()).await?;
+        client.run(ExecRequest { stdin: Some(part.to_vec()), ..ExecRequest::shell(&format!("cat {redirect} {ARCHIVE}"), &[]) }).await?;
     }
-    remote(client, format!("tar -xf {ARCHIVE} && rm -f {ARCHIVE}"), Vec::new()).await.map(drop)
+    client.run(ExecRequest::shell(&format!("tar -xf {ARCHIVE} && rm -f {ARCHIVE}"), &[])).await.map(drop)
 }
 
 /// Replaces `workspace`, but for its Git data, with the stub root: brings
 /// back additions, edits and removals.
 pub async fn copy_out(client: &StubClient, workspace: &Path) -> Result<()> {
-    let archive = remote(client, format!("tar {}", PACK.join(" ")), Vec::new()).await?;
+    let archive = client.run(ExecRequest { argv: ["tar"].iter().chain(PACK).map(|arg| (*arg).to_owned()).collect(), ..ExecRequest::default() }).await?;
     for entry in std::fs::read_dir(workspace)? {
         let entry = entry?;
         if entry.file_name() != ".git" {

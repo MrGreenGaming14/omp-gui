@@ -1,19 +1,17 @@
 //! Thin exec stub that runs inside a sandbox.
 //!
-//! Speaks [`loa_sandbox::proto`] on stdin and stdout: runs commands, reads,
-//! writes and lists files under its root directory. It holds no
-//! secrets and opens no connections; the environment it was started with is
-//! all its commands see.
+//! Speaks [`loa_sandbox::proto`] on stdin and stdout and runs commands in its
+//! root directory. It holds no secrets and opens no connections; the
+//! environment it was started with is all its commands see.
 //!
 //! Usage: `loa-sandbox-stub [ROOT]`. `ROOT` defaults to the current directory.
 
-use loa_sandbox::proto::{self, Command, DirEntry, ExecRequest, ExitStatus, FileKind, Request, Response};
+use loa_sandbox::proto::{self, ExecRequest, ExitStatus, Request, Response};
 use loa_util::LockExt;
 use std::collections::HashMap;
-use std::fs;
 use std::io::{self, Read, Write};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{self as sys, Child, Stdio};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
@@ -33,13 +31,6 @@ impl Out {
         // If the host is gone there is nobody to tell; the read loop sees the
         // closed stdin and ends the stub.
         let _ = out.write_all(&frame).and_then(|()| out.flush());
-    }
-
-    fn reply<T>(&self, id: u32, path: &str, result: io::Result<T>, ok: impl FnOnce(T) -> Response) {
-        self.send(&match result {
-            Ok(value) => ok(value),
-            Err(e) => Response::Error { id, message: format!("{path}: {e}") },
-        });
     }
 }
 
@@ -62,25 +53,9 @@ struct Stub {
 
 impl Stub {
     fn handle(&self, request: Request) -> bool {
-        let at = |path: &str| self.root.join(path);
-        match request {
-            Request::Exec { id, exec } => {
-                if let Err(e) = self.exec(id, exec) {
-                    self.out.send(&Response::Error { id, message: format!("spawn: {e}") });
-                }
-            }
-            Request::ReadFile { id, path, limit } => {
-                self.out.reply(id, &path, read_file(&at(&path), limit), |data| Response::Data { id, data });
-            }
-            Request::WriteFile { id, path, data } => {
-                let path_buf = at(&path);
-                let written = path_buf.parent().map_or(Ok(()), fs::create_dir_all).and_then(|()| fs::write(&path_buf, &data));
-                self.out.reply(id, &path, written, |()| Response::Done { id });
-            }
-            Request::ListDir { id, path } => {
-                self.out.reply(id, &path, list_dir(&at(&path)), |entries| Response::Entries { id, entries });
-            }
-            Request::Shutdown => return false,
+        let Request::Exec { id, exec } = request else { return false };
+        if let Err(e) = self.exec(id, exec) {
+            self.out.send(&Response::Error { id, message: format!("spawn: {e}") });
         }
         true
     }
@@ -88,8 +63,11 @@ impl Stub {
     /// Starts the command with a pump per output pipe and a thread that
     /// waits for it (under a watchdog when it has a timeout), then reports its exit.
     fn exec(&self, id: u32, exec: ExecRequest) -> io::Result<()> {
-        let ExecRequest { command, cwd, env, stdin, timeout_ms } = exec;
-        let mut child = spawn(command, cwd.map_or_else(|| self.root.clone(), |c| self.root.join(c)), env, stdin.is_some())?;
+        let ExecRequest { argv, cwd, env, stdin, timeout_ms } = exec;
+        let (program, args) = argv.split_first().ok_or_else(|| io::Error::other("empty argv"))?;
+        let mut child = sys::Command::new(program).args(args).current_dir(cwd.map_or_else(|| self.root.clone(), |cwd| self.root.join(cwd)))
+            .envs(env).stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() }).stdout(Stdio::piped()).stderr(Stdio::piped())
+            .process_group(0).spawn()?;
         // The child leads its own group, so its pid is the group id.
         let pgid = i32::try_from(child.id()).unwrap_or(i32::MAX);
         self.running.locked().insert(id, pgid);
@@ -112,24 +90,6 @@ impl Stub {
         });
         Ok(())
     }
-}
-
-fn spawn(command: Command, cwd: PathBuf, env: Vec<(String, String)>, stdin: bool) -> io::Result<Child> {
-    let mut cmd = match command {
-        Command::Argv(argv) => {
-            let (program, args) = argv.split_first().ok_or_else(|| io::Error::other("empty argv"))?;
-            let mut cmd = sys::Command::new(program);
-            cmd.args(args);
-            cmd
-        }
-        Command::Shell(script) => {
-            let mut cmd = sys::Command::new("/bin/sh");
-            cmd.arg("-c").arg(script);
-            cmd
-        }
-    };
-    cmd.current_dir(cwd).envs(env).stdin(if stdin { Stdio::piped() } else { Stdio::null() });
-    cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).process_group(0).spawn()
 }
 
 /// Forwards one output pipe as frames until it closes.
@@ -172,26 +132,6 @@ fn watchdog(child: &mut Child, pgid: i32, timeout_ms: Option<u64>) -> (io::Resul
     *finished.0.locked() = true;
     finished.1.notify_all();
     (status, timer.is_some_and(|t| t.join().unwrap_or(false)))
-}
-
-fn read_file(path: &Path, limit: Option<u64>) -> io::Result<Vec<u8>> {
-    let mut data = Vec::new();
-    fs::File::open(path)?.take(limit.unwrap_or(u64::MAX)).read_to_end(&mut data)?;
-    Ok(data)
-}
-
-/// Entries sorted by name; symlinks are not followed.
-fn list_dir(path: &Path) -> io::Result<Vec<DirEntry>> {
-    let mut entries = fs::read_dir(path)?
-        .map(|entry| {
-            let entry = entry?;
-            let t = entry.file_type()?;
-            let kind = if t.is_symlink() { FileKind::Symlink } else if t.is_dir() { FileKind::Dir } else if t.is_file() { FileKind::File } else { FileKind::Other };
-            Ok(DirEntry { name: entry.file_name().to_string_lossy().into_owned(), kind, size: entry.metadata()?.len() })
-        })
-        .collect::<io::Result<Vec<_>>>()?;
-    entries.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(entries)
 }
 
 fn main() {

@@ -8,11 +8,11 @@
 
 use crate::Result;
 use crate::client::StubClient;
-use crate::proto::{Command, ExecRequest, FileKind};
+use crate::proto::ExecRequest;
 use async_trait::async_trait;
 use loa_contracts::harness::{Adapter, Answer, Prompt, SessionConfig};
 use loa_contracts::tools::{CallCtx, Tool, ToolOutput, ToolSet};
-use loa_core::{CommitError, DecisionKind, DecisionStatus, Dom, Draft, ElementKind, MemorySink, MessageKind, NodeId, Op, Patch, PatchSink, Role, answer, attr};
+use loa_core::{CommitError, DecisionKind, DecisionStatus, Dom, Draft, ElementKind, MessageKind, NodeId, Op, Patch, PatchSink, Role, answer, attr};
 use loa_util::LockExt;
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -35,25 +35,6 @@ const OUTPUT_LIMIT: usize = 64 * 1024;
 pub trait WorkerJournal: Send + Sync {
     /// The sink of a new, empty session.
     fn open(&self, session_id: &str) -> Result<Arc<dyn PatchSink>>;
-}
-
-/// Keeps worker sessions in memory, for tests and previews.
-#[derive(Default)]
-pub struct MemoryJournal(Mutex<Vec<(String, Arc<MemorySink>)>>);
-
-impl MemoryJournal {
-    /// The sink of a session opened earlier.
-    pub fn session(&self, session_id: &str) -> Option<Arc<MemorySink>> {
-        self.0.locked().iter().find(|(id, _)| id == session_id).map(|(_, sink)| Arc::clone(sink))
-    }
-}
-
-impl WorkerJournal for MemoryJournal {
-    fn open(&self, session_id: &str) -> Result<Arc<dyn PatchSink>> {
-        let sink = Arc::new(MemorySink::new());
-        self.0.locked().push((session_id.to_owned(), Arc::clone(&sink)));
-        Ok(sink)
-    }
 }
 
 /// Forwards commits to the journal sink and keeps a copy of the DOM, so the
@@ -147,7 +128,7 @@ impl Tool for SandboxBash {
     const NAME: &'static str = "sandbox_bash";
     fn description(&self) -> &str { "Runs a shell command inside the sandbox, in the workspace. Returns stdout, stderr and the exit code." }
     async fn run(&self, _: &CallCtx, args: BashArgs) -> Result<ToolOutput, String> {
-        let exec = ExecRequest { cwd: args.cwd, timeout_ms: args.timeout_ms, ..ExecRequest::new(Command::Shell(args.command)) };
+        let exec = ExecRequest { cwd: args.cwd, timeout_ms: args.timeout_ms, ..ExecRequest::shell(&args.command, &[]) };
         let out = self.0.exec(exec).await.map_err(failed)?;
         let mut text = String::new();
         for (name, bytes) in [("stdout", &out.stdout), ("stderr", &out.stderr)].into_iter().filter(|(_, b)| !b.is_empty()) {
@@ -173,7 +154,8 @@ impl Tool for SandboxRead {
     const NAME: &'static str = "sandbox_read";
     fn description(&self) -> &str { "Reads a file in the sandbox workspace." }
     async fn run(&self, _: &CallCtx, args: ReadArgs) -> Result<ToolOutput, String> {
-        let data = self.0.read_file(&args.path, args.limit).await.map_err(failed)?;
+        let script = args.limit.map_or_else(|| "cat -- \"$1\"".to_owned(), |limit| format!("head -c {limit} -- \"$1\""));
+        let data = self.0.run(ExecRequest::shell(&script, &[&args.path])).await.map_err(failed)?;
         Ok(ToolOutput::text(String::from_utf8_lossy(&data)))
     }
 }
@@ -185,7 +167,8 @@ impl Tool for SandboxWrite {
     fn description(&self) -> &str { "Writes a file in the sandbox workspace, creating parent directories." }
     async fn run(&self, _: &CallCtx, args: WriteArgs) -> Result<ToolOutput, String> {
         let len = args.content.len();
-        self.0.write_file(&args.path, args.content.into_bytes()).await.map_err(failed)?;
+        let script = ExecRequest::shell(r#"mkdir -p -- "$(dirname -- "$1")" && cat > "$1""#, &[&args.path]);
+        self.0.run(ExecRequest { stdin: Some(args.content.into_bytes()), ..script }).await.map_err(failed)?;
         Ok(ToolOutput::text(format!("wrote {len} bytes to {}", args.path)))
     }
 }
@@ -196,13 +179,8 @@ impl Tool for SandboxList {
     const NAME: &'static str = "sandbox_list";
     fn description(&self) -> &str { "Lists a directory in the sandbox workspace." }
     async fn run(&self, _: &CallCtx, args: ListArgs) -> Result<ToolOutput, String> {
-        let entries = self.0.list_dir(args.path.as_deref().unwrap_or(".")).await.map_err(failed)?;
-        let mut text = String::new();
-        for entry in entries {
-            let suffix = match entry.kind { FileKind::Dir => "/", FileKind::Symlink => "@", _ => "" };
-            let _ = writeln!(text, "{}{suffix}\t{}", entry.name, entry.size);
-        }
-        Ok(ToolOutput::text(text))
+        let listing = self.0.run(ExecRequest::shell(r#"ls -Al -- "$1""#, &[args.path.as_deref().unwrap_or(".")])).await.map_err(failed)?;
+        Ok(ToolOutput::text(String::from_utf8_lossy(&listing)))
     }
 }
 

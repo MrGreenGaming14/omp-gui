@@ -4,14 +4,13 @@
 
 use async_trait::async_trait;
 use loa_contracts::harness::{Adapter, AdapterError, Answer, Capabilities, HarnessSession, HostTools, Prompt, Result, SessionConfig, SessionState};
-use loa_core::{Dom, Draft, ElementKind, NodeId, PatchSink, SessionMode, Value, attr};
+use loa_core::{Dom, Draft, ElementKind, MemorySink, NodeId, PatchSink, SessionMode, Value, attr};
 use loa_sandbox::client::StubClient;
 use loa_sandbox::isolation::{apply_patch, patch_files};
-use loa_sandbox::proto::{Command, DirEntry, ExecRequest, FileKind};
+use loa_sandbox::proto::ExecRequest;
 use loa_sandbox::provider::local::LocalProvider;
 use loa_sandbox::provider::{Sandbox, SandboxProvider, SandboxSpec};
-use loa_sandbox::tool::{SandboxTask, SandboxTaskArgs};
-use loa_sandbox::worker::MemoryJournal;
+use loa_sandbox::worker::WorkerJournal;
 use loa_sandbox::{SandboxConfig, SandboxEvent, SandboxKind, SandboxService, SandboxTaskResult};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex};
@@ -33,8 +32,14 @@ static STUB: LazyLock<PathBuf> = LazyLock::new(|| {
 
 fn stub() -> PathBuf { STUB.clone() }
 
+struct Journal;
+
+impl WorkerJournal for Journal {
+    fn open(&self, _: &str) -> loa_sandbox::Result<Arc<dyn PatchSink>> { Ok(Arc::new(MemorySink::new())) }
+}
+
 fn service() -> SandboxService {
-    SandboxService::new(SandboxConfig::default(), Arc::new(MemoryJournal::default())).with_stub(Some(stub()))
+    SandboxService::new(SandboxConfig::default(), Arc::new(Journal)).with_stub(Some(stub()))
 }
 
 fn git(dir: &Path, args: &[&str]) {
@@ -153,17 +158,11 @@ async fn connect(root: &Path) -> (StubClient, Box<dyn Sandbox>) {
 async fn the_stub_streams_output_and_reports_the_exit_status() {
     let root = tempfile::tempdir().unwrap();
     let (client, sandbox) = connect(root.path()).await;
-    let script = "printf out; printf err >&2; exit 7";
-    let output = client.exec(ExecRequest::new(Command::Argv(vec!["/bin/sh".into(), "-c".into(), script.into()]))).await.unwrap();
+    let output = client.exec(ExecRequest::shell("printf \"$1\"; printf err >&2; exit 7", &["out"])).await.unwrap();
     assert_eq!((output.stdout.as_slice(), output.stderr.as_slice(), output.status.code), (&b"out"[..], &b"err"[..], Some(7)));
-
-    client.write_file("nested/data.txt", b"abc".to_vec()).await.unwrap();
-    assert_eq!(client.read_file("nested/data.txt", Some(2)).await.unwrap(), b"ab");
-    let entries = client.list_dir("nested").await.unwrap();
-    assert_eq!(entries, [DirEntry { name: "data.txt".into(), kind: FileKind::File, size: 3 }]);
-    assert!(client.read_file("nested/missing", None).await.is_err());
-
-    let output = client.exec(ExecRequest { timeout_ms: Some(30), ..ExecRequest::new(Command::Shell("while :; do :; done".into())) }).await.unwrap();
+    let error = client.run(ExecRequest { argv: vec!["missing-program".into()], ..ExecRequest::default() }).await.unwrap_err();
+    assert!(error.to_string().contains("spawn"), "{error}");
+    let output = client.exec(ExecRequest { timeout_ms: Some(30), ..ExecRequest::shell("while :; do :; done", &[]) }).await.unwrap();
     assert!(output.status.timed_out && !output.status.success());
     client.shutdown().await.unwrap();
     sandbox.stop().await.unwrap();
@@ -178,7 +177,7 @@ async fn copied_workspaces_go_in_and_come_back_without_git_data() {
     let (client, sandbox) = connect(root.path()).await;
     loa_sandbox::sync::copy_in(&client, workspace.path()).await.unwrap();
     assert!(!root.path().join(".git").exists() && root.path().join("kept.txt").exists());
-    client.exec(ExecRequest::new(Command::Shell("rm gone.txt && mkdir new && echo new > new/file".into()))).await.unwrap();
+    client.run(ExecRequest::shell("rm gone.txt && mkdir new && echo new > new/file", &[])).await.unwrap();
     loa_sandbox::sync::copy_out(&client, workspace.path()).await.unwrap();
     let mut names: Vec<_> = std::fs::read_dir(workspace.path()).unwrap().map(|entry| entry.unwrap().file_name()).collect();
     names.sort();
@@ -188,73 +187,61 @@ async fn copied_workspaces_go_in_and_come_back_without_git_data() {
     sandbox.stop().await.unwrap();
 }
 
-#[tokio::test]
-async fn worker_secrets_stay_on_host_and_only_workspace_files_reach_the_stub() {
-    let workspace = tempfile::tempdir().unwrap();
-    std::fs::write(workspace.path().join("public.txt"), "safe-workspace-content").unwrap();
-    let adapter = Arc::new(Scripted {
-        calls: &[
-            ("sandbox_bash", r#"{"command":"printf '%s' \"${HOST_API_KEY-unset}\""}"#),
-            ("sandbox_list", r#"{"path":"."}"#),
-            ("sandbox_read", r#"{"path":"public.txt"}"#),
-        ],
-        check: Some(|config| {
-            assert_eq!(config.env.get("HOST_API_KEY").map(String::as_str), Some("host-only-value"));
-            assert!(config.mcp_servers.is_empty());
-            assert!(config.disabled_tools.iter().any(|name| name == "bash"));
-            assert!(!config.cwd.join("public.txt").exists(), "the harness cwd shows the workspace");
-        }),
-        ..Scripted::default()
-    });
-    let observed = Arc::clone(&adapter.observed);
-    let mut template = SessionConfig { session_id: "parent".into(), cwd: workspace.path().into(), ..SessionConfig::default() };
-    template.env.insert("HOST_API_KEY".into(), "host-only-value".into());
-    let provider: Arc<dyn SandboxProvider> = Arc::new(LocalProvider::new(stub()));
-    let tool = SandboxTask::new(adapter, template, Arc::new(MemoryJournal::default()), vec![provider]);
-    let args: SandboxTaskArgs = serde_json::from_str(r#"{"task":"Inspect files","kind":"local"}"#).unwrap();
-    tool.execute(args).await.unwrap();
-    let observed = observed.lock().unwrap();
-    assert!(observed[0].contains("unset"), "the sandbox inherited the host environment: {}", observed[0]);
-    assert!(observed[1].contains("public.txt"), "{}", observed[1]);
-    assert_eq!(observed[2], "safe-workspace-content");
-}
-
+/// omp in always-ask mode asks before its tool calls and only goes on once
+/// the decision is answered; the worker answers for itself. Host secrets
+/// never reach the sandbox, and the workspace only changes through the patch.
 #[tokio::test(flavor = "multi_thread")]
-async fn the_service_tool_runs_isolated_and_returns_the_patch() {
+async fn an_isolated_run_keeps_secrets_on_the_host_and_returns_the_patch() {
     let repo = repository();
     let service = service();
     let mut events = service.subscribe();
-    let template = SessionConfig { session_id: "parent".into(), cwd: repo.path().into(), ..SessionConfig::default() };
-    let adapter = Scripted {
+    let mut template = SessionConfig { session_id: "parent".into(), node: "host".into(), cwd: repo.path().into(), ..SessionConfig::default() };
+    template.env.insert("HOST_API_KEY".into(), "host-only-value".into());
+    let adapter = Arc::new(Scripted {
         calls: &[
+            ("sandbox_bash", r#"{"command":"printf '%s' \"${HOST_API_KEY-unset}\""}"#),
             ("sandbox_write", r#"{"path":"notes/hello.txt","content":"from the sandbox\n"}"#),
             ("sandbox_bash", r#"{"command":"printf 'changed\\n' > tracked.txt"}"#),
+            ("sandbox_list", r#"{"path":"notes"}"#),
+            ("sandbox_read", r#"{"path":"notes/hello.txt","limit":4}"#),
         ],
+        asks: true,
+        check: Some(|config| {
+            assert_eq!(config.env.get("HOST_API_KEY").map(String::as_str), Some("host-only-value"));
+            assert!(config.mcp_servers.is_empty() && config.disabled_tools.iter().any(|name| name == "bash"));
+            assert!(!config.cwd.join("tracked.txt").exists(), "the harness cwd shows the workspace");
+        }),
         ..Scripted::default()
-    };
-    let (spec, handler) = service.host_tool(Arc::new(adapter), &template).expect("the local provider is available");
+    });
+    let (observed, answers) = (Arc::clone(&adapter.observed), Arc::clone(&adapter.answers));
+    let (spec, handler) = service.host_tool(adapter, &template).expect("the local provider is available");
     assert_eq!(spec.name, "sandbox_task");
+    let schema: serde_json::Value = serde_json::from_str(&spec.input_schema).unwrap();
+    let kinds = schema["properties"]["kind"]["enum"].as_array().unwrap();
+    assert!(kinds.contains(&"local".into()) && !kinds.contains(&"firecracker".into()), "{kinds:?}");
 
-    let answer = handler.call("parent", "sandbox_task", r#"{"task":"Write the notes","kind":"local","isolation":true}"#).await.unwrap();
+    let call = handler.call("parent", "sandbox_task", r#"{"task":"Write the notes","kind":"local","isolation":true}"#);
+    let answer = tokio::time::timeout(std::time::Duration::from_secs(30), call).await.expect("the worker doesn't wait on nobody").unwrap();
     let result: SandboxTaskResult = serde_json::from_str(&answer).unwrap();
+    let observed = observed.lock().unwrap();
+    assert!(observed[0].contains("unset"), "the sandbox inherited the host environment: {}", observed[0]);
+    assert!(observed[3].contains("hello.txt") && observed[4] == "from", "{observed:?}");
+    let answers = answers.lock().unwrap();
+    assert_eq!((answers.len(), answers[0].values.as_slice(), answers[0].by.as_str()), (1, ["allow_once".to_owned()].as_slice(), "host"));
+
     let patch = result.patch.expect("isolated runs return a patch");
     assert!(patch.contains("+from the sandbox") && patch.contains("-original") && patch.contains("+changed"), "{patch}");
     let files: Vec<_> = patch_files(&patch).into_iter().map(|file| file.path).collect();
     assert_eq!(files, ["notes/hello.txt", "tracked.txt"]);
-
-    // The workspace is untouched until the patch is applied.
     assert!(!repo.path().join("notes").exists());
     assert_eq!(std::fs::read_to_string(repo.path().join("tracked.txt")).unwrap(), "original\n");
     let worktrees = std::process::Command::new("git").args(["worktree", "list"]).current_dir(repo.path()).output().unwrap();
     assert_eq!(String::from_utf8_lossy(&worktrees.stdout).lines().count(), 1, "the isolated worktree was removed");
 
     let SandboxEvent::Started(run) = events.recv().await.unwrap() else { panic!("a start first") };
-    assert_eq!((run.parent.as_str(), run.kind, run.isolated, run.task.as_str()), ("parent", SandboxKind::Local, true, "Write the notes"));
-    assert_eq!(run.worker, result.session_id);
-    match events.recv().await.unwrap() {
-        SandboxEvent::Finished { run: finished, patch: Some(sent), .. } => assert_eq!((finished, sent), (run.run, patch.clone())),
-        other => panic!("expected the finish with its patch, got {other:?}"),
-    }
+    assert_eq!((run.parent.as_str(), run.kind, run.isolated, run.worker.as_str()), ("parent", SandboxKind::Local, true, result.session_id.as_str()));
+    let SandboxEvent::Finished { run: finished, patch: Some(sent), .. } = events.recv().await.unwrap() else { panic!("the finish with its patch") };
+    assert_eq!((finished, &sent), (run.run, &patch));
 
     apply_patch(repo.path(), patch.as_bytes()).unwrap();
     assert_eq!(std::fs::read_to_string(repo.path().join("notes/hello.txt")).unwrap(), "from the sandbox\n");
@@ -273,23 +260,5 @@ async fn a_failed_run_is_reported() {
     assert!(matches!(events.recv().await.unwrap(), SandboxEvent::Started(_)));
     assert!(matches!(events.recv().await.unwrap(), SandboxEvent::Failed { error: reported, .. } if error.contains(&reported)));
     let error = handler.call("parent", "sandbox_task", r#"{"task":"x","kind":"firecracker"}"#).await.unwrap_err();
-    assert!(error.contains("kind") || error.contains("firecracker"), "{error}");
-}
-
-/// omp in always-ask mode asks before its tool call and only goes on once
-/// the decision is answered; the worker answers for itself.
-#[tokio::test(flavor = "multi_thread")]
-async fn the_worker_allows_its_own_approval_requests() {
-    let repo = repository();
-    let template = SessionConfig { session_id: "parent".into(), node: "host".into(), cwd: repo.path().into(), ..SessionConfig::default() };
-    let adapter = Arc::new(Scripted { calls: &[("sandbox_write", r#"{"path":"approved.txt","content":"approved\n"}"#)], asks: true, ..Scripted::default() });
-    let answers = Arc::clone(&adapter.answers);
-    let (_, handler) = service().host_tool(adapter, &template).unwrap();
-    let call = handler.call("parent", "sandbox_task", r#"{"task":"Write it","kind":"local","isolation":true}"#);
-    let answer = tokio::time::timeout(std::time::Duration::from_secs(30), call).await.expect("the worker doesn't wait on nobody").unwrap();
-    let result: SandboxTaskResult = serde_json::from_str(&answer).unwrap();
-    assert!(result.patch.expect("a patch").contains("+approved"));
-    let answers = answers.lock().unwrap();
-    assert_eq!(answers.len(), 1);
-    assert_eq!((answers[0].values.as_slice(), answers[0].by.as_str()), (["allow_once".to_owned()].as_slice(), "host"));
+    assert!(error.contains("firecracker"), "{error}");
 }

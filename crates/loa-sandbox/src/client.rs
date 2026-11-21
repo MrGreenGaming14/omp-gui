@@ -1,6 +1,6 @@
 //! The host side of the stub protocol.
 
-use crate::proto::{self, DirEntry, ExecRequest, ExitStatus, Request, Response};
+use crate::proto::{self, ExecRequest, ExitStatus, Request, Response};
 use crate::provider::Channel;
 use crate::{Result, SandboxError};
 use loa_util::LockExt;
@@ -65,12 +65,6 @@ impl StubClient {
         Ok(rx)
     }
 
-    /// Sends a request and picks the value out of its one answer.
-    async fn request<T>(&self, make: impl FnOnce(u32) -> Request, pick: fn(Response) -> Result<T, Response>) -> Result<T> {
-        let mut rx = self.call(make).await?;
-        pick(rx.recv().await.ok_or(SandboxError::Disconnected)?).map_err(refused)
-    }
-
     /// Runs a command to the end, collecting its output.
     pub async fn exec(&self, exec: ExecRequest) -> Result<ExecOutput> {
         let mut rx = self.call(|id| Request::Exec { id, exec }).await?;
@@ -85,19 +79,13 @@ impl StubClient {
         }
     }
 
-    pub async fn read_file(&self, path: &str, limit: Option<u64>) -> Result<Vec<u8>> {
-        let path = path.to_owned();
-        self.request(|id| Request::ReadFile { id, path, limit }, |r| if let Response::Data { data, .. } = r { Ok(data) } else { Err(r) }).await
-    }
-
-    pub async fn write_file(&self, path: &str, data: Vec<u8>) -> Result<()> {
-        let path = path.to_owned();
-        self.request(|id| Request::WriteFile { id, path, data }, |r| if let Response::Done { .. } = r { Ok(()) } else { Err(r) }).await
-    }
-
-    pub async fn list_dir(&self, path: &str) -> Result<Vec<DirEntry>> {
-        let path = path.to_owned();
-        self.request(|id| Request::ListDir { id, path }, |r| if let Response::Entries { entries, .. } = r { Ok(entries) } else { Err(r) }).await
+    /// Runs a command that must succeed and returns its stdout; a failure carries its stderr.
+    pub async fn run(&self, exec: ExecRequest) -> Result<Vec<u8>> {
+        let out = self.exec(exec).await?;
+        match out.status.success() {
+            true => Ok(out.stdout),
+            false => Err(SandboxError::Stub(format!("exit status {:?}: {}", out.status.code, String::from_utf8_lossy(&out.stderr).trim()))),
+        }
     }
 
     /// Asks the stub to kill its commands and exit.

@@ -3,8 +3,8 @@
 //! The stub first writes [`MAGIC`], which lets the host find the protocol in
 //! a serial console that also carries boot messages. After it, both
 //! directions carry frames: a little endian `u32` body length, then a
-//! postcard encoded [`Request`] or [`Response`]. Paths in requests are
-//! relative to the stub's root directory; absolute paths are taken as they are.
+//! postcard encoded [`Request`] or [`Response`]. The stub only runs commands,
+//! in its root directory unless a request names another.
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -17,16 +17,10 @@ pub const MAGIC: &[u8; 12] = b"\0LOA-STUB/2\n";
 /// Largest frame body either side accepts.
 pub const MAX_FRAME: u32 = 64 << 20;
 
-/// What to run: a program and its arguments, or a script for `/bin/sh -c`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Command {
-    Argv(Vec<String>),
-    Shell(String),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// A command for the stub: `argv[0]` with the rest as its arguments.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecRequest {
-    pub command: Command,
+    pub argv: Vec<String>,
     /// Working directory, relative to the stub root. `None` is the root.
     pub cwd: Option<String>,
     /// Added to the stub's own environment.
@@ -38,38 +32,19 @@ pub struct ExecRequest {
 }
 
 impl ExecRequest {
-    pub fn new(command: Command) -> Self {
-        Self { command, cwd: None, env: Vec::new(), stdin: None, timeout_ms: None }
+    /// `/bin/sh -c script sh args…`: the script sees `args` as `$1`, `$2`, ….
+    pub fn shell(script: &str, args: &[&str]) -> Self {
+        let argv = ["/bin/sh", "-c", script, "sh"].iter().chain(args).map(|arg| (*arg).to_owned()).collect();
+        Self { argv, ..Self::default() }
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Request {
-    /// Answered by `Stdout`/`Stderr` chunks, then `Exit`.
+    /// Answered by `Stdout`/`Stderr` chunks, then `Exit` (or `Error` if it can't start).
     Exec { id: u32, exec: ExecRequest },
-    /// Reads at most `limit` bytes. Answered by `Data`.
-    ReadFile { id: u32, path: String, limit: Option<u64> },
-    /// Creates parent directories. Answered by `Done`.
-    WriteFile { id: u32, path: String, data: Vec<u8> },
-    /// Answered by `Entries`.
-    ListDir { id: u32, path: String },
     /// Kills every running exec and ends the stub.
     Shutdown,
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum FileKind {
-    File,
-    Dir,
-    Symlink,
-    Other,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DirEntry {
-    pub name: String,
-    pub kind: FileKind,
-    pub size: u64,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -94,19 +69,15 @@ pub enum Response {
     Stdout { id: u32, data: Vec<u8> },
     Stderr { id: u32, data: Vec<u8> },
     Exit { id: u32, status: ExitStatus },
-    Data { id: u32, data: Vec<u8> },
-    Done { id: u32 },
-    Entries { id: u32, entries: Vec<DirEntry> },
     Error { id: u32, message: String },
 }
 
 impl Response {
     /// The request this answers. `None` for `Ready`.
     pub fn id(&self) -> Option<u32> {
-        use Response::*;
         match self {
-            Ready { .. } => None,
-            Stdout { id, .. } | Stderr { id, .. } | Exit { id, .. } | Data { id, .. } | Done { id } | Entries { id, .. } | Error { id, .. } => Some(*id),
+            Response::Ready { .. } => None,
+            Response::Stdout { id, .. } | Response::Stderr { id, .. } | Response::Exit { id, .. } | Response::Error { id, .. } => Some(*id),
         }
     }
 }
