@@ -131,7 +131,7 @@ pub struct State {
     /// The small model; `None` when omp, which runs it, isn't installed.
     small: Option<Arc<dyn loa_projects::Summarizers>>,
     /// Home directory: native sessions, omp's rules and config.
-    home: PathBuf,
+    pub(crate) home: PathBuf,
     /// Compacted successor id -> the session it replaces.
     compacted: HashMap<String, String>,
     /// Opens links clicked in the transcript.
@@ -820,7 +820,7 @@ impl Area for State {
 
     fn new(ctx: &mut Ctx) -> (Self, Task<Message>) {
         let home = std::env::var_os("HOME").map_or_else(|| PathBuf::from("."), PathBuf::from);
-        // Unit tests never make model calls; they install a fake.
+        // Unit tests never make model calls: no small model.
         let small = if cfg!(test) {
             None
         } else {

@@ -43,6 +43,7 @@ remote-video = ["loa-surfaces/remote-video", "loa-ui-surface/remote-video"]
 sandbox-vm = ["loa-sandbox/vm"]
 
 [dev-dependencies]
+loa-models = { path = "../loa-models", features = ["testing"] }
 loa-harness = { workspace = true, features = ["testing"] }
 loa-ui-kit = { path = "../loa-ui-kit", features = ["testkit"] }
 iced_runtime = "0.14"

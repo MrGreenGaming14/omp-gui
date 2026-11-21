@@ -17,11 +17,19 @@ use loa_harness::testing::ScriptedAdapter;
 use loa_trust::NodeIdentity;
 use loa_ui_session::composer;
 use loa_ui_shell::palette;
+use loa_contracts::harness::model_error::{Result as CheckResult, SettingsValidator};
+use loa_harness::omp::account::OmpFiles;
+use loa_models::keys::EnvironmentPresence;
+use loa_models::login::UrlOpener;
+use loa_models::service::{Backend, Parts};
+use loa_models::testing::FakeOmp;
+use loa_projects::{ServiceConfig, Summarizer, Summarizers};
 use tempfile::TempDir;
 use tokio::runtime::Runtime;
 
 use crate::app::{App, Message};
 use crate::area::Area;
+use crate::areas::{models, projects, sessions};
 use crate::services::{Dirs, Harnesses, Node, Services};
 
 /// The scripted harness of [`TestApp`] sessions.
@@ -84,7 +92,20 @@ impl TestApp {
         let services = Services::new(node, dirs, harnesses, dir.path().to_owned()).expect("services");
         let _entered = runtime.enter();
         // The startup tasks (harness probes, update checks) reach outside the test: dropped.
-        let (app, _startup) = App::build(services);
+        let (mut app, _startup) = App::build(services);
+        // Nothing reaches omp, a model or the developer's home.
+        let parts = Parts {
+            rpc: Arc::new(FakeOmp::default()),
+            files: OmpFiles::new(dir.path().join("omp")),
+            validator: Arc::new(Offline),
+            opener: Arc::new(Offline),
+            harnesses: Vec::new(),
+            environment: Arc::new(Offline),
+        };
+        *app.areas.get_mut::<models::State>() = models::State::with_backend(Backend::new(parts));
+        let (projects, _rebuilds) = projects::State::with(&mut app.ctx, Arc::new(Offline), ServiceConfig::default());
+        *app.areas.get_mut::<projects::State>() = projects;
+        app.areas.get_mut::<sessions::State>().home = dir.path().join("home");
         Self { app, harness, dir, runtime, tracker: Tracker::new(), feed: mpsc::channel(256) }
     }
 
@@ -237,5 +258,45 @@ impl TwoNodes {
             test
         };
         Self { owner: open("owner"), guest: open("guest-node") }
+    }
+}
+
+/// Refuses everything that would leave the test: model calls, browsers,
+/// environment keys; accepts every settings file.
+struct Offline;
+
+#[async_trait::async_trait]
+impl Summarizer for Offline {
+    async fn summarize(&self, _: &str, _: &str) -> Result<String, String> {
+        Err("no model calls in tests".to_owned())
+    }
+}
+
+impl Summarizers for Offline {
+    fn on(&self, _: Option<&str>) -> (Arc<dyn Summarizer>, Option<String>) {
+        (Arc::new(Offline), None)
+    }
+}
+
+#[async_trait::async_trait]
+impl SettingsValidator for Offline {
+    async fn check_config(&self, _: &str, _: &[(String, serde_json::Value)]) -> CheckResult<()> {
+        Ok(())
+    }
+
+    async fn check_models(&self, _: &str) -> CheckResult<()> {
+        Ok(())
+    }
+}
+
+impl UrlOpener for Offline {
+    fn open_url(&self, url: &str) -> Result<(), String> {
+        Err(format!("no browser in tests: {url}"))
+    }
+}
+
+impl EnvironmentPresence for Offline {
+    fn contains(&self, _: &str) -> bool {
+        false
     }
 }

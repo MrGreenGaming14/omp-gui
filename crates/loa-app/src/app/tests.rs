@@ -113,7 +113,6 @@ fn sessions_run_on_the_harness_stream_their_feed_and_survive_a_restart() {
     test.key(Key::Named(Named::Escape), Modifiers::empty());
     assert_eq!(test.harness.seen().interrupts, 0);
     test.key(Key::Named(Named::Escape), Modifiers::empty());
-    test.until("the interrupt reached the harness", |_| true);
     assert_eq!(test.harness.seen().interrupts, 1, "Esc interrupts the harness");
     let config = test.harness.seen().configs.remove(0);
     assert_eq!(config.session_id, id);
