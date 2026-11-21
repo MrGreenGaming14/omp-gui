@@ -1,12 +1,7 @@
 //! The `docs` surface server: opens files as document mode surfaces.
 
 use loa_util::{LockExt, RwLockExt};
-use crate::docs::docx::DocxDoc;
-use crate::docs::images::ImageDoc;
-use crate::docs::pdf::PdfDoc;
-use crate::docs::pptx::PptxDoc;
-use crate::docs::xlsx::XlsxDoc;
-use crate::docs::{DocsError, Fonts, Format, PageSize, Paged, Result, Rgba};
+use crate::docs::{DocsError, Fonts, Format, PageSize, Paged, Result, Rgba, open_pages};
 use async_trait::async_trait;
 use bytes::Bytes;
 use loa_contracts::surface::{
@@ -62,6 +57,20 @@ pub enum DataQuery {
     Slides,
 }
 
+impl DataQuery {
+    /// What the query asks for, for the error when a format lacks it.
+    fn what(&self) -> &'static str {
+        match self {
+            Self::Info => "info",
+            Self::Text { .. } => "page text",
+            Self::Sheets => "sheets",
+            Self::Cells { .. } => "cells",
+            Self::Outline => "outline",
+            Self::Slides => "slides",
+        }
+    }
+}
+
 /// Answer to [`DataQuery::Info`].
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct DocInfo {
@@ -73,47 +82,16 @@ pub struct DocInfo {
     pub pages: Vec<PageSize>,
 }
 
-/// A parsed document of any supported format.
-enum Parsed {
-    Pdf(PdfDoc),
-    Xlsx(XlsxDoc),
-    Docx(DocxDoc),
-    Pptx(PptxDoc),
-    Image(ImageDoc),
-}
-
-impl Parsed {
-    fn parse(format: Format, bytes: &[u8]) -> Result<Self> {
-        Ok(match format {
-            Format::Pdf => Self::Pdf(PdfDoc::parse(bytes)?),
-            Format::Xlsx => Self::Xlsx(XlsxDoc::parse(bytes)?),
-            Format::Docx => Self::Docx(DocxDoc::parse(bytes)?),
-            Format::Pptx => Self::Pptx(PptxDoc::parse(bytes)?),
-            image => Self::Image(ImageDoc::parse(image, bytes)?),
-        })
-    }
-
-    fn paged(&self) -> &dyn Paged {
-        match self {
-            Self::Pdf(doc) => doc,
-            Self::Xlsx(doc) => doc,
-            Self::Docx(doc) => doc,
-            Self::Pptx(doc) => doc,
-            Self::Image(doc) => doc,
-        }
-    }
-}
-
 /// The file contents and their parsed form, replaced as a whole on reload.
 struct Loaded {
     bytes: Bytes,
-    parsed: Parsed,
+    parsed: Box<dyn Paged>,
 }
 
 impl Loaded {
     fn read(path: &Path, format: Format) -> Result<Self> {
         let bytes = Bytes::from(crate::docs::read_file(path)?);
-        let parsed = Parsed::parse(format, &bytes)?;
+        let parsed = open_pages(format, &bytes)?;
         Ok(Self { bytes, parsed })
     }
 }
@@ -160,15 +138,12 @@ impl DocSurface {
     /// page other than the first.
     pub async fn screenshot_page(&self, index: usize, scale: f32) -> Result<Bytes> {
         let loaded = self.loaded();
-        let fonts = self.0.fonts.clone();
+        let (fonts, format) = (self.0.fonts.clone(), self.0.format);
         run_blocking(move || {
-            if let Parsed::Image(image) = &loaded.parsed
-                && index == 0
-                && scale == 1.0
-            {
-                return image.png(&loaded.bytes);
+            if format == Format::Png && index == 0 && scale == 1.0 {
+                return Ok(loaded.bytes.to_vec());
             }
-            loaded.parsed.paged().render_page(index, scale, &fonts)?.to_png().map_err(DocsError::from)
+            loaded.parsed.render_page(index, scale, &fonts)?.to_png().map_err(DocsError::from)
         })
         .await
         .map(Bytes::from)
@@ -178,7 +153,7 @@ impl DocSurface {
     pub async fn render_page(&self, index: usize, scale: f32) -> Result<Rgba> {
         let loaded = self.loaded();
         let fonts = self.0.fonts.clone();
-        run_blocking(move || loaded.parsed.paged().render_page(index, scale, &fonts)).await
+        run_blocking(move || loaded.parsed.render_page(index, scale, &fonts)).await
     }
 
     /// Answers a structured data query as JSON. A query the format doesn't
@@ -186,43 +161,17 @@ impl DocSurface {
     pub async fn data(&self, query: DataQuery) -> Result<Value> {
         let loaded = self.loaded();
         let surface = self.clone();
-        run_blocking(move || surface.answer(&loaded.parsed, query)).await
+        run_blocking(move || surface.answer(&*loaded.parsed, query)).await
     }
 
-    fn answer(&self, parsed: &Parsed, query: DataQuery) -> Result<Value> {
+    fn answer(&self, parsed: &dyn Paged, query: DataQuery) -> Result<Value> {
         let format = self.0.format;
-        let unsupported = |what: &str| Err(DocsError::Request(format!("{format} files have no {what}")));
-        match (query, parsed) {
-            (DataQuery::Info, parsed) => {
-                let paged = parsed.paged();
-                let pages = (0..paged.page_count()).map(|i| paged.page_size(i)).collect::<Result<_>>()?;
-                json(&DocInfo {
-                    uri: self.0.uri.clone(),
-                    name: self.0.name.clone(),
-                    path: self.0.path.clone(),
-                    format,
-                    mime: format.mime(),
-                    pages,
-                })
-            }
-            (DataQuery::Text { page: Some(index) }, Parsed::Pdf(pdf)) => json(&pdf.page_text(index)?),
-            (DataQuery::Text { page: None }, Parsed::Pdf(pdf)) => json(&pdf.text()?),
-            (DataQuery::Text { page: None }, Parsed::Docx(docx)) => json(&docx.text()),
-            (DataQuery::Text { page: Some(index) }, Parsed::Pptx(pptx)) => {
-                let count = pptx.slides().len();
-                json(pptx.slides().get(index).ok_or_else(|| DocsError::page_range(index, count))?)
-            }
-            (DataQuery::Text { page: None }, Parsed::Pptx(pptx)) => json(&pptx.text()),
-            (DataQuery::Text { .. }, _) => unsupported("page text"),
-            (DataQuery::Sheets, Parsed::Xlsx(xlsx)) => json(&xlsx.sheets()),
-            (DataQuery::Sheets, _) => unsupported("sheets"),
-            (DataQuery::Cells { sheet, range }, Parsed::Xlsx(xlsx)) => json(&xlsx.cells(sheet.as_deref(), &range)?),
-            (DataQuery::Cells { .. }, _) => unsupported("cells"),
-            (DataQuery::Outline, Parsed::Docx(docx)) => json(docx.outline()),
-            (DataQuery::Outline, _) => unsupported("outline"),
-            (DataQuery::Slides, Parsed::Pptx(pptx)) => json(pptx.slides()),
-            (DataQuery::Slides, _) => unsupported("slides"),
+        if let DataQuery::Info = query {
+            let pages = (0..parsed.page_count()).map(|i| parsed.page_size(i)).collect::<Result<_>>()?;
+            let (uri, name, path) = (self.0.uri.clone(), self.0.name.clone(), self.0.path.clone());
+            return json(&DocInfo { uri, name, path, format, mime: format.mime(), pages });
         }
+        parsed.query(&query).unwrap_or_else(|| Err(DocsError::Request(format!("{format} files have no {}", query.what()))))
     }
 
     fn mode_error(&self) -> SurfaceError {
@@ -230,11 +179,6 @@ impl DocSurface {
     }
 }
 
-fn json<T: Serialize + ?Sized>(value: &T) -> Result<Value> {
-    serde_json::to_value(value).map_err(|e| DocsError::Request(e.to_string()))
-}
-
-/// Runs CPU bound parsing and rendering off the async workers.
 async fn run_blocking<T: Send + 'static>(work: impl FnOnce() -> Result<T> + Send + 'static) -> Result<T> {
     tokio::task::spawn_blocking(work)
         .await
@@ -245,7 +189,7 @@ async fn run_blocking<T: Send + 'static>(work: impl FnOnce() -> Result<T> + Send
 impl Surface for DocSurface {
     fn info(&self) -> SurfaceInfo {
         let loaded = self.loaded();
-        let (width, height) = loaded.parsed.paged().page_size(0).map(|s| s.pixels(1.0)).unwrap_or((1, 1));
+        let (width, height) = loaded.parsed.page_size(0).map(|s| s.pixels(1.0)).unwrap_or((1, 1));
         SurfaceInfo {
             uri: self.0.uri.clone(),
             name: self.0.name.clone(),
@@ -309,7 +253,7 @@ impl DocsServer {
                 let bytes = crate::docs::read_file(&path)?;
                 let format = Format::detect(&path, &bytes)
                     .ok_or_else(|| DocsError::Unsupported(path.display().to_string()))?;
-                let parsed = Parsed::parse(format, &bytes)?;
+                let parsed = open_pages(format, &bytes)?;
                 Ok((format, Loaded { bytes: Bytes::from(bytes), parsed }))
             }
         })
