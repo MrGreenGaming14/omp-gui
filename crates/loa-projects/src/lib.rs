@@ -20,7 +20,6 @@ mod tests;
 
 pub use digest::{DigestContent, DigestState};
 pub use digester::{Summarizer, Summarizers};
-pub use loa_harness::omp::OneShot as OmpSummarizer;
 pub use rebuild::RebuildOutcome;
 pub use service::{ProjectOverview, ProjectService, ProjectSummary, ServiceConfig, SessionRow};
 pub use sessions::LiveSessions;

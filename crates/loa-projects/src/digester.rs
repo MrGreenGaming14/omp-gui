@@ -17,15 +17,6 @@ pub trait Summarizers: Send + Sync {
     fn on(&self, model: Option<&str>) -> (Arc<dyn Summarizer>, Option<String>);
 }
 
-/// `omp -p` on the given model, `@smol` by default.
-impl Summarizers for loa_harness::omp::OneShot {
-    fn on(&self, model: Option<&str>) -> (Arc<dyn Summarizer>, Option<String>) {
-        let model = self.pick(model).to_owned();
-        let name = model.trim_start_matches('@').to_owned();
-        (Arc::new(self.clone().with_model(model)), Some(name))
-    }
-}
-
 /// One summarizer for every model.
 impl Summarizers for Arc<dyn Summarizer> {
     fn on(&self, _: Option<&str>) -> (Arc<dyn Summarizer>, Option<String>) {

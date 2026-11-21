@@ -225,7 +225,7 @@ fn asks_first(ctx: &Ctx, harness: &str) -> bool {
 /// omp's model roles (`modelRoles` in `~/.omp/agent/config.yml`) with their candidate models in order.
 fn model_roles(home: &Path) -> Result<Vec<(String, Vec<String>)>, String> {
     let path = home.join(".omp/agent/config.yml");
-    let config = loa_harness::omp::config::OmpConfig::load(&path).map_err(|error| format!("Can't read {}: {error}", path.display()))?;
+    let config = loa_models::config::OmpConfig::load(&path).map_err(|error| format!("Can't read {}: {error}", path.display()))?;
     let roles = config.model_roles().map_err(|error| format!("Can't read the model roles in {}: {error}", path.display()))?;
     Ok(roles.into_iter().map(|role| (role.role, role.candidates.iter().map(ToString::to_string).collect())).collect())
 }
@@ -319,7 +319,7 @@ impl Area for State {
         let small = if cfg!(test) {
             None
         } else {
-            loa_util::exec::which("omp").map(|omp| Arc::new(loa_projects::OmpSummarizer::new(omp, ctx.services.cwd.clone())) as Arc<dyn loa_projects::Summarizers>)
+            loa_util::exec::which("omp").map(|omp| Arc::new(crate::adapters::summarizer::OmpSummarizers(loa_harness::omp::OneShot::new(omp, ctx.services.cwd.clone()))) as Arc<dyn loa_projects::Summarizers>)
         };
         let state = Self {
             agents: agents::State::from_dom(&Dom::new()),

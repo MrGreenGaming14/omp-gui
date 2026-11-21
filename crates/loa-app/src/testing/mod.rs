@@ -19,12 +19,12 @@ use loa_harness::testing::ScriptedAdapter;
 use loa_trust::NodeIdentity;
 use loa_ui_session::composer;
 use loa_ui_shell::palette;
-use loa_contracts::harness::model_error::{Result as CheckResult, SettingsValidator};
-use loa_harness::omp::account::OmpFiles;
+use loa_models::error::{Result as CheckResult, SettingsValidator};
+use loa_models::files::OmpFiles;
 use loa_models::keys::EnvironmentPresence;
 use loa_models::login::UrlOpener;
-use loa_models::service::{Backend, Parts};
-use loa_models::testing::FakeOmp;
+use loa_models::service::{Backend, FilesSource, Parts};
+use loa_models::testing::{FakeOmp, OfflineOmpAccount};
 use loa_projects::{ServiceConfig, Summarizer, Summarizers};
 use tempfile::TempDir;
 use tokio::runtime::Runtime;
@@ -106,7 +106,8 @@ impl TestApp {
         // Nothing reaches omp, a model or the developer's home.
         let parts = Parts {
             rpc: Arc::new(FakeOmp::default()),
-            files: OmpFiles::new(dir.path().join("omp")),
+            omp_account: Arc::new(OfflineOmpAccount),
+            files: FilesSource::Fixed(OmpFiles::new(dir.path().join("omp"))),
             validator: Arc::new(Offline),
             opener: Arc::new(Offline),
             harnesses: Vec::new(),

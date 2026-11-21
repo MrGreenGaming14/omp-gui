@@ -7,9 +7,9 @@ use async_trait::async_trait;
 
 use crate::account_support::{LoginKind, SignInMethod, SignInState, validate_model_name};
 use crate::account_support::configdoc::{ConfigDoc, TomlDoc, edit_file};
-use crate::account_support::error::load_snapshot;
+use loa_models::error::load_snapshot;
 use crate::account_support::process::{CommandSpec, ProcessRunner};
-use crate::account_support::{Error, Result};
+use loa_models::error::{Error, Result};
 
 /// Codex CLI, its user config path and a process runner. Paths are supplied by
 /// the app (normally `codex` and `~/.codex/config.toml`).

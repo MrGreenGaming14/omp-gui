@@ -25,12 +25,10 @@
 
 use std::path::Path;
 
-use loa_contracts::harness::model_error::{load_snapshot, save_snapshot};
+use crate::error::{Error, Result, SettingsValidator, load_snapshot, save_snapshot};
 use loa_util::fs::Snapshot;
-use loa_contracts::harness::model_rpc::ModelCost;
-use loa_contracts::harness::model_error::SettingsValidator;
-use loa_harness::account_support::yaml::{Yaml, YamlDocument, ymap, ystr, ystrs};
-use loa_contracts::harness::model_error::{Error, Result};
+use crate::rpc::ModelCost;
+use crate::yaml::{Yaml, YamlDocument, ymap, ystr, ystrs};
 
 /// The `api` values omp accepts for providers and models.
 pub const APIS: [&str; 14] = [

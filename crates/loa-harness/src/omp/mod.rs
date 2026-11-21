@@ -2,7 +2,7 @@
 //! session files and one-shot model calls.
 
 pub mod account;
-pub mod config;
+pub mod validate;
 pub mod oauth;
 pub mod launch;
 pub mod mapper;

@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use super::model_error::{Error, Result};
+use crate::error::{Error, Result};
 
 /// Thinking levels a chat selector may carry as a `:level` suffix.
 pub const THINKING_LEVELS: [&str; 9] = [

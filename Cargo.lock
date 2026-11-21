@@ -4715,6 +4715,7 @@ dependencies = [
  "loa-contracts",
  "loa-core",
  "loa-harness",
+ "loa-models",
  "loa-util",
  "reqwest",
  "serde",
@@ -4725,7 +4726,6 @@ dependencies = [
  "toml_edit",
  "tracing",
  "uuid",
- "yaml-rust2",
 ]
 
 [[package]]
@@ -4770,13 +4770,13 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "loa-contracts",
- "loa-harness",
  "loa-util",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
+ "yaml-rust2",
 ]
 
 [[package]]
@@ -4816,7 +4816,6 @@ dependencies = [
  "loa-bus",
  "loa-contracts",
  "loa-core",
- "loa-harness",
  "loa-util",
  "schemars",
  "serde",

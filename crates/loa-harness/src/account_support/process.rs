@@ -5,7 +5,7 @@ use std::process::Stdio;
 use async_trait::async_trait;
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use super::{Error, Result};
+use loa_models::error::{Error, Result};
 
 pub use loa_contracts::harness::CommandSpec;
 

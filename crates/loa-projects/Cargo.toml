@@ -9,7 +9,6 @@ publish.workspace = true
 loa-util.workspace = true
 loa-core.workspace = true
 loa-contracts.workspace = true
-loa-harness = { workspace = true, features = ["omp"] }
 loa-bus = { path = "../loa-bus" }
 async-trait.workspace = true
 serde.workspace = true

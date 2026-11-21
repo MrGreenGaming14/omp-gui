@@ -5,10 +5,8 @@ use async_trait::async_trait;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use loa_harness::account_support::process::{CommandSpec, ProcessRunner};
-use loa_contracts::harness::model_error::{Error, Result};
-
-use loa_contracts::harness::model_error::SettingsValidator;
+use crate::account_support::process::{CommandSpec, ProcessRunner};
+use loa_models::error::{Error, Result, SettingsValidator};
 
 /// Calls omp CLI with its agent directory redirected to a temp directory.
 /// It never sends a prompt; catalog listing may still discover local models.
@@ -68,7 +66,7 @@ impl SettingsValidator for OmpSettingsValidator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use loa_harness::account_support::process::{ProcessOutput, RunningProcess};
+    use crate::account_support::process::{ProcessOutput, RunningProcess};
     use std::sync::Mutex;
     struct Runner(Mutex<Vec<CommandSpec>>);
     #[async_trait]

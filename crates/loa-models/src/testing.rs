@@ -3,7 +3,11 @@ use std::collections::HashSet;
 use std::sync::Mutex;
 use std::time::Duration;
 use tokio::sync::{Notify, mpsc};
-use loa_contracts::harness::model_rpc::{LoginProvider, LoginUiRequest, ModelInfo, OmpRpc, RpcError, UiResponse};
+use crate::rpc::{LoginProvider, LoginUiRequest, ModelInfo, OmpRpc, RpcError, UiResponse};
+use loa_contracts::harness::{
+    AdapterError, CommandSpec, HarnessAccount, LoginKind, LoginStrategy, ModelSettings, SignInState,
+};
+use std::path::PathBuf;
 
 /// The behavior of a fake login after its UI frames have been sent.
 #[derive(Clone, Default)]
@@ -83,6 +87,33 @@ impl OmpRpc for FakeOmp {
         self.models.iter().find(|model| model.provider == provider && model.id == model_id).cloned().ok_or_else(|| RpcError::Command {
             command: "set_model".into(), message: format!("Model not found: {provider}/{model_id}"), code: None,
         })
+    }
+}
+
+/// An omp account that runs nothing: provider logins are refused and the
+/// default model reads as unset.
+pub struct OfflineOmpAccount;
+
+#[async_trait::async_trait]
+impl HarnessAccount for OfflineOmpAccount {
+    fn id(&self) -> &'static str { "omp" }
+    fn name(&self) -> &'static str { "omp" }
+    async fn sign_in_state(&self) -> SignInState { SignInState::SignedOut }
+    fn login(&self, _: LoginKind) -> Result<Box<dyn LoginStrategy>, AdapterError> {
+        Err(AdapterError::Unsupported { harness: "omp", what: "login without a provider" })
+    }
+    fn logout_command(&self) -> Option<CommandSpec> { None }
+    fn efforts(&self) -> &'static [&'static str] { &crate::selector::THINKING_LEVELS }
+    fn config_path(&self) -> Option<PathBuf> { None }
+    fn read_model(&self) -> Result<ModelSettings, AdapterError> { Ok(ModelSettings::default()) }
+    fn write_model(&self, _: &ModelSettings) -> Result<(), AdapterError> {
+        Err(AdapterError::Unsupported { harness: "omp", what: "model settings offline" })
+    }
+}
+
+impl crate::login::OmpProviderAccount for OfflineOmpAccount {
+    fn login_provider(&self, _: LoginProvider) -> Result<Box<dyn LoginStrategy>, AdapterError> {
+        Err(AdapterError::Unsupported { harness: "omp", what: "provider login offline" })
     }
 }
 

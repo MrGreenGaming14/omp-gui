@@ -20,6 +20,7 @@ testing = []
 loa-util.workspace = true
 loa-core.workspace = true
 loa-contracts.workspace = true
+loa-models = { path = "../loa-models" }
 async-trait.workspace = true
 base64 = { version = "0.23", optional = true }
 reqwest = { version = "0.13", default-features = false, features = ["json"], optional = true }
@@ -29,12 +30,12 @@ serde_json.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
 toml_edit = "0.25"
-yaml-rust2 = "0.13"
 tokio.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
 loa-harness = { path = ".", default-features = false, features = ["testing"] }
+loa-models = { path = "../loa-models", features = ["testing"] }
 base64 = "0.23"
 axum = "0.8"
 serde_json = { workspace = true, features = ["preserve_order"] }

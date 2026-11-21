@@ -2,7 +2,7 @@
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use loa_contracts::harness::{LoginControl, LoginStrategy, LoginUpdate, UrlOpener};
-use loa_contracts::harness::model_rpc::{LoginProvider, LoginUiRequest, OmpRpc, UiResponse};
+use loa_models::rpc::{LoginProvider, LoginUiRequest, OmpRpc, UiResponse};
 
 /// Runs omp's OAuth protocol and publishes the same updates as CLI logins.
 pub struct OmpOAuthLogin {
@@ -83,3 +83,65 @@ async fn handle_ui(request: LoginUiRequest, opener: &dyn UrlOpener, updates: &mp
     match update { Some(update) => updates.send(update).await.is_ok(), None => true }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use loa_models::testing::{FakeOmp, LoginScript};
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct Opener(Mutex<Vec<String>>);
+    impl UrlOpener for Opener {
+        fn open_url(&self, url: &str) -> Result<(), String> {
+            self.0.lock().unwrap().push(url.to_owned());
+            Ok(())
+        }
+    }
+    fn provider() -> LoginProvider {
+        LoginProvider { id: "anthropic".into(), name: "Anthropic".into(), available: true, authenticated: false }
+    }
+    fn frames() -> Vec<LoginUiRequest> {
+        vec![
+            LoginUiRequest::OpenUrl { id: "1".into(), url: "https://auth.example".into(), launch_url: Some("http://localhost/login".into()), instructions: None },
+            LoginUiRequest::Input { id: "2".into(), title: "Paste code".into(), placeholder: None, timeout: None },
+        ]
+    }
+    #[tokio::test]
+    async fn relays_oauth_input_and_success() {
+        let mut fake = FakeOmp::default();
+        fake.login_frames = frames();
+        fake.script = LoginScript::AwaitInput("code".into());
+        let rpc = Arc::new(fake);
+        let opener = Arc::new(Opener::default());
+        let (ctl_tx, ctl_rx) = mpsc::channel(16);
+        let (out_tx, mut out_rx) = mpsc::channel(16);
+        let strategy = Box::new(OmpOAuthLogin { rpc: rpc.clone(), opener: opener.clone(), provider: provider() });
+        let drive = async {
+            assert_eq!(out_rx.recv().await, Some(LoginUpdate::Url { url: "https://auth.example".into(), launch_url: Some("http://localhost/login".into()), instructions: None }));
+            assert!(matches!(out_rx.recv().await, Some(LoginUpdate::Prompt { .. })));
+            ctl_tx.send(LoginControl::SubmitInput("code".into())).await.unwrap();
+            assert_eq!(out_rx.recv().await, Some(LoginUpdate::Succeeded { account: None }));
+        };
+        tokio::join!(strategy.run(ctl_rx, out_tx), drive);
+        assert_eq!(*opener.0.lock().unwrap(), ["https://auth.example"]);
+        assert_eq!(*rpc.responses.lock().unwrap(), [UiResponse::Value { id: "2".into(), value: "code".into() }]);
+    }
+    #[tokio::test]
+    async fn cancellation_withdraws_pending_input() {
+        let mut fake = FakeOmp::default();
+        fake.login_frames = frames();
+        fake.script = LoginScript::Hang;
+        let rpc = Arc::new(fake);
+        let (ctl_tx, ctl_rx) = mpsc::channel(16);
+        let (out_tx, mut out_rx) = mpsc::channel(16);
+        let strategy = Box::new(OmpOAuthLogin { rpc: rpc.clone(), opener: Arc::new(Opener::default()), provider: provider() });
+        let drive = async {
+            assert!(matches!(out_rx.recv().await, Some(LoginUpdate::Url { .. })));
+            assert!(matches!(out_rx.recv().await, Some(LoginUpdate::Prompt { .. })));
+            ctl_tx.send(LoginControl::Cancel).await.unwrap();
+            assert_eq!(out_rx.recv().await, Some(LoginUpdate::Cancelled));
+        };
+        tokio::join!(strategy.run(ctl_rx, out_tx), drive);
+        assert_eq!(*rpc.responses.lock().unwrap(), [UiResponse::Cancelled { id: "2".into(), cancelled: true }]);
+    }
+}

@@ -3,9 +3,6 @@
 mod account;
 mod capabilities;
 mod host_tools;
-pub mod model_error;
-pub mod model_rpc;
-pub mod selector;
 
 pub use crate::availability::{Availability, AvailabilityStatus};
 pub use crate::tools::OutputBlock;
@@ -23,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// Semver of this interface: major on breaking changes, minor on additions.
-pub const INTERFACE_VERSION: &str = "0.3.0";
+pub const INTERFACE_VERSION: &str = "0.4.0";
 
 #[derive(Debug, thiserror::Error)]
 pub enum AdapterError {

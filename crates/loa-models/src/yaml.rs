@@ -12,7 +12,7 @@ use yaml_rust2::yaml::Hash;
 
 pub use yaml_rust2::Yaml;
 
-use super::{Error, Result};
+use crate::error::{Error, Result};
 
 /// A YAML document whose root is a block mapping (or empty), edited in place.
 #[derive(Debug, Clone)]

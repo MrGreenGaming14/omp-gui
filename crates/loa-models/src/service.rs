@@ -1,11 +1,12 @@
 //! The service behind the model screens: everything they need from omp and
 //! the other harnesses, as async calls returning this crate's screen data.
 //!
-//! [`Backend::system`] wires the real parts: a dedicated omp RPC process
-//! ([`OmpService`]), omp's own settings files, validation by omp itself, the
-//! platform browser opener and the Claude Code and Codex CLIs. The app keeps
-//! one `Backend` (it is cheap to clone) and turns the screens' events into
-//! these calls.
+//! A [`Backend`] is built from injected [`Parts`]: the omp RPC, omp's account
+//! for provider logins, where omp's settings files are, a validator, the
+//! browser opener and the other harnesses' accounts. The app composes the
+//! real parts from `loa-harness`; tests pass fakes. The app keeps one
+//! `Backend` (it is cheap to clone) and turns the screens' events into these
+//! calls.
 //!
 //! The current session's model is not switched here: that goes through the
 //! session's own harness connection (`HarnessSession::set_model`), which
@@ -15,19 +16,16 @@ use loa_util::LockExt;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use loa_harness::omp::config::OmpConfig;
-use crate::keys::{self, EnvironmentPresence, KeySource, ProcessEnvironment};
+use crate::config::OmpConfig;
+use crate::keys::{self, EnvironmentPresence, KeySource};
 use loa_contracts::harness::{HarnessAccount, LoginKind, SignInState};
-use crate::login::{Auth, LoginControl, LoginStrategy, ProviderEntry, ProviderKey, UrlOpener};
+use crate::files::{OmpFiles, OmpFilesResolver};
+use crate::login::{Auth, LoginControl, LoginStrategy, OmpProviderAccount, ProviderEntry, ProviderKey, UrlOpener};
 use crate::models_yml::ModelsYml;
-use loa_harness::omp::account::{OmpAccount, OmpFiles, OmpLaunch, OmpService};
-use loa_harness::account_support::opener::SystemUrlOpener;
-use loa_harness::account_support::process::TokioProcessRunner;
-use loa_contracts::harness::model_rpc::{self as rpc, LoginProvider, OmpRpc};
-use loa_contracts::harness::selector::{Catalog, ModelInfo, ModelRef, RoleAssignment, Selector};
+use crate::rpc::{self, LoginProvider, OmpRpc};
+use crate::selector::{Catalog, ModelInfo, ModelRef, RoleAssignment, Selector};
 use crate::settings::{self, HarnessModel, ModelSettings, ValidationError};
-use crate::validate::OmpSettingsValidator;
-use loa_contracts::harness::model_error::SettingsValidator;
+use crate::error::SettingsValidator;
 use loa_contracts::harness::LoginUpdate;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
@@ -76,16 +74,20 @@ impl Harness {
     }
 }
 
-/// Where omp's settings files are: a fixed directory or the one omp reports.
-enum FilesSource {
+/// Where omp's settings files are: a fixed directory, or the one omp reports
+/// (asked once; a successful answer is kept, a failure is returned as is and
+/// asked again next time).
+pub enum FilesSource {
     Fixed(OmpFiles),
-    Resolve { launch: OmpLaunch, cached: tokio::sync::OnceCell<OmpFiles> },
+    Resolve(Arc<dyn OmpFilesResolver>),
 }
 
 /// The parts a [`Backend`] is built from. Tests pass fakes.
 pub struct Parts {
     pub rpc: Arc<dyn OmpRpc>,
-    pub files: OmpFiles,
+    /// omp's account; runs provider logins. Normally owns the same RPC as `rpc`.
+    pub omp_account: Arc<dyn OmpProviderAccount>,
+    pub files: FilesSource,
     pub validator: Arc<dyn SettingsValidator>,
     pub opener: Arc<dyn UrlOpener>,
     pub harnesses: Vec<Arc<dyn HarnessAccount>>,
@@ -104,9 +106,11 @@ struct Loaded {
 struct Inner {
     rpc: Arc<dyn OmpRpc>,
     files: FilesSource,
+    /// The resolved files of [`FilesSource::Resolve`].
+    resolved: tokio::sync::OnceCell<OmpFiles>,
     validator: Arc<dyn SettingsValidator>,
     opener: Arc<dyn UrlOpener>,
-    omp_account: Arc<dyn HarnessAccount>,
+    omp_account: Arc<dyn OmpProviderAccount>,
     harnesses: Vec<Harness>,
     environment: Arc<dyn EnvironmentPresence + Send + Sync>,
     /// omp's login providers from the last listing, for display names and
@@ -143,59 +147,18 @@ impl std::fmt::Debug for Backend {
 
 
 impl Backend {
-    /// The real backend: omp started from `launch`, its active agent
-    /// directory, validation by omp, the platform browser and the `claude` and
-    /// `codex` CLIs on `PATH`.
-    pub fn system(launch: OmpLaunch) -> Self {
-        let runner = Arc::new(TokioProcessRunner);
-        let harnesses = loa_harness::factories(&loa_harness::HarnessEnv::default())
-            .into_iter().filter(|factory| factory.id() != OMP)
-            .filter_map(|factory| factory.account(None)).map(Harness).collect();
-        Self::build(
-            Arc::new(OmpService::new(launch.clone())),
-            FilesSource::Resolve { launch: launch.clone(), cached: tokio::sync::OnceCell::new() },
-            Arc::new(OmpSettingsValidator::new(launch.executable.clone(), runner)),
-            Arc::new(SystemUrlOpener),
-            harnesses,
-            Arc::new(ProcessEnvironment),
-        )
-    }
-
     /// A backend over the given parts.
     pub fn new(parts: Parts) -> Self {
-        let harnesses = parts.harnesses.into_iter().map(Harness).collect();
-        Self::build(
-            parts.rpc,
-            FilesSource::Fixed(parts.files),
-            parts.validator,
-            parts.opener,
-            harnesses,
-            parts.environment,
-        )
-    }
-
-    fn build(
-        rpc: Arc<dyn OmpRpc>,
-        files: FilesSource,
-        validator: Arc<dyn SettingsValidator>,
-        opener: Arc<dyn UrlOpener>,
-        harnesses: Vec<Harness>,
-        environment: Arc<dyn EnvironmentPresence + Send + Sync>,
-    ) -> Self {
-        let launch = match &files {
-            FilesSource::Resolve { launch, .. } => launch.clone(),
-            FilesSource::Fixed(_) => OmpLaunch::default(),
-        };
-        let omp_account = Arc::new(OmpAccount { rpc: rpc.clone(), opener: opener.clone(), launch });
         Self {
             inner: Arc::new(Inner {
-                rpc,
-                files,
-                validator,
-                opener,
-                omp_account,
-                harnesses,
-                environment,
+                rpc: parts.rpc,
+                files: parts.files,
+                resolved: tokio::sync::OnceCell::new(),
+                validator: parts.validator,
+                opener: parts.opener,
+                omp_account: parts.omp_account,
+                harnesses: parts.harnesses.into_iter().map(Harness).collect(),
+                environment: parts.environment,
                 login_providers: Mutex::default(),
                 logins: Mutex::default(),
                 next_login: std::sync::atomic::AtomicU64::new(0),
@@ -204,7 +167,7 @@ impl Backend {
         }
     }
 
-    /// The omp RPC the backend uses (the dedicated process for [`Backend::system`]).
+    /// The omp RPC the backend uses.
     pub fn rpc(&self) -> Arc<dyn OmpRpc> {
         self.inner.rpc.clone()
     }
@@ -213,8 +176,10 @@ impl Backend {
     pub async fn files(&self) -> Result<OmpFiles, String> {
         match &self.inner.files {
             FilesSource::Fixed(files) => Ok(files.clone()),
-            FilesSource::Resolve { launch, cached } => cached
-                .get_or_try_init(|| OmpFiles::resolve(launch))
+            FilesSource::Resolve(resolver) => self
+                .inner
+                .resolved
+                .get_or_try_init(|| resolver.resolve())
                 .await
                 .cloned()
                 .map_err(|e| e.to_string()),
@@ -562,8 +527,11 @@ fn catalog(available: &[rpc::ModelInfo], config: &OmpConfig, names: &HashMap<Str
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::keys::ProcessEnvironment;
+    use crate::testing::OfflineOmpAccount;
     use loa_contracts::harness::{AdapterError, CommandSpec, ModelSettings as AccountModel, SignInMethod};
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::sync::mpsc;
 
     /// A login that ends on Cancel, or when its controls close.
@@ -610,19 +578,60 @@ mod tests {
         fn open_url(&self, _: &str) -> Result<(), String> { Ok(()) }
     }
 
+    fn backend(files: FilesSource) -> Backend {
+        Backend::new(Parts {
+            rpc: Arc::new(crate::testing::FakeOmp::default()),
+            omp_account: Arc::new(OfflineOmpAccount),
+            files,
+            validator: Arc::new(NoValidation),
+            opener: Arc::new(NoBrowser),
+            harnesses: vec![Arc::new(FakeAccount)],
+            environment: Arc::new(ProcessEnvironment),
+        })
+    }
+
+    /// Finds `dir` on every call after the first `failures` calls, counting calls.
+    struct Resolver {
+        dir: PathBuf,
+        failures: usize,
+        calls: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl OmpFilesResolver for Resolver {
+        async fn resolve(&self) -> crate::error::Result<OmpFiles> {
+            match self.calls.fetch_add(1, Ordering::SeqCst) < self.failures {
+                true => Err(crate::error::Error::Process { program: "omp".into(), message: "`config path` failed: boom".into() }),
+                false => Ok(OmpFiles::new(&self.dir)),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn fixed_files_are_used_as_given() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = backend(FilesSource::Fixed(OmpFiles::new(dir.path())));
+        assert_eq!(backend.files().await, Ok(OmpFiles::new(dir.path())));
+        assert_eq!(backend.files().await.unwrap().config(), dir.path().join("config.yml"));
+    }
+
+    #[tokio::test]
+    async fn resolved_files_are_kept_and_failures_returned_as_they_are() {
+        let dir = tempfile::tempdir().unwrap();
+        let resolver = Arc::new(Resolver { dir: dir.path().to_owned(), failures: 1, calls: AtomicUsize::new(0) });
+        let backend = backend(FilesSource::Resolve(resolver.clone()));
+        assert_eq!(backend.files().await, Err("cannot run omp: `config path` failed: boom".to_owned()));
+        assert_eq!(backend.files().await, Ok(OmpFiles::new(dir.path())));
+        assert_eq!(backend.files().await, Ok(OmpFiles::new(dir.path())));
+        assert_eq!(resolver.calls.load(Ordering::SeqCst), 2, "a failure is asked again, a success is kept");
+    }
+
     /// Single-threaded, so a finished login's cleanup runs before the test
     /// sees its update channel close.
     #[tokio::test(flavor = "current_thread")]
     async fn a_replaced_login_finishing_keeps_the_new_logins_controls() {
         let dir = tempfile::tempdir().unwrap();
-        let backend = Backend::new(Parts {
-            rpc: Arc::new(crate::testing::FakeOmp::default()),
-            files: OmpFiles::new(dir.path()),
-            validator: Arc::new(NoValidation),
-            opener: Arc::new(NoBrowser),
-            harnesses: vec![Arc::new(FakeAccount)],
-            environment: Arc::new(ProcessEnvironment),
-        });
+        let backend = backend(FilesSource::Fixed(OmpFiles::new(dir.path())));
         let key = ProviderKey::new("fake", "fake");
         let mut first = backend.login(key.clone());
         let mut second = backend.login(key.clone());

@@ -495,7 +495,9 @@ impl Area for State {
             cwd: Some(ctx.services.cwd.clone()),
             env: Vec::new(),
         };
-        (Self::with_backend(Backend::system(launch)), Task::none())
+        let env = loa_harness::HarnessEnv { node: ctx.services.node.key.clone(), omp_dir: ctx.services.storage.dirs.omp.clone() };
+        let backend = crate::adapters::models::models_backend(launch, &ctx.services.harnesses, &loa_harness::factories(&env));
+        (Self::with_backend(backend), Task::none())
     }
 
     fn update(&mut self, message: Message, ctx: &mut Ctx) -> Task<Message> {

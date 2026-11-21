@@ -111,10 +111,6 @@ pub trait HarnessAccount: Send + Sync {
     fn name(&self) -> &'static str;
     async fn sign_in_state(&self) -> SignInState;
     fn login(&self, kind: LoginKind) -> Result<Box<dyn LoginStrategy>, AdapterError>;
-    /// Provider-specific login, for harnesses exposing several OAuth providers.
-    fn login_provider(&self, _provider: super::model_rpc::LoginProvider) -> Result<Box<dyn LoginStrategy>, AdapterError> {
-        Err(AdapterError::Unsupported { harness: "harness", what: "provider login" })
-    }
     fn logout_command(&self) -> Option<CommandSpec>;
     fn efforts(&self) -> &'static [&'static str];
     /// Config file displayed by the settings screen, if this account has one.

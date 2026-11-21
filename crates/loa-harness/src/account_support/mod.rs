@@ -4,8 +4,7 @@ pub mod cli;
 pub mod configdoc;
 pub mod opener;
 pub mod process;
-pub mod yaml;
-pub use loa_contracts::harness::model_error::{self as error, Error, Result};
+use loa_models::error::{Error, Result};
 
 pub use loa_contracts::harness::{LoginKind, SignInMethod, SignInState};
 

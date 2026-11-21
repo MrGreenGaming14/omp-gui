@@ -13,9 +13,11 @@ use std::sync::{Arc, Mutex};
 use iced::{Element, Subscription, Task};
 use loa_contracts::harness::{HostToolSpec, HostTools, SessionConfig};
 use loa_projects::{
-    FileSettingsStore, LiveSessions, LocalOnly, OmpSummarizer, ProjectOverview, ProjectService, ProjectSettings,
+    FileSettingsStore, LiveSessions, LocalOnly, ProjectOverview, ProjectService, ProjectSettings,
     ProjectSummary, RebuildOutcome, ServiceConfig, Summarizers,
 };
+use loa_harness::omp::OneShot;
+use crate::adapters::summarizer::OmpSummarizers;
 use loa_ui_kit::widgets::Screen;
 use loa_ui_settings::projects as screen;
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -272,7 +274,7 @@ impl Area for State {
     /// The projects of this node, digests built by omp's `smol` role.
     fn new(ctx: &mut Ctx) -> (Self, Task<Message>) {
         let omp = ctx.services.harnesses.get("omp").and_then(|harness| harness.executable.clone());
-        let summarizer = OmpSummarizer::new(omp.unwrap_or_else(|| PathBuf::from("omp")), ctx.services.storage.dirs.data.clone());
+        let summarizer = OmpSummarizers(OneShot::new(omp.unwrap_or_else(|| PathBuf::from("omp")), ctx.services.storage.dirs.data.clone()));
         Self::with(ctx, Arc::new(summarizer), ServiceConfig::default())
     }
 
