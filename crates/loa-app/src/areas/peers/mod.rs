@@ -27,7 +27,8 @@ use loa_trust::Resource;
 use adapter::{self as ui, Outcome};
 use loa_p2p::{Endpoint, LibrarySessions, Node, NodeConfig, NodeEvent, RelayConfig};
 use loa_ui_shell::palette;
-use loa_ui_peers as peers;
+use loa_ui_kit::widgets::Screen;
+use loa_ui_settings::peers;
 use loa_ui_shell::{NodeStatus, SessionSummary};
 
 use crate::area::{Area, AreaId, Ctx, PanelTab, Request};
@@ -345,11 +346,7 @@ impl Area for State {
 
     fn update(&mut self, message: Message, ctx: &mut Ctx) -> Task<Message> {
         match message {
-            Message::Panel(message) => {
-                let (task, event) = self.panel.update(message);
-                let effect = event.map_or_else(Task::none, |event| self.apply(event, ctx));
-                Task::batch([task.map(Message::Panel), effect])
-            }
+            Message::Panel(message) => self.panel.update(message).map_or_else(Task::none, |event| self.apply(event, ctx)),
             Message::Open => {
                 ctx.open_tab(TAB);
                 self.refresh(ctx);

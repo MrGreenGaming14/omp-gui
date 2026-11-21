@@ -1,4 +1,4 @@
-//! The Peers panel (`loa-ui-peers`) over a [`Node`]: the snapshot it shows
+//! The Peers panel (`loa_ui_settings::peers`) over a [`Node`]: the snapshot it shows
 //! and the effects of its events. The app area only forwards: it puts
 //! [`data`] into the panel and runs [`apply`] for each panel event.
 
@@ -8,7 +8,7 @@ use loa_p2p::{
 };
 use loa_core::NodeId as DomNodeId;
 use loa_trust::{Action, GrantId, Resource, Scope};
-use loa_ui_peers as panel;
+use loa_ui_settings::peers as panel;
 use std::sync::Arc;
 
 /// A grant resource as the panel's picker id.

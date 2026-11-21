@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use iced::futures::{SinkExt, Stream};
 use iced::widget::{button, column, container, row, text, text_input};
-use iced::{Alignment, Element, Fill, Padding, Subscription, Task, Theme};
+use iced::{Alignment, Element, Fill, Subscription, Task, Theme};
 use loa_bus::{Event, Policy, SessionWriter};
 use loa_core::{Dom, NodeId, Op, Patch, attr};
 use loa_trust::Action;
@@ -18,15 +18,13 @@ use loa_p2p::RemoteView;
 use loa_ui_session::transcript as chat;
 use loa_ui_session::decisions as cards;
 use loa_ui_kit::icons::{Icon, icon};
-use loa_ui_peers as peers;
+use loa_ui_kit::theme::{LayoutRole, SpaceRole, TextRole, sp, text_size as ts, width};
+use loa_ui_settings::peers;
 use loa_ui_shell::SessionSummary;
 use loa_ui_shell::theme::style;
 
 use super::{Message, State};
 use crate::area::{AreaId, Ctx};
-
-/// Width of the prompt box: the transcript's column width.
-const PROMPT_WIDTH: f32 = 700.0;
 
 /// Patches the mirror's feed may hold before it resubscribes.
 const FEED_CAPACITY: usize = 4096;
@@ -155,14 +153,14 @@ impl Remote {
             if access.is_empty() { "some prompts".to_owned() } else { access.join(", ") }
         );
         let fork = self.view.can(Action::Fork).then(|| {
-            button(text("Fork to this node").size(13)).style(button::secondary).on_press(RemoteMessage::Fork)
+            button(text("Fork to this node").size(ts(TextRole::Label))).style(button::secondary).on_press(RemoteMessage::Fork)
         });
         let header = row![
-            column![text(self.title()).size(20), text(subtitle).size(12).style(style::muted)].spacing(4).width(Fill),
+            column![text(self.title()).size(ts(TextRole::Title)), text(subtitle).size(ts(TextRole::Caption)).style(style::muted)].spacing(sp(SpaceRole::Xs)).width(Fill),
         ]
         .push(fork)
-        .push(button(icon(Icon::X, 16.0)).style(button::text).on_press(RemoteMessage::Close))
-        .spacing(12)
+        .push(button(icon(Icon::X, ts(TextRole::Heading))).style(button::text).on_press(RemoteMessage::Close))
+        .spacing(sp(SpaceRole::M))
         .align_y(Alignment::Center);
         let transcript = self.chat.view(&self.dom, RemoteMessage::Chat, |slot| {
             self.cards
@@ -171,7 +169,7 @@ impl Remote {
                 .unwrap_or_else(|| text("Decision no longer available").into())
         });
         let footer: Element<'_, RemoteMessage> = if let Some(reason) = &self.ended {
-            text(format!("No longer following {}: {reason}", self.peer_name)).size(12).style(style::muted).into()
+            text(format!("No longer following {}: {reason}", self.peer_name)).size(ts(TextRole::Caption)).style(style::muted).into()
         } else if self.can_drive() {
             let ready = !self.sending && !self.input.trim().is_empty();
             row![
@@ -179,22 +177,22 @@ impl Remote {
                     .on_input(RemoteMessage::Input)
                     .on_submit_maybe(ready.then_some(RemoteMessage::Send))
                     .style(style::input)
-                    .padding(10)
-                    .size(14),
-                button(icon(Icon::ArrowUp, 16.0)).style(button::primary).padding(10).on_press_maybe(ready.then_some(RemoteMessage::Send)),
+                    .padding(sp(SpaceRole::S))
+                    .size(ts(TextRole::Body)),
+                button(icon(Icon::ArrowUp, ts(TextRole::Heading))).style(button::primary).padding(sp(SpaceRole::S)).on_press_maybe(ready.then_some(RemoteMessage::Send)),
             ]
-            .spacing(8)
+            .spacing(sp(SpaceRole::S))
             .align_y(Alignment::Center)
             .into()
         } else {
-            text(format!("View only: {}'s grant doesn't let this node prompt or answer", self.peer_name)).size(12).style(style::muted).into()
+            text(format!("View only: {}'s grant doesn't let this node prompt or answer", self.peer_name)).size(ts(TextRole::Caption)).style(style::muted).into()
         };
         column![
-            container(header).padding([16, 24]),
+            container(header).padding([sp(SpaceRole::L), sp(SpaceRole::Xl)]),
             container(transcript).height(Fill),
-            container(container(footer).width(Fill).max_width(PROMPT_WIDTH))
+            container(container(footer).width(Fill).max_width(width(LayoutRole::ComposerWidth)))
                 .center_x(Fill)
-                .padding(Padding { top: 8.0, right: 24.0, bottom: 16.0, left: 24.0 }),
+                .padding(loa_ui_kit::theme::pad_x(SpaceRole::Xl).top(sp(SpaceRole::S)).bottom(sp(SpaceRole::L))),
         ]
         .into()
     }

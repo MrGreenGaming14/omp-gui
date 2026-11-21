@@ -54,11 +54,8 @@ Everything else builds on these three. Their existing public items change only w
 | `loa-ui-terminal` | Terminal tab, local and SSH |
 | `loa-ui-palette` | Command palette |
 | `loa-ui-tools` | Tools panel |
-| `loa-ui-projects` | Project screen: shared instructions, pinned files, digest model, sessions with digests and exclude toggle |
 | `loa-ui-surface` | Surfaces tab: tab shell over `PixelMode`/`DocumentMode` strategies, `FrameDecoder` chain (stills, H.264 behind `remote-video`), launcher for browser, documents, VNC and MCP surfaces, document pages through `loa-surfaces` docs with `RenderOpts` from kit tokens |
-| `loa-ui-models` | Sign in, model picker, model settings |
-| `loa-ui-peers` | Peers list, grant management (incl. a typed folder of this node), shared folders |
-| `loa-ui-updates` | Updates screen: feeds, staged versions, gate reports with update anyway/pin/wait, swap, rollback, signatures, peers behind |
+| `loa-ui-settings` | Settings-style screens on kit `Screen` (`Msg<Local, Event>` + guard): `models` (sign in reducer over `LoginUpdate`, picker, chip, session model, model settings via kit `form_view`/`list_editor` over `OVERRIDE_FIELDS`), `projects` (project screen), `peers` (peers, grants with a typed folder, shared sessions and folders), `updates` (renders `loa_updater` status with a `STATUS_RULES` table, `HoldChoice` choices) |
 | `loa-ui-icons` | Lucide line icons as theme-tinted SVG widgets, shared by every UI crate |
 | `loa-app` | The binary: wires every crate together |
 

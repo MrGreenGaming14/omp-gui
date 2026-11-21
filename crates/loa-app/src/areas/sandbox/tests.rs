@@ -303,7 +303,8 @@ mod peer {
     use iced::futures::StreamExt;
     use iced_runtime::Action as RuntimeAction;
     use loa_p2p::Endpoint;
-    use loa_ui_peers as panel;
+    use loa_ui_kit::widgets::Msg;
+    use loa_ui_settings::peers::{Local, Permission};
     use tokio::runtime::Runtime;
 
     use super::*;
@@ -333,8 +334,8 @@ mod peer {
         run(rt, app, task);
     }
 
-    fn panel(rt: &Runtime, app: &mut App, message: panel::Message) {
-        update(rt, app, AppMessage::Peers(peers::Message::Panel(message)));
+    fn panel(rt: &Runtime, app: &mut App, message: Local) {
+        update(rt, app, AppMessage::Peers(peers::Message::Panel(Msg::Local(message))));
     }
 
     /// The scripted app with its node on a free loopback port, started; the
@@ -355,9 +356,9 @@ mod peer {
     }
 
     fn add_peer(rt: &Runtime, app: &mut App, other: &App, port: u16) {
-        panel(rt, app, panel::Message::KeyChanged(other.ctx.services.node.key.clone()));
-        panel(rt, app, panel::Message::AddressChanged(format!("127.0.0.1:{port}")));
-        panel(rt, app, panel::Message::AddPeer);
+        panel(rt, app, Local::Key(other.ctx.services.node.key.clone()));
+        panel(rt, app, Local::Address(format!("127.0.0.1:{port}")));
+        panel(rt, app, Local::AddPeer);
     }
 
     fn peer_detail(app: &App) -> loa_ui_panel::tools::ToolDetail {
@@ -387,11 +388,11 @@ mod peer {
         // The owner grants "Sandbox on this node" from the Peers panel.
         let owner_key = owner.ctx.services.node.key.clone();
         update(&rt, &mut owner, AppMessage::Peers(peers::Message::Open));
-        panel(&rt, &mut owner, panel::Message::SelectPeer(guest.ctx.services.node.key.clone()));
-        panel(&rt, &mut owner, panel::Message::SelectResource("sandbox".into()));
-        panel(&rt, &mut owner, panel::Message::SelectPermission(panel::Permission::Drive));
-        panel(&rt, &mut owner, panel::Message::TtlChanged("2".into()));
-        panel(&rt, &mut owner, panel::Message::SubmitGrant);
+        panel(&rt, &mut owner, Local::SelectPeer(guest.ctx.services.node.key.clone()));
+        panel(&rt, &mut owner, Local::SelectResource("sandbox".into()));
+        panel(&rt, &mut owner, Local::Permission(Permission::Drive));
+        panel(&rt, &mut owner, Local::Ttl("2".into()));
+        panel(&rt, &mut owner, Local::SubmitGrant);
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
             update(&rt, &mut guest, AppMessage::Sandbox(Message::Refresh));

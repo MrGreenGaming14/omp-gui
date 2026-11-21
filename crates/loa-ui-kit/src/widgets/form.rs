@@ -64,21 +64,32 @@ impl<F: FormSpec> FormState<F> {
     }
 }
 
-/// Rows of `items` with a remove button each, then an input that adds `draft`.
+/// Rows of `items` with a remove button each (and up and down buttons with `on_move`), then an
+/// input that adds `draft`.
 pub fn list_editor<'a, T, M: Clone + 'a>(
     items: &'a [T],
     show: impl Fn(&T) -> String,
     on_remove: impl Fn(usize) -> M,
+    on_move: Option<&dyn Fn(usize, usize) -> M>,
     draft: &'a str,
     on_draft: impl Fn(String) -> M + 'a,
     on_add: M,
 ) -> Element<'a, M> {
     let t = tokens();
     let remove = |i| button(tinted(Icon::X, TextRole::Caption, Tone::Muted)).style(style::button(ButtonKind::Ghost)).on_press(on_remove(i));
-    let rows = items.iter().enumerate().map(|(i, it)| row![label(show(it), TextRole::Body, Tone::Normal).width(Fill), remove(i)].align_y(Alignment::Center).into());
+    let rows = items.iter().enumerate().map(|(i, it)| {
+        let moves = on_move.map(|on| reorder(i, items.len(), on));
+        row![label(show(it), TextRole::Body, Tone::Normal).width(Fill)].push(moves).push(remove(i)).align_y(Alignment::Center).into()
+    });
     let input = text_input("", draft).on_input(on_draft).on_submit(on_add.clone()).style(style::input).padding(t.space(SpaceRole::S));
     let add = button(tinted(Icon::Plus, TextRole::Body, Tone::Normal)).style(style::button(ButtonKind::Secondary)).on_press(on_add);
     column(rows).push(row![input, add].spacing(t.space(SpaceRole::S))).spacing(t.space(SpaceRole::Xs)).into()
+}
+
+/// Up and down buttons for row `index` of `len`, each disabled at its end; `on_move(from, to)`.
+pub fn reorder<'a, M: Clone + 'a>(index: usize, len: usize, on_move: &dyn Fn(usize, usize) -> M) -> Element<'a, M> {
+    let arrow = |icon, to: Option<usize>| button(tinted(icon, TextRole::Caption, Tone::Muted)).style(style::button(ButtonKind::Ghost)).on_press_maybe(to.map(|to| on_move(index, to)));
+    row![arrow(Icon::ChevronUp, index.checked_sub(1)), arrow(Icon::ChevronDown, (index + 1 < len).then_some(index + 1))].into()
 }
 
 /// An option a [`Picker`] lists.

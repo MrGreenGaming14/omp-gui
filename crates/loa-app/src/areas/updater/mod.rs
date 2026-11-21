@@ -20,12 +20,15 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use iced::widget::{container, text};
+use iced::widget::container;
 use iced::{Element, Fill, Subscription, Task};
 use loa_contracts::harness::{Prompt, SessionConfig};
 use loa_bus::SessionId;
 use loa_ui_shell::palette;
-use loa_ui_updates as updates;
+use loa_ui_kit::style::Tone;
+use loa_ui_kit::theme::{LayoutRole, SpaceRole, TextRole, sp, width};
+use loa_ui_kit::widgets::{self as kit, Msg, Screen};
+use loa_ui_settings::updates;
 use loa_updater::peers::{self, PeerInfo, PeerStanding};
 use loa_updater::swap::SwapOutcome;
 use loa_updater::{Error as UpdaterError, InstalledStatus, Overview, ProductKind, TurnGate, Updater, UpdaterConfig, default_products};
@@ -35,9 +38,6 @@ use crate::area::{Area, AreaId, Ctx, SessionEvent, Target};
 
 mod omp_gates;
 pub use omp_gates::OmpPorts;
-
-/// Widest the Updates screen grows.
-const MAX_WIDTH: f32 = 920.0;
 
 #[derive(Clone, Debug)]
 pub enum Message {
@@ -138,8 +138,14 @@ impl State {
             })
             .collect();
         ctx.shell.sidebar_mut().set_updates(waiting(&overview));
-        let peers = self.peers(ctx);
-        self.screen.set_data(updates::Data::from_updater(&overview, &peers, self.running > 0, now_secs()));
+        let data = updates::Data {
+            github_requests_left: overview.github_rate_limit.map(|limit| limit.remaining),
+            products: overview.products,
+            peers: self.peers(ctx),
+            turn_running: self.running > 0,
+            now_unix: now_secs(),
+        };
+        self.screen.set_data(data);
     }
 
     /// The peers whose hello this node has seen, against this app.
@@ -161,7 +167,7 @@ impl State {
 
     /// Checks every feed, as the screen's "Check all" does.
     fn check_all(&mut self, ctx: &mut Ctx) -> Task<Message> {
-        let (_, event) = self.screen.update(updates::Message::CheckAll);
+        let event = self.screen.update(Msg::Local(updates::Local::Start(updates::Event::CheckAll)));
         event.map_or_else(Task::none, |event| self.run(event, ctx))
     }
 
@@ -236,7 +242,7 @@ impl State {
                 )
             }
             updates::Event::Choose(id, choice) => {
-                let note = match updater.choose(&id, choice.into()) {
+                let note = match updater.choose(&id, choice) {
                     Ok(Some(_)) => swap_note(&updater, &id, &updater.swap(&id, &*turns)),
                     Ok(None) | Err(_) => None,
                 };
@@ -324,11 +330,7 @@ impl Area for State {
                 self.refresh(ctx);
                 Task::none()
             }
-            Message::Screen(message) => {
-                let (task, event) = self.screen.update(message);
-                let run = event.map_or_else(Task::none, |event| self.run(event, ctx));
-                Task::batch([task.map(Message::Screen), run])
-            }
+            Message::Screen(message) => self.screen.update(message).map_or_else(Task::none, |event| self.run(event, ctx)),
             Message::Done(id, note) => {
                 match id {
                     Some(id) => self.screen.finish(&id),
@@ -366,9 +368,9 @@ impl Area for State {
     fn view_screen<'a>(&'a self, _: &'a Ctx) -> Option<Element<'a, Message>> {
         let body: Element<'a, Message> = match &self.updater {
             Ok(_) => self.screen.view().map(Message::Screen),
-            Err(error) => text(error.as_str()).size(14).into(),
+            Err(error) => kit::label(error.as_str(), TextRole::Body, Tone::Normal).into(),
         };
-        Some(container(container(body).max_width(MAX_WIDTH)).center_x(Fill).padding([16, 24]).into())
+        Some(container(container(body).max_width(width(LayoutRole::ContentWidth))).center_x(Fill).padding([sp(SpaceRole::M), sp(SpaceRole::Xl)]).into())
     }
 
     fn contribute(&self, config: &mut SessionConfig, target: &Target<'_>, _: &Ctx) {

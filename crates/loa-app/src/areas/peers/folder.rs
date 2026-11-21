@@ -7,13 +7,11 @@ use iced::widget::{button, column, container, row, scrollable, space, text, text
 use iced::{Alignment, Element, Fill, Length, Task};
 use loa_p2p::{FolderEntry, Node};
 use loa_ui_kit::icons::{Icon, icon, muted};
+use loa_ui_kit::theme::{LayoutRole, SpaceRole, TextRole, sp, text_size as ts, width};
 use loa_ui_shell::theme::style;
 
 use super::{Message, State};
 use crate::area::Ctx;
-
-/// Width of the file list beside the preview.
-const LIST_WIDTH: f32 = 380.0;
 
 #[derive(Clone, Debug)]
 pub enum FolderMessage {
@@ -99,28 +97,28 @@ impl Browser {
         let access = if self.can_write { "read, write" } else { "read only" };
         let header = row![
             column![
-                text(self.folder.as_str()).size(20),
-                text(format!("Shared by {} · {access}", self.peer_name)).size(12).style(style::muted),
+                text(self.folder.as_str()).size(ts(TextRole::Title)),
+                text(format!("Shared by {} · {access}", self.peer_name)).size(ts(TextRole::Caption)).style(style::muted),
             ]
-            .spacing(4)
+            .spacing(sp(SpaceRole::Xs))
             .width(Fill),
-            button(text("Refresh").size(13)).style(button::secondary).on_press(FolderMessage::Refresh),
-            button(icon(Icon::X, 16.0)).style(button::text).on_press(FolderMessage::Close),
+            button(text("Refresh").size(ts(TextRole::Label))).style(button::secondary).on_press(FolderMessage::Refresh),
+            button(icon(Icon::X, ts(TextRole::Heading))).style(button::text).on_press(FolderMessage::Close),
         ]
-        .spacing(12)
+        .spacing(sp(SpaceRole::M))
         .align_y(Alignment::Center);
 
         let parts: Vec<&str> = self.path.split('/').filter(|part| !part.is_empty()).collect();
         let root_name = self.folder.rsplit('/').find(|part| !part.is_empty()).unwrap_or(self.folder.as_str());
-        let mut crumbs = row![crumb(root_name, 0, parts.is_empty())].spacing(2).align_y(Alignment::Center);
+        let mut crumbs = row![crumb(root_name, 0, parts.is_empty())].spacing(sp(SpaceRole::Xs) / 2.0).align_y(Alignment::Center);
         for (index, part) in parts.iter().enumerate() {
-            crumbs = crumbs.push(muted(Icon::ChevronRight, 12.0)).push(crumb(part, index + 1, index + 1 == parts.len()));
+            crumbs = crumbs.push(muted(Icon::ChevronRight, ts(TextRole::Caption))).push(crumb(part, index + 1, index + 1 == parts.len()));
         }
 
-        let mut list = column![].spacing(2);
+        let mut list = column![].spacing(sp(SpaceRole::Xs) / 2.0);
         if self.entries.is_empty() {
             let empty = if self.loading { "Listing…" } else { "This folder is empty" };
-            list = list.push(container(text(empty).size(13).style(style::muted)).padding([8, 10]));
+            list = list.push(container(text(empty).size(ts(TextRole::Label)).style(style::muted)).padding([sp(SpaceRole::S), sp(SpaceRole::S)]));
         }
         for entry in &self.entries {
             let selected = self.file.as_ref().is_some_and(|file| file.path == join(&self.path, &entry.name));
@@ -132,72 +130,69 @@ impl Browser {
             list = list.push(
                 button(
                     row![
-                        muted(glyph, 14.0),
-                        text(entry.name.as_str()).size(13).width(Fill),
-                        text(detail).size(12).style(style::muted),
+                        muted(glyph, ts(TextRole::Body)),
+                        text(entry.name.as_str()).size(ts(TextRole::Label)).width(Fill),
+                        text(detail).size(ts(TextRole::Caption)).style(style::muted),
                     ]
-                    .spacing(8)
+                    .spacing(sp(SpaceRole::S))
                     .align_y(Alignment::Center),
                 )
                 .width(Fill)
-                .padding([6, 10])
+                .padding([sp(SpaceRole::Xs), sp(SpaceRole::S)])
                 .style(style::row_for(selected))
                 .on_press(message),
             );
         }
-        let files = container(scrollable(list).height(Fill)).width(Length::Fixed(LIST_WIDTH)).height(Fill).padding(4).style(style::card);
+        let files = container(scrollable(list).height(Fill)).width(Length::Fixed(width(LayoutRole::ListWidth))).height(Fill).padding(sp(SpaceRole::Xs)).style(style::card);
 
         let preview: Element<'_, FolderMessage> = match &self.file {
-            None => container(text("Pick a file to open it here").size(13).style(style::muted)).center(Fill).style(style::card).into(),
+            None => container(text("Pick a file to open it here").size(ts(TextRole::Label)).style(style::muted)).center(Fill).style(style::card).into(),
             Some(file) => {
-                let mut bar = row![
-                    muted(Icon::FileText, 14.0),
-                    text(file.path.as_str()).size(13).width(Fill),
-                ]
-                .spacing(8)
-                .align_y(Alignment::Center);
+                let mut bar = row![muted(Icon::FileText, ts(TextRole::Body)), text(file.path.as_str()).size(ts(TextRole::Label)).width(Fill)]
+                    .spacing(sp(SpaceRole::S))
+                    .align_y(Alignment::Center);
                 let editable = self.can_write && matches!(file.preview, Preview::Text(_));
                 if editable {
                     let label = if file.saving { "Saving…" } else if file.dirty { "Save" } else { "Saved" };
                     bar = bar.push(
-                        button(text(label).size(12))
+                        button(text(label).size(ts(TextRole::Caption)))
                             .style(button::primary)
-                            .padding([4, 10])
+                            .padding([sp(SpaceRole::Xs), sp(SpaceRole::S)])
                             .on_press_maybe((file.dirty && !file.saving).then_some(FolderMessage::Save)),
                     );
                 } else {
-                    bar = bar.push(text("View only").size(12).style(style::muted));
+                    bar = bar.push(text("View only").size(ts(TextRole::Caption)).style(style::muted));
                 }
-                bar = bar.push(button(icon(Icon::X, 14.0)).style(button::text).on_press(FolderMessage::CloseFile));
+                bar = bar.push(button(icon(Icon::X, ts(TextRole::Body))).style(button::text).on_press(FolderMessage::CloseFile));
                 let body: Element<'_, FolderMessage> = match &file.preview {
                     Preview::Text(content) => {
-                        let editor = text_editor(content).size(13).font(iced::Font::MONOSPACE).height(Fill).padding(10);
+                        let editor = text_editor(content).size(ts(TextRole::Label)).font(iced::Font::MONOSPACE).height(Fill).padding(sp(SpaceRole::S));
                         if editable { editor.on_action(FolderMessage::Edit).into() } else { editor.into() }
                     }
                     Preview::Binary(size) => container(
-                        text(format!("Binary file, {}; no text preview", size_text(*size as u64))).size(13).style(style::muted),
+                        text(format!("Binary file, {}; no text preview", size_text(*size as u64))).size(ts(TextRole::Label)).style(style::muted),
                     )
                     .center(Fill)
                     .into(),
                 };
-                container(column![bar, body].spacing(8)).padding(10).height(Fill).style(style::card).into()
+                container(column![bar, body].spacing(sp(SpaceRole::S))).padding(sp(SpaceRole::S)).height(Fill).style(style::card).into()
             }
         };
 
         column![
             header,
             crumbs,
-            row![files, container(preview).width(Fill).height(Fill)].spacing(12).height(Fill),
-            space().height(4),
+            row![files, container(preview).width(Fill).height(Fill)].spacing(sp(SpaceRole::M)).height(Fill),
+            space().height(sp(SpaceRole::Xs)),
         ]
-        .spacing(12)
-        .padding([16, 24])
+        .spacing(sp(SpaceRole::M))
+        .padding([sp(SpaceRole::L), sp(SpaceRole::Xl)])
         .into()
     }
 }
 
 fn crumb(label: &str, depth: usize, current: bool) -> Element<'_, FolderMessage> {
-    button(text(label).size(13)).padding([2, 6]).style(style::row_for(current)).on_press(FolderMessage::Crumb(depth)).into()
+    button(text(label).size(ts(TextRole::Label))).padding([sp(SpaceRole::Xs) / 2.0, sp(SpaceRole::Xs)]).style(style::row_for(current)).on_press(FolderMessage::Crumb(depth)).into()
 }
 
 impl State {

@@ -31,6 +31,8 @@ pub mod models_yml;
 pub mod testing;
 pub mod settings;
 pub mod service;
+#[cfg(test)]
+mod service_tests;
 pub mod validate;
 
 /// The model and role selector grammar shared with the harness adapters.

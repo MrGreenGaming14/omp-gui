@@ -13,7 +13,8 @@ use iced_runtime::Action as RuntimeAction;
 use loa_core::{Dom, Draft, ElementKind, PatchSink as _, attr};
 use loa_trust::NodeIdentity;
 use loa_p2p::{DriveOutcome, Endpoint, GrantDirection, NodeEvent};
-use loa_ui_peers as panel;
+use loa_ui_kit::widgets::Msg;
+use loa_ui_settings::peers::{self as panel, Confirm, Local};
 use loa_ui_shell as shell;
 use tokio::runtime::Runtime;
 
@@ -70,8 +71,13 @@ fn update(rt: &Runtime, app: &mut App, message: Message) {
     run(rt, app, task);
 }
 
-fn panel(rt: &Runtime, app: &mut App, message: panel::Message) {
-    update(rt, app, Message::Peers(Peers::Panel(message)));
+fn panel(rt: &Runtime, app: &mut App, message: Local) {
+    update(rt, app, Message::Peers(Peers::Panel(Msg::Local(message))));
+}
+
+/// What the panel's buttons emit for the app.
+fn emit(rt: &Runtime, app: &mut App, event: panel::Event) {
+    update(rt, app, Message::Peers(Peers::Panel(Msg::Emit(event))));
 }
 
 /// Starts the app's node, as the startup task does; returns its UDP port.
@@ -92,10 +98,10 @@ fn key(app: &App) -> String {
 /// Adds `other` by key and loopback address through the panel's form.
 fn add_peer(rt: &Runtime, app: &mut App, other: &App, port: u16) {
     let key = key(other);
-    panel(rt, app, panel::Message::KeyChanged(key.clone()));
+    panel(rt, app, Local::Key(key.clone()));
     // The key is checked first; the form only adds a valid key.
-    panel(rt, app, panel::Message::AddressChanged(format!("127.0.0.1:{port}")));
-    panel(rt, app, panel::Message::AddPeer);
+    panel(rt, app, Local::Address(format!("127.0.0.1:{port}")));
+    panel(rt, app, Local::AddPeer);
 }
 
 /// Delivers the node events `events` holds as the area's feed would.
@@ -134,11 +140,11 @@ fn prompt(rt: &Runtime, app: &mut App, text: &str) {
 fn grant(rt: &Runtime, app: &mut App, holder: &str, resource: &str, permission: panel::Permission) {
     // The user opens the Peers tab, which shows the current sessions.
     update(rt, app, Message::Peers(Peers::Open));
-    panel(rt, app, panel::Message::SelectPeer(holder.to_owned()));
-    panel(rt, app, panel::Message::SelectResource(resource.to_owned()));
-    panel(rt, app, panel::Message::SelectPermission(permission));
-    panel(rt, app, panel::Message::TtlChanged("2".into()));
-    panel(rt, app, panel::Message::SubmitGrant);
+    panel(rt, app, Local::SelectPeer(holder.to_owned()));
+    panel(rt, app, Local::SelectResource(resource.to_owned()));
+    panel(rt, app, Local::Permission(permission));
+    panel(rt, app, Local::Ttl("2".into()));
+    panel(rt, app, Local::SubmitGrant);
 }
 
 #[test]
@@ -189,20 +195,20 @@ fn two_apps_share_a_session_view_drive_and_fork_over_loopback() {
     update(&rt, &mut owner, Message::Peers(Peers::Open));
     let ssh = loa_trust::Resource::Ssh { host: "buildbox".into() };
     assert!(owner_node.resources().iter().any(|(resource, _)| *resource == ssh));
-    panel(&rt, &mut owner, panel::Message::SelectPeer(guest_key.clone()));
-    panel(&rt, &mut owner, panel::Message::SelectResource("ssh:buildbox".into()));
-    panel(&rt, &mut owner, panel::Message::SelectPermission(panel::Permission::Drive));
-    panel(&rt, &mut owner, panel::Message::SubmitGrant);
+    panel(&rt, &mut owner, Local::SelectPeer(guest_key.clone()));
+    panel(&rt, &mut owner, Local::SelectResource("ssh:buildbox".into()));
+    panel(&rt, &mut owner, Local::Permission(panel::Permission::Drive));
+    panel(&rt, &mut owner, Local::SubmitGrant);
     assert_eq!(owner_node.grants().len(), 2, "not without the confirmation");
-    panel(&rt, &mut owner, panel::Message::RequestSshConfirmation);
-    panel(&rt, &mut owner, panel::Message::ConfirmSsh);
-    panel(&rt, &mut owner, panel::Message::SubmitGrant);
+    panel(&rt, &mut owner, Local::Ask(Confirm::Ssh));
+    panel(&rt, &mut owner, Local::Confirm);
+    panel(&rt, &mut owner, Local::SubmitGrant);
     let given: Vec<_> = owner_node.grants().into_iter().filter(|grant| grant.direction == GrantDirection::Given).collect();
     assert!(given.iter().any(|grant| grant.scopes.iter().any(|scope| scope.resource == ssh)), "{:?}", owner.ctx.notice());
     assert_eq!(given.len(), 3);
 
     // N4: the guest's Refresh lists the session in Recents, tagged with the owner's node.
-    panel(&rt, &mut guest, panel::Message::Refresh);
+    emit(&rt, &mut guest, panel::Event::Refresh);
     let recent = recent_id(&key(&owner), &session);
     assert!(is_remote(&recent));
     let summary = guest.ctx.shell.sidebar().session(&recent).expect("peer session in Recents").clone();
@@ -251,18 +257,18 @@ fn two_apps_share_a_session_view_drive_and_fork_over_loopback() {
     let drive = given.iter().find(|grant| grant.scopes.iter().any(|scope| scope.actions.contains(&loa_trust::Action::Drive))).unwrap();
     let until = drive.until_ms.expect("a timed grant");
     std::thread::sleep(Duration::from_millis(5));
-    panel(&rt, &mut owner, panel::Message::RenewGrant(drive.id.to_string()));
+    emit(&rt, &mut owner, panel::Event::RenewGrant(drive.id.to_string()));
     let renewed = owner_node.grants().into_iter().find(|grant| grant.id == drive.id).unwrap();
     assert!(renewed.until_ms.unwrap() > until, "{:?}", owner.ctx.notice());
     for grant in &given {
-        panel(&rt, &mut owner, panel::Message::BeginRevoke(grant.id.to_string()));
-        panel(&rt, &mut owner, panel::Message::ConfirmRevoke);
+        panel(&rt, &mut owner, Local::Ask(Confirm::RevokeGrant(grant.id.to_string())));
+        panel(&rt, &mut owner, Local::Confirm);
     }
     assert!(owner_node.grants().iter().filter(|grant| grant.direction == GrantDirection::Given).all(|grant| grant.ended));
     eventually("the revocation at the guest", || {
         guest_node.grants().iter().filter(|grant| grant.direction == GrantDirection::Received).all(|grant| grant.ended)
     });
-    panel(&rt, &mut guest, panel::Message::Refresh);
+    emit(&rt, &mut guest, panel::Event::Refresh);
     assert!(guest.ctx.shell.sidebar().session(&recent).is_none(), "revoked session leaves Recents");
 
     rt.block_on(owner_node.stop());
@@ -301,19 +307,19 @@ fn a_project_grant_shares_its_sessions_and_peers_are_renamed_and_removed() {
     eventually("the project grant at the guest", || {
         guest_node.grants().iter().any(|grant| grant.direction == GrantDirection::Received)
     });
-    panel(&rt, &mut guest, panel::Message::Refresh);
+    emit(&rt, &mut guest, panel::Event::Refresh);
     let recent = recent_id(&key(&owner), &session);
     assert!(guest.ctx.shell.sidebar().session(&recent).is_some(), "the project's session is in the guest's Recents");
 
     // N2: the guest renames and then removes the owner from the Peers tab.
     let owner_key = key(&owner);
-    panel(&rt, &mut guest, panel::Message::BeginRename(owner_key.clone()));
-    panel(&rt, &mut guest, panel::Message::RenameChanged("build server".into()));
-    panel(&rt, &mut guest, panel::Message::SaveRename);
+    panel(&rt, &mut guest, Local::BeginRename(owner_key.clone()));
+    panel(&rt, &mut guest, Local::RenameText("build server".into()));
+    panel(&rt, &mut guest, Local::SaveRename);
     assert_eq!(guest.ctx.shell.sidebar().nodes().name_of(&owner_key), "build server");
     assert_eq!(guest.ctx.peers[0].name.as_deref(), Some("build server"));
-    panel(&rt, &mut guest, panel::Message::BeginRemove(owner_key.clone()));
-    panel(&rt, &mut guest, panel::Message::ConfirmRemove);
+    panel(&rt, &mut guest, Local::Ask(Confirm::RemovePeer(owner_key.clone())));
+    panel(&rt, &mut guest, Local::Confirm);
     assert!(guest.ctx.peers.is_empty(), "{:?}", guest.ctx.notice());
 
     rt.block_on(owner_node.stop());
@@ -373,11 +379,11 @@ fn browse(rt: &Runtime, app: &mut App, message: super::FolderMessage) {
 /// Grants `folder` to `holder` through the panel's folder field.
 fn grant_folder(rt: &Runtime, app: &mut App, holder: &str, folder: &str, permission: panel::Permission) {
     update(rt, app, Message::Peers(Peers::Open));
-    panel(rt, app, panel::Message::SelectPeer(holder.to_owned()));
-    panel(rt, app, panel::Message::FolderPathChanged(folder.to_owned()));
-    panel(rt, app, panel::Message::UseFolder);
-    panel(rt, app, panel::Message::SelectPermission(permission));
-    panel(rt, app, panel::Message::SubmitGrant);
+    panel(rt, app, Local::SelectPeer(holder.to_owned()));
+    panel(rt, app, Local::FolderPath(folder.to_owned()));
+    panel(rt, app, Local::UseFolder);
+    panel(rt, app, Local::Permission(permission));
+    panel(rt, app, Local::SubmitGrant);
 }
 
 #[test]
@@ -423,7 +429,7 @@ fn a_granted_folder_is_browsed_read_and_written_only_inside_and_only_with_drive(
     let shared = &guest.areas.peers.panel.data.shared_folders;
     assert_eq!(shared.len(), 1);
     assert_eq!((shared[0].path.as_str(), shared[0].can_write, shared[0].online), (folder.as_str(), false, true));
-    panel(&rt, &mut guest, panel::Message::BrowseFolder { peer: owner_key.clone(), folder: folder.clone() });
+    emit(&rt, &mut guest, panel::Event::BrowseFolder { peer: owner_key.clone(), folder: folder.clone() });
     assert_eq!(guest.ctx.screen(), Some(crate::area::AreaId::Peers), "{:?}", guest.ctx.notice());
     let names = |app: &App| app.areas.peers.folder().unwrap().entries.iter().map(|e| (e.name.clone(), e.dir)).collect::<Vec<_>>();
     assert_eq!(names(&guest), [("docs".to_owned(), true), ("logo.bin".to_owned(), false)]);
@@ -463,7 +469,7 @@ fn a_granted_folder_is_browsed_read_and_written_only_inside_and_only_with_drive(
     grant_folder(&rt, &mut owner, &guest_key, &folder, panel::Permission::Drive);
     eventually("the drive grant at the guest", || guest_node.shared_folders().first().is_some_and(|f| f.can_write));
     update(&rt, &mut guest, Message::Peers(Peers::Open));
-    panel(&rt, &mut guest, panel::Message::BrowseFolder { peer: owner_key.clone(), folder: folder.clone() });
+    emit(&rt, &mut guest, panel::Event::BrowseFolder { peer: owner_key.clone(), folder: folder.clone() });
     assert!(guest.areas.peers.folder().unwrap().can_write);
     browse(&rt, &mut guest, F::Enter("docs".into()));
     browse(&rt, &mut guest, F::Open("plan.md".into()));
@@ -475,8 +481,8 @@ fn a_granted_folder_is_browsed_read_and_written_only_inside_and_only_with_drive(
 
     // Revoked: the folder leaves the guest's list and browsing is refused.
     for grant in owner_node.grants().into_iter().filter(|g| g.direction == GrantDirection::Given && !g.ended) {
-        panel(&rt, &mut owner, panel::Message::BeginRevoke(grant.id.to_string()));
-        panel(&rt, &mut owner, panel::Message::ConfirmRevoke);
+        panel(&rt, &mut owner, Local::Ask(Confirm::RevokeGrant(grant.id.to_string())));
+        panel(&rt, &mut owner, Local::Confirm);
     }
     eventually("the revocations at the guest", || guest_node.shared_folders().is_empty());
     browse(&rt, &mut guest, F::Refresh);

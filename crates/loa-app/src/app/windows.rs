@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use iced::widget::{Column, button, column, container, row, rule, scrollable, space, text};
 use iced::{Alignment, Element, Fill, Length, Task};
 use loa_ui_kit::icons::{Icon, muted};
-use loa_ui_models::screen::Page;
+use loa_ui_settings::models::Page;
 use loa_ui_shell::theme::style;
 use loa_ui_shell::{ThemeRef, layout};
 

@@ -12,7 +12,10 @@ use std::sync::{Arc, Mutex};
 use loa_contracts::harness::Capabilities;
 use loa_bus::Policy;
 use loa_ui_session::decisions::desk;
-use loa_updater::{Feed, Gates, Installed, PrereleasePolicy, Product, ProductSpec};
+use loa_updater::decision::HoldChoice;
+use loa_updater::peers::Standing;
+use loa_updater::{Feed, Gates, Installed, PrereleasePolicy, Product, ProductSpec, ProductStatus};
+use updates::{Event, Local};
 
 use super::*;
 use crate::app::tests::{deliver, fake_app, prompt, update};
@@ -167,12 +170,26 @@ fn app_with(dir: &Path, fixture: &Fixture) -> App {
     app
 }
 
-fn screen(app: &mut App, message: updates::Message) {
-    update(app, AppMessage::Updater(Message::Screen(message)));
+/// Starts a step from the screen.
+fn start(app: &mut App, event: Event) {
+    update(app, AppMessage::Updater(Message::Screen(Msg::Local(Local::Start(event)))));
 }
 
-fn fake(app: &App) -> updates::Product {
+/// A choice or unpin from the screen.
+fn emit(app: &mut App, event: Event) {
+    update(app, AppMessage::Updater(Message::Screen(Msg::Emit(event))));
+}
+
+fn fake(app: &App) -> ProductStatus {
     app.areas.updater.screen().data.products.iter().find(|p| p.id == "fake").cloned().expect("listed")
+}
+
+fn v(version: &str) -> Version {
+    Version::parse(version).unwrap()
+}
+
+fn offer(product: &ProductStatus) -> Option<Version> {
+    product.offer.as_ref().map(|release| release.version.clone())
 }
 
 fn notice(app: &App) -> String {
@@ -197,7 +214,7 @@ fn updates_screen_checks_stages_gates_holds_pins_and_swaps_between_turns() {
     palette(&mut app, "Check for updates");
     assert_eq!(app.ctx.screen(), Some(AreaId::Updater));
     let product = fake(&app);
-    assert_eq!((product.current.as_deref(), product.offer.as_deref()), (Some("1.0.0"), Some("1.1.0")));
+    assert_eq!((product.current.clone(), offer(&product)), (Some(v("1.0.0")), Some(v("1.1.0"))));
     assert!(product.changelog.contains("`--fast` flag removed"), "{}", product.changelog);
     assert!(app.areas.updater.screen().busy("fake").is_none(), "the check finished");
     assert_eq!(app.ctx.shell.sidebar().updates(), 1, "the sidebar lists the update");
@@ -207,28 +224,28 @@ fn updates_screen_checks_stages_gates_holds_pins_and_swaps_between_turns() {
     update(&mut app, AppMessage::Shell(shell_sidebar(loa_ui_shell::sidebar::Message::Emit(loa_ui_shell::sidebar::Event::OpenUpdates))));
     assert_eq!(app.ctx.screen(), Some(AreaId::Updater));
 
-    screen(&mut app, updates::Message::Stage("fake".into()));
-    assert_eq!(fake(&app).staged, vec!["1.1.0".to_owned()]);
+    start(&mut app, Event::Stage("fake".into()));
+    assert_eq!(fake(&app).staged, vec![v("1.1.0")]);
 
     // The changelog review flags the removal: held, with the three choices.
     fixture.review(&["fake: `--fast` flag removed"]);
-    screen(&mut app, updates::Message::Gate("fake".into()));
+    start(&mut app, Event::Gate("fake".into()));
     let product = fake(&app);
-    assert_eq!(product.held, Some(updates::Held { version: "1.1.0".into(), harmful: 1 }));
-    assert!(product.report.is_some_and(|report| report.checks.iter().any(|check| !check.pass)));
+    assert_eq!(product.held.as_ref().map(|held| (held.version.clone(), held.report.harmful().count())), Some((v("1.1.0"), 1)));
+    assert!(product.report.is_some_and(|report| !report.is_clean()));
     assert!(notice(&app).contains("held"), "{}", notice(&app));
 
     // Pin current: written to the central config; unpin removes it.
-    screen(&mut app, updates::Message::Choose("fake".into(), updates::Choice::PinCurrent));
+    emit(&mut app, Event::Choose("fake".into(), HoldChoice::PinCurrent));
     let pins = app.ctx.services.config.load().unwrap().updater.pins;
     assert_eq!(pins.get("fake").map(String::as_str), Some("1.0.0"));
-    assert_eq!((fake(&app).pin.as_deref(), fake(&app).offer), (Some("1.0.0"), None));
-    screen(&mut app, updates::Message::Unpin("fake".into()));
+    assert_eq!((fake(&app).pin, offer(&fake(&app))), (Some(v("1.0.0")), None));
+    emit(&mut app, Event::Unpin("fake".into()));
     assert!(app.ctx.services.config.load().unwrap().updater.pins.is_empty());
-    assert_eq!(fake(&app).offer.as_deref(), Some("1.1.0"));
+    assert_eq!(offer(&fake(&app)), Some(v("1.1.0")));
 
     // Update anyway while a turn runs: the swap waits for the turn to end.
-    screen(&mut app, updates::Message::Gate("fake".into()));
+    start(&mut app, Event::Gate("fake".into()));
     update(&mut app, AppMessage::NewSession);
     let session = app.ctx.sessions.active().expect("started");
     let id = session.id().clone();
@@ -236,10 +253,10 @@ fn updates_screen_checks_stages_gates_holds_pins_and_swaps_between_turns() {
     prompt(&mut app, "ask");
     deliver(&mut app, &id, &mut feed);
     assert!(app.areas.updater.turn_running());
-    screen(&mut app, updates::Message::Choose("fake".into(), updates::Choice::UpdateAnyway));
+    emit(&mut app, Event::Choose("fake".into(), HoldChoice::UpdateAnyway));
     assert!(notice(&app).contains("swaps in once the running turn ends"), "{}", notice(&app));
-    assert_eq!(fake(&app).pending_swap.as_deref(), Some("1.1.0"));
-    assert_eq!(fake(&app).current.as_deref(), Some("1.0.0"));
+    assert_eq!(fake(&app).pending_swap, Some(v("1.1.0")));
+    assert_eq!(fake(&app).current, Some(v("1.0.0")));
 
     let decision = app.areas.decisions.focused().expect("the turn waits on a decision");
     let choose = desk::Message::Card(id.to_string(), loa_ui_session::decisions::Message::Choose(decision, 0));
@@ -248,27 +265,27 @@ fn updates_screen_checks_stages_gates_holds_pins_and_swaps_between_turns() {
     assert!(!app.areas.updater.turn_running(), "turn ended");
     assert!(notice(&app).contains("fake is now 1.1.0"), "{}", notice(&app));
     let product = fake(&app);
-    assert_eq!((product.current.as_deref(), product.pending_swap), (Some("1.1.0"), None));
-    let updates::Installed::Managed(managed) = product.installed else { panic!("managed: {:?}", product.installed) };
+    assert_eq!((product.current, product.pending_swap), (Some(v("1.1.0")), None));
+    let InstalledStatus::Managed(managed) = product.installed else { panic!("managed: {:?}", product.installed) };
 
     // New sessions of the harness start the swapped in version.
     let capabilities = Capabilities::default();
     let mut config = SessionConfig::default();
     app.areas.updater.contribute(&mut config, &Target { harness: "fake", capabilities: &capabilities, resume: false }, &app.ctx);
-    assert_eq!(config.executable, Some(PathBuf::from(&managed)));
+    assert_eq!(config.executable, Some(managed));
 
     // A clean release swaps in at once; rollback goes back one version.
     fixture.review(&[]);
     fixture.publish("1.2.0", "- faster startup");
-    screen(&mut app, updates::Message::Check("fake".into()));
-    assert_eq!(fake(&app).offer.as_deref(), Some("1.2.0"));
-    screen(&mut app, updates::Message::Stage("fake".into()));
-    screen(&mut app, updates::Message::Gate("fake".into()));
+    start(&mut app, Event::Check("fake".into()));
+    assert_eq!(offer(&fake(&app)), Some(v("1.2.0")));
+    start(&mut app, Event::Stage("fake".into()));
+    start(&mut app, Event::Gate("fake".into()));
     assert!(notice(&app).contains("fake is now 1.2.0"), "{}", notice(&app));
-    assert_eq!(fake(&app).active.map(|active| active.previous), Some(Some("1.1.0".into())));
-    screen(&mut app, updates::Message::Rollback("fake".into()));
+    assert_eq!(fake(&app).active.map(|active| active.previous), Some(Some(v("1.1.0"))));
+    start(&mut app, Event::Rollback("fake".into()));
     assert!(notice(&app).contains("fake is now 1.1.0"), "{}", notice(&app));
-    assert_eq!(fake(&app).current.as_deref(), Some("1.1.0"));
+    assert_eq!(fake(&app).current, Some(v("1.1.0")));
 }
 
 fn shell_sidebar(message: loa_ui_shell::sidebar::Message) -> loa_ui_shell::Message {
@@ -308,7 +325,7 @@ fn peers_behind_come_from_the_peers_the_node_knows() {
     let peers = &app.areas.updater.screen().data.peers;
     let names: Vec<_> = peers.iter().map(|p| p.name.as_deref().unwrap_or_default()).collect();
     assert_eq!(names, ["old-box", "same-box"], "only peers whose hello was seen");
-    assert!(matches!(peers[0].standing, updates::Standing::Behind { .. }), "{:?}", peers[0].standing);
+    assert!(matches!(peers[0].standing, Standing::Behind { .. }), "{:?}", peers[0].standing);
     assert!(peers.iter().all(|p| p.can_talk));
-    assert_eq!(peers[1].standing, updates::Standing::Current);
+    assert_eq!(peers[1].standing, Standing::Current);
 }
