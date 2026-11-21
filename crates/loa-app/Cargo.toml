@@ -42,6 +42,9 @@ bytes.workspace = true
 loa-ui-kit = { path = "../loa-ui-kit" }
 loa-p2p = { path = "../loa-p2p" }
 loa-updater = { path = "../loa-updater" }
+loa-harness = { workspace = true, features = ["omp"] }
+futures.workspace = true
+tempfile.workspace = true
 loa-ui-updates = { path = "../loa-ui-updates" }
 semver = "1"
 loa-sandbox = { path = "../loa-sandbox" }

@@ -105,6 +105,7 @@ pub enum Command {
     AbortAndRestoreQueue,
     NegotiateProtocol { protocol_version: u32 },
     GetState,
+    GetEntries,
     SetAskDialog { enabled: bool },
     SetHostTools { tools: Vec<HostToolDefinition> },
     SetHostUriSchemes { schemes: Vec<HostUriScheme> },
