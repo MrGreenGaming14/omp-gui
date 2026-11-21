@@ -12,20 +12,22 @@ mod docs;
 pub mod document;
 pub mod framebuffer;
 pub mod geometry;
-mod h264;
 pub mod input;
 pub mod latency;
 pub mod panel;
 pub mod picker;
 mod state;
 mod style;
+#[cfg(feature = "remote-video")]
+mod video;
 mod viewer;
 
 pub use decode::{DecodeError, VideoDecoder};
 pub use docs::DocsRenderers;
-pub use h264::H264Decoder;
+#[cfg(feature = "remote-video")]
+pub use video::{H264Decoder, VideoStatus};
 pub use panel::{
-    Available, BrowserStatus, Capture, CaptureStatus, NewDecoder, Panel, PanelOptions, VideoStatus,
+    Available, BrowserStatus, Capture, CaptureStatus, NewDecoder, Panel, PanelOptions,
 };
 pub use document::{PageError, PageRenderer, PageRenderers, Pages, RgbaPage};
 pub use framebuffer::Framebuffer;

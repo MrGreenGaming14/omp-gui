@@ -13,15 +13,19 @@
 pub mod dom;
 mod endpoint;
 mod hub;
+mod mcp;
 mod mcp_surface;
 mod tools;
+#[cfg(feature = "remote-video")]
+mod video;
 
 pub use endpoint::{McpEndpoint, SERVER_PREFIX};
 pub use hub::{
     CaptureMode, HubConfig, HubEvent, Listed, Opened, Origin, SurfaceHub, VirtualDisplaySetup, normalize_url,
     user_namespaces,
 };
-pub use loa_surface_bench::live::LiveVideo;
+#[cfg(feature = "remote-video")]
+pub use {loa_surface_proto as proto, loa_surface_proto::video::LiveVideo, video::{RemoteVideo, VideoConfig}};
 pub use mcp_surface::McpSurface;
 pub use tools::{SurfaceTools, ToolContent, ToolResult, tool_definitions};
 

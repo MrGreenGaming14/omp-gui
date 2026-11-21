@@ -6,16 +6,13 @@ use crate::{HubError, Result};
 use async_trait::async_trait;
 use loa_mcp::{AllowAll, Manager, Status};
 use loa_contracts::surface::{Surface, SurfaceInfo, SurfaceMode, SurfaceServer, SurfaceUri};
-use loa_surface_bench::encode::ffmpeg::FfmpegConfig;
-use loa_surface_bench::live::{LiveVideo, VideoSurface};
 use loa_surface_browser::{BrowserConfig, BrowserServer, Capture, Tab, VirtualDisplayConfig};
 use loa_surface_docs::{DocSurface, DocsServer, Fonts};
 use loa_surface_rfb::{PasswordSource, RfbEndpoint, RfbOptions, RfbServer};
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use tokio::sync::{OnceCell, broadcast};
+use tokio::sync::broadcast;
 
 /// What the hub starts with.
 #[derive(Clone, Debug)]
@@ -30,13 +27,9 @@ pub struct HubConfig {
     /// that only take text results.
     pub screenshot_dir: PathBuf,
     pub rfb: RfbOptions,
-    /// Live surfaces (browser tabs, VMs) stream video to viewers across the
-    /// network that decode it (see [`SurfaceHub::network_surface`]).
-    pub video: bool,
-    /// The ffmpeg hardware encoders run through.
-    pub ffmpeg: Option<FfmpegConfig>,
-    /// This machine's encoders; `None` tries them on first need.
-    pub encoders: Option<Arc<LiveVideo>>,
+    /// Live video for viewers across the network.
+    #[cfg(feature = "remote-video")]
+    pub video: crate::video::VideoConfig,
     /// How browser tabs are captured.
     pub capture: CaptureMode,
     /// What the virtual display capture runs with, or why it can't run.
@@ -91,9 +84,8 @@ impl HubConfig {
             fonts: Fonts::system(),
             screenshot_dir: state_dir.join("screenshots"),
             rfb: RfbOptions::default(),
-            video: true,
-            ffmpeg: FfmpegConfig::discover(),
-            encoders: None,
+            #[cfg(feature = "remote-video")]
+            video: crate::video::VideoConfig::discover(),
             capture: CaptureMode::Screencast,
             virtual_display: VirtualDisplaySetup::find(path.as_deref(), home.as_deref()),
         }
@@ -192,11 +184,8 @@ pub struct SurfaceHub {
     declared: Mutex<BTreeMap<String, Vec<SurfaceInfo>>>,
     mcp: Mutex<Option<Manager>>,
     events: broadcast::Sender<HubEvent>,
-    /// This machine's encoders, tried once.
-    encoders: OnceCell<Arc<LiveVideo>>,
-    video: AtomicBool,
-    /// Live surfaces coded as video for viewers across the network, by uri.
-    videos: Mutex<Vec<(SurfaceUri, Arc<VideoSurface>)>>,
+    #[cfg(feature = "remote-video")]
+    video: crate::video::RemoteVideo,
     capture: Mutex<CaptureMode>,
 }
 
@@ -207,10 +196,9 @@ impl SurfaceHub {
             docs: DocsServer::new(config.fonts.clone()),
             vm: RfbServer::new(Vec::new(), passwords.clone(), config.rfb.clone()),
             passwords,
-            video: AtomicBool::new(config.video),
+            #[cfg(feature = "remote-video")]
+            video: crate::video::RemoteVideo::new(&config.video),
             capture: Mutex::new(config.capture),
-            encoders: OnceCell::new_with(config.encoders.clone()),
-            videos: Mutex::new(Vec::new()),
             config,
             browser: tokio::sync::Mutex::new(None),
             open: Mutex::new(Vec::new()),
@@ -252,58 +240,18 @@ impl SurfaceHub {
         Ok(self.register(tab, Origin::Browser))
     }
 
-    /// The encoders of this machine, tried on the first call (it starts
-    /// ffmpeg a few times, so the first call takes a moment).
-    pub async fn encoders(&self) -> Arc<LiveVideo> {
-        let ffmpeg = self.config.ffmpeg.clone();
-        let probe = || async move {
-            let probed = tokio::task::spawn_blocking(move || LiveVideo::probe(ffmpeg)).await;
-            Arc::new(probed.unwrap_or_else(|_| LiveVideo::probe(None)))
-        };
-        self.encoders.get_or_init(probe).await.clone()
-    }
-
-    /// Whether live surfaces stream video to network viewers that decode it.
-    pub fn video(&self) -> bool {
-        self.video.load(Ordering::Acquire)
-    }
-
-    /// Turns video on or off, for open surfaces too.
-    pub async fn set_video(&self, enabled: bool) {
-        self.video.store(enabled, Ordering::Release);
-        let videos: Vec<_> = self.videos.locked().iter().map(|(_, video)| video.clone()).collect();
-        for video in videos {
-            if let Err(error) = video.set_video(enabled).await {
-                tracing::warn!(%error, "switching a surface's video");
-            }
-        }
+    /// Live video for viewers across the network.
+    #[cfg(feature = "remote-video")]
+    pub fn video(&self) -> &crate::video::RemoteVideo {
+        &self.video
     }
 
     /// The open surface `uri` for a viewer across the network (a peer over
-    /// `omp/surface/1`). Live surfaces (browser tabs, VMs) are coded as
-    /// video for viewers that negotiate it, which keeps them small on the
-    /// wire; documents and declared surfaces go as they are. Viewers in
-    /// this process use [`Opened::surface`] instead.
+    /// `omp/surface/1`); viewers here use [`Opened::surface`].
+    #[cfg(feature = "remote-video")]
     pub async fn network_surface(&self, uri: &SurfaceUri) -> Result<Arc<dyn Surface>> {
         let opened = self.opened(uri).ok_or_else(|| HubError::NotFound(uri.clone()))?;
-        let live = matches!(opened.origin, Origin::Browser | Origin::Vm) && opened.info.mode == SurfaceMode::Pixel;
-        if !live {
-            return Ok(opened.surface);
-        }
-        let coded = |videos: &[(SurfaceUri, Arc<VideoSurface>)]| {
-            videos.iter().find(|(open, _)| open == uri).map(|(_, video)| video.clone() as Arc<dyn Surface>)
-        };
-        if let Some(video) = coded(&self.videos.locked()) {
-            return Ok(video);
-        }
-        let encoders = self.encoders().await;
-        let mut videos = self.videos.locked();
-        if let Some(video) = coded(&videos) {
-            return Ok(video);
-        }
-        let video = VideoSurface::new(opened.surface, encoders, self.video())?;
-        videos.push((uri.clone(), video.clone()));
-        Ok(video)
+        self.video.surface(opened).await
     }
 
     /// How new browser tabs are captured.
@@ -458,7 +406,8 @@ impl SurfaceHub {
             let index = open.iter().position(|o| &o.info.uri == uri).ok_or_else(|| HubError::NotFound(uri.clone()))?;
             open.remove(index)
         };
-        self.videos.locked().retain(|(open, _)| open != uri);
+        #[cfg(feature = "remote-video")]
+        self.video.forget(Some(uri));
         match opened.origin {
             Origin::Browser => {
                 let browser = self.browser.lock().await.clone();
@@ -549,7 +498,8 @@ impl SurfaceHub {
     /// Closes every surface and stops the browser.
     pub async fn shutdown(&self) {
         self.open.locked().clear();
-        self.videos.locked().clear();
+        #[cfg(feature = "remote-video")]
+        self.video.forget(None);
         let browser = self.browser.lock().await.take();
         if let Some(server) = browser
             && let Err(error) = server.shutdown().await
@@ -572,7 +522,7 @@ fn capture_mode(server: &BrowserServer) -> CaptureMode {
 fn declared_info(uri: SurfaceUri, resource: &loa_mcp::model::Resource) -> SurfaceInfo {
     let parsed = serde_json::to_value(resource)
         .ok()
-        .and_then(|value| loa_surface_proto::mcp::parse_resource(&value).ok().flatten());
+        .and_then(|value| crate::mcp::parse_resource(&value).ok().flatten());
     parsed.unwrap_or_else(|| SurfaceInfo {
         uri,
         name: resource.title.clone().unwrap_or_else(|| resource.name.clone()),

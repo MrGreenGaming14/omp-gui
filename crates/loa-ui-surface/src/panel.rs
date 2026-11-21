@@ -8,14 +8,15 @@
 //! [`Panel::attach`].
 
 use crate::decode::VideoDecoder;
-use crate::decode::encoding_name;
 use crate::picker::{self, FilePicker};
 use crate::state::{self, Clock, MonotonicClock, Options, State};
 use crate::style;
 use crate::document::PageRenderers;
 use iced::widget::{Column, button, column, container, row, rule, scrollable, space, text, text_input};
+#[cfg(feature = "remote-video")]
+pub use crate::video::VideoStatus;
 use iced::{Center, Element, Fill, Task};
-use loa_contracts::surface::{Encoding, StreamInfo, Surface, SurfaceInfo, SurfaceMode, SurfaceUri};
+use loa_contracts::surface::{Encoding, Surface, SurfaceInfo, SurfaceMode, SurfaceUri};
 use loa_ui_icons::{Icon, muted};
 use loa_ui_shell::theme::style as shell;
 use std::path::PathBuf;
@@ -31,19 +32,6 @@ pub enum BrowserStatus {
 
 /// Makes the video decoder of each new pixel tab.
 pub type NewDecoder = Arc<dyn Fn() -> Box<dyn VideoDecoder> + Send + Sync>;
-
-/// Live video encoding for viewers across the network, as the launcher
-/// shows it. Tabs in this app always get the source frames.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct VideoStatus {
-    /// Live surfaces stream video to network viewers that decode it.
-    pub enabled: bool,
-    /// What network viewers get; `None` while the machine's encoders are
-    /// tried.
-    pub encoder: Option<StreamInfo>,
-    /// Hardware encoders that work here, e.g. `h264_vaapi`.
-    pub hardware: Vec<String>,
-}
 
 /// How browser frames are captured.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -101,6 +89,7 @@ pub enum Message {
     Connect,
     OpenAvailable(SurfaceUri),
     /// Turn live video encoding on or off.
+    #[cfg(feature = "remote-video")]
     Video(bool),
     /// Pick how browser frames are captured.
     Capture(Capture),
@@ -120,6 +109,7 @@ pub enum Event {
     /// for one of `supported`.
     EncodingUnsupported { uri: SurfaceUri, encoding: Encoding, supported: Vec<Encoding> },
     /// The user turned live video encoding on or off.
+    #[cfg(feature = "remote-video")]
     SetVideo(bool),
     /// The user picked how browser frames are captured.
     SetCapture(Capture),
@@ -155,6 +145,7 @@ pub struct Panel {
     /// What is being opened right now.
     pending: Option<String>,
     error: Option<String>,
+    #[cfg(feature = "remote-video")]
     video: VideoStatus,
     capture: CaptureStatus,
 }
@@ -174,6 +165,7 @@ impl Panel {
             picker: FilePicker::new(documents_dir),
             pending: None,
             error: None,
+            #[cfg(feature = "remote-video")]
             video: VideoStatus::default(),
             capture: CaptureStatus::default(),
         }
@@ -233,6 +225,7 @@ impl Panel {
                 self.start(format!("Opening {uri}"));
                 return (Task::none(), Some(Event::Open(uri)));
             }
+            #[cfg(feature = "remote-video")]
             Message::Video(enabled) => {
                 if enabled != self.video.enabled {
                     self.video.enabled = enabled;
@@ -309,10 +302,12 @@ impl Panel {
         self.tabs.iter().find(|t| &t.state.info().uri == uri).map(|t| &t.state)
     }
 
+    #[cfg(feature = "remote-video")]
     pub fn set_video(&mut self, video: VideoStatus) {
         self.video = video;
     }
 
+    #[cfg(feature = "remote-video")]
     pub fn video(&self) -> &VideoStatus {
         &self.video
     }
@@ -431,7 +426,10 @@ impl Panel {
             "Browser",
             column![row![url, open].spacing(6).align_y(Center), browser_note, self.capture_choice()].spacing(6),
         ));
-        content = content.push(section(Icon::Monitor, "Live video", self.video_status()));
+        #[cfg(feature = "remote-video")]
+        {
+            content = content.push(section(Icon::Monitor, "Live video", crate::video::view(&self.video)));
+        }
 
         content = content.push(section(
             Icon::FileText,
@@ -515,49 +513,6 @@ impl Panel {
             choice = choice.push(note);
         }
         choice.into()
-    }
-
-    /// Whether live surfaces stream video to network viewers, and with
-    /// which encoder.
-    fn video_status(&self) -> Element<'_, Message> {
-        let toggle = |label: &'static str, on: bool| {
-            button(text(label).size(style::SMALL))
-                .on_press(Message::Video(on))
-                .padding([3, 8])
-                .style(shell::row_for(self.video.enabled == on))
-        };
-        let choices = row![
-            text("Encode browser and VM frames as video for peers").size(style::SMALL).style(shell::muted),
-            space::horizontal(),
-            toggle("On", true),
-            toggle("Off", false),
-        ]
-        .spacing(6)
-        .align_y(Center);
-        let encoder = match &self.video.encoder {
-            _ if !self.video.enabled => "Off: peers get frames as their source makes them (raw pixels, JPEG screencast)".to_owned(),
-            None => "Trying this machine's encoders…".to_owned(),
-            Some(stream) if stream.hardware => {
-                format!("{} with {}, hardware encoded", encoding_name(stream.encoding), stream.encoder)
-            }
-            Some(stream) => format!(
-                "No hardware encoder works here: {} with {}, software encoded",
-                encoding_name(stream.encoding),
-                stream.encoder
-            ),
-        };
-        let mut status = column![
-            choices,
-            text(encoder).size(style::SMALL).style(shell::muted),
-            text("Tabs here show the source frames: no encode or decode in the way").size(style::SMALL).style(shell::muted),
-        ]
-        .spacing(4);
-        if self.video.hardware.len() > 1 {
-            status = status.push(
-                text(format!("Hardware encoders: {}", self.video.hardware.join(", "))).size(style::SMALL).style(shell::muted),
-            );
-        }
-        status.into()
     }
 }
 

@@ -9,7 +9,7 @@ use loa_mcp::{AllowAll, HttpSpec, Manager, ServerSpec, Status, Transport};
 use loa_contracts::surface::{Encoding, Frame, Input, InputEvent, Modifiers, MouseButton, SurfaceMode, SurfaceUri};
 use loa_surface_docs::Fonts;
 use loa_surface_hub::{
-    CaptureMode, HubConfig, HubEvent, LiveVideo, McpEndpoint, Origin, SurfaceHub, SurfaceTools, ToolContent,
+    CaptureMode, HubConfig, HubEvent, McpEndpoint, Origin, SurfaceHub, SurfaceTools, ToolContent,
     VirtualDisplaySetup,
 };
 use serde_json::json;
@@ -26,7 +26,11 @@ fn config(dir: &Path, browser: bool) -> HubConfig {
     let mut config = HubConfig::discover(dir);
     config.fonts = Fonts::none();
     // Software H.264 only: the same on every machine, and no ffmpeg probing.
-    config.encoders = Some(Arc::new(LiveVideo::with_probed(None, loa_surface_bench::encode::probe(None))));
+    #[cfg(feature = "remote-video")]
+    {
+        use loa_surface_proto::video::{LiveVideo, encode::probe};
+        config.video.encoders = Some(Arc::new(LiveVideo::with_probed(None, probe(None))));
+    }
     if browser {
         if let Some(b) = &mut config.browser {
             b.width = 480;
@@ -366,11 +370,12 @@ async fn frame_of(frames: &mut broadcast::Receiver<Arc<Frame>>, encoding: Encodi
     }
 }
 
+#[cfg(feature = "remote-video")]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_vm_streams_h264_to_a_network_viewer_raw_frames_here_and_the_toggle_turns_video_off() {
     let dir = tempfile::tempdir().unwrap();
     let hub = SurfaceHub::new(config(dir.path(), false));
-    assert!(hub.video());
+    assert!(hub.video().enabled());
     let (address, _received, send_update) = fake_rfb(8, 4, [0, 200, 0]).await;
     let opened = hub.open_vm(&address, None).await.unwrap();
     let mut frames = opened.surface.frames().unwrap();
@@ -385,7 +390,7 @@ async fn a_vm_streams_h264_to_a_network_viewer_raw_frames_here_and_the_toggle_tu
     let frame = frame_of(&mut coded, Encoding::H264).await;
     assert!(frame.keyframe);
     let mut picture = vec![0; 8 * 4 * 4];
-    assert!(loa_surface_bench::video::VideoDecoder::new().decode(&frame, &mut picture).unwrap());
+    assert!(loa_surface_proto::video::decode::VideoDecoder::new().decode(&frame, &mut picture).unwrap());
     let [r, g, b, _] = picture[..4] else { unreachable!() };
     assert!(r < 40 && g > 160 && b < 40, "decoded {:?}", &picture[..4]);
     assert!(Arc::ptr_eq(&network, &hub.network_surface(&opened.info.uri).await.unwrap()), "one encoder per surface");
@@ -395,8 +400,8 @@ async fn a_vm_streams_h264_to_a_network_viewer_raw_frames_here_and_the_toggle_tu
     let frame = next_frame(&mut frames).await;
     assert_eq!((frame.encoding, &frame.data[..4]), (Encoding::Rgba, &[0, 200, 0, 255][..]));
 
-    hub.set_video(false).await;
-    assert_eq!(network.stream().unwrap().encoder, loa_surface_bench::live::SOURCE);
+    hub.video().set_enabled(false).await;
+    assert_eq!(network.stream().unwrap().encoder, loa_surface_proto::video::SOURCE);
     let frame = frame_of(&mut coded, Encoding::Rgba).await;
     assert_eq!(&frame.data[..4], &[0, 200, 0, 255]);
 }

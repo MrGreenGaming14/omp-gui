@@ -1,22 +1,18 @@
-//! Video for live surfaces: [`VideoSurface`] codes another surface's
-//! pictures as H.264 or HEVC, with the hardware encoder [`LiveVideo`] found
-//! on this machine when it has one, the in-process software encoder
-//! otherwise, and what the viewer negotiated.
-//!
-//! Video is for viewers across the network (peers over `omp/surface/1`):
-//! a viewer in the same process takes the source frames, which skip the
-//! encode and decode. A hardware encoder runs as a process with a fixed
-//! picture size, and starting one takes up to a few hundred milliseconds,
-//! so a new size never waits for it: the encoder for it starts on its own
-//! thread (already on the viewer's resize request), and the in-process
-//! software encoder codes the pictures until it is ready.
+//! Live video for viewers across the network (`remote-video`):
+//! [`VideoSurface`] codes another surface's pictures as H.264 or HEVC with
+//! the hardware encoder [`LiveVideo`] found here, the in-process software
+//! encoder otherwise, or passes source frames on when the viewer decodes no
+//! video. A hardware encoder for a new size warms up on its own thread while
+//! the software encoder bridges.
 
+pub mod decode;
+pub mod encode;
+pub mod ffmpeg;
+
+use decode::{Canvas, FrameDecoder};
+use encode::{Codec, EncoderInfo, EncoderSettings, LiveEncoder, ProbeResult, SoftwareH264, software_info};
+use ffmpeg::FfmpegConfig;
 use loa_util::LockExt;
-use crate::canvas::Canvas;
-use crate::decode::FrameDecoder;
-use crate::encode::{
-    self, Codec, EncoderChoice, EncoderInfo, EncoderSettings, LiveEncoder, ProbeResult, ffmpeg::FfmpegConfig, software,
-};
 use async_trait::async_trait;
 use bytes::Bytes;
 use loa_contracts::surface::{Document, Encoding, Frame, Input, InputEvent, StreamInfo, Surface, SurfaceInfo};
@@ -25,22 +21,15 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex, Weak};
 use tokio::sync::broadcast::{self, error::TryRecvError};
 
-/// Opens an encoder for a picture size, instead of ffmpeg or the software
-/// encoder (e.g. one that is slow to start, in tests).
-pub type Opener = Arc<dyn Fn(&EncoderInfo, u32, u32) -> crate::Result<LiveEncoder> + Send + Sync>;
+pub(crate) fn video_error(message: impl Into<String>) -> crate::ProtoError {
+    crate::ProtoError::Video(message.into())
+}
 
 /// The encoders this machine has, each tried once for real.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct LiveVideo {
     ffmpeg: Option<FfmpegConfig>,
     probed: Vec<ProbeResult>,
-    opener: Option<Opener>,
-}
-
-impl std::fmt::Debug for LiveVideo {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("LiveVideo").field("ffmpeg", &self.ffmpeg).field("probed", &self.probed).finish_non_exhaustive()
-    }
 }
 
 impl LiveVideo {
@@ -48,21 +37,12 @@ impl LiveVideo {
     /// few times). Software H.264 is always there.
     pub fn probe(ffmpeg: Option<FfmpegConfig>) -> Self {
         let probed = encode::probe(ffmpeg.as_ref());
-        Self { ffmpeg, probed, opener: None }
+        Self { ffmpeg, probed }
     }
 
     /// A machine with exactly these probe results, e.g. for tests.
     pub fn with_probed(ffmpeg: Option<FfmpegConfig>, probed: Vec<ProbeResult>) -> Self {
-        Self { ffmpeg, probed, opener: None }
-    }
-
-    /// A machine with these probe results whose encoders `opener` opens.
-    pub fn with_opener(probed: Vec<ProbeResult>, opener: Opener) -> Self {
-        Self { ffmpeg: None, probed, opener: Some(opener) }
-    }
-
-    pub fn ffmpeg(&self) -> Option<&FfmpegConfig> {
-        self.ffmpeg.as_ref()
+        Self { ffmpeg, probed }
     }
 
     /// Every encoder tried, working or not; software last.
@@ -85,18 +65,17 @@ impl LiveVideo {
             _ => None,
         };
         let hardware = accepted.iter().filter_map(codec).find_map(|c| self.hardware(c)).cloned();
-        hardware.or_else(|| accepted.contains(&Encoding::H264).then(software::info))
+        hardware.or_else(|| accepted.contains(&Encoding::H264).then(software_info))
     }
 
     fn open(&self, info: &EncoderInfo, width: u32, height: u32) -> crate::Result<LiveEncoder> {
-        if let Some(opener) = &self.opener {
-            return opener(info, width, height);
-        }
-        let choice = match info.name.strip_prefix(encode::ffmpeg::NAME_PREFIX) {
-            Some(name) => EncoderChoice::Ffmpeg(name.to_owned()),
-            None => EncoderChoice::SoftwareH264,
+        let settings = EncoderSettings::new(width, height);
+        let encoder: Box<dyn encode::VideoEncoder> = match (info.name.strip_prefix(ffmpeg::NAME_PREFIX), &self.ffmpeg) {
+            (Some(name), Some(config)) => Box::new(ffmpeg::FfmpegEncoder::spawn(config, name, &settings)?),
+            (Some(name), None) => return Err(video_error(format!("{name} needs an ffmpeg binary"))),
+            (None, _) => Box::new(SoftwareH264::new(&settings)?),
         };
-        encode::open(&choice, &EncoderSettings::new(width, height), self.ffmpeg.as_ref(), &self.probed)
+        Ok(LiveEncoder::new(width, height, encoder))
     }
 }
 
@@ -104,7 +83,7 @@ impl LiveVideo {
 pub fn stream_info(info: &EncoderInfo) -> StreamInfo {
     StreamInfo {
         encoding: info.codec.encoding(),
-        encoder: info.name.trim_start_matches(encode::ffmpeg::NAME_PREFIX).to_owned(),
+        encoder: info.name.trim_start_matches(ffmpeg::NAME_PREFIX).to_owned(),
         hardware: info.accel.is_hardware(),
     }
 }
@@ -192,7 +171,7 @@ impl Shared {
         let result = match current.ready.try_recv() {
             Ok(result) => result,
             Err(mpsc::TryRecvError::Empty) => return None,
-            Err(mpsc::TryRecvError::Disconnected) => Err(crate::BenchError::Encode("the encoder opening thread died".into())),
+            Err(mpsc::TryRecvError::Disconnected) => Err(video_error("the encoder opening thread died")),
         };
         *warming = None;
         Some(result)
@@ -426,8 +405,8 @@ impl Worker {
             encoder.request_keyframe();
         }
         match encoder.encode(self.canvas.rgba(), last.input_seq, last.captured_us) {
-            Ok(encoded) => {
-                for frame in encoded.frames {
+            Ok(frames) => {
+                for frame in frames {
                     self.seq += 1;
                     let _ = self.out.send(Arc::new(Frame { seq: self.seq, ..frame }));
                 }
@@ -455,7 +434,7 @@ impl Worker {
             return Ok(true);
         }
         self.shared.warm(wanted, size);
-        let bridge = software::info();
+        let bridge = software_info();
         if self.encoder.as_ref().is_some_and(|(info, encoder)| *info == bridge && encoder.size() == size) {
             return Ok(true);
         }
@@ -476,7 +455,7 @@ impl Worker {
     /// to the source frames.
     fn fall_back(&mut self, failed: &EncoderInfo, error: &str, last: &Frame) {
         tracing::warn!(encoder = %failed.name, %error, "live video encoder failed");
-        let next = (failed.accel.is_hardware() && failed.codec == Codec::H264).then(software::info);
+        let next = (failed.accel.is_hardware() && failed.codec == Codec::H264).then(software_info);
         *self.shared.wanted.locked() = next.clone();
         self.shared.keyframe.store(true, Ordering::Release);
         match next {

@@ -18,7 +18,7 @@ use loa_mcp::{AllowAll, Manager};
 use loa_contracts::surface::{
     Document, Encoding, Frame, Input, InputEvent, MouseButton, Rect, Surface, SurfaceError, SurfaceInfo, SurfaceMode,
 };
-use loa_surface_proto::mcp as proto;
+use crate::mcp as proto;
 use serde_json::{Value, json};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};

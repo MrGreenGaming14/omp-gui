@@ -18,14 +18,9 @@ use loa_contracts::harness::SessionConfig;
 use loa_bus::SessionId;
 use loa_core::{NodeId, PatchSink, TurnStatus, attr};
 use loa_contracts::surface::SurfaceUri;
-use loa_surface_hub::{
-    CaptureMode, HubConfig, HubEvent, Listed, LiveVideo, McpEndpoint, Opened, SurfaceHub, SurfaceTools, dom,
-};
+use loa_surface_hub::{CaptureMode, HubConfig, HubEvent, Listed, McpEndpoint, Opened, SurfaceHub, SurfaceTools, dom};
 use loa_ui_palette as palette;
-use loa_ui_surface::{
-    Available, BrowserStatus, Capture, CaptureStatus, DocsRenderers, H264Decoder, Panel, PanelOptions, VideoStatus,
-    panel,
-};
+use loa_ui_surface::{Available, BrowserStatus, Capture, CaptureStatus, DocsRenderers, Panel, PanelOptions, panel};
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::area::{Area, AreaId, Ctx, HostToolSet, PanelTab, SessionEvent, Target};
@@ -68,7 +63,8 @@ pub enum Message {
     /// The loopback MCP endpoint started.
     Endpoint(Result<Endpoint, String>),
     /// The machine's video encoders were tried.
-    Encoders(Arc<LiveVideo>),
+    #[cfg(feature = "remote-video")]
+    Encoders(Arc<loa_surface_hub::LiveVideo>),
     /// Whether the running browser keeps the other capture until its tabs
     /// close.
     CapturePending(bool),
@@ -93,7 +89,8 @@ impl State {
         match ctx.services.config.load() {
             Ok(loaded) => {
                 let settings = loaded.config.surfaces;
-                config.video = settings.video;
+                #[cfg(feature = "remote-video")]
+                video::configure(&mut config, &settings);
                 if settings.browser_capture == loa_config::BrowserCapture::VirtualDisplay && config.virtual_display.is_ok() {
                     config.capture = CaptureMode::VirtualDisplay;
                 }
@@ -111,10 +108,15 @@ impl State {
             ctx.set_app_tool(loa_ui_tools::ToolInfo::from(&spec));
         }
         let documents = DocsRenderers::new(hub.config().fonts.clone());
-        let video: panel::NewDecoder = Arc::new(|| Box::new(H264Decoder::new()));
-        let options = PanelOptions { documents: Some(Arc::new(documents)), video: Some(video), ..PanelOptions::default() };
+        #[allow(unused_mut)]
+        let mut options = PanelOptions { documents: Some(Arc::new(documents)), ..PanelOptions::default() };
+        #[cfg(feature = "remote-video")]
+        video::options(&mut options);
         let mut panel = Panel::new(options, browser_status(&hub), ctx.services.cwd.clone());
-        panel.set_video(VideoStatus { enabled: hub.video(), encoder: None, hardware: Vec::new() });
+        #[cfg(feature = "remote-video")]
+        let encoders = video::start(&hub, &mut panel);
+        #[cfg(not(feature = "remote-video"))]
+        let encoders = Task::none();
         panel.set_capture(capture_status(&hub, false));
         let state = Self {
             hub,
@@ -129,8 +131,6 @@ impl State {
             async move { McpEndpoint::start(tools).await.map(|endpoint| Endpoint(Arc::new(endpoint))).map_err(|e| e.to_string()) },
             Message::Endpoint,
         );
-        let probe = Arc::clone(&state.hub);
-        let encoders = Task::perform(async move { probe.encoders().await }, Message::Encoders);
         let task = Task::batch([endpoint, state.refresh_declared(), state.list(), encoders]);
         (state, task)
     }
@@ -151,12 +151,6 @@ impl State {
             Task::perform(async move { hub.list().await }, Message::Listed),
             Task::perform(async move { pending.capture_pending().await }, Message::CapturePending),
         ])
-    }
-
-    fn set_video(&mut self, enabled: bool, ctx: &mut Ctx) -> Task<Message> {
-        save(ctx, |settings| settings.video = enabled);
-        let hub = Arc::clone(&self.hub);
-        Task::future(async move { hub.set_video(enabled).await }).discard()
     }
 
     fn set_capture(&mut self, capture: Capture, ctx: &mut Ctx) -> Task<Message> {
@@ -202,7 +196,8 @@ impl State {
             panel::Event::Close(uri) => {
                 Task::perform(async move { hub.close(&uri).await.map_err(|e| e.to_string()) }, Message::Closed)
             }
-            panel::Event::SetVideo(enabled) => self.set_video(enabled, ctx),
+            #[cfg(feature = "remote-video")]
+            panel::Event::SetVideo(enabled) => video::set(&self.hub, enabled, ctx),
             panel::Event::SetCapture(capture) => self.set_capture(capture, ctx),
             panel::Event::EncodingUnsupported { uri, encoding, supported } => {
                 let supported: Vec<String> = supported.iter().map(|encoding| format!("{encoding:?}")).collect();
@@ -287,19 +282,6 @@ fn capture_status(hub: &SurfaceHub, pending: bool) -> CaptureStatus {
         virtual_display_missing: hub.config().virtual_display.as_ref().err().cloned(),
         pending,
     }
-}
-
-/// What the launcher says about live video: the encoder the renderer here
-/// gets (it decodes H.264) and the hardware encoders that work.
-fn video_status(enabled: bool, encoders: &LiveVideo) -> VideoStatus {
-    let encoder = encoders.choose(&[loa_contracts::surface::Encoding::H264]).map(|info| loa_surface_bench::live::stream_info(&info));
-    let hardware = encoders
-        .encoders()
-        .iter()
-        .filter(|probe| probe.works() && probe.info.accel.is_hardware())
-        .map(|probe| probe.info.name.trim_start_matches("ffmpeg ").to_owned())
-        .collect();
-    VideoStatus { enabled, encoder, hardware }
 }
 
 /// Changes the `[surfaces]` table of the central config.
@@ -388,8 +370,9 @@ impl Area for State {
                 ctx.notify(format!("The surface MCP servers didn't start: {error}"));
                 Task::none()
             }
+            #[cfg(feature = "remote-video")]
             Message::Encoders(encoders) => {
-                self.panel.set_video(video_status(self.panel.video().enabled, &encoders));
+                self.panel.set_video(video::status(self.panel.video().enabled, &encoders));
                 Task::none()
             }
             Message::CapturePending(pending) => {
@@ -505,3 +488,5 @@ fn mcp_events(watch: &McpWatch) -> impl Stream<Item = Message> + use<> {
 
 #[cfg(test)]
 mod tests;
+#[cfg(feature = "remote-video")]
+mod video;

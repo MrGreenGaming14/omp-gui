@@ -7,7 +7,7 @@ publish.workspace = true
 
 [dependencies]
 loa-contracts.workspace = true
-loa-surface-bench = { path = "../loa-surface-bench" }
+loa-surface-proto = { path = "../loa-surface-proto", optional = true }
 loa-surface-docs = { path = "../loa-surface-docs" }
 loa-ui-icons.workspace = true
 loa-ui-shell = { path = "../loa-ui-shell" }
@@ -20,6 +20,10 @@ image = { version = "0.25", default-features = false, features = ["png", "gif", 
 # image 0.25's JPEG backend mis-decodes baseline JPEGs with one scan per
 # component, which is how Chrome encodes some screencast frames.
 jpeg-decoder = { version = "0.3", default-features = false }
+
+[features]
+# Live video and omp/surface/1 for viewers across the network.
+remote-video = ["dep:loa-surface-proto"]
 
 [dev-dependencies]
 async-trait.workspace = true

@@ -9,8 +9,7 @@ publish.workspace = true
 loa-util.workspace = true
 loa-core.workspace = true
 loa-contracts.workspace = true
-loa-surface-proto = { path = "../loa-surface-proto" }
-loa-surface-bench = { path = "../loa-surface-bench" }
+loa-surface-proto = { path = "../loa-surface-proto", optional = true }
 loa-surface-browser = { path = "../loa-surface-browser" }
 loa-surface-docs = { path = "../loa-surface-docs" }
 loa-surface-rfb = { path = "../loa-surface-rfb" }
@@ -25,6 +24,10 @@ tracing.workspace = true
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
 base64 = "0.22"
 rmcp = { version = "3.11", default-features = false, features = ["server", "transport-streamable-http-server"] }
+
+[features]
+# Live video and omp/surface/1 for viewers across the network.
+remote-video = ["dep:loa-surface-proto"]
 
 [dev-dependencies]
 image = { version = "0.25", default-features = false, features = ["png"] }
