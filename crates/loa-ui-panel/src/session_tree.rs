@@ -342,7 +342,7 @@ impl State {
 fn row_label<'a>(label: text::Text<'a>, selected: bool, index: usize) -> Element<'a, Message> {
     button(container(label.size(ts(T::Body)).wrapping(Wrapping::None)).width(Fill).clip(true))
         .on_press(Message::Select(index))
-        .style(kit::button(ButtonKind::Row { selected: selected }))
+        .style(kit::button(ButtonKind::Row { selected }))
         .padding([sp(Sp::Xs), sp(Sp::S)])
         .width(Fill)
         .into()
