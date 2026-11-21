@@ -1,50 +1,17 @@
 //! Sign in, model listing and model settings through omp and other harnesses.
 //!
-//! The app has no provider code of its own. This crate is the logic behind the
-//! sign in screen, the model picker and the model settings screen:
+//! The app has no provider code of its own. [`service::Backend`] is the logic
+//! behind the sign in screen, the model picker and the model settings screen.
+//! The settings data, file editors and omp ports it drives live in
+//! `loa_settings::models`; `loa-harness` implements those ports over a
+//! dedicated `omp --mode rpc --no-session` process and omp's own CLI, and the
+//! app wires them into a [`service::Backend`] through [`service::Parts`].
 //!
-//! - [`rpc`] declares the [`rpc::OmpRpc`] port: the omp RPC commands this crate
-//!   needs (`get_login_providers`, `login`, `get_available_models`, `set_model`)
-//!   and the login UI frames omp sends while a login runs.
-//! - [`omp`] implements that port over a dedicated `omp --mode rpc --no-session`
-//!   process ([`omp::OmpService`]) and locates omp's settings files
-//!   ([`omp::OmpFiles`]); [`opener`] opens login URLs in the browser.
-//! - [`providers`] and [`login`] list providers with their signed in state and
-//!   drive the OAuth login flow, opening the browser through [`login::UrlOpener`].
-//! - [`keys`] reports where omp would read a provider's API key from, without ever
-//!   reading or returning a key value.
-//! - [`catalog`] groups available models by provider with their role assignments
-//!   and switches the session model or a role's model.
-//! - [`agents`] lists, validates and writes omp agent definition Markdown files.
-//! - [`yaml`], [`config`] and [`models_yml`] edit omp's own `config.yml` and
-//!   `models.yml` in place, keeping comments and ordering of untouched keys.
-//! - [`validate`] checks edited files with omp itself, without a model call.
-//! - [`process`] and [`harness`] handle sign in and model settings for the other
-//!   harnesses (Claude Code and Codex) through their own CLIs and config files.
-//!
-//! # API keys never pass through the app
-//!
-//! No function in this crate accepts, stores or returns an API key value. The only
-//! way to write a provider's `apiKey` in `models.yml` is a [`models_yml::KeyReference`],
-//! which can only be built from an environment variable name or a `!command`.
-//! Reading reports a [`models_yml::ApiKeySetting::Literal`] with no payload when
-//! the file holds an inline key, and [`keys`] reports sources by name only.
+//! No function here accepts, stores or returns an API key value; see
+//! `loa_settings::models` for how keys are referenced instead.
 
-pub mod agents;
-pub mod catalog;
-pub mod config;
-mod error;
-mod fsutil;
-pub mod harness;
-pub mod keys;
-pub mod login;
-pub mod models_yml;
-pub mod omp;
-pub mod opener;
-pub mod process;
-pub mod providers;
-pub mod rpc;
-pub mod validate;
-pub mod yaml;
-
-pub use error::{Error, Result};
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
+pub mod service;
+#[cfg(test)]
+mod service_tests;

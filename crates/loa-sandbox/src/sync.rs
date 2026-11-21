@@ -1,35 +1,29 @@
-//! Transfer workspaces through the stub when the provider does not mount a
-//! host directory. Git administration files stay on the host: in particular,
-//! a linked worktree's `.git` file points at a host-only path.
+//! Copies workspaces through the stub, as tar archives, when the provider
+//! does not mount a host directory. Git administration files stay on the
+//! host: in particular, a linked worktree's `.git` file points at a host-only path.
 //!
-//! Paths on the wire are `/`-joined names, each checked on its own; no OS
-//! path ever becomes one. Bringing files back first scans and validates the
-//! guest's whole tree, so a listing the host can't take changes nothing.
+//! Every member name of an archive from the guest is checked on its own
+//! before anything is unpacked, so an archive the host can't take changes
+//! nothing.
 
 use crate::client::StubClient;
-use crate::proto::{Command, ExecRequest, FileKind, Metadata};
+use crate::isolation::remove_entry;
+use crate::proto::ExecRequest;
 use crate::{Result, SandboxError};
-use std::collections::HashSet;
-use std::ffi::OsStr;
-use std::fs;
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::ffi::OsString;
 use std::path::Path;
+use std::process::Stdio;
+use tokio::io::AsyncWriteExt;
 
-const MAX_FILE: u64 = (crate::proto::MAX_FRAME as u64) - 1024;
+/// Archive bytes per request, well under the frame limit.
+const PART: usize = 16 << 20;
+/// Where the archive collects in the stub root until it is unpacked.
+const ARCHIVE: &str = ".loa-sandbox-in.tar";
+const PACK: &[&str] = &["-cf", "-", "--exclude=./.git", "."];
 
 fn invalid(message: impl Into<String>) -> SandboxError {
     SandboxError::Isolation(message.into())
-}
-
-/// One name of a workspace path, as it goes on the wire.
-fn wire_name(name: &OsStr) -> Result<&str> {
-    let name = name.to_str().ok_or_else(|| invalid(format!("non-UTF8 workspace path: {}", name.to_string_lossy())))?;
-    check_name(name)?;
-    Ok(name)
-}
-
-/// `parent` is `.` for the workspace root.
-fn join_wire(parent: &str, name: &str) -> String {
-    if parent == "." { name.to_owned() } else { format!("{parent}/{name}") }
 }
 
 /// The names no platform takes as a single path component.
@@ -100,215 +94,178 @@ fn check_collisions<'a>(names: impl Iterator<Item = &'a str>, dir: &str) -> Resu
     Ok(())
 }
 
-async fn run(client: &StubClient, program: &str, arguments: &[&str]) -> Result<Vec<u8>> {
-    let mut argv = Vec::with_capacity(arguments.len() + 1);
-    argv.push(program.to_owned());
-    argv.extend(arguments.iter().map(|s| (*s).to_owned()));
-    let output = client.exec(ExecRequest {
-        command: Command::Argv(argv), cwd: None, env: Vec::new(), stdin: None, timeout_ms: None,
-    }).await?;
-    if !output.status.success() {
-        return Err(invalid(format!("{program} failed: {}", String::from_utf8_lossy(&output.stderr))));
+/// The names of an archive member's path, each checked; `./` and a trailing
+/// `/` are dropped, and the root itself has none.
+fn member_names(path: &[u8]) -> Result<Vec<String>> {
+    let path = std::str::from_utf8(path).map_err(|_| invalid(format!("non-UTF8 workspace path: {}", String::from_utf8_lossy(path))))?;
+    let path = path.trim_end_matches('/');
+    let path = path.strip_prefix("./").unwrap_or(path);
+    if path.is_empty() || path == "." {
+        return Ok(Vec::new());
     }
+    path.split('/').map(|name| check_name(name).map(|()| name.to_owned())).collect()
+}
+
+/// Checks every member of an archive from the guest before any of it reaches
+/// the host: each name, the member kinds this host can hold (no symlinks on
+/// Windows), and names that differ only in case.
+fn check_archive(archive: &[u8]) -> Result<()> {
+    let mut dirs: HashMap<String, BTreeSet<String>> = HashMap::new();
+    for entry in tar::Archive::new(archive).entries()? {
+        let entry = entry?;
+        let names = member_names(&entry.path_bytes())?;
+        let wire = names.join("/");
+        match entry.header().entry_type() {
+            tar::EntryType::Regular | tar::EntryType::Continuous | tar::EntryType::Directory => {}
+            // A hard link names another member of the archive.
+            tar::EntryType::Link => drop(member_names(&entry.link_name_bytes().unwrap_or_default())?),
+            tar::EntryType::Symlink if cfg!(windows) => {
+                return Err(invalid(format!("guest symlink {wire} can't be copied to Windows; replace it with a regular file or remove it")));
+            }
+            tar::EntryType::Symlink => {}
+            _ => return Err(invalid(format!("unsupported stub entry: {wire}"))),
+        }
+        for (depth, name) in names.iter().enumerate() {
+            check_guest_name(name, depth == 0)?;
+            dirs.entry(names[..depth].join("/")).or_default().insert(name.clone());
+        }
+    }
+    for (dir, names) in &dirs {
+        check_collisions(names.iter().map(String::as_str), if dir.is_empty() { "." } else { dir })?;
+    }
+    Ok(())
+}
+
+/// Links can't be copied to a guest from Windows: refuses them before
+/// anything is sent, and returns the top level spellings of `.git` that
+/// differ in case, since `.GIT` is the same directory there.
+#[cfg(windows)]
+fn check_sendable(dir: &Path, top: bool) -> Result<Vec<String>> {
+    let mut git = Vec::new();
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        if top && name.eq_ignore_ascii_case(".git") {
+            git.extend(name.to_str().filter(|name| *name != ".git").map(str::to_owned));
+            continue;
+        }
+        let meta = std::fs::symlink_metadata(entry.path())?;
+        if crate::isolation::is_link(&meta) {
+            return Err(invalid(format!("{} is a link; links can't be copied to a guest from Windows", entry.path().display())));
+        }
+        if meta.is_dir() {
+            check_sendable(&entry.path(), false)?;
+        }
+    }
+    Ok(git)
+}
+
+/// Runs the host's tar in `dir` with `input` on its stdin.
+async fn tar(dir: &Path, args: &[&str], input: &[u8]) -> Result<Vec<u8>> {
+    let mut child = tokio::process::Command::new("tar").args(args).current_dir(dir).kill_on_drop(true)
+        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+    let mut stdin = child.stdin.take().expect("piped stdin");
+    let feed = async move { stdin.write_all(input).await };
+    let (fed, output) = tokio::join!(feed, child.wait_with_output());
+    let output = output?;
+    if !output.status.success() {
+        return Err(SandboxError::Isolation(format!("tar failed: {}", String::from_utf8_lossy(&output.stderr).trim())));
+    }
+    fed?;
     Ok(output.stdout)
 }
 
-fn check_size(path: &str, size: u64) -> Result<()> {
-    if size > MAX_FILE {
-        return Err(invalid(format!("{path} exceeds the stub's single-file protocol limit of {MAX_FILE} bytes")));
-    }
-    Ok(())
-}
-
-async fn send_entry(client: &StubClient, path: &Path, wire: &str) -> Result<()> {
-    let meta = fs::symlink_metadata(path)?;
-    if crate::isolation::is_link(&meta) {
-        #[cfg(unix)]
-        {
-            let target = fs::read_link(path)?;
-            let target = target.to_str().ok_or_else(|| invalid(format!("non-UTF8 symlink: {}", path.display())))?;
-            run(client, "ln", &["-s", "--", target, wire]).await?;
-        }
-        #[cfg(not(unix))]
-        return Err(invalid(format!("{} is a link; links can't be copied to a guest from Windows", path.display())));
-    } else if meta.is_dir() {
-        let mut entries = Vec::new();
-        for entry in fs::read_dir(path)? {
-            entries.push(entry?);
-        }
-        if entries.is_empty() {
-            // No file write makes an empty directory, and the guest may not
-            // have `mkdir` at all: the guests Windows can reach are Linux
-            // peers, so this is refused rather than guessed.
-            #[cfg(not(unix))]
-            return Err(invalid(format!("{} is an empty directory; empty directories can't be copied to a guest from Windows", path.display())));
-            #[cfg(unix)]
-            run(client, "mkdir", &["-p", "--", wire]).await?;
-        }
-        for entry in entries {
-            let child = join_wire(wire, wire_name(&entry.file_name())?);
-            send_entry_boxed(client, &entry.path(), &child).await?;
-        }
-        #[cfg(unix)] {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = format!("{:o}", meta.permissions().mode() & 0o7777);
-            run(client, "chmod", &[&mode, "--", wire]).await?;
-        }
-    } else if meta.is_file() {
-        check_size(wire, meta.len())?;
-        #[cfg(unix)]
-        let mode = { use std::os::unix::fs::PermissionsExt; Some(meta.permissions().mode() & 0o7777) };
-        #[cfg(not(unix))]
-        let mode = None;
-        // The stub creates the file's parent directories.
-        client.write_file(wire, fs::read(path)?, mode).await?;
-    } else {
-        return Err(invalid(format!("unsupported workspace entry: {}", path.display())));
-    }
-    Ok(())
-}
-
-fn send_entry_boxed<'a>(client: &'a StubClient, path: &'a Path, wire: &'a str) -> std::pin::Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
-    Box::pin(send_entry(client, path, wire))
-}
-
-/// Upload all files except host Git administration data to an empty stub root.
+/// Uploads every file but the host's Git administration data to an empty
+/// stub root. The guest needs a POSIX shell with `cat` and `tar`.
 pub async fn copy_in(client: &StubClient, workspace: &Path) -> Result<()> {
-    for entry in fs::read_dir(workspace)? {
-        let entry = entry?;
-        let name = entry.file_name();
-        // On Windows `.GIT` is the same directory as `.git`.
-        let git = if cfg!(windows) { name.eq_ignore_ascii_case(".git") } else { name == ".git" };
-        if git { continue; }
-        send_entry_boxed(client, &entry.path(), wire_name(&name)?).await?;
+    #[cfg(windows)]
+    let excludes: Vec<String> = check_sendable(workspace, true)?.into_iter().map(|name| format!("--exclude=./{name}")).collect();
+    #[cfg(not(windows))]
+    let excludes: Vec<String> = Vec::new();
+    let args: Vec<&str> = PACK[..PACK.len() - 1].iter().copied().chain(excludes.iter().map(String::as_str)).chain(PACK.last().copied()).collect();
+    let archive = tar(workspace, &args, &[]).await?;
+    for (index, part) in archive.chunks(PART).enumerate() {
+        let redirect = if index == 0 { ">" } else { ">>" };
+        client.run(ExecRequest { stdin: Some(part.to_vec()), ..ExecRequest::shell(&format!("cat {redirect} \"$1\""), &[ARCHIVE]) }).await?;
     }
-    Ok(())
+    client.run(ExecRequest::shell(r#"tar -xf "$1" && rm -f "$1""#, &[ARCHIVE])).await.map(drop)
 }
 
-fn remove(path: &Path) -> Result<()> {
-    let meta = fs::symlink_metadata(path)?;
-    if meta.is_dir() { fs::remove_dir_all(path)?; } else { fs::remove_file(path)?; }
-    Ok(())
-}
-
-/// One entry of the guest's tree, checked.
-struct Node {
-    name: String,
-    meta: Metadata,
-    wire: String,
-    children: Vec<Node>,
-}
-
-/// Reads and validates everything under `wire_dir` without touching the host.
-async fn scan(client: &StubClient, wire_dir: &str, top: bool) -> Result<Vec<Node>> {
-    let entries = client.list_dir(wire_dir).await?;
-    for entry in &entries {
-        check_guest_name(&entry.name, top)?;
-    }
-    check_collisions(entries.iter().map(|entry| entry.name.as_str()), wire_dir)?;
-    let mut nodes = Vec::with_capacity(entries.len());
-    for entry in entries {
-        if top && entry.name == ".git" { continue; }
-        let wire = join_wire(wire_dir, &entry.name);
-        let meta = client.stat(&wire).await?.ok_or_else(|| invalid(format!("stub entry disappeared: {wire}")))?;
-        let children = match meta.kind {
-            FileKind::Dir => scan_boxed(client, &wire).await?,
-            FileKind::File => {
-                check_size(&wire, meta.size)?;
-                Vec::new()
-            }
-            FileKind::Symlink if cfg!(windows) => {
-                return Err(invalid(format!("guest symlink {wire} can't be copied to Windows; replace it with a regular file or remove it")));
-            }
-            FileKind::Symlink => Vec::new(),
-            FileKind::Other => return Err(invalid(format!("unsupported stub entry: {wire}"))),
-        };
-        nodes.push(Node { name: entry.name, meta, wire, children });
-    }
-    Ok(nodes)
-}
-
-fn scan_boxed<'a>(client: &'a StubClient, wire_dir: &'a str) -> std::pin::Pin<Box<dyn Future<Output = Result<Vec<Node>>> + Send + 'a>> {
-    Box::pin(scan(client, wire_dir, false))
-}
-
-/// Makes `local_dir` match the scanned `nodes`.
-async fn apply(client: &StubClient, local_dir: &Path, top: bool, nodes: &[Node]) -> Result<()> {
-    fs::create_dir_all(local_dir)?;
-    for entry in fs::read_dir(local_dir)? {
-        let entry = entry?;
-        let name = entry.file_name();
-        if top && name == ".git" { continue; }
-        // Exact names: a guest rename that only changes case is replaced,
-        // not kept under the old spelling.
-        if !nodes.iter().any(|node| name == node.name.as_str()) {
-            remove(&entry.path())?;
-        }
-    }
-    for node in nodes {
-        let local = local_dir.join(&node.name);
-        if let Ok(existing) = fs::symlink_metadata(&local)
-            && ((node.meta.kind == FileKind::Dir && !existing.is_dir())
-                || (node.meta.kind != FileKind::Dir && existing.is_dir())
-                || (node.meta.kind == FileKind::Symlink && !existing.file_type().is_symlink())
-                || (node.meta.kind == FileKind::File && !existing.is_file()))
-        {
-            remove(&local)?;
-        }
-        match node.meta.kind {
-            FileKind::Dir => apply_boxed(client, &local, &node.children).await?,
-            FileKind::File => {
-                let data = client.read_file(&node.wire, Some(MAX_FILE + 1)).await?;
-                check_size(&node.wire, data.len() as u64)?;
-                fs::write(&local, data)?;
-                #[cfg(unix)] {
-                    use std::os::unix::fs::PermissionsExt;
-                    fs::set_permissions(&local, fs::Permissions::from_mode(node.meta.mode))?;
-                }
-            }
-            FileKind::Symlink => {
-                #[cfg(unix)] {
-                    let bytes = run(client, "readlink", &["--", &node.wire]).await?;
-                    let target = String::from_utf8(bytes).map_err(|e| invalid(e.to_string()))?;
-                    let target = target.trim_end_matches('\n');
-                    if fs::symlink_metadata(&local).is_ok() { remove(&local)?; }
-                    std::os::unix::fs::symlink(target, &local)?;
-                }
-                // `scan` refuses guest symlinks on Windows.
-                #[cfg(not(unix))]
-                return Err(invalid(format!("guest symlink {} can't be copied to Windows", node.wire)));
-            }
-            FileKind::Other => return Err(invalid(format!("unsupported stub entry: {}", node.wire))),
-        }
-    }
-    Ok(())
-}
-
-fn apply_boxed<'a>(client: &'a StubClient, local_dir: &'a Path, nodes: &'a [Node]) -> std::pin::Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
-    Box::pin(apply(client, local_dir, false, nodes))
-}
-
-/// Bring back additions, edits and removals. Only call this on an isolated
-/// checkout; it deliberately does not modify the source workspace itself.
-/// The guest's whole tree is checked first; a tree that fails a check
-/// leaves the checkout as it was.
+/// Replaces `workspace`, but for its Git data, with the stub root: brings
+/// back additions, edits and removals.
 pub async fn copy_out(client: &StubClient, workspace: &Path) -> Result<()> {
-    let nodes = scan(client, ".", true).await?;
-    apply(client, workspace, true, &nodes).await
+    let archive = client.run(ExecRequest { argv: ["tar"].iter().chain(PACK).map(|arg| (*arg).to_owned()).collect(), ..ExecRequest::default() }).await?;
+    unpack(workspace, &archive).await
+}
+
+/// Applies an untrusted archive to `workspace`. Every member is checked
+/// first ([`check_archive`]), then it unpacks into a staging directory, so a
+/// refused archive or a failed unpack leaves the workspace untouched; the
+/// archive's `.git` never reaches the workspace, and tar itself refuses
+/// members that climb out with `..`.
+async fn unpack(workspace: &Path, archive: &[u8]) -> Result<()> {
+    check_archive(archive)?;
+    let staging = tempfile::Builder::new().prefix(".loa-sandbox-out").tempdir_in(workspace)?;
+    tar(staging.path(), &["-xf", "-", "--no-same-owner"], archive).await?;
+    let mut kept = HashSet::new();
+    for entry in std::fs::read_dir(staging.path())? {
+        let name = entry?.file_name();
+        if name != ".git" {
+            let target = workspace.join(&name);
+            remove_entry(&target)?;
+            std::fs::rename(staging.path().join(&name), target)?;
+            kept.insert(name);
+        }
+    }
+    let staging_name = staging.path().file_name().map(OsString::from);
+    for entry in std::fs::read_dir(workspace)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        if name != ".git" && !kept.contains(&name) && Some(&name) != staging_name.as_ref() {
+            remove_entry(&entry.path())?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Unpacking needs GNU tar: `--transform` builds the escaping member.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unpack_keeps_git_and_refuses_escapes() {
+        let root = tempfile::tempdir().unwrap();
+        let (source, workspace) = (root.path().join("source"), root.path().join("ws"));
+        std::fs::create_dir_all(source.join(".git")).unwrap();
+        std::fs::write(source.join(".git/config"), "[core]\n\tfsmonitor = evil\n").unwrap();
+        std::fs::write(source.join("new.txt"), "new").unwrap();
+        std::fs::create_dir_all(workspace.join(".git")).unwrap();
+        std::fs::write(workspace.join(".git/config"), "host").unwrap();
+        std::fs::write(workspace.join("stale.txt"), "stale").unwrap();
+        let archive = tar(&source, &["-cf", "-", "./.git", "./new.txt"], &[]).await.unwrap();
+        unpack(&workspace, &archive).await.unwrap();
+        assert_eq!(std::fs::read_to_string(workspace.join(".git/config")).unwrap(), "host");
+        assert_eq!(std::fs::read_to_string(workspace.join("new.txt")).unwrap(), "new");
+        assert!(!workspace.join("stale.txt").exists());
+        assert_eq!(std::fs::read_dir(&workspace).unwrap().count(), 2);
+
+        let escape = tar(&source, &["-cf", "-", "-P", "--transform=s,^,../,", "./new.txt"], &[]).await.unwrap();
+        assert!(unpack(&workspace, &escape).await.is_err());
+        assert!(!root.path().join("new.txt").exists());
+        assert!(workspace.join("new.txt").exists());
+    }
+
     #[test]
     fn rejects_names_that_escape_or_collide_with_root() {
         assert!(check_name("..").is_err());
         assert!(check_name("a/b").is_err());
         assert!(check_name("a\\b").is_err());
-        assert!(wire_name(OsStr::new("src")).is_ok());
-        assert_eq!(join_wire(".", "src"), "src");
-        assert_eq!(join_wire("src", "main.rs"), "src/main.rs");
+        assert!(check_name("src").is_ok());
+        assert_eq!(member_names(b"./src/main.rs/").unwrap(), ["src", "main.rs"]);
+        assert!(member_names(b"./").unwrap().is_empty());
+        assert!(member_names(b"../source").is_err() && member_names(b"/etc/passwd").is_err() && member_names(b"a//b").is_err());
     }
 
     #[test]
@@ -333,5 +290,26 @@ mod tests {
         assert_eq!(check_guest_name(".GIT", true).is_err(), cfg!(windows));
         assert_eq!(check_guest_name(".git", false).is_err(), cfg!(windows));
         assert_eq!(check_guest_name("CON", false).is_err(), cfg!(windows));
+    }
+
+    /// A whole archive is refused before anything is unpacked when one member can't be held here.
+    #[test]
+    fn archives_are_checked_member_by_member() {
+        let archive = |entries: &[(&str, tar::EntryType)]| {
+            let mut builder = tar::Builder::new(Vec::new());
+            for (path, kind) in entries {
+                let mut header = tar::Header::new_gnu();
+                header.set_entry_type(*kind);
+                header.set_size(0);
+                header.set_path(path).unwrap();
+                header.set_cksum();
+                builder.append(&header, std::io::empty()).unwrap();
+            }
+            builder.into_inner().unwrap()
+        };
+        assert!(check_archive(&archive(&[("./", tar::EntryType::Directory), ("./src/", tar::EntryType::Directory), ("./src/a.rs", tar::EntryType::Regular)])).is_ok());
+        assert_eq!(check_archive(&archive(&[("./a.txt", tar::EntryType::Regular), ("./A.TXT", tar::EntryType::Regular)])).is_err(), cfg!(windows));
+        assert_eq!(check_archive(&archive(&[("./CON", tar::EntryType::Regular)])).is_err(), cfg!(windows));
+        assert!(check_archive(&archive(&[("./fifo", tar::EntryType::Fifo)])).is_err());
     }
 }

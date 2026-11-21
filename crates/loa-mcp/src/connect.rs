@@ -1,26 +1,21 @@
 //! Opening one client connection to a server spec.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::process::Stdio;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
 use std::time::Duration;
 
+use loa_util::exec::StderrTail;
 use rmcp::service::RunningService;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 use rmcp::transport::{StreamableHttpClientTransport, TokioChildProcess};
 use rmcp::{ClientHandler, RoleClient, ServiceExt};
-use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::ChildStderr;
-use tokio::task::JoinHandle;
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader};
 
-use crate::spec::{HttpSpec, ServerSpec, StdioSpec, Transport};
+use crate::spec::{ServerSpec, Transport};
 use crate::{Error, Result};
 
-/// Stderr lines kept for error messages.
-const STDERR_LINES: usize = 20;
-
-/// How long a crashed child may keep its stderr open before its last words
-/// are given up on (a grandchild can inherit the pipe).
+/// How long a crashed child may keep stderr open (a grandchild can inherit it) before its last words are given up on.
 const STDERR_DRAIN: Duration = Duration::from_secs(1);
 
 pub(crate) struct Connection<H: ClientHandler> {
@@ -28,130 +23,90 @@ pub(crate) struct Connection<H: ClientHandler> {
     pub stderr: Option<StderrTail>,
 }
 
-/// The tail of a child's stderr, collected in the background.
-pub(crate) struct StderrTail {
-    lines: Arc<Mutex<VecDeque<String>>>,
-    task: JoinHandle<()>,
+/// The last non empty line a child wrote to stderr, once the stream closed.
+pub(crate) async fn last_line(stderr: Option<StderrTail>) -> Option<String> {
+    let stderr = stderr?;
+    let _ = tokio::time::timeout(STDERR_DRAIN, stderr.closed()).await;
+    stderr.joined().lines().rev().find(|line| !line.trim().is_empty()).map(str::to_owned)
 }
 
-impl StderrTail {
-    fn spawn(server: &str, stderr: ChildStderr) -> Self {
-        let lines = Arc::new(Mutex::new(VecDeque::with_capacity(STDERR_LINES)));
-        let sink = lines.clone();
-        let server = server.to_owned();
-        let task = tokio::spawn(async move {
-            let mut reader = BufReader::new(stderr).lines();
-            while let Ok(Some(line)) = reader.next_line().await {
-                tracing::debug!(server, "stderr: {line}");
-                let mut lines = sink.lock().unwrap_or_else(PoisonError::into_inner);
-                if lines.len() == STDERR_LINES {
-                    lines.pop_front();
-                }
-                lines.push_back(line);
+/// `stderr` passed through unchanged, each line also logged at debug level.
+fn logged(server: &str, stderr: impl AsyncRead + Unpin + Send + 'static) -> impl AsyncRead + Unpin + Send + 'static {
+    let (mut tx, rx) = tokio::io::duplex(8 << 10);
+    let server = server.to_owned();
+    tokio::spawn(async move {
+        let (mut reader, mut line) = (BufReader::new(stderr), Vec::new());
+        while reader.read_until(b'\n', &mut line).await.is_ok_and(|n| n > 0) {
+            tracing::debug!(server, "stderr: {}", String::from_utf8_lossy(&line).trim_end());
+            if tx.write_all(&line).await.is_err() {
+                break;
             }
-        });
-        Self { lines, task }
-    }
-
-    /// The last non empty line the child wrote, once its stderr is closed.
-    pub async fn last_line(self) -> Option<String> {
-        let abort = self.task.abort_handle();
-        if tokio::time::timeout(STDERR_DRAIN, self.task).await.is_err() {
-            abort.abort();
+            line.clear();
         }
-        let lines = self.lines.lock().unwrap_or_else(PoisonError::into_inner);
-        lines.iter().rev().find(|line| !line.trim().is_empty()).cloned()
-    }
+    });
+    rx
 }
 
 /// Starts the server (or opens the HTTP session) and runs the MCP handshake.
-pub(crate) async fn connect<H: ClientHandler>(
-    spec: &ServerSpec,
-    handler: H,
-    http: &reqwest::Client,
-    timeout: Duration,
-) -> Result<Connection<H>> {
+pub(crate) async fn connect<H: ClientHandler>(spec: &ServerSpec, handler: H, http: &reqwest::Client, timeout: Duration) -> Result<Connection<H>> {
     let failed = |message: String| Error::Connect { server: spec.name.clone(), message };
-    match &spec.transport {
+    let (serving, stderr) = match &spec.transport {
         Transport::Stdio(stdio) => {
-            let (transport, stderr) = spawn(stdio).map_err(|e| failed(format!("can't run `{}`: {e}", stdio.command)))?;
-            let stderr = stderr.map(|stderr| StderrTail::spawn(&spec.name, stderr));
-            match tokio::time::timeout(timeout, handler.serve(transport)).await {
-                Ok(Ok(service)) => Ok(Connection { service, stderr }),
-                Ok(Err(e)) => {
-                    let last = match stderr {
-                        Some(stderr) => stderr.last_line().await,
-                        None => None,
-                    };
-                    Err(failed(match last {
-                        Some(last) => format!("{e}: {last}"),
-                        None => e.to_string(),
-                    }))
-                }
-                Err(_) => Err(failed(format!("no handshake within {timeout:?}"))),
+            let mut command = tokio::process::Command::new(loa_util::exec::resolve(std::path::Path::new(&stdio.command)));
+            command.args(&stdio.args).envs(&stdio.env);
+            if let Some(cwd) = &stdio.cwd {
+                #[cfg(windows)]
+                command.current_dir(loa_util::fs::simplify(cwd));
+                #[cfg(not(windows))]
+                command.current_dir(cwd);
             }
+            #[cfg_attr(not(any(unix, windows)), expect(unused_mut))]
+            let mut command = process_wrap::tokio::CommandWrap::from(command);
+            // Its own process group (Windows: job object), so shutdown also reaches what the server spawned (`npx`
+            // runs a grandchild).
+            #[cfg(unix)]
+            command.wrap(process_wrap::tokio::ProcessGroup::leader());
+            #[cfg(windows)]
+            command.wrap(process_wrap::tokio::KillOnDrop).wrap(process_wrap::tokio::JobObject);
+            let (transport, stderr) = TokioChildProcess::builder(command)
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(|e| failed(format!("can't run `{}`: {e}", stdio.command)))?;
+            let stderr = stderr.map(|s| StderrTail::spawn(logged(&spec.name, s), 20));
+            (tokio::time::timeout(timeout, handler.serve(transport)).await, stderr)
         }
-        Transport::Http(spec_http) => {
-            let transport = http_transport(spec_http, http).map_err(failed)?;
-            match tokio::time::timeout(timeout, handler.serve(transport)).await {
-                Ok(Ok(service)) => Ok(Connection { service, stderr: None }),
-                Ok(Err(e)) => Err(failed(e.to_string())),
-                Err(_) => Err(failed(format!("no handshake within {timeout:?}"))),
+        Transport::Http(spec) => {
+            let mut headers = HashMap::with_capacity(spec.headers.len());
+            for (name, value) in &spec.headers {
+                let bad = |e: &dyn std::fmt::Display| failed(format!("header `{name}`: {e}"));
+                headers.insert(http::HeaderName::from_bytes(name.as_bytes()).map_err(|e| bad(&e))?, http::HeaderValue::from_str(value).map_err(|e| bad(&e))?);
             }
+            let config = StreamableHttpClientTransportConfig::with_uri(spec.url.as_str()).custom_headers(headers);
+            let transport = StreamableHttpClientTransport::with_client(http.clone(), config);
+            (tokio::time::timeout(timeout, handler.serve(transport)).await, None)
         }
+    };
+    match serving {
+        Ok(Ok(service)) => Ok(Connection { service, stderr }),
+        Ok(Err(e)) => Err(failed(match last_line(stderr).await {
+            Some(last) => format!("{e}: {last}"),
+            None => e.to_string(),
+        })),
+        Err(_) => Err(failed(format!("no handshake within {timeout:?}"))),
     }
 }
 
-fn spawn(stdio: &StdioSpec) -> std::io::Result<(TokioChildProcess, Option<ChildStderr>)> {
-    let mut command = tokio::process::Command::new(loa_exec::resolve(std::path::Path::new(&stdio.command)));
-    command.args(&stdio.args).envs(&stdio.env);
-    if let Some(cwd) = &stdio.cwd {
-        #[cfg(windows)]
-        command.current_dir(loa_exec::simplify(cwd));
-        #[cfg(not(windows))]
-        command.current_dir(cwd);
-    }
-    #[cfg_attr(not(any(unix, windows)), expect(unused_mut))]
-    let mut command = process_wrap::tokio::CommandWrap::from(command);
-    // Its own process group, so shutdown also reaches what the server
-    // spawned (`npx` runs the real server as a grandchild).
-    #[cfg(unix)]
-    command.wrap(process_wrap::tokio::ProcessGroup::leader());
-    #[cfg(windows)]
-    command.wrap(process_wrap::tokio::KillOnDrop).wrap(process_wrap::tokio::JobObject);
-    TokioChildProcess::builder(command).stderr(Stdio::piped()).spawn()
-}
-
-fn http_transport(
-    spec: &HttpSpec,
-    http: &reqwest::Client,
-) -> Result<StreamableHttpClientTransport<reqwest::Client>, String> {
-    let mut headers = HashMap::with_capacity(spec.headers.len());
-    for (name, value) in &spec.headers {
-        let name = http::HeaderName::from_bytes(name.as_bytes()).map_err(|e| format!("header `{name}`: {e}"))?;
-        let value = http::HeaderValue::from_str(value).map_err(|e| format!("header `{name}`: {e}"))?;
-        headers.insert(name, value);
-    }
-    let config = StreamableHttpClientTransportConfig::with_uri(spec.url.as_str()).custom_headers(headers);
-    Ok(StreamableHttpClientTransport::with_client(http.clone(), config))
-}
-
-/// The HTTP client every streamable HTTP server shares: rustls on ring with
-/// the Mozilla root store, no redirects (a redirect would replay the
-/// configured headers to wherever it points).
+/// The client every streamable HTTP server shares: rustls on ring with the
+/// Mozilla roots, no redirects (one would replay the configured headers).
 pub(crate) fn http_client() -> Result<reqwest::Client> {
-    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let failed = |e: &dyn std::fmt::Display| Error::HttpClient(e.to_string());
     let roots = rustls::RootCertStore { roots: webpki_roots::TLS_SERVER_ROOTS.to_vec() };
-    let mut tls = rustls::ClientConfig::builder_with_provider(provider)
+    let mut tls = rustls::ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
         .with_safe_default_protocol_versions()
-        .map_err(|e| Error::HttpClient(e.to_string()))?
+        .map_err(|e| failed(&e))?
         .with_root_certificates(roots)
         .with_no_client_auth();
     tls.alpn_protocols = vec![b"http/1.1".to_vec()];
-    reqwest::Client::builder()
-        .tls_backend_preconfigured(tls)
-        .pool_max_idle_per_host(0)
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|e| Error::HttpClient(e.to_string()))
+    let builder = reqwest::Client::builder().tls_backend_preconfigured(tls).pool_max_idle_per_host(0);
+    builder.redirect(reqwest::redirect::Policy::none()).build().map_err(|e| failed(&e))
 }

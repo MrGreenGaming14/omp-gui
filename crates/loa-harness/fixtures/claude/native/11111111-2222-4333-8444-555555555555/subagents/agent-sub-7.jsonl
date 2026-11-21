@@ -1,0 +1,2 @@
+{"type":"user","isSidechain":true,"uuid":"child1","parentUuid":null,"sessionId":"child-session","timestamp":"2026-01-02T03:04:05.000Z","message":{"role":"user","content":"Inspect the test"},"unknown":{"scope":"child"}}
+{"type":"assistant","isSidechain":true,"uuid":"child-assistant","parentUuid":"child1","sessionId":"child-session","timestamp":"2026-01-02T03:04:06.000Z","message":{"role":"assistant","id":"child-message","model":"claude-fiction","content":[{"type":"text","text":"Looks good"}]}}

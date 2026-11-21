@@ -1,4 +1,5 @@
-//! Session writer and publish subscribe of patches with per subscriber backpressure.
+//! Session writer, publish subscribe of patches with per subscriber
+//! backpressure, and the append only journal they are persisted to.
 //!
 //! - [`SessionWriter`]: the [`loa_core::PatchSink`] of a live session. Only the
 //!   owner node orders patches; peers send requests that pass an [`Authorize`]
@@ -7,13 +8,26 @@
 //! - [`Subscription`]: a subscriber's own bounded queue of patches, with a
 //!   [`Policy`] that decides how it is fed and when it lags.
 //! - [`Bus`]: the registry of live sessions.
+//! - [`Journal`]: one session's journal file, its snapshots and forks;
+//!   [`Store`] holds every session under a root directory, and
+//!   [`JournalPersist`] is the [`Persist`] adapter over a [`JournalWriter`].
+//! - [`proto`]: the protobuf wire format of patches and DOMs, shared with peers.
 
 mod bus;
+mod error;
+mod frame;
+mod journal;
+pub mod proto;
 mod queue;
+mod snapshot;
+mod store;
 mod writer;
 
 pub use bus::{Bus, BusError};
+pub use error::JournalError;
+pub use journal::{FORMAT_VERSION, JOURNAL_FILE, Journal, JournalOptions, Parent, Patches, SessionInfo, Truncation};
 pub use queue::{Appends, Event, Policy, Subscription, TryRecvError};
+pub use store::{JournalPersist, JournalWriter, Listing, Store, SyncPolicy, SyncStrategy};
 pub use writer::{Authorize, Denied, Persist, PersistError, ReplicateError, RequestError, SessionWriter, WriterConfig};
 
 use std::fmt;

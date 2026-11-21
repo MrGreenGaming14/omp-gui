@@ -32,6 +32,11 @@ jobs:
           echo "$dir" >> "$GITHUB_PATH"
       - run: cargo build --workspace --all-targets --profile ci
       - run: xvfb-run -a cargo test --workspace --profile ci
+      - name: Remote video (default-off feature)
+        run: |
+          cargo test -p loa-surfaces --features remote-video --profile ci
+          cargo test -p loa-ui-surface --features remote-video --profile ci
+          xvfb-run -a cargo test -p loa-app --features remote-video --profile ci surfaces
   windows:
     runs-on: windows-latest
     env:

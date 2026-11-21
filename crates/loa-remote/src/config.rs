@@ -1,21 +1,20 @@
-//! The Remote hosts of the app's central config ([`loa_config::RemoteHost`])
-//! as connectable [`Host`]s, and `~/.ssh/config` aliases as new entries.
-//!
-//! The central config is the store: the Tools panel edits its
-//! `remote_hosts`, and [`load`] rebuilds the [`crate::hosts::HostRegistry`]
-//! from it.
+//! The Remote hosts of the app's central config ([`RemoteHost`]) as connectable [`Host`]s, resolved
+//! through an [`SshResolver`] one hop at a time, and `~/.ssh/config` aliases as new entries.
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 
-use loa_config::RemoteHost;
+use loa_settings::app::RemoteHost;
 
-use crate::error::Error;
-use crate::hosts::{Host, HostSource};
+use crate::error::{Error, Result};
+use crate::hosts::{AgentSocket, Endpoint, Host};
 use crate::limits::HostLimits;
-use crate::ssh_config::{Overrides, SshConfig};
+use crate::resolve::{ResolvedHost, SshResolver};
 
-/// The limits a config entry sets. Empty `allowed_paths` keeps meaning no
-/// file access; `auto_approve` covers both writes and commands.
+/// The longest ProxyJump chain followed.
+pub const MAX_JUMPS: usize = 16;
+
+/// The limits a config entry sets; `auto_approve` covers writes and commands.
 pub fn limits(entry: &RemoteHost) -> HostLimits {
     HostLimits {
         allowed_paths: entry.allowed_paths.clone(),
@@ -27,34 +26,18 @@ pub fn limits(entry: &RemoteHost) -> HostLimits {
     }
 }
 
-/// Resolves one entry through `ssh` the way `ssh -l USER -p PORT -J JUMP
-/// HOST` would: `HOST` gets the config blocks matching it, the entry's own
-/// values win.
-pub fn host(name: &str, entry: &RemoteHost, ssh: &SshConfig, default_user: &str) -> Result<Host, Error> {
-    let overrides = Overrides {
-        user: entry.user.clone(),
-        port: entry.port,
-        proxy_jump: entry.proxy_jump.clone(),
-    };
-    let resolved = ssh.resolve_named(name, &entry.host, &overrides, default_user)?;
-    let in_ssh_config = ssh.aliases().iter().any(|alias| alias.eq_ignore_ascii_case(&entry.host));
-    let mut host = Host::from_config(resolved, limits(entry));
-    if !in_ssh_config {
-        host.source = HostSource::Manual;
-    }
-    Ok(host)
+/// Resolves one entry like `ssh -l USER -p PORT -J JUMP HOST`: the entry's own values win.
+pub fn host(name: &str, entry: &RemoteHost, resolver: &dyn SshResolver) -> Result<Host> {
+    let jump = entry.proxy_jump.as_deref();
+    let (target, jumps) = chain(resolver, &entry.host, entry.user.as_deref(), entry.port, jump, &mut Vec::new())?;
+    Ok(Host { name: name.to_owned(), target, jumps, limits: limits(entry) })
 }
 
 /// Every entry as a [`Host`], and the names that failed to resolve.
-pub fn load(
-    entries: &BTreeMap<String, RemoteHost>,
-    ssh: &SshConfig,
-    default_user: &str,
-) -> (Vec<Host>, Vec<(String, Error)>) {
-    let mut hosts = Vec::with_capacity(entries.len());
-    let mut failed = Vec::new();
+pub fn load(entries: &BTreeMap<String, RemoteHost>, resolver: &dyn SshResolver) -> (Vec<Host>, Vec<(String, Error)>) {
+    let (mut hosts, mut failed) = (Vec::new(), Vec::new());
     for (name, entry) in entries {
-        match host(name, entry, ssh, default_user) {
+        match host(name, entry, resolver) {
             Ok(host) => hosts.push(host),
             Err(e) => failed.push((name.clone(), e)),
         }
@@ -62,12 +45,10 @@ pub fn load(
     (hosts, failed)
 }
 
-/// A new entry for an alias of `~/.ssh/config`: the alias carries the
-/// connection settings, the limits start closed (read only, no paths, no
-/// commands) until the user opens them.
+/// A new entry for an ssh config alias; limits start closed (read only, no paths, no commands).
 pub fn entry_for_alias(alias: &str) -> RemoteHost {
     RemoteHost {
-        host: alias.to_string(),
+        host: alias.to_owned(),
         user: None,
         port: None,
         proxy_jump: None,
@@ -78,73 +59,117 @@ pub fn entry_for_alias(alias: &str) -> RemoteHost {
     }
 }
 
-/// Adds every concrete alias of `ssh` that `entries` doesn't have yet.
-/// Returns the names added; existing entries keep their limits.
-pub fn import_aliases(entries: &mut BTreeMap<String, RemoteHost>, ssh: &SshConfig) -> Vec<String> {
-    let mut added = Vec::new();
-    for alias in ssh.aliases() {
-        if !entries.contains_key(&alias) {
-            entries.insert(alias.clone(), entry_for_alias(&alias));
-            added.push(alias);
+/// Adds every alias `entries` doesn't have yet; returns the names added.
+pub fn import_aliases(entries: &mut BTreeMap<String, RemoteHost>, resolver: &dyn SshResolver) -> Vec<String> {
+    let added: Vec<String> = resolver.aliases().into_iter().filter(|alias| !entries.contains_key(alias)).collect();
+    entries.extend(added.iter().map(|alias| (alias.clone(), entry_for_alias(alias))));
+    added
+}
+
+/// Resolves `host` and its ProxyJump list: the first jump recursively, the others as given.
+fn chain(
+    resolver: &dyn SshResolver,
+    host: &str,
+    user: Option<&str>,
+    port: Option<u16>,
+    jump: Option<&str>,
+    stack: &mut Vec<String>,
+) -> Result<(Endpoint, Vec<Endpoint>)> {
+    let key = host.to_ascii_lowercase();
+    if stack.contains(&key) {
+        return Err(Error::ProxyJumpCycle(stack[0].clone()));
+    }
+    if stack.len() > MAX_JUMPS {
+        return Err(Error::ProxyJumpTooDeep(stack[0].clone()));
+    }
+    let resolved = resolver.lookup(host, user, port)?;
+    let list = jump.map(str::to_owned).or_else(|| resolved.proxy_jump.clone()).filter(|l| !l.eq_ignore_ascii_case("none"));
+    let mut jumps = Vec::new();
+    for (i, spec) in list.iter().flat_map(|l| l.split(',')).enumerate() {
+        let (h, u, p) = parse_jump(spec.trim()).map_err(|message| Error::Resolve { host: host.to_owned(), message })?;
+        if i == 0 {
+            stack.push(key.clone());
+            let (first, before) = chain(resolver, &h, u.as_deref(), p, None, stack)?;
+            stack.pop();
+            jumps.extend(before);
+            jumps.push(first);
+        } else {
+            jumps.push(endpoint(&h, resolver.lookup(&h, u.as_deref(), p)?));
         }
     }
-    added
+    if jumps.len() > MAX_JUMPS {
+        return Err(Error::ProxyJumpTooDeep(host.to_owned()));
+    }
+    Ok((endpoint(host, resolved), jumps))
+}
+
+fn endpoint(alias: &str, r: ResolvedHost) -> Endpoint {
+    let agent = match r.identity_agent.as_deref() {
+        None | Some("SSH_AUTH_SOCK" | "$SSH_AUTH_SOCK") => AgentSocket::Default,
+        Some(v) if v.eq_ignore_ascii_case("none") => AgentSocket::Disabled,
+        Some(v) => AgentSocket::Path(match v.strip_prefix("~/").or_else(|| v.strip_prefix(r"~\").filter(|_| cfg!(windows))) {
+            Some(rest) => loa_util::fs::home().unwrap_or_default().join(rest),
+            None => PathBuf::from(v),
+        }),
+    };
+    Endpoint { alias: alias.to_owned(), hostname: r.hostname, port: r.port, user: r.user, agent }
+}
+
+/// `[ssh://][user@]host[:port]`, IPv6 hosts in brackets.
+fn parse_jump(spec: &str) -> std::result::Result<(String, Option<String>, Option<u16>), String> {
+    let bad = |what: &str| format!("ProxyJump `{spec}`: {what}");
+    let s = spec.strip_prefix("ssh://").unwrap_or(spec);
+    let (user, hostport) = s.rsplit_once('@').map_or((None, s), |(u, h)| (Some(u.to_owned()), h));
+    let (host, port) = match hostport.strip_prefix('[') {
+        Some(rest) => match rest.split_once(']').ok_or_else(|| bad("missing `]`"))? {
+            (host, "") => (host, None),
+            (host, after) => (host, Some(after.strip_prefix(':').ok_or_else(|| bad("junk after `]`"))?)),
+        },
+        None => match hostport.split_once(':') {
+            Some((h, p)) if !p.contains(':') => (h, Some(p)),
+            _ => (hostport, None),
+        },
+    };
+    if host.is_empty() {
+        return Err(bad("empty host"));
+    }
+    let port = port.map(|p| p.parse::<u16>().ok().filter(|&p| p != 0).ok_or_else(|| bad("bad port"))).transpose()?;
+    Ok((host.to_owned(), user, port))
 }
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
     use super::*;
-
-    fn ssh(text: &str) -> SshConfig {
-        SshConfig::parse(text, Path::new("/home/me/.ssh/config"), Path::new("/home/me")).unwrap()
-    }
+    use crate::resolve::Static;
 
     #[test]
-    fn aliases_resolve_through_ssh_config_and_manual_hosts_get_its_defaults() {
-        let ssh = ssh("Host bastion\n HostName 10.0.0.1\n User jump\nHost db\n HostName db.internal\n ProxyJump bastion\nHost *\n User fallback\n");
+    fn entries_resolve_hop_by_hop_and_import_keeps_limits() {
+        let ssh = Static::new("me").with("bastion", "10.0.0.1", 22, None).with("db", "db.internal", 22, Some("bastion,jump@[::1]:2200"));
+        let ssh = ssh.with("a", "a", 22, Some("b")).with("b", "b", 22, Some("a"));
         let mut entries = BTreeMap::new();
-        assert_eq!(import_aliases(&mut entries, &ssh), ["bastion", "db"]);
+        assert_eq!(import_aliases(&mut entries, &ssh), ["a", "b", "bastion", "db"]);
         assert!(entries["db"].read_only && !entries["db"].commands && entries["db"].allowed_paths.is_empty());
-        entries.insert(
-            "box".into(),
-            RemoteHost {
-                host: "192.168.1.5".into(),
-                user: Some("root".into()),
-                port: Some(2222),
-                proxy_jump: Some("bastion".into()),
-                allowed_paths: vec!["/srv".into()],
-                read_only: false,
-                commands: true,
-                auto_approve: true,
-            },
-        );
         entries.get_mut("db").unwrap().commands = true;
-        assert!(import_aliases(&mut entries, &ssh).is_empty(), "nothing new");
-        assert!(entries["db"].commands, "re-import keeps limits");
+        let manual = RemoteHost { host: "192.168.1.5".into(), user: Some("root".into()), port: Some(2222), proxy_jump: Some("bastion".into()), ..entry_for_alias("") };
+        entries.insert("box".into(), RemoteHost { auto_approve: true, ..manual });
+        assert!(import_aliases(&mut entries, &ssh).is_empty() && entries["db"].commands, "re-import adds nothing, keeps limits");
 
-        let (hosts, failed) = load(&entries, &ssh, "me");
-        assert!(failed.is_empty());
+        let (hosts, failed) = load(&entries, &ssh);
+        assert_eq!(failed.iter().map(|(n, e)| (n.as_str(), matches!(e, Error::ProxyJumpCycle(_)))).collect::<Vec<_>>(), [("a", true), ("b", true)]);
         let db = hosts.iter().find(|h| h.name == "db").unwrap();
-        assert_eq!(db.target.hostname, "db.internal");
-        assert_eq!(db.jumps[0].hostname, "10.0.0.1");
-        assert_eq!(db.jumps[0].user, "jump");
-        assert!(matches!(db.source, HostSource::SshConfig(_)));
+        let hops: Vec<_> = db.hops().map(|e| (e.hostname.as_str(), e.port, e.user.as_str())).collect();
+        assert_eq!(hops, [("10.0.0.1", 22, "me"), ("::1", 2200, "jump"), ("db.internal", 22, "me")]);
         let b = hosts.iter().find(|h| h.name == "box").unwrap();
-        assert_eq!((b.target.hostname.as_str(), b.target.port, b.target.user.as_str()), ("192.168.1.5", 2222, "root"));
-        assert_eq!(b.jumps.len(), 1, "the entry's ProxyJump resolves through ssh config");
-        assert_eq!(b.source, HostSource::Manual);
-        assert!(b.limits.auto_approve_writes && b.limits.auto_approve_commands && b.limits.commands);
+        assert_eq!((b.target.hostname.as_str(), b.target.port, b.target.user.as_str(), b.jumps.len()), ("192.168.1.5", 2222, "root", 1));
+        assert!(b.limits.auto_approve_writes && b.limits.auto_approve_commands);
+        for bad in ["", "h:0", "[::1", "[::1]x"] {
+            assert!(parse_jump(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]
-    fn a_proxyjump_cycle_is_reported_per_host() {
-        let ssh = ssh("Host a\n ProxyJump b\nHost b\n ProxyJump a\n");
-        let mut entries = BTreeMap::new();
-        import_aliases(&mut entries, &ssh);
-        let (hosts, failed) = load(&entries, &ssh, "me");
-        assert!(hosts.is_empty());
-        assert_eq!(failed.len(), 2);
+    fn identity_agent_keeps_the_named_pipe_path() {
+        let resolved = ResolvedHost { identity_agent: Some(r"\\.\pipe\openssh-ssh-agent".into()), ..ResolvedHost::default() };
+        assert_eq!(endpoint("a", resolved).agent, AgentSocket::Path(PathBuf::from(r"\\.\pipe\openssh-ssh-agent")));
     }
 }

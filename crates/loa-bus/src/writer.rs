@@ -1,15 +1,15 @@
 //! The single writer of a live session.
 
+use loa_util::LockExt;
 use crate::queue::{Policy, Queue, Subscription};
 use crate::{NodeKey, SessionId};
-use loa_core::schema;
-use loa_core::{ApplyError, CommitError, Dom, Draft, NodeId, Op, Patch, PatchSink};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use loa_core::{CommitError, Dom, Draft, Patch, PatchSink};
+use std::sync::{Arc, Mutex, PoisonError};
 
 pub type PersistError = Box<dyn std::error::Error + Send + Sync>;
 
 /// Durable storage for a session's patches, normally its journal. A port:
-/// `loa-app` backs it with `loa-journal`.
+/// [`crate::JournalPersist`] backs it with the session's journal.
 pub trait Persist: Send {
     /// Stores `patch`. Called in sequence order, after the patch was checked
     /// against the DOM and before it is applied or published. An error fails
@@ -31,7 +31,7 @@ pub trait Persist: Send {
 pub struct Denied(pub String);
 
 /// Decides whether a peer may make a change to a session this node owns. A
-/// port: `loa-app` backs it with `loa-grants`.
+/// port: `loa-app` backs it with `loa-trust`.
 pub trait Authorize: Send + Sync {
     /// Called at the point the request is ordered, with the DOM it would apply
     /// to, so subtree scoped grants see the current tree.
@@ -96,19 +96,7 @@ struct Inner {
 impl SessionWriter {
     pub fn new(config: WriterConfig) -> Self {
         let WriterConfig { session, owner, local, dom, persist, authorize } = config;
-        Self {
-            session,
-            owner,
-            local,
-            authorize,
-            inner: Mutex::new(Inner { dom, persist, subs: Vec::new(), closed: false }),
-        }
-    }
-
-    fn lock(&self) -> MutexGuard<'_, Inner> {
-        // Under the lock the DOM changes only through `Dom::apply`, which is
-        // atomic, so a panic elsewhere (a `Persist` impl) leaves it valid.
-        self.inner.lock().unwrap_or_else(PoisonError::into_inner)
+        Self { session, owner, local, authorize, inner: Mutex::new(Inner { dom, persist, subs: Vec::new(), closed: false }) }
     }
 
     pub fn session(&self) -> &SessionId {
@@ -126,18 +114,18 @@ impl SessionWriter {
 
     /// Sequence of the last committed patch.
     pub fn seq(&self) -> u64 {
-        self.lock().dom.seq()
+        self.inner.locked().dom.seq()
     }
 
     /// Reads the current DOM without copying it. Commits wait while `read` runs.
     pub fn with_dom<R>(&self, read: impl FnOnce(&Dom) -> R) -> R {
-        read(&self.lock().dom)
+        read(&self.inner.locked().dom)
     }
 
     /// The current DOM and a subscription that starts with the patch right
     /// after it.
     pub fn subscribe(&self, policy: Policy) -> (Dom, Subscription) {
-        let mut inner = self.lock();
+        let mut inner = self.inner.locked();
         let sub = Self::attach(&mut inner, policy);
         (inner.dom.clone(), sub)
     }
@@ -146,7 +134,7 @@ impl SessionWriter {
     /// right after it. For subscribers that read the journal up to that
     /// sequence instead of copying the DOM.
     pub fn subscribe_seq(&self, policy: Policy) -> (u64, Subscription) {
-        let mut inner = self.lock();
+        let mut inner = self.inner.locked();
         let sub = Self::attach(&mut inner, policy);
         (inner.dom.seq(), sub)
     }
@@ -162,34 +150,26 @@ impl SessionWriter {
     }
 
     /// Orders a change requested by peer `requester`, after [`Authorize`]
-    /// allows it. Requests and local commits are ordered as they arrive.
-    pub fn request(&self, requester: &NodeKey, draft: Draft, ts: i64) -> Result<Patch, RequestError> {
-        let mut inner = self.lock();
-        self.writable(&inner)?;
-        self.authorize.authorize(&self.session, requester, &draft, &inner.dom)?;
-        let patch = inner.dom.prepare(draft, ts);
-        Ok(Self::write(&mut inner, patch)?)
-    }
-
-    /// Orders a peer change only if the owner still has the revision the peer
-    /// saw. The revision check and grant check run under the writer lock; a
-    /// local commit cannot slip between them and the write.
-    pub fn request_if_seq(
+    /// allows it. Requests and local commits are ordered as they arrive. With
+    /// `expected_seq`, the change is refused unless the owner still has the
+    /// revision the peer saw. The revision and grant checks run under the
+    /// writer lock, so a local commit cannot slip between them and the write.
+    pub fn request(
         &self,
         requester: &NodeKey,
-        expected_seq: u64,
+        expected_seq: Option<u64>,
         draft: Draft,
         ts: i64,
     ) -> Result<Patch, RequestError> {
-        let mut inner = self.lock();
+        let mut inner = self.inner.locked();
         self.writable(&inner)?;
         let actual = inner.dom.seq();
-        if actual != expected_seq {
-            return Err(RequestError::Conflict { expected: expected_seq, actual });
+        if let Some(expected) = expected_seq.filter(|e| *e != actual) {
+            return Err(RequestError::Conflict { expected, actual });
         }
         self.authorize.authorize(&self.session, requester, &draft, &inner.dom)?;
         let patch = inner.dom.prepare(draft, ts);
-        Ok(Self::write(&mut inner, patch)?)
+        Ok(self.write(&mut inner, patch)?)
     }
 
     /// Mirrors a patch the owner ordered. Only on nodes that don't own the
@@ -198,18 +178,18 @@ impl SessionWriter {
         if self.is_writer() {
             return Err(ReplicateError::Owner);
         }
-        let mut inner = self.lock();
+        let mut inner = self.inner.locked();
         if inner.closed {
             return Err(CommitError::Closed.into());
         }
-        Self::write(&mut inner, patch)?;
+        self.write(&mut inner, patch)?;
         Ok(())
     }
 
     /// Ends the session: later commits fail with [`CommitError::Closed`] and
     /// subscriptions end after what they already hold.
     pub fn close(&self) {
-        Self::shut(&mut self.lock());
+        Self::shut(&mut self.inner.locked());
     }
 
     fn shut(inner: &mut Inner) {
@@ -230,22 +210,17 @@ impl SessionWriter {
     }
 
     /// Checks, persists, applies and publishes the next patch.
-    fn write(inner: &mut Inner, patch: Patch) -> Result<Patch, CommitError> {
-        check(&inner.dom, &patch)?;
+    fn write(&self, inner: &mut Inner, patch: Patch) -> Result<Patch, CommitError> {
+        inner.dom.check(&patch)?;
         inner.persist.append(&patch).map_err(|e| CommitError::Journal(e.to_string()))?;
-        if let Err(error) = inner.dom.apply(&patch) {
-            // `check` mirrors every rule of `Dom::apply`, so this only happens
-            // if the two drift apart. The journal now holds a patch the DOM
-            // lacks: stop taking writes rather than diverge further.
-            Self::shut(inner);
-            return Err(error.into());
-        }
+        // Already checked against this DOM, so this cannot fail.
+        inner.dom.apply(&patch)?;
         let Inner { dom, persist, .. } = inner;
         persist.applied(dom);
-        Ok(Self::publish(inner, patch))
+        Ok(self.publish(inner, patch))
     }
 
-    fn publish(inner: &mut Inner, patch: Patch) -> Patch {
+    fn publish(&self, inner: &mut Inner, patch: Patch) -> Patch {
         if inner.subs.is_empty() {
             return patch;
         }
@@ -257,10 +232,10 @@ impl SessionWriter {
 
 impl PatchSink for SessionWriter {
     fn commit_at(&self, draft: Draft, ts: i64) -> Result<Patch, CommitError> {
-        let mut inner = self.lock();
+        let mut inner = self.inner.locked();
         self.writable(&inner)?;
         let patch = inner.dom.prepare(draft, ts);
-        Self::write(&mut inner, patch)
+        self.write(&mut inner, patch)
     }
 }
 
@@ -270,41 +245,30 @@ impl Drop for SessionWriter {
     }
 }
 
-/// Every check `Dom::apply` makes, without applying, so a patch that would be
-/// rejected is never persisted.
-fn check(dom: &Dom, patch: &Patch) -> Result<(), ApplyError> {
-    if patch.seq != dom.seq() + 1 {
-        return Err(ApplyError::Sequence { expected: dom.seq() + 1, got: patch.seq });
+#[cfg(feature = "testkit")]
+mod testkit {
+    use super::*;
+    use loa_core::testkit::{AllowAll, DenyAll, MemoryPersist};
+
+    impl Authorize for AllowAll {
+        fn authorize(&self, _: &SessionId, _: &NodeKey, _: &Draft, _: &Dom) -> Result<(), Denied> {
+            Ok(())
+        }
     }
-    let missing = || ApplyError::MissingNode(patch.node);
-    match &patch.op {
-        Op::Insert { parent, index, kind, attrs, .. } => {
-            if patch.node < dom.next_id() {
-                return Err(ApplyError::IdReused { got: patch.node, next: dom.next_id() });
+
+    impl Authorize for DenyAll {
+        fn authorize(&self, _: &SessionId, _: &NodeKey, _: &Draft, _: &Dom) -> Result<(), Denied> {
+            Err(Denied("denied by test".into()))
+        }
+    }
+
+    impl Persist for MemoryPersist {
+        fn append(&mut self, patch: &Patch) -> Result<(), PersistError> {
+            if let Some(why) = &self.fail {
+                return Err(why.clone().into());
             }
-            let parent_kind = if *parent == NodeId::DOCUMENT {
-                if dom.root().is_some() {
-                    return Err(ApplyError::RootExists);
-                }
-                None
-            } else {
-                let node = dom.get(*parent).ok_or(ApplyError::MissingNode(*parent))?;
-                if let Some(index) = *index
-                    && index as usize > node.children.len()
-                {
-                    return Err(ApplyError::Index { parent: *parent, index, len: node.children.len() });
-                }
-                Some(node.kind)
-            };
-            schema::validate_insert(parent_kind, *kind, attrs.iter().map(|(k, v)| (k.as_str(), v)))?;
-        }
-        Op::Set { name, value } => {
-            let node = dom.get(patch.node).ok_or_else(missing)?;
-            schema::validate_set(node.kind, name, value.as_ref())?;
-        }
-        Op::Append { .. } | Op::Remove => {
-            dom.get(patch.node).ok_or_else(missing)?;
+            self.patches.locked().push(patch.clone());
+            Ok(())
         }
     }
-    Ok(())
 }

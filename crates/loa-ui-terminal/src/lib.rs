@@ -1,90 +1,92 @@
-//! Terminal tab for local shells and SSH hosts.
-//!
-//! The pane renders an `alacritty_terminal` emulator on an iced canvas. Its
-//! bytes come from a [`PtyChannel`]: either a local PTY spawned by
-//! [`local::spawn`] or a remote PTY opened through the [`RemotePty`] port,
-//! which the SSH layer implements. Several terminals live side by side as sub
-//! tabs inside one [`State`].
+//! Terminal tab for local shells and SSH hosts: an `alacritty_terminal` emulator on an iced canvas, fed by
+//! a [`PtyChannel`] that a [`PtyBackend`] ([`LocalPtyBackend`], [`RemotePtyBackend`]) opens for a [`Target`].
+//! The channel ports live in [`loa_view::terminal::port`].
 
 pub mod canvas;
-pub mod channel;
 pub mod emulator;
 pub mod input;
 pub mod local;
-pub mod loopback;
 pub mod palette;
 pub mod state;
-mod style;
 
-pub use canvas::{CanvasEvent, Metrics};
-pub use channel::{ChannelRead, ChannelReader, ChannelWriter, PtyChannel, RemotePty};
-pub use emulator::Emulator;
 pub use local::LocalShell;
-pub use loopback::{LoopbackHost, LoopbackSession, RemoteInput};
-pub use palette::TermPalette;
-pub use state::{Event, Message, State, Status, TabId, Target};
-use std::path::PathBuf;
+pub use state::{Message, State, Status, TabId, Target};
+use async_trait::async_trait;
+use bytes::{Bytes, BytesMut};
+use futures::future::BoxFuture;
+use loa_view::terminal::port::{ChannelRead, ChannelReader, Error, GridSize, PtyChannel, RemotePty, Result};
+use std::sync::Arc;
+use tokio::sync::mpsc;
 
-/// Errors raised while opening or driving a terminal channel.
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    /// Reading from or writing to a PTY failed.
-    #[error("terminal i/o: {0}")]
-    Io(#[from] std::io::Error),
-    /// The PTY could not be created or the shell could not be started.
-    #[error("cannot start shell: {0}")]
-    Spawn(String),
-    /// The requested working directory is not a directory.
-    #[error("working directory {} is not a directory", .0.display())]
-    NotADirectory(PathBuf),
-    /// The remote side refused or dropped the channel.
-    #[error("remote host {host}: {message}")]
-    Remote {
-        /// Host the channel was opened on.
-        host: String,
-        /// What went wrong, as reported by the transport.
-        message: String,
-    },
-    /// A remote target was requested but no [`RemotePty`] was configured.
-    #[error("no remote transport is configured")]
-    NoRemote,
-    /// The channel was already closed.
-    #[error("terminal channel is closed")]
-    Closed,
+/// Output joined into one read. Gathering stops once a burst reaches this size, so a flood still reaches the
+/// pane in bounded pieces.
+const BURST_LIMIT: usize = 256 * 1024;
+
+/// Reads queued by another task; a dropped sender reads as [`Error::Closed`]. Output already queued when the pane
+/// reads is joined into one chunk (up to [`BURST_LIMIT`]), so a burst takes a single read.
+pub(crate) struct QueueReader {
+    queue: mpsc::Receiver<Result<ChannelRead>>,
+    /// What ended the last burst (an error or the close), returned by the next read.
+    pending: Option<Result<ChannelRead>>,
 }
+impl QueueReader {
+    pub(crate) fn new(queue: mpsc::Receiver<Result<ChannelRead>>) -> Self { Self { queue, pending: None } }
 
-/// Result alias for this crate.
-pub type Result<T, E = Error> = std::result::Result<T, E>;
-
-/// Size of a terminal grid in character cells, plus the pixel size of one
-/// cell (0 when unknown) for programs that ask for it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct GridSize {
-    /// Number of columns.
-    pub cols: u16,
-    /// Number of rows.
-    pub rows: u16,
-    /// Width of one cell in pixels.
-    pub cell_width: u16,
-    /// Height of one cell in pixels.
-    pub cell_height: u16,
+    /// Joins `first` with the output chunks already queued.
+    fn coalesce(&mut self, first: Bytes) -> Bytes {
+        let mut rest = Vec::new();
+        let mut len = first.len();
+        while len < BURST_LIMIT {
+            match self.queue.try_recv() {
+                Ok(Ok(ChannelRead::Data(bytes))) => {
+                    len += bytes.len();
+                    rest.push(bytes);
+                }
+                Ok(other) => {
+                    self.pending = Some(other);
+                    break;
+                }
+                // Empty or closed: the next `recv` says which.
+                Err(_) => break,
+            }
+        }
+        if rest.is_empty() { return first }
+        let mut burst = BytesMut::with_capacity(len);
+        burst.extend_from_slice(&first);
+        rest.iter().for_each(|chunk| burst.extend_from_slice(chunk));
+        burst.freeze()
+    }
 }
-
-impl GridSize {
-    /// A grid of `cols` by `rows` with unknown pixel cell size.
-    pub const fn new(cols: u16, rows: u16) -> Self {
-        Self {
-            cols,
-            rows,
-            cell_width: 0,
-            cell_height: 0,
+#[async_trait]
+impl ChannelReader for QueueReader {
+    async fn read(&mut self) -> Result<ChannelRead> {
+        let next = match self.pending.take() { Some(next) => next, None => self.queue.recv().await.unwrap_or(Err(Error::Closed)) };
+        match next {
+            Ok(ChannelRead::Data(bytes)) => Ok(ChannelRead::Data(self.coalesce(bytes))),
+            other => other,
         }
     }
 }
 
-impl Default for GridSize {
-    /// The classic 80 by 24 terminal, used until the pane is laid out.
-    fn default() -> Self {
-        Self::new(80, 24)
+/// Port: opens a PTY for a target. The terminal state holds one and never matches on targets.
+pub trait PtyBackend: Send + Sync { fn open(&self, target: &Target, size: GridSize) -> BoxFuture<'static, Result<PtyChannel>>; }
+
+/// Local programs on a `portable_pty`; remote targets fail with [`Error::NoRemote`].
+#[derive(Debug, Default, Clone, Copy)]
+pub struct LocalPtyBackend;
+impl PtyBackend for LocalPtyBackend {
+    fn open(&self, target: &Target, size: GridSize) -> BoxFuture<'static, Result<PtyChannel>> {
+        let shell = if let Target::Local(shell) = target { Ok(shell.clone()) } else { Err(Error::NoRemote) };
+        Box::pin(async move { local::spawn(&shell?, size) })
+    }
+}
+
+/// Remote targets through a [`RemotePty`]; everything else goes to `fallback`.
+pub struct RemotePtyBackend { pub remote: Arc<dyn RemotePty>, pub fallback: Arc<dyn PtyBackend> }
+impl PtyBackend for RemotePtyBackend {
+    fn open(&self, target: &Target, size: GridSize) -> BoxFuture<'static, Result<PtyChannel>> {
+        let Target::Remote { host } = target else { return self.fallback.open(target, size) };
+        let (remote, host) = (Arc::clone(&self.remote), host.clone());
+        Box::pin(async move { remote.open_pty(&host, size).await })
     }
 }

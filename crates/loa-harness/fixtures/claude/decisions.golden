@@ -1,0 +1,38 @@
+= Waiting
+> {"response":{"request_id":"req-7","response":{"behavior":"allow","updatedInput":{"command":"ls"},"updatedPermissions":[{"behavior":"allow","destination":"session","rules":[{"ruleContent":"ls:*","toolName":"Bash"}],"type":"addRules"}]},"subtype":"success"},"type":"control_response"}
+! error unknown decision 6
+! error harness protocol error: the answer must be one of ["allow_once", "allow_session", "deny"], got ["approve"]
+> {"response":{"request_id":"req-8","response":{"behavior":"deny","message":"not in this repo"},"subtype":"success"},"type":"control_response"}
+> {"response":{"request_id":"req-10","response":{"behavior":"allow","updatedInput":{"file_path":"/c"}},"subtype":"success"},"type":"control_response"}
+= Running
+= Waiting
+> {"response":{"request_id":"req-q","response":{"behavior":"allow","updatedInput":{"answers":{"Which database?":"Postgres","Which parts?":"API, Docs"},"questions":[{"header":"Database","multiSelect":false,"options":[{"description":"file","label":"SQLite"},{"description":"server","label":"Postgres"}],"question":"Which database?"},{"header":"Parts","multiSelect":true,"options":[{"description":"","label":"API"},{"description":"","label":"CLI"},{"description":"","label":"Docs"}],"question":"Which parts?"}]}},"subtype":"success"},"type":"control_response"}
+> {"response":{"request_id":"req-e","response":{"behavior":"allow","updatedInput":{"answers":{},"questions":[]}},"subtype":"success"},"type":"control_response"}
+> {"response":{"request_id":"req-p","response":{"behavior":"deny","message":"cover the migration"},"subtype":"success"},"type":"control_response"}
+> {"response":{"request_id":"req-p2","response":{"behavior":"allow","updatedInput":{"plan":"1. Write tests first"}},"subtype":"success"},"type":"control_response"}
+> mcp r1 loa-host {"id":1,"jsonrpc":"2.0","method":"tools/list"}
+> {"response":{"error":"unsupported control request `hook_callback`","request_id":"r2","subtype":"error"},"type":"control_response"}
+<session nid="1" created.int="T" cwd="/work/demo" harness="claude-code" id="app-session" mode="normal" model="claude-sonnet-x" node="node-key" schema.int="1">
+  <turn nid="2" ended.int="T" id="p1" started.int="T" status="done">
+    <message nid="3" by="alice" id="p1" role="user" status="done">list</message>
+    <call nid="4" call_id="toolu_1" ended.int="T" started.int="T" status="cancelled" title="ls" tool="Bash" x-claude-uuid="a-1">
+      <input nid="5" format="json">{"command":"ls"}</input>
+      <decision nid="6" answer.list="['allow_session']" by="alice" call.int="4" created.int="T" ended.int="T" kind="approval" request_id="req-7" status="answered" title="Allow Bash?">{
+  "command": "ls"
+}</decision>
+      <decision nid="7" answer.list="['deny']" by="alice" call.int="4" created.int="T" ended.int="T" kind="approval" reason="not in this repo" request_id="req-8" status="answered" title="Run rm?" x-claude-blocked-path="/b" x-claude-decision-reason="dangerous">{
+  "command": "rm -rf build"
+}</decision>
+    </call>
+    <decision nid="8" created.int="T" ended.int="T" kind="approval" request_id="req-9" status="cancelled" title="Allow Write?">{
+  "file_path": "/a"
+}</decision>
+    <decision nid="9" answer.list="['allow_once']" by="alice" created.int="T" ended.int="T" kind="approval" request_id="req-10" status="answered" title="Allow Write?">Write /c</decision>
+    <decision nid="10" answer.list="['Postgres']" by="alice" created.int="T" ended.int="T" kind="question" multi.bool="false" options.list="['SQLite', 'Postgres']" request_id="req-q" status="answered" title="Database">Which database?</decision>
+    <decision nid="11" answer.list="['API', 'Docs']" by="alice" created.int="T" ended.int="T" kind="question" multi.bool="true" options.list="['API', 'CLI', 'Docs']" request_id="req-q" status="answered" title="Parts">Which parts?</decision>
+    <decision nid="12" answer.list="['reject']" by="alice" created.int="T" ended.int="T" kind="plan" reason="cover the migration" request_id="req-p" status="answered" title="Plan">x</decision>
+    <decision nid="13" answer.list="['edit']" by="alice" created.int="T" ended.int="T" kind="plan" reason="1. Write tests first" request_id="req-p2" status="answered" title="Plan">1. Write tests
+2. Ship</decision>
+    <usage nid="14" model="claude-sonnet-x"/>
+  </turn>
+</session>

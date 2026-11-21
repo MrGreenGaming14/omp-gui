@@ -1,0 +1,24 @@
+[package]
+name = "loa-settings"
+description = "Every setting the app reads, edits or displays: app config, omp model settings, project and update status"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+loa-util.workspace = true
+loa-core.workspace = true
+loa-contracts.workspace = true
+async-trait.workspace = true
+semver = { version = "1", features = ["serde"] }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true }
+toml = "1.2"
+serde_ignored = "0.1.14"
+serde_path_to_error = "0.1.20"
+yaml-rust2 = "0.13"
+
+[dev-dependencies]
+tempfile.workspace = true

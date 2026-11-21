@@ -1,8 +1,5 @@
-//! Patches: the only way a session DOM changes.
-//!
-//! A [`Draft`] is a change someone wants. The session's single writer turns it
-//! into a [`Patch`] by assigning the sequence number, the timestamp and, for
-//! inserts, the new node id.
+//! Patches: the only way a session DOM changes. A [`Draft`] is a wanted change;
+//! the session's single writer orders it into a [`Patch`] (seq, ts, new id).
 
 use crate::dom::NodeId;
 use crate::schema::{ElementKind, TEXT};
@@ -54,13 +51,8 @@ impl Draft {
         attrs: impl IntoIterator<Item = (N, Value)>,
         text: impl Into<String>,
     ) -> Self {
-        Draft::Insert {
-            parent,
-            index: None,
-            kind,
-            attrs: attrs.into_iter().map(|(name, value)| (name.into(), value)).collect(),
-            text: text.into(),
-        }
+        let attrs = attrs.into_iter().map(|(name, value)| (name.into(), value)).collect();
+        Draft::Insert { parent, index: None, kind, attrs, text: text.into() }
     }
 
     /// Like [`Draft::insert`] at a position among the parent's children.
@@ -71,12 +63,8 @@ impl Draft {
         attrs: impl IntoIterator<Item = (N, Value)>,
         text: impl Into<String>,
     ) -> Self {
-        match Self::insert(parent, kind, attrs, text) {
-            Draft::Insert { parent, kind, attrs, text, .. } => {
-                Draft::Insert { parent, index: Some(index), kind, attrs, text }
-            }
-            other => other,
-        }
+        let attrs = attrs.into_iter().map(|(name, value)| (name.into(), value)).collect();
+        Draft::Insert { parent, index: Some(index), kind, attrs, text: text.into() }
     }
 
     pub fn set(node: NodeId, name: impl Into<String>, value: impl Into<Value>) -> Self {
@@ -89,7 +77,7 @@ impl Draft {
 
     /// Replace the node text.
     pub fn set_text(node: NodeId, text: impl Into<String>) -> Self {
-        Draft::Set { node, name: TEXT.to_owned(), value: Some(Value::Str(text.into())) }
+        Self::set(node, TEXT, text.into())
     }
 
     pub fn append(node: NodeId, text: impl Into<String>) -> Self {

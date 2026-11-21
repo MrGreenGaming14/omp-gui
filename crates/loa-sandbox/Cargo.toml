@@ -7,31 +7,38 @@ publish.workspace = true
 
 [features]
 default = ["host"]
-# Everything but the wire protocol. The stub builds without it, so its
-# dependency tree stays std only.
+# Everything but the wire protocol. The stub builds without it.
 host = [
     "dep:loa-core",
-    "dep:loa-adapter",
+    "dep:loa-contracts",
     "dep:async-trait",
-    "dep:serde",
+    "dep:schemars",
     "dep:serde_json",
     "dep:thiserror",
     "dep:tokio",
+    "dep:tokio-util",
     "dep:tempfile",
-    "dep:loa-exec",
+    "dep:tar",
 ]
+# Firecracker and qemu providers.
+vm = ["host"]
+# ovnfs checkouts for isolated runs.
+ovnfs = ["host"]
 
 [dependencies]
+loa-util.workspace = true
+postcard = { version = "1", features = ["use-std"] }
+serde.workspace = true
 loa-core = { workspace = true, optional = true }
-loa-adapter = { workspace = true, optional = true }
+loa-contracts = { workspace = true, optional = true }
 async-trait = { workspace = true, optional = true }
-serde = { workspace = true, optional = true }
+schemars = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 thiserror = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
+tokio-util = { version = "0.7", features = ["io-util"], optional = true }
 tempfile = { workspace = true, optional = true }
-loa-exec = { path = "../loa-exec", optional = true }
+tar = { version = "0.4.46", default-features = false, optional = true }
 
 [dev-dependencies]
-loa-exec = { path = "../loa-exec" }
 tempfile.workspace = true

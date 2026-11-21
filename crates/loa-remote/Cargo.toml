@@ -1,19 +1,20 @@
 [package]
 name = "loa-remote"
-description = "App hosted remote MCP server: remote_bash and remote_file over SSH"
+description = "App hosted remote tools: remote_bash and remote_file over SSH"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+loa-util.workspace = true
 async-trait.workspace = true
 axum = { version = "0.8", default-features = false, features = ["tokio", "http1"] }
 bytes.workspace = true
-getrandom = "0.3"
 http = "1"
-loa-adapter.workspace = true
-loa-config = { path = "../loa-config" }
+loa-contracts.workspace = true
+loa-settings = { path = "../loa-settings" }
 loa-core.workspace = true
+loa-mcp = { path = "../loa-mcp" }
 rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -22,7 +23,7 @@ tokio.workspace = true
 tracing.workspace = true
 base64 = "0.22"
 hmac = "0.12"
-rmcp = { version = "3.11", default-features = false, features = ["server", "macros", "transport-io", "transport-streamable-http-server"] }
+rmcp = { version = "3.11", default-features = false, features = ["server", "transport-streamable-http-server"] }
 russh = { version = "0.65", default-features = false, features = ["ring", "rsa", "flate2"] }
 russh-sftp = "3.0"
 schemars = "1"
@@ -32,8 +33,5 @@ tokio-util = "0.7"
 [dev-dependencies]
 futures.workspace = true
 rand = "0.10"
-rmcp = { version = "3.11", default-features = false, features = ["server", "client", "transport-io"] }
-loa-adapter-omp = { path = "../loa-adapter-omp" }
-loa-mcp = { path = "../loa-mcp" }
 tempfile.workspace = true
 tokio-stream = { version = "0.1", features = ["net"] }

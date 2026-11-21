@@ -1,0 +1,28 @@
+= Idle
+> {"response":{"request_id":"req-2","response":{"behavior":"deny","message":"The turn was interrupted."},"subtype":"success"},"type":"control_response"}
+= Running
+= Idle
+<session nid="1" created.int="T" cwd="/work/demo" harness="claude-code" id="app-session" model="claude-sonnet-x" node="node-key" schema.int="1">
+  <turn nid="2" ended.int="T" id="p1" started.int="T" status="cancelled">
+    <message nid="3" by="alice" id="p1" role="user" status="done">long task</message>
+    <message nid="4" model="m" role="assistant" status="cancelled">Working</message>
+    <call nid="5" call_id="toolu_1" ended.int="T" started.int="T" status="cancelled" title="make" tool="Bash" x-claude-uuid="a-0">
+      <input nid="6" format="json">{"command":"make"}</input>
+      <decision nid="7" call.int="5" created.int="T" ended.int="T" kind="approval" request_id="req-1" status="cancelled" title="Allow Bash?">{
+  "command": "make"
+}</decision>
+    </call>
+  </turn>
+  <turn nid="8" ended.int="T" id="p2" started.int="T" status="done">
+    <message nid="9" by="alice" id="p2" role="user" status="done">again</message>
+    <message nid="10" id="a-2" model="m" role="assistant" status="done">ok</message>
+    <usage nid="11" model="claude-sonnet-x"/>
+  </turn>
+  <turn nid="12" ended.int="T" id="p3" started.int="T" status="cancelled">
+    <message nid="13" by="alice" id="p3" role="user" status="done">first</message>
+  </turn>
+  <turn nid="14" ended.int="T" id="p4" started.int="T" status="done">
+    <message nid="15" by="alice" id="p4" role="user" status="done">second</message>
+    <usage nid="16" input_tokens.int="1" model="claude-sonnet-x"/>
+  </turn>
+</session>

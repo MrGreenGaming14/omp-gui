@@ -1,0 +1,25 @@
+<session nid="1" created.int="T" cwd="/work/demo" harness="claude-code" id="app-session" mode="normal" model="claude-opus-x" native_id="cc-1" node="node-key" schema.int="1">
+  <turn nid="2" id="p1" started.int="T" status="running">
+    <message nid="3" by="alice" id="p1" role="user" status="done">list the files</message>
+    <message nid="4" kind="thinking" model="claude-opus-x" role="assistant" status="streaming">Need to look.</message>
+  </turn>
+</session>
+<session nid="1" created.int="T" cwd="/work/demo" harness="claude-code" id="app-session" mode="plan" model="claude-opus-x" native_id="cc-1" node="node-key" schema.int="1">
+  <turn nid="2" ended.int="T" id="p1" started.int="T" status="done">
+    <message nid="3" by="alice" id="p1" role="user" status="done">list the files</message>
+    <message nid="4" id="a-1" kind="thinking" model="claude-opus-x" role="assistant" status="done">Need to look.</message>
+    <message nid="5" id="a-2" model="claude-opus-x" role="assistant" status="done">Let me check.</message>
+    <call nid="6" call_id="toolu_1" ended.int="T" started.int="T" status="done" title="ls -la" tool="Bash" x-claude-uuid="a-3">
+      <input nid="7" format="json">{"command":"ls -la"}</input>
+      <result nid="8" is_error.bool="false" x-claude-uuid="u-r">a.txt
+b.txt</result>
+    </call>
+    <message nid="9" id="a-4" model="claude-opus-x" role="assistant" status="done">Two files.</message>
+    <usage nid="10" cache_read_tokens.int="7" cache_write_tokens.int="3" cost.float="0.25" duration_ms.int="1200" input_tokens.int="100" model="claude-opus-x" output_tokens.int="40"/>
+  </turn>
+  <turn nid="11" ended.int="T" started.int="T" status="done">
+    <message nid="12" id="a-5" model="claude-opus-x" role="assistant" status="done">The build finished.</message>
+    <usage nid="13" model="claude-opus-x"/>
+  </turn>
+  <ext nid="14" harness="claude-code" type="rate_limit_event">{"rate_limit_info":{"status":"allowed"},"type":"rate_limit_event"}</ext>
+</session>

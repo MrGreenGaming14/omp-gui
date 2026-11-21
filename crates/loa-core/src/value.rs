@@ -1,5 +1,7 @@
 //! Attribute values carried by DOM nodes and `set` patches.
 
+use crate::dom::NodeId;
+use crate::patch::Attrs;
 use serde::{Deserialize, Serialize};
 
 /// The wire-level type of a [`Value`]. The schema declares one per attribute.
@@ -24,81 +26,36 @@ pub enum Value {
     List(Vec<Value>),
 }
 
+/// Per variant: the `as_*` accessor and the `From` impl of its payload.
+macro_rules! variants {
+    ($($variant:ident($ty:ty) => $as:ident -> $out:ty, |$v:ident| $get:expr;)*) => {
+        impl Value {
+            pub fn value_type(&self) -> ValueType {
+                match self { $(Value::$variant(_) => ValueType::$variant),* }
+            }
+            $(pub fn $as(&self) -> Option<$out> {
+                match self { Value::$variant($v) => Some($get), _ => None }
+            })*
+        }
+        $(impl From<$ty> for Value {
+            fn from(v: $ty) -> Self { Value::$variant(v) }
+        })*
+    };
+}
+
+variants! {
+    Bool(bool) => as_bool -> bool, |v| *v;
+    Int(i64) => as_int -> i64, |v| *v;
+    Float(f64) => as_float -> f64, |v| *v;
+    Str(String) => as_str -> &str, |v| v;
+    Bytes(Vec<u8>) => as_bytes -> &[u8], |v| v;
+    List(Vec<Value>) => as_list -> &[Value], |v| v;
+}
+
 impl Value {
-    pub fn value_type(&self) -> ValueType {
-        match self {
-            Value::Bool(_) => ValueType::Bool,
-            Value::Int(_) => ValueType::Int,
-            Value::Float(_) => ValueType::Float,
-            Value::Str(_) => ValueType::Str,
-            Value::Bytes(_) => ValueType::Bytes,
-            Value::List(_) => ValueType::List,
-        }
-    }
-
-    pub fn as_bool(&self) -> Option<bool> {
-        match self {
-            Value::Bool(v) => Some(*v),
-            _ => None,
-        }
-    }
-
-    pub fn as_int(&self) -> Option<i64> {
-        match self {
-            Value::Int(v) => Some(*v),
-            _ => None,
-        }
-    }
-
-    pub fn as_float(&self) -> Option<f64> {
-        match self {
-            Value::Float(v) => Some(*v),
-            _ => None,
-        }
-    }
-
-    pub fn as_str(&self) -> Option<&str> {
-        match self {
-            Value::Str(v) => Some(v),
-            _ => None,
-        }
-    }
-
-    pub fn as_bytes(&self) -> Option<&[u8]> {
-        match self {
-            Value::Bytes(v) => Some(v),
-            _ => None,
-        }
-    }
-
-    pub fn as_list(&self) -> Option<&[Value]> {
-        match self {
-            Value::List(v) => Some(v),
-            _ => None,
-        }
-    }
-
     /// The strings of a list value, skipping non-string items.
     pub fn str_items(&self) -> impl Iterator<Item = &str> {
         self.as_list().unwrap_or_default().iter().filter_map(Value::as_str)
-    }
-}
-
-impl From<bool> for Value {
-    fn from(v: bool) -> Self {
-        Value::Bool(v)
-    }
-}
-
-impl From<i64> for Value {
-    fn from(v: i64) -> Self {
-        Value::Int(v)
-    }
-}
-
-impl From<f64> for Value {
-    fn from(v: f64) -> Self {
-        Value::Float(v)
     }
 }
 
@@ -108,26 +65,40 @@ impl From<&str> for Value {
     }
 }
 
-impl From<String> for Value {
-    fn from(v: String) -> Self {
-        Value::Str(v)
-    }
-}
-
-impl From<Vec<u8>> for Value {
-    fn from(v: Vec<u8>) -> Self {
-        Value::Bytes(v)
-    }
-}
-
-impl From<Vec<Value>> for Value {
-    fn from(v: Vec<Value>) -> Self {
-        Value::List(v)
-    }
-}
-
 impl From<Vec<String>> for Value {
     fn from(v: Vec<String>) -> Self {
         Value::List(v.into_iter().map(Value::Str).collect())
     }
+}
+
+/// A node id as an `Int` attribute (ids stay far below `i64::MAX`).
+impl From<NodeId> for Value {
+    fn from(id: NodeId) -> Self {
+        Value::Int(i64::try_from(id.0).unwrap_or(i64::MAX))
+    }
+}
+
+/// Anything that lists `(name, value)` pairs: arrays, vecs, [`Attrs`].
+pub trait IntoAttrs {
+    fn into_attrs(self) -> Attrs;
+}
+
+impl<K: Into<String>, V: Into<Value>, I: IntoIterator<Item = (K, V)>> IntoAttrs for I {
+    fn into_attrs(self) -> Attrs {
+        self.into_iter().map(|(k, v)| (k.into(), v.into())).collect()
+    }
+}
+
+/// Builds [`Attrs`]: `attrs! { ROLE: Role::User, "x-key": 1i64 }`. Bare names
+/// are [`attr`](crate::attr) constants.
+#[macro_export]
+macro_rules! attrs {
+    (@name $k:ident) => { $crate::attr::$k };
+    (@name $k:literal) => { $k };
+    ($($k:tt : $v:expr),* $(,)?) => {{
+        #[allow(unused_mut)]
+        let mut attrs = $crate::Attrs::new();
+        $(attrs.insert($crate::attrs!(@name $k).to_owned(), $crate::Value::from($v));)*
+        attrs
+    }};
 }

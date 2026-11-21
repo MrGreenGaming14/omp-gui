@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<session nid="1" created.int="1" harness="acp" id="s" node="owner" schema.int="1">
+  <turn nid="2" ended.int="0" started.int="0" status="done">
+    <message nid="3" by="owner" role="user" status="done">Explain main.rs</message>
+    <message nid="4" kind="thinking" model="fake-model" role="assistant" status="done">Let me look.</message>
+    <message nid="5" model="fake-model" role="assistant" status="done">It prints hello.</message>
+    <ext nid="6" harness="acp" type="available_commands_update">{"availableCommands":[]}</ext>
+  </turn>
+  <turn nid="7" ended.int="0" started.int="0" status="error" x-acp-stop-reason="max_tokens">
+    <message nid="8" by="owner" role="user" status="done">one</message>
+  </turn>
+</session>
+
+--- replies

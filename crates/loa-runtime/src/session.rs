@@ -1,0 +1,472 @@
+//! Live sessions.
+
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
+
+use loa_bus::{Event, JournalWriter, Listing, Policy, SessionId, SessionWriter, TryRecvError};
+use loa_contracts::harness::HarnessSession;
+use loa_contracts::session::SessionSummary;
+use loa_core::{DecisionStatus, Dom, ElementKind, NodeId, Op, Patch, TurnStatus, attr};
+use loa_session::library::{Library, Live};
+
+use crate::feed::Source;
+
+/// How long a feed gathers the events that arrive while it waits: one frame, so a streamed
+/// burst reaches the app as one update.
+const FRAME: Duration = Duration::from_millis(16);
+
+/// What happened to a session, as every app area sees it.
+#[derive(Clone, Debug)]
+pub enum SessionEvent {
+    /// This session became the one the chat shows; `None` when none is.
+    Activated(Option<SessionId>),
+    /// The session's DOM was replaced wholesale: started, opened from its
+    /// journal, or resynced after its feed fell behind.
+    Loaded(SessionId),
+    /// One patch was applied.
+    Patch(SessionId, Arc<Patch>),
+    /// A `<turn>` was inserted.
+    TurnStarted { session: SessionId, turn: NodeId },
+    /// A turn ended `done`, `error` or `cancelled`.
+    TurnEnded { session: SessionId, turn: NodeId, status: TurnStatus },
+    /// A `<decision>` waits for an answer.
+    DecisionWaiting { session: SessionId, decision: NodeId },
+    /// A `<decision>` was answered.
+    DecisionAnswered { session: SessionId, decision: NodeId },
+    /// A `<compaction>` was inserted.
+    Compaction { session: SessionId, node: NodeId },
+    /// The session was closed and its harness stopped.
+    Closed(SessionId),
+}
+
+/// What a session writer's feed delivers: the session's feed in the app,
+/// a peer's mirror in the peers area.
+#[derive(Clone, Debug)]
+pub enum Feed {
+    /// The writer's DOM when the feed (re)subscribed; events follow it.
+    Synced(Arc<Dom>),
+    /// The events that arrived within one frame, oldest first.
+    Events(Vec<Event>),
+    /// The writer closed; nothing follows.
+    Ended,
+}
+
+/// The DOM of `writer`, then the events that arrive within each frame as one batch;
+/// resubscribes after falling behind and ends with [`Feed::Ended`] once the writer closes.
+pub struct WriterFeed {
+    writer: Arc<SessionWriter>,
+    policy: Policy,
+    subscription: Option<loa_bus::Subscription>,
+    ended: bool,
+}
+
+impl WriterFeed {
+    pub fn new(writer: Arc<SessionWriter>, policy: Policy) -> Self {
+        Self { writer, policy, subscription: None, ended: false }
+    }
+}
+
+impl Source for WriterFeed {
+    type Item = Feed;
+
+    async fn next(&mut self) -> Option<Feed> {
+        loop {
+            if self.ended {
+                return None;
+            }
+            let Some(subscription) = &mut self.subscription else {
+                let (dom, subscription) = self.writer.subscribe(self.policy);
+                self.subscription = Some(subscription);
+                return Some(Feed::Synced(Arc::new(dom)));
+            };
+            let first = match subscription.recv().await {
+                None => {
+                    self.ended = true;
+                    return Some(Feed::Ended);
+                }
+                Some(Event::Lagged { .. }) => {
+                    self.subscription = None;
+                    continue;
+                }
+                Some(event) => event,
+            };
+            // Appends that arrive during the frame merge in the bus queue.
+            let mut batch = vec![first];
+            tokio::time::sleep(FRAME).await;
+            loop {
+                match subscription.try_recv() {
+                    // The batch goes out first; the next call resubscribes from the writer's DOM.
+                    Ok(Event::Lagged { .. }) => {
+                        self.subscription = None;
+                        break;
+                    }
+                    Ok(event) => batch.push(event),
+                    // A closed writer ends the feed on the next call.
+                    Err(TryRecvError::Empty | TryRecvError::Closed) => break,
+                }
+            }
+            return Some(Feed::Events(batch));
+        }
+    }
+}
+
+/// One open session.
+pub struct Session {
+    id: SessionId,
+    writer: Arc<SessionWriter>,
+    journal: Arc<JournalWriter>,
+    /// The UI's copy of the writer's DOM.
+    dom: Dom,
+    /// The sidebar entry of `dom`; `None` until the DOM has a session root.
+    summary: Option<SessionSummary>,
+    /// The running harness; `None` until the session is started or resumed.
+    harness: Option<Arc<dyn HarnessSession>>,
+    busy: bool,
+}
+
+impl Session {
+    fn new(id: SessionId, live: Live, dom: Dom) -> Self {
+        let busy = dom_busy(&dom);
+        let summary = SessionSummary::from_dom(&dom, false);
+        Self { id, writer: live.writer, journal: live.journal, dom, summary, harness: None, busy }
+    }
+
+    pub fn id(&self) -> &SessionId {
+        &self.id
+    }
+
+    /// The session as the UI last saw it.
+    pub fn dom(&self) -> &Dom {
+        &self.dom
+    }
+
+    /// The session's single writer: the `PatchSink` adapters write through.
+    pub fn writer(&self) -> &Arc<SessionWriter> {
+        &self.writer
+    }
+
+    /// The session's journal, for forks, rewinds and reads of past states.
+    pub fn journal(&self) -> &Arc<JournalWriter> {
+        &self.journal
+    }
+
+    pub fn harness(&self) -> Option<&Arc<dyn HarnessSession>> {
+        self.harness.as_ref()
+    }
+
+    /// Id of the harness the session runs on: the running one, else the
+    /// `harness` attribute of its `<session>`.
+    pub fn harness_id(&self) -> Option<&str> {
+        self.harness.as_ref().map(|harness| harness.harness()).or_else(|| self.dom.root()?.str_attr(attr::HARNESS))
+    }
+
+    /// A turn runs or waits, or a prompt was sent and its turn hasn't started.
+    pub fn is_busy(&self) -> bool {
+        self.busy
+    }
+
+    pub fn has_turns(&self) -> bool {
+        dom_turns(&self.dom).next().is_some()
+    }
+
+    /// The sidebar entry of the session, kept in step with the DOM.
+    pub fn summary(&self) -> Option<&SessionSummary> {
+        self.summary.as_ref()
+    }
+
+    /// Replaces the copy with `dom` and reads what depends on it again.
+    fn reload(&mut self, dom: Dom) {
+        self.dom = dom;
+        self.busy = dom_busy(&self.dom);
+        self.summary = SessionSummary::from_dom(&self.dom, false);
+    }
+
+    pub fn set_busy(&mut self, busy: bool) {
+        self.busy = busy;
+    }
+
+    /// Attaches the harness that now drives the session and catches the
+    /// DOM up with what it wrote while starting.
+    pub fn attach(&mut self, harness: Arc<dyn HarnessSession>) {
+        self.harness = Some(harness);
+        self.reload(self.writer.with_dom(Dom::clone));
+    }
+
+    /// Takes the running harness off the session; the next send resumes it
+    /// on a fresh harness.
+    pub fn detach(&mut self) -> Option<Arc<dyn HarnessSession>> {
+        self.harness.take()
+    }
+
+    /// Applies one feed event. `Ok(None)` when it carries nothing new.
+    fn apply(&mut self, event: Event) -> Result<Option<Arc<Patch>>, loa_core::ApplyError> {
+        let seq = self.dom.seq();
+        match event {
+            Event::Patch(patch) if patch.seq <= seq => Ok(None),
+            Event::Patch(patch) => {
+                self.dom.apply(&patch)?;
+                Ok(Some(patch))
+            }
+            Event::Appends(appends) if appends.last_seq <= seq => Ok(None),
+            Event::Appends(appends) => {
+                let patch = Patch {
+                    seq: appends.first_seq,
+                    node: appends.node,
+                    ts: appends.ts,
+                    op: Op::Append { text: appends.text },
+                };
+                self.dom.apply(&patch)?;
+                // The other merged patches carry no text of their own.
+                for seq in appends.first_seq + 1..=appends.last_seq {
+                    let empty = Patch { seq, node: patch.node, ts: patch.ts, op: Op::Append { text: String::new() } };
+                    self.dom.apply(&empty)?;
+                }
+                Ok(Some(Arc::new(patch)))
+            }
+            Event::Lagged { .. } => Ok(None),
+        }
+    }
+}
+
+/// What [`Sessions::sync`] and [`Sessions::apply`] did.
+pub enum Change {
+    None,
+    Loaded,
+    Patch {
+        patch: Arc<Patch>,
+        derived: Option<SessionEvent>,
+        /// The session's sidebar entry changed.
+        summary_changed: bool,
+        /// The patch changed a turn's status, so the busy flag may have changed.
+        turn_changed: bool,
+    },
+}
+
+/// The open sessions, the active one and the harness new ones start on.
+#[derive(Default)]
+pub struct Sessions {
+    open: HashMap<SessionId, Session>,
+    active: Option<SessionId>,
+    starting: Option<SessionId>,
+    /// Harness new sessions start on.
+    pub harness: Option<String>,
+}
+
+impl Sessions {
+    pub fn get(&self, id: &str) -> Option<&Session> {
+        self.open.get(id)
+    }
+
+    pub fn get_mut(&mut self, id: &str) -> Option<&mut Session> {
+        self.open.get_mut(id)
+    }
+
+    /// The session the chat shows.
+    pub fn active(&self) -> Option<&Session> {
+        self.open.get(self.active.as_ref()?)
+    }
+
+    pub fn active_mut(&mut self) -> Option<&mut Session> {
+        self.open.get_mut(self.active.as_ref()?)
+    }
+
+    pub fn active_id(&self) -> Option<&SessionId> {
+        self.active.as_ref()
+    }
+
+    pub fn is_active(&self, id: &str) -> bool {
+        self.active.as_ref().is_some_and(|active| active.as_str() == id)
+    }
+
+    /// The session whose harness is starting or resuming.
+    pub fn starting(&self) -> Option<&SessionId> {
+        self.starting.as_ref()
+    }
+
+    /// Every open session, in no particular order.
+    pub fn iter(&self) -> impl Iterator<Item = &Session> {
+        self.open.values()
+    }
+
+    pub fn set_active(&mut self, id: Option<SessionId>) {
+        self.active = id;
+    }
+
+    pub fn set_starting(&mut self, id: Option<SessionId>) {
+        self.starting = id;
+    }
+
+    /// Creates a new session's journal in `library` and its writer.
+    pub fn create(&mut self, library: &Library) -> Result<(SessionId, Arc<SessionWriter>), String> {
+        let id = new_session_id();
+        let live = library.create(&id).map_err(|error| format!("Can't create session {id}: {error}"))?;
+        let writer = Arc::clone(&live.writer);
+        let id = SessionId::from(id);
+        self.open.insert(id.clone(), Session::new(id.clone(), live, Dom::new()));
+        Ok((id, writer))
+    }
+
+    /// Opens a session from its journal in `library` unless it is open already.
+    pub fn load(&mut self, library: &Library, id: &str) -> Result<(), String> {
+        if self.open.contains_key(id) {
+            return Ok(());
+        }
+        let live = library.open(id).map_err(|error| format!("Can't open session {id}: {error}"))?;
+        let dom = live.writer.with_dom(Dom::clone);
+        let id = SessionId::from(id);
+        self.open.insert(id.clone(), Session::new(id, live, dom));
+        Ok(())
+    }
+
+    /// Closes a session's writer and releases its journal in `library`,
+    /// deleting the journal too when `delete` is set.
+    pub fn close(&mut self, library: &Library, id: &str, delete: bool) -> (Option<Session>, Option<String>) {
+        let session = self.open.remove(id);
+        if self.is_active(id) {
+            self.active = None;
+        }
+        if self.starting.as_ref().is_some_and(|starting| starting.as_str() == id) {
+            self.starting = None;
+        }
+        let closed = if delete { library.delete(id) } else { library.close(id).map(drop) };
+        (session, closed.err().map(|error| format!("Can't close session {id}: {error}")))
+    }
+
+    /// Replaces the runtime's copy with the writer's DOM when that is newer.
+    pub fn sync(&mut self, id: &str, dom: Arc<Dom>) -> Change {
+        let Some(session) = self.open.get_mut(id) else { return Change::None };
+        if dom.seq() == session.dom.seq() {
+            return Change::None;
+        }
+        session.reload(Arc::unwrap_or_clone(dom));
+        Change::Loaded
+    }
+
+    /// Applies one event from a session's feed to the runtime's copy.
+    pub fn apply(&mut self, id: &str, event: Event) -> Change {
+        let Some(session) = self.open.get_mut(id) else { return Change::None };
+        match session.apply(event) {
+            Ok(None) => Change::None,
+            Ok(Some(patch)) => {
+                let turn_changed = touches_turn_status(&session.dom, &patch);
+                if turn_changed {
+                    session.busy = dom_busy(&session.dom);
+                }
+                let summary_changed = match session.summary.as_mut() {
+                    Some(summary) => summary.apply(&session.dom, &patch),
+                    None => {
+                        session.summary = SessionSummary::from_dom(&session.dom, false);
+                        session.summary.is_some()
+                    }
+                };
+                let derived = derive(&session.id, &session.dom, &patch);
+                Change::Patch { patch, derived, summary_changed, turn_changed }
+            }
+            Err(_) => {
+                // The copy fell out of step: take the writer's DOM.
+                session.reload(session.writer.with_dom(Dom::clone));
+                Change::Loaded
+            }
+        }
+    }
+}
+
+/// The session holds turns, or continues another session.
+fn keeps_history(dom: &Dom) -> bool {
+    dom_turns(dom).next().is_some() || dom.root().is_some_and(|root| root.attr(attr::PARENT_SESSION).is_some())
+}
+
+/// Lists the library's sessions for Recents, newest first, with titles from their DOMs.
+/// Sessions without a turn hold nothing to keep and come back in `empty` for the caller to
+/// delete ([`crate::Runtime::delete_empty`]), unless they continue another session (a fork,
+/// rewind or compaction that carries its history as context). Returns the summaries, those
+/// empty ids and a note per session that couldn't be read. Reads every journal: run it off
+/// the UI thread.
+pub fn recents(library: &Library) -> (Vec<SessionSummary>, Vec<String>, Vec<String>) {
+    let mut summaries = Vec::new();
+    let mut problems = Vec::new();
+    let mut empty = Vec::new();
+    let listings = match library.store().list() {
+        Ok(listings) => listings,
+        Err(error) => return (summaries, vec![format!("Can't list sessions: {error}")], empty),
+    };
+    for listing in listings {
+        let info = match listing {
+            Listing::Session(info) => info,
+            Listing::Unreadable { id, error } => {
+                problems.push(format!("Session {id} can't be read: {error}"));
+                continue;
+            }
+        };
+        match library.load(&info.id) {
+            Ok(dom) => match SessionSummary::from_dom(&dom, false).filter(|_| keeps_history(&dom)) {
+                Some(summary) => summaries.push(summary),
+                None => empty.push(info.id),
+            },
+            Err(error) => problems.push(format!("Session {} can't be read: {error}", info.id)),
+        }
+    }
+    summaries.sort_by_key(|summary| std::cmp::Reverse(summary.updated));
+    (summaries, problems, empty)
+}
+
+/// The `<turn>` children of the session root, oldest first.
+pub fn dom_turns(dom: &Dom) -> impl Iterator<Item = &loa_core::Node> {
+    dom.root().into_iter().flat_map(|root| dom.children_of_kind(root.id, ElementKind::Turn))
+}
+
+/// Whether a turn runs or waits.
+fn dom_busy(dom: &Dom) -> bool {
+    dom_turns(dom).any(|turn| {
+        matches!(turn.str_attr(attr::STATUS).and_then(TurnStatus::parse), Some(TurnStatus::Running | TurnStatus::Waiting))
+    })
+}
+
+fn touches_turn_status(dom: &Dom, patch: &Patch) -> bool {
+    match &patch.op {
+        Op::Insert { kind, .. } => *kind == ElementKind::Turn,
+        Op::Set { name, .. } => name == attr::STATUS && dom.get(patch.node).is_some_and(|node| node.kind == ElementKind::Turn),
+        Op::Remove => true,
+        Op::Append { .. } => false,
+    }
+}
+
+/// The event `patch` (already applied to `dom`) stands for, besides itself.
+fn derive(session: &SessionId, dom: &Dom, patch: &Patch) -> Option<SessionEvent> {
+    let session = session.clone();
+    let node = dom.get(patch.node)?;
+    let status = || node.str_attr(attr::STATUS);
+    match (&patch.op, node.kind) {
+        (Op::Insert { .. }, ElementKind::Turn) => Some(SessionEvent::TurnStarted { session, turn: node.id }),
+        (Op::Insert { .. }, ElementKind::Compaction) => Some(SessionEvent::Compaction { session, node: node.id }),
+        (Op::Insert { .. } | Op::Set { .. }, ElementKind::Decision) => {
+            if let Op::Set { name, .. } = &patch.op
+                && name != attr::STATUS
+            {
+                return None;
+            }
+            match status().and_then(DecisionStatus::parse)? {
+                DecisionStatus::Waiting => Some(SessionEvent::DecisionWaiting { session, decision: node.id }),
+                DecisionStatus::Answered => Some(SessionEvent::DecisionAnswered { session, decision: node.id }),
+                DecisionStatus::Expired | DecisionStatus::Cancelled => None,
+            }
+        }
+        (Op::Set { name, .. }, ElementKind::Turn) if name == attr::STATUS => {
+            match status().and_then(TurnStatus::parse)? {
+                status @ (TurnStatus::Done | TurnStatus::Error | TurnStatus::Cancelled) => {
+                    Some(SessionEvent::TurnEnded { session, turn: node.id, status })
+                }
+                TurnStatus::Running | TurnStatus::Waiting => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// A unique session id: creation time, process and a counter.
+pub fn new_session_id() -> String {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    format!("loa-{}-{}-{}", loa_core::now_ms(), std::process::id(), COUNTER.fetch_add(1, Ordering::Relaxed))
+}

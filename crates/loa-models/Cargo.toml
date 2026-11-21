@@ -4,19 +4,18 @@ description = "Sign in, model listing and model settings through omp and other h
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+[features]
+testing = ["tokio/time"]
+
 
 [dependencies]
-loa-exec = { path = "../loa-exec" }
+loa-util.workspace = true
+loa-contracts.workspace = true
+loa-settings = { path = "../loa-settings" }
 async-trait.workspace = true
-loa-omp-rpc = { path = "../loa-omp-rpc" }
-serde.workspace = true
-serde_json.workspace = true
-tempfile.workspace = true
-thiserror.workspace = true
 tokio = { workspace = true, features = ["process", "sync", "macros", "io-util", "rt"] }
-toml_edit = "0.25"
-yaml-rust2 = "0.13"
 
 [dev-dependencies]
-loa-omp-rpc = { path = "../loa-omp-rpc", features = ["fake-omp"] }
+serde_json.workspace = true
+tempfile.workspace = true
 tokio = { workspace = true, features = ["full"] }

@@ -1,0 +1,86 @@
+[package]
+name = "loa-surfaces"
+description = "Surfaces: the browser, document and VNC servers, the surface hub and agent tools, shared pixel and frame plumbing"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[features]
+default = ["hub"]
+# The app's surface service on all built-in servers, MCP declared surfaces and the surface_* agent tools.
+hub = ["browser", "docs", "vnc", "dep:loa-core", "dep:loa-mcp", "dep:axum", "dep:rmcp"]
+browser = ["dep:chromiumoxide", "dep:x11rb", "dep:futures", "dep:tempfile"]
+docs = ["dep:hayro", "dep:calamine", "dep:docx-rs", "dep:zip", "dep:quick-xml", "dep:ab_glyph", "image/jpeg", "image/gif", "image/webp", "image/bmp"]
+vnc = ["dep:flate2", "dep:des"]
+# Live video and omp/surface/1 for viewers across the network.
+remote-video = ["dep:crc32fast", "dep:prost", "dep:rusty_h264"]
+# FakeSurface, frame helpers and the Chrome skip guard for tests.
+testkit = []
+
+[dependencies]
+loa-util.workspace = true
+loa-contracts.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+schemars.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+base64 = "0.22"
+image = { version = "0.25.10", default-features = false, features = ["png"] }
+# image 0.25's JPEG backend mis-decodes baseline JPEGs with one scan per
+# component, which is how Chrome encodes some screencast frames.
+jpeg-decoder = { version = "0.3", default-features = false }
+futures = { workspace = true, optional = true }
+tempfile = { workspace = true, optional = true }
+# hub
+loa-core = { workspace = true, optional = true }
+loa-mcp = { path = "../loa-mcp", optional = true }
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio"], optional = true }
+rmcp = { version = "3.11", default-features = false, features = ["server", "transport-streamable-http-server"], optional = true }
+# browser
+chromiumoxide = { version = "0.9", default-features = false, features = ["bytes", "rustls", "zip8"], optional = true }
+# docs
+hayro = { version = "0.9", optional = true }
+calamine = { version = "0.38", optional = true }
+docx-rs = { version = "0.4.22", optional = true }
+zip = { version = "9.7", default-features = false, features = ["deflate"], optional = true }
+quick-xml = { version = "0.42", optional = true }
+ab_glyph = { version = "0.2.32", optional = true }
+# vnc
+flate2 = { version = "1.1", default-features = false, features = ["rust_backend"], optional = true }
+des = { version = "0.9", optional = true }
+# remote-video
+crc32fast = { version = "1.5", optional = true }
+prost = { workspace = true, optional = true }
+# Pure Rust H.264. The `global-alloc` default feature installs a process wide
+# allocator, so defaults stay off.
+rusty_h264 = { version = "0.17.3", default-features = false, features = ["std", "asm"], optional = true }
+
+# browser: the Xvfb virtual display capture runs only on Linux.
+[target.'cfg(target_os = "linux")'.dependencies]
+x11rb = { version = "0.13", optional = true }
+
+[dev-dependencies]
+loa-surfaces = { path = ".", features = ["testkit"] }
+rust_xlsxwriter = "0.103"
+tempfile.workspace = true
+tokio = { workspace = true, features = ["full"] }
+
+[[test]]
+name = "session"
+required-features = ["remote-video"]
+
+[[test]]
+name = "browser"
+required-features = ["browser", "testkit"]
+
+[[test]]
+name = "x11"
+required-features = ["browser"]
+
+[[test]]
+name = "hub"
+required-features = ["hub", "testkit"]

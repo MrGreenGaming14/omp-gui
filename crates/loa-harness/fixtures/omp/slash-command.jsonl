@@ -1,0 +1,18 @@
+# omp 19 (captured from `omp --mode rpc`, anthropic/claude-haiku-5-5): the
+# command list omp sends at startup (shortened to three commands, sent twice
+# as omp does on changes), then the prompt "/dirs", a builtin omp runs itself:
+# its output arrives as `command_output` and the response says
+# `agentInvoked: false`, which the runtime turns into a completed result.
+{"type":"ready","protocolVersion":1,"supportedProtocolVersions":[1,2],"maxFrameBytes":1048576,"maxReassembledFrameBytes":67108864,"supportsBashExcludeFromContext":true}
+{"type":"extension_ui_request","id":"15d46760abbc461c","method":"setStatus","statusKey":"tokenmunchers"}
+{"type":"available_commands_update","commands":[{"name":"dirs","description":"List this session's workspace directories","source":"builtin"},{"name":"switch","description":"Switch model for this session only","input":{"hint":"[model]"},"source":"builtin"},{"name":"review","description":"Launch interactive code review","input":{"hint":"arguments"},"source":"custom"}]}
+{"type":"available_commands_update","commands":[{"name":"dirs","description":"List this session's workspace directories","source":"builtin"},{"name":"switch","description":"Switch model for this session only","input":{"hint":"[model]"},"source":"builtin"},{"name":"review","description":"Launch interactive code review","input":{"hint":"arguments"},"source":"custom"}]}
+{"type":"advisor_cost_changed"}
+{"$":"send","id":"p","text":"prompt p"}
+{"type":"command_output","text":"Workspace directories:\n  /tmp (working directory)"}
+{"id":"p","type":"response","command":"prompt","success":true,"data":{"agentInvoked":false}}
+{"type":"extension_ui_request","id":"15d46769f9fc461e","method":"setWidget","widgetKey":"autoresearch"}
+# the runtime turns the `agentInvoked: false` response into this
+{"type":"prompt_result","id":"p","agentInvoked":false,"status":"completed","sessionSettled":true}
+# output read after that response closed the turn joins it
+{"type":"command_output","text":"late output"}
