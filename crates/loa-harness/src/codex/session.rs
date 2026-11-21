@@ -58,7 +58,7 @@ impl Shared {
     }
 
     fn respond(&self, id: Json, result: std::result::Result<Json, RpcError>) -> Result<()> {
-        Ok(self.writer.get().ok_or(AdapterError::Closed)?.send(&FRAMES.response(id, result))?)
+        Ok(self.writer.get().ok_or(AdapterError::Closed)?.send(&FRAMES.response(id, "", result))?)
     }
 
     fn reply(&self, reply: Reply) -> Result<()> {
@@ -74,7 +74,7 @@ impl Shared {
                 let session = self.session_id.clone();
                 tokio::spawn(async move {
                     let outcome = handler.call(&session, &tool, &arguments).await;
-                    if let Err(error) = writer.send(&FRAMES.response(id, Ok(tool_result(outcome)))) {
+                    if let Err(error) = writer.send(&FRAMES.response(id, "", Ok(tool_result(outcome)))) {
                         tracing::warn!(%error, "codex: couldn't return an app tool result");
                     }
                 });

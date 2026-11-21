@@ -1,0 +1,32 @@
+# omp 19 `--mode rpc-ui --approval-mode always-ask`, message updates as deltas:
+# a bash call waits on omp's tool approval prompt, a `select`.
+{"$":"send","id":"p","text":"prompt p"}
+{"id":"p","type":"response","command":"prompt","success":true}
+{"type":"agent_start"}
+{"type":"turn_start"}
+{"type":"message_start","message":{"role":"user","content":[{"type":"text","text":"Run `echo loa-approved-7731` with your bash tool."}],"attribution":"user"},"messageId":"msg-1"}
+{"type":"message_end","message":{"role":"user","content":[{"type":"text","text":"Run `echo loa-approved-7731` with your bash tool."}],"attribution":"user"},"messageId":"msg-1"}
+{"type":"message_start","message":{"role":"assistant","content":[{"type":"toolCall","id":"toolu_1","name":"bash","arguments":{"command":"echo loa-"}}],"stopReason":"stop"},"messageId":"msg-2"}
+{"type":"message_update","assistantMessageEvent":{"type":"toolcall_start","contentIndex":0,"block":{"type":"toolCall","id":"toolu_1","name":"bash","arguments":{}}},"message":{"role":"assistant"},"messageId":"msg-2"}
+{"type":"message_update","assistantMessageEvent":{"type":"toolcall_delta","contentIndex":0,"delta":"{\"command\": \"echo loa-approved-7731\"}"},"message":{"role":"assistant"},"messageId":"msg-2"}
+{"type":"message_update","assistantMessageEvent":{"type":"toolcall_end","contentIndex":0,"toolCall":{"type":"toolCall","id":"toolu_1","name":"bash","arguments":{"command":"echo loa-approved-7731"}}},"message":{"role":"assistant"},"messageId":"msg-2"}
+{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","id":"toolu_1","name":"bash","arguments":{"command":"echo loa-approved-7731"}}],"stopReason":"toolUse"},"messageId":"msg-2"}
+{"type":"tool_execution_start","toolCallId":"toolu_1","toolName":"bash","args":{"command":"echo loa-approved-7731"}}
+{"type":"extension_ui_request","id":"15d4058f5bbc68c9","method":"select","title":"Allow tool: bash\nCommand: echo loa-approved-7731","options":["Approve","Approve bash for this session","Deny"]}
+{"$":"answer","request":"15d4058f5bbc68c9","values":["deny"],"reason":"not on this machine"}
+# omp 19 after the approval prompt was answered `Deny`, and the app steered
+# the deny reason.
+{"id":"s","type":"response","command":"steer","success":true}
+{"type":"tool_execution_end","toolCallId":"toolu_1","toolName":"bash","result":{"content":[{"type":"text","text":"Tool call denied by user: bash"}],"details":{}},"isError":true}
+{"type":"message_start","message":{"role":"toolResult","toolCallId":"toolu_1","toolName":"bash","content":[{"type":"text","text":"Tool call denied by user: bash"}],"isError":true},"messageId":"msg-3"}
+{"type":"message_end","message":{"role":"toolResult","toolCallId":"toolu_1","toolName":"bash","content":[{"type":"text","text":"Tool call denied by user: bash"}],"isError":true},"messageId":"msg-3"}
+{"type":"turn_end","message":{"role":"assistant","content":[{"type":"toolCall","id":"toolu_1","name":"bash","arguments":{"command":"echo loa-approved-7731"}}],"stopReason":"toolUse"},"toolResults":[]}
+{"type":"turn_start"}
+{"type":"message_start","message":{"role":"assistant","content":[{"type":"text","text":"The bash call was"}],"stopReason":"stop"},"messageId":"msg-4"}
+{"type":"message_update","assistantMessageEvent":{"type":"text_start","contentIndex":0,"block":{"type":"text","text":""}},"message":{"role":"assistant"},"messageId":"msg-4"}
+{"type":"message_update","assistantMessageEvent":{"type":"text_end","contentIndex":0,"content":"The bash call was denied, so nothing ran.","block":{"type":"text"}},"message":{"role":"assistant"},"messageId":"msg-4"}
+{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"The bash call was denied, so nothing ran."}],"stopReason":"stop"},"messageId":"msg-4"}
+{"type":"turn_end","message":{"role":"assistant","content":[{"type":"text","text":"The bash call was denied, so nothing ran."}],"stopReason":"stop"},"toolResults":[]}
+{"type":"agent_end","messages":[],"isTerminal":true,"yielded":true}
+{"type":"prompt_result","id":"p","agentInvoked":true,"status":"completed","sessionSettled":true}
+{"type":"session_settled"}

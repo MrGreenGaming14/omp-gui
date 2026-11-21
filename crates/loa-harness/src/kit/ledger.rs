@@ -2,10 +2,10 @@
 //! (messages and calls by harness key, waiting decisions), so every mapper
 //! derives its state and closes turns the same way.
 
-use loa_contracts::harness::{Prompt, SessionState};
+use loa_contracts::harness::{Prompt, SessionConfig, SessionState};
 use loa_core::{
     CallStatus, CommitError, DecisionStatus, Dom, DomWriter, ElementKind as E, MessageStatus, Node, NodeId, Role,
-    TurnStatus, attr,
+    SCHEMA_VERSION, TurnStatus, Value, attr,
 };
 use std::collections::HashMap;
 use std::hash::Hash;
@@ -145,4 +145,14 @@ impl<K: Hash + Eq> TurnLedger<K> {
     pub fn close(&mut self) {
         self.closed = true;
     }
+}
+
+/// Inserts the `<session>` root of a new session from its config.
+pub fn insert_root(w: &DomWriter, harness: &str, config: &SessionConfig) -> loa_contracts::harness::Result<NodeId> {
+    let mut attrs = vec![(attr::ID, Value::from(config.session_id.as_str())), (attr::HARNESS, harness.into()), (attr::NODE, config.node.as_str().into())];
+    attrs.extend([(attr::CREATED, Value::Int(w.now())), (attr::SCHEMA, Value::Int(i64::from(SCHEMA_VERSION))), (attr::CWD, config.cwd.to_string_lossy().as_ref().into())]);
+    let optional = [(attr::PROJECT, &config.project), (attr::MODEL, &config.model), (attr::MODEL_ROLE, &config.model_role), (attr::EFFORT, &config.effort)];
+    attrs.extend(optional.into_iter().filter_map(|(name, value)| Some((name, value.as_deref()?.into()))));
+    attrs.extend(config.mode.map(|mode| (attr::MODE, mode.into())));
+    Ok(w.insert(NodeId::DOCUMENT, E::Session, attrs, "")?)
 }

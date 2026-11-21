@@ -189,7 +189,7 @@ impl Framing for ClaudeControl {
         params
     }
 
-    fn response(&self, id: Value, result: std::result::Result<Value, RpcError>) -> Value {
+    fn response(&self, id: Value, _method: &str, result: std::result::Result<Value, RpcError>) -> Value {
         let id = id.as_str().unwrap_or_default();
         match result {
             Ok(response) => control_success(id, response),

@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<session nid="1" created.int="1" effort="high" harness="omp" id="s" native_id="native-2" node="owner" schema.int="1" title="Parser fix">
+  <ext nid="2" harness="omp" type="notice">{"level":"info","message":"Index rebuilt","source":"extension"}</ext>
+  <ext nid="3" harness="omp" type="open_url">{"instructions":"Sign in","launchUrl":null,"url":"https://example.com/login"}</ext>
+  <turn nid="4" status="error">
+    <message nid="5" by="owner" role="user" status="done">pick</message>
+    <decision nid="6" answer.list="['Approve File']" by="owner" kind="approval" multi.bool="false" options.list="['allow_once', 'deny']" request_id="g1" status="answered" title="Allow tool: read">Allow tool: read</decision>
+    <decision nid="7" answer.list="['DuckDB']" by="owner" kind="question" multi.bool="true" options.list="['Postgres', 'SQLite']" request_id="ask-1" status="answered" title="Database">Which database?</decision>
+    <decision nid="8" answer.list="['{&quot;db&quot;:&quot;Postgres&quot;,&quot;features&quot;:[&quot;Auth&quot;,&quot;Search&quot;],&quot;name&quot;:&quot;loa&quot;}']" by="owner" fields="{&quot;properties&quot;:{&quot;db&quot;:{&quot;default&quot;:&quot;SQLite&quot;,&quot;description&quot;:&quot;Storage&quot;,&quot;enum&quot;:[&quot;Postgres&quot;,&quot;SQLite&quot;],&quot;title&quot;:&quot;Which database?&quot;,&quot;type&quot;:&quot;string&quot;},&quot;features&quot;:{&quot;items&quot;:{&quot;enum&quot;:[&quot;Auth&quot;,&quot;Search&quot;],&quot;type&quot;:&quot;string&quot;},&quot;title&quot;:&quot;Which features?&quot;,&quot;type&quot;:&quot;array&quot;},&quot;name&quot;:{&quot;title&quot;:&quot;Project name?&quot;,&quot;type&quot;:&quot;string&quot;}},&quot;required&quot;:[&quot;db&quot;,&quot;features&quot;,&quot;name&quot;],&quot;type&quot;:&quot;object&quot;}" kind="form" multi.bool="false" options.list="[]" request_id="ask-2" status="answered" title="Questions">Which database?
+Which features?
+Project name?</decision>
+    <decision nid="9" answer.list="['DuckDB']" by="owner" kind="question" multi.bool="false" options.list="['Postgres (Recommended)', 'SQLite', 'Other (type your own)']" request_id="sel-1" status="answered" title="Which database?">Which database?</decision>
+    <decision nid="10" kind="approval" multi.bool="false" options.list="['yes', 'no']" request_id="c1" status="cancelled" title="Run?">write files</decision>
+    <job nid="13" agent="explore" id="s1" kind="subagent" status="done" title="Look around"/>
+    <call nid="14" call_id="b1" status="done" tool="bash">
+      <input nid="16" format="json">{"command":"ls -la"}</input>
+      <result nid="17" is_error.bool="false">a
+b
+</result>
+    </call>
+    <job nid="15" command="ls" id="b1" kind="shell" status="done">a
+</job>
+    <ext nid="18" harness="omp" type="notice">{"level":"warn","message":"slow","source":"omp"}</ext>
+  </turn>
+  <todo nid="11" id="0" state="done">Read</todo>
+  <todo nid="12" id="1" state="cancelled">Write</todo>
+  <compaction nid="19" covers.list="[4]" tokens_before.int="100">Earlier work</compaction>
+  <ext nid="20" harness="omp" type="prompt_error">{"code":null,"message":"boom","model":null,"provider":"acme","retryable":false}</ext>
+</session>
+
+--- replies
+ui Value { id: "g1", value: "Approve File" }
+ui Answers { id: "ask-1", answers: [AskAnswer { id: "db", selected_options: [], custom_input: Some("DuckDB") }] }
+ui Answers { id: "ask-2", answers: [AskAnswer { id: "db", selected_options: ["Postgres"], custom_input: None }, AskAnswer { id: "features", selected_options: ["Auth", "Search"], custom_input: None }, AskAnswer { id: "name", selected_options: [], custom_input: Some("loa") }] }
+ui Value { id: "sel-1", value: "Other (type your own)" }
+ui Value { id: "in-1", value: "DuckDB" }

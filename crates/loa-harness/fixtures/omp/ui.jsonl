@@ -1,0 +1,37 @@
+# Fire-and-forget UI requests outside any turn: title, notice and open_url
+# have an element; status lines and editor text belong to omp's TUI.
+{"type":"extension_ui_request","id":"u1","method":"setTitle","title":"Fix the parser"}
+{"type":"extension_ui_request","id":"u2","method":"notify","message":"Index rebuilt","notifyType":"info"}
+{"type":"extension_ui_request","id":"u3","method":"open_url","url":"https://example.com/login","instructions":"Sign in"}
+{"type":"extension_ui_request","id":"u4","method":"setStatus","statusKey":"tokens","statusText":"12k"}
+{"type":"extension_ui_request","id":"u5","method":"set_editor_text","text":"draft"}
+{"$":"send","id":"p","text":"pick"}
+{"type":"agent_start"}
+# An approval select with grants offers no session answer; a grant passes through by label.
+{"type":"extension_ui_request","id":"g1","method":"select","title":"Allow tool: read","options":["Approve File","Always Approve File","Approve Once","Deny"]}
+{"$":"answer","request":"g1","values":["Approve File"]}
+# A single-question ask is a question card; typed text is custom input.
+{"type":"extension_ui_request","id":"ask-1","method":"ask","questions":[{"id":"db","header":"Database","question":"Which database?","options":[{"label":"Postgres"},{"label":"SQLite"}],"multi":true}]}
+{"$":"answer","request":"ask-1","values":["DuckDB"]}
+# Several questions are a form card with one field per question.
+{"type":"extension_ui_request","id":"ask-2","method":"ask","questions":[{"id":"db","question":"Which database?","header":"Storage","options":[{"label":"Postgres"},{"label":"SQLite"}],"recommended":1},{"id":"features","question":"Which features?","options":[{"label":"Auth"},{"label":"Search"}],"multi":true},{"id":"name","question":"Project name?","options":[]}]}
+{"$":"answer","request":"ask-2","values":["{\"db\":\"Postgres\",\"features\":[\"Auth\",\"Search\"],\"name\":\"loa\"}"]}
+# Text typed on a question select goes through omp's "Other" row, then the input omp opens.
+{"type":"extension_ui_request","id":"sel-1","method":"select","title":"Which database?","options":["Postgres (Recommended)","SQLite","Other (type your own)"]}
+{"$":"answer","request":"sel-1","values":["DuckDB"]}
+{"type":"extension_ui_request","id":"in-1","method":"input","title":"Which database?"}
+# omp withdraws a dialog itself.
+{"type":"extension_ui_request","id":"c1","method":"confirm","title":"Run?","message":"write files"}
+{"type":"extension_ui_request","id":"x1","method":"cancel","targetId":"c1"}
+{"type":"todo_reminder","todos":[{"content":"Read","status":"completed"},{"content":"Write","status":"in_progress"}]}
+{"type":"todo_reminder","todos":[{"content":"Read","status":"completed"}]}
+{"type":"subagent_lifecycle","payload":{"id":"s1","agent":"explore","status":"started","description":"Look around"}}
+{"type":"subagent_lifecycle","payload":{"id":"s1","agent":"explore","status":"completed"}}
+{"type":"tool_execution_start","toolCallId":"b1","toolName":"bash","args":{"command":"ls"}}
+{"type":"tool_execution_update","toolCallId":"b1","toolName":"bash","args":{"command":"ls -la"},"partialResult":{"content":[{"type":"text","text":"a\n"}]}}
+{"type":"tool_execution_end","toolCallId":"b1","toolName":"bash","result":{"content":[{"type":"text","text":"a\nb\n"}]}}
+{"type":"config_update","thinkingLevel":"high"}
+{"type":"session_info_update","title":"Parser fix","sessionId":"native-2"}
+{"type":"notice","level":"warn","message":"slow","source":"omp"}
+{"type":"auto_compaction_end","result":{"summary":"Earlier work","tokensBefore":100}}
+{"type":"prompt_result","id":"p","agentInvoked":true,"status":"error","error":{"message":"boom","provider":"acme"},"sessionSettled":true}

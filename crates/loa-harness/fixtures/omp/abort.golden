@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<session nid="1" created.int="1" harness="omp" id="s" node="owner" schema.int="1">
+  <turn nid="2" status="cancelled">
+    <message nid="3" by="owner" role="user" status="done">prompt p</message>
+    <message nid="4" id="msg-2" kind="thinking" role="assistant" status="done">I'm going to print the numbers.</message>
+    <message nid="5" id="msg-2" kind="text" role="assistant" status="cancelled">1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11</message>
+  </turn>
+</session>
+
+--- replies

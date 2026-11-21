@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<session nid="1" created.int="1" harness="omp" id="s" node="owner" schema.int="1">
+  <ext nid="2" harness="omp" type="available_commands_update">{"commands":[{"description":"List this session's workspace directories","name":"dirs","source":"builtin"},{"description":"Switch model for this session only","input":{"hint":"[model]"},"name":"switch","source":"builtin"},{"description":"Launch interactive code review","input":{"hint":"arguments"},"name":"review","source":"custom"}],"type":"available_commands_update"}</ext>
+  <turn nid="3" status="done">
+    <message nid="4" by="owner" role="user" status="done">prompt p</message>
+    <message nid="5" kind="text" role="assistant" status="done">Workspace directories:
+  /tmp (working directory)</message>
+    <message nid="6" kind="text" role="assistant" status="done">late output</message>
+  </turn>
+</session>
+
+--- replies

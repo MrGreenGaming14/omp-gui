@@ -33,7 +33,7 @@ impl Framing for JsonRpc2 {
         }
     }
 
-    fn response(&self, id: Json, result: Result<Json, RpcError>) -> Json {
+    fn response(&self, id: Json, _method: &str, result: Result<Json, RpcError>) -> Json {
         let error = |code: i64, message: String| self.frame(json!({ "id": id, "error": { "code": code, "message": message } }));
         match result {
             Ok(result) => self.frame(json!({ "id": id, "result": result })),
