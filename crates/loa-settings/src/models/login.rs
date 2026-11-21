@@ -45,46 +45,6 @@ pub struct ProviderEntry {
     pub auth: Auth,
 }
 
-/// What a row shows about its login.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum LoginState {
-    Idle,
-    /// Sign in requested, waiting for the harness to send the URL. Progress
-    /// messages arriving before the URL are kept in `progress` and carried
-    /// into [`LoginState::Browser`]; prompts arriving before the URL are
-    /// ignored, since the user cannot have a code before visiting the URL.
-    Starting { progress: Option<String> },
-    /// Browser step: URL shown and copyable, waiting for the user to finish.
-    Browser {
-        url: String,
-        /// The URL the Copy button writes: the launch URL when the harness
-        /// sent one, the full URL otherwise.
-        copy_url: String,
-        instructions: Option<String>,
-        /// The latest progress message.
-        progress: Option<String>,
-        prompt: Option<LoginPrompt>,
-    },
-    Succeeded { account: Option<String> },
-    Failed { message: String },
-    Cancelled,
-}
-
-impl LoginState {
-    /// Whether a login is running for the row.
-    pub fn is_running(&self) -> bool {
-        matches!(self, Self::Starting { .. } | Self::Browser { .. })
-    }
-}
-
-/// A pending prompt of a running login and what the user typed so far.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct LoginPrompt {
-    pub message: String,
-    pub placeholder: Option<String>,
-    pub input: String,
-}
-
 /// omp's sign-in account: a [`HarnessAccount`] that also logs in to one of
 /// the OAuth providers omp lists.
 pub trait OmpProviderAccount: HarnessAccount {

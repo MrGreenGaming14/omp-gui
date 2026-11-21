@@ -53,17 +53,13 @@ Everything else builds on these three. Their existing public items change only w
 
 | Crate | Holds |
 | --- | --- |
-| `loa-ui-shell` | Sidebar, top bar, right panel frame, themes |
-| `loa-ui-chat` | Transcript: streaming markdown, tool rows, virtual list |
-| `loa-ui-composer` | Editor, pickers, `/` and `@` popups, stop and queue |
-| `loa-ui-decisions` | Approval, question, plan and form cards |
-| `loa-ui-panel` | Diff view, file tree, session tree, agents panel |
+| `loa-ui-kit` | Theme token layer (`ThemeRegistry`, `TokenSet`, roles), style recipes, Lucide line icons as theme-tinted SVG widgets for `loa_view::theme::Icon`, shared widgets and the `Component`/`Screen`/`PanelPane` conventions, text helpers |
+| `loa-ui-shell` | Sidebar, top bar, right panel frame, themes, command palette (`palette`) |
+| `loa-ui-session` | `transcript` (streaming markdown, tool rows, virtual list), `composer` (editor, pickers, `/` and `@` popups, stop and queue), `decisions` (approval, question, plan and form cards) |
+| `loa-ui-panel` | Diff view, file tree, session tree, agents panel, tools pane (`tools`) |
 | `loa-ui-terminal` | Terminal tab, local and SSH |
-| `loa-ui-palette` | Command palette |
-| `loa-ui-tools` | Tools panel |
 | `loa-ui-surface` | Surfaces tab: tab shell over `PixelMode`/`DocumentMode` strategies, a `FrameDecoder` chain and a `DocumentRenderer` it receives through `loa_view::surface::port` (the app supplies the still/H.264 decoders and document rendering from `loa-surfaces`), launcher for browser, documents, VNC and MCP surfaces |
 | `loa-ui-settings` | Settings-style screens on kit `Screen` (`Msg<Local, Intent>` + guard): `models` (sign in reducer over `LoginUpdate`, picker, model settings via kit `form_view`/`list_editor` over `OVERRIDE_FIELDS`), `projects` (project screen), `peers` (peers, grants with a typed folder, shared sessions and folders), `updates` (renders `loa_view::settings::updates` status with a `STATUS_RULES` table, `HoldChoice` choices). Depends only on `loa-view`, `loa-ui-kit` and `loa-util`; the session model chip is derived from the DOM in `loa-app` (`areas/models/session.rs`) |
-| `loa-ui-icons` | Lucide line icons as theme-tinted SVG widgets, shared by every UI crate |
 | `loa-app` | The binary: wires every crate together |
 
 ## Dependency rules
