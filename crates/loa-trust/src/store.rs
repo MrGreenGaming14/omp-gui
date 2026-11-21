@@ -1,46 +1,37 @@
 //! Grant definitions in SQLite: grants issued, grants received, revocations.
-//!
-//! Tokens live minutes. The issuer keeps each grant's definition and mints a
-//! fresh token whenever the holder asks while the grant is active. Revoking
-//! marks the definition, so renewal stops and the last token runs out.
+//! Tokens live minutes; the issuer keeps each definition and mints a fresh
+//! token whenever the holder asks while it is active. Revoking stops renewal.
 
 use crate::key::{NodeIdentity, PublicKey};
 use crate::scope::Scope;
 use crate::token::{Chain, GrantId, Revocations, attenuate, mint};
 use crate::{Result, TrustError};
 use loa_util::LockExt;
+use rusqlite::types::Type;
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::Mutex;
 
 const SCHEMA: &str = "
-CREATE TABLE IF NOT EXISTS grants_issued (
-    id TEXT PRIMARY KEY, holder TEXT NOT NULL, spec TEXT NOT NULL, parent TEXT,
-    created_ms INTEGER NOT NULL, revoked_ms INTEGER
-);
-CREATE TABLE IF NOT EXISTS grants_received (
-    id TEXT PRIMARY KEY, issuer TEXT NOT NULL, root TEXT NOT NULL, token BLOB NOT NULL,
-    expires_ms INTEGER NOT NULL, reshare INTEGER NOT NULL, refused_ms INTEGER
-);
-CREATE TABLE IF NOT EXISTS grants_revocations (
-    id TEXT PRIMARY KEY, issuer TEXT NOT NULL, revoked_ms INTEGER NOT NULL
-);
+CREATE TABLE IF NOT EXISTS grants_issued (id TEXT PRIMARY KEY, holder TEXT NOT NULL, spec TEXT NOT NULL, parent TEXT,
+    created_ms INTEGER NOT NULL, revoked_ms INTEGER);
+CREATE TABLE IF NOT EXISTS grants_received (id TEXT PRIMARY KEY, issuer TEXT NOT NULL, root TEXT NOT NULL, token BLOB NOT NULL,
+    expires_ms INTEGER NOT NULL, reshare INTEGER NOT NULL, refused_ms INTEGER);
+CREATE TABLE IF NOT EXISTS grants_revocations (id TEXT PRIMARY KEY, issuer TEXT NOT NULL, revoked_ms INTEGER NOT NULL);
 ";
-
-const ISSUED_COLUMNS: &str = "SELECT id, holder, spec, parent, created_ms, revoked_ms FROM grants_issued";
-const RECEIVED_COLUMNS: &str = "SELECT id, issuer, root, token, expires_ms, reshare, refused_ms FROM grants_received";
+const ISSUED: &str = "SELECT id, holder, spec, parent, created_ms, revoked_ms FROM grants_issued";
+const RECEIVED: &str = "SELECT id, issuer, root, token, expires_ms, reshare, refused_ms FROM grants_received";
 
 /// What a new grant gives.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GrantSpec {
     pub scopes: Vec<Scope>,
-    /// Lifetime of each token. Renewal hands out a new one.
+    /// Lifetime of each token; renewal hands out a new one.
     pub ttl_ms: i64,
     /// Whether the holder may re-share a narrower grant.
     pub reshare: bool,
-    /// When the grant ends: no token outlives it and renewal stops. `None`
-    /// renews until revoked.
+    /// When the grant ends: no token outlives it. `None` renews until revoked.
     #[serde(default)]
     pub until_ms: Option<i64>,
 }
@@ -50,21 +41,19 @@ impl GrantSpec {
         let expires_ms = now_ms.saturating_add(self.ttl_ms);
         match self.until_ms {
             Some(until) if until <= now_ms => Err(TrustError::Expired(id.clone())),
-            Some(until) => Ok(expires_ms.min(until)),
-            None => Ok(expires_ms),
+            until => Ok(until.map_or(expires_ms, |until| expires_ms.min(until))),
         }
     }
 }
 
-/// How a holder narrows a grant it re-shares. Rights are the intersection of
-/// the parent's and these, so a re-share can never widen.
+/// How a holder narrows a grant it re-shares: rights are the intersection of
+/// the parent's and these, so a re-share never widens.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Narrowing {
     /// Restrict to these scopes; `None` keeps the parent's.
     pub scopes: Option<Vec<Scope>>,
     /// Lifetime of each token, capped by the parent token's expiry.
     pub ttl_ms: i64,
-    /// Whether the new holder may re-share in turn.
     pub reshare: bool,
 }
 
@@ -89,34 +78,23 @@ pub struct IssuedGrant {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReceivedGrant {
     pub id: GrantId,
-    /// Who renews it: the root node, or the peer that re-shared it.
+    /// Who renews it: the root, or the peer that re-shared it.
     pub issuer: PublicKey,
     /// The node whose resources it covers and that verifies it.
     pub root: PublicKey,
     pub token: Vec<u8>,
     pub expires_ms: i64,
-    /// Whether this node may re-share it.
     pub reshare: bool,
-    /// When the issuer refused to renew it (revoked).
+    /// When the issuer refused to renew it.
     pub refused_ms: Option<i64>,
 }
 
 impl ReceivedGrant {
     /// The rights its root signed into it; see [`crate::token_scopes`].
-    pub fn scopes(&self) -> Result<Vec<Scope>> {
-        crate::token::token_scopes(&self.token, &self.root)
-    }
-
+    pub fn scopes(&self) -> Result<Vec<Scope>> { crate::token::token_scopes(&self.token, &self.root) }
     fn from_row(r: &Row<'_>) -> rusqlite::Result<Self> {
-        Ok(Self {
-            id: GrantId(r.get(0)?),
-            issuer: key_column(r, 1)?,
-            root: key_column(r, 2)?,
-            token: r.get(3)?,
-            expires_ms: r.get(4)?,
-            reshare: r.get(5)?,
-            refused_ms: r.get(6)?,
-        })
+        let (id, issuer, root, token, expires_ms, reshare, refused_ms) = (r.get(0)?, key(r, 1)?, key(r, 2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?);
+        Ok(Self { id: GrantId(id), issuer, root, token, expires_ms, reshare, refused_ms })
     }
 }
 
@@ -129,8 +107,7 @@ pub struct IssuedRecord {
     pub scopes: Option<Vec<Scope>>,
     pub ttl_ms: i64,
     pub reshare: bool,
-    /// When a root grant ends; `None` renews until revoked (and for re-shares,
-    /// which end with their parent).
+    /// When a root grant ends; `None` until revoked (and for re-shares).
     pub until_ms: Option<i64>,
     /// The received grant a re-share was cut from.
     pub parent: Option<GrantId>,
@@ -138,26 +115,16 @@ pub struct IssuedRecord {
     pub revoked_ms: Option<i64>,
 }
 
-/// One issued row with its definition still typed.
-struct IssuedRow {
-    holder: PublicKey,
-    definition: Definition,
-    parent: Option<GrantId>,
-    created_ms: i64,
-    revoked_ms: Option<i64>,
+/// One `grants_issued` row: (id, holder, definition, parent, created, revoked).
+type IssuedRow = (GrantId, PublicKey, Definition, Option<GrantId>, i64, Option<i64>);
+
+fn issued_row(r: &Row<'_>) -> rusqlite::Result<IssuedRow> {
+    let definition = serde_json::from_str(&r.get::<_, String>(2)?).map_err(|e| rusqlite::Error::FromSqlConversionFailure(2, Type::Text, e.into()))?;
+    Ok((GrantId(r.get(0)?), key(r, 1)?, definition, r.get::<_, Option<String>>(3)?.map(GrantId), r.get(4)?, r.get(5)?))
 }
 
-impl IssuedRow {
-    fn from_row(r: &Row<'_>) -> rusqlite::Result<(GrantId, Self)> {
-        let spec: String = r.get(2)?;
-        let definition = serde_json::from_str(&spec).map_err(|e| rusqlite::Error::FromSqlConversionFailure(2, rusqlite::types::Type::Text, e.into()))?;
-        let row = Self { holder: key_column(r, 1)?, definition, parent: r.get::<_, Option<String>>(3)?.map(GrantId), created_ms: r.get(4)?, revoked_ms: r.get(5)? };
-        Ok((GrantId(r.get(0)?), row))
-    }
-}
-
-fn key_column(r: &Row<'_>, i: usize) -> rusqlite::Result<PublicKey> {
-    PublicKey::from_hex(&r.get::<_, String>(i)?).map_err(|e| rusqlite::Error::FromSqlConversionFailure(i, rusqlite::types::Type::Text, e.into()))
+fn key(r: &Row<'_>, i: usize) -> rusqlite::Result<PublicKey> {
+    PublicKey::from_hex(&r.get::<_, String>(i)?).map_err(|e| rusqlite::Error::FromSqlConversionFailure(i, Type::Text, e.into()))
 }
 
 /// One node's grant tables.
@@ -166,44 +133,36 @@ pub struct GrantStore {
 }
 
 impl std::fmt::Debug for GrantStore {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("GrantStore").finish_non_exhaustive()
-    }
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.debug_struct("GrantStore").finish_non_exhaustive() }
 }
 
 impl GrantStore {
-    pub fn open(path: &Path) -> Result<Self> {
-        Self::with_connection(Connection::open(path)?)
-    }
-
+    pub fn open(path: &Path) -> Result<Self> { Self::with_connection(Connection::open(path)?) }
     /// Uses an open connection, creating the tables if needed.
     pub fn with_connection(db: Connection) -> Result<Self> {
         db.execute_batch(SCHEMA)?;
         Ok(Self { db: Mutex::new(db) })
     }
 
-    fn insert_issued(&self, id: &GrantId, holder: &PublicKey, definition: &Definition, parent: Option<&GrantId>, now_ms: i64) -> Result<()> {
+    fn insert_issued(&self, issued: &IssuedGrant, definition: &Definition, parent: Option<&GrantId>, now_ms: i64) -> Result<IssuedGrant> {
         self.db.locked().execute(
             "INSERT INTO grants_issued (id, holder, spec, parent, created_ms) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![id.0, holder.to_string(), serde_json::to_string(definition)?, parent.map(|p| &p.0), now_ms],
+            params![issued.id.0, issued.holder.to_string(), serde_json::to_string(definition)?, parent.map(|p| &p.0), now_ms],
         )?;
-        Ok(())
+        Ok(issued.clone())
     }
 
-    /// The active (not revoked) definition of a grant this node issued.
-    fn active(&self, id: &GrantId) -> Result<IssuedRow> {
-        let row = self.db.locked().query_row(&format!("{ISSUED_COLUMNS} WHERE id = ?1"), params![id.0], IssuedRow::from_row).optional()?;
-        let (_, row) = row.ok_or_else(|| TrustError::UnknownGrant(id.clone()))?;
-        if row.revoked_ms.is_some() {
-            return Err(TrustError::Revoked(id.clone()));
+    /// The holder, definition and parent of an active grant this node issued.
+    fn active(&self, id: &GrantId) -> Result<(PublicKey, Definition, Option<GrantId>)> {
+        let row = self.db.locked().query_row(&format!("{ISSUED} WHERE id = ?1"), params![id.0], issued_row).optional()?;
+        match row.ok_or_else(|| TrustError::UnknownGrant(id.clone()))? {
+            (.., Some(_)) => Err(TrustError::Revoked(id.clone())),
+            (_, holder, definition, parent, ..) => Ok((holder, definition, parent)),
         }
-        Ok(row)
     }
 
     fn mint_root(issuer: &NodeIdentity, id: &GrantId, holder: PublicKey, spec: &GrantSpec, now_ms: i64) -> Result<IssuedGrant> {
-        for scope in &spec.scopes {
-            scope.validate()?;
-        }
+        spec.scopes.iter().try_for_each(Scope::validate)?;
         let expires_ms = spec.token_expiry(id, now_ms)?;
         let token = mint(issuer, id, &holder, &spec.scopes, expires_ms, spec.reshare)?;
         Ok(IssuedGrant { id: id.clone(), holder, token, expires_ms })
@@ -216,52 +175,43 @@ impl GrantStore {
         }
         check_ttl(spec.ttl_ms)?;
         let issued = Self::mint_root(issuer, &GrantId::random(), holder, &spec, now_ms)?;
-        self.insert_issued(&issued.id, &holder, &Definition::Root(spec), None, now_ms)?;
-        Ok(issued)
+        self.insert_issued(&issued, &Definition::Root(spec), None, now_ms)
     }
 
-    /// Mints a fresh token for an active grant this node issued. Only its
-    /// holder may ask; a revoked grant is refused.
+    /// Mints a fresh token for an active grant this node issued, for its holder only.
     pub fn renew(&self, issuer: &NodeIdentity, id: &GrantId, requester: &PublicKey, now_ms: i64) -> Result<IssuedGrant> {
-        let row = self.active(id)?;
-        if row.holder != *requester {
-            return Err(TrustError::NotHolder(id.clone()));
-        }
-        match (row.definition, row.parent) {
-            (Definition::Root(spec), None) => Self::mint_root(issuer, id, row.holder, &spec, now_ms),
-            (Definition::Reshare(narrowing), Some(parent)) => self.attenuate_from(issuer, &parent, id.clone(), row.holder, &narrowing, now_ms),
+        match self.active(id)? {
+            (holder, ..) if holder != *requester => Err(TrustError::NotHolder(id.clone())),
+            (holder, Definition::Root(spec), None) => Self::mint_root(issuer, id, holder, &spec, now_ms),
+            (holder, Definition::Reshare(narrowing), Some(parent)) => self.attenuate_from(issuer, &parent, id.clone(), holder, &narrowing, now_ms),
             _ => Err(TrustError::Malformed(format!("grant {id} has a parent only when it is a re-share"))),
         }
     }
 
-    /// Moves the end of a root grant this node issued to `until_ms` (`None`:
-    /// until revoked) and mints a token right away, so the holder sees the
-    /// change without waiting for its next renewal.
+    /// Moves the end of a root grant to `until_ms` (`None`: until revoked) and
+    /// mints a token at once, so the holder sees the change before its next renewal.
     pub fn extend(&self, issuer: &NodeIdentity, id: &GrantId, until_ms: Option<i64>, now_ms: i64) -> Result<IssuedGrant> {
-        let row = self.active(id)?;
-        let (Definition::Root(mut spec), None) = (row.definition, row.parent) else {
+        let (holder, Definition::Root(mut spec), None) = self.active(id)? else {
             return Err(TrustError::Malformed(format!("only root grants can be extended, {id} is a re-share")));
         };
         spec.until_ms = until_ms;
-        let issued = Self::mint_root(issuer, id, row.holder, &spec, now_ms)?;
+        let issued = Self::mint_root(issuer, id, holder, &spec, now_ms)?;
         self.db.locked().execute("UPDATE grants_issued SET spec = ?2 WHERE id = ?1", params![id.0, serde_json::to_string(&Definition::Root(spec))?])?;
         Ok(issued)
     }
 
-    /// Re-shares a grant this node holds to `new_holder`, narrowed. Works
-    /// offline: the new token carries a block signed by this node's key. The
-    /// definition is stored so the new holder can renew through us.
+    /// Re-shares a held grant to `new_holder`, narrowed. Works offline: the new
+    /// token carries a block signed by this node. The definition is stored so
+    /// the new holder can renew through us.
     pub fn reshare(&self, holder: &NodeIdentity, parent: &GrantId, new_holder: PublicKey, narrowing: Narrowing, now_ms: i64) -> Result<IssuedGrant> {
         check_ttl(narrowing.ttl_ms)?;
-        if let Some(scopes) = &narrowing.scopes {
-            if scopes.is_empty() {
-                return Err(TrustError::NoScopes);
-            }
-            scopes.iter().try_for_each(Scope::validate)?;
+        match &narrowing.scopes {
+            Some(scopes) if scopes.is_empty() => return Err(TrustError::NoScopes),
+            Some(scopes) => scopes.iter().try_for_each(Scope::validate)?,
+            None => {}
         }
         let issued = self.attenuate_from(holder, parent, GrantId::random(), new_holder, &narrowing, now_ms)?;
-        self.insert_issued(&issued.id, &new_holder, &Definition::Reshare(narrowing), Some(parent), now_ms)?;
-        Ok(issued)
+        self.insert_issued(&issued, &Definition::Reshare(narrowing), Some(parent), now_ms)
     }
 
     fn attenuate_from(&self, holder: &NodeIdentity, parent: &GrantId, id: GrantId, new_holder: PublicKey, narrowing: &Narrowing, now_ms: i64) -> Result<IssuedGrant> {
@@ -281,57 +231,44 @@ impl GrantStore {
         Ok(IssuedGrant { id, holder: new_holder, token, expires_ms })
     }
 
-    /// Revokes a grant this node issued: renewal is refused from now on and
-    /// this node's verifier denies its tokens at once.
+    /// Revokes a grant this node issued: renewal is refused and this node's
+    /// verifier denies its tokens at once.
     pub fn revoke(&self, issuer: &PublicKey, id: &GrantId, now_ms: i64) -> Result<()> {
-        let changed = {
-            let db = self.db.locked();
-            let changed = db.execute("UPDATE grants_issued SET revoked_ms = ?2 WHERE id = ?1 AND revoked_ms IS NULL", params![id.0, now_ms])?;
-            let known: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM grants_issued WHERE id = ?1)", params![id.0], |r| r.get(0))?;
-            if !known {
-                return Err(TrustError::UnknownGrant(id.clone()));
-            }
-            changed
-        };
+        let changed = self.db.locked().execute("UPDATE grants_issued SET revoked_ms = ?2 WHERE id = ?1 AND revoked_ms IS NULL", params![id.0, now_ms])?;
         if changed > 0 {
-            self.record_revocation(id, issuer, now_ms)?;
+            return self.record_revocation(id, issuer, now_ms);
         }
-        Ok(())
+        let known: bool = self.db.locked().query_row("SELECT EXISTS(SELECT 1 FROM grants_issued WHERE id = ?1)", params![id.0], |r| r.get(0))?;
+        if known { Ok(()) } else { Err(TrustError::UnknownGrant(id.clone())) }
     }
 
-    /// Records a revocation notice from a peer, so this node's verifier denies
-    /// re-shares of that grant at once.
+    /// Records a revocation notice from a peer, so this node denies re-shares of it at once.
     pub fn record_revocation(&self, id: &GrantId, issuer: &PublicKey, revoked_ms: i64) -> Result<()> {
-        self.db.locked().execute(
-            "INSERT OR IGNORE INTO grants_revocations (id, issuer, revoked_ms) VALUES (?1, ?2, ?3)",
-            params![id.0, issuer.to_string(), revoked_ms],
-        )?;
+        let sql = "INSERT OR IGNORE INTO grants_revocations (id, issuer, revoked_ms) VALUES (?1, ?2, ?3)";
+        self.db.locked().execute(sql, params![id.0, issuer.to_string(), revoked_ms])?;
         Ok(())
     }
 
     /// Every grant this node issued, oldest first.
     pub fn issued(&self) -> Result<Vec<IssuedRecord>> {
         let db = self.db.locked();
-        let mut statement = db.prepare(&format!("{ISSUED_COLUMNS} ORDER BY created_ms, id"))?;
-        let rows = statement.query_map([], IssuedRow::from_row)?;
+        let mut statement = db.prepare(&format!("{ISSUED} ORDER BY created_ms, id"))?;
+        let rows = statement.query_map([], issued_row)?;
         rows.map(|row| {
-            let (id, row) = row?;
-            let (scopes, ttl_ms, reshare, until_ms) = match row.definition {
+            let (id, holder, definition, parent, created_ms, revoked_ms) = row?;
+            let (scopes, ttl_ms, reshare, until_ms) = match definition {
                 Definition::Root(spec) => (Some(spec.scopes), spec.ttl_ms, spec.reshare, spec.until_ms),
                 Definition::Reshare(n) => (n.scopes, n.ttl_ms, n.reshare, None),
             };
-            Ok(IssuedRecord { id, holder: row.holder, scopes, ttl_ms, reshare, until_ms, parent: row.parent, created_ms: row.created_ms, revoked_ms: row.revoked_ms })
+            Ok(IssuedRecord { id, holder, scopes, ttl_ms, reshare, until_ms, parent, created_ms, revoked_ms })
         })
         .collect()
     }
 
-    /// Stores a token issued (or renewed) to `own`. Checks it is signed by
-    /// `root`, its chain is sound and its last holder is `own`.
-    pub fn receive(&self, own: &PublicKey, root: &PublicKey, token: &[u8]) -> Result<ReceivedGrant> {
-        self.receive_checked(own, root, token, None)
-    }
-
-    /// Accepts only a fresher token for the grant being renewed.
+    /// Stores a token issued (or renewed) to `own` once its chain from `root`
+    /// checks out and ends at `own`.
+    pub fn receive(&self, own: &PublicKey, root: &PublicKey, token: &[u8]) -> Result<ReceivedGrant> { self.receive_checked(own, root, token, None) }
+    /// [`GrantStore::receive`], accepting only a fresher token for `expected`.
     pub fn receive_renewal(&self, own: &PublicKey, root: &PublicKey, expected: &GrantId, token: &[u8]) -> Result<ReceivedGrant> {
         self.receive_checked(own, root, token, Some(expected))
     }
@@ -351,22 +288,13 @@ impl GrantStore {
                 return Err(TrustError::Malformed("renewal did not extend the original grant".into()));
             }
         }
-        let received = ReceivedGrant {
-            id: last.grant.clone(),
-            issuer: last.issuer,
-            root: *root,
-            token: token.to_vec(),
-            expires_ms: chain.expires_ms(),
-            reshare: last.reshare,
-            refused_ms: None,
-        };
+        let (expires_ms, reshare) = (chain.expires_ms(), last.reshare);
+        let received = ReceivedGrant { id: last.grant.clone(), issuer: last.issuer, root: *root, token: token.to_vec(), expires_ms, reshare, refused_ms: None };
         self.db.locked().execute(
-            "INSERT INTO grants_received (id, issuer, root, token, expires_ms, reshare, refused_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL)
-             ON CONFLICT(id) DO UPDATE SET token = excluded.token, expires_ms = excluded.expires_ms,
-               reshare = excluded.reshare, refused_ms = NULL
+            "INSERT INTO grants_received (id, issuer, root, token, expires_ms, reshare, refused_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL)
+             ON CONFLICT(id) DO UPDATE SET token = excluded.token, expires_ms = excluded.expires_ms, reshare = excluded.reshare, refused_ms = NULL
              WHERE excluded.issuer = grants_received.issuer AND excluded.root = grants_received.root",
-            params![received.id.0, received.issuer.to_string(), root.to_string(), received.token, received.expires_ms, received.reshare],
+            params![received.id.0, received.issuer.to_string(), root.to_string(), received.token, expires_ms, reshare],
         )?;
         Ok(received)
     }
@@ -378,29 +306,23 @@ impl GrantStore {
     }
 
     pub fn received(&self, id: &GrantId) -> Result<Option<ReceivedGrant>> {
-        let db = self.db.locked();
-        Ok(db.query_row(&format!("{RECEIVED_COLUMNS} WHERE id = ?1"), params![id.0], ReceivedGrant::from_row).optional()?)
+        Ok(self.db.locked().query_row(&format!("{RECEIVED} WHERE id = ?1"), params![id.0], ReceivedGrant::from_row).optional()?)
     }
 
     /// Every grant this node holds, soonest expiry first.
     pub fn received_all(&self) -> Result<Vec<ReceivedGrant>> {
         let db = self.db.locked();
-        let mut statement = db.prepare(&format!("{RECEIVED_COLUMNS} ORDER BY expires_ms, id"))?;
+        let mut statement = db.prepare(&format!("{RECEIVED} ORDER BY expires_ms, id"))?;
         Ok(statement.query_map([], ReceivedGrant::from_row)?.collect::<rusqlite::Result<_>>()?)
     }
 }
 
-fn check_ttl(ttl_ms: i64) -> Result<()> {
-    if ttl_ms <= 0 { Err(TrustError::Ttl(ttl_ms)) } else { Ok(()) }
-}
+fn check_ttl(ttl_ms: i64) -> Result<()> { if ttl_ms <= 0 { Err(TrustError::Ttl(ttl_ms)) } else { Ok(()) } }
 
 impl Revocations for GrantStore {
+    /// A read failure counts as revoked: an unchecked token must not pass.
     fn is_revoked(&self, grant: &GrantId) -> bool {
-        // A read failure denies: a verifier that can't check revocations must
-        // not let a possibly revoked token through.
-        self.db
-            .locked()
-            .query_row("SELECT EXISTS(SELECT 1 FROM grants_revocations WHERE id = ?1)", params![grant.0], |r| r.get(0))
-            .unwrap_or(true)
+        let sql = "SELECT EXISTS(SELECT 1 FROM grants_revocations WHERE id = ?1)";
+        self.db.locked().query_row(sql, params![grant.0], |r| r.get(0)).unwrap_or(true)
     }
 }

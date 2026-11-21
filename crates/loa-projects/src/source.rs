@@ -94,7 +94,7 @@ pub trait SessionSource: Send + Sync {
     async fn load(&self, session: &str) -> Result<Option<Arc<Dom>>>;
 }
 
-/// The access check. `loa-app` backs it with `loa-grants`, using the same
+/// The access check. `loa-app` backs it with `loa-trust`, using the same
 /// check as opening the session directly. A "future sessions only" grant
 /// answers `false` for sessions created before the grant.
 pub trait Access: Send + Sync {

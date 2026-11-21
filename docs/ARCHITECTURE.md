@@ -37,8 +37,7 @@ Everything else builds on these three. Their existing public items change only w
 | `loa-surface-hub` | surfaces | The app's surface service: built-in servers, MCP declared surfaces, `surface_*` agent tools as host tools and a loopback MCP endpoint, `<surface>` drafts |
 | `loa-models` | models | Sign in, model listing and settings through omp and other harnesses |
 | `loa-projects` | projects | Digests, context ranking, `project_search`, `project_read`, project settings, `ProjectService` over the bus and journal |
-| `loa-identity` | p2p | Node ed25519 key in the OS keychain, a `0600` key file in the data directory when no keychain is usable |
-| `loa-grants` | p2p | Biscuit grants, scopes (sessions, prompts, projects, future sessions, SSH hosts, surfaces, sandbox, folders), renewal, narrowing |
+| `loa-trust` | p2p | One ed25519 node key (`PublicKey` converts to iroh, Biscuit and bus keys) behind the `KeyStore` port (OS keychain, falling back to a `0600` key file); Biscuit grants whose scope kinds (sessions, prompts, projects, future sessions, SSH hosts, surfaces, sandbox, folders) come from one `KINDS` table; renewal, narrowing |
 | `loa-net` | p2p | iroh endpoint on 31415, ALPNs, TCP fallback, relay, discovery |
 | `loa-share` | p2p | Session replication, view and drive, fork to own node |
 | `loa-node` | p2p | The app's peer service: identity, endpoint, mDNS and tailnet discovery, presence, grant issue/renew/revoke over `omp/control/1`, session sharing over `omp/session/1`, shared folders over `omp/folder/1` (list, read, and with a write grant write, confined to the granted folder), protocols other areas add (e.g. `loa-sandbox/1`, served only to peers proving a covering grant, registered through the app's `NodeSlot`), the Peers panel snapshot and its events |
@@ -68,7 +67,7 @@ Everything else builds on these three. Their existing public items change only w
 ## Dependency rules
 
 - Contracts depend on nothing in the workspace except `loa-core`
-- A library depends on contracts. When it needs something another library owns, it declares a trait for it (a port) and `loa-app` passes the implementation in. Example: `loa-projects` declares the access check it needs and `loa-app` backs it with `loa-grants`
+- A library depends on contracts. When it needs something another library owns, it declares a trait for it (a port) and `loa-app` passes the implementation in. Example: `loa-projects` declares the access check it needs and `loa-app` backs it with `loa-trust`
 - A UI crate depends on contracts, `iced` and `loa-ui-icons`. It takes plain data in and gives events out. It never spawns a harness, opens a socket or reads the journal
 - Only `loa-app`, `loa-features`, `loa-share` and `loa-node` depend on several libraries
 

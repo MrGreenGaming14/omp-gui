@@ -1,17 +1,17 @@
 //! Holder side renewal: refresh short lived tokens before they run out.
 
 use crate::key::PublicKey;
-use crate::store::GrantStore;
+use crate::store::{GrantStore, ReceivedGrant};
 use crate::token::GrantId;
-use crate::{TrustError, Result};
+use crate::{Result, TrustError};
 
 /// Why an issuer didn't hand out a fresh token.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum RenewFailure {
-    /// The issuer refuses: the grant is revoked, unknown, or not ours. Final.
+    /// Revoked, unknown, ended or not ours. Final.
     #[error("the issuer refused to renew: {0}")]
     Refused(String),
-    /// The issuer couldn't be reached or failed. Retried next round.
+    /// Unreachable or failed. Retried next round.
     #[error("renewal failed: {0}")]
     Unreachable(String),
 }
@@ -19,25 +19,17 @@ pub enum RenewFailure {
 impl RenewFailure {
     /// How the issuer side reports a failed [`GrantStore::renew`].
     pub fn from_issuer(error: &TrustError) -> Self {
+        use TrustError::*;
         match error {
-            TrustError::Revoked(_)
-            | TrustError::Expired(_)
-            | TrustError::UnknownGrant(_)
-            | TrustError::NotHolder(_)
-            | TrustError::ReshareForbidden(_) => RenewFailure::Refused(error.to_string()),
+            Revoked(_) | Expired(_) | UnknownGrant(_) | NotHolder(_) | ReshareForbidden(_) => RenewFailure::Refused(error.to_string()),
             other => RenewFailure::Unreachable(other.to_string()),
         }
     }
 }
 
-/// Asks a grant's issuer for a fresh token (over `omp/control/1`). Port:
-/// `loa-net` implements it in the app.
+/// Asks a grant's issuer for a fresh token (over `omp/control/1`).
 pub trait RenewTransport {
-    fn renew(
-        &self,
-        issuer: PublicKey,
-        grant: GrantId,
-    ) -> impl Future<Output = Result<Vec<u8>, RenewFailure>> + Send;
+    fn renew(&self, issuer: PublicKey, grant: GrantId) -> impl Future<Output = Result<Vec<u8>, RenewFailure>> + Send;
 }
 
 /// What happened to one grant in a renewal round.
@@ -50,8 +42,7 @@ pub enum RenewOutcome {
     Failed { grant: GrantId, reason: String },
 }
 
-/// Keeps the grants a node holds fresh. The app calls
-/// [`Renewer::renew_due`] when [`Renewer::next_due`] comes around.
+/// Keeps held grants fresh: call [`Renewer::renew_due`] at [`Renewer::next_due`].
 #[derive(Clone, Debug)]
 pub struct Renewer {
     own: PublicKey,
@@ -60,46 +51,27 @@ pub struct Renewer {
 }
 
 impl Renewer {
-    pub fn new(own: PublicKey, margin_ms: i64) -> Self {
-        Self { own, margin_ms }
-    }
+    pub fn new(own: PublicKey, margin_ms: i64) -> Self { Self { own, margin_ms } }
+    fn due_at(&self, grant: &ReceivedGrant) -> Option<i64> { grant.refused_ms.is_none().then(|| grant.expires_ms.saturating_sub(self.margin_ms)) }
 
-    /// When the next renewal is due, or `None` when nothing needs renewing.
-    pub fn next_due(&self, store: &GrantStore) -> Result<Option<i64>> {
-        Ok(store
-            .received_all()?
-            .iter()
-            .filter(|g| g.refused_ms.is_none())
-            .map(|g| g.expires_ms.saturating_sub(self.margin_ms))
-            .min())
-    }
-
+    /// When the next renewal is due; `None` when nothing needs renewing.
+    pub fn next_due(&self, store: &GrantStore) -> Result<Option<i64>> { Ok(store.received_all()?.iter().filter_map(|g| self.due_at(g)).min()) }
     /// Renews every held grant due at `now_ms` through `transport`.
-    pub async fn renew_due<T: RenewTransport>(
-        &self,
-        store: &GrantStore,
-        transport: &T,
-        now_ms: i64,
-    ) -> Result<Vec<RenewOutcome>> {
-        let due: Vec<_> = store
-            .received_all()?
-            .into_iter()
-            .filter(|g| g.refused_ms.is_none() && g.expires_ms.saturating_sub(self.margin_ms) <= now_ms)
-            .collect();
-        let mut outcomes = Vec::with_capacity(due.len());
-        for grant in due {
-            let outcome = match transport.renew(grant.issuer, grant.id.clone()).await {
-                Ok(token) => match store.receive_renewal(&self.own, &grant.root, &grant.id, &token) {
-                    Ok(fresh) => RenewOutcome::Renewed { grant: grant.id, expires_ms: fresh.expires_ms },
-                    Err(e) => RenewOutcome::Failed { grant: grant.id, reason: e.to_string() },
+    pub async fn renew_due<T: RenewTransport>(&self, store: &GrantStore, transport: &T, now_ms: i64) -> Result<Vec<RenewOutcome>> {
+        let mut outcomes = Vec::new();
+        for grant in store.received_all()?.into_iter().filter(|g| self.due_at(g).is_some_and(|due| due <= now_ms)) {
+            let id = grant.id.clone();
+            outcomes.push(match transport.renew(grant.issuer, grant.id).await {
+                Ok(token) => match store.receive_renewal(&self.own, &grant.root, &id, &token) {
+                    Ok(fresh) => RenewOutcome::Renewed { grant: id, expires_ms: fresh.expires_ms },
+                    Err(e) => RenewOutcome::Failed { grant: id, reason: e.to_string() },
                 },
                 Err(RenewFailure::Refused(reason)) => {
-                    store.mark_refused(&grant.id, now_ms)?;
-                    RenewOutcome::Refused { grant: grant.id, reason }
+                    store.mark_refused(&id, now_ms)?;
+                    RenewOutcome::Refused { grant: id, reason }
                 }
-                Err(RenewFailure::Unreachable(reason)) => RenewOutcome::Failed { grant: grant.id, reason },
-            };
-            outcomes.push(outcome);
+                Err(RenewFailure::Unreachable(reason)) => RenewOutcome::Failed { grant: id, reason },
+            });
         }
         Ok(outcomes)
     }

@@ -46,51 +46,30 @@ pub const DEFAULT_TTL_MS: i64 = 10 * 60_000;
 /// secret bytes, so errors are safe to log.
 #[derive(Debug, thiserror::Error)]
 pub enum TrustError {
-    #[error("key store: {0}")]
-    Store(String),
+    #[error("key store: {0}")] Store(String),
     /// The OS credential store can't be used at all; a [`FallbackStore`] moves on.
-    #[error("os keychain unavailable: {0}")]
-    Unavailable(String),
+    #[error("os keychain unavailable: {0}")] Unavailable(String),
     /// The store holds a value that is not a 32 byte seed. It is left in place:
     /// a new key would change the node's address.
-    #[error("stored node key has {found} bytes, expected {SECRET_KEY_LENGTH}")]
-    WrongLength { found: usize },
-    #[error("os random source: {0}")]
-    Random(String),
-    #[error("invalid key: {0}")]
-    Key(String),
-    #[error("grant database: {0}")]
-    Sql(#[from] rusqlite::Error),
-    #[error("grant encoding: {0}")]
-    Json(#[from] serde_json::Error),
-    #[error("biscuit: {0}")]
-    Biscuit(#[from] biscuit_auth::error::Token),
-    #[error("{resource} grants don't support `{action}`")]
-    Action { resource: &'static str, action: Action },
-    #[error("a grant needs at least one scope")]
-    NoScopes,
-    #[error("a scope needs at least one action")]
-    NoActions,
-    #[error("token lifetime must be positive, got {0} ms")]
-    Ttl(i64),
-    #[error("node id {0} doesn't fit a grant")]
-    NodeId(loa_core::NodeId),
-    #[error("a folder grant needs a normalized absolute path, got {0:?}")]
-    FolderPath(String),
-    #[error("unknown grant {0}")]
-    UnknownGrant(GrantId),
-    #[error("grant {0} is revoked")]
-    Revoked(GrantId),
-    #[error("grant {0} has ended")]
-    Expired(GrantId),
-    #[error("the requester doesn't hold grant {0}")]
-    NotHolder(GrantId),
-    #[error("grant {0} may not be re-shared")]
-    ReshareForbidden(GrantId),
-    #[error("the grant {0} this one was re-shared from has no current token")]
-    ParentExpired(GrantId),
-    #[error("malformed grant token: {0}")]
-    Malformed(String),
+    #[error("stored node key has {found} bytes, expected {SECRET_KEY_LENGTH}")] WrongLength { found: usize },
+    #[error("os random source: {0}")] Random(String),
+    #[error("invalid key: {0}")] Key(String),
+    #[error("grant database: {0}")] Sql(#[from] rusqlite::Error),
+    #[error("grant encoding: {0}")] Json(#[from] serde_json::Error),
+    #[error("biscuit: {0}")] Biscuit(#[from] biscuit_auth::error::Token),
+    #[error("{resource} grants don't support `{action}`")] Action { resource: &'static str, action: Action },
+    #[error("a grant needs at least one scope")] NoScopes,
+    #[error("a scope needs at least one action")] NoActions,
+    #[error("token lifetime must be positive, got {0} ms")] Ttl(i64),
+    #[error("node id {0} doesn't fit a grant")] NodeId(loa_core::NodeId),
+    #[error("a folder grant needs a normalized absolute path, got {0:?}")] FolderPath(String),
+    #[error("unknown grant {0}")] UnknownGrant(GrantId),
+    #[error("grant {0} is revoked")] Revoked(GrantId),
+    #[error("grant {0} has ended")] Expired(GrantId),
+    #[error("the requester doesn't hold grant {0}")] NotHolder(GrantId),
+    #[error("grant {0} may not be re-shared")] ReshareForbidden(GrantId),
+    #[error("the grant {0} this one was re-shared from has no current token")] ParentExpired(GrantId),
+    #[error("malformed grant token: {0}")] Malformed(String),
 }
 
 pub type Result<T, E = TrustError> = std::result::Result<T, E>;
