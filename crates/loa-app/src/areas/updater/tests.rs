@@ -104,6 +104,7 @@ impl Fixture {
             vec![spec("fake", system, Some("fake-{version}".into())), spec("omp", reviewer, None)],
         );
         config.github_api = base.clone();
+        config.ports = Some(Arc::new(OmpPorts));
         Self { served, base, review, config }
     }
 

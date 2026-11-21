@@ -73,7 +73,9 @@ pub fn platform() -> String {
 
 /// `(id, label, feed, asset, executable)`; `gh:` feeds are `owner/repo`, `npm:` a package.
 /// `app` is the running app, `omp` gets every gate, the rest are harnesses with a changelog gate.
-const CATALOG: &[(&str, &str, &str, Option<&str>, Option<&str>)] = &[
+type CatalogRow = (&'static str, &'static str, &'static str, Option<&'static str>, Option<&'static str>);
+
+const CATALOG: &[CatalogRow] = &[
     ("app", "loa", "gh:MrGreenGaming14/omp-gui", Some("loa-app-{platform}.tar.gz"), Some("loa-app")),
     ("omp", "omp", "gh:can1357/oh-my-pi", Some("omp-{platform}"), None),
     ("claude", "Claude Code", "npm:@anthropic-ai/claude-code", None, None),
@@ -84,7 +86,7 @@ const CATALOG: &[(&str, &str, &str, Option<&str>, Option<&str>)] = &[
 /// The products the app watches: itself, omp and the harnesses its adapters drive.
 pub fn default_products(app_version: Version) -> Vec<ProductSpec> {
     let platform = platform();
-    let spec = |&(id, label, feed, asset, executable): &(&str, &str, &str, Option<&str>, Option<&str>)| {
+    let spec = |&(id, label, feed, asset, executable): &CatalogRow| {
         let feed = match feed.split_once(':') {
             Some(("gh", repo)) => {
                 let (owner, repo) = repo.split_once('/').unwrap_or_default();
@@ -309,10 +311,11 @@ impl Updater {
                     crate::write_json(&self.inner.config.root.join("feeds.json"), &*cache)?;
                 }
             }
-            let mut state = self.inner.state.locked();
-            state.last_check_unix.insert(id.to_owned(), now_secs());
-            self.save_state(&state)?;
-            drop(state);
+            {
+                let mut state = self.inner.state.locked();
+                state.last_check_unix.insert(id.to_owned(), now_secs());
+                self.save_state(&state)?;
+            }
             match self.offered(spec).await {
                 Err(Error::NothingOffered(_)) => Ok(None),
                 other => other.map(Some),

@@ -9,7 +9,7 @@ publish.workspace = true
 loa-util.workspace = true
 iced.workspace = true
 loa-ui-kit.workspace = true
-loa-updater = { path = "../loa-updater" }
+loa-updater = { path = "../loa-updater", default-features = false }
 semver = "1"
 
 [dev-dependencies]
