@@ -12,7 +12,7 @@ use loa_ui_shell::theme::style as shell;
 /// [`VideoDecoder`] for H.264 streams (Constrained Baseline, what the live
 /// video encoders send).
 #[derive(Default)]
-pub struct H264Decoder(loa_surface_proto::video::decode::VideoDecoder);
+pub struct H264Decoder(loa_surfaces::proto::video::decode::VideoDecoder);
 
 impl H264Decoder {
     pub fn new() -> Self {

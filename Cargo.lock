@@ -4597,7 +4597,6 @@ dependencies = [
  "iced_futures",
  "iced_runtime",
  "iced_test",
- "image",
  "loa-bus",
  "loa-config",
  "loa-contracts",
@@ -4609,17 +4608,15 @@ dependencies = [
  "loa-projects",
  "loa-remote",
  "loa-sandbox",
- "loa-surface-hub",
+ "loa-surfaces",
  "loa-trust",
- "loa-ui-chat",
- "loa-ui-composer",
- "loa-ui-decisions",
  "loa-ui-kit",
  "loa-ui-models",
  "loa-ui-palette",
  "loa-ui-panel",
  "loa-ui-peers",
  "loa-ui-projects",
+ "loa-ui-session",
  "loa-ui-shell",
  "loa-ui-surface",
  "loa-ui-terminal",
@@ -4882,17 +4879,34 @@ dependencies = [
 ]
 
 [[package]]
-name = "loa-surface-browser"
+name = "loa-surfaces"
 version = "0.1.0"
 dependencies = [
+ "ab_glyph",
  "async-trait",
+ "axum",
  "base64 0.22.1",
  "bytes",
+ "calamine",
  "chromiumoxide",
+ "crc32fast",
+ "des",
+ "docx-rs",
+ "flate2",
  "futures",
+ "hayro",
+ "image",
  "jpeg-decoder",
  "loa-contracts",
+ "loa-core",
+ "loa-mcp",
+ "loa-surfaces",
  "loa-util",
+ "prost 0.14.6",
+ "quick-xml 0.42.0",
+ "rmcp",
+ "rust_xlsxwriter",
+ "rusty_h264",
  "serde",
  "serde_json",
  "tempfile",
@@ -4900,88 +4914,7 @@ dependencies = [
  "tokio",
  "tracing",
  "x11rb",
-]
-
-[[package]]
-name = "loa-surface-docs"
-version = "0.1.0"
-dependencies = [
- "ab_glyph",
- "async-trait",
- "bytes",
- "calamine",
- "docx-rs",
- "hayro",
- "image",
- "loa-contracts",
- "loa-util",
- "quick-xml 0.42.0",
- "rust_xlsxwriter",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
  "zip 9.7.2",
-]
-
-[[package]]
-name = "loa-surface-hub"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "axum",
- "base64 0.22.1",
- "bytes",
- "image",
- "loa-contracts",
- "loa-core",
- "loa-mcp",
- "loa-surface-browser",
- "loa-surface-docs",
- "loa-surface-proto",
- "loa-surface-rfb",
- "loa-util",
- "rmcp",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "loa-surface-proto"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "bytes",
- "crc32fast",
- "image",
- "jpeg-decoder",
- "loa-contracts",
- "loa-util",
- "prost 0.14.6",
- "rusty_h264",
- "thiserror 2.0.21",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "loa-surface-rfb"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "bytes",
- "flate2",
- "loa-contracts",
- "loa-util",
- "png 0.18.1",
- "thiserror 2.0.21",
- "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -5004,47 +4937,6 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
  "zeroize",
-]
-
-[[package]]
-name = "loa-ui-chat"
-version = "0.1.0"
-dependencies = [
- "iced",
- "iced_runtime",
- "iced_test",
- "loa-core",
- "loa-ui-kit",
-]
-
-[[package]]
-name = "loa-ui-composer"
-version = "0.1.0"
-dependencies = [
- "iced",
- "iced_test",
- "loa-contracts",
- "loa-core",
- "loa-ui-kit",
-]
-
-[[package]]
-name = "loa-ui-decisions"
-version = "0.1.0"
-dependencies = [
- "iced",
- "iced_test",
- "loa-config",
- "loa-contracts",
- "loa-core",
- "loa-ui-kit",
- "loa-util",
- "notify-rust",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
 ]
 
 [[package]]
@@ -5120,6 +5012,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "loa-ui-session"
+version = "0.1.0"
+dependencies = [
+ "iced",
+ "iced_test",
+ "loa-config",
+ "loa-contracts",
+ "loa-core",
+ "loa-ui-kit",
+ "loa-ui-panel",
+ "loa-util",
+ "notify-rust",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "loa-ui-shell"
 version = "0.1.0"
 dependencies = [
@@ -5135,18 +5044,14 @@ dependencies = [
 name = "loa-ui-surface"
 version = "0.1.0"
 dependencies = [
- "async-trait",
  "bytes",
  "futures",
  "iced",
  "iced_runtime",
  "iced_test",
  "image",
- "jpeg-decoder",
  "loa-contracts",
- "loa-surface-docs",
- "loa-surface-hub",
- "loa-surface-proto",
+ "loa-surfaces",
  "loa-ui-kit",
  "loa-ui-shell",
  "rust_xlsxwriter",

@@ -10,7 +10,7 @@ use loa_contracts::harness::{Adapter, Answer, Capabilities, Registry, SessionSta
 use loa_bus::Policy;
 use loa_core::{DecisionKind, DecisionStatus, Draft, NodeId, PatchSink, Role, Value, now_ms};
 use loa_trust::NodeIdentity;
-use loa_ui_decisions as decisions;
+use loa_ui_session::decisions as decisions;
 
 use super::*;
 use crate::services::{Dirs, Harnesses, Node};
@@ -223,7 +223,8 @@ pub(crate) fn active(app: &App) -> Option<&str> {
 }
 
 fn pick(app: &mut App, harness: &str) -> Task<Message> {
-    app.update(Message::Composer(composer::Message::HarnessPicked(harness.to_owned())))
+    let pick = app.ctx.composer.pick_key(composer::PickerId::Harness, harness).expect("a listed harness");
+    app.update(Message::Composer(pick))
 }
 
 pub(crate) fn escape() -> keyboard::Event {
@@ -757,7 +758,8 @@ fn folder_bar_switches_folders_and_starts_a_session_there() {
 
     let other = tempfile::tempdir().unwrap();
     let other_path = other.path().canonicalize().unwrap();
-    update(&mut app, Message::Composer(composer::Message::FolderPicked(other_path.display().to_string())));
+    update(&mut app, Message::Composer(composer::Message::PickerClosed));
+    update(&mut app, Message::FolderChosen(Ok(Some(other_path.clone()))));
     assert_eq!(app.ctx.services.cwd, other_path);
     assert_eq!(app.ctx.services.project, other_path.file_name().unwrap().to_string_lossy(), "new sessions belong to the new folder's project");
     assert!(app.diff.files().is_empty(), "the old folder's changes are gone");

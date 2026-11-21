@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use loa_contracts::harness::{Adapter, Availability, AvailabilityStatus, HarnessFactory, HarnessTraits, Registry};
 use loa_harness::{HarnessEnv, factories};
-use loa_ui_composer::HarnessOption;
+use loa_ui_session::composer::HarnessOption;
 use loa_util::exec::which as find_executable;
 
 /// Picker note while a harness's probe hasn't answered.

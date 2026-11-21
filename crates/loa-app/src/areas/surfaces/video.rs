@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use iced::Task;
-use loa_surface_hub::{HubConfig, LiveVideo, SurfaceHub};
+use loa_surfaces::{HubConfig, LiveVideo, SurfaceHub};
 use loa_ui_surface::{H264Decoder, Panel, PanelOptions, VideoStatus, panel};
 
 use super::{Message, save};
@@ -36,7 +36,7 @@ pub(super) fn set(hub: &Arc<SurfaceHub>, enabled: bool, ctx: &mut Ctx) -> Task<M
 /// The encoder the renderer here gets (it decodes H.264) and the hardware
 /// encoders that work.
 pub(super) fn status(enabled: bool, encoders: &LiveVideo) -> VideoStatus {
-    let encoder = encoders.choose(&[loa_contracts::surface::Encoding::H264]).map(|info| loa_surface_hub::proto::video::stream_info(&info));
+    let encoder = encoders.choose(&[loa_contracts::surface::Encoding::H264]).map(|info| loa_surfaces::proto::video::stream_info(&info));
     let hardware = encoders
         .encoders()
         .iter()

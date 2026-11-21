@@ -193,7 +193,7 @@ impl App {
         }
         if let Some(open) = self.ctx.sessions.get(session) {
             let theme = self.theme();
-            self.detached_chats.entry(session.to_owned()).or_insert_with(|| loa_ui_chat::State::from_dom(open.dom(), &theme));
+            self.detached_chats.entry(session.to_owned()).or_insert_with(|| loa_ui_session::transcript::State::from_dom(open.dom(), &theme));
         }
         self.detach(Detached::Session(session.to_owned()))
     }

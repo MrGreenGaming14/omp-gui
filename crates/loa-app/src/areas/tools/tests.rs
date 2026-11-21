@@ -17,8 +17,9 @@ use loa_core::{DecisionStatus, Dom, PatchSink, TurnStatus, attr};
 use loa_trust::{GrantSpec, Resource, Scope};
 use loa_trust::NodeIdentity;
 use loa_remote::connection::ConnectorConfig;
-use loa_ui_composer as composer;
-use loa_ui_decisions::desk;
+use loa_remote::resolve::Static;
+use loa_ui_session::composer as composer;
+use loa_ui_session::decisions::desk;
 use tokio::sync::{broadcast, mpsc, watch};
 
 use super::*;
@@ -113,7 +114,7 @@ impl Rig {
         };
         let home = dir.path().join("home");
         std::fs::create_dir_all(home.join(".ssh")).unwrap();
-        app.areas.tools.ssh = SshPaths { home: home.clone(), user: "tester".into() };
+        app.areas.tools.ssh = SshPaths { home: home.clone(), resolver: Arc::new(Static::new("tester")) };
         let mcp = app.ctx.services.mcp.events();
         let prompts = app.areas.tools.remote.queue.subscribe();
         let rig = Self { app, runtime, sender, receiver, feeds: Vec::new(), mcp, prompts, configs, home, dir };
@@ -208,7 +209,8 @@ impl Rig {
 
     /// Starts a session on `harness` and follows its feed.
     fn session(&mut self, harness: &str) -> SessionId {
-        self.update(AppMessage::Composer(composer::Message::HarnessPicked(harness.to_owned())));
+        let pick = self.app.ctx.composer.pick_key(composer::PickerId::Harness, harness).expect("a listed harness");
+        self.update(AppMessage::Composer(pick));
         let before = self.app.ctx.sessions.active_id().cloned();
         self.update(AppMessage::NewSession);
         self.until("the session starts", WAIT, |app| app.ctx.sessions.active_id().is_some_and(|id| Some(id) != before.as_ref()));
@@ -259,7 +261,7 @@ impl Rig {
         self.prompts = tools.remote.queue.subscribe();
         let app = &mut self.app;
         app.areas.tools.reload_hosts(&mut app.ctx);
-        let service = Arc::clone(&self.app.areas.tools.remote.service);
+        let service = self.app.areas.tools.remote.tools.clone();
         self.spawn(Task::perform(
             async move { RemoteHttp::start(service).await.map(Arc::new).map_err(|error| error.to_string()) },
             |result| AppMessage::Tools(Message::RemoteServing(result)),
@@ -535,11 +537,8 @@ fn the_peers_section_shows_what_each_issued_grant_allows() {
 #[test]
 fn remote_hosts_import_add_limit_and_remove_through_the_central_config() {
     let mut rig = Rig::new().started();
-    std::fs::write(
-        rig.home.join(".ssh/config"),
-        "Host bastion\n  HostName 10.0.0.1\n  User jump\nHost db\n  HostName db.internal\n  ProxyJump bastion\n",
-    )
-    .unwrap();
+    let ssh = Static::new("tester").with("bastion", "10.0.0.1", 22, None).with("db", "db.internal", 22, Some("bastion"));
+    rig.app.areas.tools.ssh.resolver = Arc::new(ssh);
     rig.panel(tools::Message::SectionSelected(tools::Section::Hosts));
     rig.panel(tools::Message::ImportSshHosts);
     let hosts: Vec<String> = rig.app.areas.tools.panel.hosts().iter().map(|host| host.alias.clone()).collect();
@@ -656,7 +655,7 @@ fn remote_questions_raise_decision_cards_answered_in_the_chat_or_the_panel() {
     assert_eq!(node.str_attr(attr::KIND), Some("question"));
     assert!(node.text.contains("presented"), "{}", node.text);
     rig.until("the card reaches the desk", WAIT, |app| app.areas.decisions.focused() == Some(card));
-    let choose = desk::Message::Card(session.to_string(), loa_ui_decisions::Message::Choose(card, 0));
+    let choose = desk::Message::Card(session.to_string(), loa_ui_session::decisions::Message::Choose(card, 0));
     rig.update(AppMessage::Decisions(decisions::Message::Desk(choose)));
     let node = rig.dom(&session).get(card).cloned().unwrap();
     assert_eq!(node.str_attr(attr::STATUS), Some("answered"));

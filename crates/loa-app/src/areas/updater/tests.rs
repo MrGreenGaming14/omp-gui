@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 
 use loa_contracts::harness::Capabilities;
 use loa_bus::Policy;
-use loa_ui_decisions::desk;
+use loa_ui_session::decisions::desk;
 use loa_updater::{Feed, Gates, Installed, PrereleasePolicy, Product, ProductSpec};
 
 use super::*;
@@ -242,7 +242,7 @@ fn updates_screen_checks_stages_gates_holds_pins_and_swaps_between_turns() {
     assert_eq!(fake(&app).current.as_deref(), Some("1.0.0"));
 
     let decision = app.areas.decisions.focused().expect("the turn waits on a decision");
-    let choose = desk::Message::Card(id.to_string(), loa_ui_decisions::Message::Choose(decision, 0));
+    let choose = desk::Message::Card(id.to_string(), loa_ui_session::decisions::Message::Choose(decision, 0));
     update(&mut app, AppMessage::Decisions(crate::areas::decisions::Message::Desk(choose)));
     deliver(&mut app, &id, &mut feed);
     assert!(!app.areas.updater.turn_running(), "turn ended");

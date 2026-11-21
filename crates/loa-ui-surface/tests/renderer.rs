@@ -1,67 +1,22 @@
 //! The surface tab driven by a fake `Surface`, through `State::update` and
 //! the tasks it returns.
 
-use async_trait::async_trait;
 use bytes::Bytes;
 use futures::StreamExt;
 use iced::{Point, Size, Task};
 use iced_runtime::Action;
 use loa_contracts::surface::{
-    Document, Encoding, Frame, Input, InputEvent, Modifiers, MouseButton, Rect, Surface,
-    SurfaceError, SurfaceInfo, SurfaceMode, SurfaceUri,
+    Document, Encoding, Frame, Input, InputEvent, Modifiers, MouseButton, Rect,
+    SurfaceInfo, SurfaceMode, SurfaceUri,
 };
 use loa_ui_surface::{
     Clock, DecodeError, Event, KeyInput, Message, Options, PageError, PageRenderer, PageRenderers,
     PointerInput, RgbaPage, State, VideoDecoder,
 };
+use loa_surfaces::testkit::{FakeSurface, Probe, solid};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::{broadcast, mpsc};
-
-struct FakeSurface {
-    info: SurfaceInfo,
-    frames: broadcast::Sender<Arc<Frame>>,
-    inputs: mpsc::UnboundedSender<InputEvent>,
-    keyframes: AtomicUsize,
-    document: Option<Document>,
-}
-
-#[async_trait]
-impl Surface for FakeSurface {
-    fn info(&self) -> SurfaceInfo {
-        self.info.clone()
-    }
-
-    fn frames(&self) -> loa_contracts::surface::Result<broadcast::Receiver<Arc<Frame>>> {
-        match self.info.mode {
-            SurfaceMode::Pixel => Ok(self.frames.subscribe()),
-            mode => Err(SurfaceError::Mode {
-                uri: self.info.uri.clone(),
-                mode,
-            }),
-        }
-    }
-
-    async fn request_keyframe(&self) -> loa_contracts::surface::Result<()> {
-        self.keyframes.fetch_add(1, Ordering::SeqCst);
-        Ok(())
-    }
-
-    async fn input(&self, event: InputEvent) -> loa_contracts::surface::Result<()> {
-        self.inputs.send(event).map_err(|_| SurfaceError::Closed)
-    }
-
-    async fn document(&self) -> loa_contracts::surface::Result<Document> {
-        self.document.clone().ok_or(SurfaceError::Mode {
-            uri: self.info.uri.clone(),
-            mode: self.info.mode,
-        })
-    }
-
-    async fn screenshot(&self) -> loa_contracts::surface::Result<Bytes> {
-        Err(SurfaceError::Backend("not needed".into()))
-    }
-}
 
 #[derive(Default)]
 struct FakeClock(AtomicU64);
@@ -82,6 +37,7 @@ impl Clock for FakeClock {
 struct Harness {
     state: State,
     surface: Arc<FakeSurface>,
+    frames: broadcast::Sender<Arc<Frame>>,
     clock: Arc<FakeClock>,
     messages: mpsc::UnboundedReceiver<Message>,
     inputs: mpsc::UnboundedReceiver<InputEvent>,
@@ -107,21 +63,15 @@ impl Harness {
         document: Option<Document>,
         options: Options,
     ) -> Self {
-        let (inputs_tx, inputs) = mpsc::unbounded_channel();
-        let surface = Arc::new(FakeSurface {
-            info: SurfaceInfo {
-                uri: SurfaceUri::new("fake", "one").unwrap(),
-                name: "Fake".into(),
-                width,
-                height,
-                mode,
-                mime: document.as_ref().map(|d| d.mime.clone()),
-            },
-            frames: broadcast::channel(16).0,
-            inputs: inputs_tx,
-            keyframes: AtomicUsize::new(0),
-            document,
-        });
+        let info = SurfaceInfo {
+            uri: SurfaceUri::new("fake", "one").unwrap(),
+            name: "Fake".into(),
+            width,
+            height,
+            mode,
+            mime: document.as_ref().map(|d| d.mime.clone()),
+        };
+        let (surface, Probe { frames, inputs, .. }) = FakeSurface::new(info, document);
         let clock = Arc::new(FakeClock::default());
         let options = Options {
             clock: clock.clone(),
@@ -133,6 +83,7 @@ impl Harness {
         Self {
             state,
             surface,
+            frames,
             clock,
             messages,
             inputs,
@@ -226,15 +177,11 @@ fn full(width: u32, height: u32) -> Rect {
     }
 }
 
-fn solid(width: u32, height: u32, rgba: [u8; 4]) -> Vec<u8> {
-    rgba.repeat((width * height) as usize)
-}
 
 #[tokio::test]
 async fn streamed_frames_are_drawn_and_input_reaches_the_surface_in_order() {
     let mut h = Harness::pixel(4, 2);
-    h.surface
-        .frames
+    h.frames
         .send(frame(
             1,
             4,
@@ -383,10 +330,7 @@ async fn frames_older_than_the_shown_one_are_dropped() {
 #[tokio::test]
 async fn png_and_jpeg_frames_are_decoded_into_their_region() {
     let mut h = Harness::pixel(8, 8);
-    let mut png = Vec::new();
-    image::RgbaImage::from_pixel(8, 8, image::Rgba([0, 200, 0, 255]))
-        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
-        .unwrap();
+    let png = loa_surfaces::pixels::RgbaImage::filled(8, 8, [0, 200, 0, 255]).to_png().unwrap();
     h.update(Message::Frame(frame(
         1,
         8,
@@ -524,7 +468,7 @@ async fn video_goes_through_the_decoder_and_recovers_on_a_keyframe() {
     assert_eq!(h.pixel_at(0, 0), [60; 4]);
     h.update(Message::Frame(video(5, 70, false)));
     assert_eq!(h.pixel_at(0, 0), [70; 4]);
-    assert_eq!(h.surface.keyframes.load(Ordering::SeqCst), 1);
+    assert_eq!(h.surface.keyframes_requested(), 1);
 }
 
 #[tokio::test]
@@ -539,7 +483,7 @@ async fn lost_frames_ask_for_a_keyframe() {
         solid(2, 2, [1; 4]),
     )));
     h.update(Message::Lagged(3));
-    assert_eq!(h.surface.keyframes.load(Ordering::SeqCst), 1);
+    assert_eq!(h.surface.keyframes_requested(), 1);
 }
 
 #[tokio::test]
@@ -812,15 +756,12 @@ async fn paged_documents_scroll_and_zoom_without_touching_the_surface() {
 
     // Document mode has no input channel: any send would show "closed".
     assert_eq!(h.state.tab().notice, None);
-    assert_eq!(h.surface.keyframes.load(Ordering::SeqCst), 0);
+    assert_eq!(h.surface.keyframes_requested(), 0);
 }
 
 #[tokio::test]
 async fn image_documents_render_without_a_page_renderer() {
-    let mut png = Vec::new();
-    image::RgbaImage::from_pixel(30, 20, image::Rgba([1, 2, 3, 255]))
-        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
-        .unwrap();
+    let png = loa_surfaces::pixels::RgbaImage::filled(30, 20, [1, 2, 3, 255]).to_png().unwrap();
     let doc = Document {
         name: "a.png".into(),
         mime: "image/png".into(),
