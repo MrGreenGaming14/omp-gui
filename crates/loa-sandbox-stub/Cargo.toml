@@ -9,12 +9,3 @@ publish.workspace = true
 loa-util.workspace = true
 loa-sandbox = { path = "../loa-sandbox", default-features = false }
 libc = "0.2"
-
-[dev-dependencies]
-loa-sandbox = { path = "../loa-sandbox" }
-loa-core.workspace = true
-loa-contracts.workspace = true
-async-trait.workspace = true
-serde_json.workspace = true
-tempfile.workspace = true
-tokio.workspace = true

@@ -1,60 +1,44 @@
 //! Sandbox providers: each starts a place to work, runs the exec stub there
-//! and hands back a byte channel to it.
+//! and hands back a byte channel to it. A [`ProviderFactory`] per kind
+//! probes this machine and builds its provider from the settings; the
+//! [`ProviderRegistry`] holds the factories.
 
 pub mod docker;
-pub mod firecracker;
 pub mod local;
 pub mod peer;
-pub mod qemu;
-mod serial;
 pub mod ssh;
+#[cfg(feature = "vm")]
+pub mod vm;
 
-use crate::Result;
+use crate::service::SandboxConfig;
+use crate::{Result, SandboxError};
 use async_trait::async_trait;
+use loa_util::registry::Registry;
 use serde::{Deserialize, Serialize};
+use std::ffi::OsString;
 use std::path::PathBuf;
+use std::process::Stdio;
+use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::process::{Child, Command};
 
-/// The kinds of sandbox `sandbox_task` can ask for.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum SandboxKind {
-    /// A child process on the host. No isolation of its own; the reference
-    /// provider and the one tests use.
-    Local,
-    Docker,
-    Firecracker,
-    /// A generic VM through qemu.
-    Vm,
-    Ssh,
-    Peer,
+loa_util::str_enum! {
+    /// The kinds of sandbox `sandbox_task` can ask for. `Local` is a child
+    /// process on the host without isolation of its own; `Vm` is qemu.
+    pub SandboxKind { Local => "local", Docker => "docker", Firecracker => "firecracker", Vm => "vm", Ssh => "ssh", Peer => "peer" }
 }
 
-impl SandboxKind {
-    pub const ALL: [SandboxKind; 6] = [
-        SandboxKind::Local,
-        SandboxKind::Docker,
-        SandboxKind::Firecracker,
-        SandboxKind::Vm,
-        SandboxKind::Ssh,
-        SandboxKind::Peer,
-    ];
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            SandboxKind::Local => "local",
-            SandboxKind::Docker => "docker",
-            SandboxKind::Firecracker => "firecracker",
-            SandboxKind::Vm => "vm",
-            SandboxKind::Ssh => "ssh",
-            SandboxKind::Peer => "peer",
-        }
+impl schemars::JsonSchema for SandboxKind {
+    fn schema_name() -> std::borrow::Cow<'static, str> { "SandboxKind".into() }
+    fn inline_schema() -> bool { true }
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({ "type": "string", "enum": Self::VALUES })
     }
 }
 
 /// Per call options from the `sandbox_task` arguments. Each provider reads
 /// the ones that apply to it and falls back to its own configuration.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SandboxOptions {
     /// Container image (docker).
@@ -83,7 +67,6 @@ pub struct SandboxSpec {
     /// Host directory the worker works on.
     pub workspace: PathBuf,
     /// The whole environment the stub (and every command it runs) gets.
-    /// Nothing from the host's own environment is passed on.
     pub env: Vec<(String, String)>,
     pub options: SandboxOptions,
 }
@@ -91,11 +74,9 @@ pub struct SandboxSpec {
 /// How the workspace reaches the stub's root directory.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum WorkspaceMode {
-    /// The stub's root is the host workspace itself (local) or a mount of it
-    /// (docker).
+    /// The stub's root is the host workspace itself (local) or a mount of it (docker).
     Shared,
-    /// The stub's root starts empty. The host copies the workspace in before
-    /// the run and the changes back after it (see [`crate::sync`]).
+    /// The stub's root starts empty; [`crate::sync`] copies the workspace in and out.
     Copied,
 }
 
@@ -109,10 +90,8 @@ pub struct Channel {
 #[async_trait]
 pub trait SandboxProvider: Send + Sync {
     fn kind(&self) -> SandboxKind;
-
     /// What this sandbox is and which options it takes, for the agent.
     fn describe(&self) -> String;
-
     async fn start(&self, spec: &SandboxSpec) -> Result<Box<dyn Sandbox>>;
 }
 
@@ -121,14 +100,152 @@ pub trait SandboxProvider: Send + Sync {
 pub trait Sandbox: Send {
     /// The channel to the stub. `None` after the first call.
     fn take_channel(&mut self) -> Option<Channel>;
-
     fn workspace_mode(&self) -> WorkspaceMode;
-
     /// Stops the sandbox and removes what the provider created for it.
     /// Dropping a sandbox without calling this cleans up on a best effort basis.
     async fn stop(self: Box<Self>) -> Result<()>;
 }
 
-/// Whether this process may use `/dev/kvm` (read and write access).
-pub use loa_util::exec::kvm_available;
+/// What a sandbox leaves behind outside its process, and the command that
+/// removes it: awaited by `stop`, and started detached when the sandbox is dropped.
+pub trait Teardown: Send + Sync {
+    fn command(&self) -> std::process::Command;
+    /// A failure that only means there was nothing left to remove.
+    fn gone(&self, _stderr: &str) -> bool { false }
+}
 
+/// A stub talking over the stdio of a host process, with an optional teardown.
+pub struct ProcessSandbox {
+    child: Child,
+    channel: Option<Channel>,
+    mode: WorkspaceMode,
+    teardown: Option<Box<dyn Teardown>>,
+    provider: &'static str,
+}
+
+/// Spawns `command` with the stub on its stdio.
+pub fn process(provider: &'static str, mut command: Command, mode: WorkspaceMode, teardown: Option<Box<dyn Teardown>>) -> Result<ProcessSandbox> {
+    command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true);
+    let mut child = command.spawn()?;
+    let (reader, writer) = (child.stdout.take().expect("piped stdout"), child.stdin.take().expect("piped stdin"));
+    Ok(ProcessSandbox { child, channel: Some(Channel { reader: Box::new(reader), writer: Box::new(writer) }), mode, teardown, provider })
+}
+
+impl Drop for ProcessSandbox {
+    fn drop(&mut self) {
+        if let Some(teardown) = self.teardown.take() {
+            let _ = teardown.command().stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
+        }
+    }
+}
+
+#[async_trait]
+impl Sandbox for ProcessSandbox {
+    fn take_channel(&mut self) -> Option<Channel> { self.channel.take() }
+    fn workspace_mode(&self) -> WorkspaceMode { self.mode }
+    async fn stop(mut self: Box<Self>) -> Result<()> {
+        if let Some(teardown) = self.teardown.take() {
+            let output = Command::from(teardown.command()).stdin(Stdio::null()).output().await?;
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if !output.status.success() && !teardown.gone(&stderr) {
+                let message = format!("teardown failed ({}): {}", output.status, stderr.trim());
+                return Err(SandboxError::Provider { provider: self.provider, message });
+            }
+        }
+        self.channel.take();
+        if self.child.try_wait()?.is_none() {
+            self.child.kill().await?;
+        }
+        self.child.wait().await?;
+        Ok(())
+    }
+}
+
+/// Where the probes look and what the providers run. The defaults are this machine's.
+#[derive(Clone)]
+pub struct Machine {
+    /// Directories searched for `docker`, `firecracker`, `qemu-system-*`, `ssh`.
+    pub path: Option<OsString>,
+    pub kvm_device: PathBuf,
+    pub ssh_config: Option<PathBuf>,
+    /// The stub binary, if one was found.
+    pub stub: Option<PathBuf>,
+    pub peers: Option<Arc<dyn peer::PeerLink>>,
+}
+
+impl Machine {
+    pub fn this() -> Self {
+        let ssh_config = loa_util::fs::home().map(|home| home.join(".ssh/config"));
+        Self { path: std::env::var_os("PATH"), kvm_device: "/dev/kvm".into(), ssh_config, stub: local::find_stub(), peers: None }
+    }
+
+    pub fn which(&self, name: &str) -> Option<PathBuf> {
+        std::env::split_paths(self.path.as_ref()?).map(|dir| dir.join(name)).find(|file| loa_util::exec::is_executable(file))
+    }
+
+    pub fn kvm(&self) -> bool {
+        std::fs::OpenOptions::new().read(true).write(true).open(&self.kvm_device).is_ok()
+    }
+}
+
+/// Whether a provider can be used on this machine now.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Availability {
+    Ready,
+    /// Installed, but it needs settings (an image, a host, a grant).
+    NotConfigured,
+    /// Missing software, hardware or permission.
+    Unavailable,
+}
+
+/// One provider's availability with the reason, as the Tools panel shows it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProviderStatus {
+    pub kind: SandboxKind,
+    pub availability: Availability,
+    pub detail: String,
+}
+
+pub(crate) fn status(kind: SandboxKind, availability: Availability, detail: impl Into<String>) -> ProviderStatus {
+    ProviderStatus { kind, availability, detail: detail.into() }
+}
+
+pub(crate) const NO_STUB: &str = "loa-sandbox-stub was not found next to the app or on PATH (set LOA_SANDBOX_STUB)";
+
+/// Probes one kind of provider and builds it from the settings.
+#[async_trait]
+pub trait ProviderFactory: Send + Sync {
+    fn kind(&self) -> SandboxKind;
+    /// Whether the provider can run here, and why not.
+    async fn probe(&self, machine: &Machine, config: &SandboxConfig) -> ProviderStatus;
+    /// The provider, when this machine has the programs and settings for it.
+    /// It can still fail at run time (a stopped daemon, an unreachable host).
+    fn build(&self, machine: &Machine, config: &SandboxConfig) -> Option<Arc<dyn SandboxProvider>>;
+}
+
+/// The provider factories by kind.
+#[derive(Clone)]
+pub struct ProviderRegistry(Registry<dyn ProviderFactory>);
+
+impl ProviderRegistry {
+    /// Every built in provider this build has.
+    pub fn builtin() -> Self {
+        let mut registry = Self(Registry::new());
+        registry.register(Arc::new(local::Factory));
+        registry.register(Arc::new(docker::Factory));
+        registry.register(Arc::new(ssh::Factory));
+        registry.register(Arc::new(peer::Factory));
+        #[cfg(feature = "vm")]
+        registry.register(Arc::new(vm::Firecracker)).register(Arc::new(vm::Qemu));
+        registry
+    }
+
+    pub fn register(&mut self, factory: Arc<dyn ProviderFactory>) -> &mut Self {
+        self.0.register(factory.kind().as_str(), factory);
+        self
+    }
+
+    pub fn factories(&self) -> impl Iterator<Item = &Arc<dyn ProviderFactory>> {
+        self.0.iter().map(|(_, factory)| factory)
+    }
+}

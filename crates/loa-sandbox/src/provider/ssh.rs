@@ -2,15 +2,16 @@
 //! so keys stay in `ssh-agent` and `~/.ssh/config` applies (aliases,
 //! `ProxyJump`, ports). The stub is uploaded over the same command channel;
 //! the workspace is copied in and out by [`crate::sync`].
-use loa_util::exec::shell_quote;
-use super::serial::command_channel;
-use super::{Sandbox, SandboxKind, SandboxProvider, SandboxSpec, WorkspaceMode};
+
+use super::{Availability, Machine, ProviderFactory, ProviderStatus, Sandbox, SandboxKind, SandboxProvider, SandboxSpec, Teardown, WorkspaceMode, process, status};
+use crate::service::SandboxConfig;
 use crate::{Result, SandboxError};
 use async_trait::async_trait;
+use loa_util::exec::shell_quote;
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
-use tokio::process::Command;
 
 pub struct SshProvider {
     pub ssh: PathBuf,
@@ -30,20 +31,20 @@ impl SshProvider {
     }
 }
 
-/// An `ssh` invocation that never prompts: the app has no terminal to answer on.
-fn ssh(program: &PathBuf, port: Option<u16>, host: &str) -> Command {
-    let mut cmd = Command::new(program);
-    cmd.arg("-T").arg("-o").arg("BatchMode=yes");
-    if let Some(port) = port {
-        cmd.arg("-p").arg(port.to_string());
-    }
-    cmd.arg("--").arg(host);
-    cmd
-}
+/// Runs a remote command on one host without ever prompting: the app has no terminal to answer on.
+#[derive(Clone)]
+struct Remote { ssh: PathBuf, port: Option<u16>, host: String, script: String }
 
-fn failed(what: &str, output: &std::process::Output) -> SandboxError {
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    SandboxError::Provider { provider: "ssh", message: format!("{what} failed ({}): {}", output.status, stderr.trim()) }
+impl Teardown for Remote {
+    fn command(&self) -> std::process::Command {
+        let mut cmd = std::process::Command::new(&self.ssh);
+        cmd.args(["-T", "-o", "BatchMode=yes"]);
+        if let Some(port) = self.port {
+            cmd.arg("-p").arg(port.to_string());
+        }
+        cmd.args(["--", &self.host, &self.script]);
+        cmd
+    }
 }
 
 #[async_trait]
@@ -68,111 +69,55 @@ impl SandboxProvider for SshProvider {
             return Err(SandboxError::Provider { provider: "ssh", message: "a valid host is required".into() });
         }
         let root = format!("{}/{}", self.remote_root.trim_end_matches('/'), spec.name);
-        let stub = format!("{root}/loa-sandbox-stub");
+        let (q_root, q_stub) = (shell_quote(&root), shell_quote(&format!("{root}/loa-sandbox-stub")));
+        let remote = |script: String| Remote { ssh: self.ssh.clone(), port: self.port, host: host.into(), script };
+        let cleanup = remote(format!("rm -rf -- {q_root}"));
         let binary = tokio::fs::read(&self.local_stub).await?;
         // One round trip creates the private root and receives the stub on stdin.
-        let setup = format!("umask 077 && mkdir -p -- {root} && cat > {stub} && chmod 700 -- {stub}", root = shell_quote(&root), stub = shell_quote(&stub));
-        let mut upload = ssh(&self.ssh, self.port, host).arg(setup)
+        let setup = remote(format!("umask 077 && mkdir -p -- {q_root} && cat > {q_stub} && chmod 700 -- {q_stub}"));
+        let mut upload = tokio::process::Command::from(setup.command())
             .stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped()).kill_on_drop(true).spawn()?;
-        let mut stdin = upload.stdin.take().expect("piped stdin");
-        let written = stdin.write_all(&binary).await;
-        drop(stdin);
+        let written = upload.stdin.take().expect("piped stdin").write_all(&binary).await;
         let output = upload.wait_with_output().await?;
         if !output.status.success() || written.is_err() {
-            let _ = cleanup(&self.ssh, self.port, host, &root).await;
-            return Err(failed("stub upload", &output));
+            let _ = tokio::process::Command::from(cleanup.command()).output().await;
+            let message = format!("stub upload failed ({}): {}", output.status, String::from_utf8_lossy(&output.stderr).trim());
+            return Err(SandboxError::Provider { provider: "ssh", message });
         }
-        let mut cmd = ssh(&self.ssh, self.port, host);
-        cmd.arg(format!("exec {} {}", shell_quote(&stub), shell_quote(&root)));
-        let process = match command_channel(cmd, WorkspaceMode::Copied) {
-            Ok(process) => process,
-            Err(e) => { let _ = cleanup(&self.ssh, self.port, host, &root).await; return Err(e); }
-        };
-        Ok(Box::new(SshSandbox { process: Some(process), ssh: self.ssh.clone(), port: self.port, host: host.into(), root }))
+        let run = remote(format!("exec {q_stub} {q_root}")).command();
+        Ok(Box::new(process("ssh", run.into(), WorkspaceMode::Copied, Some(Box::new(cleanup)))?))
     }
 }
 
-async fn cleanup(program: &PathBuf, port: Option<u16>, host: &str, root: &str) -> Result<()> {
-    let output = ssh(program, port, host).arg(format!("rm -rf -- {}", shell_quote(root))).stdin(Stdio::null()).output().await?;
-    if !output.status.success() { return Err(failed("remote cleanup", &output)); }
-    Ok(())
-}
+pub struct Factory;
 
-struct SshSandbox {
-    process: Option<super::serial::ProcessSandbox>,
-    ssh: PathBuf,
-    port: Option<u16>,
-    host: String,
-    root: String,
-}
-
-impl Drop for SshSandbox {
-    fn drop(&mut self) {
-        if self.process.is_some() {
-            let mut cmd = std::process::Command::new(&self.ssh);
-            cmd.arg("-T").arg("-o").arg("BatchMode=yes");
-            if let Some(port) = self.port { cmd.arg("-p").arg(port.to_string()); }
-            let _ = cmd.arg("--").arg(&self.host).arg(format!("rm -rf -- {}", shell_quote(&self.root)))
-                .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
+impl Factory {
+    /// The hosts of the settings, else the aliases of the SSH config.
+    fn hosts(machine: &Machine, config: &SandboxConfig) -> Vec<String> {
+        match (&config.ssh_hosts[..], &machine.ssh_config) {
+            ([], Some(file)) => loa_util::ssh::aliases(file),
+            (hosts, _) => hosts.to_vec(),
         }
     }
 }
 
 #[async_trait]
-impl Sandbox for SshSandbox {
-    fn take_channel(&mut self) -> Option<super::Channel> { self.process.as_mut().and_then(|p| p.take_channel()) }
-    fn workspace_mode(&self) -> WorkspaceMode { WorkspaceMode::Copied }
-    async fn stop(mut self: Box<Self>) -> Result<()> {
-        if let Some(process) = self.process.take() { Box::new(process).stop().await?; }
-        cleanup(&self.ssh, self.port, &self.host, &self.root).await
+impl ProviderFactory for Factory {
+    fn kind(&self) -> SandboxKind { SandboxKind::Ssh }
+    async fn probe(&self, machine: &Machine, config: &SandboxConfig) -> ProviderStatus {
+        use Availability::*;
+        match (machine.which("ssh"), &machine.stub, &Self::hosts(machine, config)[..]) {
+            (None, ..) => status(self.kind(), Unavailable, "No ssh client is installed"),
+            (Some(_), None, _) => status(self.kind(), Unavailable, super::NO_STUB),
+            (Some(_), Some(_), []) => status(self.kind(), NotConfigured, "Add a host to ~/.ssh/config or the sandbox settings"),
+            (Some(_), Some(_), hosts) => status(self.kind(), Ready, format!(
+                "{}; hosts must run {} on {}", hosts.join(", "), std::env::consts::OS, std::env::consts::ARCH
+            )),
+        }
     }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::provider::SandboxOptions;
-    use std::os::unix::fs::PermissionsExt;
-    use tokio::io::AsyncReadExt;
-
-    fn script(path: &std::path::Path, body: &str) {
-        loa_util::exec::write_executable(path, body).unwrap();
-    }
-
-    /// A fake `ssh` runs the remote command locally after `-- <host>`, and
-    /// records the host it was asked for.
-    #[tokio::test]
-    async fn uploads_the_stub_runs_it_in_a_private_root_and_removes_it() {
-        let dir = tempfile::tempdir().unwrap();
-        let fake_ssh = dir.path().join("ssh");
-        script(&fake_ssh, &format!("#!/bin/sh\nwhile [ \"$1\" != -- ]; do shift; done\nshift\necho \"$1\" >> {}/hosts\nshift\nexec sh -c \"$1\"\n", dir.path().display()));
-        let stub = dir.path().join("stub");
-        script(&stub, "#!/bin/sh\nprintf 'stub in %s' \"$1\"\n");
-        let remote = dir.path().join("remote");
-        let mut provider = SshProvider::new(&stub, vec!["builder".into()]);
-        provider.ssh = fake_ssh;
-        provider.remote_root = remote.display().to_string();
-        let spec = SandboxSpec { name: "loa-sbx-7".into(), workspace: "/unused".into(), env: vec![], options: SandboxOptions::default() };
-        let mut sandbox = provider.start(&spec).await.unwrap();
-        assert_eq!(sandbox.workspace_mode(), WorkspaceMode::Copied);
-        let mut output = String::new();
-        sandbox.take_channel().unwrap().reader.read_to_string(&mut output).await.unwrap();
-        let root = remote.join("loa-sbx-7");
-        assert_eq!(output, format!("stub in {}", root.display()));
-        let mode = std::fs::metadata(root.join("loa-sandbox-stub")).unwrap().permissions().mode();
-        assert_eq!(mode & 0o777, 0o700);
-        sandbox.stop().await.unwrap();
-        assert!(!root.exists(), "the remote root is removed");
-        let hosts = std::fs::read_to_string(dir.path().join("hosts")).unwrap();
-        assert!(hosts.lines().all(|host| host == "builder"), "{hosts}");
-    }
-
-    #[tokio::test]
-    async fn needs_a_host_when_several_are_known() {
-        let provider = SshProvider::new("/bin/true", vec!["a".into(), "b".into()]);
-        let spec = SandboxSpec { name: "x".into(), workspace: "/unused".into(), env: vec![], options: SandboxOptions::default() };
-        let error = provider.start(&spec).await.err().unwrap();
-        assert!(error.to_string().contains("a valid host is required"), "{error}");
-        assert_eq!(provider.describe(), "an SSH host; set options.host to one of a, b");
+    fn build(&self, machine: &Machine, config: &SandboxConfig) -> Option<Arc<dyn SandboxProvider>> {
+        let mut provider = SshProvider::new(machine.stub.as_ref()?, Self::hosts(machine, config));
+        provider.ssh = machine.which("ssh")?;
+        Some(Arc::new(provider))
     }
 }

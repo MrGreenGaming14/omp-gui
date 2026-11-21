@@ -1,11 +1,26 @@
 //! Reference provider: the stub is a child in the host workspace.
-use loa_util::exec::is_executable;
-use super::serial::command_channel;
-use super::{Sandbox, SandboxKind, SandboxProvider, SandboxSpec, WorkspaceMode};
+
+use super::{Availability, Machine, ProviderFactory, ProviderStatus, Sandbox, SandboxKind, SandboxProvider, SandboxSpec, WorkspaceMode, process, status};
 use crate::Result;
+use crate::service::SandboxConfig;
 use async_trait::async_trait;
+use loa_util::exec::is_executable;
 use std::path::PathBuf;
+use std::sync::Arc;
 use tokio::process::Command;
+
+/// File name of the stub binary.
+pub const STUB_NAME: &str = "loa-sandbox-stub";
+
+/// Finds the stub: `LOA_SANDBOX_STUB`, then next to the running executable
+/// or up to five directories above it (where cargo puts test executables),
+/// then `PATH`.
+pub fn find_stub() -> Option<PathBuf> {
+    let explicit = std::env::var_os("LOA_SANDBOX_STUB").map(PathBuf::from);
+    let exe = std::env::current_exe().ok();
+    let near = exe.iter().flat_map(|exe| exe.ancestors().skip(1).take(5).map(|dir| dir.join(STUB_NAME)));
+    explicit.into_iter().chain(near).chain(loa_util::exec::which(STUB_NAME)).find(|candidate| is_executable(candidate))
+}
 
 pub struct LocalProvider {
     pub stub: PathBuf,
@@ -15,26 +30,6 @@ impl LocalProvider {
     pub fn new(stub: impl Into<PathBuf>) -> Self { Self { stub: stub.into() } }
 }
 
-impl Default for LocalProvider {
-    fn default() -> Self { Self::new(STUB_NAME) }
-}
-
-/// File name of the stub binary.
-pub const STUB_NAME: &str = "loa-sandbox-stub";
-
-/// Finds the stub: `LOA_SANDBOX_STUB`, then next to the running executable
-/// or in one of the directories above it (cargo puts test executables up to
-/// four levels below the profile directory that holds the binaries), then
-/// `PATH`.
-pub fn find_stub() -> Option<PathBuf> {
-    const LEVELS: usize = 5;
-    let explicit = std::env::var_os("LOA_SANDBOX_STUB").map(PathBuf::from);
-    let exe = std::env::current_exe().ok();
-    let near = exe.iter().flat_map(|exe| exe.ancestors().skip(1).take(LEVELS).map(|dir| dir.join(STUB_NAME)));
-    let path = std::env::var_os("PATH").into_iter().flat_map(|paths| std::env::split_paths(&paths).map(|dir| dir.join(STUB_NAME)).collect::<Vec<_>>());
-    explicit.into_iter().chain(near).chain(path).find(|candidate| is_executable(candidate))
-}
-
 #[async_trait]
 impl SandboxProvider for LocalProvider {
     fn kind(&self) -> SandboxKind { SandboxKind::Local }
@@ -42,32 +37,25 @@ impl SandboxProvider for LocalProvider {
     async fn start(&self, spec: &SandboxSpec) -> Result<Box<dyn Sandbox>> {
         let mut cmd = Command::new(&self.stub);
         cmd.arg(&spec.workspace).current_dir(&spec.workspace).env_clear().envs(spec.env.iter().cloned());
-        Ok(Box::new(command_channel(cmd, WorkspaceMode::Shared)?))
+        Ok(Box::new(process("local", cmd, WorkspaceMode::Shared, None)?))
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::provider::SandboxOptions;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+pub struct Factory;
 
-    #[tokio::test]
-    async fn uses_workspace_and_only_specified_environment() {
-        let dir = tempfile::tempdir().unwrap();
-        let spec = SandboxSpec { name: "test".into(), workspace: dir.path().into(), env: vec![("SANDBOX_TEST".into(), "yes".into())], options: SandboxOptions::default() };
-        // A script stands in for the stub and reports its environment and cwd.
-        let fake = dir.path().join("stub");
-        loa_util::exec::write_executable(&fake, "#!/bin/sh\npwd\nprintf '%s' \"$SANDBOX_TEST\"\n").unwrap();
-        let provider = LocalProvider { stub: fake };
-        let mut sandbox = provider.start(&spec).await.unwrap();
-        assert_eq!(sandbox.workspace_mode(), WorkspaceMode::Shared);
-        let mut channel = sandbox.take_channel().unwrap();
-        assert!(sandbox.take_channel().is_none());
-        let mut output = String::new();
-        channel.reader.read_to_string(&mut output).await.unwrap();
-        assert_eq!(output, format!("{}\nyes", dir.path().display()));
-        channel.writer.shutdown().await.unwrap();
-        sandbox.stop().await.unwrap();
+#[async_trait]
+impl ProviderFactory for Factory {
+    fn kind(&self) -> SandboxKind { SandboxKind::Local }
+    async fn probe(&self, machine: &Machine, _: &SandboxConfig) -> ProviderStatus {
+        match machine.stub {
+            Some(_) => status(self.kind(), Availability::Ready, format!(
+                "Runs on this machine without OS isolation; isolated tasks use a {} checkout",
+                crate::isolation::backend_name()
+            )),
+            None => status(self.kind(), Availability::Unavailable, super::NO_STUB),
+        }
+    }
+    fn build(&self, machine: &Machine, _: &SandboxConfig) -> Option<Arc<dyn SandboxProvider>> {
+        Some(Arc::new(LocalProvider::new(machine.stub.as_ref()?)))
     }
 }

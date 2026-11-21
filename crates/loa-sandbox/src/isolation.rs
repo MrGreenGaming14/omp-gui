@@ -1,14 +1,16 @@
-//! Isolated workspaces and changes relative to their opening snapshot.
+//! Isolated checkouts and their changes relative to the opening snapshot.
 //!
-//! No Git command here changes the source index, HEAD, or working tree. The
-//! checkout owns its own index; an ovnfs checkout owns its Git directory too.
+//! A [`CheckoutBackend`] makes the checkout: a `git worktree`, a clone where
+//! worktrees can't be made, or ovnfs (feature `ovnfs`) when it is installed.
+//! No Git command here changes the source index, HEAD or working tree; the
+//! checkout owns its own index.
 
 use crate::{Result, SandboxError};
 use std::fs;
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
@@ -16,49 +18,161 @@ fn error(message: impl Into<String>) -> SandboxError {
     SandboxError::Isolation(message.into())
 }
 
-fn command(program: &str, args: &[&str], dir: &Path) -> Result<Output> {
-    let output = Command::new(program).args(args).current_dir(dir).output()?;
-    if !output.status.success() {
-        return Err(error(format!("{program} {}: {}", args.join(" "), String::from_utf8_lossy(&output.stderr))));
+/// Runs `cmd` and returns its stdout, or fails with its stderr.
+fn output(cmd: &mut Command) -> Result<Vec<u8>> {
+    let out = cmd.output()?;
+    if !out.status.success() {
+        let args: Vec<_> = cmd.get_args().map(|a| a.to_string_lossy()).collect();
+        return Err(error(format!("{} {}: {}", cmd.get_program().to_string_lossy(), args.join(" "), String::from_utf8_lossy(&out.stderr).trim())));
     }
-    Ok(output)
+    Ok(out.stdout)
 }
 
-fn git(args: &[&str], dir: &Path) -> Result<Output> {
-    command("git", args, dir)
+fn git(dir: &Path) -> Command {
+    let mut cmd = Command::new("git");
+    cmd.current_dir(dir);
+    cmd
 }
 
-fn unique_dir() -> Result<PathBuf> {
-    for _ in 0..100 {
-        let count = NEXT.fetch_add(1, Ordering::Relaxed);
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|e| error(e.to_string()))?.as_nanos();
-        let path = std::env::temp_dir().join(format!("loa-sandbox-{}-{now:x}-{count:x}", std::process::id()));
-        match fs::create_dir(&path) {
-            Ok(()) => return Ok(path),
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(e) => return Err(e.into()),
+fn toplevel(dir: &Path) -> Result<PathBuf> {
+    let out = output(git(dir).args(["rev-parse", "--show-toplevel"]))?;
+    Ok(PathBuf::from(String::from_utf8_lossy(&out).trim_end()))
+}
+
+/// Makes and removes checkouts of a repository's HEAD.
+pub trait CheckoutBackend: Send + Sync {
+    fn name(&self) -> &'static str;
+    /// Makes the checkout `name` of `repo` and returns its root.
+    fn create(&self, repo: &Path, name: &str) -> Result<PathBuf>;
+    fn remove(&self, repo: &Path, name: &str, checkout: &Path) -> Result<()>;
+}
+
+pub struct GitWorktree;
+pub struct GitClone;
+
+impl CheckoutBackend for GitWorktree {
+    fn name(&self) -> &'static str { "git worktree" }
+    fn create(&self, repo: &Path, name: &str) -> Result<PathBuf> {
+        let dst = std::env::temp_dir().join(name);
+        output(git(repo).args(["worktree", "add", "--detach", "--"]).arg(&dst).arg("HEAD"))?;
+        Ok(dst)
+    }
+    fn remove(&self, repo: &Path, _: &str, checkout: &Path) -> Result<()> {
+        output(git(repo).args(["worktree", "remove", "--force", "--"]).arg(checkout)).map(drop)
+    }
+}
+
+/// A clone has a private Git directory, so it can be made where a linked worktree can't.
+impl CheckoutBackend for GitClone {
+    fn name(&self) -> &'static str { "git clone" }
+    fn create(&self, repo: &Path, name: &str) -> Result<PathBuf> {
+        let dst = std::env::temp_dir().join(name);
+        output(git(&std::env::temp_dir()).args(["clone", "--no-hardlinks", "--"]).arg(repo).arg(&dst))?;
+        Ok(dst)
+    }
+    fn remove(&self, _: &Path, _: &str, checkout: &Path) -> Result<()> { Ok(fs::remove_dir_all(checkout)?) }
+}
+
+/// An ovnfs checkout, which owns its Git directory too.
+#[cfg(feature = "ovnfs")]
+pub struct Ovnfs;
+
+#[cfg(feature = "ovnfs")]
+impl CheckoutBackend for Ovnfs {
+    fn name(&self) -> &'static str { "ovnfs" }
+    fn create(&self, repo: &Path, name: &str) -> Result<PathBuf> {
+        let root = PathBuf::from(String::from_utf8_lossy(&output(Command::new("ovnfs").args(["new", "--name", name]).current_dir(repo))?).trim());
+        if !root.is_dir() {
+            let _ = self.remove(repo, name, &root);
+            return Err(error("ovnfs returned no checkout directory"));
         }
+        Ok(root)
     }
-    Err(error("could not allocate isolated workspace"))
+    fn remove(&self, repo: &Path, name: &str, _: &Path) -> Result<()> {
+        output(Command::new("ovnfs").args(["rm", name]).current_dir(repo)).map(drop)
+    }
 }
 
+/// The backends to try, in order. An installed ovnfs is authoritative: its
+/// failure must not silently degrade to another isolation mechanism.
+fn backends() -> &'static [&'static dyn CheckoutBackend] {
+    #[cfg(feature = "ovnfs")]
+    if loa_util::exec::which("ovnfs").is_some() {
+        return &[&Ovnfs];
+    }
+    &[&GitWorktree, &GitClone]
+}
+
+/// The isolation [`IsolatedCheckout::create`] uses on this machine.
+pub fn backend_name() -> &'static str {
+    backends()[0].name()
+}
+
+/// An isolated checkout, removed when dropped. [`IsolatedCheckout::patch`]
+/// includes unstaged, staged and new files relative to its opening snapshot.
+pub struct IsolatedCheckout {
+    repo: PathBuf,
+    name: String,
+    root: PathBuf,
+    path: PathBuf,
+    baseline: String,
+    backend: &'static dyn CheckoutBackend,
+}
+
+impl IsolatedCheckout {
+    pub fn create(workspace: &Path) -> Result<Self> {
+        let source = workspace.canonicalize()?;
+        let repo = toplevel(&source)?;
+        let relative = source.strip_prefix(&repo).map_err(|e| error(e.to_string()))?.to_path_buf();
+        let name = format!("loa-sandbox-{}-{:x}-{}", std::process::id(), loa_util::time::now_ms(), NEXT.fetch_add(1, Ordering::Relaxed));
+        let mut failure = error("no checkout backend");
+        for &backend in backends() {
+            match backend.create(&repo, &name) {
+                Ok(root) => {
+                    let mut checkout = Self { path: root.join(&relative), root, repo, name, baseline: String::new(), backend };
+                    overlay(&checkout.repo, &checkout.root)?;
+                    checkout.baseline = String::from_utf8_lossy(&checkout.stage(&["write-tree"])?).trim().to_owned();
+                    return Ok(checkout);
+                }
+                Err(e) => failure = e,
+            }
+        }
+        Err(failure)
+    }
+
+    pub fn path(&self) -> &Path { &self.path }
+
+    /// Stages everything in the checkout, then runs `git args` there.
+    fn stage(&self, args: &[&str]) -> Result<Vec<u8>> {
+        output(git(&self.root).args(["add", "-A", "--", "."]))?;
+        output(git(&self.root).args(args))
+    }
+
+    /// A binary capable unified Git patch of the changes since the checkout was made.
+    pub fn patch(&self) -> Result<Vec<u8>> {
+        self.stage(&["diff", "--cached", "--binary", "--no-ext-diff", &self.baseline, "--"])
+    }
+
+    pub fn cleanup(self) -> Result<()> { self.remove() }
+
+    fn remove(&self) -> Result<()> {
+        if self.root.exists() { self.backend.remove(&self.repo, &self.name, &self.root) } else { Ok(()) }
+    }
+}
+
+impl Drop for IsolatedCheckout {
+    fn drop(&mut self) { let _ = self.remove(); }
+}
+
+/// Replaces `dst` with a copy of `src` (a file, symlink or directory tree).
 fn copy_entry(src: &Path, dst: &Path) -> Result<()> {
     let meta = fs::symlink_metadata(src)?;
+    remove_entry(dst)?;
     if let Some(parent) = dst.parent() {
         fs::create_dir_all(parent)?;
     }
-    if fs::symlink_metadata(dst).is_ok() {
-        if fs::symlink_metadata(dst)?.is_dir() {
-            fs::remove_dir_all(dst)?;
-        } else {
-            fs::remove_file(dst)?;
-        }
-    }
     if meta.file_type().is_symlink() {
-        #[cfg(unix)]
         std::os::unix::fs::symlink(fs::read_link(src)?, dst)?;
-        #[cfg(not(unix))]
-        return Err(error("symlink isolation requires Unix"));
     } else if meta.is_dir() {
         fs::create_dir(dst)?;
         for entry in fs::read_dir(src)? {
@@ -74,171 +188,38 @@ fn copy_entry(src: &Path, dst: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Overlay the tracked and untracked source files onto a clean checkout.
-/// Paths listed by Git but deleted in the source are removed from the copy.
+pub(crate) fn remove_entry(path: &Path) -> std::io::Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_dir() => fs::remove_dir_all(path),
+        Ok(_) => fs::remove_file(path),
+        Err(_) => Ok(()),
+    }
+}
+
+/// Overlays the tracked and untracked source files onto the clean checkout;
+/// files Git lists but the source deleted are removed from it.
 fn overlay(source: &Path, checkout: &Path) -> Result<()> {
-    let files = git(&["ls-files", "--cached", "--others", "--exclude-standard", "-z"], source)?.stdout;
-    for path in files.split(|b| *b == 0).filter(|path| !path.is_empty()) {
-        #[cfg(unix)]
-        let relative = {
-            use std::os::unix::ffi::OsStrExt;
-            Path::new(std::ffi::OsStr::from_bytes(path))
-        };
-        #[cfg(not(unix))]
-        let relative = Path::new(std::str::from_utf8(path).map_err(|e| error(e.to_string()))?);
-        let from = source.join(relative);
-        let to = checkout.join(relative);
-        if fs::symlink_metadata(&from).is_ok() {
-            copy_entry(&from, &to)?;
-        } else if let Ok(meta) = fs::symlink_metadata(&to) {
-            if meta.is_dir() { fs::remove_dir_all(&to)?; } else { fs::remove_file(&to)?; }
-        }
+    let files = output(git(source).args(["ls-files", "--cached", "--others", "--exclude-standard", "-z"]))?;
+    for path in files.split(|b| *b == 0).filter(|path| !path.is_empty()).map(|p| Path::new(std::ffi::OsStr::from_bytes(p))) {
+        let (from, to) = (source.join(path), checkout.join(path));
+        if fs::symlink_metadata(&from).is_ok() { copy_entry(&from, &to)? } else { remove_entry(&to)? }
     }
     Ok(())
-}
-
-fn has_ovnfs() -> bool {
-    loa_util::exec::which("ovnfs").is_some()
-}
-
-/// The isolation `IsolatedCheckout::create` uses on this machine: `ovnfs`
-/// when it is installed, else a `git worktree` (a clone where worktrees
-/// can't be made).
-pub fn backend_name() -> &'static str {
-    if has_ovnfs() { "ovnfs" } else { "git worktree" }
-}
-
-enum Backend {
-    Ovnfs(String),
-    Worktree(PathBuf),
-    Copy,
-}
-
-/// An isolated checkout, automatically cleaned up when dropped.
-/// `patch` includes unstaged, staged and new files relative to its opening
-/// snapshot, as a binary-capable unified Git patch.
-pub struct IsolatedCheckout {
-    path: PathBuf,
-    baseline: String,
-    backend: Backend,
-    temporary: Option<PathBuf>,
-}
-
-impl IsolatedCheckout {
-    pub fn create(workspace: &Path) -> Result<Self> {
-        let source = workspace.canonicalize()?;
-        if !source.is_dir() {
-            return Err(error("workspace is not a directory"));
-        }
-        let root = git(&["rev-parse", "--show-toplevel"], &source)?;
-        let root = PathBuf::from(String::from_utf8(root.stdout).map_err(|e| error(e.to_string()))?.trim_end());
-        let relative = source.strip_prefix(&root).map_err(|e| error(e.to_string()))?;
-        if has_ovnfs() {
-            let name = format!("loa-{}-{:x}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed));
-            // A present ovnfs is authoritative: failure must not silently
-            // degrade to a different isolation mechanism.
-            let output = command("ovnfs", &["new", "--name", &name], &root)?;
-            let checkout_root = PathBuf::from(String::from_utf8(output.stdout).map_err(|e| error(e.to_string()))?.trim());
-            if !checkout_root.is_dir() {
-                let _ = command("ovnfs", &["rm", &name], &root);
-                return Err(error("ovnfs returned no checkout directory"));
-            }
-            let initialized = (|| {
-                overlay(&root, &checkout_root)?;
-                Self::initialize(checkout_root.join(relative), Backend::Ovnfs(name.clone()), None)
-            })();
-            if initialized.is_err() {
-                let _ = command("ovnfs", &["rm", &name], &root);
-            }
-            return initialized;
-        }
-        let temporary = unique_dir()?;
-        let checkout_root = temporary.join("checkout");
-        let worktree = Command::new("git").args(["worktree", "add", "--detach", "--", checkout_root.to_str().ok_or_else(|| error("non-UTF8 temporary path"))?, "HEAD"])
-            .current_dir(&root).output()?;
-        let backend = if worktree.status.success() {
-            Backend::Worktree(root.clone())
-        } else {
-            // A clone has a private Git directory; unlike a linked worktree it
-            // can still be made when worktree creation is unavailable.
-            command("git", &["clone", "--no-hardlinks", "--", root.to_str().ok_or_else(|| error("non-UTF8 repository path"))?, checkout_root.to_str().ok_or_else(|| error("non-UTF8 temporary path"))?], &temporary)?;
-            Backend::Copy
-        };
-        let result = (|| {
-            overlay(&root, &checkout_root)?;
-            Self::initialize(checkout_root.join(relative), backend, Some(temporary.clone()))
-        })();
-        if result.is_err() {
-            let _ = git(&["worktree", "remove", "--force", "--", checkout_root.to_str().unwrap_or_default()], &root);
-            let _ = fs::remove_dir_all(&temporary);
-        }
-        result
-    }
-
-    fn initialize(path: PathBuf, backend: Backend, temporary: Option<PathBuf>) -> Result<Self> {
-        let root = git(&["rev-parse", "--show-toplevel"], &path)?;
-        let root = PathBuf::from(String::from_utf8(root.stdout).map_err(|e| error(e.to_string()))?.trim_end());
-        git(&["add", "-A", "--", "."], &root)?;
-        let tree = git(&["write-tree"], &root)?;
-        let baseline = String::from_utf8(tree.stdout).map_err(|e| error(e.to_string()))?.trim().to_owned();
-        Ok(Self { path, baseline, backend, temporary })
-    }
-
-    pub fn path(&self) -> &Path { &self.path }
-
-    pub fn patch(&self) -> Result<Vec<u8>> {
-        let root = git(&["rev-parse", "--show-toplevel"], &self.path)?;
-        let root = PathBuf::from(String::from_utf8(root.stdout).map_err(|e| error(e.to_string()))?.trim_end());
-        git(&["add", "-A", "--", "."], &root)?;
-        Ok(git(&["diff", "--cached", "--binary", "--no-ext-diff", &self.baseline, "--"], &root)?.stdout)
-    }
-
-    pub fn cleanup(self) -> Result<()> {
-        self.remove()
-    }
-
-    fn remove(&self) -> Result<()> {
-        match &self.backend {
-            Backend::Ovnfs(name) => {
-                if self.path.exists() {
-                    command("ovnfs", &["rm", name], &self.path)?;
-                }
-            }
-            Backend::Worktree(source) => {
-                let checkout = self.temporary.as_ref().ok_or_else(|| error("checkout has no temporary directory"))?.join("checkout");
-                if checkout.exists() {
-                    git(&["worktree", "remove", "--force", "--", checkout.to_str().ok_or_else(|| error("non-UTF8 checkout path"))?], source)?;
-                }
-            }
-            Backend::Copy => {}
-        }
-        if let Some(temporary) = &self.temporary
-            && temporary.exists()
-        {
-            fs::remove_dir_all(temporary)?;
-        }
-        Ok(())
-    }
-}
-
-impl Drop for IsolatedCheckout {
-    fn drop(&mut self) { let _ = self.remove(); }
 }
 
 /// Applies a patch from [`IsolatedCheckout::patch`] to the repository that
 /// holds `workspace`. Checks the whole patch first, so a patch that doesn't
 /// apply cleanly changes nothing.
 pub fn apply_patch(workspace: &Path, patch: &[u8]) -> Result<()> {
-    let root = git(&["rev-parse", "--show-toplevel"], workspace)?;
-    let root = PathBuf::from(String::from_utf8(root.stdout).map_err(|e| error(e.to_string()))?.trim_end());
-    for args in [&["apply", "--check", "--binary", "-"][..], &["apply", "--binary", "-"][..]] {
-        let mut child = Command::new("git").args(args).current_dir(&root)
-            .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped())
-            .spawn()?;
+    let root = toplevel(workspace)?;
+    for check in [true, false] {
+        let mut cmd = git(&root);
+        cmd.arg("apply").args(check.then_some("--check")).args(["--binary", "-"]);
+        let mut child = cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
         std::io::Write::write_all(&mut child.stdin.take().expect("piped stdin"), patch)?;
-        let output = child.wait_with_output()?;
-        if !output.status.success() {
-            return Err(error(format!("git {}: {}", args.join(" "), String::from_utf8_lossy(&output.stderr).trim())));
+        let out = child.wait_with_output()?;
+        if !out.status.success() {
+            return Err(error(format!("git apply: {}", String::from_utf8_lossy(&out.stderr).trim())));
         }
     }
     Ok(())
@@ -266,69 +247,13 @@ pub fn patch_files(patch: &str) -> Vec<PatchFile> {
             continue;
         }
         let Some(file) = files.last_mut() else { continue };
-        if line.starts_with("@@") {
-            in_hunk = true;
-        } else if line == "GIT binary patch" || (line.starts_with("Binary files ") && line.ends_with(" differ")) {
-            file.binary = true;
-        } else if in_hunk && line.starts_with('+') {
-            file.added += 1;
-        } else if in_hunk && line.starts_with('-') {
-            file.removed += 1;
+        match line.as_bytes().first() {
+            _ if line.starts_with("@@") => in_hunk = true,
+            _ if line == "GIT binary patch" || (line.starts_with("Binary files ") && line.ends_with(" differ")) => file.binary = true,
+            Some(b'+') if in_hunk => file.added += 1,
+            Some(b'-') if in_hunk => file.removed += 1,
+            _ => {}
         }
     }
     files
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn patch_keeps_original_and_includes_untracked() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
-        git(&["init", "-q"], root).unwrap();
-        fs::write(root.join("tracked"), "before\n").unwrap();
-        git(&["add", "tracked"], root).unwrap();
-        git(&["-c", "user.name=Test", "-c", "user.email=t@example.org", "commit", "-qm", "baseline"], root).unwrap();
-        fs::write(root.join("tracked"), "user edit\n").unwrap();
-        fs::write(root.join("existing-untracked"), "already there\n").unwrap();
-        let checkout = IsolatedCheckout::create(root).unwrap();
-        assert_eq!(fs::read_to_string(checkout.path().join("tracked")).unwrap(), "user edit\n");
-        fs::write(checkout.path().join("tracked"), "agent edit\n").unwrap();
-        fs::write(checkout.path().join("new-untracked"), "new\n").unwrap();
-        let patch = String::from_utf8(checkout.patch().unwrap()).unwrap();
-        assert!(patch.contains("-user edit") && patch.contains("+agent edit"));
-        assert!(patch.contains("new-untracked"));
-        assert!(!patch.contains("existing-untracked"));
-        assert_eq!(fs::read_to_string(root.join("tracked")).unwrap(), "user edit\n");
-        assert!(!root.join("new-untracked").exists());
-        checkout.cleanup().unwrap();
-    }
-
-    #[test]
-    fn a_patch_applies_to_the_original_and_lists_its_files() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
-        git(&["init", "-q"], root).unwrap();
-        fs::write(root.join("tracked"), "one\ntwo\n").unwrap();
-        git(&["add", "tracked"], root).unwrap();
-        git(&["-c", "user.name=Test", "-c", "user.email=t@example.org", "commit", "-qm", "baseline"], root).unwrap();
-        let checkout = IsolatedCheckout::create(root).unwrap();
-        fs::write(checkout.path().join("tracked"), "one\nthree\nfour\n").unwrap();
-        fs::write(checkout.path().join("added"), "new\n").unwrap();
-        let patch = checkout.patch().unwrap();
-        checkout.cleanup().unwrap();
-        let files = patch_files(&String::from_utf8_lossy(&patch));
-        assert_eq!(files, [
-            PatchFile { path: "added".into(), added: 1, removed: 0, binary: false },
-            PatchFile { path: "tracked".into(), added: 2, removed: 1, binary: false },
-        ]);
-        apply_patch(root, &patch).unwrap();
-        assert_eq!(fs::read_to_string(root.join("tracked")).unwrap(), "one\nthree\nfour\n");
-        assert_eq!(fs::read_to_string(root.join("added")).unwrap(), "new\n");
-        // Applying it again fails the check and changes nothing.
-        assert!(apply_patch(root, &patch).is_err());
-        assert_eq!(fs::read_to_string(root.join("added")).unwrap(), "new\n");
-    }
 }

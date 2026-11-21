@@ -1,27 +1,24 @@
 //! The host side of the stub protocol.
 
-use loa_util::LockExt;
-use crate::proto::{
-    self, Command, DirEntry, ExecRequest, ExitStatus, MAGIC, Metadata, ProtoError, Request, Response,
-};
+use crate::proto::{self, Command, DirEntry, ExecRequest, ExitStatus, Metadata, Request, Response};
 use crate::provider::Channel;
 use crate::{Result, SandboxError};
+use loa_util::LockExt;
 use std::collections::HashMap;
+use std::io::{BufReader, Read};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
-use tokio::sync::mpsc;
-use tokio::task::JoinHandle;
+use tokio::io::{AsyncWrite, AsyncWriteExt};
+use tokio::sync::{mpsc, oneshot};
 
-type Routes = HashMap<u32, mpsc::UnboundedSender<Response>>;
+type Routes = Arc<Mutex<Option<HashMap<u32, mpsc::UnboundedSender<Response>>>>>;
 
 /// A connection to one stub. Requests may run concurrently; answers are
 /// routed back by request id.
 pub struct StubClient {
     writer: tokio::sync::Mutex<Box<dyn AsyncWrite + Send + Unpin>>,
-    routes: Arc<Mutex<Option<Routes>>>,
+    routes: Routes,
     next_id: AtomicU32,
-    reader: JoinHandle<()>,
 }
 
 /// Everything a command printed and how it ended.
@@ -53,129 +50,76 @@ impl ExecHandle {
         if self.exited {
             return Ok(None);
         }
-        match self.rx.recv().await {
-            Some(Response::Stdout { data, .. }) => Ok(Some(ExecEvent::Stdout(data))),
-            Some(Response::Stderr { data, .. }) => Ok(Some(ExecEvent::Stderr(data))),
-            Some(Response::Exit { status, .. }) => {
+        Ok(Some(match self.rx.recv().await.ok_or(SandboxError::Disconnected)? {
+            Response::Stdout { data, .. } => ExecEvent::Stdout(data),
+            Response::Stderr { data, .. } => ExecEvent::Stderr(data),
+            Response::Exit { status, .. } => {
                 self.exited = true;
-                Ok(Some(ExecEvent::Exit(status)))
+                ExecEvent::Exit(status)
             }
-            Some(Response::Error { message, .. }) => Err(SandboxError::Stub(message)),
-            Some(other) => Err(unexpected(&other)),
-            None => Err(SandboxError::Disconnected),
-        }
+            other => return Err(refused(other)),
+        }))
     }
 
     /// Collects the rest of the output.
     pub async fn wait(mut self) -> Result<ExecOutput> {
         let mut out = ExecOutput::default();
-        loop {
-            match self.rx.recv().await {
-                Some(Response::Stdout { data, .. }) => out.stdout.extend_from_slice(&data),
-                Some(Response::Stderr { data, .. }) => out.stderr.extend_from_slice(&data),
-                Some(Response::Exit { status, .. }) => {
-                    out.status = status;
-                    return Ok(out);
-                }
-                Some(Response::Error { message, .. }) => return Err(SandboxError::Stub(message)),
-                Some(other) => return Err(unexpected(&other)),
-                None => return Err(SandboxError::Disconnected),
+        while let Some(event) = self.next().await? {
+            match event {
+                ExecEvent::Stdout(data) => out.stdout.extend(data),
+                ExecEvent::Stderr(data) => out.stderr.extend(data),
+                ExecEvent::Exit(status) => out.status = status,
             }
         }
+        Ok(out)
     }
 }
 
-fn unexpected(response: &Response) -> SandboxError {
-    SandboxError::Protocol(ProtoError(format!("unexpected answer {response:?}")))
-}
-
-/// Answers that end a request.
-fn is_final(response: &Response) -> bool {
-    !matches!(response, Response::Stdout { .. } | Response::Stderr { .. } | Response::Ready { .. })
-}
-
-async fn read_frame(r: &mut (impl AsyncRead + Unpin), buf: &mut Vec<u8>) -> std::io::Result<bool> {
-    let mut header = [0; 4];
-    match r.read_exact(&mut header).await {
-        Ok(_) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(false),
-        Err(e) => return Err(e),
+/// The error for an answer that isn't the one asked for.
+fn refused(response: Response) -> SandboxError {
+    match response {
+        Response::Error { message, .. } => SandboxError::Stub(message),
+        other => SandboxError::Stub(format!("unexpected answer {other:?}")),
     }
-    let len = proto::frame_len(header)?;
-    buf.clear();
-    buf.resize(len, 0);
-    r.read_exact(buf).await?;
-    Ok(true)
 }
 
 impl StubClient {
     /// Waits for the stub's hello on `channel`, skipping anything printed
     /// before it, and starts routing its answers.
     pub async fn connect(channel: Channel) -> Result<Self> {
-        let mut reader = BufReader::new(channel.reader);
-        let mut matched = 0;
-        while matched < MAGIC.len() {
-            let byte = match reader.read_u8().await {
-                Ok(b) => b,
-                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Err(SandboxError::Disconnected),
-                Err(e) => return Err(e.into()),
-            };
-            matched = proto::advance_magic(matched, byte);
-        }
-        let mut buf = Vec::new();
-        if !read_frame(&mut reader, &mut buf).await? {
-            return Err(SandboxError::Disconnected);
-        }
-        match Response::decode(&buf)? {
-            Response::Ready { version } if version == proto::VERSION => {}
-            Response::Ready { version } => {
-                return Err(SandboxError::Stub(format!(
-                    "stub speaks protocol {version}, the host speaks {}",
-                    proto::VERSION
-                )));
-            }
-            other => return Err(unexpected(&other)),
-        }
-        let routes = Arc::new(Mutex::new(Some(Routes::new())));
-        let reader = tokio::spawn(route(reader, Arc::clone(&routes)));
-        Ok(Self { writer: tokio::sync::Mutex::new(channel.writer), routes, next_id: AtomicU32::new(1), reader })
-    }
-
-    fn id(&self) -> u32 {
-        self.next_id.fetch_add(1, Ordering::Relaxed)
+        let routes = Routes::new(Mutex::new(Some(HashMap::new())));
+        let (ready, hello) = oneshot::channel();
+        let reader = tokio_util::io::SyncIoBridge::new(channel.reader);
+        let task_routes = Arc::clone(&routes);
+        tokio::task::spawn_blocking(move || route(BufReader::new(reader), &task_routes, ready));
+        hello.await.map_err(|_| SandboxError::Disconnected)??;
+        Ok(Self { writer: tokio::sync::Mutex::new(channel.writer), routes, next_id: AtomicU32::new(1) })
     }
 
     async fn send(&self, request: &Request) -> Result<()> {
-        let mut out = Vec::new();
-        request.encode(&mut out);
         let mut writer = self.writer.lock().await;
-        writer.write_all(&out).await.map_err(|_| SandboxError::Disconnected)?;
+        writer.write_all(&proto::frame(request)).await.map_err(|_| SandboxError::Disconnected)?;
         writer.flush().await.map_err(|_| SandboxError::Disconnected)
     }
 
-    /// Registers the route for `id`, then sends `request`.
-    async fn call(&self, id: u32, request: &Request) -> Result<mpsc::UnboundedReceiver<Response>> {
+    /// Registers a route for a new id, then sends the request made with it.
+    async fn call(&self, make: impl FnOnce(u32) -> Request) -> Result<(u32, mpsc::UnboundedReceiver<Response>)> {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = mpsc::unbounded_channel();
-        {
-            let mut routes = self.routes.locked();
-            routes.as_mut().ok_or(SandboxError::Disconnected)?.insert(id, tx);
-        }
-        self.send(request).await?;
-        Ok(rx)
+        self.routes.locked().as_mut().ok_or(SandboxError::Disconnected)?.insert(id, tx);
+        self.send(&make(id)).await?;
+        Ok((id, rx))
     }
 
-    async fn reply(&self, id: u32, request: &Request) -> Result<Response> {
-        let mut rx = self.call(id, request).await?;
-        match rx.recv().await.ok_or(SandboxError::Disconnected)? {
-            Response::Error { message, .. } => Err(SandboxError::Stub(message)),
-            other => Ok(other),
-        }
+    /// Sends a request and picks the value out of its one answer.
+    async fn request<T>(&self, make: impl FnOnce(u32) -> Request, pick: fn(Response) -> Result<T, Response>) -> Result<T> {
+        let (_, mut rx) = self.call(make).await?;
+        pick(rx.recv().await.ok_or(SandboxError::Disconnected)?).map_err(refused)
     }
 
     /// Starts a command and returns its output stream.
     pub async fn spawn(&self, exec: ExecRequest) -> Result<ExecHandle> {
-        let id = self.id();
-        let rx = self.call(id, &Request::Exec { id, exec }).await?;
+        let (id, rx) = self.call(|id| Request::Exec { id, exec }).await?;
         Ok(ExecHandle { id, rx, exited: false })
     }
 
@@ -184,16 +128,9 @@ impl StubClient {
         self.spawn(exec).await?.wait().await
     }
 
-    /// Runs a shell script in `cwd` (relative to the stub root).
+    /// Runs a shell script in the stub root.
     pub async fn sh(&self, script: &str, timeout_ms: Option<u64>) -> Result<ExecOutput> {
-        self.exec(ExecRequest {
-            command: Command::Shell(script.to_owned()),
-            cwd: None,
-            env: Vec::new(),
-            stdin: None,
-            timeout_ms,
-        })
-        .await
+        self.exec(ExecRequest { timeout_ms, ..ExecRequest::new(Command::Shell(script.to_owned())) }).await
     }
 
     /// Kills a command started with [`StubClient::spawn`].
@@ -202,36 +139,24 @@ impl StubClient {
     }
 
     pub async fn read_file(&self, path: &str, limit: Option<u64>) -> Result<Vec<u8>> {
-        let id = self.id();
-        match self.reply(id, &Request::ReadFile { id, path: path.to_owned(), limit }).await? {
-            Response::Data { data, .. } => Ok(data),
-            other => Err(unexpected(&other)),
-        }
+        let path = path.to_owned();
+        self.request(|id| Request::ReadFile { id, path, limit }, |r| if let Response::Data { data, .. } = r { Ok(data) } else { Err(r) }).await
     }
 
     pub async fn write_file(&self, path: &str, data: Vec<u8>, mode: Option<u32>) -> Result<()> {
-        let id = self.id();
-        match self.reply(id, &Request::WriteFile { id, path: path.to_owned(), data, mode }).await? {
-            Response::Done { .. } => Ok(()),
-            other => Err(unexpected(&other)),
-        }
+        let path = path.to_owned();
+        self.request(|id| Request::WriteFile { id, path, data, mode }, |r| if let Response::Done { .. } = r { Ok(()) } else { Err(r) }).await
     }
 
     pub async fn list_dir(&self, path: &str) -> Result<Vec<DirEntry>> {
-        let id = self.id();
-        match self.reply(id, &Request::ListDir { id, path: path.to_owned() }).await? {
-            Response::Entries { entries, .. } => Ok(entries),
-            other => Err(unexpected(&other)),
-        }
+        let path = path.to_owned();
+        self.request(|id| Request::ListDir { id, path }, |r| if let Response::Entries { entries, .. } = r { Ok(entries) } else { Err(r) }).await
     }
 
     /// `None` when `path` doesn't exist.
     pub async fn stat(&self, path: &str) -> Result<Option<Metadata>> {
-        let id = self.id();
-        match self.reply(id, &Request::Stat { id, path: path.to_owned() }).await? {
-            Response::Stat { meta, .. } => Ok(meta),
-            other => Err(unexpected(&other)),
-        }
+        let path = path.to_owned();
+        self.request(|id| Request::Stat { id, path }, |r| if let Response::Stat { meta, .. } = r { Ok(meta) } else { Err(r) }).await
     }
 
     /// Asks the stub to kill its commands and exit.
@@ -240,27 +165,36 @@ impl StubClient {
     }
 }
 
-impl Drop for StubClient {
-    fn drop(&mut self) {
-        self.reader.abort();
-    }
-}
-
-/// Reads answers until the stream ends and hands each to its request.
-async fn route(mut reader: impl AsyncRead + Unpin, routes: Arc<Mutex<Option<Routes>>>) {
+/// Reads the hello, reports it on `ready`, then hands each answer to its
+/// request until the stream ends. Runs on a blocking thread over the shared
+/// std frame reader.
+fn route(mut reader: impl Read, routes: &Routes, ready: oneshot::Sender<Result<()>>) {
     let mut buf = Vec::new();
-    while let Ok(true) = read_frame(&mut reader, &mut buf).await {
-        let Ok(response) = Response::decode(&buf) else { break };
-        let Some(id) = response.id() else { continue };
-        let mut guard = routes.locked();
-        let Some(routes) = guard.as_mut() else { break };
-        let done = is_final(&response);
-        if let Some(tx) = routes.get(&id) {
+    let hello = match proto::skip_to_magic(&mut reader).and_then(|_| proto::read_frame(&mut reader, &mut buf)) {
+        Ok(false) => Err(SandboxError::Disconnected),
+        Ok(true) => match proto::decode(&buf) {
+            Ok(Response::Ready { version }) if version == proto::VERSION => Ok(()),
+            Ok(Response::Ready { version }) => {
+                Err(SandboxError::Stub(format!("stub speaks protocol {version}, the host speaks {}", proto::VERSION)))
+            }
+            Ok(other) => Err(refused(other)),
+            Err(e) => Err(e.into()),
+        },
+        Err(e) => Err(e.into()),
+    };
+    let connected = hello.is_ok();
+    if ready.send(hello).is_ok() && connected {
+        while let Ok(true) = proto::read_frame(&mut reader, &mut buf) {
+            let Ok(response) = proto::decode::<Response>(&buf) else { break };
+            let Some(id) = response.id() else { continue };
+            let mut guard = routes.locked();
+            let Some(routes) = guard.as_mut() else { break };
+            let done = !matches!(response, Response::Stdout { .. } | Response::Stderr { .. });
             // A dropped receiver only means the caller stopped listening.
-            let _ = tx.send(response);
-        }
-        if done {
-            routes.remove(&id);
+            let _ = routes.get(&id).map(|tx| tx.send(response));
+            if done {
+                routes.remove(&id);
+            }
         }
     }
     // Dropping every sender wakes waiting callers with `Disconnected`.
