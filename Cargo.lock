@@ -4775,6 +4775,7 @@ name = "loa-models"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "loa-contracts",
  "loa-harness",
  "loa-util",
  "serde",

@@ -1,7 +1,7 @@
 //! The session's current model as recorded on the `<session>` element, and the
 //! drafts that record a model change there.
 
-use crate::catalog::ModelRef;
+use crate::ModelRef;
 use crate::{Error, Result};
 use loa_core::{Attrs, Dom, Draft, ElementKind, NodeId, Value, attr};
 

@@ -8,9 +8,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::{Map, Value};
 
-use super::jsonedit;
+use super::configdoc::{ConfigDoc, JsonDoc, edit_file};
 use super::{HarnessAuth, HarnessId, LoginKind, SignInMethod, SignInState, validate_model_name};
-use crate::error::{load_snapshot, read_optional, save_snapshot};
+use crate::error::{load_snapshot, read_optional};
 use crate::process::{CommandSpec, ProcessRunner, RunningProcess};
 use crate::{Error, Result};
 
@@ -35,15 +35,9 @@ pub struct ClaudeCode {
     pub runner: Arc<dyn ProcessRunner>,
 }
 
-/// An effort level Claude Code accepts in `settings.json`. (`max` and
-/// `ultracode` exist only for a session and are not accepted persisted.)
+/// An effort level Claude Code accepts in `settings.json`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum ClaudeEffort {
-    Low,
-    Medium,
-    High,
-    XHigh,
-}
+pub enum ClaudeEffort { Low, Medium, High, XHigh }
 
 impl ClaudeEffort {
     /// Every level, lowest first.
@@ -111,7 +105,7 @@ impl ClaudeCode {
     /// reported as unset, as Claude Code ignores them too.
     pub fn read_model_settings(&self) -> Result<ClaudeModelSettings> {
         let text = read_optional(&self.settings_path)?.unwrap_or_default();
-        let root = jsonedit::parse_object(&text, &self.what())?;
+        let root = JsonDoc::parse(&text, &self.what())?.root;
         let model = root
             .get(MODEL_KEY)
             .and_then(Value::as_str)
@@ -136,27 +130,19 @@ impl ClaudeCode {
 
     /// Sets the default model, or removes it for `None` and `default`.
     pub fn set_model(&self, model: Option<&str>) -> Result<()> {
-        match model {
-            None | Some(DEFAULT_MODEL) => self.edit(|text, what| {
-                jsonedit::remove_path(text, &[MODEL_KEY], what)
-            }),
+        let model = match model {
+            None | Some(DEFAULT_MODEL) => None,
             Some(name) => {
                 validate_model_name(MODEL_KEY, name)?;
-                let value = Value::String(name.to_owned());
-                self.edit(|text, what| jsonedit::set_path(text, &[MODEL_KEY], &value, what))
+                Some(name)
             }
-        }
+        };
+        self.edit(|doc| doc.set(&[MODEL_KEY], model))
     }
 
     /// Sets the default effort level, or removes it for `None`.
     pub fn set_effort(&self, effort: Option<ClaudeEffort>) -> Result<()> {
-        match effort {
-            None => self.edit(|text, what| jsonedit::remove_path(text, &[EFFORT_KEY], what)),
-            Some(level) => {
-                let value = Value::String(level.as_str().to_owned());
-                self.edit(|text, what| jsonedit::set_path(text, &[EFFORT_KEY], &value, what))
-            }
-        }
+        self.edit(|doc| doc.set(&[EFFORT_KEY], effort.map(ClaudeEffort::as_str)))
     }
 
     /// Sets `modelSettings.<model>.effortLevel`, keeping the entry's other
@@ -164,19 +150,11 @@ impl ClaudeCode {
     /// the entry; removing the last entry removes `modelSettings`.
     pub fn set_model_effort(&self, model: &str, effort: Option<ClaudeEffort>) -> Result<()> {
         validate_model_name("modelSettings model", model)?;
-        match effort {
-            Some(level) => {
-                let value = Value::String(level.as_str().to_owned());
-                let path = [MODEL_SETTINGS_KEY, model, EFFORT_KEY];
-                self.edit(|text, what| jsonedit::set_path(text, &path, &value, what))
-            }
-            None => self.edit(|text, what| {
-                let root = jsonedit::parse_object(text, what)?;
-                let models = root.get(MODEL_SETTINGS_KEY).and_then(Value::as_object);
-                let entry = models
-                    .and_then(|m| m.get(model))
-                    .and_then(Value::as_object);
-                let path: &[&str] = match (models, entry) {
+        self.edit(|doc| {
+            let path: &[&str] = if effort.is_none() {
+                let models = doc.root.get(MODEL_SETTINGS_KEY).and_then(Value::as_object);
+                let entry = models.and_then(|m| m.get(model)).and_then(Value::as_object);
+                match (models, entry) {
                     (Some(models), Some(entry)) if only_key(entry, EFFORT_KEY) => {
                         if only_key(models, model) {
                             &[MODEL_SETTINGS_KEY]
@@ -185,22 +163,19 @@ impl ClaudeCode {
                         }
                     }
                     _ => &[MODEL_SETTINGS_KEY, model, EFFORT_KEY],
-                };
-                jsonedit::remove_path(text, path, what)
-            }),
-        }
+                }
+            } else {
+                &[MODEL_SETTINGS_KEY, model, EFFORT_KEY]
+            };
+            doc.set(path, effort.map(ClaudeEffort::as_str))
+        })
     }
 
-    /// Loads the settings, applies `edit` to the text and saves it atomically
-    /// unless nothing changed. A missing file is an empty object.
-    fn edit(&self, edit: impl FnOnce(&str, &str) -> Result<String>) -> Result<()> {
+    /// Applies an edit and saves it atomically if the document changed.
+    fn edit(&self, edit: impl FnOnce(&mut JsonDoc) -> Result<()>) -> Result<()> {
         let (mut snapshot, text) = load_snapshot(&self.settings_path)?;
-        let original = text.unwrap_or_default();
-        let edited = edit(&original, &self.what())?;
-        if edited == original {
-            return Ok(());
-        }
-        save_snapshot(&mut snapshot, &edited)
+        edit_file(&mut snapshot, text.as_deref().unwrap_or(""), edit)?;
+        Ok(())
     }
 }
 
@@ -473,15 +448,17 @@ mod tests {
         let path = settings_file(dir.path());
         let harness = claude(Path::new("claude"), &path);
         harness.set_model(Some("claude-opus-4-1[1m]")).unwrap();
-        let expected = SETTINGS.replace(
-            r#""model": "sonnet","#,
-            r#""model": "claude-opus-4-1[1m]","#,
-        );
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), expected);
+        let mut expected: Value = serde_json::from_str(SETTINGS).unwrap();
+        expected["model"] = Value::from("claude-opus-4-1[1m]");
+        assert_eq!(serde_json::from_str::<Value>(&std::fs::read_to_string(&path).unwrap()).unwrap(), expected);
+        let rendered = std::fs::read_to_string(&path).unwrap();
+        let parsed: Value = serde_json::from_str(&rendered).unwrap();
+        let keys: Vec<_> = parsed.as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(keys, ["$schema", "permissions", "model", "hooks", "env", "modelSettings", "includeCoAuthoredBy"]);
 
         harness.set_model(Some("default")).unwrap();
-        let expected = SETTINGS.replace("    \"model\": \"sonnet\",\n", "");
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), expected);
+        expected.as_object_mut().unwrap().shift_remove("model");
+        assert_eq!(serde_json::from_str::<Value>(&std::fs::read_to_string(&path).unwrap()).unwrap(), expected);
         assert_eq!(harness.read_model_settings().unwrap().model, None);
     }
 
@@ -496,7 +473,7 @@ mod tests {
             "{\n  \"model\": \"opus\"\n}\n"
         );
         harness.set_model(None).unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{\n}\n");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{}\n");
     }
 
     #[test]
@@ -517,17 +494,15 @@ mod tests {
         let path = settings_file(dir.path());
         let harness = claude(Path::new("claude"), &path);
         harness.set_effort(Some(ClaudeEffort::XHigh)).unwrap();
-        let expected = SETTINGS.replace(
-            "    \"includeCoAuthoredBy\": false\n}",
-            "    \"includeCoAuthoredBy\": false,\n    \"effortLevel\": \"xhigh\"\n}",
-        );
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), expected);
+        let mut expected: Value = serde_json::from_str(SETTINGS).unwrap();
+        expected["effortLevel"] = Value::from("xhigh");
+        assert_eq!(serde_json::from_str::<Value>(&std::fs::read_to_string(&path).unwrap()).unwrap(), expected);
         assert_eq!(
             harness.read_model_settings().unwrap().effort,
             Some(ClaudeEffort::XHigh)
         );
         harness.set_effort(None).unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), SETTINGS);
+        assert_eq!(serde_json::from_str::<Value>(&std::fs::read_to_string(&path).unwrap()).unwrap(), serde_json::from_str::<Value>(SETTINGS).unwrap());
     }
 
     #[test]
@@ -549,26 +524,22 @@ mod tests {
         harness
             .set_model_effort("opus", Some(ClaudeEffort::High))
             .unwrap();
-        let expected = SETTINGS.replace(
-            r#""autoCompactWindow": 400000}"#,
-            r#""autoCompactWindow": 400000,"effortLevel":"high"}"#,
-        );
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), expected);
+        let mut expected: Value = serde_json::from_str(SETTINGS).unwrap();
+        expected["modelSettings"]["opus"]["effortLevel"] = Value::from("high");
+        assert_eq!(serde_json::from_str::<Value>(&std::fs::read_to_string(&path).unwrap()).unwrap(), expected);
         let read = harness.read_model_settings().unwrap();
         assert_eq!(read.per_model_effort.get("opus"), Some(&ClaudeEffort::High));
         assert_eq!(read.per_model_effort.get("haiku"), Some(&ClaudeEffort::Low));
 
         // Removing opus's effort leaves its other fields in place.
         harness.set_model_effort("opus", None).unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), SETTINGS);
+        assert_eq!(serde_json::from_str::<Value>(&std::fs::read_to_string(&path).unwrap()).unwrap(), serde_json::from_str::<Value>(SETTINGS).unwrap());
 
         // haiku has only an effort level, so its entry goes.
         harness.set_model_effort("haiku", None).unwrap();
-        let without_haiku = SETTINGS.replace(
-            ",\n        \"haiku\": {\n            \"effortLevel\": \"low\"\n        }",
-            "",
-        );
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), without_haiku);
+        let mut expected: Value = serde_json::from_str(SETTINGS).unwrap();
+        expected["modelSettings"].as_object_mut().unwrap().shift_remove("haiku");
+        assert_eq!(serde_json::from_str::<Value>(&std::fs::read_to_string(&path).unwrap()).unwrap(), expected);
     }
 
     #[test]
@@ -609,9 +580,9 @@ mod tests {
         let harness = claude(Path::new("claude"), &path);
         let changed = SETTINGS.replace("sonnet", "haiku");
         let err = harness
-            .edit(|text, what| {
+            .edit(|doc| {
                 std::fs::write(&path, &changed).unwrap();
-                jsonedit::set_path(text, &[MODEL_KEY], &Value::from("opus"), what)
+                doc.set(&[MODEL_KEY], Some("opus"))
             })
             .unwrap_err();
         assert!(matches!(err, Error::ChangedOnDisk { .. }), "{err:?}");

@@ -9,8 +9,7 @@
 //! - [`omp`] implements that port over a dedicated `omp --mode rpc --no-session`
 //!   process ([`omp::OmpService`]) and locates omp's settings files
 //!   ([`omp::OmpFiles`]); [`opener`] opens login URLs in the browser.
-//! - [`providers`] and [`login`] list providers with their signed in state and
-//!   drive the OAuth login flow, opening the browser through [`login::UrlOpener`].
+//! - [`service`] and [`login`] list providers and drive login flows.
 //! - [`keys`] reports where omp would read a provider's API key from, without ever
 //!   reading or returning a key value.
 //! - [`yaml`], [`config`] and [`models_yml`] edit omp's own `config.yml` and
@@ -36,8 +35,12 @@ pub mod models_yml;
 pub mod omp;
 pub mod opener;
 pub mod process;
-pub mod providers;
 pub mod rpc;
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
+pub mod selector;
+pub mod settings;
+pub mod service;
 pub mod validate;
 pub mod yaml;
 

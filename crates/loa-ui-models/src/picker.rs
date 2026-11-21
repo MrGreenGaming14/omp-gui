@@ -2,7 +2,10 @@
 //! provider, showing which roles each model serves. It picks a model for the
 //! session (directly or through a role) or assigns a model to a role.
 
-use crate::catalog::{ModelInfo, ModelRef, RoleAssignment};
+use crate::ModelRef;
+pub use loa_models::selector::Catalog;
+#[cfg(test)]
+use loa_models::selector::{ModelInfo, RoleAssignment};
 use crate::session::SessionModelChange;
 use crate::style;
 use iced::event::{self, Event as RuntimeEvent};
@@ -25,12 +28,6 @@ pub enum Target {
     Role(String),
 }
 
-/// The models and role assignments the picker offers, as omp lists them.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Catalog {
-    pub models: Vec<ModelInfo>,
-    pub roles: Vec<RoleAssignment>,
-}
 
 /// One selectable line of the filtered list.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]

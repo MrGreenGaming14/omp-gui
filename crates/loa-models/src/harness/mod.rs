@@ -6,13 +6,11 @@
 //! commands the app runs in its terminal view. The app never handles credentials
 //! or API keys; it only learns which kind of sign in is active.
 //!
-//! Model settings are edited in each harness's user config file in place,
-//! keeping every other key, comment and ordering.
+//! Model settings retain unrelated keys and ordering; TOML comments are kept.
 
-pub mod cli_login;
 pub mod claude;
 pub mod codex;
-mod jsonedit;
+pub(crate) mod configdoc;
 
 use async_trait::async_trait;
 

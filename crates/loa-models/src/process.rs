@@ -134,7 +134,9 @@ impl ProcessRunner for TokioProcessRunner {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        let out = cmd.output().await.map_err(|e| process_error(spec, &e))?;
+        let out = loa_util::exec::retry_busy(|| cmd.spawn())
+            .map_err(|e| process_error(spec, &e))?
+            .wait_with_output().await.map_err(|e| process_error(spec, &e))?;
         Ok(ProcessOutput {
             code: out.status.code(),
             stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
@@ -148,7 +150,7 @@ impl ProcessRunner for TokioProcessRunner {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        let child = cmd.spawn().map_err(|e| process_error(spec, &e))?;
+        let child = loa_util::exec::retry_busy(|| cmd.spawn()).map_err(|e| process_error(spec, &e))?;
         Ok(Box::new(TokioRunningProcess {
             program: spec.program_name(),
             child,

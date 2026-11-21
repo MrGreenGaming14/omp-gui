@@ -14,101 +14,30 @@ use loa_ui_kit::icons::Icon;
 
 use crate::style::{self, BODY, NOTE, SMALL};
 
-/// Everything the screen edits, as the app reads it from omp's config files.
-#[derive(Clone, Debug, PartialEq, Default)]
-pub struct ModelSettings {
-    pub roles: Vec<RoleChain>,
-    pub models: Vec<ModelToggle>,
-    pub providers: Vec<ProviderToggle>,
-    pub overrides: Vec<ModelOverride>,
-    pub custom_providers: Vec<CustomProvider>,
-    /// The other harnesses' own default model settings.
-    pub harnesses: Vec<HarnessModel>,
-}
+use loa_models::settings::{
+    CustomProvider, FieldValue, HarnessModel, ModelOverride, ModelSettings, ModelToggle,
+    OverrideField, ProviderAuth, ProviderToggle, RoleChain, ValidationError,
+};
 
-/// The default model and effort another harness (Claude Code, Codex) keeps in
-/// its own config file. Empty values leave the choice to the harness.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct HarnessModel {
-    /// Harness key, e.g. `claude`.
-    pub harness: String,
-    /// Display name, e.g. "Claude Code".
-    pub name: String,
-    /// The config file the values live in, for display.
-    pub config_path: String,
-    pub model: String,
-    pub effort: String,
-    /// Effort values the harness accepts in its config.
-    pub efforts: Vec<String>,
-}
 
 /// The effort pick list's entry for "no effort set".
 const HARNESS_DEFAULT: &str = "default";
 
-/// A model role and its ordered chain: `chain[0]` is the primary model
-/// (`modelRoles.<role>`), the rest are its fallbacks
-/// (`retry.fallbackChains.<role>`).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RoleChain {
-    pub role: String,
-    pub chain: Vec<String>,
-}
-
-/// Whether a model selector is listed in `enabledModels`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ModelToggle {
-    pub selector: String,
-    pub enabled: bool,
-}
-
-/// A provider and whether it is enabled. In provider order.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ProviderToggle {
-    pub id: String,
-    pub name: String,
-    pub enabled: bool,
-}
-
-/// The `modelOverrides` fields set for one model selector.
-#[derive(Clone, Debug, PartialEq)]
-pub struct ModelOverride {
-    pub selector: String,
-    pub fields: Vec<OverrideField>,
-}
-
-/// One overridden model field, e.g. `contextWindow: 200000`.
-#[derive(Clone, Debug, PartialEq)]
-pub struct OverrideField {
-    pub key: String,
-    pub value: FieldValue,
-}
-
-/// A typed override value.
-#[derive(Clone, Debug, PartialEq)]
-pub enum FieldValue {
-    Text(String),
-    Int(i64),
-    Float(f64),
-    Bool(bool),
-}
-
-impl FieldValue {
-    fn kind(&self) -> FieldKind {
-        match self {
-            Self::Text(_) => FieldKind::Text,
-            Self::Int(_) => FieldKind::Int,
-            Self::Float(_) => FieldKind::Float,
-            Self::Bool(_) => FieldKind::Bool,
-        }
+fn field_kind(value: &FieldValue) -> FieldKind {
+    match value {
+        FieldValue::Text(_) => FieldKind::Text,
+        FieldValue::Int(_) => FieldKind::Int,
+        FieldValue::Float(_) => FieldKind::Float,
+        FieldValue::Bool(_) => FieldKind::Bool,
     }
+}
 
-    fn raw(&self) -> String {
-        match self {
-            Self::Text(value) => value.clone(),
-            Self::Int(value) => value.to_string(),
-            Self::Float(value) => value.to_string(),
-            Self::Bool(value) => value.to_string(),
-        }
+fn field_raw(value: &FieldValue) -> String {
+    match value {
+        FieldValue::Text(value) => value.clone(),
+        FieldValue::Int(value) => value.to_string(),
+        FieldValue::Float(value) => value.to_string(),
+        FieldValue::Bool(value) => value.to_string(),
     }
 }
 
@@ -158,49 +87,7 @@ impl fmt::Display for FieldKind {
     }
 }
 
-/// How omp authenticates against a custom provider (`auth` in models.yml).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub enum ProviderAuth {
-    #[default]
-    ApiKey,
-    None,
-    OAuth,
-}
 
-impl ProviderAuth {
-    /// All variants, in the order the auth pick list shows them.
-    pub const ALL: &'static [ProviderAuth] = &[Self::ApiKey, Self::None, Self::OAuth];
-}
-
-impl fmt::Display for ProviderAuth {
-    /// Spelled the way omp writes the value.
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Self::ApiKey => "apiKey",
-            Self::None => "none",
-            Self::OAuth => "oauth",
-        })
-    }
-}
-
-/// A provider defined in models.yml. The API key is only ever the name of an
-/// environment variable that holds it; the app never handles the key itself.
-#[derive(Clone, Debug, PartialEq, Eq, Default)]
-pub struct CustomProvider {
-    pub id: String,
-    pub base_url: String,
-    pub api: String,
-    pub auth: ProviderAuth,
-    pub api_key_env: String,
-    pub models: Vec<String>,
-}
-
-/// An error the app's validation (or omp) reported for a saved settings value.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ValidationError {
-    pub location: String,
-    pub message: String,
-}
 
 /// What the app must act on.
 #[derive(Clone, Debug, PartialEq)]
@@ -224,10 +111,7 @@ pub fn move_item<T>(items: &mut Vec<T>, from: usize, to: usize) -> bool {
     true
 }
 
-/// Checks a custom provider the way omp validates models.yml, plus the rules
-/// of this screen (id characters, no pasted secrets). `others` are the other
-/// custom providers, for the duplicate id check. Returns one message per
-/// problem; empty when the provider is valid.
+/// Checks inexpensive form constraints that cannot be delegated to file validation.
 pub fn validate_custom_provider(provider: &CustomProvider, others: &[CustomProvider]) -> Vec<String> {
     let mut messages = Vec::new();
     let id = provider.id.trim();
@@ -239,32 +123,8 @@ pub fn validate_custom_provider(provider: &CustomProvider, others: &[CustomProvi
         messages.push(format!("Another custom provider already uses the id \"{id}\""));
     }
 
-    let base_url = provider.base_url.trim();
-    if !base_url.is_empty() && !(base_url.starts_with("http://") || base_url.starts_with("https://")) {
-        messages.push("Base URL must start with http:// or https://".to_owned());
-    }
-
     let api_key_env = provider.api_key_env.trim();
-    let key_needed = provider.auth == ProviderAuth::ApiKey;
-    if provider.models.is_empty() {
-        if base_url.is_empty() && api_key_env.is_empty() && provider.auth != ProviderAuth::None {
-            messages.push(
-                "A provider without models needs a base URL, an API key variable or auth none".to_owned(),
-            );
-        }
-    } else {
-        if base_url.is_empty() {
-            messages.push("A provider with models needs a base URL".to_owned());
-        }
-        if key_needed && api_key_env.is_empty() {
-            messages.push("A provider with models needs an API key variable unless auth is none or oauth".to_owned());
-        }
-        if provider.api.trim().is_empty() {
-            messages.push("A provider with models needs an API type, e.g. openai-completions".to_owned());
-        }
-    }
-
-    if !api_key_env.is_empty() && !is_env_var_name(api_key_env) {
+    if !api_key_env.is_empty() && !loa_models::models_yml::is_env_var_name(api_key_env) {
         messages.push(
             "API key must be the name of an environment variable (A-Z, 0-9, _), not the key itself".to_owned(),
         );
@@ -272,10 +132,6 @@ pub fn validate_custom_provider(provider: &CustomProvider, others: &[CustomProvi
     messages
 }
 
-fn is_env_var_name(name: &str) -> bool {
-    name.chars().next().is_some_and(|c| !c.is_ascii_digit())
-        && name.chars().all(|c| matches!(c, 'A'..='Z' | '0'..='9' | '_'))
-}
 
 /// The editable form of [`ModelSettings`]: override values and custom provider
 /// model lists stay raw text so the user can type freely.
@@ -346,7 +202,7 @@ impl Draft {
                     fields: o
                         .fields
                         .iter()
-                        .map(|f| FieldDraft { key: f.key.clone(), kind: f.value.kind(), raw: f.value.raw() })
+                        .map(|f| FieldDraft { key: f.key.clone(), kind: field_kind(&f.value), raw: field_raw(&f.value) })
                         .collect(),
                 })
                 .collect(),
@@ -1241,14 +1097,6 @@ mod tests {
         assert_eq!(state.local_errors().len(), 2, "{:?}", state.local_errors());
     }
 
-    #[test]
-    fn custom_provider_with_models_needs_api() {
-        let provider = CustomProvider { api: String::new(), ..full_provider() };
-        let messages = validate_custom_provider(&provider, &[]);
-        assert_eq!(messages.len(), 1, "{messages:?}");
-        assert!(messages[0].contains("API type"));
-        assert!(validate_custom_provider(&full_provider(), &[]).is_empty());
-    }
 
     #[test]
     fn custom_provider_rejects_a_pasted_secret_key() {
@@ -1260,32 +1108,12 @@ mod tests {
         assert_eq!(validate_custom_provider(&digit_first, &[]).len(), 1);
     }
 
-    #[test]
-    fn custom_provider_with_auth_none_needs_no_key() {
-        let provider = CustomProvider { auth: ProviderAuth::None, api_key_env: String::new(), ..full_provider() };
-        assert!(validate_custom_provider(&provider, &[]).is_empty());
-        let keyless = CustomProvider { api_key_env: String::new(), ..full_provider() };
-        assert_eq!(validate_custom_provider(&keyless, &[]).len(), 1);
-    }
 
     #[test]
-    fn override_only_provider_needs_one_of_url_key_or_auth_none() {
-        let bare = CustomProvider { id: "anthropic".into(), ..CustomProvider::default() };
-        assert_eq!(validate_custom_provider(&bare, &[]).len(), 1);
-        let with_auth_none = CustomProvider { auth: ProviderAuth::None, ..bare.clone() };
-        assert!(validate_custom_provider(&with_auth_none, &[]).is_empty());
-    }
-
-    #[test]
-    fn custom_provider_rejects_duplicate_id_bad_id_and_bad_url() {
+    fn custom_provider_rejects_duplicate_and_bad_id() {
         let duplicate = validate_custom_provider(&full_provider(), &[full_provider()]);
         assert_eq!(duplicate.len(), 1, "{duplicate:?}");
         assert!(duplicate[0].contains("already uses"));
-
-        let bad_url = CustomProvider { base_url: "localhost:8080".into(), ..full_provider() };
-        let messages = validate_custom_provider(&bad_url, &[]);
-        assert_eq!(messages.len(), 1, "{messages:?}");
-        assert!(messages[0].contains("http://"));
 
         let bad_id = CustomProvider { id: "My Provider".into(), ..full_provider() };
         assert_eq!(validate_custom_provider(&bad_id, &[]).len(), 1);

@@ -51,10 +51,10 @@ pub enum LoginControl {
 /// Progress a running login reports.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LoginUpdate {
-    Url(String),
+    Url { url: String, launch_url: Option<String>, instructions: Option<String> },
     Progress(String),
     Prompt { message: String, placeholder: Option<String> },
-    Succeeded(Option<String>),
+    Succeeded { account: Option<String> },
     Failed(String),
     Cancelled,
 }

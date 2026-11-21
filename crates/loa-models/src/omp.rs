@@ -301,39 +301,33 @@ impl OmpService {
     }
 }
 
-#[async_trait]
-impl OmpRpc for OmpService {
-    async fn get_login_providers(&self) -> std::result::Result<Vec<LoginProvider>, RpcError> {
-        self.client().await?.get_login_providers().await
-    }
+macro_rules! delegate_lazy_client {
+    ($(fn $name:ident($($arg:ident: $ty:ty),*) -> $result:ty;)+) => {
+        #[async_trait]
+        impl OmpRpc for OmpService {
+            $(
+                async fn $name(&self, $($arg: $ty),*) -> std::result::Result<$result, RpcError> {
+                    self.client().await?.$name($($arg),*).await
+                }
+            )+
+        }
+    };
+}
 
-    async fn login(
-        &self,
-        provider_id: &str,
-        ui: UnboundedSender<LoginUiRequest>,
-    ) -> std::result::Result<String, RpcError> {
-        self.client().await?.login(provider_id, ui).await
-    }
-
-    async fn respond_ui(&self, response: UiResponse) -> std::result::Result<(), RpcError> {
-        self.client().await?.respond_ui(response).await
-    }
-
-    async fn get_available_models(&self) -> std::result::Result<Vec<ModelInfo>, RpcError> {
-        self.client().await?.get_available_models().await
-    }
-
-    async fn set_model(&self, provider: &str, model_id: &str) -> std::result::Result<ModelInfo, RpcError> {
-        self.client().await?.set_model(provider, model_id).await
-    }
+delegate_lazy_client! {
+    fn get_login_providers() -> Vec<LoginProvider>;
+    fn login(provider_id: &str, ui: UnboundedSender<LoginUiRequest>) -> String;
+    fn respond_ui(response: UiResponse) -> ();
+    fn get_available_models() -> Vec<ModelInfo>;
+    fn set_model(provider: &str, model_id: &str) -> ModelInfo;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::login::{LoginControl, LoginState, UrlOpener, run_login};
+    use crate::login::{LoginControl, LoginStrategy, LoginUpdate, OmpOAuthLogin, UrlOpener};
     use loa_harness::testing::{FakeProcess as FakeOmp, handshake_v2};
-    use tokio::sync::mpsc::unbounded_channel;
+    use tokio::sync::mpsc::channel;
 
     #[derive(Default)]
     struct Opener(Mutex<Vec<String>>);
@@ -362,19 +356,24 @@ mod tests {
         let fake = FakeOmp::install(dir.path(), &script).unwrap();
         let client = OmpClient::spawn(&launch(&fake)).await.unwrap();
         assert_eq!(fake.args(), ["--mode", "rpc", "--no-session"]);
-        let opener = Opener::default();
+        let opener = Arc::new(Opener::default());
         let provider = LoginProvider { id: "anthropic".into(), name: "Anthropic".into(), available: true, authenticated: false };
-        let (control_tx, control_rx) = unbounded_channel();
-        let (state_tx, mut state_rx) = unbounded_channel();
+        let (control_tx, control_rx) = channel(16);
+        let (state_tx, mut state_rx) = channel(16);
         let answer = async {
+            let mut succeeded = false;
             while let Some(state) = state_rx.recv().await {
-                if matches!(state, LoginState::WaitingForInput { .. }) {
-                    control_tx.send(LoginControl::SubmitInput("http://127.0.0.1:9/cb?code=1".into())).unwrap();
+                if matches!(state, LoginUpdate::Prompt { .. }) {
+                    control_tx.send(LoginControl::SubmitInput("http://127.0.0.1:9/cb?code=1".into())).await.unwrap();
+                } else if matches!(state, LoginUpdate::Succeeded { .. }) {
+                    succeeded = true;
                 }
             }
+            succeeded
         };
-        let (end, ()) = tokio::join!(run_login(&client, &opener, &provider, control_rx, state_tx), answer);
-        assert_eq!(end, LoginState::Succeeded { provider: "anthropic".into() });
+        let strategy = Box::new(OmpOAuthLogin { rpc: Arc::new(client), opener: opener.clone(), provider });
+        let (_, succeeded) = tokio::join!(strategy.run(control_rx, state_tx), answer);
+        assert!(succeeded);
         assert_eq!(*opener.0.locked(), ["https://auth.example/authorize"]);
         let received = fake.received();
         assert!(received.iter().any(|f| f["type"] == "login" && f["providerId"] == "anthropic"), "{received:?}");

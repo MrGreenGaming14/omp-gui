@@ -2,14 +2,12 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::str::FromStr;
 
 use async_trait::async_trait;
-use toml_edit::{DocumentMut, value};
 
 use super::{HarnessAuth, HarnessId, LoginKind, SignInMethod, SignInState, validate_model_name};
-use crate::error::{load_snapshot, save_snapshot};
-use loa_util::fs::Snapshot;
+use super::configdoc::{ConfigDoc, TomlDoc, edit_file};
+use crate::error::load_snapshot;
 use crate::process::{CommandSpec, ProcessRunner, RunningProcess};
 use crate::{Error, Result};
 
@@ -22,19 +20,15 @@ pub struct Codex {
     pub runner: Arc<dyn ProcessRunner>,
 }
 
-/// The supported Codex reasoning effort values in `config.toml`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReasoningEffort { None, Minimal, Low, Medium, High, XHigh }
-impl ReasoningEffort {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::None => "none", Self::Minimal => "minimal", Self::Low => "low",
-            Self::Medium => "medium", Self::High => "high", Self::XHigh => "xhigh",
-        }
-    }
-    pub fn parse(s: &str) -> Option<Self> {
-        [Self::None, Self::Minimal, Self::Low, Self::Medium, Self::High, Self::XHigh]
-            .into_iter().find(|level| level.as_str() == s)
+loa_util::str_enum! {
+    /// The supported Codex reasoning effort values in `config.toml`.
+    pub ReasoningEffort {
+        None => "none",
+        Minimal => "minimal",
+        Low => "low",
+        Medium => "medium",
+        High => "high",
+        XHigh => "xhigh",
     }
 }
 
@@ -52,19 +46,16 @@ impl Codex {
     fn command(&self, args: &[&str]) -> CommandSpec {
         CommandSpec::new(&self.program, args.iter().copied())
     }
-    fn load(&self) -> Result<(Snapshot, DocumentMut)> {
-        let (snapshot, text) = load_snapshot(&self.config_path)?;
-        let doc = DocumentMut::from_str(text.as_deref().unwrap_or("")).map_err(|e| Error::Parse {
-            what: self.config_path.display().to_string(), message: e.to_string()
-        })?;
-        Ok((snapshot, doc))
+    fn load(&self) -> Result<TomlDoc> {
+        let (_, text) = load_snapshot(&self.config_path)?;
+        TomlDoc::parse(text.as_deref().unwrap_or(""), &self.config_path.display().to_string())
     }
     /// Reads only model fields; a missing file has no overrides.
     pub fn read_model_settings(&self) -> Result<CodexModelSettings> {
-        let (_, doc) = self.load()?;
+        let doc = self.load()?;
         Ok(CodexModelSettings {
-            model: doc.get("model").and_then(|v| v.as_str()).map(str::to_owned),
-            reasoning_effort: doc.get("model_reasoning_effort").and_then(|v| v.as_str()).and_then(ReasoningEffort::parse),
+            model: doc.get(&["model"]),
+            reasoning_effort: doc.get(&["model_reasoning_effort"]).as_deref().and_then(ReasoningEffort::parse),
         })
     }
     /// Changes the default model, keeping comments and every other TOML key.
@@ -77,25 +68,9 @@ impl Codex {
         self.edit("model_reasoning_effort", effort.map(ReasoningEffort::as_str))
     }
     fn edit(&self, key: &str, setting: Option<&str>) -> Result<()> {
-        let (mut snapshot, mut doc) = self.load()?;
-        match setting {
-            Some(text) => {
-                if let Some(existing) = doc.get_mut(key).and_then(|item| item.as_value_mut()) {
-                    let decor = existing.decor().clone();
-                    *existing = toml_edit::Value::from(text);
-                    *existing.decor_mut() = decor;
-                } else {
-                    doc[key] = value(text);
-                }
-            }
-            None => { doc.remove(key); }
-        }
-        // A second parse checks the candidate before it reaches disk.
-        let edited = doc.to_string();
-        DocumentMut::from_str(&edited).map_err(|e| Error::Parse {
-            what: self.config_path.display().to_string(), message: e.to_string()
-        })?;
-        save_snapshot(&mut snapshot, &edited)
+        let (mut snapshot, text) = load_snapshot(&self.config_path)?;
+        edit_file::<TomlDoc>(&mut snapshot, text.as_deref().unwrap_or(""), |doc| doc.set(&[key], setting))?;
+        Ok(())
     }
 }
 
