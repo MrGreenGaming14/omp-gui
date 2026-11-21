@@ -3,11 +3,13 @@
 
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use async_trait::async_trait;
 use loa_bus::{Authorize, Bus, Denied, Event, JournalOptions, NodeKey, Policy, SessionId, SessionWriter, Store};
-use loa_contracts::harness::{Adapter, Answer, Capabilities, HarnessSession, HarnessTraits, Prompt, Result as HResult, SessionConfig, SessionState};
+use loa_contracts::harness::{
+    Adapter, AdapterError, Answer, Capabilities, HarnessSession, HarnessTraits, Prompt, Result as HResult, SessionConfig, SessionState,
+};
 use loa_core::{Dom, Draft, ElementKind, NodeId, PatchSink, Role, TurnStatus, Value, attr};
 use loa_harness::testing::ScriptedAdapter;
 use loa_runtime::feed::Source;
@@ -35,11 +37,13 @@ fn library(dir: &Path) -> Arc<Library> {
 struct Counted {
     inner: ScriptedAdapter,
     shutdowns: Arc<AtomicUsize>,
+    /// Shutdowns fail once set.
+    fail_shutdown: Arc<AtomicBool>,
 }
 
 impl Counted {
     fn new(inner: ScriptedAdapter) -> Self {
-        Self { inner, shutdowns: Arc::default() }
+        Self { inner, shutdowns: Arc::default(), fail_shutdown: Arc::default() }
     }
 
     fn shutdowns(&self) -> usize {
@@ -47,7 +51,7 @@ impl Counted {
     }
 
     fn wrap(&self, session: Box<dyn HarnessSession>) -> Box<dyn HarnessSession> {
-        Box::new(CountedSession { inner: session, shutdowns: Arc::clone(&self.shutdowns) })
+        Box::new(CountedSession { inner: session, shutdowns: Arc::clone(&self.shutdowns), fail_shutdown: Arc::clone(&self.fail_shutdown) })
     }
 }
 
@@ -73,6 +77,7 @@ impl Adapter for Counted {
 struct CountedSession {
     inner: Box<dyn HarnessSession>,
     shutdowns: Arc<AtomicUsize>,
+    fail_shutdown: Arc<AtomicBool>,
 }
 
 #[async_trait]
@@ -103,6 +108,9 @@ impl HarnessSession for CountedSession {
 
     async fn shutdown(&self) -> HResult<()> {
         self.shutdowns.fetch_add(1, Ordering::SeqCst);
+        if self.fail_shutdown.load(Ordering::SeqCst) {
+            return Err(AdapterError::Protocol("shutdown failed".to_owned()));
+        }
         self.inner.shutdown().await
     }
 }
@@ -206,7 +214,7 @@ async fn start_sends_the_prompt_once_and_reopens_from_the_journal() {
         closed.events.as_slice(),
         [RuntimeEvent::Session(SessionEvent::Activated(None)), RuntimeEvent::Session(SessionEvent::Closed(gone))] if *gone == id
     ));
-    assert!(matches!(run_one(closed).await, Completion::Done(Ok(()))));
+    assert!(matches!(run_one(closed).await, Completion::ShutDown(Ok(()))));
     assert_eq!(adapter.shutdowns(), 1);
 
     let opened = runtime.dispatch(Command::Open(id.clone()));
@@ -234,12 +242,38 @@ async fn a_start_completing_after_close_shuts_its_harness_down() {
 
     let late = runtime.dispatch(Command::Completed(completion));
     assert!(late.events.is_empty(), "nothing activates: {} events", late.events.len());
-    assert!(matches!(run_one(late).await, Completion::Done(Ok(()))));
+    assert!(matches!(run_one(late).await, Completion::ShutDown(Ok(()))));
     assert_eq!(adapter.shutdowns(), 1);
     assert!(runtime.sessions().active_id().is_none());
     assert!(runtime.sessions().get(id.as_str()).is_none());
     assert!(runtime.sessions().starting().is_none());
     assert!(adapter.inner.seen().prompts.is_empty());
+}
+
+#[tokio::test]
+async fn a_failed_shutdown_of_a_closed_session_leaves_the_active_turn_busy() {
+    let dir = tempfile::tempdir().unwrap();
+    let adapter = Counted::new(ScriptedAdapter::new(HARNESS));
+    let mut runtime = runtime(library(dir.path()), &adapter, dir.path());
+
+    let (closing, _) = start(&mut runtime, None).await;
+    let (active, _) = start(&mut runtime, None).await;
+    assert!(runtime.sessions().is_active(active.as_str()));
+    // The active session's turn runs; its send is never awaited.
+    let send = runtime.dispatch(Command::Send(prompt("hello")));
+    assert_eq!(send.effects.len(), 1);
+    assert!(runtime.sessions().active().unwrap().is_busy());
+
+    adapter.fail_shutdown.store(true, Ordering::SeqCst);
+    let closed = runtime.dispatch(Command::Close { id: closing.clone(), delete: false });
+    assert!(matches!(closed.events.as_slice(), [RuntimeEvent::Session(SessionEvent::Closed(gone))] if *gone == closing));
+    let shut = run_one(closed).await;
+    assert!(matches!(&shut, Completion::ShutDown(Err(_))));
+    let failed = runtime.dispatch(Command::Completed(shut));
+    assert!(failed.effects.is_empty());
+    assert!(matches!(failed.events.as_slice(), [RuntimeEvent::Notice(notice)] if notice.contains("shutdown failed")));
+    assert!(runtime.sessions().is_active(active.as_str()));
+    assert!(runtime.sessions().active().unwrap().is_busy(), "another session's shutdown doesn't end the active turn");
 }
 
 #[tokio::test]

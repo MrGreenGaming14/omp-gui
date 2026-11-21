@@ -93,6 +93,31 @@ pub(crate) fn runtime_parts(services: &Services, library: Arc<Library>, harnesse
     RuntimeParts { library, harnesses, node: services.node.key.clone(), cwd, project, access: saved.harness.approval_mode }
 }
 
+/// The parts of the app on this machine: every harness the registry knows,
+/// on the executables `[harness] executables` sets, and the backends areas
+/// build on, composed from them.
+pub(crate) fn machine_parts(services: &Services, library: Arc<Library>) -> AppParts {
+    let (node, omp_dir) = (&services.node.key, &services.storage.dirs.omp);
+    let mut harnesses = harness::detect(node, omp_dir);
+    // The backends below run the configured executables.
+    if let Ok(config) = services.storage.config.load() {
+        harness::set_executables(&mut harnesses, &config.harness.executables, node, omp_dir);
+    }
+    let runtime = runtime_parts(services, library, harnesses);
+    let executable = |id: &str| runtime.harnesses.get(id).and_then(|harness| harness.executable.clone());
+    let launch = OmpLaunch {
+        executable: executable(runtime.harnesses.roles_id()).unwrap_or_else(|| OmpLaunch::default().executable),
+        cwd: Some(runtime.cwd.clone()),
+        env: Vec::new(),
+    };
+    let env = loa_harness::HarnessEnv { node: node.clone(), omp_dir: omp_dir.clone() };
+    let models = crate::adapters::models::models_parts(launch, &runtime.harnesses, &loa_harness::factories(&env));
+    // Digests come from omp's `smol` role.
+    let summarizer = OmpSummarizers(OneShot::new(executable("omp").unwrap_or_else(|| PathBuf::from("omp")), services.storage.dirs.data.clone()));
+    let home = loa_util::fs::home().unwrap_or_else(|| PathBuf::from("."));
+    AppParts { runtime, models, summarizer: Arc::new(summarizer), home, opener: Arc::new(SystemUrlOpener) }
+}
+
 #[derive(Clone)]
 pub enum Message {
     Shell(shell::Message),
@@ -218,20 +243,7 @@ impl App {
     pub fn new() -> (Self, Task<Message>) {
         let (services, warnings) = Services::load().unwrap_or_else(|error| panic!("{error}"));
         let library = open_library(&services.storage.dirs, &services.node).unwrap_or_else(|error| panic!("{error}"));
-        let harnesses = harness::detect(&services.node.key, &services.storage.dirs.omp);
-        let runtime = runtime_parts(&services, library, harnesses);
-        let executable = |id: &str| runtime.harnesses.get(id).and_then(|harness| harness.executable.clone());
-        let launch = OmpLaunch {
-            executable: executable(runtime.harnesses.roles_id()).unwrap_or_else(|| OmpLaunch::default().executable),
-            cwd: Some(runtime.cwd.clone()),
-            env: Vec::new(),
-        };
-        let env = loa_harness::HarnessEnv { node: services.node.key.clone(), omp_dir: services.storage.dirs.omp.clone() };
-        let models = crate::adapters::models::models_parts(launch, &runtime.harnesses, &loa_harness::factories(&env));
-        // Digests come from omp's `smol` role.
-        let summarizer = OmpSummarizers(OneShot::new(executable("omp").unwrap_or_else(|| PathBuf::from("omp")), services.storage.dirs.data.clone()));
-        let home = loa_util::fs::home().unwrap_or_else(|| PathBuf::from("."));
-        let parts = AppParts { runtime, models, summarizer: Arc::new(summarizer), home, opener: Arc::new(SystemUrlOpener) };
+        let parts = machine_parts(&services, library);
         let (mut app, task) = Self::build(services, parts);
         if !warnings.is_empty() {
             app.ctx.notify(warnings.join("; "));

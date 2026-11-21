@@ -158,3 +158,22 @@ fn usage_reads_its_source_and_spends_a_saved_reset() {
     test.send(Message::Usage(usage::Message::Close));
     assert_eq!(test.app.windows.overlay, None);
 }
+
+#[test]
+fn the_backends_run_the_configured_harness_executables() {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = tempfile::tempdir().unwrap();
+    let omp = bin.path().join("my-omp");
+    std::fs::write(&omp, "#!/bin/sh\n").unwrap();
+    std::fs::set_permissions(&omp, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let runtime = Arc::new(tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap());
+    let configured = omp.clone();
+    let test = TestApp::on(runtime, crate::testing::FakeHarness::new("fake"), "testhost", move |config| {
+        config.harness.executables.insert("omp".to_owned(), configured);
+    });
+    let parts = machine_parts(&test.app.ctx.services, Arc::clone(test.app.ctx.runtime.library()));
+    // omp runs the model screens' RPC and the project digests.
+    let omp_harness = parts.runtime.harnesses.get("omp").expect("omp is registered");
+    assert_eq!(omp_harness.configured.as_deref(), Some(omp.as_path()));
+    assert_eq!(omp_harness.executable.as_deref(), Some(omp.as_path()));
+}

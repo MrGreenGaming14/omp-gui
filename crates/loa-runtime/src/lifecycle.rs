@@ -121,8 +121,12 @@ pub enum Completion {
     Resumed { operation: OperationId, id: SessionId, result: Result<Arc<dyn HarnessSession>, ResumeError>, prompt: Prompt },
     /// A session an area spawned started.
     Spawned { operation: OperationId, id: SessionId, result: Result<Arc<dyn HarnessSession>, String>, prompt: Option<Prompt> },
-    /// A harness call returned.
+    /// A harness call on the active session returned: sending, interrupting,
+    /// or stopping it to restart on a new approval mode.
     Done(Result<(), String>),
+    /// The harness of a closed or discarded session stopped; no turn of the
+    /// active session depends on it.
+    ShutDown(Result<(), String>),
 }
 
 /// What the app reacts to.
@@ -342,7 +346,7 @@ impl Runtime {
         }
         out.events.push(RuntimeEvent::Session(SessionEvent::Closed(session.id().clone())));
         if let Some(harness) = session.harness().cloned() {
-            out.effects.push(shutdown(harness));
+            out.effects.push(release(harness));
         }
     }
 
@@ -383,15 +387,21 @@ impl Runtime {
                 }
                 return;
             }
+            Completion::ShutDown(result) => {
+                if let Err(error) = result {
+                    out.events.push(RuntimeEvent::Notice(error.clone()));
+                }
+                return;
+            }
         };
         if self.operations.pending.remove(&operation).is_none() {
             // Its session closed meanwhile: stop what started for it.
             let harness = match completion {
                 Completion::Started { result, .. } | Completion::Spawned { result, .. } => result.ok(),
                 Completion::Resumed { result, .. } => result.ok(),
-                Completion::Done(_) => None,
+                Completion::Done(_) | Completion::ShutDown(_) => None,
             };
-            out.effects.extend(harness.map(shutdown));
+            out.effects.extend(harness.map(release));
             return;
         }
         match completion {
@@ -408,7 +418,7 @@ impl Runtime {
                 Err(error) => {
                     self.sessions.set_starting(None);
                     out.events.push(RuntimeEvent::Notice(error));
-                    out.effects.push(shutdown(harness));
+                    out.effects.push(release(harness));
                 }
             },
             Completion::Spawned { id, result: Err(error), .. } => {
@@ -422,7 +432,7 @@ impl Runtime {
                 match result {
                     Ok(harness) => {
                         let Some(session) = self.sessions.get_mut(id.as_str()) else {
-                            out.effects.push(shutdown(harness));
+                            out.effects.push(release(harness));
                             return;
                         };
                         session.attach(harness);
@@ -444,7 +454,7 @@ impl Runtime {
                     }
                 }
             }
-            Completion::Done(_) => {}
+            Completion::Done(_) | Completion::ShutDown(_) => {}
         }
     }
 
@@ -453,7 +463,7 @@ impl Runtime {
         self.sessions.set_starting(None);
         // Discarded while starting.
         let Some(session) = self.sessions.get_mut(id.as_str()) else {
-            out.effects.push(shutdown(harness));
+            out.effects.push(release(harness));
             return;
         };
         session.attach(harness);
@@ -491,8 +501,14 @@ impl Runtime {
     }
 }
 
+/// Stops the active session's harness; a failure ends its turn.
 fn shutdown(harness: Arc<dyn HarnessSession>) -> Effect {
     Box::pin(async move { Completion::Done(harness.shutdown().await.map_err(|error| error.to_string())) })
+}
+
+/// Stops the harness of a session that is closed or was never shown.
+fn release(harness: Arc<dyn HarnessSession>) -> Effect {
+    Box::pin(async move { Completion::ShutDown(harness.shutdown().await.map_err(|error| error.to_string())) })
 }
 
 /// The folder a session works in, from its DOM.

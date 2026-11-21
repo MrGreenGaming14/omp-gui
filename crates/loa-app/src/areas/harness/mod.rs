@@ -16,7 +16,7 @@ use loa_ui_kit::theme::{SpaceRole, TextRole, sp};
 use loa_ui_kit::widgets::{card, label, section_header, text_button};
 
 use crate::area::{Area, AreaCommand, AreaMessage, Ctx, Listed, PanelTab, Request};
-use crate::services::harness::set_executable;
+use crate::services::harness::{set_executable, set_executables};
 use loa_runtime::harnesses::Harness;
 use loa_runtime::session::SessionEvent;
 
@@ -59,10 +59,8 @@ pub struct State {
 impl State {
     fn apply(&mut self, settings: &HarnessSettings, ctx: &mut Ctx) {
         let (services, runtime) = (&ctx.services, &mut ctx.runtime);
-        for (id, executable) in &settings.executables {
-            if set_executable(runtime.harnesses_mut(), id, Some(executable.clone()), &services.node.key, &services.storage.dirs.omp) {
-                self.drafts.insert(id.clone(), executable.display().to_string());
-            }
+        for id in set_executables(runtime.harnesses_mut(), &settings.executables, &services.node.key, &services.storage.dirs.omp) {
+            self.drafts.insert(id.to_owned(), settings.executables[id].display().to_string());
         }
         self.default = Some(settings.default.clone());
         if ctx.runtime.sessions().active().is_none() && ctx.runtime.harnesses().get(&settings.default).is_some_and(|harness| harness.available) {

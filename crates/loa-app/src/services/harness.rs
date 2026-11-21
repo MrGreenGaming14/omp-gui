@@ -1,6 +1,7 @@
 //! The runtime's harnesses, built from the [`loa_harness::factories`]
 //! registry, and the composer's picker over them.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -52,6 +53,12 @@ pub fn set_executable(harnesses: &mut Harnesses, id: &str, executable: Option<Pa
     let Some(factory) = factory(id, &HarnessEnv { node: node.to_owned(), omp_dir: omp_dir.to_owned() }) else { return false };
     register(harnesses, factory.as_ref(), executable);
     true
+}
+
+/// Registers each known harness of `executables` (`[harness] executables`)
+/// running its executable there; the ids it registered.
+pub fn set_executables<'a>(harnesses: &mut Harnesses, executables: &'a BTreeMap<String, PathBuf>, node: &str, omp_dir: &Path) -> Vec<&'a str> {
+    executables.iter().filter(|(id, executable)| set_executable(harnesses, id, Some((*executable).clone()), node, omp_dir)).map(|(id, _)| id.as_str()).collect()
 }
 
 fn register(harnesses: &mut Harnesses, factory: &dyn HarnessFactory, executable: Option<PathBuf>) {
