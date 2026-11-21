@@ -15,6 +15,8 @@
 mod availability;
 mod capabilities;
 mod host_tools;
+#[cfg(feature = "testing")]
+pub mod testing;
 
 pub use availability::{Availability, AvailabilityStatus, PROBE_TIMEOUT, find_executable, parse_version, probe_cli};
 pub use capabilities::{Capabilities, ContextDelivery, Feature, ModelSwitch};
