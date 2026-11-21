@@ -9,7 +9,7 @@ use iced::keyboard::{Modifiers, key::Named};
 use iced::widget::operation;
 use loa_core::SessionMode;
 use loa_ui_session::composer as composer;
-use loa_ui_palette::{self as palette, Chord, CommandId, ids};
+use loa_ui_shell::palette::{self, Chord, CommandId, ids};
 use loa_ui_shell as shell;
 
 use super::{App, Message, TAB_COMMAND};

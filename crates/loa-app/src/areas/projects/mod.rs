@@ -24,7 +24,7 @@ use loa_projects::{
     FileSettingsStore, LiveSessions, LocalOnly, OmpSummarizer, ProjectOverview, ProjectService, ProjectSettings,
     ProjectSummary, RebuildOutcome, ServiceConfig, Summarizers,
 };
-use loa_ui_palette as palette;
+use loa_ui_shell::palette;
 use loa_ui_projects as screen;
 use tokio::sync::mpsc::UnboundedReceiver;
 
@@ -105,9 +105,9 @@ impl State {
         let (service, outcomes) = ProjectService::start(sessions, settings, Arc::new(LocalOnly), summarizer, config);
         let tools = service.host_tools();
         for spec in &tools.0 {
-            ctx.set_app_tool(loa_ui_tools::ToolInfo::from(spec));
+            ctx.set_app_tool(loa_ui_panel::tools::ToolInfo::from(spec));
         }
-        ctx.shell.set_projects([ctx.services.workspace_project()]);
+        ctx.shell.sidebar_mut().set_projects([ctx.services.workspace_project()]);
         let state = Self {
             service,
             tools,
@@ -263,7 +263,7 @@ impl Area for State {
             Message::Open(project) => self.open(project, ctx),
             Message::Listed(Ok(projects)) => {
                 self.projects = projects;
-                ctx.shell.set_projects(self.names(&ctx.services.workspace_project()));
+                ctx.shell.sidebar_mut().set_projects(self.names(&ctx.services.workspace_project()));
                 let uncached: Vec<String> =
                     self.projects.iter().filter(|p| !self.contexts.contains_key(&p.name)).map(|p| p.name.clone()).collect();
                 Task::batch(uncached.into_iter().map(|project| self.refresh_context(project)))

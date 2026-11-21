@@ -7,7 +7,7 @@ use loa_contracts::harness::McpTransport;
 use loa_trust::{Action, IssuedRecord, Resource};
 use loa_mcp::import::{App, Found, ImportReport, Outcome};
 use loa_mcp::{ServerView, Status, central};
-use loa_ui_tools as tools;
+use loa_ui_panel::tools;
 
 /// Prefix of the tools surface servers expose.
 const SURFACE_TOOL_PREFIX: &str = "surface_";

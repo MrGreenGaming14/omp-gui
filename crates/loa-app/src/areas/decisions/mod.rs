@@ -12,7 +12,7 @@ use loa_core::{ElementKind, NodeId, Op};
 use loa_models::login::UrlOpener;
 use loa_models::opener::SystemUrlOpener;
 use loa_ui_session::decisions::{self as decisions, Desk, DesktopNotifier, TIMEOUT_BY, Unattended, desk, unattended};
-use loa_ui_palette as palette;
+use loa_ui_shell::palette;
 use loa_ui_shell::theme::style;
 
 use crate::area::{Area, AreaId, Ctx, Request, SessionEvent};

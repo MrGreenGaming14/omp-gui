@@ -12,7 +12,7 @@ use iced::{Element, Font, Length, Task, Theme};
 use loa_contracts::harness::{Availability, AvailabilityStatus};
 use loa_config::HarnessSettings;
 use loa_ui_kit::icons::Icon;
-use loa_ui_palette as palette;
+use loa_ui_shell::palette;
 use loa_ui_shell::theme::style;
 
 use crate::area::{Area, AreaId, Ctx, PanelTab, Request, SessionEvent};

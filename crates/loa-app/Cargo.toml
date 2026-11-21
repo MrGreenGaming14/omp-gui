@@ -21,8 +21,6 @@ loa-ui-shell = { path = "../loa-ui-shell" }
 loa-ui-session = { path = "../loa-ui-session" }
 loa-ui-panel = { path = "../loa-ui-panel" }
 loa-ui-terminal = { path = "../loa-ui-terminal" }
-loa-ui-palette = { path = "../loa-ui-palette" }
-loa-ui-tools = { path = "../loa-ui-tools" }
 loa-ui-models = { path = "../loa-ui-models" }
 loa-models = { path = "../loa-models" }
 loa-ui-peers = { path = "../loa-ui-peers" }
