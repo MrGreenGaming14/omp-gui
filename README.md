@@ -6,14 +6,55 @@ The app is in development and does not have a packaged release. The [design arti
 
 ## Run from source on Windows
 
-Install stable Rust with the MSVC toolchain, Visual Studio Build Tools with the C++ workload and Windows SDK, and Git for Windows. Install [OMP](https://github.com/can1357/oh-my-pi/releases) and make sure `omp --version` works in PowerShell.
+These instructions use native Windows x64 and PowerShell; WSL is not required.
+
+### 1. Install prerequisites
+
+- [Git for Windows](https://git-scm.com/downloads/win). Keep Git available on `PATH`; its Bash is also used by the test fixtures.
+- [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/). Select **Desktop development with C++**, including the MSVC x64/x86 build tools and a Windows SDK.
+- [Rust via rustup](https://rustup.rs/). Use the stable MSVC toolchain, not the GNU toolchain.
+
+Open a new PowerShell window after installation so it picks up the updated `PATH`, then select the toolchain and check the commands:
 
 ```powershell
+rustup default stable-x86_64-pc-windows-msvc
+rustc --version
+cargo --version
+git --version
+```
+
+Install [OMP](https://github.com/can1357/oh-my-pi#install) using its official Windows installer:
+
+```powershell
+irm https://omp.sh/install.ps1 | iex
+```
+
+Open a new PowerShell window if the installer updated `PATH`, then run `omp --version`. Run `omp` once to configure your model provider or sign in before starting an OMP chat in Loa.
+
+### 2. Clone, build, and launch
+
+```powershell
+git clone https://github.com/MrGreenGaming14/omp-gui.git
+cd omp-gui
 cargo build --workspace --all-targets
 cargo run -p loa-app
 ```
 
-The workspace build also places `loa-sandbox-stub.exe` alongside the app. To test on Windows, install Python 3 (`python.exe` on `PATH`) and put Git for Windows' Bash ahead of the WSL launcher:
+Run the Cargo commands from the repository root. The workspace build also creates `loa-sandbox-stub.exe`, which the app needs for local sandbox tasks; `cargo run -p loa-app` alone does not build that companion executable. With Cargo's default target directory, the app and stub are in `target\debug`. Keep them together if you move the binaries.
+
+To launch an already-built app without Cargo:
+
+```powershell
+.\target\debug\loa-app.exe
+```
+
+### 3. Check the desktop
+
+Open a project, start an OMP chat, run `cd` in the Terminal tab, and use the Files tab to open a project file. Browser virtual-display mode requires Linux; Windows can use headed Chrome or Chromium.
+
+### Optional: run the tests
+
+Install [Python 3](https://www.python.org/downloads/windows/) with `python.exe` on `PATH`, then run these commands from the repository root. Put Git for Windows' Bash ahead of the WSL launcher for the test fixtures, and use the software test backend as Windows CI does:
 
 ```powershell
 $git = (Get-Command git.exe).Source
@@ -22,7 +63,14 @@ $env:ICED_TEST_BACKEND = 'tiny-skia'
 cargo test --workspace --no-fail-fast
 ```
 
-For a desktop smoke check, open a project, start an OMP chat, run `cd` in the Terminal tab, and use the Files tab to open a project file. Browser virtual-display mode requires Linux; Windows can use headed Chrome or Chromium.
+`ICED_TEST_BACKEND` selects the test backend; it is not required to launch the desktop app.
+
+### Troubleshooting
+
+- **`cargo`, `git`, or `omp` is not recognized:** reopen PowerShell after installation and check that the corresponding executable is on `PATH`.
+- **`link.exe` or a Windows SDK library is missing:** install the C++ workload and Windows SDK in Visual Studio Build Tools, confirm `rustup show active-toolchain` reports `x86_64-pc-windows-msvc`, and retry from a new PowerShell window.
+- **Local sandbox reports that `loa-sandbox-stub` was not found:** rerun `cargo build --workspace --all-targets` and keep the stub alongside the app.
+- **Tests cannot find Bash or Python:** check `Get-Command bash.exe` resolves to Git for Windows rather than WSL, and that `python.exe --version` works.
 
 ## Experience and roadmap
 
