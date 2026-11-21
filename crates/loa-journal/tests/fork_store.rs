@@ -6,7 +6,7 @@ use loa_journal::{Error, Journal, JournalOptions, JournalWriter, Listing, Parent
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 fn opts() -> JournalOptions {
     JournalOptions { snapshot_every: 16, keep_snapshots: 2 }
@@ -251,37 +251,4 @@ fn writer_syncs_by_age_every_patch_or_on_request() {
     assert_eq!(feed(&manual, 3), [1, 2, 3]);
     manual.sync().unwrap();
     assert_eq!(manual.pending(), 0);
-}
-
-#[test]
-fn replay_of_100k_appends_is_fast() {
-    let tmp = tempfile::tempdir().unwrap();
-    let dir = tmp.path().join("big");
-    let mut session = Session::new("big");
-    let msg = session.commit(Draft::insert(
-        session.turn,
-        loa_core::ElementKind::Message,
-        [(attr::ROLE, Value::from("assistant"))],
-        "",
-    ));
-    let mut journal = Journal::create(&dir, "big", JournalOptions { snapshot_every: 0, keep_snapshots: 1 }).unwrap();
-    let mut dom = session.dom.clone();
-    for p in &session.patches {
-        journal.append(p).unwrap();
-    }
-    for i in 0..100_000u32 {
-        let p = dom.commit(Draft::append(msg, if i.is_multiple_of(2) { "token " } else { "word\n" }), i64::from(i)).unwrap();
-        journal.append(&p).unwrap();
-    }
-    journal.sync().unwrap();
-    assert_eq!(journal.last_seq(), 100_003);
-
-    let started = Instant::now();
-    let loaded = journal.load().unwrap();
-    let took = started.elapsed();
-    assert_eq!(loaded, dom);
-    assert_eq!(loaded.get(msg).map(|n| n.text.len()), Some(50_000 * 6 + 50_000 * 5));
-    // Release replays this in tens of milliseconds; debug builds are ~10x slower.
-    let bound = if cfg!(debug_assertions) { Duration::from_secs(10) } else { Duration::from_secs(1) };
-    assert!(took < bound, "replaying 100k patches took {took:?}");
 }

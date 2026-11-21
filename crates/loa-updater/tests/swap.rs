@@ -6,31 +6,24 @@ use loa_updater::swap::{Active, Activity, SwapError, SwapOutcome, Swapper};
 use semver::Version;
 use std::fs;
 use std::path::Path;
-use tokio::sync::watch;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Activity driven by the test: `true` while a turn runs.
-struct Turns(watch::Sender<bool>);
+struct Turns(AtomicBool);
 
 impl Turns {
     fn new(running: bool) -> Self {
-        Self(watch::Sender::new(running))
+        Self(AtomicBool::new(running))
     }
 
     fn set(&self, running: bool) {
-        self.0.send_replace(running);
+        self.0.store(running, Ordering::Relaxed);
     }
 }
 
-#[async_trait::async_trait]
 impl Activity for Turns {
     fn turn_running(&self) -> bool {
-        *self.0.borrow()
-    }
-
-    async fn idle(&self) {
-        let mut rx = self.0.subscribe();
-        // The sender lives as long as `self`, so waiting can't fail.
-        let _ = rx.wait_for(|running| !*running).await;
+        self.0.load(Ordering::Relaxed)
     }
 }
 
@@ -226,22 +219,4 @@ fn rollback_restores_previous_and_can_be_reapplied() {
 
     swapper.try_swap("omp", &v("1.1.0"), None, &turns).unwrap();
     assert_eq!(swapper.active("omp").unwrap(), active("1.1.0", Some("1.0.0")));
-}
-
-#[tokio::test]
-async fn swap_when_idle_waits_for_the_turn_to_end() {
-    let root = tempfile::tempdir().unwrap();
-    stage(root.path(), "omp", "1.0.0", None);
-    let swapper = Swapper::new(root.path());
-    let turns = Turns::new(true);
-    let to = v("1.0.0");
-
-    let swap = swapper.swap_when_idle("omp", &to, None, &turns);
-    let mut swap = std::pin::pin!(swap);
-    assert!(futures::poll!(swap.as_mut()).is_pending());
-    assert_eq!(swapper.active("omp").unwrap(), None);
-
-    turns.set(false);
-    assert_eq!(swap.await.unwrap(), SwapOutcome::Swapped { from: None, to: v("1.0.0") });
-    assert_eq!(swapper.active("omp").unwrap(), active("1.0.0", None));
 }

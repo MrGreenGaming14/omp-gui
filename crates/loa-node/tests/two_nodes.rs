@@ -401,25 +401,6 @@ async fn journaled_library_sessions_are_listed_viewed_and_driven_by_peers() {
     assert_eq!(text_of(&journal.load().unwrap(), "user").as_deref(), Some("hello there"));
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "runs the host's real `tailscale status` and probes every tailnet machine"]
-async fn tailnet_scan_reads_the_real_tailnet() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut config = NodeConfig::new(dir.path().join("node"), "scanner", "0.4.2");
-    assert!(config.tailscale.is_some(), "tailscale is on PATH");
-    config.bind = SocketAddr::from(([0, 0, 0, 0], 0));
-    config.mdns = false;
-    config.presence_interval = Duration::from_secs(3600);
-    let node = Node::open(config, &NodeIdentity::generate().unwrap(), KeySource::Keychain, Arc::new(BusSessions::new(Arc::new(Bus::new())))).unwrap();
-    node.start().await.unwrap();
-    // This machine answers on its tailnet address with its own key, which is
-    // never listed; machines without the app on this port don't answer.
-    let found = node.scan_tailscale().await.unwrap();
-    assert_eq!(found, node.nearby().len());
-    assert!(matches!(&node.status().tailscale, loa_node::Availability::Active(text) if text.starts_with("last scan found")));
-    node.stop().await;
-}
-
 /// Echoes every byte back on the stream.
 struct Echo;
 

@@ -13,8 +13,6 @@
 //!   drive the OAuth login flow, opening the browser through [`login::UrlOpener`].
 //! - [`keys`] reports where omp would read a provider's API key from, without ever
 //!   reading or returning a key value.
-//! - [`catalog`] groups available models by provider with their role assignments
-//!   and switches the session model or a role's model.
 //! - [`yaml`], [`config`] and [`models_yml`] edit omp's own `config.yml` and
 //!   `models.yml` in place, keeping comments and ordering of untouched keys.
 //! - [`validate`] checks edited files with omp itself, without a model call.
@@ -29,7 +27,6 @@
 //! Reading reports a [`models_yml::ApiKeySetting::Literal`] with no payload when
 //! the file holds an inline key, and [`keys`] reports sources by name only.
 
-pub mod catalog;
 pub mod config;
 mod error;
 pub mod harness;

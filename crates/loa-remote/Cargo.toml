@@ -33,7 +33,6 @@ tokio-util = "0.7"
 futures.workspace = true
 rand = "0.10"
 rmcp = { version = "3.11", default-features = false, features = ["server", "client", "transport-io"] }
-loa-adapter-omp = { path = "../loa-adapter-omp" }
 loa-mcp = { path = "../loa-mcp" }
 tempfile.workspace = true
 tokio-stream = { version = "0.1", features = ["net"] }

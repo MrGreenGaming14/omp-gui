@@ -114,13 +114,6 @@ impl RemoteMcp {
         self.serve(io).await.map_err(Box::new)
     }
 
-    /// Serves on this process's stdin and stdout until the client leaves.
-    pub async fn serve_stdio(self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let running = self.serve(rmcp::transport::stdio()).await?;
-        running.waiting().await?;
-        Ok(())
-    }
-
     fn session<'a>(&'a self, context: &'a RequestContext<RoleServer>) -> Result<&'a str, ErrorData> {
         if let Some(session) = &self.session_id {
             return Ok(session);

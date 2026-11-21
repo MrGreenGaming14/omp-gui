@@ -1,12 +1,11 @@
 use loa_adapter::{McpTransport, SessionConfig};
 use loa_config::{
-    Config, ConfigError, ConfigStore, NativeConfig, NativeConfigError, NativeConfigWriter, Relay,
+    Config, ConfigError, ConfigStore, Relay,
     Theme, config_path,
 };
 use loa_core::DecisionKind;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use std::time::Duration;
 
 const FULL: &str = r#"
@@ -89,7 +88,6 @@ fn invalid_key(err: ConfigError) -> String {
 fn full_config_loads_into_typed_settings_and_round_trips() {
     let (_dir, store) = store_with(FULL);
     let loaded = store.load().unwrap();
-    assert_eq!(loaded.migrated_from, None);
     let c = loaded.config;
 
     assert_eq!(c.theme, Theme::Dark);
@@ -242,6 +240,8 @@ fn invalid_values_name_the_offending_key() {
 fn file_without_version_or_with_bad_toml_is_refused() {
     assert!(matches!(load_err("theme = \"dark\"\n"), ConfigError::MissingVersion));
     assert!(matches!(load_err("version = 1\n[network\n"), ConfigError::Parse(_)));
+    assert!(matches!(load_err("version = 99\n"), ConfigError::TooNew { found: 99, .. }));
+    assert!(matches!(load_err("version = 0\n"), ConfigError::MissingMigration { from: 0 }));
 }
 
 #[test]
@@ -304,51 +304,6 @@ fn apply_to_session_adds_enabled_servers_toggles_and_executable() {
     c.apply_to_session("omp", &mut session);
     assert_eq!(session.executable, Some(staged), "the updater's staged executable wins");
     assert!(session.disabled_tools.is_empty());
-}
-
-/// cwd, enabled servers, disabled built in tools, disabled tools of `files`.
-type Written = (PathBuf, Vec<String>, Vec<String>, Vec<String>);
-
-/// Records what it was asked to write, like an adapter's native writer would.
-#[derive(Default)]
-struct RecordingWriter {
-    written: Mutex<Vec<Written>>,
-}
-
-impl NativeConfigWriter for RecordingWriter {
-    fn harness(&self) -> &'static str {
-        "recording"
-    }
-
-    fn write(&self, cwd: &Path, config: &NativeConfig<'_>) -> Result<(), NativeConfigError> {
-        let servers = config.mcp_servers.iter().map(|(name, _)| (*name).to_owned()).collect();
-        let tools = config.disabled_tools.iter().cloned().collect();
-        let mcp_off = config.disabled_mcp_tools("files").map(str::to_owned).collect();
-        self.written.lock().unwrap().push((cwd.to_path_buf(), servers, tools, mcp_off));
-        Ok(())
-    }
-}
-
-#[test]
-fn native_view_gives_writers_enabled_servers_and_project_toggles() {
-    let (_dir, store) = store_with(FULL);
-    let c = store.load().unwrap().config;
-    let writer = RecordingWriter::default();
-    let writers: [&dyn NativeConfigWriter; 1] = [&writer];
-    for w in writers {
-        w.write(Path::new("/work/loa"), &c.native_view(w.harness(), Some("loa"))).unwrap();
-        w.write(Path::new("/work/other"), &c.native_view(w.harness(), None)).unwrap();
-    }
-    let view = c.native_view("recording", Some("loa"));
-    assert!(!view.mcp_tool_enabled("files", "delete"));
-    assert!(view.mcp_tool_enabled("search", "delete"));
-
-    let written = writer.written.into_inner().unwrap();
-    assert_eq!(
-        written[0],
-        (PathBuf::from("/work/loa"), vec!["files".into(), "search".into()], vec!["bash".into()], vec!["delete".into()])
-    );
-    assert_eq!(written[1], (PathBuf::from("/work/other"), vec!["files".into(), "search".into()], vec![], vec![]));
 }
 
 #[test]

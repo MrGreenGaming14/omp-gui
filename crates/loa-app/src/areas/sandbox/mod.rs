@@ -33,8 +33,6 @@ use crate::area::{Area, AreaId, Ctx, HostToolSet, PanelTab, Request, SessionEven
 
 #[cfg(test)]
 mod tests;
-#[cfg(test)]
-mod live;
 mod peer;
 
 /// Id of the Sandbox panel tab.

@@ -4582,9 +4582,11 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "bytes",
+ "loa-adapter",
  "loa-core",
  "loa-util",
  "serde",
+ "serde_json",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
@@ -4685,22 +4687,6 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
-]
-
-[[package]]
-name = "loa-adapter-testkit"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "loa-adapter",
- "loa-core",
- "loa-util",
- "serde",
- "serde_json",
- "similar",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
 ]
 
 [[package]]
@@ -4805,7 +4791,6 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "loa-adapter",
- "loa-adapter-omp",
  "loa-bus",
  "loa-core",
  "loa-journal",
@@ -4878,9 +4863,7 @@ dependencies = [
  "http",
  "libtest-mimic",
  "loa-adapter",
- "loa-adapter-omp",
  "loa-config",
- "loa-core",
  "loa-surface",
  "loa-util",
  "process-wrap",
@@ -5009,7 +4992,6 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "loa-adapter",
- "loa-adapter-omp",
  "loa-bus",
  "loa-core",
  "loa-journal",
@@ -5034,7 +5016,6 @@ dependencies = [
  "hmac 0.12.1",
  "http",
  "loa-adapter",
- "loa-adapter-omp",
  "loa-config",
  "loa-core",
  "loa-mcp",
@@ -5086,7 +5067,6 @@ dependencies = [
  "async-trait",
  "libc",
  "loa-adapter",
- "loa-adapter-omp",
  "loa-core",
  "loa-sandbox",
  "loa-util",
@@ -5195,7 +5175,6 @@ dependencies = [
  "bytes",
  "image",
  "loa-adapter",
- "loa-adapter-omp",
  "loa-core",
  "loa-mcp",
  "loa-surface",
@@ -5277,7 +5256,6 @@ dependencies = [
  "iced",
  "iced_test",
  "loa-adapter",
- "loa-adapter-omp",
  "loa-config",
  "loa-core",
  "loa-ui-icons",
@@ -5303,8 +5281,6 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "iced",
- "loa-adapter",
- "loa-adapter-omp",
  "loa-core",
  "loa-models",
  "loa-ui-icons",

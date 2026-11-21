@@ -19,6 +19,5 @@ notify-rust = "4.19"
 
 [dev-dependencies]
 iced_test = "0.14"
-loa-adapter-omp = { path = "../loa-adapter-omp" }
 tempfile.workspace = true
 tokio.workspace = true

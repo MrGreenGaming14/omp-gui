@@ -4,7 +4,7 @@
 //! - [`digester`]: builds a digest of a session with omp's `smol` role
 //! - [`rebuild`]: rebuilds stale digests at turn end or compaction, debounced
 //! - [`rank`]: ranks a project's digests and packs them into a token budget
-//! - [`context`]: renders project context and delivers it per harness
+//! - [`context`]: renders project context
 //! - [`search`], [`read`], [`tools`]: `project_search` and `project_read` host tools
 //! - [`settings`]: shared instructions, pinned files and the per session exclude toggle
 //! - [`source`]: the ports for loading sessions and checking access
@@ -30,7 +30,7 @@ pub mod source;
 pub mod tools;
 mod text;
 
-pub use context::{ContextRequest, Delivered, McpResource, PackedContext, build_context, deliver, render_markdown};
+pub use context::{ContextRequest, PackedContext, build_context, render_markdown};
 pub use digest::{Digest, DigestContent, DigestState, FileNote, digest_of, digest_state, mark_stale_draft, write_drafts};
 pub use digester::{Digester, OmpSummarizer, PromptLimits, Summarizer, SummaryAnswer};
 pub use rank::{Candidate, RankParams, Ranked, estimate_tokens, rank_and_pack};

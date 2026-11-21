@@ -8,7 +8,7 @@ use loa_remote::audit::{Action, AuditQuery, Outcome};
 use loa_remote::hosts::Host;
 use loa_remote::limits::HostLimits;
 use loa_remote::ports::{Approval, HostKeyChange};
-use loa_remote::ssh_config::import_hosts;
+use loa_remote::ssh_config::{Imported, SshConfig};
 use loa_remote::{
     BashRequest, EntryKind, Error, FileOp, FileOutput, FileRequest, WriteMode,
 };
@@ -154,7 +154,10 @@ async fn proxyjump_chain_from_ssh_config_reaches_the_target() {
     // Only the outer hop's key is known; the others are accepted at the prompt.
     let h = Harness::new(dir, Some(&agent), &outer.known_hosts_line(), true, vec![]);
     let failed = h.hosts.import(
-        import_hosts(&config, h.dir.path(), "nobody").unwrap(),
+        {
+            let config = SshConfig::load(&config, h.dir.path()).unwrap();
+            config.aliases().into_iter().map(|alias| Imported { host: config.resolve(&alias, "nobody"), alias }).collect()
+        },
         &open_limits(),
     );
     assert!(failed.is_empty());

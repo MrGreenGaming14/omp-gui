@@ -5,7 +5,7 @@ mod common;
 
 use common::*;
 use loa_surface::{Encoding, Input, Modifiers, MouseButton, Surface, SurfaceError, SurfaceMode, SurfaceServer, SurfaceUri};
-use loa_surface_browser::{BrowserError, Tab, bench};
+use loa_surface_browser::{BrowserError, Tab};
 use std::sync::Arc;
 
 /// Waits, one repaint at a time, until the page text contains `needle`.
@@ -321,18 +321,6 @@ async fn shutdown_kills_chrome_and_refuses_new_tabs() {
     assert!(matches!(server.open_tab("about:blank").await, Err(BrowserError::Closed)));
     assert!(server.list().await.unwrap().is_empty());
     assert!(tab.page_text().await.is_err());
-}
-
-/// The benchmark the design README asks for. Prints the numbers; run with
-/// `--nocapture` to see them.
-#[tokio::test(flavor = "multi_thread")]
-async fn screencast_click_latency_benchmark() {
-    let Some(server) = server(1280, 720).await else { return };
-    let report = bench::click_latency(&server, 100).await.unwrap();
-    println!("screencast click to frame latency: {report}");
-    assert_eq!(report.samples.len(), 100);
-    assert_eq!(report.overclaimed, 0, "frames claimed inputs they did not show");
-    server.shutdown().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread")]

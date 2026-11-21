@@ -38,11 +38,9 @@ pub enum DocsError {
     PageRange { index: usize, count: usize },
     #[error("unsupported file type `{0}`")]
     Unsupported(String),
-    /// A query or edit that doesn't fit the document (unknown sheet, bad range).
+    /// A query that doesn't fit the document (unknown sheet, bad range).
     #[error("{0}")]
     Request(String),
-    #[error("writing {format}: {message}")]
-    Write { format: Format, message: String },
     #[error("font: {0}")]
     Font(String),
     #[error("encoding png: {0}")]

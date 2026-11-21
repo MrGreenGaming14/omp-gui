@@ -66,11 +66,8 @@ pub enum SwapOutcome {
 
 /// Whether the app is in the middle of a turn. Swaps only happen when no
 /// turn runs.
-#[async_trait::async_trait]
 pub trait Activity: Send + Sync {
     fn turn_running(&self) -> bool;
-    /// Resolves when no turn is running.
-    async fn idle(&self);
 }
 
 /// Swaps and rolls back versions installed under `root`.
@@ -141,24 +138,6 @@ impl Swapper {
         self.write_active(product, &active)?;
         self.prune(product, &active);
         Ok(SwapOutcome::Swapped { from, to: to.clone() })
-    }
-
-    /// Waits until no turn is running, then swaps. If a turn starts between
-    /// becoming idle and swapping, waits again.
-    pub async fn swap_when_idle(
-        &self,
-        product: &str,
-        to: &Version,
-        requires_signature: Option<&[VerifyingKey]>,
-        activity: &dyn Activity,
-    ) -> Result<SwapOutcome> {
-        loop {
-            activity.idle().await;
-            match self.try_swap(product, to, requires_signature, activity)? {
-                SwapOutcome::Deferred => continue,
-                outcome => return Ok(outcome),
-            }
-        }
     }
 
     /// Makes the previous version current again and keeps the version

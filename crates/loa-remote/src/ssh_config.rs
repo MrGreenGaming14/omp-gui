@@ -136,21 +136,6 @@ struct Options<'a> {
     unsupported: Vec<Unsupported>,
 }
 
-/// Parses `path` and resolves every concrete alias in it.
-///
-/// `home` expands `~`; `default_user` fills hops with no `User`.
-pub fn import_hosts(path: &Path, home: &Path, default_user: &str) -> Result<Vec<Imported>> {
-    let config = SshConfig::load(path, home)?;
-    Ok(config
-        .aliases()
-        .into_iter()
-        .map(|alias| {
-            let host = config.resolve(&alias, default_user);
-            Imported { alias, host }
-        })
-        .collect())
-}
-
 impl SshConfig {
     /// Reads `path` like [`SshConfig::load`], or an empty config when the
     /// file does not exist.
@@ -820,10 +805,9 @@ mod tests {
             "Include conf.d/*\nMatch host db exec \"true\"\n  User matched\nHost db\n  User admin\n",
         )
         .unwrap();
-        let hosts = import_hosts(&dir.path().join("config"), Path::new("/home/u"), "me").unwrap();
-        let names: Vec<_> = hosts.iter().map(|h| h.alias.as_str()).collect();
-        assert_eq!(names, vec!["db", "cache"]);
-        let db = hosts[0].host.as_ref().unwrap();
+        let config = SshConfig::load(&dir.path().join("config"), Path::new("/home/u")).unwrap();
+        assert_eq!(config.aliases(), vec!["db", "cache"]);
+        let db = config.resolve("db", "me").unwrap();
         assert_eq!(db.target.hostname, "db.internal");
         assert_eq!(db.target.user, "admin", "Match block must not be guessed");
         let texts: Vec<_> = db.unsupported.iter().map(|u| u.text.as_str()).collect();
@@ -831,7 +815,7 @@ mod tests {
         assert!(texts.iter().any(|t| t.starts_with("Match")));
         let match_note = db.unsupported.iter().find(|u| u.text.starts_with("Match")).unwrap();
         assert_eq!(match_note.location.line, 2);
-        assert_eq!(hosts[1].host.as_ref().unwrap().target.port, 6000);
+        assert_eq!(config.resolve("cache", "me").unwrap().target.port, 6000);
     }
 
     #[test]

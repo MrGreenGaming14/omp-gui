@@ -13,6 +13,12 @@ bytes.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+serde_json = { workspace = true, optional = true }
+
+[features]
+# Contract checks for adapter tests (DOM invariants, WatchedSink).
+testing = ["dep:serde_json", "tokio/sync"]
 
 [dev-dependencies]
+loa-adapter = { path = ".", features = ["testing"] }
 tempfile.workspace = true

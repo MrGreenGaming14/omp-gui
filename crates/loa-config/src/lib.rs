@@ -1,21 +1,14 @@
-//! Central app config with a schema version and migrations.
+//! Central app config with a schema version.
 //!
 //! The app owns one TOML file (see [`config_path`]). [`ConfigStore`] loads it,
-//! runs the [`Migrator`] chain when its `version` is older than the app's,
 //! validates it into a typed [`Config`] and saves it atomically. Keys the app
 //! doesn't know are kept on load and written back on save, so a config written
 //! by a newer app with additive keys survives being edited by an older one.
-//! Adapters translate the central config into a harness's native config through
-//! [`NativeConfigWriter`].
 
 mod codec;
-mod migrate;
-mod native;
 mod schema;
 mod store;
 
-pub use migrate::{Migrator, Step, StepFn};
-pub use native::{NativeConfig, NativeConfigError, NativeConfigWriter};
 pub use schema::{
     ActiveProject, BrowserCapture, CURRENT_VERSION, Config, DEFAULT_PORT, DecisionDefault, Discovery, HarnessSettings,
     McpServer, NetworkSettings, ProjectSettings, Relay, RemoteHost, SurfaceSettings, Theme,
@@ -25,7 +18,7 @@ pub use store::{CONFIG_FILE_NAME, ConfigStore, Loaded, config_path};
 
 use std::path::PathBuf;
 
-/// Everything that can go wrong loading, migrating, validating or saving the config.
+/// Everything that can go wrong loading, validating or saving the config.
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
     #[error("can't read {}: {source}", path.display())]
@@ -54,8 +47,6 @@ pub enum ConfigError {
     TooNew { found: u32, supported: u32 },
     #[error("there is no migration from config version {from} to {}", from + 1)]
     MissingMigration { from: u32 },
-    #[error("migrating the config from version {from} to {}: {reason}", from + 1)]
-    Migration { from: u32, reason: String },
     #[error("can't serialize the config: {0}")]
     Serialize(#[from] toml::ser::Error),
 }

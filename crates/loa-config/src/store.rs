@@ -1,9 +1,9 @@
 //! Loading and saving the config file.
 
-use crate::codec::{decode, encode};
-use crate::{Config, ConfigError, Migrator, Result};
+use crate::codec::{decode, encode, version_of};
+use crate::{CURRENT_VERSION, Config, ConfigError, Result};
 use std::fs;
-use std::io::{self, Write};
+use std::io;
 use std::path::{Path, PathBuf};
 use toml::Table;
 
@@ -20,23 +20,17 @@ pub fn config_path(config_dir: &Path) -> PathBuf {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Loaded {
     pub config: Config,
-    /// The version the file had when it was migrated on this load.
-    pub migrated_from: Option<u32>,
-    /// Copy of the file as it was before migration.
-    pub backup: Option<PathBuf>,
 }
 
 /// Reads and writes one config file.
 #[derive(Clone, Debug)]
 pub struct ConfigStore {
     path: PathBuf,
-    migrator: Migrator,
 }
 
 impl ConfigStore {
-    /// A store for the file at `path`, migrating with [`Migrator::standard`].
     pub fn new(path: impl Into<PathBuf>) -> Self {
-        Self { path: path.into(), migrator: Migrator::standard() }
+        Self { path: path.into() }
     }
 
     /// A store for [`config_path`] in `config_dir`.
@@ -44,43 +38,25 @@ impl ConfigStore {
         Self::new(config_path(config_dir))
     }
 
-    /// Replaces the migration chain.
-    #[must_use]
-    pub fn with_migrator(mut self, migrator: Migrator) -> Self {
-        self.migrator = migrator;
-        self
-    }
-
     pub fn path(&self) -> &Path {
         &self.path
     }
 
-    /// Loads the file, or the defaults when it doesn't exist yet.
-    ///
-    /// An older file is migrated in memory and validated first. Only then is
-    /// the original copied to a backup next to it and the migrated config
-    /// written over it, so a failed migration leaves the file untouched.
+    /// Loads the file, or the defaults when it doesn't exist yet. A file of
+    /// another schema version is refused: newer as [`ConfigError::TooNew`],
+    /// older as [`ConfigError::MissingMigration`] (no migrations exist yet).
     pub fn load(&self) -> Result<Loaded> {
         let text = match fs::read_to_string(&self.path) {
             Ok(text) => text,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                let config = Config { version: self.migrator.target(), ..Config::default() };
-                return Ok(Loaded { config, migrated_from: None, backup: None });
-            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Loaded { config: Config::default() }),
             Err(source) => return Err(ConfigError::Read { path: self.path.clone(), source }),
         };
-        let mut doc: Table = text.parse().map_err(|e| ConfigError::Parse(Box::new(e)))?;
-        let migrated_from = self.migrator.migrate(&mut doc)?;
-        let config = decode(doc, self.migrator.target())?;
-        let backup = match migrated_from {
-            Some(from) => {
-                let backup = self.write_backup(from, text.as_bytes())?;
-                self.write_atomic(encode(&config)?.as_bytes())?;
-                Some(backup)
-            }
-            None => None,
-        };
-        Ok(Loaded { config, migrated_from, backup })
+        let doc: Table = text.parse().map_err(|e| ConfigError::Parse(Box::new(e)))?;
+        match version_of(&doc)? {
+            found if found > CURRENT_VERSION => Err(ConfigError::TooNew { found, supported: CURRENT_VERSION }),
+            from if from < CURRENT_VERSION => Err(ConfigError::MissingMigration { from }),
+            _ => Ok(Loaded { config: decode(doc)? }),
+        }
     }
 
     /// Validates `config` and replaces the file with it atomically: the new
@@ -93,35 +69,5 @@ impl ConfigStore {
 
     fn write_atomic(&self, bytes: &[u8]) -> Result<()> {
         loa_util::fs::write_atomic(&self.path, bytes, None).map_err(|source| ConfigError::Write { path: self.path.clone(), source })
-    }
-
-    /// Writes `original` to `<file>.v<from>.bak`, adding `.1`, `.2`, … when an
-    /// earlier backup of the same version exists. Backups are never overwritten.
-    fn write_backup(&self, from: u32, original: &[u8]) -> Result<PathBuf> {
-        let base = {
-            let mut name = self.path.file_name().unwrap_or_default().to_os_string();
-            name.push(format!(".v{from}.bak"));
-            self.path.with_file_name(name)
-        };
-        let mut n = 0u32;
-        loop {
-            let candidate = if n == 0 {
-                base.clone()
-            } else {
-                let mut name = base.clone().into_os_string();
-                name.push(format!(".{n}"));
-                PathBuf::from(name)
-            };
-            match fs::OpenOptions::new().write(true).create_new(true).open(&candidate) {
-                Ok(mut file) => {
-                    let write_err = |source| ConfigError::Write { path: candidate.clone(), source };
-                    file.write_all(original).map_err(write_err)?;
-                    file.sync_all().map_err(write_err)?;
-                    return Ok(candidate);
-                }
-                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => n += 1,
-                Err(source) => return Err(ConfigError::Write { path: candidate, source }),
-            }
-        }
     }
 }

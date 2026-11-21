@@ -13,7 +13,7 @@ use iced::widget::text_editor::{Action as EditAction, Edit};
 use iced_runtime::Action as RuntimeAction;
 use loa_adapter::{Adapter, Capabilities, HarnessSession, Registry as Adapters, SessionConfig};
 use loa_bus::{Policy, SessionId};
-use loa_core::{DecisionStatus, Dom, ElementKind, PatchSink, TurnStatus, attr};
+use loa_core::{DecisionStatus, Dom, PatchSink, TurnStatus, attr};
 use loa_grants::{GrantSpec, NodeKey, Resource, Scope};
 use loa_identity::NodeIdentity;
 use loa_remote::connection::ConnectorConfig;
@@ -33,7 +33,6 @@ use crate::session::{Feed, dom_turns};
 mod ssh;
 
 const WAIT: Duration = Duration::from_secs(30);
-const TURN_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// Harness ids of the rig: one connects to MCP servers itself, one takes
 /// host tools (like omp), one takes neither.
@@ -717,115 +716,3 @@ fn a_remote_shell_opens_on_a_host_in_the_remote_shell_tab() {
 }
 
 // ---------------------------------------------------------------- live
-
-fn live_model() -> String {
-    std::env::var("LOA_LIVE_MODEL").unwrap_or_else(|_| "anthropic/claude-haiku-5-5".into())
-}
-
-/// omp as the app registers it (approval mode always-ask), pinned to the
-/// live model.
-struct LiveOmp(loa_adapter_omp::OmpAdapter);
-
-#[async_trait::async_trait]
-impl Adapter for LiveOmp {
-    fn harness(&self) -> &'static str {
-        self.0.harness()
-    }
-
-    fn capabilities(&self) -> Capabilities {
-        self.0.capabilities()
-    }
-
-    async fn start(&self, mut config: SessionConfig, sink: Arc<dyn PatchSink>) -> loa_adapter::Result<Box<dyn HarnessSession>> {
-        config.model = Some(live_model());
-        self.0.start(config, sink).await
-    }
-
-    async fn resume(&self, mut config: SessionConfig, dom: &Dom, sink: Arc<dyn PatchSink>) -> loa_adapter::Result<Box<dyn HarnessSession>> {
-        config.model = Some(live_model());
-        self.0.resume(config, dom, sink).await
-    }
-}
-
-fn live_rig() -> Rig {
-    Rig::with(|harnesses| {
-        let data = tempfile::tempdir().unwrap().keep();
-        let mut omp = loa_adapter_omp::OmpAdapterConfig::new("live-node", data.join("omp"));
-        omp.approval_mode = Some("always-ask".into());
-        harnesses.add(Arc::new(LiveOmp(loa_adapter_omp::OmpAdapter::new(omp))), "omp", true, None, None);
-    })
-    .started()
-}
-
-/// Runs the active session's turn to its end, answering every card it
-/// raises with its first choice (allow once, trust).
-fn finish_turn(rig: &mut Rig, session: &SessionId) -> Dom {
-    let deadline = Instant::now() + TURN_TIMEOUT;
-    let mut answered = Vec::new();
-    loop {
-        rig.drain();
-        if let Some(focused) = rig.app.areas.decisions.focused()
-            && !answered.contains(&focused)
-        {
-            answered.push(focused);
-            let choose = desk::Message::Card(session.to_string(), loa_ui_decisions::Message::Choose(focused, 0));
-            rig.update(AppMessage::Decisions(decisions::Message::Desk(choose)));
-        }
-        let dom = rig.dom(session);
-        let ended = dom_turns(&dom)
-            .last()
-            .and_then(|turn| turn.str_attr(attr::STATUS))
-            .and_then(TurnStatus::parse)
-            .is_some_and(|status| !matches!(status, TurnStatus::Running | TurnStatus::Waiting));
-        if ended {
-            return dom;
-        }
-        assert!(Instant::now() < deadline, "the turn didn't end in time");
-        std::thread::sleep(Duration::from_millis(50));
-    }
-}
-
-fn call_result(dom: &Dom, tool: &str) -> String {
-    let call = dom
-        .iter()
-        .find(|node| node.kind == ElementKind::Call && node.str_attr(attr::TOOL) == Some(tool))
-        .unwrap_or_else(|| panic!("the agent called {tool}"));
-    dom.children_of_kind(call.id, ElementKind::Result).next().expect("the call has a result").text.clone()
-}
-
-#[test]
-#[ignore = "runs the installed omp with real model calls"]
-fn live_an_omp_session_calls_a_tool_of_a_server_registered_in_the_panel() {
-    let mut rig = live_rig();
-    let command = vault_server(rig.dir.path(), "LOA-8841");
-    add_server(&mut rig, "vault", &command);
-    let session = rig.session("omp");
-    rig.type_prompt("What is the vault code? Use your vault__vault_code tool to find out, then tell me the code.");
-    let dom = finish_turn(&mut rig, &session);
-    let result = call_result(&dom, "vault__vault_code");
-    assert!(result.contains("LOA-8841"), "{result}");
-    if let Some(harness) = rig.app.ctx.sessions.get(session.as_str()).and_then(|s| s.harness().cloned()) {
-        rig.runtime.block_on(harness.shutdown()).unwrap();
-    }
-}
-
-#[test]
-#[ignore = "runs the installed omp with real model calls"]
-fn live_an_omp_session_runs_remote_bash_on_a_remote_host_through_cards() {
-    let mut rig = live_rig();
-    // No sshd or agent identity on this machine: the in-process SSH server
-    // plays the host, with its test agent.
-    let (_agent, server, known_hosts) = ssh_box(&mut rig, true);
-    let session = rig.session("omp");
-    rig.type_prompt("Use your remote_bash tool with host \"box\" to run the command `echo loa-remote-5521` and tell me what it printed.");
-    let dom = finish_turn(&mut rig, &session);
-    let result = call_result(&dom, "remote_bash");
-    assert!(result.contains("loa-remote-5521"), "{result}");
-    assert!(server.stats.commands.lock().unwrap().iter().any(|command| command == "echo loa-remote-5521"));
-    let cards: Vec<_> = dom.iter().filter(|node| is_remote_decision(&dom, node.id)).map(|node| node.str_attr(attr::KIND).unwrap_or("").to_owned()).collect();
-    assert_eq!(cards, ["approval", "question"], "an approval card, then (connecting) a host key card");
-    assert!(std::fs::read_to_string(known_hosts).unwrap().contains("127.0.0.1"));
-    if let Some(harness) = rig.app.ctx.sessions.get(session.as_str()).and_then(|s| s.harness().cloned()) {
-        rig.runtime.block_on(harness.shutdown()).unwrap();
-    }
-}

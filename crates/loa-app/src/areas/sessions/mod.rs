@@ -22,9 +22,6 @@
 
 mod transfer;
 mod tree;
-
-#[cfg(test)]
-mod live;
 #[cfg(test)]
 mod tests;
 
