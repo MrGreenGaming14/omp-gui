@@ -6,8 +6,9 @@
 //! the page margins, headings bigger and bold, list items indented under a
 //! marker, tables as equal width gridded cells with wrapped text.
 
-use crate::docs::raster::{Canvas, Color, Fonts, TextStyle};
-use crate::docs::{DocsError, Format, PageSize, Paged, Result, Rgba};
+use crate::docs::raster::{Canvas, Fonts, TextStyle};
+use crate::docs::{DataQuery, DocTypography, DocsError, Format, PageSize, Paged, RenderOpts, Result, Rgba, json};
+use docx_rs::StructuredDataTagChild as SdtChild;
 use std::collections::HashMap;
 
 /// Page used when the document has no section properties: US Letter.
@@ -15,8 +16,6 @@ const LETTER: PageSize = PageSize { width: 612.0, height: 792.0 };
 /// Margin on every side when the document has no section properties.
 const DEFAULT_MARGIN: f32 = 72.0;
 const TWIPS_PER_POINT: f32 = 20.0;
-/// Body text size in points.
-const BODY_SIZE: f32 = 11.0;
 /// Indent per list level in points.
 const LIST_INDENT: f32 = 18.0;
 /// Padding between a table cell's border and its text, in points.
@@ -127,6 +126,20 @@ enum Op {
     Border { x: f32, y: f32, w: f32, h: f32 },
 }
 
+pub(crate) fn open(_: Format, bytes: &[u8]) -> Result<Box<dyn Paged>> {
+    Ok(Box::new(DocxDoc::parse(bytes)?))
+}
+
+/// Calls `f` on the non-tag children of `sdt`, flattening nested tags.
+fn sdt_leaves<'s>(sdt: &'s docx_rs::StructuredDataTag, f: &mut dyn FnMut(&'s SdtChild)) {
+    for child in &sdt.children {
+        match child {
+            SdtChild::StructuredDataTag(inner) => sdt_leaves(inner, f),
+            leaf => f(leaf),
+        }
+    }
+}
+
 impl DocxDoc {
     pub fn parse(bytes: &[u8]) -> Result<Self> {
         // docx-rs indexes attribute lists without checking them (`<w:u/>`,
@@ -176,22 +189,22 @@ impl DocxDoc {
             .collect()
     }
 
-    fn draw_op(&self, canvas: &mut Canvas, fonts: &Fonts, scale: f32, op: &Op) {
+    fn draw_op(&self, canvas: &mut Canvas, fonts: &Fonts, scale: f32, opts: &RenderOpts, op: &Op) {
         match *op {
             Op::Border { x, y, w, h } => {
-                canvas.stroke_rect(x * scale, y * scale, w * scale, h * scale, scale, Color::GRAY);
+                canvas.stroke_rect(x * scale, y * scale, w * scale, h * scale, scale, opts.palette.rule);
             }
             Op::Marker { x, y, size, block } => {
                 if let Some(Block::Paragraph(Paragraph { list: Some(item), .. })) =
                     self.outline.blocks.get(block)
                 {
-                    let style = TextStyle::new(size * scale);
+                    let style = opts.text(size * scale);
                     draw_segment(canvas, fonts, style, x * scale, y * scale, &item.marker, false);
                 }
             }
             Op::Text { x, y, size, source, start, end } => {
                 let (x, y) = (x * scale, y * scale);
-                let style = TextStyle::new(size * scale);
+                let style = opts.text(size * scale);
                 match source {
                     Source::Paragraph { block, heading } => {
                         let Some(Block::Paragraph(p)) = self.outline.blocks.get(block) else { return };
@@ -224,12 +237,20 @@ impl Paged for DocxDoc {
         }
     }
 
-    fn render_page(&self, index: usize, scale: f32, fonts: &Fonts) -> Result<Rgba> {
+    fn query(&self, query: &DataQuery) -> Option<Result<serde_json::Value>> {
+        match query {
+            DataQuery::Text { page: None } => Some(json(&self.text())),
+            DataQuery::Outline => Some(json(&self.outline)),
+            _ => None,
+        }
+    }
+
+    fn render(&self, index: usize, scale: f32, fonts: &Fonts, opts: &RenderOpts) -> Result<Rgba> {
         let ops = self.pages.get(index).ok_or_else(|| DocsError::page_range(index, self.pages.len()))?;
         let (width, height) = self.page.pixels(scale);
-        let mut canvas = Canvas::new(width, height, Color::WHITE);
+        let mut canvas = Canvas::new(width, height, opts.palette.page);
         for op in ops {
-            self.draw_op(&mut canvas, fonts, scale, op);
+            self.draw_op(&mut canvas, fonts, scale, opts, op);
         }
         Ok(canvas.into_rgba())
     }
@@ -436,7 +457,11 @@ impl<'a> Reader<'a> {
             match child {
                 DocumentChild::Paragraph(p) => out.push(Block::Paragraph(self.paragraph(p))),
                 DocumentChild::Table(t) => out.push(Block::Table(self.table(t))),
-                DocumentChild::StructuredDataTag(sdt) => self.sdt_blocks(sdt, out),
+                DocumentChild::StructuredDataTag(sdt) => sdt_leaves(sdt, &mut |leaf| match leaf {
+                    SdtChild::Paragraph(p) => out.push(Block::Paragraph(self.paragraph(p))),
+                    SdtChild::Table(t) => out.push(Block::Table(self.table(t))),
+                    _ => {}
+                }),
                 DocumentChild::TableOfContents(toc) => {
                     for content in toc.before_contents.iter().chain(&toc.after_contents) {
                         match content {
@@ -453,18 +478,6 @@ impl<'a> Reader<'a> {
                 | DocumentChild::BookmarkEnd(_)
                 | DocumentChild::CommentStart(_)
                 | DocumentChild::CommentEnd(_) => {}
-            }
-        }
-    }
-
-    fn sdt_blocks(&mut self, sdt: &docx_rs::StructuredDataTag, out: &mut Vec<Block>) {
-        use docx_rs::StructuredDataTagChild as Child;
-        for child in &sdt.children {
-            match child {
-                Child::Paragraph(p) => out.push(Block::Paragraph(self.paragraph(p))),
-                Child::Table(t) => out.push(Block::Table(self.table(t))),
-                Child::StructuredDataTag(inner) => self.sdt_blocks(inner, out),
-                _ => {}
             }
         }
     }
@@ -530,24 +543,11 @@ impl<'a> Reader<'a> {
                     }
                 }
                 ParagraphChild::Hyperlink(link) => self.inline(&link.children, style, runs, page_break),
-                ParagraphChild::StructuredDataTag(sdt) => self.sdt_runs(sdt, style, runs, page_break),
-                _ => {}
-            }
-        }
-    }
-
-    fn sdt_runs(
-        &self,
-        sdt: &docx_rs::StructuredDataTag,
-        style: Option<&str>,
-        runs: &mut Vec<Run>,
-        page_break: &mut bool,
-    ) {
-        use docx_rs::StructuredDataTagChild as Child;
-        for child in &sdt.children {
-            match child {
-                Child::Run(r) => runs.extend(self.run(r, style, page_break)),
-                Child::StructuredDataTag(inner) => self.sdt_runs(inner, style, runs, page_break),
+                ParagraphChild::StructuredDataTag(sdt) => sdt_leaves(sdt, &mut |leaf| {
+                    if let SdtChild::Run(r) = leaf {
+                        runs.extend(self.run(r, style, page_break));
+                    }
+                }),
                 _ => {}
             }
         }
@@ -719,23 +719,15 @@ impl<'a> Reader<'a> {
             match content {
                 TableCellContent::Paragraph(p) => self.push_paragraph_text(p, &mut out),
                 TableCellContent::Table(t) => push_table_text(&self.table(t), &mut out),
-                TableCellContent::StructuredDataTag(sdt) => self.push_sdt_text(sdt, &mut out),
+                TableCellContent::StructuredDataTag(sdt) => sdt_leaves(sdt, &mut |leaf| match leaf {
+                    SdtChild::Paragraph(p) => self.push_paragraph_text(p, &mut out),
+                    SdtChild::Table(t) => push_table_text(&self.table(t), &mut out),
+                    _ => {}
+                }),
                 TableCellContent::TableOfContents(_) => {}
             }
         }
         out
-    }
-
-    fn push_sdt_text(&self, sdt: &docx_rs::StructuredDataTag, out: &mut String) {
-        use docx_rs::StructuredDataTagChild as Child;
-        for child in &sdt.children {
-            match child {
-                Child::Paragraph(p) => self.push_paragraph_text(p, out),
-                Child::Table(t) => push_table_text(&self.table(t), out),
-                Child::StructuredDataTag(inner) => self.push_sdt_text(inner, out),
-                _ => {}
-            }
-        }
     }
 }
 
@@ -762,12 +754,15 @@ impl Layout<'_> {
         self.y = self.margins.top;
     }
 
-    /// Starts a new page when `height` does not fit below the cursor, unless
-    /// the cursor is already at the top (then the content overflows).
-    fn reserve(&mut self, height: f32) {
+    /// Takes `height` below the cursor, on a new page when it does not fit
+    /// (unless the cursor is already at the top: then the content overflows).
+    /// Returns the top of the taken space.
+    fn advance(&mut self, height: f32) -> f32 {
         if self.y + height > self.bottom() && self.y > self.margins.top {
             self.new_page();
         }
+        self.y += height;
+        self.y - height
     }
 
     fn push(&mut self, op: Op) {
@@ -790,7 +785,7 @@ impl Layout<'_> {
             Some(2) => (16.0, true),
             Some(3) => (14.0, true),
             Some(_) => (12.0, true),
-            None => (BODY_SIZE, false),
+            None => (DocTypography::default().body, false),
         };
         if heading && self.y > self.margins.top {
             self.y += size * 0.5;
@@ -800,17 +795,16 @@ impl Layout<'_> {
         let line_height = self.fonts.line_height(size);
         let x = self.margins.left + indent;
         for (i, line) in self.fonts.wrap(&p.text, size, heading, width).into_iter().enumerate() {
-            self.reserve(line_height);
+            let y = self.advance(line_height);
             if i == 0 && p.list.is_some() {
-                self.push(Op::Marker { x: x - LIST_INDENT, y: self.y, size, block });
+                self.push(Op::Marker { x: x - LIST_INDENT, y, size, block });
             }
             if !line.is_empty() {
                 // `wrap` returns subslices of `p.text`.
                 let start = (line.as_ptr() as usize).saturating_sub(p.text.as_ptr() as usize);
                 let source = Source::Paragraph { block, heading };
-                self.push(Op::Text { x, y: self.y, size, source, start, end: start + line.len() });
+                self.push(Op::Text { x, y, size, source, start, end: start + line.len() });
             }
-            self.y += line_height;
         }
         self.y += size * 0.5;
         if p.page_break_after {
@@ -825,17 +819,17 @@ impl Layout<'_> {
         }
         let col_width = self.content_width() / cols as f32;
         let text_width = (col_width - 2.0 * CELL_PADDING).max(1.0);
-        let size = BODY_SIZE;
+        let size = DocTypography::default().body;
         let line_height = self.fonts.line_height(size);
         for (r, row) in t.rows.iter().enumerate() {
             let lines: Vec<Vec<&str>> =
                 row.iter().map(|cell| self.fonts.wrap(cell, size, false, text_width)).collect();
             let row_lines = lines.iter().map(Vec::len).max().unwrap_or(1).max(1);
             let row_height = row_lines as f32 * line_height + 2.0 * CELL_PADDING;
-            self.reserve(row_height);
+            let y = self.advance(row_height);
             for c in 0..cols {
                 let x = self.margins.left + c as f32 * col_width;
-                self.push(Op::Border { x, y: self.y, w: col_width, h: row_height });
+                self.push(Op::Border { x, y, w: col_width, h: row_height });
                 let (Some(cell), Some(cell_lines)) = (row.get(c), lines.get(c)) else { continue };
                 for (i, line) in cell_lines.iter().enumerate() {
                     if line.is_empty() {
@@ -845,7 +839,7 @@ impl Layout<'_> {
                     let start = (line.as_ptr() as usize).saturating_sub(cell.as_ptr() as usize);
                     self.push(Op::Text {
                         x: x + CELL_PADDING,
-                        y: self.y + CELL_PADDING + i as f32 * line_height,
+                        y: y + CELL_PADDING + i as f32 * line_height,
                         size,
                         source: Source::Cell { block, row: r, col: c },
                         start,
@@ -853,7 +847,6 @@ impl Layout<'_> {
                     });
                 }
             }
-            self.y += row_height;
         }
         self.y += size * 0.5;
     }

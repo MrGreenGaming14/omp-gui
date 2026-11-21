@@ -13,12 +13,58 @@ use std::path::{Path, PathBuf};
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Color(pub [u8; 4]);
 
+/// Colours of rendered pages.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DocPalette {
+    pub page: Color,
+    pub text: Color,
+    /// Table borders, header rules and picture placeholders.
+    pub rule: Color,
+    /// Sheet grid lines and slide table outlines.
+    pub grid: Color,
+    pub header: Color,
+    pub header_text: Color,
+}
+
+impl Default for DocPalette {
+    fn default() -> Self {
+        let grey = |v| Color::rgb(v, v, v);
+        Self { page: Color::WHITE, text: Color::BLACK, rule: grey(128), grid: grey(217), header: grey(242), header_text: grey(64) }
+    }
+}
+
+/// Default font sizes in points.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DocTypography {
+    /// DOCX body text (laid out at parse time with the default).
+    pub body: f32,
+    pub cell: f32,
+    pub slide: f32,
+}
+
+impl Default for DocTypography {
+    fn default() -> Self {
+        Self { body: 11.0, cell: 11.0, slide: 18.0 }
+    }
+}
+
+/// How pages are drawn; the UI fills it from its theme tokens.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RenderOpts {
+    pub palette: DocPalette,
+    pub typography: DocTypography,
+}
+
+impl RenderOpts {
+    /// Body text of `size` canvas pixels in the palette's text colour.
+    pub fn text(&self, size: f32) -> TextStyle {
+        TextStyle::new(size).color(self.palette.text)
+    }
+}
+
 impl Color {
     pub const WHITE: Self = Self([255, 255, 255, 255]);
     pub const BLACK: Self = Self([0, 0, 0, 255]);
-    pub const GRAY: Self = Self([128, 128, 128, 255]);
-    pub const LIGHT_GRAY: Self = Self([217, 217, 217, 255]);
-    pub const HEADER: Self = Self([242, 242, 242, 255]);
 
     pub const fn rgb(r: u8, g: u8, b: u8) -> Self {
         Self([r, g, b, 255])

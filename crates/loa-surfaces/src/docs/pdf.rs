@@ -1,7 +1,7 @@
 //! PDF pages rendered and read with `hayro`.
 
 use crate::docs::raster::Fonts;
-use crate::docs::{DocsError, Format, PageSize, Paged, Result, Rgba};
+use crate::docs::{DataQuery, DocsError, Format, PageSize, Paged, RenderOpts, Result, Rgba, json};
 use hayro::hayro_interpret::font::{Glyph, GlyphRun};
 use hayro::hayro_interpret::hayro_cmap::BfString;
 use hayro::hayro_interpret::util::TransformExt;
@@ -17,6 +17,10 @@ use hayro::vello_cpu::peniko::ImageAlphaType;
 use hayro::vello_cpu::{Pixmap, RasterizerSettings, RenderContext, Resources, TargetInit};
 use hayro::{RenderCache, RenderSettings, render_into};
 use std::ops::Range;
+
+pub(crate) fn open(_: Format, bytes: &[u8]) -> Result<Box<dyn Paged>> {
+    Ok(Box::new(PdfDoc::parse(bytes)?))
+}
 
 /// A parsed PDF document with its page sizes measured once at load.
 pub struct PdfDoc {
@@ -77,7 +81,15 @@ impl Paged for PdfDoc {
             .ok_or_else(|| DocsError::page_range(index, self.sizes.len()))
     }
 
-    fn render_page(&self, index: usize, scale: f32, _fonts: &Fonts) -> Result<Rgba> {
+    fn query(&self, query: &DataQuery) -> Option<Result<serde_json::Value>> {
+        match query {
+            DataQuery::Text { page: Some(index) } => Some(self.page_text(*index).and_then(|t| json(&t))),
+            DataQuery::Text { page: None } => Some(self.text().and_then(|t| json(&t))),
+            _ => None,
+        }
+    }
+
+    fn render(&self, index: usize, scale: f32, _: &Fonts, _: &RenderOpts) -> Result<Rgba> {
         let page = self.page(index)?;
         let size = self.page_size(index)?;
         if !(scale.is_finite() && scale > 0.0) {

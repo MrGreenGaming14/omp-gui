@@ -1,8 +1,8 @@
 //! XLSX workbooks: cell queries for the agent, and a grid renderer with one
 //! page per worksheet. Reading goes through `calamine`.
 
-use crate::docs::raster::{Canvas, Color, Fonts, TextStyle};
-use crate::docs::{DocsError, Format, PageSize, Paged, Result, Rgba};
+use crate::docs::raster::{Canvas, Fonts};
+use crate::docs::{DataQuery, DocsError, Format, PageSize, Paged, RenderOpts, Result, Rgba, json};
 use calamine::{Data, ExcelDateTime, Range, Reader, SheetType, Xlsx};
 use std::fmt::Write as _;
 use std::io::Cursor;
@@ -21,9 +21,7 @@ const RENDER_COLUMNS: u32 = 20;
 const COLUMN_WIDTH: f32 = 64.0;
 const ROW_HEIGHT: f32 = 20.0;
 const ROW_HEADER_WIDTH: f32 = 40.0;
-const FONT_SIZE: f32 = 11.0;
 const CELL_PADDING: f32 = 3.0;
-const HEADER_TEXT: Color = Color::rgb(64, 64, 64);
 /// Shown instead of a number too wide for its cell, as Excel does.
 const HASHES: &str = "################################################################";
 
@@ -168,6 +166,10 @@ pub struct CellBlock {
     pub rows: Vec<Vec<CellOut>>,
 }
 
+pub(crate) fn open(_: Format, bytes: &[u8]) -> Result<Box<dyn Paged>> {
+    Ok(Box::new(XlsxDoc::parse(bytes)?))
+}
+
 impl XlsxDoc {
     pub fn parse(bytes: &[u8]) -> Result<Self> {
         let invalid = |e: calamine::XlsxError| DocsError::invalid(Format::Xlsx, e);
@@ -263,7 +265,15 @@ impl Paged for XlsxDoc {
         })
     }
 
-    fn render_page(&self, index: usize, scale: f32, fonts: &Fonts) -> Result<Rgba> {
+    fn query(&self, query: &DataQuery) -> Option<Result<serde_json::Value>> {
+        match query {
+            DataQuery::Sheets => Some(json(&self.sheets())),
+            DataQuery::Cells { sheet, range } => Some(self.cells(sheet.as_deref(), range).and_then(|c| json(&c))),
+            _ => None,
+        }
+    }
+
+    fn render(&self, index: usize, scale: f32, fonts: &Fonts, opts: &RenderOpts) -> Result<Rgba> {
         let size = self.page_size(index)?;
         let sheet = self.page(index)?;
         let (rows, cols) = sheet.render_extent();
@@ -273,23 +283,23 @@ impl Paged for XlsxDoc {
         let row_h = ROW_HEIGHT * scale;
         let head_w = ROW_HEADER_WIDTH * scale;
         let pad = CELL_PADDING * scale;
-        let style = TextStyle::new(FONT_SIZE * scale);
-        let header_style = style.color(HEADER_TEXT);
+        let (palette, style) = (&opts.palette, opts.text(opts.typography.cell * scale));
+        let header_style = style.color(palette.header_text);
         let text_top = (row_h - fonts.line_height(style.size)) / 2.0;
-        let mut canvas = Canvas::new(width, height, Color::WHITE);
+        let mut canvas = Canvas::new(width, height, palette.page);
 
-        canvas.fill_rect(0.0, 0.0, w, row_h, Color::HEADER);
-        canvas.fill_rect(0.0, 0.0, head_w, h, Color::HEADER);
+        canvas.fill_rect(0.0, 0.0, w, row_h, palette.header);
+        canvas.fill_rect(0.0, 0.0, head_w, h, palette.header);
         for c in 1..=cols {
             let x = (head_w + c as f32 * col_w).min(w - 1.0);
-            canvas.fill_rect(x, 0.0, 1.0, h, Color::LIGHT_GRAY);
+            canvas.fill_rect(x, 0.0, 1.0, h, palette.grid);
         }
         for r in 1..=rows {
             let y = ((r + 1) as f32 * row_h).min(h - 1.0);
-            canvas.fill_rect(0.0, y, w, 1.0, Color::LIGHT_GRAY);
+            canvas.fill_rect(0.0, y, w, 1.0, palette.grid);
         }
-        canvas.fill_rect(head_w, 0.0, 1.0, h, Color::GRAY);
-        canvas.fill_rect(0.0, row_h, w, 1.0, Color::GRAY);
+        canvas.fill_rect(head_w, 0.0, 1.0, h, palette.rule);
+        canvas.fill_rect(0.0, row_h, w, 1.0, palette.rule);
 
         let mut buf = String::new();
         for c in 0..cols {

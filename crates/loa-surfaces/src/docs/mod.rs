@@ -1,27 +1,23 @@
-//! Document surface servers: PDF, XLSX, DOCX, PPTX, images.
+//! Document surfaces: PDF, XLSX, DOCX, PPTX and images.
 //!
-//! [`DocsServer`] is the `docs` surface server. It opens a file as
-//! `surface://docs/<id>`, hands the file over once through
-//! [`Surface::document`](loa_contracts::surface::Surface::document), renders PNG
-//! screenshots and answers the structured data queries the agent tools use
-//! ([`DataQuery`]).
-//!
-//! Document mode renders on the viewing side, so each format also exposes a
-//! page renderer the viewer calls directly: [`open_pages`] or the per format
-//! types ([`pdf::PdfDoc`], [`xlsx::XlsxDoc`], [`docx::DocxDoc`],
-//! [`pptx::PptxDoc`], [`images::ImageDoc`]), all implementing [`Paged`].
+//! [`FORMATS`] registers each format (MIME type, extensions, magic, parser); a
+//! parsed file is a [`Paged`] document the viewer renders locally and the
+//! [`DocsServer`] (`surface://docs/<id>`) serves and queries.
 
 pub mod docx;
 pub mod images;
+mod ooxml;
 pub mod pdf;
 pub mod pptx;
 pub mod raster;
 pub mod server;
 pub mod xlsx;
 
-pub use raster::Fonts;
+pub use raster::{DocPalette, DocTypography, Fonts, RenderOpts};
 pub use server::{DataQuery, DocSurface, DocsServer, SERVER_NAME};
 
+use ::image::ImageFormat;
+use serde_json::Value;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, thiserror::Error)]
@@ -76,115 +72,98 @@ pub enum Format {
     Bmp,
 }
 
+/// How a file of a format is recognised by its content.
+#[derive(Clone, Copy, Debug)]
+pub enum Sniff {
+    /// The file starts with these bytes.
+    Magic(&'static [u8]),
+    /// A zip archive holding this part.
+    ZipPart(&'static [u8]),
+    /// An image the `image` crate recognises.
+    Image(ImageFormat),
+}
+
+/// One registered format.
+pub struct DocFormat {
+    pub format: Format,
+    pub name: &'static str,
+    pub mime: &'static str,
+    pub exts: &'static [&'static str],
+    pub sniff: Sniff,
+    pub open: fn(Format, &[u8]) -> Result<Box<dyn Paged>>,
+}
+
+macro_rules! formats {
+    ($($format:ident $name:literal $mime:expr, [$($ext:literal),*], $sniff:expr, $open:path;)*) => {
+        /// Every format, in sniffing order.
+        pub static FORMATS: &[DocFormat] = &[$(DocFormat {
+            format: Format::$format, name: $name, mime: $mime, exts: &[$($ext),*], sniff: $sniff, open: $open,
+        }),*];
+    };
+}
+
+formats! {
+    Pdf "PDF" "application/pdf", ["pdf"], Sniff::Magic(b"%PDF-"), pdf::open;
+    Xlsx "XLSX" "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", ["xlsx", "xlsm"], Sniff::ZipPart(b"xl/workbook.xml"), xlsx::open;
+    Docx "DOCX" "application/vnd.openxmlformats-officedocument.wordprocessingml.document", ["docx"], Sniff::ZipPart(b"word/document.xml"), docx::open;
+    Pptx "PPTX" "application/vnd.openxmlformats-officedocument.presentationml.presentation", ["pptx"], Sniff::ZipPart(b"ppt/presentation.xml"), pptx::open;
+    Png "PNG" "image/png", ["png"], Sniff::Image(ImageFormat::Png), images::open;
+    Jpeg "JPEG" "image/jpeg", ["jpg", "jpeg"], Sniff::Image(ImageFormat::Jpeg), images::open;
+    Gif "GIF" "image/gif", ["gif"], Sniff::Image(ImageFormat::Gif), images::open;
+    Webp "WebP" "image/webp", ["webp"], Sniff::Image(ImageFormat::WebP), images::open;
+    Bmp "BMP" "image/bmp", ["bmp"], Sniff::Image(ImageFormat::Bmp), images::open;
+}
+
 impl Format {
-    pub const ALL: [Self; 9] = [
-        Self::Pdf,
-        Self::Xlsx,
-        Self::Docx,
-        Self::Pptx,
-        Self::Png,
-        Self::Jpeg,
-        Self::Gif,
-        Self::Webp,
-        Self::Bmp,
-    ];
+    /// The registry entry of this format.
+    pub fn spec(self) -> &'static DocFormat {
+        FORMATS.iter().find(|f| f.format == self).expect("every format is registered")
+    }
 
     pub fn mime(self) -> &'static str {
-        match self {
-            Self::Pdf => "application/pdf",
-            Self::Xlsx => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            Self::Docx => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            Self::Pptx => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-            Self::Png => "image/png",
-            Self::Jpeg => "image/jpeg",
-            Self::Gif => "image/gif",
-            Self::Webp => "image/webp",
-            Self::Bmp => "image/bmp",
-        }
+        self.spec().mime
     }
 
     pub fn from_mime(mime: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|f| f.mime().eq_ignore_ascii_case(mime))
+        FORMATS.iter().find(|f| f.mime.eq_ignore_ascii_case(mime)).map(|f| f.format)
     }
 
     /// From a file extension, case insensitive.
     pub fn from_extension(ext: &str) -> Option<Self> {
-        let ext = ext.to_ascii_lowercase();
-        Some(match ext.as_str() {
-            "pdf" => Self::Pdf,
-            "xlsx" | "xlsm" => Self::Xlsx,
-            "docx" => Self::Docx,
-            "pptx" => Self::Pptx,
-            "png" => Self::Png,
-            "jpg" | "jpeg" => Self::Jpeg,
-            "gif" => Self::Gif,
-            "webp" => Self::Webp,
-            "bmp" => Self::Bmp,
-            _ => return None,
-        })
+        FORMATS.iter().find(|f| f.exts.iter().any(|e| e.eq_ignore_ascii_case(ext))).map(|f| f.format)
     }
 
     /// From the extension of `path`, falling back to the file's magic bytes.
     pub fn detect(path: &Path, bytes: &[u8]) -> Option<Self> {
-        path.extension()
-            .and_then(|e| e.to_str())
-            .and_then(Self::from_extension)
-            .or_else(|| Self::sniff(bytes))
+        path.extension().and_then(|e| e.to_str()).and_then(Self::from_extension).or_else(|| Self::sniff(bytes))
     }
 
-    /// From magic bytes. Office files are zip archives told apart by their
-    /// main part.
+    /// From magic bytes; Office files are zip archives told apart by their main part.
     pub fn sniff(bytes: &[u8]) -> Option<Self> {
-        if bytes.starts_with(b"%PDF-") {
-            return Some(Self::Pdf);
-        }
-        if bytes.starts_with(b"PK\x03\x04") {
-            let find = |needle: &[u8]| bytes.windows(needle.len()).any(|w| w == needle);
-            return if find(b"xl/workbook.xml") {
-                Some(Self::Xlsx)
-            } else if find(b"word/document.xml") {
-                Some(Self::Docx)
-            } else if find(b"ppt/presentation.xml") {
-                Some(Self::Pptx)
-            } else {
-                None
-            };
-        }
-        match ::image::guess_format(bytes).ok()? {
-            ::image::ImageFormat::Png => Some(Self::Png),
-            ::image::ImageFormat::Jpeg => Some(Self::Jpeg),
-            ::image::ImageFormat::Gif => Some(Self::Gif),
-            ::image::ImageFormat::WebP => Some(Self::Webp),
-            ::image::ImageFormat::Bmp => Some(Self::Bmp),
-            _ => None,
-        }
+        let image = ::image::guess_format(bytes).ok();
+        let zip = bytes.starts_with(b"PK\x03\x04");
+        let matches = |sniff: Sniff| match sniff {
+            Sniff::Magic(magic) => bytes.starts_with(magic),
+            Sniff::ZipPart(part) => zip && bytes.windows(part.len()).any(|w| w == part),
+            Sniff::Image(format) => image == Some(format),
+        };
+        FORMATS.iter().find(|f| matches(f.sniff)).map(|f| f.format)
     }
 
     pub fn is_image(self) -> bool {
-        matches!(self, Self::Png | Self::Jpeg | Self::Gif | Self::Webp | Self::Bmp)
+        matches!(self.spec().sniff, Sniff::Image(_))
     }
 }
 
 impl std::fmt::Display for Format {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::Pdf => "PDF",
-            Self::Xlsx => "XLSX",
-            Self::Docx => "DOCX",
-            Self::Pptx => "PPTX",
-            Self::Png => "PNG",
-            Self::Jpeg => "JPEG",
-            Self::Gif => "GIF",
-            Self::Webp => "WebP",
-            Self::Bmp => "BMP",
-        })
+        f.write_str(self.spec().name)
     }
 }
 
 pub use crate::pixels::RgbaImage as Rgba;
 
-/// Size of a page at scale 1, in points (1/72 inch), which are also surface
-/// pixels at scale 1.
+/// Size of a page at scale 1, in points (1/72 inch), which are also surface pixels at scale 1.
 #[derive(Copy, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct PageSize {
     pub width: f32,
@@ -199,27 +178,35 @@ impl PageSize {
     }
 }
 
-/// A document the viewer can page through and render locally. A page is a
-/// PDF page, a sheet, a DOCX page, a slide or the image.
+/// A parsed document: pages (a PDF page, a sheet, a DOCX page, a slide or the image) and structured data.
 pub trait Paged: Send + Sync {
     fn page_count(&self) -> usize;
 
     /// Size of page `index` (from 0) at scale 1.
     fn page_size(&self, index: usize) -> Result<PageSize>;
 
-    /// Renders page `index` at `scale` (1.0 = one pixel per point).
-    fn render_page(&self, index: usize, scale: f32, fonts: &Fonts) -> Result<Rgba>;
+    /// Renders page `index` at `scale` (1.0 = one pixel per point) with `opts`.
+    fn render(&self, index: usize, scale: f32, fonts: &Fonts, opts: &RenderOpts) -> Result<Rgba>;
+
+    /// Renders with the default [`RenderOpts`].
+    fn render_page(&self, index: usize, scale: f32, fonts: &Fonts) -> Result<Rgba> {
+        self.render(index, scale, fonts, &RenderOpts::default())
+    }
+
+    /// Answers `query`, or `None` when the format has no such data.
+    fn query(&self, _query: &DataQuery) -> Option<Result<Value>> {
+        None
+    }
+}
+
+/// Serializes a query answer.
+pub(crate) fn json<T: serde::Serialize + ?Sized>(value: &T) -> Result<Value> {
+    serde_json::to_value(value).map_err(|e| DocsError::Request(e.to_string()))
 }
 
 /// Parses a document for local rendering on the viewing side.
 pub fn open_pages(format: Format, bytes: &[u8]) -> Result<Box<dyn Paged>> {
-    Ok(match format {
-        Format::Pdf => Box::new(pdf::PdfDoc::parse(bytes)?),
-        Format::Xlsx => Box::new(xlsx::XlsxDoc::parse(bytes)?),
-        Format::Docx => Box::new(docx::DocxDoc::parse(bytes)?),
-        Format::Pptx => Box::new(pptx::PptxDoc::parse(bytes)?),
-        image => Box::new(images::ImageDoc::parse(image, bytes)?),
-    })
+    (format.spec().open)(format, bytes)
 }
 
 /// Reads a file, mapping the error to [`DocsError::Io`].
@@ -232,12 +219,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn office_files_are_told_apart_without_an_extension() {
+    fn formats_are_detected_by_extension_mime_and_magic() {
         let mut zip = b"PK\x03\x04....".to_vec();
         zip.extend_from_slice(b"word/document.xml");
-        assert_eq!(Format::detect(Path::new("upload"), &zip), Some(Format::Docx));
-        assert_eq!(Format::detect(Path::new("a.PDF"), b""), Some(Format::Pdf));
-        assert_eq!(Format::sniff(b"%PDF-1.7"), Some(Format::Pdf));
-        assert_eq!(Format::sniff(b"PK\x03\x04 other zip"), None);
+        let png = crate::pixels::encode_png(1, 1, &[0; 4]).unwrap();
+        let cases: &[(&str, &[u8], Option<Format>)] = &[
+            ("upload", &zip, Some(Format::Docx)),
+            ("a.PDF", b"", Some(Format::Pdf)),
+            ("b.xlsm", b"", Some(Format::Xlsx)),
+            ("c.jpeg", b"", Some(Format::Jpeg)),
+            ("noext", b"%PDF-1.7", Some(Format::Pdf)),
+            ("noext", b"PK\x03\x04 other zip", None),
+            ("noext", &png, Some(Format::Png)),
+            ("notes.txt", b"plain", None),
+        ];
+        for (path, bytes, want) in cases {
+            assert_eq!(Format::detect(Path::new(path), bytes), *want, "{path}");
+        }
+        for spec in FORMATS {
+            assert_eq!(Format::from_mime(&spec.mime.to_uppercase()), Some(spec.format));
+            assert_eq!(spec.format.to_string(), spec.name);
+        }
+        assert!(Format::Gif.is_image() && !Format::Pptx.is_image());
     }
 }
