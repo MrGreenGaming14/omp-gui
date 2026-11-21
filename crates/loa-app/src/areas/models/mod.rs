@@ -483,7 +483,7 @@ impl State {
             },
             Page::Model => match &self.picker.1 {
                 Load::Ready(picker) => {
-                    container(picker.state.view().map(Message::Picker)).center_x(Fill).padding([24.0, 0.0]).into()
+                    container(picker.state.view().map(Message::Picker)).center_x(Fill).padding(loa_ui_kit::theme::pad_y(loa_ui_kit::theme::SpaceRole::Xl)).into()
                 }
                 Load::Loading => screen::status("Reading models…"),
                 Load::Failed(error) => screen::status(error.as_str()),
