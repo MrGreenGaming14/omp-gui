@@ -29,9 +29,9 @@ fn full_config_loads_into_typed_settings_and_round_trips() {
     assert_eq!((c.network.port, &c.network.relay), (4242, &Relay::Url("https://relay.example.test".into())));
     assert!(!c.network.discovery.mdns);
     assert_eq!(c.updater.check_interval(), Duration::from_secs(3600));
-    assert_eq!((c.updater.pin("omp"), c.updater.github_token.as_deref()), (Some("19.0.0"), Some("ghp_test")));
+    assert_eq!((c.updater.pins["omp"].as_str(), c.updater.github_token.as_deref()), ("19.0.0", Some("ghp_test")));
     let approval = c.unattended.for_kind(DecisionKind::Approval).unwrap();
-    assert_eq!((approval.timeout(), approval.answer.as_str()), (Duration::from_secs(120), "deny"));
+    assert_eq!((approval.timeout_secs, approval.answer.as_str()), (120, "deny"));
     assert!(c.unattended.for_kind(DecisionKind::Question).is_none());
     assert!(!c.surfaces.video);
     assert!(matches!(&c.mcp_servers["files"].transport, McpTransport::Stdio { args, env, .. } if args.len() == 2 && env["LOG"] == "debug"));
@@ -41,7 +41,7 @@ fn full_config_loads_into_typed_settings_and_round_trips() {
     assert_eq!((host.port, host.read_only, host.commands, host.auto_approve), (Some(2222), false, true, false));
     let project = c.project("loa");
     assert_eq!(project.token_budget, 12000);
-    assert!(!project.tool_enabled("bash") && !project.mcp_tool_enabled("files", "delete"));
+    assert!(project.disabled_tools.contains("bash") && !project.mcp_tool_enabled("files", "delete"));
     assert!(project.mcp_tool_enabled("files", "read"));
 
     store.save(&c).unwrap();
@@ -181,19 +181,6 @@ fn edit_saves_only_changes_and_watch_counts_saves() {
     assert_eq!(*saves.borrow(), 1);
     let names: Vec<PathBuf> = fs::read_dir(store.path().parent().unwrap()).unwrap().map(|e| e.unwrap().path()).collect();
     assert_eq!(names, [store.path()], "no temp files are left");
-}
-
-#[test]
-fn remote_host_limits_stay_inside_allowed_trees() {
-    let (_dir, store) = store_with(FULL);
-    let mut host = store.load().unwrap().remote_hosts["build"].clone();
-    assert!(host.allows_read("/srv/app") && host.allows_read("/srv/app/src/./main.rs") && host.allows_read("/tmp/x"));
-    assert!(!host.allows_read("/srv/app2/secret"), "a sibling with the same prefix is outside");
-    assert!(!host.allows_read("/srv/app/../../etc/passwd") && !host.allows_read("srv/app/file"));
-    assert!(!host.allows_read("/srv"));
-    assert!(host.allows_write("/srv/app/file") && !host.allows_write("/etc/passwd"));
-    host.read_only = true;
-    assert!(!host.allows_write("/srv/app/file"));
 }
 
 #[test]

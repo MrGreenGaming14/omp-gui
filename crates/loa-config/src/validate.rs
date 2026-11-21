@@ -1,7 +1,6 @@
 //! The rules serde can't express, as one table. A rule's key may hold `*`,
 //! which its check fills with the map key it failed on.
 
-use crate::schema::remote_components;
 use crate::{Config, DecisionDefault, Relay, Result, invalid};
 use loa_contracts::harness::McpTransport;
 use loa_core::answer;
@@ -60,7 +59,7 @@ static RULES: &[Rule] = &[
     Rule { key: "remote_hosts.*.host", check: |c| each(&c.remote_hosts, |h| blank(&h.host).then_some(EMPTY)) },
     Rule { key: "remote_hosts.*.port", check: |c| each(&c.remote_hosts, |h| (h.port == Some(0)).then_some(PORT)) },
     Rule { key: "remote_hosts.*.allowed_paths", check: |c| each(&c.remote_hosts, |h| {
-        let bad = h.allowed_paths.iter().find(|p| remote_components(p).is_none())?;
+        let bad = h.allowed_paths.iter().find(|p| !p.starts_with('/') || p.split('/').any(|part| part == ".."))?;
         Some(format!("must hold absolute paths without `..`, found {bad:?}"))
     }) },
     Rule { key: "projects.*.digest_role", check: |c| each(&c.projects, |p| blank(&p.digest_role).then_some("must name a model role")) },

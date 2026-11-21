@@ -42,7 +42,7 @@ pub struct Config {
     pub pinned: BTreeSet<String>,
     #[serde(skip_serializing_if = "BTreeSet::is_empty")]
     pub pinned_projects: BTreeSet<String>,
-    /// The project whose folder is the active folder, restored at startup.
+    /// Restored at startup while its folder exists.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub active_project: Option<ActiveProject>,
     /// Whether open projects show as tabs across the top.
@@ -56,7 +56,7 @@ pub struct Config {
     pub mcp_servers: BTreeMap<String, McpServer>,
     /// SSH hosts the `remote` MCP server may reach, by name.
     pub remote_hosts: BTreeMap<String, RemoteHost>,
-    /// Per project settings, by project id.
+    /// By project id.
     pub projects: BTreeMap<String, ProjectSettings>,
     #[serde(skip)]
     pub(crate) unknown: Vec<UnknownKey>,
@@ -130,13 +130,12 @@ pub struct SurfaceSettings {
     #[serde(default)] pub browser_capture: BrowserCapture,
 }
 
+/// Headless Chrome's own screencast, or headed Chrome on an Xvfb display captured raw.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum BrowserCapture {
-    /// Headless Chrome's own screencast.
     #[default]
     Screencast,
-    /// Headed Chrome on an Xvfb virtual display, captured raw.
     VirtualDisplay,
 }
 
@@ -192,10 +191,6 @@ impl UpdaterSettings {
     pub fn check_interval(&self) -> Duration {
         Duration::from_secs(self.check_interval_secs)
     }
-
-    pub fn pin(&self, component: &str) -> Option<&str> {
-        self.pins.get(component).map(String::as_str)
-    }
 }
 
 /// Default answers for decisions nobody answers in time; a kind without one waits forever.
@@ -225,12 +220,6 @@ pub struct DecisionDefault {
     pub timeout_secs: u64,
     pub answer: String,
     #[serde(default, skip_serializing_if = "Option::is_none")] pub reason: Option<String>,
-}
-
-impl DecisionDefault {
-    pub fn timeout(&self) -> Duration {
-        Duration::from_secs(self.timeout_secs)
-    }
 }
 
 /// A registered MCP server; a disabled one stays registered but isn't started.
@@ -286,6 +275,7 @@ impl From<McpServer> for McpServerRepr {
 
 /// An SSH host (name, address or `~/.ssh/config` alias) and what the agent may do there:
 /// touch the absolute `allowed_paths` and below, run commands, skip approval cards.
+/// loa-remote enforces the limits.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteHost {
     pub host: String,
@@ -296,26 +286,6 @@ pub struct RemoteHost {
     #[serde(default = "yes")] pub read_only: bool,
     #[serde(default)] pub commands: bool,
     #[serde(default)] pub auto_approve: bool,
-}
-
-impl RemoteHost {
-    /// Whether `path` lies inside an allowed path. Relative paths and `..` are refused.
-    pub fn allows_read(&self, path: &str) -> bool {
-        let Some(path) = remote_components(path) else { return false };
-        self.allowed_paths.iter().filter_map(|allowed| remote_components(allowed)).any(|allowed| {
-            allowed.len() <= path.len() && allowed.iter().zip(&path).all(|(a, p)| a == p)
-        })
-    }
-
-    pub fn allows_write(&self, path: &str) -> bool {
-        !self.read_only && self.allows_read(path)
-    }
-}
-
-/// Components of an absolute POSIX path without `.` and empty parts; `None` when relative or with `..`.
-pub(crate) fn remote_components(path: &str) -> Option<Vec<&str>> {
-    let parts = path.strip_prefix('/')?.split('/').filter(|p| !matches!(*p, "" | "."));
-    parts.map(|p| (p != "..").then_some(p)).collect()
 }
 
 /// Settings shared by every session of one project: instructions, always-included files,
@@ -332,10 +302,6 @@ pub struct ProjectSettings {
 }
 
 impl ProjectSettings {
-    pub fn tool_enabled(&self, tool: &str) -> bool {
-        !self.disabled_tools.contains(tool)
-    }
-
     pub fn mcp_tool_enabled(&self, server: &str, tool: &str) -> bool {
         self.disabled_mcp_tools.get(server).is_none_or(|tools| !tools.contains(tool))
     }
@@ -347,15 +313,10 @@ impl Config {
         self.projects.get(id).cloned().unwrap_or_default()
     }
 
-    /// Enabled MCP servers as the adapter contract describes them.
-    pub fn mcp_specs(&self) -> Vec<McpServerSpec> {
-        self.mcp_servers.iter().filter(|(_, s)| s.enabled).map(|(name, s)| s.spec(name)).collect()
-    }
-
     /// Adds enabled MCP servers, the project's disabled tools and the harness
     /// executable override to `session`, keeping whatever the caller set.
     pub fn apply_to_session(&self, harness: &str, session: &mut SessionConfig) {
-        session.mcp_servers.extend(self.mcp_specs());
+        session.mcp_servers.extend(self.mcp_servers.iter().filter(|(_, s)| s.enabled).map(|(name, s)| s.spec(name)));
         if let Some(project) = session.project.as_deref().and_then(|p| self.projects.get(p)) {
             session.disabled_tools.extend(project.disabled_tools.iter().cloned());
         }
