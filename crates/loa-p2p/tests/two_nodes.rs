@@ -117,6 +117,15 @@ fn first_message(dom: &Dom) -> DomNodeId { dom.iter().find(|n| n.kind == Element
 fn given(node: &Node) -> Vec<GrantId> { node.grants().into_iter().filter(|g| g.direction == GrantDirection::Given && !g.ended).map(|g| g.id).collect() }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn stopping_clears_peer_transports() {
+    let (owner, guest) = pair("owner", "guest").await;
+    assert_eq!(guest.node.peers()[0].transport, Some(TransportKind::Quic));
+    guest.node.stop().await;
+    assert_eq!(guest.node.peers()[0].transport, None);
+    owner.node.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_shared_session_is_viewed_driven_prompted_forked_and_revoked() {
     let (owner, guest) = pair("owner-box", "guest-box").await;
     let seen = guest.node.peers();
@@ -363,6 +372,15 @@ async fn folder_grants_list_read_and_write_only_inside_the_folder() {
     assert_eq!(std::fs::read(share.join("docs/copy.bin")).unwrap(), big);
     g.write_folder_file(&owner_key, &folder, "empty.txt", b"").await.unwrap();
     assert_eq!(std::fs::read(share.join("empty.txt")).unwrap(), b"");
+    g.write_folder_file(&owner_key, &folder, "notes.txt", b"updated").await.unwrap();
+    assert_eq!(std::fs::read(share.join("notes.txt")).unwrap(), b"updated");
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink("notes.txt", share.join("link.txt")).unwrap();
+        assert!(g.write_folder_file(&owner_key, &folder, "link.txt", b"changed").await.is_err());
+        assert_eq!(std::fs::read(share.join("notes.txt")).unwrap(), b"updated");
+        assert!(std::fs::symlink_metadata(share.join("link.txt")).unwrap().file_type().is_symlink());
+    }
     assert!(g.write_folder_file(&owner_key, &folder, "../escaped.txt", b"x").await.is_err());
     assert!(!base.join("escaped.txt").exists());
     assert!(owner.node.resources().iter().any(|(resource, label)| *resource == Resource::Folder { path: folder.clone() } && *label == format!("Folder {folder}")));

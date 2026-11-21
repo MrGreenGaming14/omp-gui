@@ -42,11 +42,11 @@ pub enum Standing {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProtocolStatus {
     pub family: String,
-    /// The version when both sides announce the same label.
+    /// The highest version with an exact label announced by both sides.
     pub shared: Option<u32>,
-    /// The version this node announces, if any.
+    /// The highest version this node announces, if any.
     pub local: Option<u32>,
-    /// The version the peer announces, if any.
+    /// The highest version the peer announces, if any.
     pub peer: Option<u32>,
 }
 
@@ -112,15 +112,34 @@ pub fn classify(
     rows
 }
 
-fn families<'a>(labels: impl Iterator<Item = &'a str>) -> BTreeMap<&'a str, u32> { labels.filter_map(parse_alpn).collect() }
+fn families<'a>(labels: impl Iterator<Item = &'a str>) -> BTreeMap<&'a str, BTreeSet<(u32, &'a str)>> {
+    let mut families = BTreeMap::<_, BTreeSet<_>>::new();
+    for label in labels {
+        if let Some((family, version)) = parse_alpn(label) {
+            families.entry(family).or_default().insert((version, label));
+        }
+    }
+    families
+}
 
-fn protocols(local: &BTreeMap<&str, u32>, remote: &BTreeMap<&str, u32>) -> Vec<ProtocolStatus> {
+fn protocols(
+    local: &BTreeMap<&str, BTreeSet<(u32, &str)>>,
+    remote: &BTreeMap<&str, BTreeSet<(u32, &str)>>,
+) -> Vec<ProtocolStatus> {
     let names: BTreeSet<&str> = local.keys().chain(remote.keys()).copied().collect();
     names
         .into_iter()
         .map(|family| {
-            let (ours, theirs) = (local.get(family).copied(), remote.get(family).copied());
-            ProtocolStatus { family: family.to_owned(), shared: ours.filter(|v| theirs == Some(*v)), local: ours, peer: theirs }
+            let (ours, theirs) = (local.get(family), remote.get(family));
+            let shared = ours.zip(theirs).and_then(|(ours, theirs)| {
+                ours.intersection(theirs).last().map(|(v, _)| *v)
+            });
+            ProtocolStatus {
+                family: family.to_owned(),
+                shared,
+                local: ours.and_then(|versions| versions.last().map(|(v, _)| *v)),
+                peer: theirs.and_then(|versions| versions.last().map(|(v, _)| *v)),
+            }
         })
         .collect()
 }

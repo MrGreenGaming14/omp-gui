@@ -238,6 +238,7 @@ impl Node {
         if let Some(net) = net {
             net.close().await;
         }
+        self.0.peers.clear_transports();
         self.status_with(|s| {
             s.endpoint = Endpoint::Stopped;
             if matches!(s.mdns, Availability::Active(_)) {

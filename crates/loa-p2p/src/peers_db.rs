@@ -127,6 +127,9 @@ impl PeerDirectory {
         self.db.locked().execute("DELETE FROM net_peers WHERE key = ?1", [key.to_string()]).is_ok_and(|n| n != 0)
     }
 
+    /// Discards connection transports when the local endpoint stops.
+    pub fn clear_transports(&self) { self.seen.locked().transports.clear(); }
+
     /// A peer that stopped answering: offline, its last sighting kept.
     pub fn offline(&self, key: &NodeId) {
         self.update(key, "online = 0", &[]);

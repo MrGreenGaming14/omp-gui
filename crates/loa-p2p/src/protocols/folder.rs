@@ -113,6 +113,13 @@ fn resolve(covered: &dyn Fn(&str) -> bool, write: bool, folder: &str, path: &str
     if !root.to_str().is_some_and(covered) {
         return Err(format!("{folder} leads outside the shared folder"));
     }
+    if write {
+        match std::fs::symlink_metadata(root.join(path)) {
+            Ok(meta) if meta.file_type().is_symlink() => return Err(format!("{path} is a symlink")),
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(format!("{path}: {e}")),
+            _ => {}
+        }
+    }
     let target = loa_util::fs::confine(&root, Path::new(path)).map_err(|e| match e.kind() {
         std::io::ErrorKind::PermissionDenied => format!("{path} is outside the shared folder"),
         _ => format!("{path}: {e}"),
