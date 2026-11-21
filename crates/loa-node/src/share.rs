@@ -191,7 +191,7 @@ async fn subscription(node: &Node, peer: NodeId, subscribe: Subscribe, stream: S
     }
     let (dom, mut events) = writer.subscribe(Policy::every_patch(SUBSCRIBER_QUEUE));
     let actions = SessionFacts::from_dom(&dom).map(|facts| access.session_actions(&key, &facts)).unwrap_or_default();
-    let (mut projection, seed) = Projection::seeded(key, writer.session().clone(), &dom, &*access)?;
+    let (mut projection, seed) = Projection::seeded(key, &dom, &*access)?;
     send(&mut tx, Body::Seed(Seed::new(dom.seq(), &seed, &actions))).await?;
     drop(dom);
 
