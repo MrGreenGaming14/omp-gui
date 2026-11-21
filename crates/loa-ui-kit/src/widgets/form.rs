@@ -126,7 +126,7 @@ impl<T: PickerItem> Picker<T> {
                 let text = match o.detail() { Some(d) => Cow::Owned(format!("{} · {d}", o.label())), None => o.label() };
                 menu_row(o.icon(), text, self.selected == Some(i), on(PickerMsg::Pick(i)))
             });
-            let menu = container(column(items).spacing(2)).padding(t.space(SpaceRole::Xs)).width(t.layout(LayoutRole::PopupWidth) / 2.0);
+            let menu = container(column(items).spacing(t.space(SpaceRole::Xs) / 2.0)).padding(t.space(SpaceRole::Xs)).width(t.layout(LayoutRole::PopupWidth) / 2.0);
             menu.style(style::container(Surface::Popup)).into()
         });
         popover(head, menu).into()

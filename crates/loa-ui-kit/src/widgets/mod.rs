@@ -13,7 +13,7 @@ use crate::icons::{Icon, tinted};
 use crate::style::{self, ButtonKind, Surface, Tone};
 use crate::theme::{ColorRole, LayoutRole, RadiusRole, SpaceRole, TextRole, tokens};
 use iced::widget::{Space, button, column, container, mouse_area, row, rule, text, tooltip};
-use iced::{Alignment, Element, Fill, FillPortion, Subscription, Task, mouse};
+use iced::{Alignment, Element, Fill, FillPortion, Padding, Subscription, Task, mouse};
 
 /// A screen or pane: local state with messages in and events out.
 pub trait Component {
@@ -53,7 +53,7 @@ pub fn card<'a, M: 'a>(content: impl Into<Element<'a, M>>) -> container::Contain
 }
 
 pub fn badge<'a, M: 'a>(s: impl text::IntoFragment<'a>, tone: Tone) -> Element<'a, M> {
-    container(label(s, TextRole::Caption, tone)).padding([0.0, sp(SpaceRole::Xs)]).style(style::container(Surface::Badge)).into()
+    container(label(s, TextRole::Caption, tone)).padding(Padding::ZERO.left(sp(SpaceRole::Xs)).right(sp(SpaceRole::Xs))).style(style::container(Surface::Badge)).into()
 }
 
 /// A ghost icon button with a tooltip; disabled without `on`.
@@ -115,7 +115,7 @@ pub fn empty_state<'a, M: 'a>(icon: Icon, title: &'a str, hint: &'a str) -> Elem
 pub fn collapsible<'a, M: Clone + 'a>(title: impl text::IntoFragment<'a>, open: bool, toggle: M, body: impl FnOnce() -> Element<'a, M>) -> Element<'a, M> {
     let chevron = tinted(if open { Icon::ChevronDown } else { Icon::ChevronRight }, TextRole::Caption, Tone::Muted);
     let head = button(row![chevron, label(title, TextRole::Label, Tone::Muted)].spacing(sp(SpaceRole::Xs)).align_y(Alignment::Center));
-    let head = head.padding(0).style(style::button(ButtonKind::Flat)).on_press(toggle);
+    let head = head.padding(Padding::ZERO).style(style::button(ButtonKind::Flat)).on_press(toggle);
     if open { column![head, body()].spacing(sp(SpaceRole::Xs)).into() } else { head.into() }
 }
 

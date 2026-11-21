@@ -232,7 +232,8 @@ impl App {
         let mut sessions = Sessions::default();
         sessions.harness = services.harnesses.default_id();
         composer.set_harnesses(services.harnesses.options(), sessions.harness.as_deref());
-        let (recents, problems) = session::recents(&services.library);
+        let (recents, mut problems) = session::recents(&services.library);
+        problems.extend(shell.theme_state().errors().iter().map(|e| format!("Theme: {e}")));
         let metrics = terminal::canvas::Metrics::measure(Font::MONOSPACE, 13.0);
         let terminal = terminal::state::State::new(metrics, terminal::local::LocalShell::login_shell(services.cwd.clone()));
         let files = files::State::new(services.cwd.clone(), Box::new(files::LocalFs));
