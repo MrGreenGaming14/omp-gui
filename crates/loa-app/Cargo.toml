@@ -13,7 +13,6 @@ loa-contracts.workspace = true
 loa-bus = { path = "../loa-bus" }
 loa-features = { path = "../loa-features" }
 loa-config = { path = "../loa-config" }
-loa-omp-bridge = { path = "../loa-omp-bridge" }
 loa-adapter-acp = { path = "../loa-adapter-acp" }
 loa-adapter-claude = { path = "../loa-adapter-claude" }
 loa-adapter-codex = { path = "../loa-adapter-codex" }

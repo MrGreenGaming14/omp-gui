@@ -64,6 +64,8 @@ pub struct SpawnOptions {
     pub cwd: Option<PathBuf>,
     /// Extra environment variables for the child.
     pub env: Vec<(OsString, OsString)>,
+    /// Variables of this process the child must not inherit.
+    pub env_remove: Vec<OsString>,
     /// How long to wait for the `ready` frame.
     pub ready_timeout: Duration,
     /// Negotiate protocol v2 when omp offers it.
@@ -82,6 +84,7 @@ impl SpawnOptions {
             args: Vec::new(),
             cwd: None,
             env: Vec::new(),
+            env_remove: Vec::new(),
             ready_timeout: Duration::from_secs(60),
             negotiate: true,
             event_capacity: 1024,
@@ -99,6 +102,9 @@ impl SpawnOptions {
         command.arg("--mode").arg(if self.mode == Mode::RpcUi { "rpc-ui" } else { "rpc" });
         if self.no_ui {
             command.arg("--no-ui");
+        }
+        for key in &self.env_remove {
+            command.env_remove(key);
         }
         command.args(&self.args).envs(self.env.iter().map(|(k, v)| (k, v)));
         if let Some(cwd) = &self.cwd {
