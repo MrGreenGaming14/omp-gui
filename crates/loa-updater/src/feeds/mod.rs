@@ -2,7 +2,7 @@
 //!
 //! Each feed turns its upstream listing into [`Release`]s, using conditional
 //! requests (`If-None-Match`) so an unchanged feed costs nothing. [`newest`]
-//! picks what to offer; [`Watcher`] ties both together per [`Product`].
+//! picks what to offer.
 
 mod github;
 mod npm;
@@ -14,7 +14,6 @@ use loa_util::time::now_secs;
 use crate::product::{CachedFeed, Feed, PrereleasePolicy, Product, Release};
 use semver::Version;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 
 /// Errors fetching or reading a release feed.
 #[derive(Debug, thiserror::Error)]
@@ -102,7 +101,7 @@ pub fn between<'a>(releases: &'a [Release], from: &Version, to: &Version) -> Vec
     out
 }
 
-/// Key of `product` in [`Watcher::cache`]. Covers every product setting
+/// Key of `product` in the feed cache. Covers every product setting
 /// that changes what a feed returns, so editing one starts a fresh fetch
 /// instead of trusting a 304 for the old settings.
 pub fn cache_key(product: &Product) -> String {
@@ -115,71 +114,6 @@ pub fn cache_key(product: &Product) -> String {
         Feed::Npm { package } => format!("npm:{package}"),
     };
     format!("{}|{source}|{policy}|{}", product.id, product.asset.as_deref().unwrap_or(""))
-}
-
-/// Watches the feeds of every product, keeping the last response of each
-/// for conditional requests.
-pub struct Watcher {
-    pub github: GitHubFeed,
-    pub npm: NpmFeed,
-    /// Token for GitHub API requests; raises the rate limit.
-    pub github_token: Option<String>,
-    /// Last response per [`cache_key`]. Persist it to keep conditional
-    /// requests working across restarts.
-    pub cache: BTreeMap<String, CachedFeed>,
-    /// GitHub rate limit state from the last fresh response.
-    pub github_rate_limit: Option<RateLimit>,
-}
-
-impl Watcher {
-    pub fn new(
-        github: GitHubFeed,
-        npm: NpmFeed,
-        github_token: Option<String>,
-        cache: BTreeMap<String, CachedFeed>,
-    ) -> Self {
-        Self { github, npm, github_token, cache, github_rate_limit: None }
-    }
-
-    /// Fetches `product`'s feed, updates the cache and returns the release
-    /// to offer over `current` (see [`newest`]).
-    pub async fn check(
-        &mut self,
-        product: &Product,
-        current: &Version,
-        pin: Option<&Version>,
-    ) -> Result<Option<Release>> {
-        let key = cache_key(product);
-        let cached = self.cache.get(&key);
-        let response = match &product.feed {
-            Feed::GitHub { .. } => {
-                self.github.fetch(product, cached, self.github_token.as_deref()).await?
-            }
-            Feed::Npm { .. } => self.npm.fetch(product, cached).await?,
-        };
-        match response {
-            FeedResponse::NotModified => match self.cache.get(&key) {
-                Some(feed) => Ok(newest(&feed.releases, current, product.prereleases, pin).cloned()),
-                None => Err(FeedError::NotModifiedWithoutCache { url: describe(product) }),
-            },
-            FeedResponse::Fresh { feed, rate_limit } => {
-                if matches!(product.feed, Feed::GitHub { .. }) && rate_limit.is_some() {
-                    self.github_rate_limit = rate_limit;
-                }
-                let offer = newest(&feed.releases, current, product.prereleases, pin).cloned();
-                self.cache.insert(key, feed);
-                Ok(offer)
-            }
-        }
-    }
-}
-
-/// Names a product's feed in errors that have no single URL.
-fn describe(product: &Product) -> String {
-    match &product.feed {
-        Feed::GitHub { owner, repo } => format!("github.com/{owner}/{repo}"),
-        Feed::Npm { package } => format!("npm package {package}"),
-    }
 }
 
 /// `ETag` of a response, as sent back in `If-None-Match`.

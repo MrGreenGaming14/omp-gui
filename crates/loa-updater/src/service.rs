@@ -353,16 +353,9 @@ impl TurnGate {
     }
 }
 
-#[async_trait::async_trait]
 impl Activity for TurnGate {
     fn turn_running(&self) -> bool {
         *self.0.borrow() > 0
-    }
-
-    async fn idle(&self) {
-        let mut rx = self.0.subscribe();
-        // The sender lives as long as `self`, so waiting can't fail.
-        let _ = rx.wait_for(|running| *running == 0).await;
     }
 }
 
