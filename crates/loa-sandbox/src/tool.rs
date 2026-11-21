@@ -13,7 +13,6 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::broadcast;
 
 /// Name registered with an adapter; it does not replace omp's own `task`.
@@ -168,7 +167,7 @@ impl SandboxTask {
         let run = NEXT_RUN.fetch_add(1, Ordering::Relaxed);
         // With the start time, ids stay unique across app restarts too, where
         // run numbers start over but earlier worker journals remain.
-        let started = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |since| since.as_millis());
+        let started = loa_util::time::now_ms();
         let worker = format!("{}-sandbox-{started:x}-{run}", self.template.session_id);
         self.emit(SandboxEvent::Started(SandboxRun {
             run,
@@ -187,7 +186,7 @@ impl SandboxTask {
         result
     }
 
-    async fn run(&self, provider: &dyn SandboxProvider, run: u64, started: u128, worker: String, args: SandboxTaskArgs) -> Result<SandboxTaskResult> {
+    async fn run(&self, provider: &dyn SandboxProvider, run: u64, started: i64, worker: String, args: SandboxTaskArgs) -> Result<SandboxTaskResult> {
         let checkout = if args.isolation { Some(IsolatedCheckout::create(&self.workspace)?) } else { None };
         let workspace = checkout.as_ref().map_or(self.workspace.as_path(), |checkout| checkout.path());
         let mut sandbox = provider.start(&SandboxSpec {

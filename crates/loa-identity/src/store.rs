@@ -1,5 +1,6 @@
 //! Where the node's secret seed lives between runs.
 
+use loa_util::LockExt;
 use std::fmt;
 use std::fs;
 use std::io;
@@ -42,20 +43,15 @@ impl MemoryKeyStore {
         }
     }
 
-    fn slot(&self) -> std::sync::MutexGuard<'_, Option<SecretBytes>> {
-        // A poisoned lock only means another thread panicked mid-access; the
-        // slot is a plain value that is always in a consistent state.
-        self.secret.lock().unwrap_or_else(|e| e.into_inner())
-    }
 }
 
 impl KeyStore for MemoryKeyStore {
     fn load(&self) -> Result<Option<SecretBytes>> {
-        Ok(self.slot().clone())
+        Ok(self.secret.locked().clone())
     }
 
     fn store(&self, secret: &[u8]) -> Result<()> {
-        *self.slot() = Some(Zeroizing::new(secret.to_vec()));
+        *self.secret.locked() = Some(Zeroizing::new(secret.to_vec()));
         Ok(())
     }
 }
@@ -63,7 +59,7 @@ impl KeyStore for MemoryKeyStore {
 impl fmt::Debug for MemoryKeyStore {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("MemoryKeyStore")
-            .field("occupied", &self.slot().is_some())
+            .field("occupied", &self.secret.locked().is_some())
             .finish()
     }
 }
@@ -191,20 +187,9 @@ impl KeyStore for FileKeyStore {
     }
 
     fn store(&self, secret: &[u8]) -> Result<()> {
-        let dir = self.path.parent().unwrap_or(Path::new("."));
-        fs::create_dir_all(dir).map_err(|e| file_error(dir, &e))?;
         // Written to a private temporary file and renamed into place, so a
         // crash never leaves a truncated key behind.
-        let tmp = self.path.with_extension("key.tmp");
-        let mut options = fs::OpenOptions::new();
-        options.write(true).create(true).truncate(true);
-        #[cfg(unix)]
-        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-        let mut file = options.open(&tmp).map_err(|e| file_error(&tmp, &e))?;
-        io::Write::write_all(&mut file, secret).map_err(|e| file_error(&tmp, &e))?;
-        file.sync_all().map_err(|e| file_error(&tmp, &e))?;
-        drop(file);
-        fs::rename(&tmp, &self.path).map_err(|e| file_error(&self.path, &e))
+        loa_util::fs::write_atomic(&self.path, secret, Some(0o600)).map_err(|e| file_error(&self.path, &e))
     }
 }
 

@@ -54,8 +54,5 @@ pub enum ProtoError {
 pub type Result<T, E = ProtoError> = std::result::Result<T, E>;
 
 /// Wall clock in microseconds, for `InputEvent::sent_us`.
-pub(crate) fn now_us() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| u64::try_from(d.as_micros()).unwrap_or(u64::MAX))
-}
+pub(crate) use loa_util::time::now_us;
+

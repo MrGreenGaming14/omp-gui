@@ -1,7 +1,7 @@
 //! Persisted updater decisions: pins, held updates, waits, check times and
 //! pending swaps, stored as JSON at [`layout::state_path`].
 
-use crate::fsio;
+use loa_util::fs::write_atomic;
 use crate::gates::GateReport;
 use crate::layout;
 use semver::Version;
@@ -78,6 +78,6 @@ impl UpdaterState {
         let path = layout::state_path(root);
         let bytes = serde_json::to_vec_pretty(self)
             .map_err(|source| StateError::Json { path: path.clone(), source })?;
-        fsio::write_atomic(&path, &bytes).map_err(|source| StateError::Io { path, source })
+        write_atomic(&path, &bytes, None).map_err(|source| StateError::Io { path, source })
     }
 }

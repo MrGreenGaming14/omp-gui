@@ -2,6 +2,7 @@
 //! the bus persisted through their journals, plus the [`SessionStore`] port
 //! that fork, rewind, compaction and subagents create sessions through.
 
+use loa_util::LockExt;
 use crate::{Error, Result, SessionStore};
 use async_trait::async_trait;
 use loa_adapter::Adapter;
@@ -10,7 +11,7 @@ use loa_core::{Dom, Draft, ElementKind, NodeId, Op, PatchSink, Value, attr};
 use loa_journal::{Journal, JournalPersist, JournalWriter, Store, SyncPolicy};
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex};
 
 /// One live session: the writer every change goes through and the journal it
 /// persists to, for reads of earlier states and forks.
@@ -50,10 +51,6 @@ impl Library {
         &self.bus
     }
 
-    fn journals(&self) -> MutexGuard<'_, HashMap<String, Arc<JournalWriter>>> {
-        self.journals.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
     /// Creates an empty session and opens its writer.
     pub fn create(&self, id: &str) -> Result<Live> {
         let journal = self.store.create(id)?;
@@ -80,13 +77,13 @@ impl Library {
             persist: Box::new(JournalPersist(Arc::clone(&journal))),
             authorize: Arc::clone(&self.authorize),
         })?;
-        self.journals().insert(id.to_owned(), Arc::clone(&journal));
+        self.journals.locked().insert(id.to_owned(), Arc::clone(&journal));
         Ok(Live { writer, journal })
     }
 
     /// The session if it is live.
     pub fn live(&self, id: &str) -> Option<Live> {
-        let journal = self.journals().get(id).cloned()?;
+        let journal = self.journals.locked().get(id).cloned()?;
         let writer = self.bus.get(id)?;
         Some(Live { writer, journal })
     }
@@ -95,7 +92,7 @@ impl Library {
     /// synced and released (even while harness tasks still hold the writer),
     /// so it can be reopened or deleted. Returns whether it was live.
     pub fn close(&self, id: &str) -> Result<bool> {
-        let journal = self.journals().remove(id);
+        let journal = self.journals.locked().remove(id);
         let writer = self.bus.close(id);
         if let Some(journal) = &journal {
             journal.close()?;

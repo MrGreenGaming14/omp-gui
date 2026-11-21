@@ -2,8 +2,9 @@
 //! node identity, data directories, the session library (journal store and
 //! bus) and the harness registry.
 
+use loa_util::RwLockExt;
 use std::path::PathBuf;
-use std::sync::{Arc, PoisonError, RwLock};
+use std::sync::{Arc, RwLock};
 
 use loa_bus::{Authorize, Bus, Denied, NodeKey, SessionId};
 use loa_config::ConfigStore;
@@ -166,7 +167,7 @@ pub struct PeerAccess(RwLock<Arc<dyn Authorize>>);
 impl PeerAccess {
     /// Decides peer requests with `authorize` from now on, on every session.
     pub fn set(&self, authorize: Arc<dyn Authorize>) {
-        *self.0.write().unwrap_or_else(PoisonError::into_inner) = authorize;
+        *self.0.write_ok() = authorize;
     }
 }
 
@@ -178,7 +179,7 @@ impl Default for PeerAccess {
 
 impl Authorize for PeerAccess {
     fn authorize(&self, session: &SessionId, requester: &NodeKey, draft: &Draft, dom: &Dom) -> Result<(), Denied> {
-        let authorize = Arc::clone(&self.0.read().unwrap_or_else(PoisonError::into_inner));
+        let authorize = Arc::clone(&self.0.read_ok());
         authorize.authorize(session, requester, draft, dom)
     }
 }

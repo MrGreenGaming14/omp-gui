@@ -10,9 +10,11 @@
 //! versions while no turn runs, and [`Updater::rollback`] goes back one
 //! version. [`Updater::overview`] is a cheap snapshot for the screen.
 
+use loa_util::time::now_secs;
+use loa_util::LockExt;
 use crate::decision::{self, HoldChoice};
 use crate::feeds::{self, FeedError, FeedResponse, GitHubFeed, NpmFeed, RateLimit};
-use crate::fsio;
+use loa_util::fs::write_atomic;
 use crate::gates::{
     self, ChangelogGate, CheckResult, FormatGate, GateCheck, GateInputs, GateReport, OmpProbe,
     OmpReadyProbe, OmpSmolSummarizer, RpcGate, ToolGate, UsedTools,
@@ -30,7 +32,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// Errors of updater operations.
@@ -394,14 +396,6 @@ impl std::fmt::Debug for Updater {
     }
 }
 
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    // A panic while holding a lock leaves plain data behind; keep using it.
-    mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
-fn now_unix() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
-}
 
 impl Updater {
     /// Opens the updater under `config.root`, loading its state and feed
@@ -452,7 +446,7 @@ impl Updater {
     /// Records the outcome of a step: an error is kept for the screen, a
     /// success clears the last one.
     fn note<T>(&self, id: &str, result: Result<T>) -> Result<T> {
-        let mut errors = lock(&self.inner.errors);
+        let mut errors = self.inner.errors.locked();
         match &result {
             Ok(_) => {
                 errors.remove(id);
@@ -478,7 +472,7 @@ impl Updater {
             Installed::Running(_) => None,
         });
         let results = futures::future::join_all(probes).await;
-        lock(&self.inner.installed).extend(results);
+        self.inner.installed.locked().extend(results);
     }
 
     fn current(&self, spec: &ProductSpec) -> Result<Option<Current>> {
@@ -491,7 +485,7 @@ impl Updater {
             let executable = staged_executable(spec, &staged).ok();
             return Ok(Some(Current { version: active.current, executable }));
         }
-        Ok(lock(&self.inner.installed)
+        Ok(self.inner.installed.locked()
             .get(id)
             .and_then(|found| found.as_ref().ok())
             .map(|(version, path)| Current { version: version.clone(), executable: Some(path.clone()) }))
@@ -518,7 +512,7 @@ impl Updater {
         self.detect().await;
         self.current(spec)?.ok_or_else(|| UpdaterError::NotInstalled {
             product: spec.product.id.clone(),
-            reason: match lock(&self.inner.installed).get(&spec.product.id) {
+            reason: match self.inner.installed.locked().get(&spec.product.id) {
                 Some(Err(reason)) => reason.clone(),
                 _ => "no version found".to_owned(),
             },
@@ -528,9 +522,9 @@ impl Updater {
     /// The release to offer for `spec` over `current`, from the cache.
     fn offer(&self, spec: &ProductSpec, current: &Version) -> Option<Release> {
         let id = &spec.product.id;
-        let cache = lock(&self.inner.cache);
+        let cache = self.inner.cache.locked();
         let releases = &cache.get(&feeds::cache_key(&spec.product))?.releases;
-        let state = lock(&self.inner.state);
+        let state = self.inner.state.locked();
         let pin = state.pins.get(id);
         let allowed: Vec<Release> =
             releases.iter().filter(|r| decision::offer_allowed(&state, id, &r.version)).cloned().collect();
@@ -549,7 +543,7 @@ impl Updater {
         let spec = self.spec(id)?;
         let product = &spec.product;
         let key = feeds::cache_key(product);
-        let cached = lock(&self.inner.cache).get(&key).cloned();
+        let cached = self.inner.cache.locked().get(&key).cloned();
         let response = match &product.feed {
             Feed::GitHub { .. } => {
                 self.inner.github.fetch(product, cached.as_ref(), self.inner.config.github_token.as_deref()).await?
@@ -563,13 +557,13 @@ impl Updater {
             FeedResponse::NotModified => {}
             FeedResponse::Fresh { feed, rate_limit } => {
                 if matches!(product.feed, Feed::GitHub { .. }) && rate_limit.is_some() {
-                    *lock(&self.inner.rate_limit) = rate_limit;
+                    *self.inner.rate_limit.locked() = rate_limit;
                 }
-                lock(&self.inner.cache).insert(key, feed);
+                self.inner.cache.locked().insert(key, feed);
                 self.save_cache()?;
             }
         }
-        lock(&self.inner.state).last_check_unix.insert(id.to_owned(), now_unix());
+        self.inner.state.locked().last_check_unix.insert(id.to_owned(), now_secs());
         self.save_state()?;
         self.offered(spec).await
     }
@@ -578,7 +572,7 @@ impl Updater {
     /// installed). Looks for the installed executable first when it wasn't
     /// looked for yet.
     async fn offered(&self, spec: &ProductSpec) -> Result<Option<Release>> {
-        let detected = lock(&self.inner.installed).contains_key(&spec.product.id);
+        let detected = self.inner.installed.locked().contains_key(&spec.product.id);
         if !detected && self.current(spec)?.is_none() && matches!(spec.installed, Installed::Executable(_)) {
             self.detect().await;
         }
@@ -639,7 +633,7 @@ impl Updater {
                 Err(e) => SignatureStatus::Rejected(format!("verification task failed: {e}")),
             }
         };
-        lock(&self.inner.signatures).insert((id.to_owned(), version), status.clone());
+        self.inner.signatures.locked().insert((id.to_owned(), version), status.clone());
         status
     }
 
@@ -663,8 +657,8 @@ impl Updater {
                 self.run_checks(spec, gates, &current, &new_executable, &to).await
             }
         };
-        let mut state = lock(&self.inner.state);
-        decision::record(&mut state, &report, now_unix());
+        let mut state = self.inner.state.locked();
+        decision::record(&mut state, &report, now_secs());
         state.reports.insert(id.to_owned(), report.clone());
         state.save(&self.inner.config.root)?;
         Ok(report)
@@ -754,7 +748,7 @@ impl Updater {
 
     /// Release notes between `from` (exclusive) and `to`, oldest first.
     fn changelog(&self, spec: &ProductSpec, from: &Version, to: &Version) -> String {
-        let cache = lock(&self.inner.cache);
+        let cache = self.inner.cache.locked();
         let Some(feed) = cache.get(&feeds::cache_key(&spec.product)) else {
             return String::new();
         };
@@ -774,7 +768,7 @@ impl Updater {
             let current = self
                 .current(spec)?
                 .ok_or_else(|| UpdaterError::NotInstalled { product: id.to_owned(), reason: "no version in use".into() })?;
-            let mut state = lock(&self.inner.state);
+            let mut state = self.inner.state.locked();
             let to = decision::apply_choice(&mut state, id, &current.version, choice);
             state.save(&self.inner.config.root)?;
             Ok(to)
@@ -785,7 +779,7 @@ impl Updater {
     /// Removes `id`'s pin and wait, so every newer version is offered again.
     pub fn unpin(&self, id: &str) -> Result<()> {
         self.spec(id)?;
-        let mut state = lock(&self.inner.state);
+        let mut state = self.inner.state.locked();
         state.pins.remove(id);
         state.waits.remove(id);
         state.save(&self.inner.config.root)?;
@@ -798,7 +792,7 @@ impl Updater {
         for id in pins.keys() {
             self.spec(id)?;
         }
-        let mut state = lock(&self.inner.state);
+        let mut state = self.inner.state.locked();
         if state.pins == pins {
             return Ok(());
         }
@@ -810,7 +804,7 @@ impl Updater {
     /// Swaps in every version cleared for swapping, unless a turn runs
     /// (those stay pending). Returns each attempted product's outcome.
     pub fn apply_pending(&self, activity: &dyn Activity) -> Vec<(String, Result<SwapOutcome>)> {
-        let pending: Vec<String> = lock(&self.inner.state).pending_swap.keys().cloned().collect();
+        let pending: Vec<String> = self.inner.state.locked().pending_swap.keys().cloned().collect();
         pending
             .into_iter()
             .map(|id| {
@@ -825,12 +819,12 @@ impl Updater {
     pub fn swap(&self, id: &str, activity: &dyn Activity) -> Result<SwapOutcome> {
         let result = (|| {
             self.spec(id)?;
-            let Some(to) = lock(&self.inner.state).pending_swap.get(id).cloned() else {
+            let Some(to) = self.inner.state.locked().pending_swap.get(id).cloned() else {
                 return Err(UpdaterError::NothingOffered(id.to_owned()));
             };
             let keys = self.inner.config.trusted_keys.as_slice();
             let outcome = self.inner.swapper.try_swap(id, &to, Some(keys).filter(|k| !k.is_empty()), activity);
-            let mut state = lock(&self.inner.state);
+            let mut state = self.inner.state.locked();
             match &outcome {
                 Ok(SwapOutcome::Deferred) => {}
                 // A version that can't be swapped in stays out until checked
@@ -852,7 +846,7 @@ impl Updater {
             let keys = self.inner.config.trusted_keys.as_slice();
             let outcome = self.inner.swapper.rollback(id, Some(keys).filter(|k| !k.is_empty()), activity)?;
             if matches!(outcome, SwapOutcome::Swapped { .. }) {
-                let mut state = lock(&self.inner.state);
+                let mut state = self.inner.state.locked();
                 state.pending_swap.remove(id);
                 state.save(&self.inner.config.root)?;
             }
@@ -865,12 +859,12 @@ impl Updater {
     /// directories; runs nothing.
     pub fn overview(&self) -> Overview {
         let products = self.inner.config.products.iter().map(|spec| self.status(spec)).collect();
-        Overview { products, github_rate_limit: *lock(&self.inner.rate_limit) }
+        Overview { products, github_rate_limit: *self.inner.rate_limit.locked() }
     }
 
     fn status(&self, spec: &ProductSpec) -> ProductStatus {
         let id = spec.product.id.clone();
-        let mut error = lock(&self.inner.errors).get(&id).cloned();
+        let mut error = self.inner.errors.locked().get(&id).cloned();
         let active = self.inner.swapper.active(&id).unwrap_or_else(|e| {
             error.get_or_insert_with(|| e.to_string());
             None
@@ -882,7 +876,7 @@ impl Updater {
                 Some(path) => InstalledStatus::Managed(path),
                 None => InstalledStatus::Missing("the active version has no executable".into()),
             },
-            (Installed::Executable(_), None) => match lock(&self.inner.installed).get(&id) {
+            (Installed::Executable(_), None) => match self.inner.installed.locked().get(&id) {
                 None => InstalledStatus::Unknown,
                 Some(Ok((_, path))) => InstalledStatus::System(path.clone()),
                 Some(Err(reason)) => InstalledStatus::Missing(reason.clone()),
@@ -890,7 +884,7 @@ impl Updater {
         };
         let version = current.as_ref().map_or_else(|| Version::new(0, 0, 0), |c| c.version.clone());
         let offer = self.offer(spec, &version);
-        let newest = lock(&self.inner.cache)
+        let newest = self.inner.cache.locked()
             .get(&feeds::cache_key(&spec.product))
             .and_then(|feed| {
                 feed.releases
@@ -902,10 +896,10 @@ impl Updater {
         let changelog = offer.as_ref().map(|o| self.changelog(spec, &version, &o.version)).unwrap_or_default();
         let signature = offer
             .as_ref()
-            .and_then(|o| lock(&self.inner.signatures).get(&(id.clone(), o.version.clone())).cloned());
+            .and_then(|o| self.inner.signatures.locked().get(&(id.clone(), o.version.clone())).cloned());
         let restart_required = matches!(&spec.installed, Installed::Running(running)
             if active.as_ref().is_some_and(|a| a.current != *running));
-        let state = lock(&self.inner.state);
+        let state = self.inner.state.locked();
         ProductStatus {
             label: spec.label.clone(),
             kind: spec.product.kind.clone(),
@@ -934,14 +928,14 @@ impl Updater {
     }
 
     fn save_state(&self) -> Result<()> {
-        Ok(lock(&self.inner.state).save(&self.inner.config.root)?)
+        Ok(self.inner.state.locked().save(&self.inner.config.root)?)
     }
 
     fn save_cache(&self) -> Result<()> {
         let path = layout::cache_path(&self.inner.config.root);
-        let bytes = serde_json::to_vec(&*lock(&self.inner.cache))
+        let bytes = serde_json::to_vec(&*self.inner.cache.locked())
             .map_err(|e| UpdaterError::Cache { path: path.clone(), source: io::Error::other(e) })?;
-        fsio::write_atomic(&path, &bytes).map_err(|source| UpdaterError::Cache { path, source })
+        write_atomic(&path, &bytes, None).map_err(|source| UpdaterError::Cache { path, source })
     }
 }
 

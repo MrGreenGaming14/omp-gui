@@ -3,6 +3,8 @@
 //! Every call runs: host lookup, limits (#100), approval, the SSH work, and
 //! an audit row (#101) whatever the outcome.
 
+use loa_util::exec::shell_quote;
+use loa_util::LockExt;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -195,20 +197,6 @@ fn outcome_of(e: &Error) -> Outcome {
     }
 }
 
-fn shell_quote(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push('\'');
-    for c in s.chars() {
-        if c == '\'' {
-            out.push_str("'\\''");
-        } else {
-            out.push(c);
-        }
-    }
-    out.push('\'');
-    out
-}
-
 fn preview(s: &str, max: usize) -> &str {
     match s.char_indices().nth(max) {
         Some((i, _)) => &s[..i],
@@ -249,14 +237,7 @@ impl RemoteService {
 
     /// Forgets "allow for session" answers given in `session_id`.
     pub fn end_session(&self, session_id: &str) {
-        self.grants().retain(|(s, _, _)| s != session_id);
-    }
-
-    fn grants(&self) -> std::sync::MutexGuard<'_, HashSet<(String, String, Class)>> {
-        // Holds plain keys; a poisoned set is still consistent.
-        self.session_grants
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.session_grants.locked().retain(|(s, _, _)| s != session_id);
     }
 
     fn record(
@@ -302,7 +283,7 @@ impl RemoteService {
             return Ok(());
         };
         let key = (session_id.to_string(), host.name.clone(), class);
-        if self.grants().contains(&key) {
+        if self.session_grants.locked().contains(&key) {
             return Ok(());
         }
         let answer = self
@@ -318,7 +299,7 @@ impl RemoteService {
         match answer {
             Approval::AllowOnce => Ok(()),
             Approval::AllowSession => {
-                self.grants().insert(key);
+                self.session_grants.locked().insert(key);
                 Ok(())
             }
             Approval::Deny { reason } => Err(Error::Denied(reason)),
@@ -784,11 +765,6 @@ impl From<BashArgs> for BashRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn shell_quote_survives_single_quotes() {
-        assert_eq!(shell_quote("/srv/it's"), "'/srv/it'\\''s'");
-    }
 
     #[test]
     fn file_args_validation() {

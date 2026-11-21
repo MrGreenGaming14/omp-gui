@@ -1,5 +1,6 @@
 //! Project settings and the per session exclude toggle.
 
+use loa_util::LockExt;
 use crate::{Error, Result};
 use async_trait::async_trait;
 use loa_core::{Dom, Draft, attr};
@@ -51,21 +52,16 @@ impl MemorySettingsStore {
     pub fn new() -> Self {
         Self::default()
     }
-
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, ProjectSettings>> {
-        // Inserting or cloning a value can't leave the map half written.
-        self.projects.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
 }
 
 #[async_trait]
 impl SettingsStore for MemorySettingsStore {
     async fn load(&self, project: &str) -> Result<ProjectSettings> {
-        Ok(self.lock().get(project).cloned().unwrap_or_default())
+        Ok(self.projects.locked().get(project).cloned().unwrap_or_default())
     }
 
     async fn save(&self, project: &str, settings: &ProjectSettings) -> Result<()> {
-        self.lock().insert(project.to_owned(), settings.clone());
+        self.projects.locked().insert(project.to_owned(), settings.clone());
         Ok(())
     }
 }
@@ -114,18 +110,11 @@ impl SettingsStore for FileSettingsStore {
 
     async fn save(&self, project: &str, settings: &ProjectSettings) -> Result<()> {
         let path = self.path(project);
-        let dir = self.dir.clone();
         let json = serde_json::to_vec_pretty(settings).map_err(|e| Error::Port(e.to_string()))?;
-        tokio::task::spawn_blocking(move || -> Result<()> {
-            std::fs::create_dir_all(&dir)?;
-            let mut file = tempfile::NamedTempFile::new_in(&dir)?;
-            std::io::Write::write_all(&mut file, &json)?;
-            file.as_file().sync_all()?;
-            file.persist(&path).map_err(|e| e.error)?;
-            Ok(())
-        })
-        .await
-        .map_err(|e| Error::Port(e.to_string()))?
+        tokio::task::spawn_blocking(move || loa_util::fs::write_atomic(&path, &json, None))
+            .await
+            .map_err(|e| Error::Port(e.to_string()))?
+            .map_err(Into::into)
     }
 }
 

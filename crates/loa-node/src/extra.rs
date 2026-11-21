@@ -3,6 +3,7 @@
 //! whose proven grants cover the protocol's required resource and action
 //! reaches the app's handler with the raw stream.
 
+use loa_util::RwLockExt;
 use crate::share::{challenge_grants, expect, present_grants, send};
 use crate::{Inner, Node, NodeError, Result, now_ms};
 use async_trait::async_trait;
@@ -46,18 +47,14 @@ struct Slot {
 }
 
 impl NodeSlot {
-    fn slot(&self) -> std::sync::RwLockWriteGuard<'_, Slot> {
-        self.0.write().unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
     pub fn get(&self) -> Option<Node> {
-        self.0.read().unwrap_or_else(std::sync::PoisonError::into_inner).node.clone()
+        self.0.read_ok().node.clone()
     }
 
     /// Puts `node` in the slot; it serves every protocol added so far from
     /// its next start.
     pub fn set(&self, node: Option<Node>) {
-        let mut slot = self.slot();
+        let mut slot = self.0.write_ok();
         if let Some(node) = &node {
             for added in &slot.added {
                 node.add_protocol(added.name, added.version, added.required.clone(), Arc::clone(&added.handler));
@@ -69,7 +66,7 @@ impl NodeSlot {
     /// Adds a protocol to the current node and every later one (see
     /// [`Node::add_protocol`]); a node serves it from its next start.
     pub fn add_protocol(&self, protocol: AddedProtocol) {
-        let mut slot = self.slot();
+        let mut slot = self.0.write_ok();
         if let Some(node) = &slot.node {
             node.add_protocol(protocol.name, protocol.version, protocol.required.clone(), Arc::clone(&protocol.handler));
         }

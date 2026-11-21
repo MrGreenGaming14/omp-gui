@@ -6,6 +6,7 @@
 //! updates the row at once and asks the app to record it with
 //! [`Event::SetExcluded`]; the app answers with a fresh overview.
 
+use loa_util::time::ago;
 use crate::style;
 use iced::widget::{
     Column, button, column, container, row, rule, scrollable, space, text, text_editor, text_input, toggler,
@@ -417,17 +418,6 @@ fn session_row(session: &SessionRow, now: i64) -> Element<'_, Message> {
         .style(style::list_row)
         .on_press(Message::OpenSession(session.id.clone()))
         .into()
-}
-
-/// "just now", "5m ago", "3h ago", "2d ago".
-fn ago(now: i64, then: i64) -> String {
-    let minutes = (now - then).max(0) / 60_000;
-    match minutes {
-        0 => "just now".to_owned(),
-        m if m < 60 => format!("{m}m ago"),
-        m if m < 60 * 24 => format!("{}h ago", m / 60),
-        m => format!("{}d ago", m / (60 * 24)),
-    }
 }
 
 #[cfg(test)]

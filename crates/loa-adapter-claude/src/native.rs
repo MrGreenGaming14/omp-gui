@@ -27,7 +27,7 @@
 mod content;
 mod export;
 mod import;
-mod time;
+use loa_util::time;
 
 use loa_adapter::Result;
 use loa_core::{Dom, PatchSink};

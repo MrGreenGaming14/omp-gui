@@ -4,6 +4,7 @@
 //! RGBA in place, and diffed against the previous frame so a mostly static
 //! page sends only the band of rows that changed.
 
+use loa_util::LockExt;
 use crate::frames::{FrameHub, InputLog, Picture, now_us};
 use crate::{BrowserError, Result};
 use bytes::Bytes;
@@ -168,9 +169,9 @@ pub(crate) fn spawn_capture(mut capture: X11Capture, target: Arc<CaptureTarget>)
         target.keyframe.store(true, Ordering::Relaxed);
         while !target.stop.load(Ordering::Relaxed) {
             let started = Instant::now();
-            let (width, height) = *target.size.lock().unwrap_or_else(|e| e.into_inner());
+            let (width, height) = *target.size.locked();
             let captured_us = now_us();
-            let input_seq = target.log.lock().unwrap_or_else(|e| e.into_inner()).seq_before(captured_us);
+            let input_seq = target.log.locked().seq_before(captured_us);
             match capture.grab(width, height, target.keyframe.swap(false, Ordering::Relaxed)) {
                 Ok(Some(grab)) => target.hub.publish(Picture {
                     captured_us,

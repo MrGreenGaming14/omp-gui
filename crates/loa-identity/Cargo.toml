@@ -6,6 +6,7 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+loa-util.workspace = true
 thiserror.workspace = true
 ed25519-dalek = { version = "3", default-features = false, features = ["fast", "zeroize"] }
 getrandom = "0.4"

@@ -10,6 +10,7 @@ mod npm;
 pub use github::GitHubFeed;
 pub use npm::NpmFeed;
 
+use loa_util::time::now_secs;
 use crate::product::{CachedFeed, Feed, PrereleasePolicy, Product, Release};
 use semver::Version;
 use serde::{Deserialize, Serialize};
@@ -215,10 +216,10 @@ fn reject(url: &str, response: &reqwest::Response) -> FeedError {
         let retry_after = header_u64(headers, "retry-after");
         let retry_at = match (remaining, reset, retry_after) {
             (Some(0), Some(reset), _) => Some(reset),
-            (_, _, Some(secs)) => Some(now_unix().saturating_add(secs)),
+            (_, _, Some(secs)) => Some(now_secs().saturating_add(secs)),
             // Exhausted without a reset time: GitHub asks clients to wait at
             // least a minute.
-            (Some(0), None, None) => Some(now_unix().saturating_add(60)),
+            (Some(0), None, None) => Some(now_secs().saturating_add(60)),
             _ => None,
         };
         if let Some(retry_at_unix) = retry_at {
@@ -240,14 +241,6 @@ fn rate_limit(response: &reqwest::Response) -> Option<RateLimit> {
 /// A header holding a non-negative integer.
 fn header_u64(headers: &reqwest::header::HeaderMap, name: &str) -> Option<u64> {
     headers.get(name)?.to_str().ok()?.trim().parse().ok()
-}
-
-/// Current Unix time in seconds.
-fn now_unix() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
 }
 
 #[cfg(test)]

@@ -6,9 +6,9 @@
 //! and the `@cert-authority` and `@revoked` markers. New keys are appended to
 //! one writable file only after the user accepted them.
 
+use loa_util::LockExt;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
@@ -169,9 +169,7 @@ impl KnownHosts {
         // Serialises writers in this process; the file is opened in append
         // mode so concurrent OpenSSH writers interleave whole lines.
         let _guard = self
-            .write_lock
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+            .write_lock.locked();
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| fail(e.to_string()))?;
         }
@@ -287,10 +285,7 @@ fn check_certificate(entries: &[&Entry], cert: &Certificate, hostname: &str) -> 
         .iter()
         .any(|e| e.marker == Marker::CertAuthority && e.key.key_data() == ca);
     if trusted_ca {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+        let now = loa_util::time::now_secs();
         let principal_ok = cert.valid_principals().is_empty()
             || cert.valid_principals().iter().any(|p| p == hostname);
         let ca_fp = ca.fingerprint(HashAlg::Sha256);
@@ -403,7 +398,7 @@ mod tests {
         let file = dir.path().join("kh");
         std::fs::write(&file, format!("@cert-authority *.lan {}\n", line(&ca))).unwrap();
         let kh = KnownHosts::new(vec![file.clone()], file);
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        let now = loa_util::time::now_secs();
         let cert = |signer: &PrivateKey, principal: &str| {
             let mut b = Builder::new_with_random_nonce(
                 &mut rand::rng(),

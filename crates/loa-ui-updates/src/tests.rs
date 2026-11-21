@@ -223,7 +223,7 @@ fn details_show_gate_report_notes_and_signature() {
     ui.find("- edit: tool removed").expect("tool diff");
     ui.find("Adapter contract tests").expect("contract check");
     ui.find("- faster startup").expect("release notes");
-    ui.find("GitHub can1357/oh-my-pi · checked 5 min ago").expect("feed line");
+    ui.find("GitHub can1357/oh-my-pi · checked 5m ago").expect("feed line");
     drop(ui);
 
     deliver(&mut state, [Message::Toggle("app".into())]);

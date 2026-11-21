@@ -4,10 +4,10 @@
 //! [`Draft`] to the session's [`PatchSink`], which orders it, applies it and
 //! returns the committed [`Patch`].
 
+use loa_util::LockExt;
 use crate::dom::{ApplyError, Dom};
 use crate::patch::{Draft, Patch};
 use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Clone, Debug, PartialEq, thiserror::Error)]
 pub enum CommitError {
@@ -36,11 +36,7 @@ pub trait PatchSink: Send + Sync {
 }
 
 /// Unix milliseconds.
-pub fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
-}
+pub use loa_util::time::now_ms;
 
 /// A sink that keeps the DOM and every patch in memory. For tests and for
 /// building a DOM without a journal (imports, previews).
@@ -61,29 +57,23 @@ impl MemorySink {
 
     /// A copy of the current DOM.
     pub fn dom(&self) -> Dom {
-        self.lock().0.clone()
+        self.state.locked().0.clone()
     }
 
     /// Every patch committed through this sink, in order.
     pub fn patches(&self) -> Vec<Patch> {
-        self.lock().1.clone()
+        self.state.locked().1.clone()
     }
 
     /// Reads the current DOM without copying it.
     pub fn with_dom<R>(&self, read: impl FnOnce(&Dom) -> R) -> R {
-        read(&self.lock().0)
-    }
-
-    fn lock(&self) -> std::sync::MutexGuard<'_, (Dom, Vec<Patch>)> {
-        // A panic while holding the lock can't leave the pair half updated:
-        // `Dom::commit` is atomic and the push follows it.
-        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        read(&self.state.locked().0)
     }
 }
 
 impl PatchSink for MemorySink {
     fn commit_at(&self, draft: Draft, ts: i64) -> Result<Patch, CommitError> {
-        let mut state = self.lock();
+        let mut state = self.state.locked();
         let patch = state.0.commit(draft, ts)?;
         state.1.push(patch.clone());
         Ok(patch)

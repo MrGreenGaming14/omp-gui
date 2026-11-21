@@ -116,7 +116,7 @@ async fn launch(
     config: &OmpBridgeConfig,
     tools: Option<&[String]>,
 ) -> Result<(Session, ScriptedProvider, Value)> {
-    let token = random_token()?;
+    let token = loa_util::text::random_hex(16);
     let provider = ScriptedProvider::start(&token).await?;
     let agent_dir = config.state_dir.join("agent");
     tokio::fs::create_dir_all(&agent_dir).await?;
@@ -470,13 +470,6 @@ async fn write_models(agent_dir: &Path, base_url: &str) -> Result<()> {
     });
     tokio::fs::write(agent_dir.join("models.yml"), serde_json::to_vec_pretty(&models)?).await?;
     Ok(())
-}
-
-fn random_token() -> Result<String> {
-    let mut bytes = [0u8; 16];
-    getrandom::fill(&mut bytes)
-        .map_err(|error| Error::Io(std::io::Error::other(error.to_string())))?;
-    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
 #[cfg(test)]

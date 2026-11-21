@@ -7,6 +7,7 @@
 //!
 //! Usage: `loa-sandbox-stub [ROOT]`. `ROOT` defaults to the current directory.
 
+use loa_util::LockExt;
 use loa_sandbox::proto::{
     self, Command, DirEntry, ExecRequest, ExitStatus, FileKind, Metadata, Request, Response, STDERR_TAG, STDOUT_TAG,
 };
@@ -17,18 +18,13 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{self as sys, Stdio};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 /// Output chunk size for command stdout and stderr.
 const CHUNK: usize = 32 * 1024;
 
-fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
-    // Every critical section here is a single insert, remove or write, so a
-    // poisoned lock still guards consistent data.
-    m.lock().unwrap_or_else(PoisonError::into_inner)
-}
 
 /// Frames to the host. One lock per frame keeps frames whole.
 #[derive(Clone)]
@@ -38,7 +34,7 @@ impl Out {
     fn frame(&self, encode: impl FnOnce(&mut Vec<u8>)) {
         let mut buf = Vec::new();
         encode(&mut buf);
-        let mut out = lock(&self.0);
+        let mut out = self.0.locked();
         // If the host is gone there is nobody to tell; the read loop sees the
         // closed stdin and ends the stub.
         let _ = out.write_all(&buf).and_then(|()| out.flush());
@@ -79,7 +75,7 @@ impl Stub {
         match request {
             Request::Exec { id, exec } => self.exec(id, exec),
             Request::Kill { id } => {
-                if let Some(pgid) = lock(&self.running).get(&id) {
+                if let Some(pgid) = self.running.locked().get(&id) {
                     kill_group(*pgid);
                 }
             }
@@ -135,7 +131,7 @@ impl Stub {
         // The child leads its own group, so its pid is the group id. Pids fit
         // i32 on every unix.
         let pgid = i32::try_from(child.id()).unwrap_or(i32::MAX);
-        lock(&self.running).insert(id, pgid);
+        self.running.locked().insert(id, pgid);
 
         if let (Some(data), Some(mut pipe)) = (stdin, child.stdin.take()) {
             // A command that exits without reading its stdin closes the pipe;
@@ -163,7 +159,7 @@ impl Stub {
                 thread::spawn(move || {
                     let deadline = Instant::now() + Duration::from_millis(ms);
                     let (done, wake) = &*finished;
-                    let mut done = lock(done);
+                    let mut done = done.locked();
                     while !*done {
                         let left = deadline.saturating_duration_since(Instant::now());
                         if left.is_zero() {
@@ -178,7 +174,7 @@ impl Stub {
             let status = child.wait();
             {
                 let (done, wake) = &*finished;
-                *lock(done) = true;
+                *done.locked() = true;
                 wake.notify_all();
             }
             let timed_out = timer.is_some_and(|t| t.join().unwrap_or(false));
@@ -186,7 +182,7 @@ impl Stub {
             for pump in pumps {
                 let _ = pump.join();
             }
-            lock(&running).remove(&id);
+            running.locked().remove(&id);
             match status {
                 Ok(status) => out.send(&Response::Exit {
                     id,
@@ -268,7 +264,7 @@ fn main() {
         None => std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
     };
     let out = Out(Arc::new(Mutex::new(io::stdout())));
-    if proto::write_hello(&mut *lock(&out.0)).is_err() {
+    if proto::write_hello(&mut *out.0.locked()).is_err() {
         sys::exit(1);
     }
     let stub = Stub { root, out, running: Running::default() };
@@ -286,7 +282,7 @@ fn main() {
             Err(_) => break,
         }
     }
-    for pgid in lock(&stub.running).values() {
+    for pgid in stub.running.locked().values() {
         kill_group(*pgid);
     }
     sys::exit(0);

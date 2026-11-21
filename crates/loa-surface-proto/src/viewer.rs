@@ -2,6 +2,7 @@
 //! [`PixelViewer`] (frames in, input out) or a [`DocumentViewer`] (the file,
 //! once).
 
+use loa_util::LockExt;
 use bytes::BytesMut;
 use loa_surface::{Document, Encoding, Frame, Input, InputEvent, StreamInfo, SurfaceInfo, SurfaceUri};
 use std::sync::{Arc, Mutex};
@@ -227,7 +228,7 @@ impl InputSender {
     /// Queues `input` and returns its seq, which frames echo back in
     /// [`Frame::input_seq`]. Never blocks.
     pub fn send(&self, input: Input) -> Result<u64> {
-        let mut state = self.lock();
+        let mut state = self.inner.locked();
         let seq = state.next_seq;
         let event = InputEvent { seq, sent_us: now_us(), input };
         state
@@ -239,13 +240,7 @@ impl InputSender {
     }
 
     fn send_message(&self, body: Body) -> Result<()> {
-        self.lock().out.send(body.into()).map_err(|_| ProtoError::Closed("the session ended".into()))
-    }
-
-    fn lock(&self) -> std::sync::MutexGuard<'_, InputState> {
-        // The lock is held only around a counter bump and a channel send,
-        // neither of which panics, so a poisoned lock still holds valid state.
-        self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        self.inner.locked().out.send(body.into()).map_err(|_| ProtoError::Closed("the session ended".into()))
     }
 }
 

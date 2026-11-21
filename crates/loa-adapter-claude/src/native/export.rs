@@ -348,7 +348,7 @@ impl<'d> Writer<'d> {
         line.insert("type".to_owned(), J::from(ty));
         line.insert("message".to_owned(), message);
         line.insert("uuid".to_owned(), J::String(uuid));
-        line.insert("timestamp".to_owned(), J::String(time::format(self.fresh_ts(node))));
+        line.insert("timestamp".to_owned(), J::String(time::format_iso_ms(self.fresh_ts(node))));
         line.extend(extra);
         self.push(J::Object(line));
         Ok(())

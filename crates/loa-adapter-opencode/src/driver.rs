@@ -1,5 +1,6 @@
 //! An attached OpenCode server session and its event-stream worker.
 
+use loa_util::LockExt;
 use crate::client::{Client, EventStream, ServerAuth};
 use crate::ids;
 use crate::mapper::{ChildSessions, EventMapper, Reply, RootInfo};
@@ -173,13 +174,10 @@ struct Inner {
 }
 
 impl Inner {
-    fn mapper(&self) -> std::sync::MutexGuard<'_, EventMapper> {
-        self.mapper.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
     fn closed(&self) -> bool {
-        *self.closed.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        *self.closed.locked()
     }
-    fn id(&self) -> String { self.mapper().native_id().to_owned() }
+    fn id(&self) -> String { self.mapper.locked().native_id().to_owned() }
 }
 
 /// The models of `GET /config/providers`, as `provider/model` ids.
@@ -205,7 +203,7 @@ async fn read_events(inner: Arc<Inner>, mut events: EventStream) {
     loop {
         match events.next().await {
             Ok(Some(event)) => {
-                let result = inner.mapper().apply(&*inner.sink, event, now_ms());
+                let result = inner.mapper.locked().apply(&*inner.sink, event, now_ms());
                 if let Err(error) = result {
                     tracing::error!(%error, "OpenCode event mapping failed");
                 }
@@ -218,7 +216,7 @@ async fn read_events(inner: Arc<Inner>, mut events: EventStream) {
             }
         }
     }
-    *inner.closed.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = true;
+    *inner.closed.locked() = true;
     inner.notify.notify_waiters();
 }
 
@@ -231,7 +229,7 @@ pub struct OpenCodeSession {
 
 impl Drop for OpenCodeSession {
     fn drop(&mut self) {
-        if let Some(worker) = self.worker.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() { worker.abort(); }
+        if let Some(worker) = self.worker.locked().take() { worker.abort(); }
     }
 }
 
@@ -248,22 +246,22 @@ impl HarnessSession for OpenCodeSession {
             let filename = attachment.path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
             parts.push(json!({ "type": "file", "url": url.as_str(), "filename": filename, "mime": attachment.mime.as_deref().unwrap_or("application/octet-stream") }));
         }
-        let model = self.inner.mapper().model().map(str::to_owned);
+        let model = self.inner.mapper.locked().model().map(str::to_owned);
         let mut body = json!({ "messageID": id, "parts": parts });
         if let Some(model) = model {
             let (provider, model_id) = model.split_once('/').ok_or_else(|| AdapterError::Format("model must be provider/model".into()))?;
             body["model"] = json!({ "providerID": provider, "modelID": model_id });
         }
         if let Some(context) = &self.inner.context { body["system"] = json!(context); }
-        let mode = *self.inner.mode.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mode = *self.inner.mode.locked();
         if mode == SessionMode::Plan { body["agent"] = json!("plan"); }
         let turn = {
-            let mut mapper = self.inner.mapper();
+            let mut mapper = self.inner.mapper.locked();
             if mapper.state() != SessionState::Idle { return Err(AdapterError::Busy); }
             mapper.begin_turn(&*self.inner.sink, &id, &prompt.text, &prompt.by, ts)?
         };
         if let Err(error) = self.inner.client.prompt_async(&native_id, body).await {
-            self.inner.mapper().fail_turn(&*self.inner.sink, turn, &error.to_string(), now_ms())?;
+            self.inner.mapper.locked().fail_turn(&*self.inner.sink, turn, &error.to_string(), now_ms())?;
             self.inner.notify.notify_waiters();
             return Err(error);
         }
@@ -274,21 +272,21 @@ impl HarnessSession for OpenCodeSession {
         if self.inner.closed() { return Err(AdapterError::Closed); }
         if self.state() == SessionState::Idle { return Ok(()); }
         self.inner.client.abort(&self.inner.id()).await?;
-        self.inner.mapper().cancel_turn(&*self.inner.sink, now_ms())?;
+        self.inner.mapper.locked().cancel_turn(&*self.inner.sink, now_ms())?;
         self.inner.notify.notify_waiters();
         Ok(())
     }
 
     async fn answer(&self, decision: NodeId, answer: Answer) -> Result<()> {
         if self.inner.closed() { return Err(AdapterError::Closed); }
-        let reply = self.inner.mapper().plan_reply(decision, &answer)?;
+        let reply = self.inner.mapper.locked().plan_reply(decision, &answer)?;
         match reply {
             Reply::Permission { request_id, reply, message } => self.inner.client.permission_reply(&request_id, reply, message.as_deref()).await?,
             Reply::Question { request_id, answers } => self.inner.client.question_reply(&request_id, &answers).await?,
             Reply::RejectQuestion { request_id } => self.inner.client.question_reject(&request_id).await?,
             Reply::Later => {}
         }
-        self.inner.mapper().record_answer(&*self.inner.sink, decision, &answer, now_ms())?;
+        self.inner.mapper.locked().record_answer(&*self.inner.sink, decision, &answer, now_ms())?;
         self.inner.notify.notify_waiters();
         Ok(())
     }
@@ -297,7 +295,7 @@ impl HarnessSession for OpenCodeSession {
         if selection.role.is_some() { return Err(AdapterError::Unsupported { harness: "opencode", what: "model roles" }); }
         if !selection.model.contains('/') { return Err(AdapterError::Format("model must be provider/model".into())); }
         if self.state() != SessionState::Idle { return Err(AdapterError::Busy); }
-        self.inner.mapper().set_model(&*self.inner.sink, &selection.model, now_ms())
+        self.inner.mapper.locked().set_model(&*self.inner.sink, &selection.model, now_ms())
     }
 
     /// The models of the server's connected providers.
@@ -307,21 +305,21 @@ impl HarnessSession for OpenCodeSession {
 
     async fn set_mode(&self, mode: SessionMode) -> Result<()> {
         if self.state() != SessionState::Idle { return Err(AdapterError::Busy); }
-        *self.inner.mode.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = mode;
-        let root = self.inner.mapper().root();
+        *self.inner.mode.locked() = mode;
+        let root = self.inner.mapper.locked().root();
         self.inner.sink.commit_at(loa_core::Draft::set(root, attr::MODE, mode), now_ms())?;
         Ok(())
     }
 
     async fn compact(&self, instructions: Option<String>) -> Result<()> {
         if instructions.is_some() { return Err(AdapterError::Unsupported { harness: "opencode", what: "custom compaction instructions" }); }
-        let model = self.inner.mapper().model().map(str::to_owned).ok_or_else(|| AdapterError::Format("compaction requires a selected provider/model".into()))?;
+        let model = self.inner.mapper.locked().model().map(str::to_owned).ok_or_else(|| AdapterError::Format("compaction requires a selected provider/model".into()))?;
         let (provider, model_id) = model.split_once('/').ok_or_else(|| AdapterError::Format("model must be provider/model".into()))?;
         self.inner.client.summarize(&self.inner.id(), provider, model_id).await
     }
 
     fn harness(&self) -> &'static str { "opencode" }
-    fn state(&self) -> SessionState { if self.inner.closed() { SessionState::Closed } else { self.inner.mapper().state() } }
+    fn state(&self) -> SessionState { if self.inner.closed() { SessionState::Closed } else { self.inner.mapper.locked().state() } }
 
     async fn wait_idle(&self) -> Result<()> {
         loop {
@@ -335,8 +333,8 @@ impl HarnessSession for OpenCodeSession {
     }
 
     async fn shutdown(&self) -> Result<()> {
-        *self.inner.closed.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = true;
-        if let Some(worker) = self.worker.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() { worker.abort(); }
+        *self.inner.closed.locked() = true;
+        if let Some(worker) = self.worker.locked().take() { worker.abort(); }
         self.inner.notify.notify_waiters();
         Ok(())
     }

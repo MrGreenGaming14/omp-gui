@@ -5,8 +5,8 @@
 //! expands its accounts. The tightest limit across providers also feeds the
 //! sidebar's usage meter.
 
+use loa_util::time::{ago, now_ms, until};
 use std::collections::BTreeSet;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use iced::widget::{Column, button, column, container, row, scrollable, space, text};
 use iced::{Alignment, Element, Fill, Length, Task};
@@ -239,7 +239,7 @@ impl State {
         let now = now_ms();
         let updated = match &self.usage {
             _ if self.loading => "Updating…".to_owned(),
-            Some(Ok(usage)) => format!("Updated {}", ago(now - usage.generated_at)),
+            Some(Ok(usage)) => format!("Updated {}", ago(now, usage.generated_at)),
             _ => String::new(),
         };
         let header = row![
@@ -371,35 +371,8 @@ fn meter<'a>(fraction: f32, width: f32) -> Element<'a, Message> {
     container(bar).width(width).height(6).into()
 }
 
-fn now_ms() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|elapsed| elapsed.as_millis() as i64).unwrap_or_default()
-}
-
 fn semibold() -> iced::Font {
     iced::Font { weight: iced::font::Weight::Bold, ..iced::Font::default() }
-}
-
-/// "just now", "2 minutes ago".
-fn ago(ms: i64) -> String {
-    let seconds = (ms / 1000).max(0);
-    match seconds {
-        0..10 => "just now".into(),
-        10..60 => format!("{seconds} seconds ago"),
-        60..120 => "a minute ago".into(),
-        _ if seconds < 3600 => format!("{} minutes ago", seconds / 60),
-        _ => format!("{} hours ago", seconds / 3600),
-    }
-}
-
-/// "4h 35m", "2d 12h".
-fn until(ms: i64) -> String {
-    let minutes = (ms / 60_000).max(0);
-    let (days, hours, mins) = (minutes / 1440, (minutes / 60) % 24, minutes % 60);
-    match (days, hours) {
-        (0, 0) => format!("{mins}m"),
-        (0, _) => format!("{hours}h {mins}m"),
-        _ => format!("{days}d {hours}h"),
-    }
 }
 
 #[cfg(test)]
@@ -454,12 +427,5 @@ mod tests {
         assert!(state.open.contains("anthropic"));
         let _ = state.update(Message::Toggle("anthropic".into()));
         assert!(state.open.is_empty());
-    }
-
-    #[test]
-    fn durations_read_like_omp() {
-        assert_eq!(until(4 * 3_600_000 + 35 * 60_000), "4h 35m");
-        assert_eq!(until(2 * 86_400_000 + 12 * 3_600_000), "2d 12h");
-        assert_eq!(ago(65_000), "a minute ago");
     }
 }

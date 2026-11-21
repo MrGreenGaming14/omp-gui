@@ -5,6 +5,7 @@
 //! and control requests go in on stdin, events and the CLI's own control
 //! requests (permission prompts, SDK MCP messages) come out on stdout.
 
+use loa_util::LockExt;
 use crate::events::{Mapper, Output, UUID_ATTR, mcp_response};
 use crate::mcp::{self, HOST_SERVER};
 use crate::{HARNESS, native};
@@ -19,7 +20,7 @@ use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
@@ -236,12 +237,6 @@ struct Shared {
     config: SessionConfig,
 }
 
-/// Locks a std mutex. The guarded values stay consistent across a panic: the
-/// mapper commits each draft atomically and the maps are only inserted into
-/// or removed from.
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
-}
 
 impl Shared {
     fn publish(&self, mapper: &Mapper) {
@@ -268,10 +263,10 @@ impl Shared {
     async fn control(&self, request: Value) -> Result<Value> {
         let id = format!("loa_{}", self.next_request.fetch_add(1, Ordering::Relaxed));
         let (tx, rx) = oneshot::channel();
-        lock(&self.controls).insert(id.clone(), tx);
+        self.controls.locked().insert(id.clone(), tx);
         let line = json!({"type": "control_request", "request_id": id, "request": request});
         if let Err(err) = self.write(&line).await {
-            lock(&self.controls).remove(&id);
+            self.controls.locked().remove(&id);
             return Err(err);
         }
         match rx.await {
@@ -282,7 +277,7 @@ impl Shared {
     }
 
     fn exit_error(&self) -> AdapterError {
-        let stderr = lock(&self.stderr);
+        let stderr = self.stderr.locked();
         if stderr.is_empty() {
             return AdapterError::Closed;
         }
@@ -314,7 +309,7 @@ impl Shared {
                 });
             }
             Output::ControlResponse { request_id, result } => {
-                if let Some(waiter) = lock(&self.controls).remove(&request_id) {
+                if let Some(waiter) = self.controls.locked().remove(&request_id) {
                     let _ = waiter.send(result);
                 }
             }
@@ -323,14 +318,14 @@ impl Shared {
 
     fn exited(&self) {
         {
-            let mut mapper = lock(&self.mapper);
+            let mut mapper = self.mapper.locked();
             if let Err(err) = mapper.exited() {
                 tracing::warn!(%err, "recording the claude exit failed");
             }
         }
         self.state.send_replace(SessionState::Closed);
         // Dropping the senders fails every waiting control request.
-        lock(&self.controls).clear();
+        self.controls.locked().clear();
     }
 }
 
@@ -358,7 +353,7 @@ async fn read_stdout(shared: Arc<Shared>, stdout: ChildStdout) {
             }
         };
         let output = {
-            let mut mapper = lock(&shared.mapper);
+            let mut mapper = shared.mapper.locked();
             let output = mapper.handle(message);
             shared.publish(&mapper);
             output
@@ -444,7 +439,7 @@ impl ClaudeSession {
             let mut lines = BufReader::new(stderr).lines();
             while let Ok(Some(line)) = lines.next_line().await {
                 tracing::debug!(target: "claude", "{line}");
-                let mut tail = lock(&stderr_shared.stderr);
+                let mut tail = stderr_shared.stderr.locked();
                 if tail.len() == STDERR_LINES {
                     tail.pop_front();
                 }
@@ -461,7 +456,7 @@ impl ClaudeSession {
 
     /// Claude Code's own session id, once the CLI reported it.
     pub fn native_id(&self) -> Option<String> {
-        lock(&self.shared.mapper).native_id().map(str::to_owned)
+        self.shared.mapper.locked().native_id().map(str::to_owned)
     }
 
     async fn user_message(&self, prompt: &Prompt, uuid: &str) -> Result<Value> {
@@ -530,7 +525,7 @@ impl HarnessSession for ClaudeSession {
         let uuid = uuid::Uuid::new_v4().to_string();
         let line = self.user_message(&prompt, &uuid).await?;
         {
-            let mut mapper = lock(&self.shared.mapper);
+            let mut mapper = self.shared.mapper.locked();
             mapper.open_turn(&prompt.text, &prompt.by, &uuid)?;
             self.shared.publish(&mapper);
         }
@@ -538,11 +533,11 @@ impl HarnessSession for ClaudeSession {
     }
 
     async fn interrupt(&self) -> Result<()> {
-        if !lock(&self.shared.mapper).turn_open() {
+        if !self.shared.mapper.locked().turn_open() {
             return Ok(());
         }
         self.shared.control(json!({"subtype": "interrupt"})).await?;
-        let mut mapper = lock(&self.shared.mapper);
+        let mut mapper = self.shared.mapper.locked();
         mapper.interrupt()?;
         self.shared.publish(&mapper);
         Ok(())
@@ -550,7 +545,7 @@ impl HarnessSession for ClaudeSession {
 
     async fn answer(&self, decision: NodeId, answer: Answer) -> Result<()> {
         let response = {
-            let mut mapper = lock(&self.shared.mapper);
+            let mut mapper = self.shared.mapper.locked();
             let response = mapper.answer(decision, answer)?;
             self.shared.publish(&mapper);
             response
@@ -566,7 +561,7 @@ impl HarnessSession for ClaudeSession {
             return Err(AdapterError::Unsupported { harness: HARNESS, what: "model roles" });
         }
         self.shared.control(json!({"subtype": "set_model", "model": selection.model})).await?;
-        lock(&self.shared.mapper).record_model(&selection.model)
+        self.shared.mapper.locked().record_model(&selection.model)
     }
 
     async fn set_mode(&self, mode: SessionMode) -> Result<()> {
@@ -575,7 +570,7 @@ impl HarnessSession for ClaudeSession {
             SessionMode::Normal => "default",
         };
         self.shared.control(json!({"subtype": "set_permission_mode", "mode": native})).await?;
-        lock(&self.shared.mapper).record_mode(mode)
+        self.shared.mapper.locked().record_mode(mode)
     }
 
     /// The models from the CLI's `initialize` response.
@@ -608,7 +603,7 @@ impl HarnessSession for ClaudeSession {
 
     async fn shutdown(&self) -> Result<()> {
         {
-            let mut mapper = lock(&self.shared.mapper);
+            let mut mapper = self.shared.mapper.locked();
             mapper.interrupt()?;
             self.shared.publish(&mapper);
         }
@@ -622,7 +617,7 @@ impl HarnessSession for ClaudeSession {
                 Err(_) => child.kill().await?,
             }
         }
-        let reader = lock(&self.reader).take();
+        let reader = self.reader.locked().take();
         if let Some(reader) = reader {
             let _ = reader.await;
         }

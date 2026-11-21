@@ -1,5 +1,6 @@
 //! Deterministic software-rendered, actually encoded reference surface.
 
+use loa_util::LockExt;
 use crate::{bench::{StageTimingSource, StageTimings}, canvas::Canvas, encode::{region::RegionEncoder, LiveEncoder, Strategy}, BenchError, Result};
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -102,7 +103,7 @@ fn paint_marker(canvas: &mut Canvas, x: u32, y: u32, inverted: bool) {
 
 impl StageTimingSource for SyntheticSurface {
     fn take_stage_timings(&self, input_seq: u64) -> Option<StageTimings> {
-        self.stages.lock().unwrap_or_else(|poison| poison.into_inner()).remove(&input_seq)
+        self.stages.locked().remove(&input_seq)
     }
 }
 
@@ -139,7 +140,7 @@ impl Surface for SyntheticSurface {
         tokio::time::sleep(self.encode_delay).await;
         self.emit(&mut picture)?;
         let encode = encode_started.elapsed();
-        self.stages.lock().unwrap_or_else(|poison| poison.into_inner())
+        self.stages.locked()
             .insert(event.seq, StageTimings { render, encode });
         Ok(())
     }

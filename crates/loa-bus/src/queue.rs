@@ -4,10 +4,11 @@
 //! subscriber lagged and detaches it, so one slow reader never holds up the
 //! writer or the other readers.
 
+use loa_util::LockExt;
 use crate::SessionId;
 use loa_core::{ApplyError, Dom, NodeId, Op, Patch};
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex};
 use tokio::sync::Notify;
 
 /// How a subscriber is fed.
@@ -126,17 +127,11 @@ impl<K: Clone + PartialEq> Queue<K> {
         })
     }
 
-    fn lock(&self) -> MutexGuard<'_, State<K>> {
-        // Every critical section leaves the state consistent before any call
-        // that could panic, so a poisoned lock holds valid data.
-        self.state.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
     /// Offers `patch` from `source`. Never waits. Returns `false` once the
     /// queue no longer takes patches (lagged, closed or receiver dropped), so
     /// the publisher can forget it.
     pub(crate) fn push(&self, source: &K, patch: &Arc<Patch>) -> bool {
-        let mut state = self.lock();
+        let mut state = self.state.locked();
         if state.receiver_gone || state.closed || state.lagged.is_some() {
             return false;
         }
@@ -163,12 +158,12 @@ impl<K: Clone + PartialEq> Queue<K> {
 
     /// Ends the subscription after what is already queued.
     pub(crate) fn close(&self) {
-        self.lock().closed = true;
+        self.state.locked().closed = true;
         self.notify.notify_one();
     }
 
     fn take(&self) -> Result<(K, Event), TryRecvError> {
-        let mut state = self.lock();
+        let mut state = self.state.locked();
         if let Some(item) = state.items.pop_front() {
             return Ok(item);
         }
@@ -180,7 +175,7 @@ impl<K: Clone + PartialEq> Queue<K> {
     }
 
     fn len(&self) -> usize {
-        self.lock().items.len()
+        self.state.locked().items.len()
     }
 }
 
@@ -233,7 +228,7 @@ impl<K: Clone + PartialEq> Receiver<K> {
 
 impl<K: Clone + PartialEq> Drop for Receiver<K> {
     fn drop(&mut self) {
-        let mut state = self.queue.lock();
+        let mut state = self.queue.state.locked();
         state.receiver_gone = true;
         state.items.clear();
     }

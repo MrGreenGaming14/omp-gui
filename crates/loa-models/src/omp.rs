@@ -10,9 +10,10 @@
 //! [`OmpService`] starts the process on first use and starts a new one when it
 //! has exited, so the app can hold one for its whole lifetime.
 
+use loa_util::LockExt;
 use std::ffi::OsString;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use loa_omp_rpc as wire;
@@ -129,9 +130,6 @@ fn login_frame(request: wire::UiRequest) -> Option<LoginUiRequest> {
 /// The sender of the login that currently receives omp's UI frames.
 type LoginSlot = Arc<Mutex<Option<UnboundedSender<LoginUiRequest>>>>;
 
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-}
 
 /// One running `omp --mode rpc --no-session` process. The process is killed
 /// when the client is dropped.
@@ -168,7 +166,7 @@ impl OmpClient {
             while let Some(incoming) = events.recv().await {
                 let wire::Incoming::Ui(request) = incoming else { continue };
                 let dialog = request.is_dialog().then(|| request.id().to_owned());
-                let sender = lock(&slot).clone();
+                let sender = slot.locked().clone();
                 let forwarded = match (sender, login_frame(request)) {
                     (Some(sender), Some(frame)) => sender.send(frame).is_ok(),
                     _ => false,
@@ -224,7 +222,7 @@ impl OmpRpc for OmpClient {
         ui: UnboundedSender<LoginUiRequest>,
     ) -> std::result::Result<String, RpcError> {
         {
-            let mut slot = lock(&self.login);
+            let mut slot = self.login.locked();
             if slot.as_ref().is_some_and(|running| !running.is_closed()) {
                 return Err(RpcError::Command {
                     command: "login".into(),
@@ -239,7 +237,7 @@ impl OmpRpc for OmpClient {
             .request_raw(wire::Command::Login { provider_id: provider_id.to_owned() })
             .await
             .map_err(rpc_error);
-        lock(&self.login).take();
+        self.login.locked().take();
         result?;
         Ok(provider_id.to_owned())
     }
@@ -341,7 +339,7 @@ mod tests {
     struct Opener(Mutex<Vec<String>>);
     impl UrlOpener for Opener {
         fn open_url(&self, url: &str) -> std::result::Result<(), String> {
-            lock(&self.0).push(url.to_owned());
+            self.0.locked().push(url.to_owned());
             Ok(())
         }
     }
@@ -377,7 +375,7 @@ mod tests {
         };
         let (end, ()) = tokio::join!(run_login(&client, &opener, &provider, control_rx, state_tx), answer);
         assert_eq!(end, LoginState::Succeeded { provider: "anthropic".into() });
-        assert_eq!(*lock(&opener.0), ["https://auth.example/authorize"]);
+        assert_eq!(*opener.0.locked(), ["https://auth.example/authorize"]);
         let received = fake.received();
         assert!(received.iter().any(|f| f["type"] == "login" && f["providerId"] == "anthropic"), "{received:?}");
         assert!(

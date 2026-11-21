@@ -5,9 +5,10 @@
 //! the token names the session the audit rows and approval cards carry, and
 //! a request without a known token never reaches a tool.
 
+use loa_util::LockExt;
 use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex};
 
 use axum::extract::{Request, State};
 use axum::middleware::Next;
@@ -23,10 +24,6 @@ use crate::mcp::{CallerSession, RemoteMcp, SERVER_NAME};
 
 type Tokens = Arc<Mutex<HashMap<String, Arc<str>>>>;
 
-fn lock(tokens: &Tokens) -> MutexGuard<'_, HashMap<String, Arc<str>>> {
-    // Holds plain strings; a poisoned map is still consistent.
-    tokens.lock().unwrap_or_else(PoisonError::into_inner)
-}
 
 /// The running HTTP server.
 pub struct RemoteHttp {
@@ -42,19 +39,13 @@ impl std::fmt::Debug for RemoteHttp {
     }
 }
 
-fn token() -> std::io::Result<String> {
-    let mut bytes = [0u8; 32];
-    getrandom::fill(&mut bytes).map_err(|e| std::io::Error::other(e.to_string()))?;
-    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
-}
-
 async fn authenticate(State(tokens): State<Tokens>, mut request: Request, next: Next) -> Response {
     let session = request
         .headers()
         .get(http::header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.strip_prefix("Bearer "))
-        .and_then(|token| lock(&tokens).get(token).cloned());
+        .and_then(|token| tokens.locked().get(token).cloned());
     match session {
         Some(session) => {
             request.extensions_mut().insert(CallerSession(session));
@@ -103,8 +94,8 @@ impl RemoteHttp {
     /// own bearer token. Calling it again for the same session issues a new
     /// token and keeps the old one valid until [`RemoteHttp::forget`].
     pub fn session_spec(&self, session_id: &str) -> std::io::Result<McpServerSpec> {
-        let token = token()?;
-        lock(&self.tokens).insert(token.clone(), Arc::from(session_id));
+        let token = loa_util::text::random_hex(32);
+        self.tokens.locked().insert(token.clone(), Arc::from(session_id));
         Ok(McpServerSpec {
             name: SERVER_NAME.to_owned(),
             transport: McpTransport::Http {
@@ -116,7 +107,7 @@ impl RemoteHttp {
 
     /// Revokes every token of a session (it ended).
     pub fn forget(&self, session_id: &str) {
-        lock(&self.tokens).retain(|_, session| &**session != session_id);
+        self.tokens.locked().retain(|_, session| &**session != session_id);
     }
 
     /// Stops accepting requests and waits for the server task.

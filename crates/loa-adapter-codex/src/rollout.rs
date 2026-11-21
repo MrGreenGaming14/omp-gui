@@ -14,7 +14,8 @@
 //! structurally.
 
 use crate::HARNESS;
-use crate::json::{format_rfc3339_ms, parse_rfc3339_ms, str_at, take_str};
+use crate::json::{str_at, take_str};
+use loa_util::time::{format_iso_ms, parse_iso_ms};
 use loa_adapter::{AdapterError, Result};
 use loa_core::{
     CallStatus, Dom, Draft, ElementKind, MessageKind, MessageStatus, Node, NodeId, PatchSink, Role, SCHEMA_VERSION,
@@ -129,7 +130,7 @@ impl<'a> Importer<'a> {
         let Json::Object(line) = value else {
             return Err(format_error(index, "not a JSON object"));
         };
-        if let Some(ts) = line.get("timestamp").and_then(Json::as_str).and_then(parse_rfc3339_ms) {
+        if let Some(ts) = line.get("timestamp").and_then(Json::as_str).and_then(parse_iso_ms) {
             self.ts = ts;
         }
         let kind = line.get("type").and_then(Json::as_str).unwrap_or_default().to_owned();
@@ -191,7 +192,7 @@ impl<'a> Importer<'a> {
         let mut payload = take_object(&mut line, "payload").ok_or_else(|| format_error(index, "session_meta without payload"))?;
         let native = take_str(&mut payload, "id").ok_or_else(|| format_error(index, "session_meta without id"))?;
         let cwd = take_str(&mut payload, "cwd");
-        let created = payload.get("timestamp").and_then(Json::as_str).and_then(parse_rfc3339_ms).unwrap_or(self.ts);
+        let created = payload.get("timestamp").and_then(Json::as_str).and_then(parse_iso_ms).unwrap_or(self.ts);
         line.insert("payload".to_owned(), Json::Object(payload));
         let mut attrs = vec![
             (attr::ID, Value::from(native.as_str())),
@@ -655,7 +656,7 @@ fn residual(node: &Node, name: &str) -> Result<Option<Map<String, Json>>> {
 
 fn line_of(ts: i64, kind: &str, payload: Json) -> Map<String, Json> {
     let mut line = Map::new();
-    line.insert("timestamp".to_owned(), Json::from(format_rfc3339_ms(ts)));
+    line.insert("timestamp".to_owned(), Json::from(format_iso_ms(ts)));
     line.insert("type".to_owned(), Json::from(kind));
     line.insert("payload".to_owned(), payload);
     line
@@ -731,7 +732,7 @@ impl Exporter<'_> {
                 json!({
                     "id": id,
                     "session_id": id,
-                    "timestamp": format_rfc3339_ms(self.ts),
+                    "timestamp": format_iso_ms(self.ts),
                     "cwd": node.str_attr(attr::CWD).unwrap_or_default(),
                     "originator": "loa",
                     "cli_version": env!("CARGO_PKG_VERSION"),

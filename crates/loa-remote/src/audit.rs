@@ -3,6 +3,7 @@
 //! One row per remote read, write, list, edit and command, including the ones
 //! the limits refused or the user denied. The table belongs to this crate.
 
+use loa_util::LockExt;
 use std::path::Path;
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -185,17 +186,9 @@ impl AuditLog {
         })
     }
 
-    fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
-        // A panic while holding the lock leaves SQLite consistent (each
-        // statement is atomic), so a poisoned lock is still usable.
-        self.conn
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
     /// Appends a row and returns its id.
     pub fn record(&self, r: &NewRecord<'_>) -> Result<i64> {
-        let conn = self.conn();
+        let conn = self.conn.locked();
         let mut stmt = conn.prepare_cached(
             "INSERT INTO remote_audit (at_ms, host, session_id, action, target, outcome, detail)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
@@ -247,7 +240,7 @@ impl AuditLog {
         sql.push_str(" ORDER BY id DESC LIMIT ?");
         args.push(Value::Integer(i64::try_from(limit).unwrap_or(i64::MAX)));
 
-        let conn = self.conn();
+        let conn = self.conn.locked();
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map(params_from_iter(args), |row| {
             let action: String = row.get(4)?;
@@ -269,7 +262,7 @@ impl AuditLog {
     /// The most recent row, if any.
     pub fn last(&self) -> Result<Option<AuditRecord>> {
         let max: Option<i64> = self
-            .conn()
+            .conn.locked()
             .query_row("SELECT MAX(id) FROM remote_audit", [], |r| r.get(0))
             .optional()?
             .flatten();

@@ -1,37 +1,6 @@
 //! Small text helpers shared by the digester, search, read and ranking.
 
-/// The longest prefix of `text` that is at most `max` bytes and ends on a
-/// char boundary.
-pub(crate) fn clip(text: &str, max: usize) -> &str {
-    if text.len() <= max {
-        return text;
-    }
-    &text[..floor_boundary(text, max)]
-}
-
-/// The largest char boundary of `text` at or below `at`.
-pub(crate) fn floor_boundary(text: &str, at: usize) -> usize {
-    if at >= text.len() {
-        return text.len();
-    }
-    let mut at = at;
-    while !text.is_char_boundary(at) {
-        at -= 1;
-    }
-    at
-}
-
-/// The smallest char boundary of `text` at or above `at`.
-pub(crate) fn ceil_boundary(text: &str, at: usize) -> usize {
-    if at >= text.len() {
-        return text.len();
-    }
-    let mut at = at;
-    while !text.is_char_boundary(at) {
-        at += 1;
-    }
-    at
-}
+pub(crate) use loa_util::text::{ceil_boundary, clip, floor_boundary};
 
 /// `text` clipped to `max` bytes with a marker saying how much was cut.
 pub(crate) fn clip_marked(text: &str, max: usize) -> std::borrow::Cow<'_, str> {
@@ -87,12 +56,6 @@ const STOP_WORDS: &[&str] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn clip_never_splits_a_char() {
-        assert_eq!(clip("añb", 2), "a");
-        assert_eq!(clip("añb", 3), "añ");
-    }
 
     #[test]
     fn folded_maps_matches_back_to_the_original() {

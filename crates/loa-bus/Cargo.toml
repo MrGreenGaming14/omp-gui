@@ -6,6 +6,7 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+loa-util.workspace = true
 loa-core.workspace = true
 thiserror.workspace = true
 tokio.workspace = true

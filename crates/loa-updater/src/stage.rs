@@ -6,7 +6,7 @@
 //! with `staged.json` already in place. Other versions are never touched,
 //! and a failed staging leaves nothing behind.
 
-use crate::fsio;
+use loa_util::fs::{sync_dir, write_atomic};
 use crate::layout::{self, ARTIFACT_DIR, MANIFEST_FILE, PAYLOAD_DIR, Staged, StagedManifest};
 use crate::product::{ArchiveFormat, Artifact, Checksum, Release};
 use semver::Version;
@@ -158,7 +158,7 @@ impl Stager {
         let manifest_path = work.join(MANIFEST_FILE);
         let json = serde_json::to_vec_pretty(&manifest)
             .map_err(|source| StageError::Manifest { path: manifest_path.clone(), source })?;
-        fsio::write_atomic(&manifest_path, &json).map_err(io_at(&manifest_path))?;
+        write_atomic(&manifest_path, &json, None).map_err(io_at(&manifest_path))?;
 
         if let Err(e) = fs::rename(&work, &final_dir) {
             // Another stager may have finished the same version first.
@@ -170,7 +170,7 @@ impl Stager {
         // The directory now lives at `final_dir`; keep the guard from
         // deleting the (no longer existing) temporary path.
         let _ = tmp.keep();
-        fsio::sync_dir(&product_dir).map_err(io_at(&product_dir))?;
+        sync_dir(&product_dir).map_err(io_at(&product_dir))?;
         Ok(Staged { dir: final_dir, manifest })
     }
 

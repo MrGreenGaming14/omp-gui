@@ -8,7 +8,8 @@ use async_trait::async_trait;
 use toml_edit::{DocumentMut, value};
 
 use super::{HarnessAuth, HarnessId, LoginKind, SignInMethod, SignInState, validate_model_name};
-use crate::fsutil::Snapshot;
+use crate::error::{load_snapshot, save_snapshot};
+use loa_util::fs::Snapshot;
 use crate::process::{CommandSpec, ProcessRunner, RunningProcess};
 use crate::{Error, Result};
 
@@ -52,7 +53,7 @@ impl Codex {
         CommandSpec::new(&self.program, args.iter().copied())
     }
     fn load(&self) -> Result<(Snapshot, DocumentMut)> {
-        let (snapshot, text) = Snapshot::load(&self.config_path)?;
+        let (snapshot, text) = load_snapshot(&self.config_path)?;
         let doc = DocumentMut::from_str(text.as_deref().unwrap_or("")).map_err(|e| Error::Parse {
             what: self.config_path.display().to_string(), message: e.to_string()
         })?;
@@ -94,7 +95,7 @@ impl Codex {
         DocumentMut::from_str(&edited).map_err(|e| Error::Parse {
             what: self.config_path.display().to_string(), message: e.to_string()
         })?;
-        snapshot.save(&edited)
+        save_snapshot(&mut snapshot, &edited)
     }
 }
 

@@ -1,10 +1,11 @@
 //! The single writer of a live session.
 
+use loa_util::LockExt;
 use crate::queue::{Policy, Queue, Subscription};
 use crate::{NodeKey, SessionId};
 use loa_core::schema;
 use loa_core::{ApplyError, CommitError, Dom, Draft, NodeId, Op, Patch, PatchSink};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 
 pub type PersistError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -73,14 +74,7 @@ pub struct WriterConfig {
 /// Firehose subscribers shared by every writer opened on one bus.
 #[derive(Default)]
 pub(crate) struct Hub {
-    subs: Mutex<Vec<Arc<Queue<SessionId>>>>,
-}
-
-impl Hub {
-    pub(crate) fn lock(&self) -> MutexGuard<'_, Vec<Arc<Queue<SessionId>>>> {
-        // Pushing and pruning leave the list valid at every step.
-        self.subs.lock().unwrap_or_else(PoisonError::into_inner)
-    }
+    pub(crate) subs: Mutex<Vec<Arc<Queue<SessionId>>>>,
 }
 
 /// The [`PatchSink`] of one live session.
@@ -117,12 +111,6 @@ impl SessionWriter {
         Self { session, owner, local, authorize, hub, inner: Mutex::new(Inner { dom, persist, subs: Vec::new(), closed: false }) }
     }
 
-    fn lock(&self) -> MutexGuard<'_, Inner> {
-        // Under the lock the DOM changes only through `Dom::apply`, which is
-        // atomic, so a panic elsewhere (a `Persist` impl) leaves it valid.
-        self.inner.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
     pub fn session(&self) -> &SessionId {
         &self.session
     }
@@ -138,18 +126,18 @@ impl SessionWriter {
 
     /// Sequence of the last committed patch.
     pub fn seq(&self) -> u64 {
-        self.lock().dom.seq()
+        self.inner.locked().dom.seq()
     }
 
     /// Reads the current DOM without copying it. Commits wait while `read` runs.
     pub fn with_dom<R>(&self, read: impl FnOnce(&Dom) -> R) -> R {
-        read(&self.lock().dom)
+        read(&self.inner.locked().dom)
     }
 
     /// The current DOM and a subscription that starts with the patch right
     /// after it.
     pub fn subscribe(&self, policy: Policy) -> (Dom, Subscription) {
-        let mut inner = self.lock();
+        let mut inner = self.inner.locked();
         let sub = Self::attach(&mut inner, policy);
         (inner.dom.clone(), sub)
     }
@@ -158,7 +146,7 @@ impl SessionWriter {
     /// right after it. For subscribers that read the journal up to that
     /// sequence instead of copying the DOM.
     pub fn subscribe_seq(&self, policy: Policy) -> (u64, Subscription) {
-        let mut inner = self.lock();
+        let mut inner = self.inner.locked();
         let sub = Self::attach(&mut inner, policy);
         (inner.dom.seq(), sub)
     }
@@ -176,7 +164,7 @@ impl SessionWriter {
     /// Orders a change requested by peer `requester`, after [`Authorize`]
     /// allows it. Requests and local commits are ordered as they arrive.
     pub fn request(&self, requester: &NodeKey, draft: Draft, ts: i64) -> Result<Patch, RequestError> {
-        let mut inner = self.lock();
+        let mut inner = self.inner.locked();
         self.writable(&inner)?;
         self.authorize.authorize(&self.session, requester, &draft, &inner.dom)?;
         let patch = inner.dom.prepare(draft, ts);
@@ -193,7 +181,7 @@ impl SessionWriter {
         draft: Draft,
         ts: i64,
     ) -> Result<Patch, RequestError> {
-        let mut inner = self.lock();
+        let mut inner = self.inner.locked();
         self.writable(&inner)?;
         let actual = inner.dom.seq();
         if actual != expected_seq {
@@ -210,7 +198,7 @@ impl SessionWriter {
         if self.is_writer() {
             return Err(ReplicateError::Owner);
         }
-        let mut inner = self.lock();
+        let mut inner = self.inner.locked();
         if inner.closed {
             return Err(CommitError::Closed.into());
         }
@@ -221,7 +209,7 @@ impl SessionWriter {
     /// Ends the session: later commits fail with [`CommitError::Closed`] and
     /// subscriptions end after what they already hold.
     pub fn close(&self) {
-        Self::shut(&mut self.lock());
+        Self::shut(&mut self.inner.locked());
     }
 
     fn shut(inner: &mut Inner) {
@@ -258,7 +246,7 @@ impl SessionWriter {
     }
 
     fn publish(&self, inner: &mut Inner, patch: Patch) -> Patch {
-        let mut hub = self.hub.lock();
+        let mut hub = self.hub.subs.locked();
         if inner.subs.is_empty() && hub.is_empty() {
             return patch;
         }
@@ -272,7 +260,7 @@ impl SessionWriter {
 
 impl PatchSink for SessionWriter {
     fn commit_at(&self, draft: Draft, ts: i64) -> Result<Patch, CommitError> {
-        let mut inner = self.lock();
+        let mut inner = self.inner.locked();
         self.writable(&inner)?;
         let patch = inner.dom.prepare(draft, ts);
         self.write(&mut inner, patch)

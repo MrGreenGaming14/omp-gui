@@ -7,8 +7,9 @@
 //! whose harness isn't running gets them in its config when it starts or
 //! resumes.
 
+use loa_util::LockExt;
 use std::collections::HashMap;
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::Mutex;
 
 use iced::widget::container;
 use iced::{Element, Fill, Subscription, Task};
@@ -159,10 +160,6 @@ impl State {
         }
     }
 
-    fn pending(&self) -> MutexGuard<'_, HashMap<Option<String>, Pending>> {
-        self.pending.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
     fn read_providers(&self) -> Task<Message> {
         let backend = self.backend.clone();
         Task::perform(async move { backend.providers().await }, Message::Providers)
@@ -250,7 +247,7 @@ impl State {
     /// The active session's model and role, with a pending pick on top.
     fn current(&self, ctx: &Ctx) -> SessionModel {
         let Some(session) = ctx.sessions.active() else {
-            if let Some((model, role)) = self.pending().get(&None).and_then(|pending| pending.model.clone()) {
+            if let Some((model, role)) = self.pending.locked().get(&None).and_then(|pending| pending.model.clone()) {
                 return SessionModel { model: Some(model), role };
             }
             // A new omp session runs on the default role's model.
@@ -260,7 +257,7 @@ impl State {
             return default.map_or_else(SessionModel::default, |role| SessionModel { model: Some(role.model.selector()), role: None });
         };
         let mut current = SessionModel::from_dom(session.dom()).map(|(_, model)| model).unwrap_or_default();
-        if let Some((model, role)) = self.pending().get(&Some(session.id().to_string())).and_then(|pending| pending.model.clone()) {
+        if let Some((model, role)) = self.pending.locked().get(&Some(session.id().to_string())).and_then(|pending| pending.model.clone()) {
             current = SessionModel { model: Some(model), role };
         }
         current
@@ -272,13 +269,13 @@ impl State {
         let harness = Self::harness_id(ctx).to_owned();
         let Some(session) = ctx.sessions.active() else {
             ctx.notify(format!("The next session starts on {model}"));
-            self.pending().insert(None, Pending { harness, model: Some((model, role)), effort: None });
+            self.pending.locked().insert(None, Pending { harness, model: Some((model, role)), effort: None });
             return Task::none();
         };
         let id = session.id().clone();
         let Some(running) = session.harness().cloned() else {
             ctx.notify(format!("This session continues on {model} when it resumes"));
-            self.pending().entry(Some(id.to_string())).or_insert_with(|| Pending { harness, ..Pending::default() }).model = Some((model, role));
+            self.pending.locked().entry(Some(id.to_string())).or_insert_with(|| Pending { harness, ..Pending::default() }).model = Some((model, role));
             self.sync(ctx);
             return Task::none();
         };
@@ -291,14 +288,14 @@ impl State {
     fn set_effort(&mut self, effort: String, ctx: &mut Ctx) -> Task<Message> {
         let harness = Self::harness_id(ctx).to_owned();
         let Some(session) = ctx.sessions.active() else {
-            self.pending().entry(None).or_insert_with(|| Pending { harness, ..Pending::default() }).effort = Some(effort);
+            self.pending.locked().entry(None).or_insert_with(|| Pending { harness, ..Pending::default() }).effort = Some(effort);
             self.sync(ctx);
             return Task::none();
         };
         let id = session.id().clone();
         let Some(running) = session.harness().cloned() else {
             ctx.notify(format!("This session continues with {effort} effort when it resumes"));
-            self.pending().entry(Some(id.to_string())).or_insert_with(|| Pending { harness, ..Pending::default() }).effort = Some(effort);
+            self.pending.locked().entry(Some(id.to_string())).or_insert_with(|| Pending { harness, ..Pending::default() }).effort = Some(effort);
             self.sync(ctx);
             return Task::none();
         };
@@ -343,7 +340,7 @@ impl State {
         let current = self.current(ctx);
         let session = ctx.sessions.active();
         let harness = Self::harness_id(ctx);
-        let pending_effort = self.pending().get(&session.map(|session| session.id().to_string())).and_then(|p| p.effort.clone());
+        let pending_effort = self.pending.locked().get(&session.map(|session| session.id().to_string())).and_then(|p| p.effort.clone());
         let effort = pending_effort.or_else(|| session.and_then(|session| session.dom().root()?.str_attr(attr::EFFORT).map(str::to_owned)));
         let roles = if harness == OMP { self.roles.as_deref().unwrap_or_default() } else { &[] };
         let role_of = |id: &str| roles.iter().find(|role| role.model.selector() == id).map(|role| role.role.clone());
@@ -574,7 +571,7 @@ impl Area for State {
                     Err(Failure::Unsupported(reason)) => {
                         let harness = ctx.sessions.get(session.as_str()).and_then(Session::harness_id).unwrap_or(OMP).to_owned();
                         ctx.notify(format!("{reason}; new sessions start on {model}"));
-                        self.pending().insert(None, Pending { harness, model: Some((model, role)), effort: None });
+                        self.pending.locked().insert(None, Pending { harness, model: Some((model, role)), effort: None });
                     }
                     Err(Failure::Error(error)) => ctx.notify(format!("Can't switch to {model}: {error}")),
                 }
@@ -586,7 +583,7 @@ impl Area for State {
                     Ok(()) => {}
                     Err(Failure::Unsupported(reason)) => {
                         ctx.notify(format!("{reason}; new sessions start with {effort} effort"));
-                        self.pending().entry(None).or_insert_with(|| Pending { harness, ..Pending::default() }).effort = Some(effort);
+                        self.pending.locked().entry(None).or_insert_with(|| Pending { harness, ..Pending::default() }).effort = Some(effort);
                     }
                     Err(Failure::Error(error)) => ctx.notify(format!("Can't set {effort} effort: {error}")),
                 }
@@ -683,7 +680,7 @@ impl Area for State {
 
     fn contribute(&self, config: &mut SessionConfig, target: &Target<'_>, _: &Ctx) {
         let key = target.resume.then(|| config.session_id.clone());
-        let mut pending = self.pending();
+        let mut pending = self.pending.locked();
         let Some(chosen) = pending.get(&key).filter(|pending| pending.harness == target.harness).cloned() else { return };
         pending.remove(&key);
         if let Some((model, role)) = chosen.model {

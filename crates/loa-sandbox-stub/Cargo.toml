@@ -6,6 +6,7 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+loa-util.workspace = true
 loa-sandbox = { path = "../loa-sandbox", default-features = false }
 libc = "0.2"
 

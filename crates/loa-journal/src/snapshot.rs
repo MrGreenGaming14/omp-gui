@@ -9,7 +9,7 @@ use crate::error::{Error, IoContext, Result};
 use crate::proto;
 use loa_core::Dom;
 use std::fs::{self, File};
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 const MAGIC: [u8; 8] = *b"LOASNAP\0";
@@ -125,22 +125,6 @@ pub(crate) fn write(dir: &Path, dom: &Dom, offset: u64, prev_offset: u64) -> Res
     h[48..52].copy_from_slice(&header_crc.to_le_bytes());
 
     let path = dir.join(file_name(seq));
-    let tmp = dir.join(format!("{}.tmp", file_name(seq)));
-    let mut file = File::create(&tmp).at(&tmp)?;
-    file.write_all(&buf).at(&tmp)?;
-    file.sync_all().at(&tmp)?;
-    drop(file);
-    fs::rename(&tmp, &path).at(&path)?;
-    sync_dir(dir)?;
+    loa_util::fs::write_atomic(&path, &buf, None).at(&path)?;
     Ok(Meta { path, seq, offset, prev_offset, body_len, body_crc })
-}
-
-/// Makes renames and creations in `dir` durable. Directories can't be opened
-/// as files outside unix, where the rename itself is the durability point.
-pub(crate) fn sync_dir(dir: &Path) -> Result<()> {
-    #[cfg(unix)]
-    File::open(dir).and_then(|d| d.sync_all()).at(dir)?;
-    #[cfg(not(unix))]
-    let _ = dir;
-    Ok(())
 }

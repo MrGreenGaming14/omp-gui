@@ -236,7 +236,7 @@ impl<'a> Importer<'a> {
         let objects = || lines.iter().filter_map(|l| l.json.as_ref());
         let first_str = |name: &str| objects().find_map(|j| j.get(name)?.as_str().map(str::to_owned));
         let session_id = first_str("sessionId");
-        let created = objects().find_map(|j| time::parse(j.get("timestamp")?.as_str()?)).unwrap_or(0);
+        let created = objects().find_map(|j| time::parse_iso_ms(j.get("timestamp")?.as_str()?)).unwrap_or(0);
         let mut conversation = objects()
             .filter(|j| matches!(j.get("type").and_then(J::as_str), Some("user" | "assistant")))
             .peekable();
@@ -286,7 +286,7 @@ impl<'a> Importer<'a> {
     }
 
     fn line(&mut self, line: &Line) -> Result<()> {
-        if let Some(ts) = line.json.as_ref().and_then(|j| time::parse(j.get("timestamp")?.as_str()?)) {
+        if let Some(ts) = line.json.as_ref().and_then(|j| time::parse_iso_ms(j.get("timestamp")?.as_str()?)) {
             self.ts = ts;
         }
         match &line.json {

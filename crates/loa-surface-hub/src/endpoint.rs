@@ -141,9 +141,7 @@ impl Drop for McpEndpoint {
 impl McpEndpoint {
     /// Serves `tools` on `127.0.0.1` at a free port.
     pub async fn start(tools: Arc<SurfaceTools>) -> std::io::Result<Self> {
-        let mut bytes = [0u8; 24];
-        getrandom::fill(&mut bytes).map_err(std::io::Error::other)?;
-        let token: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+        let token = loa_util::text::random_hex(24);
         let mut router = axum::Router::new();
         for scope in SERVERS {
             let handler = Scoped { tools: tools.clone(), scope };

@@ -4,6 +4,7 @@
 //! server request to the [`Mapper`], writes the replies, and resolves the
 //! responses to the requests this side sent.
 
+use loa_util::LockExt;
 use crate::mapper::{Mapper, Reply, host_tool_result};
 use crate::{CodexAdapter, HARNESS};
 use async_trait::async_trait;
@@ -16,7 +17,7 @@ use serde_json::{Value as Json, json};
 use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{oneshot, watch};
@@ -43,15 +44,10 @@ struct Shared {
     host_tools: Option<Arc<dyn HostTools>>,
 }
 
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    // Every critical section here is a plain field update or a mapper call
-    // that commits drafts; a panic in one leaves no half-written invariant.
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
-}
 
 impl Shared {
     fn publish_state(&self) {
-        let state = lock(&self.mapper).state();
+        let state = self.mapper.locked().state();
         self.state.send_replace(state);
     }
 
@@ -68,9 +64,9 @@ impl Shared {
     async fn request(&self, method: &str, params: Json) -> Result<Json> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
-        lock(&self.pending).insert(id, tx);
+        self.pending.locked().insert(id, tx);
         if let Err(error) = self.write(&json!({ "id": id, "method": method, "params": params })).await {
-            lock(&self.pending).remove(&id);
+            self.pending.locked().remove(&id);
             return Err(error);
         }
         match rx.await {
@@ -118,7 +114,7 @@ impl Shared {
         let params = message.get("params").unwrap_or(&Json::Null);
         let outcome = match (method, id) {
             (Some(method), Some(id)) => {
-                let reply = lock(&self.mapper).request(id.clone(), method, params);
+                let reply = self.mapper.locked().request(id.clone(), method, params);
                 match reply {
                     Ok(Some(reply)) => self.send_reply(reply).await,
                     Ok(None) => Ok(()),
@@ -131,9 +127,9 @@ impl Shared {
                     }
                 }
             }
-            (Some(method), None) => lock(&self.mapper).notification(method, params),
+            (Some(method), None) => self.mapper.locked().notification(method, params),
             (None, Some(id)) => {
-                let responder = id.as_i64().and_then(|id| lock(&self.pending).remove(&id));
+                let responder = id.as_i64().and_then(|id| self.pending.locked().remove(&id));
                 if let Some(responder) = responder {
                     let outcome = match message.get("error") {
                         Some(error) => Err(error.get("message").and_then(Json::as_str).unwrap_or("error").to_owned()),
@@ -154,18 +150,18 @@ impl Shared {
 
     /// Codex's stdout closed.
     fn exited(&self, detail: &str) {
-        for (_, responder) in lock(&self.pending).drain() {
+        for (_, responder) in self.pending.locked().drain() {
             // Nothing waits when the requester was dropped.
             let _ = responder.send(Err(detail.to_owned()));
         }
-        if let Err(error) = lock(&self.mapper).process_exited(detail) {
+        if let Err(error) = self.mapper.locked().process_exited(detail) {
             tracing::warn!(%error, "codex: couldn't record the exit");
         }
         self.state.send_replace(SessionState::Closed);
     }
 
     fn thread_id(&self) -> String {
-        lock(&self.thread_id).clone()
+        self.thread_id.locked().clone()
     }
 }
 
@@ -410,9 +406,6 @@ impl CodexSession {
         self.shared.thread_id()
     }
 
-    fn mapper(&self) -> MutexGuard<'_, Mapper> {
-        lock(&self.shared.mapper)
-    }
 }
 
 /// The request/response exchange that runs before the reader task owns stdout.
@@ -469,11 +462,11 @@ impl HarnessSession for CodexSession {
         if *self.state.borrow() == SessionState::Closed {
             return Err(AdapterError::Closed);
         }
-        self.mapper().begin_turn(&prompt)?;
+        self.shared.mapper.locked().begin_turn(&prompt)?;
         self.shared.publish_state();
         let mut params = json!({ "threadId": self.shared.thread_id(), "input": turn_input(&prompt) });
         {
-            let settings = lock(&self.shared.settings);
+            let settings = self.shared.settings.locked();
             if let Some(object) = params.as_object_mut() {
                 if let Some(model) = &settings.model {
                     object.insert("model".to_owned(), Json::from(model.as_str()));
@@ -496,10 +489,10 @@ impl HarnessSession for CodexSession {
         let outcome = self.shared.request("turn/start", params).await;
         let recorded = match &outcome {
             Ok(result) => match result.get("turn").and_then(|t| t.get("id")).and_then(Json::as_str) {
-                Some(turn_id) => self.mapper().turn_accepted(turn_id),
+                Some(turn_id) => self.shared.mapper.locked().turn_accepted(turn_id),
                 None => Ok(()),
             },
-            Err(error) => self.mapper().turn_rejected(&error.to_string()),
+            Err(error) => self.shared.mapper.locked().turn_rejected(&error.to_string()),
         };
         self.shared.publish_state();
         recorded?;
@@ -507,13 +500,13 @@ impl HarnessSession for CodexSession {
     }
 
     async fn interrupt(&self) -> Result<()> {
-        let Some(turn_id) = self.mapper().turn_id().map(str::to_owned) else { return Ok(()) };
+        let Some(turn_id) = self.shared.mapper.locked().turn_id().map(str::to_owned) else { return Ok(()) };
         self.shared.request("turn/interrupt", json!({ "threadId": self.shared.thread_id(), "turnId": turn_id })).await?;
         Ok(())
     }
 
     async fn answer(&self, decision: NodeId, answer: Answer) -> Result<()> {
-        let reply = self.mapper().answer(decision, &answer)?;
+        let reply = self.shared.mapper.locked().answer(decision, &answer)?;
         self.shared.publish_state();
         if let Some(reply) = reply {
             self.shared.send_reply(reply).await?;
@@ -525,13 +518,13 @@ impl HarnessSession for CodexSession {
         if selection.role.is_some() {
             return Err(AdapterError::Unsupported { harness: HARNESS, what: "model roles" });
         }
-        lock(&self.shared.settings).model = Some(selection.model.clone());
-        self.mapper().set_model(&selection.model)
+        self.shared.settings.locked().model = Some(selection.model.clone());
+        self.shared.mapper.locked().set_model(&selection.model)
     }
 
     async fn set_mode(&self, mode: SessionMode) -> Result<()> {
-        lock(&self.shared.settings).mode = Some(mode);
-        self.mapper().set_mode(mode)
+        self.shared.settings.locked().mode = Some(mode);
+        self.shared.mapper.locked().set_mode(mode)
     }
 
     /// Every page of `model/list`.
@@ -558,8 +551,8 @@ impl HarnessSession for CodexSession {
 
     /// Codex takes the effort with each `turn/start`; it applies from the next turn.
     async fn set_effort(&self, effort: String) -> Result<()> {
-        lock(&self.shared.settings).effort = Some(effort.clone());
-        self.mapper().set_effort(&effort)
+        self.shared.settings.locked().effort = Some(effort.clone());
+        self.shared.mapper.locked().set_effort(&effort)
     }
 
     async fn compact(&self, instructions: Option<String>) -> Result<()> {

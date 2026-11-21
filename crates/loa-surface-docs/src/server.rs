@@ -1,5 +1,6 @@
 //! The `docs` surface server: opens files as document mode surfaces.
 
+use loa_util::{LockExt, RwLockExt};
 use crate::docx::DocxDoc;
 use crate::images::ImageDoc;
 use crate::pdf::PdfDoc;
@@ -16,7 +17,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, PoisonError, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use tokio::sync::broadcast;
 
 /// Server part of the `surface://docs/<id>` uris.
@@ -132,7 +133,7 @@ pub struct DocSurface(Arc<Inner>);
 
 impl DocSurface {
     fn loaded(&self) -> Arc<Loaded> {
-        self.0.loaded.read().unwrap_or_else(PoisonError::into_inner).clone()
+        self.0.loaded.read_ok().clone()
     }
 
     pub fn uri(&self) -> &SurfaceUri {
@@ -151,7 +152,7 @@ impl DocSurface {
     /// fetch [`Surface::document`] again to see the change.
     pub fn reload(&self) -> Result<()> {
         let loaded = Loaded::read(&self.0.path, self.0.format)?;
-        *self.0.loaded.write().unwrap_or_else(PoisonError::into_inner) = Arc::new(loaded);
+        *self.0.loaded.write_ok() = Arc::new(loaded);
         Ok(())
     }
 
@@ -236,8 +237,8 @@ impl DocSurface {
             };
             let bytes = xlsx.apply(&edits)?;
             let parsed = Parsed::parse(Format::Xlsx, &bytes)?;
-            write_atomically(&surface.0.path, &bytes)?;
-            *surface.0.loaded.write().unwrap_or_else(PoisonError::into_inner) =
+            loa_util::fs::write_atomic(&surface.0.path, &bytes, None).map_err(|source| DocsError::Io { path: surface.0.path.clone(), source })?;
+            *surface.0.loaded.write_ok() =
                 Arc::new(Loaded { bytes: Bytes::from(bytes), parsed });
             Ok(())
         })
@@ -258,18 +259,6 @@ async fn run_blocking<T: Send + 'static>(work: impl FnOnce() -> Result<T> + Send
     tokio::task::spawn_blocking(work)
         .await
         .map_err(|e| DocsError::Surface(SurfaceError::Backend(e.to_string())))?
-}
-
-fn write_atomically(path: &Path, bytes: &[u8]) -> Result<()> {
-    let io = |source| DocsError::Io { path: path.to_owned(), source };
-    let file_name = path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
-    let temp = path.with_file_name(format!(".{file_name}.{}.tmp", std::process::id()));
-    std::fs::write(&temp, bytes).map_err(io)?;
-    std::fs::rename(&temp, path).map_err(|e| {
-        // The temporary file is ours and useless once the rename failed.
-        let _ = std::fs::remove_file(&temp);
-        io(e)
-    })
 }
 
 #[async_trait]
@@ -356,20 +345,18 @@ impl DocsServer {
             fonts: self.fonts.clone(),
             loaded: RwLock::new(Arc::new(loaded)),
         }));
-        self.surfaces.lock().unwrap_or_else(PoisonError::into_inner).insert(uri, surface.clone());
+        self.surfaces.locked().insert(uri, surface.clone());
         Ok(surface)
     }
 
     /// Forgets an open surface. Returns whether it was open.
     pub fn close(&self, uri: &SurfaceUri) -> bool {
-        self.surfaces.lock().unwrap_or_else(PoisonError::into_inner).remove(uri).is_some()
+        self.surfaces.locked().remove(uri).is_some()
     }
 
     /// The open surface at `uri`, typed, for data queries and edits.
     pub fn surface(&self, uri: &SurfaceUri) -> Result<DocSurface> {
-        self.surfaces
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+        self.surfaces.locked()
             .get(uri)
             .cloned()
             .ok_or_else(|| DocsError::Surface(SurfaceError::NotFound(uri.clone())))
@@ -384,7 +371,7 @@ impl SurfaceServer for DocsServer {
 
     async fn list(&self) -> loa_surface::Result<Vec<SurfaceInfo>> {
         let surfaces: Vec<DocSurface> =
-            self.surfaces.lock().unwrap_or_else(PoisonError::into_inner).values().cloned().collect();
+            self.surfaces.locked().values().cloned().collect();
         let mut infos: Vec<SurfaceInfo> = surfaces.iter().map(Surface::info).collect();
         infos.sort_by(|a, b| a.uri.name().len().cmp(&b.uri.name().len()).then_with(|| a.uri.name().cmp(b.uri.name())));
         Ok(infos)

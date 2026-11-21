@@ -11,6 +11,9 @@ fn since_epoch() -> std::time::Duration { SystemTime::now().duration_since(UNIX_
 /// Now in Unix milliseconds.
 pub fn now_ms() -> i64 { i64::try_from(since_epoch().as_millis()).unwrap_or(i64::MAX) }
 
+/// Now in Unix seconds.
+pub fn now_secs() -> u64 { since_epoch().as_secs() }
+
 /// Now in Unix microseconds.
 pub fn now_us() -> u64 { u64::try_from(since_epoch().as_micros()).unwrap_or(u64::MAX) }
 

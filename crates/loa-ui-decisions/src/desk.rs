@@ -16,17 +16,13 @@ use iced::{Element, Subscription, Task, Theme, event, keyboard, time, window};
 use loa_adapter::Answer;
 use loa_core::{Dom, NodeId, attr};
 use std::collections::HashMap;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 /// How often pending unattended timeouts are checked.
 const TICK: Duration = Duration::from_millis(500);
 
 /// Unix ms now.
-pub fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
-}
+pub use loa_util::time::now_ms;
 
 #[derive(Clone, Debug)]
 pub enum Message {

@@ -1,11 +1,11 @@
 //! Frame fan-out and the input clock that stamps `Frame::input_seq`.
 
+use loa_util::LockExt;
 use bytes::Bytes;
 use loa_surface::{Encoding, Frame, Rect};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::broadcast;
 
 /// Frames a slow viewer may fall behind before it loses the oldest.
@@ -15,9 +15,7 @@ const FRAME_BACKLOG: usize = 8;
 const INPUT_HISTORY: usize = 256;
 
 /// Microseconds since the Unix epoch on the server clock.
-pub(crate) fn now_us() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_micros() as u64)
-}
+pub(crate) use loa_util::time::now_us;
 
 /// The picture data of one frame before it gets a sequence number.
 pub(crate) struct Picture {
@@ -60,7 +58,7 @@ impl FrameHub {
             data: picture.data,
         });
         if frame.keyframe {
-            *self.last_key.lock().unwrap_or_else(|e| e.into_inner()) = Some(frame.clone());
+            *self.last_key.locked() = Some(frame.clone());
         }
         // No receivers is fine: nobody is watching this tab right now.
         let _ = self.tx.send(frame);
@@ -69,7 +67,7 @@ impl FrameHub {
     /// Sends the last keyframe again under a new sequence number. Returns
     /// false when no keyframe was captured yet.
     pub fn republish_keyframe(&self) -> bool {
-        let last = self.last_key.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let last = self.last_key.locked().clone();
         let Some(last) = last else { return false };
         self.publish(Picture {
             captured_us: last.captured_us,

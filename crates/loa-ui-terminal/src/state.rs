@@ -1,6 +1,7 @@
 //! The terminal tab: several terminals as sub tabs, each on a local or
 //! remote PTY.
 
+use loa_util::LockExt;
 use std::cell::Cell as StdCell;
 use std::sync::{Arc, Mutex};
 
@@ -72,12 +73,7 @@ impl<T> Handoff<T> {
     }
 
     fn take(&self) -> Option<T> {
-        // A poisoned lock means a panic while holding it; the value is
-        // still there and taking it is sound.
-        match self.0.lock() {
-            Ok(mut slot) => slot.take(),
-            Err(poisoned) => poisoned.into_inner().take(),
-        }
+        self.0.locked().take()
     }
 }
 

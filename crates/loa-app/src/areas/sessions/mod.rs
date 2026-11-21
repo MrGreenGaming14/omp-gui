@@ -28,10 +28,11 @@ mod live;
 #[cfg(test)]
 mod tests;
 
+use loa_util::LockExt;
 use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use iced::{Element, Subscription, Task};
@@ -125,7 +126,7 @@ impl Held {
     }
 
     fn take(&self) -> Option<Box<dyn PlanPermit>> {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner).take()
+        self.0.locked().take()
     }
 }
 
@@ -172,7 +173,7 @@ impl State {
         let small = if cfg!(test) {
             None
         } else {
-            on_path("omp").map(|omp| OneShot::new(Arc::new(loa_projects::OmpSummarizer::new(omp, ctx.services.cwd.clone()))))
+            loa_util::exec::which("omp").map(|omp| OneShot::new(Arc::new(loa_projects::OmpSummarizer::new(omp, ctx.services.cwd.clone()))))
         };
         ctx.composer.set_commands(composer_commands(None));
         let state = Self {
@@ -207,10 +208,6 @@ impl State {
     #[cfg(test)]
     pub(crate) fn set_opener(&mut self, opener: Arc<dyn UrlOpener>) {
         self.opener = opener;
-    }
-
-    fn hooks(&self) -> MutexGuard<'_, HashMap<String, TurnHooks>> {
-        self.hooks.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Rebuilds from the active session.
@@ -448,7 +445,7 @@ impl State {
     fn delete(&mut self, ctx: &mut Ctx, id: &str) -> Task<Message> {
         self.tree.forget(id);
         self.plans.remove(id);
-        self.hooks().remove(id);
+        self.hooks.locked().remove(id);
         let task = if ctx.sessions.get(id).is_some() {
             match ctx.discard_session(id) {
                 Some(harness) => {
@@ -695,7 +692,7 @@ impl State {
         if capabilities(ctx, open.harness_id().unwrap_or_default()).has(Feature::AdvisorRules) {
             return Task::none();
         }
-        let rules = self.hooks().get(session.as_str()).and_then(|hooks| hooks.rules().map(str::to_owned));
+        let rules = self.hooks.locked().get(session.as_str()).and_then(|hooks| hooks.rules().map(str::to_owned));
         let dom = open.dom().clone();
         let id = session.clone();
         Task::perform(
@@ -814,11 +811,6 @@ fn model_roles(home: &Path) -> Result<Vec<(String, Vec<String>)>, String> {
     Ok(roles.into_iter().map(|role| (role.role, role.candidates.iter().map(ToString::to_string).collect())).collect())
 }
 
-/// `name` on `PATH`.
-fn on_path(name: &str) -> Option<PathBuf> {
-    std::env::split_paths(&std::env::var_os("PATH")?).map(|dir| dir.join(name)).find(|path| path.is_file())
-}
-
 impl Area for State {
     type Message = Message;
 
@@ -907,7 +899,7 @@ impl Area for State {
                         {
                             ctx.notify(format!("Can't record the advisor's note: {error}"));
                         }
-                        if let Some(hooks) = self.hooks().get_mut(session.as_str()) {
+                        if let Some(hooks) = self.hooks.locked().get_mut(session.as_str()) {
                             hooks.advise(note);
                         }
                     }
@@ -1032,7 +1024,7 @@ impl Area for State {
         if !target.capabilities.has(Feature::AdvisorRules) {
             let rules = self.rules(&config.cwd);
             let hooks = TurnHooks::start(config, rules);
-            self.hooks().insert(config.session_id.clone(), hooks);
+            self.hooks.locked().insert(config.session_id.clone(), hooks);
         }
     }
 
@@ -1041,7 +1033,7 @@ impl Area for State {
         if !capabilities(ctx, open.harness_id().unwrap_or_default()).has(Feature::AdvisorRules) {
             let cwd = open.dom().root().and_then(|root| root.str_attr(attr::CWD)).map_or_else(|| ctx.services.cwd.clone(), PathBuf::from);
             let rules = self.rules(&cwd);
-            let mut hooks = self.hooks();
+            let mut hooks = self.hooks.locked();
             let hooks = hooks.entry(session.to_string()).or_insert_with(|| TurnHooks::resumed(rules.clone()));
             prompt.text = hooks.before_turn(rules, &prompt.text);
         }
@@ -1113,7 +1105,7 @@ impl Area for State {
             }
             SessionEvent::Closed(id) => {
                 self.plans.remove(id.as_str());
-                self.hooks().remove(id.as_str());
+                self.hooks.locked().remove(id.as_str());
             }
             _ => {}
         }

@@ -92,17 +92,7 @@ impl ConfigStore {
     }
 
     fn write_atomic(&self, bytes: &[u8]) -> Result<()> {
-        let write_err = |source| ConfigError::Write { path: self.path.clone(), source };
-        let dir = match self.path.parent() {
-            Some(dir) if !dir.as_os_str().is_empty() => dir,
-            _ => Path::new("."),
-        };
-        fs::create_dir_all(dir).map_err(write_err)?;
-        let mut tmp = tempfile::NamedTempFile::new_in(dir).map_err(write_err)?;
-        tmp.write_all(bytes).map_err(write_err)?;
-        tmp.as_file().sync_all().map_err(write_err)?;
-        tmp.persist(&self.path).map_err(|e| write_err(e.error))?;
-        sync_dir(dir).map_err(write_err)
+        loa_util::fs::write_atomic(&self.path, bytes, None).map_err(|source| ConfigError::Write { path: self.path.clone(), source })
     }
 
     /// Writes `original` to `<file>.v<from>.bak`, adding `.1`, `.2`, … when an
@@ -134,17 +124,4 @@ impl ConfigStore {
             }
         }
     }
-}
-
-/// Makes a rename in `dir` durable.
-#[cfg(unix)]
-fn sync_dir(dir: &Path) -> io::Result<()> {
-    fs::File::open(dir)?.sync_all()
-}
-
-/// Directories can't be opened for syncing on this platform; the rename is
-/// as durable as the OS makes it.
-#[cfg(not(unix))]
-fn sync_dir(_dir: &Path) -> io::Result<()> {
-    Ok(())
 }

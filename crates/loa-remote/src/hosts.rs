@@ -1,5 +1,6 @@
 //! The host list (#95): hosts imported from ssh config and hosts added by hand.
 
+use loa_util::RwLockExt;
 use std::collections::BTreeMap;
 use std::sync::RwLock;
 
@@ -78,43 +79,30 @@ impl HostRegistry {
         Self::default()
     }
 
-    fn read(&self) -> std::sync::RwLockReadGuard<'_, BTreeMap<String, Host>> {
-        // Writers only replace whole entries, so a poisoned map is consistent.
-        self.hosts
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
-    fn write(&self) -> std::sync::RwLockWriteGuard<'_, BTreeMap<String, Host>> {
-        self.hosts
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
     /// Adds or replaces a host.
     pub fn insert(&self, host: Host) {
-        self.write().insert(host.name.clone(), host);
+        self.hosts.write_ok().insert(host.name.clone(), host);
     }
 
     /// Replaces the whole list, e.g. after the config changed.
     pub fn replace_all(&self, hosts: impl IntoIterator<Item = Host>) {
-        *self.write() = hosts.into_iter().map(|h| (h.name.clone(), h)).collect();
+        *self.hosts.write_ok() = hosts.into_iter().map(|h| (h.name.clone(), h)).collect();
     }
 
     pub fn remove(&self, name: &str) -> Option<Host> {
-        self.write().remove(name)
+        self.hosts.write_ok().remove(name)
     }
 
     pub fn get(&self, name: &str) -> Option<Host> {
-        self.read().get(name).cloned()
+        self.hosts.read_ok().get(name).cloned()
     }
 
     pub fn list(&self) -> Vec<Host> {
-        self.read().values().cloned().collect()
+        self.hosts.read_ok().values().cloned().collect()
     }
 
     pub fn set_limits(&self, name: &str, limits: HostLimits) -> Result<()> {
-        match self.write().get_mut(name) {
+        match self.hosts.write_ok().get_mut(name) {
             Some(h) => {
                 h.limits = limits;
                 Ok(())
@@ -128,7 +116,7 @@ impl HostRegistry {
     /// Returns the aliases that failed to resolve.
     pub fn import(&self, imported: Vec<Imported>, limits: &HostLimits) -> Vec<(String, Error)> {
         let mut failed = Vec::new();
-        let mut hosts = self.write();
+        let mut hosts = self.hosts.write_ok();
         for Imported { alias, host } in imported {
             match host {
                 Ok(resolved) => match hosts.get(&alias) {

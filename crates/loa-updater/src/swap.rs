@@ -5,7 +5,7 @@
 //! and replaced atomically, so a crash leaves either the old or the new
 //! pointer, never a partial one.
 
-use crate::fsio;
+use loa_util::fs::write_atomic;
 use crate::layout::{self, Staged, StagedManifest};
 use crate::signature::{self, SignatureError};
 use ed25519_dalek::VerifyingKey;
@@ -195,7 +195,7 @@ impl Swapper {
         let path = self.active_path(product);
         let bytes = serde_json::to_vec_pretty(active)
             .map_err(|source| SwapError::Json { path: path.clone(), source })?;
-        fsio::write_atomic(&path, &bytes).map_err(|source| SwapError::Io { path, source })
+        write_atomic(&path, &bytes, None).map_err(|source| SwapError::Io { path, source })
     }
 
     /// Reads the manifest of a fully staged version.
