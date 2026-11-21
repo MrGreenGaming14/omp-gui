@@ -25,6 +25,11 @@ fn str_at<'a>(value: &'a Json, key: &str) -> Option<&'a str> {
     value.get(key)?.as_str()
 }
 
+fn canonical(mut value: Json) -> String {
+    value.sort_all_objects();
+    value.to_string()
+}
+
 /// The Codex harness.
 #[derive(Clone, Debug)]
 pub struct CodexAdapter {

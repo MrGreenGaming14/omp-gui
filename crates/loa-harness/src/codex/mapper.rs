@@ -1,6 +1,6 @@
 //! Codex app-server notifications and server requests to DOM writes, dispatched by method name.
 
-use super::{HARNESS, str_at};
+use super::{HARNESS, canonical, str_at};
 use crate::kit::rpc::id_key;
 use crate::kit::{EndEvent, TurnLedger};
 use loa_contracts::harness::{AdapterError, Answer, Prompt, Result, SessionConfig, SessionState};
@@ -90,14 +90,14 @@ const REQUESTS: &[(&str, Request)] = &[
     ("item/permissions/requestApproval", |m, id, p, w| {
         let target = m.decision_target(p, w)?;
         let requested = p.get("permissions").cloned().unwrap_or(Json::Null);
-        let body = ("Grant permissions".into(), requested.to_string());
+        let body = ("Grant permissions".into(), canonical(requested.clone()));
         m.approval(target, id, p, body, true, Pending::Permissions(requested), w)
     }),
     ("item/tool/requestUserInput", Mapper::user_input),
     ("mcpServer/elicitation/request", Mapper::elicitation),
     ("item/tool/call", |_, id, p, _| {
         let tool = str_at(p, "tool").unwrap_or_default().to_owned();
-        let arguments = p.get("arguments").map_or_else(|| "{}".to_owned(), Json::to_string);
+        let arguments = p.get("arguments").map_or_else(|| "{}".to_owned(), |v| canonical(v.clone()));
         Ok(Some(Reply::HostTool { id, tool, arguments }))
     }),
 ];
@@ -141,7 +141,7 @@ fn changes(item: &Json) -> impl Iterator<Item = &Json> {
 fn content_text(items: Option<&Json>) -> String {
     let Some(items) = items.and_then(Json::as_array) else { return String::new() };
     let texts: Vec<&str> = items.iter().filter_map(|i| str_at(i, "text")).collect();
-    if texts.len() == items.len() { texts.join("\n") } else { Json::Array(items.clone()).to_string() }
+    if texts.len() == items.len() { texts.join("\n") } else { canonical(Json::Array(items.clone())) }
 }
 
 fn first_line(text: &str) -> String {
@@ -308,7 +308,7 @@ impl Mapper {
                     if let (Some(turn), Some(id)) = (self.ledger.turn(), str_at(params, "turnId"))
                         && self.turn_id.as_deref() == Some(id)
                     {
-                        w.ext(turn.node, HARNESS, method, params)?;
+                        w.ext(turn.node, HARNESS, method, canonical(params.clone()))?;
                     }
                     Ok(None)
                 }
@@ -447,7 +447,7 @@ impl Mapper {
         attrs.extend(title.map(|t| (attr::TITLE, t.into())));
         let parent = self.ensure_turn(turn_id, w)?;
         let node = w.insert(parent, E::Call, attrs, "")?;
-        w.insert(node, E::Input, Attrs::new(), input.to_string())?;
+        w.insert(node, E::Input, Attrs::new(), canonical(input))?;
         self.track(id, node, Kind::Call);
         if s("type") == "fileChange"
             && let Some(entry) = self.items.get_mut(id)
@@ -484,7 +484,7 @@ impl Mapper {
             _ => {
                 if !self.items.contains_key(id) && !self.start_call(turn_id, item, w)? {
                     let parent = self.ensure_turn(turn_id, w)?;
-                    w.ext(parent, HARNESS, &format!("item:{ty}"), item)?;
+                    w.ext(parent, HARNESS, &format!("item:{ty}"), canonical(item.clone()))?;
                     return Ok(());
                 }
                 return self.finish_call(id, item, w);
@@ -549,7 +549,7 @@ impl Mapper {
             }
             "collabAgentToolCall" => {
                 self.agent_jobs(entry.node, item, w)?;
-                (Some(item.get("agentsStates").map(Json::to_string).unwrap_or_default()), CallStatus::Done)
+                (Some(item.get("agentsStates").map(|v| canonical(v.clone())).unwrap_or_default()), CallStatus::Done)
             }
             _ => (None, CallStatus::Done),
         };
@@ -829,7 +829,7 @@ impl Mapper {
         let target = self.decision_target(params, w)?;
         let (server, message) = (str_at(params, "serverName").unwrap_or_default(), str_at(params, "message").unwrap_or_default());
         if matches!(str_at(params, "mode"), Some("form" | "openai/form")) {
-            let schema = params.get("requestedSchema").map(Json::to_string).unwrap_or_default();
+            let schema = params.get("requestedSchema").map(|v| canonical(v.clone())).unwrap_or_default();
             let attrs = vec![(attr::TITLE, server.into()), (attr::FIELDS, schema.into())];
             self.decide(target, &id, DecisionKind::Form, attrs, message.to_owned(), Pending::Form, w)?;
             return Ok(None);

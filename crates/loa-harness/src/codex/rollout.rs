@@ -3,7 +3,7 @@
 //! `x-codex`. Lines with no DOM shape become `<ext>` holding the raw line. Export puts the fields back,
 //! orders lines by `x-line`, and writes nodes of live sessions in the shapes Codex writes.
 
-use super::{HARNESS, str_at};
+use super::{HARNESS, canonical, str_at};
 use crate::kit::residual::{self as kit_residual, join_parts, split_parts};
 use loa_contracts::harness::{AdapterError, Result};
 use loa_core::{
@@ -122,7 +122,7 @@ impl Line {
     /// The line without the fields taken out of it, as JSON.
     fn residual(mut self) -> String {
         self.rest.insert("payload".to_owned(), Json::Object(self.payload));
-        Json::Object(self.rest).to_string()
+        canonical(Json::Object(self.rest))
     }
 }
 
@@ -280,7 +280,7 @@ impl<'a> Importer<'a> {
                 let action = l.payload.remove("action");
                 let command = action.as_ref().and_then(|a| a.get("command")).and_then(Json::as_array);
                 let title = command.map(|parts| parts.iter().filter_map(Json::as_str).collect::<Vec<_>>().join(" "));
-                ("local_shell".to_owned(), action.map(|a| a.to_string()), title)
+                ("local_shell".to_owned(), action.map(canonical), title)
             }
             _ => {
                 let Some(tool) = take_str(&mut l.payload, "name") else { return Ok(false) };
@@ -316,7 +316,7 @@ impl<'a> Importer<'a> {
                 attrs.push((X_PARTS, Value::List(lengths)));
                 text
             }
-            Some(other) => other.to_string(),
+            Some(other) => canonical(other.clone()),
             None => String::new(),
         };
         let is_error = l.rest.get(LOA_KEY).and_then(|x| x.get("is_error")).and_then(Json::as_bool) == Some(true);
@@ -467,7 +467,7 @@ impl Exporter<'_> {
     }
 
     fn push_line(&mut self, at: Option<i64>, line: Obj) {
-        self.push(at, Json::Object(line).to_string());
+        self.push(at, canonical(Json::Object(line)));
     }
 
     fn stamp(&mut self, node: &Node, name: &str) {

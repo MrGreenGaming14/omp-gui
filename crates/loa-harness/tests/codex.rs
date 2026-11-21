@@ -70,7 +70,7 @@ fn transcripts_replay_to_their_goldens() {
 
 fn log_reply(log: &mut String, reply: Reply) {
     log.push_str(&match reply {
-        Reply::Result { id, result } => format!("> {id} {result}\n"),
+        Reply::Result { id, mut result } => { result.sort_all_objects(); format!("> {id} {result}\n") },
         Reply::Error { id, code, message } => format!("> {id} error {code} {message}\n"),
         Reply::HostTool { id, tool, arguments } => format!("> {id} host {tool} {arguments}\n"),
     });
