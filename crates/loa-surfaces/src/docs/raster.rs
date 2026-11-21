@@ -1,12 +1,9 @@
-//! Software drawing used by the simple page renderers (XLSX grid, DOCX page,
-//! PPTX slide) and by the screenshot path: an RGBA canvas, rectangles,
-//! scaled image blits and text through a system font found at runtime.
-//!
-//! When no font is found, text degrades to one outlined box per character so
-//! the layout stays visible.
+//! Software drawing used by the simple page renderers (XLSX grid, DOCX page, PPTX slide): an RGBA canvas,
+//! rectangles, scaled image blits and text through a system font found at runtime. Without a font, text
+//! degrades to one outlined box per character so the layout stays visible.
 
 use crate::docs::Rgba;
-use ab_glyph::{Font, FontArc, PxScale, ScaleFont, point};
+use ab_glyph::{Font, FontArc, GlyphId, PxScale, PxScaleFont, ScaleFont, point};
 use std::path::{Path, PathBuf};
 
 /// Straight (not premultiplied) RGBA color.
@@ -69,16 +66,6 @@ impl Color {
     pub const fn rgb(r: u8, g: u8, b: u8) -> Self {
         Self([r, g, b, 255])
     }
-
-    /// Parses `RRGGBB` (as found in OOXML `val` attributes), with or without `#`.
-    pub fn from_hex(hex: &str) -> Option<Self> {
-        let hex = hex.strip_prefix('#').unwrap_or(hex);
-        if hex.len() != 6 || !hex.is_ascii() {
-            return None;
-        }
-        let channel = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).ok();
-        Some(Self::rgb(channel(0)?, channel(2)?, channel(4)?))
-    }
 }
 
 /// How a run of text is drawn.
@@ -108,55 +95,24 @@ impl TextStyle {
 
 /// Font files known by name, most preferred first.
 const REGULAR_NAMES: &[&str] = &[
-    "DejaVuSans.ttf",
-    "LiberationSans-Regular.ttf",
-    "NotoSans-Regular.ttf",
-    "FreeSans.ttf",
-    "Ubuntu-R.ttf",
-    "Arial.ttf",
-    "arial.ttf",
-    "Helvetica.ttc",
-    "SFNS.ttf",
-    "segoeui.ttf",
+    "DejaVuSans.ttf", "LiberationSans-Regular.ttf", "NotoSans-Regular.ttf", "FreeSans.ttf", "Ubuntu-R.ttf",
+    "Arial.ttf", "arial.ttf", "SFNS.ttf", "segoeui.ttf",
 ];
-
 const BOLD_NAMES: &[&str] = &[
-    "DejaVuSans-Bold.ttf",
-    "LiberationSans-Bold.ttf",
-    "NotoSans-Bold.ttf",
-    "FreeSansBold.ttf",
-    "Ubuntu-B.ttf",
-    "Arial Bold.ttf",
-    "arialbd.ttf",
-    "segoeuib.ttf",
+    "DejaVuSans-Bold.ttf", "LiberationSans-Bold.ttf", "NotoSans-Bold.ttf", "FreeSansBold.ttf", "Ubuntu-B.ttf",
+    "Arial Bold.ttf", "arialbd.ttf", "segoeuib.ttf",
 ];
-
 /// System wide font directories on Linux, macOS and Windows.
-const SYSTEM_FONT_DIRS: &[&str] = &[
-    "/usr/share/fonts",
-    "/usr/local/share/fonts",
-    "/System/Library/Fonts",
-    "/Library/Fonts",
-    "C:\\Windows\\Fonts",
-];
-
+const SYSTEM_FONT_DIRS: &[&str] =
+    &["/usr/share/fonts", "/usr/local/share/fonts", "/System/Library/Fonts", "/Library/Fonts", "C:\\Windows\\Fonts"];
 /// How deep font directories are searched.
 const MAX_DEPTH: usize = 4;
 
 /// The fonts text is drawn with. Cheap to clone.
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Fonts {
     regular: Option<FontArc>,
     bold: Option<FontArc>,
-}
-
-impl std::fmt::Debug for Fonts {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Fonts")
-            .field("regular", &self.regular.is_some())
-            .field("bold", &self.bold.is_some())
-            .finish()
-    }
 }
 
 impl Fonts {
@@ -165,44 +121,18 @@ impl Fonts {
         Self::default()
     }
 
-    /// Searches the operating system's shared font directories. This is the
-    /// only place the crate looks at global state for fonts.
+    /// Searches the system font directories for a sans serif font: known families first, else any `.ttf`/`.otf`.
     pub fn system() -> Self {
-        Self::from_dirs(SYSTEM_FONT_DIRS)
-    }
-
-    /// Searches `dirs` (recursively, a few levels deep) for a sans serif font.
-    /// Known families win; otherwise the first `.ttf`/`.otf` found is used.
-    pub fn from_dirs<P: AsRef<Path>>(dirs: &[P]) -> Self {
         let mut files = Vec::new();
-        for dir in dirs {
-            collect_font_files(dir.as_ref(), MAX_DEPTH, &mut files);
+        for dir in SYSTEM_FONT_DIRS {
+            collect_font_files(Path::new(dir), MAX_DEPTH, &mut files);
         }
         files.sort();
+        let load = |path: &PathBuf| FontArc::try_from_vec(std::fs::read(path).ok()?).ok();
         let find = |names: &[&str]| {
-            names.iter().find_map(|name| {
-                files
-                    .iter()
-                    .filter(|f| f.file_name().is_some_and(|n| n == *name))
-                    .find_map(|f| load_font(f))
-            })
+            names.iter().find_map(|name| files.iter().filter(|f| f.file_name().is_some_and(|n| n == *name)).find_map(load))
         };
-        let regular = find(REGULAR_NAMES).or_else(|| files.iter().find_map(|f| load_font(f)));
-        let bold = find(BOLD_NAMES);
-        Self { regular, bold }
-    }
-
-    /// Fonts from file contents (TTF or OTF).
-    pub fn from_bytes(regular: Vec<u8>, bold: Option<Vec<u8>>) -> crate::docs::Result<Self> {
-        let parse = |data: Vec<u8>| {
-            FontArc::try_from_vec(data).map_err(|e| crate::docs::DocsError::Font(e.to_string()))
-        };
-        Ok(Self { regular: Some(parse(regular)?), bold: bold.map(parse).transpose()? })
-    }
-
-    /// Whether real glyphs are drawn (as opposed to boxes).
-    pub fn has_font(&self) -> bool {
-        self.regular.is_some()
+        Self { regular: find(REGULAR_NAMES).or_else(|| files.iter().find_map(load)), bold: find(BOLD_NAMES) }
     }
 
     fn pick(&self, bold: bool) -> Option<&FontArc> {
@@ -217,26 +147,12 @@ impl Fonts {
     /// Horizontal advance of `text` drawn at `size` pixels.
     pub fn text_width(&self, text: &str, size: f32, bold: bool) -> f32 {
         match self.pick(bold) {
-            Some(font) => {
-                let scaled = font.as_scaled(PxScale::from(size));
-                let mut width = 0.0;
-                let mut last = None;
-                for c in text.chars() {
-                    let id = scaled.glyph_id(c);
-                    if let Some(prev) = last {
-                        width += scaled.kern(prev, id);
-                    }
-                    width += scaled.h_advance(id);
-                    last = Some(id);
-                }
-                width
-            }
+            Some(font) => glyphs(&font.as_scaled(PxScale::from(size)), text, |_, _, _, _| {}),
             None => text.chars().count() as f32 * box_advance(size),
         }
     }
 
-    /// Word wraps `text` to `max_width`. Explicit newlines always break. A
-    /// word wider than the line is put on its own line.
+    /// Word wraps `text` to `max_width`; newlines always break, a word wider than the line gets its own line.
     pub fn wrap<'t>(&self, text: &'t str, size: f32, bold: bool, max_width: f32) -> Vec<&'t str> {
         let mut lines = Vec::new();
         for paragraph in text.split('\n') {
@@ -256,23 +172,30 @@ impl Fonts {
     }
 }
 
-/// Words with their byte offsets, keeping each word's leading spaces with the
-/// previous one.
+/// Lays `text` out with kerning, calling `f(char, glyph, caret, advance)` per character; returns the advance.
+fn glyphs(scaled: &PxScaleFont<&FontArc>, text: &str, mut f: impl FnMut(char, GlyphId, f32, f32)) -> f32 {
+    let (mut caret, mut last) = (0.0, None);
+    for c in text.chars() {
+        let id = scaled.glyph_id(c);
+        if let Some(prev) = last {
+            caret += scaled.kern(prev, id);
+        }
+        let advance = scaled.h_advance(id);
+        f(c, id, caret, advance);
+        caret += advance;
+        last = Some(id);
+    }
+    caret
+}
+
+/// Words with their byte offsets, each with its leading spaces.
 fn word_starts(text: &str) -> impl Iterator<Item = (usize, &str)> {
-    let mut rest = text;
     let mut offset = 0;
     std::iter::from_fn(move || {
-        if rest.is_empty() {
-            return None;
-        }
+        let (start, rest) = (offset, &text[offset..]);
         let lead = rest.len() - rest.trim_start_matches(' ').len();
-        let body = &rest[lead..];
-        let len = body.find(' ').unwrap_or(body.len());
-        let start = offset;
-        let word = &rest[..lead + len];
-        rest = &rest[lead + len..];
-        offset += lead + len;
-        Some((start, word))
+        offset += lead + rest[lead..].find(' ').unwrap_or(rest.len() - lead);
+        (offset > start).then(|| (start, &rest[..offset - start]))
     })
 }
 
@@ -289,18 +212,12 @@ fn collect_font_files(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
             if depth > 0 {
                 collect_font_files(&path, depth - 1, out);
             }
-        } else if path
-            .extension()
-            .and_then(|e| e.to_str())
+        } else if (path.extension().and_then(|e| e.to_str()))
             .is_some_and(|e| e.eq_ignore_ascii_case("ttf") || e.eq_ignore_ascii_case("otf"))
         {
             out.push(path);
         }
     }
-}
-
-fn load_font(path: &Path) -> Option<FontArc> {
-    FontArc::try_from_vec(std::fs::read(path).ok()?).ok()
 }
 
 /// An RGBA drawing surface in pixels.
@@ -312,17 +229,8 @@ impl Canvas {
         Self(Rgba::filled(width, height, background.0))
     }
 
-    pub fn width(&self) -> u32 {
-        self.0.width
-    }
-
     pub fn height(&self) -> u32 {
         self.0.height
-    }
-
-    /// The pixel at `(x, y)`, for tests and hit checks.
-    pub fn pixel(&self, x: u32, y: u32) -> Option<[u8; 4]> {
-        self.0.pixel(x, y)
     }
 
     /// Blends `color` at `coverage` (0 to 1) over the pixel at `(x, y)`.
@@ -346,9 +254,7 @@ impl Canvas {
 
     /// Clamps a float span to pixel indexes inside `0..limit`.
     fn span(start: f32, len: f32, limit: u32) -> (i64, i64) {
-        let a = start.round().max(0.0) as i64;
-        let b = ((start + len).round() as i64).min(i64::from(limit));
-        (a, b)
+        (start.round().max(0.0) as i64, ((start + len).round() as i64).min(i64::from(limit)))
     }
 
     pub fn fill_rect(&mut self, x: f32, y: f32, w: f32, h: f32, color: Color) {
@@ -390,49 +296,31 @@ impl Canvas {
 
     /// Draws one line of text with its top edge at `y`. Returns the advance.
     pub fn draw_text(&mut self, fonts: &Fonts, style: TextStyle, x: f32, y: f32, text: &str) -> f32 {
+        let (size, color) = (style.size, style.color);
         let Some(font) = fonts.pick(style.bold) else {
-            return self.draw_boxes(style, x, y, text);
-        };
-        let scaled = font.as_scaled(PxScale::from(style.size));
-        let baseline = y + scaled.ascent();
-        let mut caret = x;
-        let mut last = None;
-        for c in text.chars() {
-            let id = scaled.glyph_id(c);
-            if let Some(prev) = last {
-                caret += scaled.kern(prev, id);
+            // One box per character.
+            let (advance, h) = (box_advance(size), size * 0.7);
+            for (i, c) in text.chars().enumerate() {
+                if !c.is_whitespace() {
+                    self.stroke_rect(x + i as f32 * advance + 1.0, y + size * 0.25, (advance - 2.0).max(1.0), h, 1.0, color);
+                }
             }
-            let advance = scaled.h_advance(id);
+            return text.chars().count() as f32 * advance;
+        };
+        let scaled = font.as_scaled(PxScale::from(size));
+        let baseline = y + scaled.ascent();
+        glyphs(&scaled, text, |c, id, caret, advance| {
+            let caret = x + caret;
             if id.0 == 0 && !c.is_whitespace() {
-                let h = style.size * 0.7;
-                self.stroke_rect(caret + 1.0, baseline - h, (advance - 2.0).max(1.0), h, 1.0, style.color);
-            } else if let Some(outline) =
-                font.outline_glyph(id.with_scale_and_position(style.size, point(caret, baseline)))
-            {
-                let bounds = outline.px_bounds();
-                let (ox, oy) = (bounds.min.x as i64, bounds.min.y as i64);
+                let h = size * 0.7;
+                self.stroke_rect(caret + 1.0, baseline - h, (advance - 2.0).max(1.0), h, 1.0, color);
+            } else if let Some(outline) = font.outline_glyph(id.with_scale_and_position(size, point(caret, baseline))) {
+                let min = outline.px_bounds().min;
                 outline.draw(|gx, gy, coverage| {
-                    self.blend(ox + i64::from(gx), oy + i64::from(gy), style.color, coverage);
+                    self.blend(min.x as i64 + i64::from(gx), min.y as i64 + i64::from(gy), color, coverage);
                 });
             }
-            caret += advance;
-            last = Some(id);
-        }
-        caret - x
-    }
-
-    fn draw_boxes(&mut self, style: TextStyle, x: f32, y: f32, text: &str) -> f32 {
-        let advance = box_advance(style.size);
-        let h = style.size * 0.7;
-        let top = y + style.size * 0.25;
-        let mut caret = x;
-        for c in text.chars() {
-            if !c.is_whitespace() {
-                self.stroke_rect(caret + 1.0, top, (advance - 2.0).max(1.0), h, 1.0, style.color);
-            }
-            caret += advance;
-        }
-        caret - x
+        })
     }
 
     pub fn into_rgba(self) -> Rgba {
@@ -449,7 +337,8 @@ mod tests {
         let mut canvas = Canvas::new(200, 40, Color::WHITE);
         let advance = canvas.draw_text(&Fonts::none(), TextStyle::new(20.0), 0.0, 0.0, "ab c");
         assert_eq!(advance, 4.0 * box_advance(20.0));
-        let column = |x: u32| (0..40).any(|y| canvas.pixel(x, y).is_some_and(|p| p[0] < 128));
+        let image = canvas.into_rgba();
+        let column = |x: u32| (0..40).any(|y| image.pixel(x, y).is_some_and(|p| p[0] < 128));
         assert!(column((box_advance(20.0) * 0.5) as u32) && !column((box_advance(20.0) * 2.5) as u32));
         let w = box_advance(10.0);
         for (text, width, lines) in [("aaa bbb ccc\nddd", 7.5, &["aaa bbb", "ccc", "ddd"][..]), ("abcdefghij", 3.0, &["abcdefghij"])] {

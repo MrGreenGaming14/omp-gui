@@ -52,24 +52,16 @@ impl<'b> Package<'b> {
         Ok(Some(out))
     }
 
-    /// An XML part as UTF-8 text.
-    pub fn xml(&mut self, name: &str) -> Result<Option<String>> {
-        let Some(bytes) = self.read(name)? else { return Ok(None) };
-        String::from_utf8(bytes).map(Some).map_err(|_| self.invalid(format!("{name} is not UTF-8 XML")))
-    }
-
-    /// An XML part parsed by `parse`, with parse errors naming the part.
+    /// A UTF-8 XML part parsed by `parse`, with errors naming the part.
     pub fn parsed<T>(&mut self, name: &str, parse: impl FnOnce(&str) -> XmlResult<T>) -> Result<Option<T>> {
-        let Some(xml) = self.xml(name)? else { return Ok(None) };
+        let Some(bytes) = self.read(name)? else { return Ok(None) };
+        let xml = String::from_utf8(bytes).map_err(|_| self.invalid(format!("{name} is not UTF-8 XML")))?;
         parse(&xml).map(Some).map_err(|m| self.invalid(format!("{name}: {m}")))
     }
 
     /// The internal relationships of `part`, none when it has no rels part.
     pub fn rels(&mut self, part: &str) -> Result<Vec<Rel>> {
-        let path = match part.rsplit_once('/') {
-            Some((dir, name)) => format!("{dir}/_rels/{name}.rels"),
-            None => format!("_rels/{part}.rels"),
-        };
+        let path = resolve_target(part, &format!("_rels/{}.rels", part.rsplit('/').next().unwrap_or(part)));
         let rels = self.parsed(&path, |xml| {
             let mut rels = Vec::new();
             each_element(xml, |e| {

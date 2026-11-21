@@ -13,11 +13,9 @@ mod tools;
 mod video;
 
 pub use endpoint::{McpEndpoint, SERVER_PREFIX};
-pub use mcp_surface::McpSurface;
-pub use providers::{BrowserProvider, DocsProvider, McpDeclared, VncProvider};
 pub use service::{
-    CaptureMode, HubConfig, HubEvent, Listed, OpenRequest, Opened, Origin, SurfaceHub, SurfaceProvider,
-    VirtualDisplaySetup, normalize_url, user_namespaces,
+    CaptureMode, HubConfig, HubEvent, Listed, OpenRequest, Opened, Origin, SurfaceHub, SurfaceProvider, VirtualDisplaySetup,
+    normalize_url,
 };
 pub use tools::{SurfaceTools, tool_set};
 #[cfg(feature = "remote-video")]

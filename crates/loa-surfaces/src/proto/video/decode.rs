@@ -38,8 +38,8 @@ impl VideoDecoder {
         let Some(pic) = self.0.decode(&frame.data).map_err(|e| video_error(e.to_string()))? else {
             return Ok(false);
         };
-        let fits = pic.width == w && pic.height == h;
-        if fits {
+        let size = (pic.width, pic.height);
+        if size == (w, h) {
             for (row, dst) in out.chunks_exact_mut(w * 4).enumerate() {
                 let (ys, us, vs) = (&pic.y[row * w..], &pic.u[(row / 2) * (w / 2)..], &pic.v[(row / 2) * (w / 2)..]);
                 for (x, px) in dst.as_chunks_mut::<4>().0.iter_mut().enumerate() {
@@ -50,9 +50,8 @@ impl VideoDecoder {
                 }
             }
         }
-        let size = (pic.width, pic.height);
         self.0.recycle_frame(pic);
-        if !fits {
+        if size != (w, h) {
             return Err(video_error(format!("picture is {}x{}, the frame {w}x{h}", size.0, size.1)));
         }
         Ok(true)
@@ -66,9 +65,7 @@ impl VideoDecoder {
 
 /// Applies frames of any encoding to an [`RgbaImage`].
 #[derive(Default)]
-pub struct FrameDecoder {
-    video: VideoDecoder,
-}
+pub struct FrameDecoder(VideoDecoder);
 
 impl FrameDecoder {
     pub fn new() -> Self {
@@ -77,10 +74,9 @@ impl FrameDecoder {
 
     /// Applies a frame to `canvas`, following the frame's picture size.
     pub fn apply(&mut self, frame: &Frame, canvas: &mut RgbaImage) -> Result<()> {
-        let region = frame.region;
-        if region.width == 0
-            || region.height == 0
-            || !pixels::region_fits(region, frame.width, frame.height)
+        if frame.region.width == 0
+            || frame.region.height == 0
+            || !pixels::region_fits(frame.region, frame.width, frame.height)
             || frame.width > 8192
             || frame.height > 8192
         {
@@ -90,10 +86,8 @@ impl FrameDecoder {
             *canvas = RgbaImage::new(frame.width, frame.height);
         }
         match frame.encoding {
-            Encoding::H264 | Encoding::Hevc => match self.video.decode(frame, &mut canvas.data)? {
-                true => Ok(()),
-                false => Err(video_error("access unit contains no picture")),
-            },
+            Encoding::H264 | Encoding::Hevc if self.0.decode(frame, &mut canvas.data)? => Ok(()),
+            Encoding::H264 | Encoding::Hevc => Err(video_error("access unit contains no picture")),
             _ => pixels::apply_still(&mut canvas.data, canvas.width, canvas.height, frame)
                 .map_err(|e| video_error(e.to_string())),
         }

@@ -36,36 +36,19 @@ mod tests {
     #[test]
     fn opened_and_closed_surfaces_validate_against_the_schema() {
         let sink = MemorySink::default();
-        let session = sink
-            .commit(Draft::insert(
-                NodeId::DOCUMENT,
-                ElementKind::Session,
-                [
-                    (attr::ID, Value::from("s1")),
-                    (attr::HARNESS, Value::from("omp")),
-                    (attr::NODE, Value::from("node")),
-                    (attr::CREATED, Value::Int(1)),
-                ],
-                "",
-            ))
-            .unwrap()
-            .node;
-        let info = SurfaceInfo {
-            uri: SurfaceUri::new("browser", "tab1").unwrap(),
-            name: "Example".into(),
-            width: 1280,
-            height: 720,
-            mode: SurfaceMode::Pixel,
-            mime: None,
-        };
+        let attrs = [(attr::ID, "s1"), (attr::HARNESS, "omp"), (attr::NODE, "node")].map(|(k, v)| (k, Value::from(v)));
+        let session_attrs = attrs.into_iter().chain([(attr::CREATED, Value::Int(1))]);
+        let session = sink.commit(Draft::insert(NodeId::DOCUMENT, ElementKind::Session, session_attrs, "")).unwrap().node;
+        let uri = SurfaceUri::new("browser", "tab1").unwrap();
+        let info = SurfaceInfo { uri, name: "Example".into(), width: 1280, height: 720, mode: SurfaceMode::Pixel, mime: None };
         let node = sink.commit(opened(session, &info, &Origin::Browser)).unwrap().node;
         sink.commit(closed(node)).unwrap();
         let dom: Dom = sink.dom();
         let surface = dom.get(node).unwrap();
+        let text = |key: &str| surface.attrs.get(key).and_then(Value::as_str);
         assert_eq!(surface.kind, ElementKind::Surface);
-        assert_eq!(surface.attrs.get(attr::URI).and_then(Value::as_str), Some("surface://browser/tab1"));
-        assert_eq!(surface.attrs.get(attr::SERVER).and_then(Value::as_str), Some("browser"));
-        assert_eq!(surface.attrs.get(attr::STATUS).and_then(Value::as_str), Some("closed"));
+        let want = [Some("surface://browser/tab1"), Some("browser"), Some("closed")];
+        assert_eq!([text(attr::URI), text(attr::SERVER), text(attr::STATUS)], want);
         assert_eq!(surface.attrs.get(attr::WIDTH), Some(&Value::Int(1280)));
     }
 }

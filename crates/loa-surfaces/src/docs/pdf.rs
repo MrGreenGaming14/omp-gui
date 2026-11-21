@@ -22,10 +22,9 @@ pub(crate) fn open(_: Format, bytes: &[u8]) -> Result<Box<dyn Paged>> {
     Ok(Box::new(PdfDoc::parse(bytes)?))
 }
 
-/// A parsed PDF document with its page sizes measured once at load.
+/// A parsed PDF document.
 pub struct PdfDoc {
     pdf: Pdf,
-    sizes: Vec<PageSize>,
 }
 
 impl PdfDoc {
@@ -38,23 +37,13 @@ impl PdfDoc {
             };
             DocsError::invalid(Format::Pdf, message)
         })?;
-        let sizes = pdf
-            .pages()
-            .iter()
-            .map(|page| {
-                let (width, height) = page.render_dimensions();
-                PageSize { width, height }
-            })
-            .collect();
-        Ok(Self { pdf, sizes })
+        Ok(Self { pdf })
     }
 
-    /// Text of page `index` in reading order: lines top to bottom joined with
-    /// `\n`, words separated by a space. Invisible text (OCR layers) is
-    /// included.
+    /// Text of page `index` in reading order: lines top to bottom joined with `\n`, words separated
+    /// by a space. Invisible text (OCR layers) is included.
     pub fn page_text(&self, index: usize) -> Result<String> {
-        let page = self.page(index)?;
-        Ok(extract_text(page, &InterpreterCache::new()))
+        Ok(extract_text(self.page(index)?, &InterpreterCache::new()))
     }
 
     /// Text of every page, one entry per page.
@@ -71,14 +60,12 @@ impl PdfDoc {
 
 impl Paged for PdfDoc {
     fn page_count(&self) -> usize {
-        self.sizes.len()
+        self.pdf.pages().len()
     }
 
     fn page_size(&self, index: usize) -> Result<PageSize> {
-        self.sizes
-            .get(index)
-            .copied()
-            .ok_or_else(|| DocsError::page_range(index, self.sizes.len()))
+        let (width, height) = self.page(index)?.render_dimensions();
+        Ok(PageSize { width, height })
     }
 
     fn query(&self, query: &DataQuery) -> Option<Result<serde_json::Value>> {
@@ -90,8 +77,7 @@ impl Paged for PdfDoc {
     }
 
     fn render(&self, index: usize, scale: f32, _: &Fonts, _: &RenderOpts) -> Result<Rgba> {
-        let page = self.page(index)?;
-        let size = self.page_size(index)?;
+        let (page, size) = (self.page(index)?, self.page_size(index)?);
         if !(scale.is_finite() && scale > 0.0) {
             return Err(DocsError::Request(format!("invalid render scale {scale}")));
         }
@@ -106,14 +92,7 @@ impl Paged for PdfDoc {
         let cache = RenderCache::new();
         let mut ctx = RenderContext::new(width, height);
         let transform = Affine::scale(f64::from(scale)) * page.initial_transform(true).to_kurbo();
-        render_into(
-            page,
-            &cache,
-            &InterpreterSettings::default(),
-            &RenderSettings::default(),
-            &mut ctx,
-            transform,
-        );
+        render_into(page, &cache, &InterpreterSettings::default(), &RenderSettings::default(), &mut ctx, transform);
         ctx.flush();
         let mut pixmap = Pixmap::new(width, height);
         ctx.render_with(
@@ -121,15 +100,12 @@ impl Paged for PdfDoc {
             &mut Resources::default(),
             RasterizerSettings { target_init: TargetInit::Clear(WHITE), ..Default::default() },
         );
-        Ok(Rgba {
-            width: u32::from(width),
-            height: u32::from(height),
-            data: pixmap.take_rgba8(ImageAlphaType::Alpha),
-        })
+        Ok(Rgba { width: u32::from(width), height: u32::from(height), data: pixmap.take_rgba8(ImageAlphaType::Alpha) })
     }
 }
 
-/// A glyph placed in device space (points, y down, page rotation applied).
+/// A placed glyph: in device space (points, y down, page rotation applied) while collecting, then
+/// in reading space (`x` along the line, `y` down the page) during layout.
 struct PlacedGlyph {
     origin: Point,
     /// Where the next glyph would start without extra spacing.
@@ -147,28 +123,15 @@ struct PlacedGlyph {
 struct TextCollector {
     text: String,
     glyphs: Vec<PlacedGlyph>,
-    /// Glyph count and first origin of the last filled run, to skip the
-    /// stroke pass of fill-and-stroke text, which repeats the same glyphs.
+    /// Glyph count and first origin of the last filled run, to skip the stroke pass of
+    /// fill-and-stroke text, which repeats the same glyphs.
     last_fill: Option<(usize, Point)>,
 }
 
 impl<'a> Device<'a> for TextCollector {
-    fn draw_path(&mut self, _: &BezPath, _: DrawProps<'a>, _: &DrawMode) {}
-
-    fn push_clip_path(&mut self, _: &ClipPath) {}
-
-    fn push_transparency_group(&mut self, _: f32, _: Option<SoftMask<'a>>, _: BlendMode) {}
-
-    fn draw_glyph_run(
-        &mut self,
-        glyph_run: &GlyphRun<'_, 'a>,
-        props: DrawProps<'a>,
-        draw_mode: &DrawMode,
-    ) {
+    fn draw_glyph_run(&mut self, glyph_run: &GlyphRun<'_, 'a>, props: DrawProps<'a>, draw_mode: &DrawMode) {
         let glyphs = glyph_run.glyphs();
-        let Some(first) = glyphs.first() else {
-            return;
-        };
+        let Some(first) = glyphs.first() else { return };
         let first_origin = (props.transform * first.transform()) * Point::ZERO;
         let stroke = matches!(draw_mode, DrawMode::Stroke(_));
         if stroke && self.last_fill == Some((glyphs.len(), first_origin)) {
@@ -178,9 +141,7 @@ impl<'a> Device<'a> for TextCollector {
 
         for positioned in glyphs {
             let glyph: &Glyph<'a> = positioned;
-            let Some(unicode) = glyph.as_unicode() else {
-                continue;
-            };
+            let Some(unicode) = glyph.as_unicode() else { continue };
             let start = self.text.len();
             match unicode {
                 BfString::Char(c) => self.text.push(c),
@@ -190,46 +151,34 @@ impl<'a> Device<'a> for TextCollector {
                 Glyph::Outline(g) => g.advance_width(),
                 Glyph::Type3(g) => g.advance_width(),
             };
-            // Glyph space is 1000 units per em, so the transformed vertical
-            // unit vector times 1000 is the font size on the page.
+            // Glyph space is 1000 units per em, so the transformed vertical unit vector times 1000 is
+            // the font size on the page.
             let full = props.transform * positioned.transform();
             let [a, b, c, d, _, _] = full.as_coeffs();
-            let size = c.hypot(d) * 1000.0;
-            let quadrant = ((b.atan2(a) / std::f64::consts::FRAC_PI_2).round() as i64)
-                .rem_euclid(4) as usize;
-            let advance = advance.map_or(500.0, f64::from);
             self.glyphs.push(PlacedGlyph {
                 origin: full * Point::ZERO,
-                end: full * Point::new(advance, 0.0),
-                size,
-                quadrant,
+                end: full * Point::new(advance.map_or(500.0, f64::from), 0.0),
+                size: c.hypot(d) * 1000.0,
+                quadrant: ((b.atan2(a) / std::f64::consts::FRAC_PI_2).round() as i64).rem_euclid(4) as usize,
                 text: start..self.text.len(),
             });
         }
     }
 
+    fn draw_path(&mut self, _: &BezPath, _: DrawProps<'a>, _: &DrawMode) {}
+    fn push_clip_path(&mut self, _: &ClipPath) {}
+    fn push_transparency_group(&mut self, _: f32, _: Option<SoftMask<'a>>, _: BlendMode) {}
     fn draw_image(&mut self, _: Image<'a, '_>, _: ImageDrawProps<'a>) {}
-
     fn pop_clip(&mut self) {}
-
     fn pop_transparency_group(&mut self) {}
 }
 
-/// A glyph in reading coordinates: `u` grows along the line, `v` down the page.
-struct ReadGlyph {
-    u: f64,
-    end_u: f64,
-    v: f64,
-    size: f64,
-    text: Range<usize>,
-}
-
-/// Fraction of the font size two glyphs' baselines may differ by and still
-/// share a line.
+/// Fraction of the font size two glyphs' baselines may differ by and still share a line.
 const LINE_TOLERANCE: f64 = 0.4;
 /// Fraction of the font size a horizontal gap must exceed to count as a space.
 const SPACE_GAP: f64 = 0.15;
 
+/// The page's glyphs ordered into lines and joined into text.
 fn extract_text<'a>(page: &Page<'a>, cache: &InterpreterCache<'a>) -> String {
     let (width, height) = page.render_dimensions();
     let mut collector = TextCollector::default();
@@ -241,79 +190,46 @@ fn extract_text<'a>(page: &Page<'a>, cache: &InterpreterCache<'a>) -> String {
         InterpreterSettings::default(),
     );
     interpret_page(page, &mut context, &mut collector);
-    layout(&collector)
-}
+    let TextCollector { text, mut glyphs, .. } = collector;
 
-/// Orders collected glyphs into lines and joins them into text.
-fn layout(collector: &TextCollector) -> String {
-    if collector.glyphs.is_empty() {
-        return String::new();
-    }
-    // Read along the direction most glyphs run in, so text on rotated pages
-    // still comes out line by line.
-    let mut counts = [0usize; 4];
-    for glyph in &collector.glyphs {
-        counts[glyph.quadrant] += 1;
-    }
-    let mut quadrant = 0;
-    for (q, &count) in counts.iter().enumerate() {
-        if count > counts[quadrant] {
-            quadrant = q;
-        }
-    }
+    // Read along the direction most glyphs run in, so rotated text still comes out line by line.
+    let count = |q: usize| glyphs.iter().filter(|g| g.quadrant == q).count();
+    let quadrant = (0..4).max_by_key(|&q| (count(q), std::cmp::Reverse(q))).unwrap_or(0);
     let (sin, cos) = [(0.0, 1.0), (1.0, 0.0), (0.0, -1.0), (-1.0, 0.0)][quadrant];
-    let to_u = |p: Point| p.x * cos + p.y * sin;
-    let to_v = |p: Point| p.y * cos - p.x * sin;
+    let rotate = |p: Point| Point::new(p.x * cos + p.y * sin, p.y * cos - p.x * sin);
+    glyphs.iter_mut().for_each(|g| (g.origin, g.end) = (rotate(g.origin), rotate(g.end)));
+    glyphs.sort_by(|a, b| a.origin.y.total_cmp(&b.origin.y).then(a.origin.x.total_cmp(&b.origin.x)));
 
-    let mut glyphs: Vec<ReadGlyph> = collector
-        .glyphs
-        .iter()
-        .map(|g| ReadGlyph {
-            u: to_u(g.origin),
-            end_u: to_u(g.end),
-            v: to_v(g.origin),
-            size: g.size,
-            text: g.text.clone(),
-        })
-        .collect();
-    glyphs.sort_by(|a, b| a.v.total_cmp(&b.v).then(a.u.total_cmp(&b.u)));
-
-    let mut out = String::with_capacity(collector.text.len() + collector.text.len() / 8);
+    let mut out = String::with_capacity(text.len() + text.len() / 8);
     let mut start = 0;
     while start < glyphs.len() {
-        let base_v = glyphs[start].v;
-        let mut line_size = glyphs[start].size;
-        let mut end = start + 1;
-        while end < glyphs.len()
-            && glyphs[end].v - base_v <= LINE_TOLERANCE * line_size.max(glyphs[end].size)
-        {
+        let base = glyphs[start].origin.y;
+        let (mut line_size, mut end) = (glyphs[start].size, start + 1);
+        while end < glyphs.len() && glyphs[end].origin.y - base <= LINE_TOLERANCE * line_size.max(glyphs[end].size) {
             line_size = line_size.max(glyphs[end].size);
             end += 1;
         }
         let line = &mut glyphs[start..end];
-        line.sort_by(|a, b| a.u.total_cmp(&b.u));
+        line.sort_by(|a, b| a.origin.x.total_cmp(&b.origin.x));
 
         let line_start = out.len();
         if line_start > 0 {
             out.push('\n');
         }
-        let mut prev: Option<&ReadGlyph> = None;
+        let mut prev: Option<&PlacedGlyph> = None;
         for glyph in line.iter() {
-            let text = &collector.text[glyph.text.clone()];
-            if let Some(prev) = prev {
-                let gap = glyph.u - prev.end_u;
-                if gap > SPACE_GAP * prev.size.max(glyph.size)
+            let glyph_text = &text[glyph.text.clone()];
+            if prev.is_some_and(|prev| {
+                glyph.origin.x - prev.end.x > SPACE_GAP * prev.size.max(glyph.size)
                     && !out.ends_with(char::is_whitespace)
-                    && !text.starts_with(char::is_whitespace)
-                {
-                    out.push(' ');
-                }
+                    && !glyph_text.starts_with(char::is_whitespace)
+            }) {
+                out.push(' ');
             }
-            out.push_str(text);
+            out.push_str(glyph_text);
             prev = Some(glyph);
         }
-        let trimmed = out.trim_end().len().max(line_start);
-        out.truncate(trimmed);
+        out.truncate(out.trim_end().len().max(line_start));
         start = end;
     }
     out

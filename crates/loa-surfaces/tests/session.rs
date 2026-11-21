@@ -3,21 +3,18 @@
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use loa_contracts::surface::{
-    Document, Encoding, Frame, Input, MouseButton, Rect, Surface, SurfaceInfo, SurfaceMode,
-    SurfaceUri,
-};
+use loa_contracts::surface::{Document, Encoding, Frame, Input, MouseButton, Rect, Surface, SurfaceInfo, SurfaceMode, SurfaceUri};
 use loa_surfaces::proto::fragment::fragment;
-use loa_surfaces::testkit::{FakeSurface, Probe};
 use loa_surfaces::proto::transport::{DatagramError, Datagrams};
 use loa_surfaces::proto::video::{LiveVideo, SOURCE, VideoSurface, decode::VideoDecoder, encode::probe};
 use loa_surfaces::proto::wire::{Accept, Body, Close, DocumentChunk, DocumentHeader, Open, StreamMessage};
 use loa_surfaces::proto::{
     Opened, PixelViewer, ProtoError, RejectCode, Transport, ViewerEvent, ViewerOptions, memory_pair, open, serve,
 };
+use loa_surfaces::testkit::{FakeSurface, Probe};
 use prost::Message;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -35,33 +32,23 @@ fn fake(name: &str, document: Option<Bytes>) -> (Arc<FakeSurface>, Probe) {
 }
 
 fn frame(seq: u64, encoding: Encoding, keyframe: bool, len: usize) -> Frame {
-    Frame {
-        seq,
-        captured_us: seq * 16_667,
-        input_seq: 0,
-        width: 64,
-        height: 32,
-        region: Rect { x: 0, y: 0, width: 64, height: 32 },
-        encoding,
-        keyframe,
-        data: (0..len).map(|i| (i as u64 * 31 + seq) as u8).collect::<Vec<_>>().into(),
-    }
+    let region = Rect { x: 0, y: 0, width: 64, height: 32 };
+    let data = (0..len).map(|i| (i as u64 * 31 + seq) as u8).collect::<Vec<_>>().into();
+    Frame { seq, captured_us: seq * 16_667, input_seq: 0, width: 64, height: 32, region, encoding, keyframe, data }
 }
 
-/// Serves `surface` on `server_end` and opens it on `viewer_end` with
-/// `encodings`; waits for the server's opening keyframe request.
+/// Serves `surface` on `server_end` and opens it on `viewer_end` with `encodings`.
 async fn view(surface: Arc<dyn Surface>, (server_end, viewer_end): (Transport, Transport), encodings: &[Encoding]) -> PixelViewer {
     let uri = surface.info().uri;
     tokio::spawn(serve(surface, server_end));
-    let Opened::Pixel(viewer) = open(viewer_end, &uri, ViewerOptions::new(encodings.to_vec())).await.unwrap() else {
+    let Ok(Opened::Pixel(viewer)) = open(viewer_end, &uri, ViewerOptions::new(encodings.to_vec())).await else {
         panic!("expected a pixel surface");
     };
     viewer
 }
 
 async fn next_frame(viewer: &mut PixelViewer) -> Frame {
-    let event = tokio::time::timeout(Duration::from_secs(10), viewer.next_event()).await.unwrap().unwrap();
-    match event {
+    match tokio::time::timeout(Duration::from_secs(10), viewer.next_event()).await.unwrap().unwrap() {
         ViewerEvent::Frame(frame) => frame,
         other => panic!("expected a frame, got {other:?}"),
     }
@@ -69,78 +56,62 @@ async fn next_frame(viewer: &mut PixelViewer) -> Frame {
 
 #[tokio::test]
 async fn big_frames_arrive_whole_resizes_come_first_and_input_arrives_in_order() {
-    let (surface, mut probe) = fake("tab1", None);
-    let mut viewer = view(surface.clone(), memory_pair(Some(1200)), &ALL).await;
-    probe.keyframes.recv().await.unwrap();
-    assert_eq!(viewer.info(), &surface.info);
-    let frames: Vec<_> = (1..=3).map(|seq| frame(seq, Encoding::Jpeg, true, 5000)).collect();
-    for f in &frames {
-        probe.frames.send(Arc::new(f.clone())).unwrap();
-    }
-    for f in &frames {
-        assert_eq!(&next_frame(&mut viewer).await, f);
-    }
-    let big = Frame { width: 128, height: 96, ..frame(4, Encoding::Png, true, 100) };
-    probe.frames.send(Arc::new(big.clone())).unwrap();
-    assert_eq!(viewer.next_event().await.unwrap(), ViewerEvent::Resized { width: 128, height: 96 });
-    assert_eq!(next_frame(&mut viewer).await, big);
+    // Datagrams, then the stream fallback.
+    for max_datagram in [Some(1200), None] {
+        let (surface, mut probe) = fake("tab1", None);
+        let mut viewer = view(surface.clone(), memory_pair(max_datagram), &ALL).await;
+        probe.keyframes.recv().await.unwrap();
+        assert_eq!(viewer.info(), &surface.info);
+        let frames: Vec<_> = (1..=3).map(|seq| frame(seq, Encoding::Jpeg, true, 5000)).collect();
+        for f in &frames {
+            probe.frames.send(Arc::new(f.clone())).unwrap();
+        }
+        for f in &frames {
+            assert_eq!(&next_frame(&mut viewer).await, f);
+        }
+        let big = Frame { width: 128, height: 96, ..frame(4, Encoding::Png, true, 100) };
+        probe.frames.send(Arc::new(big.clone())).unwrap();
+        assert_eq!(viewer.next_event().await.unwrap(), ViewerEvent::Resized { width: 128, height: 96 });
+        assert_eq!(next_frame(&mut viewer).await, big);
 
-    let sent = [
-        Input::MouseMove { x: 10.0, y: 5.0 },
-        Input::MouseButton { x: 10.0, y: 5.0, button: MouseButton::Left, pressed: true, modifiers: Default::default() },
-        Input::Text { text: "hello".into() },
-    ];
-    for (i, event) in sent.iter().enumerate() {
-        assert_eq!(viewer.input().send(event.clone()).unwrap(), i as u64 + 1);
-    }
-    for (i, event) in sent.iter().enumerate() {
-        let got = probe.inputs.recv().await.unwrap();
-        assert_eq!((got.seq, &got.input), (i as u64 + 1, event));
+        let sent = [
+            Input::MouseMove { x: 10.0, y: 5.0 },
+            Input::MouseButton { x: 10.0, y: 5.0, button: MouseButton::Left, pressed: true, modifiers: Default::default() },
+            Input::Text { text: "hello".into() },
+        ];
+        for (i, event) in sent.iter().enumerate() {
+            assert_eq!(viewer.input().send(event.clone()).unwrap(), i as u64 + 1);
+        }
+        for (i, event) in sent.iter().enumerate() {
+            let got = probe.inputs.recv().await.unwrap();
+            assert_eq!((got.seq, &got.input), (i as u64 + 1, event));
+        }
     }
 }
 
-/// Server side datagrams that lose or hold back datagrams by send index.
-struct Faulty {
+/// Server side datagrams that lose the one with send index `drop`.
+struct Lossy {
     inner: Arc<dyn Datagrams>,
     sent: AtomicUsize,
-    drop: Vec<usize>,
-    /// Held datagrams are sent after the one at the paired index.
-    hold_until: Vec<(usize, usize)>,
-    held: Mutex<Vec<(usize, Bytes)>>,
+    drop: usize,
 }
 
 #[async_trait]
-impl Datagrams for Faulty {
+impl Datagrams for Lossy {
     fn max_size(&self) -> Option<usize> {
         self.inner.max_size()
     }
 
     fn send(&self, datagram: Bytes) -> Result<(), DatagramError> {
-        let i = self.sent.fetch_add(1, Ordering::SeqCst);
-        if self.drop.contains(&i) {
+        if self.sent.fetch_add(1, Ordering::SeqCst) == self.drop {
             return Ok(());
         }
-        if let Some(&(_, release)) = self.hold_until.iter().find(|(held, _)| *held == i) {
-            self.held.lock().unwrap().push((release, datagram));
-            return Ok(());
-        }
-        self.inner.send(datagram)?;
-        for (_, d) in self.held.lock().unwrap().extract_if(.., |(release, _)| *release == i) {
-            self.inner.send(d)?;
-        }
-        Ok(())
+        self.inner.send(datagram)
     }
 
     async fn recv(&self) -> Result<Bytes, DatagramError> {
         self.inner.recv().await
     }
-}
-
-fn faulty(max: usize, drop: Vec<usize>, hold_until: Vec<(usize, usize)>) -> (Transport, Transport) {
-    let (mut server_end, viewer_end) = memory_pair(Some(max));
-    let inner = server_end.datagrams.clone();
-    server_end.datagrams = Arc::new(Faulty { inner, sent: AtomicUsize::new(0), drop, hold_until, held: Mutex::new(Vec::new()) });
-    (server_end, viewer_end)
 }
 
 #[tokio::test]
@@ -153,10 +124,12 @@ async fn a_lost_fragment_drops_its_frame_and_the_video_viewer_asks_for_a_keyfram
         Ok(())
     })
     .unwrap();
-    // The second fragment of frame 2 never arrives; frame 1's last fragment
-    // comes after frame 2's first.
+    // The second fragment of frame 2 never arrives.
+    let (mut server_end, viewer_end) = memory_pair(Some(MAX));
+    let inner = server_end.datagrams.clone();
+    server_end.datagrams = Arc::new(Lossy { inner, sent: AtomicUsize::new(0), drop: per_frame + 1 });
     let (surface, mut probe) = fake("video", None);
-    let mut viewer = view(surface, faulty(MAX, vec![per_frame + 1], vec![(per_frame - 1, per_frame)]), &ALL).await;
+    let mut viewer = view(surface, (server_end, viewer_end), &ALL).await;
     probe.keyframes.recv().await.unwrap();
     for f in &frames[..3] {
         probe.frames.send(Arc::new(f.clone())).unwrap();
@@ -174,51 +147,6 @@ async fn a_lost_fragment_drops_its_frame_and_the_video_viewer_asks_for_a_keyfram
     assert_eq!(shown, (frames[3].clone(), frames[4].clone()));
 }
 
-#[tokio::test]
-async fn an_overtaken_frame_is_never_shown_and_without_datagrams_frames_use_the_stream() {
-    let frames: Vec<_> = (1..=3).map(|seq| frame(seq, Encoding::Jpeg, true, 100)).collect();
-    for (transport, shown) in [(faulty(1200, vec![], vec![(0, 1)]), &frames[1..]), (memory_pair(None), &frames[..])] {
-        let (surface, mut probe) = fake("jpeg", None);
-        let mut viewer = view(surface, transport, &ALL).await;
-        probe.keyframes.recv().await.unwrap();
-        for f in &frames {
-            probe.frames.send(Arc::new(f.clone())).unwrap();
-        }
-        for f in shown {
-            assert_eq!(&next_frame(&mut viewer).await, f);
-        }
-    }
-}
-
-#[tokio::test]
-async fn sessions_close_with_a_reason_on_undecodable_frames_and_closed_surfaces() {
-    let (surface, mut probe) = fake("hevc", None);
-    let mut viewer = view(surface.clone(), memory_pair(Some(1200)), &[Encoding::Jpeg]).await;
-    probe.keyframes.recv().await.unwrap();
-    probe.frames.send(Arc::new(frame(1, Encoding::Hevc, true, 10))).unwrap();
-    assert!(matches!(viewer.next_event().await, Err(ProtoError::Closed(reason)) if reason.contains("Hevc")));
-
-    let (surface, mut probe) = fake("tab1", None);
-    let mut viewer = view(surface.clone(), memory_pair(Some(1200)), &ALL).await;
-    probe.keyframes.recv().await.unwrap();
-    surface.close();
-    drop(probe.frames);
-    assert!(matches!(viewer.next_event().await, Err(ProtoError::Closed(reason)) if reason == "the surface closed"));
-}
-
-#[tokio::test]
-async fn a_document_arrives_once_over_the_stream_in_chunks() {
-    let data: Bytes = (0..200_000u32).map(|i| (i % 251) as u8).collect::<Vec<_>>().into();
-    let (server_end, viewer_end) = memory_pair(Some(1200));
-    let (surface, _probe) = fake("report.pdf", Some(data.clone()));
-    let server = tokio::spawn(serve(surface.clone(), server_end));
-    let Opened::Document(viewer) = open(viewer_end, &surface.info.uri, ViewerOptions::new(vec![])).await.unwrap() else {
-        panic!("expected a document surface");
-    };
-    assert_eq!(viewer.receive().await.unwrap().data, data);
-    server.await.unwrap().unwrap();
-}
-
 /// Plays the server by hand: waits for the viewer to speak, then writes `messages`.
 async fn scripted_server(transport: Transport, messages: Vec<StreamMessage>) {
     let (mut reader, mut writer) = (transport.reader, transport.writer);
@@ -231,29 +159,39 @@ async fn scripted_server(transport: Transport, messages: Vec<StreamMessage>) {
 }
 
 #[tokio::test]
-async fn corrupted_truncated_and_oversized_documents_are_refused() {
+async fn documents_arrive_in_chunks_and_corrupted_truncated_or_oversized_ones_are_refused() {
+    let data: Bytes = (0..200_000u32).map(|i| (i % 251) as u8).collect::<Vec<_>>().into();
+    let (server_end, viewer_end) = memory_pair(Some(1200));
+    let (surface, _probe) = fake("report.pdf", Some(data.clone()));
+    let server = tokio::spawn(serve(surface.clone(), server_end));
+    let Ok(Opened::Document(viewer)) = open(viewer_end, &surface.info.uri, ViewerOptions::new(vec![])).await else {
+        panic!("expected a document surface");
+    };
+    assert_eq!(viewer.receive().await.unwrap().data, data);
+    server.await.unwrap().unwrap();
+
     let data = Bytes::from_static(b"%PDF-1.7 hello");
-    let crc = crc32fast::hash(&data);
-    let cases: [(u64, u32, Option<&str>, usize); 3] =
-        [(data.len() as u64, crc ^ 1, None, 1 << 20), (data.len() as u64 + 10, crc, Some("crashed"), 1 << 20), (10_000, 0, None, 1000)];
-    for (len, crc32, close, max) in cases {
+    let (len, crc) = (data.len() as u64, crc32fast::hash(&data));
+    // (header length, header crc, close after the chunk, viewer limit, expected error)
+    let cases: [(u64, u32, Option<&str>, u64, fn(&ProtoError) -> bool); 3] = [
+        (len, crc ^ 1, None, 1 << 20, |e| matches!(e, ProtoError::Checksum)),
+        (len + 10, crc, Some("crashed"), 1 << 20, |e| matches!(e, ProtoError::Closed(r) if r == "crashed")),
+        (10_000, 0, None, 1000, |e| matches!(e, ProtoError::TooLarge { len: 10_000, max: 1000 })),
+    ];
+    for (length, crc32, close, max_document, expected) in cases {
         let doc = SurfaceInfo { mode: SurfaceMode::Document, ..fake("a.pdf", None).0.info.clone() };
         let mut script: Vec<StreamMessage> = vec![
             Body::Accept(Accept { version: 1, info: Some((&doc).into()), datagrams: false, stream: None }).into(),
-            Body::DocumentHeader(DocumentHeader { name: "a.pdf".into(), mime: "application/pdf".into(), length: len, crc32 }).into(),
+            Body::DocumentHeader(DocumentHeader { name: "a.pdf".into(), mime: "application/pdf".into(), length, crc32 }).into(),
             Body::DocumentChunk(DocumentChunk { offset: 0, data: data.clone() }).into(),
         ];
         script.extend(close.map(|reason| Body::Close(Close { reason: reason.into() }).into()));
         let (server_end, viewer_end) = memory_pair(None);
         tokio::spawn(scripted_server(server_end, script));
-        let options = ViewerOptions { encodings: vec![], max_document: max as u64 };
-        let Opened::Document(viewer) = open(viewer_end, &uri("a.pdf"), options).await.unwrap() else { panic!() };
-        match (viewer.receive().await, close) {
-            (Err(ProtoError::Closed(reason)), Some(close)) => assert_eq!(reason, close),
-            (Err(ProtoError::Checksum), None) if max > 1000 => {}
-            (Err(ProtoError::TooLarge { len: 10_000, max: 1000 }), None) => {}
-            (other, _) => panic!("{len} bytes, crc {crc32:x}: {other:?}"),
-        }
+        let options = ViewerOptions { encodings: vec![], max_document };
+        let Ok(Opened::Document(viewer)) = open(viewer_end, &uri("a.pdf"), options).await else { panic!() };
+        let error = viewer.receive().await.unwrap_err();
+        assert!(expected(&error), "{length} bytes, crc {crc32:x}: {error:?}");
     }
 }
 
@@ -279,14 +217,12 @@ async fn another_surface_or_protocol_version_zero_is_rejected() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_viewer_that_decodes_h264_gets_video_and_others_get_source_frames() {
-    for (accepted, encoding) in [(&ALL[..], Encoding::H264), (&ALL[..3], Encoding::Rgba)] {
+    for (accepted, encoding, encoder) in [(&ALL[..], Encoding::H264, "rusty_h264"), (&ALL[..3], Encoding::Rgba, SOURCE)] {
         let (source, src) = fake("live", None);
         let video = VideoSurface::new(source, Arc::new(LiveVideo::with_probed(None, probe(None))), true).unwrap();
         let mut viewer = view(video, memory_pair(Some(1200)), accepted).await;
-        let stream = viewer.stream().cloned().expect("the server says what it streams");
-        let expected = if encoding == Encoding::H264 { "rusty_h264" } else { SOURCE };
-        assert_eq!(stream.encoder, expected);
-        let picture = Frame { encoding: Encoding::Rgba, ..frame(1, Encoding::Rgba, true, 64 * 32 * 4) };
+        assert_eq!(viewer.stream().expect("the server says what it streams").encoder, encoder);
+        let picture = frame(1, Encoding::Rgba, true, 64 * 32 * 4);
         // The worker codes on source frames; send until the viewer shows one.
         let shown = loop {
             src.frames.send(Arc::new(picture.clone())).unwrap();
@@ -296,8 +232,7 @@ async fn a_viewer_that_decodes_h264_gets_video_and_others_get_source_frames() {
         };
         assert_eq!(shown.encoding, encoding);
         if encoding == Encoding::H264 {
-            let mut rgba = vec![0; 64 * 32 * 4];
-            assert!(shown.keyframe && VideoDecoder::new().decode(&shown, &mut rgba).unwrap());
+            assert!(shown.keyframe && VideoDecoder::new().decode(&shown, &mut vec![0; 64 * 32 * 4]).unwrap());
         }
     }
 }

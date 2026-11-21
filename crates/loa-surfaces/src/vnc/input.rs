@@ -35,26 +35,20 @@ impl InputState {
     /// Appends the messages for `input` to `buf`. `width` and `height` are the
     /// framebuffer size, `scroll_step` the pixels per wheel click. On error
     /// `buf` may hold a partial encoding and must not be sent.
-    pub fn encode(
-        &mut self,
-        input: &Input,
-        width: u32,
-        height: u32,
-        scroll_step: f32,
-        buf: &mut Vec<u8>,
-    ) -> Result<(), RfbError> {
+    pub fn encode(&mut self, input: &Input, width: u32, height: u32, scroll_step: f32, buf: &mut Vec<u8>) -> Result<(), RfbError> {
+        // Modifiers the event asks for that are not held are pressed around it, released in reverse.
+        let wanted = match input {
+            Input::MouseButton { modifiers, .. } | Input::Scroll { modifiers, .. } => Some(modifiers),
+            Input::Key { key, modifiers, .. } if !keysym::is_modifier(key) => Some(modifiers),
+            _ => None,
+        };
+        let extra = wanted.map_or([None; 4], |m| self.extra(m));
+        for &sym in extra.iter().flatten() {
+            Msg::Key { down: true, keysym: sym }.write(buf);
+        }
         match input {
-            Input::MouseMove { x, y } => {
-                self.move_to(*x, *y, width, height);
-                Msg::Pointer { mask: self.buttons, x: self.x, y: self.y }.write(buf);
-            }
-            Input::MouseButton {
-                x,
-                y,
-                button,
-                pressed,
-                modifiers,
-            } => {
+            Input::MouseMove { x, y } => self.pointer(buf, *x, *y, width, height),
+            Input::MouseButton { x, y, button, pressed, .. } => {
                 let bit = match button {
                     MouseButton::Left => 1,
                     MouseButton::Middle => 1 << 1,
@@ -62,56 +56,27 @@ impl InputState {
                     MouseButton::Back => 1 << 7,
                     MouseButton::Forward => return Err(RfbError::ForwardButton),
                 };
-                let extra = self.extra(modifiers);
-                press(buf, &extra);
-                self.move_to(*x, *y, width, height);
-                if *pressed {
-                    self.buttons |= bit;
-                } else {
-                    self.buttons &= !bit;
-                }
-                Msg::Pointer { mask: self.buttons, x: self.x, y: self.y }.write(buf);
-                release(buf, &extra);
+                if *pressed { self.buttons |= bit } else { self.buttons &= !bit }
+                self.pointer(buf, *x, *y, width, height);
             }
-            Input::Scroll {
-                x,
-                y,
-                dx,
-                dy,
-                modifiers,
-            } => {
-                let extra = self.extra(modifiers);
-                press(buf, &extra);
-                self.move_to(*x, *y, width, height);
-                Msg::Pointer { mask: self.buttons, x: self.x, y: self.y }.write(buf);
+            Input::Scroll { x, y, dx, dy, .. } => {
+                self.pointer(buf, *x, *y, width, height);
                 let clicks_y = take_clicks(&mut self.scroll_y, *dy, scroll_step);
                 self.wheel(buf, clicks_y, WHEEL_DOWN, WHEEL_UP);
                 let clicks_x = take_clicks(&mut self.scroll_x, *dx, scroll_step);
                 self.wheel(buf, clicks_x, WHEEL_RIGHT, WHEEL_LEFT);
-                release(buf, &extra);
             }
-            Input::Key {
-                key,
-                code,
-                pressed,
-                modifiers,
-            } => {
+            Input::Key { key, code, pressed, .. } => {
                 let sym = keysym::keysym(key, code).ok_or_else(|| RfbError::Key(key.clone()))?;
-                if keysym::is_modifier(key) {
-                    let flag = match key.as_str() {
-                        "Shift" => &mut self.held.shift,
-                        "Control" => &mut self.held.ctrl,
-                        "Alt" => &mut self.held.alt,
-                        _ => &mut self.held.meta,
-                    };
-                    *flag = *pressed;
-                    Msg::Key { down: *pressed, keysym: sym }.write(buf);
-                } else {
-                    let extra = self.extra(modifiers);
-                    press(buf, &extra);
-                    Msg::Key { down: *pressed, keysym: sym }.write(buf);
-                    release(buf, &extra);
+                let held = &mut self.held;
+                match key.as_str() {
+                    "Shift" => held.shift = *pressed,
+                    "Control" => held.ctrl = *pressed,
+                    "Alt" => held.alt = *pressed,
+                    "Meta" => held.meta = *pressed,
+                    _ => {}
                 }
+                Msg::Key { down: *pressed, keysym: sym }.write(buf);
             }
             Input::Text { text } => {
                 let mut chars = text.chars().peekable();
@@ -128,12 +93,16 @@ impl InputState {
             // ExtendedDesktopSize extension; the surface keeps its size.
             Input::Resize { .. } => {}
         }
+        for &sym in extra.iter().rev().flatten() {
+            Msg::Key { down: false, keysym: sym }.write(buf);
+        }
         Ok(())
     }
 
-    fn move_to(&mut self, x: f32, y: f32, width: u32, height: u32) {
-        self.x = coordinate(x, width);
-        self.y = coordinate(y, height);
+    /// Moves the pointer to the framebuffer pixel under `(x, y)` with the held buttons.
+    fn pointer(&mut self, buf: &mut Vec<u8>, x: f32, y: f32, width: u32, height: u32) {
+        (self.x, self.y) = (coordinate(x, width), coordinate(y, height));
+        Msg::Pointer { mask: self.buttons, x: self.x, y: self.y }.write(buf);
     }
 
     /// Modifier keysyms `wanted` asks for that are not held down.
@@ -155,18 +124,6 @@ impl InputState {
             Msg::Pointer { mask: self.buttons | bit, x: self.x, y: self.y }.write(buf);
             Msg::Pointer { mask: self.buttons, x: self.x, y: self.y }.write(buf);
         }
-    }
-}
-
-fn press(buf: &mut Vec<u8>, syms: &[Option<u32>]) {
-    for &sym in syms.iter().flatten() {
-        Msg::Key { down: true, keysym: sym }.write(buf);
-    }
-}
-
-fn release(buf: &mut Vec<u8>, syms: &[Option<u32>]) {
-    for &sym in syms.iter().rev().flatten() {
-        Msg::Key { down: false, keysym: sym }.write(buf);
     }
 }
 

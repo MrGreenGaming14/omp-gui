@@ -26,14 +26,6 @@ pub(crate) struct ServerInit {
     pub name: String,
 }
 
-/// Protocol minor versions the client speaks.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-enum Version {
-    V3,
-    V7,
-    V8,
-}
-
 /// Runs the handshake up to ServerInit, then sends SetPixelFormat,
 /// SetEncodings and a full FramebufferUpdateRequest.
 pub(crate) async fn handshake<S: AsyncRead + AsyncWrite + Unpin>(
@@ -44,15 +36,11 @@ pub(crate) async fn handshake<S: AsyncRead + AsyncWrite + Unpin>(
 ) -> Result<ServerInit, RfbError> {
     let mut banner = [0u8; 12];
     stream.read_exact(&mut banner).await?;
+    // The protocol minor version spoken: 3, 7 or 8.
     let version = parse_version(&banner)?;
-    let reply: &[u8; 12] = match version {
-        Version::V3 => b"RFB 003.003\n",
-        Version::V7 => b"RFB 003.007\n",
-        Version::V8 => b"RFB 003.008\n",
-    };
-    stream.write_all(reply).await?;
+    stream.write_all(format!("RFB 003.{version:03}\n").as_bytes()).await?;
 
-    let security = if version == Version::V3 {
+    let security = if version == 3 {
         match stream.read_u32().await? {
             SEC_INVALID => return Err(RfbError::Refused(read_string(stream).await?)),
             t => u8::try_from(t).map_err(|_| RfbError::Security(Vec::new()))?,
@@ -64,27 +52,18 @@ pub(crate) async fn handshake<S: AsyncRead + AsyncWrite + Unpin>(
         }
         let mut types = vec![0u8; usize::from(count)];
         stream.read_exact(&mut types).await?;
-        let chosen = [SEC_NONE, SEC_VNC_AUTH]
-            .into_iter()
-            .find(|t| types.contains(t));
-        let chosen = chosen.ok_or(RfbError::Security(types))?;
+        let chosen = [SEC_NONE, SEC_VNC_AUTH].into_iter().find(|t| types.contains(t)).ok_or(RfbError::Security(types))?;
         stream.write_all(&[chosen]).await?;
         chosen
     };
 
     match security {
-        SEC_NONE => {
-            if version == Version::V8 {
-                security_result(stream, version).await?;
-            }
-        }
+        SEC_NONE if version == 8 => security_result(stream, version).await?,
+        SEC_NONE => {}
         SEC_VNC_AUTH => {
             let mut challenge = [0u8; 16];
             stream.read_exact(&mut challenge).await?;
-            let password = passwords
-                .password(endpoint)
-                .await
-                .ok_or_else(|| RfbError::NoPassword(endpoint.to_owned()))?;
+            let password = passwords.password(endpoint).await.ok_or_else(|| RfbError::NoPassword(endpoint.to_owned()))?;
             let response = vnc_response(password.as_bytes(), &challenge);
             drop(password);
             stream.write_all(&response).await?;
@@ -109,39 +88,25 @@ pub(crate) async fn handshake<S: AsyncRead + AsyncWrite + Unpin>(
     Ok(ServerInit { width, height, name })
 }
 
-fn parse_version(banner: &[u8; 12]) -> Result<Version, RfbError> {
-    let bad = || {
-        RfbError::Protocol(format!(
-            "bad version banner {:?}",
-            String::from_utf8_lossy(banner)
-        ))
-    };
+/// The minor version the client answers a server banner with.
+fn parse_version(banner: &[u8; 12]) -> Result<u32, RfbError> {
+    let bad = || RfbError::Protocol(format!("bad version banner {:?}", String::from_utf8_lossy(banner)));
     let text = std::str::from_utf8(banner).map_err(|_| bad())?;
-    let rest = text
-        .strip_prefix("RFB ")
-        .and_then(|r| r.strip_suffix('\n'))
-        .ok_or_else(bad)?;
+    let rest = text.strip_prefix("RFB ").and_then(|r| r.strip_suffix('\n')).ok_or_else(bad)?;
     let (major, minor) = rest.split_once('.').ok_or_else(bad)?;
-    let major: u32 = major.parse().map_err(|_| bad())?;
-    let minor: u32 = minor.parse().map_err(|_| bad())?;
-    match (major, minor) {
-        (3, 8..) => Ok(Version::V8),
-        (3, 7) => Ok(Version::V7),
-        (3, 3..=6) => Ok(Version::V3),
+    match (major.parse::<u32>().map_err(|_| bad())?, minor.parse::<u32>().map_err(|_| bad())?) {
+        (3, 8..) => Ok(8),
+        (3, 7) => Ok(7),
+        (3, 3..=6) => Ok(3),
         _ => Err(bad()),
     }
 }
 
-async fn security_result<S: AsyncRead + Unpin>(
-    stream: &mut S,
-    version: Version,
-) -> Result<(), RfbError> {
+async fn security_result<S: AsyncRead + Unpin>(stream: &mut S, version: u32) -> Result<(), RfbError> {
     match stream.read_u32().await? {
         0 => Ok(()),
-        _ if version == Version::V8 => Err(RfbError::Auth(read_string(stream).await?)),
-        _ => Err(RfbError::Auth(
-            "the server rejected the credentials".to_owned(),
-        )),
+        _ if version == 8 => Err(RfbError::Auth(read_string(stream).await?)),
+        _ => Err(RfbError::Auth("the server rejected the credentials".to_owned())),
     }
 }
 
@@ -185,7 +150,7 @@ impl Msg<'_> {
     }
 
     /// The message's bytes.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "testkit"))]
     pub fn bytes(self) -> Vec<u8> {
         let mut buf = Vec::new();
         self.write(&mut buf);
@@ -215,17 +180,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn version_negotiation() {
-        assert_eq!(parse_version(b"RFB 003.008\n").unwrap(), Version::V8);
-        assert_eq!(parse_version(b"RFB 003.889\n").unwrap(), Version::V8);
-        assert_eq!(parse_version(b"RFB 003.007\n").unwrap(), Version::V7);
-        assert_eq!(parse_version(b"RFB 003.003\n").unwrap(), Version::V3);
-        assert!(parse_version(b"RFB 004.000\n").is_err());
-        assert!(parse_version(b"HTTP/1.1 200").is_err());
-    }
-
-    #[test]
-    fn vnc_response_mirrors_and_pads_the_key() {
+    fn version_banners_and_vnc_responses() {
+        let banners = [b"RFB 003.008\n", b"RFB 003.889\n", b"RFB 003.007\n", b"RFB 003.005\n", b"RFB 004.000\n", b"HTTP/1.1 200"];
+        assert_eq!(banners.map(|b| parse_version(b).ok()), [Some(8), Some(8), Some(7), Some(3), None, None]);
         // "\x80" mirrors to the key 0100000000000000, zero up to parity: the
         // known DES answer for a zero key and block, twice (ECB).
         let zero = 0x8CA6_4DE9_C1B1_23A7u64.to_be_bytes();

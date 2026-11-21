@@ -222,16 +222,6 @@ impl McpDeclared {
         self.declared.locked().clone()
     }
 
-    /// Sets what `server` declares; an empty list forgets the server.
-    pub fn set(&self, server: &str, surfaces: Vec<SurfaceInfo>) {
-        let mut declared = self.declared.locked();
-        if surfaces.is_empty() {
-            declared.remove(server);
-        } else {
-            declared.insert(server.to_owned(), surfaces);
-        }
-    }
-
     /// Reads the `surface://` resources of every running server of `manager`; returns the failed listings.
     pub async fn refresh(&self, manager: &Manager) -> Vec<(String, String)> {
         *self.manager.locked() = Some(manager.clone());

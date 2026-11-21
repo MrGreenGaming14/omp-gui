@@ -10,16 +10,15 @@
 mod decode;
 mod input;
 mod keysym;
-mod proto;
+pub(crate) mod proto;
 mod server;
 mod surface;
 
 #[cfg(all(test, feature = "testkit"))]
 mod tests;
 
-pub use decode::Cursor;
 pub use server::{RfbEndpoint, RfbOptions, RfbServer, SERVER_NAME};
-pub use surface::{ConnectionState, RfbSurface};
+pub use surface::RfbSurface;
 
 use async_trait::async_trait;
 use loa_contracts::surface::SurfaceError;
@@ -50,8 +49,6 @@ pub enum RfbError {
     #[error("not connected, reconnecting")]
     Disconnected,
 }
-
-pub type Result<T, E = RfbError> = std::result::Result<T, E>;
 
 impl From<RfbError> for SurfaceError {
     fn from(e: RfbError) -> Self {

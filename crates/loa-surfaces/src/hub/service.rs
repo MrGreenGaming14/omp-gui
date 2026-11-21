@@ -375,12 +375,6 @@ impl SurfaceHub {
         self.mcp.declared()
     }
 
-    /// Sets the surfaces `server` declares; an empty list forgets the server.
-    pub fn set_declared(&self, server: &str, surfaces: Vec<SurfaceInfo>) {
-        self.mcp.set(server, surfaces);
-        self.emit(HubEvent::Declared);
-    }
-
     /// Reads the `surface://` resources of every running server of `manager`; returns the failed listings.
     pub async fn refresh_declared(&self, manager: &Manager) -> Vec<(String, String)> {
         let failed = self.mcp.refresh(manager).await;

@@ -16,17 +16,6 @@ const MAX_ZRLE: u32 = 64 << 20;
 
 pub(crate) type Reader<'a> = dyn AsyncRead + Unpin + Send + 'a;
 
-/// The remote pointer shape from the Cursor pseudo encoding.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Cursor {
-    pub hotspot_x: u32,
-    pub hotspot_y: u32,
-    pub width: u32,
-    pub height: u32,
-    /// 8 bit RGBA, transparent where the server's mask is clear.
-    pub rgba: Vec<u8>,
-}
-
 /// What a decoded rectangle does to the framebuffer.
 #[derive(Debug, PartialEq)]
 pub(crate) enum Update {
@@ -36,43 +25,51 @@ pub(crate) enum Update {
     Copy { x: u32, y: u32 },
     /// The desktop is now the rectangle's size.
     Resize,
-    Cursor(Cursor),
+    /// Nothing to paint.
+    Skip,
 }
 
 /// Decodes the rectangles of one encoding.
 #[async_trait]
 pub(crate) trait RectDecoder: Send {
-    fn encoding(&self) -> i32;
-    /// Pseudo encodings describe the desktop instead of painting inside it.
-    fn pseudo(&self) -> bool {
-        false
-    }
     async fn decode(&mut self, r: Rect, rd: &mut Reader<'_>, out: &mut RgbaImage) -> Result<Update, RfbError>;
 }
 
-/// The decoders in the client's order of preference, and the scratch picture they share.
+/// Pseudo encodings (negative numbers) describe the desktop instead of painting inside it.
+pub(crate) fn is_pseudo(encoding: i32) -> bool {
+    encoding < 0
+}
+
+/// The decoders by encoding number in the client's order of preference, and the scratch picture they share.
 pub(crate) struct Decoders {
-    list: Vec<Box<dyn RectDecoder>>,
+    list: Vec<(i32, Box<dyn RectDecoder>)>,
     pub scratch: RgbaImage,
 }
 
 impl Decoders {
     pub fn new() -> Self {
         let zrle = Zrle { inflate: Decompress::new(true), zbuf: Vec::new(), zout: Vec::new() };
-        let list: Vec<Box<dyn RectDecoder>> =
-            vec![Box::new(CopyRect), Box::new(zrle), Box::new(Hextile), Box::new(Rre), Box::new(Raw), Box::new(CursorShape), Box::new(DesktopSize)];
+        let list: Vec<(i32, Box<dyn RectDecoder>)> = vec![
+            (1, Box::new(CopyRect)),
+            (16, Box::new(zrle)),
+            (5, Box::new(Hextile)),
+            (2, Box::new(Rre)),
+            (0, Box::new(Raw)),
+            (-239, Box::new(CursorShape)),
+            (-223, Box::new(DesktopSize)),
+        ];
         Self { list, scratch: RgbaImage::default() }
     }
 
     pub fn get(&mut self, encoding: i32) -> Option<(&mut dyn RectDecoder, &mut RgbaImage)> {
-        let decoder = self.list.iter_mut().find(|d| d.encoding() == encoding)?;
+        let (_, decoder) = self.list.iter_mut().find(|(e, _)| *e == encoding)?;
         Some((decoder.as_mut(), &mut self.scratch))
     }
 }
 
 /// The encodings the client asks for, from the registry.
 pub(crate) fn encodings() -> Vec<i32> {
-    Decoders::new().list.iter().map(|d| d.encoding()).collect()
+    Decoders::new().list.iter().map(|(e, _)| *e).collect()
 }
 
 fn reset(out: &mut RgbaImage, r: Rect) {
@@ -100,14 +97,28 @@ fn check_inside(s: Rect, width: u32, height: u32, what: &str) -> Result<(), RfbE
     if region_fits(s, width, height) { Ok(()) } else { Err(RfbError::Protocol(format!("{what} subrectangle {s:?} outside {width}x{height}"))) }
 }
 
+/// Reads a rectangle as four u16 fields.
+pub(crate) async fn read_rect<R: AsyncRead + Unpin + ?Sized>(rd: &mut R) -> Result<Rect, RfbError> {
+    let mut f = [0u32; 4];
+    for v in &mut f {
+        *v = u32::from(rd.read_u16().await?);
+    }
+    Ok(Rect { x: f[0], y: f[1], width: f[2], height: f[3] })
+}
+
+/// Reads and discards `len` bytes.
+pub(crate) async fn skip<R: AsyncRead + Unpin + ?Sized>(rd: &mut R, len: u64) -> Result<(), RfbError> {
+    let copied = tokio::io::copy(&mut rd.take(len), &mut tokio::io::sink()).await?;
+    if copied < len {
+        return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof).into());
+    }
+    Ok(())
+}
+
 struct Raw;
 
 #[async_trait]
 impl RectDecoder for Raw {
-    fn encoding(&self) -> i32 {
-        0
-    }
-
     async fn decode(&mut self, r: Rect, rd: &mut Reader<'_>, out: &mut RgbaImage) -> Result<Update, RfbError> {
         reset(out, r);
         read_opaque(rd, &mut out.data).await?;
@@ -119,10 +130,6 @@ struct CopyRect;
 
 #[async_trait]
 impl RectDecoder for CopyRect {
-    fn encoding(&self) -> i32 {
-        1
-    }
-
     async fn decode(&mut self, _: Rect, rd: &mut Reader<'_>, _: &mut RgbaImage) -> Result<Update, RfbError> {
         Ok(Update::Copy { x: u32::from(rd.read_u16().await?), y: u32::from(rd.read_u16().await?) })
     }
@@ -133,10 +140,6 @@ struct Rre;
 
 #[async_trait]
 impl RectDecoder for Rre {
-    fn encoding(&self) -> i32 {
-        2
-    }
-
     async fn decode(&mut self, r: Rect, rd: &mut Reader<'_>, out: &mut RgbaImage) -> Result<Update, RfbError> {
         reset(out, r);
         let count = rd.read_u32().await?;
@@ -144,11 +147,7 @@ impl RectDecoder for Rre {
         out.fill(out.full(), bg);
         for _ in 0..count {
             let px = read_pixel(rd).await?;
-            let mut f = [0u32; 4];
-            for v in &mut f {
-                *v = u32::from(rd.read_u16().await?);
-            }
-            let s = Rect { x: f[0], y: f[1], width: f[2], height: f[3] };
+            let s = read_rect(rd).await?;
             check_inside(s, r.width, r.height, "RRE")?;
             out.fill(s, px);
         }
@@ -161,10 +160,6 @@ struct Hextile;
 
 #[async_trait]
 impl RectDecoder for Hextile {
-    fn encoding(&self) -> i32 {
-        5
-    }
-
     async fn decode(&mut self, r: Rect, rd: &mut Reader<'_>, out: &mut RgbaImage) -> Result<Update, RfbError> {
         const RAW: u8 = 1;
         const BACKGROUND: u8 = 2;
@@ -216,10 +211,6 @@ struct Zrle {
 
 #[async_trait]
 impl RectDecoder for Zrle {
-    fn encoding(&self) -> i32 {
-        16
-    }
-
     async fn decode(&mut self, r: Rect, rd: &mut Reader<'_>, out: &mut RgbaImage) -> Result<Update, RfbError> {
         let len = rd.read_u32().await?;
         if len > MAX_ZRLE {
@@ -235,30 +226,16 @@ impl RectDecoder for Zrle {
     }
 }
 
-/// Pixels, then a 1 bit per pixel mask.
+/// The pointer shape: pixels, then a 1 bit per pixel mask. The client asks for it only so
+/// that the server leaves the pointer out of the picture, and drops it.
 struct CursorShape;
 
 #[async_trait]
 impl RectDecoder for CursorShape {
-    fn encoding(&self) -> i32 {
-        -239
-    }
-
-    fn pseudo(&self) -> bool {
-        true
-    }
-
     async fn decode(&mut self, r: Rect, rd: &mut Reader<'_>, _: &mut RgbaImage) -> Result<Update, RfbError> {
-        let mut rgba = vec![0u8; r.width as usize * r.height as usize * BPP];
-        rd.read_exact(&mut rgba).await?;
-        let mask_row = (r.width as usize).div_ceil(8);
-        let mut mask = vec![0u8; mask_row * r.height as usize];
-        rd.read_exact(&mut mask).await?;
-        for (i, px) in rgba.as_chunks_mut::<BPP>().0.iter_mut().enumerate() {
-            let (x, y) = (i % r.width as usize, i / r.width as usize);
-            px[3] = if mask[y * mask_row + x / 8] & (0x80 >> (x % 8)) != 0 { 255 } else { 0 };
-        }
-        Ok(Update::Cursor(Cursor { hotspot_x: r.x, hotspot_y: r.y, width: r.width, height: r.height, rgba }))
+        let (width, height) = (u64::from(r.width), u64::from(r.height));
+        skip(rd, width * height * BPP as u64 + width.div_ceil(8) * height).await?;
+        Ok(Update::Skip)
     }
 }
 
@@ -266,14 +243,6 @@ struct DesktopSize;
 
 #[async_trait]
 impl RectDecoder for DesktopSize {
-    fn encoding(&self) -> i32 {
-        -223
-    }
-
-    fn pseudo(&self) -> bool {
-        true
-    }
-
     async fn decode(&mut self, _: Rect, _: &mut Reader<'_>, _: &mut RgbaImage) -> Result<Update, RfbError> {
         Ok(Update::Resize)
     }

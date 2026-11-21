@@ -9,36 +9,14 @@ pub(crate) const TAB: u32 = 0xff09;
 pub(crate) const BACKSPACE: u32 = 0xff08;
 
 /// Named keys with no left or right variant.
+#[rustfmt::skip]
 const NAMED: &[(&str, u32)] = &[
-    ("Backspace", BACKSPACE),
-    ("Tab", TAB),
-    ("Clear", 0xff0b),
-    ("Enter", RETURN),
-    ("Pause", 0xff13),
-    ("ScrollLock", 0xff14),
-    ("Escape", 0xff1b),
-    ("Home", 0xff50),
-    ("ArrowLeft", 0xff51),
-    ("ArrowUp", 0xff52),
-    ("ArrowRight", 0xff53),
-    ("ArrowDown", 0xff54),
-    ("PageUp", 0xff55),
-    ("PageDown", 0xff56),
-    ("End", 0xff57),
-    ("Select", 0xff60),
-    ("PrintScreen", 0xff61),
-    ("Execute", 0xff62),
-    ("Insert", 0xff63),
-    ("Undo", 0xff65),
-    ("Redo", 0xff66),
-    ("ContextMenu", 0xff67),
-    ("Find", 0xff68),
-    ("Cancel", 0xff69),
-    ("Help", 0xff6a),
-    ("NumLock", 0xff7f),
-    ("CapsLock", 0xffe5),
-    ("AltGraph", 0xfe03),
-    ("Delete", 0xffff),
+    ("Backspace", BACKSPACE), ("Tab", TAB), ("Clear", 0xff0b), ("Enter", RETURN), ("Pause", 0xff13),
+    ("ScrollLock", 0xff14), ("Escape", 0xff1b), ("Home", 0xff50), ("ArrowLeft", 0xff51), ("ArrowUp", 0xff52),
+    ("ArrowRight", 0xff53), ("ArrowDown", 0xff54), ("PageUp", 0xff55), ("PageDown", 0xff56), ("End", 0xff57),
+    ("Select", 0xff60), ("PrintScreen", 0xff61), ("Execute", 0xff62), ("Insert", 0xff63), ("Undo", 0xff65),
+    ("Redo", 0xff66), ("ContextMenu", 0xff67), ("Find", 0xff68), ("Cancel", 0xff69), ("Help", 0xff6a),
+    ("NumLock", 0xff7f), ("CapsLock", 0xffe5), ("AltGraph", 0xfe03), ("Delete", 0xffff),
 ];
 
 /// Modifier keys: W3C key, left keysym, right keysym.
@@ -50,15 +28,9 @@ const MODIFIERS: &[(&str, u32, u32)] = &[
 ];
 
 /// Keypad keys by their W3C `key` value, used when `code` names a numpad key.
+#[rustfmt::skip]
 const KEYPAD: &[(&str, u32)] = &[
-    ("Enter", 0xff8d),
-    ("*", 0xffaa),
-    ("+", 0xffab),
-    (",", 0xffac),
-    ("-", 0xffad),
-    (".", 0xffae),
-    ("/", 0xffaf),
-    ("=", 0xffbd),
+    ("Enter", 0xff8d), ("*", 0xffaa), ("+", 0xffab), (",", 0xffac), ("-", 0xffad), (".", 0xffae), ("/", 0xffaf), ("=", 0xffbd),
 ];
 
 /// Keysym of the first function key, F1. F2 to F35 follow it.

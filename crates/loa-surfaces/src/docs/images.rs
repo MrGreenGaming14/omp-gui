@@ -1,31 +1,19 @@
 //! Images: PNG, JPEG, GIF (first frame), WebP and BMP, one page at their pixel size.
 
 use crate::docs::{DocsError, Fonts, Format, PageSize, Paged, RenderOpts, Result, Rgba, Sniff};
-use ::image::{DynamicImage, imageops::FilterType};
 
 /// A decoded image.
-#[derive(Clone, Debug)]
-pub struct ImageDoc {
+struct ImageDoc {
     pixels: ::image::RgbaImage,
 }
 
+/// Decodes `bytes` as `format`. An animated GIF yields its first frame.
 pub(crate) fn open(format: Format, bytes: &[u8]) -> Result<Box<dyn Paged>> {
-    Ok(Box::new(ImageDoc::parse(format, bytes)?))
-}
-
-impl ImageDoc {
-    /// Decodes `bytes` as `format`. An animated GIF yields its first frame.
-    pub fn parse(format: Format, bytes: &[u8]) -> Result<Self> {
-        let Sniff::Image(image_format) = format.spec().sniff else {
-            return Err(DocsError::Unsupported(format!("{format} is not an image format")));
-        };
-        let image = ::image::load_from_memory_with_format(bytes, image_format).map_err(|e| DocsError::invalid(format, e))?;
-        let pixels = match image {
-            DynamicImage::ImageRgba8(pixels) => pixels,
-            other => other.into_rgba8(),
-        };
-        Ok(Self { pixels })
-    }
+    let Sniff::Image(image_format) = format.spec().sniff else {
+        return Err(DocsError::Unsupported(format!("{format} is not an image format")));
+    };
+    let image = ::image::load_from_memory_with_format(bytes, image_format).map_err(|e| DocsError::invalid(format, e))?;
+    Ok(Box::new(ImageDoc { pixels: image.into_rgba8() }))
 }
 
 impl Paged for ImageDoc {
@@ -34,20 +22,18 @@ impl Paged for ImageDoc {
     }
 
     fn page_size(&self, index: usize) -> Result<PageSize> {
-        if index != 0 {
-            return Err(DocsError::page_range(index, 1));
-        }
-        Ok(PageSize { width: self.pixels.width() as f32, height: self.pixels.height() as f32 })
+        let (width, height) = (self.pixels.width() as f32, self.pixels.height() as f32);
+        (index == 0).then_some(PageSize { width, height }).ok_or_else(|| DocsError::page_range(index, 1))
     }
 
     fn render(&self, index: usize, scale: f32, _: &Fonts, _: &RenderOpts) -> Result<Rgba> {
         let (width, height) = self.page_size(index)?.pixels(scale);
-        let pixels = if (width, height) == self.pixels.dimensions() {
+        let data = if (width, height) == self.pixels.dimensions() {
             self.pixels.as_raw().clone()
         } else {
-            ::image::imageops::resize(&self.pixels, width, height, FilterType::Triangle).into_raw()
+            ::image::imageops::resize(&self.pixels, width, height, ::image::imageops::FilterType::Triangle).into_raw()
         };
-        Ok(Rgba { width, height, data: pixels })
+        Ok(Rgba { width, height, data })
     }
 }
 
@@ -55,7 +41,7 @@ impl Paged for ImageDoc {
 mod tests {
     use super::*;
     use ::image::codecs::gif::GifEncoder;
-    use ::image::{Delay, Frame, Rgba as Px, RgbaImage};
+    use ::image::{Delay, DynamicImage, Frame, Rgba as Px, RgbaImage};
 
     #[test]
     fn every_image_format_decodes_scales_and_reports_corruption() {
@@ -78,8 +64,8 @@ mod tests {
         let mut gif = Vec::new();
         let frames = [[255, 0, 0, 255], [0, 255, 0, 255]].map(|c| Frame::from_parts(RgbaImage::from_pixel(3, 3, Px(c)), 0, 0, Delay::from_numer_denom_ms(100, 1)));
         GifEncoder::new(&mut gif).encode_frames(frames).unwrap();
-        let first = ImageDoc::parse(Format::Gif, &gif).unwrap().render_page(0, 1.0, &Fonts::none()).unwrap();
+        let first = open(Format::Gif, &gif).unwrap().render_page(0, 1.0, &Fonts::none()).unwrap();
         assert_eq!(first.pixel(1, 1), Some([255, 0, 0, 255]), "an animated GIF shows its first frame");
-        assert!(matches!(ImageDoc::parse(Format::Pdf, &gif), Err(DocsError::Unsupported(_))));
+        assert!(matches!(open(Format::Pdf, &gif), Err(DocsError::Unsupported(_))));
     }
 }

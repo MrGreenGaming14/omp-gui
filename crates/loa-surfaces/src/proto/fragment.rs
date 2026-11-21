@@ -18,20 +18,25 @@ use crate::proto::{ProtoError, Result};
 /// Most fragments one frame may have, about 75 MiB at a 1200 byte limit.
 pub const MAX_FRAGMENTS: u32 = 65_536;
 
-/// Frames being reassembled at once. An older partial frame is evicted for
-/// a newer one; it would be dropped when the newer one completes anyway.
+/// Frames being reassembled at once; the oldest partial frame is evicted for a newer one.
 const MAX_PENDING: usize = 8;
+
+fn datagram(seq: u64, index: u32, count: u32, header: Option<FrameHeader>, data: Bytes) -> Datagram {
+    Datagram { kind: Some(DatagramKind::Fragment(Fragment { seq, index, count, header, data })) }
+}
 
 /// Splits `frame` into datagrams of at most `max_datagram` bytes and hands
 /// each to `emit` in order.
-pub fn fragment(
-    frame: &Frame,
-    max_datagram: usize,
-    mut emit: impl FnMut(Bytes) -> Result<()>,
-) -> Result<()> {
+pub fn fragment(frame: &Frame, max_datagram: usize, mut emit: impl FnMut(Bytes) -> Result<()>) -> Result<()> {
     let header = FrameHeader::from(frame);
-    let first_room = payload_room(frame.seq, Some(&header), max_datagram);
-    let rest_room = payload_room(frame.seq, None, max_datagram);
+    // Worst case index and count, empty data: prost leaves the empty data
+    // field out, so add its tag, its length varint, and the growth of the
+    // outer length varint, each bounded by the varint of `max_datagram`.
+    let room = |header: Option<&FrameHeader>| {
+        let empty = datagram(frame.seq, u32::MAX, u32::MAX, header.cloned(), Bytes::new());
+        max_datagram.saturating_sub(empty.encoded_len() + 1 + 2 * encoded_len_varint(max_datagram as u64))
+    };
+    let (first_room, rest_room) = (room(Some(&header)), room(None));
     if first_room == 0 || rest_room == 0 {
         return Err(ProtoError::DatagramTooSmall(max_datagram));
     }
@@ -41,51 +46,20 @@ pub fn fragment(
         .ok()
         .filter(|&c| c <= MAX_FRAGMENTS)
         .ok_or(ProtoError::FrameTooLarge { len, max_datagram })?;
-
-    let mut header = Some(header);
-    let mut start = 0;
+    let (mut header, mut start) = (Some(header), 0);
     for index in 0..count {
-        let room = if index == 0 { first_room } else { rest_room };
-        let end = (start + room).min(len);
-        let datagram = Datagram {
-            kind: Some(DatagramKind::Fragment(Fragment {
-                seq: frame.seq,
-                index,
-                count,
-                header: header.take(),
-                data: frame.data.slice(start..end),
-            })),
-        };
-        let mut buf = BytesMut::with_capacity(datagram.encoded_len());
-        datagram.encode(&mut buf).map_err(|e| ProtoError::Protocol(format!("encode: {e}")))?;
-        debug_assert!(buf.len() <= max_datagram);
-        emit(buf.freeze())?;
+        let end = (start + if index == 0 { first_room } else { rest_room }).min(len);
+        let encoded = datagram(frame.seq, index, count, header.take(), frame.data.slice(start..end)).encode_to_vec();
+        debug_assert!(encoded.len() <= max_datagram);
+        emit(encoded.into())?;
         start = end;
     }
     Ok(())
 }
 
-/// Payload bytes that fit in one datagram next to the fragment fields.
-fn payload_room(seq: u64, header: Option<&FrameHeader>, max_datagram: usize) -> usize {
-    // Worst case index and count, empty data: prost leaves the empty data
-    // field out, so add its tag, its length varint, and the growth of the
-    // outer length varint, each bounded by the varint of `max_datagram`.
-    let empty = Datagram {
-        kind: Some(DatagramKind::Fragment(Fragment {
-            seq,
-            index: u32::MAX,
-            count: u32::MAX,
-            header: header.cloned(),
-            data: Bytes::new(),
-        })),
-    };
-    let overhead = empty.encoded_len() + 1 + 2 * encoded_len_varint(max_datagram as u64);
-    max_datagram.saturating_sub(overhead)
-}
-
 /// What the viewer does after one datagram or stream frame.
 #[derive(Debug, Default, PartialEq)]
-pub struct Pushed {
+pub(crate) struct Pushed {
     /// A frame ready to show.
     pub frame: Option<Frame>,
     /// Ask the server for a keyframe on the reliable stream.
@@ -94,9 +68,10 @@ pub struct Pushed {
 
 /// Viewer side frame ordering and reassembly.
 #[derive(Debug)]
-pub struct Reassembler {
+pub(crate) struct Reassembler {
     /// Seq of the newest frame delivered or skipped.
     last: Option<u64>,
+    /// Partial frames, sorted by seq.
     pending: VecDeque<Partial>,
     /// Video only: deltas are useless until the next keyframe.
     awaiting_keyframe: bool,
@@ -108,12 +83,6 @@ struct Partial {
     header: Option<FrameHeader>,
     parts: Vec<Option<Bytes>>,
     have: u32,
-}
-
-impl Default for Reassembler {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 impl Reassembler {
@@ -132,12 +101,10 @@ impl Reassembler {
         }
     }
 
-    pub fn push_fragment(&mut self, fragment: Fragment) -> Pushed {
+    fn push_fragment(&mut self, fragment: Fragment) -> Pushed {
         let Fragment { seq, index, count, header, data } = fragment;
-        if count == 0 || count > MAX_FRAGMENTS || index >= count || self.is_stale(seq) {
-            return Pushed::default();
-        }
-        if index == 0 && header.is_none() {
+        if count == 0 || count > MAX_FRAGMENTS || index >= count || self.is_stale(seq) || (index == 0 && header.is_none())
+        {
             return Pushed::default();
         }
         let slot = match self.pending.iter().position(|p| p.seq == seq) {
@@ -146,22 +113,16 @@ impl Reassembler {
                 if self.pending.len() == MAX_PENDING {
                     self.pending.pop_front();
                 }
-                // Keep `pending` sorted by seq so eviction drops the oldest.
                 let slot = self.pending.partition_point(|p| p.seq < seq);
-                self.pending
-                    .insert(slot, Partial { seq, header: None, parts: vec![None; count as usize], have: 0 });
+                self.pending.insert(slot, Partial { seq, header: None, parts: vec![None; count as usize], have: 0 });
                 slot
             }
         };
         let partial = &mut self.pending[slot];
-        if partial.parts.len() != count as usize {
+        if partial.parts.len() != count as usize || partial.parts[index as usize].is_some() {
             return Pushed::default();
         }
-        let part = &mut partial.parts[index as usize];
-        if part.is_some() {
-            return Pushed::default();
-        }
-        *part = Some(data);
+        partial.parts[index as usize] = Some(data);
         partial.have += 1;
         if index == 0 {
             partial.header = header;
@@ -169,11 +130,8 @@ impl Reassembler {
         if partial.have < count {
             return Pushed::default();
         }
-        let Some(partial) = self.pending.remove(slot) else {
-            return Pushed::default();
-        };
-        let data = join(partial.parts);
-        match partial.header.and_then(|h| h.into_frame(data)) {
+        let Some(partial) = self.pending.remove(slot) else { return Pushed::default() };
+        match partial.header.and_then(|h| h.into_frame(join(partial.parts))) {
             Some(frame) => self.push_frame(frame),
             None => Pushed::default(),
         }
@@ -188,15 +146,12 @@ impl Reassembler {
         self.last = Some(frame.seq);
         // Anything older still in reassembly is lost now.
         self.pending.retain(|p| p.seq > frame.seq);
-
         if frame.keyframe {
             self.awaiting_keyframe = false;
             return Pushed { frame: Some(frame), request_keyframe: false };
         }
         let video = is_video(frame.encoding);
-        if lost && video {
-            self.awaiting_keyframe = true;
-        }
+        self.awaiting_keyframe |= lost && video;
         let frame = (!(video && self.awaiting_keyframe)).then_some(frame);
         Pushed { frame, request_keyframe: lost }
     }
@@ -206,17 +161,13 @@ impl Reassembler {
     }
 }
 
-/// Concatenates the fragments. A single fragment is passed through without
-/// copying.
+/// Concatenates the fragments; a single fragment is passed through without copying.
 fn join(parts: Vec<Option<Bytes>>) -> Bytes {
     if let [Some(only)] = parts.as_slice() {
         return only.clone();
     }
-    let len = parts.iter().flatten().map(Bytes::len).sum();
-    let mut data = BytesMut::with_capacity(len);
-    for part in parts.iter().flatten() {
-        data.extend_from_slice(part);
-    }
+    let mut data = BytesMut::with_capacity(parts.iter().flatten().map(Bytes::len).sum());
+    parts.iter().flatten().for_each(|part| data.extend_from_slice(part));
     data.freeze()
 }
 
@@ -242,7 +193,8 @@ mod tests {
     }
 
     #[test]
-    fn frames_split_within_the_limit_and_come_back_once_whatever_the_order() {
+    fn reassembly_orders_drops_and_waits_for_keyframes() {
+        // Reordered and duplicated fragments come back as one frame.
         let original = frame(1, Encoding::Jpeg, true, 10_000);
         let mut parts = datagrams(&original, 1200);
         assert!(parts.len() == 9 && parts.iter().all(|d| d.len() <= 1200));
@@ -252,15 +204,12 @@ mod tests {
         let delivered: Vec<_> = parts.into_iter().filter_map(|d| r.push_datagram(d).frame).collect();
         assert_eq!(delivered, vec![original]);
         assert!(matches!(fragment(&frame(1, Encoding::Png, true, 10), 20, |_| Ok(())), Err(ProtoError::DatagramTooSmall(20))));
-        let bogus = Fragment { seq: 9, index: 3, count: 2, header: None, data: Bytes::new() };
-        let bogus = Datagram { kind: Some(DatagramKind::Fragment(bogus)) };
-        assert_eq!(r.push_datagram(bogus.encode_to_vec().into()), Pushed::default());
-        assert_eq!(r.push_datagram(Bytes::from_static(&[0xff, 0xff, 0xff])), Pushed::default());
-    }
+        let bogus = datagram(9, 3, 2, None, Bytes::new()).encode_to_vec();
+        for junk in [bogus.into(), Bytes::from_static(&[0xff, 0xff, 0xff])] {
+            assert_eq!(r.push_datagram(junk), Pushed::default());
+        }
 
-    #[test]
-    fn incomplete_and_older_frames_are_dropped_once_a_newer_one_completes() {
-        let mut r = Reassembler::new();
+        // An incomplete frame is dropped once a newer one completes; older frames never show.
         let mut late = datagrams(&frame(2, Encoding::Jpeg, true, 2000), 600);
         let missing = late.remove(1);
         assert!(late.into_iter().all(|d| r.push_datagram(d).frame.is_none()));
@@ -272,16 +221,14 @@ mod tests {
         // Region updates keep flowing after a loss and ask for a refresh.
         let region = frame(5, Encoding::Png, false, 10);
         assert_eq!(r.push_frame(region.clone()), Pushed { frame: Some(region), request_keyframe: true });
-    }
 
-    #[test]
-    fn video_loss_skips_deltas_until_a_keyframe_and_asks_for_one() {
+        // Video: (seq, keyframe) -> (shown, keyframe requested).
         let mut r = Reassembler::new();
-        let mut push = |seq, keyframe| r.push_frame(frame(seq, Encoding::H264, keyframe, 50));
-        assert_eq!(push(1, false), Pushed::default());
-        assert!(push(2, true).frame.is_some() && push(3, false).frame.is_some());
-        assert_eq!(push(5, false), Pushed { frame: None, request_keyframe: true });
-        assert_eq!(push(6, false), Pushed::default());
-        assert!(push(7, true).frame.is_some() && push(8, false).frame.is_some());
+        let steps = [(1, false, false, false), (2, true, true, false), (3, false, true, false), (5, false, false, true)];
+        let steps = steps.into_iter().chain([(6, false, false, false), (7, true, true, false), (8, false, true, false)]);
+        for (seq, keyframe, shown, asks) in steps {
+            let pushed = r.push_frame(frame(seq, Encoding::H264, keyframe, 50));
+            assert_eq!((pushed.frame.is_some(), pushed.request_keyframe), (shown, asks), "frame {seq}");
+        }
     }
 }

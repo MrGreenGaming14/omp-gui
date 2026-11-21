@@ -8,19 +8,20 @@
 //! Mouse moves, drags and keys other than Enter have no tool and are not
 //! sent. Document surfaces are read once with `resources/read`.
 
-use loa_util::time::now_us;
-use loa_util::LockExt;
 use crate::feed::{FrameFeed, Picture};
 use crate::hub::tools::{CLICK, SCREENSHOT, SCROLL, TYPE};
-use loa_contracts::tools::{OutputBlock, ToolOutput};
 use crate::pixels::png_size;
 use async_trait::async_trait;
 use bytes::Bytes;
+use loa_contracts::surface::{
+    Document, Encoding, Frame, Input, InputEvent, Modifiers, MouseButton, Rect, Surface, SurfaceError, SurfaceInfo,
+    SurfaceMode,
+};
+use loa_contracts::tools::{OutputBlock, ToolOutput};
 use loa_mcp::model::ResourceContents;
 use loa_mcp::{AllowAll, Manager};
-use loa_contracts::surface::{
-    Document, Encoding, Frame, Input, InputEvent, MouseButton, Rect, Surface, SurfaceError, SurfaceInfo, SurfaceMode,
-};
+use loa_util::LockExt;
+use loa_util::time::now_us;
 use serde_json::{Value, json};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -68,12 +69,10 @@ impl Shared {
     async fn publish(&self) -> loa_contracts::surface::Result<()> {
         let input_seq = self.input_done.load(Ordering::Acquire);
         let png = self.screenshot().await?;
-        let (width, height) =
-            png_size(&png).ok_or_else(|| SurfaceError::Backend(format!("{} isn't a PNG", SCREENSHOT)))?;
+        let (width, height) = png_size(&png).ok_or_else(|| SurfaceError::Backend(format!("{SCREENSHOT} isn't a PNG")))?;
         {
             let mut info = self.info.locked();
-            info.width = width;
-            info.height = height;
+            (info.width, info.height) = (width, height);
         }
         self.feed.publish(Picture {
             captured_us: now_us(),
@@ -94,15 +93,11 @@ impl Shared {
             MouseButton::Left => Ok("left"),
             MouseButton::Middle => Ok("middle"),
             MouseButton::Right => Ok("right"),
-            MouseButton::Back | MouseButton::Forward => {
-                Err(SurfaceError::Backend(format!("{} takes left, middle and right clicks", CLICK)))
-            }
+            MouseButton::Back | MouseButton::Forward => Err(SurfaceError::Backend(format!("{CLICK} takes left, middle and right clicks"))),
         };
-        let modifier_names = |m: &loa_contracts::surface::Modifiers| {
-            [(m.shift, "shift"), (m.ctrl, "ctrl"), (m.alt, "alt"), (m.meta, "meta")]
-                .into_iter()
-                .filter_map(|(on, name)| on.then_some(name))
-                .collect::<Vec<_>>()
+        let modifier_names = |m: &Modifiers| {
+            let all = [(m.shift, "shift"), (m.ctrl, "ctrl"), (m.alt, "alt"), (m.meta, "meta")];
+            all.into_iter().filter_map(|(on, name)| on.then_some(name)).collect::<Vec<_>>()
         };
         match &event.input {
             Input::MouseButton { button, pressed: true, .. } => {
@@ -165,8 +160,13 @@ impl McpSurface {
         Self { shared, poll }
     }
 
-    pub fn server(&self) -> &str {
-        &self.shared.server
+    /// The surface's info, or a mode error unless it is in `mode`.
+    fn in_mode(&self, mode: SurfaceMode) -> loa_contracts::surface::Result<SurfaceInfo> {
+        let info = self.info();
+        if info.mode != mode {
+            return Err(SurfaceError::Mode { uri: info.uri, mode: info.mode });
+        }
+        Ok(info)
     }
 }
 
@@ -192,10 +192,7 @@ impl Surface for McpSurface {
     }
 
     fn frames(&self) -> loa_contracts::surface::Result<broadcast::Receiver<Arc<Frame>>> {
-        let info = self.info();
-        if info.mode != SurfaceMode::Pixel {
-            return Err(SurfaceError::Mode { uri: info.uri, mode: info.mode });
-        }
+        self.in_mode(SurfaceMode::Pixel)?;
         let receiver = self.shared.feed.subscribe();
         self.shared.wake.notify_one();
         Ok(receiver)
@@ -207,25 +204,15 @@ impl Surface for McpSurface {
     }
 
     async fn input(&self, event: InputEvent) -> loa_contracts::surface::Result<()> {
-        let info = self.info();
-        if info.mode != SurfaceMode::Pixel {
-            return Err(SurfaceError::Mode { uri: info.uri, mode: info.mode });
-        }
+        self.in_mode(SurfaceMode::Pixel)?;
         self.shared.input(&event).await
     }
 
     async fn document(&self) -> loa_contracts::surface::Result<Document> {
         use base64::Engine;
-        let info = self.info();
-        if info.mode != SurfaceMode::Document {
-            return Err(SurfaceError::Mode { uri: info.uri, mode: info.mode });
-        }
-        let contents = self
-            .shared
-            .manager
-            .read_resource(&self.shared.server, info.uri.as_str())
-            .await
-            .map_err(|e| SurfaceError::Backend(e.to_string()))?;
+        let info = self.in_mode(SurfaceMode::Document)?;
+        let read = self.shared.manager.read_resource(&self.shared.server, info.uri.as_str()).await;
+        let contents = read.map_err(|e| SurfaceError::Backend(e.to_string()))?;
         let (mime, data) = contents
             .into_iter()
             .find_map(|c| match c {

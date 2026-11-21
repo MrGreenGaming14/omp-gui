@@ -1,9 +1,9 @@
 //! The `vm` surface server: configured RFB endpoints as surfaces.
 
-use loa_util::LockExt;
 use crate::vnc::{PasswordSource, RfbSurface};
 use async_trait::async_trait;
 use loa_contracts::surface::{Surface, SurfaceError, SurfaceInfo, SurfaceMode, SurfaceServer, SurfaceUri};
+use loa_util::LockExt;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
@@ -52,8 +52,7 @@ impl Default for RfbOptions {
 
 /// Serves each [`RfbEndpoint`] as the pixel surface `surface://vm/<name>`.
 /// Opening a surface that is already open returns the same connection.
-/// Endpoints can be added and removed while the server runs, e.g. when the
-/// user types a `host:port` to connect to.
+/// Endpoints can be added and removed while the server runs.
 pub struct RfbServer {
     endpoints: Mutex<Vec<RfbEndpoint>>,
     passwords: Arc<dyn PasswordSource>,
@@ -62,24 +61,12 @@ pub struct RfbServer {
 }
 
 impl RfbServer {
-    pub fn new(
-        endpoints: Vec<RfbEndpoint>,
-        passwords: Arc<dyn PasswordSource>,
-        options: RfbOptions,
-    ) -> Self {
-        Self {
-            endpoints: Mutex::new(endpoints),
-            passwords,
-            options,
-            open: Mutex::new(HashMap::new()),
-        }
+    pub fn new(endpoints: Vec<RfbEndpoint>, passwords: Arc<dyn PasswordSource>, options: RfbOptions) -> Self {
+        Self { endpoints: Mutex::new(endpoints), passwords, options, open: Mutex::default() }
     }
 
     fn live(&self, name: &str) -> Option<Arc<RfbSurface>> {
-        // The map holds plain data, a poisoned lock leaves it usable.
-        self.open.locked()
-            .get(name)
-            .and_then(Weak::upgrade)
+        self.open.locked().get(name).and_then(Weak::upgrade)
     }
 
     /// Adds `endpoint`, replacing one with the same name, and returns its uri.
@@ -91,56 +78,38 @@ impl RfbServer {
         match endpoints.iter_mut().find(|e| e.name == endpoint.name) {
             Some(existing) if *existing == endpoint => {}
             Some(existing) => {
+                self.open.locked().remove(&endpoint.name);
                 *existing = endpoint;
-                self.open.locked()
-                    .remove(&existing.name);
             }
             None => endpoints.push(endpoint),
         }
         Ok(uri)
     }
 
-    /// Removes the endpoint `name`. Open surfaces keep their connection until
-    /// dropped. `false` when there was none.
+    /// Removes the endpoint `name`; open surfaces keep their connection until dropped. `false` when there was none.
     pub fn remove_endpoint(&self, name: &str) -> bool {
         let mut endpoints = self.endpoints.locked();
         let before = endpoints.len();
         endpoints.retain(|e| e.name != name);
-        self.open.locked()
-            .remove(name);
+        self.open.locked().remove(name);
         endpoints.len() != before
     }
 
-    /// Opens `uri` with the RFB specific API (cursor shape, connection state).
+    /// Opens `uri`, reusing its live connection.
     pub async fn open_rfb(&self, uri: &SurfaceUri) -> loa_contracts::surface::Result<Arc<RfbSurface>> {
-        let not_found = || SurfaceError::NotFound(uri.clone());
-        if uri.server() != SERVER_NAME {
-            return Err(not_found());
-        }
-        let endpoint = self
-            .endpoints.locked()
-            .iter()
-            .find(|e| e.name == uri.name())
-            .cloned()
-            .ok_or_else(not_found)?;
+        let found = self.endpoints.locked().iter().find(|e| uri.server() == SERVER_NAME && e.name == uri.name()).cloned();
+        let endpoint = found.ok_or_else(|| SurfaceError::NotFound(uri.clone()))?;
         if let Some(surface) = self.live(&endpoint.name) {
             return Ok(surface);
         }
-        let surface = Arc::new(
-            RfbSurface::connect(
-                uri.clone(),
-                endpoint.clone(),
-                Arc::clone(&self.passwords),
-                self.options.clone(),
-            )
-            .await?,
-        );
+        let name = endpoint.name.clone();
+        let surface = Arc::new(RfbSurface::connect(uri.clone(), endpoint, self.passwords.clone(), self.options.clone()).await?);
         let mut open = self.open.locked();
         // A concurrent open may have connected first; keep its connection.
-        if let Some(existing) = open.get(&endpoint.name).and_then(Weak::upgrade) {
+        if let Some(existing) = open.get(&name).and_then(Weak::upgrade) {
             return Ok(existing);
         }
-        open.insert(endpoint.name.clone(), Arc::downgrade(&surface));
+        open.insert(name, Arc::downgrade(&surface));
         Ok(surface)
     }
 }
@@ -155,20 +124,18 @@ impl SurfaceServer for RfbServer {
     /// size, since the size is only known after connecting.
     async fn list(&self) -> loa_contracts::surface::Result<Vec<SurfaceInfo>> {
         let endpoints = self.endpoints.locked().clone();
-        endpoints
-            .iter()
-            .map(|e| match self.live(&e.name) {
-                Some(surface) => Ok(surface.info()),
-                None => Ok(SurfaceInfo {
-                    uri: SurfaceUri::new(SERVER_NAME, &e.name)?,
-                    name: e.name.clone(),
-                    width: 0,
-                    height: 0,
-                    mode: SurfaceMode::Pixel,
-                    mime: None,
-                }),
-            })
-            .collect()
+        let info = |e: &RfbEndpoint| match self.live(&e.name) {
+            Some(surface) => Ok(surface.info()),
+            None => Ok(SurfaceInfo {
+                uri: SurfaceUri::new(SERVER_NAME, &e.name)?,
+                name: e.name.clone(),
+                width: 0,
+                height: 0,
+                mode: SurfaceMode::Pixel,
+                mime: None,
+            }),
+        };
+        endpoints.iter().map(info).collect()
     }
 
     async fn open(&self, uri: &SurfaceUri) -> loa_contracts::surface::Result<Arc<dyn Surface>> {
