@@ -42,7 +42,11 @@ pub fn discover(home: &Path) -> Vec<NativeSession> {
             }
         }
     }
-    let mut stack = vec![home.join(".codex/sessions")];
+    let codex_home = match std::env::var_os("CODEX_HOME") {
+        Some(dir) if !dir.is_empty() => PathBuf::from(dir),
+        _ => home.join(".codex"),
+    };
+    let mut stack = vec![codex_home.join("sessions")];
     while let Some(dir) = stack.pop() {
         stack.extend(dirs(&dir));
         for file in files(&dir, |f| f.starts_with("rollout-") && f.ends_with(".jsonl")) {

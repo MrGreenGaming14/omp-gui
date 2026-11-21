@@ -132,6 +132,7 @@ pub fn chrome_candidates(path_var: Option<&OsStr>, home: Option<&Path>, headed: 
 
 fn chrome_candidates_with(path_var: Option<&OsStr>, home: Option<&Path>, headed: bool, env: Env) -> Vec<PathBuf> {
     let mut found = Vec::new();
+    let pathext = env("PATHEXT");
     let dirs: Vec<PathBuf> = path_var.map(|p| std::env::split_paths(p).collect()).unwrap_or_default();
     for name in PATH_NAMES {
         if headed && name == "chrome-headless-shell" {
@@ -139,7 +140,7 @@ fn chrome_candidates_with(path_var: Option<&OsStr>, home: Option<&Path>, headed:
         }
         // A bare-name search per directory: a plain file called `chromium`
         // is no browser on Windows, where only `PATHEXT` names run.
-        found.extend(dirs.iter().filter_map(|dir| loa_exec::find_executable_in(Path::new(name), Some(dir.as_os_str()), None)));
+        found.extend(dirs.iter().filter_map(|dir| loa_exec::find_executable_in(Path::new(name), Some(dir.as_os_str()), pathext.as_deref())));
     }
     found.extend(fixed_paths(env).into_iter().filter(|p| loa_exec::is_executable(p)));
     if let Some(home) = home {

@@ -602,6 +602,10 @@ async fn the_virtual_display_capture_says_why_it_cant_run_and_is_saved_where_it_
     assert_eq!(driver.area().panel().capture().selected, panel::Capture::Screencast);
     assert_eq!(driver.area().hub().capture(), loa_surface_hub::CaptureMode::Screencast);
 
+    // The fake below needs Xvfb's X11 sockets, which exist only on Linux.
+    if !cfg!(target_os = "linux") {
+        return;
+    }
     // A fake Xvfb that reports a display but serves none: the choice is
     // taken and saved, and opening a tab fails with the browser's reason.
     let dir = tempfile::tempdir().unwrap();

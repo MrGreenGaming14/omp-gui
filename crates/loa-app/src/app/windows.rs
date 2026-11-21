@@ -162,7 +162,7 @@ pub fn scan(tab: ConfigsTab, project: &Path, home: Option<&Path>) -> Vec<DocFile
 }
 
 fn home() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(PathBuf::from)
+    loa_core::home_dir()
 }
 
 #[derive(Debug, Clone)]

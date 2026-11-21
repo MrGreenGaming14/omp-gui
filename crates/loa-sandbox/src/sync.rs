@@ -100,6 +100,8 @@ fn check_collisions<'a>(names: impl Iterator<Item = &'a str>, dir: &str) -> Resu
     Ok(())
 }
 
+/// Runs a POSIX tool on the guest; Windows hosts never ask for one.
+#[cfg_attr(windows, allow(dead_code))]
 async fn run(client: &StubClient, program: &str, arguments: &[&str]) -> Result<Vec<u8>> {
     let mut argv = Vec::with_capacity(arguments.len() + 1);
     argv.push(program.to_owned());

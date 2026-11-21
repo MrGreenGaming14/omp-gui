@@ -331,6 +331,12 @@ mod tests {
         let text = String::from_utf8_lossy(&out.stdout);
         let entries = text.lines().take_while(|line| !line.trim().is_empty()).count();
         assert_eq!(entries, 1, "{text}");
+        let who = std::process::Command::new("whoami").output().unwrap();
+        assert!(who.status.success(), "{who:?}");
+        let account = String::from_utf8_lossy(&who.stdout).trim().to_lowercase();
+        assert!(!account.is_empty());
+        let ace = text.lines().next().unwrap().to_lowercase();
+        assert!(ace.contains(&format!("{account}:(f)")), "expected {account} with (F) in: {text}");
         assert!(!text.contains("(I)"), "{text}");
     }
 

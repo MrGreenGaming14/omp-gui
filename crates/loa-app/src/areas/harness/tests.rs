@@ -178,12 +178,13 @@ fn the_picked_harness_is_saved_as_the_default_for_the_next_launch() {
     assert_eq!(second.ctx.composer.harness().map(|option| option.id.as_str()), Some("other"));
 }
 
-#[cfg(unix)]
 #[test]
 fn an_executable_set_in_the_tab_is_saved_registered_and_probed() {
     let dir = tempfile::tempdir().unwrap();
-    let codex = dir.path().join("my-codex");
-    loa_exec::write_executable(&codex, "#!/bin/sh\necho 'codex-cli 0.99.1'\n").unwrap();
+    let written = dir.path().join("my-codex");
+    loa_exec::write_executable(&written, "#!/bin/sh\necho 'codex-cli 0.99.1'\n").unwrap();
+    // Windows writes `my-codex.sh` and `my-codex.cmd`; the launcher is what runs.
+    let codex = loa_exec::resolve(&written);
     let this = node();
     let key = this.key.clone();
     let dirs = Dirs::new(dir.path().join("loa"));
