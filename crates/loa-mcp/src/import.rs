@@ -16,12 +16,15 @@ pub enum App {
     Codex,
 }
 
+/// A named server entry: its spec, or why it can't be used.
+pub type Entry = (String, Result<ServerSpec, String>);
+
 /// A config file of another app, read through its format's adapter.
 pub trait ImportSource: Send + Sync {
     fn app(&self) -> App;
     fn path(&self) -> &Path;
     /// The `(name, entry)` pairs in the file's text.
-    fn entries(&self, text: &str) -> Result<Vec<(String, Result<ServerSpec, String>)>, String>;
+    fn entries(&self, text: &str) -> Result<Vec<Entry>, String>;
 
     /// The server entries in the file; a missing file has none.
     fn read(&self) -> Result<Vec<Found>, String> {
@@ -105,7 +108,7 @@ impl ImportSource for JsonServers {
         &self.path
     }
 
-    fn entries(&self, text: &str) -> Result<Vec<(String, Result<ServerSpec, String>)>, String> {
+    fn entries(&self, text: &str) -> Result<Vec<Entry>, String> {
         let root: Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
         let local = self.project.as_ref().map(|project| &root["projects"][project.to_string_lossy().as_ref()]);
         let mut out = Vec::new();
@@ -135,7 +138,7 @@ impl ImportSource for CodexToml {
         &self.0
     }
 
-    fn entries(&self, text: &str) -> Result<Vec<(String, Result<ServerSpec, String>)>, String> {
+    fn entries(&self, text: &str) -> Result<Vec<Entry>, String> {
         let root: toml::Table = toml::from_str(text).map_err(|e| e.to_string())?;
         let Some(servers) = root.get("mcp_servers").and_then(toml::Value::as_table) else { return Ok(Vec::new()) };
         let entry = |name: &str, entry: &toml::Value| entry_spec(name, entry.as_table().ok_or("the entry isn't a table")?);
