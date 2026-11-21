@@ -1,65 +1,29 @@
 //! The Surfaces tab driven through `Panel::update` and the tasks it returns,
 //! with fake surfaces, plus a headless pass over its view.
 
-use async_trait::async_trait;
 use bytes::Bytes;
 use futures::StreamExt;
 use iced::Task;
 use iced_runtime::Action;
 use loa_contracts::surface::{
-    Document, Encoding, Frame, InputEvent, Rect, Surface, SurfaceError, SurfaceInfo, SurfaceMode, SurfaceUri,
+    Document, Encoding, Frame, Rect, Surface, SurfaceInfo, SurfaceMode, SurfaceUri,
 };
 use loa_ui_surface::panel::{Event, Message};
 use loa_ui_surface::{Available, BrowserStatus, DocsRenderers, Panel, PanelOptions};
 use std::sync::Arc;
-use tokio::sync::{broadcast, mpsc};
+use loa_surfaces::testkit::{FakeSurface, Probe};
+use tokio::sync::mpsc;
 
-struct Fake {
-    info: SurfaceInfo,
-    frames: broadcast::Sender<Arc<Frame>>,
-    document: Option<Document>,
-}
-
-#[async_trait]
-impl Surface for Fake {
-    fn info(&self) -> SurfaceInfo {
-        self.info.clone()
-    }
-
-    fn frames(&self) -> loa_contracts::surface::Result<broadcast::Receiver<Arc<Frame>>> {
-        Ok(self.frames.subscribe())
-    }
-
-    async fn request_keyframe(&self) -> loa_contracts::surface::Result<()> {
-        Ok(())
-    }
-
-    async fn input(&self, _event: InputEvent) -> loa_contracts::surface::Result<()> {
-        Ok(())
-    }
-
-    async fn document(&self) -> loa_contracts::surface::Result<Document> {
-        self.document.clone().ok_or(SurfaceError::Closed)
-    }
-
-    async fn screenshot(&self) -> loa_contracts::surface::Result<Bytes> {
-        Err(SurfaceError::Closed)
-    }
-}
-
-fn fake(server: &str, name: &str, mode: SurfaceMode, document: Option<Document>) -> Arc<Fake> {
-    Arc::new(Fake {
-        info: SurfaceInfo {
-            uri: SurfaceUri::new(server, name).unwrap(),
-            name: name.to_owned(),
-            width: 8,
-            height: 4,
-            mode,
-            mime: document.as_ref().map(|d| d.mime.clone()),
-        },
-        frames: broadcast::channel(8).0,
-        document,
-    })
+fn fake(server: &str, name: &str, mode: SurfaceMode, document: Option<Document>) -> (Arc<FakeSurface>, Probe) {
+    let info = SurfaceInfo {
+        uri: SurfaceUri::new(server, name).unwrap(),
+        name: name.to_owned(),
+        width: 8,
+        height: 4,
+        mode,
+        mime: document.as_ref().map(|d| d.mime.clone()),
+    };
+    FakeSurface::new(info, document)
 }
 
 fn spawn(task: Task<Message>, out: mpsc::UnboundedSender<Message>) {
@@ -75,7 +39,7 @@ fn spawn(task: Task<Message>, out: mpsc::UnboundedSender<Message>) {
 }
 
 fn panel(dir: &std::path::Path) -> Panel {
-    let options = PanelOptions { documents: Some(Arc::new(DocsRenderers::new(loa_surface_docs::Fonts::none()))), ..PanelOptions::default() };
+    let options = PanelOptions { documents: Some(Arc::new(DocsRenderers::new(loa_surfaces::docs::Fonts::none()))), ..PanelOptions::default() };
     let browser = BrowserStatus::Ready { executable: "/usr/bin/chromium".into(), sandboxed: true };
     Panel::new(options, browser, dir)
 }
@@ -109,7 +73,7 @@ async fn the_launcher_asks_for_browser_document_and_vm_surfaces() {
         Some(Event::OpenVm { address: "10.0.0.5:5901".into(), password: Some("secret".into()) })
     );
 
-    let declared = fake("figma", "board", SurfaceMode::Pixel, None);
+    let (declared, _probe) = fake("figma", "board", SurfaceMode::Pixel, None);
     panel.set_available(vec![Available { info: declared.info(), server: "figma-mcp".into() }]);
     assert_eq!(event(&mut panel, Message::OpenAvailable(declared.info.uri.clone())), Some(Event::Open(declared.info.uri.clone())));
 
@@ -124,7 +88,7 @@ async fn attached_surfaces_stream_into_tabs_and_close() {
     let mut panel = panel(dir.path());
     let (out, mut messages) = mpsc::unbounded_channel();
 
-    let tab = fake("browser", "tab1", SurfaceMode::Pixel, None);
+    let (tab, probe) = fake("browser", "tab1", SurfaceMode::Pixel, None);
     spawn(panel.attach(tab.clone(), "browser"), out.clone());
     assert_eq!(panel.active(), Some(&tab.info.uri));
     let frame = Frame {
@@ -140,10 +104,10 @@ async fn attached_surfaces_stream_into_tabs_and_close() {
     };
     // The renderer subscribes as its task starts.
     tokio::task::yield_now().await;
-    while tab.frames.receiver_count() == 0 {
+    while probe.frames.receiver_count() == 0 {
         tokio::task::yield_now().await;
     }
-    tab.frames.send(Arc::new(frame)).unwrap();
+    probe.frames.send(Arc::new(frame)).unwrap();
     // The renderer also asks for a keyframe; deliver until the frame shows.
     while panel.surface(&tab.info.uri).unwrap().shown_seq().is_none() {
         let message = messages.recv().await.unwrap();
@@ -162,7 +126,7 @@ async fn attached_surfaces_stream_into_tabs_and_close() {
         mime: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet".into(),
         data: Bytes::from(book.save_to_buffer().unwrap()),
     };
-    let doc = fake("docs", "1", SurfaceMode::Document, Some(xlsx));
+    let (doc, _doc_probe) = fake("docs", "1", SurfaceMode::Document, Some(xlsx));
     spawn(panel.attach(doc.clone(), "docs"), out.clone());
     assert_eq!(panel.active(), Some(&doc.info.uri));
     while panel.surface(&doc.info.uri).unwrap().page_count().is_none() {

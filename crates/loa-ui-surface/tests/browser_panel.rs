@@ -1,5 +1,5 @@
-//! A real browser surface (installed Chrome or Chromium, skipped without
-//! one) in the Surfaces tab: frames stream into the renderer, a click on the
+//! A real browser surface (installed Chrome or Chromium, skipped unless
+//! `LOA_CHROME` is set) in the Surfaces tab: frames stream into the renderer, a click on the
 //! panel reaches the page, and the latency meter pairs it with the frame
 //! that shows it.
 
@@ -7,7 +7,7 @@ use futures::StreamExt;
 use iced::{Point, Size, Task};
 use iced_runtime::Action;
 use loa_contracts::surface::MouseButton;
-use loa_surface_hub::{HubConfig, SurfaceHub};
+use loa_surfaces::{HubConfig, SurfaceHub};
 use loa_ui_surface::panel::Message;
 use loa_ui_surface::{BrowserStatus, Message as SurfaceMessage, Panel, PanelOptions, PointerInput};
 use std::time::Duration;
@@ -27,12 +27,10 @@ fn spawn(task: Task<Message>, out: mpsc::UnboundedSender<Message>) {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_click_on_the_panel_drives_the_browser_and_is_measured() {
+    loa_surfaces::chrome_or_skip!();
     let dir = tempfile::tempdir().unwrap();
     let mut config = HubConfig::discover(dir.path());
-    let Some(browser) = &mut config.browser else {
-        eprintln!("SKIPPED: no Chrome or Chromium installed");
-        return;
-    };
+    let browser = config.browser.as_mut().expect("chrome");
     browser.width = 400;
     browser.height = 300;
     let hub = SurfaceHub::new(config);

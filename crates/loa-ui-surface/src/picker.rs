@@ -4,7 +4,7 @@
 use crate::style;
 use iced::widget::{Column, button, column, container, row, scrollable, text, text_input};
 use iced::{Center, Element, Fill, Length};
-use loa_surface_docs::Format;
+use loa_surfaces::docs::Format;
 use loa_ui_kit::icons::{Icon, muted};
 use loa_ui_shell::theme::style as shell;
 use std::path::{Path, PathBuf};

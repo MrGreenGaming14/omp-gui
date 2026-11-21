@@ -18,7 +18,7 @@ use loa_contracts::harness::SessionConfig;
 use loa_bus::SessionId;
 use loa_core::{NodeId, PatchSink, TurnStatus, attr};
 use loa_contracts::surface::SurfaceUri;
-use loa_surface_hub::{CaptureMode, HubConfig, HubEvent, Listed, McpEndpoint, Opened, SurfaceHub, SurfaceTools, dom};
+use loa_surfaces::{CaptureMode, HubConfig, HubEvent, Listed, McpEndpoint, Opened, SurfaceHub, SurfaceTools, dom};
 use loa_ui_palette as palette;
 use loa_ui_surface::{Available, BrowserStatus, Capture, CaptureStatus, DocsRenderers, Panel, PanelOptions, panel};
 use tokio::sync::broadcast::error::RecvError;
@@ -64,7 +64,7 @@ pub enum Message {
     Endpoint(Result<Endpoint, String>),
     /// The machine's video encoders were tried.
     #[cfg(feature = "remote-video")]
-    Encoders(Arc<loa_surface_hub::LiveVideo>),
+    Encoders(Arc<loa_surfaces::LiveVideo>),
     /// Whether the running browser keeps the other capture until its tabs
     /// close.
     CapturePending(bool),

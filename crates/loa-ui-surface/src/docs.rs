@@ -4,7 +4,7 @@
 use crate::document::{PageError, PageRenderer, PageRenderers, RgbaPage};
 use iced::Size;
 use loa_contracts::surface::Document;
-use loa_surface_docs::{Fonts, Format, Paged, open_pages};
+use loa_surfaces::docs::{Fonts, Format, Paged, open_pages};
 
 /// Opens documents with the `loa-surface-docs` parsers and renders their
 /// pages with `fonts`.
@@ -51,7 +51,7 @@ impl PageRenderer for DocsPages {
 
     fn render(&self, index: usize, scale: f32) -> Result<RgbaPage, PageError> {
         let page = self.paged.render_page(index, scale, &self.fonts).map_err(|e| match e {
-            loa_surface_docs::DocsError::PageRange { index, .. } => PageError::NoPage(index),
+            loa_surfaces::docs::DocsError::PageRange { index, .. } => PageError::NoPage(index),
             other => PageError::Render(other.to_string()),
         })?;
         Ok(RgbaPage { width: page.width, height: page.height, pixels: page.data })
