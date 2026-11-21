@@ -40,4 +40,6 @@ pub mod selector;
 pub mod testing;
 pub mod settings;
 pub mod service;
+#[cfg(test)]
+mod service_tests;
 pub mod yaml;
