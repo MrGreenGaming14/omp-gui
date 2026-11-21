@@ -7,8 +7,7 @@ publish.workspace = true
 
 [dependencies]
 loa-contracts.workspace = true
-loa-surface-proto = { path = "../loa-surface-proto", optional = true }
-loa-surface-docs = { path = "../loa-surface-docs" }
+loa-surfaces = { path = "../loa-surfaces", default-features = false, features = ["docs"] }
 loa-ui-kit.workspace = true
 loa-ui-shell = { path = "../loa-ui-shell" }
 iced.workspace = true
@@ -16,14 +15,10 @@ bytes.workspace = true
 futures.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
-image = { version = "0.25", default-features = false, features = ["png", "gif", "webp", "bmp"] }
-# image 0.25's JPEG backend mis-decodes baseline JPEGs with one scan per
-# component, which is how Chrome encodes some screencast frames.
-jpeg-decoder = { version = "0.3", default-features = false }
 
 [features]
 # Live video and omp/surface/1 for viewers across the network.
-remote-video = ["dep:loa-surface-proto"]
+remote-video = ["loa-surfaces/remote-video"]
 
 [dev-dependencies]
 async-trait.workspace = true
@@ -31,5 +26,5 @@ iced_runtime = "0.14"
 iced_test = "0.14"
 tempfile.workspace = true
 rust_xlsxwriter = "0.103"
-loa-surface-hub = { path = "../loa-surface-hub" }
-image = { version = "0.25", default-features = false, features = ["jpeg"] }
+loa-surfaces = { path = "../loa-surfaces", features = ["testkit"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }

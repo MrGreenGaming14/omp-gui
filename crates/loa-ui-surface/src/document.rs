@@ -157,11 +157,7 @@ impl Pages {
 
 /// The size of an image document, read from its header.
 pub fn image_size(data: &[u8]) -> Result<Size, PageError> {
-    let (w, h) = image::ImageReader::new(std::io::Cursor::new(data))
-        .with_guessed_format()
-        .map_err(|e| PageError::Render(e.to_string()))?
-        .into_dimensions()
-        .map_err(|e| PageError::Render(e.to_string()))?;
+    let (w, h) = loa_surfaces::pixels::image_size(data).map_err(|e| PageError::Render(e.to_string()))?;
     Ok(Size::new(w as f32, h as f32))
 }
 

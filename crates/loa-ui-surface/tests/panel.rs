@@ -75,7 +75,7 @@ fn spawn(task: Task<Message>, out: mpsc::UnboundedSender<Message>) {
 }
 
 fn panel(dir: &std::path::Path) -> Panel {
-    let options = PanelOptions { documents: Some(Arc::new(DocsRenderers::new(loa_surface_docs::Fonts::none()))), ..PanelOptions::default() };
+    let options = PanelOptions { documents: Some(Arc::new(DocsRenderers::new(loa_surfaces::docs::Fonts::none()))), ..PanelOptions::default() };
     let browser = BrowserStatus::Ready { executable: "/usr/bin/chromium".into(), sandboxed: true };
     Panel::new(options, browser, dir)
 }

@@ -12,7 +12,7 @@ use loa_contracts::harness::{Capabilities, OutputBlock, SessionConfig};
 use loa_core::{Dom, ElementKind, attr};
 use loa_mcp::{HttpSpec, ServerSpec, Transport};
 use loa_contracts::surface::{MouseButton, SurfaceMode, SurfaceUri};
-use loa_surface_hub::{HubConfig, McpEndpoint, Origin, SurfaceHub, SurfaceTools};
+use loa_surfaces::{HubConfig, McpEndpoint, Origin, SurfaceHub, SurfaceTools};
 use loa_ui_palette as palette;
 use loa_ui_surface::{PointerInput, panel, picker};
 use serde_json::json;
@@ -385,15 +385,15 @@ async fn decoded(
     encoding: loa_contracts::surface::Encoding,
     rgb: [u8; 3],
 ) {
-    let (mut decoder, mut canvas) = (loa_surface_hub::proto::video::decode::FrameDecoder::new(), loa_surface_hub::proto::video::decode::Canvas::new(0, 0));
+    let (mut decoder, mut canvas) = (loa_surfaces::proto::video::decode::FrameDecoder::new(), loa_surfaces::pixels::RgbaImage::default());
     let wait = async {
         loop {
             let Ok(frame) = frames.recv().await else { continue };
             if decoder.apply(&frame, &mut canvas).is_err() || frame.encoding != encoding {
                 continue;
             }
-            let at = ((canvas.height() / 2 * canvas.width() + canvas.width() / 2) * 4) as usize;
-            if canvas.rgba()[at..at + 3].iter().zip(rgb).all(|(&a, b)| a.abs_diff(b) < 60) {
+            let at = ((canvas.height / 2 * canvas.width + canvas.width / 2) * 4) as usize;
+            if canvas.data[at..at + 3].iter().zip(rgb).all(|(&a, b)| a.abs_diff(b) < 60) {
                 return;
             }
         }
@@ -463,7 +463,7 @@ async fn peer_video(driver: &mut Driver, hub: &SurfaceHub, uri: &SurfaceUri) {
     };
     driver.surfaces(panel::Message::Video(false));
     switched(false).await;
-    assert_eq!(network.stream().unwrap().encoder, loa_surface_hub::proto::video::SOURCE);
+    assert_eq!(network.stream().unwrap().encoder, loa_surfaces::proto::video::SOURCE);
     decoded(&mut frames, loa_contracts::surface::Encoding::Jpeg, [0, 0, 255]).await;
     assert!(!hub.video().enabled());
     assert!(!driver.app.ctx.services.config.load().unwrap().surfaces.video);
@@ -485,7 +485,7 @@ async fn the_virtual_display_capture_says_why_it_cant_run_and_is_saved_where_it_
     assert_eq!(capture.virtual_display_missing.as_deref(), Some("Xvfb isn't installed (install the xvfb package)"));
     driver.surfaces(panel::Message::Capture(panel::Capture::VirtualDisplay));
     assert_eq!(driver.area().panel().capture().selected, panel::Capture::Screencast);
-    assert_eq!(driver.area().hub().capture(), loa_surface_hub::CaptureMode::Screencast);
+    assert_eq!(driver.area().hub().capture(), loa_surfaces::CaptureMode::Screencast);
 
     // A fake Xvfb that reports a display but serves none: the choice is
     // taken and saved, and opening a tab fails with the browser's reason.
@@ -499,12 +499,12 @@ async fn the_virtual_display_capture_says_why_it_cant_run_and_is_saved_where_it_
     // A display number no X server here listens on.
     let free = (6000..7000).find(|n| !std::path::Path::new(&format!("/tmp/.X11-unix/X{n}")).exists()).unwrap();
     loa_util::exec::write_executable(&xvfb, format!("#!/bin/sh\necho {free}\nexec sleep 600\n")).unwrap();
-    config.virtual_display = Ok(loa_surface_hub::VirtualDisplaySetup { xvfb, chrome });
+    config.virtual_display = Ok(loa_surfaces::VirtualDisplaySetup { xvfb, chrome });
     let hub = SurfaceHub::new(config);
     let mut driver = Driver::new(dir.path(), Arc::clone(&hub));
     assert_eq!(driver.area().panel().capture().virtual_display_missing, None);
     driver.surfaces(panel::Message::Capture(panel::Capture::VirtualDisplay));
-    assert_eq!(hub.capture(), loa_surface_hub::CaptureMode::VirtualDisplay);
+    assert_eq!(hub.capture(), loa_surfaces::CaptureMode::VirtualDisplay);
     let saved = driver.app.ctx.services.config.load().unwrap().surfaces;
     assert_eq!(saved.browser_capture, loa_config::BrowserCapture::VirtualDisplay);
 

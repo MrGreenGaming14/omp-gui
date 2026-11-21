@@ -32,7 +32,7 @@ loa-ui-models = { path = "../loa-ui-models" }
 loa-models = { path = "../loa-models" }
 loa-ui-peers = { path = "../loa-ui-peers" }
 loa-ui-surface = { path = "../loa-ui-surface" }
-loa-surface-hub = { path = "../loa-surface-hub" }
+loa-surfaces = { path = "../loa-surfaces" }
 loa-projects = { path = "../loa-projects" }
 loa-ui-projects = { path = "../loa-ui-projects" }
 loa-mcp = { path = "../loa-mcp" }
@@ -52,7 +52,7 @@ serde_json.workspace = true
 
 [features]
 # Live video for peers: the "Live video" launcher toggle and in-process H.264.
-remote-video = ["loa-surface-hub/remote-video", "loa-ui-surface/remote-video"]
+remote-video = ["loa-surfaces/remote-video", "loa-ui-surface/remote-video"]
 
 [dev-dependencies]
 iced_runtime = "0.14"
