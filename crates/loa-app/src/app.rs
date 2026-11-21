@@ -427,6 +427,7 @@ impl App {
             Intent::Theme(picked) => {
                 let active = self.ctx.shell.theme();
                 self.sessions.chat.set_theme(&active);
+                self.sessions.chat.set_bottom_inset(width(LayoutRole::ComposerInset));
                 self.areas.get_mut::<areas::decisions::State>().set_theme(&active);
                 if let Some(theme) = picked {
                     self.ctx.edit_config("settings", |config| config.appearance.theme = theme);

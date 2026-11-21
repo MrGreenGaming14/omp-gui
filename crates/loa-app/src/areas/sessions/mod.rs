@@ -76,7 +76,7 @@ pub struct State {
     /// Compacted successor id -> the session it replaces.
     compacted: HashMap<String, String>,
     /// Opens links clicked in the transcript.
-    opener: Arc<dyn UrlOpener>,
+    pub(crate) opener: Arc<dyn UrlOpener>,
     /// The fork or rewind being started, to show the Session tab once it is active.
     branching: Option<String>,
 }

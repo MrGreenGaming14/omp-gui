@@ -115,7 +115,8 @@ impl TestApp {
         *app.areas.get_mut::<models::State>() = models::State::with_backend(Backend::new(parts));
         let (projects, _rebuilds) = projects::State::with(&mut app.ctx, Arc::new(Offline), ServiceConfig::default());
         *app.areas.get_mut::<projects::State>() = projects;
-        app.areas.get_mut::<sessions::State>().home = dir.path().join("home");
+        let sessions = app.areas.get_mut::<sessions::State>();
+        (sessions.home, sessions.opener) = (dir.path().join("home"), Arc::new(Offline));
         Self { app, harness, usage, dir, runtime, tracker: Tracker::new(), feed: mpsc::channel(256) }
     }
 

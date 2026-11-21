@@ -119,9 +119,21 @@ impl State {
 ```
 
 - Session data arrives as `&loa_core::Dom` or as patches. Other data arrives as plain structs the UI crate defines
-- Colors come from the `iced::Theme` extended palette, never from literals, so the dark and light themes apply everywhere
+- Colors, text sizes, spacing and layout widths come from the `loa-ui-kit` theme tokens (`ColorRole`, `TextRole`, `SpaceRole`, `LayoutRole`), never from literals, so runtime themes apply everywhere. `scripts/lint-ui-literals.sh` checks the UI crates and `loa-app`
 - Standard iced widgets first. A hand built widget carries a label (accessibility readiness, see `docs/accessibility.md`)
 - Logic is tested through `update` and through `iced_test` headless runs. Tests never open a window
+
+## The app
+
+`loa-app` holds the `App`, a `Ctx` every area reads and changes, and the area `Registry` built from one `AREAS` table.
+
+- `Services` splits into `NodeServices` (identity, grants, MCP servers), `Storage` (directories, session library, config), `Harnesses` and `Host`. `Host` holds the ports to outside programs: `GitProbe`, `FolderPicker` and `UsageSource`, with command line adapters (git, zenity or kdialog, `omp usage`). Tests pass fakes
+- `app/lifecycle.rs`: the `SessionController` starts, resumes, sends to, spawns, interrupts, feeds and dispatches sessions with `&mut Ctx` and the areas. It reports what the app must do with its own parts (present a folder, reread the diff, run a queued prompt) as `After` items. `App::settle` drains area requests and session events
+- `app/workspace.rs`: the folder and project the app works in, recent folders and project tabs
+- Shell and composer events go through route tables (`route`, `compose`) to one `Intent` handler
+- `app/windows.rs`: Configs, Settings (kit `side_nav`) and detached OS windows. `app/usage.rs`: the Usage window
+- `areas/sessions`: `branch` (one `spawn_branch` strategy for fork, rewind and compaction), `plan`, `hooks` (rules and advisor), `transfer` (import and export) and `tree`
+- `testing` (tests only): `TestApp` runs the app headless with its real subscriptions on a scripted harness, with no model, browser, git, dialog or `omp` calls
 
 ## Protocols and versions
 

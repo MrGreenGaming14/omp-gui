@@ -34,6 +34,8 @@ pub struct NodeServices {
 impl NodeServices {
     /// The node over `identity`, its grant store in `data`.
     pub fn open(identity: NodeIdentity, label: String, key_source: KeySource, data: &Path) -> Result<Self, String> {
+        // On a first run nothing has created the data directory yet.
+        std::fs::create_dir_all(data).map_err(|error| format!("Can't create the data directory {}: {error}", data.display()))?;
         let grants_path = data.join("grants.db");
         let grants = loa_trust::GrantStore::open(&grants_path).map_err(|error| format!("Can't open the grant store {}: {error}", grants_path.display()))?;
         let mcp = loa_mcp::Manager::new(loa_mcp::Options::default()).map_err(|error| format!("Can't set up the MCP client: {error}"))?;
@@ -176,8 +178,17 @@ pub fn starting_folder(arg: Option<String>, temp: PathBuf) -> PathBuf {
 }
 
 #[cfg(test)]
-mod starting_folder_tests {
-    use super::starting_folder;
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_first_run_creates_the_data_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("loa");
+        let key_source = KeySource::Memory { reason: "test".into() };
+        NodeServices::open(NodeIdentity::from_secret_bytes(&[1; 32]), "node".into(), key_source, &data).expect("the node opens");
+        assert!(data.join("grants.db").exists());
+    }
 
     #[test]
     fn starts_in_the_temp_folder_unless_a_folder_is_given() {
