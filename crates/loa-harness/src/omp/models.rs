@@ -63,12 +63,10 @@ pub const DISCOVERY_TYPES: [&str; 7] = [
 
 loa_util::str_enum! {
     /// How a provider authenticates (`auth`).
-    pub AuthMode { ApiKey => "apiKey", None => "none", OAuth => "oauth" }
+    #[derive(Default)]
+    pub AuthMode { #[default] ApiKey => "apiKey", None => "none", OAuth => "oauth" }
 }
 
-impl Default for AuthMode {
-    fn default() -> Self { Self::ApiKey }
-}
 
 /// Where omp reads a provider's key from. There is deliberately no variant that
 /// holds a key value.
