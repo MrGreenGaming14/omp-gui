@@ -2,7 +2,7 @@
 //! active tokens at draw time, so overrides and future theme scripts restyle every widget.
 
 use crate::theme::{ColorRole as C, StyleKey, StyleState, TokenSet, for_theme};
-use iced::widget::{self as w, pick_list, scrollable, svg, text_input};
+use iced::widget::{self as w, pick_list, scrollable, svg, text_editor, text_input};
 use iced::{Background, Border, Color, Shadow, Theme, Vector, border};
 use loa_util::Semantic;
 
@@ -139,6 +139,13 @@ pub fn input(theme: &Theme, status: text_input::Status) -> text_input::Style {
         value: t.color(C::Text),
         selection: t.color(C::Accent).scale_alpha(t.alpha(crate::theme::AlphaRole::Tint)),
     }
+}
+
+/// A multi-line editor with the [`input`] look.
+pub fn editor(theme: &Theme, status: text_editor::Status) -> text_editor::Style {
+    let focused = matches!(status, text_editor::Status::Focused { .. });
+    let i = input(theme, if focused { text_input::Status::Focused { is_hovered: false } } else { text_input::Status::Active });
+    text_editor::Style { background: i.background, border: i.border, placeholder: i.placeholder, value: i.value, selection: i.selection }
 }
 
 pub fn pick(theme: &Theme, status: pick_list::Status) -> pick_list::Style {

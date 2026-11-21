@@ -1,9 +1,11 @@
 //! One decision card: its local input state, the answers it produces, and
 //! its view.
 
+use loa_ui_kit::theme::{SpaceRole as Sp, sp, TextRole as T, text_size as ts};
 use crate::decision::{ApprovalChoice, Decision, PlanChoice, answer_summary};
 use crate::form::{FieldType, FieldValue, Form, FormError};
-use crate::{Message, TIMEOUT_BY, diff, style};
+use crate::{Message, TIMEOUT_BY, diff};
+use loa_ui_kit::style::{self as kit, ButtonKind, Surface, Tone};
 use iced::alignment::Vertical;
 use iced::widget::{
     button, checkbox, column, container, markdown, pick_list, row, text, text_editor, text_input,
@@ -286,17 +288,17 @@ impl Card {
         let active = self.open() && !view_only;
         let on = |message: Message| active.then_some(message);
 
-        let mut body = column![header(d)].spacing(10);
+        let mut body = column![header(d)].spacing(sp(Sp::M));
 
         match d.kind {
             DecisionKind::Approval => {
                 let preview: Element<'a, Message> = if diff::is_unified_diff(&d.body) {
                     diff::view(&d.body)
                 } else {
-                    container(text(&d.body).size(13).font(Font::MONOSPACE))
-                        .padding([5, 8])
+                    container(text(&d.body).size(ts(T::Label)).font(Font::MONOSPACE))
+                        .padding([sp(Sp::Xs), sp(Sp::S)])
                         .width(Fill)
-                        .style(style::raised)
+                        .style(kit::container(Surface::Raised))
                         .into()
                 };
                 body = body.push(preview);
@@ -309,20 +311,20 @@ impl Card {
                             !matches!(c, ApprovalChoice::Deny),
                         )
                     });
-                    body = body.push(row(buttons).spacing(8));
+                    body = body.push(row(buttons).spacing(sp(Sp::S)));
                     body = body.push(
                         text_input("Reason for denying (optional)", &self.text)
                             .id(text_field_id(id))
-                            .size(13)
-                            .padding([6, 10])
-                            .style(style::field)
+                            .size(ts(T::Label))
+                            .padding([sp(Sp::S), sp(Sp::M)])
+                            .style(kit::input)
                             .on_input_maybe(active.then_some(move |t| Message::Text(id, t)))
                             .on_submit_maybe(on(Message::SubmitText(id))),
                     );
                 }
             }
             DecisionKind::Question => {
-                body = body.push(text(&d.body).size(14));
+                body = body.push(text(&d.body).size(ts(T::Body)));
                 if d.is_waiting() {
                     let options = d.options.iter().enumerate().map(|(i, option)| {
                         if d.multi {
@@ -335,19 +337,19 @@ impl Card {
                             self.choice_button(i, option, on(Message::Choose(id, i)), false)
                         }
                     });
-                    body = body.push(column(options).spacing(6));
+                    body = body.push(column(options).spacing(sp(Sp::S)));
                     let mut answer_row = row![
                         text_input("Type your own answer", &self.text)
                             .id(text_field_id(id))
-                            .size(13)
-                            .padding([6, 10])
-                            .style(style::field)
+                            .size(ts(T::Label))
+                            .padding([sp(Sp::S), sp(Sp::M)])
+                            .style(kit::input)
                             .on_input_maybe(active.then_some(move |t| Message::Text(id, t)))
                             .on_submit_maybe(on(Message::SubmitText(id))),
                         action_button("Send", on(Message::SubmitText(id)), true),
                     ]
                     .align_y(Vertical::Center)
-                    .spacing(8);
+                    .spacing(sp(Sp::S));
                     if d.multi {
                         answer_row =
                             answer_row.push(action_button("Submit", on(Message::Submit(id)), true));
@@ -361,9 +363,9 @@ impl Card {
                 Some(editor) => {
                     let editor = text_editor(editor)
                         .height(320)
-                        .size(13)
+                        .size(ts(T::Label))
                         .font(Font::MONOSPACE)
-                        .style(style::editor);
+                        .style(kit::editor);
                     // Without `on_action` the editor is read only.
                     let editor = if active {
                         editor.on_action(move |a| Message::EditPlan(id, a))
@@ -376,7 +378,7 @@ impl Card {
                             action_button("Submit edited plan", on(Message::Submit(id)), true),
                             action_button("Cancel", on(Message::CancelEdit(id)), false),
                         ]
-                        .spacing(8),
+                        .spacing(sp(Sp::S)),
                     );
                 }
                 None => {
@@ -390,13 +392,13 @@ impl Card {
                                 matches!(c, PlanChoice::Approve),
                             )
                         });
-                        body = body.push(row(buttons).spacing(8));
+                        body = body.push(row(buttons).spacing(sp(Sp::S)));
                         body = body.push(
                             text_input("Feedback for rejecting", &self.text)
                                 .id(text_field_id(id))
-                                .size(13)
-                                .padding([6, 10])
-                                .style(style::field)
+                                .size(ts(T::Label))
+                                .padding([sp(Sp::S), sp(Sp::M)])
+                                .style(kit::input)
                                 .on_input_maybe(active.then_some(move |t| Message::Text(id, t)))
                                 .on_submit_maybe(on(Message::SubmitText(id))),
                         );
@@ -405,7 +407,7 @@ impl Card {
             },
             DecisionKind::Form => {
                 if !d.body.is_empty() {
-                    body = body.push(text(&d.body).size(14));
+                    body = body.push(text(&d.body).size(ts(T::Body)));
                 }
                 match &self.form {
                     Some(Ok(form)) if d.is_waiting() => {
@@ -415,22 +417,22 @@ impl Card {
                                 action_button("Submit", on(Message::Submit(id)), true),
                                 action_button("Skip", on(Message::Skip(id)), false),
                             ]
-                            .spacing(8),
+                            .spacing(sp(Sp::S)),
                         );
                     }
                     Some(Err(error)) if d.is_waiting() => {
                         body = body.push(
                             text(format!("This form can't be shown: {error}"))
-                                .size(13)
-                                .style(text::danger),
+                                .size(ts(T::Label))
+                                .style(kit::text(Tone::Danger)),
                         );
                         body = body.push(action_button("Skip", on(Message::Skip(id)), false));
                     }
                     None if d.is_waiting() => {
                         body = body.push(
                             text("This form declares no fields")
-                                .size(13)
-                                .style(text::danger),
+                                .size(ts(T::Label))
+                                .style(kit::text(Tone::Danger)),
                         );
                         body = body.push(action_button("Skip", on(Message::Skip(id)), false));
                     }
@@ -444,9 +446,9 @@ impl Card {
         }
 
         container(body)
-            .padding(12)
+            .padding(sp(Sp::M))
             .width(Fill)
-            .style(style::card(focused))
+            .style(kit::container(if focused { Surface::Attention } else { Surface::Card }))
             .into()
     }
 
@@ -460,14 +462,14 @@ impl Card {
         let selected = self.selected == Some(index);
         button(
             row![
-                text(index + 1).font(Font::MONOSPACE).size(12),
-                text(label).size(13),
+                text(index + 1).font(Font::MONOSPACE).size(ts(T::Caption)),
+                text(label).size(ts(T::Label)),
             ]
-            .spacing(8)
+            .spacing(sp(Sp::S))
             .align_y(Vertical::Center),
         )
-        .padding([5, 10])
-        .style(style::action(primary, selected))
+        .padding([sp(Sp::Xs), sp(Sp::M)])
+        .style(action(primary, selected))
         .on_press_maybe(on_press)
         .into()
     }
@@ -482,29 +484,29 @@ impl Card {
                 None => prefix.to_owned(),
             }
         };
-        let (status, tone): (String, fn(&Theme) -> text::Style) = match d.status {
-            DecisionStatus::Waiting if self.pending => ("Sending answer…".to_owned(), style::muted),
+        let (status, tone): (String, Tone) = match d.status {
+            DecisionStatus::Waiting if self.pending => ("Sending answer…".to_owned(), Tone::Muted),
             DecisionStatus::Waiting if view_only => (
                 "View only: you can't answer this prompt".to_owned(),
-                style::muted,
+                Tone::Muted,
             ),
             DecisionStatus::Waiting => return None,
             DecisionStatus::Answered => (by(&answer_summary(d.kind, &d.answer)), outcome_tone(d)),
-            DecisionStatus::Expired => (by("Expired"), style::muted),
-            DecisionStatus::Cancelled => ("Cancelled".to_owned(), style::muted),
+            DecisionStatus::Expired => (by("Expired"), Tone::Muted),
+            DecisionStatus::Cancelled => ("Cancelled".to_owned(), Tone::Muted),
         };
-        let mut footer = column![text(status).size(14).style(tone)].spacing(6);
+        let mut footer = column![text(status).size(ts(T::Body)).style(kit::text(tone))].spacing(sp(Sp::S));
         if d.status == DecisionStatus::Answered {
             if d.kind == DecisionKind::Form
                 && let [json] = d.answer.as_slice()
             {
-                footer = footer.push(text(json).size(13).font(Font::MONOSPACE));
+                footer = footer.push(text(json).size(ts(T::Label)).font(Font::MONOSPACE));
             }
             if let Some(reason) = &d.reason {
                 let plan_edit = d.kind == DecisionKind::Plan
                     && PlanChoice::from_answer(d.answer.first().map_or("", String::as_str))
                         == Some(PlanChoice::Edit);
-                let reason = text(reason).size(13).style(style::muted);
+                let reason = text(reason).size(ts(T::Label)).style(kit::text(Tone::Muted));
                 let reason: Element<'a, Message> = if plan_edit {
                     reason.font(Font::MONOSPACE).into()
                 } else {
@@ -527,18 +529,24 @@ fn header<'a>(d: &'a Decision) -> Element<'a, Message> {
         (DecisionKind::Plan, _) => (Icon::FileText, format!("{who} proposes a plan")),
         (DecisionKind::Form, _) => (Icon::SlidersHorizontal, format!("{who} needs input")),
     };
-    let mut line = row![icon(glyph, 14.0), text(label).size(14).style(text::primary)]
-        .spacing(8)
+    let mut line = row![icon(glyph, ts(T::Body)), text(label).size(ts(T::Body)).style(kit::text(Tone::Accent))]
+        .spacing(sp(Sp::S))
         .align_y(Vertical::Center);
     if let Some(tool) = &d.tool {
-        line = line.push(text(tool).size(14).style(text::primary));
+        line = line.push(text(tool).size(ts(T::Body)).style(kit::text(Tone::Accent)));
     }
     // An approval naming its tool says nothing more; other headers show the title.
     let title_shown = !(d.kind == DecisionKind::Approval && d.tool.is_some());
     if let Some(title) = d.title.as_ref().filter(|_| title_shown) {
-        line = line.push(text(title).size(13).style(style::muted));
+        line = line.push(text(title).size(ts(T::Label)).style(kit::text(Tone::Muted)));
     }
     line.into()
+}
+
+/// Button look: `primary` is the answer the card leans toward, `selected` the option a number
+/// key highlighted.
+fn action(primary: bool, selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    kit::button(if primary { ButtonKind::Accent } else if selected { ButtonKind::Tab { active: true } } else { ButtonKind::Secondary })
 }
 
 /// A labeled card button; `primary` marks the answer the card leans toward.
@@ -547,31 +555,31 @@ fn action_button<'a>(
     on_press: Option<Message>,
     primary: bool,
 ) -> Element<'a, Message> {
-    button(text(label).size(13))
-        .padding([5, 10])
-        .style(style::action(primary, false))
+    button(text(label).size(ts(T::Label)))
+        .padding([sp(Sp::Xs), sp(Sp::M)])
+        .style(action(primary, false))
         .on_press_maybe(on_press)
         .into()
 }
 
 /// Tone of an answered card's status line: approvals and plans that allow
 /// are green and refusals red; other answers stay plain.
-fn outcome_tone(d: &Decision) -> fn(&Theme) -> text::Style {
+fn outcome_tone(d: &Decision) -> Tone {
     let Some(first) = d.answer.first() else {
-        return style::muted;
+        return Tone::Muted;
     };
     match d.kind {
         DecisionKind::Approval => match ApprovalChoice::from_answer(first) {
-            Some(ApprovalChoice::Deny) => text::danger,
-            Some(_) => text::success,
-            None => text::default,
+            Some(ApprovalChoice::Deny) => Tone::Danger,
+            Some(_) => Tone::Ok,
+            None => Tone::Normal,
         },
         DecisionKind::Plan => match PlanChoice::from_answer(first) {
-            Some(PlanChoice::Reject) => text::danger,
-            Some(PlanChoice::Edit | PlanChoice::Approve) => text::success,
-            None => text::default,
+            Some(PlanChoice::Reject) => Tone::Danger,
+            Some(PlanChoice::Edit | PlanChoice::Approve) => Tone::Ok,
+            None => Tone::Normal,
         },
-        DecisionKind::Question | DecisionKind::Form => text::default,
+        DecisionKind::Question | DecisionKind::Form => Tone::Normal,
     }
 }
 
@@ -588,9 +596,9 @@ fn form_view<'a>(id: NodeId, form: &'a Form, active: bool) -> Element<'a, Messag
             } else {
                 field.label.clone()
             };
-            let mut cell = column![text(label).size(13)].spacing(4);
+            let mut cell = column![text(label).size(ts(T::Label))].spacing(sp(Sp::Xs));
             if let Some(description) = &field.description {
-                cell = cell.push(text(description).size(12).style(style::muted));
+                cell = cell.push(text(description).size(ts(T::Caption)).style(kit::text(Tone::Muted)));
             }
             let input: Element<'a, Message> = match value {
                 FieldValue::Bool(checked) => checkbox(*checked)
@@ -614,7 +622,7 @@ fn form_view<'a>(id: NodeId, form: &'a Form, active: bool) -> Element<'a, Messag
                         })
                         .placeholder("Choose…")
                         .text_size(13)
-                        .style(style::select)
+                        .style(kit::pick)
                         .into()
                     } else {
                         text(selected.map_or("", String::as_str)).into()
@@ -634,14 +642,14 @@ fn form_view<'a>(id: NodeId, form: &'a Form, active: bool) -> Element<'a, Messag
                             }))
                             .into()
                     }))
-                    .spacing(6)
+                    .spacing(sp(Sp::S))
                     .into()
                 }
                 FieldValue::Text(raw) => text_input(&field.name, raw)
                     .id(form_field_id(id, i))
-                    .size(13)
-                    .padding([6, 10])
-                    .style(style::field)
+                    .size(ts(T::Label))
+                    .padding([sp(Sp::S), sp(Sp::M)])
+                    .style(kit::input)
                     .on_input_maybe(
                         active.then_some(move |t| Message::Field(id, i, FieldInput::Text(t))),
                     )
@@ -650,11 +658,11 @@ fn form_view<'a>(id: NodeId, form: &'a Form, active: bool) -> Element<'a, Messag
             };
             cell = cell.push(input);
             if let Some(error) = error {
-                cell = cell.push(text(error.to_string()).size(12).style(text::danger));
+                cell = cell.push(text(error.to_string()).size(ts(T::Caption)).style(kit::text(Tone::Danger)));
             }
             cell.into()
         });
-    column(fields).spacing(12).into()
+    column(fields).spacing(sp(Sp::M)).into()
 }
 
 fn parse_plan(decision: &Decision) -> Vec<markdown::Item> {

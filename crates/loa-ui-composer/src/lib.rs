@@ -29,7 +29,7 @@ use loa_core::SessionMode;
 use iced::{Background, Border, Color, Theme};
 use loa_ui_kit::icons::{Icon, icon, muted};
 use loa_ui_kit::style::{self as kit, ButtonKind, Surface, Tone};
-use loa_ui_kit::theme::{AlphaRole, ColorRole as C, LayoutRole, SpaceRole as Sp, TextRole as T, for_theme, sp, text_size as ts, width};
+use loa_ui_kit::theme::{LayoutRole, SpaceRole as Sp, TextRole as T, sp, text_size as ts, width};
 
 use history::{EditKind, History, Snapshot};
 use keys::KeyContext;
@@ -1023,13 +1023,6 @@ mod tests;
 fn kit_row(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style { kit::button(ButtonKind::Row { selected }) }
 
 /// The editor inside the composer box: no fill and no edge of its own.
-fn editor_style(theme: &Theme, _: iced::widget::text_editor::Status) -> iced::widget::text_editor::Style {
-    let t = for_theme(theme);
-    iced::widget::text_editor::Style {
-        background: Background::Color(Color::TRANSPARENT),
-        border: Border::default(),
-        placeholder: t.color(C::Text3),
-        value: t.color(C::Text),
-        selection: t.color(C::Accent).scale_alpha(t.alpha(AlphaRole::Tint)),
-    }
+fn editor_style(theme: &Theme, status: iced::widget::text_editor::Status) -> iced::widget::text_editor::Style {
+    iced::widget::text_editor::Style { background: Background::Color(Color::TRANSPARENT), border: Border::default(), ..kit::editor(theme, status) }
 }
