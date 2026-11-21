@@ -10,7 +10,6 @@
 //! [`Tab`] also offers the structured reads the MCP layer hands to the agent:
 //! [`Tab::page_info`], [`Tab::page_text`] and [`Tab::outline`].
 
-pub mod bench;
 mod chrome;
 mod error;
 mod frames;
