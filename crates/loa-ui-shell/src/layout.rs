@@ -8,13 +8,13 @@
 //! active one.
 
 use crate::data::{NodeStatus, Nodes, SessionSummary, UsageMeter, short_key};
-use crate::theme::{self, Preference, style};
+use crate::theme::{self, Appearance, ThemeRef, style};
 use crate::{sidebar, topbar};
 use iced::theme::Mode;
 use iced::widget::operation::{self, AbsoluteOffset, RelativeOffset};
 use iced::widget::{button, column, container, mouse_area, row, rule, scrollable, sensor, space, text};
 use iced::{Alignment, Element, Fill, Size, Subscription, Task, Theme, mouse};
-use loa_ui_icons::{Icon, icon, muted};
+use loa_ui_kit::icons::{Icon, icon, muted};
 
 /// Width of the sidebar before the user resizes it.
 pub const SIDEBAR_WIDTH: f32 = 272.0;
@@ -185,7 +185,7 @@ pub enum Message {
     /// The frame was laid out at this size.
     FrameSized(Size),
     /// The user picked a theme.
-    SetTheme(Preference),
+    SetTheme(ThemeRef),
     /// The system theme changed.
     SystemTheme(Mode),
 }
@@ -247,7 +247,9 @@ pub enum Event {
     /// Put this detached tab back in the panel.
     ReattachTab(String),
     /// The user picked a theme. Persist it.
-    SetTheme(Preference),
+    SetTheme(ThemeRef),
+    /// The active tokens changed to this generation; rebuild cached looks.
+    ThemeChanged(u64),
 }
 
 impl From<sidebar::Event> for Event {
@@ -270,9 +272,9 @@ impl From<sidebar::Event> for Event {
 }
 
 impl State {
-    /// Builds the frame with the saved theme preference and panel settings.
+    /// Builds the frame with the saved appearance and panel settings.
     /// The task asks the system for its theme.
-    pub fn new(preference: Preference, panel: PanelPrefs) -> (Self, Task<Message>) {
+    pub fn new(appearance: Appearance, panel: PanelPrefs) -> (Self, Task<Message>) {
         let mut topbar = topbar::State::default();
         topbar.set_panel_open(panel.open);
         let state = Self {
@@ -284,7 +286,7 @@ impl State {
                 tabs: Vec::new(),
                 active: panel.active,
             },
-            theme: theme::State::new(preference),
+            theme: theme::State::new(appearance),
             frame: None,
             project_tabs: false,
             open_projects: Vec::new(),
@@ -307,9 +309,14 @@ impl State {
         self.theme.theme()
     }
 
-    /// The user's theme preference.
-    pub fn theme_preference(&self) -> Preference {
-        self.theme.preference()
+    /// The theme state: the picked theme, the registry's themes and the generation.
+    pub fn theme_state(&self) -> &theme::State {
+        &self.theme
+    }
+
+    /// Replaces the appearance (theme and overrides), e.g. after the config changed.
+    pub fn set_appearance(&mut self, appearance: Appearance) -> Option<Event> {
+        (self.theme.appearance() != &appearance).then(|| Event::ThemeChanged(self.theme.set_appearance(appearance)))
     }
 
     /// The sidebar, for reading its lists.
@@ -645,13 +652,14 @@ impl State {
                 self.frame = Some(size);
                 (Task::none(), None)
             }
-            Message::SetTheme(preference) => {
-                self.theme.set_preference(preference);
-                (Task::none(), Some(Event::SetTheme(preference)))
+            Message::SetTheme(theme) => {
+                self.theme.set_preference(theme.clone());
+                (Task::none(), Some(Event::SetTheme(theme)))
             }
             Message::SystemTheme(mode) => {
-                self.theme.set_system_mode(mode);
-                (Task::none(), None)
+                let before = self.theme.variant();
+                let generation = self.theme.set_system_mode(mode);
+                (Task::none(), (self.theme.variant() != before).then_some(Event::ThemeChanged(generation)))
             }
         }
     }
@@ -873,7 +881,7 @@ mod tests {
     use super::*;
 
     fn frame() -> State {
-        let (mut state, _) = State::new(Preference::System, PanelPrefs::default());
+        let (mut state, _) = State::new(Appearance::default(), PanelPrefs::default());
         state.set_tabs(vec![PanelTab::new("diff", "Diff"), PanelTab::new("files", "Files"), PanelTab::new("terminal", "Terminal")]);
         state
     }
@@ -941,7 +949,7 @@ mod tests {
     #[test]
     fn removed_active_tab_falls_back_and_restored_tab_applies_when_added() {
         let (mut state, _) = State::new(
-            Preference::Dark,
+            Appearance { theme: ThemeRef("dark".into()), ..Default::default() },
             PanelPrefs { open: true, width: 500.0, active: Some("agents".into()) },
         );
         state.add_tab(PanelTab::new("diff", "Diff"));
@@ -1000,8 +1008,9 @@ mod tests {
         let mut state = frame();
         send(&mut state, Message::SystemTheme(Mode::Light));
         assert!(!state.theme().extended_palette().is_dark);
-        let (_, event) = state.update(Message::SetTheme(Preference::Dark));
-        assert_eq!(event, Some(Event::SetTheme(Preference::Dark)));
+        let dark = ThemeRef("dark".into());
+        let (_, event) = state.update(Message::SetTheme(dark.clone()));
+        assert_eq!(event, Some(Event::SetTheme(dark)));
         assert!(state.theme().extended_palette().is_dark);
     }
 

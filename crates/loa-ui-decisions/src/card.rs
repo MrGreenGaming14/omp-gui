@@ -10,7 +10,7 @@ use iced::widget::{
 };
 use iced::{Element, Fill, Font, Theme};
 use loa_core::{DecisionKind, DecisionStatus, NodeId};
-use loa_ui_icons::{Icon, icon};
+use loa_ui_kit::icons::{Icon, icon};
 
 /// Values and reason of an answer, before the answering user is added.
 #[derive(Clone, Debug, PartialEq)]

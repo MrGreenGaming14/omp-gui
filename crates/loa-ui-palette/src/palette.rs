@@ -17,7 +17,7 @@ use iced::widget::{
     scrollable, space, span, text, text_input,
 };
 use iced::{Element, Fill, Font, Length, Subscription, Task, Theme, font};
-use loa_ui_icons::Icon;
+use loa_ui_kit::icons::Icon;
 
 use crate::CommandId;
 use crate::fuzzy::{Class, Matcher, highlight_runs};
@@ -345,7 +345,7 @@ impl State {
             .size(14)
             .style(Self::search_style);
         let search = container(
-            row![loa_ui_icons::muted(Icon::Search, 14.0), input].spacing(6).align_y(iced::Center),
+            row![loa_ui_kit::icons::muted(Icon::Search, 14.0), input].spacing(6).align_y(iced::Center),
         )
         .padding([0, 13]);
 
@@ -637,17 +637,7 @@ fn row_block_height(row: &Row) -> f32 {
     ROW_HEIGHT + if row.starts_section { HEADER_HEIGHT } else { 0.0 }
 }
 
-/// The scroll offset that brings `top..bottom` into a viewport of `height`
-/// currently scrolled to `offset`, or `None` when it is already visible.
-pub fn scroll_target(offset: f32, height: f32, top: f32, bottom: f32) -> Option<f32> {
-    if top < offset {
-        Some(top)
-    } else if bottom > offset + height {
-        Some(bottom - height)
-    } else {
-        None
-    }
-}
+use loa_ui_kit::widgets::scroll_target;
 
 #[cfg(test)]
 mod tests {
@@ -890,13 +880,6 @@ mod tests {
         let _ = state.update(Message::SelectPrevious);
         assert_eq!(state.selected().unwrap().title, "Command 19");
         assert_eq!(state.scroll_offset, HEADER_HEIGHT + 20.0 * ROW_HEIGHT - MAX_LIST_HEIGHT);
-    }
-
-    #[test]
-    fn scroll_target_only_moves_when_needed() {
-        assert_eq!(scroll_target(0.0, 100.0, 10.0, 40.0), None);
-        assert_eq!(scroll_target(50.0, 100.0, 10.0, 40.0), Some(10.0));
-        assert_eq!(scroll_target(0.0, 100.0, 90.0, 124.0), Some(24.0));
     }
 
     #[test]

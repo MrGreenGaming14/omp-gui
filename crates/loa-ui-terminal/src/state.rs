@@ -12,7 +12,7 @@ use bytes::Bytes;
 use iced::task::Handle;
 use iced::widget::{button, canvas, center, column, container, row, text};
 use iced::{Element, Fill, Task, clipboard};
-use loa_ui_icons::{Icon, muted};
+use loa_ui_kit::icons::{Icon, muted};
 use tokio::sync::mpsc;
 
 use crate::canvas::{CanvasEvent, Metrics, TerminalCanvas};

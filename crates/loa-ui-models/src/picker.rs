@@ -10,7 +10,7 @@ use iced::keyboard::{self, key::Named};
 use iced::widget::operation::{self, RelativeOffset};
 use iced::widget::{button, column, container, row, scrollable, space, text, text_input};
 use iced::{Element, Fill, Subscription, Task};
-use loa_ui_icons::Icon;
+use loa_ui_kit::icons::Icon;
 
 const SEARCH_ID: &str = "loa-model-picker-search";
 const LIST_ID: &str = "loa-model-picker-list";

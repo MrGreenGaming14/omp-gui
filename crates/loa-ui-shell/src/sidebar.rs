@@ -11,7 +11,7 @@ use crate::data::{NodeFilter, NodeStatus, Nodes, SessionSummary, UsageMeter};
 use crate::theme::style;
 use iced::widget::{Column, button, column, container, hover, row, scrollable, space, text, text_input};
 use iced::{Alignment, Element, Fill, Length, Padding, Task};
-use loa_ui_icons::{Icon, icon, muted};
+use loa_ui_kit::icons::{Icon, icon, muted};
 
 /// Id of the search input, for focusing it from a shortcut.
 pub const SEARCH_ID: &str = "loa-sidebar-search";

@@ -9,7 +9,7 @@
 //! with the palette, binds chords to them in the [`keymap::Keymap`], and maps
 //! the ids it receives back to actions.
 
-pub mod fuzzy;
+pub use loa_ui_kit::text::fuzzy;
 pub mod keymap;
 pub mod palette;
 

@@ -12,7 +12,7 @@ publish = false
 loa-util = { path = "crates/loa-util" }
 loa-core = { path = "crates/loa-core" }
 loa-contracts = { path = "crates/loa-contracts" }
-loa-ui-icons = { path = "crates/loa-ui-icons" }
+loa-ui-kit = { path = "crates/loa-ui-kit" }
 async-trait = "0.1"
 bytes = "1"
 futures = "0.3"
