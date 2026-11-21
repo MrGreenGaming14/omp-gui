@@ -1,6 +1,6 @@
 # omp tools bridge
 
-How the app offers omp's own tools (hashline `read`/`edit`, `lsp`, `debug`, `ast_grep`, `ast_edit`) to harnesses that are not omp, as an MCP server. Code: `crates/loa-omp-bridge`. Checked against omp 19.0.0.
+How the app offers omp's own tools (hashline `read`/`edit`, `lsp`, `debug`, `ast_grep`, `ast_edit`) to harnesses that are not omp, as an MCP server. Code: `crates/loa-mcp/src/bridge/`. Checked against omp 19.0.0.
 
 ## Can omp's tools run outside an omp agent loop? (#104)
 
@@ -34,19 +34,19 @@ How the app offers omp's own tools (hashline `read`/`edit`, `lsp`, `debug`, `ast
 ## The bridge (#105)
 
 ```text
-harness ──MCP stdio──▶ loa-omp-bridge ──RPC JSONL──▶ omp --mode rpc ──HTTP──▶ loopback "model" (in the bridge)
+harness ──MCP stdio──▶ loa omp-bridge ──RPC JSONL──▶ omp --mode rpc ──HTTP──▶ loopback "model" (in the bridge)
 ```
 
 1. Start: write `models.yml` registering the loopback provider and a settings overlay, spawn `omp --mode rpc --no-session --no-ui --no-extensions --no-skills --no-rules --no-context-files --no-title --offline --auto-approve --model loa-omp-bridge/scripted --tools <list>`, wait for `ready`, negotiate protocol v2 (chunked frames are reassembled), read `get_state.dumpTools`.
 2. `tools/list`: the configured tools with omp's schemas.
 3. `tools/call`: send `prompt` with a marker carrying the call id, tool name and arguments. The loopback endpoint sees the marker in the newest user message and streams back that one tool call. omp executes it and emits `tool_execution_end`. The endpoint answers the follow-up request with a short text, the turn ends with `prompt_result`, and the bridge returns the tool's content blocks and `isError`.
 
-Entry points: `OmpExecutor::start(OmpBridgeConfig)`, `serve_stdio(executor)`, `cli::run(args)` (the command line below, shared by the `loa-omp-bridge` binary and the app's `omp-bridge` subcommand), and `session::session_spec(program, prefix, config)`, the stdio MCP server spec (`omp`) a session of another harness is given. `list_omp_tools(config)` starts omp the same way without `--tools` and returns every default tool with its description and schema, for the Tools panel's built in list. Command line: `--state-dir DIR [--cwd DIR] [--omp PATH] [--tools a,b] [--config FILE]`. `ToolExecutor` is the port the MCP server uses, so the server shell is tested with an in-memory executor.
+Entry points: `OmpExecutor::start(&OmpBridgeConfig)`, `OmpExecutor::tool_set()`, `ToolSetMcp::serve_stdio()` and `bridge::run_cli(args)` (the app's `loa omp-bridge` subcommand). `OmpBridgeConfig::session_spec(program, prefix)` builds the stdio MCP server spec (`omp`) for another harness. `list_omp_tools(&config)` starts omp without a tool filter to populate the Tools panel. Command line: `--state-dir DIR [--cwd DIR] [--omp PATH] [--tools a,b] [--config FILE]`.
 
 Default tools: `read`, `edit`, `ast_grep`, `ast_edit`, `lsp`, `debug`. `read` is included because `edit` needs the tags it returns.
 
-Tests (`cargo test -p loa-omp-bridge`): `harness_reads_edits_and_searches_through_omp` spawns the binary as an MCP client would and, against the installed omp in a temp directory, reads a file, applies a hashline edit, checks a stale tag is refused, and runs `ast_grep`. `a_cancelled_call_leaves_the_next_call_correct` covers cancellation.
+Tests (`cargo test -p loa-mcp --test mcp`) drive the bridge's MCP server with a fake omp RPC process, checking tool schemas, successful and failed calls, and unknown-tool rejection. The bridge still needs a live installed-omp end-to-end smoke run for tool execution and cancellation.
 
 ## If omp grows a direct path
 
-Should omp add an RPC command that runs a tool, or an MCP server mode, only `OmpExecutor::run_tool` changes. The MCP side and the port stay as they are.
+Should omp add an RPC command that runs a tool, or an MCP server mode, only the executor's call path changes. The `ToolSetMcp` server adapter remains.
