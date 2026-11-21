@@ -37,10 +37,16 @@ fn api_listing_matches_api_txt() {
         let (old, new) = (semver(&saved_version), semver(version));
         assert!(new > old, "loa_view::VERSION {version} must be greater than api.txt's {saved_version}");
         let removed = diff.lines().any(|l| l.starts_with('-'));
+        let added = diff.lines().any(|l| l.starts_with('+'));
         let major = |v: (u64, u64, u64)| if v.0 == 0 { (0, v.1) } else { (v.0, 0) };
+        let minor = |v: (u64, u64, u64)| if v.0 == 0 { v } else { (v.0, v.1, 0) };
         assert!(
             !removed || major(new) > major(old),
             "items were removed or changed, which needs a major bump of loa_view::VERSION (from {saved_version}, now {version})\n{diff}"
+        );
+        assert!(
+            !added || minor(new) > minor(old),
+            "items were added, which needs at least a minor bump of loa_view::VERSION (from {saved_version}, now {version})\n{diff}"
         );
     }
     assert!(update, "api.txt is stale for loa_view::VERSION {version}: run `UPDATE_VIEW_API=1 cargo test -p loa-view --test api`\n{diff}");
