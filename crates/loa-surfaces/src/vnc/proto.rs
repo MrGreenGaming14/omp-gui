@@ -3,25 +3,6 @@
 use crate::vnc::{PasswordSource, RfbError};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-pub(crate) const ENC_RAW: i32 = 0;
-pub(crate) const ENC_COPY_RECT: i32 = 1;
-pub(crate) const ENC_RRE: i32 = 2;
-pub(crate) const ENC_HEXTILE: i32 = 5;
-pub(crate) const ENC_ZRLE: i32 = 16;
-pub(crate) const ENC_DESKTOP_SIZE: i32 = -223;
-pub(crate) const ENC_CURSOR: i32 = -239;
-
-/// Encodings in the client's order of preference.
-pub(crate) const ENCODINGS: [i32; 7] = [
-    ENC_COPY_RECT,
-    ENC_ZRLE,
-    ENC_HEXTILE,
-    ENC_RRE,
-    ENC_RAW,
-    ENC_CURSOR,
-    ENC_DESKTOP_SIZE,
-];
-
 /// The pixel format the client asks for: 32 bits per pixel, depth 24, little
 /// endian true color with red in the lowest byte. A pixel on the wire is then
 /// `R G B X`, and a ZRLE CPIXEL is `R G B`.
@@ -119,16 +100,13 @@ pub(crate) async fn handshake<S: AsyncRead + AsyncWrite + Unpin>(
     stream.read_exact(&mut server_format).await?;
     let name = read_string(stream).await?;
 
-    let mut setup = Vec::with_capacity(20 + 4 + 4 * ENCODINGS.len() + 10);
-    set_pixel_format(&mut setup);
-    set_encodings(&mut setup);
-    update_request(&mut setup, false, width, height);
+    let mut setup = Vec::with_capacity(64);
+    let encodings = crate::vnc::decode::encodings();
+    for msg in [Msg::SetPixelFormat, Msg::SetEncodings(&encodings), Msg::UpdateRequest { incremental: false, width, height }] {
+        msg.write(&mut setup);
+    }
     stream.write_all(&setup).await?;
-    Ok(ServerInit {
-        width,
-        height,
-        name,
-    })
+    Ok(ServerInit { width, height, name })
 }
 
 fn parse_version(banner: &[u8; 12]) -> Result<Version, RfbError> {
@@ -178,35 +156,41 @@ async fn read_string<S: AsyncRead + Unpin>(stream: &mut S) -> Result<String, Rfb
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
-pub(crate) fn set_pixel_format(buf: &mut Vec<u8>) {
-    buf.extend_from_slice(&[0, 0, 0, 0]);
-    buf.extend_from_slice(&PIXEL_FORMAT);
+/// A client to server message.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Msg<'a> {
+    SetPixelFormat,
+    SetEncodings(&'a [i32]),
+    /// FramebufferUpdateRequest for the whole `width` x `height` framebuffer.
+    UpdateRequest { incremental: bool, width: u16, height: u16 },
+    Key { down: bool, keysym: u32 },
+    Pointer { mask: u8, x: u16, y: u16 },
 }
 
-pub(crate) fn set_encodings(buf: &mut Vec<u8>) {
-    buf.extend_from_slice(&[2, 0]);
-    buf.extend_from_slice(&(ENCODINGS.len() as u16).to_be_bytes());
-    for e in ENCODINGS {
-        buf.extend_from_slice(&e.to_be_bytes());
+impl Msg<'_> {
+    /// Appends the message's bytes to `buf`.
+    pub fn write(self, buf: &mut Vec<u8>) {
+        match self {
+            Self::SetPixelFormat => buf.extend([0, 0, 0, 0].iter().chain(&PIXEL_FORMAT)),
+            Self::SetEncodings(list) => {
+                buf.extend([2, 0].into_iter().chain((list.len() as u16).to_be_bytes()));
+                buf.extend(list.iter().flat_map(|e| e.to_be_bytes()));
+            }
+            Self::UpdateRequest { incremental, width, height } => {
+                buf.extend([3, u8::from(incremental), 0, 0, 0, 0].into_iter().chain(width.to_be_bytes()).chain(height.to_be_bytes()));
+            }
+            Self::Key { down, keysym } => buf.extend([4, u8::from(down), 0, 0].into_iter().chain(keysym.to_be_bytes())),
+            Self::Pointer { mask, x, y } => buf.extend([5, mask].into_iter().chain(x.to_be_bytes()).chain(y.to_be_bytes())),
+        }
     }
-}
 
-/// FramebufferUpdateRequest for the whole `width` x `height` framebuffer.
-pub(crate) fn update_request(buf: &mut Vec<u8>, incremental: bool, width: u16, height: u16) {
-    buf.extend_from_slice(&[3, u8::from(incremental), 0, 0, 0, 0]);
-    buf.extend_from_slice(&width.to_be_bytes());
-    buf.extend_from_slice(&height.to_be_bytes());
-}
-
-pub(crate) fn key_event(buf: &mut Vec<u8>, down: bool, keysym: u32) {
-    buf.extend_from_slice(&[4, u8::from(down), 0, 0]);
-    buf.extend_from_slice(&keysym.to_be_bytes());
-}
-
-pub(crate) fn pointer_event(buf: &mut Vec<u8>, mask: u8, x: u16, y: u16) {
-    buf.extend_from_slice(&[5, mask]);
-    buf.extend_from_slice(&x.to_be_bytes());
-    buf.extend_from_slice(&y.to_be_bytes());
+    /// The message's bytes.
+    #[cfg(test)]
+    pub fn bytes(self) -> Vec<u8> {
+        let mut buf = Vec::new();
+        self.write(&mut buf);
+        buf
+    }
 }
 
 /// The response to a VNC Authentication challenge: the challenge encrypted

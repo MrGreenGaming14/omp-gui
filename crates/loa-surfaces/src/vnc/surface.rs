@@ -4,11 +4,9 @@ use loa_util::time::now_us;
 use loa_util::LockExt;
 use crate::feed::{FrameFeed, Picture as FeedPicture};
 use crate::pixels::{RgbaImage, encode_png, region_fits};
-use crate::vnc::decode::{Cursor, Decoder};
+use crate::vnc::decode::{Cursor, Decoders, Update};
 use crate::vnc::input::InputState;
-use crate::vnc::proto::{
-    self, ENC_COPY_RECT, ENC_CURSOR, ENC_DESKTOP_SIZE, ENC_HEXTILE, ENC_RAW, ENC_RRE, ENC_ZRLE,
-};
+use crate::vnc::proto::{self, Msg};
 use crate::vnc::{PasswordSource, RfbEndpoint, RfbError, RfbOptions};
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -253,7 +251,7 @@ impl Shared {
     /// Reads until the connection fails, then reconnects with backoff, forever.
     async fn supervise(self: Arc<Self>, mut reader: Reader) {
         loop {
-            let Err(error) = self.read_messages(&mut reader, &mut Decoder::new()).await;
+            let Err(error) = self.read_messages(&mut reader, &mut Decoders::new()).await;
             tracing::debug!(endpoint = %self.endpoint.name, %error, "RFB connection lost");
             self.link.lock().await.stream = None;
             self.state.send_replace(ConnectionState::Reconnecting {
@@ -284,7 +282,7 @@ impl Shared {
     async fn read_messages(
         &self,
         rd: &mut Reader,
-        dec: &mut Decoder,
+        dec: &mut Decoders,
     ) -> Result<Infallible, RfbError> {
         // The first update after connecting answers the full request the
         // handshake sent, so it is published as a keyframe.
@@ -323,7 +321,7 @@ impl Shared {
     async fn read_update(
         &self,
         rd: &mut Reader,
-        dec: &mut Decoder,
+        dec: &mut Decoders,
         full: &mut bool,
     ) -> Result<(), RfbError> {
         let mut head = [0u8; 3];
@@ -343,52 +341,29 @@ impl Shared {
                 height: field(3),
             };
             let encoding = i32::from_be_bytes([rh[8], rh[9], rh[10], rh[11]]);
-            match encoding {
-                ENC_DESKTOP_SIZE => {
+            let (decoder, scratch) =
+                dec.get(encoding).ok_or_else(|| RfbError::Protocol(format!("unrequested encoding {encoding}")))?;
+            let inside = |r: Rect| region_fits(r, width, height);
+            if !decoder.pseudo() && !inside(r) {
+                return Err(RfbError::Protocol(format!("rectangle {r:?} outside {width}x{height}")));
+            }
+            match decoder.decode(r, &mut *rd, scratch).await? {
+                Update::Resize => {
                     (width, height) = (r.width, r.height);
                     self.picture.locked().fb = RgbaImage::filled(width, height, [0, 0, 0, 255]);
                     *full = true;
                     dirty = None;
                     continue;
                 }
-                ENC_CURSOR => {
-                    let cursor = dec.cursor(rd, r).await?;
+                Update::Cursor(cursor) => {
                     self.cursor.send_replace(Some(Arc::new(cursor)));
                     continue;
                 }
-                _ => {}
-            }
-            let inside = |r: Rect| region_fits(r, width, height);
-            if !inside(r) {
-                return Err(RfbError::Protocol(format!(
-                    "rectangle {r:?} outside {width}x{height}"
-                )));
-            }
-            match encoding {
-                ENC_COPY_RECT => {
-                    let src_x = u32::from(rd.read_u16().await?);
-                    let src_y = u32::from(rd.read_u16().await?);
-                    if !inside(Rect {
-                        x: src_x,
-                        y: src_y,
-                        ..r
-                    }) {
-                        return Err(RfbError::Protocol(format!(
-                            "CopyRect source {src_x},{src_y} outside"
-                        )));
-                    }
-                    self.picture.locked().fb.copy_rect(src_x, src_y, r);
+                Update::Copy { x, y } if inside(Rect { x, y, ..r }) => self.picture.locked().fb.copy_rect(x, y, r),
+                Update::Copy { x, y } => return Err(RfbError::Protocol(format!("CopyRect source {x},{y} outside"))),
+                Update::Blit => {
+                    self.picture.locked().fb.blit(r, &scratch.data).map_err(|e| RfbError::Protocol(e.to_string()))?;
                 }
-                ENC_RAW | ENC_RRE | ENC_HEXTILE | ENC_ZRLE => {
-                    match encoding {
-                        ENC_RAW => dec.raw(rd, r).await?,
-                        ENC_RRE => dec.rre(rd, r).await?,
-                        ENC_HEXTILE => dec.hextile(rd, r).await?,
-                        _ => dec.zrle(rd, r).await?,
-                    }
-                    self.picture.locked().fb.blit(r, &dec.scratch.data).map_err(|e| RfbError::Protocol(e.to_string()))?;
-                }
-                other => return Err(RfbError::Protocol(format!("unrequested encoding {other}"))),
             }
             if r.width > 0 && r.height > 0 {
                 dirty = Some(union(dirty, r));
@@ -436,7 +411,7 @@ impl Shared {
         let stream = stream.as_mut().ok_or(RfbError::Disconnected)?;
         buf.clear();
         // The framebuffer size came from u16 fields.
-        proto::update_request(buf, true, width as u16, height as u16);
+        Msg::UpdateRequest { incremental: true, width: width as u16, height: height as u16 }.write(buf);
         stream.write_all(buf).await?;
         self.requested_input_seq
             .store(*last_input_seq, Ordering::Release);
@@ -460,7 +435,7 @@ impl Shared {
         if buf.is_empty() {
             return Ok(());
         }
-        proto::update_request(buf, true, width as u16, height as u16);
+        Msg::UpdateRequest { incremental: true, width: width as u16, height: height as u16 }.write(buf);
         stream.write_all(buf).await?;
         *last_input_seq = event.seq;
         self.requested_input_seq.store(event.seq, Ordering::Release);

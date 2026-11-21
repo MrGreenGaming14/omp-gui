@@ -1,7 +1,8 @@
 //! Surface input to RFB PointerEvent and KeyEvent messages.
 
 use crate::vnc::keysym::{self, ALT_L, CONTROL_L, SHIFT_L, SUPER_L};
-use crate::vnc::{RfbError, proto};
+use crate::vnc::RfbError;
+use crate::vnc::proto::Msg;
 use loa_contracts::surface::{Input, Modifiers, MouseButton};
 
 const WHEEL_UP: u8 = 1 << 3;
@@ -45,7 +46,7 @@ impl InputState {
         match input {
             Input::MouseMove { x, y } => {
                 self.move_to(*x, *y, width, height);
-                proto::pointer_event(buf, self.buttons, self.x, self.y);
+                Msg::Pointer { mask: self.buttons, x: self.x, y: self.y }.write(buf);
             }
             Input::MouseButton {
                 x,
@@ -69,7 +70,7 @@ impl InputState {
                 } else {
                     self.buttons &= !bit;
                 }
-                proto::pointer_event(buf, self.buttons, self.x, self.y);
+                Msg::Pointer { mask: self.buttons, x: self.x, y: self.y }.write(buf);
                 release(buf, &extra);
             }
             Input::Scroll {
@@ -82,7 +83,7 @@ impl InputState {
                 let extra = self.extra(modifiers);
                 press(buf, &extra);
                 self.move_to(*x, *y, width, height);
-                proto::pointer_event(buf, self.buttons, self.x, self.y);
+                Msg::Pointer { mask: self.buttons, x: self.x, y: self.y }.write(buf);
                 let clicks_y = take_clicks(&mut self.scroll_y, *dy, scroll_step);
                 self.wheel(buf, clicks_y, WHEEL_DOWN, WHEEL_UP);
                 let clicks_x = take_clicks(&mut self.scroll_x, *dx, scroll_step);
@@ -104,11 +105,11 @@ impl InputState {
                         _ => &mut self.held.meta,
                     };
                     *flag = *pressed;
-                    proto::key_event(buf, *pressed, sym);
+                    Msg::Key { down: *pressed, keysym: sym }.write(buf);
                 } else {
                     let extra = self.extra(modifiers);
                     press(buf, &extra);
-                    proto::key_event(buf, *pressed, sym);
+                    Msg::Key { down: *pressed, keysym: sym }.write(buf);
                     release(buf, &extra);
                 }
             }
@@ -119,8 +120,8 @@ impl InputState {
                         continue;
                     }
                     let sym = keysym::char_keysym(c).ok_or_else(|| RfbError::Key(c.to_string()))?;
-                    proto::key_event(buf, true, sym);
-                    proto::key_event(buf, false, sym);
+                    Msg::Key { down: true, keysym: sym }.write(buf);
+                    Msg::Key { down: false, keysym: sym }.write(buf);
                 }
             }
             // RFB 3.8 has no client initiated resize without the
@@ -151,21 +152,21 @@ impl InputState {
     fn wheel(&self, buf: &mut Vec<u8>, clicks: i32, positive: u8, negative: u8) {
         let bit = if clicks > 0 { positive } else { negative };
         for _ in 0..clicks.unsigned_abs() {
-            proto::pointer_event(buf, self.buttons | bit, self.x, self.y);
-            proto::pointer_event(buf, self.buttons, self.x, self.y);
+            Msg::Pointer { mask: self.buttons | bit, x: self.x, y: self.y }.write(buf);
+            Msg::Pointer { mask: self.buttons, x: self.x, y: self.y }.write(buf);
         }
     }
 }
 
 fn press(buf: &mut Vec<u8>, syms: &[Option<u32>]) {
     for &sym in syms.iter().flatten() {
-        proto::key_event(buf, true, sym);
+        Msg::Key { down: true, keysym: sym }.write(buf);
     }
 }
 
 fn release(buf: &mut Vec<u8>, syms: &[Option<u32>]) {
     for &sym in syms.iter().rev().flatten() {
-        proto::key_event(buf, false, sym);
+        Msg::Key { down: false, keysym: sym }.write(buf);
     }
 }
 
