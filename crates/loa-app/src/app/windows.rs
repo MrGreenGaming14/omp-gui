@@ -181,7 +181,7 @@ impl App {
                 self.overlay = None;
                 self.docs = Docs { files: scan(tab, &self.ctx.services.cwd, home().as_deref()), selected: 0, full: false };
                 let load = match tab {
-                    ConfigsTab::Models => self.update(Message::Models(areas::models::Message::Show(Page::Settings))),
+                    ConfigsTab::Models => self.update(Message::area(areas::models::Message::Show(Page::Settings))),
                     _ => Task::none(),
                 };
                 // Areas open their own screen when they load; Configs draws them instead.
@@ -203,9 +203,9 @@ impl App {
             WindowMessage::OpenSettings(tab) => {
                 self.overlay = Some(Overlay::Settings(tab));
                 let load = match tab {
-                    SettingsTab::Harnesses => self.update(Message::Models(areas::models::Message::Show(Page::SignIn))),
-                    SettingsTab::Updates => self.update(Message::Updater(areas::updater::Message::Open)),
-                    SettingsTab::Peers => self.update(Message::Peers(areas::peers::Message::Refresh)),
+                    SettingsTab::Harnesses => self.update(Message::area(areas::models::Message::Show(Page::SignIn))),
+                    SettingsTab::Updates => self.update(Message::area(areas::updater::Message::Open)),
+                    SettingsTab::Peers => self.update(Message::area(areas::peers::Message::Refresh)),
                     SettingsTab::General => Task::none(),
                 };
                 self.ctx.close_screen();
@@ -251,9 +251,9 @@ impl App {
 
         let ctx = &self.ctx;
         let body: Element<'_, Message> = match tab {
-            ConfigsTab::Models => self.areas.models.page_body(Page::Settings).map(Message::Models),
+            ConfigsTab::Models => self.areas.get::<crate::areas::models::State>().page_body(Page::Settings).map(Message::area),
             ConfigsTab::Tools => {
-                self.areas.tools.view_tab("tools", ctx).map(|view| view.map(Message::Tools)).unwrap_or_else(|| text("").into())
+                self.areas.get::<crate::areas::tools::State>().view_tab("tools", ctx).map(|view| view.map(Message::area)).unwrap_or_else(|| text("").into())
             }
             ConfigsTab::Agents | ConfigsTab::Skills | ConfigsTab::Rules => self.docs_view(tab),
         };
@@ -342,11 +342,11 @@ impl App {
         let body: Element<'_, Message> = match tab {
             SettingsTab::General => self.general_settings(),
             SettingsTab::Peers => {
-                self.areas.peers.view_tab("peers", ctx).map(|view| view.map(Message::Peers)).unwrap_or_else(|| text("").into())
+                self.areas.get::<crate::areas::peers::State>().view_tab("peers", ctx).map(|view| view.map(Message::area)).unwrap_or_else(|| text("").into())
             }
-            SettingsTab::Harnesses => self.areas.models.page_body(Page::SignIn).map(Message::Models),
+            SettingsTab::Harnesses => self.areas.get::<crate::areas::models::State>().page_body(Page::SignIn).map(Message::area),
             SettingsTab::Updates => {
-                self.areas.updater.view_screen(ctx).map(|view| view.map(Message::Updater)).unwrap_or_else(|| text("").into())
+                self.areas.get::<crate::areas::updater::State>().view_screen(ctx).map(|view| view.map(Message::area)).unwrap_or_else(|| text("").into())
             }
         };
         container(row![

@@ -6,12 +6,10 @@
 //! the [`SessionEvent`]s areas react to.
 
 use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use iced::Subscription;
-use iced::futures::{SinkExt, Stream};
 use loa_contracts::harness::HarnessSession;
 use loa_bus::{Event, Policy, SessionId, SessionWriter};
 use loa_core::{DecisionStatus, Dom, ElementKind, NodeId, Op, Patch, TurnStatus, attr};
@@ -20,6 +18,7 @@ use loa_bus::{JournalWriter, Listing};
 use loa_ui_shell::SessionSummary;
 
 use crate::services::Services;
+use crate::watch::{PtrKey, Source, watch};
 
 /// Undelivered patches a session feed may hold before it resubscribes.
 const FEED_CAPACITY: usize = 4096;
@@ -51,12 +50,55 @@ pub enum SessionEvent {
     Closed(SessionId),
 }
 
-/// What a session's feed delivers to the app.
+/// What a session writer's feed delivers: the session's feed in the app,
+/// a peer's mirror in the peers area.
 #[derive(Clone, Debug)]
 pub enum Feed {
     /// The writer's DOM when the feed (re)subscribed; events follow it.
     Synced(Arc<Dom>),
     Event(Event),
+    /// The writer closed; nothing follows.
+    Ended,
+}
+
+/// The DOM of `writer`, then each event; resubscribes after falling behind
+/// and ends with [`Feed::Ended`] once the writer closes.
+pub struct WriterFeed {
+    writer: Arc<SessionWriter>,
+    policy: Policy,
+    subscription: Option<loa_bus::Subscription>,
+    ended: bool,
+}
+
+impl WriterFeed {
+    pub fn new(writer: Arc<SessionWriter>, policy: Policy) -> Self {
+        Self { writer, policy, subscription: None, ended: false }
+    }
+}
+
+impl Source for WriterFeed {
+    type Item = Feed;
+
+    async fn next(&mut self) -> Option<Feed> {
+        loop {
+            if self.ended {
+                return None;
+            }
+            let Some(subscription) = &mut self.subscription else {
+                let (dom, subscription) = self.writer.subscribe(self.policy);
+                self.subscription = Some(subscription);
+                return Some(Feed::Synced(Arc::new(dom)));
+            };
+            match subscription.recv().await {
+                None => {
+                    self.ended = true;
+                    return Some(Feed::Ended);
+                }
+                Some(Event::Lagged { .. }) => self.subscription = None,
+                Some(event) => return Some(Feed::Event(event)),
+            }
+        }
+    }
 }
 
 /// One open session.
@@ -279,6 +321,7 @@ impl Sessions {
                 session.busy = dom_busy(&session.dom);
                 Change::Loaded
             }
+            Feed::Ended => Change::None,
             Feed::Event(event) => match session.apply(event) {
                 Ok(None) => Change::None,
                 Ok(Some(patch)) => {
@@ -300,9 +343,11 @@ impl Sessions {
 
     /// One feed per open session: the writer's DOM, then every patch.
     pub(crate) fn watch(&self) -> Subscription<(SessionId, Feed)> {
-        Subscription::batch(
-            self.open.values().map(|session| Subscription::run_with(Watch(Arc::clone(&session.writer)), feed).with(session.id.clone())),
-        )
+        Subscription::batch(self.open.values().map(|session| {
+            let writer = Arc::clone(&session.writer);
+            let open = move || WriterFeed::new(writer, Policy::coalescing(FEED_CAPACITY));
+            watch(PtrKey(&session.writer), open, |feed| (!matches!(feed, Feed::Ended)).then_some(feed)).with(session.id.clone())
+        }))
     }
 }
 
@@ -404,38 +449,4 @@ fn derive(session: &SessionId, dom: &Dom, patch: &Patch) -> Option<SessionEvent>
 pub(crate) fn new_session_id() -> String {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     format!("loa-{}-{}-{}", loa_core::now_ms(), std::process::id(), COUNTER.fetch_add(1, Ordering::Relaxed))
-}
-
-/// Identifies one writer's feed: a reopened session gets a new feed.
-struct Watch(Arc<SessionWriter>);
-
-impl Hash for Watch {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        std::ptr::hash(Arc::as_ptr(&self.0), state);
-    }
-}
-
-/// The writer's DOM, then each patch; resubscribes after falling behind and
-/// ends when the session closes.
-fn feed(watch: &Watch) -> impl Stream<Item = Feed> + use<> {
-    let writer = Arc::clone(&watch.0);
-    iced::stream::channel(64, async move |mut out: iced::futures::channel::mpsc::Sender<Feed>| {
-        loop {
-            let (dom, mut subscription) = writer.subscribe(Policy::coalescing(FEED_CAPACITY));
-            if out.send(Feed::Synced(Arc::new(dom))).await.is_err() {
-                return;
-            }
-            loop {
-                match subscription.recv().await {
-                    None => return,
-                    Some(Event::Lagged { .. }) => break,
-                    Some(event) => {
-                        if out.send(Feed::Event(event)).await.is_err() {
-                            return;
-                        }
-                    }
-                }
-            }
-        }
-    })
 }

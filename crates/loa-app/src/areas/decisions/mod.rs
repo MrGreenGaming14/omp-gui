@@ -12,17 +12,12 @@ use loa_core::{ElementKind, NodeId, Op};
 use loa_models::login::UrlOpener;
 use loa_harness::account_support::opener::SystemUrlOpener;
 use loa_ui_session::decisions::{self as decisions, Desk, DesktopNotifier, TIMEOUT_BY, Unattended, desk, unattended};
-use loa_ui_shell::palette;
 use loa_ui_shell::theme::style;
 
-use crate::area::{Area, AreaId, Ctx, Request, SessionEvent};
+use crate::area::{perform, Area, AreaCommand, AreaMessage, Ctx, Listed, Request, SessionEvent};
 
 /// Width of the settings column on the settings screen.
 const SETTINGS_WIDTH: f32 = 720.0;
-
-const SETTINGS: &str = "settings";
-const UNATTENDED_ON: &str = "unattended.on";
-const UNATTENDED_OFF: &str = "unattended.off";
 
 #[derive(Clone, Debug)]
 pub enum Message {
@@ -47,22 +42,9 @@ pub struct State {
 }
 
 impl State {
-    pub fn new(ctx: &mut Ctx) -> (Self, Task<Message>) {
-        let policy = Unattended(ctx.read_config("unattended prompt settings").unwrap_or_default().unattended);
-        let theme = ctx.shell.theme();
-        let mut desk = Desk::new(ctx.services.node.key.clone(), &theme, policy, DesktopNotifier::new("loa"));
-        desk.set_local_name(ctx.services.node.label.clone());
-        (Self { desk, theme, notify_failed: false }, Task::none())
-    }
-
     pub(crate) fn set_theme(&mut self, theme: &Theme) {
         self.desk.set_theme(theme);
         self.theme = theme.clone();
-    }
-
-    #[cfg(test)]
-    pub(crate) fn theme(&self) -> &Theme {
-        &self.theme
     }
 
     /// The inline card of `decision` in the active session, for the
@@ -104,12 +86,12 @@ impl State {
         // area's `remote` server, not the harness.
         if crate::areas::tools::is_remote_decision(open.dom(), decision) {
             let answer = crate::areas::tools::Message::AnswerDecision { session: open.id().clone(), decision, answer };
-            ctx.request(Request::Forward(Box::new(crate::app::Message::Tools(answer))));
+            ctx.request(Request::Forward(Box::new(crate::app::Message::area(answer))));
             return Task::none();
         }
         if loa_harness::features::plan::is_app_plan(open.dom(), decision) {
             let answer = crate::areas::sessions::Message::AnswerPlan { session: open.id().clone(), decision, answer };
-            ctx.request(Request::Forward(Box::new(crate::app::Message::Sessions(answer))));
+            ctx.request(Request::Forward(Box::new(crate::app::Message::area(answer))));
             return Task::none();
         }
         let Some(harness) = open.harness().cloned() else {
@@ -120,7 +102,7 @@ impl State {
             }
             return Task::none();
         };
-        Task::perform(async move { harness.answer(decision, answer).await.map_err(|error| error.to_string()) }, move |result| {
+        perform(async move { harness.answer(decision, answer).await }, move |result| {
             Message::Answered { session, decision, result }
         })
     }
@@ -128,10 +110,39 @@ impl State {
     fn save(policy: &Unattended, ctx: &mut Ctx) {
         ctx.edit_config("unattended prompt settings", |config| config.unattended = policy.0.clone());
     }
+
+    fn set_unattended(&mut self, enabled: bool, ctx: &mut Ctx) -> Task<Message> {
+        self.update(Message::Desk(desk::Message::Settings(unattended::Message::Enabled(enabled))), ctx)
+    }
+}
+
+impl AreaMessage for Message {
+    type Area = State;
 }
 
 impl Area for State {
+    const ID: &'static str = "decisions";
+    const COMMANDS: &'static [AreaCommand<Self>] = &[
+        AreaCommand::<Self>::new("decisions.settings", "Unattended prompt settings", "Settings", |_, _, ctx| {
+            ctx.show_screen(Self::ID);
+            Task::none()
+        }),
+        AreaCommand::<Self>::new("decisions.unattended.on", "", "Settings", |state, _, ctx| state.set_unattended(true, ctx)).listed(Listed::When(
+            |state, _| (!state.desk.policy().enabled()).then_some("Unattended prompts: deny approvals and reject plans after 5 min"),
+        )),
+        AreaCommand::<Self>::new("decisions.unattended.off", "", "Settings", |state, _, ctx| state.set_unattended(false, ctx))
+            .listed(Listed::When(|state, _| state.desk.policy().enabled().then_some("Unattended prompts: wait for someone"))),
+    ];
+
     type Message = Message;
+
+    fn new(ctx: &mut Ctx) -> (Self, Task<Message>) {
+        let policy = Unattended(ctx.read_config("unattended prompt settings").unwrap_or_default().unattended);
+        let theme = ctx.shell.theme();
+        let mut desk = Desk::new(ctx.services.node.key.clone(), &theme, policy, DesktopNotifier::new("loa"));
+        desk.set_local_name(ctx.services.node.label.clone());
+        (Self { desk, theme, notify_failed: false }, Task::none())
+    }
 
     fn update(&mut self, message: Message, ctx: &mut Ctx) -> Task<Message> {
         match message {
@@ -183,33 +194,6 @@ impl Area for State {
                 Task::none()
             }
         }
-    }
-
-    fn palette_commands(&self, _ctx: &Ctx) -> Vec<palette::Command> {
-        let toggle = if self.desk.policy().enabled() {
-            palette::Command::new(AreaId::Decisions.command(UNATTENDED_OFF), "Unattended prompts: wait for someone", "Settings")
-        } else {
-            palette::Command::new(
-                AreaId::Decisions.command(UNATTENDED_ON),
-                "Unattended prompts: deny approvals and reject plans after 5 min",
-                "Settings",
-            )
-        };
-        vec![palette::Command::new(AreaId::Decisions.command(SETTINGS), "Unattended prompt settings", "Settings"), toggle]
-    }
-
-    fn run_command(&mut self, id: &str, ctx: &mut Ctx) -> Option<Task<Message>> {
-        let name = id.strip_prefix(AreaId::Decisions.key())?.strip_prefix('.')?;
-        let enabled = match name {
-            SETTINGS => {
-                ctx.show_screen(AreaId::Decisions);
-                return Some(Task::none());
-            }
-            UNATTENDED_ON => true,
-            UNATTENDED_OFF => false,
-            _ => return None,
-        };
-        Some(self.update(Message::Desk(desk::Message::Settings(unattended::Message::Enabled(enabled))), ctx))
     }
 
     fn view_screen<'a>(&'a self, _ctx: &'a Ctx) -> Option<Element<'a, Message>> {

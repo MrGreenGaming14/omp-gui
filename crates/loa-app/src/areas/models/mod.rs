@@ -24,9 +24,8 @@ use loa_models::settings::{ModelSettings, ValidationError};
 use loa_ui_kit::widgets::{Msg, Screen};
 use loa_ui_settings::models::{self as screen, Catalog, ModelInfo, ModelRef, Page, RoleAssignment, SessionModel, picker, role_draft, settings, signin};
 use loa_ui_settings::models::signin::{LoginUpdate, ProviderEntry, ProviderKey};
-use loa_ui_shell::palette;
 
-use crate::area::{Area, AreaId, Ctx, Session, SessionEvent, Target};
+use crate::area::{perform, Area, AreaCommand, AreaMessage, Ctx, Session, SessionEvent, Target};
 
 #[cfg(test)]
 mod tests;
@@ -42,10 +41,6 @@ const ACTIONS: [(&str, &str, Page); 3] = [
     ("settings", "Model settings…", Page::Settings),
     ("sign-in", "Sign in…", Page::SignIn),
 ];
-
-/// Palette commands, by command name.
-const COMMANDS: [(&str, &str, Page); 3] =
-    [("model", "Switch model…", Page::Model), ("settings", "Model settings", Page::Settings), ("sign-in", "Sign in…", Page::SignIn)];
 
 #[derive(Clone, Debug)]
 pub enum Message {
@@ -135,16 +130,6 @@ pub struct State {
 const PRE_SESSION_EFFORTS: [&str; 4] = ["low", "medium", "high", "xhigh"];
 
 impl State {
-    pub fn new(ctx: &mut Ctx) -> (Self, Task<Message>) {
-        let executable = ctx.services.harnesses.get(ctx.services.harnesses.roles_id()).and_then(|harness| harness.executable.clone());
-        let launch = OmpLaunch {
-            executable: executable.unwrap_or_else(|| OmpLaunch::default().executable),
-            cwd: Some(ctx.services.cwd.clone()),
-            env: Vec::new(),
-        };
-        (Self::with_backend(Backend::system(launch)), Task::none())
-    }
-
     pub(crate) fn with_backend(backend: Backend) -> Self {
         Self {
             backend,
@@ -166,7 +151,7 @@ impl State {
     /// Shows `page` and reads what it shows.
     fn show(&mut self, page: Page, ctx: &mut Ctx) -> Task<Message> {
         self.page = page;
-        ctx.show_screen(AreaId::Models);
+        ctx.show_screen(Self::ID);
         match page {
             Page::SignIn => {
                 if !matches!(self.signin, Load::Ready(_)) {
@@ -207,7 +192,7 @@ impl State {
             return Task::none();
         }
         match ctx.sessions.active().and_then(Session::harness).cloned() {
-            Some(session) => Task::perform(async move { session.models().await.map_err(|error| error.to_string()) }, {
+            Some(session) => perform(async move { session.models().await }, {
                 move |result| Message::Listed { harness: harness.clone(), result }
             }),
             None => {
@@ -315,7 +300,7 @@ impl State {
             return Task::none();
         }
         let harness = harness.to_owned();
-        Task::perform(async move { running.models().await.map_err(|error| error.to_string()) }, move |result| Message::Listed {
+        perform(async move { running.models().await }, move |result| Message::Listed {
             harness: harness.clone(),
             result,
         })
@@ -497,8 +482,29 @@ impl State {
     }
 }
 
+impl AreaMessage for Message {
+    type Area = State;
+}
+
 impl Area for State {
+    const ID: &'static str = "models";
+    const COMMANDS: &'static [AreaCommand<Self>] = &[
+        AreaCommand::<Self>::new("models.model", "Switch model…", "Models", |state, _, ctx| state.show(Page::Model, ctx)),
+        AreaCommand::<Self>::new("models.settings", "Model settings", "Models", |state, _, ctx| state.show(Page::Settings, ctx)),
+        AreaCommand::<Self>::new("models.sign-in", "Sign in…", "Models", |state, _, ctx| state.show(Page::SignIn, ctx)),
+    ];
+
     type Message = Message;
+
+    fn new(ctx: &mut Ctx) -> (Self, Task<Message>) {
+        let executable = ctx.services.harnesses.get(ctx.services.harnesses.roles_id()).and_then(|harness| harness.executable.clone());
+        let launch = OmpLaunch {
+            executable: executable.unwrap_or_else(|| OmpLaunch::default().executable),
+            cwd: Some(ctx.services.cwd.clone()),
+            env: Vec::new(),
+        };
+        (Self::with_backend(Backend::system(launch)), Task::none())
+    }
 
     fn update(&mut self, message: Message, ctx: &mut Ctx) -> Task<Message> {
         match message {
@@ -660,16 +666,6 @@ impl Area for State {
                 }
             }
         }
-    }
-
-    fn palette_commands(&self, _: &Ctx) -> Vec<palette::Command> {
-        COMMANDS.iter().map(|(name, title, _)| palette::Command::new(AreaId::Models.command(name), *title, "Models")).collect()
-    }
-
-    fn run_command(&mut self, id: &str, ctx: &mut Ctx) -> Option<Task<Message>> {
-        let name = id.strip_prefix(AreaId::Models.key())?.strip_prefix('.')?;
-        let (_, _, page) = COMMANDS.iter().find(|(command, _, _)| *command == name)?;
-        Some(self.show(*page, ctx))
     }
 
     fn view_screen<'a>(&'a self, _: &'a Ctx) -> Option<Element<'a, Message>> {

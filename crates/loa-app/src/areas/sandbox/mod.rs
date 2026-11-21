@@ -6,11 +6,9 @@
 //! (`<data>/sandbox.json`). Worker sessions are journaled in the session
 //! library like any other session and open from their run.
 
-use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use iced::futures::{SinkExt, Stream};
 use iced::widget::{button, column, container, row, scrollable, space, svg, text, text_input, toggler};
 use iced::{Element, Font, Length, Subscription, Task, Theme};
 use loa_contracts::harness::SessionConfig;
@@ -23,13 +21,15 @@ use loa_sandbox::{
     SandboxService,
 };
 use loa_ui_kit::icons::Icon;
-use loa_ui_shell::palette;
 use loa_ui_panel::diff;
 use loa_ui_shell::theme::style;
 use loa_ui_panel::tools::{DetailState, ToolDetail, ToolInfo};
 use tokio::sync::broadcast;
 
-use crate::area::{Area, AreaId, Ctx, HostToolSet, PanelTab, Request, SessionEvent, Target};
+use loa_ui_kit::theme::{TextRole, text_size};
+use loa_ui_kit::{ButtonKind, Tone, style as kit_style};
+use crate::area::{Area, AreaCommand, AreaMessage, Ctx, HostToolSet, PanelTab, Request, SessionEvent, Target};
+use crate::watch::{PtrKey, watch};
 
 #[cfg(test)]
 mod tests;
@@ -37,44 +37,8 @@ mod peer;
 
 /// Id of the Sandbox panel tab.
 pub const TAB: &str = "sandbox";
-/// Palette command name that probes the providers again.
-const REFRESH: &str = "refresh";
-/// Palette command name that shows the settings.
-const SETTINGS: &str = "settings";
 /// The settings file under the data directory.
 const SETTINGS_FILE: &str = "sandbox.json";
-
-/// The tab's text sizes and colors, from the theme like the other panel tabs.
-mod panel_style {
-    use iced::Theme;
-    use iced::widget::{button, text};
-    use loa_ui_shell::theme::style;
-
-    /// Size of row details.
-    pub const TEXT_SIZE: f32 = 13.0;
-    /// Size of provider names, matching the sidebar.
-    pub const LIST_TEXT_SIZE: f32 = 14.0;
-
-    pub fn muted(theme: &Theme) -> text::Style {
-        style::muted(theme)
-    }
-
-    pub fn success_text(theme: &Theme) -> text::Style {
-        text::Style { color: Some(theme.extended_palette().success.base.color) }
-    }
-
-    pub fn danger_text(theme: &Theme) -> text::Style {
-        text::Style { color: Some(theme.extended_palette().danger.base.color) }
-    }
-
-    /// A small outlined action inside a row.
-    pub fn action_button(theme: &Theme, status: button::Status) -> button::Style {
-        button::Style {
-            border: iced::Border { color: style::border_color(theme), width: 1.0, radius: style::RADIUS.into() },
-            ..style::row(theme, status)
-        }
-    }
-}
 
 #[derive(Clone, Debug)]
 pub enum Message {
@@ -205,35 +169,6 @@ pub struct State {
 }
 
 impl State {
-    pub fn new(ctx: &mut Ctx) -> (Self, Task<Message>) {
-        let settings = ctx.services.dirs.data.join(SETTINGS_FILE);
-        let config = SandboxConfig::load(&settings).unwrap_or_else(|error| {
-            ctx.notify(format!("Can't read the sandbox settings {}: {error}; using the defaults", settings.display()));
-            SandboxConfig::default()
-        });
-        let journal = Arc::new(LibraryJournal(Arc::clone(&ctx.services.library)));
-        let service = SandboxService::new(config, journal).with_peers(Arc::new(peer::NodeLink(ctx.node.clone())));
-        let (failures, served) = broadcast::channel(16);
-        peer::register(&ctx.node, Arc::new(peer::ServeStub { stub: service.stub().map(PathBuf::from), failures }));
-        let mut state = Self {
-            events: Arc::new(service.subscribe()),
-            served: Arc::new(served),
-            draft: Draft::of(service.config()),
-            service,
-            runs: RunLog::default(),
-            statuses: None,
-            probing: false,
-            view: View::Runs,
-            selected: None,
-            diff: diff::State::new(),
-            applying: None,
-            settings,
-        };
-        state.publish(ctx);
-        let probe = state.probe();
-        (state, probe)
-    }
-
     /// The runs, oldest first.
     pub fn runs(&self) -> &RunLog {
         &self.runs
@@ -344,7 +279,7 @@ impl State {
 
     fn view<'a>(&'a self, ctx: &'a Ctx) -> Element<'a, Message> {
         let tab = |label: &'a str, view: View| {
-            button(text(label).size(panel_style::TEXT_SIZE))
+            button(text(label).size(text_size(TextRole::Label)))
                 .padding([2, 6])
                 .style(style::tab(self.view == view))
                 .on_press(Message::View(view))
@@ -364,7 +299,7 @@ impl State {
 
     fn runs_view<'a>(&'a self, ctx: &'a Ctx) -> Element<'a, Message> {
         if self.runs.entries().is_empty() {
-            return container(text(self.empty_text()).size(panel_style::TEXT_SIZE).style(panel_style::muted))
+            return container(text(self.empty_text()).size(text_size(TextRole::Label)).style(kit_style::text(Tone::Muted)))
                 .padding([4, 12])
                 .width(Length::Fill)
                 .into();
@@ -425,8 +360,8 @@ impl State {
             .get(&run.parent)
             .and_then(|session| session.summary())
             .map_or_else(|| run.parent.clone(), |summary| summary.title);
-        let title = row![mark, kind, text(loa_util::text::first_line(&run.task, 72)).size(panel_style::TEXT_SIZE)].spacing(8).align_y(iced::Center);
-        let meta = text(format!("{summary} · {session}")).size(12).style(panel_style::muted);
+        let title = row![mark, kind, text(loa_util::text::first_line(&run.task, 72)).size(text_size(TextRole::Label))].spacing(8).align_y(iced::Center);
+        let meta = text(format!("{summary} · {session}")).size(12).style(kit_style::text(Tone::Muted));
         button(column![title, meta].spacing(2))
             .width(Length::Fill)
             .padding([6, 8])
@@ -437,43 +372,43 @@ impl State {
 
     fn detail<'a>(&'a self, entry: &'a RunEntry) -> Element<'a, Message> {
         let run = &entry.run;
-        let mut body = column![text(run.task.as_str()).size(panel_style::TEXT_SIZE)].spacing(6);
+        let mut body = column![text(run.task.as_str()).size(text_size(TextRole::Label))].spacing(6);
         let isolation = if run.isolated { format!("isolated {} checkout of", backend_name()) } else { "directly in".into() };
         body = body.push(
             text(format!("{} sandbox, {isolation} {}", kind_label(run.kind), run.workspace.display()))
                 .size(12)
                 .font(Font::MONOSPACE)
-                .style(panel_style::muted),
+                .style(kit_style::text(Tone::Muted)),
         );
         match &entry.state {
             RunState::Running => {}
-            RunState::Failed(error) => body = body.push(text(error.as_str()).size(panel_style::TEXT_SIZE).style(panel_style::danger_text)),
+            RunState::Failed(error) => body = body.push(text(error.as_str()).size(text_size(TextRole::Label)).style(kit_style::text(Tone::Danger))),
             RunState::Finished { final_message, .. } => {
                 if let Some(message) = final_message.as_deref().filter(|message| !message.trim().is_empty()) {
-                    body = body.push(text(message).size(panel_style::TEXT_SIZE).style(panel_style::muted));
+                    body = body.push(text(message).size(text_size(TextRole::Label)).style(kit_style::text(Tone::Muted)));
                 }
             }
         }
         let mut actions = row![].spacing(6).align_y(iced::Center);
         match &entry.state {
             RunState::Finished { applied: true, .. } => {
-                actions = actions.push(text("Patch applied").size(panel_style::TEXT_SIZE).style(panel_style::success_text));
+                actions = actions.push(text("Patch applied").size(text_size(TextRole::Label)).style(kit_style::text(Tone::Ok)));
             }
             _ if entry.pending_patch().is_some() => {
                 let applying = self.applying == Some(run.run);
                 actions = actions.push(
-                    button(text(if applying { "Applying…" } else { "Apply patch" }).size(panel_style::TEXT_SIZE))
+                    button(text(if applying { "Applying…" } else { "Apply patch" }).size(text_size(TextRole::Label)))
                         .padding([4, 10])
-                        .style(panel_style::action_button)
+                        .style(kit_style::button(ButtonKind::Secondary))
                         .on_press_maybe((!applying).then_some(Message::Apply(run.run))),
                 );
             }
             _ => {}
         }
         actions = actions.push(
-            button(text("Open worker session").size(panel_style::TEXT_SIZE))
+            button(text("Open worker session").size(text_size(TextRole::Label)))
                 .padding([4, 10])
-                .style(panel_style::action_button)
+                .style(kit_style::button(ButtonKind::Secondary))
                 .on_press(Message::OpenWorker(run.worker.clone())),
         );
         body = body.push(actions);
@@ -483,19 +418,19 @@ impl State {
     fn settings_view(&self) -> Element<'_, Message> {
         let field = |label: &'static str, placeholder: &'static str, field: Field, value: &str| {
             let input = text_input(placeholder, value)
-                .size(panel_style::TEXT_SIZE)
+                .size(text_size(TextRole::Label))
                 .padding([4, 8])
                 .style(style::input)
                 .on_input(move |value| Message::Edit(field, value))
                 .on_submit(Message::Save);
-            column![text(label).size(12).style(panel_style::muted), input].spacing(3)
+            column![text(label).size(12).style(kit_style::text(Tone::Muted)), input].spacing(3)
         };
         let draft = &self.draft;
         let docker = column![
             field("Default image", "debian:stable-slim", Field::DockerImage, &draft.docker_image),
             toggler(draft.docker_network)
                 .label("Containers may use the network")
-                .text_size(panel_style::TEXT_SIZE)
+                .text_size(text_size(TextRole::Label))
                 .size(16)
                 .on_toggle(Message::Network),
         ]
@@ -514,13 +449,13 @@ impl State {
             ].spacing(8).into())));
         let sections = sections.push(self.provider(SandboxKind::Ssh, Some(ssh.into()))).push(self.provider(SandboxKind::Peer, None)).spacing(8);
         let changed = draft.config() != *self.service.config();
-        let save = button(text("Save").size(panel_style::TEXT_SIZE))
+        let save = button(text("Save").size(text_size(TextRole::Label)))
             .padding([4, 10])
-            .style(panel_style::action_button)
+            .style(kit_style::button(ButtonKind::Secondary))
             .on_press_maybe(changed.then_some(Message::Save));
-        let recheck = button(text(if self.probing { "Checking…" } else { "Recheck" }).size(panel_style::TEXT_SIZE))
+        let recheck = button(text(if self.probing { "Checking…" } else { "Recheck" }).size(text_size(TextRole::Label)))
             .padding([4, 10])
-            .style(panel_style::action_button)
+            .style(kit_style::button(ButtonKind::Secondary))
             .on_press_maybe((!self.probing).then_some(Message::Refresh));
         let actions = row![space::horizontal(), recheck, save].spacing(6);
         scrollable(column![sections, actions].spacing(10).padding([0, 12])).height(Length::Fill).into()
@@ -537,15 +472,15 @@ impl State {
             Some(Availability::Unavailable) => (Icon::TriangleAlert, |theme| theme.extended_palette().danger.base.color, "Unavailable"),
         };
         let mark = loa_ui_kit::icons::icon(icon, 14.0).style(move |theme: &Theme, _| svg::Style { color: Some(color(theme)) });
-        let word = text(word).size(panel_style::TEXT_SIZE).style(move |theme: &Theme| match availability {
-            Some(Availability::Ready) => panel_style::success_text(theme),
-            Some(Availability::Unavailable) => panel_style::danger_text(theme),
-            _ => panel_style::muted(theme),
+        let word = text(word).size(text_size(TextRole::Label)).style(move |theme: &Theme| match availability {
+            Some(Availability::Ready) => kit_style::text(Tone::Ok)(theme),
+            Some(Availability::Unavailable) => kit_style::text(Tone::Danger)(theme),
+            _ => kit_style::text(Tone::Muted)(theme),
         });
-        let title = row![mark, text(kind_label(kind)).size(panel_style::LIST_TEXT_SIZE), word].spacing(8).align_y(iced::Center);
+        let title = row![mark, text(kind_label(kind)).size(text_size(TextRole::Body)), word].spacing(8).align_y(iced::Center);
         let mut body = column![title].spacing(6);
         if let Some(status) = status {
-            body = body.push(text(status.detail.as_str()).size(12).style(panel_style::muted));
+            body = body.push(text(status.detail.as_str()).size(12).style(kit_style::text(Tone::Muted)));
         }
         if let Some(settings) = settings {
             body = body.push(settings);
@@ -566,8 +501,55 @@ fn kind_label(kind: SandboxKind) -> &'static str {
     }
 }
 
+impl AreaMessage for Message {
+    type Area = State;
+}
+
 impl Area for State {
+    const ID: &'static str = "sandbox";
+    const COMMANDS: &'static [AreaCommand<Self>] = &[
+        AreaCommand::<Self>::new("sandbox.refresh", "Recheck sandbox availability", "Sandbox", |state, _, ctx| {
+            state.view = View::Settings;
+            ctx.open_tab(TAB);
+            state.probe()
+        }),
+        AreaCommand::<Self>::new("sandbox.settings", "Sandbox settings", "Sandbox", |state, _, ctx| {
+            state.view = View::Settings;
+            ctx.open_tab(TAB);
+            Task::none()
+        }),
+    ];
+
     type Message = Message;
+
+    fn new(ctx: &mut Ctx) -> (Self, Task<Message>) {
+        let settings = ctx.services.dirs.data.join(SETTINGS_FILE);
+        let config = SandboxConfig::load(&settings).unwrap_or_else(|error| {
+            ctx.notify(format!("Can't read the sandbox settings {}: {error}; using the defaults", settings.display()));
+            SandboxConfig::default()
+        });
+        let journal = Arc::new(LibraryJournal(Arc::clone(&ctx.services.library)));
+        let service = SandboxService::new(config, journal).with_peers(Arc::new(peer::NodeLink(ctx.node.clone())));
+        let (failures, served) = broadcast::channel(16);
+        peer::register(&ctx.node, Arc::new(peer::ServeStub { stub: service.stub().map(PathBuf::from), failures }));
+        let mut state = Self {
+            events: Arc::new(service.subscribe()),
+            served: Arc::new(served),
+            draft: Draft::of(service.config()),
+            service,
+            runs: RunLog::default(),
+            statuses: None,
+            probing: false,
+            view: View::Runs,
+            selected: None,
+            diff: diff::State::new(),
+            applying: None,
+            settings,
+        };
+        state.publish(ctx);
+        let probe = state.probe();
+        (state, probe)
+    }
 
     fn update(&mut self, message: Message, ctx: &mut Ctx) -> Task<Message> {
         match message {
@@ -619,30 +601,6 @@ impl Area for State {
         }
     }
 
-    fn palette_commands(&self, _: &Ctx) -> Vec<palette::Command> {
-        vec![
-            palette::Command::new(AreaId::Sandbox.command(REFRESH), "Recheck sandbox availability", "Sandbox"),
-            palette::Command::new(AreaId::Sandbox.command(SETTINGS), "Sandbox settings", "Sandbox"),
-        ]
-    }
-
-    fn run_command(&mut self, id: &str, ctx: &mut Ctx) -> Option<Task<Message>> {
-        let name = id.strip_prefix(AreaId::Sandbox.key())?.strip_prefix('.')?;
-        match name {
-            REFRESH => {
-                self.view = View::Settings;
-                ctx.open_tab(TAB);
-                Some(self.probe())
-            }
-            SETTINGS => {
-                self.view = View::Settings;
-                ctx.open_tab(TAB);
-                Some(Task::none())
-            }
-            _ => None,
-        }
-    }
-
     fn panel_tabs(&self) -> Vec<PanelTab> {
         vec![PanelTab::new(TAB, "Sandbox", false)]
     }
@@ -672,37 +630,13 @@ impl Area for State {
         Task::none()
     }
 
+    /// Every run event and peer failure from now on; skips what a feed fell
+    /// behind on.
     fn subscription(&self) -> Subscription<Message> {
+        let (events, served) = (Arc::clone(&self.events), Arc::clone(&self.served));
         Subscription::batch([
-            Subscription::run_with(Events(Arc::clone(&self.events)), events).map(Message::Event),
-            Subscription::run_with(Events(Arc::clone(&self.served)), events).map(Message::PeerFailed),
+            watch(PtrKey(&self.events), move || events.resubscribe(), |event| event.ok().map(Message::Event)),
+            watch(PtrKey(&self.served), move || served.resubscribe(), |failure| failure.ok().map(Message::PeerFailed)),
         ])
     }
-}
-
-/// A broadcast feed, identified by the receiver it subscribes from.
-struct Events<T>(Arc<broadcast::Receiver<T>>);
-
-impl<T> Hash for Events<T> {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        std::ptr::hash(Arc::as_ptr(&self.0), state);
-    }
-}
-
-/// Every item from now on; skips what it fell behind on.
-fn events<T: Clone + Send + 'static>(events: &Events<T>) -> impl Stream<Item = T> + use<T> {
-    let mut receiver = events.0.resubscribe();
-    iced::stream::channel(64, async move |mut out: iced::futures::channel::mpsc::Sender<T>| {
-        loop {
-            match receiver.recv().await {
-                Ok(event) => {
-                    if out.send(event).await.is_err() {
-                        return;
-                    }
-                }
-                Err(broadcast::error::RecvError::Lagged(_)) => {}
-                Err(broadcast::error::RecvError::Closed) => return,
-            }
-        }
-    })
 }

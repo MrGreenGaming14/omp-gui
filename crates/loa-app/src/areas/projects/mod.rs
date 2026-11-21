@@ -13,30 +13,28 @@
 
 use loa_util::LockExt;
 use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use iced::futures::{Stream, stream};
 use iced::{Element, Subscription, Task};
 use loa_contracts::harness::{HostToolSpec, HostTools, SessionConfig};
 use loa_projects::{
     FileSettingsStore, LiveSessions, LocalOnly, OmpSummarizer, ProjectOverview, ProjectService, ProjectSettings,
     ProjectSummary, RebuildOutcome, ServiceConfig, Summarizers,
 };
-use loa_ui_shell::palette;
 use loa_ui_kit::widgets::Screen;
 use loa_ui_settings::projects as screen;
 use tokio::sync::mpsc::UnboundedReceiver;
 
-use crate::area::{Area, AreaId, Ctx, HostToolSet, Request, SessionEvent, Target};
+use crate::area::{perform, Area, AreaCommand, AreaMessage, Ctx, HostToolSet, Listed, Request, SessionEvent, Target};
+use crate::watch::{PtrKey, watch};
 
 #[cfg(test)]
 mod tests;
 
-/// Palette command prefix that opens a project, followed by its name.
+/// Palette command id prefixes that open a project and toggle its sidebar
+/// pin, followed by its name.
 const OPEN_COMMAND: &str = "open:";
-/// Palette command id prefix that toggles a project's sidebar pin.
 const PIN_COMMAND: &str = "pin:";
 
 #[derive(Clone, Debug)]
@@ -71,7 +69,8 @@ pub struct State {
     service: ProjectService,
     /// `project_search` and `project_read`, served to every session.
     tools: (Vec<HostToolSpec>, Arc<dyn HostTools>),
-    outcomes: Outcomes,
+    /// The rebuild driver's outcomes, until the subscription takes them.
+    outcomes: Arc<Mutex<Option<UnboundedReceiver<RebuildOutcome>>>>,
     projects: Vec<ProjectSummary>,
     /// The project screen, drawn while the app shows this area's screen.
     screen: Option<screen::State>,
@@ -87,13 +86,6 @@ impl State {
     /// The project whose page this area shows, if any.
     pub(crate) fn shown(&self) -> Option<&str> {
         self.screen.as_ref().map(|screen| screen.project())
-    }
-
-    /// The projects of this node, digests built by omp's `smol` role.
-    pub fn new(ctx: &mut Ctx) -> (Self, Task<Message>) {
-        let omp = ctx.services.harnesses.get("omp").and_then(|harness| harness.executable.clone());
-        let summarizer = OmpSummarizer::new(omp.unwrap_or_else(|| PathBuf::from("omp")), ctx.services.dirs.data.clone());
-        Self::with(ctx, Arc::new(summarizer), ServiceConfig::default())
     }
 
     /// The projects of this node with digests from `summarizer`.
@@ -112,7 +104,7 @@ impl State {
         let state = Self {
             service,
             tools,
-            outcomes: Outcomes(Arc::new(Mutex::new(Some(outcomes)))),
+            outcomes: Arc::new(Mutex::new(Some(outcomes))),
             projects: Vec::new(),
             screen: None,
             contexts: HashMap::new(),
@@ -140,7 +132,7 @@ impl State {
 
     fn list(&self) -> Task<Message> {
         let service = self.service.clone();
-        Task::perform(async move { service.projects().await.map_err(|error| error.to_string()) }, Message::Listed)
+        perform(async move { service.projects().await }, Message::Listed)
     }
 
     fn load_overview(&self, project: String) -> Task<Message> {
@@ -199,7 +191,7 @@ impl State {
         if self.screen.as_ref().is_none_or(|screen| screen.project() != project) {
             self.screen = Some(screen::State::new(project.clone()));
         }
-        ctx.show_screen(AreaId::Projects);
+        ctx.show_screen(Self::ID);
         Task::batch([self.load_overview(project.clone()), self.refresh_context(project)])
     }
 
@@ -252,8 +244,43 @@ impl State {
     }
 }
 
+impl AreaMessage for Message {
+    type Area = State;
+}
+
 impl Area for State {
+    const ID: &'static str = "projects";
+    const COMMANDS: &'static [AreaCommand<Self>] = &[AreaCommand::<Self>::new("projects.", "", "Projects", |state, arg, ctx| {
+        if let Some(project) = arg.strip_prefix(PIN_COMMAND) {
+            let toggle = loa_ui_shell::sidebar::Message::ToggleProjectPin(project.to_owned());
+            ctx.request(Request::Forward(Box::new(crate::app::Message::Shell(loa_ui_shell::Message::Sidebar(toggle)))));
+            return Task::none();
+        }
+        match arg.strip_prefix(OPEN_COMMAND) {
+            Some(project) => state.open(project.to_owned(), ctx),
+            None => {
+                ctx.notify(format!("Unknown command projects.{arg}"));
+                Task::none()
+            }
+        }
+    })
+    .listed(Listed::Each(|state, ctx| {
+        let pinned = ctx.shell.sidebar().pinned_projects();
+        let rows = state.names(&ctx.services.workspace_project()).into_iter().flat_map(|name| {
+            let verb = if pinned.contains(&name) { "Unpin" } else { "Pin" };
+            [(format!("{OPEN_COMMAND}{name}"), format!("Open project: {name}")), (format!("{PIN_COMMAND}{name}"), format!("{verb} project: {name}"))]
+        });
+        rows.collect()
+    }))];
+
     type Message = Message;
+
+    /// The projects of this node, digests built by omp's `smol` role.
+    fn new(ctx: &mut Ctx) -> (Self, Task<Message>) {
+        let omp = ctx.services.harnesses.get("omp").and_then(|harness| harness.executable.clone());
+        let summarizer = OmpSummarizer::new(omp.unwrap_or_else(|| PathBuf::from("omp")), ctx.services.dirs.data.clone());
+        Self::with(ctx, Arc::new(summarizer), ServiceConfig::default())
+    }
 
     fn update(&mut self, message: Message, ctx: &mut Ctx) -> Task<Message> {
         // A "New chat" that didn't start a session (no harness) is dropped.
@@ -323,33 +350,6 @@ impl Area for State {
         }
     }
 
-    fn palette_commands(&self, ctx: &Ctx) -> Vec<palette::Command> {
-        let pinned = ctx.shell.sidebar().pinned_projects();
-        self.names(&ctx.services.workspace_project())
-            .into_iter()
-            .flat_map(|name| {
-                let open = AreaId::Projects.command(&format!("{OPEN_COMMAND}{name}"));
-                let pin = AreaId::Projects.command(&format!("{PIN_COMMAND}{name}"));
-                let verb = if pinned.contains(&name) { "Unpin" } else { "Pin" };
-                [
-                    palette::Command::new(open, format!("Open project: {name}"), "Projects"),
-                    palette::Command::new(pin, format!("{verb} project: {name}"), "Projects"),
-                ]
-            })
-            .collect()
-    }
-
-    fn run_command(&mut self, id: &str, ctx: &mut Ctx) -> Option<Task<Message>> {
-        let rest = id.strip_prefix(AreaId::Projects.key())?.strip_prefix('.')?;
-        if let Some(project) = rest.strip_prefix(PIN_COMMAND) {
-            let toggle = loa_ui_shell::sidebar::Message::ToggleProjectPin(project.to_owned());
-            ctx.request(Request::Forward(Box::new(crate::app::Message::Shell(loa_ui_shell::Message::Sidebar(toggle)))));
-            return Some(Task::none());
-        }
-        let project = rest.strip_prefix(OPEN_COMMAND)?;
-        Some(self.open(project.to_owned(), ctx))
-    }
-
     fn view_screen<'a>(&'a self, _: &'a Ctx) -> Option<Element<'a, Message>> {
         self.screen.as_ref().map(|screen| screen.view().map(Message::Screen))
     }
@@ -393,33 +393,11 @@ impl Area for State {
         }
     }
 
+    /// The rebuild driver's outcomes; the receiver is taken once.
     fn subscription(&self) -> Subscription<Message> {
-        Subscription::run_with(self.outcomes.clone(), rebuilds)
+        let outcomes = Arc::clone(&self.outcomes);
+        watch(PtrKey(&self.outcomes), move || outcomes.locked().take(), |outcome| Some(Message::Rebuild(outcome)))
     }
-}
-
-/// The rebuild driver's outcomes, taken once by the subscription.
-#[derive(Clone)]
-struct Outcomes(Arc<Mutex<Option<UnboundedReceiver<RebuildOutcome>>>>);
-
-impl Outcomes {
-    fn take(&self) -> Option<UnboundedReceiver<RebuildOutcome>> {
-        self.0.locked().take()
-    }
-}
-
-impl Hash for Outcomes {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        (Arc::as_ptr(&self.0) as usize).hash(state);
-    }
-}
-
-fn rebuilds(outcomes: &Outcomes) -> impl Stream<Item = Message> + use<> {
-    stream::unfold(outcomes.take(), |receiver| async move {
-        let mut receiver = receiver?;
-        let outcome = receiver.recv().await?;
-        Some((Message::Rebuild(outcome), Some(receiver)))
-    })
 }
 
 /// A runtime of the area's own, made only when the app has none (tests,

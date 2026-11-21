@@ -24,7 +24,6 @@ use iced::widget::container;
 use iced::{Element, Fill, Subscription, Task};
 use loa_contracts::harness::{Prompt, SessionConfig};
 use loa_bus::SessionId;
-use loa_ui_shell::palette;
 use loa_ui_kit::style::Tone;
 use loa_ui_kit::theme::{LayoutRole, SpaceRole, TextRole, sp, width};
 use loa_ui_kit::widgets::{self as kit, Msg, Screen};
@@ -34,7 +33,7 @@ use loa_updater::swap::SwapOutcome;
 use loa_updater::{Error as UpdaterError, InstalledStatus, Overview, ProductKind, TurnGate, Updater, UpdaterConfig, default_products};
 use semver::Version;
 
-use crate::area::{Area, AreaId, Ctx, SessionEvent, Target};
+use crate::area::{Area, AreaCommand, AreaMessage, Ctx, SessionEvent, Target};
 
 mod omp_gates;
 pub use omp_gates::OmpPorts;
@@ -66,52 +65,6 @@ pub struct State {
 }
 
 impl State {
-    /// Opens the updater under `<data>/updates` and checks every feed.
-    pub fn new(ctx: &mut Ctx) -> (Self, Task<Message>) {
-        let version = Version::parse(env!("CARGO_PKG_VERSION")).expect("the crate version is semver");
-        let root = ctx.services.dirs.data.join("updates");
-        let mut problems = Vec::new();
-        let settings = match ctx.services.config.load() {
-            Ok(config) => config.updater,
-            Err(error) => {
-                problems.push(format!("Update settings unreadable ({error}); using defaults"));
-                loa_config::UpdaterSettings::default()
-            }
-        };
-        let mut config = UpdaterConfig::new(root, default_products(version.clone()));
-        config.github_token = settings.github_token.clone().filter(|token| !token.is_empty());
-        config.ports = Some(Arc::new(OmpPorts));
-        for key in &settings.trusted_keys {
-            match loa_updater::signature::parse_public_key(key) {
-                Ok(key) => config.trusted_keys.push(key),
-                Err(error) => problems.push(format!("updater.trusted_keys: {error}")),
-            }
-        }
-        let interval = settings.check_interval();
-        let updater = Updater::open(config).map_err(|error| format!("Updates are unavailable: {error}"));
-        let mut state = Self::with_updater(updater, version, interval);
-        if let Ok(updater) = &state.updater {
-            let mut pins = BTreeMap::new();
-            for (id, pin) in &settings.pins {
-                match Version::parse(pin.trim_start_matches('v')) {
-                    Ok(version) => {
-                        pins.insert(id.clone(), version);
-                    }
-                    Err(error) => problems.push(format!("updater.pins.{id}: {error}")),
-                }
-            }
-            if let Err(error) = updater.set_pins(pins) {
-                problems.push(format!("updater.pins: {error}"));
-            }
-        }
-        if !problems.is_empty() {
-            ctx.notify(problems.join("; "));
-        }
-        state.refresh(ctx);
-        let task = state.check_all(ctx);
-        (state, task)
-    }
-
     fn with_updater(updater: Result<Updater, String>, version: Version, interval: Duration) -> Self {
         Self {
             updater,
@@ -298,35 +251,74 @@ impl State {
         }
         self.refresh(ctx);
     }
+}
 
-    /// The test updater in place of the real one.
-    #[cfg(test)]
-    pub(crate) fn replace_updater(&mut self, updater: Updater, ctx: &mut Ctx) {
-        // The startup check of the real updater never runs in tests.
-        self.screen = updates::State::default();
-        self.updater = Ok(updater);
-        self.refresh(ctx);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn screen(&self) -> &updates::State {
-        &self.screen
-    }
-
-    #[cfg(test)]
-    pub(crate) fn turn_running(&self) -> bool {
-        use loa_updater::swap::Activity;
-        self.turns.turn_running()
-    }
+impl AreaMessage for Message {
+    type Area = State;
 }
 
 impl Area for State {
+    const ID: &'static str = "updater";
+    const COMMANDS: &'static [AreaCommand<Self>] = &[
+        AreaCommand::<Self>::new("updater.open", "Updates", "Commands", |state, _, ctx| state.update(Message::Open, ctx)),
+        AreaCommand::<Self>::new("updater.check", "Check for updates", "Commands", |state, _, ctx| {
+            let open = state.update(Message::Open, ctx);
+            Task::batch([open, state.check_all(ctx)])
+        }),
+    ];
+
     type Message = Message;
+
+    /// Opens the updater under `<data>/updates` and checks every feed.
+    fn new(ctx: &mut Ctx) -> (Self, Task<Message>) {
+        let version = Version::parse(env!("CARGO_PKG_VERSION")).expect("the crate version is semver");
+        let root = ctx.services.dirs.data.join("updates");
+        let mut problems = Vec::new();
+        let settings = match ctx.services.config.load() {
+            Ok(config) => config.updater,
+            Err(error) => {
+                problems.push(format!("Update settings unreadable ({error}); using defaults"));
+                loa_config::UpdaterSettings::default()
+            }
+        };
+        let mut config = UpdaterConfig::new(root, default_products(version.clone()));
+        config.github_token = settings.github_token.clone().filter(|token| !token.is_empty());
+        config.ports = Some(Arc::new(OmpPorts));
+        for key in &settings.trusted_keys {
+            match loa_updater::signature::parse_public_key(key) {
+                Ok(key) => config.trusted_keys.push(key),
+                Err(error) => problems.push(format!("updater.trusted_keys: {error}")),
+            }
+        }
+        let interval = settings.check_interval();
+        let updater = Updater::open(config).map_err(|error| format!("Updates are unavailable: {error}"));
+        let mut state = Self::with_updater(updater, version, interval);
+        if let Ok(updater) = &state.updater {
+            let mut pins = BTreeMap::new();
+            for (id, pin) in &settings.pins {
+                match Version::parse(pin.trim_start_matches('v')) {
+                    Ok(version) => {
+                        pins.insert(id.clone(), version);
+                    }
+                    Err(error) => problems.push(format!("updater.pins.{id}: {error}")),
+                }
+            }
+            if let Err(error) = updater.set_pins(pins) {
+                problems.push(format!("updater.pins: {error}"));
+            }
+        }
+        if !problems.is_empty() {
+            ctx.notify(problems.join("; "));
+        }
+        state.refresh(ctx);
+        let task = state.check_all(ctx);
+        (state, task)
+    }
 
     fn update(&mut self, message: Message, ctx: &mut Ctx) -> Task<Message> {
         match message {
             Message::Open => {
-                ctx.show_screen(AreaId::Updater);
+                ctx.show_screen(Self::ID);
                 self.refresh(ctx);
                 Task::none()
             }
@@ -343,25 +335,6 @@ impl Area for State {
                 Task::none()
             }
             Message::CheckDue => self.check_all(ctx),
-        }
-    }
-
-    fn palette_commands(&self, _: &Ctx) -> Vec<palette::Command> {
-        vec![
-            palette::Command::new(AreaId::Updater.command("open"), "Updates", "Commands"),
-            palette::Command::new(AreaId::Updater.command("check"), "Check for updates", "Commands"),
-        ]
-    }
-
-    fn run_command(&mut self, id: &str, ctx: &mut Ctx) -> Option<Task<Message>> {
-        let name = id.strip_prefix(AreaId::Updater.key())?.strip_prefix('.')?;
-        match name {
-            "open" => Some(self.update(Message::Open, ctx)),
-            "check" => {
-                let open = self.update(Message::Open, ctx);
-                Some(Task::batch([open, self.check_all(ctx)]))
-            }
-            _ => None,
         }
     }
 

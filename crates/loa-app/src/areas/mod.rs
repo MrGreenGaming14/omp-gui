@@ -1,9 +1,13 @@
-//! The feature areas. Each directory is owned by one area; the app holds one
-//! field and one `Message` variant per area.
+//! The feature areas. Each directory is owned by one area; the app holds
+//! them all in one [`Registry`], built from [`AREAS`].
+
+use std::any::Any;
 
 use iced::Task;
+use loa_ui_session::composer;
 
-use crate::area::Ctx;
+use crate::app::Message;
+use crate::area::{Area, AreaDyn, AreaMsg, Ctx, Typed};
 
 pub mod decisions;
 pub mod harness;
@@ -16,58 +20,74 @@ pub mod surfaces;
 pub mod tools;
 pub mod updater;
 
-/// One state per area.
-pub struct Areas {
-    pub harness: harness::State,
-    pub sessions: sessions::State,
-    pub decisions: decisions::State,
-    pub tools: tools::State,
-    pub surfaces: surfaces::State,
-    pub models: models::State,
-    pub projects: projects::State,
-    pub peers: peers::State,
-    pub updater: updater::State,
-    pub sandbox: sandbox::State,
+/// Makes an area and its first task.
+type Boot = fn(&mut Ctx) -> (Box<dyn AreaDyn>, Task<Message>);
+
+fn boot<A: Area>(ctx: &mut Ctx) -> (Box<dyn AreaDyn>, Task<Message>) {
+    let (area, task) = A::new(ctx);
+    (Box::new(Typed(area)), task.map(Message::area))
 }
 
-impl Areas {
-    pub fn new(ctx: &mut Ctx) -> (Self, Task<crate::app::Message>) {
-        use crate::app::Message;
-        let (harness, harness_task) = harness::State::new(ctx);
-        let (sessions, sessions_task) = sessions::State::new(ctx);
-        let (decisions, decisions_task) = decisions::State::new(ctx);
-        let (tools, tools_task) = tools::State::new(ctx);
-        let (surfaces, surfaces_task) = surfaces::State::new(ctx);
-        let (models, models_task) = models::State::new(ctx);
-        let (projects, projects_task) = projects::State::new(ctx);
-        let (peers, peers_task) = peers::State::new(ctx);
-        let (updater, updater_task) = updater::State::new(ctx);
-        let (sandbox, sandbox_task) = sandbox::State::new(ctx);
-        let task = Task::batch([
-            harness_task.map(Message::Harness),
-            sessions_task.map(Message::Sessions),
-            decisions_task.map(Message::Decisions),
-            tools_task.map(Message::Tools),
-            surfaces_task.map(Message::Surfaces),
-            models_task.map(Message::Models),
-            projects_task.map(Message::Projects),
-            peers_task.map(Message::Peers),
-            updater_task.map(Message::Updater),
-            sandbox_task.map(Message::Sandbox),
-        ]);
-        let areas = Self { harness, sessions, decisions, tools, surfaces, models, projects, peers, updater, sandbox };
-        (areas, task)
+/// Every area, in the order the app calls them.
+pub const AREAS: &[Boot] = &[
+    boot::<harness::State>,
+    boot::<sessions::State>,
+    boot::<decisions::State>,
+    boot::<tools::State>,
+    boot::<surfaces::State>,
+    boot::<models::State>,
+    boot::<projects::State>,
+    boot::<peers::State>,
+    boot::<updater::State>,
+    boot::<sandbox::State>,
+];
+
+/// Every area's state, in [`AREAS`] order.
+pub struct Registry(Vec<Box<dyn AreaDyn>>);
+
+impl Registry {
+    pub fn new(ctx: &mut Ctx) -> (Self, Task<Message>) {
+        let (areas, tasks): (Vec<_>, Vec<_>) = AREAS.iter().map(|boot| boot(ctx)).unzip();
+        (Self(areas), Task::batch(tasks))
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &dyn AreaDyn> {
+        self.0.iter().map(Box::as_ref)
+    }
+
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut Box<dyn AreaDyn>> {
+        self.0.iter_mut()
+    }
+
+    /// The area with id `id`.
+    pub fn find(&mut self, id: &str) -> Option<&mut Box<dyn AreaDyn>> {
+        self.0.iter_mut().find(|area| area.id() == id)
+    }
+
+    /// The area `A`. Every area is in [`AREAS`], so it is always found.
+    pub fn get<A: Area>(&self) -> &A {
+        let area = self.0.iter().find(|area| area.id() == A::ID).expect("every area is registered");
+        &(area.as_ref() as &dyn Any).downcast_ref::<Typed<A>>().expect("the area registered under its own id").0
+    }
+
+    pub fn get_mut<A: Area>(&mut self) -> &mut A {
+        let area = self.0.iter_mut().find(|area| area.id() == A::ID).expect("every area is registered");
+        &mut (area.as_mut() as &mut dyn Any).downcast_mut::<Typed<A>>().expect("the area registered under its own id").0
+    }
+
+    /// Hands `message` to area `id`.
+    pub fn update(&mut self, id: &str, message: AreaMsg, ctx: &mut Ctx) -> Task<Message> {
+        match self.find(id) {
+            Some(area) => area.update(message, ctx),
+            None => {
+                ctx.notify(format!("No area {id} for {message:?}"));
+                Task::none()
+            }
+        }
+    }
+
+    /// Every area's `/` commands, in order.
+    pub fn slash_rows(&self) -> Vec<composer::Command> {
+        self.iter().flat_map(|area| area.slash_rows()).collect()
     }
 }
-
-/// Calls `$m!` with the arguments given and then every area as
-/// `field Variant` (the `Areas` field and the `AreaId` / app `Message`
-/// variant), in call order.
-macro_rules! with_areas {
-    ($m:ident!($($args:tt)*)) => {
-        $m!($($args)*; harness Harness, sessions Sessions, decisions Decisions, tools Tools, surfaces Surfaces,
-            models Models, projects Projects, peers Peers, updater Updater, sandbox Sandbox)
-    };
-}
-
-pub(crate) use with_areas;

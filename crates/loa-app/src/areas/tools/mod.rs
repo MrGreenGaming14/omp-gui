@@ -12,7 +12,6 @@ use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use iced::futures::SinkExt;
 use iced::{Element, Font, Subscription, Task};
 use loa_contracts::harness::{Answer, HostToolRouter, McpTransport, SessionConfig};
 use loa_bus::SessionId;
@@ -25,14 +24,13 @@ use loa_mcp::{AllowAll, Registry};
 use loa_mcp::bridge::{self, OmpBridgeConfig};
 use loa_remote::RemoteServiceConfig;
 use loa_remote::http::RemoteHttp;
-use loa_remote::ports::PromptQueue;
 use loa_remote::tools::SERVER_NAME as REMOTE_SERVER;
-use loa_ui_shell::palette;
 use loa_ui_terminal as terminal;
 use loa_ui_panel::tools;
 
 use self::remote::{Remote, SshPaths, SshPty};
-use crate::area::{Area, AreaId, Ctx, HostToolSet, PanelTab, SessionEvent, Target};
+use crate::area::{perform, Area, AreaCommand, AreaMessage, Ctx, HostToolSet, Listed, PanelTab, SessionEvent, Target};
+use crate::watch::{PtrKey, watch};
 
 /// Id of the Tools panel tab.
 const TAB: &str = "tools";
@@ -42,14 +40,6 @@ const SHELL_TAB: &str = "remote-shell";
 /// The harness whose built in tools the app can list, and which serves
 /// them to the other harnesses through the bridge.
 const OMP: &str = "omp";
-
-/// Palette command names.
-const SERVERS: &str = "servers";
-const HOSTS: &str = "hosts";
-const ADD_SERVER: &str = "add-server";
-const IMPORT_SERVERS: &str = "import-servers";
-const IMPORT_HOSTS: &str = "import-hosts";
-const SHELL: &str = "shell.";
 
 /// Whether `decision` is a card the `remote` server raised (a host key or
 /// approval question), answered by this area rather than the harness.
@@ -124,46 +114,6 @@ pub struct State {
 }
 
 impl State {
-    pub fn new(ctx: &mut Ctx) -> (Self, Task<Message>) {
-        let ssh = SshPaths::from_env();
-        let (remote, warning) = Remote::new(&ctx.services.dirs.data, RemoteServiceConfig::from_home(&ssh.home));
-        if let Some(warning) = warning {
-            ctx.notify(warning);
-        }
-        let metrics = terminal::canvas::Metrics::measure(Font::MONOSPACE, 13.0);
-        let terminal = terminal::state::State::new(metrics, terminal::LocalShell::login_shell(ctx.services.cwd.clone()))
-            .with_remote(Arc::new(SshPty(Arc::clone(&remote.service))));
-        let mut state = Self {
-            panel: tools::State::new(),
-            mcp: ctx.services.mcp.clone(),
-            servers: None,
-            remote,
-            ssh,
-            harness_tools: HashMap::new(),
-            omp_loading: false,
-            shown: (None, Vec::new()),
-            found: Vec::new(),
-            project: ctx.services.project.clone(),
-            terminal,
-        };
-        state.reload_hosts(ctx);
-        state.refresh_projects(ctx);
-        let harness = state.refresh_builtin(ctx);
-        state.refresh_servers(ctx);
-        let store = ConfigServers::new(ctx.services.config.clone());
-        let manager = state.mcp.clone();
-        let open = Task::perform(
-            async move { Registry::open(store, manager).await.map(|servers| Shared(Arc::new(servers))).map_err(|error| error.to_string()) },
-            Message::ServersOpened,
-        );
-        let remote_tools = state.remote.tools.clone();
-        let serve = Task::perform(
-            async move { RemoteHttp::start(remote_tools).await.map(Arc::new).map_err(|error| error.to_string()) },
-            Message::RemoteServing,
-        );
-        (state, Task::batch([open, serve, harness]))
-    }
-
     /// The settings of `project` in the central config.
     fn settings(project: &str, ctx: &Ctx) -> ProjectSettings {
         ctx.services.config.load().unwrap_or_default().project(project)
@@ -211,14 +161,13 @@ impl State {
         }
         let mut config = OmpBridgeConfig::new(ctx.services.cwd.clone(), ctx.services.dirs.data.join("omp-bridge").join("tools"));
         config.program = program;
-        Task::perform(
+        perform(
             async move {
                 bridge::list_omp_tools(&config)
                     .await
                     .map(|specs| {
                         specs.into_iter().map(|spec| tools::ToolInfo::new(spec.name, listing::short_description(&spec.description))).collect()
                     })
-                    .map_err(|error| error.to_string())
             },
             |result| Message::HarnessTools { harness: OMP.to_owned(), result },
         )
@@ -414,7 +363,7 @@ impl State {
             }
             tools::Event::Server { name, action } => {
                 let Some(servers) = self.servers_or_notice(ctx) else { return Task::none() };
-                Task::perform(
+                perform(
                     async move {
                         let result = match action {
                             tools::ServerAction::Start => servers.set_enabled(&name, true).await,
@@ -463,10 +412,7 @@ impl State {
             tools::Event::ImportServers(chosen) => {
                 let Some(servers) = self.servers_or_notice(ctx) else { return Task::none() };
                 let picked = listing::picked(&self.found, &chosen);
-                Task::perform(
-                    async move { servers.import_found(picked).await.map_err(|error| error.to_string()) },
-                    Message::Imported,
-                )
+                perform(async move { servers.import_found(picked).await }, Message::Imported)
             }
             tools::Event::ImportSshHosts => {
                 let resolver = Arc::clone(&self.ssh.resolver);
@@ -542,8 +488,77 @@ fn disabled(settings: &ProjectSettings) -> Vec<tools::ToolId> {
     ids
 }
 
+impl AreaMessage for Message {
+    type Area = State;
+}
+
 impl Area for State {
+    const ID: &'static str = "tools";
+    const COMMANDS: &'static [AreaCommand<Self>] = &[
+        AreaCommand::<Self>::new("tools.servers", "MCP servers", "Tools", |state, _, ctx| state.show(tools::Section::Servers, ctx)),
+        AreaCommand::<Self>::new("tools.add-server", "Add MCP server", "Tools", |state, _, ctx| {
+            let task = state.show(tools::Section::Servers, ctx);
+            let _ = state.panel.update(tools::Message::FormOpen(tools::FormId::Server));
+            task
+        }),
+        AreaCommand::<Self>::new("tools.import-servers", "Import MCP servers from .claude, .cursor, .codex", "Tools", |state, _, ctx| {
+            let task = state.show(tools::Section::Servers, ctx);
+            let (_, event) = state.panel.update(tools::Message::ImportScan);
+            let scan = event.map_or_else(Task::none, |event| state.panel_event(event, ctx));
+            Task::batch([task, scan])
+        }),
+        AreaCommand::<Self>::new("tools.hosts", "Remote hosts", "Tools", |state, _, ctx| state.show(tools::Section::Hosts, ctx)),
+        AreaCommand::<Self>::new("tools.import-hosts", "Import Remote hosts from ~/.ssh/config", "Tools", |state, _, ctx| {
+            let task = state.show(tools::Section::Hosts, ctx);
+            Task::batch([task, state.panel_event(tools::Event::ImportSshHosts, ctx)])
+        }),
+        AreaCommand::<Self>::new("tools.shell.", "", "Tools", |state, host, ctx| state.open_shell(host.to_owned(), ctx)).listed(Listed::Each(|_, ctx| {
+            let hosts = ctx.services.config.load().map(|config| config.remote_hosts.into_keys().collect()).unwrap_or_else(|_| Vec::new());
+            hosts.into_iter().map(|host| (host.clone(), format!("Open a shell on {host}"))).collect()
+        })),
+    ];
+
     type Message = Message;
+
+    fn new(ctx: &mut Ctx) -> (Self, Task<Message>) {
+        let ssh = SshPaths::from_env();
+        let (remote, warning) = Remote::new(&ctx.services.dirs.data, RemoteServiceConfig::from_home(&ssh.home));
+        if let Some(warning) = warning {
+            ctx.notify(warning);
+        }
+        let metrics = terminal::canvas::Metrics::measure(Font::MONOSPACE, 13.0);
+        let terminal = terminal::state::State::new(metrics, terminal::LocalShell::login_shell(ctx.services.cwd.clone()))
+            .with_remote(Arc::new(SshPty(Arc::clone(&remote.service))));
+        let mut state = Self {
+            panel: tools::State::new(),
+            mcp: ctx.services.mcp.clone(),
+            servers: None,
+            remote,
+            ssh,
+            harness_tools: HashMap::new(),
+            omp_loading: false,
+            shown: (None, Vec::new()),
+            found: Vec::new(),
+            project: ctx.services.project.clone(),
+            terminal,
+        };
+        state.reload_hosts(ctx);
+        state.refresh_projects(ctx);
+        let harness = state.refresh_builtin(ctx);
+        state.refresh_servers(ctx);
+        let store = ConfigServers::new(ctx.services.config.clone());
+        let manager = state.mcp.clone();
+        let open = perform(
+            async move { Registry::open(store, manager).await.map(|servers| Shared(Arc::new(servers))) },
+            Message::ServersOpened,
+        );
+        let remote_tools = state.remote.tools.clone();
+        let serve = perform(
+            async move { RemoteHttp::start(remote_tools).await.map(Arc::new) },
+            Message::RemoteServing,
+        );
+        (state, Task::batch([open, serve, harness]))
+    }
 
     fn update(&mut self, message: Message, ctx: &mut Ctx) -> Task<Message> {
         let follow = self.follow_builtin(ctx);
@@ -561,7 +576,7 @@ impl Area for State {
                 }
                 let answered =
                     crate::areas::decisions::Message::Answered { session: session.to_string(), decision, result };
-                ctx.request(crate::area::Request::Forward(Box::new(crate::app::Message::Decisions(answered))));
+                ctx.request(crate::area::Request::Forward(Box::new(crate::app::Message::area(answered))));
                 Task::none()
             }
             Message::ServersOpened(Ok(Shared(servers))) => {
@@ -648,47 +663,6 @@ impl Area for State {
         Task::batch([follow, task])
     }
 
-    fn palette_commands(&self, ctx: &Ctx) -> Vec<palette::Command> {
-        let group = "Tools";
-        let mut commands = vec![
-            palette::Command::new(AreaId::Tools.command(SERVERS), "MCP servers", group),
-            palette::Command::new(AreaId::Tools.command(ADD_SERVER), "Add MCP server", group),
-            palette::Command::new(AreaId::Tools.command(IMPORT_SERVERS), "Import MCP servers from .claude, .cursor, .codex", group),
-            palette::Command::new(AreaId::Tools.command(HOSTS), "Remote hosts", group),
-            palette::Command::new(AreaId::Tools.command(IMPORT_HOSTS), "Import Remote hosts from ~/.ssh/config", group),
-        ];
-        if let Ok(config) = ctx.services.config.load() {
-            commands.extend(config.remote_hosts.keys().map(|host| {
-                palette::Command::new(AreaId::Tools.command(&format!("{SHELL}{host}")), format!("Open a shell on {host}"), group)
-            }));
-        }
-        commands
-    }
-
-    fn run_command(&mut self, id: &str, ctx: &mut Ctx) -> Option<Task<Message>> {
-        let name = id.strip_prefix(AreaId::Tools.key())?.strip_prefix('.')?;
-        Some(match name {
-            SERVERS => self.show(tools::Section::Servers, ctx),
-            HOSTS => self.show(tools::Section::Hosts, ctx),
-            ADD_SERVER => {
-                let task = self.show(tools::Section::Servers, ctx);
-                let _ = self.panel.update(tools::Message::FormOpen(tools::FormId::Server));
-                task
-            }
-            IMPORT_SERVERS => {
-                let task = self.show(tools::Section::Servers, ctx);
-                let (_, event) = self.panel.update(tools::Message::ImportScan);
-                let scan = event.map_or_else(Task::none, |event| self.panel_event(event, ctx));
-                Task::batch([task, scan])
-            }
-            IMPORT_HOSTS => {
-                let task = self.show(tools::Section::Hosts, ctx);
-                Task::batch([task, self.panel_event(tools::Event::ImportSshHosts, ctx)])
-            }
-            _ => self.open_shell(name.strip_prefix(SHELL)?.to_owned(), ctx),
-        })
-    }
-
     fn panel_tabs(&self) -> Vec<PanelTab> {
         vec![PanelTab::of(&self.panel, true), PanelTab::new(SHELL_TAB, "Remote shell", false).icon(loa_ui_kit::Icon::Terminal)]
     }
@@ -766,55 +740,13 @@ impl Area for State {
         Task::none()
     }
 
+    /// Every change of the app's MCP servers and of the remote question
+    /// queue.
     fn subscription(&self) -> Subscription<Message> {
+        let (mcp, queue) = (self.mcp.clone(), Arc::clone(&self.remote.queue));
         Subscription::batch([
-            Subscription::run_with(McpWatch(self.mcp.clone()), mcp_events),
-            Subscription::run_with(QueueWatch(Arc::clone(&self.remote.queue)), prompt_changes),
+            watch("tools.mcp", move || mcp.events(), |_| Some(Message::ServersChanged)),
+            watch(PtrKey(&self.remote.queue), move || queue.subscribe(), |()| Some(Message::PromptsChanged)),
         ])
     }
-}
-
-/// The app's one MCP manager, as a subscription key.
-struct McpWatch(loa_mcp::Manager);
-
-impl std::hash::Hash for McpWatch {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        "tools.mcp".hash(state);
-    }
-}
-
-fn mcp_events(watch: &McpWatch) -> impl iced::futures::Stream<Item = Message> + use<> {
-    let mut events = watch.0.events();
-    iced::stream::channel(16, async move |mut out: iced::futures::channel::mpsc::Sender<Message>| {
-        loop {
-            match events.recv().await {
-                Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                    if out.send(Message::ServersChanged).await.is_err() {
-                        return;
-                    }
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
-            }
-        }
-    })
-}
-
-/// The remote question queue, as a subscription key.
-struct QueueWatch(Arc<PromptQueue>);
-
-impl std::hash::Hash for QueueWatch {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        std::ptr::hash(Arc::as_ptr(&self.0), state);
-    }
-}
-
-fn prompt_changes(watch: &QueueWatch) -> impl iced::futures::Stream<Item = Message> + use<> {
-    let mut changes = watch.0.subscribe();
-    iced::stream::channel(16, async move |mut out: iced::futures::channel::mpsc::Sender<Message>| {
-        while changes.changed().await.is_ok() {
-            if out.send(Message::PromptsChanged).await.is_err() {
-                return;
-            }
-        }
-    })
 }

@@ -12,10 +12,11 @@ use iced::{Element, Font, Length, Task, Theme};
 use loa_contracts::harness::{Availability, AvailabilityStatus};
 use loa_config::HarnessSettings;
 use loa_ui_kit::icons::Icon;
-use loa_ui_shell::palette;
 use loa_ui_shell::theme::style;
 
-use crate::area::{Area, AreaId, Ctx, PanelTab, Request, SessionEvent};
+use loa_ui_kit::theme::{TextRole, text_size};
+use loa_ui_kit::{ButtonKind, Tone, style as kit_style};
+use crate::area::{perform, Area, AreaCommand, AreaMessage, Ctx, Listed, PanelTab, Request, SessionEvent};
 use crate::services::Harness;
 
 #[cfg(test)]
@@ -23,41 +24,9 @@ pub(crate) mod tests;
 
 /// Id of the Harnesses panel tab.
 pub const TAB: &str = "harnesses";
-/// Palette command name that probes every harness again.
-const RECHECK: &str = "recheck";
-
-/// The tab's text sizes and colors, from the theme like the other panel tabs.
-mod panel_style {
-    use iced::Theme;
-    use iced::widget::{button, text};
-    use loa_ui_shell::theme::style;
-
-    /// Size of row details.
-    pub const TEXT_SIZE: f32 = 13.0;
-    /// Size of headings and harness names, matching the sidebar.
-    pub const LIST_TEXT_SIZE: f32 = 14.0;
-
-    pub fn muted(theme: &Theme) -> text::Style {
-        style::muted(theme)
-    }
-
-    pub fn success_text(theme: &Theme) -> text::Style {
-        text::Style { color: Some(theme.extended_palette().success.base.color) }
-    }
-
-    pub fn danger_text(theme: &Theme) -> text::Style {
-        text::Style { color: Some(theme.extended_palette().danger.base.color) }
-    }
-
-    pub fn primary_text(theme: &Theme) -> text::Style {
-        text::Style { color: Some(theme.extended_palette().primary.base.color) }
-    }
-
-    /// A small outlined action inside a row.
-    pub fn action_button(theme: &Theme, status: button::Status) -> button::Style {
-        button::Style { border: iced::Border { color: style::border_color(theme), width: 1.0, radius: style::RADIUS.into() }, ..style::row(theme, status) }
-    }
-}
+/// Palette command id that probes every harness again; the others switch to
+/// the harness their id names.
+const RECHECK: &str = "harness.recheck";
 
 #[derive(Clone, Debug)]
 pub enum Message {
@@ -89,17 +58,6 @@ pub struct State {
 }
 
 impl State {
-    /// Applies `[harness]` from the central config (executables, then the
-    /// default harness) and probes every harness.
-    pub fn new(ctx: &mut Ctx) -> (Self, Task<Message>) {
-        let mut state = Self { probes: HashMap::new(), probing: Vec::new(), next_probe: 0, drafts: HashMap::new(), default: None };
-        if let Some(config) = ctx.read_config("harness settings") {
-            state.apply(&config.harness, ctx);
-        }
-        let task = state.probe_all(ctx);
-        (state, task)
-    }
-
     fn apply(&mut self, settings: &HarnessSettings, ctx: &mut Ctx) {
         let services = &mut ctx.services;
         for (id, executable) in &settings.executables {
@@ -181,7 +139,7 @@ impl State {
         let empty = !session.is_busy() && !session.has_turns();
         let session = session.id().clone();
         let close = match empty.then(|| ctx.discard_session(session.as_str())).flatten() {
-            Some(harness) => Task::perform(async move { harness.shutdown().await.map_err(|error| error.to_string()) }, Message::Closed),
+            Some(harness) => perform(async move { harness.shutdown().await }, Message::Closed),
             None => Task::none(),
         };
         ctx.request(Request::NewSession);
@@ -210,11 +168,11 @@ impl State {
 
     fn view<'a>(&'a self, ctx: &'a Ctx) -> Element<'a, Message> {
         let checking = !self.probing.is_empty();
-        let recheck = button(text(if checking { "Checking…" } else { "Recheck" }).size(panel_style::TEXT_SIZE))
+        let recheck = button(text(if checking { "Checking…" } else { "Recheck" }).size(text_size(TextRole::Label)))
             .padding([2, 8])
-            .style(panel_style::action_button)
+            .style(kit_style::button(ButtonKind::Secondary))
             .on_press_maybe((!checking).then_some(Message::Recheck));
-        let header = row![text("Harnesses").size(panel_style::LIST_TEXT_SIZE), space::horizontal(), recheck].align_y(iced::Center);
+        let header = row![text("Harnesses").size(text_size(TextRole::Body)), space::horizontal(), recheck].align_y(iced::Center);
         let selected = ctx.sessions.harness.as_deref();
         let rows = ctx.services.harnesses.list.iter().map(|harness| self.harness_row(harness, selected));
         let list = column(rows).spacing(8);
@@ -226,18 +184,18 @@ impl State {
         let probing = self.probing.iter().any(|probing| probing == id);
         let status = harness.availability.as_ref().filter(|_| !probing).map(|availability| availability.status);
         let mark = status_icon(status);
-        let label = text(harness.option.label.as_str()).size(panel_style::LIST_TEXT_SIZE);
-        let word = text(status_word(status)).size(panel_style::TEXT_SIZE).style(move |theme: &Theme| match status {
-            Some(AvailabilityStatus::Ready) => panel_style::success_text(theme),
-            Some(AvailabilityStatus::Unknown) | None => panel_style::muted(theme),
-            Some(_) => panel_style::danger_text(theme),
+        let label = text(harness.option.label.as_str()).size(text_size(TextRole::Body));
+        let word = text(status_word(status)).size(text_size(TextRole::Label)).style(move |theme: &Theme| match status {
+            Some(AvailabilityStatus::Ready) => kit_style::text(Tone::Ok)(theme),
+            Some(AvailabilityStatus::Unknown) | None => kit_style::text(Tone::Muted)(theme),
+            Some(_) => kit_style::text(Tone::Danger)(theme),
         });
         let action: Element<'a, Message> = if selected == Some(id) {
-            text("New sessions").size(panel_style::TEXT_SIZE).style(panel_style::primary_text).into()
+            text("New sessions").size(text_size(TextRole::Label)).style(kit_style::text(Tone::Accent)).into()
         } else if harness.option.available {
-            button(text("Use").size(panel_style::TEXT_SIZE))
+            button(text("Use").size(text_size(TextRole::Label)))
                 .padding([2, 8])
-                .style(panel_style::action_button)
+                .style(kit_style::button(ButtonKind::Secondary))
                 .on_press(Message::Pick(id.to_owned()))
                 .into()
         } else {
@@ -247,29 +205,29 @@ impl State {
         let mut body = column![title].spacing(4);
         let version = harness.availability.as_ref().and_then(|availability| availability.version.as_deref());
         if let Some(detail) = harness.option.detail.as_deref().filter(|detail| Some(*detail) != version) {
-            body = body.push(text(detail).size(panel_style::TEXT_SIZE).style(panel_style::muted));
+            body = body.push(text(detail).size(text_size(TextRole::Label)).style(kit_style::text(Tone::Muted)));
         }
         if let Some(version) = version {
-            body = body.push(text(format!("Version {version}")).size(panel_style::TEXT_SIZE).style(panel_style::muted));
+            body = body.push(text(format!("Version {version}")).size(text_size(TextRole::Label)).style(kit_style::text(Tone::Muted)));
         }
         if harness.traits.server_url {
-            body = body.push(text(format!("Server {}", harness.program)).size(panel_style::TEXT_SIZE).style(panel_style::muted));
+            body = body.push(text(format!("Server {}", harness.program)).size(text_size(TextRole::Label)).style(kit_style::text(Tone::Muted)));
         } else {
             if let Some(executable) = &harness.executable {
-                body = body.push(text(executable.display().to_string()).size(panel_style::TEXT_SIZE).font(Font::MONOSPACE).style(panel_style::muted));
+                body = body.push(text(executable.display().to_string()).size(text_size(TextRole::Label)).font(Font::MONOSPACE).style(kit_style::text(Tone::Muted)));
             }
             let draft = self.drafts.get(id).map_or("", String::as_str);
             let field = text_input(harness.program, draft)
-                .size(panel_style::TEXT_SIZE)
+                .size(text_size(TextRole::Label))
                 .padding([4, 8])
                 .style(style::input)
                 .on_input(move |value| Message::EditExecutable(id.to_owned(), value))
                 .on_submit(Message::SaveExecutable(id.to_owned()));
             let configured = harness.configured.as_ref().map(|path| path.display().to_string());
             let changed = configured.as_deref().unwrap_or("") != draft.trim();
-            let apply = button(text("Save").size(panel_style::TEXT_SIZE))
+            let apply = button(text("Save").size(text_size(TextRole::Label)))
                 .padding([4, 8])
-                .style(panel_style::action_button)
+                .style(kit_style::button(ButtonKind::Secondary))
                 .on_press_maybe(changed.then(|| Message::SaveExecutable(id.to_owned())));
             body = body.push(row![field, apply].spacing(6).align_y(iced::Center));
         }
@@ -299,8 +257,35 @@ fn status_icon<'a>(status: Option<AvailabilityStatus>) -> Element<'a, Message> {
     loa_ui_kit::icons::icon(icon, 14.0).style(move |theme: &Theme, _| svg::Style { color: Some(color(theme)) }).into()
 }
 
+impl AreaMessage for Message {
+    type Area = State;
+}
+
 impl Area for State {
+    const ID: &'static str = "harness";
+    const COMMANDS: &'static [AreaCommand<Self>] = &[
+        AreaCommand::<Self>::new("harness.", "", "Harness", |state, id, ctx| state.switch(id.to_owned(), ctx)).listed(Listed::Each(|_, ctx| {
+            let available = ctx.services.harnesses.list.iter().filter(|harness| harness.option.available);
+            available.map(|harness| (harness.option.id.clone(), format!("Switch harness: {}", harness.option.label))).collect()
+        })),
+        AreaCommand::<Self>::new(RECHECK, "Recheck harness availability", "Harness", |state, _, ctx| {
+            ctx.open_tab(TAB);
+            state.probe_all(ctx)
+        }),
+    ];
+
     type Message = Message;
+
+    /// Applies `[harness]` from the central config (executables, then the
+    /// default harness) and probes every harness.
+    fn new(ctx: &mut Ctx) -> (Self, Task<Message>) {
+        let mut state = Self { probes: HashMap::new(), probing: Vec::new(), next_probe: 0, drafts: HashMap::new(), default: None };
+        if let Some(config) = ctx.read_config("harness settings") {
+            state.apply(&config.harness, ctx);
+        }
+        let task = state.probe_all(ctx);
+        (state, task)
+    }
 
     fn update(&mut self, message: Message, ctx: &mut Ctx) -> Task<Message> {
         match message {
@@ -322,24 +307,6 @@ impl Area for State {
             }
             Message::SaveExecutable(id) => self.save_executable(id, ctx),
         }
-    }
-
-    fn palette_commands(&self, ctx: &Ctx) -> Vec<palette::Command> {
-        let switch = ctx.services.harnesses.list.iter().filter(|harness| harness.option.available).map(|harness| {
-            let id = AreaId::Harness.command(&harness.option.id);
-            palette::Command::new(id, format!("Switch harness: {}", harness.option.label), "Harness")
-        });
-        let recheck = palette::Command::new(AreaId::Harness.command(RECHECK), "Recheck harness availability", "Harness");
-        switch.chain([recheck]).collect()
-    }
-
-    fn run_command(&mut self, id: &str, ctx: &mut Ctx) -> Option<Task<Message>> {
-        let name = id.strip_prefix(AreaId::Harness.key())?.strip_prefix('.')?;
-        if name == RECHECK {
-            ctx.open_tab(TAB);
-            return Some(self.probe_all(ctx));
-        }
-        Some(self.switch(name.to_owned(), ctx))
     }
 
     fn panel_tabs(&self) -> Vec<PanelTab> {
