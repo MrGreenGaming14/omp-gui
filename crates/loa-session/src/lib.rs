@@ -1,10 +1,9 @@
 //! App-provided session features on any harness: the journal-backed
-//! [`library::Library`], fork, rewind and compaction, [`plan`] mode,
-//! rules and advisor [`hooks`], and [`native`] session discovery.
+//! [`library::Library`], fork, rewind and compaction, [`plan`] mode, and
+//! rules and advisor [`hooks`].
 
 pub mod hooks;
 pub mod library;
-pub mod native;
 pub mod plan;
 
 use async_trait::async_trait;

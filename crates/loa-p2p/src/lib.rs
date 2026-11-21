@@ -21,7 +21,7 @@ pub use protocols::extra::{AddedProtocol, NodeSlot, PeerProtocol};
 pub use protocols::folder::{FolderEntry, MAX_FILE as MAX_FOLDER_FILE, SharedFolder};
 pub use protocols::projection::{Access, Mirror, Projection, Update, fork_mirror_to_own_node};
 pub use protocols::session::{DriveOutcome, RemoteSession, RemoteView};
-pub use sessions::{BusSessions, LibrarySessions, LocalSession, LocalSessions, LocalTurn};
+pub use sessions::{BusSessions, LocalSession, LocalSessions, LocalTurn};
 pub use transport::{Connection, RelayConfig, Stream, TransportKind};
 
 /// The public ed25519 node key, the network address.

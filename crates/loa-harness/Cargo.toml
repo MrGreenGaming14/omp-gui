@@ -20,7 +20,6 @@ testing = []
 loa-util.workspace = true
 loa-core.workspace = true
 loa-contracts.workspace = true
-loa-bus = { path = "../loa-bus" }
 async-trait.workspace = true
 base64 = { version = "0.23", optional = true }
 reqwest = { version = "0.13", default-features = false, features = ["json"], optional = true }

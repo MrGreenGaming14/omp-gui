@@ -6,8 +6,8 @@ use iced::Task;
 use loa_bus::{SessionId, SessionWriter};
 use loa_contracts::harness::{Adapter, Feature, HarnessSession, SessionConfig};
 use loa_core::{Dom, Draft, NodeId, PatchSink, attr};
-use loa_harness::features::library::Library;
-use loa_harness::features::{self, Compaction};
+use loa_session::Compaction;
+use loa_session::library::Library;
 
 use super::{Message, SMALL_MODEL, State, title_of};
 use crate::area::{Ctx, Request, Spawn, SpawnStart, perform};
@@ -50,13 +50,13 @@ impl Branch {
 
     /// Creates the new session in `library` and starts it with `config`.
     async fn run(&self, adapter: &dyn Adapter, library: &Library, config: SessionConfig) -> Result<Box<dyn HarnessSession>, String> {
-        let text = |error: features::Error| error.to_string();
+        let text = |error: loa_session::Error| error.to_string();
         match self {
-            Branch::Fork(target) => features::fork(adapter, library, target, config).await.map_err(text),
-            Branch::Rewind { current, target } => features::rewind(adapter, library, current, target, config).await.map_err(text),
+            Branch::Fork(target) => loa_session::fork(adapter, library, target, config).await.map_err(text),
+            Branch::Rewind { current, target } => loa_session::rewind(adapter, library, current, target, config).await.map_err(text),
             Branch::Compact { running, source, writer, small, instructions } => {
                 let request = Compaction { running: running.as_ref(), source, source_sink: writer.as_ref(), next: config, smol_model: SMALL_MODEL, instructions: instructions.as_deref() };
-                let compacted = features::compact(adapter, library, small.on(Some(SMALL_MODEL)).0.as_ref(), request).await.map_err(text)?;
+                let compacted = loa_session::compact(adapter, library, small.on(Some(SMALL_MODEL)).0.as_ref(), request).await.map_err(text)?;
                 compacted.ok_or_else(|| "the harness compacted the session itself".to_owned())
             }
         }

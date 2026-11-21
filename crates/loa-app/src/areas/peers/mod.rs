@@ -19,11 +19,12 @@ use loa_contracts::harness::{Answer, Prompt};
 use loa_config::{NetworkSettings, Relay};
 use loa_trust::Resource;
 use adapter::{self as ui, Outcome};
-use loa_p2p::{Endpoint, LibrarySessions, Node, NodeConfig, NodeEvent, RelayConfig};
+use loa_p2p::{Endpoint, Node, NodeConfig, NodeEvent, RelayConfig};
 use loa_ui_kit::widgets::Screen;
 use loa_ui_settings::peers;
 use loa_ui_shell::{NodeStatus, SessionSummary};
 
+use crate::adapters::peer_sessions::LibrarySessions;
 use crate::area::{perform, Area, AreaCommand, AreaMessage, Ctx, PanelTab, Request};
 use crate::watch::watch;
 

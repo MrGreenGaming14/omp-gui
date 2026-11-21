@@ -2,8 +2,8 @@
 //! built on the shared protocol machinery in [`kit`].
 
 pub mod account_support;
-pub mod features;
 pub mod kit;
+pub mod native;
 pub mod registry;
 
 #[cfg(feature = "acp")]

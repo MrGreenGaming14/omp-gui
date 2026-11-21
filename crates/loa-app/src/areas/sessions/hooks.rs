@@ -8,7 +8,7 @@ use iced::Task;
 use loa_bus::SessionId;
 use loa_contracts::harness::{Feature, Prompt, SessionConfig};
 use loa_core::{NodeId, attr};
-use loa_harness::features::hooks::{self, Advisor, TurnHooks};
+use loa_session::hooks::{self, Advisor, TurnHooks};
 
 use super::{Message, SMALL_MODEL, State, capabilities};
 use crate::area::{Ctx, Target, perform};

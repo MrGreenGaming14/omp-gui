@@ -4629,6 +4629,7 @@ dependencies = [
  "loa-projects",
  "loa-remote",
  "loa-sandbox",
+ "loa-session",
  "loa-surfaces",
  "loa-trust",
  "loa-ui-kit",
@@ -4711,7 +4712,6 @@ dependencies = [
  "axum",
  "base64 0.23.1",
  "futures",
- "loa-bus",
  "loa-contracts",
  "loa-core",
  "loa-harness",
@@ -4790,7 +4790,7 @@ dependencies = [
  "loa-bus",
  "loa-config",
  "loa-core",
- "loa-harness",
+ "loa-session",
  "loa-trust",
  "loa-util",
  "mdns-sd",
@@ -4885,6 +4885,20 @@ dependencies = [
  "libc",
  "loa-sandbox",
  "loa-util",
+]
+
+[[package]]
+name = "loa-session"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "loa-bus",
+ "loa-contracts",
+ "loa-core",
+ "loa-util",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
 ]
 
 [[package]]

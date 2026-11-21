@@ -9,7 +9,7 @@ use iced::widget::{button, column, container, row, scrollable, space, toggler};
 use iced::{Alignment, Element, Fill, Length, Subscription, Task};
 use loa_contracts::harness::SessionConfig;
 use loa_core::PatchSink;
-use loa_harness::features::library::Library;
+use loa_session::library::Library;
 use loa_sandbox::isolation::{apply_patch, backend_name};
 use loa_sandbox::worker::WorkerJournal;
 use loa_sandbox::{Availability, ProviderStatus, RunEntry, RunLog, RunState, SandboxConfig, SandboxError, SandboxEvent, SandboxKind, SandboxService};

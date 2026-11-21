@@ -5,10 +5,10 @@ use loa_bus::{Authorize, Bus, Denied, JournalOptions, NodeKey, SessionId, Store}
 use loa_contracts::Summarizer;
 use loa_contracts::harness::{Adapter, AdapterError, Answer, Capabilities, Feature, HarnessSession, Prompt, Result as HResult, SessionConfig, SessionState};
 use loa_core::{Dom, Draft, ElementKind as K, NodeId, PatchSink, SessionMode, Value, attr};
-use loa_harness::features::hooks::{self, Advisor, TurnHooks};
-use loa_harness::features::library::Library;
-use loa_harness::features::plan::{self, Outcome, PlanGate, Verdict};
-use loa_harness::features::{self as f, native};
+use loa_session::hooks::{self, Advisor, TurnHooks};
+use loa_session::library::Library;
+use loa_session::plan::{self, Outcome, PlanGate, Verdict};
+use loa_session as f;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -304,31 +304,4 @@ fn rules_feed_the_context_and_each_turn() {
     let sent = turn_hooks.before_turn(Some("Use tabs only.".into()), "next");
     assert!(sent.starts_with("[The project rules changed]\nUse tabs only.") && sent.contains("[Advisor note on your last turn]\nMind the rule.") && sent.ends_with("next"), "{sent}");
     assert_eq!(turn_hooks.before_turn(Some("Use tabs only.".into()), "again"), "again");
-}
-
-#[test]
-fn native_sessions_are_found_and_recognized() {
-    let home = tempfile::tempdir().unwrap();
-    let h = home.path();
-    let cases: &[(&str, &str, Option<&str>)] = &[
-        (".omp/agent/sessions/-Projects-a/2026_x.jsonl", "{\"type\":\"title\",\"title\":\"Sorter\"}\n", Some(native::OMP)),
-        (".claude/projects/-home-a/u.jsonl", "{\"type\":\"user\",\"sessionId\":\"u\"}\n", Some(native::CLAUDE)),
-        (".codex/sessions/2026/11/19/rollout-1.jsonl", "{\"type\":\"session_meta\"}\n", Some(native::CODEX)),
-        (".codex/sessions/2026/11/19/other.txt", "x", None),
-        ("elsewhere/export.json", "{\"info\":{\"id\":\"ses_1\"},\"messages\":[]}", Some(native::OPENCODE)),
-        ("elsewhere/omp.jsonl", "{\"type\":\"session\",\"version\":3}\n", Some(native::OMP)),
-        ("elsewhere/rollout-9.jsonl", "{}\n", Some(native::CODEX)),
-        ("elsewhere/notes.jsonl", "{\"a\":1}\n", None),
-    ];
-    for (path, text, _) in cases {
-        std::fs::create_dir_all(h.join(path).parent().unwrap()).unwrap();
-        std::fs::write(h.join(path), text).unwrap();
-    }
-    for (path, _, harness) in cases {
-        assert_eq!(native::harness_of(&h.join(path)), *harness, "{path}");
-    }
-    let found = native::discover(h);
-    let mut kinds: Vec<_> = found.iter().map(|s| (s.harness, s.project.as_deref(), s.title.as_deref())).collect();
-    kinds.sort();
-    assert_eq!(kinds, [("claude-code", Some("-home-a"), None), ("codex", None, None), ("omp", Some("-Projects-a"), Some("Sorter"))]);
 }

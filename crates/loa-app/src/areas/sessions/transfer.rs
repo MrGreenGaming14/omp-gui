@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use iced::widget::{column, row, scrollable, text, text_input};
 use iced::{Alignment, Element, Fill, Length};
-use loa_harness::features::native::{self, NativeSession};
+use loa_harness::native::{self, NativeSession};
 use loa_ui_kit::style::{self, ButtonKind, Tone};
 use loa_ui_kit::theme::{LayoutRole, SpaceRole, TextRole, sp, width};
 use loa_ui_kit::widgets::{badge, card, label, section_header, text_button};

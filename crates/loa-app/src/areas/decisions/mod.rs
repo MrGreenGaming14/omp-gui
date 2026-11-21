@@ -87,7 +87,7 @@ impl State {
             ctx.request(Request::Forward(Box::new(crate::app::Message::area(answer))));
             return Task::none();
         }
-        if loa_harness::features::plan::is_app_plan(open.dom(), decision) {
+        if loa_session::plan::is_app_plan(open.dom(), decision) {
             let answer = crate::areas::sessions::Message::AnswerPlan { session: open.id().clone(), decision, answer };
             ctx.request(Request::Forward(Box::new(crate::app::Message::area(answer))));
             return Task::none();

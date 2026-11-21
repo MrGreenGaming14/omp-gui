@@ -8,8 +8,8 @@ use iced::Task;
 use loa_bus::SessionId;
 use loa_contracts::harness::{Answer, Feature, Prompt};
 use loa_core::{Dom, Draft, NodeId, PatchSink, SessionMode, answer, attr};
-use loa_harness::features::PlanPermit;
-use loa_harness::features::plan::{self as plan_mode, Outcome, Verdict};
+use loa_session::PlanPermit;
+use loa_session::plan::{self as plan_mode, Outcome, Verdict};
 
 use super::{Message, State, asks_first, capabilities, mode};
 use crate::area::{Ctx, Request, perform};
@@ -125,7 +125,7 @@ impl State {
         let (Some(step), Some(open)) = (plan.step, ctx.sessions.get(session.as_str())) else { return };
         let dom = open.dom();
         let (Some(root), Some(text)) = (dom.root().map(|root| root.id), plan_mode::plan_text(dom, turn)) else { return };
-        let submitted = loa_harness::features::submit_plan(open.writer().as_ref(), root, step, text);
+        let submitted = loa_session::submit_plan(open.writer().as_ref(), root, step, text);
         if ctx.report("Can't raise the plan review", submitted).is_some() {
             plan.step = None;
         }

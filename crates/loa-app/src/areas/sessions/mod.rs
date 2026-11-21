@@ -20,8 +20,8 @@ use loa_bus::{Listing, SessionId};
 use loa_contracts::harness::{Answer, Capabilities, Prompt, SessionConfig};
 use loa_core::{Dom, ElementKind, JobStatus, NodeId, Op, SessionMode, TurnStatus, attr};
 use loa_harness::account_support::opener::SystemUrlOpener;
-use loa_harness::features::hooks::TurnHooks;
-use loa_harness::features::plan::{self as plan_mode, PlanGate};
+use loa_session::hooks::TurnHooks;
+use loa_session::plan::{self as plan_mode, PlanGate};
 use loa_models::login::UrlOpener;
 use loa_ui_panel::{agents, session_tree};
 use loa_ui_session::composer;
@@ -148,7 +148,7 @@ impl State {
         };
         let (capabilities, candidates) = (capabilities(ctx, harness.harness()), candidates.clone());
         perform(
-            async move { loa_harness::features::select_role(harness.as_ref(), &capabilities, writer.as_ref(), root, &role, &candidates).await.map(|model| (role, model)) },
+            async move { loa_session::select_role(harness.as_ref(), &capabilities, writer.as_ref(), root, &role, &candidates).await.map(|model| (role, model)) },
             Message::RoleSet,
         )
     }

@@ -26,7 +26,7 @@ Everything else builds on these three. Their existing public items change only w
 | `loa-config` | core | Central config schema with version and migrations |
 | `loa-util` | core | Domain-free helpers: poison-tolerant locks, atomic files, executables (`write_executable`, `retry_busy`, `which`, `probe_cli`, captured `output`), time, text, `Registry`, `str_enum!` |
 | `loa-harness` | adapters | Harness adapters and account implementations, factory registry, CLI and omp OAuth login strategies, and shared configuration editors |
-| `loa-features` | adapters | omp features provided on top of harnesses that lack them |
+| `loa-session` | sessions | The session domain on any harness: the journal-backed `Library`, `SessionStore`, fork, rewind and compaction, plan mode (`PlanGate`), rules and advisor hooks, transcript helpers. Native session discovery stays in `loa-harness::native` |
 | `loa-mcp` | tools | rmcp client, server registry, config import |
 | `loa-remote` | tools | `remote` MCP server: `remote_bash`, `remote_file` over russh |
 | `loa-omp-bridge` | tools | omp tools served to other harnesses as an MCP server |
@@ -64,7 +64,7 @@ Everything else builds on these three. Their existing public items change only w
 - Contracts depend on nothing in the workspace except `loa-core`
 - A library depends on contracts. When it needs something another library owns, it declares a trait for it (a port) and `loa-app` passes the implementation in. Example: `loa-projects` declares the access check it needs and `loa-app` backs it with `loa-trust`
 - A UI crate depends on contracts, `iced` and `loa-ui-icons`. It takes plain data in and gives events out. It never spawns a harness, opens a socket or reads the journal
-- Only `loa-app`, `loa-features`, `loa-share` and `loa-node` depend on several libraries
+- Only `loa-app`, `loa-session`, `loa-share` and `loa-node` depend on several libraries
 
 ## Sessions
 

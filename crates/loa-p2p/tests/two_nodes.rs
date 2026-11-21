@@ -1,10 +1,10 @@
 //! Two nodes in one process over loopback (real iroh QUIC and TCP): peers,
 //! presence, grants, shared sessions, added protocols and folders.
 
-use loa_bus::{Bus, JournalOptions, Persist, PersistError, SessionId, SessionWriter, Store, WriterConfig};
+use loa_bus::{Bus, JournalOptions, Listing, Persist, PersistError, SessionId, SessionWriter, Store, WriterConfig};
 use loa_core::{Dom, Draft, ElementKind, NodeId as DomNodeId, Patch, PatchSink, Value, attr, now_ms};
-use loa_harness::features::library::Library;
-use loa_p2p::{BusSessions, DriveOutcome, GrantDirection, LibrarySessions, LocalSessions, Node, NodeConfig, NodeError, NodeEvent, TransportKind};
+use loa_p2p::{BusSessions, DriveOutcome, GrantDirection, LocalSession, LocalSessions, Node, NodeConfig, NodeError, NodeEvent, TransportKind};
+use loa_session::library::Library;
 use loa_trust::{Action, GrantId, GrantStore, KeySource, NodeIdentity, Resource, Scope};
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -250,6 +250,34 @@ async fn grants_wait_for_offline_holders_renew_over_tcp_and_stop_after_revocatio
     assert!(guest.node.renew_due().await.is_empty(), "a refused grant stops renewing");
 }
 
+/// Every session in a [`Library`], live or only journaled, as the app's peer
+/// adapter lists them: live writers' DOMs, else the journal read back.
+struct LibrarySessions(Arc<Library>);
+
+impl LocalSessions for LibrarySessions {
+    fn sessions(&self) -> Vec<LocalSession> {
+        let Ok(listings) = self.0.store().list() else { return Vec::new() };
+        let mut out: Vec<LocalSession> = listings
+            .into_iter()
+            .filter_map(|listing| match listing {
+                Listing::Session(info) => Some(info),
+                Listing::Unreadable { .. } => None,
+            })
+            .filter_map(|info| match self.0.live(&info.id) {
+                Some(live) => live.writer.is_writer().then(|| live.writer.with_dom(LocalSession::from_dom)).flatten(),
+                None => LocalSession::from_dom(&self.0.load(&info.id).ok()?),
+            })
+            .collect();
+        out.sort_by(|a, b| b.facts.created_ms.cmp(&a.facts.created_ms).then_with(|| a.facts.id.cmp(&b.facts.id)));
+        out
+    }
+
+    fn writer(&self, id: &str) -> Option<Arc<SessionWriter>> {
+        let live = self.0.open(id).ok()?;
+        live.writer.is_writer().then_some(live.writer)
+    }
+}
+
 /// The app's indirection: the library's writers ask the node, which exists only after the library.
 #[derive(Default)]
 struct Late(std::sync::OnceLock<Arc<dyn loa_bus::Authorize>>);
@@ -269,7 +297,7 @@ async fn journaled_library_sessions_are_listed_viewed_and_driven_by_peers() {
     let library = Arc::new(Library::new(store.clone(), Arc::new(Bus::new()), loa_bus::NodeKey(*identity.public_key().as_bytes()), Arc::clone(&late) as _));
     // The app's one grant store, outside the node's directory.
     let grants = Arc::new(GrantStore::open(&dir.path().join("grants.db")).unwrap());
-    let sessions: Arc<dyn LocalSessions> = Arc::new(LibrarySessions::new(Arc::clone(&library)));
+    let sessions: Arc<dyn LocalSessions> = Arc::new(LibrarySessions(Arc::clone(&library)));
     let owner = Node::open_with_grants(config(dir.path(), "owner", &store), &identity, KeySource::Keychain, sessions, Arc::clone(&grants)).unwrap();
     assert!(late.0.set(owner.authorizer()).is_ok());
     owner.start().await.unwrap();
