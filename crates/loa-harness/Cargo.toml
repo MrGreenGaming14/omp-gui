@@ -8,7 +8,7 @@ publish.workspace = true
 [features]
 default = ["omp", "claude", "codex", "opencode", "acp"]
 omp = ["dep:base64"]
-claude = []
+claude = ["dep:base64", "dep:uuid"]
 codex = []
 opencode = []
 acp = []
@@ -21,6 +21,7 @@ loa-core.workspace = true
 loa-contracts.workspace = true
 async-trait.workspace = true
 base64 = { version = "0.23", optional = true }
+uuid = { version = "1.29", features = ["v4"], optional = true }
 serde.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true

@@ -709,7 +709,7 @@ fn native_sessions_of_every_harness_round_trip_through_the_import_screen() {
 
     // Codex rollout (#40).
     let codex = home.join(".codex/sessions/2026/02/10/rollout-2026-02-10T09-00-00-0000aaaa.jsonl");
-    let codex_file = include_str!("../../../../loa-adapter-codex/tests/fixtures/rollout-basic.jsonl");
+    let codex_file = include_str!("../../../../loa-harness/fixtures/codex/rollout-basic.jsonl");
     write(&codex, codex_file);
 
     // An OpenCode export, picked by path (#43).

@@ -1,0 +1,16 @@
+! error a turn is already running
+<session nid="1" created.int="T" cwd="/work/demo" harness="claude-code" id="app-session" model="claude-sonnet-x" node="node-key" schema.int="1">
+  <turn nid="2" ended.int="T" id="p1" started.int="T" status="error">
+    <message nid="3" by="alice" id="p1" role="user" status="done">read it</message>
+    <message nid="4" id="a-1" model="claude-opus-x" role="assistant" status="done">Reading.</message>
+    <call nid="5" call_id="toolu_9" ended.int="T" started.int="T" status="done" title="/work/demo/README.md" tool="Read" x-claude-uuid="a-2">
+      <input nid="6" format="json">{"file_path":"/work/demo/README.md"}</input>
+      <result nid="7" is_error.bool="false" x-claude-uuid="u-r">line one
+line two</result>
+    </call>
+    <ext nid="8" harness="claude-code" type="block:redacted_thinking">{"data":"opaque","type":"redacted_thinking"}</ext>
+    <ext nid="9" harness="claude-code" type="tool_result">{"content":"orphan","is_error":true,"tool_use_id":"toolu_404","type":"tool_result"}</ext>
+    <ext nid="10" harness="claude-code" type="user">{"message":{"content":[{"text":"side note","type":"text"}],"role":"user"},"parent_tool_use_id":null,"session_id":"cc-1","type":"user","uuid":"u-s"}</ext>
+    <usage nid="11" model="claude-sonnet-x"/>
+  </turn>
+</session>

@@ -1,0 +1,14 @@
+< initialize init
+> {"id":{{init}},"result":{}}
+< initialized
+< thread/start thread
+> {"id":{{thread}},"result":{"thread":{"id":"thread-fake"},"model":"gpt-invented"}}
+< model/list page1
+> {"id":{{page1}},"result":{"data":[{"id":"invented","model":"gpt-invented","displayName":"GPT Invented","supportedReasoningEfforts":[{"reasoningEffort":"low"},{"reasoningEffort":"high"}]}],"nextCursor":"page-2"}}
+< model/list page2
+> {"id":{{page2}},"result":{"data":[{"id":"mini","model":"gpt-mini","displayName":"GPT Mini","supportedReasoningEfforts":[]},{"id":"secret","model":"gpt-secret","hidden":true}],"nextCursor":null}}
+< turn/start turn
+> {"id":{{turn}},"result":{"turn":{"id":"turn-fake","status":"inProgress"}}}
+> {"method":"item/agentMessage/delta","params":{"turnId":"turn-fake","itemId":"msg-fake","delta":"Invented answer"}}
+> {"method":"item/completed","params":{"turnId":"turn-fake","item":{"id":"msg-fake","type":"agentMessage","text":"Invented answer"}}}
+> {"method":"turn/completed","params":{"turn":{"id":"turn-fake","status":"completed"}}}

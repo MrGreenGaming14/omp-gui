@@ -1,0 +1,17 @@
+= Idle
+<session nid="1" created.int="T" cwd="/work/demo" harness="claude-code" id="app-session" model="claude-sonnet-x" node="node-key" schema.int="1">
+  <turn nid="2" ended.int="T" id="p1" started.int="T" status="cancelled">
+    <message nid="3" by="alice" id="p1" role="user" status="done">x</message>
+    <message nid="4" model="m" role="assistant" status="cancelled">half</message>
+    <call nid="5" call_id="toolu_1" ended.int="T" started.int="T" status="cancelled" title="make" tool="Bash" x-claude-uuid="a-0">
+      <input nid="6" format="json">{"command":"make"}</input>
+      <decision nid="7" call.int="5" created.int="T" ended.int="T" kind="approval" request_id="req-1" status="cancelled" title="Allow Bash?">{
+  "command": "make"
+}</decision>
+    </call>
+  </turn>
+  <turn nid="8" ended.int="T" id="p2" started.int="T" status="done">
+    <message nid="9" by="alice" id="p2" role="user" status="done">next</message>
+    <usage nid="10" model="claude-sonnet-x"/>
+  </turn>
+</session>
