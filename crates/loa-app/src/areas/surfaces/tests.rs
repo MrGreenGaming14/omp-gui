@@ -11,7 +11,7 @@ use iced_runtime::Action;
 use loa_contracts::harness::{Capabilities, OutputBlock, SessionConfig};
 use loa_core::{Dom, ElementKind, attr};
 use loa_mcp::{HttpSpec, ServerSpec, Transport};
-use loa_contracts::surface::{MouseButton, SurfaceMode, SurfaceUri};
+use loa_contracts::surface::{MouseButton, SurfaceUri};
 use loa_surfaces::{HubConfig, McpEndpoint, Origin, SurfaceHub, SurfaceTools};
 use loa_ui_shell::palette;
 use loa_ui_surface::{PointerInput, panel, picker};
@@ -156,7 +156,7 @@ async fn a_document_picked_in_the_tab_renders_and_is_recorded_in_the_session() {
     assert_eq!(uri.server(), "docs");
     driver
         .until("the page is rendered", |app| {
-            app.areas.surfaces.panel().surface(&uri).is_some_and(|s| s.info().mode == SurfaceMode::Document && s.page_count() == Some(1))
+            app.areas.surfaces.panel().surface(&uri).and_then(|s| s.document()).is_some_and(|d| d.page_count() == Some(1))
         })
         .await;
 
@@ -187,7 +187,7 @@ async fn a_vm_typed_as_host_and_port_streams_into_the_tab_and_takes_clicks() {
     let uri = SurfaceUri::new("vm", &address).unwrap();
     driver
         .until("the desktop's first frame is drawn", |app| {
-            app.areas.surfaces.panel().surface(&uri).and_then(|s| s.framebuffer()).is_some_and(|fb| fb.width() == 8)
+            app.areas.surfaces.panel().surface(&uri).and_then(|s| s.pixel()?.framebuffer()).is_some_and(|fb| fb.width() == 8)
         })
         .await;
     let session_record = recorded(&driver.app);
@@ -232,11 +232,11 @@ async fn a_browser_tab_opens_from_a_url_takes_clicks_and_the_agent_drives_it() {
 
     let size = Size::new(480.0, 320.0);
     driver.surfaces(panel::Message::Surface(uri.clone(), loa_ui_surface::Message::Panel(size)));
-    driver.until("a frame is shown", |app| app.areas.surfaces.panel().surface(&uri).and_then(|s| s.shown_seq()).is_some()).await;
+    driver.until("a frame is shown", |app| app.areas.surfaces.panel().surface(&uri).and_then(|s| s.pixel()?.shown_seq()).is_some()).await;
     let press = PointerInput::Button { at: Point::new(240.0, 160.0), button: MouseButton::Left, pressed: true };
     driver.surfaces(panel::Message::Surface(uri.clone(), loa_ui_surface::Message::Pointer { panel: size, input: press }));
     let blue = |app: &App| {
-        let Some(fb) = app.areas.surfaces.panel().surface(&uri).and_then(|s| s.framebuffer()) else { return false };
+        let Some(fb) = app.areas.surfaces.panel().surface(&uri).and_then(|s| s.pixel()?.framebuffer()) else { return false };
         let i = ((fb.height() / 2) as usize * fb.width() as usize + (fb.width() / 2) as usize) * 4;
         let px = &fb.pixels()[i..i + 3];
         px[2] > 200 && px[0] < 60
@@ -365,7 +365,7 @@ async fn a_browser_tab_shows_source_frames_here_and_streams_video_to_peers_when_
     driver.until("the tab is shown", |app| app.areas.surfaces.panel().active().is_some()).await;
     let uri = driver.area().panel().active().unwrap().clone();
     let red = |app: &App, blue: bool| {
-        let Some(fb) = app.areas.surfaces.panel().surface(&uri).and_then(|s| s.framebuffer()) else { return false };
+        let Some(fb) = app.areas.surfaces.panel().surface(&uri).and_then(|s| s.pixel()?.framebuffer()) else { return false };
         let i = ((fb.height() / 2) as usize * fb.width() as usize + (fb.width() / 2) as usize) * 4;
         let px = &fb.pixels()[i..i + 3];
         if blue { px[2] > 180 && px[0] < 80 } else { px[0] > 180 && px[2] < 80 }

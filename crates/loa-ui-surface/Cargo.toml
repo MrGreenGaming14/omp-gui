@@ -9,7 +9,6 @@ publish.workspace = true
 loa-contracts.workspace = true
 loa-surfaces = { path = "../loa-surfaces", default-features = false, features = ["docs"] }
 loa-ui-kit.workspace = true
-loa-ui-shell = { path = "../loa-ui-shell" }
 iced.workspace = true
 bytes.workspace = true
 futures.workspace = true

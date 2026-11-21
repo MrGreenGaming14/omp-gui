@@ -1,16 +1,15 @@
-//! The pixel mode canvas: draws the framebuffer and the local cursor, and
-//! turns iced events into [`Message`]s in panel coordinates.
+//! The pixel mode canvas: draws the framebuffer and the local cursor in token colours, and turns
+//! iced events into [`Message`]s in panel coordinates.
 
-use crate::input::{KeyInput, convert_button, convert_modifiers, scroll_pixels};
-use crate::state::{Message, PointerInput, State};
+use crate::keys::{KeyInput, convert_button, convert_modifiers, scroll_pixels};
+use crate::tab::{Message, PixelMode, PointerInput};
 use iced::advanced::image::FilterMethod;
 use iced::widget::canvas::{self, Action, Event, Path, Stroke};
-use iced::{Color, Point, Rectangle, Renderer, Theme, keyboard, mouse};
+use iced::{Point, Rectangle, Renderer, Theme, keyboard, mouse};
+use loa_ui_kit::theme::{AlphaRole, ColorRole as C, SpaceRole, for_theme};
 
-/// Borrowed view of a [`State`] as a canvas program.
-pub(crate) struct Viewer<'a> {
-    pub state: &'a State,
-}
+/// A [`PixelMode`] as a canvas program.
+pub(crate) struct Viewer<'a>(pub &'a PixelMode);
 
 /// Widget local tracking of the pointer between events.
 #[derive(Debug, Default)]
@@ -23,22 +22,15 @@ pub(crate) struct Tracking {
 impl canvas::Program<Message> for Viewer<'_> {
     type State = Tracking;
 
-    fn update(
-        &self,
-        tracking: &mut Tracking,
-        event: &Event,
-        bounds: Rectangle,
-        cursor: mouse::Cursor,
-    ) -> Option<Action<Message>> {
+    fn update(&self, tracking: &mut Tracking, event: &Event, bounds: Rectangle, cursor: mouse::Cursor) -> Option<Action<Message>> {
         let panel = bounds.size();
-        let local = |p: Point| Point::new(p.x - bounds.x, p.y - bounds.y);
         let pointer = |input| Action::publish(Message::Pointer { panel, input });
         match event {
             Event::Mouse(mouse::Event::CursorMoved { position }) => {
                 let over = cursor.is_over(bounds);
                 let was_inside = std::mem::replace(&mut tracking.inside, over);
                 if over || tracking.dragging > 0 {
-                    Some(pointer(PointerInput::Moved(local(*position))))
+                    Some(pointer(PointerInput::Moved(Point::new(position.x - bounds.x, position.y - bounds.y))))
                 } else {
                     was_inside.then(|| pointer(PointerInput::Left))
                 }
@@ -52,134 +44,64 @@ impl canvas::Program<Message> for Viewer<'_> {
                 match cursor.position_in(bounds) {
                     Some(at) => {
                         tracking.dragging += 1;
-                        Some(
-                            pointer(PointerInput::Button {
-                                at,
-                                button,
-                                pressed: true,
-                            })
-                            .and_capture(),
-                        )
+                        Some(pointer(PointerInput::Button { at, button, pressed: true }).and_capture())
                     }
-                    None => self.state.focused().then(|| Action::publish(Message::Blur)),
+                    None => self.0.focused().then(|| Action::publish(Message::Blur)),
                 }
             }
             Event::Mouse(mouse::Event::ButtonReleased(button)) => {
                 let button = convert_button(*button)?;
-                if tracking.dragging == 0 {
-                    return None;
-                }
-                tracking.dragging -= 1;
-                let at = local(cursor.position()?);
-                Some(
-                    pointer(PointerInput::Button {
-                        at,
-                        button,
-                        pressed: false,
-                    })
-                    .and_capture(),
-                )
+                tracking.dragging = tracking.dragging.checked_sub(1)?;
+                let at = cursor.position()?;
+                let at = Point::new(at.x - bounds.x, at.y - bounds.y);
+                Some(pointer(PointerInput::Button { at, button, pressed: false }).and_capture())
             }
             Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
                 let at = cursor.position_in(bounds)?;
                 let (dx, dy) = scroll_pixels(*delta);
                 Some(pointer(PointerInput::Scroll { at, dx, dy }).and_capture())
             }
-            Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers)) => Some(Action::publish(
-                Message::Modifiers(convert_modifiers(*modifiers)),
-            )),
-            Event::Keyboard(key) if self.state.focused() => KeyInput::from_event(key)
-                .map(|key| Action::publish(Message::Key(key)).and_capture()),
-            Event::Window(_) if panel != self.state.panel() => {
-                Some(Action::publish(Message::Panel(panel)))
-            }
+            Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers)) => Some(Action::publish(Message::Modifiers(convert_modifiers(*modifiers)))),
+            Event::Keyboard(key) if self.0.focused() => KeyInput::from_event(key).map(|key| Action::publish(Message::Key(key)).and_capture()),
+            Event::Window(_) if panel != self.0.panel() => Some(Action::publish(Message::Panel(panel))),
             _ => None,
         }
     }
 
-    fn draw(
-        &self,
-        _tracking: &Tracking,
-        renderer: &Renderer,
-        theme: &Theme,
-        bounds: Rectangle,
-        _cursor: mouse::Cursor,
-    ) -> Vec<canvas::Geometry> {
+    fn draw(&self, _: &Tracking, renderer: &Renderer, theme: &Theme, bounds: Rectangle, _: mouse::Cursor) -> Vec<canvas::Geometry> {
         let mut frame = canvas::Frame::new(renderer, bounds.size());
-        if let (Some(handle), Some(placement)) =
-            (self.state.picture(), self.state.placement_in(bounds.size()))
-        {
-            frame.draw_image(
-                placement.rect,
-                canvas::Image::new(handle.clone()).filter_method(FilterMethod::Linear),
-            );
+        if let (Some(handle), Some(placement)) = (self.0.picture(), self.0.placement_in(bounds.size())) {
+            frame.draw_image(placement.rect, canvas::Image::new(handle.clone()).filter_method(FilterMethod::Linear));
         }
-        if let Some(local) = self.state.cursor()
-            && local.on_surface.is_some()
-        {
-            let palette = theme.extended_palette();
-            let ring = Path::circle(local.at, HOVER_RADIUS);
+        if let Some(local) = self.0.cursor().filter(|c| c.on_surface.is_some()) {
+            // A ring the size of the medium space around the tip, filled while a button is held.
+            let t = for_theme(theme);
+            let (ring_color, line) = (t.color(C::CursorRing), t.space(SpaceRole::Xs) / 2.0);
+            let ring = Path::circle(local.at, t.space(SpaceRole::M));
             if local.pressed {
-                frame.fill(
-                    &ring,
-                    Color {
-                        a: 0.35,
-                        ..palette.primary.base.color
-                    },
-                );
+                frame.fill(&ring, ring_color.scale_alpha(t.alpha(AlphaRole::Tint)));
             }
-            frame.stroke(
-                &ring,
-                Stroke::default().with_width(2.0).with_color(Color {
-                    a: 0.7,
-                    ..palette.primary.base.color
-                }),
-            );
+            frame.stroke(&ring, Stroke::default().with_width(line).with_color(ring_color.scale_alpha(t.alpha(AlphaRole::Muted))));
             let arrow = arrow(local.at);
-            frame.fill(&arrow, palette.background.base.text);
-            frame.stroke(
-                &arrow,
-                Stroke::default()
-                    .with_width(1.0)
-                    .with_color(palette.background.base.color),
-            );
+            frame.fill(&arrow, t.color(C::Text));
+            frame.stroke(&arrow, Stroke::default().with_width(line / 2.0).with_color(t.color(C::Ground)));
         }
         vec![frame.into_geometry()]
     }
 
-    fn mouse_interaction(
-        &self,
-        _tracking: &Tracking,
-        bounds: Rectangle,
-        cursor: mouse::Cursor,
-    ) -> mouse::Interaction {
+    fn mouse_interaction(&self, _: &Tracking, bounds: Rectangle, cursor: mouse::Cursor) -> mouse::Interaction {
         // The cursor is drawn by `draw`; the system one would double it.
-        let drawn = self.state.cursor().is_some_and(|c| c.on_surface.is_some());
-        if drawn && cursor.is_over(bounds) {
-            mouse::Interaction::Hidden
-        } else {
-            mouse::Interaction::default()
-        }
+        let drawn = self.0.cursor().is_some_and(|c| c.on_surface.is_some());
+        if drawn && cursor.is_over(bounds) { mouse::Interaction::Hidden } else { mouse::Interaction::default() }
     }
 }
 
-/// Radius of the hover ring around the pointer, in panel pixels.
-const HOVER_RADIUS: f32 = 12.0;
-
 /// An arrow pointer with its tip at `tip`.
 fn arrow(tip: Point) -> Path {
-    const OUTLINE: [(f32, f32); 7] = [
-        (0.0, 0.0),
-        (0.0, 16.0),
-        (4.5, 12.0),
-        (7.5, 18.5),
-        (10.0, 17.5),
-        (7.0, 11.0),
-        (12.0, 11.0),
-    ];
+    const OUTLINE: [(f32, f32); 6] = [(0.0, 16.0), (4.5, 12.0), (7.5, 18.5), (10.0, 17.5), (7.0, 11.0), (12.0, 11.0)];
     Path::new(|b| {
         b.move_to(tip);
-        for &(x, y) in &OUTLINE[1..] {
+        for (x, y) in OUTLINE {
             b.line_to(Point::new(tip.x + x, tip.y + y));
         }
         b.close();

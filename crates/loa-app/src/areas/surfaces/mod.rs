@@ -20,7 +20,7 @@ use loa_core::{NodeId, PatchSink, TurnStatus, attr};
 use loa_contracts::surface::SurfaceUri;
 use loa_surfaces::{CaptureMode, HubConfig, HubEvent, Listed, McpEndpoint, Opened, SurfaceHub, SurfaceTools, dom};
 use loa_ui_shell::palette;
-use loa_ui_surface::{Available, BrowserStatus, Capture, CaptureStatus, DocsRenderers, Panel, PanelOptions, panel};
+use loa_ui_surface::{Available, BrowserStatus, Capture, CaptureStatus, Options, Panel, panel};
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::area::{Area, AreaId, Ctx, HostToolSet, PanelTab, SessionEvent, Target};
@@ -103,9 +103,8 @@ impl State {
         for spec in tools.host_tools().0 {
             ctx.set_app_tool(loa_ui_panel::tools::ToolInfo::from(&spec));
         }
-        let documents = DocsRenderers::new(hub.config().fonts.clone());
         #[allow(unused_mut)]
-        let mut options = PanelOptions { documents: Some(Arc::new(documents)), ..PanelOptions::default() };
+        let mut options = Options { fonts: hub.config().fonts.clone(), ..Options::default() };
         #[cfg(feature = "remote-video")]
         video::options(&mut options);
         let mut panel = Panel::new(options, browser_status(&hub), ctx.services.cwd.clone());
@@ -195,7 +194,7 @@ impl State {
             #[cfg(feature = "remote-video")]
             panel::Event::SetVideo(enabled) => video::set(&self.hub, enabled, ctx),
             panel::Event::SetCapture(capture) => self.set_capture(capture, ctx),
-            panel::Event::EncodingUnsupported { uri, encoding, supported } => {
+            panel::Event::Surface(loa_ui_surface::Event::EncodingUnsupported { uri, encoding, supported }) => {
                 let supported: Vec<String> = supported.iter().map(|encoding| format!("{encoding:?}")).collect();
                 ctx.notify(format!(
                     "{uri} streams {encoding:?}, which the renderer can't show (it shows {})",

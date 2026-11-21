@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use iced::Task;
 use loa_surfaces::{HubConfig, LiveVideo, SurfaceHub};
-use loa_ui_surface::{H264Decoder, Panel, PanelOptions, VideoStatus, panel};
+use loa_ui_surface::{H264Decoder, NewDecoder, Options, Panel, VideoStatus};
 
 use super::{Message, save};
 use crate::area::Ctx;
@@ -15,9 +15,9 @@ pub(super) fn configure(config: &mut HubConfig, settings: &loa_config::SurfaceSe
 }
 
 /// Tabs here decode H.264 too.
-pub(super) fn options(options: &mut PanelOptions) {
-    let video: panel::NewDecoder = Arc::new(|| Box::new(H264Decoder::new()));
-    options.video = Some(video);
+pub(super) fn options(options: &mut Options) {
+    let h264: NewDecoder = Arc::new(|| Box::new(H264Decoder::default()));
+    options.decoder = Some(h264);
 }
 
 /// Shows the toggle and tries this machine's encoders.
