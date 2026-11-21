@@ -3,15 +3,44 @@
 //! at the end of the last paragraph.
 
 use crate::Message;
-use crate::style::{self, LINE_HEIGHT, Look};
+use iced::{Background, Color, Font, Padding, border};
+use loa_ui_kit::style::{self as kit, Surface, Tone};
+use loa_ui_kit::theme::{ColorRole as C, RadiusRole, SpaceRole as Sp, TextRole as T, TokenSet, generation, sp};
 use iced::alignment::Vertical;
 use iced::widget::markdown::{self, Bullet, Item, Settings, Text};
 use iced::widget::text::LineHeight;
 use iced::widget::{checkbox, column, container, rich_text, row, scrollable, span, text};
 use iced::{Element, Fill};
 
-/// Inline code sits a little smaller than the body text around it.
-const INLINE_CODE_SIZE: f32 = 12.5;
+/// Line height of body text, relative to its size.
+pub(crate) const LINE_HEIGHT: f32 = 1.6;
+
+/// Settings for widgets that take colours rather than style functions, built from one token
+/// generation; the transcript rebuilds it when the generation changes.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Look {
+    pub markdown: Settings,
+    pub muted: Color,
+    pub generation: u64,
+}
+
+impl Look {
+    pub(crate) fn new(t: &TokenSet) -> Self {
+        let style = markdown::Style {
+            font: Font::DEFAULT,
+            inline_code_highlight: markdown::Highlight { background: Background::Color(t.color(C::Raised)), border: border::rounded(t.radius(RadiusRole::Pill)) },
+            inline_code_padding: Padding::ZERO.left(t.space(Sp::Xs) / 2.0).right(t.space(Sp::Xs) / 2.0),
+            inline_code_color: t.color(C::Text),
+            inline_code_font: t.font(T::Mono),
+            code_block_font: t.font(T::Mono),
+            link_color: t.color(C::Accent),
+        };
+        let mut markdown = Settings::with_text_size(t.text(T::Body), style);
+        markdown.code_size = t.text(T::Mono).into();
+        markdown.spacing = t.space(Sp::M).into();
+        Self { markdown, muted: t.color(C::Text2), generation: generation() }
+    }
+}
 
 /// Renders `items`, ending the last paragraph with `marker` when given.
 /// Returns whether the marker found a paragraph to end; when it did not, the
@@ -67,7 +96,7 @@ impl<'a> markdown::Viewer<'a, Message> for Prose<'a> {
             let mut all: Vec<_> = spans
                 .iter()
                 .map(|s| match s.highlight {
-                    Some(_) => s.clone().size(INLINE_CODE_SIZE),
+                    Some(_) => s.clone().size(self.look.markdown.code_size),
                     None => s.clone(),
                 })
                 .collect();
@@ -96,7 +125,7 @@ impl<'a> markdown::Viewer<'a, Message> for Prose<'a> {
                         .size(settings.text_size * 0.75)
                         .line_height(LineHeight::Absolute(line.into()))
                         .align_y(Vertical::Center)
-                        .style(style::muted)
+                        .style(kit::text(Tone::Muted))
                         .into(),
                     items,
                 ),
@@ -108,11 +137,11 @@ impl<'a> markdown::Viewer<'a, Message> for Prose<'a> {
                 ),
             };
             row![mark, markdown::view_with(items, inner, self)]
-                .spacing(8)
+                .spacing(sp(Sp::S))
                 .into()
         }))
         .spacing(settings.spacing * 0.25)
-        .padding([0.0, 8.0])
+        .padding(Padding::ZERO.left(sp(Sp::S)).right(sp(Sp::S)))
         .into()
     }
 
@@ -132,11 +161,11 @@ impl<'a> markdown::Viewer<'a, Message> for Prose<'a> {
         }));
         let scroller = scrollable::Scrollbar::default().width(4).scroller_width(4);
         container(
-            scrollable(container(lines).padding(12))
+            scrollable(container(lines).padding(sp(Sp::M)))
                 .direction(scrollable::Direction::Horizontal(scroller)),
         )
         .width(Fill)
-        .style(style::block)
+        .style(kit::container(Surface::Well))
         .into()
     }
 }
