@@ -152,7 +152,7 @@ impl State {
                 alpns: peer.protocols.clone(),
             })
             .collect();
-        peers::classify(&self.version, &loa_node::local_protocols(), &known)
+        peers::classify(&self.version, &loa_p2p::local_protocols(), &known)
     }
 
     /// Checks every feed, as the screen's "Check all" does.

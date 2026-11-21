@@ -1,21 +1,25 @@
 [package]
-name = "loa-net"
-description = "iroh endpoint on 31415, ALPNs, TCP fallback, relay and discovery"
+name = "loa-p2p"
+description = "The peer node: QUIC/TCP transports, discovery, grants over the wire and session sharing"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+loa-util.workspace = true
+loa-core.workspace = true
 loa-config = { path = "../loa-config" }
+loa-bus = { path = "../loa-bus" }
+loa-trust = { path = "../loa-trust" }
+loa-features = { path = "../loa-features" }
 iroh = { version = "1.5", default-features = false, features = ["tls-ring"] }
 tokio.workspace = true
 async-trait.workspace = true
-bytes.workspace = true
 futures.workspace = true
 prost.workspace = true
 rusqlite.workspace = true
-serde.workspace = true
 serde_json.workspace = true
+tempfile.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 mdns-sd = "0.22"
@@ -25,7 +29,3 @@ rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"]
 yamux = "0.14"
 tokio-util = { version = "0.7", features = ["compat"] }
 ed25519-dalek = { version = "2.2", features = ["pkcs8"] }
-
-[dev-dependencies]
-loa-util.workspace = true
-tempfile.workspace = true

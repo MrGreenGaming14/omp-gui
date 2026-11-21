@@ -9,6 +9,7 @@
 //! grants in `Services::grants`; peers' prompts and decision answers run
 //! through this app's harness like the user's own.
 
+mod adapter;
 mod folder;
 mod remote;
 #[cfg(test)]
@@ -23,8 +24,8 @@ use iced::{Element, Subscription, Task};
 use loa_contracts::harness::{Answer, Prompt};
 use loa_config::{NetworkSettings, Relay};
 use loa_trust::Resource;
-use loa_node::ui::{self, Outcome};
-use loa_node::{Endpoint, LibrarySessions, Node, NodeConfig, NodeEvent, RelayConfig};
+use adapter::{self as ui, Outcome};
+use loa_p2p::{Endpoint, LibrarySessions, Node, NodeConfig, NodeEvent, RelayConfig};
 use loa_ui_palette as palette;
 use loa_ui_peers as peers;
 use loa_ui_shell::{NodeStatus, SessionSummary};
@@ -103,11 +104,12 @@ fn parse_recent(id: &str) -> Option<(&str, &str)> {
 /// relay, and which discovery runs.
 pub(crate) fn node_config(ctx: &Ctx, network: &NetworkSettings) -> NodeConfig {
     let services = &ctx.services;
-    let mut config = NodeConfig::new(loa_node::data_dir(&services.dirs.data), services.node.label.clone(), env!("CARGO_PKG_VERSION"));
+    let mut config = NodeConfig::new(loa_p2p::data_dir(&services.dirs.data), services.node.label.clone(), env!("CARGO_PKG_VERSION"));
     config.bind = SocketAddr::from((Ipv4Addr::UNSPECIFIED, network.port));
-    // loa-net reaches peers through relays the user runs; it has no public ones.
+    // loa-p2p reaches peers through relays the user runs; it has no public ones.
     config.relay = match &network.relay {
         Relay::Url(url) => RelayConfig::SelfHosted(url.clone()),
+        // TODO(relay): `Relay::Default` maps to Off (no public relays); kept as is pending a product decision (#292).
         Relay::Default | Relay::Off => RelayConfig::Off,
     };
     config.mdns = network.discovery.mdns;

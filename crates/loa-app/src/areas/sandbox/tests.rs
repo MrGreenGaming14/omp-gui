@@ -301,7 +301,7 @@ mod peer {
     use iced::Task;
     use iced::futures::StreamExt;
     use iced_runtime::Action as RuntimeAction;
-    use loa_node::Endpoint;
+    use loa_p2p::Endpoint;
     use loa_ui_peers as panel;
     use tokio::runtime::Runtime;
 

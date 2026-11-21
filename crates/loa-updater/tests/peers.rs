@@ -1,7 +1,7 @@
 use loa_updater::peers::{PeerInfo, PeerStanding, Standing, classify, parse_alpn};
 use semver::Version;
 
-const LOCAL_ALPNS: [&str; 4] = ["omp/control/1", "omp/session/1", "omp/session/2", "omp/surface/1"];
+const LOCAL_ALPNS: [&str; 3] = ["omp/control/1", "omp/session/1", "omp/surface/1"];
 
 fn v(s: &str) -> Version {
     Version::parse(s).unwrap()
@@ -33,21 +33,19 @@ fn alpn_labels_parse() {
 }
 
 #[test]
-fn peer_behind_by_minor_still_talks_on_older_session() {
+fn peer_behind_by_minor_still_talks_on_the_same_labels() {
     let peers = [peer("b", Some("1.2.5"), &["omp/control/1", "omp/session/1", "omp/surface/1"])];
     let rows = classify(&v("1.4.0"), &LOCAL_ALPNS, &peers);
     let row = &rows[0];
     assert_eq!(row.standing, Standing::Behind { majors: 0, minors: 2, patches: 0 });
     assert!(row.can_talk);
     let session = row.protocols.iter().find(|p| p.family == "session").unwrap();
-    assert_eq!(session.shared, Some(1));
-    assert_eq!(session.local_max, Some(2));
-    assert_eq!(session.peer_max, Some(1));
+    assert_eq!((session.shared, session.local, session.peer), (Some(1), Some(1), Some(1)));
 }
 
 #[test]
 fn ahead_current_and_unknown_versions() {
-    let all = ["omp/control/1", "omp/session/2", "omp/surface/1"];
+    let all = ["omp/control/1", "omp/session/1", "omp/surface/1"];
     let peers = [
         peer("ahead", Some("1.5.0"), &all),
         peer("same", Some("1.4.0"), &all),
@@ -59,21 +57,20 @@ fn ahead_current_and_unknown_versions() {
     assert_eq!(find(&rows, "anon").standing, Standing::Unknown);
     assert!(rows.iter().all(|r| r.can_talk));
     let session = find(&rows, "same").protocols.iter().find(|p| p.family == "session").unwrap();
-    assert_eq!(session.shared, Some(2));
+    assert_eq!(session.shared, Some(1));
 }
 
 #[test]
-fn no_shared_session_version_cannot_talk() {
+fn a_different_session_label_cannot_talk() {
     let peers = [
-        peer("new", Some("3.0.0"), &["omp/control/1", "omp/session/3", "omp/surface/1"]),
-        peer("nosurface", Some("1.4.0"), &["omp/control/1", "omp/session/2"]),
+        peer("new", Some("3.0.0"), &["omp/control/1", "omp/session/2", "omp/surface/1"]),
+        peer("nosurface", Some("1.4.0"), &["omp/control/1", "omp/session/1"]),
     ];
     let rows = classify(&v("1.4.0"), &LOCAL_ALPNS, &peers);
     let new = find(&rows, "new");
     assert!(!new.can_talk);
     let session = new.protocols.iter().find(|p| p.family == "session").unwrap();
-    assert_eq!(session.shared, None);
-    assert_eq!(session.peer_max, Some(3));
+    assert_eq!((session.shared, session.local, session.peer), (None, Some(1), Some(2)));
     assert!(!find(&rows, "nosurface").can_talk);
 }
 

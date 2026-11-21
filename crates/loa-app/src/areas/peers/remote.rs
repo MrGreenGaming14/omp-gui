@@ -14,7 +14,7 @@ use loa_core::{Dom, NodeId, Op, Patch, attr};
 use loa_trust::Action;
 use loa_models::login::UrlOpener;
 use loa_models::opener::SystemUrlOpener;
-use loa_node::RemoteView;
+use loa_p2p::RemoteView;
 use loa_ui_chat as chat;
 use loa_ui_decisions as cards;
 use loa_ui_kit::icons::{Icon, icon};

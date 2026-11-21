@@ -12,7 +12,7 @@ use iced::futures::StreamExt;
 use iced_runtime::Action as RuntimeAction;
 use loa_core::{Dom, Draft, ElementKind, PatchSink as _, attr};
 use loa_trust::NodeIdentity;
-use loa_node::{DriveOutcome, Endpoint, GrantDirection, NodeEvent};
+use loa_p2p::{DriveOutcome, Endpoint, GrantDirection, NodeEvent};
 use loa_ui_peers as panel;
 use loa_ui_shell as shell;
 use tokio::runtime::Runtime;
@@ -158,7 +158,7 @@ fn two_apps_share_a_session_view_drive_and_fork_over_loopback() {
     let seen = &guest.ctx.peers;
     assert_eq!(seen.len(), 1, "{:?}", guest.ctx.notice());
     assert!(seen[0].online);
-    assert_eq!(seen[0].transport, Some(loa_node::Transport::Quic));
+    assert_eq!(seen[0].transport, Some(loa_p2p::TransportKind::Quic));
     assert_eq!(seen[0].app_version.as_deref(), Some(env!("CARGO_PKG_VERSION")));
     let nodes = guest.ctx.shell.sidebar().nodes();
     assert_eq!(nodes.name_of(&key(&owner)), "owner-box");
@@ -324,8 +324,8 @@ fn a_project_grant_shares_its_sessions_and_peers_are_renamed_and_removed() {
 struct Idle;
 
 #[async_trait::async_trait]
-impl loa_node::PeerProtocol for Idle {
-    async fn serve(&self, _: loa_node::NodeId, _: loa_node::Stream) {}
+impl loa_p2p::PeerProtocol for Idle {
+    async fn serve(&self, _: loa_p2p::NodeId, _: loa_p2p::Stream) {}
 }
 
 #[test]
@@ -337,7 +337,7 @@ fn restart_command_listens_on_the_configured_port_and_keeps_added_protocols() {
     // Another area (the sandbox) adds its protocol through the shared slot.
     let slot = app.ctx.node.clone();
     let first = slot.get().expect("node published");
-    slot.add_protocol(loa_node::AddedProtocol {
+    slot.add_protocol(loa_p2p::AddedProtocol {
         name: "loa-sandbox",
         version: 1,
         required: (loa_trust::Resource::Sandbox, loa_trust::Action::Exec),
@@ -456,7 +456,7 @@ fn a_granted_folder_is_browsed_read_and_written_only_inside_and_only_with_drive(
     browse(&rt, &mut guest, F::Save);
     assert!(!guest.areas.peers.folder().unwrap().file.as_ref().unwrap().dirty);
     let refused = rt.block_on(guest_node.write_folder_file(&owner_key, &folder, "docs/plan.md", b"overwritten"));
-    assert!(matches!(&refused, Err(loa_node::NodeError::Refused(_))), "{refused:?}");
+    assert!(matches!(&refused, Err(loa_p2p::NodeError::Refused(_))), "{refused:?}");
     assert_eq!(std::fs::read_to_string(share.join("docs/plan.md")).unwrap(), "# Plan\nship it\n");
 
     // Drive: the guest edits the plan and saves it on the owner.

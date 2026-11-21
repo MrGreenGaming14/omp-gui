@@ -1,5 +1,5 @@
 //! Runs the stub on a peer node. The host opens an authenticated stream to
-//! the peer through a [`PeerLink`] (the app backs it with `loa-net` and the
+//! the peer through a [`PeerLink`] (the app backs it with `loa-p2p` and the
 //! peer's grant); the peer answers it with [`serve_stub`], which runs the stub
 //! in a fresh, empty directory. The workspace is copied in and out over the
 //! same stream (see [`crate::sync`]).
