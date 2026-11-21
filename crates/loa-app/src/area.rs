@@ -184,11 +184,11 @@ pub struct Ctx {
     /// Each area replaces its own entries by name ([`Ctx::set_app_tool`]).
     pub app_tools: Vec<loa_ui_tools::ToolInfo>,
     /// Peers the peers area knows; refreshed by it.
-    pub peers: Vec<loa_node::PeerInfo>,
+    pub peers: Vec<loa_p2p::PeerInfo>,
     /// The running peer node, set by the peers area each time it opens one;
     /// clones of the slot see the current node. Areas add protocols to it
-    /// before it starts (`loa_node::Node::add_protocol`).
-    pub node: loa_node::NodeSlot,
+    /// before it starts (`loa_p2p::Node::add_protocol`).
+    pub node: loa_p2p::NodeSlot,
     pub(crate) screen: Option<AreaId>,
     pub(crate) notice: Option<String>,
     pub(crate) requests: Vec<Request>,

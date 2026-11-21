@@ -10,7 +10,6 @@ pub mod decision;
 pub mod desk;
 pub mod diff;
 pub mod form;
-mod style;
 pub mod tracker;
 pub mod unattended;
 
@@ -20,9 +19,11 @@ pub use desk::Desk;
 pub use tracker::{DesktopNotifier, Expired, Notice, NotifyError, TIMEOUT_BY, Tracker};
 pub use unattended::Unattended;
 
+use loa_ui_kit::theme::{SpaceRole as Sp, sp};
 use card::{Card, Reply};
 use iced::keyboard::{self, key};
-use iced::widget::{column, container, markdown, text, text_editor};
+use iced::widget::{column, markdown, text_editor};
+use loa_ui_kit::theme::{TextRole, TokenSet, for_theme, generation, tokens};
 use iced::{Element, Subscription, Task, Theme};
 use loa_contracts::harness::Answer;
 use loa_core::{Dom, NodeId};
@@ -111,7 +112,8 @@ pub enum Event {
 /// The decision cards of one session.
 pub struct State {
     viewer: Viewer,
-    markdown: markdown::Settings,
+    /// Plan markdown settings of one token generation; rebuilt when it changes.
+    markdown: std::cell::Cell<(u64, markdown::Settings)>,
     /// By node id. Ids only go up, so the first open card is the oldest.
     cards: BTreeMap<NodeId, Card>,
     /// The local node's human name, shown instead of its key on answers.
@@ -122,7 +124,7 @@ impl State {
     pub fn new(viewer: Viewer, theme: &Theme) -> Self {
         Self {
             viewer,
-            markdown: markdown::Settings::from(theme),
+            markdown: (generation(), markdown_settings(&for_theme(theme))).into(),
             cards: BTreeMap::new(),
             local_name: None,
         }
@@ -142,8 +144,14 @@ impl State {
         (&self.viewer.by, self.local_name.as_deref())
     }
 
-    pub fn set_theme(&mut self, theme: &Theme) {
-        self.markdown = markdown::Settings::from(theme);
+    pub fn set_theme(&mut self, theme: &Theme) { self.markdown.set((generation(), markdown_settings(&for_theme(theme)))) }
+
+    fn markdown(&self) -> markdown::Settings {
+        let (g, settings) = self.markdown.get();
+        if g == generation() { return settings }
+        let settings = markdown_settings(&tokens());
+        self.markdown.set((generation(), settings));
+        settings
     }
 
     /// Brings the cards in line with the session DOM. Text typed into a
@@ -281,11 +289,11 @@ impl State {
             c.view(
                 focused == Some(c.decision.id),
                 self.viewer.view_only,
-                self.markdown,
+                self.markdown(),
                 self.names(),
             )
         }))
-        .spacing(12)
+        .spacing(sp(Sp::M))
         .into()
     }
 
@@ -295,7 +303,7 @@ impl State {
         Some(card.view(
             self.focused() == Some(decision),
             self.viewer.view_only,
-            self.markdown,
+            self.markdown(),
             self.names(),
         ))
     }
@@ -310,23 +318,7 @@ impl State {
     }
 }
 
-/// The waiting count badge for the sidebar and top bar. `None` at zero.
-pub fn waiting_badge<'a, M: 'a>(count: usize) -> Option<Element<'a, M>> {
-    (count > 0).then(|| {
-        container(text(count).size(12))
-            .padding([1, 6])
-            .style(|theme: &Theme| {
-                let pair = theme.extended_palette().primary.strong;
-                container::Style {
-                    background: Some(pair.color.into()),
-                    text_color: Some(pair.text),
-                    border: iced::border::rounded(8),
-                    ..container::Style::default()
-                }
-            })
-            .into()
-    })
-}
+fn markdown_settings(t: &TokenSet) -> markdown::Settings { markdown::Settings::with_text_size(t.text(TextRole::Body), t.palette()) }
 
 #[cfg(test)]
 mod tests;

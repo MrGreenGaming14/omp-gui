@@ -5,13 +5,14 @@
 //! caller, so while a `<call tool="wait">` is pending or running, every running
 //! job is awaited.
 
-use crate::style;
+use loa_ui_kit::style::{self as kit, ButtonKind, Surface, Tone};
+use loa_ui_kit::theme::{ColorRole as C, SpaceRole as Sp, TextRole as T, sp, text_size as ts};
 use iced::widget::text::Wrapping;
 use iced::widget::{Column, Row, button, container, scrollable, space, text};
-use iced::{Center, Element, Fill, Font, Task, Theme};
+use iced::{Center, Element, Fill, Font, Task};
 use loa_core::schema::TEXT;
 use loa_core::{CallStatus, Dom, ElementKind, JobKind, JobStatus, Node, NodeId, Op, Patch, attr};
-use loa_ui_kit::icons::Icon;
+use loa_ui_kit::icons::{Icon, icon};
 use std::collections::{BTreeMap, HashSet};
 use std::ops::Range;
 
@@ -382,15 +383,15 @@ impl State {
 
     pub fn view(&self) -> Element<'_, Message> {
         let running = self.jobs.values().filter(|job| job.status == JobStatus::Running).count();
-        let mut header = Row::new().spacing(6).align_y(Center).height(style::LIST_ROW_HEIGHT);
-        header = header.push(text(format!("{running} running")).size(12).style(style::muted));
+        let mut header = Row::new().spacing(sp(Sp::S)).align_y(Center).height(crate::list_row_height());
+        header = header.push(text(format!("{running} running")).size(ts(T::Caption)).style(kit::text(Tone::Muted)));
         if self.waiting() && running > 0 {
             header = header.push(badge("wait blocked"));
         }
 
-        let mut list = Column::with_capacity(self.jobs.len() + 1).spacing(2).padding([4, 14]).push(header);
+        let mut list = Column::with_capacity(self.jobs.len() + 1).spacing(sp(Sp::Xs)).padding([sp(Sp::Xs), sp(Sp::L)]).push(header);
         if self.jobs.is_empty() {
-            list = list.push(text("No subagents or background jobs").size(style::TEXT_SIZE).style(style::muted));
+            list = list.push(text("No subagents or background jobs").size(ts(T::Label)).style(kit::text(Tone::Muted)));
         }
         for job in self.jobs.values() {
             list = list.push(self.job_view(job));
@@ -403,29 +404,28 @@ impl State {
             JobKind::Shell => Icon::Terminal,
             JobKind::Subagent => Icon::Cpu,
         };
-        let status_style: fn(&Theme) -> text::Style = match job.status {
-            JobStatus::Running => style::muted,
-            JobStatus::Done => style::success_text,
-            JobStatus::Error => style::danger_text,
-            JobStatus::Cancelled => style::muted,
-        };
+        let status_style = kit::text(match job.status {
+            JobStatus::Running | JobStatus::Cancelled => Tone::Muted,
+            JobStatus::Done => Tone::Ok,
+            JobStatus::Error => Tone::Danger,
+        });
 
-        let mut head = Row::new().spacing(8).align_y(Center).height(style::LIST_ROW_HEIGHT);
+        let mut head = Row::new().spacing(sp(Sp::S)).align_y(Center).height(crate::list_row_height());
         head = head
-            .push(loa_ui_kit::icons::icon(kind, 14.0))
-            .push(text(job.label()).size(style::LIST_TEXT_SIZE).wrapping(Wrapping::None))
-            .push(text(job.status.as_str()).size(12).style(status_style));
+            .push(icon(kind, ts(T::Body)))
+            .push(text(job.label()).size(ts(T::Body)).wrapping(Wrapping::None))
+            .push(text(job.status.as_str()).size(ts(T::Caption)).style(status_style));
         if job.status != JobStatus::Running
             && let Some(code) = job.exit_code
             && code != 0
         {
-            head = head.push(text(format!("exit {code}")).size(12).style(style::danger_text));
+            head = head.push(text(format!("exit {code}")).size(ts(T::Caption)).style(kit::text(Tone::Danger)));
         }
         if self.is_awaited(job.node) {
             head = head.push(badge("waiting on"));
         }
         if let Some(ms) = self.elapsed_ms(job.node) {
-            head = head.push(text(format_elapsed(ms)).size(12).style(style::muted));
+            head = head.push(text(format_elapsed(ms)).size(ts(T::Caption)).style(kit::text(Tone::Muted)));
         }
         head = head.push(space().width(Fill));
         if job.kind == JobKind::Subagent && job.session.is_some() {
@@ -442,11 +442,11 @@ impl State {
 
         let mut entry = Column::with_capacity(2).push(head);
         if job.expanded {
-            let output = text(job.output()).font(Font::MONOSPACE).size(style::TEXT_SIZE);
-            entry = entry.push(container(output).padding([6, 10]).width(Fill).style(style::band));
+            let output = text(job.output()).font(Font::MONOSPACE).size(ts(T::Label));
+            entry = entry.push(container(output).padding([sp(Sp::S), sp(Sp::M)]).width(Fill).style(kit::fill(C::Raised, 0.0)));
         } else if !job.last_line.is_empty() {
-            let line = text(job.last_line()).size(12).style(style::muted).wrapping(Wrapping::None);
-            entry = entry.push(Row::new().push(space().width(22)).push(line));
+            let line = text(job.last_line()).size(ts(T::Caption)).style(kit::text(Tone::Muted)).wrapping(Wrapping::None);
+            entry = entry.push(Row::new().push(space().width(sp(Sp::Xl))).push(line));
         }
         entry.into()
     }
@@ -473,11 +473,11 @@ fn is_active_wait(node: &Node) -> bool {
 }
 
 fn badge(label: &str) -> Element<'_, Message> {
-    container(text(label).size(12).style(style::muted)).padding([1, 6]).style(style::badge).into()
+    container(text(label).size(ts(T::Caption)).style(kit::text(Tone::Muted))).padding([sp(Sp::Xs), sp(Sp::S)]).style(kit::container(Surface::Badge)).into()
 }
 
 fn action(label: &str, message: Message) -> Element<'_, Message> {
-    button(text(label).size(12)).padding([2, 6]).style(style::action_button).on_press(message).into()
+    button(text(label).size(ts(T::Caption))).padding([sp(Sp::Xs), sp(Sp::S)]).style(kit::button(ButtonKind::Ghost)).on_press(message).into()
 }
 
 #[cfg(test)]

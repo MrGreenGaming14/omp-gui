@@ -5,10 +5,12 @@ use crate::Message;
 use crate::items::{Item, ItemKind};
 use crate::prose;
 use crate::stream::Streamed;
-use crate::style::{self, ICON_SIZE, LINE_HEIGHT, Look, SMALL_SIZE, TEXT_SIZE};
+use crate::prose::{LINE_HEIGHT, Look};
+use loa_ui_kit::style::{self as kit, ButtonKind, Surface, Tone};
+use loa_ui_kit::theme::{SpaceRole as Sp, TextRole as T, sp, text_size as ts};
 use iced::alignment::Vertical;
-use iced::widget::{Space, button, column, container, row, rule, svg, text};
-use iced::{Element, Fill, Font, Padding, Theme};
+use iced::widget::{Space, button, column, container, row, rule, text};
+use iced::{Element, Fill, Font, Padding};
 use loa_core::{
     CallStatus, Dom, ElementKind, JobKind, JobStatus, MessageStatus, Node, NodeId, TodoState, attr,
 };
@@ -18,13 +20,6 @@ use loa_ui_kit::icons::Icon;
 const MAX_LINES: usize = 40;
 /// Bytes shown of the same, so one huge line can't stall layout.
 const MAX_BYTES: usize = 6_000;
-/// Size of monospace output.
-const CODE_SIZE: f32 = 12.0;
-/// Widest a user bubble grows.
-const BUBBLE_WIDTH: f32 = 560.0;
-/// Indent of the details under an expanded row, lining the guide up with the
-/// header icon.
-const DETAIL_INDENT: f32 = 17.0;
 /// The text an interrupted message ends with.
 const INTERRUPTED: &str = "[interrupted]";
 
@@ -180,20 +175,12 @@ fn chevron<'a>(expanded: bool) -> Element<'a, Message> {
     } else {
         Icon::ChevronRight
     };
-    loa_ui_kit::icons::muted(icon, ICON_SIZE - 2.0).into()
+    loa_ui_kit::icons::muted(icon, ts(T::Caption)).into()
 }
 
 /// A row icon: muted, or in the danger color when something failed.
 fn glyph<'a>(icon: Icon, failed: bool) -> Element<'a, Message> {
-    let svg = loa_ui_kit::icons::muted(icon, ICON_SIZE);
-    if failed {
-        svg.style(|theme: &Theme, _| svg::Style {
-            color: Some(theme.extended_palette().danger.base.color),
-        })
-        .into()
-    } else {
-        svg.into()
-    }
+    if failed { loa_ui_kit::icons::tinted(icon, T::Body, Tone::Danger).into() } else { loa_ui_kit::icons::muted(icon, ts(T::Body)).into() }
 }
 
 /// A row header that toggles the row open and closed: `parts` in a line,
@@ -205,35 +192,35 @@ fn header<'a>(
 ) -> Element<'a, Message> {
     let line = row(parts)
         .push(chevron(expanded))
-        .spacing(8)
+        .spacing(sp(Sp::S))
         .align_y(Vertical::Center);
     button(line)
-        .style(style::header)
-        .padding([4, 10])
+        .style(kit::button(ButtonKind::Row { selected: false }))
+        .padding([sp(Sp::Xs), sp(Sp::M)])
         .on_press(Message::Toggle(key))
         .into()
 }
 
 /// What an expanded row shows below its header, set off by a thin guide.
 fn details<'a>(head: Element<'a, Message>, body: Element<'a, Message>) -> Element<'a, Message> {
-    let body = row![rule::vertical(1).style(style::guide), body]
-        .spacing(14)
+    let body = row![rule::vertical(1).style(kit::rule), body]
+        .spacing(sp(Sp::L))
         .height(iced::Shrink);
     column![
         head,
-        container(body).padding(Padding::ZERO.left(DETAIL_INDENT).bottom(4))
+        container(body).padding(Padding::ZERO.left(sp(Sp::L) + 1.0).bottom(sp(Sp::Xs)))
     ]
-    .spacing(4)
+    .spacing(sp(Sp::Xs))
     .into()
 }
 
 fn muted<'a>(content: impl text::IntoFragment<'a>) -> text::Text<'a> {
-    text(content).size(TEXT_SIZE).style(style::muted)
+    text(content).size(ts(T::Body)).style(kit::text(Tone::Muted))
 }
 
 fn omitted<'a>(bytes: usize) -> Element<'a, Message> {
     muted(format!("… {} more", format_bytes(bytes)))
-        .size(SMALL_SIZE)
+        .size(ts(T::Label))
         .into()
 }
 
@@ -247,20 +234,20 @@ fn format_bytes(bytes: usize) -> String {
 
 /// A monospace block of `body` with the bytes left out noted below.
 fn block<'a>(body: &'a str, left_out: usize, error: bool) -> Element<'a, Message> {
-    let body = text(body).font(Font::MONOSPACE).size(CODE_SIZE);
+    let body = text(body).font(Font::MONOSPACE).size(ts(T::Mono));
     let body = if error {
         body.style(text::danger)
     } else {
         body
     };
-    let mut col = column![body].spacing(4);
+    let mut col = column![body].spacing(sp(Sp::Xs));
     if left_out > 0 {
         col = col.push(omitted(left_out));
     }
     container(col)
-        .padding([8, 10])
+        .padding([sp(Sp::S), sp(Sp::M)])
         .width(Fill)
-        .style(style::block)
+        .style(kit::container(Surface::Well))
         .into()
 }
 
@@ -279,7 +266,7 @@ pub(crate) fn view<'a>(
         ItemKind::User => user(node),
         ItemKind::Assistant => assistant(node, streamed, look),
         ItemKind::Thinking => thinking(node, expanded),
-        ItemKind::System => muted(node.text.as_str()).size(SMALL_SIZE).into(),
+        ItemKind::System => muted(node.text.as_str()).size(ts(T::Label)).into(),
         ItemKind::Calls => calls(dom, item, expanded),
         // The app fills decision slots; this row is never asked for them.
         ItemKind::Decision => Space::new().into(),
@@ -295,13 +282,13 @@ pub(crate) fn view<'a>(
 fn user(node: &Node) -> Element<'_, Message> {
     let bubble = button(
         text(node.text.as_str())
-            .size(TEXT_SIZE)
+            .size(ts(T::Body))
             .line_height(LINE_HEIGHT),
     )
-    .style(style::bubble)
-    .padding([6, 12])
+    .style(kit::button(ButtonKind::Row { selected: true }))
+    .padding([sp(Sp::S), sp(Sp::M)])
     .on_press(Message::Rewind(node.id));
-    container(container(bubble).max_width(BUBBLE_WIDTH))
+    container(container(bubble).max_width(ts(T::Body) * 40.0))
         .align_right(Fill)
         .into()
 }
@@ -317,18 +304,18 @@ fn assistant<'a>(
         Some(streamed) => prose::view(streamed.items(), look, marker),
         None => (
             text(node.text.as_str())
-                .size(TEXT_SIZE)
+                .size(ts(T::Body))
                 .line_height(LINE_HEIGHT)
                 .into(),
             false,
         ),
     };
-    let mut col = column![body].spacing(4);
+    let mut col = column![body].spacing(sp(Sp::Xs));
     if let Some(marker) = marker.filter(|_| !placed) {
         col = col.push(muted(marker));
     }
     if status == Some(MessageStatus::Error) {
-        col = col.push(text("Failed").size(SMALL_SIZE).style(text::danger));
+        col = col.push(text("Failed").size(ts(T::Label)).style(text::danger));
     }
     col.into()
 }
@@ -342,7 +329,7 @@ fn thinking(node: &Node, expanded: bool) -> Element<'_, Message> {
         return head;
     }
     let body = muted(node.text.as_str())
-        .size(SMALL_SIZE)
+        .size(ts(T::Label))
         .line_height(LINE_HEIGHT)
         .font(italic());
     details(head, body.into())
@@ -367,7 +354,7 @@ fn calls<'a>(dom: &'a Dom, item: &'a Item, expanded: bool) -> Element<'a, Messag
     if summary.failed > 0 {
         parts.push(
             text(format!("{} failed", summary.failed))
-                .size(TEXT_SIZE)
+                .size(ts(T::Body))
                 .style(text::danger)
                 .into(),
         );
@@ -384,7 +371,7 @@ fn calls<'a>(dom: &'a Dom, item: &'a Item, expanded: bool) -> Element<'a, Messag
         .iter()
         .filter_map(|id| dom.get(*id))
         .map(|call| call_details(dom, call));
-    details(head, column(lines).spacing(6).into())
+    details(head, column(lines).spacing(sp(Sp::S)).into())
 }
 
 /// "Read src/peer/conn.rs", or the bare tool name of an untitled call.
@@ -397,11 +384,11 @@ fn call_line(call: &Node) -> String {
 }
 
 fn call_details<'a>(dom: &'a Dom, call: &'a Node) -> Element<'a, Message> {
-    let mut col = column![text(call_line(call)).size(SMALL_SIZE)].spacing(4);
+    let mut col = column![text(call_line(call)).size(ts(T::Label))].spacing(sp(Sp::Xs));
     for input in dom.children_of_kind(call.id, ElementKind::Input) {
         let (shown, left_out) = leading(&input.text);
         col = col
-            .push(muted("Input").size(SMALL_SIZE - 1.0))
+            .push(muted("Input").size(ts(T::Caption)))
             .push(block(shown, left_out, false));
     }
     for result in dom.children_of_kind(call.id, ElementKind::Result) {
@@ -413,7 +400,7 @@ fn call_details<'a>(dom: &'a Dom, call: &'a Node) -> Element<'a, Message> {
             muted("Result")
         };
         col = col
-            .push(label.size(SMALL_SIZE - 1.0))
+            .push(label.size(ts(T::Caption)))
             .push(block(shown, left_out, error));
     }
     if call.str_attr(attr::STATUS).and_then(CallStatus::parse) == Some(CallStatus::Error)
@@ -422,7 +409,7 @@ fn call_details<'a>(dom: &'a Dom, call: &'a Node) -> Element<'a, Message> {
             .next()
             .is_none()
     {
-        col = col.push(text("Failed").size(SMALL_SIZE).style(text::danger));
+        col = col.push(text("Failed").size(ts(T::Label)).style(text::danger));
     }
     col.into()
 }
@@ -454,13 +441,13 @@ fn job(node: &Node, expanded: bool) -> Element<'_, Message> {
     let mut parts = vec![
         glyph(icon, failed),
         muted(noun).into(),
-        text(name).font(Font::MONOSPACE).size(SMALL_SIZE).into(),
+        text(name).font(Font::MONOSPACE).size(ts(T::Label)).into(),
         muted(state).into(),
     ];
     if let Some(code) = node.int_attr(attr::EXIT_CODE).filter(|c| *c != 0) {
         parts.push(
             text(format!("exit {code}"))
-                .size(TEXT_SIZE)
+                .size(ts(T::Body))
                 .style(text::danger)
                 .into(),
         );
@@ -470,7 +457,7 @@ fn job(node: &Node, expanded: bool) -> Element<'_, Message> {
         return head;
     }
     let (shown, left_out) = trailing(&node.text);
-    let mut col = column![].spacing(4);
+    let mut col = column![].spacing(sp(Sp::Xs));
     if left_out > 0 {
         col = col.push(omitted(left_out));
     }
@@ -488,15 +475,15 @@ fn todo(node: &Node) -> Element<'_, Message> {
         TodoState::Done => ("☑", true),
         TodoState::Cancelled => ("☒", true),
     };
-    let body = text(node.text.as_str()).size(TEXT_SIZE);
+    let body = text(node.text.as_str()).size(ts(T::Body));
     let (mark, body) = if done {
-        (muted(mark), body.style(style::muted))
+        (muted(mark), body.style(kit::text(Tone::Muted)))
     } else {
-        (text(mark).size(TEXT_SIZE), body)
+        (text(mark).size(ts(T::Body)), body)
     };
     row![mark, body]
-        .spacing(8)
-        .padding([0, 10])
+        .spacing(sp(Sp::S))
+        .padding(Padding::ZERO.left(sp(Sp::M)).right(sp(Sp::M)))
         .align_y(Vertical::Center)
         .into()
 }
@@ -509,11 +496,11 @@ fn surface(node: &Node) -> Element<'_, Message> {
     let mode = node.str_attr(attr::MODE).unwrap_or_default();
     row![
         muted("Surface"),
-        text(name).font(Font::MONOSPACE).size(SMALL_SIZE),
+        text(name).font(Font::MONOSPACE).size(ts(T::Label)),
         muted(mode)
     ]
-    .spacing(8)
-    .padding([0, 10])
+    .spacing(sp(Sp::S))
+    .padding(Padding::ZERO.left(sp(Sp::M)).right(sp(Sp::M)))
     .align_y(Vertical::Center)
     .into()
 }
@@ -533,7 +520,7 @@ fn compaction(node: &Node, expanded: bool) -> Element<'_, Message> {
         return head;
     }
     let body = muted(node.text.as_str())
-        .size(SMALL_SIZE)
+        .size(ts(T::Label))
         .line_height(LINE_HEIGHT);
     details(head, body.into())
 }

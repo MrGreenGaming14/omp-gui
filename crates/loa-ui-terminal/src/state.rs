@@ -10,9 +10,12 @@ use alacritty_terminal::grid::Scroll;
 use alacritty_terminal::term::{ClipboardType, TermMode};
 use bytes::Bytes;
 use iced::task::Handle;
-use iced::widget::{button, canvas, center, column, container, row, text};
+use iced::widget::{button, canvas, center, column, container, row, rule, text};
 use iced::{Element, Fill, Task, clipboard};
-use loa_ui_kit::icons::{Icon, muted};
+use loa_ui_kit::icons::{Icon, tinted};
+use loa_ui_kit::style::{self as kit, ButtonKind, Tone};
+use loa_ui_kit::theme::{LayoutRole, SpaceRole as Sp, TextRole as T, sp, width};
+use loa_ui_kit::widgets::label;
 use tokio::sync::mpsc;
 
 use crate::canvas::{CanvasEvent, Metrics, TerminalCanvas};
@@ -21,7 +24,6 @@ use crate::emulator::Emulator;
 use crate::input::{KeyAction, encode_paste, key_action};
 use crate::local::{self, LocalShell};
 use crate::palette::TermPalette;
-use crate::style;
 use crate::{Error, GridSize, Result};
 
 /// Identifies one terminal sub tab.
@@ -527,79 +529,32 @@ impl State {
 
     /// The sub tab bar and the active terminal.
     pub fn view(&self) -> Element<'_, Message> {
-        let mut bar = row![].spacing(2).align_y(iced::Center);
-        for tab in &self.tabs {
+        let ghost = |icon, on| button(tinted(icon, T::Caption, Tone::Muted)).padding(sp(Sp::Xs)).style(kit::button(ButtonKind::Ghost)).on_press(on);
+        let tabs = self.tabs.iter().map(|tab| {
+            let title = container(label(tab.title.as_str(), T::Label, Tone::Normal).wrapping(text::Wrapping::None));
+            let r = row![title.max_width(width(LayoutRole::LabelColumn)).clip(true), ghost(Icon::X, Message::Close(tab.id))];
             let active = self.active == Some(tab.id);
-            let label = row![
-                container(text(tab.title.as_str()).size(13).wrapping(text::Wrapping::None)).max_width(220.0).clip(true),
-                button(muted(Icon::X, 10.0))
-                    .padding(2)
-                    .style(style::icon)
-                    .on_press(Message::Close(tab.id)),
-            ]
-            .spacing(6)
-            .align_y(iced::Center);
-            bar = bar.push(
-                button(label)
-                    .padding([3.0, 8.0])
-                    .style(style::tab(active))
-                    .on_press(Message::Select(tab.id)),
-            );
-        }
-        bar = bar.push(
-            button(muted(Icon::Plus, 14.0))
-                .padding(5)
-                .style(style::icon)
-                .on_press(Message::NewTab),
-        );
-
+            button(r.spacing(sp(Sp::Xs)).align_y(iced::Center)).padding([sp(Sp::Xs), sp(Sp::S)]).style(kit::button(ButtonKind::Tab { active })).on_press(Message::Select(tab.id)).into()
+        });
+        let bar = row(tabs).push(ghost(Icon::Plus, Message::NewTab)).spacing(sp(Sp::Xs)).align_y(iced::Center);
         let body: Element<'_, Message> = match self.active.and_then(|id| self.tab(id)) {
             None => {
                 let folder = self.new_tab.cwd.file_name().map_or_else(|| self.new_tab.cwd.display().to_string(), |name| name.to_string_lossy().into_owned());
-                center(
-                    column![
-                        text("No terminal open").size(13).style(style::muted),
-                        button(text(format!("Open a terminal in {folder}")).size(13))
-                            .padding([6.0, 12.0])
-                            .style(style::secondary)
-                            .on_press(Message::NewTab),
-                    ]
-                    .spacing(10)
-                    .align_x(iced::Center),
-                )
-                .into()
+                let open = button(label(format!("Open a terminal in {folder}"), T::Label, Tone::Normal)).padding([sp(Sp::Xs), sp(Sp::M)]).style(kit::button(ButtonKind::Secondary));
+                center(column![label("No terminal open", T::Label, Tone::Muted), open.on_press(Message::NewTab)].spacing(sp(Sp::S)).align_x(iced::Center)).into()
             }
             Some(tab) => {
-                let screen = canvas(TerminalCanvas {
-                    tab: tab.id,
-                    emulator: &tab.emulator,
-                    cache: &tab.cache,
-                    drawn_with: &tab.drawn_with,
-                    metrics: self.metrics,
-                })
-                .width(Fill)
-                .height(Fill);
-                let status = |line: text::Text<'static>| container(line.size(12)).padding([4.0, 8.0]);
-                match &tab.status {
-                    Status::Running => screen.into(),
-                    Status::Connecting => column![
-                        screen,
-                        status(text(format!("Connecting to {}…", tab.title)).style(style::muted))
-                    ]
-                    .into(),
-                    Status::Failed(error) => column![
-                        screen,
-                        status(text(error.clone()).style(text::danger))
-                    ]
-                    .into(),
-                }
+                let screen = canvas(TerminalCanvas { tab: tab.id, emulator: &tab.emulator, cache: &tab.cache, drawn_with: &tab.drawn_with, metrics: self.metrics }).width(Fill).height(Fill);
+                let (line, tone) = match &tab.status {
+                    Status::Running => (None, Tone::Muted),
+                    Status::Connecting => (Some(format!("Connecting to {}…", tab.title)), Tone::Muted),
+                    Status::Failed(error) => (Some(error.clone()), Tone::Danger),
+                };
+                column![screen].push(line.map(|s| container(label(s, T::Caption, tone)).padding([sp(Sp::Xs), sp(Sp::S)]))).into()
             }
         };
-        let bar = container(bar).padding([4.0, 6.0]).width(Fill);
-        container(column![bar, style::divider(), container(body).padding([6.0, 8.0])])
-            .width(Fill)
-            .height(Fill)
-            .into()
+        let bar = container(bar).padding([sp(Sp::Xs), sp(Sp::S)]).width(Fill);
+        container(column![bar, rule::horizontal(1).style(kit::rule), container(body).padding([sp(Sp::Xs), sp(Sp::S)])]).width(Fill).height(Fill).into()
     }
 }
 

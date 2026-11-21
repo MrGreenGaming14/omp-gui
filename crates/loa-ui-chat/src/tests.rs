@@ -686,3 +686,11 @@ fn single_line_breaks_in_a_reply_stay_line_breaks() {
     let first = format!("{:?}", paragraphs[0]);
     assert_eq!(first.matches(r#"text: "\n""#).count(), 2, "both line breaks kept: {first}");
 }
+
+#[test]
+fn look_rebuilds_after_a_theme_change() {
+    let state = State::new(&Theme::Dark);
+    let before = state.look().generation;
+    loa_ui_kit::theme::set_active((*tokens()).clone());
+    assert!(state.look().generation > before);
+}

@@ -13,7 +13,6 @@ loa-contracts.workspace = true
 loa-bus = { path = "../loa-bus" }
 loa-features = { path = "../loa-features" }
 loa-config = { path = "../loa-config" }
-loa-omp-bridge = { path = "../loa-omp-bridge" }
 loa-adapter-acp = { path = "../loa-adapter-acp" }
 loa-harness = { workspace = true, features = ["claude", "codex"] }
 loa-adapter-omp = { path = "../loa-adapter-omp" }
@@ -40,8 +39,11 @@ loa-remote = { path = "../loa-remote" }
 loa-trust = { path = "../loa-trust" }
 bytes.workspace = true
 loa-ui-kit = { path = "../loa-ui-kit" }
-loa-node = { path = "../loa-node" }
+loa-p2p = { path = "../loa-p2p" }
 loa-updater = { path = "../loa-updater" }
+loa-harness = { workspace = true, features = ["omp"] }
+futures.workspace = true
+tempfile.workspace = true
 loa-ui-updates = { path = "../loa-ui-updates" }
 semver = "1"
 loa-sandbox = { path = "../loa-sandbox" }

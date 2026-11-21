@@ -5,7 +5,7 @@
 
 use iced::widget::{button, column, container, row, scrollable, space, text, text_editor};
 use iced::{Alignment, Element, Fill, Length, Task};
-use loa_node::{FolderEntry, Node};
+use loa_p2p::{FolderEntry, Node};
 use loa_ui_kit::icons::{Icon, icon, muted};
 use loa_ui_shell::theme::style;
 

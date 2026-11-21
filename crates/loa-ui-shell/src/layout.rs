@@ -8,13 +8,16 @@
 //! active one.
 
 use crate::data::{NodeStatus, Nodes, SessionSummary, UsageMeter, short_key};
-use crate::theme::{self, Appearance, ThemeRef, style};
+use crate::theme::{self, Appearance, ThemeRef};
 use crate::{sidebar, topbar};
 use iced::theme::Mode;
 use iced::widget::operation::{self, AbsoluteOffset, RelativeOffset};
-use iced::widget::{button, column, container, mouse_area, row, rule, scrollable, sensor, space, text};
+use iced::widget::{button, column, container, mouse_area, row, rule, scrollable, sensor};
 use iced::{Alignment, Element, Fill, Size, Subscription, Task, Theme, mouse};
-use loa_ui_kit::icons::{Icon, icon, muted};
+use loa_ui_kit::icons::{Icon, tinted};
+use loa_ui_kit::style::{self, ButtonKind, Surface, Tone};
+use loa_ui_kit::theme::{SpaceRole as Sp, TextRole as T, pad_x, sp};
+use loa_ui_kit::widgets::{Tab, icon_button, label, splitter_edge, splitter_width, tab_strip};
 
 /// Width of the sidebar before the user resizes it.
 pub const SIDEBAR_WIDTH: f32 = 272.0;
@@ -58,9 +61,6 @@ const PROJECT_TABS_HEIGHT: f32 = 34.0;
 
 /// Pixels a mouse wheel line scrolls the tab bar.
 const WHEEL_LINE: f32 = 40.0;
-
-/// Width of the grab areas at the sidebar and panel edges.
-const HANDLE_WIDTH: f32 = 6.0;
 
 /// Container id of the panel's pop-out button.
 pub const PANEL_DETACH_ID: &str = "loa-panel-detach";
@@ -564,7 +564,7 @@ impl State {
     /// Widest the panel may be in the current frame.
     fn max_panel_width(&self) -> f32 {
         self.frame.map_or(f32::INFINITY, |frame| {
-            (frame.width - self.sidebar_width - MIN_CENTER_WIDTH - 2.0 * HANDLE_WIDTH).max(MIN_PANEL_WIDTH)
+            (frame.width - self.sidebar_width - MIN_CENTER_WIDTH - 2.0 * splitter_width()).max(MIN_PANEL_WIDTH)
         })
     }
 
@@ -622,12 +622,12 @@ impl State {
                 match self.dragging {
                     Some(Drag::Panel) => {
                         if let Some(frame) = self.frame {
-                            let width = frame.width - x - HANDLE_WIDTH / 2.0;
+                            let width = frame.width - x - splitter_width() / 2.0;
                             self.panel.width = width.min(self.max_panel_width()).max(MIN_PANEL_WIDTH);
                         }
                     }
                     Some(Drag::Sidebar) => {
-                        self.sidebar_width = (x - HANDLE_WIDTH / 2.0).clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH);
+                        self.sidebar_width = (x - splitter_width() / 2.0).clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH);
                     }
                     None => {}
                 }
@@ -686,20 +686,20 @@ impl State {
             frame = frame.push(container(sidebar).width(width).height(Fill));
         }
         if full.is_none() {
-            frame = frame.push(Element::from(edge(Message::SidebarDragStart)).map(map));
+            frame = frame.push(Element::from(splitter_edge(Message::SidebarDragStart)).map(map));
         }
         if show(Pane::Center) {
             let topbar = self.topbar.view().map(Message::Topbar).map(map);
-            let center = container(center).style(style::surface).width(Fill).height(Fill);
+            let center = container(center).style(style::container(Surface::Ground)).width(Fill).height(Fill);
             let mut main = column![].width(Fill);
             if self.project_tabs {
-                main = main.push(self.project_tabs_view(map)).push(rule::horizontal(1).style(style::divider));
+                main = main.push(self.project_tabs_view(map)).push(rule::horizontal(1).style(style::rule));
             }
             frame = frame.push(main.push(topbar).push(center));
         }
         if self.panel.open && show(Pane::Panel) {
             if full.is_none() {
-                frame = frame.push(Element::from(edge(Message::DragStart)).map(map));
+                frame = frame.push(Element::from(splitter_edge(Message::DragStart)).map(map));
             }
             frame = frame.push(self.panel_view(panel_body, map));
         }
@@ -719,23 +719,27 @@ impl State {
             .into()
     }
 
-    /// The strip of open projects above the top bar: a tab per project that
+    /// The strip of open projects above the top bar: a pill per project that
     /// opens it, with a close button that only drops the tab.
     fn project_tabs_view<'a, M: 'a>(&'a self, map: fn(Message) -> M) -> Element<'a, M> {
         let active = self.active_project.as_deref();
-        let tabs = self.open_projects.iter().fold(row![].align_y(Alignment::Center), |bar, project| {
-            let selected = active == Some(project.as_str());
-            let label = button(text(project.as_str()).size(13)).on_press(Message::OpenProjectTab(project.clone())).style(style::tab(selected)).padding([4, 8]);
-            let close = button(muted(Icon::X, 11.0)).on_press(Message::CloseProjectTab(project.clone())).style(style::ghost_button).padding(3);
-            let line = row![container(label).id(project_tab_id(project)), container(close).id(project_tab_close_id(project))].align_y(Alignment::Center);
-            let underline = container(space()).width(Fill).height(2);
-            let underline = if selected { underline.style(style::tab_underline) } else { underline };
-            bar.push(column![container(line).center_y(Fill), underline].width(iced::Length::Shrink).height(PROJECT_TABS_HEIGHT))
-        });
-        let scrollbar = scrollable::Scrollbar::new().width(2).scroller_width(2).spacing(0);
-        let tabs = scrollable(tabs).id(PROJECT_TABS_ID).direction(scrollable::Direction::Horizontal(scrollbar)).style(style::tab_scrollbar).width(Fill);
+        let tabs = tab_strip(self.open_projects.iter().map(|project| {
+            let close = button(tinted(Icon::X, T::Caption, Tone::Muted))
+                .on_press(Message::CloseProjectTab(project.clone()))
+                .style(style::button(ButtonKind::Ghost))
+                .padding(sp(Sp::Xs) / 2.0);
+            Tab {
+                label: project.as_str(),
+                icon: None,
+                active: active == Some(project.as_str()),
+                on: Message::OpenProjectTab(project.clone()),
+                id: Some(project_tab_id(project)),
+                trailing: Some(container(close).id(project_tab_close_id(project)).into()),
+            }
+        }));
+        let tabs = scrollable(tabs).id(PROJECT_TABS_ID).direction(tab_scroll()).style(style::scrollbar(true)).width(Fill);
         let tabs = mouse_area(tabs).on_scroll(Message::ProjectTabsWheel);
-        Element::from(container(tabs).style(style::side).padding([0, 8]).width(Fill)).map(map)
+        Element::from(container(tabs).style(style::container(Surface::Side)).padding(pad_x(Sp::S)).center_y(PROJECT_TABS_HEIGHT).width(Fill)).map(map)
     }
 
     fn panel_view<'a, M: 'a>(
@@ -744,58 +748,30 @@ impl State {
         map: fn(Message) -> M,
     ) -> Element<'a, M> {
         let active = self.active_tab();
-        let tabs = self.panel.tabs.iter().fold(row![].spacing(2), |bar, tab| {
-            let selected = active == Some(tab.id.as_str());
-            let mut label = row![].spacing(6).align_y(Alignment::Center);
-            if let Some(glyph) = tab_icon(&tab.id) {
-                label = label.push(if selected { icon(glyph, 14.0) } else { muted(glyph, 14.0) });
-            }
-            label = label.push(text(tab.title.as_str()).size(13));
-            if self.is_detached(&tab.id) {
-                label = label.push(muted(Icon::ExternalLink, 11.0));
-            }
-            bar.push(
-                button(label)
-                    .on_press(Message::SelectTab(tab.id.clone()))
-                    .style(style::tab(selected))
-                    .padding([6, 9]),
-            )
-        });
+        let tabs = tab_strip(self.panel.tabs.iter().map(|tab| Tab {
+            label: tab.title.as_str(),
+            icon: tab_icon(&tab.id),
+            active: active == Some(tab.id.as_str()),
+            on: Message::SelectTab(tab.id.clone()),
+            id: None,
+            trailing: self.is_detached(&tab.id).then(|| tinted(Icon::ExternalLink, T::Caption, Tone::Muted).into()),
+        }));
         // Embedded below the tabs, so it never covers a tab.
-        let scrollbar = scrollable::Scrollbar::new().width(2).scroller_width(2).spacing(0);
-        let tabs = scrollable(tabs)
-            .id(PANEL_TABS_ID)
-            .direction(scrollable::Direction::Horizontal(scrollbar))
-            .style(style::tab_scrollbar)
-            .width(Fill);
+        let tabs = scrollable(tabs).id(PANEL_TABS_ID).direction(tab_scroll()).style(style::scrollbar(true)).width(Fill);
         let tabs = mouse_area(tabs).on_scroll(Message::TabsWheel);
         let is_full = self.full == Some(Pane::Panel);
-        let full = container(
-            button(muted(if is_full { Icon::Minimize } else { Icon::Maximize }, 14.0))
-                .on_press(Message::ToggleFull(Pane::Panel))
-                .style(style::ghost_button)
-                .padding(7),
-        )
-        .id(PANEL_FULL_ID);
-        let mut controls = row![tabs].spacing(4).align_y(Alignment::Center);
+        let full = icon_button(if is_full { Icon::Minimize } else { Icon::Maximize }, if is_full { "Restore panel" } else { "Fill window" }, Some(Message::ToggleFull(Pane::Panel)));
+        let mut controls = row![tabs].spacing(sp(Sp::Xs)).align_y(Alignment::Center);
         if let Some(id) = active
             && !self.is_detached(id)
         {
-            controls = controls.push(
-                container(
-                    button(muted(Icon::ExternalLink, 14.0))
-                        .on_press(Message::Detach(id.to_owned()))
-                        .style(style::ghost_button)
-                        .padding(7),
-                )
-                .id(PANEL_DETACH_ID),
-            );
+            controls = controls.push(container(icon_button(Icon::ExternalLink, "Open in a window", Some(Message::Detach(id.to_owned())))).id(PANEL_DETACH_ID));
         }
-        controls = controls.push(full);
+        controls = controls.push(container(full).id(PANEL_FULL_ID));
         let tab_bar = Element::from(
             container(controls)
-                .style(style::side)
-                .padding([0, 8])
+                .style(style::container(Surface::Side))
+                .padding(pad_x(Sp::S))
                 .center_y(topbar::HEIGHT)
                 .width(Fill),
         )
@@ -804,24 +780,19 @@ impl State {
         let body = match active {
             Some(id) if self.is_detached(id) => {
                 let title = self.panel.tabs.iter().find(|tab| tab.id == id).map_or(id, |tab| tab.title.as_str());
+                let action = |s, kind, on| button(label(s, T::Label, Tone::Normal)).on_press(on).style(style::button(kind)).padding([sp(Sp::Xs) * 1.5, sp(Sp::M)]);
                 Element::from(
                     container(
                         column![
-                            muted(Icon::ExternalLink, 28.0),
-                            text!("{title} is in its own window").size(14),
+                            tinted(Icon::ExternalLink, T::Title, Tone::Muted),
+                            label(format!("{title} is in its own window"), T::Body, Tone::Normal),
                             row![
-                                button(text("Show window").size(13))
-                                    .on_press(Message::ShowDetached(id.to_owned()))
-                                    .style(style::secondary_button)
-                                    .padding([6, 12]),
-                                button(text("Reattach here").size(13))
-                                    .on_press(Message::Reattach(id.to_owned()))
-                                    .style(style::primary_button)
-                                    .padding([6, 12]),
+                                action("Show window", ButtonKind::Secondary, Message::ShowDetached(id.to_owned())),
+                                action("Reattach here", ButtonKind::Primary, Message::Reattach(id.to_owned())),
                             ]
-                            .spacing(8),
+                            .spacing(sp(Sp::S)),
                         ]
-                        .spacing(12)
+                        .spacing(sp(Sp::M))
                         .align_x(Alignment::Center),
                     )
                     .center(Fill),
@@ -829,28 +800,23 @@ impl State {
                 .map(map)
             }
             Some(id) => panel_body(id),
-            None => Element::from(
-                container(text("Nothing to show").style(style::muted)).center_x(Fill).padding(24),
-            )
-            .map(map),
+            None => Element::from(container(label("Nothing to show", T::Body, Tone::Muted)).center_x(Fill).padding(sp(Sp::Xl))).map(map),
         };
 
         let width = if is_full { iced::Length::Fill } else { iced::Length::Fixed(self.panel.width.min(self.max_panel_width())) };
-        container(column![tab_bar, rule::horizontal(1).style(style::divider), container(body).width(Fill).height(Fill)])
+        container(column![tab_bar, rule::horizontal(1).style(style::rule), container(body).width(Fill).height(Fill)])
             .id(PANEL_ID)
-            .style(style::side)
+            .style(style::container(Surface::Side))
             .width(width)
             .height(Fill)
             .into()
     }
 }
 
-/// A grab area on a pane edge, drawn as the 1px divider between panes.
-fn edge(on_press: Message) -> Element<'static, Message> {
-    mouse_area(container(rule::vertical(1).style(style::divider)).center_x(HANDLE_WIDTH).height(Fill))
-        .on_press(on_press)
-        .interaction(mouse::Interaction::ResizingHorizontally)
-        .into()
+/// A sideways scrollbar under a tab strip.
+fn tab_scroll() -> scrollable::Direction {
+    let w = sp(Sp::Xs) / 2.0;
+    scrollable::Direction::Horizontal(scrollable::Scrollbar::new().width(w).scroller_width(w).spacing(iced::Pixels::ZERO))
 }
 
 /// The icon of a known panel tab.
@@ -936,7 +902,7 @@ mod tests {
         send(&mut state, Message::FrameSized(Size::new(1200.0, 800.0)));
         send(&mut state, Message::DragStart);
         send(&mut state, Message::DragMove(10.0));
-        assert_eq!(state.panel_width(), 1200.0 - SIDEBAR_WIDTH - MIN_CENTER_WIDTH - 2.0 * HANDLE_WIDTH);
+        assert_eq!(state.panel_width(), 1200.0 - SIDEBAR_WIDTH - MIN_CENTER_WIDTH - 2.0 * splitter_width());
         send(&mut state, Message::DragMove(1190.0));
         assert_eq!(state.panel_width(), MIN_PANEL_WIDTH);
 
@@ -1007,11 +973,11 @@ mod tests {
     fn theme_override_is_reported_and_applied() {
         let mut state = frame();
         send(&mut state, Message::SystemTheme(Mode::Light));
-        assert!(!state.theme().extended_palette().is_dark);
+        assert_eq!(state.theme_state().variant(), theme::Variant::Light);
         let dark = ThemeRef("dark".into());
         let (_, event) = state.update(Message::SetTheme(dark.clone()));
         assert_eq!(event, Some(Event::SetTheme(dark)));
-        assert!(state.theme().extended_palette().is_dark);
+        assert_eq!(state.theme_state().variant(), theme::Variant::Dark);
     }
 
     #[test]

@@ -28,5 +28,6 @@ Additions and fixes pass. Anything harmful holds the update and shows the diff, 
 - Updates apply between sessions, never mid turn
 - The previous version stays installed for one click rollback
 - App updates are signed and the signature is checked before swapping
+- Archive entry parents must be real directories, not symlinks; safe links within the payload remain supported. Staged executables must resolve inside the payload.
 - Peers on different versions still talk through versioned ALPNs, and the Peers list shows who is behind
 - The app never patches omp or changes omp's tools. New behavior ships as new tools (RPC host tools or app hosted MCP servers)

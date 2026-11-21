@@ -1,8 +1,10 @@
 //! Unified diff previews for approval cards.
 
-use crate::style::{muted, well};
+use loa_ui_kit::theme::{SpaceRole as Sp, sp, TextRole as T, text_size as ts};
+use loa_ui_kit::style::{self as kit, Surface, Tone};
+use loa_ui_kit::theme::ColorRole as C;
 use iced::widget::{column, container, text};
-use iced::{Background, Color, Element, Fill, Font, Theme};
+use iced::{Element, Fill, Font};
 
 /// How one line of a unified diff renders.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -54,49 +56,28 @@ pub fn is_unified_diff(body: &str) -> bool {
     false
 }
 
-type LineStyle = fn(&Theme) -> text::Style;
-type Tint = fn(&Theme) -> Color;
 
 /// Renders `diff` in a monospace column on a sunken well. Added and removed
 /// lines sit on a faint tint of the theme's success and danger colors.
 pub fn view<'a, Message: 'a>(diff: &'a str) -> Element<'a, Message> {
     let lines = column(diff.lines().map(|line| {
-        let (style, tint): (LineStyle, Option<Tint>) = match line_kind(line) {
-            LineKind::Header | LineKind::Hunk => (muted, None),
-            LineKind::Added => (text::success, Some(added_tint)),
-            LineKind::Removed => (text::danger, Some(removed_tint)),
-            LineKind::Context => (text::default, None),
+        let (tone, tint) = match line_kind(line) {
+            LineKind::Header | LineKind::Hunk => (Tone::Muted, None),
+            LineKind::Added => (Tone::Ok, Some(C::AddedBg)),
+            LineKind::Removed => (Tone::Danger, Some(C::RemovedBg)),
+            LineKind::Context => (Tone::Normal, None),
         };
-        let line = text(line).font(Font::MONOSPACE).size(13).style(style);
+        let line = text(line).font(Font::MONOSPACE).size(ts(T::Label)).style(kit::text(tone));
         match tint {
-            Some(tint) => container(line)
-                .width(Fill)
-                .style(move |theme: &Theme| container::Style {
-                    background: Some(Background::Color(tint(theme))),
-                    ..container::Style::default()
-                })
-                .into(),
+            Some(role) => container(line).width(Fill).style(kit::fill(role, 0.0)).into(),
             None => line.into(),
         }
     }));
     container(lines)
-        .padding([5, 8])
+        .padding([sp(Sp::Xs), sp(Sp::S)])
         .width(Fill)
-        .style(well)
+        .style(kit::container(Surface::Well))
         .into()
-}
-
-fn added_tint(theme: &Theme) -> Color {
-    theme
-        .extended_palette()
-        .success
-        .base
-        .color
-        .scale_alpha(0.07)
-}
-
-fn removed_tint(theme: &Theme) -> Color {
-    theme.extended_palette().danger.base.color.scale_alpha(0.07)
 }
 
 #[cfg(test)]

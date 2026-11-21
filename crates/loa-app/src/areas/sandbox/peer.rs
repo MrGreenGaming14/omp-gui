@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use loa_trust::{Action, Resource};
-use loa_node::{AddedProtocol, Endpoint, Node, NodeId, NodeSlot, PeerProtocol, Stream};
+use loa_p2p::{AddedProtocol, Endpoint, Node, NodeId, NodeSlot, PeerProtocol, Stream};
 use loa_sandbox::provider::Channel;
 use loa_sandbox::provider::peer::{PROTOCOL, PeerLink, serve_stub};
 use loa_sandbox::{Result, SandboxError};

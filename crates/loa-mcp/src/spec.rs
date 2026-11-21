@@ -13,7 +13,6 @@ const RESERVED_HEADERS: &[&str] = &["accept", "mcp-session-id", "last-event-id",
 /// One registered server, as the central config stores it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServerSpec {
-    /// Unique key; tools are shown and addressed under it.
     pub name: String,
     /// A disabled server is kept in the config but never started.
     #[serde(default = "enabled_default")]
@@ -30,13 +29,10 @@ fn enabled_default() -> bool {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum Transport {
-    /// A child process speaking JSON-RPC lines on stdin and stdout.
     Stdio(StdioSpec),
-    /// A streamable HTTP endpoint.
     Http(HttpSpec),
 }
 
-/// A child process server.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StdioSpec {
     pub command: String,
@@ -50,7 +46,6 @@ pub struct StdioSpec {
     pub cwd: Option<PathBuf>,
 }
 
-/// A streamable HTTP server.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HttpSpec {
     pub url: String,
@@ -185,65 +180,34 @@ mod tests {
     use super::*;
 
     #[test]
-    fn command_line_splits_env_quotes_and_args() {
-        let spec = StdioSpec::parse(r#"TOKEN=a\ b DEBUG=1 npx -y "@scope/server name" --dir='/tmp/x y'"#).unwrap();
-        assert_eq!(spec.command, "npx");
-        assert_eq!(spec.args, ["-y", "@scope/server name", "--dir=/tmp/x y"]);
-        assert_eq!(spec.env.get("TOKEN").map(String::as_str), Some("a b"));
-        assert_eq!(spec.env.get("DEBUG").map(String::as_str), Some("1"));
+    fn command_lines_parse_and_round_trip() {
+        let env = |pairs: &[(&str, &str)]| pairs.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect::<BTreeMap<_, _>>();
+        for (line, command, args, vars) in [
+            (r#"TOKEN=a\ b DEBUG=1 npx -y "@scope/server name" --dir='/tmp/x y'"#, "npx", &["-y", "@scope/server name", "--dir=/tmp/x y"][..], env(&[("TOKEN", "a b"), ("DEBUG", "1")])),
+            ("server KEY=value", "server", &["KEY=value"][..], env(&[])),
+        ] {
+            let spec = StdioSpec::parse(line).unwrap();
+            assert_eq!((spec.command.as_str(), spec.args.clone(), spec.env.clone()), (command, args.iter().map(|a| (*a).to_owned()).collect(), vars));
+            assert_eq!(StdioSpec::parse(&spec.command_line().unwrap()).unwrap(), spec);
+        }
+        for (line, want) in [("  ", "empty"), ("A=1", "empty"), ("npx 'open", "unclosed")] {
+            assert!(StdioSpec::parse(line).unwrap_err().to_string().contains(want), "{line}");
+        }
     }
 
     #[test]
-    fn assignment_after_the_command_stays_an_argument() {
-        let spec = StdioSpec::parse("server KEY=value").unwrap();
-        assert_eq!(spec.command, "server");
-        assert_eq!(spec.args, ["KEY=value"]);
-        assert!(spec.env.is_empty());
-    }
-
-    #[test]
-    fn bad_command_lines_are_rejected() {
-        assert!(matches!(StdioSpec::parse("  "), Err(Error::EmptyCommand)));
-        assert!(matches!(StdioSpec::parse("A=1"), Err(Error::EmptyCommand)));
-        assert!(matches!(StdioSpec::parse("npx 'open"), Err(Error::UnclosedQuote)));
-    }
-
-    #[test]
-    fn command_line_round_trips_for_editing() {
-        let spec = StdioSpec::parse(r#"K='v w' run "a b" c"#).unwrap();
-        assert_eq!(StdioSpec::parse(&spec.command_line().unwrap()).unwrap(), spec);
-    }
-
-    #[test]
-    fn http_urls_and_headers_are_checked() {
+    fn urls_headers_and_names_are_checked() {
+        let header = |name: &str| [(name.to_owned(), "x".to_owned())];
         assert!(HttpSpec::new("https://mcp.example.com/mcp", []).is_ok());
         assert!(matches!(HttpSpec::new("ftp://example.com", []), Err(Error::Url { .. })));
         assert!(matches!(HttpSpec::new("not a url", []), Err(Error::Url { .. })));
-        let reserved = [("Mcp-Session-Id".to_owned(), "x".to_owned())];
-        assert!(matches!(HttpSpec::new("http://127.0.0.1:1/mcp", reserved), Err(Error::ReservedHeader(_))));
-        let bad = [("Bad Header".to_owned(), "x".to_owned())];
-        assert!(matches!(HttpSpec::new("http://127.0.0.1:1/mcp", bad), Err(Error::Header(_))));
-    }
-
-    #[test]
-    fn header_lines_parse() {
-        assert_eq!(
-            parse_header("Authorization:  Bearer abc ").unwrap(),
-            ("Authorization".to_owned(), "Bearer abc".to_owned())
-        );
+        assert!(matches!(HttpSpec::new("http://127.0.0.1:1/mcp", header("Mcp-Session-Id")), Err(Error::ReservedHeader(_))));
+        assert!(matches!(HttpSpec::new("http://127.0.0.1:1/mcp", header("Bad Header")), Err(Error::Header(_))));
+        assert_eq!(parse_header("Authorization:  Bearer abc ").unwrap(), ("Authorization".to_owned(), "Bearer abc".to_owned()));
         assert!(parse_header("no colon").is_err());
-    }
-
-    #[test]
-    fn names_are_restricted() {
-        assert!(validate_name("github-mcp_2.0").is_ok());
-        assert!(validate_name("").is_err());
-        assert!(validate_name("has space").is_err());
-        assert!(validate_name("a/b").is_err());
-    }
-
-    #[test]
-    fn spec_serializes_flat_with_a_type_tag() {
+        for (name, ok) in [("hub-mcp_2.0", true), ("", false), ("has space", false), ("a/b", false)] {
+            assert_eq!(validate_name(name).is_ok(), ok, "{name}");
+        }
         let spec = ServerSpec::new("fs", Transport::Stdio(StdioSpec::parse("mcp-fs /tmp").unwrap())).unwrap();
         let json = serde_json::to_value(&spec).unwrap();
         assert_eq!(json, serde_json::json!({"name": "fs", "enabled": true, "type": "stdio", "command": "mcp-fs", "args": ["/tmp"]}));

@@ -12,10 +12,11 @@ mod items;
 mod prose;
 mod rows;
 mod stream;
-mod style;
 
 pub use items::{COMMANDS_EXT, ItemKind};
 
+use loa_ui_kit::style::{self as kit, ButtonKind};
+use loa_ui_kit::theme::{LayoutRole, SpaceRole as Sp, TextRole as T, for_theme, generation, sp, text_size as ts, tokens, width};
 use loa_ui_kit::widgets::Heights;
 use iced::widget::{
     self, button, container, markdown, scrollable, sensor, space, stack, text,
@@ -42,10 +43,6 @@ const LINE: f32 = 22.0;
 const CHARS_PER_LINE: usize = 90;
 const ROW: f32 = 30.0;
 const PADDING: f32 = 12.0;
-/// Widest the transcript column grows; wider windows center it.
-const COLUMN_WIDTH: f32 = 700.0;
-/// Space between the column and the edges of a narrow transcript.
-const SIDE_PADDING: f32 = 24.0;
 
 /// Where a decision card goes: the app renders the card for `node` in its
 /// place, so this crate never draws decisions itself.
@@ -131,7 +128,7 @@ pub struct State {
     streamed: HashMap<NodeId, Streamed>,
     expanded: HashSet<NodeId>,
     scroll: Scroll,
-    look: style::Look,
+    look: std::cell::Cell<prose::Look>,
     scroll_id: widget::Id,
     /// Room left under the last row for what floats over the transcript's
     /// bottom edge (the composer), so the last row can scroll clear of it.
@@ -162,7 +159,7 @@ impl State {
                 known: false,
                 follow: true,
             },
-            look: style::Look::new(theme),
+            look: prose::Look::new(&for_theme(theme)).into(),
             scroll_id: widget::Id::unique(),
             bottom_inset: 0.0,
         }
@@ -178,7 +175,16 @@ impl State {
     /// Restyles the transcript for `theme`. Colors set through style
     /// functions follow the theme the app renders with.
     pub fn set_theme(&mut self, theme: &Theme) {
-        self.look = style::Look::new(theme);
+        self.look.set(prose::Look::new(&for_theme(theme)));
+    }
+
+    /// The look of the active token generation, rebuilt after a theme change.
+    fn look(&self) -> prose::Look {
+        let look = self.look.get();
+        if look.generation == generation() { return look }
+        let look = prose::Look::new(&tokens());
+        self.look.set(look);
+        look
     }
 
     /// The id of the transcript scrollable.
@@ -271,14 +277,14 @@ impl State {
                 })
             } else {
                 let expanded = self.expanded.contains(&key);
-                rows::view(dom, item, expanded, self.streamed.get(&key), self.look)
+                rows::view(dom, item, expanded, self.streamed.get(&key), self.look())
                     .map(map.clone())
             };
             let (on_show, on_resize) = (map.clone(), map.clone());
             let measured = sensor(
-                container(container(content).width(Fill).max_width(COLUMN_WIDTH))
+                container(container(content).width(Fill).max_width(width(LayoutRole::ComposerWidth)))
                     .center_x(Fill)
-                    .padding([PADDING / 2.0, SIDE_PADDING]),
+                    .padding([PADDING / 2.0, sp(Sp::Gutter)]),
             )
             .key(key.0)
             .anticipate(OVERSCAN)
@@ -321,12 +327,12 @@ impl State {
         if self.scroll.follow {
             return transcript.into();
         }
-        let jump = button(text("Jump to latest ↓").size(style::SMALL_SIZE))
-            .style(style::jump)
-            .padding([6, 14])
+        let jump = button(text("Jump to latest ↓").size(ts(T::Label)))
+            .style(kit::button(ButtonKind::Primary))
+            .padding([sp(Sp::S), sp(Sp::L)])
             .on_press(Message::JumpToLatest);
         let overlay = container(Element::from(jump).map(map))
-            .padding(iced::Padding { bottom: 16.0 + self.bottom_inset, ..iced::Padding::new(16.0) })
+            .padding(iced::Padding { bottom: sp(Sp::L) + self.bottom_inset, ..iced::Padding::new(sp(Sp::L)) })
             .center_x(Fill)
             .align_bottom(Fill);
         stack![transcript, overlay].into()

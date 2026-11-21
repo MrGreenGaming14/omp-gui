@@ -186,9 +186,9 @@ struct FakeModel {
 
 #[async_trait]
 impl loa_projects::Summarizer for FakeModel {
-    async fn summarize(&self, prompt: &str, _: Option<&str>) -> loa_projects::Result<loa_projects::SummaryAnswer> {
+    async fn summarize(&self, _: &str, prompt: &str) -> Result<String, String> {
         self.prompts.lock().unwrap().push(prompt.to_owned());
-        Ok(loa_projects::SummaryAnswer { text: self.answer.clone(), model: None })
+        Ok(self.answer.clone())
     }
 }
 
@@ -217,7 +217,7 @@ impl Env {
 
     fn small_model(&mut self, answer: &str) -> Arc<FakeModel> {
         let model = Arc::new(FakeModel { answer: answer.to_owned(), prompts: Mutex::default() });
-        self.app.areas.sessions.set_small_model(Arc::clone(&model) as _);
+        self.app.areas.sessions.set_small_model(Arc::new(Arc::clone(&model) as Arc<dyn loa_projects::Summarizer>));
         model
     }
 

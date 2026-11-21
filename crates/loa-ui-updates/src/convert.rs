@@ -109,7 +109,7 @@ mod tests {
     use loa_updater::gates::{CheckResult, GateCheck};
     use loa_updater::peers::{PeerInfo, classify};
     use loa_updater::state::HeldUpdate;
-    use loa_updater::swap;
+    use loa_updater::model::Active as UpdaterActive;
     use semver::Version;
 
     fn v(s: &str) -> Version {
@@ -139,7 +139,7 @@ mod tests {
             changelog: String::new(),
             last_check_unix: Some(10),
             staged: vec![v("19.1.0")],
-            active: Some(swap::Active { current: v("19.0.0"), previous: Some(v("18.9.0")) }),
+            active: Some(UpdaterActive { current: v("19.0.0"), previous: Some(v("18.9.0")) }),
             report: Some(report.clone()),
             held: Some(HeldUpdate { version: v("19.1.0"), report, held_at_unix: 5 }),
             pending_swap: None,
