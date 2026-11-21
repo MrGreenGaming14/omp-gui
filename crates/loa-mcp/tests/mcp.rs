@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use libtest_mimic::{Arguments, Trial};
-use loa_mcp::import::{ConfigFile, Outcome};
+use loa_mcp::import::{self, App, CodexToml, ImportSource, JsonServers, Outcome};
 use loa_mcp::model::ResourceContents;
 use loa_mcp::{
     AllowAll, Backoff, Error, Event, HttpSpec, Manager, MemoryStore, Options, Registry, ServerSpec, Status, StdioSpec,
@@ -47,6 +47,8 @@ fn main() {
         trial("http_server_is_validated_with_its_headers", http_server_is_validated_with_its_headers),
         trial("registry_edits_and_removes_servers", registry_edits_and_removes_servers),
         trial("registry_import_starts_new_servers_once", registry_import_starts_new_servers_once),
+        trial("registry_rolls_back_a_failed_save", registry_rolls_back_a_failed_save),
+        trial("import_fixture_table", import_fixture_table),
         trial("host_tools_route_calls_through_the_filter", host_tools_route_calls_through_the_filter),
     ];
     libtest_mimic::run(&args, tests).exit();
@@ -272,19 +274,75 @@ async fn registry_import_starts_new_servers_once() {
     let config = serde_json::json!({"mcpServers": {"imported": {"command": stdio.command, "env": stdio.env}}});
     let path = dir.path().join(".mcp.json");
     std::fs::write(&path, config.to_string()).unwrap();
-    let files = [ConfigFile::ClaudeProject(path)];
+    let files: Vec<Box<dyn ImportSource>> = vec![Box::new(JsonServers { app: App::Claude, path, project: None })];
 
     let store = Arc::new(MemoryStore::default());
     let registry = Registry::open(store.clone(), Manager::new(options()).unwrap()).await.unwrap();
-    let report = registry.import(&files).await.unwrap();
+    let report = registry.import_found(import::scan(&files).0).await.unwrap();
     assert!(matches!(report.entries[0].outcome, Outcome::Imported(_)));
     assert_eq!(store.servers().len(), 1);
     wait_status(registry.manager(), "imported", running).await;
 
-    let again = registry.import(&files).await.unwrap();
+    let again = registry.import_found(import::scan(&files).0).await.unwrap();
     assert_eq!(again.entries[0].outcome, Outcome::Duplicate { existing: "imported".to_owned() });
     assert_eq!(store.servers().len(), 1);
     registry.manager().shutdown().await;
+}
+
+struct FailingStore;
+
+#[async_trait::async_trait]
+impl loa_mcp::ServerStore for FailingStore {
+    async fn load(&self) -> Result<Vec<ServerSpec>, loa_mcp::StoreError> {
+        Ok(vec![ServerSpec { enabled: false, ..fake_spec("kept") }])
+    }
+    async fn save(&self, _: &[ServerSpec]) -> Result<(), loa_mcp::StoreError> {
+        Err("disk full".into())
+    }
+}
+
+async fn registry_rolls_back_a_failed_save() {
+    let registry = Registry::open(FailingStore, Manager::new(options()).unwrap()).await.unwrap();
+    assert!(matches!(registry.remove("kept").await, Err(Error::Store(_))));
+    assert!(matches!(registry.set_enabled("nope", true).await, Err(Error::UnknownServer(_))));
+    assert_eq!(registry.specs().await.len(), 1);
+    registry.manager().shutdown().await;
+}
+
+async fn import_fixture_table() {
+    let dir = tempfile::tempdir().unwrap();
+    let json = r#"{"mcpServers": {
+        "a": {"command": "srv", "args": ["-v"], "env": {"N": 1}},
+        "b": {"type": "http", "url": "https://x.test/mcp", "headers": {"K": "v"}, "disabled": true},
+        "c": {"type": "sse", "url": "https://x.test/sse"},
+        "d": {"envFile": ".env", "command": "x"},
+        "e": {"args": []}
+    }, "projects": {"/p": {"mcpServers": {"f": {"command": "local"}}}}}"#;
+    let toml = "[mcp_servers.g]\nurl = \"https://y.test\"\nbearer_token = \"t\"\nenabled = false\n[mcp_servers.h]\ncommand = \"x\"\nbearer_token_env_var = \"T\"\n";
+    std::fs::write(dir.path().join("c.json"), json).unwrap();
+    std::fs::write(dir.path().join("c.toml"), toml).unwrap();
+    std::fs::write(dir.path().join("bad.json"), "{").unwrap();
+    let files: Vec<Box<dyn ImportSource>> = vec![
+        Box::new(JsonServers { app: App::Claude, path: dir.path().join("c.json"), project: Some("/p".into()) }),
+        Box::new(CodexToml(dir.path().join("c.toml"))),
+        Box::new(JsonServers { app: App::Cursor, path: dir.path().join("bad.json"), project: None }),
+        Box::new(CodexToml(dir.path().join("missing.toml"))),
+    ];
+    let (found, errors) = import::scan(&files);
+    assert_eq!(errors.len(), 1);
+    let names: Vec<_> = found.iter().map(|f| (f.name.as_str(), f.spec.is_ok())).collect();
+    let expect = [("a", true), ("b", true), ("c", false), ("d", false), ("e", false), ("f", true), ("g", true), ("h", false)];
+    assert_eq!(names, expect);
+    let spec = |name: &str| found.iter().find(|f| f.name == name).unwrap().spec.clone().unwrap();
+    let Transport::Stdio(a) = spec("a").transport else { panic!("stdio") };
+    assert_eq!((a.args, a.env["N"].as_str()), (vec!["-v".to_owned()], "1"));
+    let (b, g) = (spec("b"), spec("g"));
+    assert!(!b.enabled && !g.enabled);
+    let Transport::Http(g) = g.transport else { panic!("http") };
+    assert_eq!(g.headers["Authorization"], "Bearer t");
+    let report = import::plan_found(&[spec("a")], found);
+    assert_eq!(report.entries[0].outcome, Outcome::Duplicate { existing: "a".into() });
+    assert_eq!(report.imported().count(), 3);
 }
 
 async fn host_tools_route_calls_through_the_filter() {

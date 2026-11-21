@@ -62,7 +62,7 @@ impl OmpBridgeConfig {
 
     /// Reads `--state-dir DIR [--cwd DIR] [--omp PATH] [--tools a,b] [--config FILE]...`.
     pub fn parse(mut args: impl Iterator<Item = String>) -> Result<Self, String> {
-        let (mut state, mut cwd, mut program, mut tools, mut overlays) = (None, None, None, None, Vec::new());
+        let (mut state, mut cwd, mut program, mut tools, mut overlays): (Option<PathBuf>, Option<PathBuf>, Option<PathBuf>, _, _) = (None, None, None, None, Vec::new());
         while let Some(flag) = args.next() {
             let value = args.next().ok_or_else(|| format!("{flag} needs a value"))?;
             match flag.as_str() {
