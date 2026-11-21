@@ -11,7 +11,7 @@ use iced::widget::{
     text_input,
 };
 use iced::{Alignment, Element, Fill, Font, Length, Padding, Shrink, font};
-use loa_ui_icons::{Icon, icon, muted};
+use loa_ui_kit::icons::{Icon, icon, muted};
 
 use crate::catalog::{Catalog, GroupView, ServerView, ToolRow};
 use crate::form::FieldError;

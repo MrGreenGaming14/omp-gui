@@ -12,7 +12,7 @@ use iced::{Element, Fill, Font, Padding, Theme};
 use loa_core::{
     CallStatus, Dom, ElementKind, JobKind, JobStatus, MessageStatus, Node, NodeId, TodoState, attr,
 };
-use loa_ui_icons::Icon;
+use loa_ui_kit::icons::Icon;
 
 /// Lines of a call input, call result or job output shown when expanded.
 const MAX_LINES: usize = 40;
@@ -180,12 +180,12 @@ fn chevron<'a>(expanded: bool) -> Element<'a, Message> {
     } else {
         Icon::ChevronRight
     };
-    loa_ui_icons::muted(icon, ICON_SIZE - 2.0).into()
+    loa_ui_kit::icons::muted(icon, ICON_SIZE - 2.0).into()
 }
 
 /// A row icon: muted, or in the danger color when something failed.
 fn glyph<'a>(icon: Icon, failed: bool) -> Element<'a, Message> {
-    let svg = loa_ui_icons::muted(icon, ICON_SIZE);
+    let svg = loa_ui_kit::icons::muted(icon, ICON_SIZE);
     if failed {
         svg.style(|theme: &Theme, _| svg::Style {
             color: Some(theme.extended_palette().danger.base.color),

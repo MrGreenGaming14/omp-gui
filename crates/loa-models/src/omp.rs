@@ -16,7 +16,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use loa_omp_rpc as wire;
+use loa_harness::omp::rpc as wire;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use tokio::sync::mpsc::UnboundedSender;
@@ -332,7 +332,7 @@ impl OmpRpc for OmpService {
 mod tests {
     use super::*;
     use crate::login::{LoginControl, LoginState, UrlOpener, run_login};
-    use loa_omp_rpc::fake::{FakeOmp, handshake_v2};
+    use loa_harness::testing::{FakeProcess as FakeOmp, handshake_v2};
     use tokio::sync::mpsc::unbounded_channel;
 
     #[derive(Default)]

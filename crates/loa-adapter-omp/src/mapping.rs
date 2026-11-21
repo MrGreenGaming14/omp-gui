@@ -12,7 +12,7 @@
 use loa_contracts::harness::{AdapterError, Answer, Prompt, Result};
 use loa_core::{answer, attr, CallStatus, DecisionKind, DecisionStatus, Draft, ElementKind as K, JobStatus, MessageKind, MessageStatus, NodeId, Op, Patch, TodoState, TurnStatus, Value};
 use loa_core::schema::TEXT;
-use loa_omp_rpc::{AskAnswer, AskQuestion, AssistantEvent, Event, PromptError, PromptStatus, SubagentStatus, TodoItem, TodoStatus, UiRequest, UiResponse};
+use loa_harness::omp::rpc::{AskAnswer, AskQuestion, AssistantEvent, Event, PromptError, PromptStatus, SubagentStatus, TodoItem, TodoStatus, UiRequest, UiResponse};
 use serde_json::Value as Json;
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -135,7 +135,7 @@ impl Mapping {
     }
 
     pub fn event(&mut self, event: &Event) -> Vec<Draft> {
-        let command_output = matches!(event, Event::Unknown { kind, .. } if kind == COMMAND_OUTPUT) && !self.queued.is_empty();
+        let command_output = matches!(event, Event::Unknown(raw) if raw["type"] == COMMAND_OUTPUT) && !self.queued.is_empty();
         if self.turn.is_none() && (needs_turn(event) || command_output) {
             self.deferred.push_back(event.clone());
             return if self.opening() { Vec::new() } else { self.open_turn() };
@@ -144,7 +144,7 @@ impl Mapping {
             Event::AgentStart | Event::TurnStart => {
                 if self.turn.is_none() && !self.opening() { self.open_turn() } else { Vec::new() }
             }
-            Event::AgentEnd { .. } | Event::TurnEnd => Vec::new(),
+            Event::AgentEnd | Event::TurnEnd => Vec::new(),
             Event::SessionSettled => self.finish(TurnStatus::Done),
             Event::PromptResult { id, status, error, .. } => self.prompt_result(id.as_deref(), *status, error.as_ref()),
             Event::MessageStart { message, message_id } => {
@@ -243,7 +243,7 @@ impl Mapping {
                 if let Some(title) = title { out.push(set(self.session, attr::TITLE, title.clone())); }
                 out
             }
-            Event::Unknown { kind, raw } if kind == COMMANDS => {
+            Event::Unknown(raw) if raw["type"] == COMMANDS => {
                 let commands = raw.get("commands").cloned().unwrap_or(Json::Null);
                 if self.commands.as_ref() == Some(&commands) { return Vec::new(); }
                 self.commands = Some(commands);
@@ -252,7 +252,7 @@ impl Mapping {
             // A slash command omp ran itself answers in its turn. The
             // runtime may close that turn from the prompt's response before
             // the output frame is read; it then joins the turn just closed.
-            Event::Unknown { kind, raw } if kind == COMMAND_OUTPUT => {
+            Event::Unknown(raw) if raw["type"] == COMMAND_OUTPUT => {
                 let text = raw.get("text").and_then(Json::as_str).unwrap_or_default();
                 match self.turn.or_else(|| self.turns.last().copied()) {
                     Some(turn) => vec![self.insert(turn, K::Message, vec![(attr::ROLE, "assistant".into()), (attr::KIND, MessageKind::Text.into()), (attr::STATUS, MessageStatus::Done.into())], text, Pending::Other)],
@@ -262,8 +262,8 @@ impl Mapping {
             // omp's TUI bookkeeping (`advisor_cost_changed` carries no
             // payload; the cost arrives as usage on `message_end`) has no
             // element; newer events are dropped the same way.
-            Event::Unknown { kind, .. } => {
-                tracing::trace!(kind, "omp event without an element, ignored");
+            Event::Unknown(raw) => {
+                tracing::trace!(kind = %raw["type"], "omp event without an element, ignored");
                 Vec::new()
             }
             Event::Notice { level, message, source } => vec![self.ext("notice", &serde_json::json!({"level":level,"message":message,"source":source}))],
@@ -332,7 +332,7 @@ impl Mapping {
         vec![self.insert(self.turn.unwrap(), K::Job, attrs, "", Pending::Job(key.to_owned()))]
     }
 
-    fn subagent(&mut self, l: &loa_omp_rpc::SubagentLifecycle) -> Vec<Draft> {
+    fn subagent(&mut self, l: &loa_harness::omp::rpc::SubagentLifecycle) -> Vec<Draft> {
         let key = l.id.clone();
         if let Some(node) = self.jobs.get(&key).copied() {
             let status = job_status(l.status);

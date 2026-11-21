@@ -4623,7 +4623,7 @@ dependencies = [
  "base64 0.23.1",
  "loa-contracts",
  "loa-core",
- "loa-omp-rpc",
+ "loa-harness",
  "loa-util",
  "serde",
  "serde_json",
@@ -4701,7 +4701,7 @@ dependencies = [
  "loa-ui-chat",
  "loa-ui-composer",
  "loa-ui-decisions",
- "loa-ui-icons",
+ "loa-ui-kit",
  "loa-ui-models",
  "loa-ui-palette",
  "loa-ui-panel",
@@ -4761,7 +4761,6 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "bytes",
- "loa-contracts",
  "loa-core",
  "loa-util",
  "schemars",
@@ -4796,6 +4795,24 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
+]
+
+[[package]]
+name = "loa-harness"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.23.1",
+ "loa-contracts",
+ "loa-core",
+ "loa-harness",
+ "loa-util",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -4835,7 +4852,7 @@ name = "loa-models"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "loa-omp-rpc",
+ "loa-harness",
  "loa-util",
  "serde",
  "serde_json",
@@ -4916,22 +4933,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "loa-omp-rpc"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "base64 0.23.1",
- "loa-omp-rpc",
- "loa-util",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "loa-projects"
 version = "0.1.0"
 dependencies = [
@@ -4939,6 +4940,7 @@ dependencies = [
  "loa-bus",
  "loa-contracts",
  "loa-core",
+ "loa-harness",
  "loa-util",
  "serde",
  "serde_json",
@@ -5157,7 +5159,7 @@ dependencies = [
  "iced_runtime",
  "iced_test",
  "loa-core",
- "loa-ui-icons",
+ "loa-ui-kit",
 ]
 
 [[package]]
@@ -5168,7 +5170,7 @@ dependencies = [
  "iced_test",
  "loa-contracts",
  "loa-core",
- "loa-ui-icons",
+ "loa-ui-kit",
  "loa-ui-shell",
 ]
 
@@ -5181,7 +5183,7 @@ dependencies = [
  "loa-config",
  "loa-contracts",
  "loa-core",
- "loa-ui-icons",
+ "loa-ui-kit",
  "loa-util",
  "notify-rust",
  "serde",
@@ -5192,10 +5194,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "loa-ui-icons"
+name = "loa-ui-kit"
 version = "0.1.0"
 dependencies = [
  "iced",
+ "iced_runtime",
+ "iced_test",
+ "loa-config",
+ "loa-util",
+ "thiserror 2.0.21",
+ "toml",
 ]
 
 [[package]]
@@ -5206,7 +5214,7 @@ dependencies = [
  "iced",
  "loa-core",
  "loa-models",
- "loa-ui-icons",
+ "loa-ui-kit",
  "loa-util",
  "serde_json",
  "tempfile",
@@ -5220,7 +5228,7 @@ version = "0.1.0"
 dependencies = [
  "iced",
  "iced_test",
- "loa-ui-icons",
+ "loa-ui-kit",
  "thiserror 2.0.21",
 ]
 
@@ -5231,7 +5239,7 @@ dependencies = [
  "iced",
  "ignore",
  "loa-core",
- "loa-ui-icons",
+ "loa-ui-kit",
  "similar",
  "tempfile",
  "thiserror 2.0.21",
@@ -5242,7 +5250,7 @@ name = "loa-ui-peers"
 version = "0.1.0"
 dependencies = [
  "iced",
- "loa-ui-icons",
+ "loa-ui-kit",
  "thiserror 2.0.21",
 ]
 
@@ -5253,7 +5261,7 @@ dependencies = [
  "iced",
  "iced_test",
  "loa-projects",
- "loa-ui-icons",
+ "loa-ui-kit",
  "loa-util",
 ]
 
@@ -5264,7 +5272,7 @@ dependencies = [
  "iced",
  "iced_test",
  "loa-core",
- "loa-ui-icons",
+ "loa-ui-kit",
  "png 0.18.1",
  "tempfile",
 ]
@@ -5285,7 +5293,7 @@ dependencies = [
  "loa-surface-docs",
  "loa-surface-hub",
  "loa-surface-proto",
- "loa-ui-icons",
+ "loa-ui-kit",
  "loa-ui-shell",
  "rust_xlsxwriter",
  "tempfile",
@@ -5304,7 +5312,7 @@ dependencies = [
  "iced",
  "iced_runtime",
  "iced_test",
- "loa-ui-icons",
+ "loa-ui-kit",
  "loa-util",
  "portable-pty",
  "tempfile",
@@ -5319,7 +5327,7 @@ dependencies = [
  "iced",
  "iced_test",
  "loa-contracts",
- "loa-ui-icons",
+ "loa-ui-kit",
  "thiserror 2.0.21",
 ]
 
@@ -5329,7 +5337,7 @@ version = "0.1.0"
 dependencies = [
  "iced",
  "iced_test",
- "loa-ui-icons",
+ "loa-ui-kit",
  "loa-updater",
  "loa-util",
  "semver",
@@ -5346,6 +5354,8 @@ dependencies = [
  "flate2",
  "futures",
  "hex",
+ "loa-contracts",
+ "loa-harness",
  "loa-util",
  "reqwest",
  "rustls",

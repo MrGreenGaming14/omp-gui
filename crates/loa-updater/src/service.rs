@@ -17,7 +17,7 @@ use crate::feeds::{self, FeedError, FeedResponse, GitHubFeed, NpmFeed, RateLimit
 use loa_util::fs::write_atomic;
 use crate::gates::{
     self, ChangelogGate, CheckResult, FormatGate, GateCheck, GateInputs, GateReport, OmpProbe,
-    OmpReadyProbe, OmpSmolSummarizer, RpcGate, ToolGate, UsedTools,
+    OmpReadyProbe, RpcGate, SmolReviewer, ToolGate, UsedTools,
 };
 use crate::installed;
 use crate::layout::{self, Staged};
@@ -674,10 +674,9 @@ impl Updater {
         } else {
             self.executable(&config.reviewer)
         };
-        let summarizer = reviewer_exe.as_ref().map(|exe| OmpSmolSummarizer {
-            executable: exe.clone(),
-            timeout: config.review_timeout,
-            model: config.review_model.clone(),
+        let summarizer = reviewer_exe.as_ref().map(|exe| {
+            let omp = loa_harness::omp::OneShot::new(exe, std::env::temp_dir());
+            SmolReviewer(omp.with_timeout(config.review_timeout).with_model(config.review_model.clone()))
         });
         let changelog_gate = match (&summarizer, notes.trim().is_empty()) {
             (Some(summarizer), false) => Some(ChangelogGate { summarizer, text: &notes }),

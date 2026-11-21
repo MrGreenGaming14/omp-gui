@@ -15,7 +15,7 @@ use iced::widget::operation::{self, AbsoluteOffset};
 use iced::widget::scrollable::Viewport;
 use iced::widget::{Id, Space, button, column, container, row, scrollable, text};
 use iced::{Alignment, Element, Length, Task};
-use loa_ui_icons::Icon;
+use loa_ui_kit::icons::Icon;
 
 use crate::style;
 
@@ -356,19 +356,19 @@ impl State {
         let node = &self.nodes[index];
         let chevron: Element<'_, Message> = match (node.is_dir, node.expanded) {
             (false, _) => Space::new().width(style::INDENT).into(),
-            (true, false) => loa_ui_icons::muted(Icon::ChevronRight, 12.0).width(style::INDENT).into(),
-            (true, true) => loa_ui_icons::muted(Icon::ChevronDown, 12.0).width(style::INDENT).into(),
+            (true, false) => loa_ui_kit::icons::muted(Icon::ChevronRight, 12.0).width(style::INDENT).into(),
+            (true, true) => loa_ui_kit::icons::muted(Icon::ChevronDown, 12.0).width(style::INDENT).into(),
         };
         let kind = if node.is_dir { Icon::Folder } else { Icon::FileText };
         let marker: Element<'_, Message> = match node.mark {
             Mark::None => Space::new().into(),
-            Mark::Contains => loa_ui_icons::muted(Icon::CircleDot, 12.0).into(),
-            Mark::Touched => loa_ui_icons::icon(Icon::CircleDot, 12.0).into(),
+            Mark::Contains => loa_ui_kit::icons::muted(Icon::CircleDot, 12.0).into(),
+            Mark::Touched => loa_ui_kit::icons::icon(Icon::CircleDot, 12.0).into(),
         };
         let content = row![
             Space::new().width((node.depth - 1) as f32 * style::INDENT),
             chevron,
-            loa_ui_icons::icon(kind, 14.0),
+            loa_ui_kit::icons::icon(kind, 14.0),
             text(node.name.as_str())
                 .size(style::LIST_TEXT_SIZE)
                 .wrapping(text::Wrapping::None)

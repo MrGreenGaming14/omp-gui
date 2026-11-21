@@ -7,7 +7,7 @@ use crate::style;
 use iced::widget::{button, container, row, text, tooltip};
 use iced::{Element, Task};
 use loa_core::{Dom, ElementKind, NodeId, Op, Patch, Value, attr};
-use loa_ui_icons::Icon;
+use loa_ui_kit::icons::Icon;
 
 /// Separator between role and model in the chip label.
 const SEPARATOR: &str = " · ";
@@ -95,7 +95,7 @@ impl State {
 
     pub fn view(&self) -> Element<'_, Message> {
         let chip = button(
-            row![text(self.label()).size(style::BODY), loa_ui_icons::muted(Icon::ChevronDown, 12.0)]
+            row![text(self.label()).size(style::BODY), loa_ui_kit::icons::muted(Icon::ChevronDown, 12.0)]
                 .spacing(4)
                 .align_y(iced::Center),
         )

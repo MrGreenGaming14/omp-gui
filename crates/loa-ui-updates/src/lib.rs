@@ -16,7 +16,7 @@ pub use model::{Active, Check, Choice, Held, Installed, Kind, Peer, Product, Rep
 
 use iced::widget::{Column, button, column, container, row, scrollable, space, text};
 use iced::{Element, Fill, Task};
-use loa_ui_icons::Icon;
+use loa_ui_kit::icons::Icon;
 use std::collections::BTreeMap;
 use style::{BODY, NOTE, SMALL, Tone};
 
@@ -213,7 +213,7 @@ impl State {
         let chevron = if open { Icon::ChevronDown } else { Icon::ChevronRight };
         let name = button(
             row![
-                loa_ui_icons::muted(chevron, 12.0),
+                loa_ui_kit::icons::muted(chevron, 12.0),
                 text(p.label.as_str()).size(BODY),
                 container(text(kind_label(p.kind)).size(SMALL)).padding([1.0, 6.0]).style(style::badge),
             ]
@@ -443,7 +443,7 @@ fn view_notes(notes: &str) -> Element<'_, Message> {
 }
 
 fn icon<'a>(name: Icon, tone: Tone) -> Element<'a, Message> {
-    loa_ui_icons::icon(name, 12.0)
+    loa_ui_kit::icons::icon(name, 12.0)
         .style(move |theme: &iced::Theme, _| iced::widget::svg::Style { color: Some(style::tone_color(theme, tone)) })
         .into()
 }

@@ -12,7 +12,7 @@ pub use peers::{Discovery, Peer, PeerSort, Presence, Transport, VersionRelation}
 
 use iced::widget::{button, column, container, row, scrollable, space, text, text_input};
 use iced::{Element, Fill, Length, Task};
-use loa_ui_icons::{Icon, muted};
+use loa_ui_kit::icons::{Icon, muted};
 
 const SMALL: f32 = 12.0;
 

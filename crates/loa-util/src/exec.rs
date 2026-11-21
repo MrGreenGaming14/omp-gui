@@ -129,13 +129,14 @@ fn first_stderr(stderr: &[u8]) -> String {
 }
 
 /// The last lines a child wrote to a stream, kept in a bounded ring by a reader task.
-#[derive(Clone, Default, Debug)]
-pub struct StderrTail(Arc<Mutex<VecDeque<String>>>);
+#[derive(Clone, Debug)]
+pub struct StderrTail(Arc<Mutex<VecDeque<String>>>, tokio::sync::watch::Receiver<bool>);
 
 impl StderrTail {
     /// Drains `r` on a tokio task, keeping its last `lines` lines.
     pub fn spawn(r: impl AsyncRead + Unpin + Send + 'static, lines: usize) -> Self {
-        let tail = Self::default();
+        let (done, closed) = tokio::sync::watch::channel(false);
+        let tail = Self(Arc::default(), closed);
         let ring = tail.0.clone();
         tokio::spawn(async move {
             let (mut reader, mut line) = (BufReader::new(r), Vec::new());
@@ -147,11 +148,15 @@ impl StderrTail {
                 ring.push_back(String::from_utf8_lossy(&line).trim_end().to_owned());
                 line.clear();
             }
+            done.send_replace(true);
         });
         tail
     }
 
     pub fn joined(&self) -> String { self.0.locked().iter().map(String::as_str).collect::<Vec<_>>().join("\n") }
+
+    /// Resolves once the stream reached its end.
+    pub async fn closed(&self) { let _ = self.1.clone().wait_for(|done| *done).await; }
 }
 
 /// `s` single-quoted for a POSIX shell.
@@ -180,8 +185,7 @@ mod tests {
         assert!(probe_cli(&bad, &[], Duration::from_secs(5)).await.unwrap_err().to_string().contains("bad flag"));
         assert!(run_checked(Command::new(&bad)).await.unwrap_err().contains("bad flag"));
         let tail = StderrTail::spawn(&b"a\nb\xff\nc"[..], 2);
-        let filled = async { while !tail.joined().ends_with('c') { tokio::task::yield_now().await } };
-        tokio::time::timeout(Duration::from_secs(5), filled).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), tail.closed()).await.unwrap();
         assert_eq!(tail.joined(), "b\u{fffd}\nc");
     }
 

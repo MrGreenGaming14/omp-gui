@@ -22,7 +22,7 @@ use iced::widget::text::Wrapping;
 use iced::widget::{button, column, container, row, scrollable, space, text};
 use iced::{Center, Element, Fill, Task};
 use loa_core::NodeId;
-use loa_ui_icons::Icon;
+use loa_ui_kit::icons::Icon;
 
 use crate::style;
 
@@ -288,7 +288,7 @@ impl State {
             RowKind::Session { id, title, current, on_path, collapsed } => {
                 let chevron: Element<'a, Message> = if self.has_subtree(row.index) {
                     let (icon, label) = if collapsed { (Icon::ChevronRight, "Expand") } else { (Icon::ChevronDown, "Collapse") };
-                    let toggle = button(loa_ui_icons::muted(icon, 12.0))
+                    let toggle = button(loa_ui_kit::icons::muted(icon, 12.0))
                         .on_press(Message::Toggle(row.index))
                         .style(style::action_button)
                         .padding(1);
@@ -314,7 +314,7 @@ impl State {
                 };
                 row![
                     indent,
-                    loa_ui_icons::muted(Icon::GitCompare, 12.0),
+                    loa_ui_kit::icons::muted(Icon::GitCompare, 12.0),
                     container(label.size(style::TEXT_SIZE).wrapping(Wrapping::None).style(style::muted))
                         .width(Fill)
                         .clip(true),

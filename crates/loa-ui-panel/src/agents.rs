@@ -11,7 +11,7 @@ use iced::widget::{Column, Row, button, container, scrollable, space, text};
 use iced::{Center, Element, Fill, Font, Task, Theme};
 use loa_core::schema::TEXT;
 use loa_core::{CallStatus, Dom, ElementKind, JobKind, JobStatus, Node, NodeId, Op, Patch, attr};
-use loa_ui_icons::Icon;
+use loa_ui_kit::icons::Icon;
 use std::collections::{BTreeMap, HashSet};
 use std::ops::Range;
 
@@ -412,7 +412,7 @@ impl State {
 
         let mut head = Row::new().spacing(8).align_y(Center).height(style::LIST_ROW_HEIGHT);
         head = head
-            .push(loa_ui_icons::icon(kind, 14.0))
+            .push(loa_ui_kit::icons::icon(kind, 14.0))
             .push(text(job.label()).size(style::LIST_TEXT_SIZE).wrapping(Wrapping::None))
             .push(text(job.status.as_str()).size(12).style(status_style));
         if job.status != JobStatus::Running

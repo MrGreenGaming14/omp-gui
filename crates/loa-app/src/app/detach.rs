@@ -8,7 +8,7 @@
 
 use iced::widget::{button, column, container, row, rule, text};
 use iced::{Alignment, Element, Fill, Size, Task, window};
-use loa_ui_icons::{Icon, muted};
+use loa_ui_kit::icons::{Icon, muted};
 use loa_ui_shell::theme::style;
 
 use super::{App, Message};

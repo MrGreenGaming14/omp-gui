@@ -12,4 +12,4 @@ pub mod topbar;
 
 pub use data::{NodeFilter, NodeStatus, Nodes, SessionSummary, UsageMeter};
 pub use layout::{Event, Message, PanelPrefs, PanelTab, State};
-pub use theme::Preference;
+pub use theme::{Appearance, ThemeRef};

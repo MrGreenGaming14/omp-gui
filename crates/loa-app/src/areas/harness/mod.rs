@@ -11,7 +11,7 @@ use iced::widget::{button, column, container, row, scrollable, space, svg, text,
 use iced::{Element, Font, Length, Task, Theme};
 use loa_contracts::harness::{Availability, AvailabilityStatus};
 use loa_config::HarnessSettings;
-use loa_ui_icons::Icon;
+use loa_ui_kit::icons::Icon;
 use loa_ui_palette as palette;
 use loa_ui_shell::theme::style;
 
@@ -296,7 +296,7 @@ fn status_icon<'a>(status: Option<AvailabilityStatus>) -> Element<'a, Message> {
         None | Some(AvailabilityStatus::Unknown) => (Icon::CircleDot, style::muted_color),
         Some(_) => (Icon::TriangleAlert, |theme| theme.extended_palette().danger.base.color),
     };
-    loa_ui_icons::icon(icon, 14.0).style(move |theme: &Theme, _| svg::Style { color: Some(color(theme)) }).into()
+    loa_ui_kit::icons::icon(icon, 14.0).style(move |theme: &Theme, _| svg::Style { color: Some(color(theme)) }).into()
 }
 
 /// The executable field's placeholder: what runs when it is empty.

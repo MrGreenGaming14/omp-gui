@@ -9,7 +9,7 @@ publish.workspace = true
 loa-contracts.workspace = true
 loa-surface-proto = { path = "../loa-surface-proto", optional = true }
 loa-surface-docs = { path = "../loa-surface-docs" }
-loa-ui-icons.workspace = true
+loa-ui-kit.workspace = true
 loa-ui-shell = { path = "../loa-ui-shell" }
 iced.workspace = true
 bytes.workspace = true

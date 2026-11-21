@@ -13,7 +13,7 @@ use iced::widget::{
 };
 use iced::{Alignment, Element, Fill, Length};
 use loa_projects::{DigestState, PinnedFile, ProjectOverview, ProjectSettings, SessionRow};
-use loa_ui_icons::Icon;
+use loa_ui_kit::icons::Icon;
 
 /// Width of the screen's content column.
 const CONTENT_WIDTH: f32 = 760.0;
@@ -221,14 +221,14 @@ impl State {
             details.push(if count == 1 { "1 session".to_owned() } else { format!("{count} sessions") });
         }
         let title = column![
-            row![loa_ui_icons::icon(Icon::Folder, 20.0), text(&self.project).size(style::TITLE)]
+            row![loa_ui_kit::icons::icon(Icon::Folder, 20.0), text(&self.project).size(style::TITLE)]
                 .spacing(10)
                 .align_y(Alignment::Center),
             text(details.join("  ·  ")).size(style::SMALL).style(style::muted),
         ]
         .spacing(4);
         let new_chat = button(
-            row![loa_ui_icons::icon(Icon::Plus, 14.0), text("New chat").size(style::BODY)]
+            row![loa_ui_kit::icons::icon(Icon::Plus, 14.0), text("New chat").size(style::BODY)]
                 .spacing(6)
                 .align_y(Alignment::Center),
         )
@@ -257,7 +257,7 @@ impl State {
             if index > 0 {
                 pins = pins.push(rule::horizontal(1).style(style::divider));
             }
-            let mut label = row![loa_ui_icons::muted(Icon::FileText, 14.0), text(&pin.path).size(style::BODY)]
+            let mut label = row![loa_ui_kit::icons::muted(Icon::FileText, 14.0), text(&pin.path).size(style::BODY)]
                 .spacing(8)
                 .align_y(Alignment::Center);
             if let Some(note) = &pin.note {
@@ -267,7 +267,7 @@ impl State {
                 row![
                     label,
                     space::horizontal(),
-                    button(loa_ui_icons::muted(Icon::X, 12.0)).padding(4).style(style::flat).on_press(Message::RemovePin(index)),
+                    button(loa_ui_kit::icons::muted(Icon::X, 12.0)).padding(4).style(style::flat).on_press(Message::RemovePin(index)),
                 ]
                 .align_y(Alignment::Center)
                 .padding([6.0, 10.0]),
@@ -296,7 +296,7 @@ impl State {
                     .padding([6.0, 8.0])
                     .style(style::input)
                     .width(Length::FillPortion(4)),
-                button(row![loa_ui_icons::icon(Icon::Plus, 12.0), text("Pin").size(style::SMALL)].spacing(6).align_y(Alignment::Center))
+                button(row![loa_ui_kit::icons::icon(Icon::Plus, 12.0), text("Pin").size(style::SMALL)].spacing(6).align_y(Alignment::Center))
                     .padding([6.0, 10.0])
                     .style(style::flat)
                     .on_press_maybe(can_pin.then_some(Message::AddPin)),

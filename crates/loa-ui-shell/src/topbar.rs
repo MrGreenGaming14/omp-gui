@@ -8,7 +8,7 @@ use crate::data::NodeStatus;
 use crate::theme::style;
 use iced::widget::{button, container, row, space, text, tooltip};
 use iced::{Alignment, Element, Fill, Task};
-use loa_ui_icons::{Icon, muted};
+use loa_ui_kit::icons::{Icon, muted};
 
 /// Height of the top bar, shared with the panel tab bar so their bottom
 /// borders line up.

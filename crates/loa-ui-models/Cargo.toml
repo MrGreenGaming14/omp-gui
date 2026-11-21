@@ -10,7 +10,7 @@ loa-util.workspace = true
 iced.workspace = true
 loa-core.workspace = true
 loa-models = { path = "../loa-models" }
-loa-ui-icons.workspace = true
+loa-ui-kit.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync", "macros", "rt"] }
 

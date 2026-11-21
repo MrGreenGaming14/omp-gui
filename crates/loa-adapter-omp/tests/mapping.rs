@@ -1,7 +1,7 @@
 use loa_contracts::harness::{Answer, Prompt};
 use loa_adapter_omp::mapping::{COMMANDS, Mapping};
 use loa_core::{answer, attr, Draft, ElementKind as K, MemorySink, NodeId, PatchSink};
-use loa_omp_rpc::{AssistantEvent, Event, Frame, PromptStatus, UiRequest, UiResponse};
+use loa_harness::omp::rpc::{AssistantEvent, Event, Frame, PromptStatus, UiRequest, UiResponse};
 use serde_json::json;
 
 fn commit(sink: &MemorySink, mapper: &mut Mapping, drafts: Vec<Draft>) {
@@ -101,7 +101,6 @@ fn replay(sink: &MemorySink, mapper: &mut Mapping, script: &str) {
         let drafts = match Frame::parse(frame.as_bytes()).unwrap() {
             Frame::Event(event) => mapper.event(&event),
             Frame::Ui(request) => mapper.ui(&request),
-            _ => continue,
         };
         commit(sink, mapper, drafts);
     }

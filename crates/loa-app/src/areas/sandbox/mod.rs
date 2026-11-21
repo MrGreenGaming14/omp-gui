@@ -22,7 +22,7 @@ use loa_sandbox::{
     Availability, ProviderStatus, RunEntry, RunLog, RunState, SandboxConfig, SandboxError, SandboxEvent, SandboxKind,
     SandboxService,
 };
-use loa_ui_icons::Icon;
+use loa_ui_kit::icons::Icon;
 use loa_ui_palette as palette;
 use loa_ui_panel::diff;
 use loa_ui_shell::theme::style;
@@ -417,7 +417,7 @@ impl State {
                 (Icon::Check, |theme| theme.extended_palette().success.base.color, summary)
             }
         };
-        let mark = loa_ui_icons::icon(icon, 14.0).style(move |theme: &Theme, _| svg::Style { color: Some(color(theme)) });
+        let mark = loa_ui_kit::icons::icon(icon, 14.0).style(move |theme: &Theme, _| svg::Style { color: Some(color(theme)) });
         let kind = container(text(kind_label(run.kind)).size(12)).padding([1, 6]).style(style::badge);
         let session = ctx
             .sessions
@@ -542,7 +542,7 @@ impl State {
             Some(Availability::NotConfigured) => (Icon::CircleDot, style::muted_color, "Not configured"),
             Some(Availability::Unavailable) => (Icon::TriangleAlert, |theme| theme.extended_palette().danger.base.color, "Unavailable"),
         };
-        let mark = loa_ui_icons::icon(icon, 14.0).style(move |theme: &Theme, _| svg::Style { color: Some(color(theme)) });
+        let mark = loa_ui_kit::icons::icon(icon, 14.0).style(move |theme: &Theme, _| svg::Style { color: Some(color(theme)) });
         let word = text(word).size(panel_style::TEXT_SIZE).style(move |theme: &Theme| match availability {
             Some(Availability::Ready) => panel_style::success_text(theme),
             Some(Availability::Unavailable) => panel_style::danger_text(theme),

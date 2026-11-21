@@ -8,7 +8,6 @@
 //! and estimates elsewhere. The view follows new content only while it is
 //! scrolled to the bottom.
 
-mod heights;
 mod items;
 mod prose;
 mod rows;
@@ -17,7 +16,7 @@ mod style;
 
 pub use items::{COMMANDS_EXT, ItemKind};
 
-use heights::Heights;
+use loa_ui_kit::widgets::Heights;
 use iced::widget::{
     self, button, container, markdown, scrollable, sensor, space, stack, text,
 };

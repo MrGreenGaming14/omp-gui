@@ -3,7 +3,7 @@
 
 use iced::widget::{button, center, column, container, row, space, text};
 use iced::{Element, Fill};
-use loa_ui_icons::Icon;
+use loa_ui_kit::icons::Icon;
 
 use crate::style;
 

@@ -7,7 +7,7 @@ publish.workspace = true
 
 [dependencies]
 loa-core.workspace = true
-loa-ui-icons.workspace = true
+loa-ui-kit.workspace = true
 iced.workspace = true
 
 [dev-dependencies]
