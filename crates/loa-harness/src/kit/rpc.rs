@@ -94,6 +94,8 @@ pub trait Inbound: Send + Sync + 'static {
         false
     }
     async fn on_deferred(&self, _id: Json, _method: &str, _params: Json) {}
+    /// Sees every response, in read order, before the request waiting for it does.
+    async fn on_response(&self, _id: &str, _result: &Result<Json>) {}
 }
 
 /// The id as a pending-map key: a string id as is, anything else as JSON text.
@@ -164,10 +166,13 @@ impl<F: Framing> Core<F> {
         };
         match self.framing.classify(msg) {
             None => {}
-            Some(Incoming::Response { id, result }) => match self.state.locked().pending.remove(&id) {
-                Some(tx) => drop(tx.send(result)),
-                None => tracing::debug!(id, "a response nobody waits for"),
-            },
+            Some(Incoming::Response { id, result }) => {
+                inbound.on_response(&id, &result).await;
+                match self.state.locked().pending.remove(&id) {
+                    Some(tx) => drop(tx.send(result)),
+                    None => tracing::debug!(id, "a response nobody waits for"),
+                }
+            }
             Some(Incoming::Notification { method, params }) => inbound.on_notification(&method, params).await,
             Some(Incoming::Request { id, method, params }) if inbound.defers_requests() => {
                 inbound.on_deferred(id, &method, params).await

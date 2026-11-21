@@ -80,9 +80,16 @@ impl<K: Hash + Eq> TurnLedger<K> {
 
     /// Opens a turn with the user's message.
     pub fn begin(&mut self, w: &DomWriter, p: &Prompt) -> Result<NodeId, CommitError> {
+        self.begin_with(w, Some(p))
+    }
+
+    /// Opens a turn, with the user's message when there is one (harness-started turns have none).
+    pub fn begin_with(&mut self, w: &DomWriter, prompt: Option<&Prompt>) -> Result<NodeId, CommitError> {
         let node = w.insert(self.session, E::Turn, [(attr::STATUS, TurnStatus::Running.as_str())], "")?;
-        let by = [(attr::ROLE, Role::User.as_str()), (attr::STATUS, MessageStatus::Done.as_str()), (attr::BY, p.by.as_str())];
-        w.insert(node, E::Message, by, p.text.as_str())?;
+        if let Some(p) = prompt {
+            let by = [(attr::ROLE, Role::User.as_str()), (attr::STATUS, MessageStatus::Done.as_str()), (attr::BY, p.by.as_str())];
+            w.insert(node, E::Message, by, p.text.as_str())?;
+        }
         self.turn = Some(OpenTurn { node, open: HashMap::new(), waiting: Vec::new() });
         Ok(node)
     }

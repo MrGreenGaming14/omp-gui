@@ -3,8 +3,8 @@
 //! decision> <values,…> [| reason]`, `interrupt`, `attach`, `state`, `dom`.
 
 use loa_contracts::harness::{Answer, SessionConfig};
-use loa_core::{Dom, ElementKind, MemorySink};
-use loa_harness::claude::events::{Mapper, Output};
+use loa_core::{ElementKind, MemorySink};
+use loa_harness::claude::mapper::{Mapper, Output};
 use loa_harness::testing::{golden, render};
 use std::path::Path;
 use std::sync::Arc;
@@ -28,7 +28,6 @@ fn run(name: &str) {
             match mapper.handle(serde_json::from_str(line).unwrap()) {
                 Ok(Some(Output::Write(line))) => log.push_str(&format!("> {line}\n")),
                 Ok(Some(Output::Mcp { request_id, server, message })) => log.push_str(&format!("> mcp {request_id} {server} {message}\n")),
-                Ok(Some(other)) => log.push_str(&format!("> {other:?}\n")),
                 Ok(None) => {}
                 Err(err) => log.push_str(&format!("! error {err}\n")),
             }
@@ -53,8 +52,8 @@ fn run(name: &str) {
                 sink = Arc::new(MemorySink::from_dom(dom.clone()));
                 Mapper::attach(sink.clone(), &dom).map(|m| mapper = m)
             }
-            "state" => Ok(log.push_str(&format!("= {:?}\n", mapper.state()))),
-            "dom" => Ok(log.push_str(&render(&sink.dom()))),
+            "state" => { log.push_str(&format!("= {:?}\n", mapper.state())); Ok(()) },
+            "dom" => { log.push_str(&render(&sink.dom())); Ok(()) },
             other => panic!("unknown directive {other}"),
         };
         if let Err(err) = outcome {
@@ -119,4 +118,21 @@ fn native_transcripts_round_trip() {
     assert_eq!((lines.len(), &lines[0]["parentUuid"], &lines[1]["parentUuid"]), (2, &serde_json::Value::Null, &lines[0]["uuid"]));
     assert_eq!(lines[0]["message"]["content"], "Start here");
     assert_eq!(lines[1]["message"]["content"][0]["text"], "Here is the result");
+}
+
+#[test]
+fn malformed_optional_fields_do_not_discard_known_events() {
+    use loa_contracts::harness::SessionState;
+    use serde_json::json;
+    let sink = Arc::new(MemorySink::new());
+    let mut mapper = Mapper::create(sink.clone(), &SessionConfig::default()).unwrap();
+    mapper.open_turn("hello", "alice", "p1").unwrap();
+    mapper.handle(json!({"type":"assistant","uuid":42,"message":{"content":[{"type":"text","text":"hello"}]}})).unwrap();
+    mapper.handle(json!({"type":"control_request","request_id":"r1","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{},"description":12}})).unwrap();
+    assert_eq!(mapper.state(), SessionState::Waiting);
+    mapper.handle(json!({"type":"result","subtype":"success","usage":{"input_tokens":"bad"}})).unwrap();
+    assert_eq!(mapper.state(), SessionState::Idle);
+    let dom = sink.dom();
+    assert!(dom.iter().any(|n| n.kind == ElementKind::Message && n.text == "hello"));
+    assert!(dom.iter().any(|n| n.kind == ElementKind::Decision && n.str_attr(loa_core::attr::STATUS) == Some("cancelled")));
 }
