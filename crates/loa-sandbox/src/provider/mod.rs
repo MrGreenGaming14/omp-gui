@@ -15,7 +15,6 @@ use crate::{Result, SandboxError};
 use async_trait::async_trait;
 use loa_util::registry::Registry;
 use serde::{Deserialize, Serialize};
-use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -161,13 +160,9 @@ impl Sandbox for ProcessSandbox {
     }
 }
 
-/// Where the probes look and what the providers run. The defaults are this machine's.
+/// What the providers find on this machine besides its programs.
 #[derive(Clone)]
 pub struct Machine {
-    /// Directories searched for `docker`, `firecracker`, `qemu-system-*`, `ssh`.
-    pub path: Option<OsString>,
-    pub kvm_device: PathBuf,
-    pub ssh_config: Option<PathBuf>,
     /// The stub binary, if one was found.
     pub stub: Option<PathBuf>,
     pub peers: Option<Arc<dyn peer::PeerLink>>,
@@ -175,18 +170,19 @@ pub struct Machine {
 
 impl Machine {
     pub fn this() -> Self {
-        let ssh_config = loa_util::fs::home().map(|home| home.join(".ssh/config"));
-        Self { path: std::env::var_os("PATH"), kvm_device: "/dev/kvm".into(), ssh_config, stub: local::find_stub(), peers: None }
+        Self { stub: local::find_stub(), peers: None }
     }
 
     pub fn which(&self, name: &str) -> Option<PathBuf> {
-        std::env::split_paths(self.path.as_ref()?).map(|dir| dir.join(name)).find(|file| loa_util::exec::is_executable(file))
+        loa_util::exec::which(name)
     }
 
     pub fn kvm(&self) -> bool {
-        std::fs::OpenOptions::new().read(true).write(true).open(&self.kvm_device).is_ok()
+        std::fs::OpenOptions::new().read(true).write(true).open(KVM).is_ok()
     }
 }
+
+pub(crate) const KVM: &str = "/dev/kvm";
 
 /// Whether a provider can be used on this machine now.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]

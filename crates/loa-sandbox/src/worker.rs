@@ -7,6 +7,7 @@
 //! stub inside the sandbox.
 
 use crate::Result;
+use crate::tool::SandboxTaskArgs;
 use crate::client::StubClient;
 use crate::proto::ExecRequest;
 use async_trait::async_trait;
@@ -17,7 +18,7 @@ use loa_util::LockExt;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use std::fmt::Write;
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 /// Tools of the harness itself that act on the host. They are switched off
@@ -192,42 +193,25 @@ pub fn sandbox_tools(client: &Arc<StubClient>) -> ToolSet {
     tools
 }
 
-/// One worker run.
-pub struct WorkerRequest {
-    pub session_id: String,
-    pub task: String,
-    /// Instructions of the agent the worker plays, if one was asked for.
-    pub agent: Option<String>,
-    pub model_role: Option<String>,
-    /// Host directory the harness runs in. Kept empty: the worker sees the
-    /// workspace only through the sandbox.
-    pub harness_cwd: PathBuf,
-}
-
-/// What the worker said at the end.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct WorkerReport {
-    pub session_id: String,
-    pub final_message: Option<String>,
-}
-
 /// Instructions every worker gets ahead of its task.
 const PREAMBLE: &str = "You are working inside a sandbox. Use sandbox_bash, sandbox_read, sandbox_write and \
 sandbox_list for every command and file operation; paths are relative to the workspace root. End with a short \
 report of what you did.";
 
-/// Runs the worker session to the end of its first turn.
+/// Runs the worker session `session_id` to the end of its first turn and
+/// returns its final message.
 ///
 /// `template` carries the host side settings (node, model, harness env and
 /// executable); the worker keeps them, gets `tools` in place of any host
 /// tools and MCP servers, and has the harness's own host tools switched off.
-pub async fn run_worker(adapter: &dyn Adapter, template: &SessionConfig, journal: &dyn WorkerJournal, tools: ToolSet, request: WorkerRequest) -> Result<WorkerReport> {
-    let WorkerRequest { session_id, task, agent, model_role, harness_cwd } = request;
+/// Its harness runs in `harness_cwd`, an empty directory: the worker sees the
+/// workspace only through the sandbox.
+pub async fn run_worker(adapter: &dyn Adapter, template: &SessionConfig, journal: &dyn WorkerJournal, tools: ToolSet, session_id: &str, harness_cwd: &Path, args: SandboxTaskArgs) -> Result<Option<String>> {
     let mut config = template.clone();
-    config.session_id.clone_from(&session_id);
-    config.cwd = harness_cwd;
-    config.model_role = model_role.or(config.model_role);
-    config.context = Some(match agent.or(template.context.clone()) {
+    config.session_id = session_id.to_owned();
+    config.cwd = harness_cwd.to_owned();
+    config.model_role = args.model_role.or(config.model_role);
+    config.context = Some(match args.agent.or(template.context.clone()) {
         Some(extra) => format!("{PREAMBLE}\n\n{extra}"),
         None => PREAMBLE.to_owned(),
     });
@@ -241,11 +225,11 @@ pub async fn run_worker(adapter: &dyn Adapter, template: &SessionConfig, journal
     }
 
     let (approvals, mut waiting) = tokio::sync::mpsc::unbounded_channel();
-    let mirror = Arc::new(Mirror { inner: journal.open(&session_id)?, dom: Mutex::new(Dom::new()), approvals });
+    let mirror = Arc::new(Mirror { inner: journal.open(session_id)?, dom: Mutex::new(Dom::new()), approvals });
     let session = adapter.start(config, Arc::clone(&mirror) as Arc<dyn PatchSink>).await?;
     let by = template.node.clone();
     let run = async {
-        session.send(Prompt { text: task, attachments: Vec::new(), by: by.clone() }).await?;
+        session.send(Prompt { text: args.task, attachments: Vec::new(), by: by.clone() }).await?;
         session.wait_idle().await
     };
     // The mirror keeps the sender, so this only ends on a failed answer.
@@ -262,6 +246,5 @@ pub async fn run_worker(adapter: &dyn Adapter, template: &SessionConfig, journal
     let shutdown = session.shutdown().await;
     result?;
     shutdown?;
-    let final_message = final_message(&mirror.dom.locked());
-    Ok(WorkerReport { session_id, final_message })
+    Ok(final_message(&mirror.dom.locked()))
 }

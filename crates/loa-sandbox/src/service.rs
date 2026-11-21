@@ -104,7 +104,7 @@ impl SandboxService {
         }
         // The worker gets the sandbox tools instead; nothing of the parent's host tools may reach it.
         let template = SessionConfig { host_tools: Vec::new(), host_tool_handler: None, ..template.clone() };
-        let tool = SandboxTask::new(adapter, template, Arc::clone(&self.journal), providers).with_events(self.events.clone());
+        let tool = SandboxTask::new(adapter, template, Arc::clone(&self.journal), providers, self.events.clone());
         // Only the kinds this machine runs are offered.
         let mut spec = DynTool::spec(&tool);
         if let Ok(mut schema) = serde_json::from_str::<serde_json::Value>(&spec.input_schema) {

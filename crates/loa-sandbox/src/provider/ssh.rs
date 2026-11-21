@@ -84,9 +84,9 @@ pub struct Factory;
 
 impl Factory {
     /// The hosts of the settings, else the aliases of the SSH config.
-    fn hosts(machine: &Machine, config: &SandboxConfig) -> Vec<String> {
-        match (&config.ssh_hosts[..], &machine.ssh_config) {
-            ([], Some(file)) => loa_util::ssh::aliases(file),
+    fn hosts(config: &SandboxConfig) -> Vec<String> {
+        match (&config.ssh_hosts[..], loa_util::fs::home()) {
+            ([], Some(home)) => loa_util::ssh::aliases(&home.join(".ssh/config")),
             (hosts, _) => hosts.to_vec(),
         }
     }
@@ -97,7 +97,7 @@ impl ProviderFactory for Factory {
     fn kind(&self) -> SandboxKind { SandboxKind::Ssh }
     async fn probe(&self, machine: &Machine, config: &SandboxConfig) -> ProviderStatus {
         use Availability::*;
-        match (machine.which("ssh"), &machine.stub, &Self::hosts(machine, config)[..]) {
+        match (machine.which("ssh"), &machine.stub, &Self::hosts(config)[..]) {
             (None, ..) => status(self.kind(), Unavailable, "No ssh client is installed"),
             (Some(_), None, _) => status(self.kind(), Unavailable, super::NO_STUB),
             (Some(_), Some(_), []) => status(self.kind(), NotConfigured, "Add a host to ~/.ssh/config or the sandbox settings"),
@@ -108,6 +108,6 @@ impl ProviderFactory for Factory {
     }
     fn build(&self, machine: &Machine, config: &SandboxConfig) -> Option<Arc<dyn SandboxProvider>> {
         let (ssh, local_stub) = (machine.which("ssh")?, machine.stub.clone()?);
-        Some(Arc::new(SshProvider { ssh, hosts: Self::hosts(machine, config), local_stub }))
+        Some(Arc::new(SshProvider { ssh, hosts: Self::hosts(config), local_stub }))
     }
 }

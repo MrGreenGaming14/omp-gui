@@ -3,7 +3,7 @@
 use crate::client::StubClient;
 use crate::isolation::IsolatedCheckout;
 use crate::provider::{SandboxKind, SandboxOptions, SandboxProvider, SandboxSpec, WorkspaceMode};
-use crate::worker::{WorkerJournal, WorkerRequest, run_worker, sandbox_tools};
+use crate::worker::{WorkerJournal, run_worker, sandbox_tools};
 use crate::{Result, SandboxError, sync};
 use async_trait::async_trait;
 use loa_contracts::harness::{Adapter, SessionConfig};
@@ -76,14 +76,14 @@ pub struct SandboxTask {
     adapter: Arc<dyn Adapter>,
     template: SessionConfig,
     journal: Arc<dyn WorkerJournal>,
-    workspace: PathBuf,
     providers: BTreeMap<SandboxKind, Arc<dyn SandboxProvider>>,
-    events: Option<broadcast::Sender<SandboxEvent>>,
+    events: broadcast::Sender<SandboxEvent>,
     description: String,
 }
 
 impl SandboxTask {
-    pub fn new(adapter: Arc<dyn Adapter>, template: SessionConfig, journal: Arc<dyn WorkerJournal>, providers: Vec<Arc<dyn SandboxProvider>>) -> Self {
+    /// The tool for sessions like `template`, whose runs go to `events`.
+    pub fn new(adapter: Arc<dyn Adapter>, template: SessionConfig, journal: Arc<dyn WorkerJournal>, providers: Vec<Arc<dyn SandboxProvider>>, events: broadcast::Sender<SandboxEvent>) -> Self {
         let providers: BTreeMap<_, _> = providers.into_iter().map(|provider| (provider.kind(), provider)).collect();
         let available: Vec<String> = providers.iter().map(|(kind, provider)| format!("- {kind}: {}", provider.describe())).collect();
         let description = format!(
@@ -94,14 +94,7 @@ impl SandboxTask {
              workspace itself.\nSandboxes available here:\n{}",
             available.join("\n")
         );
-        let workspace = template.cwd.clone();
-        Self { adapter, template, journal, workspace, providers, events: None, description }
-    }
-
-    /// Reports every run to `events`.
-    pub fn with_events(mut self, events: broadcast::Sender<SandboxEvent>) -> Self {
-        self.events = Some(events);
-        self
+        Self { adapter, template, journal, providers, events, description }
     }
 
     /// The kinds with a provider.
@@ -111,7 +104,7 @@ impl SandboxTask {
 
     fn emit(&self, event: SandboxEvent) {
         // No receiver only means nobody is watching.
-        let _ = self.events.as_ref().map(|events| events.send(event));
+        let _ = self.events.send(event);
     }
 
     /// Runs the host worker and always stops its sandbox, including on worker errors.
@@ -125,7 +118,7 @@ impl SandboxTask {
         // run numbers start over but earlier worker journals remain.
         let started = loa_util::time::now_ms();
         let worker = format!("{}-sandbox-{started:x}-{run}", self.template.session_id);
-        let (parent, workspace) = (self.template.session_id.clone(), self.workspace.clone());
+        let (parent, workspace) = (self.template.session_id.clone(), self.template.cwd.clone());
         let (kind, task, isolated) = (args.kind, args.task.clone(), args.isolation);
         self.emit(SandboxEvent::Started(SandboxRun { run, parent, worker: worker.clone(), kind, task, isolated, workspace }));
         // Names containers and remote directories: unique across processes
@@ -140,10 +133,10 @@ impl SandboxTask {
     }
 
     async fn work(&self, provider: &dyn SandboxProvider, name: String, worker: String, args: SandboxTaskArgs) -> Result<SandboxTaskResult> {
-        let checkout = if args.isolation { Some(IsolatedCheckout::create(&self.workspace)?) } else { None };
-        let workspace = checkout.as_ref().map_or(self.workspace.as_path(), |checkout| checkout.path());
+        let checkout = if args.isolation { Some(IsolatedCheckout::create(&self.template.cwd)?) } else { None };
+        let workspace = checkout.as_ref().map_or(self.template.cwd.as_path(), |checkout| checkout.path());
         // Never inherit the host adapter's env (which can contain API keys).
-        let spec = SandboxSpec { name, workspace: workspace.to_path_buf(), env: Vec::new(), options: args.options };
+        let spec = SandboxSpec { name, workspace: workspace.to_path_buf(), env: Vec::new(), options: args.options.clone() };
         let mut sandbox = provider.start(&spec).await?;
         let copied = sandbox.workspace_mode() == WorkspaceMode::Copied;
         let result = async {
@@ -153,14 +146,13 @@ impl SandboxTask {
             }
             // The harness needs a host cwd that shows nothing of the host or the checkout.
             let harness_dir = tempfile::tempdir()?;
-            let request = WorkerRequest { session_id: worker, task: args.task, agent: args.agent, model_role: args.model_role, harness_cwd: harness_dir.path().into() };
-            let report = run_worker(self.adapter.as_ref(), &self.template, self.journal.as_ref(), sandbox_tools(&client), request).await?;
+            let final_message = run_worker(self.adapter.as_ref(), &self.template, self.journal.as_ref(), sandbox_tools(&client), &worker, harness_dir.path(), args).await?;
             if copied {
                 sync::copy_out(&client, workspace).await?;
             }
             client.shutdown().await?;
             let patch = checkout.as_ref().map(IsolatedCheckout::patch).transpose()?.map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
-            Ok::<_, SandboxError>(SandboxTaskResult { session_id: report.session_id, final_message: report.final_message, patch })
+            Ok::<_, SandboxError>(SandboxTaskResult { session_id: worker, final_message, patch })
         }
         .await;
         let stopped = sandbox.stop().await;
