@@ -1,8 +1,5 @@
-//! The write side of a session.
-//!
-//! One writer per session: everything that wants to change a session hands a
-//! [`Draft`] to the session's [`PatchSink`], which orders it, applies it and
-//! returns the committed [`Patch`].
+//! The write side of a session: everything that changes a session hands a
+//! [`Draft`] to its one [`PatchSink`], which orders, applies and returns it.
 
 use loa_util::LockExt;
 use crate::dom::{ApplyError, Dom};
@@ -46,29 +43,15 @@ pub struct MemorySink {
 }
 
 impl MemorySink {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
+    pub fn new() -> Self { Self::default() }
     /// Continues from an existing DOM.
-    pub fn from_dom(dom: Dom) -> Self {
-        Self { state: Mutex::new((dom, Vec::new())) }
-    }
-
+    pub fn from_dom(dom: Dom) -> Self { Self { state: Mutex::new((dom, Vec::new())) } }
     /// A copy of the current DOM.
-    pub fn dom(&self) -> Dom {
-        self.state.locked().0.clone()
-    }
-
+    pub fn dom(&self) -> Dom { self.state.locked().0.clone() }
     /// Every patch committed through this sink, in order.
-    pub fn patches(&self) -> Vec<Patch> {
-        self.state.locked().1.clone()
-    }
-
+    pub fn patches(&self) -> Vec<Patch> { self.state.locked().1.clone() }
     /// Reads the current DOM without copying it.
-    pub fn with_dom<R>(&self, read: impl FnOnce(&Dom) -> R) -> R {
-        read(&self.state.locked().0)
-    }
+    pub fn with_dom<R>(&self, read: impl FnOnce(&Dom) -> R) -> R { read(&self.state.locked().0) }
 }
 
 impl PatchSink for MemorySink {

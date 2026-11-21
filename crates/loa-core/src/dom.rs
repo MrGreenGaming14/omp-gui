@@ -17,9 +17,7 @@ impl NodeId {
 }
 
 impl std::fmt::Display for NodeId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(f)
-    }
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { self.0.fmt(f) }
 }
 
 /// One element. Read only outside this crate: a [`Dom`] hands out `&Node`.
@@ -34,22 +32,12 @@ pub struct Node {
     pub text: String,
 }
 
+/// Typed attribute reads, delegating to the [`Value`] accessors.
 impl Node {
-    pub fn attr(&self, name: &str) -> Option<&Value> {
-        self.attrs.get(name)
-    }
-
-    pub fn str_attr(&self, name: &str) -> Option<&str> {
-        self.attr(name)?.as_str()
-    }
-
-    pub fn int_attr(&self, name: &str) -> Option<i64> {
-        self.attr(name)?.as_int()
-    }
-
-    pub fn bool_attr(&self, name: &str) -> Option<bool> {
-        self.attr(name)?.as_bool()
-    }
+    pub fn attr(&self, name: &str) -> Option<&Value> { self.attrs.get(name) }
+    pub fn str_attr(&self, name: &str) -> Option<&str> { self.attr(name)?.as_str() }
+    pub fn int_attr(&self, name: &str) -> Option<i64> { self.attr(name)?.as_int() }
+    pub fn bool_attr(&self, name: &str) -> Option<bool> { self.attr(name)?.as_bool() }
 }
 
 #[derive(Clone, Debug, PartialEq, thiserror::Error)]
@@ -94,9 +82,7 @@ pub struct Dom {
 }
 
 impl Dom {
-    pub fn new() -> Self {
-        Self::default()
-    }
+    pub fn new() -> Self { Self::default() }
 
     /// Rebuilds a DOM from snapshot data: every node, the next free id and the
     /// sequence of the last applied patch.
@@ -114,9 +100,7 @@ impl Dom {
         if extra > 0 || (root.is_none() && !map.is_empty()) {
             return Err(PartsError::Roots(extra + usize::from(root.is_some())));
         }
-        // Walk down from the root: every listed child must exist, name the
-        // lister as its parent and be listed once. Whatever the walk misses
-        // is detached from the tree.
+        // Every listed child must exist, name its lister and be listed once.
         let mut seen = std::collections::HashSet::with_capacity(map.len());
         let mut stack: Vec<NodeId> = root.into_iter().collect();
         seen.extend(root);
@@ -140,35 +124,15 @@ impl Dom {
     }
 
     /// Sequence number of the last applied patch. 0 for a new DOM.
-    pub fn seq(&self) -> u64 {
-        self.seq
-    }
-
+    pub fn seq(&self) -> u64 { self.seq }
     /// The lowest id an insert may use.
-    pub fn next_id(&self) -> NodeId {
-        NodeId(self.last_id + 1)
-    }
-
-    pub fn root(&self) -> Option<&Node> {
-        self.get(self.root?)
-    }
-
-    pub fn get(&self, id: NodeId) -> Option<&Node> {
-        self.nodes.get(&id)
-    }
-
-    pub fn contains(&self, id: NodeId) -> bool {
-        self.nodes.contains_key(&id)
-    }
-
+    pub fn next_id(&self) -> NodeId { NodeId(self.last_id + 1) }
+    pub fn root(&self) -> Option<&Node> { self.get(self.root?) }
+    pub fn get(&self, id: NodeId) -> Option<&Node> { self.nodes.get(&id) }
+    pub fn contains(&self, id: NodeId) -> bool { self.nodes.contains_key(&id) }
     /// Number of nodes.
-    pub fn len(&self) -> usize {
-        self.nodes.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.nodes.is_empty()
-    }
+    pub fn len(&self) -> usize { self.nodes.len() }
+    pub fn is_empty(&self) -> bool { self.nodes.is_empty() }
 
     /// Children of `id` in order. Empty when `id` doesn't exist.
     pub fn children(&self, id: NodeId) -> impl Iterator<Item = &Node> {
@@ -203,15 +167,15 @@ impl Dom {
 
     /// Orders `draft` as the next patch without applying it.
     pub fn prepare(&self, draft: Draft, ts: i64) -> Patch {
-        let seq = self.seq + 1;
-        match draft {
+        let (node, op) = match draft {
             Draft::Insert { parent, index, kind, attrs, text } => {
-                Patch { seq, node: self.next_id(), ts, op: Op::Insert { parent, index, kind, attrs, text } }
+                (self.next_id(), Op::Insert { parent, index, kind, attrs, text })
             }
-            Draft::Set { node, name, value } => Patch { seq, node, ts, op: Op::Set { name, value } },
-            Draft::Append { node, text } => Patch { seq, node, ts, op: Op::Append { text } },
-            Draft::Remove { node } => Patch { seq, node, ts, op: Op::Remove },
-        }
+            Draft::Set { node, name, value } => (node, Op::Set { name, value }),
+            Draft::Append { node, text } => (node, Op::Append { text }),
+            Draft::Remove { node } => (node, Op::Remove),
+        };
+        Patch { seq: self.seq + 1, node, ts, op }
     }
 
     /// Orders `draft` as the next patch and applies it.
@@ -223,12 +187,21 @@ impl Dom {
 
     /// Applies the next patch. On error the DOM is unchanged.
     pub fn apply(&mut self, patch: &Patch) -> Result<(), ApplyError> {
+        self.check(patch)?;
+        self.mutate(patch);
+        Ok(())
+    }
+
+    /// Every rule [`Dom::apply`] enforces, without applying, so a writer can
+    /// reject a patch before persisting it.
+    pub fn check(&self, patch: &Patch) -> Result<(), ApplyError> {
         if patch.seq != self.seq + 1 {
             return Err(ApplyError::Sequence { expected: self.seq + 1, got: patch.seq });
         }
         let id = patch.node;
+        let node = |id| self.get(id).ok_or(ApplyError::MissingNode(id));
         match &patch.op {
-            Op::Insert { parent, index, kind, attrs, text } => {
+            Op::Insert { parent, index, kind, attrs, .. } => {
                 if id.0 <= self.last_id {
                     return Err(ApplyError::IdReused { got: id, next: self.next_id() });
                 }
@@ -238,53 +211,47 @@ impl Dom {
                     }
                     None
                 } else {
-                    let node = self.get(*parent).ok_or(ApplyError::MissingNode(*parent))?;
+                    let p = node(*parent)?;
                     if let Some(index) = *index
-                        && index as usize > node.children.len()
+                        && index as usize > p.children.len()
                     {
-                        return Err(ApplyError::Index { parent: *parent, index, len: node.children.len() });
+                        return Err(ApplyError::Index { parent: *parent, index, len: p.children.len() });
                     }
-                    Some(node.kind)
+                    Some(p.kind)
                 };
                 schema::validate_insert(parent_kind, *kind, attrs.iter().map(|(k, v)| (k.as_str(), v)))?;
+            }
+            Op::Set { name, value } => schema::validate_set(node(id)?.kind, name, value.as_ref())?,
+            Op::Append { .. } | Op::Remove => drop(node(id)?),
+        }
+        Ok(())
+    }
+
+    /// Applies a patch [`Dom::check`] accepted.
+    fn mutate(&mut self, patch: &Patch) {
+        let id = patch.node;
+        match &patch.op {
+            Op::Insert { parent, index, kind, attrs, text } => {
                 match self.nodes.get_mut(parent) {
-                    Some(node) => {
-                        let at = index.map_or(node.children.len(), |i| i as usize);
-                        node.children.insert(at, id);
-                    }
+                    Some(node) => node.children.insert(index.map_or(node.children.len(), |i| i as usize), id),
                     None => self.root = Some(id),
                 }
-                let node = Node {
-                    id,
-                    kind: *kind,
-                    parent: *parent,
-                    children: Vec::new(),
-                    attrs: attrs.clone(),
-                    text: text.clone(),
-                };
-                self.nodes.insert(id, node);
+                let (kind, parent, attrs, text) = (*kind, *parent, attrs.clone(), text.clone());
+                self.nodes.insert(id, Node { id, kind, parent, children: Vec::new(), attrs, text });
                 self.last_id = id.0;
             }
             Op::Set { name, value } => {
-                let node = self.nodes.get_mut(&id).ok_or(ApplyError::MissingNode(id))?;
-                schema::validate_set(node.kind, name, value.as_ref())?;
+                let node = self.nodes.get_mut(&id).expect("checked");
                 match (name.as_str(), value) {
                     (TEXT, Some(Value::Str(text))) => node.text.clone_from(text),
                     (TEXT, _) => node.text.clear(),
-                    (_, Some(value)) => {
-                        node.attrs.insert(name.clone(), value.clone());
-                    }
-                    (_, None) => {
-                        node.attrs.remove(name);
-                    }
+                    (_, Some(value)) => drop(node.attrs.insert(name.clone(), value.clone())),
+                    (_, None) => drop(node.attrs.remove(name)),
                 }
             }
-            Op::Append { text } => {
-                let node = self.nodes.get_mut(&id).ok_or(ApplyError::MissingNode(id))?;
-                node.text.push_str(text);
-            }
+            Op::Append { text } => self.nodes.get_mut(&id).expect("checked").text.push_str(text),
             Op::Remove => {
-                let parent = self.get(id).ok_or(ApplyError::MissingNode(id))?.parent;
+                let parent = self.nodes[&id].parent;
                 let doomed: Vec<NodeId> = self.descendants(id).map(|n| n.id).collect();
                 for gone in doomed {
                     self.nodes.remove(&gone);
@@ -296,7 +263,6 @@ impl Dom {
             }
         }
         self.seq = patch.seq;
-        Ok(())
     }
 }
 
