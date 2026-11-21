@@ -1022,8 +1022,11 @@ impl Mapper {
     }
 
     fn resume_turn(&self, w: &DomWriter, turn: Option<NodeId>) -> Result<()> {
-        if turn.is_some() && turn == self.active() && !self.decisions.values().any(|d| d.waiting && d.turn == turn) {
-            w.set(turn.expect("checked"), attr::STATUS, TurnStatus::Running)?;
+        if let Some(node) = turn
+            && turn == self.active()
+            && !self.decisions.values().any(|d| d.waiting && d.turn == turn)
+        {
+            w.set(node, attr::STATUS, TurnStatus::Running)?;
         }
         Ok(())
     }

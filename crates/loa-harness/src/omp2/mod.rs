@@ -108,7 +108,10 @@ impl Inbound for Shared {
     }
 
     async fn on_closed(&self, _: Option<std::process::ExitStatus>, _: &str) {
-        let _ = self.with(|m, _| Ok(m.ledger_mut().close()));
+        let _ = self.with(|m, _| {
+            m.ledger_mut().close();
+            Ok(())
+        });
     }
 }
 
@@ -215,7 +218,10 @@ impl HarnessSession for Omp2Session {
     async fn shutdown(&self) -> Result<()> {
         let _ = self.rpc.send(&json!({ "type": "quit", "id": "loa-quit" }));
         self.rpc.shutdown(Duration::from_secs(5)).await;
-        self.shared.with(|m, _| Ok(m.ledger_mut().close()))
+        self.shared.with(|m, _| {
+            m.ledger_mut().close();
+            Ok(())
+        })
     }
 }
 
