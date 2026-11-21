@@ -58,12 +58,6 @@ impl OmpAdapterConfig {
             shutdown_grace: Duration::from_secs(10),
         }
     }
-
-    /// Like [`OmpAdapterConfig::new`], with `state_dir` under the OS temp
-    /// directory (`$TMPDIR`).
-    pub fn with_temp_state_dir(node: impl Into<String>) -> Self {
-        Self::new(node, std::env::temp_dir().join("loa-adapter-omp"))
-    }
 }
 
 /// omp's built-in tools that are on by default (`omp --help`, "Built-in
