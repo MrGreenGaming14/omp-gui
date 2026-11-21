@@ -11,7 +11,7 @@ use iced::Task;
 use iced::futures::StreamExt;
 use iced::widget::text_editor::{Action as EditAction, Edit};
 use iced_runtime::Action as RuntimeAction;
-use loa_adapter::{Adapter, Capabilities, HarnessSession, Registry as Adapters, SessionConfig};
+use loa_contracts::harness::{Adapter, Capabilities, HarnessSession, Registry as Adapters, SessionConfig};
 use loa_bus::{Policy, SessionId};
 use loa_core::{DecisionStatus, Dom, PatchSink, TurnStatus, attr};
 use loa_grants::{GrantSpec, NodeKey, Resource, Scope};
@@ -58,12 +58,12 @@ impl Adapter for Recording {
         self.capabilities.clone()
     }
 
-    async fn start(&self, config: SessionConfig, sink: Arc<dyn PatchSink>) -> loa_adapter::Result<Box<dyn HarnessSession>> {
+    async fn start(&self, config: SessionConfig, sink: Arc<dyn PatchSink>) -> loa_contracts::harness::Result<Box<dyn HarnessSession>> {
         self.configs.lock().unwrap().push(config.clone());
         self.inner.start(config, sink).await
     }
 
-    async fn resume(&self, config: SessionConfig, dom: &Dom, sink: Arc<dyn PatchSink>) -> loa_adapter::Result<Box<dyn HarnessSession>> {
+    async fn resume(&self, config: SessionConfig, dom: &Dom, sink: Arc<dyn PatchSink>) -> loa_contracts::harness::Result<Box<dyn HarnessSession>> {
         self.configs.lock().unwrap().push(config.clone());
         self.inner.resume(config, dom, sink).await
     }

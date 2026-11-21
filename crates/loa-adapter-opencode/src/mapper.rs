@@ -21,7 +21,7 @@
 
 use crate::event::{Event, PartDelta, PermissionRequest, QuestionRequest, Todo, ToolRef};
 use crate::json;
-use loa_adapter::{AdapterError, Answer, Result, SessionState};
+use loa_contracts::harness::{AdapterError, Answer, Result, SessionState};
 use loa_core::{
     CallStatus, DecisionKind, DecisionStatus, Dom, Draft, ElementKind as K, JobKind, JobStatus, MessageKind,
     MessageStatus, Node, NodeId, PatchSink, Role, SCHEMA_VERSION, SessionMode, TodoState, TurnStatus, Value, answer,

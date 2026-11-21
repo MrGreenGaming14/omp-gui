@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use iced::futures::SinkExt;
 use iced::{Element, Font, Subscription, Task};
-use loa_adapter::{Answer, HostToolRouter, McpTransport, SessionConfig};
+use loa_contracts::harness::{Answer, HostToolRouter, McpTransport, SessionConfig};
 use loa_bus::SessionId;
 use loa_config::ProjectSettings;
 use loa_core::{Dom, ElementKind, NodeId, attr};
@@ -545,7 +545,7 @@ impl State {
     /// The `omp` bridge for a session of another harness: omp's tools minus
     /// the ones the project switched off, with its state under the
     /// session's own directory.
-    fn bridge_spec(config: &SessionConfig, settings: &ProjectSettings, ctx: &Ctx) -> Option<loa_adapter::McpServerSpec> {
+    fn bridge_spec(config: &SessionConfig, settings: &ProjectSettings, ctx: &Ctx) -> Option<loa_contracts::harness::McpServerSpec> {
         let program = Self::omp(ctx)?;
         let exe = std::env::current_exe().ok()?;
         let state = ctx.services.dirs.data.join("omp-bridge").join(&config.session_id);

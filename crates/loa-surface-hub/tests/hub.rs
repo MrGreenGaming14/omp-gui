@@ -4,9 +4,9 @@
 //! declared surfaces of an MCP server opened as `McpSurface`s.
 
 use bytes::Bytes;
-use loa_adapter::HostToolContent;
+use loa_contracts::harness::OutputBlock;
 use loa_mcp::{AllowAll, HttpSpec, Manager, ServerSpec, Status, Transport};
-use loa_surface::{Encoding, Frame, Input, InputEvent, Modifiers, MouseButton, SurfaceMode, SurfaceUri};
+use loa_contracts::surface::{Encoding, Frame, Input, InputEvent, Modifiers, MouseButton, SurfaceMode, SurfaceUri};
 use loa_surface_docs::Fonts;
 use loa_surface_hub::{
     CaptureMode, HubConfig, HubEvent, LiveVideo, McpEndpoint, Origin, SurfaceHub, SurfaceTools, ToolContent,
@@ -105,7 +105,7 @@ async fn documents_open_list_answer_tools_and_close() {
     assert!(text.starts_with("Screenshot (30x20)"), "{text}");
     assert_eq!(std::fs::read(path).unwrap(), png_bytes);
     let content = handler.call_content("s1", "surface_screenshot", &json!({ "uri": uri }).to_string()).await.unwrap();
-    assert!(matches!(&content[..], [HostToolContent::Image { mime, data }] if mime == "image/png" && *data == png_bytes));
+    assert!(matches!(&content[..], [OutputBlock::Image { mime, data }] if mime == "image/png" && *data == png_bytes));
     let missing = handler.call("s1", "surface_screenshot", r#"{"uri":"surface://docs/99"}"#).await.unwrap_err();
     assert!(missing.contains("no surface"), "{missing}");
 

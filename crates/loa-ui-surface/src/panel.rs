@@ -15,7 +15,7 @@ use crate::style;
 use crate::document::PageRenderers;
 use iced::widget::{Column, button, column, container, row, rule, scrollable, space, text, text_input};
 use iced::{Center, Element, Fill, Task};
-use loa_surface::{Encoding, StreamInfo, Surface, SurfaceInfo, SurfaceMode, SurfaceUri};
+use loa_contracts::surface::{Encoding, StreamInfo, Surface, SurfaceInfo, SurfaceMode, SurfaceUri};
 use loa_ui_icons::{Icon, muted};
 use loa_ui_shell::theme::style as shell;
 use std::path::PathBuf;

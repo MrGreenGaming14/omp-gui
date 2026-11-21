@@ -4,7 +4,7 @@ use loa_util::LockExt;
 use crate::{bench::{StageTimingSource, StageTimings}, canvas::Canvas, encode::{region::RegionEncoder, LiveEncoder, Strategy}, BenchError, Result};
 use async_trait::async_trait;
 use bytes::Bytes;
-use loa_surface::{Document, Frame, Input, InputEvent, Surface, SurfaceError, SurfaceInfo, SurfaceMode, SurfaceUri};
+use loa_contracts::surface::{Document, Frame, Input, InputEvent, Surface, SurfaceError, SurfaceInfo, SurfaceMode, SurfaceUri};
 use std::{collections::HashMap, sync::{Arc, Mutex}, time::{Duration, Instant}};
 use tokio::sync::{broadcast, Mutex as AsyncMutex};
 
@@ -70,7 +70,7 @@ impl SyntheticSurface {
         })
     }
 
-    fn emit(&self, picture: &mut Picture) -> loa_surface::Result<()> {
+    fn emit(&self, picture: &mut Picture) -> loa_contracts::surface::Result<()> {
         let timestamp = crate::stats::saturating_us(self.epoch.elapsed());
         let encoded = picture.encoder.encode(picture.canvas.rgba(), picture.last_input_seq, timestamp)
             .map_err(|e| SurfaceError::Backend(e.to_string()))?;
@@ -111,18 +111,18 @@ impl StageTimingSource for SyntheticSurface {
 impl Surface for SyntheticSurface {
     fn info(&self) -> SurfaceInfo { self.info.clone() }
 
-    fn frames(&self) -> loa_surface::Result<broadcast::Receiver<Arc<Frame>>> {
+    fn frames(&self) -> loa_contracts::surface::Result<broadcast::Receiver<Arc<Frame>>> {
         Ok(self.sender.subscribe())
     }
 
-    async fn request_keyframe(&self) -> loa_surface::Result<()> {
+    async fn request_keyframe(&self) -> loa_contracts::surface::Result<()> {
         let mut picture = self.picture.lock().await;
         picture.encoder.request_keyframe();
         self.emit(&mut picture)
     }
 
-    async fn input(&self, event: InputEvent) -> loa_surface::Result<()> {
-        let Input::MouseButton { x, y, button: loa_surface::MouseButton::Left, pressed: true, .. } = event.input else {
+    async fn input(&self, event: InputEvent) -> loa_contracts::surface::Result<()> {
+        let Input::MouseButton { x, y, button: loa_contracts::surface::MouseButton::Left, pressed: true, .. } = event.input else {
             return Ok(());
         };
         if !x.is_finite() || !y.is_finite() || x < 0.0 || y < 0.0 || x >= self.info.width as f32 || y >= self.info.height as f32 {
@@ -145,11 +145,11 @@ impl Surface for SyntheticSurface {
         Ok(())
     }
 
-    async fn document(&self) -> loa_surface::Result<Document> {
+    async fn document(&self) -> loa_contracts::surface::Result<Document> {
         Err(SurfaceError::Mode { uri: self.info.uri.clone(), mode: self.info.mode })
     }
 
-    async fn screenshot(&self) -> loa_surface::Result<Bytes> {
+    async fn screenshot(&self) -> loa_contracts::surface::Result<Bytes> {
         let picture = self.picture.lock().await;
         let mut bytes = Vec::new();
         {
@@ -167,7 +167,7 @@ impl Surface for SyntheticSurface {
 mod tests {
     use super::*;
     use crate::bench::{run, BenchConfig};
-    use loa_surface::Rect;
+    use loa_contracts::surface::Rect;
 
     #[tokio::test]
     async fn clicks_are_encoded_decoded_and_measured_with_delays() {
@@ -201,7 +201,7 @@ mod tests {
         surface.input(InputEvent {
             seq: 1, sent_us: 0,
             input: Input::MouseButton {
-                x: 60.0, y: 60.0, button: loa_surface::MouseButton::Left,
+                x: 60.0, y: 60.0, button: loa_contracts::surface::MouseButton::Left,
                 pressed: true, modifiers: Default::default(),
             },
         }).await.unwrap();
@@ -236,7 +236,7 @@ mod tests {
         assert_eq!(first.region, Rect { x: 0, y: 0, width: 320, height: 180 });
         surface.input(InputEvent {
             seq: 7, sent_us: 0,
-            input: Input::MouseButton { x: 1.0, y: 1.0, button: loa_surface::MouseButton::Left,
+            input: Input::MouseButton { x: 1.0, y: 1.0, button: loa_contracts::surface::MouseButton::Left,
                 pressed: true, modifiers: Default::default() },
         }).await.unwrap();
         let changed = frames.recv().await.unwrap();

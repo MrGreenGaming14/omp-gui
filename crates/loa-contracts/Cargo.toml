@@ -1,6 +1,6 @@
 [package]
-name = "loa-adapter"
-description = "Harness adapter contract: Adapter and HarnessSession traits, capabilities"
+name = "loa-contracts"
+description = "Ports: harness adapters and accounts, surfaces, host tools, summarizer"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
@@ -10,15 +10,16 @@ loa-core.workspace = true
 loa-util.workspace = true
 async-trait.workspace = true
 bytes.workspace = true
+schemars.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
-serde_json = { workspace = true, optional = true }
 
 [features]
 # Contract checks for adapter tests (DOM invariants, WatchedSink).
-testing = ["dep:serde_json", "tokio/sync"]
+testing = []
 
 [dev-dependencies]
-loa-adapter = { path = ".", features = ["testing"] }
+loa-contracts = { path = ".", features = ["testing"] }
 tempfile.workspace = true

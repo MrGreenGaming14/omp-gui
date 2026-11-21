@@ -1,6 +1,6 @@
 //! Input to pixels latency benchmark and the 50 ms gate.
 //!
-//! - [`bench`] drives any [`loa_surface::Surface`]: it sends an input that
+//! - [`bench`] drives any [`loa_contracts::surface::Surface`]: it sends an input that
 //!   changes the picture, then waits for the first frame that both echoes the
 //!   input (`input_seq`) and shows the change in its pixels.
 //! - [`synthetic`] is a software rendered reference surface, so the
@@ -22,12 +22,12 @@ pub mod synthetic;
 pub mod yuv;
 pub mod video;
 
-use loa_surface::Encoding;
+use loa_contracts::surface::Encoding;
 
 #[derive(Debug, thiserror::Error)]
 pub enum BenchError {
     #[error(transparent)]
-    Surface(#[from] loa_surface::SurfaceError),
+    Surface(#[from] loa_contracts::surface::SurfaceError),
     #[error("encoder: {0}")]
     Encode(String),
     #[error("decoding a {encoding:?} frame: {message}")]

@@ -10,7 +10,7 @@ use crate::proto::{
 use crate::{PasswordSource, RfbEndpoint, RfbError, RfbOptions};
 use async_trait::async_trait;
 use bytes::Bytes;
-use loa_surface::{
+use loa_contracts::surface::{
     Document, Encoding, Frame, InputEvent, Rect, Surface, SurfaceError, SurfaceInfo, SurfaceMode,
     SurfaceUri,
 };
@@ -147,31 +147,31 @@ impl Surface for RfbSurface {
         }
     }
 
-    fn frames(&self) -> loa_surface::Result<broadcast::Receiver<Arc<Frame>>> {
+    fn frames(&self) -> loa_contracts::surface::Result<broadcast::Receiver<Arc<Frame>>> {
         Ok(self.shared.frames.subscribe())
     }
 
     /// Publishes the local framebuffer copy as a keyframe right away; it is
     /// the complete picture, so no round trip to the server is needed.
-    async fn request_keyframe(&self) -> loa_surface::Result<()> {
+    async fn request_keyframe(&self) -> loa_contracts::surface::Result<()> {
         let mut pic = self.shared.picture.locked();
         let full = pic.fb.full();
         self.shared.send(&mut pic, full);
         Ok(())
     }
 
-    async fn input(&self, event: InputEvent) -> loa_surface::Result<()> {
+    async fn input(&self, event: InputEvent) -> loa_contracts::surface::Result<()> {
         Ok(self.shared.input(&event).await?)
     }
 
-    async fn document(&self) -> loa_surface::Result<Document> {
+    async fn document(&self) -> loa_contracts::surface::Result<Document> {
         Err(SurfaceError::Mode {
             uri: self.shared.uri.clone(),
             mode: SurfaceMode::Pixel,
         })
     }
 
-    async fn screenshot(&self) -> loa_surface::Result<Bytes> {
+    async fn screenshot(&self) -> loa_contracts::surface::Result<Bytes> {
         let (width, height, rgba) = {
             let pic = self.shared.picture.locked();
             (pic.fb.width, pic.fb.height, pic.fb.pixels.clone())

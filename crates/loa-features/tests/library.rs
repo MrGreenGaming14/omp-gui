@@ -2,7 +2,7 @@
 //! scripted harness.
 
 use async_trait::async_trait;
-use loa_adapter::{Adapter, AdapterError, Answer, Capabilities, Feature, HarnessSession, Prompt, SessionConfig, SessionState};
+use loa_contracts::harness::{Adapter, AdapterError, Answer, Capabilities, Feature, HarnessSession, Prompt, SessionConfig, SessionState};
 use loa_bus::{Authorize, Bus, Denied, NodeKey, SessionId};
 use loa_core::{Dom, Draft, ElementKind as K, NodeId, PatchSink, SessionMode, Value, attr};
 use loa_features::library::Library;
@@ -35,23 +35,23 @@ struct Echo {
 
 #[async_trait]
 impl HarnessSession for Echo {
-    async fn send(&self, prompt: Prompt) -> loa_adapter::Result<()> {
+    async fn send(&self, prompt: Prompt) -> loa_contracts::harness::Result<()> {
         self.prompts.lock().unwrap().push(prompt.text.clone());
         let turn = self.sink.commit(Draft::insert(self.root, K::Turn, [(attr::STATUS, Value::from("done"))], ""))?.node;
         self.sink.commit(Draft::insert(turn, K::Message, [(attr::ROLE, Value::from("user"))], prompt.text.as_str()))?;
         self.sink.commit(Draft::insert(turn, K::Message, [(attr::ROLE, Value::from("assistant"))], format!("echo {}", prompt.text)))?;
         Ok(())
     }
-    async fn interrupt(&self) -> loa_adapter::Result<()> { Ok(()) }
-    async fn answer(&self, decision: NodeId, _: Answer) -> loa_adapter::Result<()> { Err(AdapterError::UnknownDecision(decision)) }
-    async fn set_mode(&self, mode: SessionMode) -> loa_adapter::Result<()> {
+    async fn interrupt(&self) -> loa_contracts::harness::Result<()> { Ok(()) }
+    async fn answer(&self, decision: NodeId, _: Answer) -> loa_contracts::harness::Result<()> { Err(AdapterError::UnknownDecision(decision)) }
+    async fn set_mode(&self, mode: SessionMode) -> loa_contracts::harness::Result<()> {
         self.modes.lock().unwrap().push(mode);
         Err(AdapterError::Unsupported { harness: "echo", what: "set_mode" })
     }
     fn harness(&self) -> &'static str { "echo" }
     fn state(&self) -> SessionState { SessionState::Idle }
-    async fn wait_idle(&self) -> loa_adapter::Result<()> { Ok(()) }
-    async fn shutdown(&self) -> loa_adapter::Result<()> { Ok(()) }
+    async fn wait_idle(&self) -> loa_contracts::harness::Result<()> { Ok(()) }
+    async fn shutdown(&self) -> loa_contracts::harness::Result<()> { Ok(()) }
 }
 
 #[derive(Default)]
@@ -74,21 +74,21 @@ impl Adapter for EchoAdapter {
     fn capabilities(&self) -> Capabilities {
         Capabilities { features: if self.native_fork { vec![Feature::Fork] } else { vec![] }, import: true, export: true, ..Default::default() }
     }
-    async fn start(&self, config: SessionConfig, sink: Arc<dyn PatchSink>) -> loa_adapter::Result<Box<dyn HarnessSession>> {
+    async fn start(&self, config: SessionConfig, sink: Arc<dyn PatchSink>) -> loa_contracts::harness::Result<Box<dyn HarnessSession>> {
         let root = sink.commit(Draft::insert(NodeId::DOCUMENT, K::Session, [
             (attr::ID, Value::from(config.session_id)), (attr::HARNESS, Value::from("echo")),
             (attr::NODE, Value::from("me")), (attr::CREATED, Value::Int(1)),
         ], ""))?.node;
         Ok(self.session(sink, root))
     }
-    async fn resume(&self, _: SessionConfig, dom: &Dom, sink: Arc<dyn PatchSink>) -> loa_adapter::Result<Box<dyn HarnessSession>> {
+    async fn resume(&self, _: SessionConfig, dom: &Dom, sink: Arc<dyn PatchSink>) -> loa_contracts::harness::Result<Box<dyn HarnessSession>> {
         Ok(self.session(sink, dom.root().unwrap().id))
     }
-    async fn fork(&self, _: SessionConfig, dom: &Dom, sink: Arc<dyn PatchSink>) -> loa_adapter::Result<Box<dyn HarnessSession>> {
+    async fn fork(&self, _: SessionConfig, dom: &Dom, sink: Arc<dyn PatchSink>) -> loa_contracts::harness::Result<Box<dyn HarnessSession>> {
         self.forked.lock().unwrap().push(dom.clone());
         Ok(self.session(sink, dom.root().unwrap().id))
     }
-    fn import(&self, native: &Path, sink: &dyn PatchSink) -> loa_adapter::Result<()> {
+    fn import(&self, native: &Path, sink: &dyn PatchSink) -> loa_contracts::harness::Result<()> {
         let text = std::fs::read_to_string(native)?;
         let root = sink.commit_at(Draft::insert(NodeId::DOCUMENT, K::Session, [
             (attr::ID, Value::from("native-7")), (attr::HARNESS, Value::from("echo")),
@@ -100,7 +100,7 @@ impl Adapter for EchoAdapter {
         }
         Ok(())
     }
-    fn export(&self, dom: &Dom, out: &Path) -> loa_adapter::Result<()> {
+    fn export(&self, dom: &Dom, out: &Path) -> loa_contracts::harness::Result<()> {
         let lines: Vec<_> = dom.iter().filter(|n| n.kind == K::Message).map(|n| n.text.clone()).collect();
         std::fs::write(out, lines.join("\n"))?;
         Ok(())

@@ -25,7 +25,7 @@ pub use loa_surface_bench::live::LiveVideo;
 pub use mcp_surface::McpSurface;
 pub use tools::{SurfaceTools, ToolContent, ToolResult, tool_definitions};
 
-use loa_surface::{SurfaceError, SurfaceUri};
+use loa_contracts::surface::{SurfaceError, SurfaceUri};
 
 #[derive(Debug, thiserror::Error)]
 pub enum HubError {

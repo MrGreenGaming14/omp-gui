@@ -1,7 +1,7 @@
 //! The renderer's H.264 decoder: in process, a picture per access unit.
 
 use crate::decode::{DecodeError, VideoDecoder};
-use loa_surface::{Encoding, Frame};
+use loa_contracts::surface::{Encoding, Frame};
 
 /// [`VideoDecoder`] for H.264 streams (Constrained Baseline, what the live
 /// video encoders send).

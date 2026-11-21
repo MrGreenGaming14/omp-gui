@@ -7,7 +7,7 @@ use crate::RfbError;
 use crate::proto::BPP;
 use bytes::{Bytes, BytesMut};
 use flate2::{Decompress, FlushDecompress, Status};
-use loa_surface::Rect;
+use loa_contracts::surface::Rect;
 use tokio::io::{AsyncRead, AsyncReadExt};
 
 /// Upper bound for one ZRLE rectangle's compressed data.

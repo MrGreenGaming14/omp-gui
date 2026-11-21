@@ -1,6 +1,6 @@
 //! The `testing` checks accept a well-formed session and flag a broken one.
 
-use loa_adapter::testing::{Phase, Rule, WatchedSink, check_dom, check_dom_in, check_history};
+use loa_contracts::harness::testing::{Phase, Rule, WatchedSink, check_dom, check_dom_in, check_history};
 use loa_core::{CallStatus, Draft, ElementKind, MessageStatus, NodeId, PatchSink, Role, SCHEMA_VERSION, TurnStatus, Value, attr};
 
 fn insert(sink: &WatchedSink, parent: NodeId, kind: ElementKind, attrs: Vec<(&str, Value)>, text: &str) -> NodeId {

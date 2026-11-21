@@ -13,7 +13,7 @@ use std::sync::Mutex;
 
 use iced::widget::container;
 use iced::{Element, Fill, Subscription, Task};
-use loa_adapter::{AdapterError, HarnessModel, ModelSelection, SessionConfig};
+use loa_contracts::harness::{AdapterError, HarnessModel, ModelSelection, SessionConfig};
 use loa_bus::SessionId;
 use loa_core::{Dom, Draft, Op, PatchSink, attr};
 use loa_models::omp::OmpLaunch;

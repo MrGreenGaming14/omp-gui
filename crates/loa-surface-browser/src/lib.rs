@@ -1,6 +1,6 @@
 //! Browser surface server on Chrome.
 //!
-//! [`BrowserServer`] is the `browser` [`SurfaceServer`](loa_surface::SurfaceServer):
+//! [`BrowserServer`] is the `browser` [`SurfaceServer`](loa_contracts::surface::SurfaceServer):
 //! each open tab is a pixel surface `surface://browser/<tab>`. Chrome is driven
 //! over the DevTools protocol with `chromiumoxide`. Frames come from one of two
 //! capture strategies ([`Capture`]): Chrome's own `Page.startScreencast` on a

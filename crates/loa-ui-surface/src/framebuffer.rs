@@ -2,7 +2,7 @@
 
 use bytes::{Bytes, BytesMut};
 use iced::widget::image::Handle;
-use loa_surface::Rect;
+use loa_contracts::surface::Rect;
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum BlitError {

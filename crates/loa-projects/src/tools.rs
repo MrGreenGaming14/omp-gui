@@ -5,7 +5,7 @@ use crate::search::{AttrFilter, SearchPage, SearchQuery, TextMode, search};
 use crate::source::{Access, Requester, SessionSource, session_project};
 use crate::{Error, Result};
 use async_trait::async_trait;
-use loa_adapter::{HostToolSpec, HostTools};
+use loa_contracts::harness::{HostToolSpec, HostTools};
 use loa_core::{ElementKind, NodeId};
 use serde::Deserialize;
 use serde_json::json;

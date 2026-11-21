@@ -1,4 +1,4 @@
-use loa_adapter::{McpTransport, SessionConfig};
+use loa_contracts::harness::{McpTransport, SessionConfig};
 use loa_config::{
     Config, ConfigError, ConfigStore, Relay,
     Theme, config_path,

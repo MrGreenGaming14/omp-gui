@@ -7,7 +7,7 @@
 //! peers can add message types without breaking older ones.
 
 use bytes::Bytes;
-use loa_surface::{
+use loa_contracts::surface::{
     Encoding, Frame, Input, InputEvent, Modifiers, MouseButton, Rect, StreamInfo, SurfaceInfo, SurfaceMode,
     SurfaceUri,
 };

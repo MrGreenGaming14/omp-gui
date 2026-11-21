@@ -3,7 +3,7 @@
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use loa_surface::{
+use loa_contracts::surface::{
     Document, Encoding, Frame, Input, InputEvent, MouseButton, Rect, Surface, SurfaceError, SurfaceInfo, SurfaceMode,
     SurfaceServer, SurfaceUri,
 };
@@ -89,7 +89,7 @@ impl Surface for FakeSurface {
         self.info.clone()
     }
 
-    fn frames(&self) -> loa_surface::Result<broadcast::Receiver<Arc<Frame>>> {
+    fn frames(&self) -> loa_contracts::surface::Result<broadcast::Receiver<Arc<Frame>>> {
         match self.info.mode {
             SurfaceMode::Pixel => {
                 let frames = self.frames.lock().unwrap();
@@ -99,12 +99,12 @@ impl Surface for FakeSurface {
         }
     }
 
-    async fn request_keyframe(&self) -> loa_surface::Result<()> {
+    async fn request_keyframe(&self) -> loa_contracts::surface::Result<()> {
         let _ = self.keyframes.send(());
         Ok(())
     }
 
-    async fn input(&self, event: InputEvent) -> loa_surface::Result<()> {
+    async fn input(&self, event: InputEvent) -> loa_contracts::surface::Result<()> {
         if self.info.mode == SurfaceMode::Document {
             return Err(SurfaceError::Mode { uri: self.info.uri.clone(), mode: self.info.mode });
         }
@@ -112,11 +112,11 @@ impl Surface for FakeSurface {
         Ok(())
     }
 
-    async fn document(&self) -> loa_surface::Result<Document> {
+    async fn document(&self) -> loa_contracts::surface::Result<Document> {
         self.document.clone().ok_or(SurfaceError::Mode { uri: self.info.uri.clone(), mode: self.info.mode })
     }
 
-    async fn screenshot(&self) -> loa_surface::Result<Bytes> {
+    async fn screenshot(&self) -> loa_contracts::surface::Result<Bytes> {
         Ok(Bytes::from_static(b"\x89PNG\r\n\x1a\nfake"))
     }
 }
@@ -551,11 +551,11 @@ impl SurfaceServer for FakeServer {
         "test"
     }
 
-    async fn list(&self) -> loa_surface::Result<Vec<SurfaceInfo>> {
+    async fn list(&self) -> loa_contracts::surface::Result<Vec<SurfaceInfo>> {
         Ok(self.0.iter().map(|s| s.info.clone()).collect())
     }
 
-    async fn open(&self, uri: &SurfaceUri) -> loa_surface::Result<Arc<dyn Surface>> {
+    async fn open(&self, uri: &SurfaceUri) -> loa_contracts::surface::Result<Arc<dyn Surface>> {
         let found = self.0.iter().find(|s| &s.info.uri == uri).cloned();
         found.map(|s| s as Arc<dyn Surface>).ok_or_else(|| SurfaceError::NotFound(uri.clone()))
     }
@@ -622,7 +622,7 @@ async fn agent_tools_drive_the_surface_with_numbered_input() {
     }
     assert_eq!(events.iter().map(|e| e.seq).collect::<Vec<_>>(), [1, 2, 3]);
     assert_eq!(events[0].input, Input::MouseMove { x: 12.0, y: 8.5 });
-    let ctrl = loa_surface::Modifiers { ctrl: true, ..Default::default() };
+    let ctrl = loa_contracts::surface::Modifiers { ctrl: true, ..Default::default() };
     assert_eq!(
         events[1].input,
         Input::MouseButton { x: 12.0, y: 8.5, button: MouseButton::Right, pressed: true, modifiers: ctrl }

@@ -14,10 +14,10 @@ use std::sync::Arc;
 
 use iced::futures::{Stream, stream};
 use iced::{Element, Subscription, Task};
-use loa_adapter::SessionConfig;
+use loa_contracts::harness::SessionConfig;
 use loa_bus::SessionId;
 use loa_core::{NodeId, PatchSink, TurnStatus, attr};
-use loa_surface::SurfaceUri;
+use loa_contracts::surface::SurfaceUri;
 use loa_surface_hub::{
     CaptureMode, HubConfig, HubEvent, Listed, LiveVideo, McpEndpoint, Opened, SurfaceHub, SurfaceTools, dom,
 };
@@ -292,7 +292,7 @@ fn capture_status(hub: &SurfaceHub, pending: bool) -> CaptureStatus {
 /// What the launcher says about live video: the encoder the renderer here
 /// gets (it decodes H.264) and the hardware encoders that work.
 fn video_status(enabled: bool, encoders: &LiveVideo) -> VideoStatus {
-    let encoder = encoders.choose(&[loa_surface::Encoding::H264]).map(|info| loa_surface_bench::live::stream_info(&info));
+    let encoder = encoders.choose(&[loa_contracts::surface::Encoding::H264]).map(|info| loa_surface_bench::live::stream_info(&info));
     let hardware = encoders
         .encoders()
         .iter()

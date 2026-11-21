@@ -6,7 +6,7 @@
 
 use iced::widget::{button, column, container, row, scrollable, space, text};
 use iced::{Element, Fill, Subscription, Task, Theme};
-use loa_adapter::Answer;
+use loa_contracts::harness::Answer;
 use loa_bus::SessionId;
 use loa_core::{ElementKind, NodeId, Op};
 use loa_models::login::UrlOpener;

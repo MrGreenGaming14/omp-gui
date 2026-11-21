@@ -3,7 +3,7 @@
 
 use crate::hub::Origin;
 use loa_core::{Draft, ElementKind, NodeId, SurfaceStatus, Value, attr};
-use loa_surface::SurfaceInfo;
+use loa_contracts::surface::SurfaceInfo;
 
 /// Inserts `<surface uri mode name width height server status="open">`
 /// under `parent` (a session, turn or call node).
@@ -31,7 +31,7 @@ pub fn closed(node: NodeId) -> Draft {
 mod tests {
     use super::*;
     use loa_core::{Dom, MemorySink, PatchSink};
-    use loa_surface::{SurfaceMode, SurfaceUri};
+    use loa_contracts::surface::{SurfaceMode, SurfaceUri};
 
     #[test]
     fn opened_and_closed_surfaces_validate_against_the_schema() {

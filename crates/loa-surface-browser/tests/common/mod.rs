@@ -3,7 +3,7 @@
 
 #![allow(dead_code)]
 
-use loa_surface::{Frame, Input, InputEvent, Modifiers, MouseButton, Surface};
+use loa_contracts::surface::{Frame, Input, InputEvent, Modifiers, MouseButton, Surface};
 use loa_surface_browser::{BrowserConfig, BrowserServer, find_chrome};
 use std::path::PathBuf;
 use std::sync::Arc;

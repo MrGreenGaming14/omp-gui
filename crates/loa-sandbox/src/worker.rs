@@ -11,7 +11,7 @@ use crate::client::StubClient;
 use crate::proto::{Command, ExecRequest, FileKind};
 use crate::{Result, SandboxError};
 use async_trait::async_trait;
-use loa_adapter::{Adapter, Answer, HostToolSpec, HostTools, Prompt, SessionConfig};
+use loa_contracts::harness::{Adapter, Answer, HostToolSpec, HostTools, Prompt, SessionConfig};
 use loa_core::{
     CommitError, DecisionKind, DecisionStatus, Dom, Draft, ElementKind, MemorySink, MessageKind, NodeId, Op, Patch, PatchSink, Role,
     answer, attr,

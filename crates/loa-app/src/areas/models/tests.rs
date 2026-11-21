@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use iced::futures::StreamExt;
 use iced_runtime::Action as RuntimeAction;
-use loa_adapter::{Adapter, AdapterError, Answer, Capabilities, HarnessSession, Prompt, Registry, SessionState};
+use loa_contracts::harness::{Adapter, AdapterError, Answer, Capabilities, HarnessSession, Prompt, Registry, SessionState};
 use loa_bus::Policy;
 use loa_core::{ElementKind, NodeId, Value, now_ms};
 use loa_identity::NodeIdentity;
@@ -53,7 +53,7 @@ impl Adapter for FakeAdapter {
         Capabilities::default()
     }
 
-    async fn start(&self, config: SessionConfig, sink: Arc<dyn PatchSink>) -> loa_adapter::Result<Box<dyn HarnessSession>> {
+    async fn start(&self, config: SessionConfig, sink: Arc<dyn PatchSink>) -> loa_contracts::harness::Result<Box<dyn HarnessSession>> {
         let mut attrs: Vec<(&str, Value)> = vec![
             ("id", config.session_id.clone().into()),
             ("node", config.node.clone().into()),
@@ -72,7 +72,7 @@ impl Adapter for FakeAdapter {
         Ok(Box::new(FakeSession { id: self.id, sink, root, models: self.models.clone(), efforts: self.efforts }))
     }
 
-    async fn resume(&self, _: SessionConfig, dom: &Dom, sink: Arc<dyn PatchSink>) -> loa_adapter::Result<Box<dyn HarnessSession>> {
+    async fn resume(&self, _: SessionConfig, dom: &Dom, sink: Arc<dyn PatchSink>) -> loa_contracts::harness::Result<Box<dyn HarnessSession>> {
         let root = dom.root().map(|root| root.id).ok_or_else(|| AdapterError::Format("empty DOM".into()))?;
         Ok(Box::new(FakeSession { id: self.id, sink, root, models: self.models.clone(), efforts: self.efforts }))
     }
@@ -88,19 +88,19 @@ struct FakeSession {
 
 #[async_trait::async_trait]
 impl HarnessSession for FakeSession {
-    async fn send(&self, _: Prompt) -> loa_adapter::Result<()> {
+    async fn send(&self, _: Prompt) -> loa_contracts::harness::Result<()> {
         Ok(())
     }
 
-    async fn interrupt(&self) -> loa_adapter::Result<()> {
+    async fn interrupt(&self) -> loa_contracts::harness::Result<()> {
         Ok(())
     }
 
-    async fn answer(&self, decision: NodeId, _: Answer) -> loa_adapter::Result<()> {
+    async fn answer(&self, decision: NodeId, _: Answer) -> loa_contracts::harness::Result<()> {
         Err(AdapterError::UnknownDecision(decision))
     }
 
-    async fn set_model(&self, selection: ModelSelection) -> loa_adapter::Result<()> {
+    async fn set_model(&self, selection: ModelSelection) -> loa_contracts::harness::Result<()> {
         if selection.role.is_some() {
             return Err(AdapterError::Unsupported { harness: self.id, what: "model roles" });
         }
@@ -111,11 +111,11 @@ impl HarnessSession for FakeSession {
         Ok(())
     }
 
-    async fn models(&self) -> loa_adapter::Result<Vec<HarnessModel>> {
+    async fn models(&self) -> loa_contracts::harness::Result<Vec<HarnessModel>> {
         Ok(self.models.clone())
     }
 
-    async fn set_effort(&self, effort: String) -> loa_adapter::Result<()> {
+    async fn set_effort(&self, effort: String) -> loa_contracts::harness::Result<()> {
         if !self.efforts {
             return Err(AdapterError::Unsupported { harness: self.id, what: "set_effort" });
         }
@@ -131,11 +131,11 @@ impl HarnessSession for FakeSession {
         SessionState::Idle
     }
 
-    async fn wait_idle(&self) -> loa_adapter::Result<()> {
+    async fn wait_idle(&self) -> loa_contracts::harness::Result<()> {
         Ok(())
     }
 
-    async fn shutdown(&self) -> loa_adapter::Result<()> {
+    async fn shutdown(&self) -> loa_contracts::harness::Result<()> {
         Ok(())
     }
 }

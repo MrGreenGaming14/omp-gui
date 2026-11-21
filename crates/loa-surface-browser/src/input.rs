@@ -5,7 +5,7 @@ use chromiumoxide::cdp::browser_protocol::input::{
     DispatchMouseEventType, InsertTextParams, MouseButton as CdpButton,
 };
 use chromiumoxide::keys::{USKEYBOARD_LAYOUT, get_key_definition};
-use loa_surface::{Input, Modifiers, MouseButton};
+use loa_contracts::surface::{Input, Modifiers, MouseButton};
 use std::time::{Duration, Instant};
 
 /// Presses closer than this in time and space count as one multi-click.

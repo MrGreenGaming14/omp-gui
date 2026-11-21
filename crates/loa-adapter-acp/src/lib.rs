@@ -30,9 +30,9 @@ pub use session::AcpSession;
 
 use loa_util::LockExt;
 use async_trait::async_trait;
-use loa_adapter::{
+use loa_contracts::harness::{
     Adapter, AdapterError, Availability, AvailabilityStatus, Capabilities, ContextDelivery, Feature, HarnessModel,
-    HarnessSession, McpTransport, ModelSwitch, PROBE_TIMEOUT, Result, SessionConfig,
+    HarnessSession, McpTransport, ModelSwitch, Result, SessionConfig,
 };
 use loa_core::{
     DecisionKind, Dom, Draft, ElementKind, MemorySink, NodeId, PatchSink, SCHEMA_VERSION, SessionMode, TodoState, Value,
@@ -351,7 +351,7 @@ impl Adapter for AcpAdapter {
             let _ = session.shutdown().await;
             initialized.map(drop)
         };
-        match tokio::time::timeout(PROBE_TIMEOUT, probe).await {
+        match tokio::time::timeout(Availability::PROBE_TIMEOUT, probe).await {
             Ok(Ok(())) => {
                 let agent = sink.with_dom(|dom| dom.root().and_then(|root| root.str_attr(X_AGENT)).map(str::to_owned));
                 Availability { detail: agent.or_else(|| Some("ACP agent".to_owned())), ..Availability::ready(None, None) }

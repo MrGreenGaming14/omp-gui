@@ -1,10 +1,4 @@
-//! The surface contract: what a surface server offers and what the renderer
-//! and peers consume.
-//!
-//! A surface is declared as a `surface://<server>/<name>` resource with a
-//! name, a size and a mode. Pixel surfaces stream [`Frame`]s and take
-//! [`InputEvent`]s in surface coordinates. Document surfaces hand over the
-//! file once and the viewer renders it locally.
+//! Surfaces: `surface://<server>/<name>` resources that stream frames and take input, or hand over a document.
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -40,27 +34,12 @@ pub type Result<T, E = SurfaceError> = std::result::Result<T, E>;
 pub struct SurfaceUri(String);
 
 impl SurfaceUri {
-    pub fn new(server: &str, name: &str) -> Result<Self> {
-        format!("{SCHEME}://{server}/{name}").parse()
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    fn parts(&self) -> (&str, &str) {
-        // Checked in `from_str`.
-        self.0[SCHEME.len() + 3..].split_once('/').unwrap_or_default()
-    }
-
-    pub fn server(&self) -> &str {
-        self.parts().0
-    }
-
+    pub fn new(server: &str, name: &str) -> Result<Self> { format!("{SCHEME}://{server}/{name}").parse() }
+    pub fn as_str(&self) -> &str { &self.0 }
+    fn parts(&self) -> (&str, &str) { self.0[SCHEME.len() + 3..].split_once('/').unwrap_or_default() }
+    pub fn server(&self) -> &str { self.parts().0 }
     /// Everything after the server, e.g. `tab1`.
-    pub fn name(&self) -> &str {
-        self.parts().1
-    }
+    pub fn name(&self) -> &str { self.parts().1 }
 }
 
 impl std::str::FromStr for SurfaceUri {
@@ -76,22 +55,18 @@ impl std::str::FromStr for SurfaceUri {
 }
 
 impl std::fmt::Display for SurfaceUri {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str(&self.0) }
 }
 
 /// What a server declares for each surface.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SurfaceInfo {
     pub uri: SurfaceUri,
-    /// Shown on the tab.
     pub name: String,
-    /// Size in surface pixels. For documents, the size of the first page.
+    /// Surface pixels; for documents, the first page.
     pub width: u32,
     pub height: u32,
     pub mode: SurfaceMode,
-    /// Document mode: MIME type of the file.
     pub mime: Option<String>,
 }
 
@@ -109,29 +84,24 @@ pub enum Encoding {
     Rgba,
     Jpeg,
     Png,
-    /// Annex B access unit.
+    /// Annex B access units.
     H264,
-    /// Annex B access unit.
     Hevc,
 }
 
 /// One update of a pixel surface.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Frame {
-    /// Counts up per surface. A frame older than the last one shown is dropped.
+    /// Counts up per surface; older frames are dropped.
     pub seq: u64,
-    /// Server clock when the frame was captured, in microseconds.
     pub captured_us: u64,
-    /// Highest [`InputEvent::seq`] whose effect is in this frame. The latency
-    /// meter pairs it with the time the input was sent.
+    /// Highest [`InputEvent::seq`] whose effect is in this frame.
     pub input_seq: u64,
-    /// Full surface size at capture.
     pub width: u32,
     pub height: u32,
-    /// Part of the surface `data` covers. Video encodings always cover it all.
+    /// Part of the surface `data` covers; video covers it all.
     pub region: Rect,
     pub encoding: Encoding,
-    /// Decodable without earlier frames.
     pub keyframe: bool,
     pub data: Bytes,
 }
@@ -158,21 +128,20 @@ pub struct Modifiers {
 pub enum Input {
     MouseMove { x: f32, y: f32 },
     MouseButton { x: f32, y: f32, button: MouseButton, pressed: bool, modifiers: Modifiers },
-    /// `dx`, `dy` in pixels. Positive `dy` scrolls the content down.
+    /// Positive `dy` scrolls the content down.
     Scroll { x: f32, y: f32, dx: f32, dy: f32, modifiers: Modifiers },
-    /// `key` is the W3C `KeyboardEvent.key` value, `code` the `KeyboardEvent.code`.
+    /// W3C `KeyboardEvent.key` and `.code`.
     Key { key: String, code: String, pressed: bool, modifiers: Modifiers },
     /// Committed text (typing, paste, IME).
     Text { text: String },
-    /// The viewer's panel changed size. A server may resize the surface.
+    /// The viewer's panel changed size.
     Resize { width: u32, height: u32 },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct InputEvent {
-    /// Counts up per viewer, from 1. Echoed back in [`Frame::input_seq`].
+    /// Counts up per viewer from 1; echoed in [`Frame::input_seq`].
     pub seq: u64,
-    /// Viewer clock when the input happened, in microseconds.
     pub sent_us: u64,
     pub input: Input,
 }
@@ -189,10 +158,8 @@ pub struct Document {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StreamInfo {
     pub encoding: Encoding,
-    /// What codes the frames, e.g. `ffmpeg h264_vaapi`, `rusty_h264`, or
-    /// `screencast` for frames passed on as the source made them.
+    /// e.g. `ffmpeg h264_vaapi`, `rusty_h264`, `screencast`.
     pub encoder: String,
-    /// Coded by a hardware encoder (VA-API, NVENC, Quick Sync, V4L2).
     pub hardware: bool,
 }
 
@@ -201,36 +168,23 @@ pub struct StreamInfo {
 pub trait Surface: Send + Sync {
     fn info(&self) -> SurfaceInfo;
 
-    /// Pixel mode: subscribes to frames. A slow receiver loses old frames
-    /// (`RecvError::Lagged`) and must wait for the next keyframe when the
-    /// encoding is a video codec. Document mode: `Mode` error.
+    /// Pixel mode: frames; a lagging receiver waits for the next keyframe.
     fn frames(&self) -> Result<broadcast::Receiver<Arc<Frame>>>;
 
-    /// Asks for a keyframe on the frame stream, e.g. after a lag.
     async fn request_keyframe(&self) -> Result<()>;
 
-    /// Pixel mode: delivers one input event.
     async fn input(&self, event: InputEvent) -> Result<()>;
 
-    /// Document mode: the file, sent once. Pixel mode: `Mode` error.
+    /// Document mode: the file, sent once.
     async fn document(&self) -> Result<Document>;
 
-    /// The current picture as PNG, for `surface_screenshot`.
+    /// The current picture as PNG.
     async fn screenshot(&self) -> Result<Bytes>;
 
-    /// Pixel mode: the viewer decodes `accepted`, best first. A surface
-    /// that can code its pictures several ways switches to the best one it
-    /// can produce and returns what it streams from now on. The default
-    /// streams what it always streams and says nothing.
-    async fn negotiate(&self, accepted: &[Encoding]) -> Result<Option<StreamInfo>> {
-        let _ = accepted;
-        Ok(None)
-    }
+    /// Switches to the best of `accepted` (best first) and returns what it streams now.
+    async fn negotiate(&self, _accepted: &[Encoding]) -> Result<Option<StreamInfo>> { Ok(None) }
 
-    /// What the frame stream carries right now, when the surface knows.
-    fn stream(&self) -> Option<StreamInfo> {
-        None
-    }
+    fn stream(&self) -> Option<StreamInfo> { None }
 }
 
 /// A source of surfaces: the browser, a document viewer, a VM.
@@ -239,7 +193,6 @@ pub trait SurfaceServer: Send + Sync {
     /// Server part of its uris, e.g. `browser`.
     fn name(&self) -> &str;
 
-    /// Surfaces that exist right now.
     async fn list(&self) -> Result<Vec<SurfaceInfo>>;
 
     async fn open(&self, uri: &SurfaceUri) -> Result<Arc<dyn Surface>>;

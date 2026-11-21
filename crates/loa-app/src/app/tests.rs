@@ -6,7 +6,7 @@ use std::time::Duration;
 use iced::futures::StreamExt;
 use iced::widget::text_editor::{Action, Edit};
 use iced_runtime::Action as RuntimeAction;
-use loa_adapter::{Adapter, Answer, Capabilities, Registry, SessionState};
+use loa_contracts::harness::{Adapter, Answer, Capabilities, Registry, SessionState};
 use loa_bus::Policy;
 use loa_core::{DecisionKind, DecisionStatus, Draft, NodeId, PatchSink, Role, Value, now_ms};
 use loa_identity::NodeIdentity;
@@ -42,7 +42,7 @@ impl Adapter for FakeAdapter {
         Capabilities::default()
     }
 
-    async fn start(&self, config: SessionConfig, sink: Arc<dyn PatchSink>) -> loa_adapter::Result<Box<dyn HarnessSession>> {
+    async fn start(&self, config: SessionConfig, sink: Arc<dyn PatchSink>) -> loa_contracts::harness::Result<Box<dyn HarnessSession>> {
         let attrs: [(&str, Value); 5] = [
             ("id", config.session_id.into()),
             ("node", config.node.into()),
@@ -54,7 +54,7 @@ impl Adapter for FakeAdapter {
         Ok(Box::new(FakeSession::new(self.id, sink, root, Arc::clone(&self.interrupts))))
     }
 
-    async fn resume(&self, _: SessionConfig, dom: &Dom, sink: Arc<dyn PatchSink>) -> loa_adapter::Result<Box<dyn HarnessSession>> {
+    async fn resume(&self, _: SessionConfig, dom: &Dom, sink: Arc<dyn PatchSink>) -> loa_contracts::harness::Result<Box<dyn HarnessSession>> {
         if !self.resumes {
             return Err(AdapterError::Unsupported { harness: self.id, what: "resume" });
         }
@@ -78,7 +78,7 @@ impl FakeSession {
         Self { id, sink, root, interrupts, waiting: Mutex::new(None) }
     }
 
-    fn end(&self, turn: NodeId) -> loa_adapter::Result<()> {
+    fn end(&self, turn: NodeId) -> loa_contracts::harness::Result<()> {
         let reply: [(&str, Value); 2] = [("role", Role::Assistant.into()), ("status", "done".into())];
         self.sink.commit(Draft::insert(turn, ElementKind::Message, reply, "ok"))?;
         self.sink.commit(Draft::set(turn, "status", TurnStatus::Done))?;
@@ -88,7 +88,7 @@ impl FakeSession {
 
 #[async_trait::async_trait]
 impl HarnessSession for FakeSession {
-    async fn send(&self, prompt: Prompt) -> loa_adapter::Result<()> {
+    async fn send(&self, prompt: Prompt) -> loa_contracts::harness::Result<()> {
         let turn = self.sink.commit(Draft::insert(self.root, ElementKind::Turn, [("status", Value::from(TurnStatus::Running))], ""))?.node;
         self.sink.commit(Draft::insert(turn, ElementKind::Message, [("role", Value::from(Role::User))], prompt.text.as_str()))?;
         if let Some(ask) = prompt.text.strip_prefix("ask") {
@@ -111,12 +111,12 @@ impl HarnessSession for FakeSession {
         self.end(turn)
     }
 
-    async fn interrupt(&self) -> loa_adapter::Result<()> {
+    async fn interrupt(&self) -> loa_contracts::harness::Result<()> {
         self.interrupts.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
 
-    async fn answer(&self, decision: NodeId, answer: Answer) -> loa_adapter::Result<()> {
+    async fn answer(&self, decision: NodeId, answer: Answer) -> loa_contracts::harness::Result<()> {
         let values = Value::List(answer.values.into_iter().map(Value::from).collect());
         self.sink.commit(Draft::set(decision, "answer", values))?;
         self.sink.commit(Draft::set(decision, "by", answer.by))?;
@@ -137,11 +137,11 @@ impl HarnessSession for FakeSession {
         SessionState::Idle
     }
 
-    async fn wait_idle(&self) -> loa_adapter::Result<()> {
+    async fn wait_idle(&self) -> loa_contracts::harness::Result<()> {
         Ok(())
     }
 
-    async fn shutdown(&self) -> loa_adapter::Result<()> {
+    async fn shutdown(&self) -> loa_contracts::harness::Result<()> {
         Ok(())
     }
 }

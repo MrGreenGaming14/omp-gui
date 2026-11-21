@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-use loa_adapter::Attachment;
+use loa_contracts::harness::Attachment;
 
 /// The text inserted for a mention of `path`. Paths with whitespace are quoted
 /// so the mention stays one word.

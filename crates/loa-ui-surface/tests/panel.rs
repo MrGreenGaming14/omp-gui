@@ -6,7 +6,7 @@ use bytes::Bytes;
 use futures::StreamExt;
 use iced::Task;
 use iced_runtime::Action;
-use loa_surface::{
+use loa_contracts::surface::{
     Document, Encoding, Frame, InputEvent, Rect, Surface, SurfaceError, SurfaceInfo, SurfaceMode, SurfaceUri,
 };
 use loa_ui_surface::panel::{Event, Message};
@@ -26,23 +26,23 @@ impl Surface for Fake {
         self.info.clone()
     }
 
-    fn frames(&self) -> loa_surface::Result<broadcast::Receiver<Arc<Frame>>> {
+    fn frames(&self) -> loa_contracts::surface::Result<broadcast::Receiver<Arc<Frame>>> {
         Ok(self.frames.subscribe())
     }
 
-    async fn request_keyframe(&self) -> loa_surface::Result<()> {
+    async fn request_keyframe(&self) -> loa_contracts::surface::Result<()> {
         Ok(())
     }
 
-    async fn input(&self, _event: InputEvent) -> loa_surface::Result<()> {
+    async fn input(&self, _event: InputEvent) -> loa_contracts::surface::Result<()> {
         Ok(())
     }
 
-    async fn document(&self) -> loa_surface::Result<Document> {
+    async fn document(&self) -> loa_contracts::surface::Result<Document> {
         self.document.clone().ok_or(SurfaceError::Closed)
     }
 
-    async fn screenshot(&self) -> loa_surface::Result<Bytes> {
+    async fn screenshot(&self) -> loa_contracts::surface::Result<Bytes> {
         Err(SurfaceError::Closed)
     }
 }

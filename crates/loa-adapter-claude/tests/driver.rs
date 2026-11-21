@@ -2,7 +2,7 @@
 //! and control protocol the real CLI speaks.
 
 use async_trait::async_trait;
-use loa_adapter::{
+use loa_contracts::harness::{
     Adapter, AdapterError, Answer, HostToolSpec, HostTools, McpServerSpec, McpTransport, ModelSelection, Prompt,
     SessionConfig, SessionState,
 };

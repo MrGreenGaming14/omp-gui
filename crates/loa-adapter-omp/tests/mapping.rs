@@ -1,4 +1,4 @@
-use loa_adapter::{Answer, Prompt};
+use loa_contracts::harness::{Answer, Prompt};
 use loa_adapter_omp::mapping::{COMMANDS, Mapping};
 use loa_core::{answer, attr, Draft, ElementKind as K, MemorySink, NodeId, PatchSink};
 use loa_omp_rpc::{AssistantEvent, Event, Frame, PromptStatus, UiRequest, UiResponse};

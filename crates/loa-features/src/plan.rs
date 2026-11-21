@@ -18,7 +18,7 @@
 use loa_util::LockExt;
 use crate::{Error, PlanPermit, ReadOnlyTools, Result};
 use async_trait::async_trait;
-use loa_adapter::{AdapterError, Answer, HarnessSession};
+use loa_contracts::harness::{AdapterError, Answer, HarnessSession};
 use loa_core::{
     DecisionKind, DecisionStatus, Dom, Draft, ElementKind, MessageKind, Node, NodeId, PatchSink, Role,
     SessionMode, TodoState, Value, answer, attr,

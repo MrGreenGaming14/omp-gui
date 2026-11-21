@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use loa_adapter::McpTransport;
+use loa_contracts::harness::McpTransport;
 
 use super::*;
 
@@ -214,7 +214,7 @@ fn add_server_reports_errors_then_emits_the_spec() {
     let event = send(&mut state, Message::AddServerSubmit);
     assert_eq!(
         event,
-        Some(Event::AddServer(loa_adapter::McpServerSpec {
+        Some(Event::AddServer(loa_contracts::harness::McpServerSpec {
             name: "docs".into(),
             transport: McpTransport::Http {
                 url: "http://localhost:3000/mcp".into(),
@@ -232,7 +232,7 @@ fn candidate(source: ImportSource, name: &str) -> ImportCandidate {
     ImportCandidate {
         source,
         path: format!("{}/mcp.json", source.label()),
-        server: loa_adapter::McpServerSpec {
+        server: loa_contracts::harness::McpServerSpec {
             name: name.into(),
             transport: McpTransport::Stdio {
                 command: name.into(),

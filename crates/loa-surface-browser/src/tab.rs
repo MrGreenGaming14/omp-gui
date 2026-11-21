@@ -14,7 +14,7 @@ use bytes::Bytes;
 use chromiumoxide::Page;
 use chromiumoxide::cdp::browser_protocol::emulation::SetDeviceMetricsOverrideParams;
 use chromiumoxide::cdp::browser_protocol::page::{CaptureScreenshotFormat, CaptureScreenshotParams};
-use loa_surface::{Document, Frame, InputEvent, Surface, SurfaceError, SurfaceInfo, SurfaceMode, SurfaceUri};
+use loa_contracts::surface::{Document, Frame, InputEvent, Surface, SurfaceError, SurfaceInfo, SurfaceMode, SurfaceUri};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -183,7 +183,7 @@ impl Surface for Tab {
         }
     }
 
-    fn frames(&self) -> loa_surface::Result<broadcast::Receiver<Arc<Frame>>> {
+    fn frames(&self) -> loa_contracts::surface::Result<broadcast::Receiver<Arc<Frame>>> {
         let receiver = self.hub.subscribe();
         // Navigation can finish after Chrome's only repaint of a static page.
         // A subscriber must still receive the current image without an input.
@@ -193,7 +193,7 @@ impl Surface for Tab {
         Ok(receiver)
     }
 
-    async fn request_keyframe(&self) -> loa_surface::Result<()> {
+    async fn request_keyframe(&self) -> loa_contracts::surface::Result<()> {
         match &self.feed {
             // Every screencast frame is a whole JPEG. A static page sends no
             // new ones, so the last is sent again.
@@ -205,15 +205,15 @@ impl Surface for Tab {
         Ok(())
     }
 
-    async fn input(&self, event: InputEvent) -> loa_surface::Result<()> {
+    async fn input(&self, event: InputEvent) -> loa_contracts::surface::Result<()> {
         Ok(self.dispatch(&event).await?)
     }
 
-    async fn document(&self) -> loa_surface::Result<Document> {
+    async fn document(&self) -> loa_contracts::surface::Result<Document> {
         Err(SurfaceError::Mode { uri: self.uri.clone(), mode: SurfaceMode::Pixel })
     }
 
-    async fn screenshot(&self) -> loa_surface::Result<Bytes> {
+    async fn screenshot(&self) -> loa_contracts::surface::Result<Bytes> {
         let params = CaptureScreenshotParams { format: Some(CaptureScreenshotFormat::Png), ..Default::default() };
         let shot = self.page.execute(params).await.map_err(BrowserError::from)?;
         let png = STANDARD.decode(shot.result.data.as_ref() as &str).map_err(|e| BrowserError::Script(e.to_string()))?;

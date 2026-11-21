@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use axum::extract::{Request, State};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use loa_adapter::{McpServerSpec, McpTransport};
+use loa_contracts::harness::{McpServerSpec, McpTransport};
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
 use tokio::task::JoinHandle;

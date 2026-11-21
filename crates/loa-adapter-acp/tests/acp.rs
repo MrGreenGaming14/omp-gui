@@ -2,7 +2,7 @@
 //! plays the agent side by hand: it reads what the client sends, checks it,
 //! and answers the way an ACP agent would.
 
-use loa_adapter::{
+use loa_contracts::harness::{
     Adapter, AdapterError, Answer, Attachment, Feature, HarnessSession, McpServerSpec, McpTransport, Prompt, Result,
     SessionConfig, SessionState,
 };
@@ -807,10 +807,10 @@ async fn offered_models_are_listed_picked_from_the_config_and_switched() {
 
     let listed: Vec<(String, String)> = session.models().await.unwrap().into_iter().map(|m| (m.id, m.name)).collect();
     assert_eq!(listed, [("other-model".to_owned(), "Other".to_owned()), ("fake-model".to_owned(), "Fake".to_owned())]);
-    assert_eq!(adapter.capabilities().model_switch, loa_adapter::ModelSwitch::PerTurn);
+    assert_eq!(adapter.capabilities().model_switch, loa_contracts::harness::ModelSwitch::PerTurn);
 
     let switch = tokio::spawn(async move {
-        let result = session.set_model(loa_adapter::ModelSelection { model: "other-model".to_owned(), role: None }).await;
+        let result = session.set_model(loa_contracts::harness::ModelSelection { model: "other-model".to_owned(), role: None }).await;
         (session, result)
     });
     let (id, params) = agent.expect_request("session/set_model").await;
@@ -819,7 +819,7 @@ async fn offered_models_are_listed_picked_from_the_config_and_switched() {
     let (session, result) = switch.await.unwrap();
     result.unwrap();
     assert_eq!(sink.dom().root().unwrap().str_attr(attr::MODEL), Some("other-model"));
-    let unknown = session.set_model(loa_adapter::ModelSelection { model: "missing".to_owned(), role: None }).await;
+    let unknown = session.set_model(loa_contracts::harness::ModelSelection { model: "missing".to_owned(), role: None }).await;
     assert!(matches!(unknown, Err(AdapterError::Protocol(_))), "{unknown:?}");
 }
 
@@ -846,9 +846,9 @@ async fn availability_runs_the_initialize_handshake() {
     let probe = tokio::spawn(async move { adapter.availability().await });
     let (id, _) = agent.expect_request("initialize").await;
     agent.respond(id, json!({ "protocolVersion": 7, "agentCapabilities": {} })).await;
-    assert_eq!(probe.await.unwrap().status, loa_adapter::AvailabilityStatus::Incompatible);
+    assert_eq!(probe.await.unwrap().status, loa_contracts::harness::AvailabilityStatus::Incompatible);
 
     let dir = tempfile::tempdir().unwrap();
     let missing = AcpAdapter::new(dir.path().join("no-such-agent"), Vec::<String>::new()).availability().await;
-    assert_eq!(missing.status, loa_adapter::AvailabilityStatus::NotInstalled);
+    assert_eq!(missing.status, loa_contracts::harness::AvailabilityStatus::NotInstalled);
 }

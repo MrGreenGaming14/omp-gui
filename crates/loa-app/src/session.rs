@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use iced::Subscription;
 use iced::futures::{SinkExt, Stream};
-use loa_adapter::HarnessSession;
+use loa_contracts::harness::HarnessSession;
 use loa_bus::{Event, Policy, SessionId, SessionWriter};
 use loa_core::{DecisionStatus, Dom, ElementKind, NodeId, Op, Patch, TurnStatus, attr};
 use loa_features::library::{Library, Live};

@@ -4,7 +4,7 @@
 use crate::scope::{Action, Request, SessionFacts, turn_of};
 use crate::token::VerifiedGrant;
 use loa_core::{Dom, ElementKind, NodeId};
-use loa_surface::SurfaceUri;
+use loa_contracts::surface::SurfaceUri;
 
 /// The parts of one session DOM a grant opens for an action.
 #[derive(Clone, Debug, PartialEq, Eq)]

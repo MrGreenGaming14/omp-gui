@@ -221,7 +221,7 @@ pub fn peer_matrix<'a>(
 
 #[cfg(test)]
 mod tests {
-    use loa_adapter::McpTransport;
+    use loa_contracts::harness::McpTransport;
 
     use super::*;
     use crate::model::{ServerKind, ServerStatus, ToolRule};

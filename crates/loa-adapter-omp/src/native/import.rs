@@ -1,7 +1,7 @@
 //! omp JSONL session file to DOM.
 
 use super::{HARNESS, X_ENTRY, X_LINE, time, to_line};
-use loa_adapter::AdapterError;
+use loa_contracts::harness::AdapterError;
 use loa_core::{
     CallStatus, Draft, ElementKind, MessageKind, MessageStatus, NodeId, PatchSink, Role, SCHEMA_VERSION, SessionMode,
     TurnStatus, Value, attr,

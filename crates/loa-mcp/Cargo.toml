@@ -12,9 +12,8 @@ base64 = "0.22"
 bytes.workspace = true
 futures.workspace = true
 http = "1"
-loa-adapter.workspace = true
+loa-contracts.workspace = true
 loa-config = { path = "../loa-config" }
-loa-surface.workspace = true
 process-wrap = { version = "10", default-features = false, features = ["tokio1", "process-group"] }
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
 rmcp = { version = "3.11", default-features = false, features = [

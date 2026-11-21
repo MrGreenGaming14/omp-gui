@@ -1,7 +1,7 @@
 //! Turning frames into pixels: still encodings here, video through a port.
 
 use crate::framebuffer::{BlitError, Framebuffer};
-use loa_surface::{Encoding, Frame};
+use loa_contracts::surface::{Encoding, Frame};
 
 #[derive(Debug, thiserror::Error)]
 pub enum DecodeError {
@@ -124,7 +124,7 @@ pub fn encoding_name(encoding: Encoding) -> &'static str {
 mod tests {
     use super::*;
     use bytes::Bytes;
-    use loa_surface::Rect;
+    use loa_contracts::surface::Rect;
 
     #[test]
     fn chrome_jpeg_with_one_scan_per_component_keeps_its_colors() {

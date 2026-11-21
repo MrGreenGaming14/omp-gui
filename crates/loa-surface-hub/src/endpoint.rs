@@ -9,14 +9,14 @@
 //! drive the user's browser.
 
 use crate::tools::{SurfaceTools, ToolContent, ToolResult, tool_definitions};
-use loa_adapter::{McpServerSpec, McpTransport};
+use loa_contracts::harness::{McpServerSpec, McpTransport};
 use rmcp::handler::server::ServerHandler;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ErrorData, JsonObject, ListResourcesResult,
     ListToolsResult, PaginatedRequestParams, ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult,
     Resource, ResourceContents, ServerCapabilities, ServerConfig, Tool,
 };
-use loa_surface::SurfaceMode;
+use loa_contracts::surface::SurfaceMode;
 use rmcp::service::RequestContext;
 use rmcp::RoleServer;
 use rmcp::transport::StreamableHttpService;
@@ -106,12 +106,12 @@ impl ServerHandler for Scoped {
     ) -> Result<ReadResourceResponse, ErrorData> {
         use base64::Engine;
         let not_found = || ErrorData::resource_not_found(request.uri.clone(), None);
-        let uri: loa_surface::SurfaceUri = request.uri.parse().map_err(|_| not_found())?;
+        let uri: loa_contracts::surface::SurfaceUri = request.uri.parse().map_err(|_| not_found())?;
         if uri.server() != self.scope {
             return Err(not_found());
         }
         let opened = self.tools.hub().open(&uri).await.map_err(|_| not_found())?;
-        let failed = |e: loa_surface::SurfaceError| ErrorData::internal_error(e.to_string(), None);
+        let failed = |e: loa_contracts::surface::SurfaceError| ErrorData::internal_error(e.to_string(), None);
         let (mime, data) = match opened.info.mode {
             SurfaceMode::Document => {
                 let document = opened.surface.document().await.map_err(failed)?;

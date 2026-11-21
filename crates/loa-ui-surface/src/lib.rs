@@ -1,4 +1,4 @@
-//! Surface renderer: the generic right panel view of any [`loa_surface::Surface`].
+//! Surface renderer: the generic right panel view of any [`loa_contracts::surface::Surface`].
 //!
 //! Pixel surfaces stream frames onto a retained framebuffer, scaled to the
 //! panel with letterboxing, and get mouse, scroll and keys back in surface

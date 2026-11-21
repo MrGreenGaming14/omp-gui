@@ -3,7 +3,7 @@
 //! [`RfbServer`] is the `vm` surface server. Each configured [`RfbEndpoint`]
 //! is the surface `surface://vm/<name>`; opening it connects an RFB 3.8
 //! client (RFC 6143) that keeps a local copy of the remote framebuffer,
-//! publishes every framebuffer update as an RGBA [`loa_surface::Frame`] and
+//! publishes every framebuffer update as an RGBA [`loa_contracts::surface::Frame`] and
 //! turns surface input into RFB pointer and key events. A dropped connection
 //! is re-established with exponential backoff.
 
@@ -23,7 +23,7 @@ pub use server::{RfbEndpoint, RfbOptions, RfbServer, SERVER_NAME};
 pub use surface::{ConnectionState, RfbSurface};
 
 use async_trait::async_trait;
-use loa_surface::SurfaceError;
+use loa_contracts::surface::SurfaceError;
 
 /// Errors of the RFB client.
 #[derive(Debug, thiserror::Error)]

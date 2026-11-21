@@ -2,7 +2,7 @@
 //!
 //! [`DocsServer`] is the `docs` surface server. It opens a file as
 //! `surface://docs/<id>`, hands the file over once through
-//! [`Surface::document`](loa_surface::Surface::document), renders PNG
+//! [`Surface::document`](loa_contracts::surface::Surface::document), renders PNG
 //! screenshots and answers the structured data queries the agent tools use
 //! ([`DataQuery`]).
 //!
@@ -46,7 +46,7 @@ pub enum DocsError {
     #[error("encoding png: {0}")]
     Png(String),
     #[error(transparent)]
-    Surface(#[from] loa_surface::SurfaceError),
+    Surface(#[from] loa_contracts::surface::SurfaceError),
 }
 
 pub type Result<T, E = DocsError> = std::result::Result<T, E>;
@@ -182,7 +182,7 @@ impl std::fmt::Display for Format {
 }
 
 /// 8 bit RGBA pixels, straight alpha, row major, no padding (the layout of
-/// [`loa_surface::Encoding::Rgba`]).
+/// [`loa_contracts::surface::Encoding::Rgba`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Rgba {
     pub width: u32,

@@ -5,7 +5,7 @@ use crate::wire::{
     CurrentModeUpdate, PermissionOption, PermissionOptionKind, Plan, PlanEntryStatus, RequestPermissionRequest,
     SessionInfoUpdate, StopReason, ToolCallFields, ToolCallStatus,
 };
-use loa_adapter::{Prompt, SessionState};
+use loa_contracts::harness::{Prompt, SessionState};
 use loa_core::{
     CallStatus, CommitError, DecisionKind, DecisionStatus, Draft, ElementKind, MessageKind, MessageStatus, NodeId,
     PatchSink, Role, SessionMode, TodoState, TurnStatus, Value, answer, attr, now_ms,

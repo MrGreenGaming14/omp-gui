@@ -2,7 +2,7 @@
 
 use crate::{BenchError, Result};
 use bytes::Bytes;
-use loa_surface::Rect;
+use loa_contracts::surface::Rect;
 
 const TILE: usize = 16;
 

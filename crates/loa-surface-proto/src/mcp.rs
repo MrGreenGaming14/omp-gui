@@ -10,7 +10,7 @@
 //!   a [`ToolRunner`]
 
 use base64::prelude::{BASE64_STANDARD, Engine as _};
-use loa_surface::{Input, Modifiers, MouseButton, Surface, SurfaceInfo, SurfaceMode, SurfaceUri};
+use loa_contracts::surface::{Input, Modifiers, MouseButton, Surface, SurfaceInfo, SurfaceMode, SurfaceUri};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -34,7 +34,7 @@ pub enum McpError {
     #[error("unknown surface mode `{0}`")]
     Mode(String),
     #[error(transparent)]
-    Uri(#[from] loa_surface::SurfaceError),
+    Uri(#[from] loa_contracts::surface::SurfaceError),
     #[error("`resources` is missing from the resources/list result")]
     List,
     #[error("bad arguments for {tool}: {source}")]
@@ -89,7 +89,7 @@ struct SurfaceMeta {
 /// through it.
 pub fn parse_resource(resource: &Value) -> Result<Option<SurfaceInfo>> {
     let r = ResourceJson::deserialize(resource).map_err(McpError::Resource)?;
-    if !r.uri.starts_with(&format!("{}://", loa_surface::SCHEME)) {
+    if !r.uri.starts_with(&format!("{}://", loa_contracts::surface::SCHEME)) {
         return Ok(None);
     }
     let uri: SurfaceUri = r.uri.parse()?;
@@ -318,10 +318,10 @@ impl ToolRunner {
         }
     }
 
-    async fn try_run(&self, call: &ToolCall, surface: &dyn Surface) -> loa_surface::Result<Value> {
+    async fn try_run(&self, call: &ToolCall, surface: &dyn Surface) -> loa_contracts::surface::Result<Value> {
         let uri = surface.info().uri;
         if call.uri() != uri.as_str() {
-            return Err(loa_surface::SurfaceError::NotFound(call.uri().parse()?));
+            return Err(loa_contracts::surface::SurfaceError::NotFound(call.uri().parse()?));
         }
         let text = match call {
             ToolCall::Screenshot(_) => {
@@ -369,9 +369,9 @@ impl ToolRunner {
         Ok(json!({ "content": [{ "type": "text", "text": text }] }))
     }
 
-    async fn input(&self, surface: &dyn Surface, input: Input) -> loa_surface::Result<()> {
+    async fn input(&self, surface: &dyn Surface, input: Input) -> loa_contracts::surface::Result<()> {
         let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
-        surface.input(loa_surface::InputEvent { seq, sent_us: now_us(), input }).await
+        surface.input(loa_contracts::surface::InputEvent { seq, sent_us: now_us(), input }).await
     }
 }
 

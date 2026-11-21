@@ -2,7 +2,7 @@
 
 use crate::{ConnectionState, RfbEndpoint, RfbOptions, RfbServer, RfbSurface, des};
 use flate2::{Compress, Compression, FlushCompress};
-use loa_surface::{
+use loa_contracts::surface::{
     Encoding, Frame, Input, InputEvent, Modifiers, MouseButton, Rect, Surface, SurfaceError,
     SurfaceServer, SurfaceUri,
 };

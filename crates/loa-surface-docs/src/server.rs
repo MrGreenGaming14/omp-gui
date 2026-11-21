@@ -9,7 +9,7 @@ use crate::xlsx::XlsxDoc;
 use crate::{DocsError, Fonts, Format, PageSize, Paged, Result, Rgba};
 use async_trait::async_trait;
 use bytes::Bytes;
-use loa_surface::{
+use loa_contracts::surface::{
     Document, Frame, InputEvent, Surface, SurfaceError, SurfaceInfo, SurfaceMode, SurfaceServer, SurfaceUri,
 };
 use serde::{Deserialize, Serialize};
@@ -256,19 +256,19 @@ impl Surface for DocSurface {
         }
     }
 
-    fn frames(&self) -> loa_surface::Result<broadcast::Receiver<Arc<Frame>>> {
+    fn frames(&self) -> loa_contracts::surface::Result<broadcast::Receiver<Arc<Frame>>> {
         Err(self.mode_error())
     }
 
-    async fn request_keyframe(&self) -> loa_surface::Result<()> {
+    async fn request_keyframe(&self) -> loa_contracts::surface::Result<()> {
         Err(self.mode_error())
     }
 
-    async fn input(&self, _event: InputEvent) -> loa_surface::Result<()> {
+    async fn input(&self, _event: InputEvent) -> loa_contracts::surface::Result<()> {
         Err(self.mode_error())
     }
 
-    async fn document(&self) -> loa_surface::Result<Document> {
+    async fn document(&self) -> loa_contracts::surface::Result<Document> {
         Ok(Document {
             name: self.0.name.clone(),
             mime: self.0.format.mime().to_owned(),
@@ -277,7 +277,7 @@ impl Surface for DocSurface {
     }
 
     /// The first page as PNG. Images are returned at their own size.
-    async fn screenshot(&self) -> loa_surface::Result<Bytes> {
+    async fn screenshot(&self) -> loa_contracts::surface::Result<Bytes> {
         let scale = if self.0.format.is_image() { 1.0 } else { SCREENSHOT_SCALE };
         Ok(self.screenshot_page(0, scale).await?)
     }
@@ -349,7 +349,7 @@ impl SurfaceServer for DocsServer {
         SERVER_NAME
     }
 
-    async fn list(&self) -> loa_surface::Result<Vec<SurfaceInfo>> {
+    async fn list(&self) -> loa_contracts::surface::Result<Vec<SurfaceInfo>> {
         let surfaces: Vec<DocSurface> =
             self.surfaces.locked().values().cloned().collect();
         let mut infos: Vec<SurfaceInfo> = surfaces.iter().map(Surface::info).collect();
@@ -357,7 +357,7 @@ impl SurfaceServer for DocsServer {
         Ok(infos)
     }
 
-    async fn open(&self, uri: &SurfaceUri) -> loa_surface::Result<Arc<dyn Surface>> {
+    async fn open(&self, uri: &SurfaceUri) -> loa_contracts::surface::Result<Arc<dyn Surface>> {
         Ok(Arc::new(self.surface(uri)?))
     }
 }

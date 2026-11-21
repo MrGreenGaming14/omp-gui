@@ -2,7 +2,7 @@
 //! the surface until either side closes.
 
 use bytes::Bytes;
-use loa_surface::{Encoding, Surface, SurfaceError, SurfaceMode, SurfaceServer};
+use loa_contracts::surface::{Encoding, Surface, SurfaceError, SurfaceMode, SurfaceServer};
 use std::sync::Arc;
 use tokio::sync::broadcast::error::RecvError;
 
@@ -39,7 +39,7 @@ pub async fn serve_from(server: &dyn SurfaceServer, transport: Transport) -> Res
     let Some(open) = session.read_open().await? else {
         return Ok(());
     };
-    let uri = match open.uri.parse::<loa_surface::SurfaceUri>() {
+    let uri = match open.uri.parse::<loa_contracts::surface::SurfaceUri>() {
         Ok(uri) => uri,
         Err(e) => return session.reject(RejectCode::NotFound, e.to_string()).await,
     };
@@ -127,7 +127,7 @@ impl Handshake {
     async fn pixel(
         mut self,
         surface: Arc<dyn Surface>,
-        mut frames: tokio::sync::broadcast::Receiver<Arc<loa_surface::Frame>>,
+        mut frames: tokio::sync::broadcast::Receiver<Arc<loa_contracts::surface::Frame>>,
         encodings: Vec<Encoding>,
         use_datagrams: bool,
         mut size: (u32, u32),
@@ -186,7 +186,7 @@ impl Handshake {
     }
 
     /// Sends one frame as datagrams. `false` when the connection is gone.
-    fn send_datagrams(&self, frame: &loa_surface::Frame) -> Result<bool> {
+    fn send_datagrams(&self, frame: &loa_contracts::surface::Frame) -> Result<bool> {
         let Some(max) = self.datagrams.max_size() else {
             return Err(ProtoError::Datagram(DatagramError::Unsupported));
         };

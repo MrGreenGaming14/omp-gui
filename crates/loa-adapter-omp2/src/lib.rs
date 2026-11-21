@@ -6,9 +6,9 @@ pub mod translate;
 pub mod wire;
 
 use async_trait::async_trait;
-use loa_adapter::{
+use loa_contracts::harness::{
     Adapter, AdapterError, Availability, AvailabilityStatus, Capabilities, Feature, HarnessSession, ModelSwitch,
-    PROBE_TIMEOUT, Result, SessionConfig,
+    Result, SessionConfig,
 };
 use loa_core::{Dom, Draft, ElementKind, MemorySink, NodeId, PatchSink, SCHEMA_VERSION, SessionMode, Value, attr, now_ms};
 use std::path::{Path, PathBuf};
@@ -101,7 +101,7 @@ impl Adapter for Omp2Adapter {
     /// it accepts the DOM subscription this adapter needs. An `omp` that
     /// isn't omp2 refuses it and is reported as incompatible.
     async fn availability(&self) -> Availability {
-        let found = loa_adapter::probe_cli(&self.executable, &["--version"]).await;
+        let found = loa_contracts::harness::Availability::probe(&self.executable, &["--version"]).await;
         let Some(executable) = found.executable.clone().filter(|_| found.is_ready()) else { return found };
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
         let config = SessionConfig { cwd, executable: Some(executable.clone()), ..SessionConfig::default() };
@@ -113,7 +113,7 @@ impl Adapter for Omp2Adapter {
             session.shutdown().await
         };
         let shown = executable.display();
-        match tokio::time::timeout(PROBE_TIMEOUT, probe).await {
+        match tokio::time::timeout(Availability::PROBE_TIMEOUT, probe).await {
             Ok(Ok(())) => found,
             Ok(Err(AdapterError::Version { detail, .. })) => Availability {
                 executable: Some(executable.clone()),

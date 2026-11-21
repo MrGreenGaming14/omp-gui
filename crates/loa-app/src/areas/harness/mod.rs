@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use iced::widget::{button, column, container, row, scrollable, space, svg, text, text_input};
 use iced::{Element, Font, Length, Task, Theme};
-use loa_adapter::{Availability, AvailabilityStatus};
+use loa_contracts::harness::{Availability, AvailabilityStatus};
 use loa_config::HarnessSettings;
 use loa_ui_icons::Icon;
 use loa_ui_palette as palette;

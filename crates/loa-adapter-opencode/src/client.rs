@@ -6,7 +6,7 @@
 
 use crate::event::{Event, SseDecoder};
 use crate::native::WithParts;
-use loa_adapter::{AdapterError, Result};
+use loa_contracts::harness::{AdapterError, Result};
 use reqwest::{Method, RequestBuilder, Response, StatusCode};
 use serde_json::{Value as Json, json};
 use std::collections::VecDeque;

@@ -2,7 +2,7 @@
 //! looks at it to decide whether an input's effect is visible.
 
 use crate::{BenchError, Result};
-use loa_surface::Rect;
+use loa_contracts::surface::Rect;
 
 /// An RGBA picture, row major, no padding.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

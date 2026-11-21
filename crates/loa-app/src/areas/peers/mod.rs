@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 use iced::futures::{SinkExt, Stream};
 use iced::{Element, Subscription, Task};
-use loa_adapter::{Answer, Prompt};
+use loa_contracts::harness::{Answer, Prompt};
 use loa_config::{NetworkSettings, Relay};
 use loa_grants::Resource;
 use loa_node::ui::{self, Outcome};

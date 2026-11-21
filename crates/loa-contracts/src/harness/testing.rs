@@ -1,5 +1,4 @@
-//! Adapter-test checks for the DOM conventions in `docs/ARCHITECTURE.md`:
-//! [`check_dom_in`] for a live or settled DOM, [`check_history`] for patches.
+//! Adapter-test checks of the DOM conventions in `docs/ARCHITECTURE.md`.
 
 use loa_core::{
     CallStatus, CommitError, DecisionStatus, Dom, Draft, ElementKind, JobStatus, MemorySink, MessageStatus, Node, NodeId,
@@ -7,13 +6,7 @@ use loa_core::{
 };
 use tokio::sync::watch;
 
-/// The rule a [`Violation`] breaks: `Root` (no `<session>` root), `MissingStatus`,
-/// `NotTerminal` (open where everything must have ended), `OpenTurn` (an open
-/// turn that isn't last), `TurnShape` (no done user message first),
-/// `CallInput`/`CallResult` (input or result disagree with the call),
-/// `Waiting` (turn and decision disagree), `DecisionAnswer`, `DanglingRef`,
-/// `Transition` (a status change the machine forbids), `CloseOrder` and
-/// `Replay` (a history that doesn't apply).
+/// The convention a [`Violation`] breaks.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 #[rustfmt::skip]
 pub enum Rule {
@@ -21,7 +14,7 @@ pub enum Rule {
     Waiting, DecisionAnswer, DanglingRef, Transition, CloseOrder, Replay,
 }
 
-/// One broken rule, with the node it was found on.
+/// One broken rule and the node it was found on.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Violation {
     pub rule: Rule,
@@ -35,17 +28,14 @@ impl Violation {
     }
 }
 
-/// When a DOM is checked.
+/// `Settled`: everything has ended. `Live`: the harness may be mid event.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Phase {
-    /// Nothing runs: every turn, message, call and decision has ended.
     Settled,
-    /// The harness may be writing; rules that break between two patches of
-    /// one event are skipped.
     Live,
 }
 
-/// Checks a settled DOM. Empty when every convention holds.
+/// Checks a settled DOM; empty when every convention holds.
 pub fn check_dom(dom: &Dom) -> Vec<Violation> {
     check_dom_in(dom, Phase::Settled)
 }
@@ -91,8 +81,7 @@ pub fn check_dom_in(dom: &Dom, phase: Phase) -> Vec<Violation> {
     out
 }
 
-/// Replays `patches` onto an empty DOM, checking every status change against
-/// the status machines. Stops at the first patch that doesn't apply.
+/// Replays `patches` onto an empty DOM, checking status transitions; stops at the first failure.
 pub fn check_history(patches: &[Patch]) -> Vec<Violation> {
     let mut out = Vec::new();
     let mut dom = Dom::new();
@@ -283,8 +272,7 @@ fn check_set(dom: &Dom, node: &Node, to: Option<&str>, seq: u64, out: &mut Vec<V
     }
 }
 
-/// A [`MemorySink`] that announces every commit's seq, so a test can wait
-/// for the DOM to reach a state.
+/// A [`MemorySink`] that announces every commit's seq.
 #[derive(Default)]
 pub struct WatchedSink {
     pub inner: MemorySink,

@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 
 use async_trait::async_trait;
-use loa_adapter::{McpServerSpec, McpTransport};
+use loa_contracts::harness::{McpServerSpec, McpTransport};
 use loa_config::{ConfigStore, McpServer, ProjectSettings};
 
 use crate::registry::{ServerStore, StoreError};

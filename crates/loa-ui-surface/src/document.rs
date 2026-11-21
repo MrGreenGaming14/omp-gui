@@ -3,7 +3,7 @@
 
 use iced::Size;
 use iced::widget::image::Handle;
-use loa_surface::Document;
+use loa_contracts::surface::Document;
 use std::ops::Range;
 
 /// Space between pages, in panel pixels.

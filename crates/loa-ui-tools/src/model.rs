@@ -1,6 +1,6 @@
 //! Plain data the app feeds into the Tools panel.
 
-use loa_adapter::{HostToolSpec, McpServerSpec, McpTransport};
+use loa_contracts::harness::{HostToolSpec, McpServerSpec, McpTransport};
 
 /// A tool as the panel lists it: a name, what it does, and optional
 /// readiness details shown as sub rows.

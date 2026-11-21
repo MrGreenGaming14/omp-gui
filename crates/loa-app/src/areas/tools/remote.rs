@@ -10,7 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use loa_adapter::Answer;
+use loa_contracts::harness::Answer;
 use loa_bus::SessionId;
 use loa_core::{DecisionKind, DecisionStatus, Draft, ElementKind, NodeId, PatchSink, Value, answer, attr, now_ms};
 use loa_remote::audit::{Action, AuditLog, AuditQuery, AuditRecord};

@@ -13,7 +13,7 @@ use std::sync::Arc;
 use iced::futures::{SinkExt, Stream};
 use iced::widget::{button, column, container, row, scrollable, space, svg, text, text_input, toggler};
 use iced::{Element, Font, Length, Subscription, Task, Theme};
-use loa_adapter::SessionConfig;
+use loa_contracts::harness::SessionConfig;
 use loa_core::PatchSink;
 use loa_features::library::Library;
 use loa_sandbox::isolation::{apply_patch, backend_name};

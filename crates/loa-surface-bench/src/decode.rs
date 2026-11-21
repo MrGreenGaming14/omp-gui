@@ -1,7 +1,7 @@
 //! Reconstructs the viewer picture from full and partial surface frames.
 
 use crate::{BenchError, Result, canvas::Canvas, video::VideoDecoder};
-use loa_surface::{Encoding, Frame, Rect};
+use loa_contracts::surface::{Encoding, Frame, Rect};
 
 /// Stateful decoder: video references persist between successive access units.
 pub struct FrameDecoder {

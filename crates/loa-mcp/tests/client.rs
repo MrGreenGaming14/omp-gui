@@ -288,7 +288,7 @@ async fn registry_import_starts_new_servers_once() {
 }
 
 async fn host_tools_route_calls_through_the_filter() {
-    use loa_adapter::{HostToolContent, HostTools};
+    use loa_contracts::harness::{OutputBlock, HostTools};
     use loa_mcp::host_tools::McpHostTools;
 
     let manager = Manager::new(options()).unwrap();
@@ -306,8 +306,8 @@ async fn host_tools_route_calls_through_the_filter() {
     assert_eq!(tools.call("s", "fake__echo", r#"{"text":"hi"}"#).await.unwrap(), "hi");
     assert_eq!(tools.call("s", "fake__vault_code", "{}").await.unwrap(), VAULT_CODE);
     let blocks = tools.call_content("s", "fake__picture", "{}").await.unwrap();
-    assert_eq!(blocks[0], HostToolContent::Text("a picture".into()));
-    assert!(matches!(&blocks[1], HostToolContent::Image { mime, data } if mime == "image/png" && data.as_ref() == PNG));
+    assert_eq!(blocks[0], OutputBlock::Text("a picture".into()));
+    assert!(matches!(&blocks[1], OutputBlock::Image { mime, data } if mime == "image/png" && data.as_ref() == PNG));
     assert!(tools.call("s", "fake__crash", "{}").await.unwrap_err().contains("unknown MCP tool"), "filtered out");
     assert!(tools.call("s", "fake__echo", "[1]").await.is_err());
     manager.shutdown().await;

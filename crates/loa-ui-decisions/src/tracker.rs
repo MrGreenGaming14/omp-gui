@@ -5,7 +5,7 @@
 
 use crate::decision::Decision;
 use crate::unattended::Unattended;
-use loa_adapter::Answer;
+use loa_contracts::harness::Answer;
 use loa_core::{DecisionKind, Dom, NodeId, attr};
 use std::collections::{BTreeMap, HashMap};
 

@@ -1,7 +1,7 @@
 //! `<decision>` nodes read out of the session DOM, and the canonical answers
 //! each kind produces.
 
-use loa_adapter::Answer;
+use loa_contracts::harness::Answer;
 use loa_core::{DecisionKind, DecisionStatus, Dom, ElementKind, Node, NodeId, answer, attr};
 
 /// One `<decision>` node as plain data: what a card shows and what the

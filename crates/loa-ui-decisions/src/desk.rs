@@ -13,7 +13,7 @@ use crate::tracker::{DesktopNotifier, Notice, NotifyError, Tracker};
 use crate::unattended::{self, Unattended};
 use crate::{Shortcut, State, Viewer, shortcut};
 use iced::{Element, Subscription, Task, Theme, event, keyboard, time, window};
-use loa_adapter::Answer;
+use loa_contracts::harness::Answer;
 use loa_core::{Dom, NodeId, attr};
 use std::collections::HashMap;
 use std::time::Duration;

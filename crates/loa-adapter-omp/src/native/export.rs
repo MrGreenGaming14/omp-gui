@@ -1,7 +1,7 @@
 //! DOM to omp JSONL session file.
 
 use super::{X_ENTRY, X_LINE, time, to_line};
-use loa_adapter::AdapterError;
+use loa_contracts::harness::AdapterError;
 use loa_core::{Dom, ElementKind, MessageKind, Node, NodeId, Role, attr};
 use serde_json::{Map, Value as Json, json};
 use std::collections::HashSet;

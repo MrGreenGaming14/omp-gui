@@ -15,7 +15,7 @@ pub mod plan;
 pub mod smol;
 
 use async_trait::async_trait;
-use loa_adapter::{Adapter, AdapterError, Feature, HarnessSession, ModelSelection, ModelSwitch, Prompt, SessionConfig, SessionState};
+use loa_contracts::harness::{Adapter, AdapterError, Feature, HarnessSession, ModelSelection, ModelSwitch, Prompt, SessionConfig, SessionState};
 use loa_core::{attr, Dom, Draft, ElementKind, NodeId, PatchSink, SessionMode, Value};
 use std::sync::Arc;
 
@@ -377,7 +377,7 @@ pub fn submit_plan(sink: &dyn PatchSink, session: NodeId, todo: NodeId, plan: &s
 /// Assigns a model to a role, switching immediately before the appropriate
 /// call. `PerTurn` can only switch while idle; `PerCall` works mid-turn.
 pub async fn select_model(
-    session: &dyn HarnessSession, capabilities: &loa_adapter::Capabilities,
+    session: &dyn HarnessSession, capabilities: &loa_contracts::harness::Capabilities,
     sink: &dyn PatchSink, root: NodeId, role: &str, model: &str,
 ) -> Result<()> {
     match capabilities.model_switch {
@@ -396,7 +396,7 @@ pub async fn select_model(
 /// picked. Model-switch errors of the harness move on to the next
 /// candidate; [`Error::ModelFixed`] and [`Error::Busy`] stop at once.
 pub async fn select_role(
-    session: &dyn HarnessSession, capabilities: &loa_adapter::Capabilities,
+    session: &dyn HarnessSession, capabilities: &loa_contracts::harness::Capabilities,
     sink: &dyn PatchSink, root: NodeId, role: &str, candidates: &[String],
 ) -> Result<String> {
     let mut last = None;

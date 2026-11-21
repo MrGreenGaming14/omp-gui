@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use loa_adapter::{McpServerSpec, McpTransport};
+use loa_contracts::harness::{McpServerSpec, McpTransport};
 
 use crate::model::{HostLimits, RemoteHost};
 

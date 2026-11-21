@@ -5,7 +5,7 @@ use crate::mapping::Mapping;
 use crate::native;
 use async_trait::async_trait;
 use base64::Engine;
-use loa_adapter::{Adapter, AdapterError, Answer, Availability, Capabilities, ContextDelivery, Feature, HarnessModel, HarnessSession, HostToolContent, HostTools, ModelSelection, Prompt, Result, SessionConfig, SessionState};
+use loa_contracts::harness::{Adapter, AdapterError, Answer, Availability, Capabilities, ContextDelivery, Feature, HarnessModel, HarnessSession, OutputBlock, HostTools, ModelSelection, Prompt, Result, SessionConfig, SessionState};
 use loa_core::{DecisionKind, Draft, ElementKind, NodeId, PatchSink, SCHEMA_VERSION, SessionMode, Value, attr, now_ms};
 use loa_omp_rpc::{Event, HostHandler, HostToolCall, HostToolDefinition, HostToolOutput, HostUriRequest, HostUriOutput, ImageContent, Incoming, MessageUpdates, ModelInfo, PromptStatus, RpcClient, RpcError, StreamingBehavior, SubagentLevel, ToolContent};
 use std::path::Path;
@@ -47,8 +47,8 @@ impl HostHandler for AppHost {
     async fn tool_call(&self, call: HostToolCall) -> HostToolOutput {
         match self.handler.call_content(&self.session_id, &call.tool_name, &call.arguments.to_string()).await {
             Ok(content) => HostToolOutput::blocks(content.into_iter().map(|block| match block {
-                HostToolContent::Text(text) => ToolContent::text(text),
-                HostToolContent::Image { mime, data } => ToolContent::Image(ImageContent { data: base64::engine::general_purpose::STANDARD.encode(&data), mime_type: mime }),
+                OutputBlock::Text(text) => ToolContent::text(text),
+                OutputBlock::Image { mime, data } => ToolContent::Image(ImageContent { data: base64::engine::general_purpose::STANDARD.encode(&data), mime_type: mime }),
             }).collect()),
             Err(error) => HostToolOutput::error(error),
         }
@@ -169,14 +169,14 @@ impl Adapter for OmpAdapter {
     fn harness(&self) -> &'static str { "omp" }
 
     async fn availability(&self) -> Availability {
-        loa_adapter::probe_cli(&self.config.executable, &["--version"]).await
+        loa_contracts::harness::Availability::probe(&self.config.executable, &["--version"]).await
     }
 
     fn capabilities(&self) -> Capabilities {
         Capabilities {
             schema_version: SCHEMA_VERSION,
             features: vec![Feature::Rewind, Feature::Compaction, Feature::Subagents, Feature::OmpTools, Feature::AdvisorRules],
-            model_switch: loa_adapter::ModelSwitch::PerCall,
+            model_switch: loa_contracts::harness::ModelSwitch::PerCall,
             decisions: vec![DecisionKind::Approval, DecisionKind::Question, DecisionKind::Plan, DecisionKind::Form],
             context_delivery: vec![ContextDelivery::SystemPrompt],
             host_tools: true,

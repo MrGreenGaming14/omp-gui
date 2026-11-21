@@ -6,7 +6,7 @@
 //! requests) comes out as an [`Output`] for the driver to act on.
 
 use crate::HARNESS;
-use loa_adapter::{AdapterError, Answer, Result, SessionConfig, SessionState};
+use loa_contracts::harness::{AdapterError, Answer, Result, SessionConfig, SessionState};
 use loa_core::{
     CallStatus, DecisionKind, DecisionStatus, Dom, Draft, ElementKind, JobKind, JobStatus, MessageKind,
     MessageStatus, NodeId, PatchSink, Role, SCHEMA_VERSION, SessionMode, TurnStatus, Value as V, answer, attr,

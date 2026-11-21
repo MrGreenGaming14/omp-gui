@@ -8,7 +8,7 @@ use loa_util::LockExt;
 use crate::frames::{FrameHub, InputLog, Picture, now_us};
 use crate::{BrowserError, Result};
 use bytes::Bytes;
-use loa_surface::{Encoding, Rect};
+use loa_contracts::surface::{Encoding, Rect};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};

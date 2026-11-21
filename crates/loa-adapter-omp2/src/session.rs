@@ -7,7 +7,7 @@ use crate::wire::{self, DomEvent, Frame, Line};
 use crate::HARNESS;
 use async_trait::async_trait;
 use base64::Engine as _;
-use loa_adapter::{AdapterError, Answer, HarnessModel, HarnessSession, ModelSelection, Prompt, Result, SessionState};
+use loa_contracts::harness::{AdapterError, Answer, HarnessModel, HarnessSession, ModelSelection, Prompt, Result, SessionState};
 use loa_core::{Attrs, DecisionKind, DecisionStatus, Draft, ElementKind, NodeId, PatchSink, TurnStatus, Value, answer, attr, now_ms};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
