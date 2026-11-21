@@ -1,10 +1,11 @@
 //! The `vm` surface server: configured RFB endpoints as surfaces.
 
+use loa_util::LockExt;
 use crate::{PasswordSource, RfbSurface};
 use async_trait::async_trait;
 use loa_surface::{Surface, SurfaceError, SurfaceInfo, SurfaceMode, SurfaceServer, SurfaceUri};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, PoisonError, Weak};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 /// Server part of the uris, `surface://vm/<name>`.
@@ -77,14 +78,13 @@ impl RfbServer {
     fn live(&self, name: &str) -> Option<Arc<RfbSurface>> {
         // The map holds plain data, a poisoned lock leaves it usable.
         self.open
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+            .locked()
             .get(name)
             .and_then(Weak::upgrade)
     }
 
     fn endpoints(&self) -> std::sync::MutexGuard<'_, Vec<RfbEndpoint>> {
-        self.endpoints.lock().unwrap_or_else(PoisonError::into_inner)
+        self.endpoints.locked()
     }
 
     /// Adds `endpoint`, replacing one with the same name, and returns its uri.
@@ -98,8 +98,7 @@ impl RfbServer {
             Some(existing) => {
                 *existing = endpoint;
                 self.open
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
+                    .locked()
                     .remove(&existing.name);
             }
             None => endpoints.push(endpoint),
@@ -114,8 +113,7 @@ impl RfbServer {
         let before = endpoints.len();
         endpoints.retain(|e| e.name != name);
         self.open
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+            .locked()
             .remove(name);
         endpoints.len() != before
     }
@@ -144,7 +142,7 @@ impl RfbServer {
             )
             .await?,
         );
-        let mut open = self.open.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut open = self.open.locked();
         // A concurrent open may have connected first; keep its connection.
         if let Some(existing) = open.get(&endpoint.name).and_then(Weak::upgrade) {
             return Ok(existing);

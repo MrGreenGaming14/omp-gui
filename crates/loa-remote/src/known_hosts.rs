@@ -6,6 +6,7 @@
 //! and the `@cert-authority` and `@revoked` markers. New keys are appended to
 //! one writable file only after the user accepted them.
 
+use loa_util::LockExt;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -170,8 +171,7 @@ impl KnownHosts {
         // mode so concurrent OpenSSH writers interleave whole lines.
         let _guard = self
             .write_lock
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+            .locked();
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| fail(e.to_string()))?;
         }

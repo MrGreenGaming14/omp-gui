@@ -1,6 +1,7 @@
 //! `terminal/*` client methods: commands the agent runs through the client,
 //! with their working directory inside the session cwd.
 
+use loa_util::LockExt;
 use crate::fs::resolve_inside;
 use crate::rpc::RpcError;
 use crate::wire::{CreateTerminalRequest, code};
@@ -9,7 +10,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::{ExitStatus, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
 use tokio::sync::{oneshot, watch};
@@ -101,14 +102,14 @@ impl Terminals {
         });
         let id = format!("term-{}", self.next.fetch_add(1, Ordering::Relaxed));
         let terminal = Terminal { output, exit: exit_rx, kill: Mutex::new(Some(kill_tx)) };
-        lock(&self.map).insert(id.clone(), Arc::new(terminal));
+        self.map.locked().insert(id.clone(), Arc::new(terminal));
         Ok(json!({ "terminalId": id }))
     }
 
     pub fn output(&self, id: &str) -> Result<Value, RpcError> {
         let terminal = self.get(id)?;
         let exit = terminal.exit.borrow().clone();
-        let output = lock(&terminal.output);
+        let output = terminal.output.locked();
         Ok(json!({
             "output": String::from_utf8_lossy(&output.bytes),
             "truncated": output.truncated,
@@ -130,26 +131,26 @@ impl Terminals {
 
     /// Kills the command and forgets the terminal.
     pub fn release(&self, id: &str) -> Result<Value, RpcError> {
-        let terminal = lock(&self.map).remove(id).ok_or_else(|| unknown(id))?;
+        let terminal = self.map.locked().remove(id).ok_or_else(|| unknown(id))?;
         terminal.kill();
         Ok(json!({}))
     }
 
     /// Kills every command. Used when the session shuts down.
     pub fn release_all(&self) {
-        for (_, terminal) in lock(&self.map).drain() {
+        for (_, terminal) in self.map.locked().drain() {
             terminal.kill();
         }
     }
 
     fn get(&self, id: &str) -> Result<Arc<Terminal>, RpcError> {
-        lock(&self.map).get(id).cloned().ok_or_else(|| unknown(id))
+        self.map.locked().get(id).cloned().ok_or_else(|| unknown(id))
     }
 }
 
 impl Terminal {
     fn kill(&self) {
-        if let Some(kill) = lock(&self.kill).take() {
+        if let Some(kill) = self.kill.locked().take() {
             let _ = kill.send(());
         }
     }
@@ -160,7 +161,7 @@ async fn pump(mut from: impl AsyncRead + Unpin, into: Arc<Mutex<Output>>) {
     loop {
         match from.read(&mut buf).await {
             Ok(0) | Err(_) => break,
-            Ok(n) => lock(&into).push(&buf[..n]),
+            Ok(n) => into.locked().push(&buf[..n]),
         }
     }
 }
@@ -191,10 +192,6 @@ fn unknown(id: &str) -> RpcError {
     RpcError::remote(code::INVALID_PARAMS, format!("unknown terminal {id}"))
 }
 
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    // Each guarded value is updated in one call, so a panic can't leave it half written.
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
-}
 
 #[cfg(test)]
 mod tests {

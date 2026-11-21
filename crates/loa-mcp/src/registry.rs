@@ -1,6 +1,7 @@
 //! Adding, editing and removing servers, persisted through a port.
 
-use std::sync::{Mutex, PoisonError};
+use loa_util::LockExt;
+use std::sync::{Mutex};
 
 use async_trait::async_trait;
 use rmcp::model::Tool;
@@ -44,7 +45,7 @@ impl MemoryStore {
     }
 
     pub fn servers(&self) -> Vec<ServerSpec> {
-        self.servers.lock().unwrap_or_else(PoisonError::into_inner).clone()
+        self.servers.locked().clone()
     }
 }
 
@@ -55,7 +56,7 @@ impl ServerStore for MemoryStore {
     }
 
     async fn save(&self, servers: &[ServerSpec]) -> Result<(), StoreError> {
-        *self.servers.lock().unwrap_or_else(PoisonError::into_inner) = servers.to_vec();
+        *self.servers.locked() = servers.to_vec();
         Ok(())
     }
 }

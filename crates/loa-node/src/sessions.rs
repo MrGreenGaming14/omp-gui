@@ -1,12 +1,13 @@
 //! The port to this node's own sessions, which peers may view and drive.
 
+use loa_util::LockExt;
 use loa_bus::{Bus, SessionWriter};
 use loa_core::{Dom, ElementKind, NodeId, attr};
 use loa_features::library::Library;
 use loa_grants::SessionFacts;
 use loa_journal::Listing;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 
 /// Characters of a prompt shown when picking it as a grant resource.
 const PREVIEW_CHARS: usize = 60;
@@ -125,7 +126,7 @@ impl LibrarySessions {
 
     /// `id` at journal sequence `seq`, read again only when the journal moved.
     fn closed(&self, id: &str, seq: u64) -> Option<LocalSession> {
-        let mut cache = self.cache.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut cache = self.cache.locked();
         if let Some(session) = cache.get(id).filter(|s| s.last_seq == seq) {
             return Some(session.clone());
         }

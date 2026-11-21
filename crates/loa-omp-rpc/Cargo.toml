@@ -25,4 +25,3 @@ loa-util.workspace = true
 # Turns on `fake-omp` for this crate's own integration tests.
 loa-omp-rpc = { path = ".", features = ["fake-omp"] }
 tempfile.workspace = true
-loa-util.workspace = true

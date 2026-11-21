@@ -6,6 +6,7 @@
 //! the app can open it right after. Loaded DOMs are cached by journal
 //! sequence, so listing a project doesn't replay unchanged journals.
 
+use loa_util::LockExt;
 use crate::rebuild::SessionWriter;
 use crate::source::{SessionInfo, SessionSource};
 use crate::{Error, Result};
@@ -14,7 +15,7 @@ use loa_bus::Bus;
 use loa_core::{Dom, Draft, Patch, PatchSink, now_ms};
 use loa_journal::{Journal, Listing, Store};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 /// Every session of this node, live or stored.
 #[derive(Clone)]
@@ -60,7 +61,7 @@ async fn blocking<T: Send + 'static>(work: impl FnOnce() -> Result<T> + Send + '
 impl Inner {
     fn cache(&self) -> MutexGuard<'_, HashMap<String, (u64, Arc<Dom>)>> {
         // Inserting or cloning an entry can't leave the map half written.
-        self.cache.lock().unwrap_or_else(PoisonError::into_inner)
+        self.cache.locked()
     }
 
     fn live(&self, session: &str) -> Option<Arc<Dom>> {

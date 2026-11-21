@@ -1,5 +1,6 @@
 //! An attached OpenCode server session and its event-stream worker.
 
+use loa_util::LockExt;
 use crate::client::{Client, EventStream, ServerAuth};
 use crate::ids;
 use crate::mapper::{ChildSessions, EventMapper, Reply, RootInfo};
@@ -174,10 +175,10 @@ struct Inner {
 
 impl Inner {
     fn mapper(&self) -> std::sync::MutexGuard<'_, EventMapper> {
-        self.mapper.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.mapper.locked()
     }
     fn closed(&self) -> bool {
-        *self.closed.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        *self.closed.locked()
     }
     fn id(&self) -> String { self.mapper().native_id().to_owned() }
 }
@@ -218,7 +219,7 @@ async fn read_events(inner: Arc<Inner>, mut events: EventStream) {
             }
         }
     }
-    *inner.closed.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = true;
+    *inner.closed.locked() = true;
     inner.notify.notify_waiters();
 }
 
@@ -231,7 +232,7 @@ pub struct OpenCodeSession {
 
 impl Drop for OpenCodeSession {
     fn drop(&mut self) {
-        if let Some(worker) = self.worker.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() { worker.abort(); }
+        if let Some(worker) = self.worker.locked().take() { worker.abort(); }
     }
 }
 
@@ -255,7 +256,7 @@ impl HarnessSession for OpenCodeSession {
             body["model"] = json!({ "providerID": provider, "modelID": model_id });
         }
         if let Some(context) = &self.inner.context { body["system"] = json!(context); }
-        let mode = *self.inner.mode.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mode = *self.inner.mode.locked();
         if mode == SessionMode::Plan { body["agent"] = json!("plan"); }
         let turn = {
             let mut mapper = self.inner.mapper();
@@ -307,7 +308,7 @@ impl HarnessSession for OpenCodeSession {
 
     async fn set_mode(&self, mode: SessionMode) -> Result<()> {
         if self.state() != SessionState::Idle { return Err(AdapterError::Busy); }
-        *self.inner.mode.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = mode;
+        *self.inner.mode.locked() = mode;
         let root = self.inner.mapper().root();
         self.inner.sink.commit_at(loa_core::Draft::set(root, attr::MODE, mode), now_ms())?;
         Ok(())
@@ -335,8 +336,8 @@ impl HarnessSession for OpenCodeSession {
     }
 
     async fn shutdown(&self) -> Result<()> {
-        *self.inner.closed.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = true;
-        if let Some(worker) = self.worker.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() { worker.abort(); }
+        *self.inner.closed.locked() = true;
+        if let Some(worker) = self.worker.locked().take() { worker.abort(); }
         self.inner.notify.notify_waiters();
         Ok(())
     }

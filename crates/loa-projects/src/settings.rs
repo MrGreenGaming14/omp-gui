@@ -1,5 +1,6 @@
 //! Project settings and the per session exclude toggle.
 
+use loa_util::LockExt;
 use crate::{Error, Result};
 use async_trait::async_trait;
 use loa_core::{Dom, Draft, attr};
@@ -51,21 +52,16 @@ impl MemorySettingsStore {
     pub fn new() -> Self {
         Self::default()
     }
-
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, ProjectSettings>> {
-        // Inserting or cloning a value can't leave the map half written.
-        self.projects.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
 }
 
 #[async_trait]
 impl SettingsStore for MemorySettingsStore {
     async fn load(&self, project: &str) -> Result<ProjectSettings> {
-        Ok(self.lock().get(project).cloned().unwrap_or_default())
+        Ok(self.projects.locked().get(project).cloned().unwrap_or_default())
     }
 
     async fn save(&self, project: &str, settings: &ProjectSettings) -> Result<()> {
-        self.lock().insert(project.to_owned(), settings.clone());
+        self.projects.locked().insert(project.to_owned(), settings.clone());
         Ok(())
     }
 }

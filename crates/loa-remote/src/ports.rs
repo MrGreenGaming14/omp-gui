@@ -2,8 +2,9 @@
 //! and [`PromptQueue`], the implementation of both that parks each question
 //! until the user answers its decision card.
 
+use loa_util::LockExt;
 use std::collections::BTreeMap;
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::Mutex;
 
 use async_trait::async_trait;
 use tokio::sync::{oneshot, watch};
@@ -182,7 +183,7 @@ impl Default for PromptQueue {
 
 impl std::fmt::Debug for PromptQueue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PromptQueue").field("pending", &self.lock().pending.len()).finish()
+        f.debug_struct("PromptQueue").field("pending", &self.queue.locked().pending.len()).finish()
     }
 }
 
@@ -194,7 +195,7 @@ struct Parked<'a> {
 
 impl Drop for Parked<'_> {
     fn drop(&mut self) {
-        if self.queue.lock().pending.remove(&self.id).is_some() {
+        if self.queue.queue.locked().pending.remove(&self.id).is_some() {
             self.queue.bump();
         }
     }
@@ -205,18 +206,13 @@ impl PromptQueue {
         Self::default()
     }
 
-    fn lock(&self) -> MutexGuard<'_, Queue> {
-        // Entries are inserted and removed whole; a poisoned map is consistent.
-        self.queue.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
     fn bump(&self) {
         self.changed.send_modify(|generation| *generation += 1);
     }
 
     fn park(&self, prompt: Prompt, reply: Reply) -> Parked<'_> {
         let id = {
-            let mut queue = self.lock();
+            let mut queue = self.queue.locked();
             queue.next += 1;
             let id = queue.next;
             queue.pending.insert(id, (prompt, reply));
@@ -227,7 +223,7 @@ impl PromptQueue {
     }
 
     fn take(&self, id: u64) -> Option<Reply> {
-        let reply = self.lock().pending.remove(&id).map(|(_, reply)| reply);
+        let reply = self.queue.locked().pending.remove(&id).map(|(_, reply)| reply);
         if reply.is_some() {
             self.bump();
         }
@@ -241,7 +237,7 @@ impl PromptQueue {
 
     /// The waiting questions, oldest first.
     pub fn pending(&self) -> Vec<PendingPrompt> {
-        self.lock()
+        self.queue.locked()
             .pending
             .iter()
             .map(|(id, (prompt, _))| PendingPrompt { id: *id, prompt: prompt.clone() })
@@ -250,7 +246,7 @@ impl PromptQueue {
 
     /// Answers a host key question. `false` when `id` isn't a waiting host key question.
     pub fn answer_host_key(&self, id: u64, accept: bool) -> bool {
-        let mut queue = self.lock();
+        let mut queue = self.queue.locked();
         if !matches!(queue.pending.get(&id), Some((_, Reply::HostKey(_)))) {
             return false;
         }
@@ -264,7 +260,7 @@ impl PromptQueue {
 
     /// Answers an approval. `false` when `id` isn't a waiting approval.
     pub fn answer_approval(&self, id: u64, approval: Approval) -> bool {
-        let mut queue = self.lock();
+        let mut queue = self.queue.locked();
         if !matches!(queue.pending.get(&id), Some((_, Reply::Approval(_)))) {
             return false;
         }
@@ -279,7 +275,8 @@ impl PromptQueue {
     /// Denies every approval a session is still waiting on (it ended).
     pub fn deny_session(&self, session_id: &str) {
         let ids: Vec<u64> = self
-            .lock()
+            .queue
+            .locked()
             .pending
             .iter()
             .filter(|(_, (prompt, _))| prompt.session_id() == Some(session_id))

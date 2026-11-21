@@ -1,5 +1,6 @@
 //! One browser tab as a pixel surface.
 
+use loa_util::LockExt;
 use crate::frames::{FrameHub, InputLog, now_us};
 use crate::input::{Command, InputMapper};
 use crate::server::Instance;
@@ -89,7 +90,7 @@ impl Tab {
     pub async fn page_info(&self) -> Result<PageInfo> {
         let info = structured::page_info(&self.page).await?;
         let label = if info.title.is_empty() { &info.url } else { &info.title };
-        label.clone_into(&mut self.label.lock().unwrap_or_else(|e| e.into_inner()));
+        label.clone_into(&mut self.label.locked());
         Ok(info)
     }
 
@@ -104,7 +105,7 @@ impl Tab {
     }
 
     fn size(&self) -> (u32, u32) {
-        *self.size.lock().unwrap_or_else(|e| e.into_inner())
+        *self.size.locked()
     }
 
     /// Dispatches one input. It is logged once Chrome has handled it, so a
@@ -120,7 +121,7 @@ impl Tab {
             Command::Text(params) => drop(self.page.execute(params).await?),
             Command::Resize { width, height } => self.resize(width, height).await?,
         }
-        self.log.lock().unwrap_or_else(|e| e.into_inner()).record(event.seq, now_us());
+        self.log.locked().record(event.seq, now_us());
         Ok(())
     }
 
@@ -138,7 +139,7 @@ impl Tab {
             screencast::stop(&self.page).await?;
         }
         set_viewport(&self.page, width, height).await?;
-        *self.size.lock().unwrap_or_else(|e| e.into_inner()) = (width, height);
+        *self.size.locked() = (width, height);
         match &self.feed {
             Feed::Screencast { quality, .. } => screencast::start(&self.page, width, height, *quality).await?,
             Feed::Display { target, .. } => target.keyframe.store(true, Ordering::Relaxed),
@@ -174,7 +175,7 @@ impl Surface for Tab {
         let (width, height) = self.size();
         SurfaceInfo {
             uri: self.uri.clone(),
-            name: self.label.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+            name: self.label.locked().clone(),
             width,
             height,
             mode: SurfaceMode::Pixel,

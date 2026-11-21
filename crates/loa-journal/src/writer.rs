@@ -1,10 +1,11 @@
 //! The journal side of a session writer: shared, cheap appends with a
 //! configurable fsync policy.
 
+use loa_util::LockExt;
 use crate::error::{Error, Result};
 use crate::journal::{Journal, Patches};
 use loa_core::{Dom, Patch};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 /// When appended patches are fsynced.
@@ -51,16 +52,10 @@ impl JournalWriter {
         Self { session_id, state: Mutex::new(State { journal: Some(journal), last_seq, policy, pending: 0, oldest_pending: None }) }
     }
 
-    fn lock(&self) -> MutexGuard<'_, State> {
-        // Journal methods update their state only after the file write
-        // succeeded, so a panic elsewhere can't leave it half changed.
-        self.state.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
     /// Journals `patch`, which the writer has already applied to `dom`, writes
     /// a snapshot of `dom` when one is due, and fsyncs as the policy says.
     pub fn append(&self, patch: &Patch, dom: &Dom) -> Result<()> {
-        let mut state = self.lock();
+        let mut state = self.state.locked();
         state.journal()?.append_applied(patch, dom)?;
         state.appended()
     }
@@ -69,7 +64,7 @@ impl JournalWriter {
     /// (a [`loa_bus::SessionWriter`]). Follow up with
     /// [`JournalWriter::snapshot_if_due`] once the patch is applied.
     pub fn append_patch(&self, patch: &Patch) -> Result<()> {
-        let mut state = self.lock();
+        let mut state = self.state.locked();
         state.journal()?.append(patch)?;
         state.appended()
     }
@@ -78,7 +73,7 @@ impl JournalWriter {
     /// when [`crate::JournalOptions::snapshot_every`] patches followed the
     /// last one.
     pub fn snapshot_if_due(&self, dom: &Dom) -> Result<()> {
-        let mut state = self.lock();
+        let mut state = self.state.locked();
         let journal = state.journal()?;
         if !journal.snapshot_due() {
             return Ok(());
@@ -92,7 +87,7 @@ impl JournalWriter {
 
     /// See [`Journal::load_at`]: the DOM right after patch `seq`.
     pub fn load_at(&self, seq: u64) -> Result<Dom> {
-        self.lock().journal()?.load_at(seq)
+        self.state.locked().journal()?.load_at(seq)
     }
 
     pub fn session_id(&self) -> &str {
@@ -101,34 +96,34 @@ impl JournalWriter {
 
     /// Fsyncs every pending patch.
     pub fn sync(&self) -> Result<()> {
-        self.lock().sync()
+        self.state.locked().sync()
     }
 
     /// Patches appended but not fsynced yet.
     pub fn pending(&self) -> u32 {
-        self.lock().pending
+        self.state.locked().pending
     }
 
     pub fn last_seq(&self) -> u64 {
-        let state = self.lock();
+        let state = self.state.locked();
         state.journal.as_ref().map_or(state.last_seq, Journal::last_seq)
     }
 
     /// See [`Journal::patches`]. The returned iterator doesn't hold the lock.
     pub fn patches(&self, from_seq: u64) -> Result<Patches> {
-        self.lock().journal()?.patches(from_seq)
+        self.state.locked().journal()?.patches(from_seq)
     }
 
     /// See [`Journal::fork`].
     pub fn fork(&self, at_seq: u64, new_session_id: &str) -> Result<Journal> {
-        self.lock().journal()?.fork(at_seq, new_session_id)
+        self.state.locked().journal()?.fork(at_seq, new_session_id)
     }
 
     /// Syncs and releases the journal and its session lock, while others may
     /// still hold this writer: later appends fail with [`Error::Closed`]. The
     /// session can then be opened again or deleted.
     pub fn close(&self) -> Result<()> {
-        let mut state = self.lock();
+        let mut state = self.state.locked();
         if state.journal.is_none() {
             return Ok(());
         }

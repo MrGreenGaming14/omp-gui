@@ -2,6 +2,7 @@
 //! the bus persisted through their journals, plus the [`SessionStore`] port
 //! that fork, rewind, compaction and subagents create sessions through.
 
+use loa_util::LockExt;
 use crate::{Error, Result, SessionStore};
 use async_trait::async_trait;
 use loa_adapter::Adapter;
@@ -10,7 +11,7 @@ use loa_core::{Dom, Draft, ElementKind, NodeId, Op, PatchSink, Value, attr};
 use loa_journal::{Journal, JournalPersist, JournalWriter, Store, SyncPolicy};
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 /// One live session: the writer every change goes through and the journal it
 /// persists to, for reads of earlier states and forks.
@@ -51,7 +52,7 @@ impl Library {
     }
 
     fn journals(&self) -> MutexGuard<'_, HashMap<String, Arc<JournalWriter>>> {
-        self.journals.lock().unwrap_or_else(PoisonError::into_inner)
+        self.journals.locked()
     }
 
     /// Creates an empty session and opens its writer.

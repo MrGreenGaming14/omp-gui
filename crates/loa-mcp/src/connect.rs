@@ -1,8 +1,9 @@
 //! Opening one client connection to a server spec.
 
+use loa_util::LockExt;
 use std::collections::{HashMap, VecDeque};
 use std::process::Stdio;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use rmcp::service::RunningService;
@@ -43,7 +44,7 @@ impl StderrTail {
             let mut reader = BufReader::new(stderr).lines();
             while let Ok(Some(line)) = reader.next_line().await {
                 tracing::debug!(server, "stderr: {line}");
-                let mut lines = sink.lock().unwrap_or_else(PoisonError::into_inner);
+                let mut lines = sink.locked();
                 if lines.len() == STDERR_LINES {
                     lines.pop_front();
                 }
@@ -59,7 +60,7 @@ impl StderrTail {
         if tokio::time::timeout(STDERR_DRAIN, self.task).await.is_err() {
             abort.abort();
         }
-        let lines = self.lines.lock().unwrap_or_else(PoisonError::into_inner);
+        let lines = self.lines.locked();
         lines.iter().rev().find(|line| !line.trim().is_empty()).cloned()
     }
 }

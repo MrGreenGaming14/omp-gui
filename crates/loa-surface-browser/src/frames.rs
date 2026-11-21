@@ -1,5 +1,6 @@
 //! Frame fan-out and the input clock that stamps `Frame::input_seq`.
 
+use loa_util::LockExt;
 use bytes::Bytes;
 use loa_surface::{Encoding, Frame, Rect};
 use std::collections::VecDeque;
@@ -60,7 +61,7 @@ impl FrameHub {
             data: picture.data,
         });
         if frame.keyframe {
-            *self.last_key.lock().unwrap_or_else(|e| e.into_inner()) = Some(frame.clone());
+            *self.last_key.locked() = Some(frame.clone());
         }
         // No receivers is fine: nobody is watching this tab right now.
         let _ = self.tx.send(frame);
@@ -69,7 +70,7 @@ impl FrameHub {
     /// Sends the last keyframe again under a new sequence number. Returns
     /// false when no keyframe was captured yet.
     pub fn republish_keyframe(&self) -> bool {
-        let last = self.last_key.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let last = self.last_key.locked().clone();
         let Some(last) = last else { return false };
         self.publish(Picture {
             captured_us: last.captured_us,

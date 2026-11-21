@@ -7,8 +7,9 @@
 //! whose harness isn't running gets them in its config when it starts or
 //! resumes.
 
+use loa_util::LockExt;
 use std::collections::HashMap;
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Mutex, MutexGuard};
 
 use iced::widget::container;
 use iced::{Element, Fill, Subscription, Task};
@@ -160,7 +161,7 @@ impl State {
     }
 
     fn pending(&self) -> MutexGuard<'_, HashMap<Option<String>, Pending>> {
-        self.pending.lock().unwrap_or_else(PoisonError::into_inner)
+        self.pending.locked()
     }
 
     fn read_providers(&self) -> Task<Message> {

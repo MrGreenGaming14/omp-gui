@@ -1,5 +1,6 @@
 //! One RFB connection as a pixel [`Surface`], with reconnect.
 
+use loa_util::LockExt;
 use crate::decode::{self, Cursor, Decoder, Framebuffer};
 use crate::input::InputState;
 use crate::proto::{
@@ -14,7 +15,7 @@ use loa_surface::{
 };
 use std::convert::Infallible;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, MutexGuard, PoisonError};
+use std::sync::{Arc, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
@@ -228,7 +229,7 @@ impl Shared {
     fn picture(&self) -> MutexGuard<'_, Picture> {
         // Every critical section leaves the picture whole (plain copies), so a
         // panic elsewhere cannot leave it inconsistent.
-        self.picture.lock().unwrap_or_else(PoisonError::into_inner)
+        self.picture.locked()
     }
 
     fn size(&self) -> (u32, u32) {

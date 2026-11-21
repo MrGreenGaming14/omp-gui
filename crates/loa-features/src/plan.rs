@@ -15,6 +15,7 @@
 //! sit inside a `<turn>`; [`is_app_plan`] tells them apart, since only the
 //! app can answer its own (with [`answer_plan`]).
 
+use loa_util::LockExt;
 use crate::{Error, PlanPermit, ReadOnlyTools, Result};
 use async_trait::async_trait;
 use loa_adapter::{AdapterError, Answer, HarnessSession};
@@ -23,7 +24,7 @@ use loa_core::{
     SessionMode, TodoState, Value, answer, attr,
 };
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 /// The plan step, put before every prompt sent while a session is in plan mode.
 pub const PLAN_STEP: &str = "[Plan mode] Tools that change files or run commands are blocked until the user \
@@ -58,7 +59,7 @@ impl PlanGate {
     }
 
     fn sessions(&self) -> MutexGuard<'_, HashMap<String, Entry>> {
-        self.sessions.lock().unwrap_or_else(PoisonError::into_inner)
+        self.sessions.locked()
     }
 
     /// Declares that `session_id`'s harness asks the app before every tool

@@ -4,6 +4,7 @@
 //! fresh token whenever the holder asks while the grant is active. Revoking
 //! marks the definition, so renewal stops and the last token runs out.
 
+use loa_util::LockExt;
 use crate::keys::{NodeKey, NodePublicKey};
 use crate::scope::Scope;
 use crate::token::{Chain, GrantId, Revocations, attenuate, mint};
@@ -11,7 +12,7 @@ use crate::{GrantError, Result};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Mutex, MutexGuard};
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS grants_issued (
@@ -159,7 +160,7 @@ impl GrantStore {
     fn db(&self) -> MutexGuard<'_, Connection> {
         // Every write is one statement, so a panic elsewhere can't leave the
         // connection mid-transaction.
-        self.db.lock().unwrap_or_else(PoisonError::into_inner)
+        self.db.locked()
     }
 
     /// Creates a grant for `holder` and mints its first token.

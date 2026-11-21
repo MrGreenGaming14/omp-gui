@@ -1,5 +1,6 @@
 //! [`SurfaceHub`]: the surfaces of this app, whoever opened them.
 
+use loa_util::LockExt;
 use crate::mcp_surface::McpSurface;
 use crate::{HubError, Result};
 use async_trait::async_trait;
@@ -13,7 +14,7 @@ use loa_surface_rfb::{PasswordSource, RfbEndpoint, RfbOptions, RfbServer};
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex};
 use tokio::sync::{OnceCell, broadcast};
 
 /// What the hub starts with.
@@ -175,7 +176,7 @@ struct Passwords(Mutex<HashMap<String, String>>);
 #[async_trait]
 impl PasswordSource for Passwords {
     async fn password(&self, endpoint: &str) -> Option<String> {
-        lock(&self.0).get(endpoint).cloned()
+        self.0.locked().get(endpoint).cloned()
     }
 }
 
@@ -270,7 +271,7 @@ impl SurfaceHub {
     /// Turns video on or off, for open surfaces too.
     pub async fn set_video(&self, enabled: bool) {
         self.video.store(enabled, Ordering::Release);
-        let videos: Vec<_> = lock(&self.videos).iter().map(|(_, video)| video.clone()).collect();
+        let videos: Vec<_> = self.videos.locked().iter().map(|(_, video)| video.clone()).collect();
         for video in videos {
             if let Err(error) = video.set_video(enabled).await {
                 tracing::warn!(%error, "switching a surface's video");
@@ -292,11 +293,11 @@ impl SurfaceHub {
         let coded = |videos: &[(SurfaceUri, Arc<VideoSurface>)]| {
             videos.iter().find(|(open, _)| open == uri).map(|(_, video)| video.clone() as Arc<dyn Surface>)
         };
-        if let Some(video) = coded(&lock(&self.videos)) {
+        if let Some(video) = coded(&self.videos.locked()) {
             return Ok(video);
         }
         let encoders = self.encoders().await;
-        let mut videos = lock(&self.videos);
+        let mut videos = self.videos.locked();
         if let Some(video) = coded(&videos) {
             return Ok(video);
         }
@@ -307,7 +308,7 @@ impl SurfaceHub {
 
     /// How new browser tabs are captured.
     pub fn capture(&self) -> CaptureMode {
-        *lock(&self.capture)
+        *self.capture.locked()
     }
 
     /// Picks how new browser tabs are captured. The virtual display needs
@@ -318,7 +319,7 @@ impl SurfaceHub {
         {
             return Err(HubError::NoVirtualDisplay(missing.clone()));
         }
-        *lock(&self.capture) = mode;
+        *self.capture.locked() = mode;
         Ok(())
     }
 
@@ -392,7 +393,7 @@ impl SurfaceHub {
             return Err(HubError::Address(address.to_owned()));
         }
         {
-            let mut passwords = lock(&self.passwords.0);
+            let mut passwords = self.passwords.0.locked();
             match password.filter(|p| !p.is_empty()) {
                 Some(password) => passwords.insert(address.to_owned(), password),
                 None => passwords.remove(address),
@@ -418,11 +419,11 @@ impl SurfaceHub {
             let surface = self.vm.open_rfb(uri).await?;
             return Ok(self.register(surface, Origin::Vm));
         }
-        let declared = lock(&self.declared)
+        let declared = self.declared.locked()
             .iter()
             .find_map(|(server, infos)| infos.iter().find(|i| &i.uri == uri).map(|i| (server.clone(), i.clone())));
         let (server, info) = declared.ok_or_else(|| HubError::NotFound(uri.clone()))?;
-        let manager = lock(&self.mcp).clone().ok_or(HubError::NoMcp)?;
+        let manager = self.mcp.locked().clone().ok_or(HubError::NoMcp)?;
         let surface = McpSurface::new(manager, server.clone(), info);
         Ok(self.register(Arc::new(surface), Origin::Mcp(server)))
     }
@@ -430,7 +431,7 @@ impl SurfaceHub {
     fn register(&self, surface: Arc<dyn Surface>, origin: Origin) -> Opened {
         let opened = Opened { info: surface.info(), origin, surface };
         {
-            let mut open = lock(&self.open);
+            let mut open = self.open.locked();
             open.retain(|o| o.info.uri != opened.info.uri);
             open.push(opened.clone());
         }
@@ -440,12 +441,12 @@ impl SurfaceHub {
 
     /// The open surface behind `uri`.
     pub fn opened(&self, uri: &SurfaceUri) -> Option<Opened> {
-        lock(&self.open).iter().find(|o| &o.info.uri == uri).cloned()
+        self.open.locked().iter().find(|o| &o.info.uri == uri).cloned()
     }
 
     /// Open surfaces in the order they were opened.
     pub fn open_surfaces(&self) -> Vec<Opened> {
-        lock(&self.open).clone()
+        self.open.locked().clone()
     }
 
     /// Closes `uri`: the browser tab closes, the document is dropped, the
@@ -453,11 +454,11 @@ impl SurfaceHub {
     /// surfaces stay listed for reopening.
     pub async fn close(&self, uri: &SurfaceUri) -> Result<()> {
         let opened = {
-            let mut open = lock(&self.open);
+            let mut open = self.open.locked();
             let index = open.iter().position(|o| &o.info.uri == uri).ok_or_else(|| HubError::NotFound(uri.clone()))?;
             open.remove(index)
         };
-        lock(&self.videos).retain(|(open, _)| open != uri);
+        self.videos.locked().retain(|(open, _)| open != uri);
         match opened.origin {
             Origin::Browser => {
                 let browser = self.browser.lock().await.clone();
@@ -490,7 +491,7 @@ impl SurfaceHub {
                 .filter(|info| !is_open(&info.uri))
                 .map(|info| Listed { info, origin: Origin::Vm, open: false }),
         );
-        for (server, infos) in lock(&self.declared).iter() {
+        for (server, infos) in self.declared.locked().iter() {
             listed.extend(infos.iter().filter(|info| !is_open(&info.uri)).map(|info| Listed {
                 info: info.clone(),
                 origin: Origin::Mcp(server.clone()),
@@ -502,13 +503,13 @@ impl SurfaceHub {
 
     /// Surfaces MCP servers declare, by server.
     pub fn declared(&self) -> BTreeMap<String, Vec<SurfaceInfo>> {
-        lock(&self.declared).clone()
+        self.declared.locked().clone()
     }
 
     /// Sets the surfaces `server` declares; an empty list forgets the server.
     pub fn set_declared(&self, server: &str, surfaces: Vec<SurfaceInfo>) {
         {
-            let mut declared = lock(&self.declared);
+            let mut declared = self.declared.locked();
             if surfaces.is_empty() {
                 declared.remove(server);
             } else {
@@ -522,7 +523,7 @@ impl SurfaceHub {
     /// `manager` and keeps `manager` to open them with. Servers that aren't
     /// running are forgotten. Returns the servers whose listing failed.
     pub async fn refresh_declared(&self, manager: &Manager) -> Vec<(String, String)> {
-        *lock(&self.mcp) = Some(manager.clone());
+        *self.mcp.locked() = Some(manager.clone());
         let mut declared = BTreeMap::new();
         let mut failed = Vec::new();
         for view in manager.view(&AllowAll) {
@@ -540,15 +541,15 @@ impl SurfaceHub {
                 Err(error) => failed.push((name, error.to_string())),
             }
         }
-        *lock(&self.declared) = declared;
+        *self.declared.locked() = declared;
         self.emit(HubEvent::Declared);
         failed
     }
 
     /// Closes every surface and stops the browser.
     pub async fn shutdown(&self) {
-        lock(&self.open).clear();
-        lock(&self.videos).clear();
+        self.open.locked().clear();
+        self.videos.locked().clear();
         let browser = self.browser.lock().await.take();
         if let Some(server) = browser
             && let Err(error) = server.shutdown().await
@@ -596,9 +597,6 @@ pub fn normalize_url(url: &str) -> String {
     }
 }
 
-pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
-}
 
 #[cfg(test)]
 mod tests {

@@ -5,10 +5,11 @@
 //! responses to waiting requests and hands the agent's requests and
 //! notifications to an [`Inbound`] handler, in the order they arrived.
 
+use loa_util::LockExt;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::sync::{mpsc, oneshot};
 
@@ -90,10 +91,10 @@ impl Rpc {
     /// Sends request `id` and returns the receiver of its response.
     pub fn start_request(&self, id: u64, method: &str, params: Value) -> Result<oneshot::Receiver<RpcResult>, RpcError> {
         let (tx, rx) = oneshot::channel();
-        lock(&self.pending).insert(id, tx);
+        self.pending.locked().insert(id, tx);
         let line = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
         if let Err(e) = self.send(&line) {
-            lock(&self.pending).remove(&id);
+            self.pending.locked().remove(&id);
             return Err(e);
         }
         Ok(rx)
@@ -124,12 +125,12 @@ impl Rpc {
 
     /// Closes the agent's input and fails every waiting request.
     pub fn close(&self) {
-        lock(&self.out).take();
-        lock(&self.pending).clear();
+        self.out.locked().take();
+        self.pending.locked().clear();
     }
 
     fn resolve(&self, id: u64, result: RpcResult) {
-        if let Some(tx) = lock(&self.pending).remove(&id) {
+        if let Some(tx) = self.pending.locked().remove(&id) {
             let _ = tx.send(result);
         }
     }
@@ -138,7 +139,7 @@ impl Rpc {
         // Serializing a `Value` can't fail: its map keys are strings.
         let mut line = serde_json::to_vec(message).map_err(|_| RpcError::Closed)?;
         line.push(b'\n');
-        let out = lock(&self.out);
+        let out = self.out.locked();
         out.as_ref().ok_or(RpcError::Closed)?.send(line).map_err(|_| RpcError::Closed)
     }
 }
@@ -207,7 +208,3 @@ fn dispatch<H: Inbound>(mut message: Value, rpc: &Rpc, handler: &Arc<H>) {
     rpc.resolve(id, result);
 }
 
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    // The guarded maps stay consistent across a panic: each update is one call.
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
-}

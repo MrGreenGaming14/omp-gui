@@ -1,5 +1,6 @@
 //! Frames from Chrome's `Page.startScreencast`.
 
+use loa_util::LockExt;
 use crate::Result;
 use crate::frames::{FrameHub, InputLog, Picture, now_us};
 use base64::Engine;
@@ -45,7 +46,7 @@ pub(crate) async fn pump(
         let captured_us = event.metadata.timestamp.as_ref().map_or_else(now_us, |t| (*t.inner() * 1e6) as u64);
         match STANDARD.decode(event.data.as_ref() as &str) {
             Ok(jpeg) => {
-                let input_seq = log.lock().unwrap_or_else(|e| e.into_inner()).seq_before(captured_us);
+                let input_seq = log.locked().seq_before(captured_us);
                 // Metadata may describe the new viewport for a frame still
                 // encoded at the old size during resize. The JPEG header is
                 // authoritative for the pixels sent to viewers.

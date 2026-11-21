@@ -1,5 +1,6 @@
 //! The host side of the stub protocol.
 
+use loa_util::LockExt;
 use crate::proto::{
     self, Command, DirEntry, ExecRequest, ExitStatus, MAGIC, Metadata, ProtoError, Request, Response,
 };
@@ -7,7 +8,7 @@ use crate::provider::Channel;
 use crate::{Result, SandboxError};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -156,7 +157,7 @@ impl StubClient {
     async fn call(&self, id: u32, request: &Request) -> Result<mpsc::UnboundedReceiver<Response>> {
         let (tx, rx) = mpsc::unbounded_channel();
         {
-            let mut routes = self.routes.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut routes = self.routes.locked();
             routes.as_mut().ok_or(SandboxError::Disconnected)?.insert(id, tx);
         }
         self.send(request).await?;
@@ -251,7 +252,7 @@ async fn route(mut reader: impl AsyncRead + Unpin, routes: Arc<Mutex<Option<Rout
     while let Ok(true) = read_frame(&mut reader, &mut buf).await {
         let Ok(response) = Response::decode(&buf) else { break };
         let Some(id) = response.id() else { continue };
-        let mut guard = routes.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut guard = routes.locked();
         let Some(routes) = guard.as_mut() else { break };
         let done = is_final(&response);
         if let Some(tx) = routes.get(&id) {
@@ -263,5 +264,5 @@ async fn route(mut reader: impl AsyncRead + Unpin, routes: Arc<Mutex<Option<Rout
         }
     }
     // Dropping every sender wakes waiting callers with `Disconnected`.
-    routes.lock().unwrap_or_else(PoisonError::into_inner).take();
+    routes.locked().take();
 }

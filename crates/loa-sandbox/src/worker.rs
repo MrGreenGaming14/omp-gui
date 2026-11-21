@@ -6,6 +6,7 @@
 //! through the `sandbox_*` host tools here, each of which is one request to
 //! the stub inside the sandbox.
 
+use loa_util::LockExt;
 use crate::client::StubClient;
 use crate::proto::{Command, ExecRequest, FileKind};
 use crate::{Result, SandboxError};
@@ -17,7 +18,7 @@ use loa_core::{
 };
 use serde::Deserialize;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 
 /// Names of the tools offered to the worker.
 pub const SANDBOX_BASH: &str = "sandbox_bash";
@@ -49,7 +50,7 @@ pub struct MemoryJournal {
 impl MemoryJournal {
     /// The sink of a session opened earlier.
     pub fn session(&self, session_id: &str) -> Option<Arc<MemorySink>> {
-        let sessions = self.sessions.lock().unwrap_or_else(PoisonError::into_inner);
+        let sessions = self.sessions.locked();
         sessions.iter().find(|(id, _)| id == session_id).map(|(_, sink)| Arc::clone(sink))
     }
 }
@@ -57,7 +58,7 @@ impl MemoryJournal {
 impl WorkerJournal for MemoryJournal {
     fn open(&self, session_id: &str) -> Result<Arc<dyn PatchSink>> {
         let sink = Arc::new(MemorySink::new());
-        let mut sessions = self.sessions.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut sessions = self.sessions.locked();
         sessions.push((session_id.to_owned(), Arc::clone(&sink)));
         Ok(sink)
     }
@@ -77,7 +78,7 @@ struct Mirror {
 impl PatchSink for Mirror {
     fn commit_at(&self, draft: Draft, ts: i64) -> Result<Patch, CommitError> {
         // Held across the commit so patches reach the mirror in sequence.
-        let mut dom = self.dom.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut dom = self.dom.locked();
         let patch = self.inner.commit_at(draft, ts)?;
         dom.apply(&patch)?;
         let touches_status = match &patch.op {
@@ -373,7 +374,7 @@ pub async fn run_worker(
     let shutdown = session.shutdown().await;
     result?;
     shutdown?;
-    let final_message = final_message(&mirror.dom.lock().unwrap_or_else(PoisonError::into_inner));
+    let final_message = final_message(&mirror.dom.locked());
     Ok(WorkerReport { session_id, final_message })
 }
 

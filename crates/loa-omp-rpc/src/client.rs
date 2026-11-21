@@ -1,6 +1,7 @@
 //! The process side: spawning `omp --mode rpc`, correlating responses,
 //! serving host callbacks and delivering everything else as [`Incoming`].
 
+use loa_util::LockExt;
 use crate::chunk::Reassembler;
 use crate::command::{
     CancellationResult, Command, CompactionResult, HostToolDefinition, HostUriScheme, ImageContent, LoginProvider,
@@ -18,7 +19,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::{ExitStatus, Stdio};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout};
@@ -172,11 +173,6 @@ struct Shared {
     stderr: Mutex<VecDeque<u8>>,
 }
 
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    // Every critical section here is a map or buffer update that can't panic
-    // halfway, so a poisoned lock still holds consistent data.
-    mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-}
 
 /// Decodes response `data` as `T`. A success response may omit `data`
 /// (`data?` in omp's RPC docs; omp 19 answers `prompt` that way), which
@@ -214,14 +210,14 @@ impl Shared {
     }
 
     fn gone(&self) -> RpcError {
-        match &lock(&self.pending).exited {
+        match &self.pending.locked().exited {
             Some(exit) => RpcError::Exited { status: exit.status, stderr: exit.stderr.clone() },
             None => RpcError::Closed,
         }
     }
 
     fn stderr_tail(&self) -> String {
-        let tail = lock(&self.stderr);
+        let tail = self.stderr.locked();
         let (a, b) = tail.as_slices();
         let mut bytes = Vec::with_capacity(a.len() + b.len());
         bytes.extend_from_slice(a);
@@ -430,7 +426,7 @@ impl RpcClient {
         let shared = &self.inner.shared;
         let (tx, rx) = oneshot::channel();
         {
-            let mut pending = lock(&shared.pending);
+            let mut pending = shared.pending.locked();
             if let Some(exit) = &pending.exited {
                 return Err(RpcError::Exited { status: exit.status, stderr: exit.stderr.clone() });
             }
@@ -438,7 +434,7 @@ impl RpcClient {
         }
         let line = serde_json::to_vec(&Outgoing { id: &id, command: &command })?;
         if let Err(err) = shared.write_line(line).await {
-            lock(&shared.pending).waiting.remove(&id);
+            shared.pending.locked().waiting.remove(&id);
             return Err(err);
         }
         let response = rx.await.map_err(|_| shared.gone())??;
@@ -587,7 +583,7 @@ impl RpcClient {
 
     /// Kills omp without waiting.
     pub fn kill(&self) {
-        if let Some(kill) = lock(&self.inner.kill).take() {
+        if let Some(kill) = self.inner.kill.locked().take() {
             let _ = kill.send(());
         }
     }
@@ -602,7 +598,7 @@ impl RpcClient {
             self.kill();
         }
         let info = exit.wait_for(Option::is_some).await.ok().and_then(|info| info.clone());
-        for (_, task) in lock(&self.inner.shared.host_tasks).drain() {
+        for (_, task) in self.inner.shared.host_tasks.locked().drain() {
             task.abort();
         }
         Ok(info.and_then(|info| info.status))
@@ -615,7 +611,7 @@ async fn collect_stderr(mut stderr: tokio::process::ChildStderr, shared: Arc<Sha
         match stderr.read(&mut buf).await {
             Ok(0) | Err(_) => break,
             Ok(n) => {
-                let mut tail = lock(&shared.stderr);
+                let mut tail = shared.stderr.locked();
                 tail.extend(&buf[..n]);
                 let excess = tail.len().saturating_sub(STDERR_TAIL);
                 tail.drain(..excess);
@@ -671,14 +667,14 @@ impl Reader {
         let info = ExitInfo { status, stderr: self.shared.stderr_tail() };
         self.shared.stdin.lock().await.take();
         let waiting = {
-            let mut pending = lock(&self.shared.pending);
+            let mut pending = self.shared.pending.locked();
             pending.exited = Some(info.clone());
             std::mem::take(&mut pending.waiting)
         };
         for (_, tx) in waiting {
             let _ = tx.send(Err(RpcError::Exited { status: info.status, stderr: info.stderr.clone() }));
         }
-        for (_, task) in lock(&self.shared.host_tasks).drain() {
+        for (_, task) in self.shared.host_tasks.locked().drain() {
             task.abort();
         }
         exit_tx.send_replace(Some(info.clone()));
@@ -740,7 +736,7 @@ impl Reader {
                 }
             }
             Frame::Response(response) => {
-                let waiter = response.id.as_ref().and_then(|id| lock(&self.shared.pending).waiting.remove(id));
+                let waiter = response.id.as_ref().and_then(|id| self.shared.pending.locked().waiting.remove(id));
                 match waiter {
                     Some(tx) => {
                         let _ = tx.send(Ok(response));
@@ -753,7 +749,7 @@ impl Reader {
             Frame::HostToolCall(call) => self.host_tool_call(call),
             Frame::HostUriRequest(request) => self.host_uri_request(request),
             Frame::HostToolCancel { target_id, .. } | Frame::HostUriCancel { target_id, .. } => {
-                if let Some(task) = lock(&self.shared.host_tasks).remove(&target_id) {
+                if let Some(task) = self.shared.host_tasks.locked().remove(&target_id) {
                     task.abort();
                 }
             }
@@ -771,7 +767,7 @@ impl Reader {
         let host = self.host.clone();
         let id = call.id.clone();
         // Held across the spawn so the task's own removal can't run before the insert.
-        let mut tasks = lock(&self.shared.host_tasks);
+        let mut tasks = self.shared.host_tasks.locked();
         let task = tokio::spawn({
             let id = id.clone();
             async move {
@@ -779,7 +775,7 @@ impl Reader {
                     Some(host) => host.tool_call(call).await,
                     None => HostToolOutput::error("this host serves no tools"),
                 };
-                lock(&shared.host_tasks).remove(&id);
+                shared.host_tasks.locked().remove(&id);
                 if let Err(err) = shared.write_json(&output.result_json(&id)).await {
                     tracing::warn!(%err, "couldn't send a host tool result");
                 }
@@ -793,7 +789,7 @@ impl Reader {
         let host = self.host.clone();
         let id = request.id.clone();
         // Held across the spawn so the task's own removal can't run before the insert.
-        let mut tasks = lock(&self.shared.host_tasks);
+        let mut tasks = self.shared.host_tasks.locked();
         let task = tokio::spawn({
             let id = id.clone();
             async move {
@@ -801,7 +797,7 @@ impl Reader {
                     Some(host) => host.uri_request(request).await,
                     None => HostUriOutput::Error("this host serves no URI schemes".to_owned()),
                 };
-                lock(&shared.host_tasks).remove(&id);
+                shared.host_tasks.locked().remove(&id);
                 if let Err(err) = shared.write_json(&output.result_json(&id)).await {
                     tracing::warn!(%err, "couldn't send a host URI result");
                 }

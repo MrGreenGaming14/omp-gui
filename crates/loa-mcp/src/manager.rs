@@ -1,7 +1,8 @@
 //! Running registered servers.
 
+use loa_util::LockExt;
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use loa_surface::SurfaceUri;
@@ -134,9 +135,6 @@ struct Shared {
     events: broadcast::Sender<Event>,
 }
 
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
-}
 
 impl Shared {
     fn set_status(&self, status: Status) {
@@ -145,11 +143,11 @@ impl Shared {
     }
 
     fn set_tools(&self, tools: Vec<Tool>) {
-        *lock(&self.tools) = tools.into();
+        *self.tools.locked() = tools.into();
     }
 
     fn peer(&self) -> Result<Peer<RoleClient>> {
-        lock(&self.peer).clone().ok_or_else(|| Error::NotRunning(self.name.clone()))
+        self.peer.locked().clone().ok_or_else(|| Error::NotRunning(self.name.clone()))
     }
 }
 
@@ -193,7 +191,7 @@ impl Manager {
     /// Registers a server and starts it when it is enabled.
     pub fn add(&self, spec: ServerSpec) -> Result<()> {
         spec.validate()?;
-        let mut servers = lock(&self.inner.servers);
+        let mut servers = self.inner.servers.locked();
         if servers.contains_key(&spec.name) {
             return Err(Error::NameTaken(spec.name));
         }
@@ -214,7 +212,7 @@ impl Manager {
 
     /// Stops a server and forgets it.
     pub async fn remove(&self, name: &str) -> Result<ServerSpec> {
-        let entry = lock(&self.inner.servers).remove(name).ok_or_else(|| Error::UnknownServer(name.to_owned()))?;
+        let entry = self.inner.servers.locked().remove(name).ok_or_else(|| Error::UnknownServer(name.to_owned()))?;
         if let Some(run) = entry.run {
             finish(run).await;
         }
@@ -226,7 +224,7 @@ impl Manager {
     /// new name. The old one is stopped first.
     pub async fn replace(&self, name: &str, spec: ServerSpec) -> Result<()> {
         spec.validate()?;
-        if spec.name != name && lock(&self.inner.servers).contains_key(&spec.name) {
+        if spec.name != name && self.inner.servers.locked().contains_key(&spec.name) {
             return Err(Error::NameTaken(spec.name));
         }
         self.remove(name).await?;
@@ -235,7 +233,7 @@ impl Manager {
 
     /// Starts a stopped server (and marks it enabled in the running set).
     pub fn start(&self, name: &str) -> Result<()> {
-        let mut servers = lock(&self.inner.servers);
+        let mut servers = self.inner.servers.locked();
         let entry = servers.get_mut(name).ok_or_else(|| Error::UnknownServer(name.to_owned()))?;
         entry.spec.enabled = true;
         if entry.run.as_ref().is_none_or(|run| run.task.is_finished()) {
@@ -247,7 +245,7 @@ impl Manager {
     /// Stops a server and waits until its child has exited.
     pub async fn stop(&self, name: &str) -> Result<()> {
         let run = {
-            let mut servers = lock(&self.inner.servers);
+            let mut servers = self.inner.servers.locked();
             let entry = servers.get_mut(name).ok_or_else(|| Error::UnknownServer(name.to_owned()))?;
             entry.spec.enabled = false;
             entry.run.take()
@@ -266,7 +264,7 @@ impl Manager {
 
     /// Stops every server and waits for their children to exit.
     pub async fn shutdown(&self) {
-        let runs: Vec<Run> = lock(&self.inner.servers).values_mut().filter_map(|entry| entry.run.take()).collect();
+        let runs: Vec<Run> = self.inner.servers.locked().values_mut().filter_map(|entry| entry.run.take()).collect();
         for run in &runs {
             run.stop.cancel();
         }
@@ -277,25 +275,25 @@ impl Manager {
 
     /// The registered specs, sorted by name.
     pub fn specs(&self) -> Vec<ServerSpec> {
-        lock(&self.inner.servers).values().map(|entry| entry.spec.clone()).collect()
+        self.inner.servers.locked().values().map(|entry| entry.spec.clone()).collect()
     }
 
     pub fn status(&self, name: &str) -> Option<Status> {
-        lock(&self.inner.servers).get(name).map(|entry| entry.shared.status.borrow().clone())
+        self.inner.servers.locked().get(name).map(|entry| entry.shared.status.borrow().clone())
     }
 
     /// Follows one server's status.
     pub fn watch(&self, name: &str) -> Option<watch::Receiver<Status>> {
-        lock(&self.inner.servers).get(name).map(|entry| entry.shared.status.subscribe())
+        self.inner.servers.locked().get(name).map(|entry| entry.shared.status.subscribe())
     }
 
     /// Every server with its status and its tools, each marked with what
     /// `filter` allows.
     pub fn view(&self, filter: &dyn ToolFilter) -> Vec<ServerView> {
-        lock(&self.inner.servers)
+        self.inner.servers.locked()
             .values()
             .map(|entry| {
-                let tools = lock(&entry.shared.tools).clone();
+                let tools = entry.shared.tools.locked().clone();
                 let tools = tools
                     .iter()
                     .map(|tool| ToolView { allowed: filter.allows(&entry.spec.name, &tool.name), tool: tool.clone() })
@@ -309,7 +307,7 @@ impl Manager {
     /// server isn't running.
     pub fn tools(&self, server: &str, filter: &dyn ToolFilter) -> Result<Vec<Tool>> {
         let shared = self.shared(server)?;
-        let tools = lock(&shared.tools).clone();
+        let tools = shared.tools.locked().clone();
         Ok(tools.iter().filter(|tool| filter.allows(server, &tool.name)).cloned().collect())
     }
 
@@ -369,7 +367,7 @@ impl Manager {
     }
 
     fn shared(&self, server: &str) -> Result<Arc<Shared>> {
-        lock(&self.inner.servers)
+        self.inner.servers.locked()
             .get(server)
             .map(|entry| entry.shared.clone())
             .ok_or_else(|| Error::UnknownServer(server.to_owned()))
@@ -397,7 +395,7 @@ impl Drop for Inner {
     /// Without [`Manager::shutdown`], supervisors still close their children,
     /// just without anyone waiting for it.
     fn drop(&mut self) {
-        for entry in lock(&self.servers).values() {
+        for entry in self.servers.locked().values() {
             if let Some(run) = &entry.run {
                 run.stop.cancel();
             }
@@ -467,7 +465,7 @@ impl Supervisor {
             }
         };
         self.shared.set_tools(tools);
-        *lock(&self.shared.peer) = Some(service.peer().clone());
+        *self.shared.peer.locked() = Some(service.peer().clone());
         self.shared.set_status(Status::Running);
 
         let cancel = service.cancellation_token();
@@ -481,7 +479,7 @@ impl Supervisor {
                 true
             }
         };
-        *lock(&self.shared.peer) = None;
+        *self.shared.peer.locked() = None;
         self.shared.set_tools(Vec::new());
         if stopped {
             return Ended::Stopped;

@@ -1,10 +1,11 @@
 //! Registry of live sessions and the firehose across them.
 
+use loa_util::LockExt;
 use crate::queue::{Firehose, Policy, Queue};
 use crate::writer::{Hub, SessionWriter, WriterConfig};
 use crate::SessionId;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum BusError {
@@ -29,7 +30,7 @@ impl Bus {
 
     fn sessions(&self) -> MutexGuard<'_, HashMap<SessionId, Arc<SessionWriter>>> {
         // Map inserts and removes are single steps; a poisoned map is intact.
-        self.sessions.lock().unwrap_or_else(PoisonError::into_inner)
+        self.sessions.locked()
     }
 
     /// Starts the writer of a session.
@@ -66,14 +67,14 @@ impl Bus {
     /// session's [`SessionWriter::seq`] and skip events at or below it.
     pub fn firehose(&self, policy: Policy) -> Firehose {
         let queue = Queue::new(policy);
-        self.hub.lock().push(Arc::clone(&queue));
+        self.hub.subs.locked().push(Arc::clone(&queue));
         Firehose::new(queue)
     }
 }
 
 impl Drop for Bus {
     fn drop(&mut self) {
-        for queue in self.hub.lock().drain(..) {
+        for queue in self.hub.subs.locked().drain(..) {
             queue.close();
         }
     }

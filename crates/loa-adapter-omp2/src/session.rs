@@ -1,6 +1,7 @@
 //! The omp2 process driver: one `omp --mode rpc` child per session, spoken
 //! to with one JSON object per line.
 
+use loa_util::LockExt;
 use crate::translate::{TranslateError, Translator};
 use crate::wire::{self, DomEvent, Frame, Line};
 use crate::HARNESS;
@@ -10,7 +11,7 @@ use loa_adapter::{AdapterError, Answer, HarnessModel, HarnessSession, ModelSelec
 use loa_core::{Attrs, DecisionKind, DecisionStatus, Draft, ElementKind, NodeId, PatchSink, TurnStatus, Value, answer, attr, now_ms};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout};
 use tokio::sync::{oneshot, watch};
@@ -46,12 +47,6 @@ struct Inner {
 }
 
 impl Inner {
-    fn lock(&self) -> MutexGuard<'_, Shared> {
-        // Every critical section leaves `Shared` consistent before it can
-        // panic (commits are atomic), so a poisoned lock is still usable.
-        self.shared.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
     fn set_state(&self, state: SessionState) {
         self.state.send_if_modified(|current| {
             let changed = *current != state && *current != SessionState::Closed;
@@ -75,9 +70,9 @@ impl Inner {
     async fn request(&self, make: impl FnOnce(&str) -> String) -> Result<Reply> {
         let id = format!("loa-{}", self.next_id.fetch_add(1, Ordering::Relaxed));
         let (tx, rx) = oneshot::channel();
-        self.lock().replies.insert(id.clone(), tx);
+        self.shared.locked().replies.insert(id.clone(), tx);
         if let Err(error) = self.write(&make(&id)).await {
-            self.lock().replies.remove(&id);
+            self.shared.locked().replies.remove(&id);
             return Err(error);
         }
         rx.await.map_err(|_| AdapterError::Closed)
@@ -110,7 +105,7 @@ impl Inner {
     }
 
     fn dom(&self, event: DomEvent, line: &str, ts: i64) -> Result<(), TranslateError> {
-        let result = self.lock().translator.apply(self.sink.as_ref(), event, ts);
+        let result = self.shared.locked().translator.apply(self.sink.as_ref(), event, ts);
         match result {
             Err(TranslateError::Commit(error)) => Err(TranslateError::Commit(error)),
             Err(error) => self.keep(line, "untranslated", &error.to_string(), ts),
@@ -120,7 +115,7 @@ impl Inner {
 
     /// Keeps a line the adapter couldn't use as `<ext>` under the session.
     fn keep(&self, line: &str, kind: &str, error: &str, ts: i64) -> Result<(), TranslateError> {
-        let root = self.lock().translator.root();
+        let root = self.shared.locked().translator.root();
         let attrs = [(attr::HARNESS, Value::from(HARNESS)), (attr::TYPE, Value::from(kind)), ("x-error", Value::from(error))];
         self.sink.commit_at(Draft::insert(root, ElementKind::Ext, attrs, line), ts)?;
         Ok(())
@@ -130,7 +125,7 @@ impl Inner {
         let sink = self.sink.as_ref();
         match frame {
             Frame::Response { id, success, data, error, code } => {
-                if let Some(tx) = self.lock().replies.remove(&id) {
+                if let Some(tx) = self.shared.locked().replies.remove(&id) {
                     // The requester may have given up; nothing else wants it.
                     let _ = tx.send(Reply { success, data, error, code });
                 }
@@ -141,7 +136,7 @@ impl Inner {
                     (false, true) => TurnStatus::Cancelled,
                     (false, false) => TurnStatus::Done,
                 };
-                let mut shared = self.lock();
+                let mut shared = self.shared.locked();
                 for (decision, _) in shared.decisions.drain() {
                     sink.commit_at(Draft::set(decision, attr::STATUS, DecisionStatus::Cancelled), ts)?;
                     sink.commit_at(Draft::set(decision, attr::ENDED, ts), ts)?;
@@ -155,7 +150,7 @@ impl Inner {
                 self.set_state(SessionState::Idle);
             }
             Frame::Approval { prompt_id, call_id, title, body, timeout_ms } => {
-                let mut shared = self.lock();
+                let mut shared = self.shared.locked();
                 let call = call_id.as_deref().and_then(|c| shared.translator.call(c));
                 let turn = shared.translator.current_turn();
                 let parent = call.or(turn).unwrap_or(shared.translator.root());
@@ -185,7 +180,7 @@ impl Inner {
                 self.set_state(SessionState::Waiting);
             }
             Frame::Select { id, title, options, multi } => {
-                let mut shared = self.lock();
+                let mut shared = self.shared.locked();
                 let turn = shared.translator.current_turn();
                 let parent = turn.unwrap_or(shared.translator.root());
                 let attrs = Attrs::from([
@@ -278,7 +273,7 @@ async fn read(inner: Arc<Inner>, stdout: ChildStdout) {
         }
     }
     inner.state.send_replace(SessionState::Closed);
-    let mut shared = inner.lock();
+    let mut shared = inner.shared.locked();
     shared.replies.clear();
 }
 
@@ -312,13 +307,13 @@ impl HarnessSession for Omp2Session {
             images.push((base64::engine::general_purpose::STANDARD.encode(bytes), mime.to_owned()));
         }
         let ts = now_ms();
-        self.inner.lock().translator.begin_turn(self.inner.sink.as_ref(), &prompt.text, &prompt.by, ts).map_err(translate_error)?;
+        self.inner.shared.locked().translator.begin_turn(self.inner.sink.as_ref(), &prompt.text, &prompt.by, ts).map_err(translate_error)?;
         self.inner.set_state(SessionState::Running);
         let sent = self.inner.call(|id| wire::prompt(id, &prompt.text, images)).await;
         if let Err(error) = sent {
             let ts = now_ms();
             let sink = self.inner.sink.clone();
-            self.inner.lock().translator.finish_turn(sink.as_ref(), TurnStatus::Error, ts).map_err(translate_error)?;
+            self.inner.shared.locked().translator.finish_turn(sink.as_ref(), TurnStatus::Error, ts).map_err(translate_error)?;
             self.inner.set_state(SessionState::Idle);
             return Err(error);
         }
@@ -334,7 +329,7 @@ impl HarnessSession for Omp2Session {
     }
 
     async fn answer(&self, decision: NodeId, answer: Answer) -> Result<()> {
-        let pending = self.inner.lock().decisions.remove(&decision).ok_or(AdapterError::UnknownDecision(decision))?;
+        let pending = self.inner.shared.locked().decisions.remove(&decision).ok_or(AdapterError::UnknownDecision(decision))?;
         let sent = match &pending {
             Pending::Approval { prompt_id } => {
                 let (approved, scope) = match answer.values.first().map(String::as_str) {
@@ -356,12 +351,12 @@ impl HarnessSession for Omp2Session {
             }
         };
         if let Err(error) = sent {
-            self.inner.lock().decisions.insert(decision, pending);
+            self.inner.shared.locked().decisions.insert(decision, pending);
             return Err(error);
         }
         let ts = now_ms();
         let values: Vec<Value> = answer.values.into_iter().map(Value::Str).collect();
-        let shared = self.inner.lock();
+        let shared = self.inner.shared.locked();
         let sink = self.inner.sink.as_ref();
         sink.commit_at(Draft::set(decision, attr::ANSWER, values), ts)?;
         sink.commit_at(Draft::set(decision, attr::BY, answer.by), ts)?;
@@ -389,7 +384,7 @@ impl HarnessSession for Omp2Session {
             return Err(AdapterError::Protocol(format!("omp2 models are `provider/model`, got `{}`", selection.model)));
         };
         self.inner.call(|id| wire::set_model(id, provider, model)).await?;
-        let root = self.inner.lock().translator.root();
+        let root = self.inner.shared.locked().translator.root();
         self.inner.commit(Draft::set(root, attr::MODEL, selection.model))?;
         Ok(())
     }
@@ -412,7 +407,7 @@ impl HarnessSession for Omp2Session {
     /// `set_thinking_level`, recorded as the session's effort.
     async fn set_effort(&self, effort: String) -> Result<()> {
         self.inner.call(|id| wire::set_thinking(id, &effort)).await?;
-        let root = self.inner.lock().translator.root();
+        let root = self.inner.shared.locked().translator.root();
         self.inner.commit(Draft::set(root, attr::EFFORT, effort))?;
         Ok(())
     }
@@ -441,7 +436,7 @@ impl HarnessSession for Omp2Session {
         let _ = self.inner.write(&wire::bare("loa-quit", "quit")).await;
         self.inner.stdin.lock().await.take();
         self.child.lock().await.wait().await?;
-        let reader = self.reader.lock().unwrap_or_else(PoisonError::into_inner).take();
+        let reader = self.reader.locked().take();
         if let Some(reader) = reader {
             // The reader ends at EOF, which the exit above guarantees.
             let _ = reader.await;

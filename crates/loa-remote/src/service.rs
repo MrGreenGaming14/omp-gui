@@ -3,6 +3,7 @@
 //! Every call runs: host lookup, limits (#100), approval, the SSH work, and
 //! an audit row (#101) whatever the outcome.
 
+use loa_util::LockExt;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -255,8 +256,7 @@ impl RemoteService {
     fn grants(&self) -> std::sync::MutexGuard<'_, HashSet<(String, String, Class)>> {
         // Holds plain keys; a poisoned set is still consistent.
         self.session_grants
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .locked()
     }
 
     fn record(

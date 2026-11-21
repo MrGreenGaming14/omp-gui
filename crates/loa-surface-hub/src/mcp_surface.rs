@@ -8,6 +8,7 @@
 //! Mouse moves, drags and keys other than Enter have no tool and are not
 //! sent. Document surfaces are read once with `resources/read`.
 
+use loa_util::LockExt;
 use crate::tools::{ToolResult, png_size};
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -60,7 +61,7 @@ impl Shared {
     }
 
     fn uri(&self) -> String {
-        self.info.lock().unwrap_or_else(std::sync::PoisonError::into_inner).uri.as_str().to_owned()
+        self.info.locked().uri.as_str().to_owned()
     }
 
     async fn screenshot(&self) -> loa_surface::Result<Bytes> {
@@ -78,7 +79,7 @@ impl Shared {
         let (width, height) =
             png_size(&png).ok_or_else(|| SurfaceError::Backend(format!("{} isn't a PNG", proto::SCREENSHOT)))?;
         {
-            let mut info = self.info.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut info = self.info.locked();
             info.width = width;
             info.height = height;
         }
@@ -115,11 +116,11 @@ impl Shared {
         };
         match &event.input {
             Input::MouseButton { button, pressed: true, .. } => {
-                *self.press.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(*button);
+                *self.press.locked() = Some(*button);
                 return Ok(());
             }
             Input::MouseButton { x, y, button, pressed: false, modifiers } => {
-                let pressed = self.press.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+                let pressed = self.press.locked().take();
                 if pressed != Some(*button) {
                     return Ok(());
                 }
@@ -204,7 +205,7 @@ fn now_us() -> u64 {
 #[async_trait]
 impl Surface for McpSurface {
     fn info(&self) -> SurfaceInfo {
-        self.shared.info.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+        self.shared.info.locked().clone()
     }
 
     fn frames(&self) -> loa_surface::Result<broadcast::Receiver<Arc<Frame>>> {

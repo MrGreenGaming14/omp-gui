@@ -1,6 +1,7 @@
 //! `omp/session/1` for the node: peers list, view, drive and prompt the
 //! sessions their grants reach; this node stays their single writer.
 
+use loa_util::LockExt;
 use crate::access::Refuse;
 use crate::{Inner, Node, NodeError, NodeEvent, RemoteSession, Result, bus_key, grant_key, now_ms};
 use async_trait::async_trait;
@@ -18,15 +19,12 @@ use loa_share::{
 };
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, PoisonError, Weak};
+use std::sync::{Arc, Mutex, Weak};
 use tokio::sync::oneshot;
 
 /// Events a subscriber may hold before it is cut off and must resubscribe.
 const SUBSCRIBER_QUEUE: usize = 4096;
 
-fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
-}
 
 pub(crate) async fn send(send: &mut SendHalf, body: Body) -> Result<()> {
     Ok(send_message(send, &Frame::from(body)).await?)
@@ -340,7 +338,7 @@ struct Recorder(Arc<Mutex<Vec<Patch>>>);
 
 impl Persist for Recorder {
     fn append(&mut self, patch: &Patch) -> Result<(), PersistError> {
-        lock(&self.0).push(patch.clone());
+        self.0.locked().push(patch.clone());
         Ok(())
     }
 }
@@ -438,7 +436,7 @@ async fn pump(mut rx: RecvHalf, mut mirror: Mirror, source: Arc<AtomicU64>, pend
                 source.store(mirror.source_seq(), Ordering::Release);
             }
             Ok(Some(answer @ (Body::DriveResult(_) | Body::Ack(_)))) => {
-                let waiter = lock(&pending).pop_front();
+                let waiter = pending.locked().pop_front();
                 match (waiter, answer) {
                     (Some(waiter), answer) => {
                         let _ = waiter.send(answer);
@@ -452,8 +450,8 @@ async fn pump(mut rx: RecvHalf, mut mirror: Mirror, source: Arc<AtomicU64>, pend
             Err(error) => break error.to_string(),
         }
     };
-    *lock(&ended) = Some(reason);
-    lock(&pending).clear();
+    *ended.locked() = Some(reason);
+    pending.locked().clear();
     mirror.writer().close();
 }
 
@@ -487,12 +485,12 @@ impl RemoteView {
 
     /// Why the view stopped following the owner, once it has.
     pub fn ended(&self) -> Option<String> {
-        lock(&self.ended).clone()
+        self.ended.locked().clone()
     }
 
     /// The mirror's patches from 1, for forking.
     pub(crate) fn patches(&self) -> Vec<Patch> {
-        lock(&self.patches).clone()
+        self.patches.locked().clone()
     }
 
     async fn call(&self, body: Body) -> Result<Body> {
@@ -502,7 +500,7 @@ impl RemoteView {
             if let Some(reason) = self.ended() {
                 return Err(NodeError::Refused(reason));
             }
-            lock(&self.pending).push_back(tx);
+            self.pending.locked().push_back(tx);
             send(&mut send_half, body).await?;
         }
         rx.await.map_err(|_| NodeError::Refused(self.ended().unwrap_or_else(|| "the view closed".into())))

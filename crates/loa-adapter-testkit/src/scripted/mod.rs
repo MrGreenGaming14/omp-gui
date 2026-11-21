@@ -10,6 +10,7 @@
 pub mod native;
 mod writer;
 
+use loa_util::LockExt;
 use async_trait::async_trait;
 use loa_adapter::{
     Adapter, AdapterError, Answer, Capabilities, HarnessSession, Prompt, Result, SessionConfig, SessionState,
@@ -19,7 +20,7 @@ use loa_core::{
 };
 use std::collections::VecDeque;
 use std::path::Path;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex};
 use tokio::sync::{oneshot, watch};
 use writer::{AskSpec, SessionHeader, Writer};
 
@@ -189,11 +190,6 @@ struct Shared {
     failure: Mutex<Option<String>>,
 }
 
-/// Recovers a poisoned lock: every critical section here leaves the guarded
-/// value consistent before anything that can panic.
-fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(PoisonError::into_inner)
-}
 
 /// A live scripted session.
 pub struct ScriptedSession {
@@ -206,20 +202,20 @@ impl HarnessSession for ScriptedSession {
         let shared = &self.shared;
         // Holding the control lock makes the idle check and the turn start one
         // step, so two concurrent sends can't both start a turn.
-        let mut control = lock(&shared.control);
+        let mut control = shared.control.locked();
         let state = *shared.state.borrow();
         match state {
             SessionState::Idle => {}
             SessionState::Closed => return Err(AdapterError::Closed),
             SessionState::Running | SessionState::Waiting => return Err(AdapterError::Busy),
         }
-        let Some(script) = lock(&shared.scripts).pop_front() else {
+        let Some(script) = shared.scripts.locked().pop_front() else {
             return Err(AdapterError::Protocol("the script has no turn left".to_owned()));
         };
         let turn = Writer::new(&*shared.sink).turn(shared.session, None, &prompt.text, Some(&prompt.by), now_ms())?;
         let (cancel, cancelled) = watch::channel(false);
         control.cancel = Some(cancel);
-        *lock(&shared.failure) = None;
+        *shared.failure.locked() = None;
         shared.state.send_replace(SessionState::Running);
         drop(control);
         tokio::spawn(play(Arc::clone(shared), turn, script, cancelled));
@@ -227,7 +223,7 @@ impl HarnessSession for ScriptedSession {
     }
 
     async fn interrupt(&self) -> Result<()> {
-        if let Some(cancel) = &lock(&self.shared.control).cancel {
+        if let Some(cancel) = &self.shared.control.locked().cancel {
             cancel.send_replace(true);
         }
         self.wait_idle().await
@@ -235,7 +231,7 @@ impl HarnessSession for ScriptedSession {
 
     async fn answer(&self, decision: NodeId, answer: Answer) -> Result<()> {
         let shared = &self.shared;
-        let mut control = lock(&shared.control);
+        let mut control = shared.control.locked();
         let Some(pending) = control.pending.take_if(|p| p.decision == decision) else {
             return Err(AdapterError::UnknownDecision(decision));
         };
@@ -266,7 +262,7 @@ impl HarnessSession for ScriptedSession {
         let mut state = self.shared.state.subscribe();
         // The sender lives in `shared`, which `self` keeps alive.
         let _ = state.wait_for(|s| matches!(s, SessionState::Idle | SessionState::Closed)).await;
-        match lock(&self.shared.failure).take() {
+        match self.shared.failure.locked().take() {
             Some(why) => Err(AdapterError::Protocol(why)),
             None => Ok(()),
         }
@@ -302,9 +298,9 @@ async fn play(shared: Arc<Shared>, turn: NodeId, script: Script, mut cancel: wat
         Ok(End::Failed(why)) | Err(why) => fail_turn(&shared, &open, &why).map_err(|e| e.to_string()),
     };
     if let Err(why) = written {
-        *lock(&shared.failure) = Some(why);
+        *shared.failure.locked() = Some(why);
     }
-    lock(&shared.control).cancel = None;
+    shared.control.locked().cancel = None;
     shared.state.send_if_modified(|s| {
         let running = matches!(s, SessionState::Running | SessionState::Waiting);
         if running {
@@ -364,7 +360,7 @@ async fn run(
             }
             Step::Ask(ask) => {
                 let resumed = {
-                    let mut control = lock(&shared.control);
+                    let mut control = shared.control.locked();
                     let call = open.call.map(|(c, _)| c);
                     let spec = AskSpec {
                         kind: ask.kind,
@@ -412,7 +408,7 @@ async fn run(
 fn cancel_turn(shared: &Shared, open: &Open) -> std::result::Result<(), loa_core::CommitError> {
     let w = Writer::new(&*shared.sink);
     let ts = now_ms();
-    let mut control = lock(&shared.control);
+    let mut control = shared.control.locked();
     if let Some(message) = open.message {
         w.status(message, MessageStatus::Cancelled, ts)?;
     }
@@ -431,7 +427,7 @@ fn cancel_turn(shared: &Shared, open: &Open) -> std::result::Result<(), loa_core
 fn fail_turn(shared: &Shared, open: &Open, why: &str) -> std::result::Result<(), loa_core::CommitError> {
     let w = Writer::new(&*shared.sink);
     let ts = now_ms();
-    let mut control = lock(&shared.control);
+    let mut control = shared.control.locked();
     if let Some(message) = open.message {
         w.status(message, MessageStatus::Error, ts)?;
     }

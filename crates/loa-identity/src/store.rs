@@ -1,5 +1,6 @@
 //! Where the node's secret seed lives between runs.
 
+use loa_util::LockExt;
 use std::fmt;
 use std::fs;
 use std::io;
@@ -45,7 +46,7 @@ impl MemoryKeyStore {
     fn slot(&self) -> std::sync::MutexGuard<'_, Option<SecretBytes>> {
         // A poisoned lock only means another thread panicked mid-access; the
         // slot is a plain value that is always in a consistent state.
-        self.secret.lock().unwrap_or_else(|e| e.into_inner())
+        self.secret.locked()
     }
 }
 

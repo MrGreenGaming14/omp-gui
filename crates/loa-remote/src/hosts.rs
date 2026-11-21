@@ -1,5 +1,6 @@
 //! The host list (#95): hosts imported from ssh config and hosts added by hand.
 
+use loa_util::RwLockExt;
 use std::collections::BTreeMap;
 use std::sync::RwLock;
 
@@ -81,14 +82,12 @@ impl HostRegistry {
     fn read(&self) -> std::sync::RwLockReadGuard<'_, BTreeMap<String, Host>> {
         // Writers only replace whole entries, so a poisoned map is consistent.
         self.hosts
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .read_ok()
     }
 
     fn write(&self) -> std::sync::RwLockWriteGuard<'_, BTreeMap<String, Host>> {
         self.hosts
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .write_ok()
     }
 
     /// Adds or replaces a host.

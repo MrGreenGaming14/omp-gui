@@ -6,6 +6,7 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+loa-util.workspace = true
 iced.workspace = true
 loa-core.workspace = true
 loa-models = { path = "../loa-models" }
@@ -14,7 +15,6 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["sync", "macros", "rt"] }
 
 [dev-dependencies]
-loa-util.workspace = true
 async-trait.workspace = true
 loa-adapter.workspace = true
 loa-adapter-omp = { path = "../loa-adapter-omp" }

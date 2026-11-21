@@ -3,6 +3,7 @@
 //! One row per remote read, write, list, edit and command, including the ones
 //! the limits refused or the user denied. The table belongs to this crate.
 
+use loa_util::LockExt;
 use std::path::Path;
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -189,8 +190,7 @@ impl AuditLog {
         // A panic while holding the lock leaves SQLite consistent (each
         // statement is atomic), so a poisoned lock is still usable.
         self.conn
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .locked()
     }
 
     /// Appends a row and returns its id.

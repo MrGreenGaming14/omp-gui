@@ -2,6 +2,7 @@
 //! [`KnownHosts`] and the [`HostKeyDecider`] port, agent authentication, and
 //! one reused connection per host.
 
+use loa_util::LockExt;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -64,8 +65,7 @@ impl ClientHandler {
     fn reject(&self, reason: String) {
         *self
             .rejection
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(reason);
+            .locked() = Some(reason);
     }
 }
 
@@ -213,8 +213,7 @@ impl Connector {
     fn slots(&self) -> std::sync::MutexGuard<'_, HashMap<String, Slot>> {
         // The map only holds Arcs; a poisoned lock leaves it consistent.
         self.pool
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .locked()
     }
 
     /// A live connection to `host`: the pooled one, or a new one when there
@@ -300,8 +299,7 @@ impl Connector {
         };
         let mut handle = connected.map_err(|source| {
             let reason = rejection
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .locked()
                 .take();
             match reason {
                 Some(reason) => Error::HostKeyRejected {

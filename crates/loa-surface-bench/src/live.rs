@@ -11,6 +11,7 @@
 //! thread (already on the viewer's resize request), and the in-process
 //! software encoder codes the pictures until it is ready.
 
+use loa_util::LockExt;
 use crate::canvas::Canvas;
 use crate::decode::FrameDecoder;
 use crate::encode::{
@@ -21,7 +22,7 @@ use bytes::Bytes;
 use loa_surface::{Document, Encoding, Frame, Input, InputEvent, StreamInfo, Surface, SurfaceInfo};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex, PoisonError, Weak};
+use std::sync::{Arc, Mutex, Weak};
 use tokio::sync::broadcast::{self, error::TryRecvError};
 
 /// Opens an encoder for a picture size, instead of ffmpeg or the software
@@ -138,11 +139,11 @@ struct Warming {
 
 impl Shared {
     fn wanted(&self) -> Option<EncoderInfo> {
-        lock(&self.wanted).clone()
+        self.wanted.locked().clone()
     }
 
     fn set_stream(&self, stream: StreamInfo) {
-        *lock(&self.stream) = Some(stream);
+        *self.stream.locked() = Some(stream);
     }
 
     /// Has the source send its current picture, e.g. to code it again.
@@ -155,7 +156,7 @@ impl Shared {
     /// starting is dropped once it is up. Once up, the source is asked for
     /// its picture, so the encoder takes over without waiting for a change.
     fn warm(&self, info: &EncoderInfo, size: (u32, u32)) {
-        let mut warming = lock(&self.warming);
+        let mut warming = self.warming.locked();
         if warming.as_ref().is_some_and(|w| w.info == *info && w.size == size) {
             return;
         }
@@ -186,7 +187,7 @@ impl Shared {
     /// The encoder [`warm`](Self::warm) started for `info` at `size`, once
     /// it is up (or failed).
     fn warmed(&self, info: &EncoderInfo, size: (u32, u32)) -> Option<crate::Result<LiveEncoder>> {
-        let mut warming = lock(&self.warming);
+        let mut warming = self.warming.locked();
         let current = warming.as_ref().filter(|w| w.info == *info && w.size == size)?;
         let result = match current.ready.try_recv() {
             Ok(result) => result,
@@ -251,7 +252,7 @@ impl VideoSurface {
     /// negotiation is redone.
     pub async fn set_video(&self, enabled: bool) -> loa_surface::Result<Option<StreamInfo>> {
         self.shared.enabled.store(enabled, Ordering::Release);
-        let accepted = lock(&self.shared.accepted).clone();
+        let accepted = self.shared.accepted.locked().clone();
         if accepted.is_empty() {
             return Ok(self.stream());
         }
@@ -311,26 +312,26 @@ impl Surface for VideoSurface {
     }
 
     async fn negotiate(&self, accepted: &[Encoding]) -> loa_surface::Result<Option<StreamInfo>> {
-        *lock(&self.shared.accepted) = accepted.to_vec();
+        *self.shared.accepted.locked() = accepted.to_vec();
         let enabled = self.shared.enabled.load(Ordering::Acquire);
         let chosen = if enabled { self.shared.live.choose(accepted) } else { None };
         let stream = match &chosen {
             Some(info) => stream_info(info),
             None => {
                 let encoding = self.inner.stream().map(|s| s.encoding).or_else(|| {
-                    lock(&self.shared.stream).as_ref().filter(|s| s.encoder == SOURCE).map(|s| s.encoding)
+                    self.shared.stream.locked().as_ref().filter(|s| s.encoder == SOURCE).map(|s| s.encoding)
                 });
                 StreamInfo { encoding: encoding.unwrap_or(Encoding::Rgba), encoder: SOURCE.to_owned(), hardware: false }
             }
         };
-        *lock(&self.shared.wanted) = chosen;
+        *self.shared.wanted.locked() = chosen;
         self.shared.set_stream(stream.clone());
         self.request_keyframe().await?;
         Ok(Some(stream))
     }
 
     fn stream(&self) -> Option<StreamInfo> {
-        lock(&self.shared.stream).clone()
+        self.shared.stream.locked().clone()
     }
 }
 
@@ -458,7 +459,7 @@ impl Worker {
         if self.encoder.as_ref().is_some_and(|(info, encoder)| *info == bridge && encoder.size() == size) {
             return Ok(true);
         }
-        if !lock(&self.shared.accepted).contains(&Encoding::H264) {
+        if !self.shared.accepted.locked().contains(&Encoding::H264) {
             return Ok(false);
         }
         let encoder = self.shared.live.open(&bridge, size.0, size.1)?;
@@ -476,7 +477,7 @@ impl Worker {
     fn fall_back(&mut self, failed: &EncoderInfo, error: &str, last: &Frame) {
         tracing::warn!(encoder = %failed.name, %error, "live video encoder failed");
         let next = (failed.accel.is_hardware() && failed.codec == Codec::H264).then(software::info);
-        *lock(&self.shared.wanted) = next.clone();
+        *self.shared.wanted.locked() = next.clone();
         self.shared.keyframe.store(true, Ordering::Release);
         match next {
             Some(next) => self.encode(next, last),
@@ -499,6 +500,3 @@ fn request_keyframe(source: &Weak<dyn Surface>, runtime: &tokio::runtime::Handle
     }
 }
 
-fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
-}

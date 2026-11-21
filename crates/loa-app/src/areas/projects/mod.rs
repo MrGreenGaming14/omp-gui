@@ -11,10 +11,11 @@
 //! synchronous, so the context of each project is kept in a cache that is
 //! refreshed after listing, rebuilds, settings saves and exclude toggles.
 
+use loa_util::LockExt;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use iced::futures::{Stream, stream};
 use iced::{Element, Subscription, Task};
@@ -138,7 +139,7 @@ impl State {
 
     fn new_chat(&self) -> MutexGuard<'_, Option<NewChat>> {
         // Replacing the value can't leave it half written.
-        self.new_chat.lock().unwrap_or_else(PoisonError::into_inner)
+        self.new_chat.locked()
     }
 
     fn list(&self) -> Task<Message> {
@@ -407,7 +408,7 @@ struct Outcomes(Arc<Mutex<Option<UnboundedReceiver<RebuildOutcome>>>>);
 
 impl Outcomes {
     fn take(&self) -> Option<UnboundedReceiver<RebuildOutcome>> {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner).take()
+        self.0.locked().take()
     }
 }
 

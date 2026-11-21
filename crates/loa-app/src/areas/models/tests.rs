@@ -1,6 +1,7 @@
 //! The models area driven through `App::update`: a fake harness for the
 //! session side and a backend over a fake omp RPC and a temp agent dir.
 
+use loa_util::LockExt;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -26,9 +27,6 @@ use crate::app::{App, Message as AppMessage};
 use crate::services::{Dirs, Harnesses, Node, Services};
 use crate::session::Feed;
 
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
-}
 
 /// A harness listing `models`, recording the config of each start and the
 /// model and effort changes on `<session>` the way the real adapters do.
@@ -69,7 +67,7 @@ impl Adapter for FakeAdapter {
         if let Some(effort) = &config.effort {
             attrs.push((attr::EFFORT, effort.as_str().into()));
         }
-        lock(&self.configs).push(config);
+        self.configs.locked().push(config);
         let root = sink.commit(Draft::insert(NodeId::DOCUMENT, ElementKind::Session, attrs, ""))?.node;
         Ok(Box::new(FakeSession { id: self.id, sink, root, models: self.models.clone(), efforts: self.efforts }))
     }
@@ -152,7 +150,7 @@ struct FakeRpc {
 #[async_trait::async_trait]
 impl OmpRpc for FakeRpc {
     async fn get_login_providers(&self) -> Result<Vec<LoginProvider>, RpcError> {
-        let openai = *lock(&self.signed_in);
+        let openai = *self.signed_in.locked();
         Ok(vec![
             LoginProvider { id: "anthropic".into(), name: "Anthropic".into(), available: true, authenticated: true },
             LoginProvider { id: "openai-codex".into(), name: "ChatGPT".into(), available: true, authenticated: openai },
@@ -164,7 +162,7 @@ impl OmpRpc for FakeRpc {
         ui.send(url).map_err(|error| RpcError::Transport(error.to_string()))?;
         // The user finishes in the browser.
         tokio::time::sleep(Duration::from_millis(50)).await;
-        *lock(&self.signed_in) = true;
+        *self.signed_in.locked() = true;
         Ok(provider_id.to_owned())
     }
 
@@ -217,7 +215,7 @@ struct Opener(Mutex<Vec<String>>);
 
 impl UrlOpener for Opener {
     fn open_url(&self, url: &str) -> Result<(), String> {
-        lock(&self.0).push(url.to_owned());
+        self.0.locked().push(url.to_owned());
         Ok(())
     }
 }
@@ -381,12 +379,12 @@ fn an_effort_the_harness_cannot_change_mid_session_starts_the_next_session() {
     update(&mut f.app, AppMessage::Composer(composer::Message::EffortPicked("high".into())));
     assert!(f.app.ctx.notice().is_some_and(|notice| notice.contains("new sessions start with high effort")), "{:?}", f.app.ctx.notice());
     update(&mut f.app, AppMessage::NewSession);
-    assert_eq!(lock(&f.configs).last().and_then(|config| config.effort.clone()).as_deref(), Some("high"));
+    assert_eq!(f.configs.locked().last().and_then(|config| config.effort.clone()).as_deref(), Some("high"));
     sync(&mut f.app);
     assert_eq!(session_attr(&f.app, attr::EFFORT).as_deref(), Some("high"));
     // Only the next session.
     update(&mut f.app, AppMessage::NewSession);
-    assert_eq!(lock(&f.configs).last().and_then(|config| config.effort.clone()), None);
+    assert_eq!(f.configs.locked().last().and_then(|config| config.effort.clone()), None);
 }
 
 #[test]
@@ -426,7 +424,7 @@ fn a_model_picked_without_a_session_starts_the_next_one() {
     models(&mut f.app, Message::Picker(picker::Message::Query("gpt".into())));
     models(&mut f.app, Message::Picker(picker::Message::Submit));
     update(&mut f.app, AppMessage::NewSession);
-    assert_eq!(lock(&f.configs)[0].model.as_deref(), Some("openai-codex/gpt-y"));
+    assert_eq!(f.configs.locked()[0].model.as_deref(), Some("openai-codex/gpt-y"));
     sync(&mut f.app);
     assert_eq!(session_attr(&f.app, attr::MODEL).as_deref(), Some("openai-codex/gpt-y"));
 }
@@ -447,7 +445,7 @@ fn the_sign_in_screen_lists_providers_and_runs_an_omp_login() {
 
     let key = ProviderKey::new("omp", "openai-codex");
     models(&mut f.app, Message::SignIn(signin::Message::SignIn(key.clone())));
-    assert_eq!(*lock(&f.opener.0), ["https://auth.example/authorize"], "the browser opened on omp's URL");
+    assert_eq!(*f.opener.0.locked(), ["https://auth.example/authorize"], "the browser opened on omp's URL");
     let Load::Ready(state) = &f.app.areas.models.signin else { unreachable!() };
     assert!(matches!(state.login_state(&key), LoginState::Succeeded { .. }), "{:?}", state.login_state(&key));
     assert!(matches!(state.providers()[1].auth, Auth::Login { signed_in: true, .. }), "rows were read again");

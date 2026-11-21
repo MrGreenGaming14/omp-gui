@@ -3,6 +3,7 @@
 //! whose proven grants cover the protocol's required resource and action
 //! reaches the app's handler with the raw stream.
 
+use loa_util::RwLockExt;
 use crate::share::{challenge_grants, expect, present_grants, send};
 use crate::{Inner, Node, NodeError, Result, now_ms};
 use async_trait::async_trait;
@@ -47,11 +48,11 @@ struct Slot {
 
 impl NodeSlot {
     fn slot(&self) -> std::sync::RwLockWriteGuard<'_, Slot> {
-        self.0.write().unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.0.write_ok()
     }
 
     pub fn get(&self) -> Option<Node> {
-        self.0.read().unwrap_or_else(std::sync::PoisonError::into_inner).node.clone()
+        self.0.read_ok().node.clone()
     }
 
     /// Puts `node` in the slot; it serves every protocol added so far from

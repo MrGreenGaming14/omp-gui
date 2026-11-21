@@ -38,6 +38,7 @@ pub use loa_net::conn::Transport;
 pub use loa_net::endpoint::RelayConfig;
 pub use loa_net::peers::DiscoverySource;
 
+use loa_util::LockExt;
 use loa_grants::{Action, GrantId, GrantSpec, GrantStore, NodePublicKey, RenewOutcome, Renewer, Resource, Scope};
 use loa_identity::NodeIdentity;
 use loa_journal::{Journal, Store};
@@ -51,7 +52,7 @@ use std::collections::{HashMap, HashSet};
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
+use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::Duration;
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
@@ -320,9 +321,6 @@ struct State {
     tasks: Vec<JoinHandle<()>>,
 }
 
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
-}
 
 pub(crate) fn grant_key(id: &NodeId) -> NodePublicKey {
     NodePublicKey(*id.as_bytes())
@@ -432,11 +430,11 @@ impl Node {
     }
 
     fn state(&self) -> MutexGuard<'_, State> {
-        lock(&self.inner.state)
+        self.inner.state.locked()
     }
 
     fn peers_db(&self) -> MutexGuard<'_, PeerStore> {
-        lock(&self.inner.peers)
+        self.inner.peers.locked()
     }
 
     pub(crate) fn grant_store(&self) -> &Arc<GrantStore> {
@@ -456,13 +454,13 @@ impl Node {
     }
 
     pub(crate) fn network(&self) -> Result<Arc<Network>> {
-        lock(&self.inner.net).clone().ok_or(NodeError::NotStarted)
+        self.inner.net.locked().clone().ok_or(NodeError::NotStarted)
     }
 
     /// Binds the endpoint and starts discovery, presence and renewal.
     /// Starting a running node does nothing.
     pub async fn start(&self) -> Result<()> {
-        if lock(&self.inner.net).is_some() {
+        if self.inner.net.locked().is_some() {
             return Ok(());
         }
         self.state().endpoint = Endpoint::Starting;
@@ -489,7 +487,7 @@ impl Node {
         };
         let udp = net.quic().local_addrs();
         let tcp = net.tcp().local_addr();
-        *lock(&self.inner.net) = Some(Arc::clone(&net));
+        *self.inner.net.locked() = Some(Arc::clone(&net));
         let mut tasks = Vec::new();
         let mdns = if config.mdns {
             let announce = loa_net::discovery::Announce {
@@ -525,7 +523,7 @@ impl Node {
         for task in tasks {
             task.abort();
         }
-        let net = lock(&self.inner.net).take();
+        let net = self.inner.net.locked().take();
         if let Some(net) = net {
             net.close().await;
         }

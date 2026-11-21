@@ -1,10 +1,11 @@
 //! What each peer may do here, from the grants it presented.
 
+use loa_util::LockExt;
 use loa_bus::{Authorize, Denied, NodeKey, SessionId};
 use loa_core::{Dom, Draft, NodeId, now_ms};
 use loa_grants::{Action, GrantStore, Request, Revocations, SessionFacts, VerifiedGrant, turn_of};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 
 /// The session actions a grant can carry, strongest last.
 const SESSION_ACTIONS: [Action; 4] = [Action::View, Action::Fork, Action::Suggest, Action::Drive];
@@ -28,11 +29,11 @@ impl GrantAccess {
 
     /// Records the grants `peer` just proved, replacing what it proved before.
     pub fn set(&self, peer: NodeKey, grants: Vec<VerifiedGrant>) {
-        self.held.lock().unwrap_or_else(PoisonError::into_inner).insert(peer, grants);
+        self.held.locked().insert(peer, grants);
     }
 
     fn live(&self, peer: &NodeKey, now: i64) -> Vec<VerifiedGrant> {
-        let held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
+        let held = self.held.locked();
         held.get(peer)
             .into_iter()
             .flatten()

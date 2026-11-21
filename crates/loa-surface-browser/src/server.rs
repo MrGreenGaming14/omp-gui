@@ -1,5 +1,6 @@
 //! The `browser` surface server: launches Chrome and keeps its tabs.
 
+use loa_util::LockExt;
 use crate::chrome::{BrowserConfig, Capture, VirtualDisplayConfig};
 use crate::frames::{FrameHub, InputLog};
 use crate::tab::{Feed, Tab, TabParts, set_viewport};
@@ -129,7 +130,7 @@ impl Instance {
             }
         }
         self.handler.abort();
-        let display = self.display.lock().unwrap_or_else(|e| e.into_inner()).take();
+        let display = self.display.locked().take();
         if let Some(display) = display {
             display.stop().await?;
         }
@@ -185,7 +186,7 @@ impl BrowserServer {
             self.close(&tab).await;
             return Err(error);
         }
-        self.tabs.lock().unwrap_or_else(|e| e.into_inner()).insert(id, tab.clone());
+        self.tabs.locked().insert(id, tab.clone());
         Ok(tab)
     }
 
@@ -259,19 +260,19 @@ impl BrowserServer {
 
     /// The open tab behind `uri`.
     pub fn tab(&self, uri: &SurfaceUri) -> Result<Arc<Tab>> {
-        let tabs = self.tabs.lock().unwrap_or_else(|e| e.into_inner());
+        let tabs = self.tabs.locked();
         tabs.values().find(|t| t.uri() == uri).cloned().ok_or_else(|| BrowserError::NotFound(uri.clone()))
     }
 
     /// Open tabs in the order they were opened.
     pub fn tabs(&self) -> Vec<Arc<Tab>> {
-        self.tabs.lock().unwrap_or_else(|e| e.into_inner()).values().cloned().collect()
+        self.tabs.locked().values().cloned().collect()
     }
 
     /// Closes the tab behind `uri`. Its viewers' frame streams end.
     pub async fn close_tab(&self, uri: &SurfaceUri) -> Result<()> {
         let tab = {
-            let mut tabs = self.tabs.lock().unwrap_or_else(|e| e.into_inner());
+            let mut tabs = self.tabs.locked();
             let id = tabs.iter().find(|(_, t)| t.uri() == uri).map(|(id, _)| *id);
             id.and_then(|id| tabs.remove(&id)).ok_or_else(|| BrowserError::NotFound(uri.clone()))?
         };
@@ -309,7 +310,7 @@ impl BrowserServer {
     /// [`open_tab`](Self::open_tab) fail with [`BrowserError::Closed`].
     pub async fn shutdown(&self) -> Result<()> {
         self.closed.store(true, Ordering::Release);
-        let tabs = std::mem::take(&mut *self.tabs.lock().unwrap_or_else(|e| e.into_inner()));
+        let tabs = std::mem::take(&mut *self.tabs.locked());
         for tab in tabs.values() {
             tab.stop_feed();
             if !self.shared.as_ref().is_some_and(|shared| Arc::ptr_eq(shared, tab.instance())) {

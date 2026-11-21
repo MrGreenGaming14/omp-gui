@@ -1,6 +1,7 @@
 //! A running ACP session: the [`HarnessSession`] side and the handler for
 //! everything the agent sends.
 
+use loa_util::LockExt;
 use crate::fs;
 use crate::project::Projector;
 use crate::rpc::{Inbound, Rpc, RpcError, RpcResult};
@@ -16,7 +17,7 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use tokio::process::Child;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
@@ -49,7 +50,7 @@ impl Shared {
     pub fn projector(&self) -> MutexGuard<'_, Projector> {
         // Projector methods commit patches one by one and keep no invariant
         // across a panic that a later call could trip over.
-        self.projector.lock().unwrap_or_else(PoisonError::into_inner)
+        self.projector.locked()
     }
 
     pub fn session_id(&self) -> &str {
@@ -211,7 +212,7 @@ impl AcpSession {
     /// Picks the agent mode that stands for `mode`: `plan` for plan mode;
     /// `default`, else the starting mode, else the first non-plan mode otherwise.
     pub(crate) fn mode_id(shared: &Shared, mode: SessionMode) -> Option<String> {
-        let modes = lock(&shared.modes);
+        let modes = shared.modes.locked();
         let has = |id: &str| modes.available.iter().any(|m| m == id);
         match mode {
             SessionMode::Plan => has("plan").then(|| "plan".to_owned()),
@@ -351,12 +352,12 @@ impl HarnessSession for AcpSession {
 
     /// The models the agent offered in `session/new` or `session/load`.
     async fn models(&self) -> Result<Vec<HarnessModel>> {
-        lock(&self.shared.models).clone().ok_or(AdapterError::Unsupported { harness: crate::project::HARNESS, what: "listing models" })
+        self.shared.models.locked().clone().ok_or(AdapterError::Unsupported { harness: crate::project::HARNESS, what: "listing models" })
     }
 
     /// `session/set_model`, for agents that offered models.
     async fn set_model(&self, selection: ModelSelection) -> Result<()> {
-        let offered = lock(&self.shared.models).as_ref().map(|models| models.iter().any(|m| m.id == selection.model));
+        let offered = self.shared.models.locked().as_ref().map(|models| models.iter().any(|m| m.id == selection.model));
         match (offered, &selection.role) {
             (None, _) => Err(AdapterError::Unsupported { harness: crate::project::HARNESS, what: "set_model" }),
             (_, Some(_)) => Err(AdapterError::Unsupported { harness: crate::project::HARNESS, what: "model roles" }),
@@ -385,14 +386,14 @@ impl HarnessSession for AcpSession {
     async fn shutdown(&self) -> Result<()> {
         self.shared.shutting_down.store(true, Ordering::Relaxed);
         self.shared.rpc.close();
-        let child = lock(&self.child).take();
+        let child = self.child.locked().take();
         if let Some(mut child) = child {
             let _ = child.start_kill();
             let _ = child.wait().await;
         }
         // The agent is gone or going; nothing it still sends matters. Without
         // a process to kill, the other end may never close, so stop reading.
-        let reader = lock(&self.reader).take();
+        let reader = self.reader.locked().take();
         if let Some(reader) = reader {
             reader.abort();
             let _ = reader.await;
@@ -407,16 +408,12 @@ impl HarnessSession for AcpSession {
 impl Drop for AcpSession {
     fn drop(&mut self) {
         self.shared.rpc.close();
-        if let Some(reader) = lock(&self.reader).take() {
+        if let Some(reader) = self.reader.locked().take() {
             reader.abort();
         }
     }
 }
 
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    // Guarded values are replaced in one step, so a panic leaves them whole.
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
-}
 
 #[cfg(test)]
 mod tests {

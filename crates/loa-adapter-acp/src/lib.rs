@@ -28,6 +28,7 @@ mod wire;
 pub use project::{HARNESS, X_AGENT, X_MODE, X_OPTION, X_OPTION_IDS, X_OPTION_KINDS, X_PRIORITY, X_STOP_REASON};
 pub use session::AcpSession;
 
+use loa_util::LockExt;
 use async_trait::async_trait;
 use loa_adapter::{
     Adapter, AdapterError, Availability, AvailabilityStatus, Capabilities, ContextDelivery, Feature, HarnessModel,
@@ -44,7 +45,7 @@ use session::{Modes, Shared};
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock};
 use terminal::Terminals;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, BufReader};
 use tokio::process::{Child, Command};
@@ -157,7 +158,7 @@ impl AcpAdapter {
     }
 
     fn learn(&self, update: impl FnOnce(&mut Learned)) {
-        update(self.learned.lock().unwrap_or_else(PoisonError::into_inner).get_or_insert_with(Learned::default));
+        update(self.learned.locked().get_or_insert_with(Learned::default));
     }
 
     /// Spawns the agent and starts the reader. `root` is the `<session>`
@@ -283,7 +284,7 @@ impl AcpAdapter {
             .collect();
         let wanted = config.model.as_deref().filter(|wanted| *wanted != models.current_model_id);
         let switch = wanted.filter(|wanted| offered.iter().any(|m| m.id == *wanted)).map(str::to_owned);
-        *shared.models.lock().unwrap_or_else(PoisonError::into_inner) = Some(offered);
+        *shared.models.locked() = Some(offered);
         match switch {
             Some(model) => AcpSession::switch_model(shared, &model).await,
             None if wanted.is_none() => {
@@ -303,7 +304,7 @@ impl AcpAdapter {
         let available: Vec<String> = modes.available_modes.into_iter().map(|m| m.id).collect();
         self.learn(|learned| learned.plan_mode = available.iter().any(|m| m == "plan"));
         {
-            let mut known = shared.modes.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut known = shared.modes.locked();
             known.available = available;
             known.initial = Some(modes.current_mode_id.clone());
         }
@@ -366,7 +367,7 @@ impl Adapter for AcpAdapter {
 
     fn capabilities(&self) -> Capabilities {
         let mut capabilities = Self::base_capabilities();
-        let learned = *self.learned.lock().unwrap_or_else(PoisonError::into_inner);
+        let learned = *self.learned.locked();
         if learned.is_some_and(|l| l.plan_mode) {
             capabilities.features.push(Feature::PlanMode);
         }

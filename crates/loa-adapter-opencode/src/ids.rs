@@ -2,6 +2,7 @@
 //! `timestamp_ms * 0x1000 + counter` + 14 random base62 characters. Ascending
 //! ids sort by creation time, which is how OpenCode orders messages and parts.
 
+use loa_util::LockExt;
 use std::hash::{BuildHasher, Hasher};
 use std::sync::Mutex;
 
@@ -17,7 +18,7 @@ pub fn ascending(prefix: &str, now_ms: i64) -> String {
     let counter = {
         // The pair is only read and written under the lock, so a poisoned
         // lock still holds a consistent value.
-        let mut clock = CLOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut clock = CLOCK.locked();
         if clock.0 != now_ms {
             *clock = (now_ms, 0);
         }

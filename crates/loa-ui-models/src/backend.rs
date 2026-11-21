@@ -11,9 +11,10 @@
 //! session's own harness connection (`HarnessSession::set_model`), which
 //! records the new `model` on the `<session>`.
 
+use loa_util::LockExt;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex};
 
 use iced::futures::{SinkExt, Stream};
 use loa_models::config::{OmpConfig, Selector};
@@ -186,9 +187,6 @@ struct Inner {
     loaded: tokio::sync::Mutex<Option<Loaded>>,
 }
 
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-}
 
 /// What [`Backend::load_settings`] returns.
 #[derive(Clone, Debug, PartialEq)]
@@ -300,12 +298,12 @@ impl Backend {
     }
 
     fn provider_names(&self) -> HashMap<String, String> {
-        lock(&self.inner.login_providers).iter().map(|p| (p.id.clone(), p.name.clone())).collect()
+        self.inner.login_providers.locked().iter().map(|p| (p.id.clone(), p.name.clone())).collect()
     }
 
     async fn refresh_login_providers(&self) -> Result<Vec<LoginProvider>, String> {
         let providers = self.inner.rpc.get_login_providers().await.map_err(|e| e.to_string())?;
-        *lock(&self.inner.login_providers) = providers.clone();
+        *self.inner.login_providers.locked() = providers.clone();
         Ok(providers)
     }
 
@@ -358,7 +356,7 @@ impl Backend {
         let Ok(files) = self.files().await else { return Vec::new() };
         let Ok(models) = ModelsYml::load(&files.models()) else { return Vec::new() };
         let env = self.inner.environment.as_ref();
-        let oauth: Vec<String> = lock(&self.inner.login_providers).iter().map(|p| p.id.clone()).collect();
+        let oauth: Vec<String> = self.inner.login_providers.locked().iter().map(|p| p.id.clone()).collect();
         let mut rows = Vec::new();
         let mut add = |provider: &str, source: KeySource| {
             let names = keys::builtin_environment_names(provider);
@@ -407,7 +405,7 @@ impl Backend {
         let backend = self.clone();
         iced::stream::channel(16, async move |mut out: iced::futures::channel::mpsc::Sender<LoginUpdate>| {
             let (control_tx, control_rx) = unbounded_channel();
-            lock(&backend.inner.logins).insert(key.clone(), control_tx);
+            backend.inner.logins.locked().insert(key.clone(), control_tx);
             let (update_tx, mut update_rx) = unbounded_channel();
             let run = backend.run_login(key.clone(), control_rx, update_tx);
             let forward = async {
@@ -418,7 +416,7 @@ impl Backend {
                 }
             };
             tokio::join!(run, forward);
-            lock(&backend.inner.logins).remove(&key);
+            backend.inner.logins.locked().remove(&key);
         })
     }
 
@@ -429,7 +427,7 @@ impl Backend {
         updates: UnboundedSender<LoginUpdate>,
     ) {
         if key.harness == OMP {
-            let provider = lock(&self.inner.login_providers).iter().find(|p| p.id == key.provider).cloned();
+            let provider = self.inner.login_providers.locked().iter().find(|p| p.id == key.provider).cloned();
             let provider = provider.unwrap_or_else(|| LoginProvider {
                 id: key.provider.clone(),
                 name: key.provider.clone(),
@@ -498,14 +496,14 @@ impl Backend {
 
     /// Answers the running login's prompt of `key`.
     pub fn submit_input(&self, key: &ProviderKey, text: String) {
-        if let Some(control) = lock(&self.inner.logins).get(key) {
+        if let Some(control) = self.inner.logins.locked().get(key) {
             let _ = control.send(LoginControl::SubmitInput(text));
         }
     }
 
     /// Stops the running login of `key`.
     pub fn cancel(&self, key: &ProviderKey) {
-        if let Some(control) = lock(&self.inner.logins).get(key) {
+        if let Some(control) = self.inner.logins.locked().get(key) {
             let _ = control.send(LoginControl::Cancel);
         }
     }
@@ -520,7 +518,7 @@ impl Backend {
         let files = self.files().await?;
         let config = OmpConfig::load(&files.config()).map_err(|e| e.to_string())?;
         let available = self.inner.rpc.get_available_models().await.map_err(|e| e.to_string())?;
-        if lock(&self.inner.login_providers).is_empty() {
+        if self.inner.login_providers.locked().is_empty() {
             let _ = self.refresh_login_providers().await;
         }
         bridge::catalog(&available, &config, &self.provider_names())
@@ -552,7 +550,7 @@ impl Backend {
         let config = OmpConfig::load(&files.config()).map_err(|e| e.to_string())?;
         let models = ModelsYml::load(&files.models()).map_err(|e| e.to_string())?;
         let available = self.inner.rpc.get_available_models().await.unwrap_or_default();
-        if lock(&self.inner.login_providers).is_empty() {
+        if self.inner.login_providers.locked().is_empty() {
             let _ = self.refresh_login_providers().await;
         }
         let mut settings = bridge::settings(&config, &models, &available, &self.provider_names())?;
@@ -711,7 +709,7 @@ mod tests {
             Ok(provider_id.to_owned())
         }
         async fn respond_ui(&self, response: UiResponse) -> Result<(), RpcError> {
-            lock(&self.responses).push(response);
+            self.responses.locked().push(response);
             self.answered.notify_one();
             Ok(())
         }
@@ -742,7 +740,7 @@ mod tests {
     struct Opener(Mutex<Vec<String>>);
     impl UrlOpener for Opener {
         fn open_url(&self, url: &str) -> Result<(), String> {
-            lock(&self.0).push(url.to_owned());
+            self.0.locked().push(url.to_owned());
             Ok(())
         }
     }
@@ -908,9 +906,9 @@ exit 64"#,
                 LoginUpdate::Succeeded { account: None },
             ]
         );
-        assert_eq!(*lock(&f.opener.0), ["https://auth.openai.example/authorize"]);
+        assert_eq!(*f.opener.0.locked(), ["https://auth.openai.example/authorize"]);
         assert_eq!(
-            *lock(&f.rpc.responses),
+            *f.rpc.responses.locked(),
             [UiResponse::Value { id: "u2".into(), value: "http://127.0.0.1:1455/cb?code=7".into() }]
         );
         assert_eq!(screen.login_state(&key), &signin::LoginState::Succeeded { account: None });
@@ -934,7 +932,7 @@ exit 64"#,
             seen.push(update);
         }
         assert!(seen.iter().all(|u| !matches!(u, LoginUpdate::Succeeded { .. } | LoginUpdate::Failed(_))), "{seen:?}");
-        assert!(lock(&f.backend.inner.logins).is_empty());
+        assert!(f.backend.inner.logins.locked().is_empty());
     }
 
     #[tokio::test]

@@ -28,10 +28,11 @@ mod live;
 #[cfg(test)]
 mod tests;
 
+use loa_util::LockExt;
 use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use iced::{Element, Subscription, Task};
@@ -125,7 +126,7 @@ impl Held {
     }
 
     fn take(&self) -> Option<Box<dyn PlanPermit>> {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner).take()
+        self.0.locked().take()
     }
 }
 
@@ -210,7 +211,7 @@ impl State {
     }
 
     fn hooks(&self) -> MutexGuard<'_, HashMap<String, TurnHooks>> {
-        self.hooks.lock().unwrap_or_else(PoisonError::into_inner)
+        self.hooks.locked()
     }
 
     /// Rebuilds from the active session.
