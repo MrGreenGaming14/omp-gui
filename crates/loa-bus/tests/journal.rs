@@ -58,9 +58,10 @@ fn checked_in_journals_open_and_rewrite_byte_for_byte() {
 #[test]
 fn torn_tails_are_cut_and_other_damage_is_refused() {
     type Damage = fn(&Path, &[u64], u64) -> u64;
+    type Refused = Option<fn(&Error) -> bool>;
     // Each gets the record offsets and the file length, damages the file and
     // returns its new length. Record 21 is the last.
-    let cases: [(&str, Damage, Option<fn(&Error) -> bool>); 7] = [
+    let cases: [(&str, Damage, Refused); 7] = [
         ("half a record", |p, o, e| (set_len(p, (o[20] + e) / 2), (o[20] + e) / 2).1, None),
         ("torn record header", |p, o, _| (set_len(p, o[20] + 3), o[20] + 3).1, None),
         ("zero filled tail", |p, o, _| (set_len(p, o[20]), set_len(p, o[20] + 4096), o[20] + 4096).2, None),
