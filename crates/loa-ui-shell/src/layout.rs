@@ -101,6 +101,10 @@ impl State {
     pub fn subscription(&self) -> Subscription<Message> { iced::system::theme_changes().map(Message::SystemTheme) }
     pub fn theme(&self) -> Theme { self.theme.theme() }
     pub fn theme_state(&self) -> &theme::State { &self.theme }
+    /// Replaces the appearance (theme and overrides), e.g. after the config changed.
+    pub fn set_appearance(&mut self, appearance: Appearance) -> Option<Event> {
+        (self.theme.appearance() != &appearance).then(|| Event::ThemeChanged(self.theme.set_appearance(appearance)))
+    }
     pub fn sidebar(&self) -> &sidebar::State { &self.sidebar }
     pub fn sidebar_mut(&mut self) -> &mut sidebar::State { &mut self.sidebar }
     /// Highlights the selected project in the sidebar and the project tab strip.
@@ -294,6 +298,8 @@ mod tests {
         let events = send(&mut state, [Message::SystemTheme(Mode::Light), Message::SetTheme(ThemeRef("dark".into())), Message::SetTheme(ThemeRef("nope".into()))]);
         assert!(matches!(events[..], [Event::ThemeChanged(_), Event::SetTheme(_), Event::SetTheme(_)]));
         assert_eq!((state.theme_state().variant(), state.theme_state().errors().len()), (theme::Variant::Light, 1), "unknown themes fall back to the system");
+        let dark = Appearance { theme: ThemeRef("dark".into()), ..Appearance::default() };
+        assert!(matches!(state.set_appearance(dark.clone()), Some(Event::ThemeChanged(_))) && state.set_appearance(dark).is_none(), "a config change re-applies the appearance once");
     }
 
     #[test]

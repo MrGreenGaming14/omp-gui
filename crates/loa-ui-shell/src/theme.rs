@@ -16,11 +16,14 @@ pub struct State {
 }
 
 impl State {
-    pub fn new(appearance: Appearance) -> Self {
-        let mut s = Self { registry: ThemeRegistry::builtin().into(), appearance, system: Mode::None, theme: Theme::Dark, variant: Variant::Dark, errors: vec![] };
+    pub fn new(appearance: Appearance) -> Self { Self::with_registry(ThemeRegistry::builtin(), appearance) }
+    /// Resolves through `registry`, which may carry extra sources and loaders.
+    pub fn with_registry(registry: ThemeRegistry, appearance: Appearance) -> Self {
+        let mut s = Self { registry: registry.into(), appearance, system: Mode::None, theme: Theme::Dark, variant: Variant::Dark, errors: vec![] };
         s.refresh();
         s
     }
+    pub fn appearance(&self) -> &Appearance { &self.appearance }
     pub fn preference(&self) -> &ThemeRef { &self.appearance.theme }
     pub fn themes(&self) -> Vec<(String, String)> { self.registry.list() }
     pub fn errors(&self) -> &[ThemeError] { &self.errors }
@@ -30,6 +33,11 @@ impl State {
     /// Picks a theme; returns the new token generation.
     pub fn set_preference(&mut self, theme: ThemeRef) -> u64 {
         self.appearance.theme = theme;
+        self.refresh()
+    }
+    /// Replaces the whole appearance, overrides included; returns the new token generation.
+    pub fn set_appearance(&mut self, appearance: Appearance) -> u64 {
+        self.appearance = appearance;
         self.refresh()
     }
     pub fn set_system_mode(&mut self, mode: Mode) -> u64 {
