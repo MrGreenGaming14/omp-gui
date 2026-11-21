@@ -120,7 +120,8 @@ impl HostTools for ToolSet {
     }
 
     async fn call_content(&self, session_id: &str, tool: &str, args: &str) -> Result<Vec<OutputBlock>, String> {
-        let args = if args.trim().is_empty() { Json::Null } else { serde_json::from_str(args).map_err(|e| e.to_string())? };
+        // Blank args mean "no arguments": an empty object, so all-optional argument structs still parse.
+        let args = if args.trim().is_empty() { Json::Object(Default::default()) } else { serde_json::from_str(args).map_err(|e| e.to_string())? };
         let out = ToolSet::call(self, &CallCtx { session_id: session_id.into() }, tool, args).await?;
         if out.is_error { Err(out.joined_text()) } else { Ok(out.blocks) }
     }
@@ -161,6 +162,7 @@ mod tests {
             ("shout", r#"{"word":"hi"}"#, Ok("s:HI")),
             ("shout", r#"{"word":""}"#, Err("empty")),
             ("shout", "{}", Err("invalid arguments for `shout`: missing field `word`")),
+            ("shout", " ", Err("invalid arguments for `shout`: missing field `word`")),
             ("nope", "{}", Err("unknown tool `nope`")),
         ] {
             assert_eq!(HostTools::call(&set, "s", tool, args).await.as_deref(), want.map_err(String::from).as_deref());
