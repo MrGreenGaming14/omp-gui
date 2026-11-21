@@ -1,0 +1,23 @@
+[package]
+name = "loa-ui-session"
+description = "Session screen components: transcript, composer and decision cards"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+iced.workspace = true
+loa-config = { path = "../loa-config" }
+loa-contracts.workspace = true
+loa-core.workspace = true
+loa-ui-kit.workspace = true
+loa-ui-panel = { path = "../loa-ui-panel" }
+loa-util.workspace = true
+notify-rust = "4.19"
+serde_json = { workspace = true, features = ["preserve_order"] }
+
+[dev-dependencies]
+iced_test = "0.14"
+loa-core = { workspace = true, features = ["testkit"] }
+loa-ui-kit = { workspace = true, features = ["testkit"] }
+tempfile.workspace = true

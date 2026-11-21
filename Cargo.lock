@@ -4631,15 +4631,13 @@ dependencies = [
  "loa-sandbox",
  "loa-surfaces",
  "loa-trust",
- "loa-ui-chat",
- "loa-ui-composer",
- "loa-ui-decisions",
  "loa-ui-kit",
  "loa-ui-models",
  "loa-ui-palette",
  "loa-ui-panel",
  "loa-ui-peers",
  "loa-ui-projects",
+ "loa-ui-session",
  "loa-ui-shell",
  "loa-ui-surface",
  "loa-ui-terminal",
@@ -4975,47 +4973,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "loa-ui-chat"
-version = "0.1.0"
-dependencies = [
- "iced",
- "iced_runtime",
- "iced_test",
- "loa-core",
- "loa-ui-kit",
-]
-
-[[package]]
-name = "loa-ui-composer"
-version = "0.1.0"
-dependencies = [
- "iced",
- "iced_test",
- "loa-contracts",
- "loa-core",
- "loa-ui-kit",
-]
-
-[[package]]
-name = "loa-ui-decisions"
-version = "0.1.0"
-dependencies = [
- "iced",
- "iced_test",
- "loa-config",
- "loa-contracts",
- "loa-core",
- "loa-ui-kit",
- "loa-util",
- "notify-rust",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
-]
-
-[[package]]
 name = "loa-ui-kit"
 version = "0.1.0"
 dependencies = [
@@ -5085,6 +5042,23 @@ dependencies = [
  "loa-projects",
  "loa-ui-kit",
  "loa-util",
+]
+
+[[package]]
+name = "loa-ui-session"
+version = "0.1.0"
+dependencies = [
+ "iced",
+ "iced_test",
+ "loa-config",
+ "loa-contracts",
+ "loa-core",
+ "loa-ui-kit",
+ "loa-ui-panel",
+ "loa-util",
+ "notify-rust",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

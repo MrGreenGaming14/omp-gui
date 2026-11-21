@@ -18,9 +18,7 @@ loa-adapter-omp2 = { path = "../loa-adapter-omp2" }
 loa-adapter-opencode = { path = "../loa-adapter-opencode" }
 tokio.workspace = true
 loa-ui-shell = { path = "../loa-ui-shell" }
-loa-ui-chat = { path = "../loa-ui-chat" }
-loa-ui-composer = { path = "../loa-ui-composer" }
-loa-ui-decisions = { path = "../loa-ui-decisions" }
+loa-ui-session = { path = "../loa-ui-session" }
 loa-ui-panel = { path = "../loa-ui-panel" }
 loa-ui-terminal = { path = "../loa-ui-terminal" }
 loa-ui-palette = { path = "../loa-ui-palette" }

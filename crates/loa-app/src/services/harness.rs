@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use loa_contracts::harness::{Adapter, Availability, AvailabilityStatus, Registry};
 use loa_util::exec::which as find_executable;
-use loa_ui_composer::HarnessOption;
+use loa_ui_session::composer::HarnessOption;
 
 /// Address `opencode serve` listens on by default.
 pub const OPENCODE_URL: &str = "http://127.0.0.1:4096";

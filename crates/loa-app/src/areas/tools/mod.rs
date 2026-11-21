@@ -23,11 +23,10 @@ use loa_mcp::host_tools::McpHostTools;
 use loa_mcp::import::{self, Found};
 use loa_mcp::{AllowAll, Registry};
 use loa_mcp::bridge::{self, OmpBridgeConfig};
-use loa_remote::host_tools::RemoteHostTools;
-use loa_remote::http::RemoteHttp;
-use loa_remote::mcp::SERVER_NAME as REMOTE_SERVER;
-use loa_remote::ports::PromptQueue;
 use loa_remote::RemoteServiceConfig;
+use loa_remote::http::RemoteHttp;
+use loa_remote::ports::PromptQueue;
+use loa_remote::tools::SERVER_NAME as REMOTE_SERVER;
 use loa_ui_palette as palette;
 use loa_ui_terminal as terminal;
 use loa_ui_tools as tools;
@@ -157,9 +156,9 @@ impl State {
             async move { Registry::open(store, manager).await.map(|servers| Shared(Arc::new(servers))).map_err(|error| error.to_string()) },
             Message::ServersOpened,
         );
-        let service = Arc::clone(&state.remote.service);
+        let remote_tools = state.remote.tools.clone();
         let serve = Task::perform(
-            async move { RemoteHttp::start(service).await.map(Arc::new).map_err(|error| error.to_string()) },
+            async move { RemoteHttp::start(remote_tools).await.map(Arc::new).map_err(|error| error.to_string()) },
             Message::RemoteServing,
         );
         (state, Task::batch([open, serve, harness]))
@@ -263,7 +262,10 @@ impl State {
             (None, Some(error)) => (tools::ServerStatus::Error(error.clone()), String::new()),
             (None, None) => (tools::ServerStatus::Starting, String::new()),
         };
-        let tools = loa_remote::host_tools::specs()
+        let tools = self
+            .remote
+            .tools
+            .specs()
             .iter()
             .map(|spec| tools::ToolInfo::new(spec.name.clone(), listing::short_description(&spec.description)))
             .collect();
@@ -309,15 +311,7 @@ impl State {
     /// `~/.ssh/config`, and lists them.
     pub(crate) fn reload_hosts(&mut self, ctx: &mut Ctx) {
         let Some(entries) = ctx.read_config("Remote hosts").map(|config| config.remote_hosts) else { return };
-        let ssh = match self.ssh.ssh_config() {
-            Ok(ssh) => ssh,
-            Err(error) => {
-                ctx.notify(error);
-                let Some(empty) = self.ssh.empty() else { return };
-                empty
-            }
-        };
-        let (hosts, failed) = loa_remote::config::load(&entries, &ssh, &self.ssh.user);
+        let (hosts, failed) = loa_remote::config::load(&entries, &*self.ssh.resolver);
         self.remote.service.hosts().replace_all(hosts);
         self.panel.set_hosts(remote::panel_hosts(&entries));
         if !failed.is_empty() {
@@ -475,9 +469,9 @@ impl State {
                 )
             }
             tools::Event::ImportSshHosts => {
-                let ssh = self.ssh.ssh_config();
+                let resolver = Arc::clone(&self.ssh.resolver);
                 self.edit_hosts(ctx, |entries| {
-                    let added = loa_remote::config::import_aliases(entries, &ssh?);
+                    let added = loa_remote::config::import_aliases(entries, &*resolver);
                     Ok(Some(match added.len() {
                         0 => "No new hosts in ~/.ssh/config".to_owned(),
                         n => format!("Imported {n} hosts from ~/.ssh/config, read only until you open their limits"),
@@ -747,8 +741,8 @@ impl Area for State {
         for spec in mcp.specs() {
             let _ = router.add(spec.clone(), Arc::clone(&mcp) as _);
         }
-        let remote = Arc::new(RemoteHostTools::new(Arc::clone(&self.remote.service)));
-        for spec in loa_remote::host_tools::specs() {
+        let remote = Arc::new(self.remote.tools.clone());
+        for spec in remote.specs() {
             if settings.mcp_tool_enabled(REMOTE_SERVER, &spec.name) {
                 let _ = router.add(spec, Arc::clone(&remote) as _);
             }

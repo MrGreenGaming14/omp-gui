@@ -1,8 +1,5 @@
-//! Per host limits (#100): allowed paths, read only, commands allowed.
-//!
-//! Everything here runs before a byte is sent to the host. The symlink check
-//! that needs the remote file system lives in the service and runs before
-//! any read or write.
+//! Per host limits: allowed paths, read only, commands allowed. All checks here run before a byte
+//! is sent; the symlink check that needs the remote file system lives in the service.
 
 use serde::{Deserialize, Serialize};
 
@@ -12,24 +9,18 @@ use crate::audit::Action;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HostLimits {
-    /// Absolute path prefixes files must sit under. Empty allows no file
-    /// access at all; `/` allows every path.
+    /// Absolute path prefixes files must sit under; empty allows no file access, `/` every path.
     pub allowed_paths: Vec<String>,
     /// Refuse writes, edits and commands.
     pub read_only: bool,
     /// Whether `remote_bash` may run at all.
     pub commands: bool,
-    /// Writes and edits run without an approval card.
     pub auto_approve_writes: bool,
-    /// Commands run without an approval card.
     pub auto_approve_commands: bool,
     /// Cap on captured stdout and on captured stderr, each.
     pub max_output_bytes: usize,
-    /// Cap on a file read or written in one call.
     pub max_file_bytes: u64,
-    /// Command timeout when the call gives none.
     pub default_timeout_secs: u64,
-    /// Upper bound on any timeout the call asks for.
     pub max_timeout_secs: u64,
 }
 
@@ -53,10 +44,10 @@ impl HostLimits {
     /// Refuses actions the host does not allow at all.
     pub fn check_action(&self, action: Action) -> Result<(), String> {
         if self.read_only && action.mutates() {
-            return Err(format!("host is read only; {} refused", action.as_str()));
+            return Err(format!("host is read only; {action} refused"));
         }
         if action == Action::Command && !self.commands {
-            return Err("commands are not allowed on this host".to_string());
+            return Err("commands are not allowed on this host".to_owned());
         }
         Ok(())
     }
@@ -66,14 +57,10 @@ impl HostLimits {
         if self.allowed_paths.is_empty() {
             return Err(format!("{normalized} refused: no paths are allowed on this host"));
         }
-        if self.allowed_by_any(normalized, &self.prefixes()) {
-            Ok(())
-        } else {
-            Err(format!(
-                "{normalized} is outside the allowed paths ({})",
-                self.allowed_paths.join(", ")
-            ))
+        if self.prefixes().iter().any(|p| within(normalized, p)) {
+            return Ok(());
         }
+        Err(format!("{normalized} is outside the allowed paths ({})", self.allowed_paths.join(", ")))
     }
 
     /// Whether `action` needs the approval port.
@@ -85,30 +72,21 @@ impl HostLimits {
         }
     }
 
-    /// The allowed prefixes, normalized. Prefixes that do not normalize
-    /// (relative ones) are dropped, so they never allow anything.
+    /// The allowed prefixes, normalized; relative ones are dropped so they never allow anything.
     pub fn prefixes(&self) -> Vec<String> {
-        self.allowed_paths
-            .iter()
-            .filter_map(|p| normalize(p).ok())
-            .collect()
+        self.allowed_paths.iter().filter_map(|p| normalize(p).ok()).collect()
     }
 
     /// Whether `/` is allowed, so no path (or symlink) can escape.
     pub fn allows_every_path(&self) -> bool {
         self.prefixes().iter().any(|p| p == "/")
     }
-
-    pub(crate) fn allowed_by_any(&self, path: &str, prefixes: &[String]) -> bool {
-        prefixes.iter().any(|p| within(path, p))
-    }
 }
 
-/// Lexically normalizes an absolute POSIX path: collapses `//` and `.`,
-/// applies `..` (never above `/`). Relative paths and NUL bytes are refused.
+/// Lexically normalizes an absolute POSIX path (`//`, `.`, `..` never above `/`); refuses relative paths and NUL.
 pub fn normalize(path: &str) -> Result<String, String> {
     if path.contains('\0') {
-        return Err("path contains a NUL byte".to_string());
+        return Err("path contains a NUL byte".to_owned());
     }
     if !path.starts_with('/') {
         return Err(format!("path `{path}` is not absolute"));
@@ -117,45 +95,25 @@ pub fn normalize(path: &str) -> Result<String, String> {
     for part in path.split('/') {
         match part {
             "" | "." => {}
-            ".." => {
-                parts.pop();
-            }
+            ".." => drop(parts.pop()),
             p => parts.push(p),
         }
     }
-    let mut out = String::with_capacity(path.len());
-    for p in &parts {
-        out.push('/');
-        out.push_str(p);
-    }
-    if out.is_empty() {
-        out.push('/');
-    }
-    Ok(out)
+    Ok(if parts.is_empty() { "/".to_owned() } else { parts.iter().map(|p| format!("/{p}")).collect() })
 }
 
 /// Whether normalized `path` is `prefix` or below it.
 pub fn within(path: &str, prefix: &str) -> bool {
-    if prefix == "/" {
-        return true;
-    }
-    match path.strip_prefix(prefix) {
-        Some(rest) => rest.is_empty() || rest.starts_with('/'),
-        None => false,
-    }
+    prefix == "/" || path.strip_prefix(prefix).is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
 }
 
-/// The directory part of a normalized path.
-pub(crate) fn parent(path: &str) -> &str {
+/// The directory and the last component of a normalized path.
+pub(crate) fn split(path: &str) -> (&str, &str) {
     match path.rfind('/') {
-        Some(0) | None => "/",
-        Some(i) => &path[..i],
+        Some(0) => ("/", &path[1..]),
+        Some(i) => (&path[..i], &path[i + 1..]),
+        None => ("/", path),
     }
-}
-
-/// The last component of a normalized path.
-pub(crate) fn file_name(path: &str) -> &str {
-    path.rsplit('/').next().unwrap_or(path)
 }
 
 #[cfg(test)]
@@ -163,70 +121,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn dotdot_cannot_escape_an_allowed_prefix() {
-        let limits = HostLimits {
-            allowed_paths: vec!["/srv/app/".into()],
-            ..Default::default()
-        };
-        let escape = normalize("/srv/app/../../etc/shadow").unwrap();
-        assert_eq!(escape, "/etc/shadow");
-        assert!(limits.check_path(&escape).is_err());
-        assert!(limits.check_path(&normalize("/srv/app/./a//b").unwrap()).is_ok());
-        assert!(limits.check_path("/srv/app").is_ok());
-        assert!(
-            limits.check_path("/srv/application").is_err(),
-            "prefix must end on a component boundary"
-        );
-        assert_eq!(normalize("/../..").unwrap(), "/");
-        assert!(normalize("relative/x").is_err());
-        assert!(normalize("/a\0b").is_err());
-    }
-
-    #[test]
-    fn read_only_refuses_mutations_and_commands_flag_is_separate() {
-        let ro = HostLimits {
-            read_only: true,
-            ..Default::default()
-        };
-        assert!(ro.check_action(Action::Read).is_ok());
-        assert!(ro.check_action(Action::List).is_ok());
-        assert!(ro.check_action(Action::Write).is_err());
-        assert!(ro.check_action(Action::Edit).is_err());
-        assert!(ro.check_action(Action::Command).is_err());
-        let no_cmd = HostLimits {
-            commands: false,
-            ..Default::default()
-        };
-        assert!(no_cmd.check_action(Action::Write).is_ok());
-        assert!(no_cmd.check_action(Action::Command).is_err());
-    }
-
-    #[test]
-    fn no_allowed_paths_means_no_file_access_and_root_means_all() {
-        let none = HostLimits::default();
-        assert!(none.check_path("/srv/x").is_err());
-        assert!(!none.allows_every_path());
-        let all = HostLimits {
-            allowed_paths: vec!["/".into()],
-            ..Default::default()
-        };
-        assert!(all.check_path("/etc/hosts").is_ok());
-        assert!(all.allows_every_path());
-    }
-
-    #[test]
-    fn relative_allowed_prefix_allows_nothing() {
-        let limits = HostLimits {
-            allowed_paths: vec!["srv".into()],
-            ..Default::default()
-        };
-        assert!(limits.check_path("/srv/x").is_err());
-    }
-
-    #[test]
-    fn parent_and_name() {
-        assert_eq!(parent("/a/b/c"), "/a/b");
-        assert_eq!(parent("/a"), "/");
-        assert_eq!(file_name("/a/b/c"), "c");
+    fn paths_and_actions_are_checked_before_anything_is_sent() {
+        let srv = HostLimits { allowed_paths: vec!["/srv/app/".into(), "rel".into()], ..Default::default() };
+        let all = HostLimits { allowed_paths: vec!["/".into()], ..Default::default() };
+        for (limits, path, ok) in [
+            (&srv, "/srv/app/../../etc/shadow", false),
+            (&srv, "/srv/app/./a//b", true),
+            (&srv, "/srv/application", false),
+            (&srv, "/rel/x", false),
+            (&HostLimits::default(), "/srv/x", false),
+            (&all, "/etc/hosts", true),
+        ] {
+            assert_eq!(limits.check_path(&normalize(path).unwrap()).is_ok(), ok, "{path}");
+        }
+        assert!(all.allows_every_path() && !srv.allows_every_path());
+        assert_eq!(normalize("/../.."), Ok("/".into()));
+        assert!(normalize("relative/x").is_err() && normalize("/a\0b").is_err());
+        assert_eq!((split("/a/b/c"), split("/a")), (("/a/b", "c"), ("/", "a")));
+        let ro = HostLimits { read_only: true, ..Default::default() };
+        let no_cmd = HostLimits { commands: false, ..Default::default() };
+        let allowed = |l: &HostLimits| Action::ALL.iter().filter(|a| l.check_action(**a).is_ok()).copied().collect::<Vec<_>>();
+        assert_eq!(allowed(&ro), [Action::Read, Action::List]);
+        assert_eq!(allowed(&no_cmd), [Action::Read, Action::Write, Action::List, Action::Edit, Action::Terminal]);
     }
 }
