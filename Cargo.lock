@@ -4752,6 +4752,7 @@ dependencies = [
  "serde_path_to_error",
  "tempfile",
  "thiserror 2.0.21",
+ "tokio",
  "toml",
 ]
 
@@ -4889,6 +4890,7 @@ dependencies = [
  "ed25519-dalek 2.2.0",
  "futures",
  "iroh",
+ "loa-config",
  "loa-util",
  "mdns-sd",
  "prost 0.14.6",

@@ -219,11 +219,11 @@ fn updates_screen_checks_stages_gates_holds_pins_and_swaps_between_turns() {
 
     // Pin current: written to the central config; unpin removes it.
     screen(&mut app, updates::Message::Choose("fake".into(), updates::Choice::PinCurrent));
-    let pins = app.ctx.services.config.load().unwrap().config.updater.pins;
+    let pins = app.ctx.services.config.load().unwrap().updater.pins;
     assert_eq!(pins.get("fake").map(String::as_str), Some("1.0.0"));
     assert_eq!((fake(&app).pin.as_deref(), fake(&app).offer), (Some("1.0.0"), None));
     screen(&mut app, updates::Message::Unpin("fake".into()));
-    assert!(app.ctx.services.config.load().unwrap().config.updater.pins.is_empty());
+    assert!(app.ctx.services.config.load().unwrap().updater.pins.is_empty());
     assert_eq!(fake(&app).offer.as_deref(), Some("1.1.0"));
 
     // Update anyway while a turn runs: the swap waits for the turn to end.

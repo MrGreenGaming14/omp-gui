@@ -59,7 +59,7 @@ use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 
 /// Default port of every node, UDP and TCP.
-pub const DEFAULT_PORT: u16 = loa_net::network::DEFAULT_PORT;
+pub use loa_net::DEFAULT_PORT;
 /// Protocol versions this build speaks.
 const VERSIONS: &[u32] = &[1];
 /// How the panel names [`Resource::Sandbox`].

@@ -120,13 +120,7 @@ pub(crate) fn node_config(ctx: &Ctx, network: &NetworkSettings) -> NodeConfig {
 
 /// `[network]` from the central config; the defaults when it can't be read.
 fn network_settings(ctx: &mut Ctx) -> NetworkSettings {
-    match ctx.services.config.load() {
-        Ok(loaded) => loaded.config.network,
-        Err(error) => {
-            ctx.notify(format!("Can't read the network settings, using the defaults: {error}"));
-            NetworkSettings::default()
-        }
-    }
+    ctx.read_config("network settings, using the defaults").unwrap_or_default().network
 }
 
 impl State {
@@ -242,13 +236,7 @@ impl State {
         if self.node.is_none() {
             return Task::none();
         }
-        let hosts: Vec<String> = match ctx.services.config.load() {
-            Ok(loaded) => loaded.config.remote_hosts.into_keys().collect(),
-            Err(error) => {
-                ctx.notify(format!("Can't read the SSH hosts: {error}"));
-                Vec::new()
-            }
-        };
+        let hosts: Vec<String> = ctx.read_config("SSH hosts").unwrap_or_default().remote_hosts.into_keys().collect();
         let mcp = ctx.services.mcp.clone();
         Task::perform(
             async move {

@@ -1,6 +1,6 @@
 [package]
 name = "loa-config"
-description = "Central app config with a schema version and migrations"
+description = "Central app config with a schema version"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
@@ -11,8 +11,11 @@ loa-core.workspace = true
 loa-contracts.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tempfile.workspace = true
 thiserror.workspace = true
+tokio = { workspace = true }
 toml = "1.2"
 serde_ignored = "0.1.14"
 serde_path_to_error = "0.1.20"
+
+[dev-dependencies]
+tempfile.workspace = true

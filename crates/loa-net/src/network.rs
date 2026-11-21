@@ -4,8 +4,6 @@ use std::{net::SocketAddr, time::Duration};
 
 use crate::{NodeId, Result, conn::Connection, endpoint::{QuicNode, RelayConfig}, router::Router, tcp::TcpNode};
 
-/// Port used for both UDP and TCP when no explicit bind address is supplied.
-pub const DEFAULT_PORT: u16 = 31415;
 /// Time allowed for a direct or relayed QUIC handshake before trying TCP.
 pub const QUIC_DIAL_TIMEOUT: Duration = Duration::from_millis(400);
 

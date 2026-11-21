@@ -71,20 +71,15 @@ impl ConfigServers {
 impl ServerStore for ConfigServers {
     async fn load(&self) -> Result<Vec<ServerSpec>, StoreError> {
         let store = self.store.clone();
-        let loaded = tokio::task::spawn_blocking(move || store.load()).await??;
-        Ok(loaded.config.mcp_servers.iter().map(|(name, server)| from_config(name, server)).collect())
+        let config = tokio::task::spawn_blocking(move || store.load()).await??;
+        Ok(config.mcp_servers.iter().map(|(name, server)| from_config(name, server)).collect())
     }
 
     async fn save(&self, servers: &[ServerSpec]) -> Result<(), StoreError> {
         let store = self.store.clone();
         let table: BTreeMap<String, McpServer> =
             servers.iter().map(|spec| (spec.name.clone(), to_config(spec))).collect();
-        tokio::task::spawn_blocking(move || {
-            let mut config = store.load()?.config;
-            config.mcp_servers = table;
-            store.save(&config)
-        })
-        .await??;
+        tokio::task::spawn_blocking(move || store.edit(|config| config.mcp_servers = table)).await??;
         Ok(())
     }
 }
@@ -131,7 +126,7 @@ mod tests {
     async fn the_central_config_stores_servers_without_touching_other_keys() {
         let dir = tempfile::tempdir().unwrap();
         let store = ConfigStore::in_dir(dir.path());
-        let mut config = store.load().unwrap().config;
+        let mut config = store.load().unwrap();
         config.harness.default = "claude".into();
         store.save(&config).unwrap();
 
@@ -144,7 +139,7 @@ mod tests {
         };
         servers.save(&[fs.clone(), web.clone()]).await.unwrap();
         assert_eq!(servers.load().await.unwrap(), [fs.clone(), web]);
-        assert_eq!(store.load().unwrap().config.harness.default, "claude");
+        assert_eq!(store.load().unwrap().harness.default, "claude");
 
         let session = session_spec(&fs);
         assert_eq!(session.name, "fs");

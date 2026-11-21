@@ -762,12 +762,7 @@ fn unpin(ctx: &mut Ctx, id: &str) {
         let pins: Vec<String> = ctx.shell.sidebar().pins().iter().filter(|pin| *pin != id).cloned().collect();
         ctx.shell.set_pins(pins);
     }
-    let saved = ctx.services.config.load().and_then(|mut loaded| {
-        if loaded.config.pinned.remove(id) { ctx.services.config.save(&loaded.config) } else { Ok(()) }
-    });
-    if let Err(error) = saved {
-        ctx.notify(format!("Can't save the pins: {error}"));
-    }
+    ctx.edit_config("pins", |config| config.pinned.remove(id));
 }
 
 /// The session's mode, `normal` unless the DOM says otherwise.

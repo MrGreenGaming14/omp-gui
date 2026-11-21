@@ -1,280 +1,209 @@
-//! The typed config schema and its validation.
+//! The typed config schema. Defaults live in serde attributes; the non-derivable
+//! `Default`s deserialize an empty table, so the two can't drift apart.
 
 use crate::codec::UnknownKey;
-use crate::{Result, invalid};
-use loa_contracts::harness::{McpServerSpec, McpTransport};
-use loa_core::{DecisionKind, answer};
+use loa_contracts::harness::{McpServerSpec, McpTransport, SessionConfig};
+use loa_core::DecisionKind;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+use toml::Table;
 
 /// Schema version this build reads and writes.
 pub const CURRENT_VERSION: u32 = 1;
-
-/// The p2p port from the networking design (UDP for iroh, TCP fallback).
+/// The p2p port (UDP for iroh, TCP fallback). The one definition; loa-net and loa-node re-export it.
 pub const DEFAULT_PORT: u16 = 31415;
 
-/// The whole central config file.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+macro_rules! serde_default {
+    ($($ty:ty),*) => {$(
+        impl Default for $ty {
+            fn default() -> Self { Table::new().try_into().expect("serde defaults deserialize") }
+        }
+    )*};
+}
+serde_default!(SurfaceSettings, HarnessSettings, NetworkSettings, Discovery, UpdaterSettings, ProjectSettings);
+
+fn yes() -> bool { true }
+fn omp() -> String { "omp".to_owned() }
+fn port() -> u16 { DEFAULT_PORT }
+fn six_hours() -> u64 { 6 * 60 * 60 }
+fn smol() -> String { "smol".to_owned() }
+fn budget() -> u32 { 8_000 }
+
+/// The whole central config file. `version` is checked by the loader and written by the encoder.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
-    /// Schema version of the file. Set by the loader; see [`CURRENT_VERSION`].
-    pub version: u32,
-    pub theme: Theme,
-    /// Ids of the sessions pinned in the sidebar.
+    #[serde(rename = "theme")]
+    pub appearance: Appearance,
+    /// Session ids pinned in the sidebar.
     #[serde(skip_serializing_if = "BTreeSet::is_empty")]
     pub pinned: BTreeSet<String>,
-    /// Names of the projects pinned to the top of the sidebar project list.
     #[serde(skip_serializing_if = "BTreeSet::is_empty")]
     pub pinned_projects: BTreeSet<String>,
-    /// The project whose folder is the active folder, restored at startup.
+    /// Restored at startup while its folder exists.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub active_project: Option<ActiveProject>,
     /// Whether open projects show as tabs across the top.
-    #[serde(skip_serializing_if = "is_false")]
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub project_tabs: bool,
     pub harness: HarnessSettings,
     pub network: NetworkSettings,
     pub updater: UpdaterSettings,
     pub unattended: UnattendedSettings,
     pub surfaces: SurfaceSettings,
-    /// MCP servers by name.
     pub mcp_servers: BTreeMap<String, McpServer>,
     /// SSH hosts the `remote` MCP server may reach, by name.
     pub remote_hosts: BTreeMap<String, RemoteHost>,
-    /// Per project settings, by project id.
+    /// By project id.
     pub projects: BTreeMap<String, ProjectSettings>,
-    /// Keys from the file this build doesn't know, written back on save.
     #[serde(skip)]
     pub(crate) unknown: Vec<UnknownKey>,
 }
 
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            version: CURRENT_VERSION,
-            theme: Theme::default(),
-            pinned: BTreeSet::new(),
-            pinned_projects: BTreeSet::new(),
-            active_project: None,
-            project_tabs: false,
-            harness: HarnessSettings::default(),
-            network: NetworkSettings::default(),
-            updater: UpdaterSettings::default(),
-            unattended: UnattendedSettings::default(),
-            surfaces: SurfaceSettings::default(),
-            mcp_servers: BTreeMap::new(),
-            remote_hosts: BTreeMap::new(),
-            projects: BTreeMap::new(),
-            unknown: Vec::new(),
-        }
-    }
-}
-
-fn is_false(flag: &bool) -> bool {
-    !*flag
-}
-
-/// The project the user last selected and the folder it runs in.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActiveProject {
     pub name: String,
     pub cwd: PathBuf,
 }
 
-/// UI color scheme.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Theme {
-    /// Follow the OS light or dark setting.
-    #[default]
-    System,
-    Dark,
-    Light,
-}
-
-/// The Surfaces panel: how live surfaces stream.
+/// A theme by registry name or file path; the legacy `system`, `dark` and `light` are registry names.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct SurfaceSettings {
-    /// Live surfaces (browser, VMs) stream H.264 or HEVC video, hardware
-    /// encoded when the machine can.
-    pub video: bool,
-    /// How browser surfaces are captured.
-    pub browser_capture: BrowserCapture,
-}
+#[serde(transparent)]
+pub struct ThemeRef(pub String);
 
-impl Default for SurfaceSettings {
-    fn default() -> Self {
-        Self { video: true, browser_capture: BrowserCapture::Screencast }
+impl ThemeRef {
+    pub const SYSTEM: &str = "system";
+
+    pub fn as_str(&self) -> &str {
+        &self.0
     }
 }
 
-/// Where browser surface frames come from.
+impl Default for ThemeRef {
+    fn default() -> Self {
+        Self(Self::SYSTEM.to_owned())
+    }
+}
+
+/// The UI theme plus token overrides; config names a theme, never its colors. Written as
+/// `theme = "<name>"`, or as a `[theme]` table with `name` and the overrides.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(from = "AppearanceRepr", into = "AppearanceRepr")]
+pub struct Appearance {
+    pub theme: ThemeRef,
+    pub overrides: Table,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+enum AppearanceRepr {
+    Name(ThemeRef),
+    Table {
+        #[serde(default)]
+        name: ThemeRef,
+        #[serde(flatten)]
+        overrides: Table,
+    },
+}
+
+impl From<AppearanceRepr> for Appearance {
+    fn from(repr: AppearanceRepr) -> Self {
+        match repr {
+            AppearanceRepr::Name(theme) => Self { theme, overrides: Table::new() },
+            AppearanceRepr::Table { name, overrides } => Self { theme: name, overrides },
+        }
+    }
+}
+
+impl From<Appearance> for AppearanceRepr {
+    fn from(a: Appearance) -> Self {
+        if a.overrides.is_empty() { Self::Name(a.theme) } else { Self::Table { name: a.theme, overrides: a.overrides } }
+    }
+}
+
+/// How live surfaces stream: H.264/HEVC video, and where browser frames come from.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SurfaceSettings {
+    #[serde(default = "yes")] pub video: bool,
+    #[serde(default)] pub browser_capture: BrowserCapture,
+}
+
+/// Headless Chrome's own screencast, or headed Chrome on an Xvfb display captured raw.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum BrowserCapture {
-    /// Headless Chrome's own screencast.
     #[default]
     Screencast,
-    /// Headed Chrome on an Xvfb virtual display, captured raw.
     VirtualDisplay,
 }
 
-/// Which harness new sessions use and where each harness's executable lives.
+/// The harness new sessions use, executable overrides by harness name, and omp's approval mode.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
 pub struct HarnessSettings {
-    /// Harness name as registered in `loa_contracts::harness::Registry`.
-    pub default: String,
-    /// Executable per harness name, used instead of the one on `PATH`.
-    pub executables: BTreeMap<String, PathBuf>,
-    /// omp's approval mode for new sessions (`always-ask`,
-    /// `always-ask-cached`, `write`, `yolo`); unset uses the app's default,
-    /// `always-ask`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub approval_mode: Option<String>,
-}
-
-impl Default for HarnessSettings {
-    fn default() -> Self {
-        Self { default: "omp".to_owned(), executables: BTreeMap::new(), approval_mode: None }
-    }
+    #[serde(default = "omp")] pub default: String,
+    #[serde(default)] pub executables: BTreeMap<String, PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub approval_mode: Option<String>,
 }
 
 impl HarnessSettings {
-    /// The executable override for `harness`, if one is set.
     pub fn executable(&self, harness: &str) -> Option<&Path> {
         self.executables.get(harness).map(PathBuf::as_path)
     }
 }
 
-/// The p2p endpoint settings.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
 pub struct NetworkSettings {
-    /// UDP (iroh) and TCP fallback port.
-    pub port: u16,
-    pub relay: Relay,
-    pub discovery: Discovery,
+    #[serde(default = "port")] pub port: u16,
+    #[serde(default)] pub relay: Relay,
+    #[serde(default)] pub discovery: Discovery,
 }
 
-impl Default for NetworkSettings {
-    fn default() -> Self {
-        Self { port: DEFAULT_PORT, relay: Relay::Default, discovery: Discovery::default() }
-    }
-}
-
-/// Relay used when no direct path to a peer exists.
-///
-/// Written as `"default"`, `"off"` or an `http(s)` URL.
+/// Relay used when no direct path to a peer exists: `"default"` (iroh's), `"off"` or an `http(s)` URL.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(try_from = "String", into = "String")]
+#[serde(rename_all = "lowercase")]
 pub enum Relay {
-    /// iroh's public relays.
     #[default]
     Default,
-    /// Direct connections only.
     Off,
-    /// A self hosted relay.
+    #[serde(untagged)]
     Url(String),
 }
 
-impl TryFrom<String> for Relay {
-    type Error = String;
-
-    fn try_from(value: String) -> Result<Self, String> {
-        match value.as_str() {
-            "default" => Ok(Self::Default),
-            "off" => Ok(Self::Off),
-            url if is_http_url(url) => Ok(Self::Url(value)),
-            _ => Err(format!("expected \"default\", \"off\" or an http(s) URL, found {value:?}")),
-        }
-    }
-}
-
-impl From<Relay> for String {
-    fn from(relay: Relay) -> Self {
-        match relay {
-            Relay::Default => "default".to_owned(),
-            Relay::Off => "off".to_owned(),
-            Relay::Url(url) => url,
-        }
-    }
-}
-
-/// How peers are found without typing their key.
+/// How peers are found without typing their key: mDNS and Tailscale MagicDNS.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
 pub struct Discovery {
-    /// mDNS on the local network.
-    pub mdns: bool,
-    /// Tailscale MagicDNS names.
-    pub tailscale: bool,
+    #[serde(default = "yes")] pub mdns: bool,
+    #[serde(default = "yes")] pub tailscale: bool,
 }
 
-impl Default for Discovery {
-    fn default() -> Self {
-        Self { mdns: true, tailscale: true }
-    }
-}
-
-/// Update checks for the app, omp and the harnesses.
+/// Update checks; `pins` holds a version per component, `trusted_keys` hex ed25519 release keys.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
 pub struct UpdaterSettings {
-    /// Seconds between release feed checks.
-    pub check_interval_secs: u64,
-    /// Version pinned per component (`app`, `omp`, a harness name). A pinned
-    /// component is never updated.
-    pub pins: BTreeMap<String, String>,
-    /// GitHub token for release feed checks; raises the rate limit.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub github_token: Option<String>,
-    /// Hex ed25519 public keys app releases must be signed with.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub trusted_keys: Vec<String>,
-}
-
-impl Default for UpdaterSettings {
-    fn default() -> Self {
-        Self { check_interval_secs: 6 * 60 * 60, pins: BTreeMap::new(), github_token: None, trusted_keys: Vec::new() }
-    }
+    #[serde(default = "six_hours")] pub check_interval_secs: u64,
+    #[serde(default)] pub pins: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub github_token: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")] pub trusted_keys: Vec<String>,
 }
 
 impl UpdaterSettings {
     pub fn check_interval(&self) -> Duration {
         Duration::from_secs(self.check_interval_secs)
     }
-
-    /// The pinned version of `component`, if any.
-    pub fn pin(&self, component: &str) -> Option<&str> {
-        self.pins.get(component).map(String::as_str)
-    }
 }
 
-/// Default answers for decisions nobody answers in time, one per kind.
-/// A kind without an entry waits forever.
+/// Default answers for decisions nobody answers in time; a kind without one waits forever.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UnattendedSettings {
-    /// Answer is one of `allow_once`, `allow_session`, `deny`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub approval: Option<DecisionDefault>,
-    /// Answer is an option label or free text.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub question: Option<DecisionDefault>,
-    /// Answer is `approve` or `reject`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub plan: Option<DecisionDefault>,
-    /// Answer is a JSON object with the field values.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub form: Option<DecisionDefault>,
+    #[serde(skip_serializing_if = "Option::is_none")] pub approval: Option<DecisionDefault>,
+    #[serde(skip_serializing_if = "Option::is_none")] pub question: Option<DecisionDefault>,
+    #[serde(skip_serializing_if = "Option::is_none")] pub plan: Option<DecisionDefault>,
+    #[serde(skip_serializing_if = "Option::is_none")] pub form: Option<DecisionDefault>,
 }
 
 impl UnattendedSettings {
-    /// The timeout and default answer for decisions of `kind`.
     pub fn for_kind(&self, kind: DecisionKind) -> Option<&DecisionDefault> {
         match kind {
             DecisionKind::Approval => self.approval.as_ref(),
@@ -285,312 +214,109 @@ impl UnattendedSettings {
     }
 }
 
-/// What to answer when a decision has waited `timeout_secs`.
+/// What to answer when a decision has waited `timeout_secs`; `reason` is recorded with it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DecisionDefault {
     pub timeout_secs: u64,
     pub answer: String,
-    /// Recorded as the decision's `reason`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub reason: Option<String>,
 }
 
-impl DecisionDefault {
-    pub fn timeout(&self) -> Duration {
-        Duration::from_secs(self.timeout_secs)
-    }
-}
-
-/// A registered MCP server.
+/// A registered MCP server; a disabled one stays registered but isn't started.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "McpServerRepr", into = "McpServerRepr")]
 pub struct McpServer {
     pub transport: McpTransport,
-    /// A disabled server stays registered but isn't started or given to harnesses.
     pub enabled: bool,
 }
 
 impl McpServer {
-    /// The server as the adapter contract describes it.
     pub fn spec(&self, name: &str) -> McpServerSpec {
         McpServerSpec { name: name.to_owned(), transport: self.transport.clone() }
     }
 }
 
 /// File shape of [`McpServer`]: `command` (stdio) or `url` (HTTP), never both.
-#[derive(Serialize, Deserialize)]
+#[derive(Default, Serialize, Deserialize)]
+#[serde(default)]
 struct McpServerRepr {
-    #[serde(default = "yes")]
-    enabled: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    command: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    args: Vec<String>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    env: BTreeMap<String, String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    url: Option<String>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    headers: BTreeMap<String, String>,
-}
-
-fn yes() -> bool {
-    true
+    #[serde(default = "yes")] enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")] command: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")] args: Vec<String>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")] env: BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "Option::is_none")] url: Option<String>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")] headers: BTreeMap<String, String>,
 }
 
 impl TryFrom<McpServerRepr> for McpServer {
-    type Error = String;
+    type Error = &'static str;
 
-    fn try_from(repr: McpServerRepr) -> Result<Self, String> {
-        let transport = match (repr.command, repr.url) {
-            (Some(command), None) => {
-                if !repr.headers.is_empty() {
-                    return Err("`headers` only applies to servers with a `url`".to_owned());
-                }
-                if command.trim().is_empty() {
-                    return Err("`command` must not be empty".to_owned());
-                }
-                McpTransport::Stdio { command, args: repr.args, env: repr.env }
-            }
-            (None, Some(url)) => {
-                if !repr.args.is_empty() || !repr.env.is_empty() {
-                    return Err("`args` and `env` only apply to servers with a `command`".to_owned());
-                }
-                if !is_http_url(&url) {
-                    return Err(format!("`url` must be an http(s) URL, found {url:?}"));
-                }
-                McpTransport::Http { url, headers: repr.headers }
-            }
-            (Some(_), Some(_)) => return Err("set `command` or `url`, not both".to_owned()),
-            (None, None) => return Err("set `command` (stdio) or `url` (HTTP)".to_owned()),
+    fn try_from(r: McpServerRepr) -> Result<Self, Self::Error> {
+        let transport = match (r.command, r.url) {
+            (Some(command), None) if r.headers.is_empty() => McpTransport::Stdio { command, args: r.args, env: r.env },
+            (None, Some(url)) if r.args.is_empty() && r.env.is_empty() => McpTransport::Http { url, headers: r.headers },
+            (Some(_), Some(_)) => return Err("set `command` or `url`, not both"),
+            (None, None) => return Err("set `command` (stdio) or `url` (HTTP)"),
+            _ => return Err("`args` and `env` only apply to `command` servers, `headers` only to `url` ones"),
         };
-        Ok(Self { transport, enabled: repr.enabled })
+        Ok(Self { transport, enabled: r.enabled })
     }
 }
 
 impl From<McpServer> for McpServerRepr {
-    fn from(server: McpServer) -> Self {
-        let mut repr = Self {
-            enabled: server.enabled,
-            command: None,
-            args: Vec::new(),
-            env: BTreeMap::new(),
-            url: None,
-            headers: BTreeMap::new(),
-        };
-        match server.transport {
-            McpTransport::Stdio { command, args, env } => {
-                repr.command = Some(command);
-                repr.args = args;
-                repr.env = env;
-            }
-            McpTransport::Http { url, headers } => {
-                repr.url = Some(url);
-                repr.headers = headers;
-            }
+    fn from(s: McpServer) -> Self {
+        let enabled = s.enabled;
+        match s.transport {
+            McpTransport::Stdio { command, args, env } => Self { enabled, command: Some(command), args, env, ..Self::default() },
+            McpTransport::Http { url, headers } => Self { enabled, url: Some(url), headers, ..Self::default() },
         }
-        repr
     }
 }
 
-/// An SSH host and the limits on what the agent may do there.
+/// An SSH host (name, address or `~/.ssh/config` alias) and what the agent may do there:
+/// touch the absolute `allowed_paths` and below, run commands, skip approval cards.
+/// loa-remote enforces the limits.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteHost {
-    /// Host name or address, or a `Host` alias from `~/.ssh/config`.
     pub host: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub user: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub port: Option<u16>,
-    /// `ProxyJump` value, as in `~/.ssh/config`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub proxy_jump: Option<String>,
-    /// Absolute remote paths the agent may touch, each with everything below
-    /// it. Empty means no file access.
-    #[serde(default)]
-    pub allowed_paths: Vec<String>,
-    #[serde(default = "yes")]
-    pub read_only: bool,
-    /// Whether `remote_bash` may run commands.
-    #[serde(default)]
-    pub commands: bool,
-    /// Writes and commands run without an approval card.
-    #[serde(default)]
-    pub auto_approve: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub user: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub port: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub proxy_jump: Option<String>,
+    #[serde(default)] pub allowed_paths: Vec<String>,
+    #[serde(default = "yes")] pub read_only: bool,
+    #[serde(default)] pub commands: bool,
+    #[serde(default)] pub auto_approve: bool,
 }
 
-impl RemoteHost {
-    /// Whether `path` lies inside one of the allowed paths. Relative paths and
-    /// paths with `..` are refused, since they could escape the allowed tree.
-    pub fn allows_read(&self, path: &str) -> bool {
-        let Some(path) = remote_components(path) else { return false };
-        self.allowed_paths.iter().filter_map(|allowed| remote_components(allowed)).any(|allowed| {
-            allowed.len() <= path.len() && allowed.iter().zip(&path).all(|(a, p)| a == p)
-        })
-    }
-
-    /// Whether `path` may be written: the host isn't read only and the path is allowed.
-    pub fn allows_write(&self, path: &str) -> bool {
-        !self.read_only && self.allows_read(path)
-    }
-}
-
-/// Components of an absolute POSIX path with `.` and empty parts dropped, or
-/// `None` when the path is relative or contains `..`.
-fn remote_components(path: &str) -> Option<Vec<&str>> {
-    let rest = path.strip_prefix('/')?;
-    let mut parts = Vec::new();
-    for part in rest.split('/') {
-        match part {
-            "" | "." => {}
-            ".." => return None,
-            part => parts.push(part),
-        }
-    }
-    Some(parts)
-}
-
-/// Settings shared by every session of one project.
+/// Settings shared by every session of one project: instructions, always-included files,
+/// the omp role and token budget for session digests, and switched-off tools.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
 pub struct ProjectSettings {
-    /// Shared instructions given to every chat in the project.
-    pub instructions: String,
-    /// Files always included in the project context.
-    pub pinned_files: Vec<PathBuf>,
-    /// omp model role that writes session digests.
-    pub digest_role: String,
-    /// Token budget the ranked digests are packed into.
-    pub token_budget: u32,
-    /// Built in tools switched off in this project.
-    pub disabled_tools: BTreeSet<String>,
-    /// MCP tools switched off in this project, by server name.
-    pub disabled_mcp_tools: BTreeMap<String, BTreeSet<String>>,
-}
-
-impl Default for ProjectSettings {
-    fn default() -> Self {
-        Self {
-            instructions: String::new(),
-            pinned_files: Vec::new(),
-            digest_role: "smol".to_owned(),
-            token_budget: 8_000,
-            disabled_tools: BTreeSet::new(),
-            disabled_mcp_tools: BTreeMap::new(),
-        }
-    }
+    #[serde(default)] pub instructions: String,
+    #[serde(default)] pub pinned_files: Vec<PathBuf>,
+    #[serde(default = "smol")] pub digest_role: String,
+    #[serde(default = "budget")] pub token_budget: u32,
+    #[serde(default)] pub disabled_tools: BTreeSet<String>,
+    /// By MCP server name.
+    #[serde(default)] pub disabled_mcp_tools: BTreeMap<String, BTreeSet<String>>,
 }
 
 impl ProjectSettings {
-    /// Whether the built in tool `tool` is on.
-    pub fn tool_enabled(&self, tool: &str) -> bool {
-        !self.disabled_tools.contains(tool)
-    }
-
-    /// Whether `tool` of MCP server `server` is on.
     pub fn mcp_tool_enabled(&self, server: &str, tool: &str) -> bool {
         self.disabled_mcp_tools.get(server).is_none_or(|tools| !tools.contains(tool))
     }
 }
 
 impl Config {
-    /// Checks the rules serde can't express. The error names the offending key.
-    pub fn validate(&self) -> Result<()> {
-        if self.harness.default.trim().is_empty() {
-            return Err(invalid("harness.default", "must name a harness"));
-        }
-        for (name, exe) in &self.harness.executables {
-            if exe.as_os_str().is_empty() {
-                return Err(invalid(format!("harness.executables.{name}"), "must not be empty"));
-            }
-        }
-        if self.network.port == 0 {
-            return Err(invalid("network.port", "must be between 1 and 65535"));
-        }
-        if self.updater.check_interval_secs == 0 {
-            return Err(invalid("updater.check_interval_secs", "must be at least 1"));
-        }
-        for (component, version) in &self.updater.pins {
-            if version.trim().is_empty() {
-                return Err(invalid(format!("updater.pins.{component}"), "must be a version"));
-            }
-        }
-        self.validate_unattended()?;
-        for name in self.mcp_servers.keys() {
-            if name.trim().is_empty() {
-                return Err(invalid("mcp_servers", "server names must not be empty"));
-            }
-        }
-        for (name, host) in &self.remote_hosts {
-            let key = |field: &str| format!("remote_hosts.{name}.{field}");
-            if host.host.trim().is_empty() {
-                return Err(invalid(key("host"), "must not be empty"));
-            }
-            if host.port == Some(0) {
-                return Err(invalid(key("port"), "must be between 1 and 65535"));
-            }
-            if let Some(bad) = host.allowed_paths.iter().find(|p| remote_components(p).is_none()) {
-                return Err(invalid(
-                    key("allowed_paths"),
-                    format!("must hold absolute paths without `..`, found {bad:?}"),
-                ));
-            }
-        }
-        for (id, project) in &self.projects {
-            let key = |field: &str| format!("projects.{id}.{field}");
-            if project.digest_role.trim().is_empty() {
-                return Err(invalid(key("digest_role"), "must name a model role"));
-            }
-            if project.token_budget == 0 {
-                return Err(invalid(key("token_budget"), "must be at least 1"));
-            }
-            if project.pinned_files.iter().any(|p| p.as_os_str().is_empty()) {
-                return Err(invalid(key("pinned_files"), "must not hold empty paths"));
-            }
-        }
-        Ok(())
-    }
-
-    fn validate_unattended(&self) -> Result<()> {
-        let u = &self.unattended;
-        let kinds = [
-            ("approval", &u.approval, AnswerRule::OneOf(&[answer::ALLOW_ONCE, answer::ALLOW_SESSION, answer::DENY])),
-            ("question", &u.question, AnswerRule::NonEmpty),
-            ("plan", &u.plan, AnswerRule::OneOf(&[answer::APPROVE, answer::REJECT])),
-            ("form", &u.form, AnswerRule::JsonObject),
-        ];
-        for (kind, default, rule) in kinds {
-            let Some(default) = default else { continue };
-            if default.timeout_secs == 0 {
-                return Err(invalid(format!("unattended.{kind}.timeout_secs"), "must be at least 1"));
-            }
-            rule.check(&default.answer)
-                .map_err(|reason| invalid(format!("unattended.{kind}.answer"), reason))?;
-        }
-        Ok(())
-    }
-
     /// Settings of project `id`, or the defaults when it has none.
     pub fn project(&self, id: &str) -> ProjectSettings {
         self.projects.get(id).cloned().unwrap_or_default()
     }
 
-    /// Enabled MCP servers as the adapter contract describes them.
-    pub fn mcp_specs(&self) -> Vec<McpServerSpec> {
-        self.mcp_servers
-            .iter()
-            .filter(|(_, server)| server.enabled)
-            .map(|(name, server)| server.spec(name))
-            .collect()
-    }
-
-    /// Adds the parts of a session's config the central config decides:
-    /// enabled MCP servers, the project's disabled built in tools and the
-    /// harness executable override. Servers, tools and an executable the
-    /// caller already set are kept. Disabled MCP tools are filtered by the MCP
-    /// client.
-    pub fn apply_to_session(&self, harness: &str, session: &mut loa_contracts::harness::SessionConfig) {
-        session.mcp_servers.extend(self.mcp_specs());
+    /// Adds enabled MCP servers, the project's disabled tools and the harness
+    /// executable override to `session`, keeping whatever the caller set.
+    pub fn apply_to_session(&self, harness: &str, session: &mut SessionConfig) {
+        session.mcp_servers.extend(self.mcp_servers.iter().filter(|(_, s)| s.enabled).map(|(name, s)| s.spec(name)));
         if let Some(project) = session.project.as_deref().and_then(|p| self.projects.get(p)) {
             session.disabled_tools.extend(project.disabled_tools.iter().cloned());
         }
@@ -598,31 +324,4 @@ impl Config {
             session.executable = self.harness.executable(harness).map(Path::to_path_buf);
         }
     }
-}
-
-enum AnswerRule {
-    OneOf(&'static [&'static str]),
-    NonEmpty,
-    JsonObject,
-}
-
-impl AnswerRule {
-    fn check(&self, answer: &str) -> Result<(), String> {
-        match self {
-            Self::OneOf(allowed) if !allowed.contains(&answer) => {
-                Err(format!("must be one of {}, found {answer:?}", allowed.join(", ")))
-            }
-            Self::NonEmpty if answer.trim().is_empty() => Err("must not be empty".to_owned()),
-            Self::JsonObject => serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(answer)
-                .map(drop)
-                .map_err(|e| format!("must be a JSON object: {e}")),
-            _ => Ok(()),
-        }
-    }
-}
-
-fn is_http_url(s: &str) -> bool {
-    ["https://", "http://"]
-        .iter()
-        .any(|scheme| s.strip_prefix(scheme).is_some_and(|rest| !rest.is_empty()))
 }

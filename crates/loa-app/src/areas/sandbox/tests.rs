@@ -340,7 +340,7 @@ mod peer {
     /// UDP port it listens on.
     fn networked(rt: &Runtime, dir: &Path, seed: u8, name: &str) -> (App, Peer, u16) {
         let (mut app, _, peer) = scripted_app_as(dir, seed, name);
-        let mut settings = app.ctx.services.config.load().unwrap().config;
+        let mut settings = app.ctx.services.config.load().unwrap();
         settings.network.discovery.mdns = false;
         settings.network.discovery.tailscale = false;
         settings.network.port = 0;

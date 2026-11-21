@@ -279,7 +279,7 @@ fn unattended_prompts_are_turned_on_in_the_palette_saved_and_answer_after_the_ti
     let dir = tempfile::tempdir().unwrap();
     let mut app = fake_app(dir.path(), &["fake-a"]);
     palette(&mut app, "Unattended prompts: deny approvals");
-    let saved = app.ctx.services.config.load().unwrap().config.unattended;
+    let saved = app.ctx.services.config.load().unwrap().unattended;
     assert_eq!(saved.approval.as_ref().map(|d| (d.answer.as_str(), d.timeout_secs)), Some((loa_core::answer::DENY, 300)));
     assert_eq!(saved.plan.as_ref().map(|d| d.answer.as_str()), Some(loa_core::answer::REJECT));
 
@@ -289,7 +289,7 @@ fn unattended_prompts_are_turned_on_in_the_palette_saved_and_answer_after_the_ti
     let _ = app.view();
     let shorter = unattended::Message::Timeout(loa_core::DecisionKind::Approval, unattended::Duration(30));
     update(&mut app, desk_message(desk::Message::Settings(shorter)));
-    let saved = app.ctx.services.config.load().unwrap().config.unattended;
+    let saved = app.ctx.services.config.load().unwrap().unattended;
     assert_eq!(saved.approval.map(|d| d.timeout_secs), Some(30));
     update(&mut app, AppMessage::Decisions(Message::CloseSettings));
     assert_eq!(app.ctx.screen(), None);
@@ -312,6 +312,6 @@ fn unattended_prompts_are_turned_on_in_the_palette_saved_and_answer_after_the_ti
     let mut app = fake_app(dir.path(), &["fake-a"]);
     assert!(app.areas.decisions.desk.policy().enabled());
     palette(&mut app, "Unattended prompts: wait for someone");
-    assert_eq!(app.ctx.services.config.load().unwrap().config.unattended, Default::default());
+    assert_eq!(app.ctx.services.config.load().unwrap().unattended, Default::default());
     assert!(active(&app).is_none());
 }
