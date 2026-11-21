@@ -29,6 +29,13 @@ const DEFAULT_VIEWPORT: f32 = 1200.0;
 /// Width of one monospace character at the mono text size.
 fn char_width() -> f32 { ts(T::Mono) * 0.6 }
 
+/// File rows use label text and include vertical button padding.
+fn file_row_height() -> f32 { ts(T::Label) + 2.0 * sp(Sp::Xs) }
+
+fn file_label<'a>(content: impl text::IntoFragment<'a>) -> text::Text<'a> {
+    text(content).size(ts(T::Label)).line_height(1.0)
+}
+
 /// Height of the file list when a diff has several files.
 const FILE_LIST_HEIGHT: f32 = 140.0;
 
@@ -256,21 +263,21 @@ impl State {
                 FileStatus::Renamed => "R",
             };
             let label = row![
-                text(marker).size(ts(T::Label)).font(Font::MONOSPACE).style(kit::text(Tone::Muted)),
-                text(file.path()).size(ts(T::Label)).wrapping(text::Wrapping::None).width(Length::Fill),
-                text(format!("+{}", file.added())).size(ts(T::Label)).style(kit::text(Tone::Ok)),
-                text(format!("-{}", file.removed())).size(ts(T::Label)).style(kit::text(Tone::Danger)),
+                file_label(marker).font(Font::MONOSPACE).style(kit::text(Tone::Muted)),
+                file_label(file.path()).wrapping(text::Wrapping::None).width(Length::Fill),
+                file_label(format!("+{}", file.added())).style(kit::text(Tone::Ok)),
+                file_label(format!("-{}", file.removed())).style(kit::text(Tone::Danger)),
             ]
             .spacing(sp(Sp::S));
             button(label)
                 .width(Length::Fill)
-                .height(crate::row_height())
+                .height(file_row_height())
                 .padding([sp(Sp::Xs), sp(Sp::S)])
                 .style(kit::button(ButtonKind::Row { selected: index == self.selected }))
                 .on_press(Message::SelectFile(index))
                 .into()
         });
-        let list_height = (self.files.len() as f32 * crate::row_height()).min(FILE_LIST_HEIGHT);
+        let list_height = (self.files.len() as f32 * file_row_height()).min(FILE_LIST_HEIGHT);
         scrollable(column(entries)).height(list_height).into()
     }
 
@@ -302,7 +309,7 @@ impl State {
                     hunk.new_len,
                     file.section(&hunk)
                 );
-                container(text(header).size(ts(T::Caption)).wrapping(text::Wrapping::None).style(kit::text(Tone::Muted)))
+                container(mono(header).style(kit::text(Tone::Muted)))
                     .width(Length::Fill)
                     .height(Length::Fill)
                     .align_y(iced::Center)
@@ -339,7 +346,7 @@ enum Side {
 }
 
 fn mono<'a>(content: impl text::IntoFragment<'a>) -> text::Text<'a> {
-    text(content).size(ts(T::Label)).font(Font::MONOSPACE).wrapping(text::Wrapping::None)
+    text(content).size(ts(T::Mono)).line_height(1.0).font(Font::MONOSPACE).wrapping(text::Wrapping::None)
 }
 
 /// Digits needed for the largest line number of the file.

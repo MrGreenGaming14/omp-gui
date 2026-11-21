@@ -1009,7 +1009,16 @@ impl App {
                         Task::none()
                     }
                     Some(shell::Event::SetTheme(theme)) => {
+                        let active = self.ctx.shell.theme();
+                        self.chat.set_theme(&active);
+                        self.areas.decisions.set_theme(&active);
                         self.save_ui(|config| config.appearance.theme = theme);
+                        Task::none()
+                    }
+                    Some(shell::Event::ThemeChanged(_)) => {
+                        let active = self.ctx.shell.theme();
+                        self.chat.set_theme(&active);
+                        self.areas.decisions.set_theme(&active);
                         Task::none()
                     }
                     Some(shell::Event::SetPinned { .. }) => {

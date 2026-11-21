@@ -25,6 +25,14 @@ fn header(h: &Hunk) -> (u32, u32, u32, u32) {
 }
 
 #[test]
+fn fixed_diff_and_file_rows_include_their_text_and_padding() {
+    let padding = 2.0 * sp(Sp::Xs);
+    assert_eq!(crate::row_height(), ts(T::Mono) + padding);
+    assert_eq!(char_width(), ts(T::Mono) * 0.6);
+    assert_eq!(file_row_height(), ts(T::Label) + padding);
+}
+
+#[test]
 fn one_change_gets_diff_u_hunk_and_folds_on_both_sides() {
     let old = numbered(20);
     let new = replace_line(&old, 10, "line ten");
