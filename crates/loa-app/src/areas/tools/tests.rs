@@ -229,7 +229,7 @@ impl Rig {
     }
 
     fn config(&self) -> loa_config::Config {
-        self.app.ctx.services.config.load().unwrap().config
+        self.app.ctx.services.config.load().unwrap()
     }
 
     fn project(&self) -> String {

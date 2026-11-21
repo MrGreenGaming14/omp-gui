@@ -226,14 +226,14 @@ impl App {
     /// registered.
     pub fn build(mut services: Services) -> (Self, Task<Message>) {
         // Sidebar pins, the theme and the active project are app data in the central config.
-        let saved = services.config.load().map(|loaded| loaded.config).unwrap_or_default();
+        let saved = services.config.load().unwrap_or_default();
         // The project selected last run, while its folder still exists, is the active one from the start.
         let restored = saved.active_project.filter(|active| active.cwd.is_dir());
         if let Some(active) = &restored {
             services.set_active(active.name.clone(), active.cwd.clone());
         }
         let (shell, setup) =
-            shell::State::new(preference(saved.theme), shell::PanelPrefs { open: true, ..Default::default() });
+            shell::State::new(preference(&saved.appearance.theme), shell::PanelPrefs { open: true, ..Default::default() });
         let theme = shell.theme();
         let mut composer = composer::State::new();
         let mut sessions = Sessions::default();
@@ -344,13 +344,7 @@ impl App {
 
     /// Saves a change to the app's own config keys (theme, sidebar pins).
     fn save_ui(&mut self, change: impl FnOnce(&mut loa_config::Config)) {
-        let saved = self.ctx.services.config.load().and_then(|mut loaded| {
-            change(&mut loaded.config);
-            self.ctx.services.config.save(&loaded.config)
-        });
-        if let Err(error) = saved {
-            self.ctx.notify(format!("Can't save the settings: {error}"));
-        }
+        self.ctx.edit_config("settings", change);
     }
 
     /// The palette's commands: session and view actions, panel tabs, themes
@@ -1023,7 +1017,7 @@ impl App {
                         Task::none()
                     }
                     Some(shell::Event::SetTheme(preference)) => {
-                        self.save_ui(|config| config.theme = theme_setting(preference));
+                        self.save_ui(|config| config.appearance.theme = theme_ref(preference));
                         Task::none()
                     }
                     Some(shell::Event::SetPinned { .. }) => {
@@ -1417,22 +1411,16 @@ fn git_branch(dir: &Path) -> Option<String> {
     }
 }
 
-/// The shell's theme preference for the saved setting.
-fn preference(theme: loa_config::Theme) -> shell::Preference {
-    match theme {
-        loa_config::Theme::System => shell::Preference::System,
-        loa_config::Theme::Dark => shell::Preference::Dark,
-        loa_config::Theme::Light => shell::Preference::Light,
-    }
+/// The shell's preference for a saved theme, by the [`THEMES`] keys; an
+/// unknown theme follows the system. Temporary until the theme registry (P23).
+fn preference(theme: &loa_config::ThemeRef) -> shell::Preference {
+    THEMES.into_iter().find(|(key, _, _)| *key == theme.as_str()).map_or(shell::Preference::System, |(_, _, p)| p)
 }
 
-/// The saved setting for the shell's theme preference.
-fn theme_setting(preference: shell::Preference) -> loa_config::Theme {
-    match preference {
-        shell::Preference::System => loa_config::Theme::System,
-        shell::Preference::Dark => loa_config::Theme::Dark,
-        shell::Preference::Light => loa_config::Theme::Light,
-    }
+/// The saved theme for a shell preference.
+fn theme_ref(preference: shell::Preference) -> loa_config::ThemeRef {
+    let key = THEMES.into_iter().find(|(_, _, p)| *p == preference).map_or(loa_config::ThemeRef::SYSTEM, |(key, _, _)| key);
+    loa_config::ThemeRef(key.to_owned())
 }
 
 /// Whether `patch` may change the session's sidebar entry or status: its

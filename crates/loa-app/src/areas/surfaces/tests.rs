@@ -461,11 +461,11 @@ async fn a_browser_tab_shows_source_frames_here_streams_video_to_peers_and_the_t
     assert_eq!(network.stream().unwrap().encoder, loa_surface_bench::live::SOURCE);
     decoded(&mut frames, loa_contracts::surface::Encoding::Jpeg, [0, 0, 255]).await;
     assert!(!hub.video());
-    assert!(!driver.app.ctx.services.config.load().unwrap().config.surfaces.video);
+    assert!(!driver.app.ctx.services.config.load().unwrap().surfaces.video);
     driver.surfaces(panel::Message::Video(true));
     switched(true).await;
     decoded(&mut frames, loa_contracts::surface::Encoding::H264, [0, 0, 255]).await;
-    assert!(driver.app.ctx.services.config.load().unwrap().config.surfaces.video);
+    assert!(driver.app.ctx.services.config.load().unwrap().surfaces.video);
     assert_eq!(stream_label(&driver.app, &uri).as_deref(), Some("JPEG"));
     hub.shutdown().await;
 }
@@ -501,7 +501,7 @@ async fn the_virtual_display_capture_says_why_it_cant_run_and_is_saved_where_it_
     assert_eq!(driver.area().panel().capture().virtual_display_missing, None);
     driver.surfaces(panel::Message::Capture(panel::Capture::VirtualDisplay));
     assert_eq!(hub.capture(), loa_surface_hub::CaptureMode::VirtualDisplay);
-    let saved = driver.app.ctx.services.config.load().unwrap().config.surfaces;
+    let saved = driver.app.ctx.services.config.load().unwrap().surfaces;
     assert_eq!(saved.browser_capture, loa_config::BrowserCapture::VirtualDisplay);
 
     driver.surfaces(panel::Message::Url("about:blank".into()));

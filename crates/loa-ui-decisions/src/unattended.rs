@@ -396,7 +396,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = loa_config::ConfigStore::in_dir(dir.path());
         store.save(&config).unwrap();
-        assert_eq!(Unattended(store.load().unwrap().config.unattended), policy);
+        assert_eq!(Unattended(store.load().unwrap().unattended), policy);
     }
 
     #[test]

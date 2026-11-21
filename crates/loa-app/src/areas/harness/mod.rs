@@ -93,9 +93,8 @@ impl State {
     /// default harness) and probes every harness.
     pub fn new(ctx: &mut Ctx) -> (Self, Task<Message>) {
         let mut state = Self { probes: HashMap::new(), probing: Vec::new(), next_probe: 0, drafts: HashMap::new(), default: None };
-        match ctx.services.config.load() {
-            Ok(loaded) => state.apply(&loaded.config.harness, ctx),
-            Err(error) => ctx.notify(format!("Can't read the harness settings: {error}")),
+        if let Some(config) = ctx.read_config("harness settings") {
+            state.apply(&config.harness, ctx);
         }
         let task = state.probe_all(ctx);
         (state, task)
@@ -167,11 +166,10 @@ impl State {
         }
         ctx.sessions.harness = Some(id.clone());
         ctx.composer.set_harnesses(ctx.services.harnesses.options(), Some(&id));
-        if self.default.as_deref() != Some(id.as_str()) {
-            match save(ctx, |settings| settings.default.clone_from(&id)) {
-                Ok(()) => self.default = Some(id.clone()),
-                Err(error) => ctx.notify(error),
-            }
+        if self.default.as_deref() != Some(id.as_str())
+            && ctx.edit_config("harness settings", |config| config.harness.default.clone_from(&id)).is_some()
+        {
+            self.default = Some(id.clone());
         }
         let Some(session) = ctx.sessions.active() else {
             ctx.request(Request::NewSession);
@@ -195,16 +193,11 @@ impl State {
     fn save_executable(&mut self, id: String, ctx: &mut Ctx) -> Task<Message> {
         let draft = self.drafts.get(&id).map(|draft| draft.trim()).unwrap_or_default();
         let executable = (!draft.is_empty()).then(|| PathBuf::from(draft));
-        let saved = save(ctx, |settings| match &executable {
-            Some(executable) => {
-                settings.executables.insert(id.clone(), executable.clone());
-            }
-            None => {
-                settings.executables.remove(&id);
-            }
+        let saved = ctx.edit_config("harness settings", |config| match &executable {
+            Some(executable) => drop(config.harness.executables.insert(id.clone(), executable.clone())),
+            None => drop(config.harness.executables.remove(&id)),
         });
-        if let Err(error) = saved {
-            ctx.notify(error);
+        if saved.is_none() {
             return Task::none();
         }
         let services = &mut ctx.services;
@@ -282,15 +275,6 @@ impl State {
         }
         container(body).padding(10).width(Length::Fill).style(style::card).into()
     }
-}
-
-/// Loads the central config, lets `change` edit `[harness]` and saves it,
-/// so other areas' tables written meanwhile survive.
-fn save(ctx: &Ctx, change: impl FnOnce(&mut HarnessSettings)) -> Result<(), String> {
-    let store = &ctx.services.config;
-    let mut config = store.load().map_err(|error| format!("Can't read {}: {error}", store.path().display()))?.config;
-    change(&mut config.harness);
-    store.save(&config).map_err(|error| format!("Can't save the harness settings: {error}"))
 }
 
 /// What the Harnesses tab says about a probe result; `None` while probing.

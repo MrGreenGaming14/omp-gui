@@ -28,7 +28,7 @@ use crate::services::{Dirs, Harnesses, Node, Services};
 fn app(dir: &std::path::Path, name: &str) -> App {
     let dirs = Dirs::new(dir.join("loa"));
     let config = loa_config::ConfigStore::in_dir(&dirs.data);
-    let mut settings = config.load().unwrap().config;
+    let mut settings = config.load().unwrap();
     settings.network.discovery.mdns = false;
     settings.network.discovery.tailscale = false;
     config.save(&settings).unwrap();
@@ -183,7 +183,7 @@ fn two_apps_share_a_session_view_drive_and_fork_over_loopback() {
 
     // SSH hosts in `[remote_hosts]` are grant resources; an SSH grant needs an explicit confirmation.
     let config = &owner.ctx.services.config;
-    let mut settings = config.load().unwrap().config;
+    let mut settings = config.load().unwrap();
     settings.remote_hosts.insert("buildbox".into(), serde_json::from_value(serde_json::json!({"host": "buildbox.lan"})).unwrap());
     config.save(&settings).unwrap();
     update(&rt, &mut owner, Message::Peers(Peers::Open));
@@ -347,7 +347,7 @@ fn restart_command_listens_on_the_configured_port_and_keeps_added_protocols() {
     start(&rt, &mut app);
     let free = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
     let config = &app.ctx.services.config;
-    let mut settings = config.load().unwrap().config;
+    let mut settings = config.load().unwrap();
     settings.network.port = free;
     config.save(&settings).unwrap();
     let task = app.command(&crate::area::AreaId::Peers.command(super::RESTART));

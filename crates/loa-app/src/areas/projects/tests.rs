@@ -248,7 +248,7 @@ fn project_tabs_list_activated_projects_and_the_shortcuts_switch_between_them() 
     let task = app.command(&toggle);
     run(&mut app, task);
     assert!(app.ctx.shell.project_tabs());
-    assert!(app.ctx.services.config.load().unwrap().config.project_tabs);
+    assert!(app.ctx.services.config.load().unwrap().project_tabs);
 
     // Next and previous switch the active project, wrapping around.
     open_from_sidebar(&mut app, "alpha");

@@ -69,7 +69,7 @@ impl State {
         let root = ctx.services.dirs.data.join("updates");
         let mut problems = Vec::new();
         let settings = match ctx.services.config.load() {
-            Ok(loaded) => loaded.config.updater,
+            Ok(config) => config.updater,
             Err(error) => {
                 problems.push(format!("Update settings unreadable ({error}); using defaults"));
                 loa_config::UpdaterSettings::default()
@@ -263,18 +263,7 @@ impl State {
             .into_iter()
             .filter_map(|product| product.pin.map(|pin| (product.id, pin.to_string())))
             .collect();
-        let store = &ctx.services.config;
-        let result = store.load().and_then(|loaded| {
-            let mut config = loaded.config;
-            if config.updater.pins == pins {
-                return Ok(());
-            }
-            config.updater.pins = pins;
-            store.save(&config)
-        });
-        if let Err(error) = result {
-            ctx.notify(format!("Can't save the pins to {}: {error}", store.path().display()));
-        }
+        ctx.edit_config("pins", |config| config.updater.pins = pins);
     }
 
     /// Records how many sessions are mid turn; once none is, swaps in the

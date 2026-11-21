@@ -163,7 +163,7 @@ fn the_picked_harness_is_saved_as_the_default_for_the_next_launch() {
     assert_eq!(first.ctx.sessions.harness.as_deref(), Some("ready"));
     // Picking starts a session on it; this fake can't run one.
     update(&mut first, Message::Composer(composer::Message::HarnessPicked("other".into())));
-    let saved = first.ctx.services.config.load().unwrap().config.harness;
+    let saved = first.ctx.services.config.load().unwrap().harness;
     assert_eq!(saved.default, "other");
 
     let mut harnesses = probed_harnesses();
@@ -191,7 +191,7 @@ fn an_executable_set_in_the_tab_is_saved_registered_and_probed() {
     update(&mut app, Message::Harness(HarnessMessage::EditExecutable(id.into(), codex.display().to_string())));
     update(&mut app, Message::Harness(HarnessMessage::SaveExecutable(id.into())));
 
-    let saved = app.ctx.services.config.load().unwrap().config.harness;
+    let saved = app.ctx.services.config.load().unwrap().harness;
     assert_eq!(saved.executable(id), Some(codex.as_path()));
     let harness = app.ctx.services.harnesses.get(id).unwrap();
     assert_eq!(harness.configured.as_deref(), Some(codex.as_path()));
@@ -207,7 +207,7 @@ fn an_executable_set_in_the_tab_is_saved_registered_and_probed() {
     // Clearing the field restores the default and forgets the override.
     update(&mut app, Message::Harness(HarnessMessage::EditExecutable(id.into(), String::new())));
     update(&mut app, Message::Harness(HarnessMessage::SaveExecutable(id.into())));
-    assert_eq!(app.ctx.services.config.load().unwrap().config.harness.executable(id), None);
+    assert_eq!(app.ctx.services.config.load().unwrap().harness.executable(id), None);
     let harness = app.ctx.services.harnesses.get(id).unwrap();
     assert_eq!(harness.configured, None);
     assert_ne!(harness.executable.as_deref(), Some(codex.as_path()));

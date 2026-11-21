@@ -1,191 +1,82 @@
+use loa_config::{Config, ConfigError, ConfigStore, Relay, ThemeRef};
 use loa_contracts::harness::{McpTransport, SessionConfig};
-use loa_config::{
-    Config, ConfigError, ConfigStore, Relay,
-    Theme, config_path,
-};
 use loa_core::DecisionKind;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-const FULL: &str = r#"
-version = 1
-theme = "dark"
-
-[harness]
-default = "claude"
-executables = { omp = "/opt/omp/bin/omp" }
-
-[network]
-port = 4242
-relay = "https://relay.example.test"
-discovery = { mdns = false, tailscale = true }
-
-[updater]
-check_interval_secs = 3600
-pins = { omp = "19.0.0" }
-
-[unattended.approval]
-timeout_secs = 120
-answer = "deny"
-reason = "nobody was around"
-
-[unattended.form]
-timeout_secs = 30
-answer = '{"name": "x"}'
-
-[mcp_servers.files]
-command = "mcp-files"
-args = ["--root", "/srv"]
-env = { LOG = "debug" }
-
-[mcp_servers.search]
-url = "https://mcp.example.test/sse"
-headers = { "X-Team" = "a" }
-
-[mcp_servers.old]
-enabled = false
-command = "old-server"
-
-[remote_hosts.build]
-host = "build.example.test"
-user = "ci"
-port = 2222
-proxy_jump = "bastion"
-allowed_paths = ["/srv/app"]
-read_only = false
-commands = true
-
-[projects.loa]
-instructions = "Use iced."
-pinned_files = ["docs/design/README.md"]
-digest_role = "fast"
-token_budget = 12000
-disabled_tools = ["bash"]
-disabled_mcp_tools = { files = ["delete"] }
-"#;
+const FULL: &str = include_str!("fixtures/full.toml");
 
 fn store_with(text: &str) -> (tempfile::TempDir, ConfigStore) {
     let dir = tempfile::tempdir().unwrap();
-    let store = ConfigStore::in_dir(dir.path());
+    let store = ConfigStore::in_dir(&dir.path().join("nested"));
+    fs::create_dir_all(dir.path().join("nested")).unwrap();
     fs::write(store.path(), text).unwrap();
     (dir, store)
 }
 
 fn load_err(text: &str) -> ConfigError {
-    let (_dir, store) = store_with(text);
-    store.load().expect_err("config should be rejected")
-}
-
-fn invalid_key(err: ConfigError) -> String {
-    match err {
-        ConfigError::Invalid { key, .. } => key,
-        other => panic!("expected an invalid key error, got {other}"),
-    }
+    store_with(text).1.load().expect_err("config should be rejected")
 }
 
 #[test]
 fn full_config_loads_into_typed_settings_and_round_trips() {
     let (_dir, store) = store_with(FULL);
-    let loaded = store.load().unwrap();
-    let c = loaded.config;
-
-    assert_eq!(c.theme, Theme::Dark);
-    assert_eq!(c.harness.default, "claude");
+    let c = store.load().unwrap();
+    assert_eq!(c.appearance.theme, ThemeRef("dark".into()));
+    assert!(c.project_tabs);
     assert_eq!(c.harness.executable("omp"), Some(Path::new("/opt/omp/bin/omp")));
-    assert_eq!(c.network.port, 4242);
-    assert_eq!(c.network.relay, Relay::Url("https://relay.example.test".into()));
+    assert_eq!((c.network.port, &c.network.relay), (4242, &Relay::Url("https://relay.example.test".into())));
     assert!(!c.network.discovery.mdns);
     assert_eq!(c.updater.check_interval(), Duration::from_secs(3600));
-    assert_eq!(c.updater.pin("omp"), Some("19.0.0"));
-
+    assert_eq!((c.updater.pin("omp"), c.updater.github_token.as_deref()), (Some("19.0.0"), Some("ghp_test")));
     let approval = c.unattended.for_kind(DecisionKind::Approval).unwrap();
     assert_eq!((approval.timeout(), approval.answer.as_str()), (Duration::from_secs(120), "deny"));
     assert!(c.unattended.for_kind(DecisionKind::Question).is_none());
-
-    match &c.mcp_servers["files"].transport {
-        McpTransport::Stdio { command, args, env } => {
-            assert_eq!(command, "mcp-files");
-            assert_eq!(args, &["--root", "/srv"]);
-            assert_eq!(env["LOG"], "debug");
-        }
-        other => panic!("files should be stdio, got {other:?}"),
-    }
+    assert!(!c.surfaces.video);
+    assert!(matches!(&c.mcp_servers["files"].transport, McpTransport::Stdio { args, env, .. } if args.len() == 2 && env["LOG"] == "debug"));
     assert!(matches!(&c.mcp_servers["search"].transport, McpTransport::Http { url, .. } if url.ends_with("/sse")));
     assert!(!c.mcp_servers["old"].enabled);
-
     let host = &c.remote_hosts["build"];
     assert_eq!((host.port, host.read_only, host.commands, host.auto_approve), (Some(2222), false, true, false));
-
     let project = c.project("loa");
     assert_eq!(project.token_budget, 12000);
-    assert!(!project.tool_enabled("bash"));
-    assert!(!project.mcp_tool_enabled("files", "delete"));
+    assert!(!project.tool_enabled("bash") && !project.mcp_tool_enabled("files", "delete"));
     assert!(project.mcp_tool_enabled("files", "read"));
 
     store.save(&c).unwrap();
-    assert_eq!(store.load().unwrap().config, c);
+    assert_eq!(store.load().unwrap(), c);
+    let raw: toml::Table = fs::read_to_string(store.path()).unwrap().parse().unwrap();
+    assert_eq!(raw, FULL.parse::<toml::Table>().unwrap(), "every key survives a round trip unchanged");
 }
 
 #[test]
-fn missing_sections_and_projects_get_design_defaults() {
+fn missing_file_and_sections_get_the_defaults() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = ConfigStore::in_dir(dir.path());
+    assert_eq!(store.load().unwrap(), Config::default());
+    assert!(!store.path().exists());
+
     let (_dir, store) = store_with("version = 1\n[remote_hosts.box]\nhost = \"box\"\n");
-    let c = store.load().unwrap().config;
-    assert_eq!(c.network.port, 31415);
-    assert_eq!(c.network.relay, Relay::Default);
-    assert_eq!(c.harness.default, "omp");
+    let c = store.load().unwrap();
+    assert_eq!((c.network.port, &c.network.relay, c.harness.default.as_str()), (31415, &Relay::Default, "omp"));
+    assert_eq!(c.appearance.theme.as_str(), ThemeRef::SYSTEM);
+    assert!(c.surfaces.video && c.network.discovery.tailscale);
     let host = &c.remote_hosts["box"];
     assert!(host.read_only && !host.commands && !host.auto_approve);
-    let project = c.project("never-configured");
-    assert_eq!(project.digest_role, "smol");
-    assert!(project.tool_enabled("bash"));
-}
-
-#[test]
-fn missing_file_loads_defaults_without_creating_it() {
-    let dir = tempfile::tempdir().unwrap();
-    let store = ConfigStore::in_dir(&dir.path().join("loa"));
-    let loaded = store.load().unwrap();
-    assert_eq!(loaded.config, Config::default());
-    assert!(!store.path().exists());
+    assert_eq!(c.project("never-configured").digest_role, "smol");
 }
 
 #[test]
 fn unknown_keys_survive_load_edit_save() {
-    let text = r#"
-version = 1
-future_flag = true
-
-[future_section]
-level = 3
-when = 2026-01-02T03:04:05Z
-
-[network]
-port = 31415
-x-mtu = 1200
-
-[unattended.plan]
-timeout_secs = 60
-answer = "reject"
-escalate_to = "owner"
-
-[mcp_servers.keep]
-command = "keep"
-x-color = "red"
-
-[mcp_servers.drop]
-command = "drop"
-x-color = "blue"
-
-[projects.p]
-future_digest_mode = "dense"
-"#;
+    let text = include_str!("fixtures/unknown.toml");
     let (_dir, store) = store_with(text);
-    let mut c = store.load().unwrap().config;
-    c.theme = Theme::Light;
-    c.mcp_servers.remove("drop");
-    store.save(&c).unwrap();
-
+    store
+        .edit(|c| {
+            c.appearance.theme = ThemeRef("light".into());
+            c.mcp_servers.remove("drop");
+        })
+        .unwrap();
     let raw: toml::Table = fs::read_to_string(store.path()).unwrap().parse().unwrap();
     assert_eq!(raw["theme"].as_str(), Some("light"));
     assert_eq!(raw["future_flag"].as_bool(), Some(true));
@@ -197,100 +88,118 @@ future_digest_mode = "dense"
     assert!(raw["mcp_servers"].get("drop").is_none(), "deleted server came back: {raw}");
     assert_eq!(raw["projects"]["p"]["future_digest_mode"].as_str(), Some("dense"));
 
-    // A second cycle keeps them too.
-    let again = store.load().unwrap().config;
+    let again = store.load().unwrap();
     store.save(&again).unwrap();
-    let raw2: toml::Table = fs::read_to_string(store.path()).unwrap().parse().unwrap();
-    assert_eq!(raw, raw2);
+    assert_eq!(raw, fs::read_to_string(store.path()).unwrap().parse::<toml::Table>().unwrap());
 }
 
 #[test]
 fn invalid_values_name_the_offending_key() {
     let cases: &[(&str, &str)] = &[
-        ("version = 1\n[network]\nport = \"high\"\n", "network.port"),
-        ("version = 1\n[network]\nport = 0\n", "network.port"),
-        ("version = 1\n[network]\nrelay = \"ftp://relay\"\n", "network.relay"),
-        ("version = 1\ntheme = \"blue\"\n", "theme"),
-        ("version = 1\n[harness]\ndefault = \"\"\n", "harness.default"),
-        ("version = 1\n[mcp_servers.s]\ncommand = \"a\"\nurl = \"https://b\"\n", "mcp_servers.s"),
-        ("version = 1\n[mcp_servers.s]\nenabled = true\n", "mcp_servers.s"),
-        ("version = 1\n[mcp_servers.s]\nurl = \"localhost:80\"\n", "mcp_servers.s"),
-        ("version = 1\n[mcp_servers.s]\ncommand = \"a\"\nargs = 5\n", "mcp_servers.s.args"),
-        ("version = 1\n[remote_hosts.h]\nuser = \"me\"\n", "remote_hosts.h"),
-        ("version = 1\n[remote_hosts.h]\nhost = \"h\"\nallowed_paths = [\"srv\"]\n", "remote_hosts.h.allowed_paths"),
-        ("version = 1\n[remote_hosts.h]\nhost = \"h\"\nallowed_paths = [\"/srv/../etc\"]\n", "remote_hosts.h.allowed_paths"),
-        ("version = 1\n[unattended.approval]\ntimeout_secs = 5\nanswer = \"maybe\"\n", "unattended.approval.answer"),
-        ("version = 1\n[unattended.plan]\ntimeout_secs = 5\nanswer = \"edit\"\n", "unattended.plan.answer"),
-        ("version = 1\n[unattended.form]\ntimeout_secs = 5\nanswer = \"[1]\"\n", "unattended.form.answer"),
-        ("version = 1\n[unattended.question]\ntimeout_secs = 0\nanswer = \"yes\"\n", "unattended.question.timeout_secs"),
-        ("version = 1\n[projects.p]\ntoken_budget = 0\n", "projects.p.token_budget"),
-        ("version = 1\n[updater]\ncheck_interval_secs = 0\n", "updater.check_interval_secs"),
-        ("version = \"one\"\n", "version"),
-        ("version = -1\n", "version"),
+        ("[network]\nport = \"high\"", "network.port"),
+        ("[network]\nport = 0", "network.port"),
+        ("[network]\nrelay = \"ftp://relay\"", "network.relay"),
+        ("theme = 5", "theme"),
+        ("[harness]\ndefault = \"\"", "harness.default"),
+        ("[harness]\nexecutables = { omp = \"\" }", "harness.executables.omp"),
+        ("[mcp_servers.s]\ncommand = \"a\"\nurl = \"https://b\"", "mcp_servers.s"),
+        ("[mcp_servers.s]\nenabled = true", "mcp_servers.s"),
+        ("[mcp_servers.s]\ncommand = \" \"", "mcp_servers.s.command"),
+        ("[mcp_servers.s]\nurl = \"localhost:80\"", "mcp_servers.s.url"),
+        ("[mcp_servers.s]\ncommand = \"a\"\nargs = 5", "mcp_servers.s.args"),
+        ("[remote_hosts.h]\nuser = \"me\"", "remote_hosts.h"),
+        ("[remote_hosts.h]\nhost = \"h\"\nport = 0", "remote_hosts.h.port"),
+        ("[remote_hosts.h]\nhost = \"h\"\nallowed_paths = [\"srv\"]", "remote_hosts.h.allowed_paths"),
+        ("[unattended.approval]\ntimeout_secs = 5\nanswer = \"maybe\"", "unattended.approval.answer"),
+        ("[unattended.plan]\ntimeout_secs = 5\nanswer = \"edit\"", "unattended.plan.answer"),
+        ("[unattended.form]\ntimeout_secs = 5\nanswer = \"[1]\"", "unattended.form.answer"),
+        ("[unattended.question]\ntimeout_secs = 0\nanswer = \"yes\"", "unattended.question.timeout_secs"),
+        ("[projects.p]\ntoken_budget = 0", "projects.p.token_budget"),
+        ("[updater]\ncheck_interval_secs = 0", "updater.check_interval_secs"),
+        ("version = \"one\"", "version"),
+        ("version = -1", "version"),
     ];
-    for (text, key) in cases {
-        let err = load_err(text);
+    for (snippet, key) in cases {
+        let text = if snippet.starts_with("version") { format!("{snippet}\n") } else { format!("version = 1\n{snippet}\n") };
+        let err = load_err(&text);
         let message = err.to_string();
-        assert_eq!(invalid_key(err), *key, "for config:\n{text}");
+        let ConfigError::Invalid { key: found, .. } = err else { panic!("expected an invalid key for {text}, got {err}") };
+        assert_eq!(found, *key, "for config:\n{text}");
         assert!(message.contains(key), "message {message:?} should name {key}");
     }
 }
 
 #[test]
-fn file_without_version_or_with_bad_toml_is_refused() {
+fn saved_files_hold_only_what_is_set() {
+    let cases: &[(&str, &str, bool)] = &[
+        ("", "version = 1", true),
+        ("", "theme = \"system\"", true),
+        ("", "project_tabs", false),
+        ("", "github_token", false),
+        ("", "trusted_keys", false),
+        ("", "pinned", false),
+        ("project_tabs = true", "project_tabs = true", true),
+        ("theme = \"light\"", "theme = \"light\"", true),
+        ("[theme]\nname = \"dark\"", "theme = \"dark\"", true),
+        ("[theme]\nname = \"nord\"\naccent = \"#88c0d0\"", "accent = \"#88c0d0\"", true),
+        ("[network]\nrelay = \"off\"", "relay = \"off\"", true),
+        ("[updater]\ntrusted_keys = [\"ab\"]", "trusted_keys = [\"ab\"]", true),
+        ("[surfaces]\nbrowser_capture = \"virtual-display\"", "browser_capture = \"virtual-display\"", true),
+        ("[mcp_servers.s]\ncommand = \"a\"", "args", false),
+    ];
+    for (snippet, needle, present) in cases {
+        let (_dir, store) = store_with(&format!("version = 1\n{snippet}\n"));
+        let c = store.load().unwrap();
+        store.save(&c).unwrap();
+        let saved = fs::read_to_string(store.path()).unwrap();
+        assert_eq!(saved.contains(needle), *present, "{needle:?} after loading {snippet:?}:\n{saved}");
+        assert_eq!(store.load().unwrap(), c);
+    }
+}
+
+#[test]
+fn refused_files_are_left_alone() {
     assert!(matches!(load_err("theme = \"dark\"\n"), ConfigError::MissingVersion));
     assert!(matches!(load_err("version = 1\n[network\n"), ConfigError::Parse(_)));
     assert!(matches!(load_err("version = 99\n"), ConfigError::TooNew { found: 99, .. }));
     assert!(matches!(load_err("version = 0\n"), ConfigError::MissingMigration { from: 0 }));
-}
 
-#[test]
-fn save_creates_the_directory_and_leaves_no_temp_files() {
-    let dir = tempfile::tempdir().unwrap();
-    let config_dir = dir.path().join("nested").join("loa");
-    let store = ConfigStore::in_dir(&config_dir);
-    let mut c = Config::default();
-    c.theme = Theme::Dark;
-    store.save(&c).unwrap();
-    let names: Vec<PathBuf> = fs::read_dir(&config_dir).unwrap().map(|e| e.unwrap().path()).collect();
-    assert_eq!(names, vec![config_path(&config_dir)]);
-    assert_eq!(store.load().unwrap().config.theme, Theme::Dark);
-}
-
-#[test]
-fn saving_an_invalid_config_keeps_the_old_file() {
     let (_dir, store) = store_with(FULL);
-    let mut c = store.load().unwrap().config;
-    c.network.port = 0;
-    let err = store.save(&c).unwrap_err();
-    assert_eq!(invalid_key(err), "network.port");
+    let err = store.edit(|c| c.network.port = 0).unwrap_err();
+    assert!(matches!(err, ConfigError::Invalid { key, .. } if key == "network.port"));
     assert_eq!(fs::read_to_string(store.path()).unwrap(), FULL);
 }
 
 #[test]
+fn edit_saves_only_changes_and_watch_counts_saves() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = ConfigStore::in_dir(&dir.path().join("new"));
+    let saves = store.clone().watch();
+    assert!(!store.edit(|c| c.project_tabs).unwrap());
+    assert!(!store.path().exists(), "an edit that changes nothing doesn't save");
+    store.edit(|c| c.pinned.insert("s1".into())).unwrap();
+    assert_eq!(*saves.borrow(), 1);
+    let names: Vec<PathBuf> = fs::read_dir(store.path().parent().unwrap()).unwrap().map(|e| e.unwrap().path()).collect();
+    assert_eq!(names, [store.path()], "no temp files are left");
+}
+
+#[test]
 fn remote_host_limits_stay_inside_allowed_trees() {
-    let (_dir, store) = store_with(
-        "version = 1\n[remote_hosts.h]\nhost = \"h\"\nallowed_paths = [\"/srv/app\", \"/tmp/\"]\n",
-    );
-    let mut host = store.load().unwrap().config.remote_hosts["h"].clone();
-    assert!(host.allows_read("/srv/app"));
-    assert!(host.allows_read("/srv/app/src/./main.rs"));
-    assert!(host.allows_read("/tmp/x"));
+    let (_dir, store) = store_with(FULL);
+    let mut host = store.load().unwrap().remote_hosts["build"].clone();
+    assert!(host.allows_read("/srv/app") && host.allows_read("/srv/app/src/./main.rs") && host.allows_read("/tmp/x"));
     assert!(!host.allows_read("/srv/app2/secret"), "a sibling with the same prefix is outside");
-    assert!(!host.allows_read("/srv/app/../../etc/passwd"));
-    assert!(!host.allows_read("srv/app/file"));
+    assert!(!host.allows_read("/srv/app/../../etc/passwd") && !host.allows_read("srv/app/file"));
     assert!(!host.allows_read("/srv"));
-    assert!(!host.allows_write("/srv/app/file"), "hosts are read only unless allowed");
-    host.read_only = false;
-    assert!(host.allows_write("/srv/app/file"));
-    assert!(!host.allows_write("/etc/passwd"));
+    assert!(host.allows_write("/srv/app/file") && !host.allows_write("/etc/passwd"));
+    host.read_only = true;
+    assert!(!host.allows_write("/srv/app/file"));
 }
 
 #[test]
 fn apply_to_session_adds_enabled_servers_toggles_and_executable() {
     let (_dir, store) = store_with(FULL);
-    let c = store.load().unwrap().config;
-
+    let c = store.load().unwrap();
     let mut session = SessionConfig { project: Some("loa".into()), ..SessionConfig::default() };
     session.disabled_tools.push("task".into());
     c.apply_to_session("omp", &mut session);
@@ -303,53 +212,4 @@ fn apply_to_session_adds_enabled_servers_toggles_and_executable() {
     let mut session = SessionConfig { executable: Some(staged.clone()), ..SessionConfig::default() };
     c.apply_to_session("omp", &mut session);
     assert_eq!(session.executable, Some(staged), "the updater's staged executable wins");
-    assert!(session.disabled_tools.is_empty());
-}
-
-#[test]
-fn updater_token_and_trusted_keys_round_trip_and_default_when_absent() {
-    let (_dir, store) = store_with(FULL);
-    let mut c = store.load().unwrap().config;
-    assert_eq!((c.updater.github_token.as_deref(), c.updater.trusted_keys.len()), (None, 0));
-    store.save(&c).unwrap();
-    let saved = fs::read_to_string(store.path()).unwrap();
-    assert!(!saved.contains("github_token") && !saved.contains("trusted_keys"));
-
-    c.updater.github_token = Some("ghp_test".into());
-    c.updater.trusted_keys = vec!["ab".repeat(32)];
-    store.save(&c).unwrap();
-    let loaded = store.load().unwrap().config;
-    assert_eq!(loaded.updater.github_token.as_deref(), Some("ghp_test"));
-    assert_eq!(loaded.updater.trusted_keys, vec!["ab".repeat(32)]);
-    assert_eq!(loaded, c);
-}
-
-#[test]
-fn surfaces_settings_round_trip_and_default_when_absent() {
-    let (_dir, store) = store_with(FULL);
-    let mut c = store.load().unwrap().config;
-    assert_eq!(c.surfaces, loa_config::SurfaceSettings::default());
-    assert!(c.surfaces.video);
-    assert_eq!(c.surfaces.browser_capture, loa_config::BrowserCapture::Screencast);
-
-    c.surfaces.video = false;
-    c.surfaces.browser_capture = loa_config::BrowserCapture::VirtualDisplay;
-    store.save(&c).unwrap();
-    let saved = fs::read_to_string(store.path()).unwrap();
-    assert!(saved.contains("[surfaces]") && saved.contains("browser_capture = \"virtual-display\""), "{saved}");
-    assert_eq!(store.load().unwrap().config, c);
-}
-
-#[test]
-fn project_tabs_default_off_stay_out_of_the_file_and_round_trip() {
-    let (_dir, store) = store_with(FULL);
-    let mut c = store.load().unwrap().config;
-    assert!(!c.project_tabs);
-    store.save(&c).unwrap();
-    assert!(!fs::read_to_string(store.path()).unwrap().contains("project_tabs"));
-
-    c.project_tabs = true;
-    store.save(&c).unwrap();
-    assert!(fs::read_to_string(store.path()).unwrap().contains("project_tabs = true"));
-    assert!(store.load().unwrap().config.project_tabs);
 }

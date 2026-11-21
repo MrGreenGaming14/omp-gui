@@ -167,7 +167,7 @@ impl State {
 
     /// The settings of `project` in the central config.
     fn settings(project: &str, ctx: &Ctx) -> ProjectSettings {
-        ctx.services.config.load().ok().and_then(|loaded| loaded.config.projects.get(project).cloned()).unwrap_or_default()
+        ctx.services.config.load().unwrap_or_default().project(project)
     }
 
     /// The harness the Built in section describes: the active session's,
@@ -289,14 +289,13 @@ impl State {
                 return;
             }
         };
-        let hosts: Vec<String> =
-            ctx.services.config.load().map(|loaded| loaded.config.remote_hosts.into_keys().collect()).unwrap_or_default();
+        let hosts: Vec<String> = ctx.services.config.load().unwrap_or_default().remote_hosts.into_keys().collect();
         self.panel.set_peers(listing::peer_tools(&issued, servers, &hosts, loa_core::now_ms()));
     }
 
     /// The project selector and the toggles of the selected project.
     fn refresh_projects(&mut self, ctx: &Ctx) {
-        let config = ctx.services.config.load().map(|loaded| loaded.config).unwrap_or_default();
+        let config = ctx.services.config.load().unwrap_or_default();
         let mut ids: BTreeSet<String> = config.projects.keys().cloned().collect();
         ids.insert(ctx.services.project.clone());
         ids.insert(self.project.clone());
@@ -309,13 +308,7 @@ impl State {
     /// Rebuilds the `remote` server's hosts from the central config and
     /// `~/.ssh/config`, and lists them.
     pub(crate) fn reload_hosts(&mut self, ctx: &mut Ctx) {
-        let entries = match ctx.services.config.load() {
-            Ok(loaded) => loaded.config.remote_hosts,
-            Err(error) => {
-                ctx.notify(format!("Can't read the Remote hosts: {error}"));
-                return;
-            }
-        };
+        let Some(entries) = ctx.read_config("Remote hosts").map(|config| config.remote_hosts) else { return };
         let ssh = match self.ssh.ssh_config() {
             Ok(ssh) => ssh,
             Err(error) => {
@@ -340,28 +333,22 @@ impl State {
         ctx: &mut Ctx,
         change: impl FnOnce(&mut std::collections::BTreeMap<String, loa_config::RemoteHost>) -> Result<Option<String>, String>,
     ) {
-        let saved = ctx.services.config.load().map_err(|error| error.to_string()).and_then(|loaded| {
-            let mut config = loaded.config;
-            let notice = change(&mut config.remote_hosts)?;
-            ctx.services.config.save(&config).map_err(|error| error.to_string())?;
-            Ok(notice)
-        });
-        match saved {
-            Ok(notice) => {
+        match ctx.edit_config("Remote hosts", |config| change(&mut config.remote_hosts)) {
+            Some(Ok(notice)) => {
                 if let Some(notice) = notice {
                     ctx.notify(notice);
                 }
                 self.reload_hosts(ctx);
             }
-            Err(error) => ctx.notify(format!("Can't save the Remote hosts: {error}")),
+            Some(Err(error)) => ctx.notify(format!("Can't save the Remote hosts: {error}")),
+            None => {}
         }
         self.refresh_servers(ctx);
     }
 
     /// Turns tools on or off in `project` and saves it.
     fn set_tools(&mut self, project: &str, ids: &[tools::ToolId], enabled: bool, ctx: &mut Ctx) {
-        let saved = ctx.services.config.load().and_then(|loaded| {
-            let mut config = loaded.config;
+        ctx.edit_config("tool toggles", |config| {
             let settings = config.projects.entry(project.to_owned()).or_default();
             for id in ids {
                 match id {
@@ -385,11 +372,7 @@ impl State {
                     }
                 }
             }
-            ctx.services.config.save(&config)
         });
-        if let Err(error) = saved {
-            ctx.notify(format!("Can't save the tool toggles: {error}"));
-        }
         // The panel shows what is stored, also after a failed save.
         let settings = Self::settings(project, ctx);
         self.panel.set_disabled_tools(project.to_owned(), disabled(&settings));
@@ -680,8 +663,8 @@ impl Area for State {
             palette::Command::new(AreaId::Tools.command(HOSTS), "Remote hosts", group),
             palette::Command::new(AreaId::Tools.command(IMPORT_HOSTS), "Import Remote hosts from ~/.ssh/config", group),
         ];
-        if let Ok(loaded) = ctx.services.config.load() {
-            commands.extend(loaded.config.remote_hosts.keys().map(|host| {
+        if let Ok(config) = ctx.services.config.load() {
+            commands.extend(config.remote_hosts.keys().map(|host| {
                 palette::Command::new(AreaId::Tools.command(&format!("{SHELL}{host}")), format!("Open a shell on {host}"), group)
             }));
         }

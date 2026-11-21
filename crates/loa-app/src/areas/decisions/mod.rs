@@ -48,13 +48,7 @@ pub struct State {
 
 impl State {
     pub fn new(ctx: &mut Ctx) -> (Self, Task<Message>) {
-        let policy = match ctx.services.config.load() {
-            Ok(loaded) => Unattended(loaded.config.unattended),
-            Err(error) => {
-                ctx.notify(format!("Can't read the unattended prompt settings: {error}"));
-                Unattended::default()
-            }
-        };
+        let policy = Unattended(ctx.read_config("unattended prompt settings").unwrap_or_default().unattended);
         let theme = ctx.shell.theme();
         let mut desk = Desk::new(ctx.services.node.key.clone(), &theme, policy, DesktopNotifier::new("loa"));
         desk.set_local_name(ctx.services.node.label.clone());
@@ -123,13 +117,7 @@ impl State {
     }
 
     fn save(policy: &Unattended, ctx: &mut Ctx) {
-        let saved = ctx.services.config.load().and_then(|mut loaded| {
-            loaded.config.unattended = policy.0.clone();
-            ctx.services.config.save(&loaded.config)
-        });
-        if let Err(error) = saved {
-            ctx.notify(format!("Can't save the unattended prompt settings: {error}"));
-        }
+        ctx.edit_config("unattended prompt settings", |config| config.unattended = policy.0.clone());
     }
 }
 

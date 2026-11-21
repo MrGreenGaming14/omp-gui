@@ -884,7 +884,7 @@ fn deleting_a_pinned_session_drops_its_pin() {
     let id = env.start();
     env.say("pin me");
     env.send(Message::Shell(shell::Message::Sidebar(shell::sidebar::Message::TogglePin(id.to_string()))));
-    let saved = |env: &Env| env.app.ctx.services.config.load().unwrap().config.pinned;
+    let saved = |env: &Env| env.app.ctx.services.config.load().unwrap().pinned;
     assert!(saved(&env).contains(id.as_str()));
 
     env.send(Message::Shell(shell::Message::Sidebar(shell::sidebar::Message::Delete(id.to_string()))));

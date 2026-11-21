@@ -8,13 +8,14 @@
 mod codec;
 mod schema;
 mod store;
+mod validate;
 
 pub use schema::{
-    ActiveProject, BrowserCapture, CURRENT_VERSION, Config, DEFAULT_PORT, DecisionDefault, Discovery, HarnessSettings,
-    McpServer, NetworkSettings, ProjectSettings, Relay, RemoteHost, SurfaceSettings, Theme,
+    ActiveProject, Appearance, BrowserCapture, CURRENT_VERSION, Config, DEFAULT_PORT, DecisionDefault, Discovery,
+    HarnessSettings, McpServer, NetworkSettings, ProjectSettings, Relay, RemoteHost, SurfaceSettings, ThemeRef,
     UnattendedSettings, UpdaterSettings,
 };
-pub use store::{CONFIG_FILE_NAME, ConfigStore, Loaded, config_path};
+pub use store::{CONFIG_FILE_NAME, ConfigStore, config_path};
 
 use std::path::PathBuf;
 
@@ -22,17 +23,9 @@ use std::path::PathBuf;
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
     #[error("can't read {}: {source}", path.display())]
-    Read {
-        path: PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
+    Read { path: PathBuf, source: std::io::Error },
     #[error("can't write {}: {source}", path.display())]
-    Write {
-        path: PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
+    Write { path: PathBuf, source: std::io::Error },
     #[error("the config isn't valid TOML: {0}")]
     Parse(#[source] Box<toml::de::Error>),
     #[error("the config has no top level `version` key")]
@@ -41,9 +34,7 @@ pub enum ConfigError {
     #[error("`{key}` {reason}")]
     Invalid { key: String, reason: String },
     /// The file was written by a newer app. It is never downgraded.
-    #[error(
-        "the config is schema version {found} but this app understands up to version {supported}; update the app to use it"
-    )]
+    #[error("the config is schema version {found} but this app understands up to version {supported}; update the app to use it")]
     TooNew { found: u32, supported: u32 },
     #[error("there is no migration from config version {from} to {}", from + 1)]
     MissingMigration { from: u32 },

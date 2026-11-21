@@ -90,15 +90,11 @@ pub struct State {
 impl State {
     pub fn new(ctx: &mut Ctx) -> (Self, Task<Message>) {
         let mut config = HubConfig::discover(&ctx.services.dirs.data.join("surfaces"));
-        match ctx.services.config.load() {
-            Ok(loaded) => {
-                let settings = loaded.config.surfaces;
-                config.video = settings.video;
-                if settings.browser_capture == loa_config::BrowserCapture::VirtualDisplay && config.virtual_display.is_ok() {
-                    config.capture = CaptureMode::VirtualDisplay;
-                }
+        if let Some(settings) = ctx.read_config("surface settings").map(|config| config.surfaces) {
+            config.video = settings.video;
+            if settings.browser_capture == loa_config::BrowserCapture::VirtualDisplay && config.virtual_display.is_ok() {
+                config.capture = CaptureMode::VirtualDisplay;
             }
-            Err(error) => ctx.notify(format!("Can't read the surface settings: {error}")),
         }
         Self::with_hub(SurfaceHub::new(config), ctx)
     }
@@ -304,13 +300,7 @@ fn video_status(enabled: bool, encoders: &LiveVideo) -> VideoStatus {
 
 /// Changes the `[surfaces]` table of the central config.
 fn save(ctx: &mut Ctx, change: impl FnOnce(&mut loa_config::SurfaceSettings)) {
-    let saved = ctx.services.config.load().and_then(|mut loaded| {
-        change(&mut loaded.config.surfaces);
-        ctx.services.config.save(&loaded.config)
-    });
-    if let Err(error) = saved {
-        ctx.notify(format!("Can't save the surface settings: {error}"));
-    }
+    ctx.edit_config("surface settings", |config| change(&mut config.surfaces));
 }
 
 impl Area for State {
