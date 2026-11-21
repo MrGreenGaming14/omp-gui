@@ -198,7 +198,11 @@ async fn a_lost_fragment_drops_its_frame_and_the_video_viewer_asks_for_a_keyfram
     const MAX: usize = 400;
     let frames: Vec<_> = (1..=5).map(|seq| frame(seq, Encoding::H264, seq == 1 || seq == 4, 1000)).collect();
     let mut per_frame = 0;
-    fragment(&frames[0], MAX, |_| Ok(per_frame += 1)).unwrap();
+    fragment(&frames[0], MAX, |_| {
+        per_frame += 1;
+        Ok(())
+    })
+    .unwrap();
     // The second fragment of frame 2 never arrives; frame 1's last fragment
     // comes after frame 2's first.
     let (surface, mut probe) = fake("video", None);
