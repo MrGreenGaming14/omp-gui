@@ -132,7 +132,7 @@ mod tests {
     fn catalog_groups_filters_and_scopes_toggles() {
         let (builtin, servers) = fixture();
         let none = BTreeSet::new();
-        let cases: [(&str, Vec<Vec<&str>>, Vec<Vec<&str>>); 5] = [
+        let cases = [
             ("", vec![vec!["bash", "read"], vec!["project_search", "project_read", "sandbox_task"]], vec![vec!["remote_bash", "remote_file"], vec!["surface_screenshot", "surface_click"], vec!["read"]]),
             ("PROJECT_", vec![vec!["project_search", "project_read"]], vec![]),
             ("ssh host", vec![], vec![vec!["remote_bash", "remote_file"]]),

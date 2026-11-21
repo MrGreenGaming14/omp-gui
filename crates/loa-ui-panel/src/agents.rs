@@ -131,7 +131,9 @@ impl State {
     /// Rebuilds from `dom`, keeping rows that were expanded.
     pub fn reset(&mut self, dom: &Dom) {
         let expanded: Vec<NodeId> = self.jobs.values().filter(|j| j.expanded).map(|j| j.node).collect();
-        (self.jobs.clear(), self.waits.clear(), self.scan(dom));
+        self.jobs.clear();
+        self.waits.clear();
+        self.scan(dom);
         for n in expanded {
             if let Some(j) = self.jobs.get_mut(&n) { j.expanded = true }
         }
