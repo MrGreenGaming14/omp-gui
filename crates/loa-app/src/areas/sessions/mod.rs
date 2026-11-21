@@ -44,7 +44,7 @@ use loa_models::login::UrlOpener;
 use loa_models::opener::SystemUrlOpener;
 use loa_ui_session::transcript as chat;
 use loa_ui_session::composer as composer;
-use loa_ui_palette as palette;
+use loa_ui_shell::palette;
 use loa_ui_panel::{agents, session_tree};
 use loa_ui_shell::SessionSummary;
 
@@ -449,7 +449,7 @@ impl State {
             }
         } else {
             match ctx.services.library.delete(id) {
-                Ok(()) => ctx.shell.remove_session(id),
+                Ok(()) => ctx.shell.sidebar_mut().remove_session(id),
                 Err(error) => ctx.notify(format!("Can't delete session {id}: {error}")),
             }
             Task::none()
@@ -757,7 +757,7 @@ fn composer_commands(dom: Option<&Dom>) -> Vec<composer::Command> {
 fn unpin(ctx: &mut Ctx, id: &str) {
     if ctx.shell.sidebar().pins().contains(id) {
         let pins: Vec<String> = ctx.shell.sidebar().pins().iter().filter(|pin| *pin != id).cloned().collect();
-        ctx.shell.set_pins(pins);
+        ctx.shell.sidebar_mut().set_pins(pins);
     }
     ctx.edit_config("pins", |config| config.pinned.remove(id));
 }
@@ -993,7 +993,7 @@ impl Area for State {
     }
 
     fn panel_tabs(&self) -> Vec<PanelTab> {
-        vec![PanelTab::new("agents", "Agents", false), PanelTab::new("session", "Session tree", false)]
+        vec![PanelTab::of(&self.agents, false), PanelTab::of(&self.tree.view, false)]
     }
 
     fn view_tab<'a>(&'a self, id: &str, _: &'a Ctx) -> Option<Element<'a, Message>> {

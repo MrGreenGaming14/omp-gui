@@ -1,6 +1,6 @@
 [package]
 name = "loa-ui-shell"
-description = "Sidebar, top bar, right panel frame and themes"
+description = "App frame, command palette, keymap and themes"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
@@ -12,5 +12,3 @@ iced.workspace = true
 
 [dev-dependencies]
 iced_test = "0.14"
-png = "0.18"
-tempfile.workspace = true

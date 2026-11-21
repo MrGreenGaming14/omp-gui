@@ -1,536 +1,193 @@
-//! The terminal grid drawn on an iced canvas, and the input it captures.
+//! The terminal grid on an iced canvas (background, decoration and text passes over resolved cells) and its input.
 
-use std::cell::Cell as StdCell;
-use std::time::{Duration, Instant};
+use crate::{GridSize, emulator::{Emulator, ViewportCell}, palette::TermPalette, state::{Message, TabId}};
+use alacritty_terminal::{index::Side, selection::SelectionType, term::cell::Flags, vte::ansi::CursorShape};
+use iced::{advanced::graphics::text::Paragraph, advanced::text::{self, Paragraph as _}, alignment, keyboard::{self, Key, Modifiers}, mouse::{self, ScrollDelta}};
+use iced::{theme::palette::mix, widget::canvas::{self, Action, Cache, Event, Frame, Geometry, Stroke}, Color, Font, Pixels, Point, Rectangle, Renderer, Size, Theme, Vector};
+use std::{cell::Cell as StdCell, time::{Duration, Instant}};
 
-use alacritty_terminal::index::{Point as GridPoint, Side};
-use alacritty_terminal::selection::SelectionType;
-use alacritty_terminal::term::cell::Flags;
-use alacritty_terminal::vte::ansi::CursorShape;
-use iced::advanced::graphics::text::Paragraph;
-use iced::advanced::text::{self, Paragraph as _};
-use iced::keyboard::{self, Key, Modifiers};
-use iced::mouse::{self, ScrollDelta};
-use iced::theme::palette::mix;
-use iced::widget::canvas::{self, Action, Cache, Event, Frame, Geometry, Stroke};
-use iced::{Color, Font, Pixels, Point, Rectangle, Renderer, Size, Theme, alignment};
-
-use crate::GridSize;
-use crate::emulator::{Emulator, ViewportCell};
-use crate::palette::TermPalette;
-use crate::state::{Message, TabId};
-
-/// Two clicks closer than this on the same cell are a double click.
+/// Two clicks on one cell closer than this are a double click.
 const MULTI_CLICK: Duration = Duration::from_millis(400);
-/// Line height relative to the font size.
 const LINE_HEIGHT: f32 = 1.25;
 
-/// Font and cell geometry of the terminal grid.
+/// Font (monospaced) and cell geometry of the grid.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Metrics {
-    /// Font for terminal text; should be monospaced.
-    pub font: Font,
-    /// Font size in logical pixels.
-    pub font_size: f32,
-    /// Size of one character cell in logical pixels.
-    pub cell: Size,
-}
-
+pub struct Metrics { pub font: Font, pub font_size: f32, pub cell: Size }
 impl Metrics {
-    /// Measures the cell size of `font` at `font_size` with the text
-    /// renderer's font system.
     pub fn measure(font: Font, font_size: f32) -> Self {
         const SAMPLE: &str = "MMMMMMMMMMMMMMMMMMMM";
-        let paragraph = Paragraph::with_text(text::Text {
-            content: SAMPLE,
-            bounds: Size::INFINITE,
-            size: Pixels(font_size),
-            line_height: text::LineHeight::Relative(LINE_HEIGHT),
-            font,
-            align_x: text::Alignment::Left,
-            align_y: alignment::Vertical::Top,
-            shaping: text::Shaping::Basic,
-            wrapping: text::Wrapping::None,
-        });
-        let bounds = paragraph.min_bounds();
-        Self {
-            font,
-            font_size,
-            cell: Size::new(bounds.width / SAMPLE.len() as f32, bounds.height),
-        }
+        let (align_x, align_y, line_height) = (text::Alignment::Left, alignment::Vertical::Top, text::LineHeight::Relative(LINE_HEIGHT));
+        let p = Paragraph::with_text(text::Text { content: SAMPLE, bounds: Size::INFINITE, size: Pixels(font_size), line_height, font, align_x, align_y, shaping: text::Shaping::Basic, wrapping: text::Wrapping::None });
+        Self { font, font_size, cell: Size::new(p.min_bounds().width / SAMPLE.len() as f32, p.min_bounds().height) }
     }
-
-    /// The grid that fits in `area`, at least 2 columns by 1 row.
+    /// The grid that fits in `area`, at least 2 by 1.
     pub fn grid_for(&self, area: Size) -> GridSize {
-        let fit = |space: f32, cell: f32| -> u16 {
-            if cell <= 0.0 {
-                return 0;
-            }
-            (space / cell).floor().clamp(0.0, f32::from(u16::MAX)) as u16
-        };
-        GridSize {
-            cols: fit(area.width, self.cell.width).max(2),
-            rows: fit(area.height, self.cell.height).max(1),
-            cell_width: self.cell.width.round() as u16,
-            cell_height: self.cell.height.round() as u16,
-        }
+        let fit = |space: f32, cell: f32| if cell <= 0.0 { 0 } else { (space / cell).floor().clamp(0.0, f32::from(u16::MAX)) as u16 };
+        GridSize { cols: fit(area.width, self.cell.width).max(2), rows: fit(area.height, self.cell.height).max(1), cell_width: self.cell.width.round() as u16, cell_height: self.cell.height.round() as u16 }
     }
-
-    /// The cell under a position relative to the canvas, and which half of
-    /// it the position is in. Positions outside the canvas clamp to the edge.
-    pub fn cell_at(&self, position: Point, grid: GridSize) -> (ViewportCell, Side) {
-        let x = (position.x / self.cell.width).max(0.0);
-        let y = (position.y / self.cell.height).max(0.0);
-        let col = (x as usize).min(usize::from(grid.cols.saturating_sub(1)));
-        let row = (y as usize).min(usize::from(grid.rows.saturating_sub(1)));
-        let side = if x.fract() > 0.5 { Side::Right } else { Side::Left };
-        (ViewportCell { col, row }, side)
+    /// The cell under a canvas position and which half of it; outside positions clamp.
+    pub fn cell_at(&self, p: Point, grid: GridSize) -> (ViewportCell, Side) {
+        let (x, y) = ((p.x / self.cell.width).max(0.0), (p.y / self.cell.height).max(0.0));
+        let cell = ViewportCell { col: (x as usize).min(usize::from(grid.cols.saturating_sub(1))), row: (y as usize).min(usize::from(grid.rows.saturating_sub(1))) };
+        (cell, if x.fract() > 0.5 { Side::Right } else { Side::Left })
     }
+    fn origin(&self, row: usize, col: usize) -> Point { Point::new(col as f32 * self.cell.width, row as f32 * self.cell.height) }
+    fn span(&self, cells: usize, height: f32) -> Size { Size::new(cells as f32 * self.cell.width, height) }
 }
 
-/// What the canvas reports to [`crate::State`].
+/// Canvas input for the state: `Scroll` lines are positive up; `SelectStart` is simple, semantic (2 clicks) or lines (3).
 #[derive(Debug, Clone, PartialEq)]
 pub enum CanvasEvent {
-    /// The canvas was laid out at a new grid size.
     Resized(GridSize),
-    /// A key was pressed while the terminal had focus.
-    Key {
-        /// Logical key.
-        key: Key,
-        /// Modifiers held.
-        modifiers: Modifiers,
-        /// Text the key produced, if any.
-        text: Option<String>,
-    },
-    /// The mouse wheel moved by this many lines; positive is up.
+    Key { key: Key, modifiers: Modifiers, text: Option<String> },
     Scroll(i32),
-    /// A mouse press started a selection.
-    SelectStart {
-        /// Cell under the pointer.
-        cell: ViewportCell,
-        /// Half of the cell under the pointer.
-        side: Side,
-        /// Simple, semantic (double click) or lines (triple click).
-        kind: SelectionType,
-    },
-    /// The pointer moved while selecting.
-    SelectUpdate {
-        /// Cell under the pointer.
-        cell: ViewportCell,
-        /// Half of the cell under the pointer.
-        side: Side,
-    },
-    /// The mouse button was released.
+    SelectStart { cell: ViewportCell, side: Side, kind: SelectionType },
+    SelectUpdate { cell: ViewportCell, side: Side },
     SelectEnd,
 }
 
-/// Input state the canvas keeps between events.
 #[derive(Debug, Default)]
-pub struct CanvasState {
-    focused: bool,
-    selecting: bool,
-    grid: Option<GridSize>,
-    last_click: Option<(Instant, ViewportCell, u8)>,
-    scroll_remainder: f32,
-}
+pub struct CanvasState { focused: bool, selecting: bool, grid: Option<GridSize>, last_click: Option<(Instant, ViewportCell, u8)>, scroll_remainder: f32 }
+/// One terminal, drawn and turned into [`Message`]s.
+pub struct TerminalCanvas<'a> { pub(crate) tab: TabId, pub(crate) emulator: &'a Emulator, pub(crate) cache: &'a Cache, pub(crate) drawn_with: &'a StdCell<Option<TermPalette>>, pub(crate) metrics: Metrics }
 
-/// Draws one terminal and turns canvas events into [`Message`]s.
-pub struct TerminalCanvas<'a> {
-    pub(crate) tab: TabId,
-    pub(crate) emulator: &'a Emulator,
-    pub(crate) cache: &'a Cache,
-    pub(crate) drawn_with: &'a StdCell<Option<TermPalette>>,
-    pub(crate) metrics: Metrics,
-}
+/// A visible cell, colours resolved (inverse, selection, dim), `c` blank for spaces/tabs/hidden text; `run` is the text colour
+/// and bold/italic, blanks continue the run before them and wide cells (`None`) stand alone.
+struct Painted<'a> { row: usize, col: usize, width: usize, fg: Color, bg: Color, flags: Flags, c: char, zerowidth: Option<&'a [char]>, run: Option<(Color, Flags)> }
+fn adjacent(a: &Painted, b: &Painted) -> bool { a.row == b.row && a.col + a.width == b.col }
 
-impl TerminalCanvas<'_> {
-    fn publish(&self, event: CanvasEvent) -> Action<Message> {
-        Action::publish(Message::Canvas(self.tab, event))
+impl<'a> TerminalCanvas<'a> {
+    fn publish(&self, e: CanvasEvent) -> Action<Message> { Action::publish(Message::Canvas(self.tab, e)) }
+    fn cells(&self, palette: &TermPalette) -> Vec<Painted<'a>> {
+        let content = self.emulator.term.renderable_content();
+        let (offset, colors, selection) = (content.display_offset as i32, content.colors, content.selection);
+        let mut run = None;
+        content.display_iter.filter(|i| !i.cell.flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)).map(|i| {
+            let (mut fg, mut bg, flags) = (palette.resolve(i.cell.fg, colors), palette.resolve(i.cell.bg, colors), i.cell.flags);
+            if flags.contains(Flags::INVERSE) { std::mem::swap(&mut fg, &mut bg) }
+            if selection.is_some_and(|r| r.contains(i.point)) { (fg, bg) = (palette.foreground, palette.selection) }
+            if flags.contains(Flags::DIM) { fg = mix(fg, bg, 0.33) }
+            let blank = matches!(i.cell.c, ' ' | '\t') || flags.contains(Flags::HIDDEN);
+            let wide = flags.contains(Flags::WIDE_CHAR);
+            run = if wide { None } else if blank { run } else { Some((fg, flags & (Flags::BOLD | Flags::ITALIC))) };
+            let c = if blank { ' ' } else { i.cell.c };
+            Painted { row: (i.point.line.0 + offset) as usize, col: i.point.column.0, width: 1 + usize::from(wide), fg, bg, flags, c, zerowidth: i.cell.zerowidth(), run }
+        }).collect()
     }
-
-    fn draw_content(&self, frame: &mut Frame, palette: &TermPalette) {
-        let size = frame.size();
-        frame.fill_rectangle(Point::ORIGIN, size, palette.background);
-
-        let cw = self.metrics.cell.width;
-        let ch = self.metrics.cell.height;
-        let content = self.emulator.term().renderable_content();
-        let offset = content.display_offset as i32;
-        let colors = content.colors;
-        let selection = content.selection;
-        let thickness = (self.metrics.font_size / 14.0).max(1.0);
-
-        let mut backgrounds: Vec<(usize, usize, usize, Color)> = Vec::new();
-        let mut decorations: Vec<(usize, usize, usize, Color, f32)> = Vec::new();
-        let mut runs: Vec<Run> = Vec::new();
-
-        for indexed in content.display_iter {
-            let cell = indexed.cell;
-            if cell
-                .flags
-                .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
-            {
-                continue;
-            }
-            let row = (indexed.point.line.0 + offset) as usize;
-            let col = indexed.point.column.0;
-            let width = if cell.flags.contains(Flags::WIDE_CHAR) { 2 } else { 1 };
-
-            let mut fg = palette.resolve(cell.fg, colors);
-            let mut bg = palette.resolve(cell.bg, colors);
-            if cell.flags.contains(Flags::INVERSE) {
-                std::mem::swap(&mut fg, &mut bg);
-            }
-            if selection.is_some_and(|range| range.contains(indexed.point)) {
-                fg = palette.selection_text;
-                bg = palette.selection;
-            }
-            if cell.flags.contains(Flags::DIM) {
-                fg = mix(fg, bg, 0.33);
-            }
-
-            if bg != palette.background {
-                match backgrounds.last_mut() {
-                    Some((r, _, end, color)) if *r == row && *end == col && *color == bg => {
-                        *end = col + width;
-                    }
-                    _ => backgrounds.push((row, col, col + width, bg)),
-                }
-            }
-            if cell.flags.intersects(Flags::ALL_UNDERLINES) {
-                decorations.push((row, col, width, fg, ch - thickness));
-            }
-            if cell.flags.contains(Flags::STRIKEOUT) {
-                decorations.push((row, col, width, fg, ch * 0.5));
-            }
-            let continues = |run: &Run| run.row == row && run.end == col && run.single_width;
-            if cell.c == ' ' || cell.c == '\t' || cell.flags.contains(Flags::HIDDEN) {
-                // Blanks inside a run keep it going instead of splitting it.
-                if let Some(run) = runs.last_mut().filter(|run| continues(run)) {
-                    run.text.push(' ');
-                    run.end = col + width;
-                }
-                continue;
-            }
-            let style = (
-                cell.flags.contains(Flags::BOLD),
-                cell.flags.contains(Flags::ITALIC),
-            );
-            let extends = width == 1
-                && runs
-                    .last()
-                    .is_some_and(|run| continues(run) && run.color == fg && run.style == style);
-            if !extends {
-                runs.push(Run {
-                    row,
-                    start: col,
-                    end: col,
-                    color: fg,
-                    style,
-                    single_width: width == 1,
-                    text: String::new(),
-                });
-            }
-            if let Some(run) = runs.last_mut() {
-                run.text.push(cell.c);
-                if let Some(zerowidth) = cell.zerowidth() {
-                    run.text.extend(zerowidth);
-                }
-                run.end = col + width;
-            }
-        }
-
-        for (row, start, end, color) in backgrounds {
-            frame.fill_rectangle(
-                Point::new(start as f32 * cw, row as f32 * ch),
-                Size::new((end - start) as f32 * cw, ch),
-                color,
-            );
-        }
-        for (row, col, width, color, y) in decorations {
-            frame.fill_rectangle(
-                Point::new(col as f32 * cw, row as f32 * ch + y),
-                Size::new(width as f32 * cw, thickness),
-                color,
-            );
-        }
-        for mut run in runs {
-            run.text.truncate(run.text.trim_end().len());
-            let font = self.font(run.style);
-            frame.fill_text(self.text(run.text, run.row, run.start, run.color, font));
+    fn backgrounds(&self, frame: &mut Frame, cells: &[Painted], palette: &TermPalette) {
+        for run in cells.chunk_by(|a, b| adjacent(a, b) && a.bg == b.bg).filter(|r| r[0].bg != palette.background) {
+            let (first, last) = (&run[0], &run[run.len() - 1]);
+            frame.fill_rectangle(self.metrics.origin(first.row, first.col), self.metrics.span(last.col + last.width - first.col, self.metrics.cell.height), first.bg);
         }
     }
-
-    fn font(&self, (bold, italic): (bool, bool)) -> Font {
+    /// Underlines and strikeouts.
+    fn decorations(&self, frame: &mut Frame, cells: &[Painted]) {
+        let (thickness, ch) = ((self.metrics.font_size / 14.0).max(1.0), self.metrics.cell.height);
+        for c in cells {
+            for (_, y) in [(c.flags.intersects(Flags::ALL_UNDERLINES), ch - thickness), (c.flags.contains(Flags::STRIKEOUT), ch * 0.5)].into_iter().filter(|(on, _)| *on) {
+                frame.fill_rectangle(self.metrics.origin(c.row, c.col) + Vector::new(0.0, y), self.metrics.span(c.width, thickness), c.fg);
+            }
+        }
+    }
+    fn text_runs(&self, frame: &mut Frame, cells: &[Painted]) {
+        for run in cells.chunk_by(|a, b| adjacent(a, b) && a.run.is_some() && a.run == b.run) {
+            let text: String = run.iter().flat_map(|c| std::iter::once(c.c).chain(c.zerowidth.into_iter().flatten().copied())).collect();
+            let (first, text) = (&run[0], text.trim_end());
+            let (color, style) = first.run.unwrap_or((first.fg, first.flags));
+            if !text.is_empty() { frame.fill_text(self.text(text.to_owned(), first.row, first.col, color, style)) }
+        }
+    }
+    fn text(&self, content: String, row: usize, col: usize, color: Color, flags: Flags) -> canvas::Text {
         let mut font = self.metrics.font;
-        if bold {
-            font.weight = iced::font::Weight::Bold;
-        }
-        if italic {
-            font.style = iced::font::Style::Italic;
-        }
-        font
+        if flags.contains(Flags::BOLD) { font.weight = iced::font::Weight::Bold }
+        if flags.contains(Flags::ITALIC) { font.style = iced::font::Style::Italic }
+        let shaping = if content.is_ascii() { text::Shaping::Basic } else { text::Shaping::Advanced };
+        let line_height = text::LineHeight::Absolute(Pixels(self.metrics.cell.height));
+        canvas::Text { content, position: self.metrics.origin(row, col), color, size: Pixels(self.metrics.font_size), line_height, font, shaping, ..canvas::Text::default() }
     }
-
-    fn text(&self, content: String, row: usize, col: usize, color: Color, font: Font) -> canvas::Text {
-        let shaping = if content.is_ascii() {
-            text::Shaping::Basic
-        } else {
-            text::Shaping::Advanced
-        };
-        canvas::Text {
-            content,
-            position: Point::new(
-                col as f32 * self.metrics.cell.width,
-                row as f32 * self.metrics.cell.height,
-            ),
-            color,
-            size: Pixels(self.metrics.font_size),
-            line_height: text::LineHeight::Absolute(Pixels(self.metrics.cell.height)),
-            font,
-            shaping,
-            ..canvas::Text::default()
-        }
-    }
-
     fn draw_cursor(&self, frame: &mut Frame, palette: &TermPalette, focused: bool) {
-        let term = self.emulator.term();
-        let content = term.renderable_content();
-        let shape = content.cursor.shape;
-        if shape == CursorShape::Hidden {
-            return;
-        }
-        let point: GridPoint = content.cursor.point;
+        let (term, metrics, content) = (&self.emulator.term, self.metrics, self.emulator.term.renderable_content());
+        let (shape, point) = (content.cursor.shape, content.cursor.point);
         let row = point.line.0 + content.display_offset as i32;
-        let screen_rows = i32::from(self.emulator.size().rows.max(1));
-        if !(0..screen_rows).contains(&row) {
-            return;
-        }
-        let cell = &term.grid()[point];
-        let width = if cell.flags.contains(Flags::WIDE_CHAR) { 2.0 } else { 1.0 };
-        let cw = self.metrics.cell.width;
-        let ch = self.metrics.cell.height;
-        let origin = Point::new(point.column.0 as f32 * cw, row as f32 * ch);
-        let size = Size::new(cw * width, ch);
-        let thickness = (self.metrics.font_size / 8.0).max(1.0);
+        if shape == CursorShape::Hidden || !(0..i32::from(self.emulator.size().rows.max(1))).contains(&row) { return }
+        let (cell, ch, thickness) = (&term.grid()[point], metrics.cell.height, (metrics.font_size / 8.0).max(1.0));
+        let (origin, size) = (metrics.origin(row as usize, point.column.0), metrics.span(1 + usize::from(cell.flags.contains(Flags::WIDE_CHAR)), ch));
         match shape {
             CursorShape::Block if focused => {
                 frame.fill_rectangle(origin, size, palette.cursor);
-                if cell.c != ' ' {
-                    let font = self.font((
-                        cell.flags.contains(Flags::BOLD),
-                        cell.flags.contains(Flags::ITALIC),
-                    ));
-                    frame.fill_text(self.text(
-                        cell.c.to_string(),
-                        row as usize,
-                        point.column.0,
-                        palette.background,
-                        font,
-                    ));
-                }
+                if cell.c != ' ' { frame.fill_text(self.text(cell.c.to_string(), row as usize, point.column.0, palette.background, cell.flags)) }
             }
-            CursorShape::Beam => {
-                frame.fill_rectangle(origin, Size::new(thickness, ch), palette.cursor);
-            }
-            CursorShape::Underline => frame.fill_rectangle(
-                Point::new(origin.x, origin.y + ch - thickness),
-                Size::new(size.width, thickness),
-                palette.cursor,
-            ),
-            _ => frame.stroke_rectangle(
-                origin,
-                size,
-                Stroke::default()
-                    .with_color(palette.cursor)
-                    .with_width(thickness / 2.0),
-            ),
+            CursorShape::Beam => frame.fill_rectangle(origin, Size::new(thickness, ch), palette.cursor),
+            CursorShape::Underline => frame.fill_rectangle(origin + Vector::new(0.0, ch - thickness), Size::new(size.width, thickness), palette.cursor),
+            _ => frame.stroke_rectangle(origin, size, Stroke::default().with_color(palette.cursor).with_width(thickness / 2.0)),
         }
     }
-}
-
-struct Run {
-    row: usize,
-    start: usize,
-    end: usize,
-    color: Color,
-    style: (bool, bool),
-    single_width: bool,
-    text: String,
+    /// A mouse or key event the terminal handles, as a captured message.
+    fn input(&self, state: &mut CanvasState, event: &Event, bounds: Rectangle, cursor: mouse::Cursor, grid: GridSize) -> Option<Action<Message>> {
+        let event = match event {
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
+                (state.focused, state.selecting) = (cursor.is_over(bounds), cursor.is_over(bounds));
+                let ((cell, side), now) = (self.metrics.cell_at(cursor.position_in(bounds)?, grid), Instant::now());
+                let clicks = state.last_click.filter(|&(at, last, _)| last == cell && now - at < MULTI_CLICK).map_or(1, |(_, _, n)| n % 3 + 1);
+                state.last_click = Some((now, cell, clicks));
+                CanvasEvent::SelectStart { cell, side, kind: [SelectionType::Simple, SelectionType::Semantic, SelectionType::Lines][usize::from(clicks - 1)] }
+            }
+            Event::Mouse(mouse::Event::CursorMoved { .. }) if state.selecting => {
+                let (cell, side) = self.metrics.cell_at(cursor.position_from(bounds.position())?, grid);
+                CanvasEvent::SelectUpdate { cell, side }
+            }
+            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) if state.selecting => {
+                state.selecting = false;
+                CanvasEvent::SelectEnd
+            }
+            Event::Mouse(mouse::Event::WheelScrolled { delta }) if cursor.is_over(bounds) => {
+                let (ScrollDelta::Lines { y, .. } | ScrollDelta::Pixels { y, .. }) = *delta;
+                let lines = state.scroll_remainder + if matches!(delta, ScrollDelta::Lines { .. }) { y * 3.0 } else { y / self.metrics.cell.height.max(1.0) };
+                state.scroll_remainder = lines.fract();
+                if lines.trunc() == 0.0 { return Some(Action::capture()) }
+                CanvasEvent::Scroll(lines.trunc() as i32)
+            }
+            Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, text, .. }) if state.focused => CanvasEvent::Key { key: key.clone(), modifiers: *modifiers, text: text.as_ref().map(ToString::to_string) },
+            _ => return None,
+        };
+        Some(self.publish(event).and_capture())
+    }
 }
 
 impl canvas::Program<Message> for TerminalCanvas<'_> {
     type State = CanvasState;
-
-    fn update(
-        &self,
-        state: &mut CanvasState,
-        event: &Event,
-        bounds: Rectangle,
-        cursor: mouse::Cursor,
-    ) -> Option<Action<Message>> {
+    fn update(&self, state: &mut CanvasState, event: &Event, bounds: Rectangle, cursor: mouse::Cursor) -> Option<Action<Message>> {
         let grid = self.metrics.grid_for(bounds.size());
-        if let Some(action) = self.input(state, event, bounds, cursor, grid) {
-            return Some(action);
-        }
-        // A canvas action carries one message, so a size change is reported
-        // on the next event that is not input.
-        if state.grid != Some(grid) {
-            state.grid = Some(grid);
-            return Some(self.publish(CanvasEvent::Resized(grid)));
-        }
-        None
+        let input = self.input(state, event, bounds, cursor, grid);
+        // An action carries one message, so a size change waits for an event that isn't input.
+        if input.is_some() || state.grid == Some(grid) { return input }
+        state.grid = Some(grid);
+        Some(self.publish(CanvasEvent::Resized(grid)))
     }
-
-    fn draw(
-        &self,
-        state: &CanvasState,
-        renderer: &Renderer,
-        theme: &Theme,
-        bounds: Rectangle,
-        _cursor: mouse::Cursor,
-    ) -> Vec<Geometry> {
+    fn draw(&self, state: &CanvasState, renderer: &Renderer, theme: &Theme, bounds: Rectangle, _: mouse::Cursor) -> Vec<Geometry> {
         let palette = TermPalette::from_theme(theme);
-        if self.drawn_with.get() != Some(palette) {
-            self.cache.clear();
-            self.drawn_with.set(Some(palette));
-        }
+        if self.drawn_with.replace(Some(palette)) != Some(palette) { self.cache.clear() }
         let content = self.cache.draw(renderer, bounds.size(), |frame| {
-            self.draw_content(frame, &palette);
+            frame.fill_rectangle(Point::ORIGIN, frame.size(), palette.background);
+            let cells = self.cells(&palette);
+            self.backgrounds(frame, &cells, &palette);
+            self.decorations(frame, &cells);
+            self.text_runs(frame, &cells);
         });
         let mut overlay = Frame::new(renderer, bounds.size());
         self.draw_cursor(&mut overlay, &palette, state.focused);
         vec![content, overlay.into_geometry()]
     }
-
-    fn mouse_interaction(
-        &self,
-        _state: &CanvasState,
-        bounds: Rectangle,
-        cursor: mouse::Cursor,
-    ) -> mouse::Interaction {
-        if cursor.is_over(bounds) {
-            mouse::Interaction::Text
-        } else {
-            mouse::Interaction::default()
-        }
-    }
-}
-
-impl TerminalCanvas<'_> {
-    /// Turns a mouse or keyboard event into a message, if it is one the
-    /// terminal handles.
-    fn input(
-        &self,
-        state: &mut CanvasState,
-        event: &Event,
-        bounds: Rectangle,
-        cursor: mouse::Cursor,
-        grid: GridSize,
-    ) -> Option<Action<Message>> {
-        match event {
-            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
-                let Some(position) = cursor.position_in(bounds) else {
-                    state.focused = false;
-                    return None;
-                };
-                state.focused = true;
-                state.selecting = true;
-                let (cell, side) = self.metrics.cell_at(position, grid);
-                let now = Instant::now();
-                let clicks = match state.last_click {
-                    Some((at, last, count)) if last == cell && now - at < MULTI_CLICK => {
-                        count % 3 + 1
-                    }
-                    _ => 1,
-                };
-                state.last_click = Some((now, cell, clicks));
-                let kind = match clicks {
-                    1 => SelectionType::Simple,
-                    2 => SelectionType::Semantic,
-                    _ => SelectionType::Lines,
-                };
-                Some(
-                    self.publish(CanvasEvent::SelectStart { cell, side, kind })
-                        .and_capture(),
-                )
-            }
-            Event::Mouse(mouse::Event::CursorMoved { .. }) if state.selecting => {
-                let position = cursor.position_from(bounds.position())?;
-                let (cell, side) = self.metrics.cell_at(position, grid);
-                Some(self.publish(CanvasEvent::SelectUpdate { cell, side }))
-            }
-            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) if state.selecting => {
-                state.selecting = false;
-                Some(self.publish(CanvasEvent::SelectEnd))
-            }
-            Event::Mouse(mouse::Event::WheelScrolled { delta }) if cursor.is_over(bounds) => {
-                let lines = match *delta {
-                    ScrollDelta::Lines { y, .. } => y * 3.0,
-                    ScrollDelta::Pixels { y, .. } => y / self.metrics.cell.height.max(1.0),
-                } + state.scroll_remainder;
-                let whole = lines.trunc();
-                state.scroll_remainder = lines - whole;
-                if whole == 0.0 {
-                    return Some(Action::capture());
-                }
-                Some(self.publish(CanvasEvent::Scroll(whole as i32)).and_capture())
-            }
-            Event::Keyboard(keyboard::Event::KeyPressed {
-                key,
-                modifiers,
-                text,
-                ..
-            }) if state.focused => Some(
-                self.publish(CanvasEvent::Key {
-                    key: key.clone(),
-                    modifiers: *modifiers,
-                    text: text.as_ref().map(ToString::to_string),
-                })
-                .and_capture(),
-            ),
-            _ => None,
-        }
+    fn mouse_interaction(&self, _: &CanvasState, bounds: Rectangle, cursor: mouse::Cursor) -> mouse::Interaction {
+        if cursor.is_over(bounds) { mouse::Interaction::Text } else { mouse::Interaction::default() }
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn metrics() -> Metrics {
-        Metrics {
-            font: Font::MONOSPACE,
-            font_size: 14.0,
-            cell: Size::new(8.0, 16.0),
-        }
-    }
-
-    #[test]
-    fn grid_fills_the_pane_with_whole_cells() {
-        let grid = metrics().grid_for(Size::new(803.0, 410.0));
-        assert_eq!((grid.cols, grid.rows), (100, 25));
-        assert_eq!((grid.cell_width, grid.cell_height), (8, 16));
-        let tiny = metrics().grid_for(Size::new(3.0, 3.0));
-        assert_eq!((tiny.cols, tiny.rows), (2, 1));
-    }
-
-    #[test]
-    fn pointer_maps_to_cell_and_side_and_clamps_outside() {
-        let m = metrics();
-        let grid = GridSize::new(10, 5);
-        let (cell, side) = m.cell_at(Point::new(17.0, 33.0), grid);
-        assert_eq!(cell, ViewportCell { col: 2, row: 2 });
-        assert_eq!(side, Side::Left);
-        let (_, side) = m.cell_at(Point::new(22.0, 33.0), grid);
-        assert_eq!(side, Side::Right);
-        let (cell, _) = m.cell_at(Point::new(-40.0, 900.0), grid);
-        assert_eq!(cell, ViewportCell { col: 0, row: 4 });
-    }
-
-    #[test]
-    fn measured_cells_are_positive() {
-        let m = Metrics::measure(Font::MONOSPACE, 14.0);
-        assert!(m.cell.width > 1.0 && m.cell.height > 10.0, "{m:?}");
-    }
+#[test]
+fn grid_and_pointer_geometry() {
+    let m = Metrics { font: Font::MONOSPACE, font_size: 14.0, cell: Size::new(8.0, 16.0) };
+    assert_eq!([m.grid_for(Size::new(803.0, 410.0)), m.grid_for(Size::new(3.0, 3.0))].map(|g| (g.cols, g.rows, g.cell_width)), [(100, 25, 8), (2, 1, 8)]);
+    let cases = [((17.0, 33.0), (2, 2, Side::Left)), ((22.0, 33.0), (2, 2, Side::Right)), ((-40.0, 900.0), (0, 4, Side::Left))];
+    for ((x, y), (col, row, side)) in cases { assert_eq!(m.cell_at(Point::new(x, y), GridSize::new(10, 5)), (ViewportCell { col, row }, side)) }
 }

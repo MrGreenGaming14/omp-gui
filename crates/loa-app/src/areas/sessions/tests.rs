@@ -15,7 +15,7 @@ use loa_core::{
 };
 use loa_trust::NodeIdentity;
 use loa_ui_session::composer as composer;
-use loa_ui_palette as palette;
+use loa_ui_shell::palette;
 use loa_ui_panel::{agents, session_tree};
 use loa_ui_shell as shell;
 
@@ -333,7 +333,7 @@ fn deleting_a_recent_removes_it_and_its_journal() {
     assert!(journals.join(open.as_str()).exists());
 
     // The active session, from its sidebar row.
-    env.send(Message::Shell(shell::Message::Sidebar(shell::sidebar::Message::Delete(closed.to_string()))));
+    env.send(Message::Shell(shell::Message::Sidebar(shell::sidebar::Message::Emit(shell::sidebar::Event::DeleteSession(closed.to_string())))));
     assert!(active(&env.app).is_none());
     assert!(env.app.ctx.shell.sidebar().session(closed.as_str()).is_none());
     assert!(!journals.join(closed.as_str()).exists());
@@ -342,7 +342,7 @@ fn deleting_a_recent_removes_it_and_its_journal() {
     drop(env.app);
     let mut app = build(env.dir.path(), "fake-s", &env.seen, &env.reply);
     assert!(app.ctx.shell.sidebar().session(open.as_str()).is_some(), "listed in Recents");
-    update(&mut app, Message::Shell(shell::Message::Sidebar(shell::sidebar::Message::Delete(open.to_string()))));
+    update(&mut app, Message::Shell(shell::Message::Sidebar(shell::sidebar::Message::Emit(shell::sidebar::Event::DeleteSession(open.to_string())))));
     assert!(app.ctx.shell.sidebar().session(open.as_str()).is_none());
     assert!(!journals.join(open.as_str()).exists());
 }
@@ -887,7 +887,7 @@ fn deleting_a_pinned_session_drops_its_pin() {
     let saved = |env: &Env| env.app.ctx.services.config.load().unwrap().pinned;
     assert!(saved(&env).contains(id.as_str()));
 
-    env.send(Message::Shell(shell::Message::Sidebar(shell::sidebar::Message::Delete(id.to_string()))));
+    env.send(Message::Shell(shell::Message::Sidebar(shell::sidebar::Message::Emit(shell::sidebar::Event::DeleteSession(id.to_string())))));
     assert!(!saved(&env).contains(id.as_str()), "the saved pin is gone");
     assert!(!env.app.ctx.shell.sidebar().pins().contains(id.as_str()));
 }

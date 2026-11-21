@@ -11,8 +11,8 @@ use loa_contracts::harness::{Adapter, AdapterError, Answer, Capabilities, Harnes
 use loa_core::{Dom, Draft, ElementKind, NodeId, PatchSink, Role, TurnStatus, Value, now_ms};
 use loa_trust::NodeIdentity;
 use loa_sandbox::provider::local::find_stub;
-use loa_ui_palette as palette;
-use loa_ui_tools::DetailState;
+use loa_ui_shell::palette;
+use loa_ui_panel::tools::DetailState;
 
 use super::{Field, Message, TAB, View};
 use crate::app::tests::{prompt, update};
@@ -249,9 +249,10 @@ fn the_tools_panel_lists_each_provider_with_its_availability() {
     sandbox(&mut app, Message::Refresh);
     let tool = app.ctx.app_tools.iter().find(|tool| tool.name == "sandbox_task").unwrap();
     let labels: Vec<_> = tool.details.iter().map(|detail| detail.label.as_str()).collect();
-    assert_eq!(labels, ["Local", "Docker", "Firecracker", "VM (qemu)", "SSH host", "Peer"]);
+    let vm: &[&str] = if cfg!(feature = "sandbox-vm") { &["Firecracker", "VM (qemu)"] } else { &[] };
+    assert_eq!(labels, [&["Local", "Docker"][..], vm, &["SSH host", "Peer"]].concat());
     assert_eq!(tool.details[0].state, DetailState::Ready, "the stub is here: {:?}", tool.details[0]);
-    let peer = &tool.details[5];
+    let peer = tool.details.last().unwrap();
     assert_eq!((peer.state, peer.text.as_str()), (DetailState::Unavailable, "Peer networking is not running"), "the node isn't started");
     assert!(tool.details.iter().all(|detail| !detail.text.is_empty()), "every state says why");
 }
@@ -359,7 +360,7 @@ mod peer {
         panel(rt, app, panel::Message::AddPeer);
     }
 
-    fn peer_detail(app: &App) -> loa_ui_tools::ToolDetail {
+    fn peer_detail(app: &App) -> loa_ui_panel::tools::ToolDetail {
         let tool = app.ctx.app_tools.iter().find(|tool| tool.name == "sandbox_task").unwrap();
         tool.details.iter().find(|detail| detail.label == "Peer").unwrap().clone()
     }
