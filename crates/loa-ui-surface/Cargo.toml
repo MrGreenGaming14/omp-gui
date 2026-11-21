@@ -6,27 +6,22 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
-loa-core.workspace = true
-loa-surface.workspace = true
-loa-surface-bench = { path = "../loa-surface-bench" }
-loa-surface-docs = { path = "../loa-surface-docs" }
-loa-ui-icons.workspace = true
-loa-ui-shell = { path = "../loa-ui-shell" }
+loa-view.workspace = true
+loa-ui-kit.workspace = true
+loa-util.workspace = true
 iced.workspace = true
 bytes.workspace = true
 futures.workspace = true
-thiserror.workspace = true
 tokio.workspace = true
-image = { version = "0.25", default-features = false, features = ["png", "gif", "webp", "bmp"] }
-# image 0.25's JPEG backend mis-decodes baseline JPEGs with one scan per
-# component, which is how Chrome encodes some screencast frames.
-jpeg-decoder = { version = "0.3", default-features = false }
+
+[features]
+# The launcher's live video toggle for viewers across the network.
+remote-video = []
 
 [dev-dependencies]
-async-trait.workspace = true
 iced_runtime = "0.14"
 iced_test = "0.14"
 tempfile.workspace = true
-rust_xlsxwriter = "0.103"
-loa-surface-hub = { path = "../loa-surface-hub" }
-image = { version = "0.25", default-features = false, features = ["jpeg"] }
+async-trait.workspace = true
+# Reads the canvas snapshots back.
+image = { version = "0.25", default-features = false, features = ["png"] }

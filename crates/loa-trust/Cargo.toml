@@ -1,0 +1,37 @@
+[package]
+name = "loa-trust"
+description = "Node identity (one ed25519 key) and the Biscuit grants bound to it"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+loa-util.workspace = true
+loa-core.workspace = true
+loa-contracts.workspace = true
+loa-bus = { path = "../loa-bus" }
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+# biscuit-auth 6.0.0 doesn't compile without `datalog-macro` (its builder
+# modules import `ToAnyParam` unconditionally).
+biscuit-auth = { version = "6.0.0", default-features = false, features = ["datalog-macro"] }
+ed25519-dalek = { version = "3", default-features = false, features = ["fast", "zeroize"] }
+iroh-base = { version = "1.5", default-features = false, features = ["key"] }
+getrandom = "0.4"
+data-encoding = "2"
+zeroize = "1"
+# Default `v1` feature: Secret Service over zbus with pure Rust crypto on Linux/BSD,
+# Keychain Services on macOS, Credential Manager on Windows. No system headers needed.
+keyring = "4.2"
+
+[target.'cfg(windows)'.dependencies]
+tempfile.workspace = true
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation", "Win32_Security_Authorization", "Win32_Storage_FileSystem",
+    "Win32_System_SystemServices", "Win32_System_Threading",
+] }
+
+[dev-dependencies]
+futures.workspace = true

@@ -1,341 +1,152 @@
-use loa_updater::gates::{
-    ChangelogGate, ChangelogReview, ChangelogSummarizer, ConfigSchema, ContractFailure,
-    ContractRunner, FormatGate, FormatProbe, GateCheck, GateInputs, OmpReadyProbe,
-    OmpSmolSummarizer, RpcGate,
-    RpcProbe, ToolCatalog, ToolGate, ToolSchema, UsedTools, Verdict, check_tool_schemas,
-    run_gates,
-};
+//! The pure gate checks, table driven, and `run_gates` over fake ports.
+
+use async_trait::async_trait;
+use loa_settings::updates::{GateCheck, Verdict};
+use loa_updater::gates::*;
 use semver::Version;
-use serde_json::json;
+use serde_json::{Value, json};
 use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::path::Path;
 
-mod common;
-
-fn tool(name: &str, schema: serde_json::Value) -> ToolSchema {
-    ToolSchema { name: name.to_string(), input_schema: schema }
+fn tools(edit: Value) -> Vec<ToolSchema> {
+    let notebook = json!({"type": "object", "properties": {"cell": {"type": "integer"}}});
+    vec![ToolSchema { name: "edit".into(), input_schema: edit }, ToolSchema { name: "notebook".into(), input_schema: notebook }]
 }
 
-fn old_tools() -> Vec<ToolSchema> {
-    vec![
-        tool(
-            "edit",
-            json!({
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string", "description": "file"},
-                    "content": {"type": "string"},
-                    "edits": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {"line": {"type": "integer"}},
-                            "required": ["line"]
-                        }
-                    }
-                },
-                "required": ["path"]
-            }),
-        ),
-        tool("notebook", json!({"type": "object", "properties": {"cell": {"type": "integer"}}})),
-    ]
+fn old_edit() -> Value {
+    let item = json!({"type": "object", "properties": {"line": {"type": "integer"}}, "required": ["line"]});
+    let properties = json!({"path": {"type": "string"}, "content": {"type": "string"}, "edits": {"type": "array", "items": item}});
+    json!({"type": "object", "properties": properties, "required": ["path"]})
 }
 
 fn used() -> UsedTools {
-    [("edit".to_string(), ["path", "content", "edits.line"].map(String::from).into())].into()
-}
-
-fn edit_schema_with(f: impl FnOnce(&mut serde_json::Value)) -> Vec<ToolSchema> {
-    let mut tools = old_tools();
-    f(&mut tools[0].input_schema);
-    tools
+    [("edit".to_owned(), ["path", "content", "edits.line"].map(String::from).into())].into()
 }
 
 #[test]
-fn removed_used_tool_is_harmful() {
-    let new = vec![old_tools().remove(1)];
-    let r = check_tool_schemas(&old_tools(), &new, &used());
-    assert_eq!(r.verdict, Verdict::Harmful);
-    assert!(r.details.contains(&"- edit: tool removed".to_string()), "{:?}", r.details);
+fn tool_schema_diff() {
+    type Change = fn(&mut Vec<ToolSchema>);
+    let cases: &[(&str, Change, Verdict, &[&str])] = &[
+        ("unchanged", |_| {}, Verdict::Pass, &[]),
+        ("used tool removed", |t| drop(t.remove(0)), Verdict::Harmful, &["- edit: tool removed"]),
+        ("unused tool removed", |t| drop(t.remove(1)), Verdict::Pass, &["- notebook: tool removed (unused)"]),
+        ("field removed", |t| drop(t[0].input_schema["properties"].as_object_mut().unwrap().remove("content")), Verdict::Harmful, &["- edit.content: field removed"]),
+        ("field renamed", |t| {
+            let props = t[0].input_schema["properties"].as_object_mut().unwrap();
+            let path = props.remove("path").unwrap();
+            props.insert("file_path".into(), path);
+            t[0].input_schema["required"] = json!(["file_path"]);
+        }, Verdict::Harmful, &["- edit.path: field removed, likely renamed path -> file_path", "~ edit.file_path: now required"]),
+        ("type changed", |t| t[0].input_schema["properties"]["content"] = json!({"type": "array"}), Verdict::Harmful, &[r#"~ edit.content: type "string" -> "array""#]),
+        ("newly required", |t| {
+            t[0].input_schema["properties"]["mode"] = json!({"type": "string"});
+            t[0].input_schema["required"] = json!(["path", "mode"]);
+        }, Verdict::Harmful, &["~ edit.mode: now required"]),
+        ("nested changes", |t| {
+            let item = &mut t[0].input_schema["properties"]["edits"]["items"];
+            item["properties"]["line"] = json!({"type": "string"});
+            item["properties"]["end"] = json!({"type": "integer"});
+            item["required"] = json!(["line", "end"]);
+        }, Verdict::Harmful, &[r#"~ edit.edits.line: type "integer" -> "string""#, "~ edit.edits.end: now required"]),
+        ("additions", |t| {
+            t[0].input_schema["properties"]["dry_run"] = json!({"type": "boolean"});
+            t.push(ToolSchema { name: "search".into(), input_schema: json!({"type": "object"}) });
+        }, Verdict::Pass, &["+ edit.dry_run: field added", "+ search: tool added"]),
+        ("unused tool changed", |t| t[1].input_schema = json!({"type": "object", "properties": {"cell": {"type": "string"}, "k": {}}, "required": ["k"]}),
+            Verdict::Pass, &["+ notebook.k: field added (required)"]),
+    ];
+    for (name, change, verdict, details) in cases {
+        let mut new = tools(old_edit());
+        change(&mut new);
+        let result = check_tool_schemas(&tools(old_edit()), &new, &used());
+        assert_eq!((result.verdict, result.details.as_slice()), (*verdict, &details.iter().map(|d| d.to_string()).collect::<Vec<_>>()[..]), "{name}");
+    }
+    let only_notebook = vec![tools(old_edit()).remove(1)];
+    assert_eq!(check_tool_schemas(&only_notebook, &only_notebook, &used()).details, ["~ edit: unavailable in both versions"]);
 }
 
 #[test]
-fn removed_unused_tool_passes() {
-    let new = vec![old_tools().remove(0)];
-    let r = check_tool_schemas(&old_tools(), &new, &used());
-    assert_eq!(r.verdict, Verdict::Pass, "{:?}", r.details);
+fn format_config_rpc_contract_and_changelog_checks() {
+    let migrations: BTreeSet<(u32, u32)> = [(1, 2), (2, 3)].into();
+    assert_eq!(check_session_format(1, 3, &migrations).details, ["~ 1 -> 3: migrated via 1 -> 2 -> 3"]);
+    assert_eq!(check_session_format(3, 1, &migrations).verdict, Verdict::Harmful);
+    let schema = ConfigSchema { keys: ["a".into()].into(), open: ["roles".into()].into(), renamed: [("b".into(), "c".into())].into() };
+    let written: BTreeSet<String> = ["a", "roles.smol", "b", "d"].map(String::from).into();
+    assert_eq!(check_config_schema(&written, &schema).details, ["- b: renamed to c", "- d: removed"]);
+    assert!(check_rpc_protocol(&[1, 2], 1..=3).details.contains(&"negotiated: 2".to_owned()));
+    assert_eq!(check_rpc_protocol(&[3], 1..=2).verdict, Verdict::Harmful);
+    let failure = ContractFailure { test: "basic: leaf".into(), diff: "- a\n+ b".into() };
+    assert_eq!(check_contract(&[failure]).details, ["basic: leaf:", "  - a", "  + b"]);
+    let review = ChangelogReview { breaking: vec![], removed: vec!["drop `grep`".into()] };
+    assert_eq!((check_changelog(&review).details, check_changelog(&Default::default()).verdict), (vec!["- removed: drop `grep`".to_owned()], Verdict::Pass));
+    let v = |s: &str| Version::parse(s).unwrap();
+    assert_eq!(changelog_text(&[(v("1.10.0"), "ten"), (v("1.2.0"), "two\n")]), "## 1.2.0\n\ntwo\n\n## 1.10.0\n\nten\n");
 }
 
 #[test]
-fn used_tool_missing_from_both_versions_passes() {
-    let tools = vec![old_tools().remove(1)];
-    let r = check_tool_schemas(&tools, &tools, &used());
-    assert_eq!(r.verdict, Verdict::Pass, "{:?}", r.details);
-    assert!(r.details.contains(&"~ edit: unavailable in both versions".to_string()), "{:?}", r.details);
-}
-
-#[test]
-fn renamed_field_is_reported_as_rename() {
-    let new = edit_schema_with(|s| {
-        let props = s["properties"].as_object_mut().unwrap();
-        let path = props.remove("path").unwrap();
-        props.insert("file_path".into(), path);
-        s["required"] = json!(["file_path"]);
-    });
-    let r = check_tool_schemas(&old_tools(), &new, &used());
-    assert_eq!(r.verdict, Verdict::Harmful);
-    assert!(
-        r.details.contains(&"- edit.path: field removed, likely renamed path -> file_path".to_string()),
-        "{:?}",
-        r.details
-    );
-    assert!(!r.details.iter().any(|l| l.starts_with("+ edit.file_path")), "{:?}", r.details);
-}
-
-#[test]
-fn removed_field_without_match_is_plain_removal() {
-    let new = edit_schema_with(|s| {
-        s["properties"].as_object_mut().unwrap().remove("content");
-    });
-    let r = check_tool_schemas(&old_tools(), &new, &used());
-    assert_eq!(r.verdict, Verdict::Harmful);
-    assert_eq!(r.details, vec!["- edit.content: field removed"]);
-}
-
-#[test]
-fn newly_required_field_is_harmful() {
-    let new = edit_schema_with(|s| {
-        s["properties"]["mode"] = json!({"type": "string"});
-        s["required"] = json!(["path", "mode"]);
-    });
-    let r = check_tool_schemas(&old_tools(), &new, &used());
-    assert_eq!(r.verdict, Verdict::Harmful);
-    assert_eq!(r.details, vec!["~ edit.mode: now required"]);
-}
-
-#[test]
-fn type_change_is_harmful() {
-    let new = edit_schema_with(|s| {
-        s["properties"]["content"] = json!({"type": "array"});
-    });
-    let r = check_tool_schemas(&old_tools(), &new, &used());
-    assert_eq!(r.verdict, Verdict::Harmful);
-    assert_eq!(r.details, vec![r#"~ edit.content: type "string" -> "array""#]);
-}
-
-#[test]
-fn nested_field_changes_are_checked() {
-    let new = edit_schema_with(|s| {
-        let item = &mut s["properties"]["edits"]["items"];
-        item["properties"]["line"] = json!({"type": "string"});
-        item["properties"]["end"] = json!({"type": "integer"});
-        item["required"] = json!(["line", "end"]);
-    });
-    let r = check_tool_schemas(&old_tools(), &new, &used());
-    assert_eq!(r.verdict, Verdict::Harmful);
-    assert!(r.details.contains(&r#"~ edit.edits.line: type "integer" -> "string""#.to_string()));
-    assert!(r.details.contains(&"~ edit.edits.end: now required".to_string()), "{:?}", r.details);
-}
-
-#[test]
-fn additions_pass_with_plus_lines() {
-    let mut new = edit_schema_with(|s| {
-        s["properties"]["dry_run"] = json!({"type": "boolean"});
-    });
-    new.push(tool("search", json!({"type": "object", "properties": {}})));
-    let r = check_tool_schemas(&old_tools(), &new, &used());
-    assert_eq!(r.verdict, Verdict::Pass);
-    assert!(r.details.contains(&"+ edit.dry_run: field added".to_string()), "{:?}", r.details);
-    assert!(r.details.contains(&"+ search: tool added".to_string()), "{:?}", r.details);
-}
-
-#[test]
-fn unused_tool_changes_never_harm() {
-    let mut new = old_tools();
-    new[1].input_schema = json!({
-        "type": "object",
-        "properties": {"cell": {"type": "string"}, "kernel": {"type": "string"}},
-        "required": ["kernel"]
-    });
-    let r = check_tool_schemas(&old_tools(), &new, &used());
-    assert_eq!(r.verdict, Verdict::Pass, "{:?}", r.details);
-}
-
-fn script(dir: &Path, body: &str) -> PathBuf {
-    let path = dir.join("omp");
-    loa_exec::write_executable(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-    path
-}
-
-#[tokio::test]
-async fn ready_probe_reads_frame_and_kills_child() {
-    let dir = tempfile::tempdir().unwrap();
-    let exe = script(
-        dir.path(),
-        r#"printf '%s\n' '{"type":"ready","protocolVersion":1,"supportedProtocolVersions":[1,2],"maxFrameBytes":1048576}'
-exec sleep 30"#,
-    );
-    let probe = OmpReadyProbe::new(Duration::from_secs(20));
-    let started = Instant::now();
-    let versions = probe.protocol_versions(&exe).await.unwrap();
-    assert_eq!(versions, vec![1, 2]);
-    assert!(started.elapsed() < Duration::from_secs(15), "probe waited for the child to exit");
-}
-
-#[tokio::test]
-async fn ready_probe_rejects_garbage() {
-    let dir = tempfile::tempdir().unwrap();
-    let exe = script(dir.path(), "echo 'Welcome to omp!'\nexec sleep 30");
-    let probe = OmpReadyProbe::new(Duration::from_secs(20));
-    assert!(probe.protocol_versions(&exe).await.is_err());
-}
-
-#[tokio::test]
-async fn ready_probe_passes_rpc_args() {
-    let dir = tempfile::tempdir().unwrap();
-    let args_file = dir.path().join("args");
-    let exe = script(
-        dir.path(),
-        &format!(
-            "echo \"$@\" > '{}'\nprintf '%s\\n' '{{\"type\":\"ready\",\"protocolVersion\":1}}'\nexec sleep 30",
-            common::sh_path(&args_file)
-        ),
-    );
-    let probe = OmpReadyProbe::new(Duration::from_secs(20));
-    assert_eq!(probe.protocol_versions(&exe).await.unwrap(), vec![1]);
-    assert_eq!(std::fs::read_to_string(&args_file).unwrap().trim(), "--mode rpc --no-session");
-}
-
-#[tokio::test]
-async fn smol_summarizer_parses_reply_and_passes_flags() {
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::write(
-        dir.path().join("review.json"),
-        r#"{"breaking": ["edit: path renamed"], "removed": []}"#,
-    )
-    .unwrap();
-    let exe = common::write_omp_stub(dir.path());
-    let summarizer = OmpSmolSummarizer::new(exe, Duration::from_secs(10));
-    let review = summarizer.review("## 2.0.0\n\n- edit: path renamed").await.unwrap();
-    assert_eq!(review.breaking, vec!["edit: path renamed"]);
-
-    let args = std::fs::read_to_string(dir.path().join("args.txt")).unwrap();
-    let lines: Vec<&str> = args.lines().collect();
-    assert_eq!(&lines[..5], ["-p", "--model", "@smol", "--no-session", "--no-tools"]);
-    assert!(args.contains("- edit: path renamed"));
-}
-
-#[tokio::test]
-async fn smol_summarizer_rejects_junk() {
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("review.json"), "Sure! Nothing breaking here.").unwrap();
-    let exe = common::write_omp_stub(dir.path());
-    let summarizer = OmpSmolSummarizer::new(exe, Duration::from_secs(10));
-    assert!(summarizer.review("## 1.0.1\n\n- fix").await.is_err());
-}
-
-struct FakeCatalog {
-    fail: bool,
-}
-
-#[async_trait::async_trait]
-impl ToolCatalog for FakeCatalog {
-    async fn tools(&self, _: &Path) -> Result<Vec<ToolSchema>, String> {
-        if self.fail { Err("rpc client crashed".to_string()) } else { Ok(old_tools()) }
+fn reviews_parse_strictly() {
+    assert_eq!(parse_review("  {\"breaking\": [\"a\"], \"removed\": []}\n").unwrap().breaking, ["a"]);
+    assert_eq!(parse_review("```json\n{\"breaking\": [], \"removed\": [\"b\"]}\n```").unwrap().removed, ["b"]);
+    for junk in ["{\"breaking\": [], \"removed\": [], \"notes\": []}", "{\"breaking\": []}", "Here: {\"breaking\": [], \"removed\": []}", "[[], []]", "{\"breaking\": [1], \"removed\": []}"] {
+        assert!(parse_review(junk).is_err(), "{junk}");
     }
 }
 
-struct FakeFormats;
+struct Fake {
+    tools_fail: bool,
+}
 
-#[async_trait::async_trait]
-impl FormatProbe for FakeFormats {
-    async fn session_version(&self, executable: &Path) -> Result<u32, String> {
-        Ok(if executable.ends_with("new") { 4 } else { 3 })
+#[async_trait]
+impl ToolCatalog for Fake {
+    async fn tools(&self, _: &Path) -> Result<Vec<ToolSchema>, String> {
+        if self.tools_fail { Err("rpc client crashed".into()) } else { Ok(tools(old_edit())) }
+    }
+}
+
+#[async_trait]
+impl FormatProbe for Fake {
+    async fn session_version(&self, exe: &Path) -> Result<u32, String> {
+        Ok(if exe.ends_with("new") { 2 } else { 1 })
     }
     async fn config_keys(&self, _: &Path) -> Result<ConfigSchema, String> {
-        Ok(ConfigSchema {
-            keys: ["modelRoles.smol".to_string()].into(),
-            open: Default::default(),
-            renamed: Default::default(),
-        })
+        Ok(ConfigSchema { keys: OmpGates::default().written_keys, ..Default::default() })
     }
 }
 
-struct FakeRpc;
-
-#[async_trait::async_trait]
-impl RpcProbe for FakeRpc {
+#[async_trait]
+impl RpcProbe for Fake {
     async fn protocol_versions(&self, _: &Path) -> Result<Vec<u32>, String> {
         Ok(vec![1, 2])
     }
 }
 
-struct FakeContract;
-
-#[async_trait::async_trait]
-impl ContractRunner for FakeContract {
+#[async_trait]
+impl ContractRunner for Fake {
     async fn run(&self, _: &Path) -> Result<Vec<ContractFailure>, String> {
         Ok(Vec::new())
     }
 }
 
-struct FakeSummarizer;
-
-#[async_trait::async_trait]
-impl ChangelogSummarizer for FakeSummarizer {
+#[async_trait]
+impl ChangelogSummarizer for Fake {
     async fn review(&self, _: &str) -> Result<ChangelogReview, String> {
         Ok(ChangelogReview::default())
     }
 }
 
-async fn report(catalog: &FakeCatalog, rpc: bool) -> loa_updater::gates::GateReport {
-    let used = used();
-    let migrations: BTreeSet<(u32, u32)> = [(3, 4)].into();
-    let written: BTreeSet<String> = ["modelRoles.smol".to_string()].into();
-    let inputs = GateInputs {
-        old_executable: Path::new("/versions/omp/old"),
-        new_executable: Path::new("/versions/omp/new"),
-        tools: Some(ToolGate { catalog, used: &used }),
-        formats: Some(FormatGate {
-            probe: &FakeFormats,
-            migrations: &migrations,
-            written_keys: &written,
-        }),
-        rpc: rpc.then_some(RpcGate { probe: &FakeRpc, supported: 1..=2 }),
-        contract: Some(&FakeContract),
-        changelog: Some(ChangelogGate { summarizer: &FakeSummarizer, text: "## 2.0.0\n\n- fix" }),
-    };
-    run_gates("omp", &Version::new(1, 0, 0), &Version::new(2, 0, 0), &inputs).await
-}
-
 #[tokio::test]
-async fn all_clean_ports_give_clean_report() {
-    let r = report(&FakeCatalog { fail: false }, true).await;
-    assert!(r.is_clean(), "{r}");
-    let checks: Vec<GateCheck> = r.checks.iter().map(|c| c.check).collect();
-    assert_eq!(
-        checks,
-        vec![
-            GateCheck::ToolSchemas,
-            GateCheck::SessionFormat,
-            GateCheck::ConfigSchema,
-            GateCheck::RpcProtocol,
-            GateCheck::ContractTests,
-            GateCheck::Changelog,
-        ]
-    );
-}
-
-#[tokio::test]
-async fn failing_port_marks_only_its_check() {
-    let r = report(&FakeCatalog { fail: true }, false).await;
-    assert!(!r.is_clean());
-    let harmful: Vec<GateCheck> = r.harmful().map(|c| c.check).collect();
-    assert_eq!(harmful, vec![GateCheck::ToolSchemas]);
-    let tools = &r.checks[0];
-    assert!(tools.details[0].starts_with("check could not run:"), "{:?}", tools.details);
-    assert!(tools.details[0].contains("rpc client crashed"));
-    assert_eq!(r.checks.len(), 5, "RPC check is skipped when not applicable");
-    assert!(r.checks.iter().all(|c| c.check != GateCheck::RpcProtocol));
+async fn run_gates_runs_every_check_and_a_failing_port_fails_only_its_own() {
+    let gates = OmpGates { used_tools: used(), ..OmpGates::default() };
+    for tools_fail in [false, true] {
+        let fake = Fake { tools_fail };
+        let inputs =
+            GateInputs { old_executable: Path::new("old"), new_executable: Path::new("new"), omp: Some((&fake, &gates)), changelog: Some((&fake, "- fix")) };
+        let report = run_gates("omp", &Version::new(1, 0, 0), &Version::new(2, 0, 0), &inputs).await;
+        let checks: Vec<GateCheck> = report.checks.iter().map(|c| c.check).collect();
+        use GateCheck::*;
+        assert_eq!(checks, [ToolSchemas, SessionFormat, ConfigSchema, RpcProtocol, ContractTests, Changelog]);
+        let harmful: Vec<GateCheck> = report.harmful().map(|c| c.check).collect();
+        assert_eq!(harmful, if tools_fail { vec![ToolSchemas] } else { vec![] }, "{report}");
+        assert!(!tools_fail || report.checks[0].details[0].contains("current version: rpc client crashed"));
+    }
 }

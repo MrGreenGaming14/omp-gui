@@ -1,0 +1,46 @@
+[package]
+name = "loa-harness"
+description = "Harness adapters on one protocol kit: omp, claude, codex, opencode, acp"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[features]
+default = ["omp", "claude", "codex", "opencode", "acp", "omp2"]
+omp = ["dep:base64"]
+claude = ["dep:base64", "dep:uuid"]
+codex = []
+opencode = ["dep:reqwest"]
+acp = []
+omp2 = ["dep:base64"]
+# Test doubles: FakeProcess, WatchSink, check_dom, replay and round_trip.
+testing = []
+
+[dependencies]
+loa-util.workspace = true
+loa-core.workspace = true
+loa-contracts.workspace = true
+loa-settings = { path = "../loa-settings" }
+async-trait.workspace = true
+base64 = { version = "0.23", optional = true }
+reqwest = { version = "0.13", default-features = false, features = ["json"], optional = true }
+uuid = { version = "1.29", features = ["v4"], optional = true }
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+toml_edit = "0.25"
+tokio.workspace = true
+tracing.workspace = true
+
+# ACP terminals run in a job object so killing one ends what it spawned.
+[target.'cfg(windows)'.dependencies]
+process-wrap = { version = "10", default-features = false, features = ["tokio1", "job-object", "kill-on-drop"] }
+
+[dev-dependencies]
+loa-harness = { path = ".", default-features = false, features = ["testing"] }
+loa-models = { path = "../loa-models", features = ["testing"] }
+base64 = "0.23"
+axum = "0.8"
+serde_json = { workspace = true, features = ["preserve_order"] }
+futures.workspace = true

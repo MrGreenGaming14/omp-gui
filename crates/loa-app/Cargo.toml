@@ -5,65 +5,59 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+loa-util.workspace = true
 iced.workspace = true
 async-trait.workspace = true
 loa-core.workspace = true
-loa-adapter.workspace = true
+loa-contracts.workspace = true
+loa-view.workspace = true
 loa-bus = { path = "../loa-bus" }
-loa-journal = { path = "../loa-journal" }
-loa-identity = { path = "../loa-identity" }
-loa-features = { path = "../loa-features" }
-loa-config = { path = "../loa-config" }
-loa-omp-bridge = { path = "../loa-omp-bridge" }
-loa-adapter-acp = { path = "../loa-adapter-acp" }
-loa-adapter-claude = { path = "../loa-adapter-claude" }
-loa-adapter-codex = { path = "../loa-adapter-codex" }
-loa-adapter-omp = { path = "../loa-adapter-omp" }
-loa-adapter-omp2 = { path = "../loa-adapter-omp2" }
-loa-adapter-opencode = { path = "../loa-adapter-opencode" }
+loa-settings = { path = "../loa-settings" }
+loa-harness = { workspace = true, features = ["omp", "acp", "claude", "codex", "opencode", "omp2"] }
+loa-session = { path = "../loa-session" }
+loa-runtime = { path = "../loa-runtime" }
 tokio.workspace = true
 loa-ui-shell = { path = "../loa-ui-shell" }
-loa-ui-chat = { path = "../loa-ui-chat" }
-loa-ui-composer = { path = "../loa-ui-composer" }
-loa-ui-decisions = { path = "../loa-ui-decisions" }
+loa-ui-session = { path = "../loa-ui-session" }
 loa-ui-panel = { path = "../loa-ui-panel" }
 loa-ui-terminal = { path = "../loa-ui-terminal" }
-loa-ui-palette = { path = "../loa-ui-palette" }
-loa-ui-tools = { path = "../loa-ui-tools" }
-loa-ui-models = { path = "../loa-ui-models" }
-loa-ui-agents = { path = "../loa-ui-agents" }
 loa-models = { path = "../loa-models" }
-loa-ui-peers = { path = "../loa-ui-peers" }
+loa-ui-settings = { path = "../loa-ui-settings" }
 loa-ui-surface = { path = "../loa-ui-surface" }
-loa-surface.workspace = true
-loa-surface-hub = { path = "../loa-surface-hub" }
-loa-surface-bench = { path = "../loa-surface-bench" }
+loa-surfaces = { path = "../loa-surfaces" }
 loa-projects = { path = "../loa-projects" }
-loa-ui-projects = { path = "../loa-ui-projects" }
 loa-mcp = { path = "../loa-mcp" }
 loa-remote = { path = "../loa-remote" }
-loa-grants = { path = "../loa-grants" }
+loa-trust = { path = "../loa-trust" }
 bytes.workspace = true
-loa-ui-icons = { path = "../loa-ui-icons" }
-loa-node = { path = "../loa-node" }
+loa-ui-kit = { path = "../loa-ui-kit" }
+loa-p2p = { path = "../loa-p2p" }
 loa-updater = { path = "../loa-updater" }
-loa-ui-updates = { path = "../loa-ui-updates" }
+futures.workspace = true
+tempfile.workspace = true
 semver = "1"
 loa-sandbox = { path = "../loa-sandbox" }
 serde_json.workspace = true
-loa-exec = { path = "../loa-exec" }
+notify-rust = "4.19"
 # Images pasted into the composer: read from the clipboard and saved as PNG.
 arboard = "3"
 image = { version = "0.25", default-features = false, features = ["png"] }
 
+[features]
+# Live video for peers: the "Live video" launcher toggle and in-process H.264.
+remote-video = ["loa-surfaces/remote-video", "loa-ui-surface/remote-video"]
+# The Firecracker and qemu sandbox providers and their settings.
+sandbox-vm = ["loa-sandbox/vm"]
+
 [dev-dependencies]
+loa-models = { path = "../loa-models", features = ["testing"] }
+loa-harness = { workspace = true, features = ["testing"] }
+loa-ui-kit = { path = "../loa-ui-kit", features = ["testkit"] }
 iced_runtime = "0.14"
+iced_test = "0.14"
 # The iced runtime's subscription tracker, to run the app's subscriptions in tests.
 iced_futures = "0.14"
-tempfile.workspace = true
-iced_test = "0.14"
-# The in-process SSH server of loa-remote's tests, for the Remote hosts tests.
-russh = { version = "0.65", default-features = false, features = ["ring", "rsa", "flate2"] }
-russh-sftp = "3.0"
-rand = "0.10"
-tokio-stream = { version = "0.1", features = ["net"] }
+toml = "1.2"
+# JPEG on top of the app's PNG, for the surface fixtures.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+rust_xlsxwriter = "0.103"

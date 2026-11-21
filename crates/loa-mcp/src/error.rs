@@ -1,8 +1,5 @@
-use std::path::PathBuf;
-
 use crate::registry::StoreError;
 
-/// Everything that can go wrong in this crate.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("`{0}` isn't a valid server name: use letters, digits, `-`, `_` or `.`")]
@@ -28,23 +25,20 @@ pub enum Error {
     #[error("couldn't connect to `{server}`: {message}")]
     Connect { server: String, message: String },
     #[error("server `{server}`: {source}")]
-    Service {
-        server: String,
-        #[source]
-        source: Box<rmcp::ServiceError>,
-    },
-    #[error("reading {}: {source}", path.display())]
-    Read {
-        path: PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
-    #[error("parsing {}: {message}", path.display())]
-    Parse { path: PathBuf, message: String },
+    Service { server: String, source: Box<rmcp::ServiceError> },
     #[error("server config store: {0}")]
     Store(#[source] StoreError),
     #[error("building the HTTP client: {0}")]
     HttpClient(String),
+    #[error("omp bridge: {0}")]
+    Bridge(String),
+}
+
+impl Error {
+    /// Maps an rmcp error of `server`.
+    pub(crate) fn service(server: &str) -> impl FnOnce(rmcp::ServiceError) -> Self {
+        move |source| Self::Service { server: server.to_owned(), source: Box::new(source) }
+    }
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;

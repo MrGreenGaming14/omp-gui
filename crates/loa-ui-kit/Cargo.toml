@@ -1,0 +1,18 @@
+[package]
+name = "loa-ui-kit"
+description = "Theme tokens, style recipes, icons, shared widgets and text helpers for the loa UI"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[features]
+testkit = ["dep:iced_test", "dep:iced_runtime"]
+
+[dependencies]
+iced.workspace = true
+iced_runtime = { version = "0.14", optional = true }
+iced_test = { version = "0.14", optional = true }
+loa-view.workspace = true
+loa-util.workspace = true
+thiserror.workspace = true
+toml = "1.2"

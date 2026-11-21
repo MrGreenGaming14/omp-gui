@@ -1,117 +1,119 @@
-//! The application: the shell frame, the chat, composer and decision cards of
-//! the active session, the palette, the built-in panel tabs (Diff, Files,
-//! Terminal) and the areas. Sessions start, resume and stream here; the
-//! areas react through the [`Area`] contract.
+//! The application: the shell frame, the chat, composer and decision cards of the active
+//! session, the palette, the built-in panel tabs and the areas.
 
-use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use iced::keyboard::{self, key};
-use iced::widget::{column, container, stack, text};
-use iced::{Element, Fill, Font, Padding, Subscription, Task, Theme};
-use loa_adapter::{AdapterError, HarnessSession, HostToolRouter, Prompt, SessionConfig};
-use loa_bus::SessionId;
-use loa_core::{Dom, Op, Patch, SessionMode, TurnStatus, attr};
-use loa_ui_chat as chat;
-use loa_ui_composer as composer;
-use loa_ui_palette as palette;
+use iced::widget::{button, column, container, mouse_area, opaque, row, rule, scrollable, space, stack, text};
+use iced::{Alignment, Element, Fill, Font, Padding, Subscription, Task, Theme};
+use loa_contracts::harness::Prompt;
+use loa_core::NodeId;
+use loa_ui_kit::style::{ButtonKind, Surface, Tone};
+use loa_ui_kit::theme::{LayoutRole, SpaceRole, TextRole, pad_x, sp, width};
+use loa_ui_kit::widgets::label;
 use loa_ui_panel::{diff, files};
-use loa_ui_shell as shell;
+use loa_ui_session::composer;
+use loa_ui_session::transcript as chat;
 use loa_ui_shell::theme::style;
+use loa_ui_shell::{self as shell, palette};
+use loa_bus::SessionId;
+use loa_harness::account_support::opener::SystemUrlOpener;
+use loa_harness::omp::OneShot;
+use loa_harness::omp::account::OmpLaunch;
+use loa_settings::models::login::UrlOpener;
+use loa_models::service::Backend;
+use loa_projects::Summarizers;
+use loa_runtime::harnesses::Harnesses;
+use loa_runtime::lifecycle::Command;
+use loa_runtime::{Runtime, RuntimeParts};
+use loa_session::library::Library;
 use loa_ui_terminal as terminal;
+use loa_util::time::{ago, now_ms};
+use loa_view::session::composer::Intent as ComposerIntent;
+use loa_view::session::transcript::Intent as ChatIntent;
+use loa_view::shell::{Intent as ShellIntent, PanelTab, SessionSummary, SidebarIntent as Nav};
+use loa_view::theme::ThemeRef;
 
-use crate::area::{Area, AreaId, Ctx, Request, SessionEvent, Sessions, Spawn, Target};
-use crate::areas::{self, Areas, with_areas};
-use crate::services::Services;
-use crate::session::{self, Change, Feed, dom_turns};
-use feed::turn_status;
-pub(crate) use folders::choose_folder;
-use folders::{working_diff, workspace};
+use crate::adapters::summarizer::OmpSummarizers;
+use crate::area::{Area, AreaMsg, Backends, Ctx, Request};
+use crate::areas::{self, Registry};
+use crate::services::{Services, harness, open_library};
 
-/// Panel tabs the app draws itself, before the areas' tabs.
-/// How often the sidebar's usage meter re-reads `omp usage`.
+mod keys;
+pub(crate) mod lifecycle;
+mod media;
+mod panes;
+pub(crate) mod usage;
+mod windows;
+pub(crate) mod workspace;
+
+#[cfg(test)]
+pub(crate) mod tests;
+
+use lifecycle::{After, SessionController};
+use windows::{ConfigsTab, Overlay, SettingsTab, WindowMessage, Windows};
+use workspace::Workspace;
+
+/// How often the sidebar's usage meter re-reads usage.
 const USAGE_REFRESH: Duration = Duration::from_secs(300);
-
-const BUILTIN_TABS: [(&str, &str); 3] = [("diff", "Diff"), ("files", "Files"), ("terminal", "Terminal")];
-
-/// Theme choices offered in the palette, by command id suffix.
-const THEMES: [(&str, &str, shell::Preference); 3] = [
-    ("dark", "Dark", shell::Preference::Dark),
-    ("light", "Light", shell::Preference::Light),
-    ("system", "System", shell::Preference::System),
-];
-
-const TAB_COMMAND: &str = "tab.";
-const THEME_COMMAND: &str = "theme.";
-const NEW_SESSION: palette::CommandId = palette::CommandId::from_static("session.new");
-const PROJECT_TABS_TOGGLE: palette::CommandId = palette::CommandId::from_static("project.tabs.toggle");
-
-/// Width of the composer: the transcript's column width.
-pub(crate) const COMPOSER_WIDTH: f32 = 700.0;
-
-/// Room under the transcript's last row for the floating composer.
-const COMPOSER_INSET: f32 = 190.0;
-
 /// How often running sessions redraw, so elapsed times advance.
 const TICK: Duration = Duration::from_secs(1);
+/// How many recent sessions the start screen lists.
+const RECENTS: usize = 4;
 
-/// `&$e` for `ref`, `&mut $e` for `mut`.
-macro_rules! borrow {
-    (ref, $e:expr) => {
-        &$e
-    };
-    (mut, $e:expr) => {
-        &mut $e
-    };
+/// What [`App::build`] starts from besides the services: the runtime's parts
+/// and the backends areas build on. [`App::new`] makes them from this
+/// machine; tests pass offline ones.
+pub struct AppParts {
+    pub runtime: RuntimeParts,
+    /// The model screens' backend.
+    pub models: loa_models::service::Parts,
+    /// Writes the projects' digests.
+    pub summarizer: Arc<dyn Summarizers>,
+    /// Home directory: native sessions, omp's rules and config.
+    pub home: PathBuf,
+    /// Opens links clicked in the transcript.
+    pub opener: Arc<dyn UrlOpener>,
 }
 
-/// `[$body; each area]`, with `$area` bound to the area (borrowed `ref` or
-/// `mut`) and `$wrap` to its `Message` variant.
-macro_rules! each_area {
-    ($areas:expr, $borrow:ident |$area:ident, $wrap:ident| $body:expr; $($field:ident $variant:ident),+) => {
-        [$({
-            let $area = borrow!($borrow, $areas.$field);
-            let $wrap = Message::$variant;
-            let _ = $wrap;
-            $body
-        }),+]
+/// The runtime over `library` and `harnesses`: on the project selected last
+/// run while its folder still exists, else on no project in the workspace,
+/// and on the saved approval mode.
+pub(crate) fn runtime_parts(services: &Services, library: Arc<Library>, harnesses: Harnesses) -> RuntimeParts {
+    let saved = services.storage.config.load().unwrap_or_default();
+    let (project, cwd) = match saved.active_project.filter(|active| active.cwd.is_dir()) {
+        Some(active) => (Some(active.name), active.cwd),
+        None => (None, services.workspace.clone()),
     };
+    RuntimeParts { library, harnesses, node: services.node.key.clone(), cwd, project, access: saved.harness.approval_mode }
 }
 
-/// `$body` for the area `$id`, bound as in [`each_area`].
-macro_rules! on_area {
-    ($id:expr, $areas:expr, $borrow:ident |$area:ident, $wrap:ident| $body:expr; $($field:ident $variant:ident),+) => {
-        match $id {
-            $(AreaId::$variant => {
-                let $area = borrow!($borrow, $areas.$field);
-                let $wrap = Message::$variant;
-                let _ = $wrap;
-                $body
-            })+
-        }
-    };
-}
-
-/// Why a session couldn't be resumed.
-#[derive(Clone, Debug)]
-pub enum ResumeError {
-    /// The harness can't resume it; a new session takes the prompt.
-    Unsupported(String),
-    Failed(String),
-}
-
-impl From<AdapterError> for ResumeError {
-    fn from(error: AdapterError) -> Self {
-        match error {
-            AdapterError::Unsupported { .. } | AdapterError::Format(_) => ResumeError::Unsupported(error.to_string()),
-            error => ResumeError::Failed(error.to_string()),
-        }
+/// The parts of the app on this machine: every harness the registry knows,
+/// on the executables `[harness] executables` sets, and the backends areas
+/// build on, composed from them.
+pub(crate) fn machine_parts(services: &Services, library: Arc<Library>) -> AppParts {
+    let (node, omp_dir) = (&services.node.key, &services.storage.dirs.omp);
+    let mut harnesses = harness::detect(node, omp_dir);
+    // The backends below run the configured executables.
+    if let Ok(config) = services.storage.config.load() {
+        harness::set_executables(&mut harnesses, &config.harness.executables, node, omp_dir);
     }
+    let runtime = runtime_parts(services, library, harnesses);
+    let executable = |id: &str| runtime.harnesses.get(id).and_then(|harness| harness.executable.clone());
+    let launch = OmpLaunch {
+        executable: executable(runtime.harnesses.roles_id()).unwrap_or_else(|| OmpLaunch::default().executable),
+        cwd: Some(runtime.cwd.clone()),
+        env: Vec::new(),
+    };
+    let env = loa_harness::HarnessEnv { node: node.clone(), omp_dir: omp_dir.clone() };
+    let models = crate::adapters::models::models_parts(launch, &runtime.harnesses, &loa_harness::factories(&env));
+    // Digests come from omp's `smol` role.
+    let summarizer = OmpSummarizers(OneShot::new(executable("omp").unwrap_or_else(|| PathBuf::from("omp")), services.storage.dirs.data.clone()));
+    let home = loa_util::fs::home().unwrap_or_else(|| PathBuf::from("."));
+    AppParts { runtime, models, summarizer: Arc::new(summarizer), home, opener: Arc::new(SystemUrlOpener) }
 }
-
-type Started = Result<Arc<dyn HarnessSession>, String>;
 
 #[derive(Clone)]
 pub enum Message {
@@ -125,212 +127,235 @@ pub enum Message {
     Keyboard(keyboard::Event),
     /// Redraw while a turn runs.
     Tick,
-    NewSession,
-    /// A session's feed delivered something.
-    Session(SessionId, Feed),
-    /// A new session's harness started; `prompt` is sent once it runs.
-    Started { id: SessionId, result: Started, prompt: Option<Prompt> },
-    /// A session's harness resumed; `prompt` is sent once it runs.
-    Resumed { id: SessionId, result: Result<Arc<dyn HarnessSession>, ResumeError>, prompt: Prompt },
-    /// A session an area spawned (fork, rewind, compaction) started.
-    Spawned { id: SessionId, result: Started, prompt: Option<Prompt> },
-    /// A harness call returned.
-    Operation(Result<(), String>),
+    Session(lifecycle::Message),
     /// The working tree's changes against HEAD, already parsed off the UI thread.
     WorkingDiff(Option<Result<Vec<diff::FileDiff>, String>>),
-    /// Sessions read from disk at startup. `empty` lists sessions with no turns.
-    Recents {
-        summaries: Vec<shell::SessionSummary>,
-        problems: Vec<String>,
-        empty: Vec<String>,
-    },
-    Harness(areas::harness::Message),
-    Sessions(areas::sessions::Message),
-    Decisions(areas::decisions::Message),
-    Tools(areas::tools::Message),
-    Surfaces(areas::surfaces::Message),
-    Models(areas::models::Message),
-    Projects(areas::projects::Message),
-    Peers(areas::peers::Message),
-    Updater(areas::updater::Message),
-    Sandbox(areas::sandbox::Message),
-    /// The Usage window.
+    /// A message for area `.0` ([`Message::area`]).
+    Area(&'static str, AreaMsg),
     Usage(usage::Message),
-    /// Configs and Settings.
-    Window(windows::WindowMessage),
-    /// A window closed (the main one or a detached one).
-    WindowClosed(iced::window::Id),
-    /// A detached window's Reattach button.
-    Reattach(iced::window::Id),
+    Window(WindowMessage),
     /// The transcript in a detached session's window.
     DetachedChat(String, chat::Message),
     /// The folder dialog closed with this folder, or none when cancelled.
     FolderChosen(Result<Option<PathBuf>, String>),
-    /// The start screen.
-    Start(start::StartMessage),
-    Agents(areas::agents::Message),
+    /// A recent session picked on the start screen.
+    OpenRecent(String),
+    /// Sessions read from disk at startup. `empty` lists sessions with no turns.
+    Recents { summaries: Vec<SessionSummary>, problems: Vec<String>, empty: Vec<String> },
     /// The clipboard image a paste asked for, saved to disk, or none.
     ImagePasted(Result<Option<media::Pasted>, String>),
     /// A file was dropped on a window.
     FileDropped(PathBuf),
 }
 
+/// What a shell or composer event asks of the app.
+enum Intent {
+    Start,
+    OpenSession(String),
+    Submit(Prompt),
+    Interrupt,
+    Access(String),
+    Files,
+    Tab(&'static str),
+    Folder(PathBuf),
+    Browse,
+    Usage,
+    Notice(&'static str),
+    /// Paste the clipboard's image into the composer.
+    PasteImage,
+    /// The composer's project chip: moves the shown session, or picks the next one's project.
+    ProjectPicked(Option<String>),
+    CloseProjectTab(String),
+    /// A theme was picked (saved) or the active one changed.
+    Theme(Option<ThemeRef>),
+    SavePins,
+    SaveProjectPins,
+    /// Runs this message.
+    Forward(Message),
+}
+
+/// The route table from shell events to intents.
+fn route(event: ShellIntent) -> Option<Intent> {
+    let window = |message| Intent::Forward(Message::Window(message));
+    Some(match event {
+        ShellIntent::Sidebar(Nav::NewSession) => Intent::Start,
+        ShellIntent::Sidebar(Nav::OpenUsage) => Intent::Usage,
+        ShellIntent::Sidebar(Nav::OpenConfigs) => window(WindowMessage::OpenConfigs(ConfigsTab::Models)),
+        ShellIntent::Sidebar(Nav::OpenSettings) => window(WindowMessage::OpenSettings(SettingsTab::General)),
+        ShellIntent::Sidebar(Nav::OpenPeers) => window(WindowMessage::OpenSettings(SettingsTab::Peers)),
+        ShellIntent::Sidebar(Nav::OpenTools) => Intent::Forward(Message::area(areas::tools::Message::Open)),
+        ShellIntent::Sidebar(Nav::OpenUpdates) => Intent::Forward(Message::area(areas::updater::Message::Open)),
+        ShellIntent::Sidebar(Nav::OpenSession(id)) if areas::peers::is_remote(&id) => Intent::Forward(Message::area(areas::peers::Message::OpenRecent(id))),
+        ShellIntent::Sidebar(Nav::OpenSession(id)) => Intent::OpenSession(id),
+        ShellIntent::Sidebar(Nav::DeleteSession(id)) if areas::peers::is_remote(&id) => {
+            Intent::Notice("A peer's session is deleted on its own node; revoke or let the grant end to hide it")
+        }
+        ShellIntent::Sidebar(Nav::DeleteSession(id)) => Intent::Forward(Message::area(areas::sessions::Message::Delete(id))),
+        ShellIntent::Sidebar(Nav::OpenProject(project)) => Intent::Forward(Message::area(areas::projects::Message::Open(project))),
+        ShellIntent::Sidebar(Nav::NewProject) => Intent::Forward(Message::area(areas::projects::Message::New)),
+        ShellIntent::Sidebar(Nav::NewSessionIn(project)) => Intent::Forward(Message::area(areas::projects::Message::NewChatIn(project))),
+        ShellIntent::Sidebar(Nav::DeleteProject(project)) => Intent::Forward(Message::area(areas::projects::Message::AskDelete(project))),
+        ShellIntent::Sidebar(Nav::MoveSession { id, project }) => Intent::Forward(Message::area(areas::projects::Message::Move { session: id, project })),
+        ShellIntent::Sidebar(Nav::SetPinned { .. }) => Intent::SavePins,
+        ShellIntent::Sidebar(Nav::SetProjectPinned { .. }) => Intent::SaveProjectPins,
+        ShellIntent::DetachTab(tab) => window(WindowMessage::Detach(tab)),
+        ShellIntent::ShowDetached(tab) => window(WindowMessage::Show(tab)),
+        ShellIntent::ReattachTab(tab) => window(WindowMessage::ReattachTab(tab)),
+        ShellIntent::CloseProjectTab(project) => Intent::CloseProjectTab(project),
+        ShellIntent::SetTheme(theme) => Intent::Theme(Some(theme)),
+        ShellIntent::ThemeChanged(_) => Intent::Theme(None),
+    })
+}
+
+/// The route table from composer intents to app intents.
+fn compose(event: ComposerIntent) -> Option<Intent> {
+    let area = |message| Some(Intent::Forward(message));
+    match event {
+        ComposerIntent::Submit(prompt) => Some(Intent::Submit(prompt)),
+        ComposerIntent::Stop => Some(Intent::Interrupt),
+        ComposerIntent::HarnessChanged(id) => area(Message::area(areas::harness::Message::Pick(id))),
+        ComposerIntent::ModelChanged(model) => area(Message::area(areas::models::Message::Model(model))),
+        ComposerIntent::ModelAction(id) => area(Message::area(areas::models::Message::Action(id))),
+        ComposerIntent::EffortChanged(effort) => area(Message::area(areas::models::Message::Effort(effort))),
+        ComposerIntent::ModeChanged(mode) => area(Message::area(areas::sessions::Message::Mode(mode))),
+        ComposerIntent::AccessChanged(id) => Some(Intent::Access(id)),
+        ComposerIntent::FilesRequested { .. } => Some(Intent::Files),
+        ComposerIntent::OpenWorkspace => Some(Intent::Tab("files")),
+        ComposerIntent::FolderPicked(path) => Some(Intent::Folder(PathBuf::from(path))),
+        ComposerIntent::BrowseFolders => Some(Intent::Browse),
+        ComposerIntent::PasteImage => Some(Intent::PasteImage),
+        ComposerIntent::ProjectPicked(project) => Some(Intent::ProjectPicked(project)),
+        ComposerIntent::QueueChanged(_) => None,
+    }
+}
+
 pub struct App {
     pub(crate) ctx: Ctx,
-    pub(crate) areas: Areas,
-    pub(crate) chat: chat::State,
+    pub(crate) areas: Registry,
+    pub(crate) sessions: SessionController,
+    pub(crate) workspace: Workspace,
     pub(crate) palette: palette::State,
     pub(crate) files: files::State,
     diff: diff::State,
     pub(crate) terminal: terminal::state::State,
     usage: usage::State,
-    overlay: Option<windows::Overlay>,
-    docs: windows::Docs,
-    main_window: Option<iced::window::Id>,
-    detached: Vec<(iced::window::Id, detach::Detached)>,
-    /// Transcripts of sessions shown in their own window, by session id.
-    detached_chats: std::collections::HashMap<String, chat::State>,
-    /// Folders worked in this run, most recent first, for the folder menu.
-    recent_folders: Vec<PathBuf>,
-    /// omp's approval mode for sessions started from now on; `None` uses
-    /// the adapter's default (`always-ask`).
-    access: Option<String>,
-    /// The active session restarts on the new approval mode once its turn
-    /// ends.
-    restart_for_access: bool,
-    /// What `sync_access` last pushed to the composer: whether the active session
-    /// runs omp, and the permission level it showed.
-    access_synced: Option<(bool, Option<String>)>,
-    /// The projects with a tab in the project strip, in order. Not saved:
-    /// projects selected this run plus the project of every session opened
-    /// this run. Closing a tab only removes the entry here.
-    pub(crate) open_projects: Vec<String>,
-    /// Sessions whose project was already offered a tab, so a closed tab
-    /// stays closed until its project is activated again.
-    tabbed_sessions: HashSet<String>,
+    windows: Windows,
 }
 
 impl App {
-    /// Boots the daemon: the app on this machine's services, with its main
-    /// window open.
+    /// Boots the daemon: the app on this machine's services, with its main window open.
     pub fn boot() -> (Self, Task<Message>) {
         let (mut app, task) = Self::new();
         let open = app.open_main();
-        let catalog = app.areas.models.read_catalog().map(Message::Models);
+        let catalog = app.areas.get::<areas::models::State>().read_catalog().map(Message::area);
         (app, Task::batch([open, task, catalog]))
     }
 
     /// The app on this machine's services.
     pub fn new() -> (Self, Task<Message>) {
         let (services, warnings) = Services::load().unwrap_or_else(|error| panic!("{error}"));
-        let (mut app, task) = Self::build(services);
+        let library = open_library(&services.storage.dirs, &services.node).unwrap_or_else(|error| panic!("{error}"));
+        let parts = machine_parts(&services, library);
+        let (mut app, task) = Self::build(services, parts);
         if !warnings.is_empty() {
             app.ctx.notify(warnings.join("; "));
         }
         (app, task)
     }
 
-    /// The app over `services`: Recents from the session store, every area
-    /// registered.
-    pub fn build(mut services: Services) -> (Self, Task<Message>) {
-        // Sidebar pins, the theme and the active project are app data in the central config.
-        let saved = services.config.load().map(|loaded| loaded.config).unwrap_or_default();
-        // The project selected last run, while its folder still exists, is the active one from the start.
-        let restored = saved.active_project.filter(|active| active.cwd.is_dir());
-        if let Some(active) = &restored {
-            services.set_active(active.name.clone(), Some(active.cwd.clone()));
-        }
-        let (shell, setup) =
-            shell::State::new(preference(saved.theme), shell::PanelPrefs { open: true, ..Default::default() });
+    /// The app over `services` and `parts`: Recents from the session store,
+    /// every area registered.
+    pub fn build(services: Services, parts: AppParts) -> (Self, Task<Message>) {
+        let saved = services.storage.config.load().unwrap_or_default();
+        let AppParts { runtime, models, summarizer, home, opener } = parts;
+        let mut runtime = Runtime::new(runtime);
+        let (shell, setup) = shell::State::new(crate::view::theme::to_view(&saved.appearance));
         let theme = shell.theme();
         let mut composer = composer::State::new();
-        let mut sessions = Sessions::default();
-        sessions.harness = services.harnesses.default_id();
-        composer.set_harnesses(services.harnesses.options(), sessions.harness.as_deref());
-        let library = Arc::clone(&services.library);
-        let metrics = terminal::canvas::Metrics::measure(Font::MONOSPACE, 13.0);
-        let terminal = terminal::state::State::new(metrics, terminal::local::LocalShell::login_shell(services.cwd.clone()));
-        let files = files::State::new(services.cwd.clone(), Box::new(files::LocalFs));
-        let cwd = services.cwd.clone();
-        let mut ctx = Ctx::new(
+        runtime.sessions_mut().harness = runtime.harnesses().default_id();
+        composer.set_harnesses(harness::options(runtime.harnesses()), runtime.sessions().harness.as_deref());
+        let problems: Vec<_> = shell.theme_state().errors().iter().map(|e| format!("Theme: {e}")).collect();
+        let metrics = terminal::canvas::Metrics::measure(Font::MONOSPACE, loa_ui_kit::theme::text_size(TextRole::Label));
+        let terminal = terminal::state::State::new(metrics, terminal::local::LocalShell::login_shell(runtime.cwd().to_path_buf()));
+        let files = files::State::new(runtime.cwd().to_path_buf(), Box::new(files::LocalFs));
+        let usage = usage::State::new(services.host.usage.clone());
+        let mut ctx = Ctx {
             services,
-            sessions,
+            runtime,
+            backends: Backends { models: Backend::new(models), summarizer, home, opener },
             shell,
             composer,
-            palette::Keymap::defaults(palette::Platform::current()),
-        );
+            keymap: palette::Keymap::defaults(palette::Platform::current()),
+            app_tools: Vec::new(),
+            app_tools_rev: 0,
+            node: loa_p2p::NodeSlot::default(),
+            screen: None,
+            notice: (!problems.is_empty()).then(|| problems.join("; ")),
+            requests: Vec::new(),
+            transitions: Vec::new(),
+            slash: Vec::new(),
+        };
         ctx.shell.set_project_tabs(saved.project_tabs);
-        ctx.shell.set_active_project(restored.map(|active| active.name));
-        ctx.shell.set_pins(saved.pinned);
-        ctx.shell.set_pinned_projects(saved.pinned_projects);
-        let (areas, area_tasks) = Areas::new(&mut ctx);
+        // The project selected last run, while its folder still exists, is the active one from the start.
+        ctx.shell.set_active_project(saved.active_project.filter(|active| active.cwd.is_dir()).map(|active| active.name));
+        ctx.shell.sidebar_mut().set_pins(saved.pinned);
+        ctx.shell.sidebar_mut().set_pinned_projects(saved.pinned_projects);
+        let library = Arc::clone(ctx.runtime.library());
+        let (areas, area_tasks) = Registry::new(&mut ctx);
+        ctx.slash = crate::area::slash_rows(keys::APP_COMMANDS).chain(areas.slash_rows()).collect();
+        ctx.composer.set_commands(ctx.slash.clone());
         let mut app = Self {
             ctx,
             areas,
-            chat: { let mut chat = chat::State::new(&theme); chat.set_bottom_inset(COMPOSER_INSET); chat },
+            sessions: SessionController::new(&theme),
+            workspace: Workspace::default(),
             palette: palette::State::new(palette::Platform::current()),
             files,
             diff: diff::State::new(),
             terminal,
-            usage: usage::State::default(),
-            overlay: None,
-            docs: windows::Docs::default(),
-            main_window: None,
-            detached: Vec::new(),
-            detached_chats: std::collections::HashMap::new(),
-            recent_folders: Vec::new(),
-            access: saved.harness.approval_mode.clone(),
-            restart_for_access: false,
-            access_synced: None,
-            open_projects: Vec::new(),
-            tabbed_sessions: HashSet::new(),
+            usage,
+            windows: Windows::default(),
         };
-        let shown = app.tabs().into_iter().filter(|tab| tab.shown).map(|tab| shell::PanelTab::new(tab.id, tab.title)).collect();
+        let shown = app.tabs().into_iter().filter(|tab| tab.shown).map(|tab| PanelTab::new(tab.id, tab.title, tab.icon)).collect();
         app.ctx.shell.set_tabs(shown);
-        let folder = workspace(&app.ctx.services.cwd);
-        app.ctx.composer.set_workspace(Some(folder));
-        app.recent_folders.push(app.ctx.services.cwd.clone());
-        app.refresh_folders();
+        let cwd = app.ctx.runtime.cwd().to_path_buf();
+        app.ctx.composer.set_workspace(Some(workspace::chip(app.ctx.services.host.git.as_ref(), &cwd)));
+        app.remember(&cwd);
         app.refresh_commands();
         let settle = app.settle();
         let usage = app.usage.refresh().map(Message::Usage);
+        let diff = app.working_diff();
         // The sidebar fills in once the sessions on disk have been read.
         let recents = Task::perform(
             async move {
-                tokio::task::spawn_blocking(move || session::recents(&library))
+                tokio::task::spawn_blocking(move || loa_runtime::session::recents(&library))
                     .await
                     .unwrap_or_else(|error| (Vec::new(), vec![format!("Can't read sessions: {error}")], Vec::new()))
             },
             |(summaries, problems, empty)| Message::Recents { summaries, problems, empty },
         );
-        (app, Task::batch([setup.map(Message::Shell), area_tasks, working_diff(cwd), recents, settle, usage]))
+        (app, Task::batch([setup.map(Message::Shell), area_tasks, diff, recents, settle, usage]))
     }
 
     /// Every panel tab: the built-in ones, then each area's.
     fn tabs(&self) -> Vec<crate::area::PanelTab> {
-        let mut tabs: Vec<_> =
-            BUILTIN_TABS.into_iter().map(|(id, title)| crate::area::PanelTab::new(id, title, true)).collect();
-        for area_tabs in with_areas!(each_area!(self.areas, ref |area, wrap| area.panel_tabs())) {
-            tabs.extend(area_tabs);
-        }
-        tabs
+        let tabs = panes::REGISTRY.iter().map(|pane| pane.tab(self));
+        tabs.chain(self.areas.iter().flat_map(|area| area.panel_tabs())).collect()
     }
 
-    /// Lists the panel tab `id` when it isn't; `false` when no such tab
-    /// exists.
+    /// Lists the panel tab `id` when it isn't; `false` when no such tab exists.
     fn list_tab(&mut self, id: &str) -> bool {
         if !self.ctx.shell.tabs().iter().any(|tab| tab.id == id) {
             let Some(tab) = self.tabs().into_iter().find(|tab| tab.id == id) else {
                 self.ctx.notify(format!("There is no {id} tab"));
                 return false;
             };
-            self.ctx.shell.add_tab(shell::PanelTab::new(tab.id, tab.title));
+            self.ctx.shell.add_tab(PanelTab::new(tab.id, tab.title, tab.icon));
         }
         true
     }
 
-    /// Adds the panel tab `id` when it isn't listed and shows it, scrolling
-    /// the tab bar to it.
+    /// Lists the panel tab `id` and shows it, scrolling the tab bar to it.
     fn open_tab(&mut self, id: &str) -> Task<Message> {
         if !self.list_tab(id) {
             return Task::none();
@@ -339,10 +364,7 @@ impl App {
         self.ctx.shell.reveal_active_tab()
     }
 
-    /// Lists the panel tab `id` for something that just became relevant
-    /// there (a job started, a branch was made), without taking the panel
-    /// from the tab the user is reading: a closed panel opens on it, an
-    /// open one only gains the tab.
+    /// Lists the panel tab `id` without taking an open panel from the tab the user reads.
     fn reveal_tab(&mut self, id: &str) -> Task<Message> {
         if !self.ctx.shell.panel_open() {
             return self.open_tab(id);
@@ -351,270 +373,193 @@ impl App {
         Task::none()
     }
 
-    /// Saves a change to the app's own config keys (theme, sidebar pins).
-    fn save_ui(&mut self, change: impl FnOnce(&mut loa_config::Config)) {
-        let saved = self.ctx.services.config.load().and_then(|mut loaded| {
-            change(&mut loaded.config);
-            self.ctx.services.config.save(&loaded.config)
-        });
-        if let Err(error) = saved {
-            self.ctx.notify(format!("Can't save the settings: {error}"));
-        }
-    }
-
-    /// The palette's commands: session and view actions, panel tabs, themes
-    /// and each area's.
+    /// The palette's commands: the app's, the keymap's reference rows, then each area's.
     fn refresh_commands(&mut self) {
-        let keymap = &self.ctx.keymap;
-        let mut commands = vec![
-            palette::Command::new(NEW_SESSION, "New session", "Commands"),
-            palette::Command::new(palette::ids::PANEL_TOGGLE, "Toggle right panel", "Commands")
-                .shortcut(keymap.chord_for(&palette::ids::PANEL_TOGGLE)),
-            palette::Command::new(palette::ids::SESSION_INTERRUPT, "Interrupt session", "Commands"),
-            palette::Command::new(
-                PROJECT_TABS_TOGGLE,
-                if self.ctx.shell.project_tabs() { "Hide project tabs" } else { "Show project tabs" },
-                "Commands",
-            ),
-            palette::Command::new(palette::ids::PALETTE_TOGGLE, "Command palette", "Commands")
-                .shortcut(keymap.chord_for(&palette::ids::PALETTE_TOGGLE)),
-        ];
-        commands.extend(self.tabs().into_iter().map(|tab| {
-            let id = palette::CommandId::new(format!("{TAB_COMMAND}{}", tab.id));
-            palette::Command::new(id, format!("Open {} tab", tab.title), "Commands")
-        }));
-        commands.extend(THEMES.into_iter().map(|(key, label, _)| {
-            palette::Command::new(palette::CommandId::new(format!("{THEME_COMMAND}{key}")), format!("Theme: {label}"), "Theme")
-        }));
-        commands.extend(self.keyboard_commands());
-        for area_commands in with_areas!(each_area!(self.areas, ref |area, wrap| area.palette_commands(&self.ctx))) {
-            commands.extend(area_commands);
-        }
+        let mut commands: Vec<_> = keys::APP_COMMANDS.iter().flat_map(|spec| spec.palette(self, &self.ctx)).collect();
+        commands.extend(self.reference_keys());
+        commands.extend(self.areas.iter().flat_map(|area| area.commands(&self.ctx)));
         self.hint_commands(&mut commands);
         if self.palette.commands() != commands.as_slice() {
             self.palette.set_commands(commands);
         }
     }
 
-    /// Loads the active session's DOM into the chat and the frame. The
-    /// composer follows its turn state, so it never waits on a session that
-    /// isn't shown.
-    fn present(&mut self) -> Task<Message> {
-        self.ctx.composer.follow_session(self.ctx.sessions.active().is_some_and(|session| session.is_busy()));
-        let Some(session) = self.ctx.sessions.active() else {
-            self.chat.load(&Dom::new());
-            let workspace = workspace(&self.ctx.services.cwd);
-            self.ctx.composer.set_workspace(Some(workspace));
-            let cwd = self.ctx.services.cwd.clone();
-            return self.terminal_follow(cwd);
-        };
-        let cwd = session
-            .dom()
-            .root()
-            .and_then(|root| root.str_attr(attr::CWD))
-            .map_or_else(|| self.ctx.services.cwd.clone(), PathBuf::from);
-        self.ctx.composer.set_workspace(Some(workspace(&cwd)));
-        self.chat.load(session.dom());
-        if let Some(summary) = session.summary() {
-            self.ctx.shell.upsert_session(summary.clone());
-        }
-        self.ctx.shell.set_active_session(Some(session.id().to_string()));
-        self.ctx.shell.set_session_status(turn_status(session.dom()).map(str::to_owned));
-        self.terminal_follow(cwd)
+    /// Runs a session lifecycle call with the context and the areas, then what it asked of the app.
+    fn lifecycle(&mut self, call: impl FnOnce(&mut SessionController, &mut Ctx, &mut Registry) -> Task<Message>) -> Task<Message> {
+        let task = call(&mut self.sessions, &mut self.ctx, &mut self.areas);
+        self.after(task)
     }
 
+    /// Does what the last lifecycle call asked of the app, then settles.
+    fn after(&mut self, task: Task<Message>) -> Task<Message> {
+        let mut tasks = vec![task];
+        for after in std::mem::take(&mut self.sessions.after) {
+            tasks.push(match after {
+                After::Present(cwd) => self.follow(cwd),
+                After::Diff => self.working_diff(),
+                After::RefreshFiles => {
+                    self.files.refresh();
+                    Task::none()
+                }
+                After::TurnEnded => {
+                    // A queued `/` command runs like a typed one.
+                    let next = self.ctx.composer.turn_ended();
+                    self.composer_event(next)
+                }
+                After::Continue(folder, prompt) => {
+                    let moved = folder.map_or_else(Task::none, |folder| self.set_folder(folder));
+                    Task::batch([moved, self.lifecycle(|s, ctx, areas| s.run(ctx, areas, Command::Start { prompt: Some(prompt) }))])
+                }
+            });
+        }
+        tasks.push(self.settle());
+        Task::batch(tasks)
+    }
+
+    /// Runs what areas asked for and delivers the session events they caused, until none are left.
+    fn settle(&mut self) -> Task<Message> {
+        let mut tasks = Vec::new();
+        loop {
+            if !self.ctx.transitions.is_empty() {
+                for transition in std::mem::take(&mut self.ctx.transitions) {
+                    tasks.push(self.lifecycle(|s, ctx, areas| s.apply(ctx, areas, transition)));
+                }
+                continue;
+            }
+            if self.ctx.requests.is_empty() {
+                break;
+            }
+            for request in std::mem::take(&mut self.ctx.requests) {
+                tasks.push(match request {
+                    Request::NewSession => self.lifecycle(|s, ctx, areas| s.run(ctx, areas, Command::Start { prompt: None })),
+                    Request::OpenSession(id) => self.lifecycle(|s, ctx, areas| s.run(ctx, areas, Command::Open(SessionId::from(id)))),
+                    Request::DetachSession(id) => self.detach_session(&id),
+                    Request::Prompt(prompt) => self.lifecycle(|s, ctx, areas| s.send(ctx, areas, prompt)),
+                    Request::OpenTab(id) => self.open_tab(&id),
+                    Request::RevealTab(id) => self.reveal_tab(&id),
+                    Request::Spawn(spawn) => self.lifecycle(|s, ctx, areas| s.run(ctx, areas, Command::Spawn(spawn))),
+                    Request::ActivateProject { project, cwd } => self.activate_project(project, cwd),
+                    Request::ForgetProject(project) => self.forget_project(&project),
+                    Request::Forward(message) => self.update(*message),
+                });
+            }
+        }
+        Task::batch(tasks)
+    }
+
+    /// Runs palette command `id`: one of [`keys::APP_COMMANDS`], else the command of the area its prefix names.
     pub(crate) fn command(&mut self, id: &palette::CommandId) -> Task<Message> {
         let id = id.as_str();
-        if let Some(task) = self.keyboard_command(id) {
-            return task;
+        if let Some((spec, arg)) = crate::area::find_command(keys::APP_COMMANDS, id) {
+            return (spec.run)(self, arg);
         }
-        if let Some(tab) = id.strip_prefix(TAB_COMMAND) {
-            return self.open_tab(tab);
-        }
-        if let Some((_, _, preference)) =
-            id.strip_prefix(THEME_COMMAND).and_then(|theme| THEMES.into_iter().find(|(key, _, _)| *key == theme))
-        {
-            return self.update(Message::Shell(shell::Message::SetTheme(preference)));
-        }
-        match id {
-            "palette.toggle" => self.update(Message::Palette(palette::Message::Toggle)),
-            "panel.toggle" => {
-                self.ctx.shell.set_panel_open(!self.ctx.shell.panel_open());
+        let area = id.split_once('.').and_then(|(area, _)| self.areas.find(area));
+        match area.and_then(|area| area.run(id, &mut self.ctx)) {
+            Some(task) => Task::batch([task, self.settle()]),
+            None => {
+                self.ctx.notify(format!("Unknown command {id}"));
                 Task::none()
-            }
-            "session.new" => self.start(None),
-            "project.tabs.toggle" => {
-                let enabled = !self.ctx.shell.project_tabs();
-                self.ctx.shell.set_project_tabs(enabled);
-                self.save_ui(|config| config.project_tabs = enabled);
-                Task::none()
-            }
-            "session.interrupt" => self.update(Message::Composer(composer::Message::Interrupt)),
-            _ => {
-                let Some(area) = AreaId::of_command(id) else {
-                    self.ctx.notify(format!("Unknown command {id}"));
-                    return Task::none();
-                };
-                let task = with_areas!(on_area!(area, self.areas, mut |area, wrap| area
-                    .run_command(id, &mut self.ctx)
-                    .map(|task| task.map(wrap))));
-                let Some(task) = task else {
-                    self.ctx.notify(format!("Unknown command {id}"));
-                    return Task::none();
-                };
-                Task::batch([task, self.settle()])
             }
         }
     }
 
-    /// Runs a `/` command typed in the composer when it is one of the
-    /// app's: `/new`, `/model <id>` (the models area) and the sessions
-    /// area's. `None` for anything else, which goes to the harness as typed,
-    /// its own commands included.
+    /// Runs a `/` command typed in the composer when it is the app's or an area's; `None` sends it to the harness.
     fn slash(&mut self, text: &str) -> Option<Task<Message>> {
-        let (name, model) = areas::sessions::split_slash(text)?;
-        match name {
-            "new" => Some(self.start(None)),
-            "model" if model.is_empty() => {
-                self.ctx.notify("Name the model: /model <provider/model>, or pick one in the model picker");
-                Some(Task::none())
-            }
-            "model" => {
-                let option =
-                    composer::ModelOption { id: model.to_owned(), name: model.to_owned(), provider: String::new(), role: None };
-                Some(self.update(Message::Models(areas::models::Message::Model(option))))
-            }
-            _ => areas::sessions::slash(text).map(|message| self.update(Message::Sessions(message))),
+        if let Some((spec, args)) = crate::area::find_slash(keys::APP_COMMANDS, text) {
+            return Some((spec.run)(self, args));
         }
+        let task = self.areas.iter_mut().find_map(|area| area.slash(text, &mut self.ctx))?;
+        Some(Task::batch([task, self.settle()]))
     }
 
-    fn composer_event(&mut self, event: Option<composer::Event>) -> Task<Message> {
-        match event {
-            Some(composer::Event::Submit(prompt)) => match self.slash(&prompt.text) {
+    fn composer_event(&mut self, event: Option<ComposerIntent>) -> Task<Message> {
+        event.and_then(compose).map_or_else(Task::none, |intent| self.intent(intent))
+    }
+
+    fn intent(&mut self, intent: Intent) -> Task<Message> {
+        match intent {
+            Intent::Start => self.lifecycle(|s, ctx, areas| s.run(ctx, areas, Command::Start { prompt: None })),
+            Intent::OpenSession(id) => self.lifecycle(|s, ctx, areas| s.run(ctx, areas, Command::Open(SessionId::from(id)))),
+            Intent::Submit(prompt) => match self.slash(&prompt.text) {
                 Some(task) => {
-                    // Not a turn: the composer is ready again, and a message
-                    // queued behind the command goes out now.
+                    // Not a turn: the composer is ready again, and a message queued behind the command goes out now.
                     let next = self.ctx.composer.turn_ended();
                     Task::batch([task, self.composer_event(next)])
                 }
-                None if self.ctx.sessions.active().is_none() => self.start(Some(prompt)),
-                None => self.send(prompt),
+                None if self.ctx.runtime.sessions().active().is_none() => self.lifecycle(|s, ctx, areas| s.run(ctx, areas, Command::Start { prompt: Some(prompt) })),
+                None => self.lifecycle(|s, ctx, areas| s.send(ctx, areas, prompt)),
             },
-            Some(composer::Event::Stop) => self.interrupt(),
-            Some(composer::Event::HarnessChanged(id)) => self.update(Message::Harness(areas::harness::Message::Pick(id))),
-            Some(composer::Event::ModelChanged(model)) => self.update(Message::Models(areas::models::Message::Model(model))),
-            Some(composer::Event::ModelAction(id)) => self.update(Message::Models(areas::models::Message::Action(id))),
-            Some(composer::Event::EffortChanged(effort)) => {
-                self.update(Message::Models(areas::models::Message::Effort(effort)))
-            }
-            Some(composer::Event::AccessChanged(id)) => self.set_access(id),
-            Some(composer::Event::ModeChanged(mode)) => self.update(Message::Sessions(areas::sessions::Message::Mode(mode))),
-            Some(composer::Event::FilesRequested { .. }) => {
+            Intent::Interrupt => self.lifecycle(|s, ctx, areas| s.run(ctx, areas, Command::Interrupt)),
+            Intent::Access(id) => self.lifecycle(|s, ctx, areas| s.set_access(ctx, areas, id)),
+            Intent::Files => {
                 self.files.refresh();
                 self.ctx.composer.set_files(self.files.visible().map(|path| path.to_string_lossy().into_owned()).collect());
                 Task::none()
             }
-            Some(composer::Event::OpenWorkspace) => self.open_tab("files"),
-            Some(composer::Event::FolderPicked(path)) => self.switch_folder(PathBuf::from(path)),
-            Some(composer::Event::BrowseFolders) => Task::perform(choose_folder(self.ctx.services.cwd.clone()), Message::FolderChosen),
-            Some(composer::Event::ImagePasteRequested) => self.paste_image(),
-            Some(composer::Event::ProjectPicked(project)) => self.project_picked(project),
-            Some(composer::Event::QueueChanged(_)) | None => Task::none(),
+            Intent::Tab(tab) => self.open_tab(tab),
+            Intent::Folder(path) => self.switch_folder(path),
+            Intent::Browse => self.browse(),
+            Intent::Usage => {
+                self.windows.overlay = Some(Overlay::Usage);
+                self.usage.refresh().map(Message::Usage)
+            }
+            Intent::Notice(notice) => {
+                self.ctx.notify(notice);
+                Task::none()
+            }
+            Intent::PasteImage => self.paste_image(),
+            Intent::ProjectPicked(project) => self.project_picked(project),
+            Intent::CloseProjectTab(project) => {
+                self.close_project_tab(&project);
+                Task::none()
+            }
+            Intent::Theme(picked) => {
+                let active = self.ctx.shell.theme();
+                self.sessions.chat.set_theme(&active);
+                self.sessions.chat.set_bottom_inset(width(LayoutRole::ComposerInset));
+                self.areas.get_mut::<areas::decisions::State>().set_theme(&active);
+                if let Some(theme) = picked {
+                    self.ctx.edit_config("settings", |config| config.appearance.theme = crate::view::theme::theme_from_view(theme));
+                }
+                Task::none()
+            }
+            Intent::SavePins => {
+                let pins = self.ctx.shell.sidebar().pins().clone();
+                self.ctx.edit_config("settings", |config| config.pinned = pins);
+                Task::none()
+            }
+            Intent::SaveProjectPins => {
+                let pins = self.ctx.shell.sidebar().pinned_projects().clone();
+                self.ctx.edit_config("settings", |config| config.pinned_projects = pins);
+                Task::none()
+            }
+            Intent::Forward(message) => self.update(message),
         }
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
         let task = self.handle(message);
         // The sidebar and top bar follow a project page in the center.
-        let shown = (self.ctx.screen() == Some(AreaId::Projects)).then(|| self.areas.projects.shown().map(str::to_owned)).flatten();
-        self.ctx.shell.set_shown_project(shown);
-        self.sync_access();
+        let projects = (self.ctx.screen() == Some(areas::projects::State::ID)).then(|| self.areas.get::<areas::projects::State>().shown().map(str::to_owned));
+        self.ctx.shell.set_shown_project(projects.flatten());
+        self.sessions.sync_access(&mut self.ctx);
         self.sync_project_tabs();
         task
     }
 
     fn handle(&mut self, message: Message) -> Task<Message> {
-        macro_rules! area {
-            ($field:ident, $variant:ident, $message:expr) => {{
-                let task = self.areas.$field.update($message, &mut self.ctx).map(Message::$variant);
-                Task::batch([task, self.settle()])
-            }};
-        }
         match message {
             Message::Shell(message) => {
                 let (task, event) = self.ctx.shell.update(message);
-                if matches!(event, Some(shell::Event::NewSession | shell::Event::OpenSession(_) | shell::Event::OpenProject(_))) {
-                    self.overlay = None;
+                if matches!(event, Some(ShellIntent::Sidebar(Nav::NewSession | Nav::OpenSession(_) | Nav::OpenProject(_)))) {
+                    self.windows.overlay = None;
                 }
-                let action = match event {
-                    Some(shell::Event::NewSession) => self.start(None),
-                    Some(shell::Event::OpenUsage) => {
-                        self.overlay = Some(windows::Overlay::Usage);
-                        self.usage.refresh().map(Message::Usage)
-                    }
-                    Some(shell::Event::NewProject) => self.update(Message::Projects(areas::projects::Message::New)),
-                    Some(shell::Event::NewSessionIn(project)) => {
-                        self.update(Message::Projects(areas::projects::Message::NewChatIn(project)))
-                    }
-                    Some(shell::Event::DeleteProject(project)) => {
-                        self.update(Message::Projects(areas::projects::Message::AskDelete(project)))
-                    }
-                    Some(shell::Event::MoveSession { id, project }) => {
-                        self.update(Message::Projects(areas::projects::Message::Move { session: id, project }))
-                    }
-                    Some(shell::Event::OpenConfigs) => {
-                        self.window_update(windows::WindowMessage::OpenConfigs(windows::ConfigsTab::Models))
-                    }
-                    Some(shell::Event::OpenSettings) => {
-                        self.window_update(windows::WindowMessage::OpenSettings(windows::SettingsTab::General))
-                    }
-                    Some(shell::Event::OpenTools) => self.update(Message::Tools(areas::tools::Message::Open)),
-                    Some(shell::Event::DetachTab(tab)) => self.detach(detach::Detached::Tab(tab)),
-                    Some(shell::Event::ShowDetached(tab)) => self.show_detached_tab(&tab),
-                    Some(shell::Event::ReattachTab(tab)) => self.reattach_tab(&tab),
-                    Some(shell::Event::OpenPeers) => {
-                        self.window_update(windows::WindowMessage::OpenSettings(windows::SettingsTab::Peers))
-                    }
-                    Some(shell::Event::OpenUpdates) => self.update(Message::Updater(areas::updater::Message::Open)),
-                    Some(shell::Event::OpenSession(id)) if areas::peers::is_remote(&id) => {
-                        self.update(Message::Peers(areas::peers::Message::OpenRecent(id)))
-                    }
-                    Some(shell::Event::DeleteSession(id)) if areas::peers::is_remote(&id) => {
-                        self.update(Message::Peers(areas::peers::Message::ForgetRecent(id)))
-                    }
-                    Some(shell::Event::OpenSession(id)) => self.open_session(&id),
-                    Some(shell::Event::DeleteSession(id)) => self.update(Message::Sessions(areas::sessions::Message::Delete(id))),
-                    Some(shell::Event::OpenProject(project)) => {
-                        self.update(Message::Projects(areas::projects::Message::Open(project)))
-                    }
-                    Some(shell::Event::CloseProjectTab(project)) => {
-                        self.close_project_tab(&project);
-                        Task::none()
-                    }
-                    Some(shell::Event::SetTheme(preference)) => {
-                        self.save_ui(|config| config.theme = theme_setting(preference));
-                        Task::none()
-                    }
-                    Some(shell::Event::SetPinned { .. }) => {
-                        let pins = self.ctx.shell.sidebar().pins().clone();
-                        self.save_ui(|config| config.pinned = pins);
-                        Task::none()
-                    }
-                    Some(shell::Event::SetProjectPinned { .. }) => {
-                        let pins = self.ctx.shell.sidebar().pinned_projects().clone();
-                        self.save_ui(|config| config.pinned_projects = pins);
-                        Task::none()
-                    }
-                    _ => Task::none(),
-                };
+                let action = event.and_then(route).map_or_else(Task::none, |intent| self.intent(intent));
                 Task::batch([task.map(Message::Shell), action])
             }
             Message::Chat(message) => {
-                let (task, event) = self.chat.update(message);
-                let action = match event {
-                    Some(event) => self.update(Message::Sessions(areas::sessions::Message::Chat(event))),
-                    None => Task::none(),
-                };
+                let (task, event) = self.sessions.chat.update(message);
+                let action = event.map_or_else(Task::none, |event| self.update(Message::area(areas::sessions::Message::Chat(event))));
                 Task::batch([task.map(Message::Chat), action])
             }
             Message::Composer(message) => {
@@ -623,17 +568,15 @@ impl App {
             }
             Message::Files(message) => {
                 let (task, event) = self.files.update(message);
-                if let Some(files::Event::Open(path)) = event {
+                if let Some(loa_view::panel::FilesIntent::Open(path)) = event {
                     self.ctx.notify(path.display().to_string());
                 }
                 task.map(Message::Files)
             }
             Message::Diff(message) => self.diff.update(message).0.map(Message::Diff),
-            Message::Terminal(message) => self.terminal.update(message).0.map(Message::Terminal),
+            Message::Terminal(message) => self.terminal.update(message).map(Message::Terminal),
             Message::Palette(message) => {
-                if matches!(message, palette::Message::Open | palette::Message::OpenShortcuts)
-                    || matches!(message, palette::Message::Toggle) && !self.palette.is_open()
-                {
+                if matches!(message, palette::Message::Open | palette::Message::OpenShortcuts) || matches!(message, palette::Message::Toggle) && !self.palette.is_open() {
                     self.refresh_commands();
                 }
                 let (task, event) = self.palette.update(message);
@@ -643,36 +586,12 @@ impl App {
                 };
                 Task::batch([task.map(Message::Palette), action])
             }
+            Message::Keyboard(keyboard::Event::KeyPressed { key: keyboard::Key::Named(key::Named::Escape), modifiers, .. })
+                if !modifiers.control() && !modifiers.alt() && !modifiers.logo() =>
+            {
+                self.escape()
+            }
             Message::Keyboard(event) => {
-                if let keyboard::Event::KeyPressed { key: keyboard::Key::Named(key::Named::Escape), modifiers, .. } = &event
-                    && !modifiers.control()
-                    && !modifiers.alt()
-                    && !modifiers.logo()
-                {
-                    if self.palette.is_open() {
-                        return self.update(Message::Palette(palette::Message::Close));
-                    }
-                    // A file's full screen leaves before the Configs window it is drawn in.
-                    if self.docs.full && matches!(self.overlay, Some(windows::Overlay::Configs(_))) {
-                        self.docs.full = false;
-                        return Task::none();
-                    }
-                    if self.overlay.take().is_some() {
-                        return Task::none();
-                    }
-                    if let Some(pane) = self.ctx.shell.full() {
-                        return self.update(Message::Shell(shell::Message::ToggleFull(pane)));
-                    }
-                    if self.areas.decisions.focused().is_some() {
-                        return self.update(Message::Decisions(areas::decisions::State::dismiss()));
-                    }
-                    if self.ctx.screen().is_some() {
-                        self.ctx.close_screen();
-                        return Task::none();
-                    }
-                    // Interrupt the harness itself, even before the turn-start patch arrives.
-                    return self.interrupt();
-                }
                 // The palette is modal: only its own bindings apply while it shows.
                 let scope = if self.palette.is_open() { palette::Scope::Palette } else { palette::Scope::Global };
                 match self.ctx.keymap.resolve(&event, scope).cloned() {
@@ -684,17 +603,13 @@ impl App {
             Message::Usage(message) => {
                 let (task, event) = self.usage.update(message);
                 match event {
-                    Some(usage::Event::Close) => self.overlay = None,
-                    Some(usage::Event::Meter(meter)) => self.ctx.shell.set_usage(meter),
+                    Some(usage::Event::Close) => self.windows.overlay = None,
+                    Some(usage::Event::Meter(meter)) => self.ctx.shell.sidebar_mut().set_usage(meter),
                     None => {}
                 }
                 task.map(Message::Usage)
             }
             Message::Window(message) => self.window_update(message),
-            Message::WindowClosed(id) => self.window_closed(id),
-            Message::Reattach(id) => self.reattach(id),
-            Message::ImagePasted(pasted) => self.image_pasted(pasted),
-            Message::FileDropped(path) => self.file_dropped(path),
             Message::FolderChosen(Ok(Some(path))) => self.switch_folder(path),
             Message::FolderChosen(Ok(None)) => Task::none(),
             Message::FolderChosen(Err(error)) => {
@@ -702,124 +617,138 @@ impl App {
                 Task::none()
             }
             Message::DetachedChat(session, message) => {
-                let Some(chat) = self.detached_chats.get_mut(&session) else { return Task::none() };
+                let Some(chat) = self.sessions.detached.get_mut(&session) else { return Task::none() };
                 let (task, event) = chat.update(message);
                 let task = task.map(move |message| Message::DetachedChat(session.clone(), message));
                 // Rewinds act on the active session, so only links pass on.
                 let action = match event {
-                    Some(event @ chat::Event::OpenLink(_)) => self.update(Message::Sessions(areas::sessions::Message::Chat(event))),
+                    Some(event @ ChatIntent::OpenLink(_)) => self.update(Message::area(areas::sessions::Message::Chat(event))),
                     _ => Task::none(),
                 };
                 Task::batch([task, action])
             }
-            Message::NewSession => self.start(None),
-            Message::Start(start::StartMessage::Open(id)) => self.open_session(&id),
-            Message::Session(id, feed) => self.feed(id, feed),
-            Message::Recents { summaries, problems, empty } => self.recents_loaded(summaries, problems, empty),
-            Message::Spawned { id, result, prompt } => self.on_spawned(id, result, prompt),
-            Message::Started { id, result, prompt } => self.on_started(id, result, prompt),
-            Message::Resumed { id, result, prompt } => self.on_resumed(id, result, prompt),
-            Message::Operation(result) => {
-                if let Err(error) = result {
-                    if let Some(session) = self.ctx.sessions.active_mut() {
-                        session.set_busy(false);
-                    }
-                    self.ctx.notify(error);
-                }
+            Message::OpenRecent(id) => self.lifecycle(|s, ctx, areas| s.run(ctx, areas, Command::Open(SessionId::from(id)))),
+            Message::Recents { summaries, problems, empty } => {
+                self.sessions.recents_loaded(&mut self.ctx, summaries, problems, empty);
                 Task::none()
             }
-            Message::WorkingDiff(Some(Ok(files))) => {
-                let _ = self.diff.set_note(None);
-                self.diff.set_files(files).map(Message::Diff)
-            }
-            Message::WorkingDiff(Some(Err(error))) => {
-                self.ctx.notify(error);
-                Task::none()
-            }
-            // Not a git repository (or no commit yet): say so instead of
-            // keeping another folder's changes.
-            Message::WorkingDiff(None) => {
-                let folder = workspace(&self.ctx.services.cwd).path;
-                self.diff.set_note(Some(format!("No git changes to show: {folder} isn't a git repository with a commit"))).map(Message::Diff)
-            }
-            Message::Harness(message) => area!(harness, Harness, message),
-            Message::Sessions(message) => area!(sessions, Sessions, message),
-            Message::Decisions(message) => area!(decisions, Decisions, message),
-            Message::Tools(message) => area!(tools, Tools, message),
-            Message::Surfaces(message) => area!(surfaces, Surfaces, message),
-            Message::Models(areas::models::Message::Close) if matches!(self.overlay, Some(windows::Overlay::Settings(_) | windows::Overlay::Configs(_))) => {
-                // The models screen's own close button, drawn inside Configs or Settings.
-                self.overlay = None;
+            Message::ImagePasted(pasted) => self.image_pasted(pasted),
+            Message::FileDropped(path) => self.file_dropped(path),
+            Message::Session(message) => self.lifecycle(|s, ctx, areas| s.update(ctx, areas, message)),
+            Message::WorkingDiff(diff) => self.show_diff(diff),
+            // The models screen's own close button, drawn inside Configs or Settings.
+            Message::Area(_, message)
+                if matches!(message.downcast_ref(), Some(areas::models::Message::Close))
+                    && matches!(self.windows.overlay, Some(Overlay::Settings(_) | Overlay::Configs(_))) =>
+            {
+                self.windows.overlay = None;
                 self.ctx.close_screen();
                 Task::none()
             }
-            Message::Models(message) => area!(models, Models, message),
-            Message::Projects(message) => area!(projects, Projects, message),
-            Message::Peers(message) => area!(peers, Peers, message),
-            Message::Updater(message) => area!(updater, Updater, message),
-            Message::Sandbox(message) => area!(sandbox, Sandbox, message),
-            Message::Agents(message) => area!(agents, Agents, message),
+            Message::Area(id, message) => {
+                let task = self.areas.update(id, message, &mut self.ctx);
+                Task::batch([task, self.settle()])
+            }
         }
+    }
+
+    /// Esc closes the innermost thing open, else interrupts the harness.
+    fn escape(&mut self) -> Task<Message> {
+        if self.palette.is_open() {
+            return self.update(Message::Palette(palette::Message::Close));
+        }
+        let windows = &mut self.windows;
+        // A file's full screen leaves before the Configs window it is drawn in.
+        if windows.docs.full && matches!(windows.overlay, Some(Overlay::Configs(_))) {
+            windows.docs.full = false;
+            return Task::none();
+        }
+        if windows.overlay.take().is_some() {
+            return Task::none();
+        }
+        if let Some(pane) = self.ctx.shell.full() {
+            return self.update(Message::Shell(shell::Message::ToggleFull(pane)));
+        }
+        if self.areas.get::<areas::decisions::State>().focused().is_some() {
+            return self.update(Message::area(areas::decisions::State::dismiss()));
+        }
+        if self.ctx.screen().is_some() {
+            self.ctx.close_screen();
+            return Task::none();
+        }
+        // Interrupt the harness itself, even before the turn-start patch arrives.
+        self.lifecycle(|s, ctx, areas| s.run(ctx, areas, Command::Interrupt))
+    }
+
+    /// The decision card at `node` of session `session`.
+    fn decision_card(&self, session: &str, node: NodeId) -> Element<'_, Message> {
+        let card = self.areas.get::<areas::decisions::State>().card(session, node);
+        card.map_or_else(|| text("Decision no longer available").into(), |card| card.map(Message::area))
     }
 
     pub fn view(&self) -> Element<'_, Message> {
         let ctx = &self.ctx;
-        let screen = ctx.screen().and_then(|screen| {
-            with_areas!(on_area!(screen, self.areas, ref |area, wrap| area.view_screen(ctx).map(|view| view.map(wrap))))
-        });
-        let center_content: Element<'_, Message> = if let Some(screen) = screen {
+        let screen = ctx.screen().and_then(|screen| self.areas.iter().find(|area| area.id() == screen)?.view_screen(ctx));
+        let center = if let Some(screen) = screen {
             screen
-        } else if let Some(session) = ctx.sessions.active() {
-            let transcript = self.chat.view(session.dom(), Message::Chat, |slot| {
-                self.areas
-                    .decisions
-                    .card(session.id().as_str(), slot.node)
-                    .map(|card| card.map(Message::Decisions))
-                    .unwrap_or_else(|| text("Decision no longer available").into())
-            });
-            // The composer floats over the transcript's bottom edge; the
-            // transcript scrolls on underneath it (see `COMPOSER_INSET`).
-            let composer = container(container(ctx.composer.view().map(Message::Composer)).width(Fill).max_width(COMPOSER_WIDTH))
-                .center_x(Fill)
-                .padding(Padding { top: 28.0, right: 24.0, bottom: 16.0, left: 24.0 })
-                .style(style::composer_fade);
+        } else if let Some(session) = ctx.runtime.sessions().active() {
+            let transcript = self.sessions.chat.view(session.dom(), Message::Chat, |slot| self.decision_card(session.id().as_str(), slot.node));
+            // The composer floats over the transcript's bottom edge; the transcript scrolls on underneath it.
+            let composer = container(container(ctx.composer.view().map(Message::Composer)).width(Fill).max_width(width(LayoutRole::ComposerWidth)));
+            let composer = composer.center_x(Fill).padding(Padding::from([sp(SpaceRole::M), sp(SpaceRole::Xl)]).top(sp(SpaceRole::Xl))).style(style::composer_fade);
             stack![container(transcript).height(Fill), container(composer).align_bottom(Fill)].into()
         } else {
             self.start_view()
         };
-        let center_content: Element<'_, Message> = match ctx.notice() {
-            Some(notice) => {
-                column![center_content, container(text(notice).size(12).style(style::muted)).padding([6, 24])].into()
-            }
-            None => center_content,
+        let center = match ctx.notice() {
+            Some(notice) => column![center, container(label(notice, TextRole::Caption, Tone::Muted)).padding([sp(SpaceRole::Xs), sp(SpaceRole::Xl)])].into(),
+            None => center,
         };
-        let frame = ctx.shell.view(center_content, |tab| self.view_tab(tab), Message::Shell);
-        let frame: Element<'_, Message> = match self.overlay {
+        let frame = ctx.shell.view(center, |tab| self.view_tab(tab), Message::Shell);
+        let frame: Element<'_, Message> = match self.windows.overlay {
             Some(overlay) => {
                 let window = match overlay {
-                    windows::Overlay::Usage => self.usage.view().map(Message::Usage),
-                    windows::Overlay::Configs(tab) => self.configs_view(tab),
-                    windows::Overlay::Settings(tab) => self.settings_view(tab),
+                    Overlay::Usage => self.usage.view().map(Message::Usage),
+                    Overlay::Settings(tab) => self.settings_view(tab),
+                    Overlay::Configs(tab) => self.configs_view(tab),
                 };
-                let scrim = iced::widget::mouse_area(container(iced::widget::space()).style(style::scrim).width(Fill).height(Fill))
-                    .on_press(Message::Window(windows::WindowMessage::CloseOverlay));
-                stack![frame, scrim, container(iced::widget::opaque(window)).center_x(Fill).padding(Padding { top: 64.0, right: 24.0, bottom: 24.0, left: 24.0 })].into()
+                let scrim = mouse_area(container(space()).style(style::scrim).width(Fill).height(Fill)).on_press(Message::Window(WindowMessage::CloseOverlay));
+                let top = Padding::from(sp(SpaceRole::Xl)).top(width(LayoutRole::NavWidth) / 4.0);
+                stack![frame, scrim, container(opaque(window)).center_x(Fill).padding(top)].into()
             }
             None => frame,
         };
         if self.palette.is_open() { stack![frame, self.palette.view().map(Message::Palette)].into() } else { frame }
     }
 
+    /// The center with no session open: a heading, the composer and the recent sessions of the
+    /// active project (of every project without one).
+    fn start_view(&self) -> Element<'_, Message> {
+        let ctx = &self.ctx;
+        let starting = ctx.runtime.sessions().starting().is_some();
+        let project = ctx.runtime.project();
+        // Where new sessions go: the active project, else the folder.
+        let place = project.map_or_else(|| workspace::chip(ctx.services.host.git.as_ref(), ctx.runtime.cwd()).path, str::to_owned);
+        let now = now_ms();
+        let recents = ctx.shell.sidebar().recents().into_iter().filter(|summary| project.is_none_or(|project| summary.project.as_deref() == Some(project)));
+        let recents = recents.take(RECENTS).map(|summary| {
+            let content = row![label(summary.title.as_str(), TextRole::Body, Tone::Normal).width(Fill).wrapping(text::Wrapping::None), label(ago(now, summary.updated), TextRole::Caption, Tone::Muted)];
+            list_row(content, Some(Message::OpenRecent(summary.id.clone())))
+        });
+        let recents: Vec<_> = recents.collect();
+        let header = if project.is_some() { format!("Recent in {place}") } else { "Recent".to_owned() };
+        let recent = (!recents.is_empty()).then(|| column![label(header, TextRole::Caption, Tone::Muted), divided(recents)].spacing(sp(SpaceRole::S)));
+        let status = if starting { format!("Starting a session in {place}…") } else { format!("in {place}") };
+        let heading = column![label("What should we work on?", TextRole::Title, Tone::Normal), label(status, TextRole::Body, Tone::Muted)];
+        let body = column![heading.spacing(sp(SpaceRole::Xs)).width(Fill).align_x(Alignment::Center), ctx.composer.view().map(Message::Composer)];
+        let body = body.push(recent).spacing(sp(SpaceRole::L)).width(Fill).max_width(width(LayoutRole::ComposerWidth));
+        container(scrollable(container(body).center_x(Fill).padding(pad_x(SpaceRole::Xl))).height(iced::Length::Shrink)).center(Fill).into()
+    }
+
     fn view_tab<'a>(&'a self, tab: &'a str) -> Element<'a, Message> {
-        match tab {
-            "files" => self.files.view().map(Message::Files),
-            "diff" => self.diff.view().map(Message::Diff),
-            "terminal" => self.terminal.view().map(Message::Terminal),
-            _ => with_areas!(each_area!(self.areas, ref |area, wrap| area.view_tab(tab, &self.ctx).map(|view| view.map(wrap))))
-                .into_iter()
-                .flatten()
-                .next()
-                .unwrap_or_else(|| text("Unknown tab").into()),
+        match panes::find(self, tab) {
+            Some(pane) => pane.view(self),
+            None => self.areas.iter().find_map(|area| area.view_tab(tab, &self.ctx)).unwrap_or_else(|| text("Unknown tab").into()),
         }
     }
 
@@ -828,73 +757,50 @@ impl App {
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
-        let busy = self.ctx.sessions.active().is_some_and(|session| session.is_busy());
-        let areas = with_areas!(each_area!(self.areas, ref |area, wrap| area.subscription().map(wrap)));
-        Subscription::batch(
-            [
-                self.ctx.shell.subscription().map(Message::Shell),
-                self.ctx.composer.subscription().map(Message::Composer),
-                iced::event::listen_with(key_press),
-                iced::event::listen_with(file_drop),
-                self.ctx.sessions.watch().map(|(id, feed)| Message::Session(id, feed)),
-                if busy { iced::time::every(TICK).map(|_| Message::Tick) } else { Subscription::none() },
-                iced::time::every(USAGE_REFRESH).map(|_| Message::Usage(usage::Message::Refresh)),
-                iced::window::close_events().map(Message::WindowClosed),
-            ]
-            .into_iter()
-            .chain(areas),
-        )
+        let busy = self.ctx.runtime.sessions().active().is_some_and(|session| session.is_busy());
+        let areas = self.areas.iter().map(|area| area.subscription());
+        let own = [
+            self.ctx.shell.subscription().map(Message::Shell),
+            self.ctx.composer.subscription().map(Message::Composer),
+            iced::event::listen_with(key_press),
+            iced::event::listen_with(file_drop),
+            crate::watch::sessions(self.ctx.runtime.sessions()).map(|(id, feed)| Message::Session(lifecycle::Message::Feed(id, feed))),
+            if busy { iced::time::every(TICK).map(|_| Message::Tick) } else { Subscription::none() },
+            iced::time::every(USAGE_REFRESH).map(|_| Message::Usage(usage::Message::Refresh)),
+            iced::window::close_events().map(|id| Message::Window(WindowMessage::Closed(id))),
+        ];
+        Subscription::batch(own.into_iter().chain(areas))
     }
 }
 
-/// The shell's theme preference for the saved setting.
-fn preference(theme: loa_config::Theme) -> shell::Preference {
-    match theme {
-        loa_config::Theme::System => shell::Preference::System,
-        loa_config::Theme::Dark => shell::Preference::Dark,
-        loa_config::Theme::Light => shell::Preference::Light,
-    }
-}
-
-/// The saved setting for the shell's theme preference.
-fn theme_setting(preference: shell::Preference) -> loa_config::Theme {
-    match preference {
-        shell::Preference::System => loa_config::Theme::System,
-        shell::Preference::Dark => loa_config::Theme::Dark,
-        shell::Preference::Light => loa_config::Theme::Light,
-    }
-}
-
-/// Keeps only key presses that no widget captured. Releases and modifier
-/// changes would each cost a full update and view.
-fn key_press(event: iced::event::Event, status: iced::event::Status, _: iced::window::Id) -> Option<Message> {
+/// Keeps only key presses that no widget captured. Releases and modifier changes would each cost a
+/// full update and view.
+fn key_press(event: iced::Event, status: iced::event::Status, _: iced::window::Id) -> Option<Message> {
     match (event, status) {
-        (iced::event::Event::Keyboard(event @ keyboard::Event::KeyPressed { .. }), iced::event::Status::Ignored) => {
-            Some(Message::Keyboard(event))
-        }
+        (iced::Event::Keyboard(event @ keyboard::Event::KeyPressed { .. }), iced::event::Status::Ignored) => Some(Message::Keyboard(event)),
         _ => None,
     }
 }
 
 /// Files dropped on a window go to the composer.
-fn file_drop(event: iced::event::Event, _: iced::event::Status, _: iced::window::Id) -> Option<Message> {
+fn file_drop(event: iced::Event, _: iced::event::Status, _: iced::window::Id) -> Option<Message> {
     match event {
-        iced::event::Event::Window(iced::window::Event::FileDropped(path)) => Some(Message::FileDropped(path)),
+        iced::Event::Window(iced::window::Event::FileDropped(path)) => Some(Message::FileDropped(path)),
         _ => None,
     }
 }
 
-mod detach;
-mod start;
-mod keys;
-mod usage;
-mod windows;
-mod access;
-mod feed;
-mod flow;
-mod media;
-mod folders;
-mod projects;
+/// A full-width row button of a [`divided`] list.
+fn list_row<'a>(content: iced::widget::Row<'a, Message>, on: Option<Message>) -> Element<'a, Message> {
+    let content = content.spacing(sp(SpaceRole::M)).align_y(Alignment::Center);
+    button(content).width(Fill).padding([sp(SpaceRole::S), sp(SpaceRole::M)]).style(loa_ui_kit::style::button(ButtonKind::Row { selected: false })).on_press_maybe(on).into()
+}
 
-#[cfg(test)]
-pub(crate) mod tests;
+/// `rows` in a card, divided by rules.
+fn divided(rows: Vec<Element<'_, Message>>) -> Element<'_, Message> {
+    let mut list = column![];
+    for (index, row) in rows.into_iter().enumerate() {
+        list = list.push((index > 0).then(|| rule::horizontal(1).style(style::divider))).push(row);
+    }
+    container(list).style(loa_ui_kit::style::container(Surface::Card)).width(Fill).into()
+}

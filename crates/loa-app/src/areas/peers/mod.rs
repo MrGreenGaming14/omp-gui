@@ -4,46 +4,40 @@
 //! folders), peers' sessions in Recents tagged by node, a peer's session
 //! opened in the center to watch, prompt, answer or fork, and a peer's shared
 //! folder browsed in the center, its files opened and (with drive) saved.
-//!
-//! The node checks every peer request on this node's sessions against the
-//! grants in `Services::grants`; peers' prompts and decision answers run
-//! through this app's harness like the user's own.
 
+mod adapter;
 mod folder;
 mod remote;
 #[cfg(test)]
 mod tests;
 
-use std::hash::{Hash, Hasher};
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 
-use iced::futures::{SinkExt, Stream};
 use iced::{Element, Subscription, Task};
-use loa_adapter::{Answer, Prompt};
-use loa_config::{NetworkSettings, Relay};
-use loa_grants::Resource;
-use loa_node::ui::{self, Outcome};
-use loa_node::{Endpoint, LibrarySessions, Node, NodeConfig, NodeEvent, RelayConfig};
-use loa_ui_palette as palette;
-use loa_ui_peers as peers;
-use loa_ui_shell::{NodeStatus, SessionSummary};
+use loa_contracts::harness::{Answer, Prompt};
+use loa_settings::app::{NetworkSettings, Relay};
+use loa_trust::Resource;
+use adapter::{self as ui, Outcome};
+use loa_p2p::{Endpoint, Node, NodeConfig, NodeEvent, RelayConfig};
+use loa_ui_kit::widgets::Screen;
+use loa_ui_settings::peers;
+use loa_contracts::session::SessionSummary;
+use loa_view::settings::peers::Intent;
+use loa_view::shell::NodeStatus;
 
-use crate::area::{Area, AreaId, Ctx, PanelTab, Request};
+use crate::adapters::peer_sessions::LibrarySessions;
+use crate::area::{perform, Area, AreaCommand, AreaMessage, Ctx, PanelTab, Request};
+use crate::watch::watch;
 
 pub use folder::FolderMessage;
-pub use remote::{Feed, RemoteMessage};
+pub use remote::RemoteMessage;
 
 /// Id of the Peers panel tab.
 const TAB: &str = "peers";
 
 /// Recents ids of peers' sessions: `peer:<node key>:<session id>`.
 const RECENT_PREFIX: &str = "peer:";
-
-const COPY_KEY: &str = "copy_key";
-const REFRESH: &str = "refresh";
-const SCAN: &str = "scan_tailnet";
-const RESTART: &str = "restart";
 
 #[derive(Clone, Debug)]
 pub enum Message {
@@ -65,8 +59,6 @@ pub enum Message {
     Stopped,
     /// A peer's session picked in Recents.
     OpenRecent(String),
-    /// Delete on a peer's session in Recents.
-    ForgetRecent(String),
     Remote(RemoteMessage),
     Folder(FolderMessage),
 }
@@ -103,39 +95,28 @@ fn parse_recent(id: &str) -> Option<(&str, &str)> {
 /// relay, and which discovery runs.
 pub(crate) fn node_config(ctx: &Ctx, network: &NetworkSettings) -> NodeConfig {
     let services = &ctx.services;
-    let mut config = NodeConfig::new(loa_node::data_dir(&services.dirs.data), services.node.label.clone(), env!("CARGO_PKG_VERSION"));
+    let mut config = NodeConfig::new(loa_p2p::data_dir(&services.storage.dirs.data), services.node.label.clone(), env!("CARGO_PKG_VERSION"));
     config.bind = SocketAddr::from((Ipv4Addr::UNSPECIFIED, network.port));
-    // loa-net reaches peers through relays the user runs; it has no public ones.
+    // loa-p2p reaches peers through relays the user runs; it has no public ones.
     config.relay = match &network.relay {
         Relay::Url(url) => RelayConfig::SelfHosted(url.clone()),
+        // TODO(relay): `Relay::Default` maps to Off (no public relays); kept as is pending a product decision (#292).
         Relay::Default | Relay::Off => RelayConfig::Off,
     };
     config.mdns = network.discovery.mdns;
     if !network.discovery.tailscale {
         config.tailscale = None;
     }
-    config.sessions = Some(services.library.store().clone());
+    config.sessions = Some(ctx.runtime.library().store().clone());
     config
 }
 
 /// `[network]` from the central config; the defaults when it can't be read.
 fn network_settings(ctx: &mut Ctx) -> NetworkSettings {
-    match ctx.services.config.load() {
-        Ok(loaded) => loaded.config.network,
-        Err(error) => {
-            ctx.notify(format!("Can't read the network settings, using the defaults: {error}"));
-            NetworkSettings::default()
-        }
-    }
+    ctx.read_config("network settings, using the defaults").unwrap_or_default().network
 }
 
 impl State {
-    pub fn new(ctx: &mut Ctx) -> (Self, Task<Message>) {
-        let network = network_settings(ctx);
-        let config = node_config(ctx, &network);
-        Self::with_config(ctx, config)
-    }
-
     /// Opens the node over the app's sessions and grant store with
     /// `config`; the task starts its endpoint.
     pub(crate) fn with_config(ctx: &mut Ctx, config: NodeConfig) -> (Self, Task<Message>) {
@@ -148,23 +129,23 @@ impl State {
     fn open(&mut self, ctx: &mut Ctx, config: NodeConfig) -> Task<Message> {
         self.generation += 1;
         let services = &ctx.services;
-        let sessions = Arc::new(LibrarySessions::new(Arc::clone(&services.library)));
+        let sessions = Arc::new(LibrarySessions::new(Arc::clone(ctx.runtime.library())));
         let opened = Node::open_with_grants(
             config,
             &services.node.identity,
             services.node.key_source.clone(),
             sessions,
-            Arc::clone(&services.grants),
+            Arc::clone(&services.node.grants),
         );
         match opened {
             Ok(node) => {
-                services.peer_access.set(node.authorizer());
+                services.node.peer_access.set(node.authorizer());
                 ctx.node.set(Some(node.clone()));
                 let start = node.clone();
                 self.node = Some(node);
                 self.refresh(ctx);
                 Task::batch([
-                    Task::perform(async move { start.start().await.map_err(|error| error.to_string()) }, Message::Started),
+                    perform(async move { start.start().await }, Message::Started),
                     self.resources(ctx),
                 ])
             }
@@ -178,30 +159,11 @@ impl State {
         }
     }
 
-    /// The running node, if it opened.
-    #[cfg(test)]
-    pub(crate) fn node(&self) -> Option<&Node> {
-        self.node.as_ref()
-    }
-
-    /// The peer's session shown in the center.
-    #[cfg(test)]
-    pub(crate) fn remote(&self) -> Option<&remote::Remote> {
-        self.remote.as_ref()
-    }
-
-    /// The peer's shared folder shown in the center.
-    #[cfg(test)]
-    pub(crate) fn folder(&self) -> Option<&folder::Browser> {
-        self.folder.as_ref()
-    }
-
-    /// Brings the panel, the sidebar's nodes and peers' sessions in line
-    /// with the node.
+    /// Brings the panel, the sidebar's nodes and peers' sessions in line with the node.
     fn refresh(&mut self, ctx: &mut Ctx) {
         let local = &ctx.services.node;
         let Some(node) = &self.node else {
-            ctx.shell.set_nodes(vec![NodeStatus { key: local.key.clone(), name: local.label.clone(), online: false, local: true }]);
+            ctx.shell.sidebar_mut().set_nodes(vec![NodeStatus { key: local.key.clone(), name: local.label.clone(), online: false, local: true }]);
             return;
         };
         self.panel.set_data(ui::data(node, loa_core::now_ms()));
@@ -213,14 +175,14 @@ impl State {
             online: peer.online,
             local: false,
         }));
-        ctx.shell.set_nodes(nodes);
+        ctx.shell.sidebar_mut().set_nodes(nodes);
         let sessions = node.remote_sessions();
         let ids: Vec<String> = sessions.iter().map(|session| recent_id(&session.peer.to_string(), &session.id)).collect();
         for stale in self.listed.iter().filter(|id| !ids.contains(id)) {
-            ctx.shell.remove_session(stale);
+            ctx.shell.sidebar_mut().remove_session(stale);
         }
         for (session, id) in sessions.into_iter().zip(&ids) {
-            ctx.shell.upsert_session(SessionSummary {
+            ctx.shell.sidebar_mut().upsert_session(SessionSummary {
                 id: id.clone(),
                 title: if session.title.is_empty() { format!("Session {}", session.id) } else { session.title },
                 project: None,
@@ -239,14 +201,8 @@ impl State {
         if self.node.is_none() {
             return Task::none();
         }
-        let hosts: Vec<String> = match ctx.services.config.load() {
-            Ok(loaded) => loaded.config.remote_hosts.into_keys().collect(),
-            Err(error) => {
-                ctx.notify(format!("Can't read the SSH hosts: {error}"));
-                Vec::new()
-            }
-        };
-        let mcp = ctx.services.mcp.clone();
+        let hosts: Vec<String> = ctx.read_config("SSH hosts").unwrap_or_default().remote_hosts.into_keys().collect();
+        let mcp = ctx.services.node.mcp.clone();
         Task::perform(
             async move {
                 let mut resources: Vec<(Resource, String)> =
@@ -265,7 +221,7 @@ impl State {
     }
 
     /// Runs a panel event on the node.
-    fn apply(&self, event: peers::Event, ctx: &mut Ctx) -> Task<Message> {
+    fn apply(&self, event: Intent, ctx: &mut Ctx) -> Task<Message> {
         let Some(node) = self.node.clone() else {
             ctx.notify("The peer node isn't running; see the notice from startup");
             return Task::none();
@@ -293,7 +249,7 @@ impl State {
                 let theme = ctx.shell.theme();
                 self.remote = Some(remote::Remote::new(view, name, ctx.services.node.key.clone(), &theme));
                 self.folder = None;
-                ctx.show_screen(AreaId::Peers);
+                ctx.show_screen(State::ID);
                 Task::none()
             }
             Outcome::Forked(id) => {
@@ -306,7 +262,7 @@ impl State {
                     let name = Node::parse_key(&peer).map_or_else(|_| peer.clone(), |key| node.peer_name(&key));
                     self.folder = Some(folder::Browser::new(node.clone(), peer, name, folder, entries, can_write));
                     self.remote = None;
-                    ctx.show_screen(AreaId::Peers);
+                    ctx.show_screen(State::ID);
                 }
                 Task::none()
             }
@@ -328,7 +284,7 @@ impl State {
             NodeEvent::AnswerRequested { peer, session, decision, values, reason } => {
                 let answer = Answer { values, reason, by: peer.to_string() };
                 let message = crate::areas::decisions::Message::Answer { session, decision, answer };
-                ctx.request(Request::Forward(Box::new(crate::app::Message::Decisions(message))));
+                ctx.request(Request::Forward(Box::new(crate::app::Message::area(message))));
             }
         }
     }
@@ -337,7 +293,7 @@ impl State {
     fn restart(&mut self, ctx: &mut Ctx) -> Task<Message> {
         self.remote = None;
         self.folder = None;
-        if ctx.screen() == Some(AreaId::Peers) {
+        if ctx.screen() == Some(State::ID) {
             ctx.close_screen();
         }
         match self.node.take() {
@@ -347,16 +303,33 @@ impl State {
     }
 }
 
+impl AreaMessage for Message {
+    type Area = State;
+}
+
 impl Area for State {
+    const ID: &'static str = "peers";
+    const COMMANDS: &'static [AreaCommand<Self>] = &[
+        AreaCommand::<Self>::new("peers.copy_key", "Copy this node's key", "Peers", |_, _, ctx| {
+            ctx.notify("Key copied");
+            iced::clipboard::write(ctx.services.node.key.clone())
+        }),
+        AreaCommand::<Self>::new("peers.refresh", "Check peers now", "Peers", |state, _, ctx| state.apply(Intent::Refresh, ctx)),
+        AreaCommand::<Self>::new("peers.scan_tailnet", "Scan the tailnet for nodes", "Peers", |state, _, ctx| state.apply(Intent::ScanTailscale, ctx)),
+        AreaCommand::<Self>::new("peers.restart", "Restart the peer endpoint with the network settings", "Peers", |state, _, ctx| state.restart(ctx)),
+    ];
+
     type Message = Message;
+
+    fn new(ctx: &mut Ctx) -> (Self, Task<Message>) {
+        let network = network_settings(ctx);
+        let config = node_config(ctx, &network);
+        Self::with_config(ctx, config)
+    }
 
     fn update(&mut self, message: Message, ctx: &mut Ctx) -> Task<Message> {
         match message {
-            Message::Panel(message) => {
-                let (task, event) = self.panel.update(message);
-                let effect = event.map_or_else(Task::none, |event| self.apply(event, ctx));
-                Task::batch([task.map(Message::Panel), effect])
-            }
+            Message::Panel(message) => self.panel.update(message).map_or_else(Task::none, |event| self.apply(event, ctx)),
             Message::Open => {
                 ctx.open_tab(TAB);
                 self.refresh(ctx);
@@ -367,9 +340,7 @@ impl Area for State {
                 self.resources(ctx)
             }
             Message::Started(result) => {
-                if let Err(error) = result {
-                    ctx.notify(format!("The peer endpoint didn't start: {error}"));
-                }
+                let _ = ctx.report("The peer endpoint didn't start", result);
                 self.refresh(ctx);
                 Task::none()
             }
@@ -399,41 +370,14 @@ impl Area for State {
                 let Some((peer, session)) = parse_recent(&id) else { return Task::none() };
                 if self.remote.as_ref().is_some_and(|remote| remote.is(peer, session) && remote.ended.is_none()) {
                     self.folder = None;
-                    ctx.show_screen(AreaId::Peers);
+                    ctx.show_screen(State::ID);
                     return Task::none();
                 }
-                self.apply(peers::Event::OpenRemote { peer: peer.to_owned(), session: session.to_owned() }, ctx)
-            }
-            Message::ForgetRecent(_) => {
-                ctx.notify("A peer's session is deleted on its own node; revoke or let the grant end to hide it");
-                Task::none()
+                self.apply(Intent::OpenRemote { peer: peer.to_owned(), session: session.to_owned() }, ctx)
             }
             Message::Remote(message) => self.remote_update(message, ctx),
             Message::Folder(message) => self.folder_update(message, ctx),
         }
-    }
-
-    fn palette_commands(&self, _: &Ctx) -> Vec<palette::Command> {
-        vec![
-            palette::Command::new(AreaId::Peers.command(COPY_KEY), "Copy this node's key", "Peers"),
-            palette::Command::new(AreaId::Peers.command(REFRESH), "Check peers now", "Peers"),
-            palette::Command::new(AreaId::Peers.command(SCAN), "Scan the tailnet for nodes", "Peers"),
-            palette::Command::new(AreaId::Peers.command(RESTART), "Restart the peer endpoint with the network settings", "Peers"),
-        ]
-    }
-
-    fn run_command(&mut self, id: &str, ctx: &mut Ctx) -> Option<Task<Message>> {
-        let name = id.strip_prefix(AreaId::Peers.key())?.strip_prefix('.')?;
-        Some(match name {
-            COPY_KEY => {
-                ctx.notify("Key copied");
-                iced::clipboard::write(ctx.services.node.key.clone())
-            }
-            REFRESH => self.apply(peers::Event::Refresh, ctx),
-            SCAN => self.apply(peers::Event::ScanTailscale, ctx),
-            RESTART => self.restart(ctx),
-            _ => return None,
-        })
     }
 
     fn panel_tabs(&self) -> Vec<PanelTab> {
@@ -451,8 +395,8 @@ impl Area for State {
         self.remote.as_ref().map(|remote| remote.view().map(Message::Remote))
     }
 
-    fn on_session_event(&mut self, event: &crate::area::SessionEvent, ctx: &mut Ctx) -> Task<Message> {
-        use crate::area::SessionEvent;
+    fn on_session_event(&mut self, event: &loa_runtime::session::SessionEvent, ctx: &mut Ctx) -> Task<Message> {
+        use loa_runtime::session::SessionEvent;
         // New sessions and prompts become resources grants can name.
         if matches!(event, SessionEvent::Loaded(_) | SessionEvent::TurnStarted { .. } | SessionEvent::Closed(_)) {
             self.refresh(ctx);
@@ -460,41 +404,14 @@ impl Area for State {
         Task::none()
     }
 
+    /// The node's events, a feed that fell behind reporting a change; a
+    /// node opened again gets a new feed.
     fn subscription(&self) -> Subscription<Message> {
-        let events = self
-            .node
-            .as_ref()
-            .map_or_else(Subscription::none, |node| Subscription::run_with(Events(node.clone(), self.generation), events).map(Message::Node));
+        let events = self.node.as_ref().map_or_else(Subscription::none, |node| {
+            let opened = node.clone();
+            watch((node.key(), self.generation), move || opened.events(), |event| Some(Message::Node(event.unwrap_or(NodeEvent::Changed))))
+        });
         let remote = self.remote.as_ref().map_or_else(Subscription::none, |remote| remote.subscription().map(Message::Remote));
         Subscription::batch([events, remote])
     }
-}
-
-/// The node's event feed; a node opened again gets a new one.
-pub(crate) struct Events(pub(crate) Node, pub(crate) u64);
-
-impl Hash for Events {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.0.key().hash(state);
-        self.1.hash(state);
-    }
-}
-
-/// Every event of the node; a feed that fell behind reports a change.
-pub(crate) fn events(events: &Events) -> impl Stream<Item = NodeEvent> + use<> {
-    let node = events.0.clone();
-    iced::stream::channel(64, async move |mut out: iced::futures::channel::mpsc::Sender<NodeEvent>| {
-        let mut receiver = node.events();
-        drop(node);
-        loop {
-            let event = match receiver.recv().await {
-                Ok(event) => event,
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => NodeEvent::Changed,
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
-            };
-            if out.send(event).await.is_err() {
-                return;
-            }
-        }
-    })
 }

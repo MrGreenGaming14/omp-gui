@@ -1,42 +1,27 @@
 //! The Surfaces panel tab: browser tabs, documents, VMs and surfaces MCP
 //! servers declare, drawn by the generic surface renderer, and the
 //! `surface_*` tools sessions drive them with.
-//!
-//! - The [`SurfaceHub`] opens and keeps the surfaces, whoever opened them
-//!   (the launcher in the tab, or an agent tool call).
-//! - Sessions get the tools as host tools when their harness takes them,
-//!   else as the loopback [`McpEndpoint`]'s MCP servers.
-//! - Every surface opened is recorded as a `<surface>` element in the active
-//!   session, under its running turn, and marked closed when it closes.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use iced::futures::{Stream, stream};
 use iced::{Element, Subscription, Task};
-use loa_adapter::SessionConfig;
+use loa_contracts::harness::SessionConfig;
 use loa_bus::SessionId;
 use loa_core::{NodeId, PatchSink, TurnStatus, attr};
-use loa_surface::SurfaceUri;
-use loa_surface_hub::{
-    CaptureMode, HubConfig, HubEvent, Listed, LiveVideo, McpEndpoint, Opened, SurfaceHub, SurfaceTools, dom,
-};
-use loa_ui_palette as palette;
-use loa_ui_surface::{
-    Available, BrowserStatus, Capture, CaptureStatus, DocsRenderers, H264Decoder, Panel, PanelOptions, VideoStatus,
-    panel,
-};
-use tokio::sync::broadcast::error::RecvError;
+use loa_contracts::surface::SurfaceUri;
+use loa_surfaces::{CaptureMode, HubConfig, HubEvent, Listed, McpEndpoint, Opened, SurfaceHub, SurfaceTools, dom};
+use loa_ui_surface::{Options, Panel, panel};
+use loa_view::surface::{Capture, Intent};
 
-use crate::area::{Area, AreaId, Ctx, HostToolSet, PanelTab, SessionEvent, Target};
-use crate::session::dom_turns;
+use crate::adapters::surface::{DocsRenderer, decoders};
+use crate::view::surface::{available, browser_status, capture_from_view, capture_status};
+use crate::area::{perform, Area, AreaCommand, AreaMessage, Ctx, HostToolSet, PanelTab, Target};
+use crate::watch::{PtrKey, watch};
+use loa_runtime::session::{SessionEvent, dom_turns};
 
 /// Id of the Surfaces panel tab.
 pub const TAB: &str = "surfaces";
-
-const OPEN_BROWSER: &str = "browser";
-const OPEN_DOCUMENT: &str = "document";
-const OPEN_VM: &str = "vm";
 
 /// The running loopback MCP endpoint, shared by the sessions that use it.
 #[derive(Clone)]
@@ -68,7 +53,8 @@ pub enum Message {
     /// The loopback MCP endpoint started.
     Endpoint(Result<Endpoint, String>),
     /// The machine's video encoders were tried.
-    Encoders(Arc<LiveVideo>),
+    #[cfg(feature = "remote-video")]
+    Encoders(Arc<loa_surfaces::LiveVideo>),
     /// Whether the running browser keeps the other capture until its tabs
     /// close.
     CapturePending(bool),
@@ -88,49 +74,33 @@ pub struct State {
 }
 
 impl State {
-    pub fn new(ctx: &mut Ctx) -> (Self, Task<Message>) {
-        let mut config = HubConfig::discover(&ctx.services.dirs.data.join("surfaces"));
-        match ctx.services.config.load() {
-            Ok(loaded) => {
-                let settings = loaded.config.surfaces;
-                config.video = settings.video;
-                if settings.browser_capture == loa_config::BrowserCapture::VirtualDisplay && config.virtual_display.is_ok() {
-                    config.capture = CaptureMode::VirtualDisplay;
-                }
-            }
-            Err(error) => ctx.notify(format!("Can't read the surface settings: {error}")),
-        }
-        Self::with_hub(SurfaceHub::new(config), ctx)
-    }
-
     /// The area over `hub`; starts the MCP endpoint and reads the surfaces
     /// the MCP servers declare.
     pub(crate) fn with_hub(hub: Arc<SurfaceHub>, ctx: &mut Ctx) -> (Self, Task<Message>) {
         let tools = SurfaceTools::new(Arc::clone(&hub));
         for spec in tools.host_tools().0 {
-            ctx.set_app_tool(loa_ui_tools::ToolInfo::from(&spec));
+            ctx.set_app_tool(loa_view::panel::ToolInfo::from(&spec));
         }
-        let documents = DocsRenderers::new(hub.config().fonts.clone());
-        let video: panel::NewDecoder = Arc::new(|| Box::new(H264Decoder::new()));
-        let options = PanelOptions { documents: Some(Arc::new(documents)), video: Some(video), ..PanelOptions::default() };
-        let mut panel = Panel::new(options, browser_status(&hub), ctx.services.cwd.clone());
-        panel.set_video(VideoStatus { enabled: hub.video(), encoder: None, hardware: Vec::new() });
+        let options = Options::new(decoders(), Arc::new(DocsRenderer::new(hub.config().fonts.clone())));
+        let mut panel = Panel::new(options, browser_status(&hub), ctx.runtime.cwd().to_path_buf());
+        #[cfg(feature = "remote-video")]
+        let encoders = video::start(&hub, &mut panel);
+        #[cfg(not(feature = "remote-video"))]
+        let encoders = Task::none();
         panel.set_capture(capture_status(&hub, false));
         let state = Self {
             hub,
             endpoint: None,
-            mcp: ctx.services.mcp.clone(),
+            mcp: ctx.services.node.mcp.clone(),
             panel,
             recorded: HashMap::new(),
             unrecorded: Vec::new(),
             tools: Arc::clone(&tools),
         };
-        let endpoint = Task::perform(
-            async move { McpEndpoint::start(tools).await.map(|endpoint| Endpoint(Arc::new(endpoint))).map_err(|e| e.to_string()) },
+        let endpoint = perform(
+            async move { McpEndpoint::start(tools).await.map(|endpoint| Endpoint(Arc::new(endpoint))) },
             Message::Endpoint,
         );
-        let probe = Arc::clone(&state.hub);
-        let encoders = Task::perform(async move { probe.encoders().await }, Message::Encoders);
         let task = Task::batch([endpoint, state.refresh_declared(), state.list(), encoders]);
         (state, task)
     }
@@ -153,26 +123,16 @@ impl State {
         ])
     }
 
-    fn set_video(&mut self, enabled: bool, ctx: &mut Ctx) -> Task<Message> {
-        save(ctx, |settings| settings.video = enabled);
-        let hub = Arc::clone(&self.hub);
-        Task::future(async move { hub.set_video(enabled).await }).discard()
-    }
-
     fn set_capture(&mut self, capture: Capture, ctx: &mut Ctx) -> Task<Message> {
-        let mode = match capture {
-            Capture::Screencast => CaptureMode::Screencast,
-            Capture::VirtualDisplay => CaptureMode::VirtualDisplay,
-        };
-        if let Err(error) = self.hub.set_capture(mode) {
+        if let Err(error) = self.hub.set_capture(capture_from_view(capture)) {
             ctx.notify(error.to_string());
             self.panel.set_capture(capture_status(&self.hub, false));
             return Task::none();
         }
         save(ctx, |settings| {
-            settings.browser_capture = match mode {
-                CaptureMode::Screencast => loa_config::BrowserCapture::Screencast,
-                CaptureMode::VirtualDisplay => loa_config::BrowserCapture::VirtualDisplay,
+            settings.browser_capture = match capture {
+                Capture::Screencast => loa_settings::app::BrowserCapture::Screencast,
+                Capture::VirtualDisplay => loa_settings::app::BrowserCapture::VirtualDisplay,
             };
         });
         self.list()
@@ -184,27 +144,31 @@ impl State {
         Task::perform(async move { hub.refresh_declared(&mcp).await }, Message::Declared)
     }
 
-    fn panel_event(&mut self, event: panel::Event, ctx: &mut Ctx) -> Task<Message> {
+    fn panel_event(&mut self, intent: Intent, ctx: &mut Ctx) -> Task<Message> {
         let hub = Arc::clone(&self.hub);
-        match event {
-            panel::Event::OpenBrowser(url) => {
-                Task::perform(async move { hub.open_browser(&url).await.map_err(|e| e.to_string()) }, Message::Opened)
+        match intent {
+            Intent::OpenBrowser(url) => {
+                perform(async move { hub.open_browser(&url).await }, Message::Opened)
             }
-            panel::Event::OpenDocument(path) => {
-                Task::perform(async move { hub.open_document(&path).await.map_err(|e| e.to_string()) }, Message::Opened)
+            Intent::OpenDocument(path) => {
+                perform(async move { hub.open_document(&path).await }, Message::Opened)
             }
-            panel::Event::OpenVm { address, password } => {
-                Task::perform(async move { hub.open_vm(&address, password).await.map_err(|e| e.to_string()) }, Message::Opened)
+            Intent::OpenVm { address, password } => {
+                perform(async move { hub.open_vm(&address, password).await }, Message::Opened)
             }
-            panel::Event::Open(uri) => {
-                Task::perform(async move { hub.open(&uri).await.map_err(|e| e.to_string()) }, Message::Opened)
+            Intent::Open(uri) => {
+                perform(async move { hub.open(&uri).await }, Message::Opened)
             }
-            panel::Event::Close(uri) => {
-                Task::perform(async move { hub.close(&uri).await.map_err(|e| e.to_string()) }, Message::Closed)
+            Intent::Close(uri) => {
+                perform(async move { hub.close(&uri).await }, Message::Closed)
             }
-            panel::Event::SetVideo(enabled) => self.set_video(enabled, ctx),
-            panel::Event::SetCapture(capture) => self.set_capture(capture, ctx),
-            panel::Event::EncodingUnsupported { uri, encoding, supported } => {
+            #[cfg(feature = "remote-video")]
+            Intent::SetVideo(enabled) => video::set(&self.hub, enabled, ctx),
+            // The launcher has no live video toggle without the feature.
+            #[cfg(not(feature = "remote-video"))]
+            Intent::SetVideo(_) => Task::none(),
+            Intent::SetCapture(capture) => self.set_capture(capture, ctx),
+            Intent::EncodingUnsupported { uri, encoding, supported } => {
                 let supported: Vec<String> = supported.iter().map(|encoding| format!("{encoding:?}")).collect();
                 ctx.notify(format!(
                     "{uri} streams {encoding:?}, which the renderer can't show (it shows {})",
@@ -228,7 +192,7 @@ impl State {
     /// Records `<surface>` for `opened` in the active session, under its
     /// running turn, or keeps it for the next session shown.
     fn record(&mut self, opened: &Opened, ctx: &mut Ctx) {
-        let Some(session) = ctx.sessions.active() else {
+        let Some(session) = ctx.runtime.sessions().active() else {
             if !self.unrecorded.contains(&opened.info.uri) {
                 self.unrecorded.push(opened.info.uri.clone());
             }
@@ -256,7 +220,7 @@ impl State {
     fn record_closed(&mut self, uri: &SurfaceUri, ctx: &mut Ctx) {
         self.unrecorded.retain(|open| open != uri);
         for (session, node) in self.recorded.remove(uri).unwrap_or_default() {
-            let Some(session) = ctx.sessions.get(session.as_str()) else { continue };
+            let Some(session) = ctx.runtime.sessions().get(session.as_str()) else { continue };
             if let Err(error) = session.writer().commit(dom::closed(node)) {
                 ctx.notify(format!("Can't record {uri} closed in the session: {error}"));
             }
@@ -269,52 +233,36 @@ impl State {
     }
 }
 
-/// What the launcher says about the browser.
-fn browser_status(hub: &SurfaceHub) -> BrowserStatus {
-    match hub.browser_executable() {
-        Some(executable) => BrowserStatus::Ready { executable: executable.to_owned(), sandboxed: hub.browser_sandboxed() },
-        None => BrowserStatus::Missing,
-    }
-}
-
-/// What the launcher says about the browser capture.
-fn capture_status(hub: &SurfaceHub, pending: bool) -> CaptureStatus {
-    CaptureStatus {
-        selected: match hub.capture() {
-            CaptureMode::Screencast => Capture::Screencast,
-            CaptureMode::VirtualDisplay => Capture::VirtualDisplay,
-        },
-        virtual_display_missing: hub.config().virtual_display.as_ref().err().cloned(),
-        pending,
-    }
-}
-
-/// What the launcher says about live video: the encoder the renderer here
-/// gets (it decodes H.264) and the hardware encoders that work.
-fn video_status(enabled: bool, encoders: &LiveVideo) -> VideoStatus {
-    let encoder = encoders.choose(&[loa_surface::Encoding::H264]).map(|info| loa_surface_bench::live::stream_info(&info));
-    let hardware = encoders
-        .encoders()
-        .iter()
-        .filter(|probe| probe.works() && probe.info.accel.is_hardware())
-        .map(|probe| probe.info.name.trim_start_matches("ffmpeg ").to_owned())
-        .collect();
-    VideoStatus { enabled, encoder, hardware }
-}
-
 /// Changes the `[surfaces]` table of the central config.
-fn save(ctx: &mut Ctx, change: impl FnOnce(&mut loa_config::SurfaceSettings)) {
-    let saved = ctx.services.config.load().and_then(|mut loaded| {
-        change(&mut loaded.config.surfaces);
-        ctx.services.config.save(&loaded.config)
-    });
-    if let Err(error) = saved {
-        ctx.notify(format!("Can't save the surface settings: {error}"));
-    }
+fn save(ctx: &mut Ctx, change: impl FnOnce(&mut loa_settings::app::SurfaceSettings)) {
+    ctx.edit_config("surface settings", |config| change(&mut config.surfaces));
+}
+
+impl AreaMessage for Message {
+    type Area = State;
 }
 
 impl Area for State {
+    const ID: &'static str = "surfaces";
+    const COMMANDS: &'static [AreaCommand<Self>] = &[
+        AreaCommand::<Self>::new("surfaces.browser", "Open browser surface", "Surfaces", |state, _, ctx| state.launcher(ctx)),
+        AreaCommand::<Self>::new("surfaces.document", "Open document surface", "Surfaces", |state, _, ctx| state.launcher(ctx)),
+        AreaCommand::<Self>::new("surfaces.vm", "Open VNC surface", "Surfaces", |state, _, ctx| state.launcher(ctx)),
+    ];
+
     type Message = Message;
+
+    fn new(ctx: &mut Ctx) -> (Self, Task<Message>) {
+        let mut config = HubConfig::discover(&ctx.services.storage.dirs.data.join("surfaces"));
+        if let Some(settings) = ctx.read_config("surface settings").map(|config| config.surfaces) {
+            #[cfg(feature = "remote-video")]
+            video::configure(&mut config, &settings);
+            if settings.browser_capture == loa_settings::app::BrowserCapture::VirtualDisplay && config.virtual_display.is_ok() {
+                config.capture = CaptureMode::VirtualDisplay;
+            }
+        }
+        Self::with_hub(SurfaceHub::new(config), ctx)
+    }
 
     fn update(&mut self, message: Message, ctx: &mut Ctx) -> Task<Message> {
         match message {
@@ -329,9 +277,7 @@ impl Area for State {
                 Task::none()
             }
             Message::Closed(result) => {
-                if let Err(error) = result {
-                    ctx.notify(format!("Closing the surface failed: {error}"));
-                }
+                let _ = ctx.report("Closing the surface failed", result);
                 self.list()
             }
             Message::Hub(HubEvent::Opened { info, .. }) => {
@@ -367,7 +313,7 @@ impl Area for State {
                 let available = listed
                     .into_iter()
                     .filter(|listed| !listed.open)
-                    .map(|listed| Available { server: listed.origin.server().to_owned(), info: listed.info })
+                    .map(available)
                     .collect();
                 self.panel.set_available(available);
                 Task::none()
@@ -388,8 +334,9 @@ impl Area for State {
                 ctx.notify(format!("The surface MCP servers didn't start: {error}"));
                 Task::none()
             }
+            #[cfg(feature = "remote-video")]
             Message::Encoders(encoders) => {
-                self.panel.set_video(video_status(self.panel.video().enabled, &encoders));
+                self.panel.set_video(video::status(self.panel.video().enabled, &encoders));
                 Task::none()
             }
             Message::CapturePending(pending) => {
@@ -399,20 +346,8 @@ impl Area for State {
         }
     }
 
-    fn palette_commands(&self, _: &Ctx) -> Vec<palette::Command> {
-        [(OPEN_BROWSER, "Open browser surface"), (OPEN_DOCUMENT, "Open document surface"), (OPEN_VM, "Open VNC surface")]
-            .into_iter()
-            .map(|(name, label)| palette::Command::new(AreaId::Surfaces.command(name), label, "Surfaces"))
-            .collect()
-    }
-
-    fn run_command(&mut self, id: &str, ctx: &mut Ctx) -> Option<Task<Message>> {
-        let name = id.strip_prefix(AreaId::Surfaces.key())?.strip_prefix('.')?;
-        [OPEN_BROWSER, OPEN_DOCUMENT, OPEN_VM].contains(&name).then(|| self.launcher(ctx))
-    }
-
     fn panel_tabs(&self) -> Vec<PanelTab> {
-        vec![PanelTab::new(TAB, "Surfaces", false)]
+        vec![PanelTab::new(TAB, "Surfaces", false).icon(loa_view::theme::Icon::Globe)]
     }
 
     fn view_tab<'a>(&'a self, id: &str, _: &'a Ctx) -> Option<Element<'a, Message>> {
@@ -454,54 +389,21 @@ impl Area for State {
         Task::none()
     }
 
+    /// The hub's events, a resync after falling behind; and the changes of
+    /// the app's MCP servers, which re-read the declared surfaces.
     fn subscription(&self) -> Subscription<Message> {
+        let (hub, mcp) = (Arc::clone(&self.hub), self.mcp.clone());
         Subscription::batch([
-            Subscription::run_with(HubWatch(Arc::clone(&self.hub)), hub_events),
-            Subscription::run_with(McpWatch(self.mcp.clone()), mcp_events),
+            watch(PtrKey(&self.hub), move || hub.events(), |event| Some(event.map_or(Message::Resync, Message::Hub))),
+            watch("surfaces.mcp", move || mcp.events(), |event| match event {
+                Ok(loa_mcp::Event::Status { status: loa_mcp::Status::Starting, .. } | loa_mcp::Event::ToolsChanged { .. }) => None,
+                Ok(_) | Err(_) => Some(Message::Mcp),
+            }),
         ])
     }
 }
 
-/// The hub whose events the subscription streams; one per app.
-struct HubWatch(Arc<SurfaceHub>);
-
-impl std::hash::Hash for HubWatch {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        Arc::as_ptr(&self.0).hash(state);
-    }
-}
-
-fn hub_events(watch: &HubWatch) -> impl Stream<Item = Message> + use<> {
-    stream::unfold(watch.0.events(), |mut events| async move {
-        let message = match events.recv().await {
-            Ok(event) => Message::Hub(event),
-            Err(RecvError::Lagged(_)) => Message::Resync,
-            Err(RecvError::Closed) => return None,
-        };
-        Some((message, events))
-    })
-}
-
-/// The app's MCP servers, whose changes re-read the declared surfaces.
-struct McpWatch(loa_mcp::Manager);
-
-impl std::hash::Hash for McpWatch {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        "surfaces.mcp".hash(state);
-    }
-}
-
-fn mcp_events(watch: &McpWatch) -> impl Stream<Item = Message> + use<> {
-    stream::unfold(watch.0.events(), |mut events| async move {
-        loop {
-            match events.recv().await {
-                Ok(loa_mcp::Event::Status { status: loa_mcp::Status::Starting, .. } | loa_mcp::Event::ToolsChanged { .. }) => {}
-                Ok(_) | Err(RecvError::Lagged(_)) => return Some((Message::Mcp, events)),
-                Err(RecvError::Closed) => return None,
-            }
-        }
-    })
-}
-
 #[cfg(test)]
 mod tests;
+#[cfg(feature = "remote-video")]
+mod video;

@@ -1,0 +1,11 @@
+<session nid="1" created.int="T" harness="omp2" id="s" node="owner" title="Demo">
+  <turn nid="3" ended.int="T" id="t1" started.int="T" status="done" x-omp2-handle.int="5">
+    <message nid="4" by="owner" id="u1" role="user" status="done" x-omp2-handle.int="6">Say hello</message>
+    <message nid="5" kind="thinking" model="m1" role="assistant" status="done" x-index.int="0" x-latency.int="12" x-omp2-handle.int="8" x-provider="p1" x-stop-reason="end_turn">Thinking</message>
+    <message nid="6" kind="text" model="m1" role="assistant" status="done" x-index.int="1" x-latency.int="12" x-omp2-handle.int="9" x-provider="p1" x-stop-reason="end_turn">Hello world</message>
+    <usage nid="7" cost.float="0.0015" input_tokens.int="10" model="m1" output_tokens.int="5" x-omp2-handle.int="10"/>
+  </turn>
+  <ext nid="2" harness="omp2" type="queues" x-omp2-handle.int="4"/>
+</session>
+
+--- replies

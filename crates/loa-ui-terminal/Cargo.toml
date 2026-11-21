@@ -6,14 +6,15 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+loa-util.workspace = true
 alacritty_terminal = "0.26"
 async-trait.workspace = true
 bytes.workspace = true
 futures.workspace = true
 iced.workspace = true
-loa-ui-icons.workspace = true
+loa-ui-kit.workspace = true
+loa-view.workspace = true
 portable-pty = "0.9"
-thiserror.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<session nid="1" created.int="1" harness="acp" id="s" node="owner" schema.int="1">
+  <turn nid="2" ended.int="0" started.int="0" status="done">
+    <message nid="3" by="owner" role="user" status="done">fix it</message>
+    <message nid="4" model="fake-model" role="assistant" status="done">Reading.</message>
+    <call nid="5" call_id="c1" ended.int="0" started.int="0" status="done" title="Read src/lib.rs" tool="read">
+      <input nid="6" format="json">{"path":"src/lib.rs"}</input>
+      <result nid="7" is_error.bool="false">fn main() {}</result>
+      <ext nid="8" harness="acp" type="tool_call_content">{"newText":"b","oldText":"a","path":"/x/src/lib.rs","type":"diff"}</ext>
+    </call>
+    <call nid="9" call_id="c2" ended.int="0" started.int="0" status="error" title="Run tests" tool="execute">
+      <result nid="10" format="json" is_error.bool="true">{"exit":101}</result>
+    </call>
+    <message nid="11" model="fake-model" role="assistant" status="done">Done.</message>
+  </turn>
+</session>
+
+--- replies

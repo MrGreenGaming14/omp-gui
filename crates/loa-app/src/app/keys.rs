@@ -1,83 +1,136 @@
-//! Keyboard control (#78) and keyboard reachability (#82): the shortcuts
-//! the keymap binds beyond the palette and panel toggles, palette commands
-//! for every sidebar and composer control so nothing needs a pointer, and
-//! reference rows that list the keys which aren't commands (Esc, Enter,
-//! number keys on prompt cards…), so the palette shows the whole keymap.
+//! The app's own commands (#78, #82): session and view actions, panel tabs,
+//! themes, the shortcuts the keymap binds and a palette command for every
+//! sidebar and composer control, so nothing needs a pointer.
 
 use iced::Task;
 use iced::keyboard::{Modifiers, key::Named};
 use iced::widget::operation;
 use loa_core::SessionMode;
-use loa_ui_composer as composer;
-use loa_ui_palette::{self as palette, Chord, CommandId, ids};
+use loa_ui_session::composer as composer;
+use loa_ui_shell::palette::{self, Chord, CommandId, ids};
 use loa_ui_shell as shell;
 
-use super::{App, Message, TAB_COMMAND};
+use super::{App, Message};
+use crate::area::{CommandSpec, Listed};
 use crate::areas;
 
 /// Section of the rows that list keys which aren't commands.
 const KEYS_SECTION: &str = "Keyboard shortcuts";
-/// The sidebar's Tools button.
-const SHOW_TOOLS: CommandId = CommandId::from_static("sidebar.tools");
-/// The sidebar's Peers rows.
-const SHOW_PEERS: CommandId = CommandId::from_static("sidebar.peers");
-/// The hover-only Pin / Unpin button of the active session's sidebar row.
-const PIN: CommandId = CommandId::from_static("sidebar.pin");
-/// Prefixes of the composer picker commands; the rest is the mode, the
-/// effort, or the model's index in the picker.
-const MODE: &str = "composer.mode.";
-const EFFORT: &str = "composer.effort.";
-const MODEL: &str = "composer.model.";
+/// Prefix of the `Open X tab` commands; the rest is the tab id.
+pub(super) const TAB_COMMAND: &str = "tab.";
+
+/// A command of the app itself.
+pub(crate) type AppCommand = CommandSpec<App, fn(&mut App, &str) -> Task<Message>>;
+
+const fn command(id: &'static str, title: &'static str, section: &'static str, run: fn(&mut App, &str) -> Task<Message>) -> AppCommand {
+    CommandSpec { id, title, section, slash: None, listed: Listed::Always, run }
+}
+
+/// Every app command, in palette order. Area commands follow them.
+pub(crate) const APP_COMMANDS: &[AppCommand] = &[
+    command("session.new", "New session", "Commands", |app, _| app.lifecycle(|s, ctx, areas| s.run(ctx, areas, loa_runtime::lifecycle::Command::Start { prompt: None })))
+        .slash("new", "Start a new session"),
+    command("panel.toggle", "Toggle right panel", "Commands", |app, _| {
+        app.ctx.shell.set_panel_open(!app.ctx.shell.panel_open());
+        Task::none()
+    }),
+    command("session.interrupt", "Interrupt session", "Commands", |app, _| app.update(Message::Composer(composer::Message::Interrupt))),
+    command("project.tabs.toggle", "", "Commands", |app, _| {
+        let enabled = !app.ctx.shell.project_tabs();
+        app.ctx.shell.set_project_tabs(enabled);
+        app.ctx.edit_config("settings", |config| config.project_tabs = enabled);
+        Task::none()
+    })
+    .listed(Listed::When(|app, _| Some(if app.ctx.shell.project_tabs() { "Hide project tabs" } else { "Show project tabs" }))),
+    command("palette.toggle", "Command palette", "Commands", |app, _| app.update(Message::Palette(palette::Message::Toggle))),
+    command(TAB_COMMAND, "", "Commands", |app, tab| app.open_tab(tab))
+        .listed(Listed::Each(|app, _| app.tabs().into_iter().map(|tab| (tab.id, format!("Open {} tab", tab.title))).collect())),
+    command("theme.", "", "Theme", |app, theme| {
+        if !app.ctx.shell.theme_state().themes().iter().any(|(key, _)| key == theme) {
+            return app.unknown("theme.", theme);
+        }
+        app.update(Message::Shell(shell::Message::SetTheme(loa_view::theme::ThemeRef(theme.to_owned()))))
+    })
+    .listed(Listed::Each(|app, _| {
+        app.ctx.shell.theme_state().themes().into_iter().map(|(key, label)| (key.to_string(), format!("Theme: {label}"))).collect()
+    })),
+    command("session.next", "Next session", "Commands", |app, _| app.step_session(true)),
+    command("session.previous", "Previous session", "Commands", |app, _| app.step_session(false)),
+    command("project.tab.next", "Next project tab", "Commands", |app, _| app.step_project_tab(true)),
+    command("project.tab.previous", "Previous project tab", "Commands", |app, _| app.step_project_tab(false)),
+    command("composer.focus", "Focus the composer", "Commands", |app, _| app.focus_composer()),
+    command("sidebar.search", "Search sessions", "Commands", |_, _| operation::focus(shell::sidebar::SEARCH_ID)),
+    command("focus.next", "Focus the next field", "Commands", |_, _| operation::focus_next()),
+    command("focus.previous", "Focus the previous field", "Commands", |_, _| operation::focus_previous()),
+    command("keymap.show", "Keyboard shortcuts", "Commands", |app, _| app.update(Message::Palette(palette::Message::OpenShortcuts))),
+    // The sidebar's Tools button and Peers rows.
+    command("sidebar.tools", "Show tools", "Commands", |app, _| app.update(Message::area(areas::tools::Message::Open))),
+    command("sidebar.peers", "Show peers", "Commands", |app, _| app.update(Message::area(areas::peers::Message::Open))),
+    command(ids::SESSION_GOTO, "", "Sessions", |app, n| match n.parse::<usize>() {
+        Ok(n) => match app.session_order().get(n.wrapping_sub(1)).cloned() {
+            Some(session) => app.show_session(session),
+            None => {
+                app.ctx.notify(format!("There is no session {n} in the sidebar"));
+                Task::none()
+            }
+        },
+        Err(_) => app.unknown(ids::SESSION_GOTO, n),
+    })
+    .listed(Listed::Each(|app, _| {
+        let sidebar = app.ctx.shell.sidebar();
+        let title = |id: &str| sidebar.session(id).map_or(id.to_owned(), |summary| summary.title.clone());
+        app.session_order().iter().enumerate().map(|(index, id)| ((index + 1).to_string(), format!("Go to session: {}", title(id)))).collect()
+    })),
+    // The hover-only Pin / Unpin button of the active session's sidebar row.
+    command("sidebar.pin", "", "Session", |app, _| match app.ctx.runtime.sessions().active_id().map(ToString::to_string) {
+        Some(id) => app.update(Message::Shell(shell::Message::Sidebar(shell::sidebar::Message::TogglePin(id)))),
+        None => {
+            app.ctx.notify("Open a session to pin it");
+            Task::none()
+        }
+    })
+    .listed(Listed::When(|app, ctx| {
+        let summary = ctx.runtime.sessions().active_id().and_then(|id| app.ctx.shell.sidebar().session(id.as_str()))?;
+        Some(if summary.pinned { "Unpin session" } else { "Pin session" })
+    })),
+    // The composer's pickers: the mode, the effort, the model by its index.
+    command("composer.mode.", "", "Composer", |app, mode| app.pick(composer::PickerId::Mode, "composer.mode.", mode))
+        .listed(Listed::Each(|_, ctx| match ctx.runtime.sessions().active() {
+            Some(_) => SessionMode::ALL.iter().map(|mode| (mode.as_str().to_owned(), format!("Mode: {}", mode.as_str()))).collect(),
+            None => Vec::new(),
+        })),
+    command("composer.effort.", "", "Composer", |app, effort| app.pick(composer::PickerId::Effort, "composer.effort.", effort))
+        .listed(Listed::Each(|_, ctx| match ctx.runtime.sessions().active() {
+            Some(_) => ctx.composer.efforts().0.iter().map(|effort| (effort.to_string(), format!("Effort: {effort}"))).collect(),
+            None => Vec::new(),
+        })),
+    command("composer.model.", "", "Composer", |app, index| match index.parse::<usize>() {
+        Ok(index) if index < app.ctx.composer.models().0.len() => {
+            app.update(Message::Composer(composer::Message::Pick(composer::PickerId::Model, index)))
+        }
+        _ => app.unknown("composer.model.", index),
+    })
+    .listed(Listed::Each(|_, ctx| match ctx.runtime.sessions().active() {
+        Some(_) => ctx.composer.models().0.iter().enumerate().map(|(index, model)| (index.to_string(), format!("Model: {model}"))).collect(),
+        None => Vec::new(),
+    })),
+    // Ctrl/Cmd+Alt+1…9: the n-th tab in the panel.
+    command(ids::PANEL_TAB, "", "Commands", |app, n| match n.parse::<usize>() {
+        Ok(n) => match app.ctx.shell.tabs().get(n.wrapping_sub(1)).map(|tab| tab.id.clone()) {
+            Some(tab) => app.open_tab(&tab),
+            None => {
+                app.ctx.notify(format!("There is no panel tab {n}"));
+                Task::none()
+            }
+        },
+        Err(_) => app.unknown(ids::PANEL_TAB, n),
+    })
+    .listed(Listed::Never),
+];
 
 impl App {
-    /// Navigation, focus, sidebar and composer commands, then the keymap's
-    /// reference rows.
-    pub(super) fn keyboard_commands(&self) -> Vec<palette::Command> {
-        let keymap = &self.ctx.keymap;
-        let hinted = |id: CommandId, title: String, section: &str| {
-            let chord = keymap.chord_for(&id);
-            palette::Command::new(id, title, section).shortcut(chord)
-        };
-        let mut commands = vec![
-            hinted(ids::SESSION_NEXT, "Next session".into(), "Commands"),
-            hinted(ids::SESSION_PREVIOUS, "Previous session".into(), "Commands"),
-            hinted(ids::PROJECT_TAB_NEXT, "Next project tab".into(), "Commands"),
-            hinted(ids::PROJECT_TAB_PREVIOUS, "Previous project tab".into(), "Commands"),
-            hinted(ids::COMPOSER_FOCUS, "Focus the composer".into(), "Commands"),
-            hinted(ids::SEARCH_FOCUS, "Search sessions".into(), "Commands"),
-            hinted(ids::FOCUS_NEXT, "Focus the next field".into(), "Commands"),
-            hinted(ids::FOCUS_PREVIOUS, "Focus the previous field".into(), "Commands"),
-            hinted(ids::KEYMAP_SHOW, "Keyboard shortcuts".into(), "Commands"),
-            palette::Command::new(SHOW_TOOLS, "Show tools", "Commands"),
-            palette::Command::new(SHOW_PEERS, "Show peers", "Commands"),
-        ];
-        let sidebar = self.ctx.shell.sidebar();
-        for (index, id) in self.session_order().iter().enumerate() {
-            let title = sidebar.session(id).map_or(id.as_str(), |summary| summary.title.as_str());
-            commands.push(hinted(ids::session_goto(index + 1), format!("Go to session: {title}"), "Sessions"));
-        }
-        if let Some(summary) = self.ctx.sessions.active_id().and_then(|id| sidebar.session(id.as_str())) {
-            commands.push(palette::Command::new(PIN, if summary.pinned { "Unpin session" } else { "Pin session" }, "Session"));
-        }
-        if self.ctx.sessions.active().is_some() {
-            let composer = &self.ctx.composer;
-            commands.extend(SessionMode::ALL.iter().map(|mode| {
-                let id = CommandId::new(format!("{MODE}{}", mode.as_str()));
-                palette::Command::new(id, format!("Mode: {}", mode.as_str()), "Composer")
-            }));
-            commands.extend(composer.efforts().0.iter().map(|effort| {
-                palette::Command::new(CommandId::new(format!("{EFFORT}{effort}")), format!("Effort: {effort}"), "Composer")
-            }));
-            commands.extend(composer.models().0.iter().enumerate().map(|(index, model)| {
-                palette::Command::new(CommandId::new(format!("{MODEL}{index}")), format!("Model: {model}"), "Composer")
-            }));
-        }
-        commands.extend(self.reference_keys());
-        commands
-    }
-
     /// Keys that aren't palette commands, listed for reference.
-    fn reference_keys(&self) -> Vec<palette::Command> {
+    pub(super) fn reference_keys(&self) -> Vec<palette::Command> {
         let keymap = &self.ctx.keymap;
         let platform = keymap.platform();
         let primary = platform.primary();
@@ -124,61 +177,18 @@ impl App {
         }
     }
 
-    /// Runs `id` when it is one of the keyboard commands.
-    pub(super) fn keyboard_command(&mut self, id: &str) -> Option<Task<Message>> {
-        let task = match id {
-            "session.next" => self.step_session(true),
-            "session.previous" => self.step_session(false),
-            "project.tab.next" => self.step_project_tab(true),
-            "project.tab.previous" => self.step_project_tab(false),
-            "composer.focus" => self.focus_composer(),
-            "sidebar.search" => operation::focus(shell::sidebar::SEARCH_ID),
-            "focus.next" => operation::focus_next(),
-            "focus.previous" => operation::focus_previous(),
-            "keymap.show" => self.update(Message::Palette(palette::Message::OpenShortcuts)),
-            "sidebar.pin" => match self.ctx.sessions.active_id().map(ToString::to_string) {
-                Some(id) => self.update(Message::Shell(shell::Message::Sidebar(shell::sidebar::Message::TogglePin(id)))),
-                None => {
-                    self.ctx.notify("Open a session to pin it");
-                    Task::none()
-                }
-            },
-            "sidebar.tools" => self.update(Message::Tools(areas::tools::Message::Open)),
-            "sidebar.peers" => self.update(Message::Peers(areas::peers::Message::Open)),
-            _ => {
-                if let Some(n) = id.strip_prefix(ids::SESSION_GOTO) {
-                    let n = n.parse::<usize>().ok()?;
-                    return Some(match self.session_order().get(n.wrapping_sub(1)).cloned() {
-                        Some(session) => self.show_session(session),
-                        None => {
-                            self.ctx.notify(format!("There is no session {n} in the sidebar"));
-                            Task::none()
-                        }
-                    });
-                }
-                if let Some(n) = id.strip_prefix(ids::PANEL_TAB) {
-                    let n = n.parse::<usize>().ok()?;
-                    return Some(match self.ctx.shell.tabs().get(n.wrapping_sub(1)).map(|tab| tab.id.clone()) {
-                        Some(tab) => self.open_tab(&tab),
-                        None => {
-                            self.ctx.notify(format!("There is no panel tab {n}"));
-                            Task::none()
-                        }
-                    });
-                }
-                if let Some(mode) = id.strip_prefix(MODE) {
-                    let mode = SessionMode::ALL.iter().copied().find(|known| known.as_str() == mode)?;
-                    return Some(self.update(Message::Composer(composer::Message::ModePicked(mode))));
-                }
-                if let Some(effort) = id.strip_prefix(EFFORT) {
-                    return Some(self.update(Message::Composer(composer::Message::EffortPicked(effort.to_owned()))));
-                }
-                let index = id.strip_prefix(MODEL)?.parse::<usize>().ok()?;
-                let model = self.ctx.composer.models().0.get(index).cloned()?;
-                self.update(Message::Composer(composer::Message::ModelPicked(model)))
-            }
-        };
-        Some(task)
+    /// The `Unknown command` notice for `prefix` + `arg`.
+    fn unknown(&mut self, prefix: &str, arg: &str) -> Task<Message> {
+        self.ctx.notify(format!("Unknown command {prefix}{arg}"));
+        Task::none()
+    }
+
+    /// Picks `key` in the composer's `picker`.
+    fn pick(&mut self, picker: composer::PickerId, prefix: &str, key: &str) -> Task<Message> {
+        match self.ctx.composer.pick_key(picker, key) {
+            Some(pick) => self.update(Message::Composer(pick)),
+            None => self.unknown(prefix, key),
+        }
     }
 
     /// Session ids in the sidebar's order: Pinned, then Recents, as
@@ -217,13 +227,10 @@ impl App {
         if self.ctx.screen().is_some() {
             self.ctx.close_screen();
         }
-        if self.ctx.sessions.active().is_none() {
+        if self.ctx.runtime.sessions().active().is_none() {
             self.ctx.notify("Start or open a session to type a prompt");
             return Task::none();
         }
         operation::focus(composer::EDITOR_ID)
     }
 }
-
-#[cfg(test)]
-mod tests;

@@ -4,9 +4,10 @@
 //! subscriber lagged and detaches it, so one slow reader never holds up the
 //! writer or the other readers.
 
+use loa_util::LockExt;
 use loa_core::{ApplyError, Dom, NodeId, Op, Patch};
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex};
 use tokio::sync::Notify;
 
 /// How a subscriber is fed.
@@ -93,7 +94,7 @@ pub enum TryRecvError {
     Closed,
 }
 
-/// One subscriber's bounded queue of patches.
+/// One subscriber's queue.
 pub(crate) struct Queue {
     state: Mutex<State>,
     notify: Notify,
@@ -102,8 +103,7 @@ pub(crate) struct Queue {
 
 struct State {
     items: VecDeque<Event>,
-    /// Set when the queue overflowed: the sequence of the first patch
-    /// not delivered.
+    /// Set when the queue overflowed: the sequence of the first patch not delivered.
     lagged: Option<u64>,
     closed: bool,
     receiver_gone: bool,
@@ -124,17 +124,11 @@ impl Queue {
         })
     }
 
-    fn lock(&self) -> MutexGuard<'_, State> {
-        // Every critical section leaves the state consistent before any call
-        // that could panic, so a poisoned lock holds valid data.
-        self.state.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
-    /// Offers `patch`. Never waits. Returns `false` once the
-    /// queue no longer takes patches (lagged, closed or receiver dropped), so
-    /// the publisher can forget it.
+    /// Offers `patch`. Never waits. Returns `false` once the queue no longer
+    /// takes patches (lagged, closed or receiver dropped), so the publisher
+    /// can forget it.
     pub(crate) fn push(&self, patch: &Arc<Patch>) -> bool {
-        let mut state = self.lock();
+        let mut state = self.state.locked();
         if state.receiver_gone || state.closed || state.lagged.is_some() {
             return false;
         }
@@ -160,24 +154,20 @@ impl Queue {
 
     /// Ends the subscription after what is already queued.
     pub(crate) fn close(&self) {
-        self.lock().closed = true;
+        self.state.locked().closed = true;
         self.notify.notify_one();
     }
 
     fn take(&self) -> Result<Event, TryRecvError> {
-        let mut state = self.lock();
-        if let Some(event) = state.items.pop_front() {
-            return Ok(event);
+        let mut state = self.state.locked();
+        if let Some(item) = state.items.pop_front() {
+            return Ok(item);
         }
         if let Some(resync_from) = state.lagged.take() {
             state.closed = true;
             return Ok(Event::Lagged { resync_from });
         }
         if state.closed { Err(TryRecvError::Closed) } else { Err(TryRecvError::Empty) }
-    }
-
-    fn len(&self) -> usize {
-        self.lock().items.len()
     }
 }
 
@@ -226,7 +216,7 @@ impl Subscription {
     pub async fn recv(&mut self) -> Option<Event> {
         loop {
             match self.queue.take() {
-                Ok(event) => return Some(event),
+                Ok(item) => return Some(item),
                 Err(TryRecvError::Closed) => return None,
                 // A push between `take` and `notified` leaves a permit, so
                 // this wait can't miss it.
@@ -237,13 +227,13 @@ impl Subscription {
 
     /// Events waiting in the queue.
     pub fn pending(&self) -> usize {
-        self.queue.len()
+        self.queue.state.locked().items.len()
     }
 }
 
 impl Drop for Subscription {
     fn drop(&mut self) {
-        let mut state = self.queue.lock();
+        let mut state = self.queue.state.locked();
         state.receiver_gone = true;
         state.items.clear();
     }

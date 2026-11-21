@@ -1,124 +1,64 @@
-//! Agents tab: live subagents and background shells from the `<job>` elements
-//! of one session, plus whether omp's `wait` tool is blocked on them.
-//!
-//! omp's `wait` takes no arguments and blocks on every running job of the
-//! caller, so while a `<call tool="wait">` is pending or running, every running
-//! job is awaited.
+//! The agents tab: one session's `<job>`s; a pending or running `<call tool="wait">` awaits every running job.
 
-use crate::style;
+use crate::{action, list_row_height};
 use iced::widget::text::Wrapping;
-use iced::widget::{Column, Row, button, container, scrollable, space, text};
-use iced::{Center, Element, Fill, Font, Task, Theme};
+use iced::widget::{Column, container, row, scrollable, space, text};
+use iced::{Center, Element, Fill, Font, Task};
 use loa_core::schema::TEXT;
 use loa_core::{CallStatus, Dom, ElementKind, JobKind, JobStatus, Node, NodeId, Op, Patch, attr};
-use loa_ui_icons::Icon;
+use loa_ui_kit::icons::icon;
+use loa_view::panel::AgentsIntent;
+use loa_view::theme::Icon;
+use loa_ui_kit::style::{self as kit, Tone};
+use loa_ui_kit::text::format_duration;
+use loa_ui_kit::theme::{ColorRole as C, SpaceRole as Sp, TextRole as T, sp, text_size as ts};
+use loa_ui_kit::widgets::{badge, label};
 use std::collections::{BTreeMap, HashSet};
-use std::ops::Range;
 
-/// Tool name of omp's blocking wait.
 const WAIT_TOOL: &str = "wait";
-
-/// Output lines a job shows while collapsed; longer output shows only its tail.
+/// Output lines a job shows while not in full; longer output shows only its tail.
 const TAIL_LINES: usize = 200;
+/// The attributes a [`Job`] keeps, in its `attrs` order.
+const ATTRS: [&str; 5] = [attr::ID, attr::TITLE, attr::COMMAND, attr::AGENT, attr::SESSION];
 
-/// One `<job>` element as the panel shows it.
+/// One `<job>` as the panel shows it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Job {
-    node: NodeId,
-    kind: JobKind,
-    status: JobStatus,
-    id: Option<String>,
-    title: Option<String>,
-    command: Option<String>,
-    agent: Option<String>,
-    session: Option<String>,
-    started: Option<i64>,
-    ended: Option<i64>,
-    exit_code: Option<i64>,
-    output: String,
-    /// Byte range of the last non-blank output line, trimmed. Empty when the
-    /// output has no such line.
-    last_line: Range<usize>,
-    /// Start of the line the output ends in. Lines before it are complete and
-    /// already searched for `last_line`.
-    line_start: usize,
+    node: NodeId, kind: JobKind, status: JobStatus, attrs: [Option<String>; 5],
+    started: Option<i64>, ended: Option<i64>, exit_code: Option<i64>, output: String, expanded: bool,
     /// Newlines in `output`, kept in step with it.
     newlines: usize,
-    expanded: bool,
 }
 
 impl Job {
-    /// Builds an entry from a `<job>` node. `None` when the node isn't a job.
     fn from_node(node: &Node) -> Option<Self> {
-        if node.kind != ElementKind::Job {
-            return None;
-        }
-        let mut job = Job {
-            node: node.id,
-            kind: JobKind::parse(node.str_attr(attr::KIND)?)?,
-            status: JobStatus::Running,
-            id: None,
-            title: None,
-            command: None,
-            agent: None,
-            session: None,
-            started: None,
-            ended: None,
-            exit_code: None,
-            output: node.text.clone(),
-            last_line: 0..0,
-            line_start: 0,
-            expanded: false,
-            newlines: 0,
-        };
+        if node.kind != ElementKind::Job { return None }
+        let kind = JobKind::parse(node.str_attr(attr::KIND)?)?;
+        let output = node.text.clone();
+        let newlines = output.matches('\n').count();
+        let mut job = Job { node: node.id, kind, status: JobStatus::Running, attrs: Default::default(), started: None, ended: None, exit_code: None, output, expanded: false, newlines };
         job.read_attrs(node);
-        job.rescan_output();
         Some(job)
     }
-
-    /// Copies every attribute from `node`. A missing status reads as running.
+    /// Copies every attribute; a missing status reads as running.
     fn read_attrs(&mut self, node: &Node) {
-        fn copy(slot: &mut Option<String>, node: &Node, name: &str) {
-            match (node.str_attr(name), slot) {
-                (Some(new), Some(old)) => new.clone_into(old),
-                (new, slot) => *slot = new.map(str::to_owned),
-            }
-        }
-        if let Some(kind) = node.str_attr(attr::KIND).and_then(JobKind::parse) {
-            self.kind = kind;
-        }
+        self.kind = node.str_attr(attr::KIND).and_then(JobKind::parse).unwrap_or(self.kind);
         self.status = node.str_attr(attr::STATUS).and_then(JobStatus::parse).unwrap_or(JobStatus::Running);
-        copy(&mut self.id, node, attr::ID);
-        copy(&mut self.title, node, attr::TITLE);
-        copy(&mut self.command, node, attr::COMMAND);
-        copy(&mut self.agent, node, attr::AGENT);
-        copy(&mut self.session, node, attr::SESSION);
-        self.started = node.int_attr(attr::STARTED);
-        self.ended = node.int_attr(attr::ENDED);
-        self.exit_code = node.int_attr(attr::EXIT_CODE);
+        self.attrs = ATTRS.map(|a| node.str_attr(a).map(str::to_owned));
+        (self.started, self.ended, self.exit_code) = (node.int_attr(attr::STARTED), node.int_attr(attr::ENDED), node.int_attr(attr::EXIT_CODE));
     }
-
-    /// Recomputes the last line and newline count after the whole output was replaced.
-    fn rescan_output(&mut self) {
-        self.last_line = 0..0;
-        self.find_last_line(0);
-        self.line_start = self.output.rfind('\n').map_or(0, |i| i + 1);
-        self.newlines = self.output.matches('\n').count();
-    }
-
-    /// Adds streamed output, searching only the unfinished line and `chunk`.
-    fn append(&mut self, chunk: &str) {
-        let old_len = self.output.len();
-        self.output.push_str(chunk);
-        self.find_last_line(self.line_start);
-        if let Some(i) = chunk.rfind('\n') {
-            self.line_start = old_len + i + 1;
-        }
-        self.newlines += chunk.matches('\n').count();
-    }
-
-    /// Byte offset where the last [`TAIL_LINES`] lines of the output start.
-    /// Walks back over at most `TAIL_LINES` newlines.
+    pub fn node(&self) -> NodeId { self.node }
+    pub fn status(&self) -> JobStatus { self.status }
+    /// The child session of a subagent.
+    pub fn session(&self) -> Option<&str> { self.attrs[4].as_deref() }
+    /// Title, else agent, else command, else kind.
+    pub fn label(&self) -> &str { [1, 3, 2].iter().find_map(|&i| self.attrs[i].as_deref()).unwrap_or(self.kind.as_str()) }
+    pub fn output(&self) -> &str { &self.output }
+    /// The last non-blank output line, trimmed.
+    pub fn last_line(&self) -> &str { self.output.rsplit('\n').map(str::trim).find(|l| !l.is_empty()).unwrap_or_default() }
+    fn running(&self) -> bool { self.status == JobStatus::Running }
+    /// Byte offset where the last [`TAIL_LINES`] lines of the output start; walks back over at
+    /// most `TAIL_LINES` newlines.
     fn tail_start(&self) -> usize {
         let body = self.output.strip_suffix('\n').unwrap_or(&self.output);
         let mut end = body.len();
@@ -130,406 +70,138 @@ impl Job {
         }
         end + 1
     }
-
     /// Lines in the output, counting an unterminated last line.
-    fn line_count(&self) -> usize {
-        self.newlines + usize::from(!self.output.is_empty() && !self.output.ends_with('\n'))
+    fn line_count(&self) -> usize { self.newlines + usize::from(!self.output.is_empty() && !self.output.ends_with('\n')) }
+    fn set_output(&mut self, text: &str) {
+        text.clone_into(&mut self.output);
+        self.newlines = text.matches('\n').count();
     }
-
-    /// Sets `last_line` to the last non-blank line starting at or after `from`,
-    /// scanning backwards from the end. Keeps the old value when there is none.
-    fn find_last_line(&mut self, from: usize) {
-        let region = &self.output[from..];
-        let mut end = region.len();
-        loop {
-            let start = region[..end].rfind('\n').map_or(0, |i| i + 1);
-            let line = &region[start..end];
-            let trimmed = line.trim();
-            if !trimmed.is_empty() {
-                let lead = line.len() - line.trim_start().len();
-                let begin = from + start + lead;
-                self.last_line = begin..begin + trimmed.len();
-                return;
-            }
-            if start == 0 {
-                return;
-            }
-            end = start - 1;
-        }
-    }
-
-    /// Node id of the `<job>` element.
-    pub fn node(&self) -> NodeId {
-        self.node
-    }
-
-    pub fn kind(&self) -> JobKind {
-        self.kind
-    }
-
-    /// Status of the job. A job without a `status` attribute is running.
-    pub fn status(&self) -> JobStatus {
-        self.status
-    }
-
-    /// The harness's id for the job, used to cancel it.
-    pub fn id(&self) -> Option<&str> {
-        self.id.as_deref()
-    }
-
-    pub fn title(&self) -> Option<&str> {
-        self.title.as_deref()
-    }
-
-    pub fn command(&self) -> Option<&str> {
-        self.command.as_deref()
-    }
-
-    pub fn agent(&self) -> Option<&str> {
-        self.agent.as_deref()
-    }
-
-    /// Session id of a subagent's child session.
-    pub fn session(&self) -> Option<&str> {
-        self.session.as_deref()
-    }
-
-    /// Unix milliseconds.
-    pub fn started(&self) -> Option<i64> {
-        self.started
-    }
-
-    /// Unix milliseconds.
-    pub fn ended(&self) -> Option<i64> {
-        self.ended
-    }
-
-    pub fn exit_code(&self) -> Option<i64> {
-        self.exit_code
-    }
-
-    /// Name shown on the row: title, else agent, else command, else kind.
-    pub fn label(&self) -> &str {
-        self.title
-            .as_deref()
-            .or(self.agent.as_deref())
-            .or(self.command.as_deref())
-            .unwrap_or(self.kind.as_str())
-    }
-
-    /// Output so far.
-    pub fn output(&self) -> &str {
-        &self.output
-    }
-
-    /// Last non-blank output line without surrounding whitespace. Empty when
-    /// there is none.
-    pub fn last_line(&self) -> &str {
-        &self.output[self.last_line.clone()]
-    }
-
-    /// The full output is shown below the row.
-    pub fn expanded(&self) -> bool {
-        self.expanded
+    fn append_output(&mut self, chunk: &str) {
+        self.output.push_str(chunk);
+        self.newlines += chunk.matches('\n').count();
     }
 }
 
-/// Jobs of one session in document order and the wait calls blocked on them.
+/// Jobs of one session in document order, the active `wait` calls, the jobs shown in full and
+/// the last tick in unix ms.
 #[derive(Debug, Default)]
-pub struct State {
-    jobs: BTreeMap<NodeId, Job>,
-    /// `<call tool="wait">` nodes that are pending or running.
-    waits: HashSet<NodeId>,
-    /// Jobs whose output is shown in full instead of its tail.
-    full: HashSet<NodeId>,
-    /// Unix milliseconds of the last tick.
-    now: Option<i64>,
-}
-
+pub struct State { jobs: BTreeMap<NodeId, Job>, waits: HashSet<NodeId>, full: HashSet<NodeId>, now: Option<i64> }
+/// `Tick` carries unix ms; `Toggle` shows or hides a job's output; `ToggleFull` shows all of
+/// it or only its last lines; `Detach` opens a subagent's session in a window.
 #[derive(Debug, Clone)]
-pub enum Message {
-    /// Current time in unix milliseconds.
-    Tick(i64),
-    /// Expand or collapse the output of a job.
-    Toggle(NodeId),
-    /// Show all output lines of a job, or only its last lines.
-    ToggleFull(NodeId),
-    Open(NodeId),
-    /// Open the subagent's session in its own window.
-    Detach(NodeId),
-    Cancel(NodeId),
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum Event {
-    /// Open the child session with this id.
-    OpenSession(String),
-    /// Show the child session with this id in its own window.
-    DetachSession(String),
-    /// Stop a running job. `id` is the harness's job id when known.
-    Cancel { node: NodeId, id: Option<String> },
-}
+pub enum Message { Tick(i64), Toggle(NodeId), ToggleFull(NodeId), Open(NodeId), Detach(NodeId), Cancel(NodeId) }
 
 impl State {
     pub fn from_dom(dom: &Dom) -> Self {
-        let mut state = Self::default();
-        state.scan(dom);
-        state
+        let mut s = Self::default();
+        s.reset(dom);
+        s
     }
-
-    /// Rebuilds the list from `dom`, keeping expanded rows that still exist.
+    /// Rebuilds from `dom`, keeping rows that were expanded.
     pub fn reset(&mut self, dom: &Dom) {
-        let expanded: Vec<NodeId> = self.jobs.values().filter(|j| j.expanded).map(|j| j.node).collect();
-        self.jobs.clear();
-        self.waits.clear();
-        self.scan(dom);
-        for node in expanded {
-            if let Some(job) = self.jobs.get_mut(&node) {
-                job.expanded = true;
-            }
-        }
-        self.full.retain(|node| self.jobs.contains_key(node));
+        let expanded: HashSet<NodeId> = self.jobs.values().filter(|j| j.expanded).map(|j| j.node).collect();
+        self.jobs = dom.iter().filter_map(Job::from_node).map(|j| (j.node, Job { expanded: expanded.contains(&j.node), ..j })).collect();
+        self.waits = dom.iter().filter(|n| is_active_wait(n)).map(|n| n.id).collect();
+        self.full.retain(|n| self.jobs.contains_key(n));
     }
-
-    fn scan(&mut self, dom: &Dom) {
-        for node in dom.iter() {
-            match node.kind {
-                ElementKind::Job => {
-                    if let Some(job) = Job::from_node(node) {
-                        self.jobs.insert(node.id, job);
-                    }
-                }
-                ElementKind::Call if is_active_wait(node) => {
-                    self.waits.insert(node.id);
-                }
-                _ => {}
-            }
-        }
-    }
-
-    /// Updates the list for `patch`, which was already applied to `dom`.
+    /// Follows `patch`, already applied to `dom`.
     pub fn apply(&mut self, dom: &Dom, patch: &Patch) {
-        match &patch.op {
-            Op::Insert { kind: ElementKind::Job, .. } => {
-                if let Some(job) = dom.get(patch.node).and_then(Job::from_node) {
-                    self.jobs.insert(patch.node, job);
-                }
+        let node = patch.node;
+        match (&patch.op, self.jobs.get_mut(&node), dom.get(node)) {
+            (Op::Insert { .. }, _, Some(n)) => match Job::from_node(n) {
+                Some(job) => { self.jobs.insert(node, job); }
+                None => self.refresh_wait(n),
+            },
+            (Op::Set { name, .. }, Some(job), Some(n)) if name == TEXT => job.set_output(&n.text),
+            (Op::Set { .. }, Some(job), Some(n)) => job.read_attrs(n),
+            (Op::Set { .. }, None, Some(n)) => self.refresh_wait(n),
+            (Op::Append { text }, Some(job), _) => job.append_output(text),
+            (Op::Remove, ..) => {
+                self.jobs.retain(|n, _| dom.contains(*n));
+                self.waits.retain(|n| dom.contains(*n));
+                self.full.retain(|n| dom.contains(*n));
             }
-            Op::Insert { kind: ElementKind::Call, .. } => self.refresh_wait(dom, patch.node),
-            Op::Insert { .. } => {}
-            Op::Set { name, .. } => {
-                if let Some(job) = self.jobs.get_mut(&patch.node) {
-                    if let Some(node) = dom.get(patch.node) {
-                        if name == TEXT {
-                            node.text.clone_into(&mut job.output);
-                            job.rescan_output();
-                        } else {
-                            job.read_attrs(node);
-                        }
-                    }
-                } else {
-                    self.refresh_wait(dom, patch.node);
-                }
-            }
-            Op::Append { text } => {
-                if let Some(job) = self.jobs.get_mut(&patch.node) {
-                    job.append(text);
-                }
-            }
-            Op::Remove => {
-                self.jobs.retain(|node, _| dom.contains(*node));
-                self.waits.retain(|node| dom.contains(*node));
-                self.full.retain(|node| dom.contains(*node));
-            }
+            _ => {}
         }
     }
-
-    /// Tracks `node` as a blocking wait call exactly while it is one.
-    fn refresh_wait(&mut self, dom: &Dom, node: NodeId) {
-        if dom.get(node).is_some_and(is_active_wait) {
-            self.waits.insert(node);
-        } else {
-            self.waits.remove(&node);
-        }
+    /// Tracks `node` as a blocking wait exactly while it is one.
+    fn refresh_wait(&mut self, node: &Node) {
+        if is_active_wait(node) { self.waits.insert(node.id); } else { self.waits.remove(&node.id); }
     }
-
-    pub fn update(&mut self, message: Message) -> (Task<Message>, Option<Event>) {
+    pub fn update(&mut self, message: Message) -> (Task<Message>, Option<AgentsIntent>) {
+        let session = |n: NodeId| self.jobs.get(&n).and_then(Job::session).map(str::to_owned);
         let event = match message {
-            Message::Tick(now) => {
-                self.now = Some(now);
-                None
-            }
-            Message::Toggle(node) => {
-                if let Some(job) = self.jobs.get_mut(&node) {
-                    job.expanded = !job.expanded;
+            Message::Open(n) => session(n).map(AgentsIntent::OpenSession),
+            Message::Detach(n) => session(n).map(AgentsIntent::DetachSession),
+            Message::Cancel(n) => self.jobs.get(&n).filter(|j| j.running()).map(|j| AgentsIntent::Cancel { node: n, id: j.attrs[0].clone() }),
+            Message::Tick(now) => { self.now = Some(now); None }
+            Message::Toggle(n) => { self.jobs.entry(n).and_modify(|j| j.expanded = !j.expanded); None }
+            Message::ToggleFull(n) => {
+                if !self.full.remove(&n) && self.jobs.contains_key(&n) {
+                    self.full.insert(n);
                 }
                 None
             }
-            Message::ToggleFull(node) => {
-                if self.full.contains(&node) {
-                    self.full.remove(&node);
-                } else if self.jobs.contains_key(&node) {
-                    self.full.insert(node);
-                }
-                None
-            }
-            Message::Open(node) => {
-                self.jobs.get(&node).and_then(|job| job.session.clone()).map(Event::OpenSession)
-            }
-            Message::Detach(node) => {
-                self.jobs.get(&node).and_then(|job| job.session.clone()).map(Event::DetachSession)
-            }
-            Message::Cancel(node) => self
-                .jobs
-                .get(&node)
-                .filter(|job| job.status == JobStatus::Running)
-                .map(|job| Event::Cancel { node, id: job.id.clone() }),
         };
         (Task::none(), event)
     }
-
-    /// Jobs in document order.
-    pub fn jobs(&self) -> impl Iterator<Item = &Job> {
-        self.jobs.values()
-    }
-
-    pub fn job(&self, node: NodeId) -> Option<&Job> {
-        self.jobs.get(&node)
-    }
-
-    /// A `wait` call is blocked on the running jobs.
-    pub fn waiting(&self) -> bool {
-        !self.waits.is_empty()
-    }
-
-    /// The job is running and a `wait` call is blocked on it.
-    pub fn is_awaited(&self, node: NodeId) -> bool {
-        self.waiting() && self.jobs.get(&node).is_some_and(|job| job.status == JobStatus::Running)
-    }
-
-    /// Time the job ran: until `ended`, or until the last tick while it is
-    /// still running. `None` without `started`, before the first tick, or for
-    /// a finished job without `ended`.
+    pub fn jobs(&self) -> impl Iterator<Item = &Job> { self.jobs.values() }
+    pub fn job(&self, node: NodeId) -> Option<&Job> { self.jobs.get(&node) }
+    /// A `wait` call blocks on the running jobs.
+    pub fn waiting(&self) -> bool { !self.waits.is_empty() }
+    pub fn is_awaited(&self, node: NodeId) -> bool { self.waiting() && self.jobs.get(&node).is_some_and(Job::running) }
+    /// How long the job ran: to `ended`, or to the last tick while it runs.
     pub fn elapsed_ms(&self, node: NodeId) -> Option<i64> {
         let job = self.jobs.get(&node)?;
-        let started = job.started?;
-        let end = match job.ended {
-            Some(ended) => ended,
-            None if job.status == JobStatus::Running => self.now?,
-            None => return None,
-        };
-        Some((end - started).max(0))
+        let end = job.ended.or(self.now.filter(|_| job.running()))?;
+        Some((end - job.started?).max(0))
     }
-
     pub fn view(&self) -> Element<'_, Message> {
-        let running = self.jobs.values().filter(|job| job.status == JobStatus::Running).count();
-        let mut header = Row::new().spacing(6).align_y(Center).height(style::LIST_ROW_HEIGHT);
-        header = header.push(text(format!("{running} running")).size(12).style(style::muted));
-        if self.waiting() && running > 0 {
-            header = header.push(badge("wait blocked"));
-        }
-
-        let mut list = Column::with_capacity(self.jobs.len() + 1).spacing(2).padding([4, 14]).push(header);
-        if self.jobs.is_empty() {
-            list = list.push(text("No subagents or background jobs").size(style::TEXT_SIZE).style(style::muted));
-        }
-        for job in self.jobs.values() {
-            list = list.push(self.job_view(job));
-        }
-        scrollable(list).height(Fill).into()
+        let running = self.jobs.values().filter(|j| j.running()).count();
+        let blocked = (self.waiting() && running > 0).then(|| badge("wait blocked", Tone::Muted));
+        let header = row![label(format!("{running} running"), T::Caption, Tone::Muted), blocked].spacing(sp(Sp::S)).align_y(Center).height(list_row_height());
+        let empty = self.jobs.is_empty().then(|| label("No subagents or background jobs", T::Label, Tone::Muted));
+        let list = Column::new().push(header).push(empty).extend(self.jobs.values().map(|j| self.job_view(j)));
+        scrollable(list.spacing(sp(Sp::Xs)).padding([sp(Sp::Xs), sp(Sp::L)])).height(Fill).into()
     }
-
     fn job_view<'a>(&'a self, job: &'a Job) -> Element<'a, Message> {
-        let kind = match job.kind {
-            JobKind::Shell => Icon::Terminal,
-            JobKind::Subagent => Icon::Cpu,
-        };
-        let status_style: fn(&Theme) -> text::Style = match job.status {
-            JobStatus::Running => style::muted,
-            JobStatus::Done => style::success_text,
-            JobStatus::Error => style::danger_text,
-            JobStatus::Cancelled => style::muted,
-        };
-
-        let mut head = Row::new().spacing(8).align_y(Center).height(style::LIST_ROW_HEIGHT);
-        head = head
-            .push(loa_ui_icons::icon(kind, 14.0))
-            .push(text(job.label()).size(style::LIST_TEXT_SIZE).wrapping(Wrapping::None))
-            .push(text(job.status.as_str()).size(12).style(status_style));
-        if job.status != JobStatus::Running
-            && let Some(code) = job.exit_code
-            && code != 0
-        {
-            head = head.push(text(format!("exit {code}")).size(12).style(style::danger_text));
-        }
-        if self.is_awaited(job.node) {
-            head = head.push(badge("waiting on"));
-        }
-        if let Some(ms) = self.elapsed_ms(job.node) {
-            head = head.push(text(format_elapsed(ms)).size(12).style(style::muted));
-        }
-        head = head.push(space().width(Fill));
-        if job.kind == JobKind::Subagent && job.session.is_some() {
-            head = head.push(action("Open", Message::Open(job.node)));
-            head = head.push(action("Window", Message::Detach(job.node)));
-        }
-        if job.status == JobStatus::Running {
-            head = head.push(action("Cancel", Message::Cancel(job.node)));
-        }
-        if !job.output.is_empty() {
-            let label = if job.expanded { "Collapse" } else { "Expand" };
-            head = head.push(action(label, Message::Toggle(job.node)));
-        }
-
-        let mut entry = Column::with_capacity(2).push(head);
-        if job.expanded {
-            let full = self.full.contains(&job.node);
+        let tone = [Tone::Muted, Tone::Ok, Tone::Danger, Tone::Muted][job.status as usize];
+        let exit = job.exit_code.filter(|&c| c != 0 && !job.running()).map(|c| label(format!("exit {c}"), T::Caption, Tone::Danger));
+        let (child, n) = (job.kind == JobKind::Subagent && job.session().is_some(), job.node);
+        let head = row![
+            icon(if job.kind == JobKind::Shell { Icon::Terminal } else { Icon::Cpu }, ts(T::Body)),
+            text(job.label()).size(ts(T::Body)).wrapping(Wrapping::None),
+            label(job.status.as_str(), T::Caption, tone),
+            exit,
+            self.is_awaited(n).then(|| badge("waiting on", Tone::Muted)),
+            self.elapsed_ms(n).map(|ms| label(format_duration(ms), T::Caption, Tone::Muted)),
+            space().width(Fill),
+            child.then(|| action("Open", Message::Open(n))),
+            child.then(|| action("Window", Message::Detach(n))),
+            job.running().then(|| action("Cancel", Message::Cancel(n))),
+            (!job.output.is_empty()).then(|| action(if job.expanded { "Collapse" } else { "Expand" }, Message::Toggle(n))),
+        ];
+        let below: Option<Element<'a, Message>> = if job.expanded {
+            let full = self.full.contains(&n);
             let shown = if full { job.output() } else { &job.output()[job.tail_start()..] };
-            let output = text(shown).font(Font::MONOSPACE).size(style::TEXT_SIZE);
-            let mut body = Column::with_capacity(2).push(output);
-            if job.line_count() > TAIL_LINES {
-                let label = if full {
-                    format!("Show last {TAIL_LINES} lines")
-                } else {
-                    format!("Show all {} lines", job.line_count())
-                };
-                body = body.push(action(label, Message::ToggleFull(job.node)));
-            }
-            entry = entry.push(container(body).padding([6, 10]).width(Fill).style(style::band));
-        } else if !job.last_line.is_empty() {
-            let line = text(job.last_line()).size(12).style(style::muted).wrapping(Wrapping::None);
-            entry = entry.push(Row::new().push(space().width(22)).push(line));
-        }
-        entry.into()
+            let toggle = (job.line_count() > TAIL_LINES).then(|| {
+                let label = if full { format!("Show last {TAIL_LINES} lines") } else { format!("Show all {} lines", job.line_count()) };
+                action(label, Message::ToggleFull(n))
+            });
+            let body = Column::new().push(text(shown).font(Font::MONOSPACE).size(ts(T::Label))).push(toggle).spacing(sp(Sp::S));
+            Some(container(body).padding([sp(Sp::S), sp(Sp::M)]).width(Fill).style(kit::fill(C::Raised, 0.0)).into())
+        } else {
+            Some(job.last_line()).filter(|l| !l.is_empty()).map(|l| row![space().width(sp(Sp::Xl)), label(l, T::Caption, Tone::Muted).wrapping(Wrapping::None)].into())
+        };
+        Column::new().push(head.spacing(sp(Sp::S)).align_y(Center).height(list_row_height())).push(below).into()
     }
 }
 
-/// Formats a duration as its two largest units: `5s`, `1m 05s`, `2h 03m`.
-pub fn format_elapsed(ms: i64) -> String {
-    let secs = ms.max(0) / 1000;
-    match secs {
-        0..60 => format!("{secs}s"),
-        60..3600 => format!("{}m {:02}s", secs / 60, secs % 60),
-        _ => format!("{}h {:02}m", secs / 3600, secs % 3600 / 60),
-    }
-}
+panel_pane!("agents", "Agents", Bot);
 
-/// A `<call tool="wait">` that is pending or running.
-fn is_active_wait(node: &Node) -> bool {
-    node.kind == ElementKind::Call
-        && node.str_attr(attr::TOOL) == Some(WAIT_TOOL)
-        && matches!(
-            node.str_attr(attr::STATUS).and_then(CallStatus::parse),
-            Some(CallStatus::Pending | CallStatus::Running)
-        )
-}
-
-fn badge(label: &str) -> Element<'_, Message> {
-    container(text(label).size(12).style(style::muted)).padding([1, 6]).style(style::badge).into()
-}
-
-fn action<'a>(label: impl text::IntoFragment<'a>, message: Message) -> Element<'a, Message> {
-    button(text(label).size(12)).padding([2, 6]).style(style::action_button).on_press(message).into()
+/// A pending or running `<call tool="wait">`.
+fn is_active_wait(n: &Node) -> bool {
+    n.kind == ElementKind::Call && n.str_attr(attr::TOOL) == Some(WAIT_TOOL) && matches!(n.str_attr(attr::STATUS).and_then(CallStatus::parse), Some(CallStatus::Pending | CallStatus::Running))
 }
 
 #[cfg(test)]
@@ -537,211 +209,48 @@ mod tests {
     use super::*;
     use loa_core::{Draft, Value};
 
-    struct Fixture {
-        dom: Dom,
-        state: State,
-        turn: NodeId,
+    fn commit(dom: &mut Dom, state: &mut State, draft: Draft) -> NodeId {
+        let patch = dom.commit(draft, 0).unwrap();
+        state.apply(dom, &patch);
+        patch.node
     }
-
-    impl Fixture {
-        fn new() -> Self {
-            let mut fixture = Fixture { dom: Dom::new(), state: State::default(), turn: NodeId::DOCUMENT };
-            let session = fixture.commit(Draft::insert(
-                NodeId::DOCUMENT,
-                ElementKind::Session,
-                [
-                    (attr::ID, Value::from("s1")),
-                    (attr::HARNESS, Value::from("omp")),
-                    (attr::NODE, Value::from("key")),
-                    (attr::CREATED, Value::from(0_i64)),
-                ],
-                "",
-            ));
-            fixture.turn = fixture.commit(Draft::insert(session, ElementKind::Turn, [(attr::STATUS, "running".into())], ""));
-            fixture
+    #[test]
+    fn patches_track_output_waits_and_events() {
+        let (mut dom, mut state) = (Dom::new(), State::default());
+        let attrs = [(attr::ID, Value::from("s1")), (attr::HARNESS, "omp".into()), (attr::NODE, "key".into()), (attr::CREATED, 0_i64.into())];
+        let session = commit(&mut dom, &mut state, Draft::insert(NodeId::DOCUMENT, ElementKind::Session, attrs, ""));
+        let turn = commit(&mut dom, &mut state, Draft::insert(session, ElementKind::Turn, [(attr::STATUS, Value::from("running"))], ""));
+        let shell = [(attr::KIND, Value::from(JobKind::Shell)), (attr::COMMAND, "cargo build".into()), (attr::STARTED, 1_000_i64.into())];
+        let a = commit(&mut dom, &mut state, Draft::insert(turn, ElementKind::Job, shell, ""));
+        for (chunk, last) in [("ab", "ab"), ("c\nde", "de"), ("f\n", "def"), ("  \n\n", "def")] {
+            commit(&mut dom, &mut state, Draft::append(a, chunk));
+            assert_eq!(state.job(a).unwrap().last_line(), last);
         }
-
-        fn commit(&mut self, draft: Draft) -> NodeId {
-            let patch = self.dom.commit(draft, 0).expect("fixture patch is valid");
-            self.state.apply(&self.dom, &patch);
-            patch.node
-        }
-
-        fn job(&mut self, parent: NodeId, attrs: Vec<(&str, Value)>) -> NodeId {
-            self.commit(Draft::insert(parent, ElementKind::Job, attrs, ""))
-        }
-
-        fn wait_call(&mut self, status: &str) -> NodeId {
-            let turn = self.turn;
-            self.commit(Draft::insert(
-                turn,
-                ElementKind::Call,
-                [(attr::TOOL, Value::from(WAIT_TOOL)), (attr::STATUS, status.into())],
-                "",
-            ))
-        }
-
-        fn get(&self, node: NodeId) -> &Job {
-            self.state.job(node).expect("job is listed")
-        }
-    }
-
-    fn shell(command: &str) -> Vec<(&'static str, Value)> {
-        vec![
-            (attr::KIND, JobKind::Shell.into()),
-            (attr::STATUS, JobStatus::Running.into()),
-            (attr::COMMAND, command.into()),
-            (attr::STARTED, 1_000_i64.into()),
-        ]
-    }
-
-    #[test]
-    fn inserted_job_is_listed_as_running() {
-        let mut fx = Fixture::new();
-        let turn = fx.turn;
-        let job = fx.job(turn, shell("cargo build"));
-        let listed: Vec<_> = fx.state.jobs().map(|j| (j.node(), j.status(), j.label())).collect();
-        assert_eq!(listed, [(job, JobStatus::Running, "cargo build")]);
-    }
-
-    #[test]
-    fn last_line_follows_appends_split_mid_line() {
-        let mut fx = Fixture::new();
-        let turn = fx.turn;
-        let job = fx.job(turn, shell("ls"));
-        fx.commit(Draft::append(job, "ab"));
-        assert_eq!(fx.get(job).last_line(), "ab");
-        fx.commit(Draft::append(job, "c\nde"));
-        assert_eq!(fx.get(job).last_line(), "de");
-        fx.commit(Draft::append(job, "f\n"));
-        assert_eq!(fx.get(job).last_line(), "def");
-        fx.commit(Draft::append(job, "  \n\n"));
-        assert_eq!(fx.get(job).last_line(), "def");
-        assert_eq!(fx.get(job).output(), "abc\ndef\n  \n\n");
-    }
-
-    #[test]
-    fn finished_job_stops_elapsed_at_ended() {
-        let mut fx = Fixture::new();
-        let turn = fx.turn;
-        let job = fx.job(turn, shell("sleep 100"));
-        let _ = fx.state.update(Message::Tick(66_000));
-        assert_eq!(fx.state.elapsed_ms(job), Some(65_000));
-        assert_eq!(format_elapsed(65_000), "1m 05s");
-
-        fx.commit(Draft::set(job, attr::STATUS, JobStatus::Done));
-        fx.commit(Draft::set(job, attr::ENDED, 6_000_i64));
-        let _ = fx.state.update(Message::Tick(500_000));
-        assert_eq!(fx.state.elapsed_ms(job), Some(5_000));
-    }
-
-    #[test]
-    fn format_elapsed_uses_two_largest_units() {
-        assert_eq!(format_elapsed(5_999), "5s");
-        assert_eq!(format_elapsed(60_000), "1m 00s");
-        assert_eq!(format_elapsed((2 * 3600 + 3 * 60 + 59) * 1000), "2h 03m");
-    }
-
-    #[test]
-    fn removing_turn_drops_its_jobs() {
-        let mut fx = Fixture::new();
-        let session = fx.dom.root().expect("session exists").id;
-        let turn = fx.turn;
-        fx.job(turn, shell("a"));
-        let kept = fx.job(session, shell("b"));
-        fx.commit(Draft::remove(turn));
-        let left: Vec<_> = fx.state.jobs().map(Job::node).collect();
-        assert_eq!(left, [kept]);
-    }
-
-    #[test]
-    fn running_wait_marks_running_jobs_awaited_until_done() {
-        let mut fx = Fixture::new();
-        let turn = fx.turn;
-        let running = fx.job(turn, shell("a"));
-        let finished = fx.job(turn, shell("b"));
-        fx.commit(Draft::set(finished, attr::STATUS, JobStatus::Done));
-        assert!(!fx.state.is_awaited(running));
-
-        let wait = fx.wait_call("pending");
-        assert!(fx.state.is_awaited(running));
-        assert!(!fx.state.is_awaited(finished));
-        fx.commit(Draft::set(wait, attr::STATUS, CallStatus::Running));
-        assert!(fx.state.is_awaited(running));
-
-        fx.commit(Draft::set(wait, attr::STATUS, CallStatus::Done));
-        assert!(!fx.state.is_awaited(running));
-        assert!(!fx.state.waiting());
-    }
-
-    #[test]
-    fn open_emits_child_session_and_cancel_ignores_finished_jobs() {
-        let mut fx = Fixture::new();
-        let turn = fx.turn;
-        let sub = fx.job(
-            turn,
-            vec![
-                (attr::KIND, JobKind::Subagent.into()),
-                (attr::ID, "job-1".into()),
-                (attr::SESSION, "child-7".into()),
-            ],
-        );
-        let (_, event) = fx.state.update(Message::Open(sub));
-        assert_eq!(event, Some(Event::OpenSession("child-7".to_owned())));
-        let (_, event) = fx.state.update(Message::Cancel(sub));
-        assert_eq!(event, Some(Event::Cancel { node: sub, id: Some("job-1".to_owned()) }));
-
-        fx.commit(Draft::set(sub, attr::STATUS, JobStatus::Done));
-        let (_, event) = fx.state.update(Message::Cancel(sub));
-        assert_eq!(event, None);
-
-        let sh = fx.job(turn, shell("ls"));
-        let (_, event) = fx.state.update(Message::Open(sh));
-        assert_eq!(event, None);
-    }
-
-    #[test]
-    fn incremental_state_matches_full_scan() {
-        let mut fx = Fixture::new();
-        let session = fx.dom.root().expect("session exists").id;
-        let turn = fx.turn;
-        let a = fx.job(turn, shell("a"));
-        let b = fx.job(session, shell("b"));
-        let wait = fx.wait_call("running");
-        fx.commit(Draft::append(a, "one\ntw"));
-        fx.commit(Draft::append(b, "x"));
-        fx.commit(Draft::append(a, "o\n"));
-        fx.commit(Draft::set(b, attr::TITLE, "build"));
-        fx.commit(Draft::set_text(b, "replaced\n\n"));
-        fx.commit(Draft::append(b, "tail"));
-        fx.commit(Draft::set(a, attr::EXIT_CODE, 1_i64));
-        fx.commit(Draft::set(a, attr::STATUS, JobStatus::Error));
-        let turn2 = fx.commit(Draft::insert(session, ElementKind::Turn, Vec::<(&str, Value)>::new(), ""));
-        let c = fx.job(turn2, shell("c"));
-        fx.commit(Draft::append(c, "\n  last  \n"));
-        fx.commit(Draft::remove(turn));
-
-        let full = State::from_dom(&fx.dom);
-        assert!(fx.state.jobs().eq(full.jobs()));
-        assert_eq!(fx.state.waiting(), full.waiting());
-        assert!(!fx.dom.contains(wait));
-        assert_eq!(fx.get(b).last_line(), "tail");
-        assert_eq!(fx.get(c).last_line(), "last");
+        let _ = state.update(Message::Tick(66_000));
+        let wait = commit(&mut dom, &mut state, Draft::insert(turn, ElementKind::Call, [(attr::TOOL, Value::from(WAIT_TOOL)), (attr::STATUS, "pending".into())], ""));
+        assert_eq!((state.job(a).unwrap().label(), state.elapsed_ms(a), state.is_awaited(a)), ("cargo build", Some(65_000), true));
+        assert_eq!(state.update(Message::Cancel(a)).1, Some(AgentsIntent::Cancel { node: a, id: None }));
+        commit(&mut dom, &mut state, Draft::set(wait, attr::STATUS, CallStatus::Done));
+        commit(&mut dom, &mut state, Draft::set(a, attr::STATUS, JobStatus::Done));
+        assert_eq!((state.waiting(), state.update(Message::Cancel(a)).1, state.update(Message::Open(a)).1), (false, None, None));
+        assert!(state.jobs().eq(State::from_dom(&dom).jobs()), "incremental equals a fresh scan");
     }
 
     #[test]
     fn long_output_shows_only_its_tail_until_expanded_in_full() {
-        let mut fx = Fixture::new();
-        let turn = fx.turn;
-        let job = fx.job(turn, shell("make"));
+        let (mut dom, mut state) = (Dom::new(), State::default());
+        let attrs = [(attr::ID, Value::from("s1")), (attr::HARNESS, "omp".into()), (attr::NODE, "key".into()), (attr::CREATED, 0_i64.into())];
+        let session = commit(&mut dom, &mut state, Draft::insert(NodeId::DOCUMENT, ElementKind::Session, attrs, ""));
+        let turn = commit(&mut dom, &mut state, Draft::insert(session, ElementKind::Turn, [(attr::STATUS, Value::from("running"))], ""));
+        let job = commit(&mut dom, &mut state, Draft::insert(turn, ElementKind::Job, [(attr::KIND, Value::from(JobKind::Shell)), (attr::COMMAND, "make".into())], ""));
         let text: String = (1..=250).map(|i| format!("line {i}\n")).collect();
-        fx.commit(Draft::append(job, text.as_str()));
-        assert_eq!(fx.get(job).line_count(), 250);
-        let shown = &fx.get(job).output()[fx.get(job).tail_start()..];
+        commit(&mut dom, &mut state, Draft::append(job, text.as_str()));
+        assert_eq!(state.job(job).unwrap().line_count(), 250);
+        let shown = &state.job(job).unwrap().output()[state.job(job).unwrap().tail_start()..];
         assert_eq!(shown.lines().next(), Some("line 51"));
         assert_eq!(shown.lines().count(), TAIL_LINES);
 
-        let _ = fx.state.update(Message::ToggleFull(job));
-        assert!(fx.state.full.contains(&job));
+        let _ = state.update(Message::ToggleFull(job));
+        assert!(state.full.contains(&job));
     }
 }

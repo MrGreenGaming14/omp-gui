@@ -1,8 +1,5 @@
-//! Input to pixels latency, measured on the viewer's clock.
-//!
-//! Each input's send time is paired with the first shown frame whose
-//! `input_seq` covers it. The meter keeps the most recent samples and reports
-//! their median and 95th percentile.
+//! Input to pixels latency on the viewer's clock: each input's send time is paired with the
+//! first shown frame whose `input_seq` covers it, over a rolling window of samples.
 
 use std::collections::VecDeque;
 
@@ -33,6 +30,7 @@ pub struct LatencyMeter {
     pending: VecDeque<(u64, u64)>,
     samples: VecDeque<u64>,
     window: usize,
+    /// Scratch buffer for the percentiles, reused across frames.
     sorted: Vec<u64>,
     reading: Option<Reading>,
 }
@@ -47,13 +45,7 @@ impl LatencyMeter {
     /// A meter keeping the last `window` samples (at least one).
     pub fn new(window: usize) -> Self {
         let window = window.max(1);
-        Self {
-            pending: VecDeque::new(),
-            samples: VecDeque::with_capacity(window),
-            window,
-            sorted: Vec::with_capacity(window),
-            reading: None,
-        }
+        Self { pending: VecDeque::new(), samples: VecDeque::with_capacity(window), window, sorted: Vec::with_capacity(window), reading: None }
     }
 
     /// Records input `seq` sent at `sent_us`. Sequence numbers go up.
@@ -64,23 +56,23 @@ impl LatencyMeter {
         self.pending.push_back((seq, sent_us));
     }
 
-    /// Records a frame shown at `now_us` that includes every input up to
-    /// `input_seq`. Each covered input yields one sample.
+    /// Records a frame shown at `now_us` that includes every input up to `input_seq`. Each
+    /// covered input yields one sample.
     pub fn frame_shown(&mut self, input_seq: u64, now_us: u64) {
-        let mut added = false;
-        while let Some(&(seq, sent_us)) = self.pending.front() {
-            if seq > input_seq {
-                break;
-            }
+        let before = self.pending.len();
+        while let Some(&(_, sent_us)) = self.pending.front().filter(|(seq, _)| *seq <= input_seq) {
             self.pending.pop_front();
             if self.samples.len() == self.window {
                 self.samples.pop_front();
             }
             self.samples.push_back(now_us.saturating_sub(sent_us));
-            added = true;
         }
-        if added {
-            self.reading = self.compute();
+        if self.pending.len() != before {
+            self.sorted.clear();
+            self.sorted.extend(&self.samples);
+            self.sorted.sort_unstable();
+            let (median_us, p95_us) = (percentile(&self.sorted, 50), percentile(&self.sorted, 95));
+            self.reading = Some(Reading { median_us, p95_us, samples: self.sorted.len(), warning: p95_us > BUDGET_US });
         }
     }
 
@@ -88,94 +80,43 @@ impl LatencyMeter {
     pub fn reading(&self) -> Option<Reading> {
         self.reading
     }
-
-    fn compute(&mut self) -> Option<Reading> {
-        self.sorted.clear();
-        self.sorted.extend(self.samples.iter().copied());
-        self.sorted.sort_unstable();
-        let median_us = nearest_rank(&self.sorted, 50)?;
-        let p95_us = nearest_rank(&self.sorted, 95)?;
-        Some(Reading {
-            median_us,
-            p95_us,
-            samples: self.sorted.len(),
-            warning: p95_us > BUDGET_US,
-        })
-    }
 }
 
-/// Nearest rank percentile of an ascending slice.
-fn nearest_rank(sorted: &[u64], percent: usize) -> Option<u64> {
-    let rank = (sorted.len() * percent).div_ceil(100).max(1);
-    sorted.get(rank - 1).copied()
+/// Nearest rank percentile of a non-empty ascending slice.
+fn percentile(sorted: &[u64], percent: usize) -> u64 {
+    sorted[(sorted.len() * percent).div_ceil(100).max(1) - 1]
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Feeds `(input seq, sent ms, frame input_seq, shown ms)` rounds, checking the reading.
+    fn run(meter: &mut LatencyMeter, rounds: &[(u64, u64, u64, u64)]) -> Option<(usize, u64, u64, bool)> {
+        for &(seq, sent, covers, shown) in rounds {
+            if seq > 0 {
+                meter.input_sent(seq, sent * 1000);
+            }
+            meter.frame_shown(covers, shown * 1000);
+        }
+        meter.reading().map(|r| (r.samples, r.median_us / 1000, r.p95_us / 1000, r.warning))
+    }
+
     #[test]
-    fn pairs_each_input_with_the_first_frame_covering_it() {
+    fn samples_pair_inputs_with_covering_frames() {
+        // Frames without new input count nothing.
+        assert_eq!(run(&mut LatencyMeter::default(), &[(0, 0, 0, 5)]), None);
+        // 1 and 2 are covered by the first frame, 3 waits; a repeated cover adds nothing.
         let mut m = LatencyMeter::default();
         m.input_sent(1, 1_000);
-        m.input_sent(2, 3_000);
-        m.input_sent(3, 4_000);
-        // Covers 1 and 2 only.
-        m.frame_shown(2, 11_000);
-        let r = m.reading().unwrap();
-        assert_eq!(r.samples, 2);
-        // A later frame covering 2 again adds nothing; 3 is still waiting.
-        m.frame_shown(2, 90_000);
-        assert_eq!(m.reading().unwrap().samples, 2);
-        m.frame_shown(3, 24_000);
-        let r = m.reading().unwrap();
-        assert_eq!(r.samples, 3);
-        // Samples 10 ms, 8 ms, 20 ms.
-        assert_eq!(r.median_us, 10_000);
-        assert_eq!(r.p95_us, 20_000);
-        assert!(!r.warning);
-    }
-
-    #[test]
-    fn frames_without_new_input_do_not_count() {
+        assert_eq!(run(&mut m, &[(2, 3, 2, 11), (0, 0, 2, 90), (3, 4, 3, 24)]), Some((3, 10, 20, false)));
+        // 21 samples: p95 is the 20th; one past the budget warns.
+        let quick: Vec<_> = (1..=20).map(|s| (s, 0, s, 20 + 60 * u64::from(s == 20))).collect();
         let mut m = LatencyMeter::default();
-        m.frame_shown(0, 5_000);
-        assert_eq!(m.reading(), None);
-    }
-
-    #[test]
-    fn warns_when_p95_is_past_the_budget() {
-        let mut m = LatencyMeter::default();
-        let mut t = 0;
-        for seq in 1..=19 {
-            m.input_sent(seq, t);
-            m.frame_shown(seq, t + 20_000);
-            t += 100_000;
-        }
-        assert!(!m.reading().unwrap().warning);
-        m.input_sent(20, t);
-        m.frame_shown(20, t + 80_000);
-        // 20 samples: p95 is the 19th, still 20 ms.
-        assert!(!m.reading().unwrap().warning);
-        m.input_sent(21, t);
-        m.frame_shown(21, t + 51_000);
-        let r = m.reading().unwrap();
-        assert_eq!(r.median_us, 20_000);
-        assert_eq!(r.p95_us, 51_000);
-        assert!(r.warning);
-    }
-
-    #[test]
-    fn old_samples_leave_the_window() {
-        let mut m = LatencyMeter::new(3);
-        for (seq, ms) in [(1, 90), (2, 90), (3, 90), (4, 5), (5, 5), (6, 5)] {
-            m.input_sent(seq, 0);
-            m.frame_shown(seq, ms * 1_000);
-        }
-        let r = m.reading().unwrap();
-        assert_eq!(
-            (r.samples, r.median_us, r.p95_us, r.warning),
-            (3, 5_000, 5_000, false)
-        );
+        assert_eq!(run(&mut m, &quick), Some((20, 20, 20, false)));
+        assert_eq!(run(&mut m, &[(21, 0, 21, 51)]), Some((21, 20, 51, true)));
+        // Old samples leave the window.
+        let window: Vec<_> = [90, 90, 90, 5, 5, 5].iter().zip(1..).map(|(&ms, s)| (s, 0, s, ms)).collect();
+        assert_eq!(run(&mut LatencyMeter::new(3), &window), Some((3, 5, 5, false)));
     }
 }

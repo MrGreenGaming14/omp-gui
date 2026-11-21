@@ -1,0 +1,23 @@
+[package]
+name = "loa-util"
+description = "Domain-free helpers: poison-tolerant locks, atomic files, process probing, time, text, registries and str_enum!"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[features]
+testkit = []
+
+[dependencies]
+getrandom = "0.3"
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+time = { version = "0.3", features = ["formatting", "parsing", "macros"] }
+tokio.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+dunce = "1"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }

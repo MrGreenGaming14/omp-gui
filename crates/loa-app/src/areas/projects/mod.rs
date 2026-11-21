@@ -1,47 +1,45 @@
-//! Projects (P1, P2): the sidebar's project list from the sessions' projects
-//! and working directories, selecting a project (it becomes the active
-//! project with its folder, and its screen lists its chats), the project screen (shared instructions, pinned
-//! files, sessions with their digests and exclude toggle), digest rebuilds
-//! at turn end and compaction, the project context new chats receive, and
-//! the `project_search` / `project_read` host tools.
-//!
-//! [`ProjectService`] does the work. Its rebuild driver runs on the app's
-//! tokio runtime when there is one, otherwise on a small runtime of its own;
-//! its outcomes arrive through [`Area::subscription`]. `contribute` is
-//! synchronous, so the context of each project is kept in a cache that is
-//! refreshed after listing, rebuilds, settings saves and exclude toggles.
+//! Projects (P1, P2): projects are groups of sessions, not folders. A session's project is its
+//! `<session project>`; the sidebar lists every stored project and every project a session names.
+//! A project may have a folder, where its new chats start and whose `.omgui` folder links to the
+//! directories its sessions run in. This area creates projects (the New project screen), moves
+//! sessions between them, changes a project's folder, deletes projects (keeping their sessions),
+//! selects a project (it becomes the active project, with its folder when it has one, and its
+//! screen lists its chats), and runs the project screen (shared instructions, pinned files,
+//! sessions with their digests and exclude toggle), digest rebuilds at turn end and compaction,
+//! the project context new chats receive, and the `project_search` / `project_read` host tools.
 
+use loa_util::LockExt;
 use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex};
 
-use iced::futures::{Stream, stream};
 use iced::{Element, Subscription, Task};
-use loa_adapter::{HostToolSpec, HostTools, SessionConfig};
-use loa_projects::{
-    FileSettingsStore, LiveSessions, LocalOnly, OmpSummarizer, ProjectOverview, ProjectService, ProjectSettings,
-    ProjectSummary, RebuildOutcome, ServiceConfig, Summarizer, Trigger,
-};
-use loa_ui_palette as palette;
-use loa_ui_projects as screen;
+use loa_contracts::harness::{HostToolSpec, HostTools, SessionConfig};
+use loa_projects::{FileSettingsStore, LiveSessions, LocalOnly, ProjectService, ProjectSummary, RebuildOutcome, ServiceConfig, Summarizers};
+use loa_settings::projects::{ProjectOverview, ProjectSettings};
+use loa_ui_kit::widgets::Screen;
+use loa_ui_settings::projects::{self as screen, create};
+use loa_view::settings::projects::{CreateIntent, Intent};
 use tokio::sync::mpsc::UnboundedReceiver;
 
-use crate::area::{Area, AreaId, Ctx, HostToolSet, Request, SessionEvent, Target};
+use crate::area::{perform, Area, AreaCommand, AreaMessage, Ctx, HostToolSet, Listed, Request, Target};
+use loa_runtime::session::SessionEvent;
+use crate::watch::{PtrKey, watch};
+use crate::view::settings::projects::{overview_to_view, settings_from_view, settings_to_view};
 
 #[cfg(test)]
 mod tests;
 
-/// Palette command prefix that opens a project, followed by its name.
+/// Palette command id prefixes that open a project and toggle its sidebar
+/// pin, followed by its name.
 const OPEN_COMMAND: &str = "open:";
-/// Palette command id prefix that toggles a project's sidebar pin.
 const PIN_COMMAND: &str = "pin:";
 
 #[derive(Clone, Debug)]
 pub enum Message {
     /// The user picked this project in the sidebar or the palette.
     Open(String),
-    /// Every project with sessions, most recently active first.
+    /// Every project, most recently active first.
     Listed(Result<Vec<ProjectSummary>, String>),
     /// The project screen's data for this project.
     Overview(String, Result<ProjectOverview, String>),
@@ -55,7 +53,7 @@ pub enum Message {
     Context(String, Result<Option<String>, String>),
     /// The rebuild driver finished with a session's digest.
     Rebuild(RebuildOutcome),
-    /// Make this project the active one, without showing its screen: the
+    /// Make this project the active one without showing its screen: the
     /// composer's project chip with no session shown.
     Activate(String),
     /// A new session in this project, in its folder: the `+` on its row.
@@ -66,12 +64,12 @@ pub enum Message {
     Deleted(String, Result<usize, String>),
     /// Open the New project screen.
     New,
-    Form(screen::create::Message),
+    Form(create::Message),
     /// A project was created, with the folder it stored.
     Created(String, Result<Option<PathBuf>, String>),
     /// A folder dialog closed, with the folder picked if any.
     FolderChosen(Pick, Result<Option<PathBuf>, String>),
-    /// A project's folder was stored, possibly isolated inside `/tmp`.
+    /// A project's folder was stored, possibly isolated inside the temp folder.
     FolderSet(String, Result<PathBuf, String>),
     /// Move a session to a project, or out of every project with `None`.
     Move { session: String, project: Option<String> },
@@ -88,7 +86,7 @@ pub enum Pick {
 }
 
 /// The project and directory the next new session starts in, set by the
-/// project screen's "New chat".
+/// project screen's "New chat" and a project row's `+`.
 #[derive(Clone, Debug)]
 struct NewChat {
     project: String,
@@ -99,12 +97,13 @@ pub struct State {
     service: ProjectService,
     /// `project_search` and `project_read`, served to every session.
     tools: (Vec<HostToolSpec>, Arc<dyn HostTools>),
-    outcomes: Outcomes,
+    /// The rebuild driver's outcomes, until the subscription takes them.
+    outcomes: Arc<Mutex<Option<UnboundedReceiver<RebuildOutcome>>>>,
     projects: Vec<ProjectSummary>,
     /// The project screen, drawn while the app shows this area's screen.
     screen: Option<screen::State>,
     /// The New project form, drawn instead of the project screen while open.
-    creating: Option<screen::create::State>,
+    creating: Option<create::State>,
     /// Context for new chats, by project.
     contexts: HashMap<String, Option<String>>,
     /// Taken by the next new session's `contribute`.
@@ -122,29 +121,22 @@ impl State {
         self.screen.as_ref().map(|screen| screen.project())
     }
 
-    /// The projects of this node, digests built by omp's `smol` role.
-    pub fn new(ctx: &mut Ctx) -> (Self, Task<Message>) {
-        let omp = ctx.services.harnesses.get("omp").and_then(|harness| harness.executable.clone());
-        let summarizer = OmpSummarizer::new(omp.unwrap_or_else(|| PathBuf::from("omp")), ctx.services.dirs.data.clone());
-        Self::with(ctx, Arc::new(summarizer), ServiceConfig::default())
-    }
-
     /// The projects of this node with digests from `summarizer`.
-    pub fn with(ctx: &mut Ctx, summarizer: Arc<dyn Summarizer>, config: ServiceConfig) -> (Self, Task<Message>) {
-        let library = &ctx.services.library;
+    pub fn with(ctx: &mut Ctx, summarizer: Arc<dyn Summarizers>, config: ServiceConfig) -> (Self, Task<Message>) {
+        let library = ctx.runtime.library();
         let sessions = LiveSessions::new(Arc::clone(library.bus()), library.store().clone());
-        let settings = Arc::new(FileSettingsStore::new(ctx.services.dirs.data.join("projects")));
+        let settings = Arc::new(FileSettingsStore::new(ctx.services.storage.dirs.data.join("projects")));
         let (runtime, handle) = OwnRuntime::current_or_new();
         let _entered = handle.enter();
         let (service, outcomes) = ProjectService::start(sessions, settings, Arc::new(LocalOnly), summarizer, config);
         let tools = service.host_tools();
         for spec in &tools.0 {
-            ctx.set_app_tool(loa_ui_tools::ToolInfo::from(spec));
+            ctx.set_app_tool(loa_view::panel::ToolInfo::from(spec));
         }
         let state = Self {
             service,
             tools,
-            outcomes: Outcomes(Arc::new(Mutex::new(Some(outcomes)))),
+            outcomes: Arc::new(Mutex::new(Some(outcomes))),
             projects: Vec::new(),
             screen: None,
             creating: None,
@@ -152,7 +144,8 @@ impl State {
             new_chat: Mutex::new(None),
             _runtime: runtime,
         };
-        let task = Task::batch([state.list(), ctx.services.project.clone().map_or_else(Task::none, |project| state.refresh_context(project))]);
+        let context = ctx.runtime.project().map_or_else(Task::none, |project| state.refresh_context(project.to_owned()));
+        let task = Task::batch([state.list(), context]);
         (state, task)
     }
 
@@ -171,14 +164,14 @@ impl State {
         self.screen.as_ref()
     }
 
-    fn new_chat(&self) -> MutexGuard<'_, Option<NewChat>> {
-        // Replacing the value can't leave it half written.
-        self.new_chat.lock().unwrap_or_else(PoisonError::into_inner)
+    /// The New project form while it is open.
+    pub fn form(&self) -> Option<&create::State> {
+        self.creating.as_ref()
     }
 
     fn list(&self) -> Task<Message> {
         let service = self.service.clone();
-        Task::perform(async move { service.projects().await.map_err(|error| error.to_string()) }, Message::Listed)
+        perform(async move { service.projects().await }, Message::Listed)
     }
 
     fn load_overview(&self, project: String) -> Task<Message> {
@@ -216,29 +209,23 @@ impl State {
         }
     }
 
-    /// The default folder of `project`, when it still exists: the one it was
-    /// created with, else that of its most recent session.
+    /// The folder of `project` when it still exists: the one it was given, else that of its most recent session.
     fn folder(&self, project: &str) -> Option<PathBuf> {
-        self.projects
-            .iter()
-            .find(|summary| summary.name == project)
-            .and_then(|summary| summary.cwd.as_deref())
-            .map(PathBuf::from)
-            .filter(|folder| folder.is_dir())
+        self.projects.iter().find(|summary| summary.name == project).and_then(|summary| summary.cwd.as_deref()).map(PathBuf::from).filter(|folder| folder.is_dir())
     }
 
-    /// Puts the project list and the current project into the composer's
-    /// project chip: the shown session's project, else the active one.
+    /// Puts the project names and the current project into the composer's project chip: the shown session's
+    /// project, else the active one.
     fn sync_chip(&self, ctx: &mut Ctx) {
-        let current = match ctx.sessions.active() {
+        let current = match ctx.runtime.sessions().active() {
             Some(session) => session.summary().and_then(|summary| summary.project.clone()),
-            None => ctx.services.project.clone(),
+            None => ctx.runtime.project().map(str::to_owned),
         };
         ctx.composer.set_projects(self.names(), current);
     }
 
-    /// Makes `project` the active project, with its folder, and shows its
-    /// screen: the project's chats, most recent first.
+    /// Makes `project` the active project, with its folder, and shows its screen: the project's chats, most recent
+    /// first.
     fn open(&mut self, project: String, ctx: &mut Ctx) -> Task<Message> {
         let folder = self.folder(&project);
         self.open_in(project, folder, ctx)
@@ -256,14 +243,21 @@ impl State {
         if self.screen.as_ref().is_none_or(|screen| screen.project() != project) {
             self.screen = Some(screen::State::new(project.clone()));
         }
-        ctx.show_screen(AreaId::Projects);
+        ctx.show_screen(Self::ID);
         Task::batch([self.load_overview(project.clone()), self.refresh_context(project)])
     }
 
-    fn screen_event(&mut self, event: screen::Event, ctx: &mut Ctx) -> Task<Message> {
+    /// The desktop's folder dialog, starting at `start`, answering for `pick`.
+    fn choose_folder(ctx: &Ctx, start: PathBuf, pick: Pick) -> Task<Message> {
+        let picker = ctx.services.host.picker.clone();
+        Task::perform(async move { picker.pick(&start).await }, move |result| Message::FolderChosen(pick.clone(), result))
+    }
+
+    fn screen_event(&mut self, event: Intent, ctx: &mut Ctx) -> Task<Message> {
         match event {
-            screen::Event::SaveSettings { project, settings } => {
+            Intent::SaveSettings { project, settings } => {
                 let service = self.service.clone();
+                let settings = settings_from_view(settings);
                 Task::perform(
                     async move {
                         let result = service.save_settings(&project, &settings).await.map(|()| settings);
@@ -272,7 +266,7 @@ impl State {
                     |(project, result)| Message::Saved(project, result),
                 )
             }
-            screen::Event::SetExcluded { session, excluded } => {
+            Intent::SetExcluded { session, excluded } => {
                 let service = self.service.clone();
                 let project = self.screen.as_ref().map(|screen| screen.project().to_owned()).unwrap_or_default();
                 Task::perform(
@@ -283,24 +277,22 @@ impl State {
                     |(project, result)| Message::Excluded(project, result),
                 )
             }
-            screen::Event::OpenSession(id) => {
+            Intent::OpenSession(id) => {
                 // The active session's chat comes back too.
                 ctx.close_screen();
                 ctx.request(Request::OpenSession(id));
                 Task::none()
             }
-            screen::Event::NewChat { project, cwd } => {
-                *self.new_chat() = Some(NewChat { project, cwd: cwd.map(PathBuf::from) });
+            Intent::NewChat { project, cwd } => {
+                *self.new_chat.locked() = Some(NewChat { project, cwd: cwd.map(PathBuf::from) });
                 ctx.request(Request::NewSession);
                 Task::none()
             }
-            screen::Event::ChangeFolder { project, current } => {
-                let start = current.map_or_else(|| ctx.services.cwd.clone(), PathBuf::from);
-                Task::perform(crate::app::choose_folder(start), move |result| {
-                    Message::FolderChosen(Pick::Project(project.clone()), result)
-                })
+            Intent::ChangeFolder { project, current } => {
+                let start = current.map_or_else(|| ctx.runtime.cwd().to_path_buf(), PathBuf::from);
+                Self::choose_folder(ctx, start, Pick::Project(project))
             }
-            screen::Event::Delete { project } => {
+            Intent::Delete { project } => {
                 let service = self.service.clone();
                 Task::perform(
                     async move {
@@ -313,12 +305,18 @@ impl State {
         }
     }
 
-    fn form_event(&mut self, event: screen::create::Event, ctx: &mut Ctx) -> Task<Message> {
+    fn form_event(&mut self, event: CreateIntent, ctx: &mut Ctx) -> Task<Message> {
         match event {
-            screen::create::Event::ChooseFolder(start) => {
-                Task::perform(crate::app::choose_folder(start), |result| Message::FolderChosen(Pick::Form, result))
-            }
-            screen::create::Event::Create { name, settings } => {
+            CreateIntent::ChooseFolder(start) => Self::choose_folder(ctx, PathBuf::from(start), Pick::Form),
+            CreateIntent::Create { name, settings } => {
+                let settings = settings_from_view(settings);
+                if let Some(folder) = settings.folder.as_ref().filter(|folder| !folder.is_dir()) {
+                    let error = format!("{} isn't a folder", folder.display());
+                    if let Some(form) = self.creating.as_mut() {
+                        form.failed(error);
+                    }
+                    return Task::none();
+                }
                 let service = self.service.clone();
                 Task::perform(
                     async move {
@@ -328,7 +326,7 @@ impl State {
                     |(name, result)| Message::Created(name, result),
                 )
             }
-            screen::create::Event::Cancel => {
+            CreateIntent::Cancel => {
                 self.creating = None;
                 // Back to the project screen it was opened over, if any.
                 if self.screen.is_none() {
@@ -345,19 +343,53 @@ impl State {
     }
 }
 
+impl AreaMessage for Message {
+    type Area = State;
+}
+
 impl Area for State {
+    const ID: &'static str = "projects";
+    const COMMANDS: &'static [AreaCommand<Self>] = &[AreaCommand::<Self>::new("projects.", "", "Projects", |state, arg, ctx| {
+        if let Some(project) = arg.strip_prefix(PIN_COMMAND) {
+            let toggle = loa_ui_shell::sidebar::Message::ToggleProjectPin(project.to_owned());
+            ctx.request(Request::Forward(Box::new(crate::app::Message::Shell(loa_ui_shell::Message::Sidebar(toggle)))));
+            return Task::none();
+        }
+        match arg.strip_prefix(OPEN_COMMAND) {
+            Some(project) => state.open(project.to_owned(), ctx),
+            None => {
+                ctx.notify(format!("Unknown command projects.{arg}"));
+                Task::none()
+            }
+        }
+    })
+    .listed(Listed::Each(|state, ctx| {
+        let pinned = ctx.shell.sidebar().pinned_projects();
+        let rows = state.names().into_iter().flat_map(|name| {
+            let verb = if pinned.contains(&name) { "Unpin" } else { "Pin" };
+            [(format!("{OPEN_COMMAND}{name}"), format!("Open project: {name}")), (format!("{PIN_COMMAND}{name}"), format!("{verb} project: {name}"))]
+        });
+        rows.collect()
+    }))];
+
     type Message = Message;
+
+    /// The projects of this node, digests built by the app's summarizer.
+    fn new(ctx: &mut Ctx) -> (Self, Task<Message>) {
+        let summarizer = Arc::clone(&ctx.backends.summarizer);
+        Self::with(ctx, summarizer, ServiceConfig::default())
+    }
 
     fn update(&mut self, message: Message, ctx: &mut Ctx) -> Task<Message> {
         // A "New chat" that didn't start a session (no harness) is dropped.
         if !matches!(message, Message::Screen(_)) {
-            self.new_chat().take();
+            self.new_chat.locked().take();
         }
         match message {
             Message::Open(project) => self.open(project, ctx),
             Message::Listed(Ok(projects)) => {
                 self.projects = projects;
-                ctx.shell.set_projects(self.names());
+                ctx.shell.sidebar_mut().set_projects(self.names());
                 self.sync_chip(ctx);
                 let uncached: Vec<String> =
                     self.projects.iter().filter(|p| !self.contexts.contains_key(&p.name)).map(|p| p.name.clone()).collect();
@@ -372,7 +404,7 @@ impl Area for State {
                     return Task::none();
                 };
                 match result {
-                    Ok(overview) => screen.set_overview(overview, loa_core::now_ms()),
+                    Ok(overview) => screen.set_overview(overview_to_view(&overview), loa_core::now_ms()),
                     Err(error) => screen.set_error(format!("Can't load project {project}: {error}")),
                 }
                 Task::none()
@@ -386,7 +418,7 @@ impl Area for State {
             Message::Saved(project, result) => {
                 let saved = result.is_ok();
                 if let Some(screen) = self.screen.as_mut().filter(|screen| screen.project() == project) {
-                    screen.saved(result);
+                    screen.saved(result.map(|settings| settings_to_view(&settings)));
                 }
                 if saved { self.refresh_context(project) } else { Task::none() }
             }
@@ -415,12 +447,11 @@ impl Area for State {
                 RebuildOutcome::Skipped { .. } => Task::none(),
             },
             Message::Activate(project) => {
-                ctx.request(Request::ActivateProject { project: project.clone(), cwd: self.folder(&project) });
+                ctx.request(Request::ActivateProject { cwd: self.folder(&project), project });
                 Task::none()
             }
             Message::NewChatIn(project) => {
-                let cwd = self.folder(&project);
-                *self.new_chat() = Some(NewChat { project, cwd });
+                *self.new_chat.locked() = Some(NewChat { cwd: self.folder(&project), project });
                 ctx.request(Request::NewSession);
                 Task::none()
             }
@@ -445,9 +476,9 @@ impl Area for State {
                 Task::none()
             }
             Message::New => {
-                self.creating = Some(screen::create::State::new(ctx.services.cwd.display().to_string()));
-                ctx.show_screen(AreaId::Projects);
-                iced::widget::operation::focus(screen::create::NAME_ID)
+                self.creating = Some(create::State::new(ctx.runtime.cwd().display().to_string()));
+                ctx.show_screen(Self::ID);
+                iced::widget::operation::focus(create::NAME_ID)
             }
             Message::Form(message) => {
                 let Some(event) = self.creating.as_mut().and_then(|form| form.update(message)) else {
@@ -469,7 +500,7 @@ impl Area for State {
             Message::FolderChosen(_, Ok(None)) => Task::none(),
             Message::FolderChosen(Pick::Form, Ok(Some(folder))) => {
                 if let Some(form) = self.creating.as_mut() {
-                    form.set_folder(folder);
+                    form.set_folder(folder.display().to_string());
                 }
                 Task::none()
             }
@@ -489,7 +520,7 @@ impl Area for State {
             }
             Message::FolderSet(project, Ok(folder)) => {
                 // New chats in the active project start in its new folder.
-                if ctx.services.project.as_deref() == Some(project.as_str()) {
+                if ctx.runtime.project() == Some(project.as_str()) {
                     ctx.request(Request::ActivateProject { project, cwd: Some(folder) });
                 }
                 Task::batch([self.list(), self.reload_screen()])
@@ -500,10 +531,7 @@ impl Area for State {
             }
             Message::Move { session, project } => {
                 let service = self.service.clone();
-                Task::perform(
-                    async move { service.move_session(&session, project.as_deref()).await.map_err(|error| error.to_string()) },
-                    Message::Moved,
-                )
+                perform(async move { service.move_session(&session, project.as_deref()).await }, Message::Moved)
             }
             Message::Moved(Ok(())) => self.list(),
             Message::Moved(Err(error)) => {
@@ -511,33 +539,6 @@ impl Area for State {
                 Task::none()
             }
         }
-    }
-
-    fn palette_commands(&self, ctx: &Ctx) -> Vec<palette::Command> {
-        let pinned = ctx.shell.sidebar().pinned_projects();
-        self.names()
-            .into_iter()
-            .flat_map(|name| {
-                let open = AreaId::Projects.command(&format!("{OPEN_COMMAND}{name}"));
-                let pin = AreaId::Projects.command(&format!("{PIN_COMMAND}{name}"));
-                let verb = if pinned.contains(&name) { "Unpin" } else { "Pin" };
-                [
-                    palette::Command::new(open, format!("Open project: {name}"), "Projects"),
-                    palette::Command::new(pin, format!("{verb} project: {name}"), "Projects"),
-                ]
-            })
-            .collect()
-    }
-
-    fn run_command(&mut self, id: &str, ctx: &mut Ctx) -> Option<Task<Message>> {
-        let rest = id.strip_prefix(AreaId::Projects.key())?.strip_prefix('.')?;
-        if let Some(project) = rest.strip_prefix(PIN_COMMAND) {
-            let toggle = loa_ui_shell::sidebar::Message::ToggleProjectPin(project.to_owned());
-            ctx.request(Request::Forward(Box::new(crate::app::Message::Shell(loa_ui_shell::Message::Sidebar(toggle)))));
-            return Some(Task::none());
-        }
-        let project = rest.strip_prefix(OPEN_COMMAND)?;
-        Some(self.open(project.to_owned(), ctx))
     }
 
     fn view_screen<'a>(&'a self, _: &'a Ctx) -> Option<Element<'a, Message>> {
@@ -551,7 +552,7 @@ impl Area for State {
         if target.resume {
             return;
         }
-        if let Some(chat) = self.new_chat().take() {
+        if let Some(chat) = self.new_chat.locked().take() {
             config.project = Some(chat.project);
             if let Some(cwd) = chat.cwd {
                 config.cwd = cwd;
@@ -574,11 +575,11 @@ impl Area for State {
     fn on_session_event(&mut self, event: &SessionEvent, ctx: &mut Ctx) -> Task<Message> {
         match event {
             SessionEvent::TurnEnded { session, .. } => {
-                self.service.notify(session.as_str(), Trigger::TurnEnd);
+                self.service.notify(session.as_str());
                 Task::batch([self.list(), self.reload_screen()])
             }
             SessionEvent::Compaction { session, .. } => {
-                self.service.notify(session.as_str(), Trigger::Compaction);
+                self.service.notify(session.as_str());
                 Task::none()
             }
             SessionEvent::Activated(_) | SessionEvent::Closed(_) => {
@@ -586,9 +587,7 @@ impl Area for State {
                 self.list()
             }
             // A session moved between projects.
-            SessionEvent::Patch(_, patch)
-                if matches!(&patch.op, loa_core::Op::Set { name, .. } if name == loa_core::attr::PROJECT) =>
-            {
+            SessionEvent::Patch(_, patch) if matches!(&patch.op, loa_core::Op::Set { name, .. } if name == loa_core::attr::PROJECT) => {
                 self.sync_chip(ctx);
                 self.list()
             }
@@ -596,38 +595,15 @@ impl Area for State {
         }
     }
 
+    /// The rebuild driver's outcomes; the receiver is taken once.
     fn subscription(&self) -> Subscription<Message> {
-        Subscription::run_with(self.outcomes.clone(), rebuilds)
+        let outcomes = Arc::clone(&self.outcomes);
+        watch(PtrKey(&self.outcomes), move || outcomes.locked().take(), |outcome| Some(Message::Rebuild(outcome)))
     }
-}
-
-/// The rebuild driver's outcomes, taken once by the subscription.
-#[derive(Clone)]
-struct Outcomes(Arc<Mutex<Option<UnboundedReceiver<RebuildOutcome>>>>);
-
-impl Outcomes {
-    fn take(&self) -> Option<UnboundedReceiver<RebuildOutcome>> {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner).take()
-    }
-}
-
-impl Hash for Outcomes {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        (Arc::as_ptr(&self.0) as usize).hash(state);
-    }
-}
-
-fn rebuilds(outcomes: &Outcomes) -> impl Stream<Item = Message> + use<> {
-    stream::unfold(outcomes.take(), |receiver| async move {
-        let mut receiver = receiver?;
-        let outcome = receiver.recv().await?;
-        Some((Message::Rebuild(outcome), Some(receiver)))
-    })
 }
 
 /// A runtime of the area's own, made only when the app has none (tests,
-/// tools that build the app headless). Shut down without waiting on drop,
-/// which is allowed from inside another runtime.
+/// tools that build the app headless).
 struct OwnRuntime(Option<tokio::runtime::Runtime>);
 
 impl OwnRuntime {

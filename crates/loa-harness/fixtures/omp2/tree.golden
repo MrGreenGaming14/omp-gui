@@ -1,0 +1,9 @@
+<session nid="1" created.int="T" harness="omp2" id="s" node="owner" x-todo-title="Plan">
+  <turn nid="8" id="second" started.int="T" status="running" x-omp2-handle.int="12">
+    <message nid="10" role="user" status="done" x-omp2-handle.int="13">hello again</message>
+    <message nid="12" kind="text" role="assistant" status="done" x-omp2-handle.int="16">partial result</message>
+  </turn>
+  <ext nid="2" harness="omp2" type="queues" x-omp2-handle.int="4"/>
+</session>
+
+--- replies

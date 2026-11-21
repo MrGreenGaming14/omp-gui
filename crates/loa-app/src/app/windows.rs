@@ -1,18 +1,16 @@
-//! Configs and Settings, each a window over the app: a side menu over
-//! existing area screens plus the agent, skill and rule files omp reads.
-//!
-//! Configs is for what shapes the agents: model roles, tools and MCP
-//! servers, agent definitions, skills and rules, at project or global scope.
-//! Settings is for the app itself: theme, peers, harness sign-in, updates.
+//! Configs and Settings, each a window over the app, and detached OS windows: a panel tab or a
+//! subagent's session in a window of its own.
 
 use std::path::{Path, PathBuf};
 
-use iced::widget::{Column, button, column, container, row, rule, scrollable, space, text};
-use iced::{Alignment, Element, Fill, Length, Task};
-use loa_ui_icons::{Icon, muted};
-use loa_ui_models::screen::Page;
-use loa_ui_shell::theme::style;
-use loa_ui_shell::{Preference, layout};
+use iced::widget::{column, container, row, rule, scrollable, text};
+use iced::{Alignment, Element, Fill, Length, Size, Task, window};
+use loa_ui_kit::style::{self, ButtonKind, Surface, Tone};
+use loa_ui_kit::theme::{LayoutRole, SpaceRole, TextRole, sp, width};
+use loa_ui_kit::widgets::{NavItem, card, icon_button, label, mono_block, section_header, side_nav, text_button, two_line_row};
+use loa_ui_kit::icons::tinted;
+use loa_ui_settings::models::Page;
+use loa_view::theme::{Icon, ThemeRef};
 
 use super::{App, Message};
 use crate::area::Area;
@@ -29,17 +27,7 @@ pub enum ConfigsTab {
 }
 
 impl ConfigsTab {
-    const ALL: [(ConfigsTab, &'static str, &'static str); 5] = [
-        (ConfigsTab::Models, "Model roles", "Models"),
-        (ConfigsTab::Agents, "Agents", "Delegation"),
-        (ConfigsTab::Skills, "Skills", "Delegation"),
-        (ConfigsTab::Tools, "Tools & MCP", "Behavior"),
-        (ConfigsTab::Rules, "Rules", "Behavior"),
-    ];
-
-    fn title(self) -> &'static str {
-        Self::ALL.iter().find(|(tab, ..)| *tab == self).map_or("", |(_, title, _)| title)
-    }
+    const ALL: [ConfigsTab; 5] = [ConfigsTab::Models, ConfigsTab::Agents, ConfigsTab::Skills, ConfigsTab::Tools, ConfigsTab::Rules];
 
     fn blurb(self) -> &'static str {
         match self {
@@ -49,6 +37,35 @@ impl ConfigsTab {
             ConfigsTab::Skills => "Skills load when a task matches their description.",
             ConfigsTab::Rules => "Instruction files loaded into every session, in this order.",
         }
+    }
+
+    /// Where omp reads this tab's files from.
+    fn places(self) -> &'static str {
+        match self {
+            ConfigsTab::Agents => ".omp/agents/ or ~/.omp/agent/agents/",
+            ConfigsTab::Skills => ".omp/skills/<name>/SKILL.md or ~/.omp/agent/skills/",
+            _ => "RULES.md, AGENTS.md or ~/.omp/agent/RULES.md",
+        }
+    }
+}
+
+impl NavItem for ConfigsTab {
+    fn label(self) -> &'static str {
+        match self {
+            ConfigsTab::Models => "Model roles",
+            ConfigsTab::Agents => "Agents",
+            ConfigsTab::Skills => "Skills",
+            ConfigsTab::Tools => "Tools & MCP",
+            ConfigsTab::Rules => "Rules",
+        }
+    }
+
+    fn group(self) -> Option<&'static str> {
+        Some(match self {
+            ConfigsTab::Models => "Models",
+            ConfigsTab::Agents | ConfigsTab::Skills => "Delegation",
+            ConfigsTab::Tools | ConfigsTab::Rules => "Behavior",
+        })
     }
 }
 
@@ -62,12 +79,18 @@ pub enum SettingsTab {
 }
 
 impl SettingsTab {
-    const ALL: [(SettingsTab, &'static str); 4] = [
-        (SettingsTab::General, "General"),
-        (SettingsTab::Peers, "Peers & sharing"),
-        (SettingsTab::Harnesses, "Harnesses"),
-        (SettingsTab::Updates, "Updates"),
-    ];
+    const ALL: [SettingsTab; 4] = [SettingsTab::General, SettingsTab::Peers, SettingsTab::Harnesses, SettingsTab::Updates];
+}
+
+impl NavItem for SettingsTab {
+    fn label(self) -> &'static str {
+        match self {
+            SettingsTab::General => "General",
+            SettingsTab::Peers => "Peers & sharing",
+            SettingsTab::Harnesses => "Harnesses",
+            SettingsTab::Updates => "Updates",
+        }
+    }
 }
 
 /// A Markdown definition file omp reads.
@@ -88,293 +111,37 @@ pub struct Docs {
     pub full: bool,
 }
 
-/// Lists the definition files for a tab, project scope first.
+/// Lists the definition files of `tab`, project scope first.
 pub fn scan(tab: ConfigsTab, project: &Path, home: Option<&Path>) -> Vec<DocFile> {
     let global = home.map(|home| home.join(".omp/agent"));
-    let mut out = Vec::new();
-    let mut push = |path: PathBuf, name: String, scope: &'static str| {
-        if let Ok(text) = std::fs::read_to_string(&path) {
-            out.push(DocFile { name, path, scope, text });
-        }
-    };
-    let markdown_in = |dir: &Path| -> Vec<PathBuf> {
-        let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .map(|entry| entry.path())
-            .filter(|path| path.extension().is_some_and(|ext| ext == "md"))
-            .collect();
+    // The files in `dir` (or `<dir>/*/SKILL.md` with `skill`), named by stem or folder.
+    let list = |dir: &Path, skill: bool| -> Vec<(PathBuf, String)> {
+        let entries = std::fs::read_dir(dir).into_iter().flatten().flatten().map(|entry| entry.path());
+        let mut files: Vec<_> = match skill {
+            true => entries.map(|path| path.join("SKILL.md")).filter(|path| path.is_file()).collect(),
+            false => entries.filter(|path| path.extension().is_some_and(|ext| ext == "md")).collect(),
+        };
         files.sort();
-        files
+        let name = |path: &Path| if skill { path.parent().and_then(Path::file_name) } else { path.file_stem() }.map(|name| name.to_string_lossy().into_owned());
+        files.into_iter().map(|path| (path.clone(), name(&path).unwrap_or_default())).collect()
     };
-    let skill_dirs = |dir: &Path| -> Vec<PathBuf> {
-        let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .map(|entry| entry.path().join("SKILL.md"))
-            .filter(|path| path.is_file())
-            .collect();
-        files.sort();
-        files
-    };
-    let stem = |path: &Path| path.file_stem().map(|stem| stem.to_string_lossy().into_owned()).unwrap_or_default();
-    let parent_name = |path: &Path| {
-        path.parent().and_then(Path::file_name).map(|name| name.to_string_lossy().into_owned()).unwrap_or_default()
-    };
+    let mut found: Vec<(PathBuf, String, &'static str)> = Vec::new();
+    let mut add = |files: Vec<(PathBuf, String)>, scope| found.extend(files.into_iter().map(|(path, name)| (path, name, scope)));
     match tab {
-        ConfigsTab::Agents => {
-            for path in markdown_in(&project.join(".omp/agents")) {
-                let name = stem(&path);
-                push(path, name, "This project");
-            }
+        ConfigsTab::Agents | ConfigsTab::Skills => {
+            let (local, shared, skill) = if tab == ConfigsTab::Agents { (".omp/agents", "agents", false) } else { (".omp/skills", "skills", true) };
+            add(list(&project.join(local), skill), "This project");
             if let Some(global) = &global {
-                for path in markdown_in(&global.join("agents")) {
-                    let name = stem(&path);
-                    push(path, name, "All projects");
-                }
-            }
-        }
-        ConfigsTab::Skills => {
-            for path in skill_dirs(&project.join(".omp/skills")) {
-                let name = parent_name(&path);
-                push(path, name, "This project");
-            }
-            if let Some(global) = &global {
-                for path in skill_dirs(&global.join("skills")) {
-                    let name = parent_name(&path);
-                    push(path, name, "All projects");
-                }
+                add(list(&global.join(shared), skill), "All projects");
             }
         }
         ConfigsTab::Rules => {
-            if let Some(global) = &global {
-                push(global.join("RULES.md"), "RULES.md".into(), "All projects");
-            }
-            for name in ["RULES.md", "AGENTS.md", "CLAUDE.md"] {
-                push(project.join(name), name.into(), "This project");
-            }
+            add(global.iter().map(|global| (global.join("RULES.md"), "RULES.md".to_owned())).collect(), "All projects");
+            add(["RULES.md", "AGENTS.md", "CLAUDE.md"].map(|name| (project.join(name), name.to_owned())).to_vec(), "This project");
         }
         ConfigsTab::Models | ConfigsTab::Tools => {}
     }
-    out
-}
-
-fn home() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(PathBuf::from)
-}
-
-#[derive(Debug, Clone)]
-pub enum WindowMessage {
-    OpenConfigs(ConfigsTab),
-    PickDoc(usize),
-    ToggleDocFull,
-    OpenSettings(SettingsTab),
-    CloseOverlay,
-    SetTheme(Preference),
-}
-
-impl App {
-    pub(super) fn window_update(&mut self, message: WindowMessage) -> Task<Message> {
-        match message {
-            WindowMessage::OpenConfigs(tab) => {
-                self.overlay = Some(Overlay::Configs(tab));
-                self.docs = Docs { files: scan(tab, &self.ctx.services.cwd, home().as_deref()), selected: 0, full: false };
-                let load = match tab {
-                    ConfigsTab::Models => self.update(Message::Models(areas::models::Message::Show(Page::Settings))),
-                    _ => Task::none(),
-                };
-                // Areas open their own screen when they load; Configs draws them instead.
-                self.ctx.close_screen();
-                load
-            }
-            WindowMessage::PickDoc(index) => {
-                self.docs.selected = index.min(self.docs.files.len().saturating_sub(1));
-                Task::none()
-            }
-            WindowMessage::ToggleDocFull => {
-                self.docs.full = !self.docs.full;
-                Task::none()
-            }
-            WindowMessage::OpenSettings(tab) => {
-                self.overlay = Some(Overlay::Settings(tab));
-                let load = match tab {
-                    SettingsTab::Harnesses => self.update(Message::Models(areas::models::Message::Show(Page::SignIn))),
-                    SettingsTab::Updates => self.update(Message::Updater(areas::updater::Message::Open)),
-                    SettingsTab::Peers => self.update(Message::Peers(areas::peers::Message::Refresh)),
-                    SettingsTab::General => Task::none(),
-                };
-                self.ctx.close_screen();
-                load
-            }
-            WindowMessage::CloseOverlay => {
-                self.overlay = None;
-                Task::none()
-            }
-            WindowMessage::SetTheme(preference) => {
-                self.update(Message::Shell(layout::Message::SetTheme(preference)))
-            }
-        }
-    }
-
-    /// The Configs window, drawn over the app.
-    pub(super) fn configs_view(&self, tab: ConfigsTab) -> Element<'_, Message> {
-        let wrap = |message: WindowMessage| Message::Window(message);
-        let mut nav = Column::new().spacing(2).padding([16, 10]).width(200);
-        let mut group = "";
-        for (item, title, heading) in ConfigsTab::ALL {
-            if heading != group {
-                group = heading;
-                nav = nav.push(container(text(heading).size(12).style(style::faint)).padding([10, 10]));
-            }
-            nav = nav.push(
-                button(text(title).size(14))
-                    .on_press(wrap(WindowMessage::OpenConfigs(item)))
-                    .style(style::row_for(item == tab))
-                    .padding([7, 10])
-                    .width(Fill),
-            );
-        }
-
-        let header = row![
-            column![text(tab.title()).size(20).font(semibold()), text(tab.blurb()).size(13).style(style::muted)]
-                .spacing(4)
-                .width(Fill),
-            button(muted(Icon::X, 15.0)).on_press(wrap(WindowMessage::CloseOverlay)).style(style::ghost_button).padding(6),
-        ]
-        .spacing(12)
-        .align_y(Alignment::Start);
-
-        let ctx = &self.ctx;
-        let body: Element<'_, Message> = match tab {
-            ConfigsTab::Models => self.areas.models.page_body(Page::Settings).map(Message::Models),
-            ConfigsTab::Tools => {
-                self.areas.tools.view_tab("tools", ctx).map(|view| view.map(Message::Tools)).unwrap_or_else(|| text("").into())
-            }
-            ConfigsTab::Agents | ConfigsTab::Skills | ConfigsTab::Rules => self.docs_view(tab),
-        };
-
-        if self.docs.full && matches!(tab, ConfigsTab::Agents | ConfigsTab::Skills | ConfigsTab::Rules) {
-            return window_frame(self.docs_view(tab));
-        }
-
-        window_frame(row![
-            container(nav).style(style::side).height(Fill),
-            rule::vertical(1).style(style::divider),
-            column![container(header).padding([20, 28]), container(body).width(Fill).height(Fill).padding([0, 28])].width(Fill),
-        ])
-    }
-
-    fn docs_view(&self, tab: ConfigsTab) -> Element<'_, Message> {
-        let wrap = |message: WindowMessage| Message::Window(message);
-        let docs = &self.docs;
-        if docs.files.is_empty() {
-            let place = match tab {
-                ConfigsTab::Agents => ".omp/agents/ or ~/.omp/agent/agents/",
-                ConfigsTab::Skills => ".omp/skills/<name>/SKILL.md or ~/.omp/agent/skills/",
-                _ => "RULES.md, AGENTS.md or ~/.omp/agent/RULES.md",
-            };
-            return container(text!("Nothing yet. omp reads these from {place}.").size(14).style(style::muted))
-                .style(style::card)
-                .padding(20)
-                .width(Fill)
-                .into();
-        }
-        let mut list = Column::new().spacing(2).width(240);
-        for (index, file) in docs.files.iter().enumerate() {
-            list = list.push(
-                button(column![text(file.name.as_str()).size(14), text(file.scope).size(12).style(style::faint)].spacing(2))
-                    .on_press(wrap(WindowMessage::PickDoc(index)))
-                    .style(style::row_for(index == docs.selected))
-                    .padding([8, 12])
-                    .width(Fill),
-            );
-        }
-        let file = &docs.files[docs.selected.min(docs.files.len() - 1)];
-        let lines = file.text.lines().count();
-        let toolbar = row![
-            text(file.path.display().to_string()).size(12).font(iced::Font::MONOSPACE).style(style::muted).width(Fill),
-            text!("{lines} lines").size(12).style(style::faint),
-            button(row![muted(if docs.full { Icon::Minimize } else { Icon::Maximize }, 13.0), text(if docs.full { "Exit full screen" } else { "Full screen" }).size(13)].spacing(6).align_y(Alignment::Center))
-                .on_press(wrap(WindowMessage::ToggleDocFull))
-                .style(style::ghost_button)
-                .padding([5, 8]),
-        ]
-        .spacing(12)
-        .align_y(Alignment::Center);
-        let content = scrollable(container(text(file.text.as_str()).size(13).font(iced::Font::MONOSPACE)).padding(16).width(Fill))
-            .direction(scrollable::Direction::Both { vertical: Default::default(), horizontal: Default::default() })
-            .height(if docs.full { Length::Fill } else { Length::Fixed(420.0) });
-        let viewer = column![toolbar, container(content).style(style::side).width(Fill)].spacing(8).width(Fill);
-        if docs.full {
-            return container(viewer).padding(24).style(style::surface).width(Fill).height(Fill).into();
-        }
-        row![list, viewer].spacing(20).into()
-    }
-
-    /// The Settings window, drawn over the app.
-    pub(super) fn settings_view(&self, tab: SettingsTab) -> Element<'_, Message> {
-        let wrap = |message: WindowMessage| Message::Window(message);
-        let mut nav = Column::new().spacing(2).padding([18, 10]).width(200);
-        nav = nav.push(container(text("Settings").size(18).font(semibold())).padding([0, 10]));
-        nav = nav.push(space().height(8));
-        for (item, title) in SettingsTab::ALL {
-            nav = nav.push(
-                button(text(title).size(14))
-                    .on_press(wrap(WindowMessage::OpenSettings(item)))
-                    .style(style::row_for(item == tab))
-                    .padding([7, 10])
-                    .width(Fill),
-            );
-        }
-        let title = SettingsTab::ALL.iter().find(|(item, _)| *item == tab).map_or("", |(_, title)| title);
-        let header = row![
-            text(title).size(16).font(semibold()).width(Fill),
-            button(muted(Icon::X, 15.0)).on_press(wrap(WindowMessage::CloseOverlay)).style(style::ghost_button).padding(6),
-        ]
-        .align_y(Alignment::Center);
-        let ctx = &self.ctx;
-        let body: Element<'_, Message> = match tab {
-            SettingsTab::General => self.general_settings(),
-            SettingsTab::Peers => {
-                self.areas.peers.view_tab("peers", ctx).map(|view| view.map(Message::Peers)).unwrap_or_else(|| text("").into())
-            }
-            SettingsTab::Harnesses => self.areas.models.page_body(Page::SignIn).map(Message::Models),
-            SettingsTab::Updates => {
-                self.areas.updater.view_screen(ctx).map(|view| view.map(Message::Updater)).unwrap_or_else(|| text("").into())
-            }
-        };
-        window_frame(row![
-            container(nav).style(style::side).height(Fill),
-            column![container(header).padding([16, 20]), container(body).padding([0, 20]).width(Fill).height(Fill)].width(Fill),
-        ])
-    }
-
-    fn general_settings(&self) -> Element<'_, Message> {
-        let current = self.ctx.shell.theme_preference();
-        let mut choices = row![].spacing(6);
-        for preference in Preference::ALL {
-            choices = choices.push(
-                button(text(preference.to_string()).size(13))
-                    .on_press(Message::Window(WindowMessage::SetTheme(preference)))
-                    .style(if preference == current { style::primary_button } else { style::secondary_button })
-                    .padding([6, 12]),
-            );
-        }
-        let setting = |label: &'static str, help: &'static str, control: Element<'static, Message>| -> Element<'static, Message> {
-            row![column![text(label).size(14), text(help).size(13).style(style::faint)].spacing(2).width(Fill), control]
-                .spacing(16)
-                .align_y(Alignment::Center)
-                .into()
-        };
-        column![
-            setting("Theme", "Follows your system unless set", choices.into()),
-            rule::horizontal(1).style(style::divider),
-        ]
-        .spacing(14)
-        .into()
-    }
+    found.into_iter().filter_map(|(path, name, scope)| Some(DocFile { text: std::fs::read_to_string(&path).ok()?, name, path, scope })).collect()
 }
 
 /// A window drawn over the app.
@@ -385,13 +152,282 @@ pub enum Overlay {
     Settings(SettingsTab),
 }
 
-/// The frame both windows draw their content in.
-fn window_frame<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
-    container(content).style(style::window).width(900).height(640).clip(true).into()
+/// What a detached window shows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Detached {
+    /// A panel tab, by id.
+    Tab(String),
+    /// A session (a subagent's), by library id.
+    Session(String),
 }
 
-pub(crate) fn semibold() -> iced::Font {
-    iced::Font { weight: iced::font::Weight::Bold, ..iced::Font::default() }
+impl Detached {
+    fn size(&self) -> Size {
+        match self {
+            Detached::Tab(tab) if !tab.starts_with("surface") => Size::new(width(LayoutRole::DetachWidth), width(LayoutRole::DetachHeight)),
+            _ => Size::new(width(LayoutRole::PopupWidth), width(LayoutRole::TallHeight)),
+        }
+    }
+}
+
+/// The app's windows: the overlay and the detached ones.
+#[derive(Default)]
+pub(crate) struct Windows {
+    pub overlay: Option<Overlay>,
+    pub docs: Docs,
+    main: Option<window::Id>,
+    detached: Vec<(window::Id, Detached)>,
+}
+
+#[derive(Debug, Clone)]
+pub enum WindowMessage {
+    OpenConfigs(ConfigsTab),
+    PickDoc(usize),
+    ToggleDocFull,
+    OpenSettings(SettingsTab),
+    /// Closes Configs, Settings or Usage.
+    CloseOverlay,
+    SetTheme(ThemeRef),
+    /// Shows a panel tab in its own window.
+    Detach(String),
+    /// Brings a detached tab's window forward.
+    Show(String),
+    /// Puts a detached tab back in the panel.
+    ReattachTab(String),
+    /// A detached window's Reattach button.
+    Reattach(window::Id),
+    /// A window closed (the main one or a detached one).
+    Closed(window::Id),
+}
+
+/// Settings of a new window of `size`.
+fn settings(size: Size) -> window::Settings {
+    window::Settings { size, min_size: Some(Size::new(width(LayoutRole::MinWidth), width(LayoutRole::MinHeight))), ..window::Settings::default() }
+}
+
+/// The frame Configs and Settings draw their content in.
+fn window_frame<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+    container(content).style(style::container(Surface::Popup)).width(width(LayoutRole::WindowWidth)).height(width(LayoutRole::WindowHeight)).clip(true).into()
+}
+
+impl App {
+    /// Opens the main window, once, when the daemon boots.
+    pub fn open_main(&mut self) -> Task<Message> {
+        let (id, open) = window::open(settings(Size::new(width(LayoutRole::MainWidth), width(LayoutRole::MainHeight))));
+        self.windows.main = Some(id);
+        open.discard()
+    }
+
+    pub(super) fn window_update(&mut self, message: WindowMessage) -> Task<Message> {
+        let windows = &mut self.windows;
+        match message {
+            WindowMessage::OpenConfigs(tab) => {
+                windows.overlay = Some(Overlay::Configs(tab));
+                windows.docs = Docs { files: scan(tab, self.ctx.runtime.cwd(), loa_util::fs::home().as_deref()), selected: 0, full: false };
+                let load = match tab {
+                    ConfigsTab::Models => self.update(Message::area(areas::models::Message::Show(Page::Settings))),
+                    ConfigsTab::Agents => self.update(Message::area(areas::agents::Message::Open)),
+                    _ => Task::none(),
+                };
+                // Areas open their own screen when they load; Configs draws them instead.
+                self.ctx.close_screen();
+                load
+            }
+            WindowMessage::PickDoc(index) => {
+                windows.docs.selected = index.min(windows.docs.files.len().saturating_sub(1));
+                Task::none()
+            }
+            WindowMessage::ToggleDocFull => {
+                windows.docs.full = !windows.docs.full;
+                Task::none()
+            }
+            WindowMessage::OpenSettings(tab) => {
+                windows.overlay = Some(Overlay::Settings(tab));
+                let load = match tab {
+                    SettingsTab::Harnesses => self.update(Message::area(areas::models::Message::Show(Page::SignIn))),
+                    SettingsTab::Updates => self.update(Message::area(areas::updater::Message::Open)),
+                    SettingsTab::Peers => self.update(Message::area(areas::peers::Message::Refresh)),
+                    SettingsTab::General => Task::none(),
+                };
+                self.ctx.close_screen();
+                load
+            }
+            WindowMessage::CloseOverlay => {
+                windows.overlay = None;
+                Task::none()
+            }
+            WindowMessage::SetTheme(preference) => self.update(Message::Shell(loa_ui_shell::Message::SetTheme(preference))),
+            WindowMessage::Detach(tab) => self.detach(Detached::Tab(tab)),
+            WindowMessage::Show(tab) => match self.detached_window(&Detached::Tab(tab)) {
+                Some(id) => window::gain_focus(id),
+                None => Task::none(),
+            },
+            WindowMessage::ReattachTab(tab) => match self.detached_window(&Detached::Tab(tab)) {
+                Some(id) => self.window_update(WindowMessage::Reattach(id)),
+                None => Task::none(),
+            },
+            WindowMessage::Reattach(id) => {
+                let Some(what) = self.forget_window(id) else { return Task::none() };
+                let show = if let Detached::Tab(tab) = what { tab } else { "agents".to_owned() };
+                self.ctx.shell.show_tab(&show);
+                Task::batch([window::close(id), self.ctx.shell.reveal_active_tab()])
+            }
+            // The main window quits the app; a detached one gives its view back to the panel.
+            WindowMessage::Closed(id) if windows.main == Some(id) => iced::exit(),
+            WindowMessage::Closed(id) => {
+                self.forget_window(id);
+                Task::none()
+            }
+        }
+    }
+
+    fn detached_window(&self, what: &Detached) -> Option<window::Id> {
+        self.windows.detached.iter().find(|(_, shown)| shown == what).map(|(id, _)| *id)
+    }
+
+    /// Shows `what` in its own window, or brings its window forward.
+    pub(super) fn detach(&mut self, what: Detached) -> Task<Message> {
+        if let Some(id) = self.detached_window(&what) {
+            return window::gain_focus(id);
+        }
+        let (id, open) = window::open(settings(what.size()));
+        self.windows.detached.push((id, what));
+        self.sync_detached();
+        open.discard()
+    }
+
+    /// Drops detached window `id` and what it showed.
+    fn forget_window(&mut self, id: window::Id) -> Option<Detached> {
+        let index = self.windows.detached.iter().position(|(window, _)| *window == id)?;
+        let (_, what) = self.windows.detached.remove(index);
+        if let Detached::Session(session) = &what {
+            self.sessions.detached.remove(session);
+        }
+        self.sync_detached();
+        Some(what)
+    }
+
+    fn sync_detached(&mut self) {
+        let tabs = self.windows.detached.iter().filter_map(|(_, what)| if let Detached::Tab(tab) = what { Some(tab.clone()) } else { None }).collect();
+        self.ctx.shell.set_detached(tabs);
+    }
+
+    /// Loads a session without making it active and shows it in a window.
+    pub(super) fn detach_session(&mut self, session: &str) -> Task<Message> {
+        if let Err(error) = self.ctx.runtime.load_session(session) {
+            self.ctx.notify(error);
+            return Task::none();
+        }
+        if let Some(open) = self.ctx.runtime.sessions().get(session) {
+            let theme = self.theme();
+            self.sessions.detached.entry(session.to_owned()).or_insert_with(|| loa_ui_session::transcript::State::from_dom(open.dom(), &theme));
+        }
+        self.detach(Detached::Session(session.to_owned()))
+    }
+
+    /// The title of window `id`.
+    pub fn title(&self, id: window::Id) -> String {
+        match self.windows.detached.iter().find(|(window, _)| *window == id) {
+            Some((_, what)) => format!("{} — Loa", self.detached_title(what)),
+            None => "Loa".to_owned(),
+        }
+    }
+
+    fn detached_title(&self, what: &Detached) -> String {
+        match what {
+            Detached::Tab(tab) => self.ctx.shell.tabs().iter().find(|shown| shown.id == *tab).map_or(tab.clone(), |shown| shown.title.clone()),
+            Detached::Session(session) => self.ctx.shell.sidebar().session(session).map_or_else(|| "Subagent".to_owned(), |summary| summary.title.clone()),
+        }
+    }
+
+    /// Draws a window: the app in the main one, the detached view elsewhere.
+    pub fn view_window(&self, id: window::Id) -> Element<'_, Message> {
+        let Some((_, what)) = self.windows.detached.iter().find(|(window, _)| *window == id) else { return self.view() };
+        let body = match what {
+            Detached::Tab(tab) => self.view_tab(tab),
+            Detached::Session(session) => self.detached_session(session),
+        };
+        let header = row![tinted(Icon::ExternalLink, TextRole::Body, Tone::Muted), label(self.detached_title(what), TextRole::Body, Tone::Normal).width(Fill)]
+            .push(text_button("Reattach", ButtonKind::Ghost, Some(Message::Window(WindowMessage::Reattach(id)))))
+            .spacing(sp(SpaceRole::S))
+            .align_y(Alignment::Center);
+        let header = container(header).padding([sp(SpaceRole::Xs), sp(SpaceRole::M)]).style(style::container(Surface::Side));
+        container(column![header, rule::horizontal(1).style(style::rule), container(body).width(Fill).height(Fill)]).style(style::container(Surface::Ground)).width(Fill).height(Fill).into()
+    }
+
+    fn detached_session(&self, session: &str) -> Element<'_, Message> {
+        let center = |s| container(label(s, TextRole::Body, Tone::Muted)).center(Fill).into();
+        let Some(open) = self.ctx.runtime.sessions().get(session) else { return center("This session is no longer loaded") };
+        let Some(chat) = self.sessions.detached.get(session) else { return center("Loading…") };
+        let owned = session.to_owned();
+        chat.view(open.dom(), move |message| Message::DetachedChat(owned.clone(), message), |slot| self.decision_card(open.id().as_str(), slot.node))
+    }
+
+    /// The Configs window, drawn over the app.
+    pub(super) fn configs_view(&self, tab: ConfigsTab) -> Element<'_, Message> {
+        let documents = matches!(tab, ConfigsTab::Agents | ConfigsTab::Skills | ConfigsTab::Rules);
+        if self.windows.docs.full && documents {
+            return window_frame(self.docs_view(tab));
+        }
+        let ctx = &self.ctx;
+        let content = match tab {
+            ConfigsTab::Models => self.areas.get::<areas::models::State>().page_body(Page::Settings).map(Message::area),
+            ConfigsTab::Tools => self.areas.get::<areas::tools::State>().view_tab("tools", ctx).map_or_else(|| text("").into(), |view| view.map(Message::area)),
+            ConfigsTab::Agents => self.areas.get::<areas::agents::State>().configs_body(ctx).map_or_else(|| self.docs_view(tab), |view| view.map(Message::area)),
+            _ => self.docs_view(tab),
+        };
+        let close = icon_button(Icon::X, "Close", Some(Message::Window(WindowMessage::CloseOverlay)));
+        let body = column![section_header(tab.label(), [close]), label(tab.blurb(), TextRole::Label, Tone::Muted), container(content).height(Fill)];
+        window_frame(side_nav(None, &ConfigsTab::ALL, tab, |tab| Message::Window(WindowMessage::OpenConfigs(tab)), body.spacing(sp(SpaceRole::M)).into()))
+    }
+
+    fn docs_view(&self, tab: ConfigsTab) -> Element<'_, Message> {
+        let docs = &self.windows.docs;
+        let Some(file) = docs.files.get(docs.selected) else {
+            return card(label(format!("Nothing yet. omp reads these from {}.", tab.places()), TextRole::Body, Tone::Muted)).width(Fill).into();
+        };
+        let rows = docs.files.iter().enumerate().map(|(index, file)| two_line_row(file.name.as_str(), file.scope, index == docs.selected, Message::Window(WindowMessage::PickDoc(index))));
+        let list = column(rows).spacing(sp(SpaceRole::Xs)).width(width(LayoutRole::NavWidth));
+        let full = if docs.full { "Exit full screen" } else { "Full screen" };
+        let toolbar = row![label(file.path.display().to_string(), TextRole::Caption, Tone::Muted).width(Fill), label(format!("{} lines", file.text.lines().count()), TextRole::Caption, Tone::Faint)]
+            .push(text_button(full, ButtonKind::Ghost, Some(Message::Window(WindowMessage::ToggleDocFull))))
+            .spacing(sp(SpaceRole::M))
+            .align_y(Alignment::Center);
+        let content = scrollable(mono_block(file.text.as_str())).direction(scrollable::Direction::Both { vertical: Default::default(), horizontal: Default::default() });
+        let viewer = column![toolbar, content.height(if docs.full { Length::Fill } else { Length::Fixed(width(LayoutRole::ListWidth)) })].spacing(sp(SpaceRole::S)).width(Fill);
+        if docs.full {
+            return container(viewer).padding(sp(SpaceRole::Xl)).style(style::container(Surface::Ground)).width(Fill).height(Fill).into();
+        }
+        row![list, viewer].spacing(sp(SpaceRole::L)).into()
+    }
+
+    /// The Settings window, drawn over the app.
+    pub(super) fn settings_view(&self, tab: SettingsTab) -> Element<'_, Message> {
+        let ctx = &self.ctx;
+        let missing = || text("").into();
+        let content = match tab {
+            SettingsTab::General => self.general_settings(),
+            SettingsTab::Peers => self.areas.get::<areas::peers::State>().view_tab("peers", ctx).map_or_else(missing, |view| view.map(Message::area)),
+            SettingsTab::Harnesses => self.areas.get::<areas::models::State>().page_body(Page::SignIn).map(Message::area),
+            SettingsTab::Updates => self.areas.get::<areas::updater::State>().view_screen(ctx).map_or_else(missing, |view| view.map(Message::area)),
+        };
+        let close = icon_button(Icon::X, "Close", Some(Message::Window(WindowMessage::CloseOverlay)));
+        let body = column![section_header(tab.label(), [close]), container(content).height(Fill)].spacing(sp(SpaceRole::M));
+        let nav = side_nav(Some("Settings"), &SettingsTab::ALL, tab, |tab| Message::Window(WindowMessage::OpenSettings(tab)), body.into());
+        window_frame(nav)
+    }
+
+    fn general_settings(&self) -> Element<'_, Message> {
+        let theme = self.ctx.shell.theme_state();
+        let current = theme.preference().as_str();
+        let choices = theme.themes().into_iter().map(|(id, name)| {
+            let kind = if id == current { ButtonKind::Primary } else { ButtonKind::Secondary };
+            text_button(name, kind, Some(Message::Window(WindowMessage::SetTheme(ThemeRef(id)))))
+        });
+        let help = column![label("Theme", TextRole::Body, Tone::Normal), label("Follows your system unless set", TextRole::Label, Tone::Faint)].width(Fill);
+        let setting = row![help, row(choices).spacing(sp(SpaceRole::Xs))].spacing(sp(SpaceRole::L)).align_y(Alignment::Center);
+        column![setting, rule::horizontal(1).style(style::rule)].spacing(sp(SpaceRole::M)).into()
+    }
 }
 
 #[cfg(test)]
@@ -413,10 +449,8 @@ mod tests {
         let agents = scan(ConfigsTab::Agents, project.path(), Some(home.path()));
         let names: Vec<_> = agents.iter().map(|f| (f.name.as_str(), f.scope)).collect();
         assert_eq!(names, [("reviewer", "This project"), ("explore", "All projects")]);
-
         let skills = scan(ConfigsTab::Skills, project.path(), Some(home.path()));
         assert_eq!(skills.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["git-workflow"]);
-
         let rules = scan(ConfigsTab::Rules, project.path(), Some(home.path()));
         assert_eq!(rules.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["AGENTS.md"]);
     }

@@ -1,11 +1,21 @@
 [package]
 name = "loa-bus"
-description = "Session writer and publish subscribe of patches with per subscriber backpressure"
+description = "Session writer, publish subscribe of patches, and the append only prost journal behind them"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+loa-util.workspace = true
 loa-core.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+prost.workspace = true
+crc32fast = "1.5"
+
+[dev-dependencies]
+tempfile.workspace = true
+loa-bus = { path = ".", features = ["testkit"] }
+
+[features]
+testkit = ["loa-core/testkit"]

@@ -1,45 +1,32 @@
 //! A peer's session opened on this node: a live, read-only mirror kept
-//! current over `omp/session/1`. Drive grants prompt the owner's harness and
-//! answer its decision cards; fork grants copy the session to this node. The
-//! owner stays the single writer: nothing here writes the mirror.
+//! current over `omp/session/1`.
 
-use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
-use iced::futures::{SinkExt, Stream};
 use iced::widget::{button, column, container, row, text, text_input};
-use iced::{Alignment, Element, Fill, Padding, Subscription, Task, Theme};
-use loa_bus::{Event, Policy, SessionWriter};
-use loa_core::{Dom, NodeId, Op, Patch, attr};
-use loa_grants::Action;
-use loa_models::login::UrlOpener;
-use loa_models::opener::SystemUrlOpener;
-use loa_node::RemoteView;
-use loa_ui_chat as chat;
-use loa_ui_decisions as cards;
-use loa_ui_icons::{Icon, icon};
-use loa_ui_peers as peers;
-use loa_ui_shell::SessionSummary;
-use loa_ui_shell::theme::style;
+use iced::{Alignment, Element, Fill, Subscription, Task, Theme};
+use loa_bus::{Event, Policy};
+use loa_core::{Dom, NodeId, Op, attr};
+use loa_trust::Action;
+use loa_p2p::RemoteView;
+use loa_ui_session::transcript as chat;
+use loa_ui_session::decisions as cards;
+use loa_ui_kit::icons::tinted;
+use loa_ui_kit::style::{self, ButtonKind, Tone};
+use loa_ui_kit::widgets::{icon_button, label, text_button};
+use loa_ui_kit::theme::{LayoutRole, SpaceRole, TextRole, sp, text_size as ts, width};
+use loa_view::session::{decisions, transcript};
+use loa_view::settings::peers::Intent;
+use loa_view::theme::Icon;
+use loa_contracts::session::SessionSummary;
 
 use super::{Message, State};
-use crate::area::{AreaId, Ctx};
-
-/// Width of the prompt box: the transcript's column width.
-const PROMPT_WIDTH: f32 = 700.0;
+use crate::area::{perform, Area, Ctx};
+use loa_runtime::session::{Feed, WriterFeed};
+use crate::watch::{PtrKey, watch};
 
 /// Patches the mirror's feed may hold before it resubscribes.
 const FEED_CAPACITY: usize = 4096;
-
-/// What the mirror's feed delivers.
-#[derive(Clone, Debug)]
-pub enum Feed {
-    /// The mirror's DOM when the feed (re)subscribed.
-    Synced(Arc<Dom>),
-    Patch(Arc<Patch>),
-    /// The view stopped following the owner.
-    Ended,
-}
 
 #[derive(Clone, Debug)]
 pub enum RemoteMessage {
@@ -86,16 +73,6 @@ impl Remote {
         self.view.peer().to_string() == peer && self.view.session() == session
     }
 
-    #[cfg(test)]
-    pub fn dom(&self) -> &Dom {
-        &self.dom
-    }
-
-    #[cfg(test)]
-    pub fn view_handle(&self) -> &Arc<RemoteView> {
-        &self.view
-    }
-
     /// The title Recents shows: the `title` attribute, else the first prompt.
     pub fn title(&self) -> String {
         SessionSummary::from_dom(&self.dom, false)
@@ -115,7 +92,19 @@ impl Remote {
                     self.reload(Arc::unwrap_or_clone(dom));
                 }
             }
-            Feed::Patch(patch) => {
+            Feed::Events(events) => events.into_iter().for_each(|event| self.event(event)),
+            Feed::Ended => {
+                self.ended = Some(self.view.ended().unwrap_or_else(|| "the owner closed the session".to_owned()));
+                self.cards.set_viewer(cards::Viewer { by: String::new(), view_only: true });
+                self.cards.sync(&self.dom);
+            }
+        }
+    }
+
+    /// One event of a feed batch, oldest first.
+    fn event(&mut self, event: Event) {
+        match event {
+            Event::Patch(patch) => {
                 if patch.seq <= self.dom.seq() {
                     return;
                 }
@@ -130,11 +119,8 @@ impl Remote {
                     self.cards.sync(&self.dom);
                 }
             }
-            Feed::Ended => {
-                self.ended = Some(self.view.ended().unwrap_or_else(|| "the owner closed the session".to_owned()));
-                self.cards.set_viewer(cards::Viewer { by: String::new(), view_only: true });
-                self.cards.sync(&self.dom);
-            }
+            // Merged appends only reach coalescing feeds; take the DOM.
+            _ => self.reload(self.view.writer().with_dom(Dom::clone)),
         }
     }
 
@@ -142,8 +128,11 @@ impl Remote {
         self.ended.is_none() && self.view.can(Action::Drive)
     }
 
+    /// The mirror's DOM, then each patch; resubscribes after falling behind
+    /// and reports the end when the view stops following the owner.
     pub fn subscription(&self) -> Subscription<RemoteMessage> {
-        Subscription::run_with(Watch(Arc::clone(self.view.writer())), feed).map(RemoteMessage::Feed)
+        let writer = Arc::clone(self.view.writer());
+        watch(PtrKey(self.view.writer()), move || WriterFeed::new(writer, Policy::every_patch(FEED_CAPACITY)), |feed| Some(RemoteMessage::Feed(feed)))
     }
 
     pub fn view(&self) -> Element<'_, RemoteMessage> {
@@ -154,16 +143,9 @@ impl Remote {
             self.peer_name,
             if access.is_empty() { "some prompts".to_owned() } else { access.join(", ") }
         );
-        let fork = self.view.can(Action::Fork).then(|| {
-            button(text("Fork to this node").size(13)).style(button::secondary).on_press(RemoteMessage::Fork)
-        });
-        let header = row![
-            column![text(self.title()).size(20), text(subtitle).size(12).style(style::muted)].spacing(4).width(Fill),
-        ]
-        .push(fork)
-        .push(button(icon(Icon::X, 16.0)).style(button::text).on_press(RemoteMessage::Close))
-        .spacing(12)
-        .align_y(Alignment::Center);
+        let fork = self.view.can(Action::Fork).then(|| text_button("Fork to this node", ButtonKind::Secondary, Some(RemoteMessage::Fork)));
+        let title = column![label(self.title(), TextRole::Title, Tone::Normal), label(subtitle, TextRole::Caption, Tone::Muted)].spacing(sp(SpaceRole::Xs)).width(Fill);
+        let header = row![title].push(fork).push(icon_button(Icon::X, "Close", Some(RemoteMessage::Close))).spacing(sp(SpaceRole::M)).align_y(Alignment::Center);
         let transcript = self.chat.view(&self.dom, RemoteMessage::Chat, |slot| {
             self.cards
                 .view_card(slot.node)
@@ -171,30 +153,21 @@ impl Remote {
                 .unwrap_or_else(|| text("Decision no longer available").into())
         });
         let footer: Element<'_, RemoteMessage> = if let Some(reason) = &self.ended {
-            text(format!("No longer following {}: {reason}", self.peer_name)).size(12).style(style::muted).into()
+            label(format!("No longer following {}: {reason}", self.peer_name), TextRole::Caption, Tone::Muted).into()
         } else if self.can_drive() {
             let ready = !self.sending && !self.input.trim().is_empty();
-            row![
-                text_input(&format!("Prompt {}'s harness", self.peer_name), &self.input)
-                    .on_input(RemoteMessage::Input)
-                    .on_submit_maybe(ready.then_some(RemoteMessage::Send))
-                    .style(style::input)
-                    .padding(10)
-                    .size(14),
-                button(icon(Icon::ArrowUp, 16.0)).style(button::primary).padding(10).on_press_maybe(ready.then_some(RemoteMessage::Send)),
-            ]
-            .spacing(8)
-            .align_y(Alignment::Center)
-            .into()
+            let input = text_input(&format!("Prompt {}'s harness", self.peer_name), &self.input).on_input(RemoteMessage::Input).on_submit_maybe(ready.then_some(RemoteMessage::Send));
+            let send = button(tinted(Icon::ArrowUp, TextRole::Heading, Tone::OnAccent)).style(style::button(ButtonKind::Primary)).padding(sp(SpaceRole::S)).on_press_maybe(ready.then_some(RemoteMessage::Send));
+            row![input.style(style::input).padding(sp(SpaceRole::S)).size(ts(TextRole::Body)), send].spacing(sp(SpaceRole::S)).align_y(Alignment::Center).into()
         } else {
-            text(format!("View only: {}'s grant doesn't let this node prompt or answer", self.peer_name)).size(12).style(style::muted).into()
+            label(format!("View only: {}'s grant doesn't let this node prompt or answer", self.peer_name), TextRole::Caption, Tone::Muted).into()
         };
         column![
-            container(header).padding([16, 24]),
+            container(header).padding([sp(SpaceRole::L), sp(SpaceRole::Xl)]),
             container(transcript).height(Fill),
-            container(container(footer).width(Fill).max_width(PROMPT_WIDTH))
+            container(container(footer).width(Fill).max_width(width(LayoutRole::ComposerWidth)))
                 .center_x(Fill)
-                .padding(Padding { top: 8.0, right: 24.0, bottom: 16.0, left: 24.0 }),
+                .padding(loa_ui_kit::theme::pad_x(SpaceRole::Xl).top(sp(SpaceRole::S)).bottom(sp(SpaceRole::L))),
         ]
         .into()
     }
@@ -211,9 +184,9 @@ impl State {
             RemoteMessage::Chat(message) => {
                 let (task, event) = remote.chat.update(message);
                 match event {
-                    Some(chat::Event::Rewind(_)) => ctx.notify("Only the owner rewinds this session; fork it to rewind a copy on this node"),
-                    Some(chat::Event::OpenLink(url)) => {
-                        if let Err(error) = SystemUrlOpener.open_url(&url) {
+                    Some(transcript::Intent::Rewind(_)) => ctx.notify("Only the owner rewinds this session; fork it to rewind a copy on this node"),
+                    Some(transcript::Intent::OpenLink(url)) => {
+                        if let Err(error) = ctx.backends.opener.open_url(&url) {
                             ctx.notify(error);
                         }
                     }
@@ -223,20 +196,20 @@ impl State {
             }
             RemoteMessage::Card(message) => {
                 // Card keys act only while this screen shows.
-                if matches!(message, cards::Message::Shortcut(_)) && ctx.screen() != Some(AreaId::Peers) {
+                if matches!(message, cards::Message::Shortcut(_)) && ctx.screen() != Some(super::State::ID) {
                     return Task::none();
                 }
                 let (task, event) = remote.cards.update(message);
                 let answer = match event {
-                    Some(cards::Event::Answer { decision, answer }) => {
+                    Some(decisions::Intent::Answer { decision, answer }) => {
                         let view = Arc::clone(&remote.view);
-                        Task::perform(
-                            async move { view.answer(decision, answer.values, answer.reason).await.map_err(|error| error.to_string()) },
+                        perform(
+            async move { view.answer(decision, answer.values, answer.reason).await },
                             move |result| Message::Remote(RemoteMessage::Answered(decision, result)),
                         )
                     }
-                    Some(cards::Event::OpenLink(url)) => {
-                        if let Err(error) = SystemUrlOpener.open_url(&url) {
+                    Some(decisions::Intent::OpenLink(url)) => {
+                        if let Err(error) = ctx.backends.opener.open_url(&url) {
                             ctx.notify(error);
                         }
                         Task::none()
@@ -263,7 +236,7 @@ impl State {
                 }
                 remote.sending = true;
                 let view = Arc::clone(&remote.view);
-                Task::perform(async move { view.prompt(&text).await.map_err(|error| error.to_string()) }, |result| {
+                perform(async move { view.prompt(&text).await }, |result| {
                     Message::Remote(RemoteMessage::Sent(result))
                 })
             }
@@ -276,7 +249,7 @@ impl State {
                 Task::none()
             }
             RemoteMessage::Fork => {
-                let event = peers::Event::ForkRemote { peer: remote.view.peer().to_string(), session: remote.view.session().to_owned() };
+                let event = Intent::ForkRemote { peer: remote.view.peer().to_string(), session: remote.view.session().to_owned() };
                 self.apply(event, ctx)
             }
             RemoteMessage::Close => {
@@ -286,42 +259,4 @@ impl State {
             }
         }
     }
-}
-
-/// Identifies the mirror's feed: another view gets a new one.
-pub(crate) struct Watch(pub(crate) Arc<SessionWriter>);
-
-impl Hash for Watch {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        std::ptr::hash(Arc::as_ptr(&self.0), state);
-    }
-}
-
-/// The mirror's DOM, then each patch; resubscribes after falling behind and
-/// reports the end when the view stops following the owner.
-pub(crate) fn feed(watch: &Watch) -> impl Stream<Item = Feed> + use<> {
-    let writer = Arc::clone(&watch.0);
-    iced::stream::channel(64, async move |mut out: iced::futures::channel::mpsc::Sender<Feed>| {
-        loop {
-            let (dom, mut subscription) = writer.subscribe(Policy::every_patch(FEED_CAPACITY));
-            if out.send(Feed::Synced(Arc::new(dom))).await.is_err() {
-                return;
-            }
-            loop {
-                match subscription.recv().await {
-                    None => {
-                        let _ = out.send(Feed::Ended).await;
-                        return;
-                    }
-                    Some(Event::Lagged { .. }) => break,
-                    Some(Event::Patch(patch)) => {
-                        if out.send(Feed::Patch(patch)).await.is_err() {
-                            return;
-                        }
-                    }
-                    Some(Event::Appends(_)) => break,
-                }
-            }
-        }
-    })
 }

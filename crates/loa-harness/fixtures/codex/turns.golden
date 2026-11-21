@@ -1,0 +1,141 @@
+! error a turn is already running
+= Waiting
+! error harness protocol error: `bogus` isn't an answer to this decision
+> 71 {"decision":"acceptForSession"}
+> 72 {"decision":"decline"}
+= Idle
+= Waiting
+> 42 {"answers":{"first":{"answers":["Pear"]},"second":{"answers":["4"]}}}
+> 43 {"answers":{}}
+> "p-1" {"permissions":{"network":true},"scope":"turn"}
+> "p-2" {"permissions":{}}
+! error harness protocol error: a form answer must be one JSON object
+> 44 {"action":"accept","content":{"name":"x"}}
+> 45 {"action":"accept","content":null}
+> 46 {"action":"decline","content":null}
+> 48 host project_search {"query":"x"}
+> 49 error -32601 item/unknown/request isn't supported
+= Idle
+= Idle
+= Closed
+<session nid="1" created.int="T" cwd="/work/invented" effort="high" harness="codex" id="session-invented" mode="plan" model="gpt-other" native_id="thread-one" node="local-node" schema.int="1">
+  <turn nid="2" ended.int="T" id="turn-one" started.int="T" status="done">
+    <message nid="3" by="person" role="user" status="done">Inspect inventory</message>
+    <message nid="4" id="message-one" model="gpt-invented" role="assistant" status="done">Inventory ready</message>
+    <message nid="5" id="thought-one" kind="thinking" model="gpt-invented" role="assistant" status="done">Checking
+
+More</message>
+    <call nid="6" call_id="command-one" ended.int="T" started.int="T" status="done" title="printf inventory" tool="exec_command">
+      <input nid="7">{"command":"printf inventory","cwd":"/work/invented"}</input>
+      <decision nid="8" answer.list="['allow_session']" by="person" call.int="6" created.int="T" ended.int="T" kind="approval" options.list="['allow_once', 'allow_session', 'deny']" request_id="71" status="answered" title="Run command">printf inventory
+
+needs a shell</decision>
+      <result nid="9" is_error.bool="false" x-exit-code.int="0">inventory
+</result>
+      <usage nid="10" duration_ms.int="12"/>
+    </call>
+    <call nid="11" call_id="patch-one" ended.int="T" started.int="T" status="cancelled" title="Edit inventory.txt" tool="apply_patch">
+      <input nid="12">{"changes":[{"diff":"@@ -1 +1 @@\n-old\n+new","kind":{"type":"update"},"path":"inventory.txt"}]}</input>
+      <decision nid="13" answer.list="['deny']" by="person" call.int="11" created.int="T" ended.int="T" kind="approval" options.list="['allow_once', 'allow_session', 'deny']" request_id="72" status="answered" title="Apply patch">update inventory.txt
+@@ -1 +1 @@
+-old
++new
+
+
+update inventory</decision>
+      <result nid="14" is_error.bool="false"/>
+    </call>
+    <call nid="15" call_id="mcp-one" ended.int="T" started.int="T" status="done" title="catalog: lookup" tool="mcp__catalog__lookup">
+      <input nid="16">{"item":"inventory"}</input>
+      <result nid="17" is_error.bool="false">found</result>
+    </call>
+    <call nid="18" call_id="mcp-two" ended.int="T" started.int="T" status="error" title="catalog: lookup" tool="mcp__catalog__lookup">
+      <input nid="19">{}</input>
+      <result nid="20" is_error.bool="true">boom</result>
+    </call>
+    <call nid="21" call_id="cmd-two" ended.int="T" started.int="T" status="error" title="false" tool="exec_command">
+      <input nid="22">{"command":"false","cwd":null}</input>
+      <result nid="23" is_error.bool="true" x-exit-code.int="1"/>
+    </call>
+    <call nid="24" call_id="web-1" ended.int="T" started.int="T" status="cancelled" title="tomatoes" tool="web_search">
+      <input nid="25">{"query":"tomatoes"}</input>
+    </call>
+    <call nid="26" call_id="img-1" ended.int="T" started.int="T" status="done" title="/a.png" tool="view_image">
+      <input nid="27">{"path":"/a.png"}</input>
+      <result nid="28" is_error.bool="false"/>
+    </call>
+    <ext nid="29" harness="codex" type="item:futureThing">{"id":"odd-1","type":"futureThing","x":1}</ext>
+    <ext nid="33" harness="codex" type="turn/diff/updated">{"diff":"x","turnId":"turn-one"}</ext>
+    <ext nid="34" harness="codex" type="error">hard</ext>
+    <usage nid="35" cache_read_tokens.int="7" cache_write_tokens.int="2" input_tokens.int="32" output_tokens.int="12"/>
+  </turn>
+  <todo nid="30" state="done">Look</todo>
+  <todo nid="31" state="cancelled">Fix</todo>
+  <todo nid="32" state="cancelled">Ship</todo>
+  <turn nid="36" ended.int="T" id="turn-q" started.int="T" status="error">
+    <message nid="37" by="person" role="user" status="done">Plan</message>
+    <message nid="38" id="plan-1" model="gpt-rerouted" role="assistant" status="done" x-codex-item="plan">1. Do it well</message>
+    <decision nid="39" answer.list="['Pear']" by="person" created.int="T" ended.int="T" kind="question" options.list="['Apple', 'Pear']" request_id="42" status="answered" title="First">Which fruit?</decision>
+    <decision nid="40" answer.list="['4']" by="person" created.int="T" ended.int="T" kind="question" options.list="[]" request_id="42" status="answered" title="Second">Quantity?</decision>
+    <decision nid="41" answer.list="['allow_once']" by="person" created.int="T" ended.int="T" kind="approval" options.list="['allow_once', 'allow_session', 'deny']" request_id="p-1" status="answered" title="Grant permissions">{"network":true}</decision>
+    <decision nid="42" answer.list="['deny']" by="person" created.int="T" ended.int="T" kind="approval" options.list="['allow_once', 'allow_session', 'deny']" request_id="p-2" status="answered" title="Grant permissions">{"fs":true}</decision>
+    <decision nid="43" answer.list="['{&quot;name&quot;:&quot;x&quot;}']" by="person" created.int="T" ended.int="T" fields="{&quot;type&quot;:&quot;object&quot;}" kind="form" request_id="44" status="answered" title="forms">Fill in</decision>
+    <decision nid="44" answer.list="['allow_once']" by="person" created.int="T" ended.int="T" kind="approval" options.list="['allow_once', 'deny']" request_id="45" status="answered" title="auth">Log in
+
+https://example.invalid</decision>
+    <decision nid="45" answer.list="['reject']" by="person" created.int="T" ended.int="T" fields="" kind="form" request_id="46" status="answered" title="forms">Again</decision>
+    <decision nid="46" created.int="T" ended.int="T" kind="approval" options.list="['allow_once', 'deny']" request_id="47" status="cancelled" title="Allow network access to example.invalid">example.invalid</decision>
+    <call nid="47" call_id="dyn-1" ended.int="T" started.int="T" status="error" tool="loa.search">
+      <input nid="48">{}</input>
+      <result nid="49" is_error.bool="true">no</result>
+    </call>
+    <call nid="50" call_id="spawn-1" ended.int="T" started.int="T" status="done" title="Check the docs" tool="spawn_agent">
+      <input nid="51">{"model":null,"prompt":"Check the docs\nthoroughly","receiverThreadIds":["agent-a"]}</input>
+      <result nid="53" is_error.bool="false">{"agent-a":{"status":"running"}}</result>
+    </call>
+    <job nid="52" agent="agent-a" call.int="50" ended.int="T" id="agent-a" kind="subagent" started.int="T" status="done" title="Check the docs"/>
+    <call nid="54" call_id="wait-1" ended.int="T" started.int="T" status="done" tool="wait">
+      <input nid="55">{"model":null,"prompt":null,"receiverThreadIds":["agent-a"]}</input>
+      <result nid="56" is_error.bool="false">{"agent-a":{"status":"completed"}}</result>
+    </call>
+    <ext nid="57" harness="codex" type="error">quota</ext>
+  </turn>
+  <turn nid="58" ended.int="T" id="turn-self" started.int="T" status="done">
+    <message nid="59" id="u-self" role="user" status="done">from cli</message>
+    <message nid="60" id="m-self" model="gpt-rerouted" role="assistant" status="done">seeded</message>
+  </turn>
+  <compaction nid="61" covers.list="[2, 36, 58]" created.int="T"/>
+  <turn nid="62" ended.int="T" id="turn-next" started.int="T" status="cancelled">
+    <message nid="63" id="r-1" kind="thinking" model="gpt-rerouted" role="assistant" status="cancelled">early</message>
+  </turn>
+  <turn nid="64" ended.int="T" started.int="T" status="error">
+    <message nid="65" by="person" role="user" status="done">rejected</message>
+    <ext nid="66" harness="codex" type="error">turn/start failed</ext>
+  </turn>
+  <turn nid="67" ended.int="T" id="turn-a" started.int="T" status="cancelled">
+    <message nid="68" by="person" role="user" status="done">Inspect</message>
+    <message nid="69" id="msg-a" model="gpt-other" role="assistant" status="cancelled">partial</message>
+    <call nid="70" call_id="shell-a" ended.int="T" started.int="T" status="cancelled" title="slow-command" tool="exec_command">
+      <input nid="71">{"command":"slow-command","cwd":null}</input>
+      <decision nid="72" call.int="70" created.int="T" ended.int="T" kind="approval" options.list="['allow_once', 'allow_session', 'deny']" request_id="12" status="cancelled" title="Run command">slow-command</decision>
+    </call>
+  </turn>
+  <turn nid="73" ended.int="T" id="turn-z" started.int="T" status="cancelled">
+    <message nid="74" by="person" role="user" status="done">left open</message>
+    <message nid="75" id="msg-z" model="gpt-other" role="assistant" status="cancelled">half</message>
+    <call nid="76" call_id="shell-z" ended.int="T" started.int="T" status="cancelled" title="make" tool="exec_command">
+      <input nid="77">{"command":"make","cwd":null}</input>
+      <decision nid="78" call.int="76" created.int="T" ended.int="T" kind="approval" options.list="['allow_once', 'allow_session', 'deny']" request_id="13" status="cancelled" title="Run command">make</decision>
+    </call>
+    <call nid="79" call_id="spawn-z" ended.int="T" started.int="T" status="done" tool="spawn_agent">
+      <input nid="80">{"model":null,"prompt":null,"receiverThreadIds":["agent-z"]}</input>
+      <result nid="82" is_error.bool="false"/>
+    </call>
+    <job nid="81" agent="agent-z" call.int="79" ended.int="T" id="agent-z" kind="subagent" started.int="T" status="cancelled"/>
+  </turn>
+  <turn nid="83" ended.int="T" id="turn-b" started.int="T" status="error">
+    <message nid="84" by="person" role="user" status="done">after attach</message>
+    <message nid="85" id="msg-b" model="gpt-other" role="assistant" status="error">partial</message>
+    <ext nid="86" harness="codex" type="exit">codex exited</ext>
+  </turn>
+</session>

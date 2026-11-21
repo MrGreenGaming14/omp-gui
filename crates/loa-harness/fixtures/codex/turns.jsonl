@@ -1,0 +1,107 @@
+# A turn with streamed messages, reasoning, commands, a patch, MCP and usage.
+! prompt Inspect inventory
+! prompt busy
+{"method":"turn/started","params":{"turn":{"id":"turn-one"}}}
+! accepted turn-one
+{"method":"item/started","params":{"turnId":"turn-one","item":{"id":"user-1","type":"userMessage","content":[{"type":"text","text":"Inspect inventory"}]}}}
+{"method":"item/agentMessage/delta","params":{"turnId":"turn-one","itemId":"message-one","delta":"Inventory "}}
+{"method":"item/agentMessage/delta","params":{"turnId":"turn-one","itemId":"message-one","delta":"ready"}}
+{"method":"item/completed","params":{"turnId":"turn-one","item":{"id":"message-one","type":"agentMessage","text":"Inventory ready"}}}
+{"method":"item/reasoning/summaryTextDelta","params":{"turnId":"turn-one","itemId":"thought-one","delta":"Checking"}}
+{"method":"item/reasoning/summaryPartAdded","params":{"turnId":"turn-one","itemId":"thought-one"}}
+{"method":"item/reasoning/summaryTextDelta","params":{"turnId":"turn-one","itemId":"thought-one","delta":"More"}}
+{"method":"item/completed","params":{"turnId":"turn-one","item":{"id":"thought-one","type":"reasoning","summary":["Checking","More"]}}}
+{"method":"item/started","params":{"turnId":"turn-one","item":{"id":"command-one","type":"commandExecution","command":"printf inventory","cwd":"/work/invented"}}}
+{"id":71,"method":"item/commandExecution/requestApproval","params":{"turnId":"turn-one","itemId":"command-one","command":"printf inventory","reason":"needs a shell"}}
+! state
+! answer 0 bogus
+! answer 0 allow_session
+{"method":"item/commandExecution/outputDelta","params":{"itemId":"command-one","delta":"inventory\n"}}
+{"method":"item/completed","params":{"turnId":"turn-one","item":{"id":"command-one","type":"commandExecution","command":"printf inventory","aggregatedOutput":"inventory\n","exitCode":0,"status":"completed","durationMs":12}}}
+{"method":"item/started","params":{"turnId":"turn-one","item":{"id":"patch-one","type":"fileChange","changes":[{"path":"inventory.txt","kind":{"type":"update"},"diff":"@@ -1 +1 @@\n-old\n+new"}]}}}
+{"id":72,"method":"item/fileChange/requestApproval","params":{"turnId":"turn-one","itemId":"patch-one","reason":"update inventory"}}
+! answer 1 deny
+{"method":"item/completed","params":{"turnId":"turn-one","item":{"id":"patch-one","type":"fileChange","status":"declined","changes":[]}}}
+{"method":"item/completed","params":{"turnId":"turn-one","item":{"id":"mcp-one","type":"mcpToolCall","server":"catalog","tool":"lookup","arguments":{"item":"inventory"},"result":{"content":[{"type":"text","text":"found"}]}}}}
+{"method":"item/completed","params":{"turnId":"turn-one","item":{"id":"mcp-two","type":"mcpToolCall","server":"catalog","tool":"lookup","arguments":{},"error":{"message":"boom"}}}}
+{"method":"item/started","params":{"turnId":"turn-one","item":{"id":"cmd-two","type":"commandExecution","command":"false"}}}
+{"method":"item/completed","params":{"turnId":"turn-one","item":{"id":"cmd-two","type":"commandExecution","command":"false","exitCode":1}}}
+{"method":"item/started","params":{"turnId":"turn-one","item":{"id":"web-1","type":"webSearch","query":"tomatoes"}}}
+{"method":"item/started","params":{"turnId":"turn-one","item":{"id":"img-1","type":"imageView","path":"/a.png"}}}
+{"method":"item/completed","params":{"turnId":"turn-one","item":{"id":"img-1","type":"imageView","path":"/a.png"}}}
+{"method":"item/completed","params":{"turnId":"turn-one","item":{"id":"odd-1","type":"futureThing","x":1}}}
+{"method":"thread/tokenUsage/updated","params":{"tokenUsage":{"last":{"inputTokens":31,"cachedInputTokens":7,"outputTokens":11}}}}
+{"method":"thread/tokenUsage/updated","params":{"tokenUsage":{"last":{"inputTokens":1,"outputTokens":1,"cacheWriteInputTokens":2}}}}
+{"method":"turn/plan/updated","params":{"plan":[{"step":"Look","status":"completed"},{"step":"Fix","status":"inProgress"},{"step":"Ship","status":"pending"}]}}
+{"method":"turn/diff/updated","params":{"turnId":"turn-one","diff":"x"}}
+{"method":"turn/diff/updated","params":{"turnId":"other","diff":"x"}}
+{"method":"model/rerouted","params":{"toModel":"gpt-rerouted"}}
+{"method":"error","params":{"willRetry":true,"error":{"message":"retrying"}}}
+{"method":"error","params":{"error":{"message":"hard"}}}
+{"method":"turn/completed","params":{"turn":{"id":"other","status":"completed"}}}
+{"method":"turn/completed","params":{"turn":{"id":"turn-one","status":"completed"}}}
+! state
+# Plans, questions, permissions, elicitations and host tools.
+! prompt Plan
+{"method":"item/plan/delta","params":{"turnId":"turn-q","itemId":"plan-1","delta":"1. Do it"}}
+{"method":"item/completed","params":{"turnId":"turn-q","item":{"id":"plan-1","type":"plan","text":"1. Do it well"}}}
+{"method":"turn/plan/updated","params":{"plan":[{"step":"Look","status":"completed"}]}}
+{"id":42,"method":"item/tool/requestUserInput","params":{"turnId":"turn-q","questions":[{"id":"first","header":"First","question":"Which fruit?","options":[{"label":"Apple"},{"label":"Pear"}]},{"id":"second","header":"Second","question":"Quantity?","options":[]}]}}
+! answer 2 Pear
+! state
+! answer 3 4
+{"id":43,"method":"item/tool/requestUserInput","params":{"turnId":"turn-q","questions":[]}}
+{"id":"p-1","method":"item/permissions/requestApproval","params":{"turnId":"turn-q","permissions":{"network":true}}}
+! answer 4 allow_once
+{"id":"p-2","method":"item/permissions/requestApproval","params":{"turnId":"turn-q","permissions":{"fs":true}}}
+! answer 5 deny
+{"id":44,"method":"mcpServer/elicitation/request","params":{"turnId":"turn-q","serverName":"forms","message":"Fill in","mode":"form","requestedSchema":{"type":"object"}}}
+! answer 6 not json
+! answer 6 {"name":"x"}
+{"id":45,"method":"mcpServer/elicitation/request","params":{"turnId":"turn-q","serverName":"auth","message":"Log in","mode":"url","url":"https://example.invalid"}}
+! answer 7 allow_once
+{"id":46,"method":"mcpServer/elicitation/request","params":{"turnId":"turn-q","serverName":"forms","message":"Again","mode":"form"}}
+! answer 8 reject
+{"id":47,"method":"item/commandExecution/requestApproval","params":{"turnId":"turn-q","kind":"humanCommand","networkApprovalContext":{"host":"example.invalid"}}}
+{"method":"serverRequest/resolved","params":{"requestId":47}}
+{"id":48,"method":"item/tool/call","params":{"turnId":"turn-q","tool":"project_search","arguments":{"query":"x"}}}
+{"id":49,"method":"item/unknown/request","params":{}}
+{"method":"item/completed","params":{"turnId":"turn-q","item":{"id":"dyn-1","type":"dynamicToolCall","namespace":"loa","tool":"search","arguments":{},"success":false,"contentItems":[{"type":"inputText","text":"no"}]}}}
+{"method":"item/started","params":{"turnId":"turn-q","item":{"id":"spawn-1","type":"collabAgentToolCall","tool":"spawnAgent","prompt":"Check the docs\nthoroughly","receiverThreadIds":["agent-a"]}}}
+{"method":"item/completed","params":{"turnId":"turn-q","item":{"id":"spawn-1","type":"collabAgentToolCall","tool":"spawnAgent","prompt":"Check the docs\nthoroughly","receiverThreadIds":["agent-a"],"agentsStates":{"agent-a":{"status":"running"}}}}}
+{"method":"item/completed","params":{"turnId":"turn-q","item":{"id":"wait-1","type":"collabAgentToolCall","tool":"wait","receiverThreadIds":["agent-a"],"agentsStates":{"agent-a":{"status":"completed"}}}}}
+{"method":"turn/completed","params":{"turn":{"id":"turn-q","status":"failed","error":{"message":"quota"}}}}
+# Codex starts a turn on its own; compaction covers earlier turns.
+{"method":"item/started","params":{"turnId":"turn-self","item":{"id":"u-self","type":"userMessage","content":[{"type":"text","text":"from cli"}]}}}
+{"method":"item/started","params":{"turnId":"turn-self","item":{"id":"m-self","type":"agentMessage","text":"seeded"}}}
+{"method":"item/completed","params":{"turnId":"turn-self","item":{"id":"ctx","type":"contextCompaction"}}}
+{"method":"item/started","params":{"turnId":"turn-next","item":{"id":"r-1","type":"reasoning","summary":["early"]}}}
+{"method":"turn/completed","params":{"turn":{"id":"turn-next","status":"interrupted"}}}
+! model gpt-other
+! effort high
+! mode plan
+! prompt rejected
+! rejected turn/start failed
+# An interrupted turn cancels open calls, messages and decisions.
+! prompt Inspect
+{"method":"turn/started","params":{"turn":{"id":"turn-a"}}}
+{"method":"item/agentMessage/delta","params":{"turnId":"turn-a","itemId":"msg-a","delta":"partial"}}
+{"method":"item/started","params":{"turnId":"turn-a","item":{"id":"shell-a","type":"commandExecution","command":"slow-command"}}}
+{"id":12,"method":"item/commandExecution/requestApproval","params":{"turnId":"turn-a","itemId":"shell-a","command":"slow-command"}}
+{"method":"turn/completed","params":{"turn":{"id":"turn-a","status":"interrupted"}}}
+! state
+# Attaching cancels what a dead process left open.
+! prompt left open
+{"method":"turn/started","params":{"turn":{"id":"turn-z"}}}
+{"method":"item/agentMessage/delta","params":{"turnId":"turn-z","itemId":"msg-z","delta":"half"}}
+{"method":"item/started","params":{"turnId":"turn-z","item":{"id":"shell-z","type":"commandExecution","command":"make"}}}
+{"id":13,"method":"item/commandExecution/requestApproval","params":{"turnId":"turn-z","itemId":"shell-z","command":"make"}}
+{"method":"item/completed","params":{"turnId":"turn-z","item":{"id":"spawn-z","type":"collabAgentToolCall","tool":"spawnAgent","receiverThreadIds":["agent-z"]}}}
+! attach
+! state
+! prompt after attach
+{"method":"turn/started","params":{"turn":{"id":"turn-b"}}}
+{"method":"item/agentMessage/delta","params":{"turnId":"turn-b","itemId":"msg-b","delta":"partial"}}
+! exited codex exited
+! state
+{"method":"turn/started","params":{"turn":{"id":"turn-c"}}}

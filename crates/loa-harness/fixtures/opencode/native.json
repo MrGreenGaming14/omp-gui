@@ -1,0 +1,17 @@
+{
+  "info": {"id": "ses_fixture", "title": "Example", "directory": "/work", "time": {"created": 100, "updated": 130, "future": 42}, "projectID": "p", "version": "1", "plugin": {"flag": true}},
+  "messages": [
+    {"info": {"id": "msg_user", "sessionID": "ses_fixture", "role": "user", "time": {"created": 101}, "model": {"providerID": "p", "modelID": "m"}, "future": "yes"},
+     "parts": [{"id": "prt_user", "sessionID": "ses_fixture", "messageID": "msg_user", "type": "text", "text": "hi", "future": {"x": 2}}]},
+    {"info": {"id": "msg_assistant", "sessionID": "ses_fixture", "role": "assistant", "parentID": "msg_user", "time": {"created": 102, "completed": 130}, "providerID": "p", "modelID": "m", "tokens": {"input": 2, "output": 4}, "future": false},
+     "parts": [
+       {"id": "prt_reason", "sessionID": "ses_fixture", "messageID": "msg_assistant", "type": "reasoning", "text": "thinking", "time": {"start": 103, "end": 104}, "future": [1, 2]},
+       {"id": "prt_tool", "sessionID": "ses_fixture", "messageID": "msg_assistant", "type": "tool", "callID": "call_1", "tool": "bash", "state": {"status": "completed", "input": {"command": "ls"}, "output": "ok", "title": "List", "time": {"start": 105, "end": 106}}, "future": "tool"},
+       {"id": "prt_fail", "sessionID": "ses_fixture", "messageID": "msg_assistant", "type": "tool", "callID": "call_2", "tool": "read", "state": {"status": "error", "input": {"path": "x"}, "error": "missing", "time": {"start": 107, "end": 108}}},
+       {"id": "prt_step", "sessionID": "ses_fixture", "messageID": "msg_assistant", "type": "step-finish", "reason": "stop", "future": 9},
+       {"id": "prt_answer", "sessionID": "ses_fixture", "messageID": "msg_assistant", "type": "text", "text": "done", "time": {"start": 110, "end": 130}}
+     ]},
+    {"info": {"id": "msg_user2", "sessionID": "ses_fixture", "role": "user", "time": {"created": 140}},
+     "parts": [{"id": "prt_user2", "sessionID": "ses_fixture", "messageID": "msg_user2", "type": "text", "text": "more"}, {"id": "prt_file", "sessionID": "ses_fixture", "messageID": "msg_user2", "type": "file", "url": "file:///a", "mime": "text/plain"}]}
+  ]
+}

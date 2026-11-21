@@ -1,888 +1,249 @@
-//! The app frame: sidebar on the left, top bar above a center slot, and a
-//! toggleable right panel with a tab bar.
-//!
-//! The sidebar and the panel are resizable by their edges, and each of the
-//! three panes can fill the window on its own. The panel remembers its width
-//! and active tab while closed. Tabs are data: the app adds diff, files,
-//! terminal, agents, session tree and surface tabs and draws the body of the
-//! active one.
+//! The app frame: sidebar, top bar over a center slot, and a resizable right panel with tabs.
 
-use crate::data::{NodeStatus, Nodes, SessionSummary, UsageMeter, short_key};
-use crate::theme::{self, Preference, style};
+use crate::theme;
+use loa_view::shell::{Intent, NodeStatus, PanelTab, SessionSummary, SidebarIntent};
+use loa_view::theme::{Appearance, Icon, ThemeRef};
 use crate::{sidebar, topbar};
 use iced::theme::Mode;
 use iced::widget::operation::{self, AbsoluteOffset, RelativeOffset};
-use iced::widget::{button, column, container, mouse_area, row, rule, scrollable, sensor, space, text};
-use iced::{Alignment, Element, Fill, Size, Subscription, Task, Theme, mouse};
-use loa_ui_icons::{Icon, icon, muted};
+use iced::widget::{button, column, container, mouse_area, row, rule, scrollable, sensor};
+use iced::{Alignment, Element, Fill, Length, Size, Subscription, Task, Theme, mouse};
+use loa_ui_kit::icons::tinted;
+use loa_ui_kit::style::{self, ButtonKind, Surface, Tone};
+use loa_ui_kit::theme::{SpaceRole as Sp, TextRole as T, pad_x, sp};
+use loa_ui_kit::widgets::{Tab, icon_button, label, splitter_edge, splitter_width, tab_strip};
 
-/// Width of the sidebar before the user resizes it.
-pub const SIDEBAR_WIDTH: f32 = 272.0;
-
-/// Narrowest the sidebar gets.
-pub const MIN_SIDEBAR_WIDTH: f32 = 200.0;
-
-/// Widest the sidebar gets.
-pub const MAX_SIDEBAR_WIDTH: f32 = 480.0;
-
-/// Narrowest the right panel gets.
-pub const MIN_PANEL_WIDTH: f32 = 240.0;
-
-/// Width of the right panel before the user resizes it.
-pub const DEFAULT_PANEL_WIDTH: f32 = 420.0;
-
-/// Narrowest the center slot gets while the panel is resized.
-pub const MIN_CENTER_WIDTH: f32 = 320.0;
-
-/// Container id of the right panel.
-pub const PANEL_ID: &str = "loa-right-panel";
-
-/// Id of the panel's tab bar, which scrolls sideways when the tabs overflow.
-pub const PANEL_TABS_ID: &str = "loa-panel-tabs";
-
-/// Id of the project tab strip, which scrolls sideways when the tabs overflow.
-pub const PROJECT_TABS_ID: &str = "loa-project-tabs";
-
-/// Container id of the tab of `project` in the project tab strip.
-pub fn project_tab_id(project: &str) -> String {
-    format!("loa-project-tab-{project}")
-}
-
-/// Container id of the close button of the tab of `project`.
-pub fn project_tab_close_id(project: &str) -> String {
-    format!("loa-project-tab-close-{project}")
-}
-
-/// Height of the project tab strip.
+const SIDEBAR_WIDTH: f32 = 272.0;
+const SIDEBAR_WIDTHS: (f32, f32) = (200.0, 480.0);
+const MIN_PANEL_WIDTH: f32 = 240.0;
+const DEFAULT_PANEL_WIDTH: f32 = 420.0;
+const MIN_CENTER_WIDTH: f32 = 320.0;
+const PANEL_TABS_ID: &str = "loa-panel-tabs";
+const PROJECT_TABS_ID: &str = "loa-project-tabs";
+pub const PANEL_DETACH_ID: &str = "loa-panel-detach";
 const PROJECT_TABS_HEIGHT: f32 = 34.0;
-
-/// Pixels a mouse wheel line scrolls the tab bar.
+/// Pixels a mouse wheel line scrolls a tab strip.
 const WHEEL_LINE: f32 = 40.0;
 
-/// Width of the grab areas at the sidebar and panel edges.
-const HANDLE_WIDTH: f32 = 6.0;
-
-/// Container id of the panel's pop-out button.
-pub const PANEL_DETACH_ID: &str = "loa-panel-detach";
-
-/// Container id of the panel's full screen button.
-pub const PANEL_FULL_ID: &str = "loa-panel-full";
-
-/// A pane that can fill the window.
+/// A pane that can fill the window, or whose edge is dragged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Pane {
-    /// The sidebar.
-    Sidebar,
-    /// The top bar and center.
-    Center,
-    /// The right panel.
-    Panel,
-}
+pub enum Pane { Sidebar, Center, Panel }
 
-/// Which edge is being dragged.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Drag {
-    Sidebar,
-    Panel,
-}
-
-/// One tab of the right panel.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PanelTab {
-    /// Stable id the app uses to draw the body, e.g. `"diff"`.
-    pub id: String,
-    /// Label on the tab.
-    pub title: String,
-}
-
-impl PanelTab {
-    /// A tab with this id and label.
-    pub fn new(id: impl Into<String>, title: impl Into<String>) -> Self {
-        Self { id: id.into(), title: title.into() }
-    }
-}
-
-/// Panel settings worth keeping across restarts.
-#[derive(Debug, Clone, PartialEq)]
-pub struct PanelPrefs {
-    /// Whether the panel is open.
-    pub open: bool,
-    /// Width in logical pixels.
-    pub width: f32,
-    /// Id of the active tab.
-    pub active: Option<String>,
-}
-
-impl Default for PanelPrefs {
-    fn default() -> Self {
-        Self { open: true, width: DEFAULT_PANEL_WIDTH, active: None }
-    }
-}
-
-#[derive(Debug, Clone)]
-struct Panel {
-    open: bool,
-    width: f32,
-    tabs: Vec<PanelTab>,
-    /// The tab the user picked. May name a tab not added yet (restored
-    /// prefs); [`State::active_tab`] falls back to the first tab then.
-    active: Option<String>,
-}
-
-/// Frame state: the sidebar, top bar, panel and theme.
 #[derive(Debug, Clone)]
 pub struct State {
     sidebar: sidebar::State,
-    topbar: topbar::State,
-    panel: Panel,
     theme: theme::State,
+    pub(crate) status: Option<String>,
+    panel_open: bool,
+    panel_width: f32,
+    tabs: Vec<PanelTab>,
+    /// The tab the user picked; may name a tab not added yet, then the first tab shows.
+    active: Option<String>,
     frame: Option<Size>,
-    /// Whether the project tab strip is drawn.
     project_tabs: bool,
-    /// The projects with a tab, in order.
     open_projects: Vec<String>,
-    active_project: Option<String>,
     sidebar_width: f32,
-    dragging: Option<Drag>,
+    dragging: Option<Pane>,
     full: Option<Pane>,
     /// Tabs shown in their own window instead of the panel.
     detached: Vec<String>,
 }
 
-/// Internal messages.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Message {
-    /// From the sidebar.
+    /// Pass this intent on as is.
+    Emit(Intent),
     Sidebar(sidebar::Message),
-    /// From the top bar.
-    Topbar(topbar::Message),
-    /// A panel tab was clicked.
     SelectTab(String),
-    /// The mouse wheel turned over the tab bar.
-    TabsWheel(mouse::ScrollDelta),
-    /// A project tab was clicked.
-    OpenProjectTab(String),
-    /// The close button of a project tab was clicked.
-    CloseProjectTab(String),
-    /// The mouse wheel turned over the project tab strip.
-    ProjectTabsWheel(mouse::ScrollDelta),
-    /// The panel edge was grabbed.
-    DragStart,
-    /// The sidebar edge was grabbed.
-    SidebarDragStart,
+    TabsWheel(&'static str, mouse::ScrollDelta),
+    DragStart(Pane),
     /// The cursor moved to this x while an edge is held.
     DragMove(f32),
-    /// The held edge was released.
     DragEnd,
-    /// A pane's full screen button was clicked.
+    TogglePanel,
     ToggleFull(Pane),
-    /// The pop-out button of the active tab was clicked.
-    Detach(String),
-    /// "Show window" on a detached tab's placeholder.
-    ShowDetached(String),
-    /// "Reattach here" on a detached tab's placeholder.
-    Reattach(String),
-    /// The frame was laid out at this size.
     FrameSized(Size),
-    /// The user picked a theme.
-    SetTheme(Preference),
-    /// The system theme changed.
+    SetTheme(ThemeRef),
     SystemTheme(Mode),
 }
 
-/// What the app must act on.
-#[derive(Debug, Clone, PartialEq)]
-pub enum Event {
-    /// Start a new session.
-    NewSession,
-    /// Show this session.
-    OpenSession(String),
-    /// Show this project.
-    OpenProject(String),
-    /// Show the peers list.
-    OpenPeers,
-    /// Show the tools panel.
-    OpenTools,
-    /// Show the updates screen.
-    OpenUpdates,
-    /// Show the usage window.
-    OpenUsage,
-    /// Show the configs screen.
-    OpenConfigs,
-    /// Show the settings window.
-    OpenSettings,
-    /// Persist the pinned flag of a session.
-    SetPinned {
-        /// Session id.
-        id: String,
-        /// New flag.
-        pinned: bool,
-    },
-    /// Persist the pinned flag of a project.
-    SetProjectPinned {
-        /// Project name.
-        project: String,
-        /// New flag.
-        pinned: bool,
-    },
-    /// Drop this project's tab from the strip. Its sessions stay open.
-    CloseProjectTab(String),
-    /// Delete this session and its journal.
-    DeleteSession(String),
-    /// Open the New project screen, from the sidebar's `+`.
-    NewProject,
-    /// Start a new session in this project, from its sidebar row.
-    NewSessionIn(String),
-    /// Ask to delete this project, from its sidebar row.
-    DeleteProject(String),
-    /// Move a session to a project, or out of every project with `None`.
-    MoveSession { id: String, project: Option<String> },
-    /// The right panel opened or closed.
-    PanelToggled {
-        /// Whether it is open now.
-        open: bool,
-    },
-    /// A panel tab became active.
-    SelectTab(String),
-    /// The user finished resizing the panel to this width.
-    PanelResized(f32),
-    /// The user finished resizing the sidebar to this width.
-    SidebarResized(f32),
-    /// Show this tab in its own window.
-    DetachTab(String),
-    /// Bring this detached tab's window to the front.
-    ShowDetached(String),
-    /// Put this detached tab back in the panel.
-    ReattachTab(String),
-    /// The user picked a theme. Persist it.
-    SetTheme(Preference),
-}
-
-impl From<sidebar::Event> for Event {
-    fn from(event: sidebar::Event) -> Self {
-        match event {
-            sidebar::Event::NewSession => Event::NewSession,
-            sidebar::Event::OpenSession(id) => Event::OpenSession(id),
-            sidebar::Event::OpenProject(project) => Event::OpenProject(project),
-            sidebar::Event::OpenPeers => Event::OpenPeers,
-            sidebar::Event::OpenTools => Event::OpenTools,
-            sidebar::Event::OpenUpdates => Event::OpenUpdates,
-            sidebar::Event::OpenUsage => Event::OpenUsage,
-            sidebar::Event::OpenConfigs => Event::OpenConfigs,
-            sidebar::Event::OpenSettings => Event::OpenSettings,
-            sidebar::Event::SetPinned { id, pinned } => Event::SetPinned { id, pinned },
-            sidebar::Event::SetProjectPinned { project, pinned } => Event::SetProjectPinned { project, pinned },
-            sidebar::Event::DeleteSession(id) => Event::DeleteSession(id),
-            sidebar::Event::NewProject => Event::NewProject,
-            sidebar::Event::NewSessionIn(project) => Event::NewSessionIn(project),
-            sidebar::Event::DeleteProject(project) => Event::DeleteProject(project),
-            sidebar::Event::MoveSession { id, project } => Event::MoveSession { id, project },
-        }
-    }
-}
-
 impl State {
-    /// Builds the frame with the saved theme preference and panel settings.
-    /// The task asks the system for its theme.
-    pub fn new(preference: Preference, panel: PanelPrefs) -> (Self, Task<Message>) {
-        let mut topbar = topbar::State::default();
-        topbar.set_panel_open(panel.open);
+    /// The frame with the panel open; the task asks the system for its theme.
+    pub fn new(appearance: Appearance) -> (Self, Task<Message>) {
         let state = Self {
-            sidebar: sidebar::State::default(),
-            topbar,
-            panel: Panel {
-                open: panel.open,
-                width: panel.width.max(MIN_PANEL_WIDTH),
-                tabs: Vec::new(),
-                active: panel.active,
-            },
-            theme: theme::State::new(preference),
-            frame: None,
-            project_tabs: false,
-            open_projects: Vec::new(),
-            active_project: None,
-            sidebar_width: SIDEBAR_WIDTH,
-            dragging: None,
-            full: None,
-            detached: Vec::new(),
+            sidebar: sidebar::State::default(), theme: theme::State::new(appearance), status: None, panel_open: true, panel_width: DEFAULT_PANEL_WIDTH, tabs: Vec::new(), active: None,
+            frame: None, project_tabs: false, open_projects: Vec::new(), sidebar_width: SIDEBAR_WIDTH, dragging: None, full: None, detached: Vec::new(),
         };
-        (state, theme::State::detect().map(Message::SystemTheme))
+        (state, iced::system::theme().map(Message::SystemTheme))
     }
-
-    /// System theme changes.
-    pub fn subscription(&self) -> Subscription<Message> {
-        theme::State::subscription().map(Message::SystemTheme)
+    pub fn subscription(&self) -> Subscription<Message> { iced::system::theme_changes().map(Message::SystemTheme) }
+    pub fn theme(&self) -> Theme { self.theme.theme() }
+    pub fn theme_state(&self) -> &theme::State { &self.theme }
+    /// Replaces the appearance (theme and overrides), e.g. after the config changed.
+    pub fn set_appearance(&mut self, appearance: Appearance) -> Option<Intent> {
+        (self.theme.appearance() != &appearance).then(|| Intent::ThemeChanged(self.theme.set_appearance(appearance)))
     }
-
-    /// The theme to return from the application's `theme` function.
-    pub fn theme(&self) -> Theme {
-        self.theme.theme()
+    pub fn sidebar(&self) -> &sidebar::State { &self.sidebar }
+    pub fn sidebar_mut(&mut self) -> &mut sidebar::State { &mut self.sidebar }
+    /// Highlights the selected project in the sidebar and the project tab strip.
+    pub fn set_active_project(&mut self, project: Option<String>) { self.sidebar.active_project = project }
+    pub fn set_shown_project(&mut self, project: Option<String>) { self.sidebar.shown_project = project }
+    pub fn set_project_tabs(&mut self, enabled: bool) { self.project_tabs = enabled }
+    pub fn project_tabs(&self) -> bool { self.project_tabs }
+    pub fn set_open_projects(&mut self, projects: Vec<String>) { self.open_projects = projects }
+    pub fn open_projects(&self) -> &[String] { &self.open_projects }
+    pub fn full(&self) -> Option<Pane> { self.full }
+    pub fn set_detached(&mut self, tabs: Vec<String>) { self.detached = tabs }
+    pub fn is_detached(&self, tab: &str) -> bool { self.detached.iter().any(|d| d == tab) }
+    /// The short status of the shown session in the top bar, e.g. "Running".
+    pub fn set_session_status(&mut self, status: Option<String>) { self.status = status }
+    /// Replaces the panel tabs; the active tab stays when it is still there.
+    pub fn set_tabs(&mut self, tabs: Vec<PanelTab>) { self.tabs = tabs }
+    pub fn tabs(&self) -> &[PanelTab] { &self.tabs }
+    pub fn panel_open(&self) -> bool { self.panel_open }
+    /// The active session and its node, as the top bar shows them.
+    pub fn breadcrumb(&self) -> Option<(&SessionSummary, NodeStatus)> {
+        let s = self.sidebar.active().and_then(|id| self.sidebar.session(id))?;
+        let nodes = self.sidebar.nodes();
+        Some((s, nodes.get(&s.node).cloned().unwrap_or_else(|| NodeStatus { key: s.node.clone(), name: nodes.name_of(&s.node).to_owned(), online: false, local: false })))
     }
-
-    /// The user's theme preference.
-    pub fn theme_preference(&self) -> Preference {
-        self.theme.preference()
-    }
-
-    /// The sidebar, for reading its lists.
-    pub fn sidebar(&self) -> &sidebar::State {
-        &self.sidebar
-    }
-
-    /// The top bar, for reading its breadcrumb.
-    pub fn topbar(&self) -> &topbar::State {
-        &self.topbar
-    }
-
-    /// Replaces every session.
-    pub fn set_sessions(&mut self, sessions: impl IntoIterator<Item = SessionSummary>) {
-        self.sidebar.set_sessions(sessions);
-        self.refresh_breadcrumb();
-    }
-
-    /// Adds a session or replaces the one with the same id.
-    pub fn upsert_session(&mut self, summary: SessionSummary) {
-        let active = self.sidebar.active() == Some(summary.id.as_str());
-        self.sidebar.upsert_session(summary);
-        if active {
-            self.refresh_breadcrumb();
-        }
-    }
-
-    /// Adds or replaces many sessions at once, e.g. the ones read from disk.
-    pub fn upsert_sessions(&mut self, summaries: impl IntoIterator<Item = SessionSummary>) {
-        self.sidebar.upsert_sessions(summaries);
-        self.refresh_breadcrumb();
-    }
-
-    /// Drops a session.
-    pub fn remove_session(&mut self, id: &str) {
-        self.sidebar.remove_session(id);
-        self.refresh_breadcrumb();
-    }
-
-    /// Replaces the pinned session ids, as saved by the app.
-    pub fn set_pins(&mut self, pins: impl IntoIterator<Item = String>) {
-        self.sidebar.set_pins(pins);
-    }
-
-    /// Replaces the project list.
-    pub fn set_pinned_projects(&mut self, pinned: impl IntoIterator<Item = String>) {
-        self.sidebar.set_pinned_projects(pinned);
-    }
-
-    /// Highlights the project the user selected in the sidebar.
-    /// The project tab strip highlights it too.
-    pub fn set_active_project(&mut self, project: Option<String>) {
-        self.sidebar.set_active_project(project.clone());
-        self.active_project = project;
-    }
-
-    /// Shows or hides the project tab strip. Hidden, the frame is as it was
-    /// without the strip.
-    pub fn set_project_tabs(&mut self, enabled: bool) {
-        self.project_tabs = enabled;
-    }
-
-    /// Whether the project tab strip is drawn.
-    pub fn project_tabs(&self) -> bool {
-        self.project_tabs
-    }
-
-    /// Replaces the projects with a tab, in order.
-    pub fn set_open_projects(&mut self, projects: Vec<String>) {
-        self.open_projects = projects;
-    }
-
-    /// The projects with a tab, in order.
-    pub fn open_projects(&self) -> &[String] {
-        &self.open_projects
-    }
-
-    /// Replaces the project list.
-    pub fn set_projects(&mut self, projects: impl IntoIterator<Item = String>) {
-        self.sidebar.set_projects(projects);
-    }
-
-    /// Replaces the node list.
-    pub fn set_nodes(&mut self, nodes: Vec<NodeStatus>) {
-        self.sidebar.set_nodes(Nodes::new(nodes));
-        self.refresh_breadcrumb();
-    }
-
-    /// Sets how many updates wait for the user; the sidebar lists an
-    /// Updates row while it is non-zero.
-    pub fn set_updates(&mut self, count: usize) {
-        self.sidebar.set_updates(count);
-    }
-
-    /// Sets the sidebar's usage meter.
-    pub fn set_usage(&mut self, usage: Option<UsageMeter>) {
-        self.sidebar.set_usage(usage);
-    }
-
-    /// The sidebar width the user chose.
-    pub fn sidebar_width(&self) -> f32 {
-        self.sidebar_width
-    }
-
-    /// Restores a saved sidebar width.
-    pub fn set_sidebar_width(&mut self, width: f32) {
-        self.sidebar_width = width.clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH);
-    }
-
-    /// The pane filling the window, if any.
-    pub fn full(&self) -> Option<Pane> {
-        self.full
-    }
-
-    /// Tells the panel which tabs show in their own window.
-    pub fn set_detached(&mut self, tabs: Vec<String>) {
-        self.detached = tabs;
-    }
-
-    /// Whether this tab shows in its own window.
-    pub fn is_detached(&self, tab: &str) -> bool {
-        self.detached.iter().any(|detached| detached == tab)
-    }
-
-    /// How many updates wait for the user.
-    pub fn updates(&self) -> usize {
-        self.sidebar.updates()
-    }
-
-    /// Sets the session shown in the center.
-    pub fn set_active_session(&mut self, id: Option<String>) {
-        self.sidebar.set_active(id);
-        self.refresh_breadcrumb();
-    }
-
-    /// Marks the project whose page fills the center (`None` when a session
-    /// or the start screen does): the sidebar highlights it and the top bar
-    /// names it.
-    pub fn set_shown_project(&mut self, project: Option<String>) {
-        if self.sidebar.shown_project() == project.as_deref() {
-            return;
-        }
-        self.sidebar.set_shown_project(project.clone());
-        self.topbar.set_project_page(project);
-    }
-
-    /// Sets the short status of the session shown in the top bar, e.g.
-    /// "Running", "Waiting" or "Interrupted", or `None` to hide it.
-    pub fn set_session_status(&mut self, status: Option<String>) {
-        self.topbar.set_status(status);
-    }
-
-    fn refresh_breadcrumb(&mut self) {
-        let crumb = self.sidebar.active().and_then(|id| self.sidebar.session(id)).map(|session| {
-            let node = self.sidebar.nodes().get(&session.node).cloned().unwrap_or_else(|| NodeStatus {
-                key: session.node.clone(),
-                name: short_key(&session.node).to_owned(),
-                online: false,
-                local: false,
-            });
-            topbar::Breadcrumb {
-                project: session.project.clone(),
-                title: session.title.clone(),
-                waiting: session.waiting,
-                node,
-            }
-        });
-        self.topbar.set_breadcrumb(crumb);
-    }
-
-    /// Replaces the panel tabs. The active tab stays when it is still there.
-    pub fn set_tabs(&mut self, tabs: Vec<PanelTab>) {
-        self.panel.tabs = tabs;
-    }
-
-    /// Adds a tab, or renames the tab with the same id.
+    /// Adds a tab, or replaces the tab with the same id.
     pub fn add_tab(&mut self, tab: PanelTab) {
-        match self.panel.tabs.iter_mut().find(|existing| existing.id == tab.id) {
-            Some(existing) => *existing = tab,
-            None => self.panel.tabs.push(tab),
+        match self.tabs.iter_mut().find(|t| t.id == tab.id) {
+            Some(t) => *t = tab,
+            None => self.tabs.push(tab),
         }
     }
-
-    /// Removes a tab. When it was active, the first tab takes over.
-    pub fn remove_tab(&mut self, id: &str) {
-        self.panel.tabs.retain(|tab| tab.id != id);
-        if self.panel.active.as_deref() == Some(id) {
-            self.panel.active = None;
-        }
-    }
-
-    /// The panel tabs in order.
-    pub fn tabs(&self) -> &[PanelTab] {
-        &self.panel.tabs
-    }
-
-    /// Opens the panel on this tab, e.g. when a file is clicked in the chat.
-    /// Pair it with [`State::reveal_active_tab`] so the tab bar scrolls to
-    /// it when the tabs overflow.
+    /// Opens the panel on this tab; pair it with [`State::reveal_active_tab`].
     pub fn show_tab(&mut self, id: &str) {
-        if self.panel.tabs.iter().any(|tab| tab.id == id) {
-            self.panel.active = Some(id.to_owned());
+        if self.tabs.iter().any(|t| t.id == id) {
+            self.active = Some(id.to_owned());
             self.set_panel_open(true);
         }
     }
-
-    /// Scrolls an overflowing tab bar so the active tab shows: the bar snaps
-    /// to the active tab's share of the bar, so the first and last tabs land
-    /// exactly at the start and the end.
-    pub fn reveal_active_tab<T: Send + 'static>(&self) -> Task<T> {
-        let tabs = &self.panel.tabs;
-        let index = self.active_tab().and_then(|active| tabs.iter().position(|tab| tab.id == active)).unwrap_or(0);
-        let x = match tabs.len() {
-            0 | 1 => 0.0,
-            len => index as f32 / (len - 1) as f32,
-        };
+    /// Snaps an overflowing tab bar to the active tab's share of it, so the first and last tabs land at its ends.
+    pub fn reveal_active_tab<M: Send + 'static>(&self) -> Task<M> {
+        let index = self.active_tab().and_then(|a| self.tabs.iter().position(|t| t.id == a)).unwrap_or(0);
+        let x = if self.tabs.len() < 2 { 0.0 } else { index as f32 / (self.tabs.len() - 1) as f32 };
         operation::snap_to(PANEL_TABS_ID, RelativeOffset { x: Some(x), y: None })
     }
-
-    /// The id of the tab whose body the panel shows.
     pub fn active_tab(&self) -> Option<&str> {
-        let tabs = &self.panel.tabs;
-        self.panel
-            .active
-            .as_deref()
-            .filter(|active| tabs.iter().any(|tab| tab.id == *active))
-            .or_else(|| tabs.first().map(|tab| tab.id.as_str()))
+        self.active.as_deref().filter(|a| self.tabs.iter().any(|t| t.id == *a)).or_else(|| self.tabs.first().map(|t| t.id.as_str()))
     }
-
-    /// Whether the panel is open.
-    pub fn panel_open(&self) -> bool {
-        self.panel.open
-    }
-
-    /// Opens or closes the panel. Width and active tab are kept.
+    /// Opens or closes the panel, keeping width and tab; closing leaves its full screen.
     pub fn set_panel_open(&mut self, open: bool) {
-        self.panel.open = open;
-        if self.dragging == Some(Drag::Panel) {
-            self.dragging = None;
-        }
-        if !open && self.full == Some(Pane::Panel) {
-            self.set_full(None);
-        }
-        self.topbar.set_panel_open(open);
+        self.panel_open = open;
+        if self.dragging == Some(Pane::Panel) { self.dragging = None }
+        if !open && self.full == Some(Pane::Panel) { self.full = None }
     }
-
-    /// The panel width the user chose.
-    pub fn panel_width(&self) -> f32 {
-        self.panel.width
-    }
-
-    /// The panel settings to persist.
-    pub fn panel_prefs(&self) -> PanelPrefs {
-        PanelPrefs { open: self.panel.open, width: self.panel.width, active: self.panel.active.clone() }
-    }
-
-    /// Widest the panel may be in the current frame.
     fn max_panel_width(&self) -> f32 {
-        self.frame.map_or(f32::INFINITY, |frame| {
-            (frame.width - self.sidebar_width - MIN_CENTER_WIDTH - 2.0 * HANDLE_WIDTH).max(MIN_PANEL_WIDTH)
-        })
+        self.frame.map_or(f32::INFINITY, |f| (f.width - self.sidebar_width - MIN_CENTER_WIDTH - 2.0 * splitter_width()).max(MIN_PANEL_WIDTH))
     }
 
-    fn set_full(&mut self, pane: Option<Pane>) {
-        self.full = pane;
-        self.topbar.set_full(pane == Some(Pane::Center));
-    }
-
-    /// Handles a message.
-    pub fn update(&mut self, message: Message) -> (Task<Message>, Option<Event>) {
+    pub fn update(&mut self, message: Message) -> (Task<Message>, Option<Intent>) {
         match message {
-            Message::Sidebar(message) => {
-                let (task, event) = self.sidebar.update(message);
-                if matches!(event, Some(sidebar::Event::OpenSession(_))) {
-                    self.refresh_breadcrumb();
-                }
-                (task.map(Message::Sidebar), event.map(Event::from))
+            Message::Sidebar(m) => {
+                let (task, event) = self.sidebar.update(m);
+                return (task.map(Message::Sidebar), event.map(Intent::Sidebar));
             }
-            Message::Topbar(message) => {
-                let (task, event) = self.topbar.update(message);
-                let event = event.map(|event| match event {
-                    topbar::Event::TogglePanel => {
-                        self.set_panel_open(!self.panel.open);
-                        Some(Event::PanelToggled { open: self.panel.open })
-                    }
-                    topbar::Event::ToggleFull => {
-                        self.set_full(if self.full == Some(Pane::Center) { None } else { Some(Pane::Center) });
-                        None
-                    }
-                    topbar::Event::OpenProject(project) => Some(Event::OpenProject(project)),
-                });
-                (task.map(Message::Topbar), event.flatten())
-            }
-            Message::SelectTab(id) => {
-                let known = self.panel.tabs.iter().any(|tab| tab.id == id);
-                let event = known.then(|| {
-                    self.panel.active = Some(id.clone());
-                    Event::SelectTab(id)
-                });
-                (Task::none(), event)
-            }
-            Message::TabsWheel(delta) => (wheel_tabs(PANEL_TABS_ID, delta), None),
-            Message::ProjectTabsWheel(delta) => (wheel_tabs(PROJECT_TABS_ID, delta), None),
-            Message::OpenProjectTab(project) => (Task::none(), Some(Event::OpenProject(project))),
-            Message::CloseProjectTab(project) => (Task::none(), Some(Event::CloseProjectTab(project))),
-            Message::DragStart => {
-                self.dragging = self.panel.open.then_some(Drag::Panel);
-                (Task::none(), None)
-            }
-            Message::SidebarDragStart => {
-                self.dragging = Some(Drag::Sidebar);
-                (Task::none(), None)
-            }
-            Message::DragMove(x) => {
-                match self.dragging {
-                    Some(Drag::Panel) => {
-                        if let Some(frame) = self.frame {
-                            let width = frame.width - x - HANDLE_WIDTH / 2.0;
-                            self.panel.width = width.min(self.max_panel_width()).max(MIN_PANEL_WIDTH);
-                        }
-                    }
-                    Some(Drag::Sidebar) => {
-                        self.sidebar_width = (x - HANDLE_WIDTH / 2.0).clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH);
-                    }
-                    None => {}
-                }
-                (Task::none(), None)
-            }
-            Message::DragEnd => {
-                let event = match self.dragging.take() {
-                    Some(Drag::Panel) => Some(Event::PanelResized(self.panel.width)),
-                    Some(Drag::Sidebar) => Some(Event::SidebarResized(self.sidebar_width)),
-                    None => None,
-                };
-                (Task::none(), event)
-            }
-            Message::ToggleFull(pane) => {
-                self.set_full(if self.full == Some(pane) { None } else { Some(pane) });
-                (Task::none(), None)
-            }
-            Message::Detach(tab) => (Task::none(), Some(Event::DetachTab(tab))),
-            Message::ShowDetached(tab) => (Task::none(), Some(Event::ShowDetached(tab))),
-            Message::Reattach(tab) => (Task::none(), Some(Event::ReattachTab(tab))),
-            Message::FrameSized(size) => {
-                self.frame = Some(size);
-                (Task::none(), None)
-            }
-            Message::SetTheme(preference) => {
-                self.theme.set_preference(preference);
-                (Task::none(), Some(Event::SetTheme(preference)))
+            Message::TabsWheel(id, delta) => return (wheel_tabs(id, delta), None),
+            Message::Emit(event) => return (Task::none(), Some(event)),
+            Message::SetTheme(theme) => {
+                self.theme.set_preference(theme.clone());
+                return (Task::none(), Some(Intent::SetTheme(theme)));
             }
             Message::SystemTheme(mode) => {
-                self.theme.set_system_mode(mode);
-                (Task::none(), None)
+                let before = self.theme.variant();
+                let generation = self.theme.set_system_mode(mode);
+                return (Task::none(), (self.theme.variant() != before).then_some(Intent::ThemeChanged(generation)));
             }
+            Message::SelectTab(id) => if self.tabs.iter().any(|t| t.id == id) { self.active = Some(id) },
+            Message::DragStart(pane) => self.dragging = (pane != Pane::Panel || self.panel_open).then_some(pane),
+            Message::DragMove(x) => match (self.dragging, self.frame) {
+                (Some(Pane::Panel), Some(f)) => self.panel_width = (f.width - x - splitter_width() / 2.0).min(self.max_panel_width()).max(MIN_PANEL_WIDTH),
+                (Some(Pane::Sidebar), _) => self.sidebar_width = (x - splitter_width() / 2.0).clamp(SIDEBAR_WIDTHS.0, SIDEBAR_WIDTHS.1),
+                _ => {}
+            },
+            Message::DragEnd => self.dragging = None,
+            Message::TogglePanel => self.set_panel_open(!self.panel_open),
+            Message::ToggleFull(pane) => self.full = (self.full != Some(pane)).then_some(pane),
+            Message::FrameSized(size) => self.frame = Some(size),
         }
+        (Task::none(), None)
     }
 
-    /// Draws the frame around the app's content.
-    ///
-    /// `center` fills the area under the top bar. `panel_body` draws the body
-    /// of the active tab and is only called while the panel is open with a
-    /// tab. `map` lifts this crate's messages into the app's.
-    pub fn view<'a, M: Clone + 'a>(
-        &'a self,
-        center: impl Into<Element<'a, M>>,
-        panel_body: impl FnOnce(&'a str) -> Element<'a, M>,
-        map: fn(Message) -> M,
-    ) -> Element<'a, M> {
+    /// The frame around `center`; `panel_body` draws the active tab's body and `map` lifts frame messages into the app's.
+    pub fn view<'a, M: Clone + 'a>(&'a self, center: impl Into<Element<'a, M>>, panel_body: impl FnOnce(&'a str) -> Element<'a, M>, map: fn(Message) -> M) -> Element<'a, M> {
         let full = self.full;
-        let show = |pane: Pane| full.is_none() || full == Some(pane);
+        let show = |pane| full.is_none() || full == Some(pane);
+        let edge = |pane| full.is_none().then(|| Element::from(splitter_edge(Message::DragStart(pane))).map(map));
         let mut frame = row![];
-
         if show(Pane::Sidebar) {
-            let width = if full == Some(Pane::Sidebar) { iced::Length::Fill } else { iced::Length::Fixed(self.sidebar_width) };
-            let sidebar = self.sidebar.view_with(move |message| map(Message::Sidebar(message)));
-            frame = frame.push(container(sidebar).width(width).height(Fill));
+            let width = if full == Some(Pane::Sidebar) { Length::Fill } else { Length::Fixed(self.sidebar_width) };
+            frame = frame.push(container(self.sidebar.view_with(move |m| map(Message::Sidebar(m)))).width(width).height(Fill));
         }
-        if full.is_none() {
-            frame = frame.push(Element::from(edge(Message::SidebarDragStart)).map(map));
-        }
+        frame = frame.push(edge(Pane::Sidebar));
         if show(Pane::Center) {
-            let topbar = self.topbar.view().map(Message::Topbar).map(map);
-            let center = container(center).style(style::surface).width(Fill).height(Fill);
-            let mut main = column![].width(Fill);
-            if self.project_tabs {
-                main = main.push(self.project_tabs_view(map)).push(rule::horizontal(1).style(style::divider));
-            }
-            frame = frame.push(main.push(topbar).push(center));
+            let strip = self.project_tabs.then(|| column![self.project_tabs_view().map(map), rule::horizontal(1).style(style::rule)]);
+            let center = container(center).style(style::container(Surface::Ground)).width(Fill).height(Fill);
+            frame = frame.push(column![strip, topbar::view(self).map(map), center].width(Fill));
         }
-        if self.panel.open && show(Pane::Panel) {
-            if full.is_none() {
-                frame = frame.push(Element::from(edge(Message::DragStart)).map(map));
-            }
-            frame = frame.push(self.panel_view(panel_body, map));
+        if self.panel_open && show(Pane::Panel) {
+            frame = frame.push(edge(Pane::Panel)).push(self.panel_view(panel_body, map));
         }
-
         let mut tracked = mouse_area(frame);
         if self.dragging.is_some() {
-            tracked = tracked
-                .on_move(move |point| map(Message::DragMove(point.x)))
-                .on_release(map(Message::DragEnd))
-                .on_exit(map(Message::DragEnd))
-                .interaction(mouse::Interaction::ResizingHorizontally);
+            tracked = tracked.on_move(move |p| map(Message::DragMove(p.x))).on_release(map(Message::DragEnd)).on_exit(map(Message::DragEnd)).interaction(mouse::Interaction::ResizingHorizontally);
         }
-
-        sensor(tracked)
-            .on_show(move |size| map(Message::FrameSized(size)))
-            .on_resize(move |size| map(Message::FrameSized(size)))
-            .into()
+        sensor(tracked).on_show(move |s| map(Message::FrameSized(s))).on_resize(move |s| map(Message::FrameSized(s))).into()
     }
 
-    /// The strip of open projects above the top bar: a tab per project that
-    /// opens it, with a close button that only drops the tab.
-    fn project_tabs_view<'a, M: 'a>(&'a self, map: fn(Message) -> M) -> Element<'a, M> {
-        let active = self.active_project.as_deref();
-        let tabs = self.open_projects.iter().fold(row![].align_y(Alignment::Center), |bar, project| {
-            let selected = active == Some(project.as_str());
-            let label = button(text(project.as_str()).size(13)).on_press(Message::OpenProjectTab(project.clone())).style(style::tab(selected)).padding([4, 8]);
-            let close = button(muted(Icon::X, 11.0)).on_press(Message::CloseProjectTab(project.clone())).style(style::ghost_button).padding(3);
-            let line = row![container(label).id(project_tab_id(project)), container(close).id(project_tab_close_id(project))].align_y(Alignment::Center);
-            let underline = container(space()).width(Fill).height(2);
-            let underline = if selected { underline.style(style::tab_underline) } else { underline };
-            bar.push(column![container(line).center_y(Fill), underline].width(iced::Length::Shrink).height(PROJECT_TABS_HEIGHT))
-        });
-        let scrollbar = scrollable::Scrollbar::new().width(2).scroller_width(2).spacing(0);
-        let tabs = scrollable(tabs).id(PROJECT_TABS_ID).direction(scrollable::Direction::Horizontal(scrollbar)).style(style::tab_scrollbar).width(Fill);
-        let tabs = mouse_area(tabs).on_scroll(Message::ProjectTabsWheel);
-        Element::from(container(tabs).style(style::side).padding([0, 8]).width(Fill)).map(map)
+    /// The strip of open projects above the top bar; closing a tab only drops the tab.
+    fn project_tabs_view(&self) -> Element<'_, Message> {
+        let active = self.sidebar.active_project.as_deref();
+        let tabs = tab_strip(self.open_projects.iter().map(|p| {
+            let close = button(tinted(Icon::X, T::Caption, Tone::Muted)).on_press(Message::Emit(Intent::CloseProjectTab(p.clone()))).style(style::button(ButtonKind::Ghost)).padding(sp(Sp::Xs) / 2.0);
+            Tab { label: p.as_str(), icon: None, active: active == Some(p.as_str()), on: open_project(p), id: None, trailing: Some(close.into()) }
+        }));
+        container(scrolling_strip(PROJECT_TABS_ID, tabs)).style(style::container(Surface::Side)).padding(pad_x(Sp::S)).center_y(PROJECT_TABS_HEIGHT).width(Fill).into()
     }
 
-    fn panel_view<'a, M: 'a>(
-        &'a self,
-        panel_body: impl FnOnce(&'a str) -> Element<'a, M>,
-        map: fn(Message) -> M,
-    ) -> Element<'a, M> {
+    fn panel_view<'a, M: 'a>(&'a self, panel_body: impl FnOnce(&'a str) -> Element<'a, M>, map: fn(Message) -> M) -> Element<'a, M> {
         let active = self.active_tab();
-        let tabs = self.panel.tabs.iter().fold(row![].spacing(2), |bar, tab| {
-            let selected = active == Some(tab.id.as_str());
-            let mut label = row![].spacing(6).align_y(Alignment::Center);
-            if let Some(glyph) = tab_icon(&tab.id) {
-                label = label.push(if selected { icon(glyph, 14.0) } else { muted(glyph, 14.0) });
-            }
-            label = label.push(text(tab.title.as_str()).size(13));
-            if self.is_detached(&tab.id) {
-                label = label.push(muted(Icon::ExternalLink, 11.0));
-            }
-            bar.push(
-                button(label)
-                    .on_press(Message::SelectTab(tab.id.clone()))
-                    .style(style::tab(selected))
-                    .padding([6, 9]),
-            )
-        });
-        // Embedded below the tabs, so it never covers a tab.
-        let scrollbar = scrollable::Scrollbar::new().width(2).scroller_width(2).spacing(0);
-        let tabs = scrollable(tabs)
-            .id(PANEL_TABS_ID)
-            .direction(scrollable::Direction::Horizontal(scrollbar))
-            .style(style::tab_scrollbar)
-            .width(Fill);
-        let tabs = mouse_area(tabs).on_scroll(Message::TabsWheel);
+        let tabs = tab_strip(self.tabs.iter().map(|t| {
+            let trailing = self.is_detached(&t.id).then(|| tinted(Icon::ExternalLink, T::Caption, Tone::Muted).into());
+            Tab { label: t.title.as_str(), icon: t.icon, active: active == Some(t.id.as_str()), on: Message::SelectTab(t.id.clone()), id: None, trailing }
+        }));
         let is_full = self.full == Some(Pane::Panel);
-        let full = container(
-            button(muted(if is_full { Icon::Minimize } else { Icon::Maximize }, 14.0))
-                .on_press(Message::ToggleFull(Pane::Panel))
-                .style(style::ghost_button)
-                .padding(7),
-        )
-        .id(PANEL_FULL_ID);
-        let mut controls = row![tabs].spacing(4).align_y(Alignment::Center);
-        if let Some(id) = active
-            && !self.is_detached(id)
-        {
-            controls = controls.push(
-                container(
-                    button(muted(Icon::ExternalLink, 14.0))
-                        .on_press(Message::Detach(id.to_owned()))
-                        .style(style::ghost_button)
-                        .padding(7),
-                )
-                .id(PANEL_DETACH_ID),
-            );
-        }
-        controls = controls.push(full);
-        let tab_bar = Element::from(
-            container(controls)
-                .style(style::side)
-                .padding([0, 8])
-                .center_y(topbar::HEIGHT)
-                .width(Fill),
-        )
-        .map(map);
-
+        let full = icon_button(if is_full { Icon::Minimize } else { Icon::Maximize }, if is_full { "Restore panel" } else { "Fill window" }, Some(Message::ToggleFull(Pane::Panel)));
+        let detach = active.filter(|id| !self.is_detached(id)).map(|id| container(icon_button(Icon::ExternalLink, "Open in a window", Some(Message::Emit(Intent::DetachTab(id.to_owned()))))).id(PANEL_DETACH_ID));
+        let controls = row![scrolling_strip(PANEL_TABS_ID, tabs), detach, full].spacing(sp(Sp::Xs)).align_y(Alignment::Center);
+        let tab_bar = Element::from(container(controls).style(style::container(Surface::Side)).padding(pad_x(Sp::S)).center_y(topbar::HEIGHT).width(Fill)).map(map);
         let body = match active {
             Some(id) if self.is_detached(id) => {
-                let title = self.panel.tabs.iter().find(|tab| tab.id == id).map_or(id, |tab| tab.title.as_str());
-                Element::from(
-                    container(
-                        column![
-                            muted(Icon::ExternalLink, 28.0),
-                            text!("{title} is in its own window").size(14),
-                            row![
-                                button(text("Show window").size(13))
-                                    .on_press(Message::ShowDetached(id.to_owned()))
-                                    .style(style::secondary_button)
-                                    .padding([6, 12]),
-                                button(text("Reattach here").size(13))
-                                    .on_press(Message::Reattach(id.to_owned()))
-                                    .style(style::primary_button)
-                                    .padding([6, 12]),
-                            ]
-                            .spacing(8),
-                        ]
-                        .spacing(12)
-                        .align_x(Alignment::Center),
-                    )
-                    .center(Fill),
-                )
-                .map(map)
+                let title = self.tabs.iter().find(|t| t.id == id).map_or(id, |t| t.title.as_str());
+                let action = |s, kind, on| button(label(s, T::Label, Tone::Normal)).on_press(Message::Emit(on)).style(style::button(kind)).padding([sp(Sp::Xs) * 1.5, sp(Sp::M)]);
+                let actions = row![action("Show window", ButtonKind::Secondary, Intent::ShowDetached(id.to_owned())), action("Reattach here", ButtonKind::Primary, Intent::ReattachTab(id.to_owned()))];
+                let note = column![tinted(Icon::ExternalLink, T::Title, Tone::Muted), label(format!("{title} is in its own window"), T::Body, Tone::Normal), actions.spacing(sp(Sp::S))];
+                Element::from(container(note.spacing(sp(Sp::M)).align_x(Alignment::Center)).center(Fill)).map(map)
             }
             Some(id) => panel_body(id),
-            None => Element::from(
-                container(text("Nothing to show").style(style::muted)).center_x(Fill).padding(24),
-            )
-            .map(map),
+            None => Element::from(container(label("Nothing to show", T::Body, Tone::Muted)).center_x(Fill).padding(sp(Sp::Xl))).map(map),
         };
-
-        let width = if is_full { iced::Length::Fill } else { iced::Length::Fixed(self.panel.width.min(self.max_panel_width())) };
-        container(column![tab_bar, rule::horizontal(1).style(style::divider), container(body).width(Fill).height(Fill)])
-            .id(PANEL_ID)
-            .style(style::side)
-            .width(width)
-            .height(Fill)
-            .into()
+        let width = if is_full { Length::Fill } else { Length::Fixed(self.panel_width.min(self.max_panel_width())) };
+        container(column![tab_bar, rule::horizontal(1).style(style::rule), container(body).width(Fill).height(Fill)]).style(style::container(Surface::Side)).width(width).height(Fill).into()
     }
 }
 
-/// A grab area on a pane edge, drawn as the 1px divider between panes.
-fn edge(on_press: Message) -> Element<'static, Message> {
-    mouse_area(container(rule::vertical(1).style(style::divider)).center_x(HANDLE_WIDTH).height(Fill))
-        .on_press(on_press)
-        .interaction(mouse::Interaction::ResizingHorizontally)
-        .into()
+pub(crate) fn open_project(project: &str) -> Message { Message::Emit(Intent::Sidebar(SidebarIntent::OpenProject(project.to_owned()))) }
+
+/// A tab strip that scrolls sideways under the wheel, with a thin scrollbar below the tabs so it never covers one.
+fn scrolling_strip<'a>(id: &'static str, tabs: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+    let w = sp(Sp::Xs) / 2.0;
+    let direction = scrollable::Direction::Horizontal(scrollable::Scrollbar::new().width(w).scroller_width(w).spacing(iced::Pixels::ZERO));
+    mouse_area(scrollable(tabs).id(id).direction(direction).style(style::scrollbar(true)).width(Fill)).on_scroll(move |d| Message::TabsWheel(id, d)).into()
 }
 
-/// The icon of a known panel tab.
-fn tab_icon(id: &str) -> Option<Icon> {
-    match id {
-        "diff" | "changes" => Some(Icon::GitCompare),
-        "files" => Some(Icon::Folder),
-        "terminal" => Some(Icon::Terminal),
-        "agents" => Some(Icon::Bot),
-        "tree" | "session-tree" => Some(Icon::GitFork),
-        id if id.starts_with("surface") || id == "browser" => Some(Icon::Globe),
-        _ => None,
-    }
-}
-
-/// Scrolls the tab bar `id` for a wheel turn. The bar scrolls only sideways:
-/// a vertical wheel turns it, sideways deltas reach the scrollable itself.
 fn wheel_tabs(id: &'static str, delta: mouse::ScrollDelta) -> Task<Message> {
     let x = match delta {
         mouse::ScrollDelta::Lines { y, .. } => -y * WHEEL_LINE,
@@ -895,175 +256,41 @@ fn wheel_tabs(id: &'static str, delta: mouse::ScrollDelta) -> Task<Message> {
 mod tests {
     use super::*;
 
-    fn frame() -> State {
-        let (mut state, _) = State::new(Preference::System, PanelPrefs::default());
-        state.set_tabs(vec![PanelTab::new("diff", "Diff"), PanelTab::new("files", "Files"), PanelTab::new("terminal", "Terminal")]);
-        state
-    }
-
-    fn send(state: &mut State, message: Message) -> Option<Event> {
-        state.update(message).1
-    }
+    fn send(state: &mut State, messages: impl IntoIterator<Item = Message>) -> Vec<Intent> { messages.into_iter().filter_map(|m| state.update(m).1).collect() }
 
     #[test]
-    fn project_tab_messages_become_events_and_the_strip_is_off_by_default() {
-        let mut state = frame();
-        assert!(!state.project_tabs());
-        state.set_open_projects(vec!["loa".into(), "docs".into()]);
-        state.set_active_project(Some("docs".into()));
-        assert_eq!(state.open_projects(), ["loa", "docs"]);
-        assert_eq!(send(&mut state, Message::OpenProjectTab("loa".into())), Some(Event::OpenProject("loa".into())));
-        assert_eq!(
-            send(&mut state, Message::CloseProjectTab("docs".into())),
-            Some(Event::CloseProjectTab("docs".into()))
-        );
-        assert_eq!(state.open_projects(), ["loa", "docs"], "the app owns the list");
-        state.set_project_tabs(true);
-        assert!(state.project_tabs());
-    }
-
-    fn toggle(state: &mut State) -> Option<Event> {
-        send(state, Message::Topbar(topbar::Message::TogglePanel))
-    }
-
-    #[test]
-    fn closing_and_reopening_the_panel_keeps_width_and_tab() {
-        let mut state = frame();
-        send(&mut state, Message::FrameSized(Size::new(1600.0, 900.0)));
-        assert!(state.panel_open(), "the panel starts open");
-
-        send(&mut state, Message::SelectTab("files".into()));
-        send(&mut state, Message::DragStart);
-        send(&mut state, Message::DragMove(1100.0));
-        assert_eq!(send(&mut state, Message::DragEnd), Some(Event::PanelResized(497.0)));
-
-        assert_eq!(toggle(&mut state), Some(Event::PanelToggled { open: false }));
-        assert!(!state.panel_open());
-        assert_eq!(toggle(&mut state), Some(Event::PanelToggled { open: true }));
-        assert_eq!(state.panel_width(), 497.0);
-        assert_eq!(state.active_tab(), Some("files"));
-    }
-
-    #[test]
-    fn resizing_is_clamped_to_the_frame() {
-        let mut state = frame();
-        state.set_panel_open(true);
-        send(&mut state, Message::FrameSized(Size::new(1200.0, 800.0)));
-        send(&mut state, Message::DragStart);
-        send(&mut state, Message::DragMove(10.0));
-        assert_eq!(state.panel_width(), 1200.0 - SIDEBAR_WIDTH - MIN_CENTER_WIDTH - 2.0 * HANDLE_WIDTH);
-        send(&mut state, Message::DragMove(1190.0));
-        assert_eq!(state.panel_width(), MIN_PANEL_WIDTH);
-
-        send(&mut state, Message::DragEnd);
-        send(&mut state, Message::DragMove(600.0));
-        assert_eq!(state.panel_width(), MIN_PANEL_WIDTH, "moves after release do not resize");
-        assert_eq!(send(&mut state, Message::DragEnd), None);
-    }
-
-    #[test]
-    fn removed_active_tab_falls_back_and_restored_tab_applies_when_added() {
-        let (mut state, _) = State::new(
-            Preference::Dark,
-            PanelPrefs { open: true, width: 500.0, active: Some("agents".into()) },
-        );
-        state.add_tab(PanelTab::new("diff", "Diff"));
-        assert_eq!(state.active_tab(), Some("diff"));
-        state.add_tab(PanelTab::new("agents", "Agents"));
-        assert_eq!(state.active_tab(), Some("agents"));
-
-        state.remove_tab("agents");
-        assert_eq!(state.active_tab(), Some("diff"));
-        assert_eq!(state.update(Message::SelectTab("gone".into())).1, None);
-        assert_eq!(state.active_tab(), Some("diff"));
-    }
-
-    #[test]
-    fn show_tab_opens_the_panel_on_that_tab() {
-        let mut state = frame();
-        state.show_tab("terminal");
-        assert!(state.panel_open());
-        assert_eq!(state.active_tab(), Some("terminal"));
-        assert_eq!(state.panel_prefs().active.as_deref(), Some("terminal"));
-    }
-
-    #[test]
-    fn breadcrumb_follows_active_session_node_and_waiting_state() {
-        let mut state = frame();
-        state.set_nodes(vec![NodeStatus { key: "k-box".into(), name: "buildbox".into(), online: false, local: false }]);
-        state.set_sessions([SessionSummary {
-            id: "s1".into(),
-            title: "Ship it".into(),
-            project: Some("loa".into()),
-            node: "k-box".into(),
-            pinned: false,
-            waiting: false,
-            updated: 1,
-        }]);
-        let (_, event) = state.update(Message::Sidebar(sidebar::Message::OpenSession("s1".into())));
-        assert_eq!(event, Some(Event::OpenSession("s1".into())));
-
-        let crumb = state.topbar().breadcrumb().expect("breadcrumb");
-        assert_eq!((crumb.project.as_deref(), crumb.title.as_str()), (Some("loa"), "Ship it"));
-        assert_eq!((crumb.node.name.as_str(), crumb.node.online, crumb.waiting), ("buildbox", false, false));
-
-        state.set_nodes(vec![NodeStatus { key: "k-box".into(), name: "buildbox".into(), online: true, local: false }]);
-        let mut waiting = state.sidebar().session("s1").cloned().expect("session");
-        waiting.waiting = true;
-        state.upsert_session(waiting);
-        let crumb = state.topbar().breadcrumb().expect("breadcrumb");
-        assert!(crumb.node.online && crumb.waiting);
-
-        state.remove_session("s1");
-        assert!(state.topbar().breadcrumb().is_none());
-    }
-
-    #[test]
-    fn theme_override_is_reported_and_applied() {
-        let mut state = frame();
-        send(&mut state, Message::SystemTheme(Mode::Light));
-        assert!(!state.theme().extended_palette().is_dark);
-        let (_, event) = state.update(Message::SetTheme(Preference::Dark));
-        assert_eq!(event, Some(Event::SetTheme(Preference::Dark)));
-        assert!(state.theme().extended_palette().is_dark);
-    }
-
-    #[test]
-    fn sidebar_resizes_within_bounds_and_reports_on_release() {
-        let mut state = frame();
-        send(&mut state, Message::FrameSized(Size::new(1600.0, 900.0)));
-        send(&mut state, Message::SidebarDragStart);
-        send(&mut state, Message::DragMove(343.0));
-        assert_eq!(send(&mut state, Message::DragEnd), Some(Event::SidebarResized(340.0)));
-        send(&mut state, Message::SidebarDragStart);
-        send(&mut state, Message::DragMove(5000.0));
-        assert_eq!(state.sidebar_width(), MAX_SIDEBAR_WIDTH);
-        send(&mut state, Message::DragMove(10.0));
-        assert_eq!(state.sidebar_width(), MIN_SIDEBAR_WIDTH);
-    }
-
-    #[test]
-    fn panes_go_full_screen_one_at_a_time() {
-        let mut state = frame();
-        send(&mut state, Message::ToggleFull(Pane::Panel));
-        assert_eq!(state.full(), Some(Pane::Panel));
-        send(&mut state, Message::Topbar(topbar::Message::ToggleFull));
-        assert_eq!(state.full(), Some(Pane::Center), "the chat takes over");
-        send(&mut state, Message::Topbar(topbar::Message::ToggleFull));
-        assert_eq!(state.full(), None);
-
-        send(&mut state, Message::ToggleFull(Pane::Panel));
-        toggle(&mut state);
+    fn panes_resize_within_bounds_go_full_and_follow_the_theme() {
+        let (mut state, _) = State::new(Appearance::default());
+        state.set_tabs(["diff", "files"].map(|t| PanelTab::new(t, t, None)).to_vec());
+        send(&mut state, [Message::FrameSized(Size::new(1600.0, 900.0)), Message::SelectTab("files".into()), Message::SelectTab("gone".into())]);
+        let max_panel = 1600.0 - SIDEBAR_WIDTH - MIN_CENTER_WIDTH - 2.0 * splitter_width();
+        let drags = [(Pane::Panel, 1100.0, 497.0), (Pane::Panel, 10.0, max_panel), (Pane::Panel, 1590.0, MIN_PANEL_WIDTH), (Pane::Sidebar, 343.0, 340.0), (Pane::Sidebar, 5000.0, 480.0), (Pane::Sidebar, 10.0, 200.0)];
+        for (pane, x, width) in drags {
+            send(&mut state, [Message::DragStart(pane), Message::DragMove(x), Message::DragEnd, Message::DragMove(600.0)]);
+            assert_eq!(if pane == Pane::Panel { state.panel_width } else { state.sidebar_width }, width, "{pane:?} to {x}");
+        }
+        send(&mut state, [Message::TogglePanel, Message::TogglePanel, Message::ToggleFull(Pane::Panel), Message::ToggleFull(Pane::Center)]);
+        assert_eq!((state.active_tab(), state.full()), (Some("files"), Some(Pane::Center)), "the panel keeps its tab and the chat takes over");
+        send(&mut state, [Message::ToggleFull(Pane::Panel), Message::TogglePanel]);
         assert_eq!(state.full(), None, "closing the panel leaves its full screen");
+        let events = send(&mut state, [Message::SystemTheme(Mode::Light), Message::SetTheme(ThemeRef("dark".into())), Message::SetTheme(ThemeRef("nope".into()))]);
+        assert!(matches!(events[..], [Intent::ThemeChanged(_), Intent::SetTheme(_), Intent::SetTheme(_)]));
+        assert_eq!((state.theme_state().variant(), state.theme_state().errors().len()), (theme::Variant::Light, 1), "unknown themes fall back to the system");
+        let dark = Appearance { theme: ThemeRef("dark".into()), ..Appearance::default() };
+        assert!(matches!(state.set_appearance(dark.clone()), Some(Intent::ThemeChanged(_))) && state.set_appearance(dark).is_none(), "a config change re-applies the appearance once");
     }
 
     #[test]
-    fn detaching_a_tab_reports_it_and_reattaching_reports_back() {
-        let mut state = frame();
-        assert_eq!(send(&mut state, Message::Detach("terminal".into())), Some(Event::DetachTab("terminal".into())));
-        state.set_detached(vec!["terminal".into()]);
-        assert!(state.is_detached("terminal"));
-        assert_eq!(send(&mut state, Message::ShowDetached("terminal".into())), Some(Event::ShowDetached("terminal".into())));
-        assert_eq!(send(&mut state, Message::Reattach("terminal".into())), Some(Event::ReattachTab("terminal".into())));
+    fn breadcrumb_follows_the_active_session_and_the_frame_renders_narrow() {
+        let (mut state, _) = State::new(Appearance::default());
+        state.sidebar.set_nodes(vec![NodeStatus { key: "k-box".into(), name: "buildbox".into(), online: true, local: false }]);
+        state.sidebar.set_sessions([SessionSummary { id: "s1".into(), title: "Ship it".into(), project: Some("loa".into()), node: "k-box".into(), pinned: false, waiting: true, updated: 1 }]);
+        assert_eq!(send(&mut state, [Message::Sidebar(sidebar::Message::OpenSession("s1".into()))]), [Intent::Sidebar(SidebarIntent::OpenSession("s1".into()))]);
+        let (crumb, node) = state.breadcrumb().unwrap();
+        assert_eq!((crumb.title.as_str(), node.name.as_str(), crumb.waiting), ("Ship it", "buildbox", true));
+        let view = state.view(iced::widget::space(), |_| iced::widget::space().into(), |m| m);
+        assert!(iced_test::Simulator::with_size(iced::Settings::default(), Size::new(700.0, 500.0), view).find("Ship it").is_ok());
+        state.sidebar.remove_session("s1");
+        assert!(state.breadcrumb().is_none());
     }
 }
