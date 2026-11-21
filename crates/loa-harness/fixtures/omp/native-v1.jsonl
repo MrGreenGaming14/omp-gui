@@ -1,0 +1,4 @@
+{"type":"session","version":1,"id":"old","timestamp":"2020-01-01T00:00:00Z"}
+{"type":"message","message":{"role":"user","content":"hello"}}
+{"type":"compaction","summary":"summary","firstKeptEntryIndex":1}
+{"type":"message","message":{"role":"hookMessage","content":"custom"}}
