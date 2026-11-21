@@ -10,6 +10,7 @@ use crate::testing::{Builder, Fake, MemorySource, Only, live};
 use crate::*;
 use loa_bus::{Bus, JournalOptions, Store};
 use loa_core::{ElementKind as K, NodeId};
+use loa_contracts::harness::HostTools;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -45,6 +46,42 @@ async fn access_decides_what_every_path_sees() {
     }
     let other = ReadRequest { session: "c".into(), node: None, offset: 0, max_bytes: 0 };
     assert!(matches!(read_subtree(&source, &LocalOnly, "loa", &other).await, Err(Error::SessionNotFound(_))));
+}
+
+#[tokio::test]
+async fn host_tools_search_and_read_respect_session_boundaries() {
+    let (source, ..) = fixture();
+    let source = Arc::new(source);
+    let tools = crate::tools::tool_set(source.clone(), Arc::new(LocalOnly));
+
+    let result = HostTools::call(&tools, "b", "project_search", r#"{"query":"iroh"}"#).await.unwrap();
+    let page: serde_json::Value = serde_json::from_str(&result).unwrap();
+    let hits = page["hits"].as_array().unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0]["session"], "a");
+    let args = serde_json::json!({"session": hits[0]["session"], "node": hits[0]["node"]});
+    let text = HostTools::call(&tools, "b", "project_read", &args.to_string()).await.unwrap();
+    assert!(text.contains("Iroh endpoint"));
+
+    let own = HostTools::call(&tools, "b", "project_search", r#"{"query":"dark tokens"}"#).await.unwrap();
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&own).unwrap()["total"], 0);
+    let own = HostTools::call(&tools, "b", "project_search", r#"{"query":"dark tokens","sessions":["b"]}"#).await.unwrap();
+    assert!(serde_json::from_str::<serde_json::Value>(&own).unwrap()["total"].as_u64().unwrap() > 0);
+
+    let restricted = crate::tools::tool_set(source, Arc::new(Only(&["b"])));
+    let denied = HostTools::call(&restricted, "b", "project_search", r#"{"query":"iroh"}"#).await.unwrap();
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&denied).unwrap()["total"], 0);
+    assert!(HostTools::call(&restricted, "b", "project_read", &args.to_string()).await.is_err());
+    assert!(HostTools::call(&tools, "b", "project_read", r#"{"session":"c"}"#).await.is_err());
+    for (tool, args) in [
+        ("project_search", "{"),
+        ("project_search", r#"{"element":"not-an-element"}"#),
+        ("project_search", r#"{"unexpected":true}"#),
+        ("project_read", r#"{"node":1}"#),
+        ("project_read", r#"{"session":"a","node":"wrong"}"#),
+    ] {
+        assert!(HostTools::call(&tools, "b", tool, args).await.is_err(), "{tool}: {args}");
+    }
 }
 
 #[tokio::test]
@@ -144,7 +181,7 @@ fn rank_cases() {
     assert!((mix.score(&q, &c) - 0.75).abs() < 1e-9);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn digest_staleness_and_rebuilds() {
     let s = Builder::new("s", "loa", 1);
     assert_eq!((decide(&s.dom()), digest_state(&s.dom())), (Decision::Empty, DigestState::Missing));
@@ -166,6 +203,8 @@ async fn digest_staleness_and_rebuilds() {
         let driver = RebuildDriver { source: source.clone(), writer: source, digester, debounce: Duration::from_millis(20), settings: None };
         let (tx, mut out) = driver.spawn();
         (0..3).for_each(|_| tx.send("s".into()).unwrap());
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_millis(20)).await;
         let outcome = out.recv().await.unwrap();
         assert_eq!((fake.calls.load(Ordering::SeqCst), matches!(outcome, RebuildOutcome::Failed { .. })), (1, fail));
         let digest = digest_of(&s.dom()).unwrap();

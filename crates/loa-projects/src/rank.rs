@@ -66,6 +66,7 @@ pub trait Scorer: Send + Sync {
 /// BM25 fitted on the candidates, divided by the best candidate's score.
 pub struct Bm25 {
     docs: HashMap<String, HashMap<String, usize>>,
+    idfs: HashMap<String, f64>,
     avg_len: f64,
     best: f64,
 }
@@ -82,18 +83,27 @@ impl Bm25 {
             docs.insert(c.session.clone(), counts);
         }
         let total: usize = docs.values().map(|d: &HashMap<String, usize>| d.values().sum::<usize>()).sum();
-        let mut bm25 = Self { avg_len: total as f64 / docs.len().max(1) as f64, docs, best: 1.0 };
+        let mut document_frequencies = HashMap::new();
+        for doc in docs.values() {
+            for word in doc.keys() {
+                *document_frequencies.entry(word.clone()).or_insert(0usize) += 1;
+            }
+        }
+        let n = docs.len() as f64;
+        let idfs = document_frequencies.into_iter().map(|(word, df)| {
+            (word, (1.0 + (n - df as f64 + 0.5) / (df as f64 + 0.5)).ln())
+        }).collect();
+        let mut bm25 = Self { avg_len: total as f64 / docs.len().max(1) as f64, docs, idfs, best: 1.0 };
         bm25.best = candidates.iter().map(|c| bm25.raw(query, &c.session)).fold(0.0, f64::max);
         bm25
     }
 
     fn raw(&self, query: &[String], session: &str) -> f64 {
         let Some(doc) = self.docs.get(session) else { return 0.0 };
-        let (n, len) = (self.docs.len() as f64, doc.values().sum::<usize>() as f64);
+        let len = doc.values().sum::<usize>() as f64;
         let term = |t: &String| {
-            let df = self.docs.values().filter(|d| d.contains_key(t)).count() as f64;
             let tf = *doc.get(t).unwrap_or(&0) as f64;
-            let idf = (1.0 + (n - df + 0.5) / (df + 0.5)).ln();
+            let idf = self.idfs.get(t).copied().unwrap_or(0.0);
             idf * tf * (Self::K1 + 1.0) / (tf + Self::K1 * (1.0 - Self::B + Self::B * len / self.avg_len.max(1.0)))
         };
         query.iter().map(term).sum()
@@ -177,4 +187,43 @@ pub fn rank_and_pack(mut candidates: Vec<Candidate>, query: &str, params: &RankP
         true
     });
     ranked
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::digest::DigestContent;
+    use loa_core::NodeId;
+
+    fn candidate(session: &str, summary: &str) -> Candidate {
+        Candidate {
+            session: session.to_owned(),
+            title: None,
+            digest: Digest {
+                node: NodeId::DOCUMENT,
+                content: DigestContent { summary: summary.to_owned(), ..Default::default() },
+                source_seq: 0,
+                stale: false,
+                model: None,
+            },
+            last_active: 0,
+            excluded: false,
+        }
+    }
+
+    #[test]
+    fn bm25_orders_multiple_terms_across_sessions() {
+        let candidates = vec![
+            candidate("unrelated", "unrelated"),
+            candidate("common-once", "common"),
+            candidate("common-twice", "common common"),
+            candidate("both", "common rare"),
+        ];
+        let mut params = RankParams::new(0, usize::MAX);
+        params.relevance_weight = 1.0;
+        let ranked = rank_and_pack(candidates, "common rare", &params);
+        let sessions: Vec<_> = ranked.iter().map(|r| r.candidate.session.as_str()).collect();
+        assert_eq!(sessions, ["both", "common-twice", "common-once", "unrelated"]);
+        assert!(ranked.windows(2).all(|pair| pair[0].score > pair[1].score));
+    }
 }

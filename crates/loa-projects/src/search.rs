@@ -182,12 +182,8 @@ impl Folded {
     }
 }
 
-fn strings(value: &Value) -> Box<dyn Iterator<Item = &str> + '_> {
-    match value {
-        Value::Str(s) => Box::new(std::iter::once(s.as_str())),
-        Value::List(_) => Box::new(value.str_items()),
-        _ => Box::new(std::iter::empty()),
-    }
+fn strings(value: &Value) -> impl Iterator<Item = &str> {
+    value.as_str().into_iter().chain(value.str_items())
 }
 
 pub(crate) fn render_value(value: &Value) -> String {
