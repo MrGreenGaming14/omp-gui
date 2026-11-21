@@ -10,6 +10,7 @@ use rmcp::service::RunningService;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 use rmcp::transport::{StreamableHttpClientTransport, TokioChildProcess};
 use rmcp::{ClientHandler, RoleClient, ServiceExt};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader};
 
 use crate::spec::{ServerSpec, Transport};
 use crate::{Error, Result};
@@ -27,6 +28,23 @@ pub(crate) async fn last_line(stderr: Option<StderrTail>) -> Option<String> {
     let stderr = stderr?;
     let _ = tokio::time::timeout(STDERR_DRAIN, stderr.closed()).await;
     stderr.joined().lines().rev().find(|line| !line.trim().is_empty()).map(str::to_owned)
+}
+
+/// `stderr` passed through unchanged, each line also logged at debug level.
+fn logged(server: &str, stderr: impl AsyncRead + Unpin + Send + 'static) -> impl AsyncRead + Unpin + Send + 'static {
+    let (mut tx, rx) = tokio::io::duplex(8 << 10);
+    let server = server.to_owned();
+    tokio::spawn(async move {
+        let (mut reader, mut line) = (BufReader::new(stderr), Vec::new());
+        while reader.read_until(b'\n', &mut line).await.is_ok_and(|n| n > 0) {
+            tracing::debug!(server, "stderr: {}", String::from_utf8_lossy(&line).trim_end());
+            if tx.write_all(&line).await.is_err() {
+                break;
+            }
+            line.clear();
+        }
+    });
+    rx
 }
 
 /// Starts the server (or opens the HTTP session) and runs the MCP handshake.
@@ -48,7 +66,8 @@ pub(crate) async fn connect<H: ClientHandler>(spec: &ServerSpec, handler: H, htt
                 .stderr(Stdio::piped())
                 .spawn()
                 .map_err(|e| failed(format!("can't run `{}`: {e}", stdio.command)))?;
-            (tokio::time::timeout(timeout, handler.serve(transport)).await, stderr.map(|s| StderrTail::spawn(s, 20)))
+            let stderr = stderr.map(|s| StderrTail::spawn(logged(&spec.name, s), 20));
+            (tokio::time::timeout(timeout, handler.serve(transport)).await, stderr)
         }
         Transport::Http(spec) => {
             let mut headers = HashMap::with_capacity(spec.headers.len());

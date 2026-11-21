@@ -73,6 +73,15 @@ fn free(specs: &[ServerSpec], name: &str) -> Result<()> {
     if specs.iter().any(|other| other.name == name) { Err(Error::NameTaken(name.to_owned())) } else { Ok(()) }
 }
 
+/// Where `name` sits, provided renaming it to `new` collides with nothing.
+fn editable(specs: &[ServerSpec], name: &str, new: &str) -> Result<usize> {
+    let index = position(specs, name)?;
+    if new != name {
+        free(specs, new)?;
+    }
+    Ok(index)
+}
+
 impl<S: ServerStore> Registry<S> {
     /// Loads the stored servers and starts the enabled ones.
     pub async fn open(store: S, manager: Manager) -> Result<Self> {
@@ -117,12 +126,10 @@ impl<S: ServerStore> Registry<S> {
     /// Replaces the server `name` with `spec` (which may rename it), after the same check as [`Registry::add`].
     pub async fn edit(&self, name: &str, spec: ServerSpec) -> Result<Vec<Tool>> {
         spec.validate()?;
+        editable(&self.specs.lock().await, name, &spec.name)?;
         let tools = self.manager.probe(&spec).await?;
         self.commit(|specs| {
-            let index = position(specs, name)?;
-            if spec.name != name {
-                free(specs, &spec.name)?;
-            }
+            let index = editable(specs, name, &spec.name)?;
             specs[index] = spec.clone();
             Ok(())
         })

@@ -43,6 +43,7 @@ webpki-roots = "1"
 [dev-dependencies]
 axum = "0.8"
 libtest-mimic = "0.8"
+loa-harness = { workspace = true, features = ["omp", "testing"] }
 rmcp = { version = "3.11", features = ["server", "transport-io", "transport-streamable-http-server"] }
 schemars.workspace = true
 tempfile.workspace = true

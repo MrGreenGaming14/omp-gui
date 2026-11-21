@@ -113,8 +113,11 @@ impl ServerHandler for ToolSetMcp {
         let tools = self.tools.specs().into_iter().map(|spec| {
             let schema: JsonObject = serde_json::from_str(&spec.input_schema).unwrap_or_default();
             let hints = self.tools.get(&spec.name).map(|tool| tool.annotations()).unwrap_or_default();
-            let annotations = ToolAnnotations::new().read_only(hints.read_only).destructive(hints.destructive);
-            let tool = Tool::new(spec.name, spec.description, schema).with_annotations(annotations);
+            let mut tool = Tool::new(spec.name, spec.description, schema);
+            // No hints means MCP's defaults (which assume destructive), not an explicit "safe".
+            if hints != loa_contracts::tools::ToolAnnotations::default() {
+                tool = tool.with_annotations(ToolAnnotations::new().read_only(hints.read_only).destructive(hints.destructive));
+            }
             match hints.title {
                 Some(title) => tool.with_title(title),
                 None => tool,
@@ -127,7 +130,7 @@ impl ServerHandler for ToolSetMcp {
         if self.tools.get(&request.name).is_none() {
             return Err(ErrorData::invalid_params(format!("unknown tool: {}", request.name), None));
         }
-        let args = request.arguments.map_or(serde_json::Value::Null, serde_json::Value::Object);
+        let args = serde_json::Value::Object(request.arguments.unwrap_or_default());
         let ctx = CallCtx { session_id: String::new() };
         // A cancelled request drops the call.
         let output = tokio::select! {

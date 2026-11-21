@@ -26,6 +26,8 @@ use provider::{ScriptedProvider, call_prompt};
 
 /// omp tools offered by default: hashline reads and edits, AST search and edits, LSP and DAP.
 pub const DEFAULT_TOOLS: &[&str] = &["read", "edit", "ast_grep", "ast_edit", "lsp", "debug"];
+/// omp tools that change files or run things.
+const MUTATING_TOOLS: &[&str] = &["edit", "ast_edit", "debug", "write", "bash"];
 /// MCP server name harnesses see; their tool names become `mcp__omp__read`.
 pub const SERVER_NAME: &str = "omp";
 const INSTRUCTIONS: &str = "omp's own tools. `edit` takes hashline patches: read a file with this \
@@ -154,7 +156,9 @@ struct OmpTool {
 #[async_trait]
 impl DynTool for OmpTool {
     fn spec(&self) -> HostToolSpec { self.spec.clone() }
-    fn annotations(&self) -> ToolAnnotations { ToolAnnotations::default() }
+    fn annotations(&self) -> ToolAnnotations {
+        ToolAnnotations { destructive: MUTATING_TOOLS.contains(&self.spec.name.as_str()), ..ToolAnnotations::default() }
+    }
     async fn call(&self, _ctx: &CallCtx, args: Value) -> Result<ToolOutput, String> {
         let Value::Object(args) = args else { return Err("arguments must be a JSON object".into()) };
         self.executor.call(&self.spec.name, args).await
