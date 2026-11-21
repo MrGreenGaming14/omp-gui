@@ -8,37 +8,20 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-/// Where a mounted host stub appears inside the container.
-pub const MOUNTED_STUB: &str = "/opt/loa/loa-sandbox-stub";
+/// Where the host stub is mounted, read only, inside the container. Works
+/// with any image whose C library matches the host's.
+const MOUNTED_STUB: &str = "/opt/loa/loa-sandbox-stub";
 
 /// Variables of the host the Docker CLI itself needs to find its daemon and
 /// configuration. They reach the `docker` client process only, never the container.
 const CLIENT_ENV: &[&str] = &["PATH", "HOME", "XDG_RUNTIME_DIR", "DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG", "DOCKER_CERT_PATH", "DOCKER_TLS_VERIFY"];
 
-/// How the container gets the stub.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum DockerStub {
-    /// Bind mount this host binary read only at [`MOUNTED_STUB`]. Works with
-    /// any image whose C library matches the host's.
-    Mount(PathBuf),
-    /// The image ships the stub at this path.
-    InImage(String),
-}
-
 pub struct DockerProvider {
     pub docker: PathBuf,
-    pub stub: DockerStub,
+    pub stub: PathBuf,
     /// Used when the call names no image.
     pub image: String,
     pub network: bool,
-    pub memory_mib: Option<u32>,
-    pub cpus: Option<u32>,
-}
-
-impl DockerProvider {
-    pub fn new(image: impl Into<String>, stub: DockerStub) -> Self {
-        Self { docker: "docker".into(), stub, image: image.into(), network: false, memory_mib: None, cpus: None }
-    }
 }
 
 /// The `docker` client with only [`CLIENT_ENV`] from the host.
@@ -73,24 +56,18 @@ impl SandboxProvider for DockerProvider {
         cmd.args(["run", "--rm", "-i", "--name", &spec.name, "--network", network, "--mount"])
             .arg(format!("type=bind,src={},dst=/workspace", spec.workspace.display()))
             .args(["--workdir", "/workspace"]);
-        let stub = match &self.stub {
-            DockerStub::Mount(host) => {
-                cmd.arg("--mount").arg(format!("type=bind,src={},dst={MOUNTED_STUB},readonly", host.display()));
-                MOUNTED_STUB
-            }
-            DockerStub::InImage(path) => path.as_str(),
-        };
-        if let Some(memory) = spec.options.memory_mib.or(self.memory_mib) {
+        cmd.arg("--mount").arg(format!("type=bind,src={},dst={MOUNTED_STUB},readonly", self.stub.display()));
+        if let Some(memory) = spec.options.memory_mib {
             cmd.arg("--memory").arg(format!("{memory}m"));
         }
-        if let Some(cpus) = spec.options.cpus.or(self.cpus) {
+        if let Some(cpus) = spec.options.cpus {
             cmd.arg("--cpus").arg(cpus.to_string());
         }
         for (key, value) in &spec.env {
             cmd.arg("--env").arg(format!("{key}={value}"));
         }
         let image = spec.options.image.as_deref().filter(|image| !image.is_empty()).unwrap_or(&self.image);
-        cmd.args([image, stub, "/workspace"]);
+        cmd.args([image, MOUNTED_STUB, "/workspace"]);
         let remove = Remove { docker: self.docker.clone(), name: spec.name.clone() };
         Ok(Box::new(process("docker", cmd.into(), WorkspaceMode::Shared, Some(Box::new(remove)))?))
     }
@@ -113,10 +90,8 @@ impl ProviderFactory for Factory {
         }
     }
     fn build(&self, machine: &Machine, config: &SandboxConfig) -> Option<Arc<dyn SandboxProvider>> {
-        let mut provider = DockerProvider::new(&config.docker_image, DockerStub::Mount(machine.stub.clone()?));
-        provider.docker = machine.which("docker")?;
-        provider.network = config.docker_network;
-        Some(Arc::new(provider))
+        let (docker, stub) = (machine.which("docker")?, machine.stub.clone()?);
+        Some(Arc::new(DockerProvider { docker, stub, image: config.docker_image.clone(), network: config.docker_network }))
     }
 }
 

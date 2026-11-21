@@ -18,31 +18,21 @@ pub struct SshProvider {
     /// Hosts the agent may pick from (aliases or `user@host`). With exactly
     /// one, calls may leave `options.host` out.
     pub hosts: Vec<String>,
-    /// Overrides the port from `~/.ssh/config`.
-    pub port: Option<u16>,
     /// The stub binary to upload. It must run on the remote host's OS and CPU.
     pub local_stub: PathBuf,
-    pub remote_root: String,
 }
 
-impl SshProvider {
-    pub fn new(local_stub: impl Into<PathBuf>, hosts: Vec<String>) -> Self {
-        Self { ssh: "ssh".into(), hosts, port: None, local_stub: local_stub.into(), remote_root: "/tmp/loa-sandbox".into() }
-    }
-}
+/// Where runs get their private directories on the host.
+const REMOTE_ROOT: &str = "/tmp/loa-sandbox";
 
 /// Runs a remote command on one host without ever prompting: the app has no terminal to answer on.
 #[derive(Clone)]
-struct Remote { ssh: PathBuf, port: Option<u16>, host: String, script: String }
+struct Remote { ssh: PathBuf, host: String, script: String }
 
 impl Teardown for Remote {
     fn command(&self) -> std::process::Command {
         let mut cmd = std::process::Command::new(&self.ssh);
-        cmd.args(["-T", "-o", "BatchMode=yes"]);
-        if let Some(port) = self.port {
-            cmd.arg("-p").arg(port.to_string());
-        }
-        cmd.args(["--", &self.host, &self.script]);
+        cmd.args(["-T", "-o", "BatchMode=yes", "--", &self.host, &self.script]);
         cmd
     }
 }
@@ -68,12 +58,13 @@ impl SandboxProvider for SshProvider {
         if host.is_empty() || host.starts_with('-') {
             return Err(SandboxError::Provider { provider: "ssh", message: "a valid host is required".into() });
         }
-        let root = format!("{}/{}", self.remote_root.trim_end_matches('/'), spec.name);
-        let (q_root, q_stub) = (shell_quote(&root), shell_quote(&format!("{root}/loa-sandbox-stub")));
-        let remote = |script: String| Remote { ssh: self.ssh.clone(), port: self.port, host: host.into(), script };
-        let cleanup = remote(format!("rm -rf -- {q_root}"));
+        // The stub sits beside the workspace root, so copying out never brings it back.
+        let dir = format!("{REMOTE_ROOT}/{}", spec.name);
+        let (q_dir, q_root, q_stub) = (shell_quote(&dir), shell_quote(&format!("{dir}/workspace")), shell_quote(&format!("{dir}/loa-sandbox-stub")));
+        let remote = |script: String| Remote { ssh: self.ssh.clone(), host: host.into(), script };
+        let cleanup = remote(format!("rm -rf -- {q_dir}"));
         let binary = tokio::fs::read(&self.local_stub).await?;
-        // One round trip creates the private root and receives the stub on stdin.
+        // One round trip creates the private directory and receives the stub on stdin.
         let setup = remote(format!("umask 077 && mkdir -p -- {q_root} && cat > {q_stub} && chmod 700 -- {q_stub}"));
         let mut upload = tokio::process::Command::from(setup.command())
             .stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped()).kill_on_drop(true).spawn()?;
@@ -116,8 +107,7 @@ impl ProviderFactory for Factory {
         }
     }
     fn build(&self, machine: &Machine, config: &SandboxConfig) -> Option<Arc<dyn SandboxProvider>> {
-        let mut provider = SshProvider::new(machine.stub.as_ref()?, Self::hosts(machine, config));
-        provider.ssh = machine.which("ssh")?;
-        Some(Arc::new(provider))
+        let (ssh, local_stub) = (machine.which("ssh")?, machine.stub.clone()?);
+        Some(Arc::new(SshProvider { ssh, hosts: Self::hosts(machine, config), local_stub }))
     }
 }
