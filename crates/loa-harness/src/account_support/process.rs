@@ -83,13 +83,8 @@ fn process_error(program: &str, err: std::io::Error) -> Error {
 impl ProcessRunner for TokioProcessRunner {
     async fn output(&self, spec: &CommandSpec) -> Result<ProcessOutput> {
         let mut cmd = Self::command(spec);
-        cmd.stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-        let out = loa_util::exec::retry_busy(|| cmd.spawn())
-            .map_err(|e| process_error(&spec.program_name(), e))?
-            .wait_with_output().await.map_err(|e| process_error(&spec.program_name(), e))?;
+        let out = loa_util::exec::output(&mut cmd).await
+            .map_err(|e| process_error(&spec.program_name(), e))?;
         Ok(ProcessOutput {
             code: out.status.code(),
             stdout: String::from_utf8_lossy(&out.stdout).into_owned(),

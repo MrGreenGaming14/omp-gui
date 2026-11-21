@@ -24,7 +24,7 @@ Everything else builds on these three. Their existing public items change only w
 | `loa-journal` | core | Append only prost journal, replay, snapshots, fork |
 | `loa-bus` | core | Session writer (`PatchSink` impl), publish subscribe with backpressure |
 | `loa-config` | core | Central config schema with version and migrations |
-| `loa-util` | core | Domain-free helpers: poison-tolerant locks, atomic files, executables (`write_executable`, `retry_busy`, `which`, `probe_cli`), time, text, `Registry`, `str_enum!` |
+| `loa-util` | core | Domain-free helpers: poison-tolerant locks, atomic files, executables (`write_executable`, `retry_busy`, `which`, `probe_cli`, captured `output`), time, text, `Registry`, `str_enum!` |
 | `loa-harness` | adapters | Harness adapters and account implementations, factory registry, CLI and omp OAuth login strategies, and shared configuration editors |
 | `loa-features` | adapters | omp features provided on top of harnesses that lack them |
 | `loa-mcp` | tools | rmcp client, server registry, config import |

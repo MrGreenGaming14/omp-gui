@@ -432,48 +432,44 @@ impl<'a> Editor<'a> {
         Some(region)
     }
 
-    fn set(&self, path: &[&str], expected_root: &Yaml) -> Result<String> {
+    /// Finds the first missing key, non-mapping ancestor, or the requested entry.
+    fn walk(&self, path: &[&str]) -> Result<(usize, Region, Option<Entry>)> {
         let mut region = self.root_region();
-        let mut sub = expected_root;
         for (depth, key) in path.iter().enumerate() {
-            sub = sub.as_hash()
-                .and_then(|map| map.get(&Yaml::String((*key).to_owned())))
-                .ok_or_else(|| self.unsupported("edited key missing from the result"))?;
-            match self.find(region, key)? {
-                Some(entry) => {
-                    if depth + 1 < path.len()
-                        && let Some(child) = self.child_mapping(&entry)
-                    {
-                        region = child;
-                        continue;
-                    }
-                    return Ok(self.replace_value(&entry, sub));
-                }
-                None => return self.insert_entry(region, depth == 0, key, sub),
+            let entry = self.find(region, key)?;
+            if depth + 1 < path.len()
+                && let Some(child) = entry.as_ref().and_then(|entry| self.child_mapping(entry))
+            {
+                region = child;
+                continue;
             }
+            return Ok((depth, region, entry));
         }
         Err(self.unsupported("empty key path"))
     }
 
-    fn remove(&self, path: &[&str]) -> Result<String> {
-        let mut region = self.root_region();
-        for depth in 0..path.len() {
-            let entry = self
-                .find(region, path[depth])?
-                .ok_or_else(|| self.unsupported(format!("`{}` not found in the text", path[..=depth].join("."))))?;
-            if depth + 1 == path.len() {
-                let end = self.span_end(entry.body_end);
-                let start = self.lines[entry.line].start;
-                let mut out = String::with_capacity(self.text.len());
-                out.push_str(&self.text[..start]);
-                out.push_str(&self.text[end..]);
-                return Ok(out);
-            }
-            region = self
-                .child_mapping(&entry)
-                .ok_or_else(|| self.unsupported(format!("`{}` is not a block mapping", path[..=depth].join("."))))?;
+    fn set(&self, path: &[&str], expected_root: &Yaml) -> Result<String> {
+        let (depth, region, entry) = self.walk(path)?;
+        let value = get_path(expected_root, &path[..=depth])
+            .ok_or_else(|| self.unsupported("edited key missing from the result"))?;
+        match entry {
+            Some(entry) => Ok(self.replace_value(&entry, value)),
+            None => self.insert_entry(region, depth == 0, path[depth], value),
         }
-        Err(self.unsupported("empty key path"))
+    }
+
+    fn remove(&self, path: &[&str]) -> Result<String> {
+        let (depth, _, entry) = self.walk(path)?;
+        let entry = entry.ok_or_else(|| self.unsupported(format!("`{}` not found in the text", path[..=depth].join("."))))?;
+        if depth + 1 != path.len() {
+            return Err(self.unsupported(format!("`{}` is not a block mapping", path[..=depth].join("."))));
+        }
+        let start = self.lines[entry.line].start;
+        let end = self.span_end(entry.body_end);
+        let mut out = String::with_capacity(self.text.len());
+        out.push_str(&self.text[..start]);
+        out.push_str(&self.text[end..]);
+        Ok(out)
     }
 
     /// Byte offset where line `i` starts, or the text end.
@@ -490,13 +486,7 @@ impl<'a> Editor<'a> {
         let head = &line[..entry.head_len];
         let mut new_lines = Vec::new();
         let comment = entry.comment.as_deref().map(|c| format!(" {c}")).unwrap_or_default();
-        match render_inline(value) {
-            Some(inline) => new_lines.push(format!("{head} {inline}{comment}")),
-            None => {
-                new_lines.push(format!("{head}{comment}"));
-                render_block(value, entry.indent + self.unit, self.unit, &mut new_lines);
-            }
-        }
+        render_value(format_args!("{head}"), &comment, value, entry.indent, self.unit, &mut new_lines);
         let start = self.lines[entry.line].start;
         let end = self.span_end(entry.body_end);
         let had_newline = self.lines[entry.body_end - 1].next > self.lines[entry.body_end - 1].end;
@@ -667,10 +657,14 @@ fn render_key(key: &Yaml) -> String {
 
 fn render_entry(key: &str, value: &Yaml, indent: usize, unit: usize, out: &mut Vec<String>) {
     let pad = " ".repeat(indent);
+    render_value(format_args!("{pad}{key}:"), "", value, indent, unit, out);
+}
+
+fn render_value(head: std::fmt::Arguments<'_>, comment: &str, value: &Yaml, indent: usize, unit: usize, out: &mut Vec<String>) {
     match render_inline(value) {
-        Some(v) => out.push(format!("{pad}{key}: {v}")),
+        Some(value) => out.push(format!("{head} {value}{comment}")),
         None => {
-            out.push(format!("{pad}{key}:"));
+            out.push(format!("{head}{comment}"));
             render_block(value, indent + unit, unit, out);
         }
     }
