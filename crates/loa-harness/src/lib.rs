@@ -18,4 +18,4 @@ pub mod opencode;
 #[cfg(feature = "testing")]
 pub mod testing;
 
-pub use registry::factories;
+pub use registry::{HarnessEnv, factories};

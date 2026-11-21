@@ -16,7 +16,7 @@ use loa_bus::{JournalOptions, Store};
 mod harness;
 mod host;
 
-pub use harness::{CHECKING, Harness, Harnesses, OPENCODE_URL};
+pub use harness::{CHECKING, Harness, Harnesses};
 pub use host::hostname;
 
 /// This node: its ed25519 identity and the label people see.

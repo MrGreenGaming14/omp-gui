@@ -6,12 +6,13 @@ edition.workspace = true
 publish.workspace = true
 
 [features]
-default = ["omp", "claude", "codex", "opencode", "acp"]
+default = ["omp", "claude", "codex", "opencode", "acp", "omp2"]
 omp = ["dep:base64"]
 claude = ["dep:base64", "dep:uuid"]
 codex = []
 opencode = ["dep:reqwest"]
 acp = []
+omp2 = ["dep:loa-adapter-omp2"]
 # Test doubles: FakeProcess, WatchSink, check_dom, replay and round_trip.
 testing = []
 
@@ -20,6 +21,7 @@ loa-util.workspace = true
 loa-core.workspace = true
 loa-contracts.workspace = true
 loa-bus = { path = "../loa-bus" }
+loa-adapter-omp2 = { path = "../loa-adapter-omp2", optional = true }
 async-trait.workspace = true
 base64 = { version = "0.23", optional = true }
 reqwest = { version = "0.13", default-features = false, features = ["json"], optional = true }
@@ -35,4 +37,5 @@ tracing.workspace = true
 loa-harness = { path = ".", default-features = false, features = ["testing"] }
 base64 = "0.23"
 axum = "0.8"
+serde_json = { workspace = true, features = ["preserve_order"] }
 futures.workspace = true

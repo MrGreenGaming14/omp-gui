@@ -223,7 +223,7 @@ impl State {
         let Some(session) = ctx.sessions.active() else { return };
         let id = session.id().to_string();
         let harness = session.harness_id().unwrap_or_default().to_owned();
-        if harness == native::OMP {
+        if asks_first(ctx, &harness) {
             self.gate.enforce_through_approvals(&id);
         }
         if mode(session.dom()) != SessionMode::Plan
@@ -266,7 +266,7 @@ impl State {
                     ctx.composer.set_mode(SessionMode::Normal);
                     return Task::none();
                 }
-                if harness_id == native::OMP {
+                if asks_first(ctx, &harness_id) {
                     self.gate.enforce_through_approvals(&id);
                 }
                 let entered = self.gate.permit(&id).and_then(|permit| {
@@ -784,6 +784,11 @@ fn capabilities(ctx: &Ctx, harness: &str) -> Capabilities {
 }
 
 /// Titles the new session `id`.
+/// Whether `harness` runs on an app approval mode, asking before each tool that writes or executes.
+fn asks_first(ctx: &Ctx, harness: &str) -> bool {
+    !ctx.services.harnesses.traits(harness).approval_modes.is_empty()
+}
+
 fn name(library: &loa_harness::features::library::Library, id: &str, title: &str) -> Result<(), String> {
     let live = library.live(id).ok_or_else(|| format!("session {id} isn't open"))?;
     let root = live.writer.with_dom(|dom| dom.root().map(|root| root.id)).ok_or_else(|| format!("session {id} has no root"))?;
@@ -1004,10 +1009,10 @@ impl Area for State {
         Some(self.transfer.view(active, loa_core::now_ms()).map(Message::Transfer))
     }
 
-    fn contribute(&self, config: &mut SessionConfig, target: &Target<'_>, _: &Ctx) {
-        if target.harness == native::OMP {
-            // The app runs omp with `--approval-mode always-ask`: it asks
-            // before every tool that writes or executes.
+    fn contribute(&self, config: &mut SessionConfig, target: &Target<'_>, ctx: &Ctx) {
+        if asks_first(ctx, target.harness) {
+            // The app runs it on an approval mode that asks before every
+            // tool that writes or executes.
             self.gate.enforce_through_approvals(&config.session_id);
         }
         if !target.capabilities.has(Feature::AdvisorRules) {

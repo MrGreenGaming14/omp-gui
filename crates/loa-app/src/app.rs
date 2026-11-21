@@ -916,12 +916,14 @@ impl App {
     /// Shows the permission picker for omp sessions, with the current level.
     fn sync_access(&mut self) {
         let harness = self.ctx.sessions.active().and_then(|session| session.harness_id()).or(self.ctx.sessions.harness.as_deref());
-        if harness != Some("omp") {
+        let modes = harness.map_or(&[][..], |harness| self.ctx.services.harnesses.traits(harness).approval_modes);
+        if modes.is_empty() {
             self.ctx.composer.set_access(Vec::new(), None);
             return;
         }
         let options = ACCESS
             .iter()
+            .filter(|(id, _, _)| modes.contains(id))
             .map(|(id, label, detail)| composer::AccessOption { id: (*id).to_owned(), label: (*label).to_owned(), detail: (*detail).to_owned() })
             .collect();
         let current = self.access.clone().unwrap_or_else(|| ACCESS_DEFAULT.to_owned());

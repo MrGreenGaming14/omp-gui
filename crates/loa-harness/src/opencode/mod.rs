@@ -10,4 +10,7 @@ mod native;
 
 pub use driver::{OpenCodeAdapter, OpenCodeSession, provider_models};
 pub use mapper::HARNESS;
+
+/// Where `opencode serve` listens by default.
+pub const DEFAULT_URL: &str = "http://127.0.0.1:4096";
 pub use native::{OpenCodeNative, export_value};
