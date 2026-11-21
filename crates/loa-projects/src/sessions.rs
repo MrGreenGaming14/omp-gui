@@ -13,7 +13,7 @@ use crate::{Error, Result};
 use async_trait::async_trait;
 use loa_bus::Bus;
 use loa_core::{Dom, Draft, Patch, PatchSink, now_ms};
-use loa_journal::{Journal, Listing, Store};
+use loa_bus::{Journal, Listing, Store};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -68,7 +68,7 @@ impl Inner {
     fn open(&self, session: &str) -> Result<Option<Journal>> {
         match self.store.open(session) {
             Ok((journal, _)) => Ok(Some(journal)),
-            Err(loa_journal::Error::NotFound(_) | loa_journal::Error::InvalidSessionId(_)) => Ok(None),
+            Err(loa_bus::JournalError::NotFound(_) | loa_bus::JournalError::InvalidSessionId(_)) => Ok(None),
             Err(e) => Err(port(e)),
         }
     }
@@ -177,7 +177,7 @@ mod tests {
     use crate::settings::{exclude_draft, is_excluded};
     use loa_bus::{Authorize, Denied, NodeKey, Persist, PersistError, SessionId, WriterConfig};
     use loa_core::{ElementKind as K, NodeId, Value, attr};
-    use loa_journal::JournalOptions;
+    use loa_bus::JournalOptions;
 
     struct JournalPersist(Journal);
 

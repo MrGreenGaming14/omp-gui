@@ -11,7 +11,6 @@ async-trait.workspace = true
 loa-core.workspace = true
 loa-contracts.workspace = true
 loa-bus = { path = "../loa-bus" }
-loa-journal = { path = "../loa-journal" }
 loa-identity = { path = "../loa-identity" }
 loa-features = { path = "../loa-features" }
 loa-config = { path = "../loa-config" }

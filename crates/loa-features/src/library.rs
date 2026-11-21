@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use loa_contracts::harness::Adapter;
 use loa_bus::{Authorize, Bus, NodeKey, SessionWriter, WriterConfig};
 use loa_core::{Dom, Draft, ElementKind, NodeId, Op, PatchSink, Value, attr};
-use loa_journal::{Journal, JournalPersist, JournalWriter, Store, SyncPolicy};
+use loa_bus::{Journal, JournalPersist, JournalWriter, Store, SyncPolicy};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -234,7 +234,7 @@ impl Library {
             .ok()
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
-        let existing = self.store.list()?.iter().any(|l| matches!(l, loa_journal::Listing::Session(i) if i.id == id));
+        let existing = self.store.list()?.iter().any(|l| matches!(l, loa_bus::Listing::Session(i) if i.id == id));
         if existing {
             let fresh = self.load(&id)?.root().and_then(|r| r.int_attr(SOURCE_MODIFIED)) == Some(modified);
             if fresh {

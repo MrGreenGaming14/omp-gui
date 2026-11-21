@@ -9,7 +9,6 @@ publish.workspace = true
 loa-util.workspace = true
 loa-core.workspace = true
 loa-contracts.workspace = true
-loa-journal = { path = "../loa-journal" }
 loa-bus = { path = "../loa-bus" }
 loa-projects = { path = "../loa-projects" }
 async-trait.workspace = true

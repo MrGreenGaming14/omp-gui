@@ -1,5 +1,5 @@
 //! Live sessions. Each open session is a loa-bus [`SessionWriter`] whose
-//! [`Persist`](loa_bus::Persist) port appends to its loa-journal journal, so
+//! [`Persist`](loa_bus::Persist) port appends to its journal, so
 //! every patch an adapter commits is on disk before the UI sees it. The UI
 //! keeps its own copy of each DOM, fed by the writer's subscription
 //! ([`Sessions::watch`]); [`Sessions::feed`] applies what arrives and names
@@ -16,7 +16,7 @@ use loa_contracts::harness::HarnessSession;
 use loa_bus::{Event, Policy, SessionId, SessionWriter};
 use loa_core::{DecisionStatus, Dom, ElementKind, NodeId, Op, Patch, TurnStatus, attr};
 use loa_features::library::{Library, Live};
-use loa_journal::{JournalWriter, Listing};
+use loa_bus::{JournalWriter, Listing};
 use loa_ui_shell::SessionSummary;
 
 use crate::services::Services;

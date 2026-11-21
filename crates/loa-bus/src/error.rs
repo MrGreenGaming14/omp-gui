@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 /// Everything that can go wrong with a journal, its snapshots or the store.
 #[derive(Debug, thiserror::Error)]
-pub enum Error {
+pub enum JournalError {
     #[error("{path}: {source}")]
     Io {
         path: PathBuf,
@@ -49,7 +49,7 @@ pub enum Error {
     Proto(#[from] ProtoError),
 }
 
-pub type Result<T, E = Error> = std::result::Result<T, E>;
+pub(crate) type Result<T, E = JournalError> = std::result::Result<T, E>;
 
 /// Attaches a path to io errors.
 pub(crate) trait IoContext<T> {
@@ -58,6 +58,6 @@ pub(crate) trait IoContext<T> {
 
 impl<T> IoContext<T> for std::io::Result<T> {
     fn at(self, path: impl Into<PathBuf>) -> Result<T> {
-        self.map_err(|source| Error::Io { path: path.into(), source })
+        self.map_err(|source| JournalError::Io { path: path.into(), source })
     }
 }

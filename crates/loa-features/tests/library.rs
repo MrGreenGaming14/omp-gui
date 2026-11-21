@@ -9,7 +9,7 @@ use loa_features::library::Library;
 use loa_features::plan::{self, Outcome, PlanGate, Verdict};
 use loa_features::smol::OneShot;
 use loa_features::hooks::{self, Advisor, TurnHooks};
-use loa_journal::{JournalOptions, Store};
+use loa_bus::{JournalOptions, Store};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -164,7 +164,7 @@ async fn native_fork_shares_the_journal_prefix_and_labels_the_root_once() {
     branch.harness.send(prompt("third")).await.unwrap();
     assert_eq!(lib.store().list().unwrap().len(), 2);
     let info = lib.store().list().unwrap().into_iter().find_map(|l| match l {
-        loa_journal::Listing::Session(i) if i.id == "b1" => Some(i),
+        loa_bus::Listing::Session(i) if i.id == "b1" => Some(i),
         _ => None,
     });
     assert_eq!(info.unwrap().parent.unwrap().session_id, "s1");

@@ -5,7 +5,7 @@ use loa_bus::{Bus, SessionWriter};
 use loa_core::{Dom, ElementKind, NodeId, attr};
 use loa_features::library::Library;
 use loa_grants::SessionFacts;
-use loa_journal::Listing;
+use loa_bus::Listing;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 

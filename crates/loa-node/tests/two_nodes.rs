@@ -6,7 +6,7 @@ use loa_bus::{Bus, Persist, PersistError, SessionId, SessionWriter, WriterConfig
 use loa_core::{Dom, Draft, ElementKind, NodeId as DomNodeId, Patch, PatchSink, Value, attr, now_ms};
 use loa_grants::{Action, GrantId, GrantStore, Resource, Scope};
 use loa_identity::{KeySource, NodeIdentity};
-use loa_journal::{JournalOptions, Store};
+use loa_bus::{JournalOptions, Store};
 use loa_features::library::Library;
 use loa_node::{BusSessions, DriveOutcome, GrantDirection, LibrarySessions, Node, NodeConfig, NodeEvent, Transport, ui};
 use loa_ui_peers as panel;
