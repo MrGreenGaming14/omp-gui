@@ -9,7 +9,6 @@ use crate::service::SandboxConfig;
 use crate::{Result, SandboxError};
 use async_trait::async_trait;
 use std::path::Path;
-use std::process::Stdio;
 use std::sync::Arc;
 use tokio::process::Command;
 
@@ -68,26 +67,19 @@ impl Sandbox for PeerSandbox {
 /// ends. The directory is removed afterwards.
 pub async fn serve_stub(channel: Channel, stub: &Path) -> Result<()> {
     let root = tempfile::tempdir()?;
-    let mut child = Command::new(stub).arg(root.path()).current_dir(root.path()).env_clear()
-        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true).spawn()?;
-    let (mut stdin, mut stdout) = (child.stdin.take().expect("piped stdin"), child.stdout.take().expect("piped stdout"));
-    let Channel { mut reader, mut writer } = channel;
-    let inbound = async {
-        let copied = tokio::io::copy(&mut reader, &mut stdin).await;
-        // Closing the stub's stdin ends it, which ends the outbound copy.
-        drop(stdin);
-        copied
-    };
+    let mut command = Command::new(stub);
+    command.arg(root.path()).current_dir(root.path()).env_clear();
+    let mut sandbox = Box::new(super::process("peer", command, WorkspaceMode::Copied, None)?);
+    let (Channel { mut reader, mut writer }, Channel { reader: mut stdout, writer: mut stdin }) = (channel, sandbox.take_channel().expect("a new sandbox"));
+    // Closing the stub's stdin ends it, which ends the outbound copy.
+    let inbound = async move { tokio::io::copy(&mut reader, &mut stdin).await };
     let outbound = async {
         let copied = tokio::io::copy(&mut stdout, &mut writer).await;
         let _ = tokio::io::AsyncWriteExt::shutdown(&mut writer).await;
         copied
     };
     let (inbound, outbound) = tokio::join!(inbound, outbound);
-    if child.try_wait()?.is_none() {
-        child.kill().await?;
-    }
-    child.wait().await?;
+    sandbox.stop().await?;
     inbound?;
     outbound?;
     Ok(())

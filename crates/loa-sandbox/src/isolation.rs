@@ -153,8 +153,6 @@ impl IsolatedCheckout {
         self.stage(&["diff", "--cached", "--binary", "--no-ext-diff", &self.baseline, "--"])
     }
 
-    pub fn cleanup(self) -> Result<()> { self.remove() }
-
     fn remove(&self) -> Result<()> {
         if self.root.exists() { self.backend.remove(&self.repo, &self.name, &self.root) } else { Ok(()) }
     }

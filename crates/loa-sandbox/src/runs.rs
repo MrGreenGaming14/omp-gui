@@ -64,11 +64,6 @@ impl RunLog {
 
     fn get_mut(&mut self, run: u64) -> Option<&mut RunEntry> { self.entries.iter_mut().find(|entry| entry.run.run == run) }
 
-    /// Runs of one session.
-    pub fn of_session<'a>(&'a self, session: &'a str) -> impl Iterator<Item = &'a RunEntry> + 'a {
-        self.entries.iter().filter(move |entry| entry.run.parent == session)
-    }
-
     pub fn running(&self) -> usize { self.entries.iter().filter(|entry| entry.state == RunState::Running).count() }
 
     /// Records that the run's patch was applied (with

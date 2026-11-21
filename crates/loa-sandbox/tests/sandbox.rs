@@ -61,13 +61,13 @@ type Calls = &'static [(&'static str, &'static str)];
 
 /// A harness whose "model" makes fixed tool calls when prompted, or, when
 /// `asks`, first raises an approval and makes them once it is answered.
+/// Answers and tool outputs go to `log` in order.
 #[derive(Default)]
 struct Scripted {
     calls: Calls,
     asks: bool,
     check: Option<fn(&SessionConfig)>,
-    observed: Arc<Mutex<Vec<String>>>,
-    answers: Arc<Mutex<Vec<Answer>>>,
+    log: Arc<Mutex<Vec<String>>>,
 }
 
 struct Session {
@@ -77,15 +77,14 @@ struct Session {
     calls: Calls,
     asks: bool,
     answered: Notify,
-    observed: Arc<Mutex<Vec<String>>>,
-    answers: Arc<Mutex<Vec<Answer>>>,
+    log: Arc<Mutex<Vec<String>>>,
 }
 
 impl Session {
     async fn call(&self) -> Result<()> {
         for (tool, args) in self.calls {
             let output = self.tools.call(&self.id, tool, args).await.map_err(AdapterError::Protocol)?;
-            self.observed.lock().unwrap().push(output);
+            self.log.lock().unwrap().push(output);
         }
         Ok(())
     }
@@ -97,14 +96,10 @@ impl Adapter for Scripted {
     fn capabilities(&self) -> Capabilities { Capabilities::default() }
     async fn start(&self, config: SessionConfig, sink: Arc<dyn PatchSink>) -> Result<Box<dyn HarnessSession>> {
         assert!(config.host_tools.iter().all(|tool| tool.name.starts_with("sandbox_") && tool.name != "sandbox_task"));
-        if let Some(check) = self.check {
-            check(&config);
-        }
+        self.check.inspect(|check| check(&config));
         let tools = config.host_tool_handler.ok_or_else(|| AdapterError::Format("worker has no sandbox tools".into()))?;
-        Ok(Box::new(Session {
-            tools, id: config.session_id, sink, calls: self.calls, asks: self.asks, answered: Notify::new(),
-            observed: Arc::clone(&self.observed), answers: Arc::clone(&self.answers),
-        }))
+        let (calls, asks, log) = (self.calls, self.asks, Arc::clone(&self.log));
+        Ok(Box::new(Session { tools, id: config.session_id, sink, calls, asks, answered: Notify::new(), log }))
     }
     async fn resume(&self, _: SessionConfig, _: &Dom, _: Arc<dyn PatchSink>) -> Result<Box<dyn HarnessSession>> {
         Err(AdapterError::Format("unexpected resume".into()))
@@ -117,12 +112,7 @@ impl HarnessSession for Session {
         if !self.asks {
             return self.call().await;
         }
-        let session_attrs = [
-            (attr::ID, Value::Str(self.id.clone())),
-            (attr::HARNESS, Value::Str("scripted".into())),
-            (attr::NODE, Value::Str("host".into())),
-            (attr::CREATED, Value::Int(0)),
-        ];
+        let session_attrs = [(attr::ID, Value::Str(self.id.clone())), (attr::HARNESS, Value::Str("scripted".into())), (attr::NODE, Value::Str("host".into())), (attr::CREATED, Value::Int(0))];
         let session = self.sink.commit(Draft::insert(NodeId::DOCUMENT, ElementKind::Session, session_attrs, "")).unwrap();
         let attrs = [(attr::KIND, Value::Str("approval".into())), (attr::STATUS, Value::Str("waiting".into()))];
         self.sink.commit(Draft::insert(session.node, ElementKind::Decision, attrs, "Allow tool: sandbox_write")).unwrap();
@@ -130,7 +120,7 @@ impl HarnessSession for Session {
     }
     async fn interrupt(&self) -> Result<()> { Ok(()) }
     async fn answer(&self, _: NodeId, answer: Answer) -> Result<()> {
-        self.answers.lock().unwrap().push(answer);
+        self.log.lock().unwrap().push(format!("{} by {}", answer.values.join(","), answer.by));
         self.answered.notify_one();
         Ok(())
     }
@@ -138,11 +128,11 @@ impl HarnessSession for Session {
     fn harness(&self) -> &'static str { "scripted" }
     fn state(&self) -> SessionState { SessionState::Idle }
     async fn wait_idle(&self) -> Result<()> {
-        if !self.asks {
-            return Ok(());
+        if self.asks {
+            self.answered.notified().await;
+            self.call().await?;
         }
-        self.answered.notified().await;
-        self.call().await
+        Ok(())
     }
     async fn shutdown(&self) -> Result<()> { Ok(()) }
 }
@@ -213,7 +203,7 @@ async fn an_isolated_run_keeps_secrets_on_the_host_and_returns_the_patch() {
         }),
         ..Scripted::default()
     });
-    let (observed, answers) = (Arc::clone(&adapter.observed), Arc::clone(&adapter.answers));
+    let log = Arc::clone(&adapter.log);
     let (spec, handler) = service.host_tool(adapter, &template).expect("the local provider is available");
     assert_eq!(spec.name, "sandbox_task");
     let schema: serde_json::Value = serde_json::from_str(&spec.input_schema).unwrap();
@@ -223,11 +213,10 @@ async fn an_isolated_run_keeps_secrets_on_the_host_and_returns_the_patch() {
     let call = handler.call("parent", "sandbox_task", r#"{"task":"Write the notes","kind":"local","isolation":true}"#);
     let answer = tokio::time::timeout(std::time::Duration::from_secs(30), call).await.expect("the worker doesn't wait on nobody").unwrap();
     let result: SandboxTaskResult = serde_json::from_str(&answer).unwrap();
-    let observed = observed.lock().unwrap();
-    assert!(observed[0].contains("unset"), "the sandbox inherited the host environment: {}", observed[0]);
-    assert!(observed[3].contains("hello.txt") && observed[4] == "from", "{observed:?}");
-    let answers = answers.lock().unwrap();
-    assert_eq!((answers.len(), answers[0].values.as_slice(), answers[0].by.as_str()), (1, ["allow_once".to_owned()].as_slice(), "host"));
+    let log = log.lock().unwrap();
+    assert_eq!(log[0], "allow_once by host", "the worker answers its one approval");
+    assert!(log[1].contains("unset"), "the sandbox inherited the host environment: {}", log[1]);
+    assert!(log[4].contains("hello.txt") && log[5] == "from" && log.len() == 6, "{log:?}");
 
     let patch = result.patch.expect("isolated runs return a patch");
     assert!(patch.contains("+from the sandbox") && patch.contains("-original") && patch.contains("+changed"), "{patch}");

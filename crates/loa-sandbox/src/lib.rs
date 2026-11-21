@@ -3,17 +3,8 @@
 //! with feature `vm`, Firecracker or qemu), while the worker's model calls,
 //! keys and journal stay on the host.
 //!
-//! - [`proto`]: the wire protocol spoken with the exec stub (the stub builds
-//!   this crate with default features off and gets only this module)
-//! - [`client`]: the host side of that protocol
-//! - [`provider`]: [`SandboxProvider`], the provider factories and their registry
-//! - [`isolation`]: isolated checkouts and patch capture
-//! - [`sync`]: copying the workspace in and out of sandboxes that don't share it
-//! - [`worker`]: the worker session and its `sandbox_*` tools
-//! - [`tool`]: the `sandbox_task` tool and the events of its runs
-//! - [`service`]: what the app holds: settings, provider availability and the
-//!   host tool for each session
-//! - [`runs`]: the runs the app lists, built from the tool's events
+//! [`proto`] is all the stub needs; it builds this crate without the `host`
+//! feature, which brings everything else.
 
 pub mod proto;
 

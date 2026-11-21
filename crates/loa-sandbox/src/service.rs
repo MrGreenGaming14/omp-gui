@@ -78,12 +78,6 @@ impl SandboxService {
         self
     }
 
-    /// Probes and runs on `machine` instead of this one.
-    pub fn with_machine(mut self, machine: Machine) -> Self {
-        self.machine = machine;
-        self
-    }
-
     pub fn config(&self) -> &SandboxConfig { &self.config }
 
     /// New settings apply to sessions started afterwards.
