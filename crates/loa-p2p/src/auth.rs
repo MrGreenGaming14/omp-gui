@@ -49,14 +49,14 @@ impl GrantAccess {
 
     pub fn session_actions(&self, peer: &NodeKey, facts: &SessionFacts) -> Vec<Action> {
         let now = now_ms();
-        SESSION_ACTIONS.into_iter().filter(|action| self.allows(peer, &Request::session(*action, facts), now)).collect()
+        SESSION_ACTIONS.into_iter().filter(|action| GrantGate::allows(self, peer, &Request::session(*action, facts), now)).collect()
     }
 
     pub fn turn_visible(&self, peer: &NodeKey, facts: &SessionFacts, turn: DomNodeId) -> bool {
-        self.allows(peer, &Request::turn(Action::View, facts, turn), now_ms())
+        GrantGate::allows(self, peer, &Request::turn(Action::View, facts, turn), now_ms())
     }
 
-    fn allows_in(&self, peer: &NodeKey, dom: &Dom, action: Action, node: Option<DomNodeId>) -> bool {
+    pub(crate) fn allows_in(&self, peer: &NodeKey, dom: &Dom, action: Action, node: Option<DomNodeId>) -> bool {
         let Some(facts) = SessionFacts::from_dom(dom) else { return false };
         let (now, turn) = (now_ms(), node.and_then(|node| turn_of(dom, node)));
         self.live_grants(peer, now).iter().any(|grant| {
@@ -176,7 +176,7 @@ impl GrantService {
             Resource::Folder { path } => Request::folder(action, path),
             _ => return false,
         };
-        self.access.allows(&PublicKey::from(peer).into(), &request, now_ms())
+        GrantGate::allows(&*self.access, &PublicKey::from(peer).into(), &request, now_ms())
     }
 
     /// Grants issued here, then grants held.

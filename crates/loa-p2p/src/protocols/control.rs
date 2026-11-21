@@ -5,7 +5,7 @@
 use crate::discovery::NodeProbe;
 use crate::node::Node;
 use crate::transport::{Connection, Stream};
-use crate::wire::{self, Control, ControlFrame, GrantRenewal, GrantRenewalResult, Hello, Presence};
+use crate::wire::{self, Control, ControlFrame, GrantRenewal, GrantRenewalResult, Presence};
 use crate::{NodeError, NodeId, Result};
 use async_trait::async_trait;
 use loa_trust::{GrantId, PublicKey, RenewFailure, RenewTransport};

@@ -22,6 +22,7 @@ use tokio_rustls::{TlsAcceptor, TlsConnector};
 use tokio_util::compat::{Compat, FuturesAsyncReadCompatExt, TokioAsyncReadCompatExt};
 use yamux::{Config, Mode};
 
+type Tls<T> = std::result::Result<T, rustls::Error>;
 const QUEUE: usize = 64;
 /// First byte of every yamux stream: an application stream (1 was datagrams).
 const STREAM_FRAME: u8 = 0;
@@ -141,7 +142,7 @@ fn peer_of(certs: Option<&[CertificateDer<'_>]>) -> Result<NodeId> {
 struct NodeVerifier(Option<NodeId>);
 
 impl NodeVerifier {
-    fn check(&self, cert: &CertificateDer<'_>, chain: &[CertificateDer<'_>]) -> rustls::Result<()> {
+    fn check(&self, cert: &CertificateDer<'_>, chain: &[CertificateDer<'_>]) -> Tls<()> {
         let general = |text: String| rustls::Error::General(text);
         if !chain.is_empty() {
             return Err(general("node certificate must be a single leaf".into()));
@@ -157,10 +158,10 @@ impl NodeVerifier {
 /// The signature methods both verifier traits share.
 macro_rules! signatures {
     () => {
-        fn verify_tls12_signature(&self, _: &[u8], _: &CertificateDer<'_>, _: &DigitallySignedStruct) -> rustls::Result<HandshakeSignatureValid> {
+        fn verify_tls12_signature(&self, _: &[u8], _: &CertificateDer<'_>, _: &DigitallySignedStruct) -> Tls<HandshakeSignatureValid> {
             Err(rustls::Error::General("TLS 1.2 disabled".into()))
         }
-        fn verify_tls13_signature(&self, msg: &[u8], cert: &CertificateDer<'_>, dss: &DigitallySignedStruct) -> rustls::Result<HandshakeSignatureValid> {
+        fn verify_tls13_signature(&self, msg: &[u8], cert: &CertificateDer<'_>, dss: &DigitallySignedStruct) -> Tls<HandshakeSignatureValid> {
             if dss.scheme != SignatureScheme::ED25519 {
                 return Err(rustls::Error::General("expected Ed25519 signature".into()));
             }
@@ -171,7 +172,7 @@ macro_rules! signatures {
 }
 
 impl ServerCertVerifier for NodeVerifier {
-    fn verify_server_cert(&self, cert: &CertificateDer<'_>, chain: &[CertificateDer<'_>], _: &ServerName<'_>, _: &[u8], _: UnixTime) -> rustls::Result<ServerCertVerified> {
+    fn verify_server_cert(&self, cert: &CertificateDer<'_>, chain: &[CertificateDer<'_>], _: &ServerName<'_>, _: &[u8], _: UnixTime) -> Tls<ServerCertVerified> {
         self.check(cert, chain).map(|()| ServerCertVerified::assertion())
     }
     signatures!();
@@ -179,7 +180,7 @@ impl ServerCertVerifier for NodeVerifier {
 
 impl ClientCertVerifier for NodeVerifier {
     fn root_hint_subjects(&self) -> &[DistinguishedName] { &[] }
-    fn verify_client_cert(&self, cert: &CertificateDer<'_>, chain: &[CertificateDer<'_>], _: UnixTime) -> rustls::Result<ClientCertVerified> {
+    fn verify_client_cert(&self, cert: &CertificateDer<'_>, chain: &[CertificateDer<'_>], _: UnixTime) -> Tls<ClientCertVerified> {
         self.check(cert, chain).map(|()| ClientCertVerified::assertion())
     }
     signatures!();

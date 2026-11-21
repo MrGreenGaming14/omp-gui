@@ -11,17 +11,17 @@ mod sessions;
 pub mod transport;
 pub mod wire;
 
-pub use auth::{GrantAccess, GrantGate};
+pub use auth::{GrantAccess, GrantDirection, GrantGate, GrantInfo};
 pub use discovery::{Availability, Discoverer, NearbyPeer, NearbySource};
 pub use loa_config::DEFAULT_PORT;
 pub use loa_trust::KeySource;
-pub use node::*;
-pub use peers_db::DiscoverySource;
+pub use node::{Endpoint, Node, NodeConfig, NodeEvent, NodeStatus, SANDBOX_LABEL, data_dir, local_protocols};
+pub use peers_db::{DiscoverySource, PeerInfo};
 pub use protocols::extra::{AddedProtocol, NodeSlot, PeerProtocol};
 pub use protocols::folder::{FolderEntry, MAX_FILE as MAX_FOLDER_FILE, SharedFolder};
 pub use protocols::projection::{Access, Mirror, Projection, Update, fork_mirror_to_own_node};
-pub use protocols::session::{DriveOutcome, RemoteView};
-pub use sessions::{BusSessions, LocalSession, LocalSessions, LocalTurn};
+pub use protocols::session::{DriveOutcome, RemoteSession, RemoteView};
+pub use sessions::{BusSessions, LibrarySessions, LocalSession, LocalSessions, LocalTurn};
 pub use transport::{Connection, RelayConfig, Stream, TransportKind};
 
 /// The public ed25519 node key, the network address.

@@ -79,7 +79,7 @@ macro_rules! messages {
 
 /// Defines a oneof frame `$frame { body: Option<$body> }` and its [`Envelope`] over `$ack`.
 macro_rules! frame {
-    ($frame:ident, $body:ident, $name:literal, $tags:literal { $($variant:ident($ty:ty) = $tag:literal),* $(,)? }) => {
+    ($frame:ident, $body:ident, $name:tt, $tags:tt { $($variant:ident($ty:ty) = $tag:tt),* $(,)? }) => {
         #[derive(Clone, PartialEq, Message)]
         pub struct $frame { #[prost(oneof = $name, tags = $tags)] pub body: Option<$body> }
         #[derive(Clone, PartialEq, Oneof)]

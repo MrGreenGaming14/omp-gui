@@ -1,54 +1,23 @@
-//! The app's peer node: one service that owns this node's network presence.
-//!
-//! - the iroh endpoint on 31415 (UDP) with the authenticated TCP fallback on
-//!   the same port, both keyed by the node identity ([`Node::start`])
-//! - peers: added by key, found on the LAN (mDNS) or the tailnet, probed for
-//!   presence, transport and app version ([`Node::peers`], [`Node::nearby`])
-//! - grants: issued, renewed, revoked and delivered over `omp/control/1`;
-//!   received grants renew themselves before they expire ([`Node::grants`])
-//! - session sharing over `omp/session/1`: peers list, view and drive the
-//!   sessions their grants reach; this node stays the single writer
-//!   ([`Node::open_remote`], [`RemoteView`], [`Node::fork_remote`])
-//!
-//! The app plugs in its sessions through [`LocalSessions`] and opens every
-//! session writer with [`Node::authorizer`], so peer requests are checked
-//! against grants under the writer lock. Every incoming connection is
-//! authenticated by its node key; control traffic is open to any node (a
-//! connection never makes it a peer), session traffic needs grants proven on
-//! each request.
+//! [`Node`]: the facade the app drives. It owns the transports and composes
+//! a [`PeerDirectory`], a [`GrantService`] and a [`SessionShare`].
 
-mod access;
-mod control;
-mod extra;
-mod folder;
-mod sessions;
-mod share;
-pub mod ui;
-
-pub use access::GrantAccess;
-pub use extra::{AddedProtocol, NodeSlot, PeerProtocol};
-pub use folder::{FolderEntry, MAX_FILE as MAX_FOLDER_FILE, SharedFolder};
-pub use loa_net::conn::Stream;
-pub use sessions::{BusSessions, LibrarySessions, LocalSession, LocalSessions, LocalTurn};
-pub use share::{DriveOutcome, RemoteView};
-
-pub use loa_trust::KeySource;
-pub use loa_net::NodeId;
-pub use loa_net::conn::Transport;
-pub use loa_net::endpoint::RelayConfig;
-pub use loa_net::peers::DiscoverySource;
-
-use loa_util::exec::which;
-use loa_util::LockExt;
-use loa_trust::{Action, GrantId, GrantSpec, GrantStore, NodeIdentity, PublicKey, RenewOutcome, Renewer, Resource, Scope};
+use crate::auth::{GrantInfo, GrantService};
+use crate::discovery::{Announce, Availability, Discoverer, Mdns, NearbyPeer, Tailnet};
+use crate::peers_db::{DiscoverySource, PeerDirectory, PeerInfo};
+use crate::protocols::session::{RemoteSession, RemoteView, SessionShare};
+use crate::protocols::{Served, control, extra, folder, session};
+use crate::protocols::extra::{AddedProtocol, PeerProtocol};
+use crate::protocols::folder::{FolderEntry, SharedFolder};
+use crate::sessions::LocalSessions;
+use crate::transport::{Connection, FallbackDialer, Quic, RelayConfig, Router, Stream, Tcp, Transport, TransportKind};
+use crate::wire::{self, Control, GrantDelivery, GrantRevocation, Hello, ProtocolVersion};
+use crate::{DEFAULT_PORT, NodeError, NodeId, Result};
 use loa_bus::{Journal, Store};
-use loa_net::alpn;
-use loa_net::conn::Connection;
-use loa_net::control::{self as wire, control_frame::Kind};
-use loa_net::network::Network;
-use loa_net::peers::PeerStore;
-use loa_net::router::{AllowAll, Router};
-use std::collections::{HashMap, HashSet};
+use loa_trust::{Action, GrantId, GrantSpec, GrantStore, KeySource, NodeIdentity, PublicKey, RenewOutcome, Renewer, Resource, Scope};
+use loa_util::LockExt;
+use loa_util::exec::which;
+use loa_util::time::now_ms;
+use std::collections::HashSet;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -57,82 +26,42 @@ use std::time::Duration;
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 
-/// Default port of every node, UDP and TCP.
-pub use loa_net::DEFAULT_PORT;
-/// Protocol versions this build speaks.
-const VERSIONS: &[u32] = &[1];
 /// How the panel names [`Resource::Sandbox`].
 pub const SANDBOX_LABEL: &str = "Sandbox on this node";
-
-/// The ALPN labels this node announces in its hello, e.g. `omp/session/1`.
-pub fn local_protocols() -> Vec<String> {
-    local_alpns().map(|alpn| alpn.to_string()).collect()
-}
-
-fn local_alpns() -> impl Iterator<Item = alpn::Alpn> {
-    [alpn::CONTROL, alpn::SESSION, folder::PROTOCOL]
-        .into_iter()
-        .flat_map(|name| VERSIONS.iter().map(move |v| alpn::Alpn::new(name, *v)))
-}
-
-/// How long one probe or control request may take.
+/// How long one dial or control request may take.
 const CALL_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long QUIC may take before TCP is tried.
+const QUIC_TIMEOUT: Duration = Duration::from_millis(400);
 
-#[derive(Debug, thiserror::Error)]
-pub enum NodeError {
-    #[error(transparent)]
-    Net(#[from] loa_net::NetError),
-    #[error(transparent)]
-    Grant(#[from] loa_trust::TrustError),
-    #[error(transparent)]
-    Share(#[from] loa_share::Error),
-    #[error("not a node key: {0:?}")]
-    InvalidKey(String),
-    #[error("invalid address {0:?}: {1}")]
-    InvalidAddress(String, String),
-    #[error("unknown peer {0}")]
-    UnknownPeer(String),
-    #[error("the peer endpoint is not running")]
-    NotStarted,
-    #[error("the peer refused: {0}")]
-    Refused(String),
-    #[error("protocol: {0}")]
-    Protocol(String),
-    #[error("{0} timed out")]
-    Timeout(&'static str),
-    #[error("{0}")]
-    Unavailable(String),
-}
+/// The protocol labels this node announces in its hello.
+pub fn local_protocols() -> Vec<String> { wire::LOCAL.iter().map(|l| String::from_utf8_lossy(l).into_owned()).collect() }
 
-pub type Result<T, E = NodeError> = std::result::Result<T, E>;
+/// Default directory of the node's stores inside the app data directory.
+pub fn data_dir(app_data: &Path) -> PathBuf { app_data.join("node") }
 
 /// How the node runs. [`NodeConfig::new`] gives the app defaults.
 #[derive(Clone, Debug)]
 pub struct NodeConfig {
-    /// Where `peers.sqlite` and `grants.sqlite` live.
+    /// Where `peers.sqlite` (and with [`Node::open`], `grants.sqlite`) live.
     pub data_dir: PathBuf,
     /// UDP and TCP listening address; port 0 picks free ports (tests).
     pub bind: SocketAddr,
     pub relay: RelayConfig,
-    /// Announce and browse on the LAN.
     pub mdns: bool,
-    /// The `tailscale` executable; `None` when Tailscale isn't installed.
+    /// The `tailscale` executable; `None` when not installed or turned off.
     pub tailscale: Option<PathBuf>,
-    /// The name peers see, the machine's host name.
+    /// The name peers see.
     pub name: String,
     pub app_version: String,
     /// How often peers are probed and held grants renewed.
     pub presence_interval: Duration,
     /// Held grants renew this long before they expire.
     pub renew_margin_ms: i64,
-    /// Where forks of peers' sessions become local sessions: the app's
-    /// session store. `None` disables forking.
+    /// The session store forks of peers' sessions go into; `None` disables forking.
     pub sessions: Option<Store>,
 }
 
 impl NodeConfig {
-    /// The app's defaults: port 31415 on every interface, mDNS on, Tailscale
-    /// when its CLI is on `PATH`, presence every 30 s.
     pub fn new(data_dir: impl Into<PathBuf>, name: impl Into<String>, app_version: impl Into<String>) -> Self {
         Self {
             data_dir: data_dir.into(),
@@ -149,25 +78,12 @@ impl NodeConfig {
     }
 }
 
-fn create_dir(dir: &Path) -> Result<()> {
-    std::fs::create_dir_all(dir).map_err(|e| NodeError::Unavailable(format!("{}: {e}", dir.display())))
-}
-
 /// State of the endpoint.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Endpoint {
     Stopped,
     Starting,
     Listening { udp: Vec<SocketAddr>, tcp: SocketAddr },
-    Failed(String),
-}
-
-/// Whether an optional discovery source works here.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Availability {
-    /// Turned off, or its tool isn't installed.
-    Off(String),
-    Active(String),
     Failed(String),
 }
 
@@ -183,362 +99,172 @@ pub struct NodeStatus {
     pub tailscale: Availability,
 }
 
-/// A saved peer with what this node last observed about it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PeerInfo {
-    pub key: NodeId,
-    pub name: Option<String>,
-    pub addresses: Vec<SocketAddr>,
-    pub source: DiscoverySource,
-    pub online: bool,
-    pub last_seen_ms: Option<i64>,
-    pub app_version: Option<String>,
-    /// Transport of the last connection, while the peer is online.
-    pub transport: Option<Transport>,
-    /// Whether it speaks a version of `omp/session` this node does.
-    pub shared_protocol: Option<bool>,
-    /// The ALPN labels (`omp/<family>/<n>`) it announced in its last hello;
-    /// empty until it has been seen.
-    pub protocols: Vec<String>,
-}
-
-/// How an unsaved node became known.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum NearbySource {
-    Mdns,
-    Tailscale,
-    /// It connected to this node.
-    Incoming,
-}
-
-/// A node seen but not saved as a peer.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct NearbyPeer {
-    pub key: NodeId,
-    pub name: Option<String>,
-    pub addresses: Vec<SocketAddr>,
-    pub source: NearbySource,
-    pub seen_ms: i64,
-    pub app_version: Option<String>,
-    /// The ALPN labels it announced, when it connected or answered a probe.
-    pub protocols: Vec<String>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum GrantDirection {
-    Given,
-    Received,
-}
-
-/// A grant this node issued or holds.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct GrantInfo {
-    pub id: GrantId,
-    /// The holder of a given grant, the issuer of a received one.
-    pub peer: NodeId,
-    pub direction: GrantDirection,
-    pub scopes: Vec<Scope>,
-    /// When the grant ends (given grants with an end).
-    pub until_ms: Option<i64>,
-    /// When the current token expires (received grants).
-    pub expires_ms: Option<i64>,
-    /// When this node renews it (received grants).
-    pub renews_at_ms: Option<i64>,
-    pub reshare: bool,
-    /// Revoked by this node, or refused renewal by its issuer.
-    pub ended: bool,
-}
-
-/// A session of a peer that this node's grants reach.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RemoteSession {
-    pub peer: NodeId,
-    pub id: String,
-    pub title: String,
-    pub harness: String,
-    pub created_ms: i64,
-    pub actions: Vec<Action>,
-    /// Only some prompts are visible.
-    pub partial: bool,
-    pub last_seq: u64,
-}
-
 /// Something the app should react to.
 #[derive(Clone, Debug)]
 pub enum NodeEvent {
-    /// Peers, grants, status or remote sessions changed: refresh views.
+    /// Peers, grants, status or remote sessions changed.
     Changed,
     /// A peer with drive access asks this node's harness to run a prompt.
     PromptRequested { peer: NodeId, session: String, text: String },
-    /// A peer with drive access answers a decision waiting in this node's
-    /// session `session`; `decision` is this node's id of it.
+    /// A peer with drive access answers decision `decision` (this node's id) of `session`.
     AnswerRequested { peer: NodeId, session: String, decision: loa_core::NodeId, values: Vec<String>, reason: Option<String> },
 }
 
 /// The running node. Cheap to clone; every clone is the same node.
 #[derive(Clone)]
-pub struct Node {
-    inner: Arc<Inner>,
-}
+pub struct Node(pub(crate) Arc<Inner>);
 
 pub(crate) struct Inner {
     config: NodeConfig,
-    identity: NodeIdentity,
     key: NodeId,
-    peers: Mutex<PeerStore>,
-    grants: Arc<GrantStore>,
-    access: Arc<GrantAccess>,
-    sessions: Arc<dyn LocalSessions>,
-    net: Mutex<Option<Arc<Network>>>,
+    pub(crate) peers: PeerDirectory,
+    pub(crate) grants: GrantService,
+    pub(crate) share: SessionShare,
+    net: Mutex<Option<Arc<FallbackDialer>>>,
     state: Mutex<State>,
     events: broadcast::Sender<NodeEvent>,
 }
 
 struct State {
-    key_source: KeySource,
-    endpoint: Endpoint,
-    mdns: Availability,
-    tailscale: Availability,
-    transports: HashMap<NodeId, Transport>,
-    /// ALPN labels each peer announced in its last hello.
-    protocols: HashMap<NodeId, Vec<String>>,
-    nearby: HashMap<NodeId, NearbyPeer>,
-    remote: HashMap<NodeId, Vec<RemoteSession>>,
-    /// Grants issued while their holder was unreachable; delivered when it answers.
-    undelivered: HashSet<GrantId>,
+    status: NodeStatus,
     resources: Vec<(Resource, String)>,
     /// Protocols the app added; served from the next start.
     added: Vec<AddedProtocol>,
     tasks: Vec<JoinHandle<()>>,
 }
 
-
-pub(crate) use loa_util::time::now_ms;
+fn create_dir(dir: &Path) -> Result<()> { std::fs::create_dir_all(dir).map_err(|e| NodeError::Unavailable(format!("{}: {e}", dir.display()))) }
 
 impl Node {
-    /// Opens the node's stores under `config.data_dir`, grants included.
-    /// Nothing touches the network until [`Node::start`].
+    /// Opens the node's stores under `config.data_dir`, grants included. Nothing touches the network until [`Node::start`].
     pub fn open(config: NodeConfig, identity: &NodeIdentity, key_source: KeySource, sessions: Arc<dyn LocalSessions>) -> Result<Self> {
         create_dir(&config.data_dir)?;
         let grants = Arc::new(GrantStore::open(&config.data_dir.join("grants.sqlite"))?);
         Self::open_with_grants(config, identity, key_source, sessions, grants)
     }
 
-    /// [`Node::open`] over the app's grant store, shared with whatever else
-    /// checks grants; only the peer directory lives under `config.data_dir`.
-    pub fn open_with_grants(
-        config: NodeConfig,
-        identity: &NodeIdentity,
-        key_source: KeySource,
-        sessions: Arc<dyn LocalSessions>,
-        grants: Arc<GrantStore>,
-    ) -> Result<Self> {
+    /// [`Node::open`] over the app's grant store, shared with whatever else checks grants.
+    pub fn open_with_grants(config: NodeConfig, identity: &NodeIdentity, key_source: KeySource, sessions: Arc<dyn LocalSessions>, grants: Arc<GrantStore>) -> Result<Self> {
         create_dir(&config.data_dir)?;
-        let peers = PeerStore::open(config.data_dir.join("peers.sqlite"))?;
-        let key = NodeId::try_from(identity.public_key())?;
-        let mdns = if config.mdns { Availability::Off("starts with the endpoint".into()) } else { Availability::Off("turned off".into()) };
+        let key = NodeId::try_from(identity.public_key()).map_err(|e| NodeError::InvalidKey(e.to_string()))?;
         let tailscale = match &config.tailscale {
             Some(path) => Availability::Active(format!("{} found; scan to look for nodes", path.display())),
             None if which("tailscale").is_some() => Availability::Off("turned off".into()),
             None => Availability::Off("tailscale is not installed".into()),
         };
-        let (events, _) = broadcast::channel(256);
-        Ok(Self {
-            inner: Arc::new(Inner {
-                access: Arc::new(GrantAccess::new(Arc::clone(&grants))),
-                config,
-                identity: identity.clone(),
-                key,
-                peers: Mutex::new(peers),
-                grants,
-                sessions,
-                net: Mutex::new(None),
-                state: Mutex::new(State {
-                    key_source,
-                    endpoint: Endpoint::Stopped,
-                    mdns,
-                    tailscale,
-                    transports: HashMap::new(),
-                    protocols: HashMap::new(),
-                    nearby: HashMap::new(),
-                    remote: HashMap::new(),
-                    undelivered: HashSet::new(),
-                    resources: Vec::new(),
-                    added: Vec::new(),
-                    tasks: Vec::new(),
-                }),
-                events,
-            }),
-        })
+        let mdns = Availability::Off(if config.mdns { "starts with the endpoint" } else { "turned off" }.into());
+        let status = NodeStatus { key, name: config.name.clone(), app_version: config.app_version.clone(), key_source, endpoint: Endpoint::Stopped, mdns, tailscale };
+        Ok(Self(Arc::new(Inner {
+            peers: PeerDirectory::open(&config.data_dir.join("peers.sqlite"))?,
+            grants: GrantService::new(grants, identity.clone(), config.renew_margin_ms),
+            share: SessionShare { local: sessions, remote: Mutex::default() },
+            config,
+            key,
+            net: Mutex::new(None),
+            state: Mutex::new(State { status, resources: Vec::new(), added: Vec::new(), tasks: Vec::new() }),
+            events: broadcast::channel(256).0,
+        })))
     }
 
-    pub(crate) fn from_inner(inner: Arc<Inner>) -> Self {
-        Self { inner }
-    }
-
-    pub fn key(&self) -> NodeId {
-        self.inner.key
-    }
-
-    pub fn config(&self) -> &NodeConfig {
-        &self.inner.config
-    }
-
-    /// The `Authorize` port every session writer this node owns must use:
-    /// peer requests pass only with a live grant for that change.
-    pub fn authorizer(&self) -> Arc<dyn loa_bus::Authorize> {
-        Arc::clone(&self.inner.access) as Arc<dyn loa_bus::Authorize>
-    }
-
+    pub fn key(&self) -> NodeId { self.0.key }
+    pub fn config(&self) -> &NodeConfig { &self.0.config }
+    pub fn status(&self) -> NodeStatus { self.0.state.locked().status.clone() }
+    /// The `Authorize` every session writer this node owns must use.
+    pub fn authorizer(&self) -> Arc<dyn loa_bus::Authorize> { self.0.grants.access.clone() }
+    pub fn grant_store(&self) -> &Arc<GrantStore> { &self.0.grants.store }
     /// Changes and requests, for the app's subscription.
-    pub fn events(&self) -> broadcast::Receiver<NodeEvent> {
-        self.inner.events.subscribe()
+    pub fn events(&self) -> broadcast::Receiver<NodeEvent> { self.0.events.subscribe() }
+    pub(crate) fn emit(&self, event: NodeEvent) { let _ = self.0.events.send(event); }
+    pub(crate) fn changed(&self) { self.emit(NodeEvent::Changed) }
+    pub(crate) fn network(&self) -> Result<Arc<FallbackDialer>> { self.0.net.locked().clone().ok_or(NodeError::NotStarted) }
+
+    fn status_with(&self, change: impl FnOnce(&mut NodeStatus)) {
+        change(&mut self.0.state.locked().status);
+        self.changed();
     }
 
-    pub(crate) fn changed(&self) {
-        let _ = self.inner.events.send(NodeEvent::Changed);
-    }
-
-    pub(crate) fn emit(&self, event: NodeEvent) {
-        let _ = self.inner.events.send(event);
-    }
-
-    pub(crate) fn grant_store(&self) -> &Arc<GrantStore> {
-        &self.inner.grants
-    }
-
-    pub(crate) fn access(&self) -> &Arc<GrantAccess> {
-        &self.inner.access
-    }
-
-    pub(crate) fn local_sessions(&self) -> &Arc<dyn LocalSessions> {
-        &self.inner.sessions
-    }
-
-    pub(crate) fn identity(&self) -> &NodeIdentity {
-        &self.inner.identity
-    }
-
-    pub(crate) fn network(&self) -> Result<Arc<Network>> {
-        self.inner.net.locked().clone().ok_or(NodeError::NotStarted)
-    }
-
-    /// Binds the endpoint and starts discovery, presence and renewal.
-    /// Starting a running node does nothing.
+    /// Binds both transports and starts discovery, presence and renewal; a running node does nothing.
     pub async fn start(&self) -> Result<()> {
-        if self.inner.net.locked().is_some() {
+        if self.0.net.locked().is_some() {
             return Ok(());
         }
-        self.inner.state.locked().endpoint = Endpoint::Starting;
-        self.changed();
-        let weak = Arc::downgrade(&self.inner);
-        // Every node may open control (that is how grants and presence
-        // arrive); session requests are checked against grants per request.
-        let mut router = Router::new(Arc::new(AllowAll))
-            .handler(alpn::CONTROL, 1, Arc::new(control::Handler(weak.clone())))
-            .handler(alpn::SESSION, 1, Arc::new(share::Handler(weak.clone())))
-            .handler(folder::PROTOCOL, 1, Arc::new(folder::Handler(weak.clone())));
-        for protocol in self.added_protocols() {
-            let (name, version) = (protocol.name, protocol.version);
-            router = router.handler(name, version, Arc::new(extra::Handler { inner: weak.clone(), protocol }));
+        self.status_with(|s| s.endpoint = Endpoint::Starting);
+        let weak = Arc::downgrade(&self.0);
+        let mut router = Router::default()
+            .handler(wire::CONTROL, Arc::new(Served(weak.clone(), control::serve)))
+            .handler(wire::SESSION, Arc::new(Served(weak.clone(), session::serve)))
+            .handler(wire::FOLDER, Arc::new(Served(weak.clone(), folder::serve)));
+        for added in self.added_protocols() {
+            let label = added.label();
+            router = router.handler(label, Arc::new(Served(weak.clone(), move |node, conn, stream| extra::serve(node, conn, stream, added.clone()))));
         }
-        let config = &self.inner.config;
-        let net = match Network::bind(*self.inner.identity.secret_bytes(), config.bind, config.relay.clone(), router).await {
-            Ok(net) => Arc::new(net),
+        let (config, seed) = (&self.0.config, *self.0.grants.identity.secret_bytes());
+        let bound = async {
+            let quic = Quic::bind(seed, config.bind, config.relay.clone(), router.clone()).await?;
+            Ok::<_, NodeError>((quic, Tcp::bind(seed, config.bind, router).await?))
+        };
+        let (quic, tcp) = match bound.await {
+            Ok(bound) => bound,
             Err(error) => {
-                self.inner.state.locked().endpoint = Endpoint::Failed(error.to_string());
-                self.changed();
-                return Err(error.into());
+                self.status_with(|s| s.endpoint = Endpoint::Failed(error.to_string()));
+                return Err(error);
             }
         };
-        let udp = net.quic().local_addrs();
-        let tcp = net.tcp().local_addr();
-        *self.inner.net.locked() = Some(Arc::clone(&net));
-        let mut tasks = Vec::new();
+        let (udp, tcp_addr) = (quic.local_addrs(), tcp.local_addrs()[0]);
+        *self.0.net.locked() = Some(Arc::new(FallbackDialer { transports: vec![Arc::new(quic), Arc::new(tcp)], first_timeout: QUIC_TIMEOUT }));
+        let mut tasks = vec![tokio::spawn(background(weak.clone(), config.presence_interval))];
         let mdns = if config.mdns {
-            let announce = loa_net::discovery::Announce {
-                node: self.inner.key,
-                udp_port: udp.first().map_or(0, SocketAddr::port),
-                tcp_port: tcp.port(),
-                name: config.name.clone(),
-            };
-            match loa_net::discovery::Discovery::new(&announce, true) {
-                Ok(discovery) => {
-                    tasks.push(tokio::spawn(control::browse(weak.clone(), discovery)));
-                    Availability::Active("announcing and browsing on the LAN".into())
+            let announce = Announce { node: self.0.key, udp_port: udp.first().map_or(0, SocketAddr::port), tcp_port: tcp_addr.port(), name: config.name.clone() };
+            match Mdns::start(&announce) {
+                Ok(mdns) => {
+                    let availability = mdns.availability();
+                    tasks.push(tokio::spawn(discover(weak, mdns)));
+                    availability
                 }
                 Err(error) => Availability::Failed(error.to_string()),
             }
         } else {
             Availability::Off("turned off".into())
         };
-        tasks.push(tokio::spawn(background(weak, config.presence_interval)));
-        {
-            let mut state = self.inner.state.locked();
-            state.endpoint = Endpoint::Listening { udp, tcp };
-            state.mdns = mdns;
-            state.tasks = tasks;
-        }
-        self.changed();
+        self.0.state.locked().tasks = tasks;
+        self.status_with(|s| (s.endpoint, s.mdns) = (Endpoint::Listening { udp, tcp: tcp_addr }, mdns));
         Ok(())
     }
 
     /// Stops discovery and closes the endpoint.
     pub async fn stop(&self) {
-        let tasks = std::mem::take(&mut self.inner.state.locked().tasks);
-        for task in tasks {
-            task.abort();
-        }
-        let net = self.inner.net.locked().take();
+        std::mem::take(&mut self.0.state.locked().tasks).iter().for_each(JoinHandle::abort);
+        let net = self.0.net.locked().take();
         if let Some(net) = net {
             net.close().await;
         }
-        {
-            let mut state = self.inner.state.locked();
-            state.endpoint = Endpoint::Stopped;
-            state.transports.clear();
-            if matches!(state.mdns, Availability::Active(_)) {
-                state.mdns = Availability::Off("stopped with the endpoint".into());
+        self.status_with(|s| {
+            s.endpoint = Endpoint::Stopped;
+            if matches!(s.mdns, Availability::Active(_)) {
+                s.mdns = Availability::Off("stopped with the endpoint".into());
             }
-        }
-        self.changed();
+        });
     }
 
-    pub fn status(&self) -> NodeStatus {
-        let state = self.inner.state.locked();
-        NodeStatus {
-            key: self.inner.key,
-            name: self.inner.config.name.clone(),
-            app_version: self.inner.config.app_version.clone(),
-            key_source: state.key_source.clone(),
-            endpoint: state.endpoint.clone(),
-            mdns: state.mdns.clone(),
-            tailscale: state.tailscale.clone(),
-        }
-    }
-
-    /// Parses a node key in the iroh endpoint id form (64 hex characters or
-    /// 52 base32) or the Biscuit form (`ed25519/<hex>`).
+    /// Parses a node key: 64 hex or 52 base32 characters, or the Biscuit form `ed25519/<hex>`.
     pub fn parse_key(text: &str) -> Result<NodeId> {
         let text = text.trim();
-        let key = PublicKey::from_str(text.strip_prefix("ed25519/").unwrap_or(text));
-        key.and_then(NodeId::try_from).map_err(|_| NodeError::InvalidKey(text.to_owned()))
+        let key = PublicKey::from_str(text.strip_prefix("ed25519/").unwrap_or(text)).ok().and_then(|key| NodeId::try_from(key).ok());
+        key.ok_or_else(|| NodeError::InvalidKey(text.to_owned()))
     }
 
-    /// Saves a peer by key, with an optional `host[:port]` to reach it, then
-    /// probes it.
+    /// Saves a peer by key, with an optional `host[:port]` to reach it, then probes it.
     pub async fn add_peer(&self, key: &str, address: Option<&str>) -> Result<()> {
         let key = Self::parse_key(key)?;
-        if key == self.inner.key {
+        if key == self.0.key {
             return Err(NodeError::InvalidKey("this node's own key".into()));
         }
         let addresses = match address.map(str::trim).filter(|a| !a.is_empty()) {
             Some(address) => resolve(address).await?,
-            None => self.inner.state.locked().nearby.get(&key).map(|n| n.addresses.clone()).unwrap_or_default(),
+            None => self.0.peers.hints(&key),
         };
-        let name = self.inner.state.locked().nearby.get(&key).and_then(|n| n.name.clone());
-        self.inner.peers.locked().add_peer(&key.to_string(), name.as_deref(), &addresses, DiscoverySource::Manual)?;
-        self.inner.state.locked().nearby.remove(&key);
+        let name = self.0.peers.nearby().into_iter().find(|n| n.key == key).and_then(|n| n.name);
+        self.0.peers.save(&key, name.as_deref(), &addresses, DiscoverySource::Manual)?;
         self.changed();
         self.probe(key).await;
         Ok(())
@@ -547,317 +273,129 @@ impl Node {
     /// Saves a node found on the LAN, the tailnet or that connected here.
     pub async fn add_nearby(&self, key: &str) -> Result<()> {
         let key = Self::parse_key(key)?;
-        let Some(nearby) = self.inner.state.locked().nearby.remove(&key) else {
-            return Err(NodeError::UnknownPeer(key.to_string()));
-        };
-        let source = match nearby.source {
-            NearbySource::Mdns => DiscoverySource::Mdns,
-            NearbySource::Tailscale => DiscoverySource::Tailscale,
-            NearbySource::Incoming => DiscoverySource::Manual,
-        };
-        self.inner.peers.locked().add_peer(&key.to_string(), nearby.name.as_deref(), &nearby.addresses, source)?;
-        if let Some(version) = &nearby.app_version {
-            self.inner.peers.locked().update_app_version(&key, version)?;
-        }
+        self.0.peers.save_nearby(&key)?;
         self.changed();
         self.probe(key).await;
         Ok(())
     }
 
-    pub fn rename_peer(&self, key: &str, name: &str) -> Result<()> {
-        let key = Self::parse_key(key)?;
-        if !self.inner.peers.locked().rename(&key, name.trim())? {
-            return Err(NodeError::UnknownPeer(key.to_string()));
-        }
-        self.changed();
-        Ok(())
-    }
+    pub fn rename_peer(&self, key: &str, name: &str) -> Result<()> { self.known(key, |node, key| node.0.peers.rename(key, name.trim())) }
 
     /// Forgets a peer. Grants given to it stay until revoked.
     pub fn remove_peer(&self, key: &str) -> Result<()> {
+        self.known(key, |node, key| {
+            node.0.share.remote.locked().remove(key);
+            node.0.peers.remove(key)
+        })
+    }
+
+    fn known(&self, key: &str, change: impl FnOnce(&Self, &NodeId) -> bool) -> Result<()> {
         let key = Self::parse_key(key)?;
-        if !self.inner.peers.locked().remove(&key)? {
+        if !change(self, &key) {
             return Err(NodeError::UnknownPeer(key.to_string()));
-        }
-        {
-            let mut state = self.inner.state.locked();
-            state.transports.remove(&key);
-            state.remote.remove(&key);
         }
         self.changed();
         Ok(())
     }
 
-    pub fn peers(&self) -> Vec<PeerInfo> {
-        let peers = self.inner.peers.locked().list().unwrap_or_default();
-        let state = self.inner.state.locked();
-        peers
-            .into_iter()
-            .map(|peer| PeerInfo {
-                transport: if peer.online { state.transports.get(&peer.key).copied() } else { None },
-                shared_protocol: state.protocols.get(&peer.key).map(|labels| {
-                    VERSIONS.iter().any(|v| labels.contains(&alpn::Alpn::new(alpn::SESSION, *v).to_string()))
-                }),
-                protocols: state.protocols.get(&peer.key).cloned().unwrap_or_default(),
-                key: peer.key,
-                name: peer.name,
-                addresses: peer.addresses,
-                source: peer.discovery_source,
-                online: peer.online,
-                last_seen_ms: peer.last_seen_ms,
-                app_version: peer.app_version,
-            })
-            .collect()
-    }
+    pub fn peers(&self) -> Vec<PeerInfo> { self.0.peers.list() }
+    pub fn nearby(&self) -> Vec<NearbyPeer> { self.0.peers.nearby() }
+    /// A peer's display name: the user's, its own, or the start of its key.
+    pub fn peer_name(&self, key: &NodeId) -> String { self.0.peers.name(key) }
 
-    pub fn nearby(&self) -> Vec<NearbyPeer> {
-        let mut nearby: Vec<_> = self.inner.state.locked().nearby.values().cloned().collect();
-        nearby.sort_by(|a, b| b.seen_ms.cmp(&a.seen_ms).then_with(|| a.key.cmp(&b.key)));
-        nearby
-    }
-
-    /// A peer's display name: what the user named it, its own announced name,
-    /// or the start of its key.
-    pub fn peer_name(&self, key: &NodeId) -> String {
-        if let Ok(Some(peer)) = self.inner.peers.locked().lookup(key)
-            && let Some(name) = peer.name.filter(|n| !n.is_empty())
-        {
-            return name;
-        }
-        if let Some(name) = self.inner.state.locked().nearby.get(key).and_then(|n| n.name.clone()) {
-            return name;
-        }
-        key.fmt_short().to_string()
-    }
-
-    /// Probes every saved peer, refreshes the sessions they share and
-    /// delivers grants that were waiting for them.
+    /// Probes every saved peer, refreshing what each shares and delivering waiting grants.
     pub async fn refresh_presence(&self) {
-        let peers: Vec<NodeId> = self.inner.peers.locked().list().unwrap_or_default().into_iter().map(|p| p.key).collect();
         let mut probes = tokio::task::JoinSet::new();
-        for peer in peers {
+        for peer in self.0.peers.keys() {
             let node = self.clone();
             probes.spawn(async move { node.probe(peer).await });
         }
         while probes.join_next().await.is_some() {}
     }
 
-    /// One presence round trip to `peer`, then the follow-ups it unblocks.
-    pub(crate) async fn probe(&self, peer: NodeId) {
-        let presence = Kind::Presence(wire::Presence { online: true, last_seen_ms: Some(now_ms()) });
-        match self.control_call(peer, presence).await {
-            Ok(_) => {
-                self.deliver_waiting(peer).await;
-                if self.holds_grants_from(&peer) {
-                    let _ = self.list_remote(&peer.to_string()).await;
-                } else {
-                    // Its grants ended: its sessions leave Recents.
-                    let listed = self.inner.state.locked().remote.remove(&peer).is_some();
-                    if listed {
-                        self.changed();
-                    }
-                }
-            }
-            Err(error) => {
-                tracing::debug!(%peer, %error, "peer unreachable");
-                let _ = self.inner.peers.locked().update_presence(&peer, false, now_ms());
-                self.inner.state.locked().transports.remove(&peer);
-                self.changed();
-            }
+    async fn probe(&self, peer: NodeId) {
+        if let Err(error) = self.control_call(peer, control::presence()).await {
+            tracing::debug!(%peer, %error, "peer unreachable");
+            self.0.peers.offline(&peer);
+            return self.changed();
+        }
+        self.deliver_waiting(peer).await;
+        if self.0.grants.holds_from(&peer) {
+            let _ = self.list_remote(&peer.to_string()).await;
+        } else if self.0.share.remote.locked().remove(&peer).is_some() {
+            // Its grants ended: its sessions leave Recents.
+            self.changed();
         }
     }
 
-    fn holds_grants_from(&self, peer: &NodeId) -> bool {
-        let root = PublicKey::from(*peer);
-        self.inner.grants.received_all().unwrap_or_default().iter().any(|g| g.root == root && g.refused_ms.is_none())
-    }
-
-    /// Records what a connection showed about `peer`.
-    pub(crate) fn observe(&self, peer: NodeId, hello: &wire::Hello, transport: Transport) {
-        let known = {
-            let db = self.inner.peers.locked();
-            let known = db.update_app_version(&peer, &hello.app_version).unwrap_or(false);
-            if known {
-                if !hello.name.is_empty() {
-                    let _ = db.name_if_unset(&peer, &hello.name);
-                }
-                let _ = db.update_presence(&peer, true, now_ms());
-            }
-            known
-        };
-        {
-            let mut state = self.inner.state.locked();
-            state.transports.insert(peer, transport);
-            let labels: Vec<String> =
-                hello.protocols.iter().map(|p| alpn::Alpn::new(p.name.as_str(), p.version).to_string()).collect();
-            state.protocols.insert(peer, labels.clone());
-            if !known {
-                let entry = state.nearby.entry(peer).or_insert_with(|| NearbyPeer {
-                    key: peer,
-                    name: None,
-                    addresses: Vec::new(),
-                    source: NearbySource::Incoming,
-                    seen_ms: 0,
-                    app_version: None,
-                    protocols: Vec::new(),
-                });
-                entry.seen_ms = now_ms();
-                entry.app_version = Some(hello.app_version.clone());
-                entry.protocols = labels;
-                if !hello.name.is_empty() {
-                    entry.name = Some(hello.name.clone());
-                }
-            }
-        }
+    /// Records what a connection's hello showed about `peer`.
+    pub(crate) fn observe(&self, peer: NodeId, hello: &Hello, kind: TransportKind) {
+        self.0.peers.observe(peer, hello, kind);
         self.changed();
     }
 
-    pub(crate) fn hello(&self) -> wire::Hello {
-        let protocols = local_alpns().map(|a| wire::ProtocolVersion { name: a.protocol, version: a.version }).collect();
-        wire::Hello { app_version: self.inner.config.app_version.clone(), protocols, name: self.inner.config.name.clone() }
+    pub(crate) fn hello(&self) -> Hello {
+        let protocols = local_protocols().into_iter().filter_map(|label| {
+            let (name, version) = label.rsplit_once('/')?;
+            Some(ProtocolVersion { name: name.to_owned(), version: version.parse().ok()? })
+        });
+        Hello { app_version: self.0.config.app_version.clone(), protocols: protocols.collect(), name: self.0.config.name.clone() }
     }
 
-    fn hints(&self, peer: &NodeId) -> Vec<SocketAddr> {
-        let mut hints = self.inner.peers.locked().lookup(peer).ok().flatten().map(|p| p.addresses).unwrap_or_default();
-        if let Some(nearby) = self.inner.state.locked().nearby.get(peer) {
-            for address in &nearby.addresses {
-                if !hints.contains(address) {
-                    hints.push(*address);
-                }
-            }
-        }
-        hints
+    /// Dials `peer` on the exact `label`: QUIC first, then TCP, on its address hints.
+    pub(crate) async fn dial(&self, peer: NodeId, label: &[u8]) -> Result<Connection> {
+        let (net, hints) = (self.network()?, self.0.peers.hints(&peer));
+        tokio::time::timeout(CALL_TIMEOUT, net.dial(peer, &hints, label)).await.map_err(|_| NodeError::Timeout("dialing the peer"))?
     }
 
-    /// Dials `peer` on `protocol`: QUIC first, then TCP, on its address hints.
-    pub(crate) async fn dial(&self, peer: NodeId, protocol: &str) -> Result<Connection> {
-        self.dial_versions(peer, protocol, VERSIONS).await
-    }
-
-    /// Dials `peer` on `protocol` offering `versions`.
-    pub(crate) async fn dial_versions(&self, peer: NodeId, protocol: &str, versions: &[u32]) -> Result<Connection> {
-        let net = self.network()?;
-        let hints = self.hints(&peer);
-        let conn = tokio::time::timeout(CALL_TIMEOUT, net.dial(peer, protocol, versions, &hints, &hints))
-            .await
-            .map_err(|_| NodeError::Timeout("dialing the peer"))??;
-        self.inner.state.locked().transports.insert(peer, conn.transport());
-        Ok(conn)
-    }
-
-    /// One request on `omp/control/1`: hello both ways, then `request` and its answer.
-    pub(crate) async fn control_call(&self, peer: NodeId, request: Kind) -> Result<Kind> {
-        let conn = self.dial(peer, alpn::CONTROL).await?;
-        let answer = tokio::time::timeout(CALL_TIMEOUT, control::call(self, &conn, request))
-            .await
-            .map_err(|_| NodeError::Timeout("the control request"));
+    /// One request on `omp/control/1`: hellos both ways, then `request` and its answer.
+    pub(crate) async fn control_call(&self, peer: NodeId, request: Control) -> Result<Control> {
+        let conn = self.dial(peer, wire::CONTROL).await?;
+        let answer = tokio::time::timeout(CALL_TIMEOUT, control::call(self, &conn, request)).await;
         conn.close(0, b"done");
-        answer?
+        answer.map_err(|_| NodeError::Timeout("the control request"))?
     }
 
-    /// Looks for nodes on the tailnet: every online tailnet machine is probed
-    /// on this node's port; machines that answer the control handshake show
-    /// up in [`Node::nearby`]. Returns how many answered.
+    /// Probes every online tailnet machine on this node's port; those that
+    /// answer show up in [`Node::nearby`]. Returns how many answered.
     pub async fn scan_tailscale(&self) -> Result<usize> {
-        let Some(executable) = self.inner.config.tailscale.clone() else {
-            return Err(NodeError::Unavailable("tailscale is not installed".into()));
+        let executable = self.0.config.tailscale.clone().ok_or_else(|| NodeError::Unavailable("tailscale is not installed".into()))?;
+        let port = match (self.0.config.bind.port(), self.status().endpoint) {
+            (0, Endpoint::Listening { tcp, .. }) => tcp.port(),
+            (0, _) => return Err(NodeError::NotStarted),
+            (port, _) => port,
         };
-        let port = match self.inner.config.bind.port() {
-            0 => self.network()?.tcp().local_addr().port(),
-            port => port,
+        let mut tailnet = Tailnet::new(executable, port, control::Probe(self.clone()));
+        let mut count = 0;
+        while let Some(found) = tailnet.next().await {
+            if found.key != self.0.key {
+                self.0.peers.found(found);
+                count += 1;
+            }
+        }
+        let availability = match tailnet.availability() {
+            Availability::Failed(error) => Err(error),
+            _ => Ok(Availability::Active(format!("last scan found {count} node{}", if count == 1 { "" } else { "s" }))),
         };
-        let result = loa_net::tailscale::discover_from_status(&executable, Some(port), &control::Probe(self.clone())).await;
-        let found = match result {
-            Ok(found) => found,
-            Err(error) => {
-                self.inner.state.locked().tailscale = Availability::Failed(error.to_string());
-                self.changed();
-                return Err(error.into());
-            }
-        };
-        let count = found.iter().filter(|p| p.node != self.inner.key).count();
-        {
-            let mut state = self.inner.state.locked();
-            for peer in found.into_iter().filter(|p| p.node != self.inner.key) {
-                let entry = state.nearby.entry(peer.node).or_insert_with(|| NearbyPeer {
-                    key: peer.node,
-                    name: None,
-                    addresses: Vec::new(),
-                    source: NearbySource::Tailscale,
-                    seen_ms: 0,
-                    app_version: None,
-                    protocols: Vec::new(),
-                });
-                entry.source = NearbySource::Tailscale;
-                entry.seen_ms = now_ms();
-                if entry.name.is_none() {
-                    entry.name = Some(peer.name.split('.').next().unwrap_or(&peer.name).to_owned());
-                }
-                if !entry.addresses.contains(&peer.address) {
-                    entry.addresses.push(peer.address);
-                }
-            }
-            state.tailscale = Availability::Active(format!("last scan found {count} node{}", if count == 1 { "" } else { "s" }));
-        }
-        let peers = self.inner.peers.locked().list().unwrap_or_default();
-        for peer in peers {
-            if let Some(nearby) = self.inner.state.locked().nearby.get(&peer.key).filter(|n| n.source == NearbySource::Tailscale).cloned() {
-                let mut addresses = peer.addresses.clone();
-                addresses.extend(nearby.addresses.iter().copied().filter(|a| !peer.addresses.contains(a)));
-                let _ = self.inner.peers.locked().set_addresses(&peer.key, &addresses);
-                self.inner.state.locked().nearby.remove(&peer.key);
-            }
-        }
-        self.changed();
-        Ok(count)
-    }
-
-    pub(crate) fn note_discovered(&self, found: loa_net::discovery::DiscoveredPeer) {
-        if found.node == self.inner.key {
-            return;
-        }
-        let known = self.inner.peers.locked().lookup(&found.node).ok().flatten();
-        if let Some(peer) = known {
-            if !found.addresses.is_empty() && peer.addresses != found.addresses {
-                let _ = self.inner.peers.locked().set_addresses(&found.node, &found.addresses);
-            }
-        } else {
-            let mut state = self.inner.state.locked();
-            let entry = state.nearby.entry(found.node).or_insert_with(|| NearbyPeer {
-                key: found.node,
-                name: None,
-                addresses: Vec::new(),
-                source: NearbySource::Mdns,
-                seen_ms: 0,
-                app_version: None,
-                protocols: Vec::new(),
-            });
-            entry.source = NearbySource::Mdns;
-            entry.seen_ms = now_ms();
-            entry.addresses = found.addresses;
-            if found.name.is_some() {
-                entry.name = found.name;
-            }
-        }
-        self.changed();
+        self.status_with(|s| s.tailscale = availability.clone().unwrap_or_else(Availability::Failed));
+        availability.map(|_| count).map_err(NodeError::Unavailable)
     }
 
     /// Grants a peer `scopes` until `until_ms` (`None`: until revoked) and
-    /// sends it the token. A holder that is offline gets it when it answers.
+    /// sends it the token; an offline holder gets it when it answers.
     pub async fn issue_grant(&self, holder: &str, scopes: Vec<Scope>, until_ms: Option<i64>, reshare: bool) -> Result<GrantId> {
-        let holder = Self::parse_key(holder)?;
-        let now = now_ms();
+        let (holder, now) = (Self::parse_key(holder)?, now_ms());
         let ttl_ms = until_ms.map_or(loa_trust::DEFAULT_TTL_MS, |until| (until - now).min(loa_trust::DEFAULT_TTL_MS));
-        let spec = GrantSpec { scopes, ttl_ms, reshare, until_ms };
-        let issued = self.inner.grants.issue(&self.inner.identity, PublicKey::from(holder), spec, now)?;
+        let grants = &self.0.grants;
+        let issued = grants.store.issue(&grants.identity, PublicKey::from(holder), GrantSpec { scopes, ttl_ms, reshare, until_ms }, now)?;
         self.changed();
         self.deliver(holder, &issued.id, issued.token).await;
         Ok(issued.id)
     }
 
-    /// Moves the end of a grant this node issued and sends the holder a token.
+    /// Moves the end of a grant this node issued and sends the holder a fresh token.
     pub async fn renew_grant(&self, id: &GrantId, until_ms: Option<i64>) -> Result<()> {
-        let issued = self.inner.grants.extend(&self.inner.identity, id, until_ms, now_ms())?;
+        let issued = self.0.grants.store.extend(&self.0.grants.identity, id, until_ms, now_ms())?;
         self.changed();
         if let Ok(holder) = NodeId::try_from(issued.holder) {
             self.deliver(holder, id, issued.token).await;
@@ -865,52 +403,44 @@ impl Node {
         Ok(())
     }
 
-    /// Revokes a grant this node issued and tells its holder. Its streams stop
-    /// at the next patch: every check looks the revocation up.
+    /// Revokes a grant this node issued and tells its holder; its streams stop at the next patch.
     pub async fn revoke_grant(&self, id: &GrantId) -> Result<()> {
-        self.inner.grants.revoke(&self.inner.identity.public_key(), id, now_ms())?;
-        self.inner.state.locked().undelivered.remove(id);
+        let grants = &self.0.grants;
+        grants.store.revoke(&grants.key(), id, now_ms())?;
+        grants.undelivered.locked().remove(id);
         self.changed();
-        let holder = self.inner.grants.issued()?.into_iter().find(|g| &g.id == id).and_then(|g| NodeId::try_from(g.holder).ok());
+        let holder = grants.store.issued()?.into_iter().find(|g| &g.id == id).and_then(|g| NodeId::try_from(g.holder).ok());
         if let Some(holder) = holder {
-            let notice = Kind::GrantRevocation(wire::GrantRevocation { grant_id: id.as_str().as_bytes().to_vec() });
+            let notice = Control::GrantRevocation(GrantRevocation { grant_id: id.as_str().as_bytes().to_vec() });
             if let Err(error) = self.control_call(holder, notice).await {
-                tracing::debug!(%holder, %error, "revocation notice not delivered; the grant still ends at its next renewal");
+                tracing::debug!(%holder, %error, "revocation notice not delivered; the grant ends at its next renewal");
             }
         }
         Ok(())
     }
 
     async fn deliver(&self, holder: NodeId, id: &GrantId, token: Vec<u8>) {
-        let delivery = Kind::GrantDelivery(wire::GrantDelivery { token, root: Vec::new() });
-        match self.control_call(holder, delivery).await {
-            Ok(Kind::Ack(ack)) if ack.error.is_empty() => {
-                self.inner.state.locked().undelivered.remove(id);
-            }
-            Ok(other) => {
-                tracing::warn!(%holder, ?other, "grant delivery refused");
-                self.inner.state.locked().undelivered.insert(id.clone());
-            }
+        let delivered = self.control_call(holder, Control::GrantDelivery(GrantDelivery { token, root: Vec::new() })).await;
+        let mut waiting = self.0.grants.undelivered.locked();
+        match delivered {
+            Ok(_) => waiting.remove(id),
             Err(error) => {
                 tracing::debug!(%holder, %error, "grant delivery deferred until the holder answers");
-                self.inner.state.locked().undelivered.insert(id.clone());
+                waiting.insert(id.clone())
             }
-        }
+        };
     }
 
     async fn deliver_waiting(&self, peer: NodeId) {
-        let waiting: Vec<GrantId> = self.inner.state.locked().undelivered.iter().cloned().collect();
-        if waiting.is_empty() {
-            return;
-        }
+        let grants = &self.0.grants;
+        let waiting: HashSet<GrantId> = grants.undelivered.locked().clone();
         let holder = PublicKey::from(peer);
-        let issued = self.inner.grants.issued().unwrap_or_default();
-        for record in issued.into_iter().filter(|g| g.holder == holder && waiting.contains(&g.id) && g.revoked_ms.is_none()) {
-            match self.inner.grants.extend(&self.inner.identity, &record.id, record.until_ms, now_ms()) {
+        for record in grants.store.issued().unwrap_or_default().into_iter().filter(|g| g.holder == holder && waiting.contains(&g.id) && g.revoked_ms.is_none()) {
+            match grants.store.extend(&grants.identity, &record.id, record.until_ms, now_ms()) {
                 Ok(fresh) => self.deliver(peer, &record.id, fresh.token).await,
                 Err(error) => {
                     tracing::debug!(id = %record.id, %error, "waiting grant can no longer be delivered");
-                    self.inner.state.locked().undelivered.remove(&record.id);
+                    grants.undelivered.locked().remove(&record.id);
                 }
             }
         }
@@ -918,11 +448,8 @@ impl Node {
 
     /// Renews held grants that expire within the renewal margin.
     pub async fn renew_due(&self) -> Vec<RenewOutcome> {
-        let renewer = Renewer::new(self.inner.identity.public_key(), self.inner.config.renew_margin_ms);
-        let outcomes = renewer
-            .renew_due(&self.inner.grants, &control::RenewVia(self.clone()), now_ms())
-            .await
-            .unwrap_or_default();
+        let renewer = Renewer::new(self.0.grants.key(), self.0.config.renew_margin_ms);
+        let outcomes = renewer.renew_due(&self.0.grants.store, &control::RenewVia(self.clone()), now_ms()).await.unwrap_or_default();
         if !outcomes.is_empty() {
             self.changed();
         }
@@ -930,123 +457,74 @@ impl Node {
     }
 
     /// Grants this node issued, then grants it holds.
-    pub fn grants(&self) -> Vec<GrantInfo> {
-        let mut out = Vec::new();
-        for record in self.inner.grants.issued().unwrap_or_default() {
-            let Some(peer) = NodeId::try_from(record.holder).ok() else { continue };
-            out.push(GrantInfo {
-                id: record.id,
-                peer,
-                direction: GrantDirection::Given,
-                scopes: record.scopes.unwrap_or_default(),
-                until_ms: record.until_ms,
-                expires_ms: None,
-                renews_at_ms: None,
-                reshare: record.reshare,
-                ended: record.revoked_ms.is_some(),
-            });
-        }
-        for received in self.inner.grants.received_all().unwrap_or_default() {
-            let Some(peer) = NodeId::try_from(received.issuer).ok() else { continue };
-            out.push(GrantInfo {
-                scopes: received.scopes().unwrap_or_default(),
-                id: received.id,
-                peer,
-                direction: GrantDirection::Received,
-                until_ms: None,
-                expires_ms: Some(received.expires_ms),
-                renews_at_ms: received.refused_ms.is_none().then(|| received.expires_ms - self.inner.config.renew_margin_ms),
-                reshare: received.reshare,
-                ended: received.refused_ms.is_some(),
-            });
-        }
-        out
-    }
+    pub fn grants(&self) -> Vec<GrantInfo> { self.0.grants.infos() }
 
-    /// Resources the app adds to grant pickers: SSH hosts, projects, surfaces.
+    /// Resources the app adds to grant pickers: SSH hosts, surfaces.
     pub fn set_resources(&self, resources: Vec<(Resource, String)>) {
-        self.inner.state.locked().resources = resources;
+        self.0.state.locked().resources = resources;
         self.changed();
     }
 
-    /// What grants can name here, with labels: every future session, each
-    /// project, session and prompt this node owns, and the app's extra
-    /// resources. Future sessions carry `after_ms: 0`; issuing sets it to the
-    /// issue time.
+    /// What grants can name here, labelled: future sessions (`after_ms: 0`,
+    /// set when issued), projects, sessions and prompts, then extra resources.
     pub fn resources(&self) -> Vec<(Resource, String)> {
-        let mut out = vec![(Resource::FutureSessions { after_ms: 0 }, "Every future session".to_owned())];
-        let sessions = self.inner.sessions.sessions();
+        let sessions = self.0.share.local.sessions();
         let mut projects: Vec<&str> = sessions.iter().filter_map(|session| session.facts.project.as_deref()).collect();
         projects.sort_unstable();
         projects.dedup();
+        let mut out = vec![(Resource::FutureSessions { after_ms: 0 }, "Every future session".to_owned())];
         out.extend(projects.into_iter().map(|id| (Resource::Project { id: id.to_owned() }, format!("Project {id}"))));
         for session in &sessions {
             let label = session.label();
             out.push((Resource::Session { id: session.facts.id.clone() }, label.clone()));
-            for (index, turn) in session.turns.iter().enumerate() {
-                out.push((
-                    Resource::Prompt { session: session.facts.id.clone(), turn: turn.id },
-                    format!("{label} › prompt {}: {}", index + 1, turn.preview),
-                ));
-            }
+            out.extend(session.turns.iter().enumerate().map(|(i, turn)| {
+                (Resource::Prompt { session: session.facts.id.clone(), turn: turn.id }, format!("{label} › prompt {}: {}", i + 1, turn.preview))
+            }));
         }
-        let added = self.inner.state.locked().added.iter().map(|protocol| protocol.required.0.clone()).collect::<Vec<_>>();
-        if added.contains(&Resource::Sandbox) {
+        let state = self.0.state.locked();
+        if state.added.iter().any(|protocol| protocol.required.0 == Resource::Sandbox) {
             out.push((Resource::Sandbox, SANDBOX_LABEL.to_owned()));
         }
         // Folders already granted, to grant again; others are typed into the panel.
-        let mut folders: Vec<String> = self
-            .inner
-            .grants
-            .issued()
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|record| record.revoked_ms.is_none())
-            .flat_map(|record| record.scopes.unwrap_or_default())
-            .filter_map(|scope| match scope.resource {
-                Resource::Folder { path } => Some(path),
-                _ => None,
-            })
-            .collect();
+        let issued = self.0.grants.store.issued().unwrap_or_default().into_iter().filter(|record| record.revoked_ms.is_none());
+        let mut folders: Vec<String> = issued.flat_map(|record| record.scopes.unwrap_or_default()).filter_map(|scope| match scope.resource {
+            Resource::Folder { path } => Some(path),
+            _ => None,
+        }).collect();
         folders.sort_unstable();
         folders.dedup();
         out.extend(folders.into_iter().map(|path| (Resource::Folder { path: path.clone() }, format!("Folder {path}"))));
-        out.extend(self.inner.state.locked().resources.iter().cloned());
+        out.extend(state.resources.iter().cloned());
         out
     }
 
-    /// Serves `name`/`version` from the next [`Node::start`]: each stream
-    /// reaches `handler` once its requester proved a grant for `required`.
-    /// Adding a name and version again replaces the earlier handler.
+    /// Serves `name/version` from the next [`Node::start`] to requesters proving a grant for `required`.
     pub fn add_protocol(&self, name: &'static str, version: u32, required: (Resource, Action), handler: Arc<dyn PeerProtocol>) {
-        let mut state = self.inner.state.locked();
-        state.added.retain(|protocol| (protocol.name, protocol.version) != (name, version));
-        state.added.push(AddedProtocol { name, version, required, handler });
+        self.add(AddedProtocol { name, version, required, handler });
     }
 
-    /// The protocols added so far, to carry over to a node opened again.
-    pub fn added_protocols(&self) -> Vec<AddedProtocol> {
-        self.inner.state.locked().added.clone()
+    pub(crate) fn add(&self, protocol: AddedProtocol) {
+        let added = &mut self.0.state.locked().added;
+        added.retain(|known| known.label() != protocol.label());
+        added.push(protocol);
     }
 
-    /// A stream on `name`/`version` to `peer`, after presenting the grants
-    /// this node holds from it; refused when none covers the protocol.
-    pub async fn open_stream(&self, peer: NodeId, name: &'static str, version: u32) -> Result<Stream> {
-        extra::open(self, peer, name, version).await
+    /// The protocols added so far.
+    pub fn added_protocols(&self) -> Vec<AddedProtocol> { self.0.state.locked().added.clone() }
+
+    /// A stream on `name/version` to `peer` past the grant handshake; refused without a covering grant.
+    pub async fn open_stream(&self, peer: NodeId, name: &'static str, version: u32) -> Result<Stream> { extra::open(self, peer, name, version).await }
+
+    /// Live received grants, each with the peer that gave it.
+    fn live_received(&self) -> impl Iterator<Item = GrantInfo> {
+        let now = now_ms();
+        self.grants().into_iter().filter(move |grant| grant.live_received(now))
     }
 
     /// Online peers whose live grants to this node cover `required`.
     pub fn granting_peers(&self, (resource, action): &(Resource, Action)) -> Vec<NodeId> {
-        let now = now_ms();
-        let granting: HashSet<NodeId> = self
-            .grants()
-            .into_iter()
-            .filter(|grant| {
-                grant.direction == GrantDirection::Received
-                    && !grant.ended
-                    && grant.expires_ms.is_none_or(|expires| expires > now)
-                    && grant.scopes.iter().any(|scope| scope.resource == *resource && scope.actions.contains(action))
-            })
+        let granting: HashSet<NodeId> = self.live_received()
+            .filter(|grant| grant.scopes.iter().any(|scope| scope.resource == *resource && scope.actions.contains(action)))
             .map(|grant| grant.peer)
             .collect();
         self.peers().into_iter().filter(|peer| peer.online && granting.contains(&peer.key)).map(|peer| peer.key).collect()
@@ -1054,37 +532,26 @@ impl Node {
 
     /// Peers' folders this node's live grants reach, by peer and path.
     pub fn shared_folders(&self) -> Vec<SharedFolder> {
-        let now = now_ms();
         let mut out: Vec<SharedFolder> = Vec::new();
-        for grant in self.grants() {
-            if grant.direction != GrantDirection::Received || grant.ended || grant.expires_ms.is_some_and(|expires| expires <= now) {
-                continue;
-            }
-            for scope in grant.scopes {
-                let Resource::Folder { path } = scope.resource else { continue };
-                let can_write = scope.actions.contains(&Action::Write);
-                match out.iter_mut().find(|folder| folder.peer == grant.peer && folder.path == path) {
-                    Some(folder) => folder.can_write |= can_write,
-                    None => out.push(SharedFolder { peer: grant.peer, path, can_write }),
-                }
+        for (peer, scope) in self.live_received().flat_map(|grant| grant.scopes.into_iter().map(move |scope| (grant.peer, scope))) {
+            let Resource::Folder { path } = scope.resource else { continue };
+            let can_write = scope.actions.contains(&Action::Write);
+            match out.iter_mut().find(|folder| folder.peer == peer && folder.path == path) {
+                Some(folder) => folder.can_write |= can_write,
+                None => out.push(SharedFolder { peer, path, can_write }),
             }
         }
         out.sort_by(|a, b| a.peer.to_string().cmp(&b.peer.to_string()).then_with(|| a.path.cmp(&b.path)));
         out
     }
 
-    /// The entries of `path` (relative, empty for the folder itself) in a
-    /// peer's shared `folder`.
-    pub async fn list_folder(&self, peer: &str, folder: &str, path: &str) -> Result<Vec<FolderEntry>> {
-        folder::list_remote(self, Self::parse_key(peer)?, folder, path).await
-    }
+    /// The entries of `path` (relative; empty for the folder) in a peer's shared `folder`.
+    pub async fn list_folder(&self, peer: &str, folder: &str, path: &str) -> Result<Vec<FolderEntry>> { folder::list_remote(self, Self::parse_key(peer)?, folder, path).await }
 
-    /// The bytes of file `path` in a peer's shared `folder` (up to [`MAX_FOLDER_FILE`]).
-    pub async fn read_folder_file(&self, peer: &str, folder: &str, path: &str) -> Result<Vec<u8>> {
-        folder::read_remote(self, Self::parse_key(peer)?, folder, path).await
-    }
+    /// A file of a peer's shared folder, up to [`crate::MAX_FOLDER_FILE`].
+    pub async fn read_folder_file(&self, peer: &str, folder: &str, path: &str) -> Result<Vec<u8>> { folder::read_remote(self, Self::parse_key(peer)?, folder, path).await }
 
-    /// Writes file `path` in a peer's shared `folder` (needs a write grant).
+    /// Writes a file in a peer's shared folder (needs a write grant).
     pub async fn write_folder_file(&self, peer: &str, folder: &str, path: &str, bytes: &[u8]) -> Result<()> {
         folder::write_remote(self, Self::parse_key(peer)?, folder, path, bytes).await
     }
@@ -1092,39 +559,29 @@ impl Node {
     /// Sessions of `peer` this node's grants reach, asked over the network.
     pub async fn list_remote(&self, peer: &str) -> Result<Vec<RemoteSession>> {
         let peer = Self::parse_key(peer)?;
-        let sessions = share::list(self, peer).await?;
-        self.inner.state.locked().remote.insert(peer, sessions.clone());
+        let sessions = session::list(self, peer).await?;
+        self.0.share.remote.locked().insert(peer, sessions.clone());
         self.changed();
         Ok(sessions)
     }
 
-    /// Every peer session last listed, for Recents (tagged by [`RemoteSession::peer`]).
+    /// Every peer session last listed, newest first, for Recents.
     pub fn remote_sessions(&self) -> Vec<RemoteSession> {
-        let state = self.inner.state.locked();
-        let mut out: Vec<_> = state.remote.values().flatten().cloned().collect();
+        let mut out: Vec<_> = self.0.share.remote.locked().values().flatten().cloned().collect();
         out.sort_by(|a, b| b.created_ms.cmp(&a.created_ms).then_with(|| a.id.cmp(&b.id)));
         out
     }
 
-    /// Opens a live view of a peer's session. Drive requests go through it.
-    pub async fn open_remote(&self, peer: &str, session: &str) -> Result<RemoteView> {
-        let peer = Self::parse_key(peer)?;
-        share::open(self, peer, session).await
-    }
+    /// Opens a live view of a peer's session; drive requests go through it.
+    pub async fn open_remote(&self, peer: &str, session: &str) -> Result<RemoteView> { session::open(self, Self::parse_key(peer)?, session).await }
 
     /// Asks a peer's harness to run `text` in `session` (needs drive).
-    pub async fn prompt_remote(&self, peer: &str, session: &str, text: &str) -> Result<()> {
-        let peer = Self::parse_key(peer)?;
-        share::prompt(self, peer, session, text).await
-    }
+    pub async fn prompt_remote(&self, peer: &str, session: &str, text: &str) -> Result<()> { session::prompt(self, Self::parse_key(peer)?, session, text).await }
 
-    /// Copies a peer's session, as far as this node's grant shows it, into a
-    /// new session this node owns (needs fork). Returns the new session id;
-    /// the app resumes it on its own harness with its own credentials.
+    /// Copies a peer's session, as far as the grant shows it, into a new
+    /// session this node owns (needs fork); returns its id.
     pub async fn fork_remote(&self, peer: &str, session: &str) -> Result<String> {
-        let Some(store) = self.inner.config.sessions.clone() else {
-            return Err(NodeError::Unavailable("this node has no session store to fork into".into()));
-        };
+        let store = self.0.config.sessions.clone().ok_or_else(|| NodeError::Unavailable("this node has no session store to fork into".into()))?;
         let view = self.open_remote(peer, session).await?;
         let new_id = format!("{session}-fork-{}", now_ms());
         self.fork_view(&view, &store, &new_id)?;
@@ -1138,13 +595,7 @@ impl Node {
         }
         let patches = view.patches();
         let at = patches.last().map_or(0, |p| p.seq);
-        Ok(loa_share::fork_mirror_to_own_node(store, &patches, at, new_id, &self.inner.key.to_string())?)
-    }
-}
-
-impl Inner {
-    pub(crate) fn node(self: &Arc<Self>) -> Node {
-        Node::from_inner(Arc::clone(self))
+        crate::protocols::projection::fork_mirror_to_own_node(store, &patches, at, new_id, &self.0.key.to_string())
     }
 }
 
@@ -1152,35 +603,30 @@ async fn background(weak: Weak<Inner>, every: Duration) {
     let mut tick = tokio::time::interval(every);
     loop {
         tick.tick().await;
-        let Some(inner) = weak.upgrade() else { break };
-        let node = inner.node();
-        drop(inner);
+        let Some(node) = weak.upgrade().map(Node) else { break };
         node.refresh_presence().await;
         node.renew_due().await;
     }
 }
 
-/// Resolves `host[:port]`; the port defaults to 31415.
+/// Feeds a discoverer's findings into the directory while the node lives.
+async fn discover(weak: Weak<Inner>, mut discoverer: impl Discoverer) {
+    while let Some(found) = discoverer.next().await {
+        let Some(node) = weak.upgrade().map(Node) else { break };
+        node.0.peers.found(found);
+        node.changed();
+    }
+}
+
+/// Resolves `host[:port]`; the port defaults to [`DEFAULT_PORT`].
 async fn resolve(address: &str) -> Result<Vec<SocketAddr>> {
     if let Ok(addr) = address.parse::<SocketAddr>() {
         return Ok(vec![addr]);
     }
-    let target = if address.rsplit_once(':').is_some_and(|(_, port)| port.parse::<u16>().is_ok()) {
-        address.to_owned()
-    } else {
-        format!("{address}:{DEFAULT_PORT}")
-    };
-    let found: Vec<SocketAddr> = tokio::net::lookup_host(&target)
-        .await
-        .map_err(|e| NodeError::InvalidAddress(address.to_owned(), e.to_string()))?
-        .collect();
-    if found.is_empty() {
-        return Err(NodeError::InvalidAddress(address.to_owned(), "no addresses".into()));
-    }
-    Ok(found)
+    let has_port = address.rsplit_once(':').is_some_and(|(_, port)| port.parse::<u16>().is_ok());
+    let target = if has_port { address.to_owned() } else { format!("{address}:{DEFAULT_PORT}") };
+    let invalid = |reason: String| NodeError::InvalidAddress(address.to_owned(), reason);
+    let found: Vec<SocketAddr> = tokio::net::lookup_host(&target).await.map_err(|e| invalid(e.to_string()))?.collect();
+    if found.is_empty() { Err(invalid("no addresses".into())) } else { Ok(found) }
 }
 
-/// Default directory of the node's stores inside the app data directory.
-pub fn data_dir(app_data: &Path) -> PathBuf {
-    app_data.join("node")
-}

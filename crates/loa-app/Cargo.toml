@@ -41,7 +41,7 @@ loa-remote = { path = "../loa-remote" }
 loa-trust = { path = "../loa-trust" }
 bytes.workspace = true
 loa-ui-kit = { path = "../loa-ui-kit" }
-loa-node = { path = "../loa-node" }
+loa-p2p = { path = "../loa-p2p" }
 loa-updater = { path = "../loa-updater" }
 loa-ui-updates = { path = "../loa-ui-updates" }
 semver = "1"
