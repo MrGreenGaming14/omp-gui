@@ -300,14 +300,23 @@ async fn plan_mode_denies_tool_approvals_until_the_plan_is_approved() {
 #[derive(Default)]
 struct Scripted {
     answers: Mutex<Vec<String>>,
-    asked: Mutex<Vec<(String, Option<String>)>>,
+    asked: Arc<Mutex<Vec<(String, Option<String>)>>>,
 }
 
+struct Reply(String, Option<String>, Arc<Mutex<Vec<(String, Option<String>)>>>);
+
 #[async_trait]
-impl loa_projects::Summarizer for Scripted {
-    async fn summarize(&self, prompt: &str, model: Option<&str>) -> loa_projects::Result<loa_projects::SummaryAnswer> {
-        self.asked.lock().unwrap().push((prompt.to_owned(), model.map(str::to_owned)));
-        Ok(loa_projects::SummaryAnswer { text: self.answers.lock().unwrap().remove(0), model: model.map(str::to_owned) })
+impl loa_projects::Summarizer for Reply {
+    async fn summarize(&self, _: &str, prompt: &str) -> Result<String, String> {
+        self.2.lock().unwrap().push((prompt.to_owned(), self.1.clone()));
+        Ok(self.0.clone())
+    }
+}
+
+impl loa_projects::Summarizers for Scripted {
+    fn on(&self, model: Option<&str>) -> (Arc<dyn loa_projects::Summarizer>, Option<String>) {
+        let answer = self.answers.lock().unwrap().remove(0);
+        (Arc::new(Reply(answer, model.map(str::to_owned), self.asked.clone())), None)
     }
 }
 

@@ -191,7 +191,7 @@ impl State {
 
     /// Runs compaction summaries and advisor notes on `model`.
     #[cfg(test)]
-    pub(crate) fn set_small_model(&mut self, model: Arc<dyn loa_projects::Summarizer>) {
+    pub(crate) fn set_small_model(&mut self, model: Arc<dyn loa_projects::Summarizers>) {
         self.small = Some(OneShot::new(model));
     }
 

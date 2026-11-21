@@ -23,6 +23,7 @@ mod tests;
 pub use context::{ContextRequest, PackedContext, build_context, render_markdown};
 pub use digest::{Digest, DigestContent, DigestState, FileNote, digest_of, digest_state, mark_stale_draft, write_drafts};
 pub use digester::{Digester, PromptLimits, Summarizer, Summarizers};
+pub use loa_harness::omp::OneShot as OmpSummarizer;
 pub use rank::{Bm25, Candidate, RankParams, Ranked, Recency, Scorer, Weighted, estimate_tokens, rank_and_pack};
 pub use read::{ReadPage, ReadRequest, read_subtree};
 pub use rebuild::{Decision, RebuildDriver, RebuildHandle, RebuildOutcome, SessionWriter, Trigger, decide};

@@ -22,7 +22,7 @@ use iced::{Element, Subscription, Task};
 use loa_contracts::harness::{HostToolSpec, HostTools, SessionConfig};
 use loa_projects::{
     FileSettingsStore, LiveSessions, LocalOnly, OmpSummarizer, ProjectOverview, ProjectService, ProjectSettings,
-    ProjectSummary, RebuildOutcome, ServiceConfig, Summarizer, Trigger,
+    ProjectSummary, RebuildOutcome, ServiceConfig, Summarizers, Trigger,
 };
 use loa_ui_palette as palette;
 use loa_ui_projects as screen;
@@ -96,7 +96,7 @@ impl State {
     }
 
     /// The projects of this node with digests from `summarizer`.
-    pub fn with(ctx: &mut Ctx, summarizer: Arc<dyn Summarizer>, config: ServiceConfig) -> (Self, Task<Message>) {
+    pub fn with(ctx: &mut Ctx, summarizer: Arc<dyn Summarizers>, config: ServiceConfig) -> (Self, Task<Message>) {
         let library = &ctx.services.library;
         let sessions = LiveSessions::new(Arc::clone(library.bus()), library.store().clone());
         let settings = Arc::new(FileSettingsStore::new(ctx.services.dirs.data.join("projects")));
