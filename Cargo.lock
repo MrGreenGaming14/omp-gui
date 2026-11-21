@@ -4623,7 +4623,7 @@ dependencies = [
  "base64 0.23.1",
  "loa-contracts",
  "loa-core",
- "loa-omp-rpc",
+ "loa-harness",
  "loa-util",
  "serde",
  "serde_json",
@@ -4761,7 +4761,6 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "bytes",
- "loa-contracts",
  "loa-core",
  "loa-util",
  "schemars",
@@ -4818,6 +4817,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "loa-harness"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.23.1",
+ "loa-contracts",
+ "loa-core",
+ "loa-harness",
+ "loa-util",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "loa-identity"
 version = "0.1.0"
 dependencies = [
@@ -4869,7 +4886,7 @@ name = "loa-models"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "loa-omp-rpc",
+ "loa-harness",
  "loa-util",
  "serde",
  "serde_json",
@@ -4950,22 +4967,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "loa-omp-rpc"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "base64 0.23.1",
- "loa-omp-rpc",
- "loa-util",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "loa-projects"
 version = "0.1.0"
 dependencies = [
@@ -4973,6 +4974,7 @@ dependencies = [
  "loa-bus",
  "loa-contracts",
  "loa-core",
+ "loa-harness",
  "loa-util",
  "serde",
  "serde_json",
@@ -5358,6 +5360,8 @@ dependencies = [
  "flate2",
  "futures",
  "hex",
+ "loa-contracts",
+ "loa-harness",
  "loa-util",
  "reqwest",
  "rustls",

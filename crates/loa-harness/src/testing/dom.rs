@@ -1,10 +1,9 @@
 //! Adapter-test checks of the DOM conventions in `docs/ARCHITECTURE.md`.
 
 use loa_core::{
-    CallStatus, CommitError, DecisionStatus, Dom, Draft, ElementKind, JobStatus, MemorySink, MessageStatus, Node, NodeId,
-    Op, Patch, PatchSink, Role, TurnStatus, Value, attr,
+    CallStatus, DecisionStatus, Dom, ElementKind, JobStatus, MessageStatus, Node, NodeId, Op, Patch, Role, TurnStatus,
+    Value, attr,
 };
-use tokio::sync::watch;
 
 /// The convention a [`Violation`] breaks.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
@@ -269,20 +268,5 @@ fn check_set(dom: &Dom, node: &Node, to: Option<&str>, seq: u64, out: &mut Vec<V
     }
     if node.kind == ElementKind::Decision && to == DecisionStatus::Answered.as_str() && node.attr(attr::ANSWER).is_none() {
         out.push(Violation::new(Rule::CloseOrder, node.id, format!("patch {seq} answers before the answer is set")));
-    }
-}
-
-/// A [`MemorySink`] that announces every commit's seq.
-#[derive(Default)]
-pub struct WatchedSink {
-    pub inner: MemorySink,
-    pub seq: watch::Sender<u64>,
-}
-
-impl PatchSink for WatchedSink {
-    fn commit_at(&self, draft: Draft, ts: i64) -> Result<Patch, CommitError> {
-        let patch = self.inner.commit_at(draft, ts)?;
-        self.seq.send_replace(patch.seq);
-        Ok(patch)
     }
 }
