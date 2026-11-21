@@ -1,14 +1,9 @@
-//! XLSX workbooks: cell queries and edits for the agent, and a grid renderer
-//! with one page per worksheet.
-//!
-//! Reading goes through `calamine`; edits rebuild the workbook with
-//! `rust_xlsxwriter`, keeping every sheet, value and formula (styles other
-//! than date formats, column widths and charts are not carried over).
+//! XLSX workbooks: cell queries for the agent, and a grid renderer with one
+//! page per worksheet. Reading goes through `calamine`.
 
 use crate::raster::{Canvas, Color, Fonts, TextStyle};
 use crate::{DocsError, Format, PageSize, Paged, Result, Rgba};
 use calamine::{Data, ExcelDateTime, Range, Reader, SheetType, Xlsx};
-use rust_xlsxwriter::{Format as CellFormat, Formula, Workbook, Worksheet, XlsxError};
 use std::fmt::Write as _;
 use std::io::Cursor;
 
@@ -32,13 +27,6 @@ const HEADER_TEXT: Color = Color::rgb(64, 64, 64);
 /// Shown instead of a number too wide for its cell, as Excel does.
 const HASHES: &str = "################################################################";
 
-/// Days between the 1904 and the 1900 date epochs.
-const EPOCH_1904_OFFSET: f64 = 1462.0;
-const DATE_FORMAT: &str = "yyyy-mm-dd";
-const DATETIME_FORMAT: &str = "yyyy-mm-dd hh:mm:ss";
-const TIME_FORMAT: &str = "hh:mm:ss";
-const DURATION_FORMAT: &str = "[h]:mm:ss";
-
 /// Stand in for cells outside a sheet's stored range.
 static EMPTY: Data = Data::Empty;
 
@@ -47,8 +35,6 @@ static EMPTY: Data = Data::Empty;
 #[derive(Clone, Debug)]
 pub struct XlsxDoc {
     sheets: Vec<Sheet>,
-    /// Whether date serials count from 1904 instead of 1900.
-    epoch_1904: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -182,43 +168,11 @@ pub struct CellBlock {
     pub rows: Vec<Vec<CellOut>>,
 }
 
-/// One change applied by [`XlsxDoc::apply`]. JSON form:
-/// `{"op": "set_cell", "sheet": "Data", "cell": "B2", "value": {"number": 3}}`
-/// (`sheet` may be omitted for the first sheet) or
-/// `{"op": "add_sheet", "name": "Notes"}`.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "op", rename_all = "snake_case")]
-pub enum XlsxEdit {
-    SetCell {
-        #[serde(default)]
-        sheet: Option<String>,
-        cell: String,
-        value: CellInput,
-    },
-    /// Appends an empty sheet after the existing ones.
-    AddSheet { name: String },
-}
-
-/// A value written by [`XlsxEdit::SetCell`]. Externally tagged in JSON:
-/// `{"text": "abc"}`, `{"number": 1.5}`, `{"bool": true}`,
-/// `{"formula": "=SUM(A1:A3)"}` (the `=` is optional) or `"empty"` to clear
-/// the cell.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CellInput {
-    Text(String),
-    Number(f64),
-    Bool(bool),
-    Formula(String),
-    Empty,
-}
-
 impl XlsxDoc {
     pub fn parse(bytes: &[u8]) -> Result<Self> {
         let invalid = |e: calamine::XlsxError| DocsError::invalid(Format::Xlsx, e);
         let mut book: Xlsx<Cursor<&[u8]>> =
             calamine::open_workbook_from_rs(Cursor::new(bytes)).map_err(invalid)?;
-        let epoch_1904 = book.has_1904_epoch();
         let names: Vec<String> = book
             .sheets_metadata()
             .iter()
@@ -234,7 +188,7 @@ impl XlsxDoc {
             for_used_cells(&formulas, |row, col, _| used = Some(Area::include(used, row, col)));
             sheets.push(Sheet { name, values, formulas, used });
         }
-        Ok(Self { sheets, epoch_1904 })
+        Ok(Self { sheets })
     }
 
     /// The worksheets in workbook order.
@@ -284,41 +238,6 @@ impl XlsxDoc {
             })
             .collect();
         Ok(CellBlock { sheet: sheet.name.clone(), range: area.name(), rows })
-    }
-
-    /// Rebuilds the workbook with every sheet and cell plus `edits`, applied
-    /// in order, and returns the new file's bytes.
-    pub fn apply(&self, edits: &[XlsxEdit]) -> Result<Vec<u8>> {
-        let formats = DateFormats::new();
-        let mut book = Workbook::new();
-        for sheet in &self.sheets {
-            let worksheet = book.add_worksheet();
-            worksheet.set_name(sheet.name.as_str()).map_err(write_error)?;
-            sheet.write_to(worksheet, &formats, self.epoch_1904)?;
-        }
-        let mut names: Vec<&str> = self.sheets.iter().map(|s| s.name.as_str()).collect();
-        for edit in edits {
-            match edit {
-                XlsxEdit::AddSheet { name } => {
-                    let lower = name.to_lowercase();
-                    if names.iter().any(|n| n.to_lowercase() == lower) {
-                        return Err(DocsError::Request(format!("a sheet named `{name}` already exists")));
-                    }
-                    book.add_worksheet()
-                        .set_name(name.as_str())
-                        .map_err(|e| DocsError::Request(format!("invalid sheet name `{name}`: {e}")))?;
-                    names.push(name);
-                }
-                XlsxEdit::SetCell { sheet, cell, value } => {
-                    let index = find_sheet(&names, sheet.as_deref())?;
-                    let (row, col) = parse_cell(cell)?;
-                    let worksheet = book.worksheet_from_index(index).map_err(write_error)?;
-                    write_input(worksheet, row, column(col)?, value)
-                        .map_err(|e| DocsError::Request(format!("setting {cell}: {e}")))?;
-                }
-            }
-        }
-        book.save_to_buffer().map_err(write_error)
     }
 
     fn sheet_index(&self, name: Option<&str>) -> Result<usize> {
@@ -434,135 +353,6 @@ impl Sheet {
         })
     }
 
-    /// Writes every value and formula of this sheet into `worksheet`.
-    fn write_to(&self, worksheet: &mut Worksheet, formats: &DateFormats, epoch_1904: bool) -> Result<()> {
-        let mut result = Ok(());
-        for_used_cells(&self.values, |row, col, data| {
-            if result.is_ok() {
-                result = column(col).and_then(|col16| {
-                    write_data(worksheet, row, col16, data, self.formula(row, col), formats, epoch_1904)
-                        .map_err(write_error)
-                });
-            }
-        });
-        // Formulas whose cached result is empty are not among the values.
-        for_used_cells(&self.formulas, |row, col, formula| {
-            if result.is_ok() && matches!(self.value(row, col), Data::Empty) {
-                result = column(col).and_then(|col16| {
-                    worksheet.write_formula(row, col16, Formula::new(formula)).map(|_| ()).map_err(write_error)
-                });
-            }
-        });
-        result
-    }
-}
-
-/// The number formats dates are written with.
-struct DateFormats {
-    date: CellFormat,
-    datetime: CellFormat,
-    time: CellFormat,
-    duration: CellFormat,
-}
-
-impl DateFormats {
-    fn new() -> Self {
-        Self {
-            date: CellFormat::new().set_num_format(DATE_FORMAT),
-            datetime: CellFormat::new().set_num_format(DATETIME_FORMAT),
-            time: CellFormat::new().set_num_format(TIME_FORMAT),
-            duration: CellFormat::new().set_num_format(DURATION_FORMAT),
-        }
-    }
-
-    /// The format and the 1900 epoch serial a date value is written with.
-    fn pick(&self, dt: &ExcelDateTime, epoch_1904: bool) -> (&CellFormat, f64) {
-        if dt.is_duration() {
-            return (&self.duration, dt.as_f64());
-        }
-        let serial = if epoch_1904 { dt.as_f64() + EPOCH_1904_OFFSET } else { dt.as_f64() };
-        let format = if dt.as_f64() < 1.0 {
-            &self.time
-        } else if serial.fract() == 0.0 {
-            &self.date
-        } else {
-            &self.datetime
-        };
-        (format, serial)
-    }
-}
-
-/// Writes one existing cell, as a formula with its cached result when it has one.
-fn write_data(
-    worksheet: &mut Worksheet,
-    row: u32,
-    col: u16,
-    data: &Data,
-    formula: Option<&str>,
-    formats: &DateFormats,
-    epoch_1904: bool,
-) -> std::result::Result<(), XlsxError> {
-    if let Some(formula) = formula {
-        let formula = Formula::new(formula);
-        let formula = match data {
-            Data::Empty => formula,
-            Data::String(s) | Data::DateTimeIso(s) | Data::DurationIso(s) => formula.set_result(s.as_str()),
-            Data::Float(f) => formula.set_result(f.to_string()),
-            Data::Int(i) => formula.set_result(i.to_string()),
-            Data::Bool(b) => formula.set_result(if *b { "TRUE" } else { "FALSE" }),
-            Data::Error(e) => formula.set_result(e.to_string()),
-            Data::DateTime(dt) => formula.set_result(formats.pick(dt, epoch_1904).1.to_string()),
-        };
-        let written = match data {
-            Data::DateTime(dt) => {
-                worksheet.write_formula_with_format(row, col, formula, formats.pick(dt, epoch_1904).0)
-            }
-            _ => worksheet.write_formula(row, col, formula),
-        };
-        return written.map(|_| ());
-    }
-    let written = match data {
-        Data::Empty => Ok(worksheet),
-        Data::String(s) | Data::DateTimeIso(s) | Data::DurationIso(s) => worksheet.write_string(row, col, s.as_str()),
-        Data::Float(f) => worksheet.write_number(row, col, *f),
-        Data::Int(i) => worksheet.write_number(row, col, *i as f64),
-        Data::Bool(b) => worksheet.write_boolean(row, col, *b),
-        Data::Error(e) => {
-            let text = e.to_string();
-            worksheet.write_formula(row, col, Formula::new(&text).set_result(text))
-        }
-        Data::DateTime(dt) => {
-            let (format, serial) = formats.pick(dt, epoch_1904);
-            worksheet.write_number_with_format(row, col, serial, format)
-        }
-    };
-    written.map(|_| ())
-}
-
-fn write_input(
-    worksheet: &mut Worksheet,
-    row: u32,
-    col: u16,
-    value: &CellInput,
-) -> std::result::Result<(), XlsxError> {
-    let written = match value {
-        CellInput::Text(s) => worksheet.write_string(row, col, s.as_str()),
-        CellInput::Number(n) => worksheet.write_number(row, col, *n),
-        CellInput::Bool(b) => worksheet.write_boolean(row, col, *b),
-        CellInput::Formula(f) => worksheet.write_formula(row, col, Formula::new(f)),
-        CellInput::Empty => Ok(worksheet.clear_cell(row, col)),
-    };
-    written.map(|_| ())
-}
-
-fn write_error(e: XlsxError) -> DocsError {
-    DocsError::Write { format: Format::Xlsx, message: e.to_string() }
-}
-
-/// A column index as `rust_xlsxwriter` takes it.
-fn column(col: u32) -> Result<u16> {
-    u16::try_from(col)
-        .map_err(|_| DocsError::Write { format: Format::Xlsx, message: format!("column {} is out of range", col + 1) })
 }
 
 /// Calls `f` with the absolute row, column and value of each non-empty cell.
@@ -768,6 +558,7 @@ fn fit<'t>(fonts: &Fonts, text: &'t str, size: f32, max: f32) -> &'t str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rust_xlsxwriter::{Format as CellFormat, Formula, Workbook};
 
     /// Two sheets: `Data` from A1 with text, numbers, a bool, a formula and a
     /// date; `Offset` whose data starts at D3.
@@ -861,54 +652,6 @@ mod tests {
             assert!(matches!(err, DocsError::Request(_)), "{sheet:?} {range}: {err}");
         }
         assert!(matches!(XlsxDoc::parse(b"PK\x03\x04 not a workbook"), Err(DocsError::Invalid { .. })));
-    }
-
-    #[test]
-    fn apply_changes_only_the_edited_cells() {
-        let doc = XlsxDoc::parse(&workbook()).unwrap();
-        let edits: Vec<XlsxEdit> = serde_json::from_str(
-            r#"[
-                {"op": "set_cell", "sheet": "Data", "cell": "B2", "value": {"number": 10}},
-                {"op": "add_sheet", "name": "Notes"},
-                {"op": "set_cell", "sheet": "Notes", "cell": "A1", "value": {"text": "hi"}},
-                {"op": "set_cell", "cell": "A3", "value": "empty"}
-            ]"#,
-        )
-        .unwrap();
-        let edited = XlsxDoc::parse(&doc.apply(&edits).unwrap()).unwrap();
-
-        let names: Vec<String> = edited.sheets().into_iter().map(|s| s.name).collect();
-        assert_eq!(names, ["Data", "Offset", "Notes"]);
-        assert_eq!(cell(&edited, "Data", "B2").value, Cell::Float(10.0));
-        assert_eq!(cell(&edited, "Data", "A3").value, Cell::Empty);
-        assert_eq!(cell(&edited, "Data", "A2").value, Cell::String("apple".into()));
-        assert_eq!(cell(&edited, "Data", "B3").value, Cell::Float(4.5));
-        assert_eq!(cell(&edited, "Data", "A4").value, Cell::Bool(true));
-        let total = cell(&edited, "Data", "B4");
-        assert_eq!(total.formula.as_deref(), Some("SUM(B2:B3)"));
-        assert_eq!(total.value, Cell::Float(7.5));
-        assert_eq!(
-            cell(&edited, "Data", "A5").value,
-            Cell::DateTime { serial: Some(45366.0), iso: "2024-03-15T00:00:00".into() }
-        );
-        assert_eq!(cell(&edited, "Offset", "D3").value, Cell::String("origin".into()));
-        assert_eq!(cell(&edited, "Offset", "E4").value, Cell::Float(42.0));
-        assert_eq!(cell(&edited, "Notes", "A1").value, Cell::String("hi".into()));
-    }
-
-    #[test]
-    fn apply_rejects_duplicate_and_invalid_sheet_names_and_unknown_sheets() {
-        let doc = XlsxDoc::parse(&workbook()).unwrap();
-        let rejected = [
-            XlsxEdit::AddSheet { name: "data".into() },
-            XlsxEdit::AddSheet { name: "bad/name".into() },
-            XlsxEdit::SetCell { sheet: Some("Nope".into()), cell: "A1".into(), value: CellInput::Bool(true) },
-            XlsxEdit::SetCell { sheet: None, cell: "1A".into(), value: CellInput::Bool(true) },
-        ];
-        for edit in rejected {
-            let err = doc.apply(std::slice::from_ref(&edit)).unwrap_err();
-            assert!(matches!(err, DocsError::Request(_)), "{edit:?}: {err}");
-        }
     }
 
     fn dark_pixels(image: &Rgba, x0: f32, y0: f32, x1: f32, y1: f32) -> usize {

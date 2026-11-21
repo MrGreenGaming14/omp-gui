@@ -5,7 +5,7 @@ use crate::docx::DocxDoc;
 use crate::images::ImageDoc;
 use crate::pdf::PdfDoc;
 use crate::pptx::PptxDoc;
-use crate::xlsx::{XlsxDoc, XlsxEdit};
+use crate::xlsx::XlsxDoc;
 use crate::{DocsError, Fonts, Format, PageSize, Paged, Result, Rgba};
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -225,26 +225,6 @@ impl DocSurface {
         }
     }
 
-    /// XLSX: applies `edits`, saves the file in place (write to a sibling
-    /// temporary file, then rename) and reloads it. Cell values and formulas
-    /// are kept; cell formatting is not (rust_xlsxwriter writes new files).
-    pub async fn edit_xlsx(&self, edits: Vec<XlsxEdit>) -> Result<()> {
-        let surface = self.clone();
-        run_blocking(move || {
-            let loaded = surface.loaded();
-            let Parsed::Xlsx(xlsx) = &loaded.parsed else {
-                return Err(DocsError::Request(format!("{} files can't be edited", surface.0.format)));
-            };
-            let bytes = xlsx.apply(&edits)?;
-            let parsed = Parsed::parse(Format::Xlsx, &bytes)?;
-            loa_util::fs::write_atomic(&surface.0.path, &bytes, None).map_err(|source| DocsError::Io { path: surface.0.path.clone(), source })?;
-            *surface.0.loaded.write_ok() =
-                Arc::new(Loaded { bytes: Bytes::from(bytes), parsed });
-            Ok(())
-        })
-        .await
-    }
-
     fn mode_error(&self) -> SurfaceError {
         SurfaceError::Mode { uri: self.0.uri.clone(), mode: SurfaceMode::Document }
     }
@@ -394,15 +374,6 @@ mod tests {
         out.into_inner()
     }
 
-    fn xlsx_bytes() -> Vec<u8> {
-        let mut workbook = rust_xlsxwriter::Workbook::new();
-        let sheet = workbook.add_worksheet();
-        sheet.set_name("Data").unwrap();
-        sheet.write_string(0, 0, "name").unwrap();
-        sheet.write_number(1, 0, 41.0).unwrap();
-        workbook.save_to_buffer().unwrap()
-    }
-
     #[tokio::test]
     async fn an_opened_file_is_listed_and_served_once_as_a_document() {
         let dir = tempfile::tempdir().unwrap();
@@ -447,45 +418,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn xlsx_edits_are_saved_to_disk_and_visible_to_queries() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("book.xlsx");
-        std::fs::write(&path, xlsx_bytes()).unwrap();
-        let server = DocsServer::new(Fonts::none());
-        let surface = server.open_file(&path).await.unwrap();
-
-        let edits: Vec<XlsxEdit> = serde_json::from_value(serde_json::json!([
-            { "op": "set_cell", "sheet": "Data", "cell": "A2", "value": { "number": 42.0 } }
-        ]))
-        .unwrap();
-        surface.edit_xlsx(edits).await.unwrap();
-
-        let cells = surface
-            .data(DataQuery::Cells { sheet: Some("Data".into()), range: "A1:A2".into() })
-            .await
-            .unwrap();
-        let text = cells.to_string();
-        assert!(text.contains("42"), "{text}");
-        assert!(text.contains("name"), "{text}");
-
-        let reopened = DocsServer::new(Fonts::none()).open_file(&path).await.unwrap();
-        let again = reopened
-            .data(DataQuery::Cells { sheet: None, range: "A2".into() })
-            .await
-            .unwrap();
-        assert!(again.to_string().contains("42"));
-        let served = Surface::document(&surface).await.unwrap();
-        assert_eq!(served.data.as_ref(), std::fs::read(&path).unwrap().as_slice());
-    }
-
-    #[tokio::test]
     async fn queries_a_format_does_not_offer_are_refused() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("a.png");
         std::fs::write(&path, png(2, 2, [0, 0, 0, 255])).unwrap();
         let surface = DocsServer::new(Fonts::none()).open_file(&path).await.unwrap();
         assert!(matches!(surface.data(DataQuery::Sheets).await, Err(DocsError::Request(_))));
-        assert!(matches!(surface.edit_xlsx(Vec::new()).await, Err(DocsError::Request(_))));
         let info = surface.data(DataQuery::Info).await.unwrap();
         assert_eq!(info["format"], "png");
         assert_eq!(info["pages"][0]["width"], 2.0);
