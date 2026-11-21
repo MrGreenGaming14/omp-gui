@@ -60,6 +60,16 @@ pub struct AccessOption {
     pub detail: String,
 }
 
+/// A workflow the composer's workflow picker can switch to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorkflowOption {
+    /// The model role it runs under, reported by
+    /// [`Event::WorkflowChanged`](crate::Event::WorkflowChanged).
+    pub role: String,
+    /// Name shown in the picker.
+    pub label: String,
+}
+
 /// One of the composer's bottom-row pickers.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Picker {
@@ -73,6 +83,8 @@ pub enum Picker {
     Folder,
     /// The project the session belongs to.
     Project,
+    /// The workflow (model role) prompts run under.
+    Workflow,
 }
 
 /// Picker contents and the current choices.
@@ -97,6 +109,12 @@ pub struct Pickers {
     pub projects: Vec<String>,
     /// The session's project, or the one new sessions join.
     pub project: Option<String>,
+    /// Workflows the picker lists.
+    pub workflows: Vec<WorkflowOption>,
+    /// Role of the active workflow; `None` is the default one.
+    pub workflow: Option<String>,
+    /// Whether the session can switch workflows (an OMP session).
+    pub workflows_enabled: bool,
     /// The picker whose menu is open, if any.
     pub open: Option<Picker>,
 }
@@ -116,6 +134,9 @@ impl Default for Pickers {
             access_current: None,
             projects: Vec::new(),
             project: None,
+            workflows: Vec::new(),
+            workflow: None,
+            workflows_enabled: false,
             open: None,
         }
     }

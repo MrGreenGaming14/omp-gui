@@ -34,7 +34,7 @@ use loa_ui_icons::{Icon, colored, icon, muted};
 
 use history::{EditKind, History, Snapshot};
 use keys::KeyContext;
-pub use pickers::{AccessOption, HarnessOption, ModelOption, Picker, PickerAction};
+pub use pickers::{AccessOption, HarnessOption, ModelOption, Picker, PickerAction, WorkflowOption};
 use pickers::Pickers;
 pub use popup::PopupKind;
 use popup::{MAX_ITEMS, Popup, Trigger};
@@ -66,6 +66,14 @@ const ACCESS_MENU_WIDTH: f32 = 340.0;
 const MODE_MENU_WIDTH: f32 = 150.0;
 /// The project chip's label and menu row for a session in no project.
 pub const NO_PROJECT: &str = "No project";
+/// The workflow chip's label while no workflow is active.
+const DEFAULT_WORKFLOW: &str = "Default";
+/// The Rules button.
+const RULES_LABEL: &str = "Rules";
+/// Last row of the workflow picker.
+const EDIT_WORKFLOWS: &str = "Edit workflows…";
+/// Tooltip of the dimmed workflow picker and Rules button.
+const WORKFLOWS_UNAVAILABLE: &str = "Available with OMP sessions";
 /// Labels of the icon-only buttons, shown as tooltips (and their accessible
 /// names once iced exposes them).
 pub const SEND_LABEL: &str = "Send (Enter)";
@@ -117,6 +125,12 @@ pub enum Event {
     /// A project was picked in the project chip: the session moves there,
     /// or new sessions join it. `None` is "No project".
     ProjectPicked(Option<String>),
+    /// The user picked another workflow in the workflow picker. Holds its
+    /// role.
+    WorkflowChanged(String),
+    /// The Rules button or the "Edit workflows…" row: open the workflow
+    /// editor.
+    ManageWorkflows,
 }
 
 /// The folder a session works in, as the composer's folder chip shows it.
@@ -181,6 +195,10 @@ pub enum Message {
     EffortSlid(u8),
     /// The effort slider was let go: its level applies.
     EffortReleased,
+    /// A workflow row of the workflow picker was pressed. Holds its role.
+    WorkflowPicked(String),
+    /// The Rules button or the "Edit workflows…" row.
+    ManageWorkflows,
 }
 
 /// An image pasted or dropped into the composer, shown as `[Image #n]` in
@@ -363,6 +381,23 @@ impl State {
         self.pickers.harnesses = harnesses;
     }
 
+    /// Workflows the picker lists, the role of the active one (`None` is the
+    /// default workflow), and whether the session can switch workflows. Only
+    /// OMP sessions can; otherwise the picker and the Rules button are dimmed.
+    pub fn set_workflows(&mut self, options: Vec<WorkflowOption>, active: Option<String>, enabled: bool) {
+        self.pickers.workflows = options;
+        self.pickers.workflow = active;
+        self.pickers.workflows_enabled = enabled;
+        if !enabled && self.pickers.open == Some(Picker::Workflow) {
+            self.pickers.open = None;
+        }
+    }
+
+    /// The role of the active workflow, if one is set.
+    pub fn workflow(&self) -> Option<&str> {
+        self.pickers.workflow.as_deref()
+    }
+
     /// The current harness, if it is one of the options.
     pub fn harness(&self) -> Option<&HarnessOption> {
         let id = self.pickers.harness.as_deref()?;
@@ -496,8 +531,20 @@ impl State {
                 })
             }
             Message::PickerToggled(picker) => {
-                self.pickers.open = (self.pickers.open != Some(picker)).then_some(picker);
+                let usable = picker != Picker::Workflow || self.pickers.workflows_enabled;
+                self.pickers.open = (usable && self.pickers.open != Some(picker)).then_some(picker);
                 None
+            }
+            Message::WorkflowPicked(role) => {
+                self.pickers.open = None;
+                (self.pickers.workflows_enabled && self.pickers.workflow.as_ref() != Some(&role)).then(|| {
+                    self.pickers.workflow = Some(role.clone());
+                    Event::WorkflowChanged(role)
+                })
+            }
+            Message::ManageWorkflows => {
+                self.pickers.open = None;
+                self.pickers.workflows_enabled.then_some(Event::ManageWorkflows)
             }
             Message::PickerClosed => {
                 self.pickers.open = None;
@@ -660,6 +707,22 @@ impl State {
             let label = current.map_or("Permissions", |a| a.label.as_str()).to_owned();
             controls = controls.push(self.picker(Picker::Access, Icon::Shield, label));
         }
+        {
+            let label = pickers
+                .workflow
+                .as_deref()
+                .and_then(|role| pickers.workflows.iter().find(|w| w.role == role))
+                .map_or(DEFAULT_WORKFLOW, |w| w.label.as_str())
+                .to_owned();
+            controls = controls.push(self.picker(Picker::Workflow, Icon::GitFork, label));
+            let rules = button(
+                row![icon(Icon::FileText, CONTROL_ICON).style(style::ghost_icon), text(RULES_LABEL).size(CONTROL_TEXT)].spacing(6).align_y(Center),
+            )
+            .padding([5, 8])
+            .style(style::ghost(false))
+            .on_press_maybe(pickers.workflows_enabled.then_some(Message::ManageWorkflows));
+            controls = controls.push(if pickers.workflows_enabled { rules.into() } else { disabled_hint(rules) });
+        }
         controls = controls
             .push(space::horizontal())
             .push(action);
@@ -711,7 +774,11 @@ impl State {
         ]
         .spacing(if compact { 4 } else { 6 })
         .align_y(Center);
-        let button = button(content).padding(padding).style(style::ghost(open)).on_press(Message::PickerToggled(picker));
+        let enabled = picker != Picker::Workflow || self.pickers.workflows_enabled;
+        let button = button(content).padding(padding).style(style::ghost(open)).on_press_maybe(enabled.then_some(Message::PickerToggled(picker)));
+        if !enabled {
+            return disabled_hint(button);
+        }
         popover::popover(button, open.then(|| self.menu_view(picker))).own_width().on_dismiss(Message::PickerClosed).into()
     }
 
@@ -751,6 +818,15 @@ impl State {
                 )
                 .collect(),
             Picker::Effort | Picker::Folder => Vec::new(),
+            Picker::Workflow => pickers
+                .workflows
+                .iter()
+                .map(|w| {
+                    let current = pickers.workflow.as_deref() == Some(w.role.as_str());
+                    menu_row(&w.label, None, current, Some(Message::WorkflowPicked(w.role.clone())))
+                })
+                .chain(std::iter::once(menu_row(EDIT_WORKFLOWS, None, false, Some(Message::ManageWorkflows))))
+                .collect(),
             Picker::Project => std::iter::once(menu_row(NO_PROJECT, None, pickers.project.is_none(), Some(Message::ProjectPicked(None))))
                 .chain(pickers.projects.iter().map(|name| {
                     let current = pickers.project.as_ref() == Some(name);
@@ -1357,6 +1433,11 @@ pub const WORKSPACE_CHIP_ID: &str = "loa-composer-workspace";
 fn labelled<'a>(button: iced::widget::Button<'a, Message>, label: &'static str) -> Element<'a, Message> {
     let tip = container(text(label).size(12)).padding([3, 8]).style(style::menu);
     iced::widget::tooltip(button, tip, iced::widget::tooltip::Position::Top).into()
+}
+
+/// A dimmed, unpressable control with the reason as its tooltip.
+fn disabled_hint<'a>(button: iced::widget::Button<'a, Message>) -> Element<'a, Message> {
+    labelled(button, WORKFLOWS_UNAVAILABLE)
 }
 
 #[cfg(test)]

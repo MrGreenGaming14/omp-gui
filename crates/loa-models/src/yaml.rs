@@ -426,6 +426,12 @@ impl<'a> Editor<'a> {
                         is_root = false;
                         continue;
                     }
+                    if depth + 1 < path.len() && !entry.inline.is_empty() {
+                        return Err(self.unsupported(format!(
+                            "`{}` is written inline (flow style); editing it would reformat its line, so edit it by hand",
+                            path[..=depth].join(".")
+                        )));
+                    }
                     return Ok(self.replace_value(&entry, sub));
                 }
                 None => return self.insert_entry(region, is_root, path[depth], sub),

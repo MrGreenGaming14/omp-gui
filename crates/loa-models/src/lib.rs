@@ -45,6 +45,7 @@ pub mod process;
 pub mod providers;
 pub mod rpc;
 pub mod validate;
+pub mod workflows;
 pub mod yaml;
 
 pub use error::{Error, Result};

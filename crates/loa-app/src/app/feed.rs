@@ -50,8 +50,21 @@ impl App {
                 tasks.push(self.restart_active_harness());
             }
             tasks.push(working_diff(self.ctx.services.cwd.clone()));
-            let next = self.ctx.composer.turn_ended();
-            tasks.push(self.composer_event(next));
+            // A workflow picked mid-turn switches the session first. A message
+            // queued in this session is held until that switch succeeds; the
+            // role switch releases it (see `RoleSwitched`).
+            let waits = self.ctx.composer.queue().next().is_some() && self.areas.workflows.pending().is_some_and(|(session, _)| session == id.as_str());
+            if waits {
+                self.areas.workflows.hold_queue(&id);
+            }
+            match self.take_workflow_switch(&id) {
+                Some(switch) if waits => tasks.push(switch),
+                switch => {
+                    let next = self.ctx.composer.turn_ended();
+                    tasks.extend(switch);
+                    tasks.push(self.composer_event(next));
+                }
+            }
         }
         Task::batch(tasks)
     }
