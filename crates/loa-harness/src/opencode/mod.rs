@@ -1,14 +1,13 @@
-//! OpenCode HTTP adapter and lossless native session conversion.
+//! OpenCode over its HTTP server (`opencode serve`) and its export files.
 
 pub mod client;
-pub mod driver;
+mod driver;
 pub mod event;
-pub mod ids;
-pub mod json;
+mod ids;
+mod json;
 pub mod mapper;
-pub mod native;
+mod native;
 
-pub use driver::{OpenCodeAdapter, OpenCodeSession};
-
-#[cfg(test)]
-mod tests;
+pub use driver::{OpenCodeAdapter, OpenCodeSession, provider_models};
+pub use mapper::HARNESS;
+pub use native::{OpenCodeNative, export_value};

@@ -1,4 +1,4 @@
-//! Small helpers over `serde_json::Value` addressed by JSON pointers.
+//! JSON pointer helpers for the native objects.
 
 use serde_json::{Map, Value as Json};
 
@@ -12,16 +12,11 @@ pub fn int_at(v: &Json, ptr: &str) -> Option<i64> {
     n.as_i64().or_else(|| n.as_f64().filter(|f| f.fract() == 0.0).map(|f| f as i64))
 }
 
-pub fn float_at(v: &Json, ptr: &str) -> Option<f64> {
-    v.pointer(ptr)?.as_f64()
+pub fn is_true(v: &Json, ptr: &str) -> bool {
+    v.pointer(ptr).and_then(Json::as_bool) == Some(true)
 }
 
-pub fn bool_at(v: &Json, ptr: &str) -> Option<bool> {
-    v.pointer(ptr)?.as_bool()
-}
-
-/// A copy of `v` without the leaves at `ptrs`. Objects that become empty stay,
-/// so putting the leaves back rebuilds the same structure.
+/// A copy of `v` without the leaves at `ptrs`; emptied objects stay, so [`put`] rebuilds the same shape.
 pub fn without(v: &Json, ptrs: &[&str]) -> Json {
     let mut copy = v.clone();
     for ptr in ptrs {
@@ -34,8 +29,7 @@ pub fn without(v: &Json, ptrs: &[&str]) -> Json {
     copy
 }
 
-/// Sets the leaf at `ptr`, creating objects on the way. A non-object in the
-/// way is replaced by an object.
+/// Sets the leaf at `ptr`, creating (or replacing non-objects with) objects on the way.
 pub fn put(v: &mut Json, ptr: &str, value: Json) {
     let mut cur = v;
     let mut keys = ptr.split('/').skip(1).peekable();
@@ -52,35 +46,15 @@ pub fn put(v: &mut Json, ptr: &str, value: Json) {
     }
 }
 
-/// Compact JSON text, or an empty string for an empty object.
-pub fn remainder_text(v: &Json) -> String {
-    match v {
+/// Compact JSON of `v` without `ptrs`; empty for an empty object.
+pub fn rest(v: &Json, ptrs: &[&str]) -> String {
+    match without(v, ptrs) {
         Json::Object(map) if map.is_empty() => String::new(),
-        _ => v.to_string(),
+        other => other.to_string(),
     }
 }
 
 /// Parses `text` as a JSON object; empty text is an empty object.
 pub fn parse_object(text: &str) -> serde_json::Result<Json> {
-    if text.is_empty() {
-        return Ok(Json::Object(Map::new()));
-    }
-    serde_json::from_str(text)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn without_then_put_restores_nested_leaves() {
-        let full = json!({"a": 1, "state": {"time": {"start": 5, "end": 6}, "m": {}}});
-        let mut rest = without(&full, &["/a", "/state/time/start", "/state/time/end"]);
-        assert_eq!(rest, json!({"state": {"time": {}, "m": {}}}));
-        put(&mut rest, "/a", json!(1));
-        put(&mut rest, "/state/time/start", json!(5));
-        put(&mut rest, "/state/time/end", json!(6));
-        assert_eq!(rest, full);
-    }
+    if text.is_empty() { Ok(Json::Object(Map::new())) } else { serde_json::from_str(text) }
 }

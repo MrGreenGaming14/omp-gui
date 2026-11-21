@@ -94,6 +94,11 @@ impl<K: Hash + Eq> TurnLedger<K> {
         Ok(node)
     }
 
+    /// Opens `node`, a turn the mapper inserted itself.
+    pub fn adopt(&mut self, node: NodeId) {
+        self.turn = Some(OpenTurn { node, open: HashMap::new(), waiting: Vec::new() });
+    }
+
     /// Tracks an open message or call under the harness's `key`.
     pub fn open(&mut self, key: K, node: NodeId) {
         if let Some(turn) = &mut self.turn {

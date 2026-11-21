@@ -58,6 +58,10 @@ impl<'a> DomWriter<'a> {
         self.commit(Draft::append(node, text)).map(drop)
     }
 
+    pub fn set_text(&self, node: NodeId, text: impl Into<String>) -> Result<(), CommitError> {
+        self.commit(Draft::set_text(node, text)).map(drop)
+    }
+
     /// Ends a turn, call, job or decision: `status`, then `ended`.
     pub fn close(&self, node: NodeId, status: impl Into<Value>) -> Result<(), CommitError> {
         self.set(node, attr::STATUS, status)?;
