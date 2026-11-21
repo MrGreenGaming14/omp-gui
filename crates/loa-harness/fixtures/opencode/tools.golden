@@ -3,31 +3,31 @@
   <turn nid="2" ended.int="0" id="msg_u1" started.int="10" status="done" x-oc="{&quot;time&quot;:{}}">
     <message nid="3" id="prt_u1" role="user" status="done" x-message="msg_u1">Fix it</message>
     <ext nid="4" harness="opencode" type="part" x-message="msg_u1" x-part="prt_u2">{"synthetic":true,"text":"context","type":"text"}</ext>
-    <ext nid="5" harness="opencode" type="message" x-message="msg_a1">{"modelID":"m","parentID":"msg_u1","providerID":"p","role":"assistant","time":{"created":11}}</ext>
-    <call nid="6" call_id="call_1" ended.int="13" started.int="12" status="done" title="List files" tool="bash" x-message="msg_a1" x-oc="{&quot;state&quot;:{&quot;metadata&quot;:{&quot;exit&quot;:0},&quot;status&quot;:&quot;completed&quot;,&quot;time&quot;:{&quot;end&quot;:13,&quot;start&quot;:12}}}" x-part="prt_b1">
+    <ext nid="5" harness="opencode" type="message" x-message="msg_a1">{"time":{"created":11},"modelID":"m","role":"assistant","parentID":"msg_u1","providerID":"p"}</ext>
+    <call nid="6" call_id="call_1" ended.int="13" started.int="12" status="done" title="List files" tool="bash" x-message="msg_a1" x-oc="{&quot;state&quot;:{&quot;status&quot;:&quot;completed&quot;,&quot;time&quot;:{&quot;start&quot;:12,&quot;end&quot;:13},&quot;metadata&quot;:{&quot;exit&quot;:0}}}" x-part="prt_b1">
       <input nid="7">{"command":"ls"}</input>
-      <decision nid="8" answer.list="['allow_session']" call.int="6" created.int="0" ended.int="0" kind="approval" request_id="per_1" status="answered" title="bash: ls" x-oc="{&quot;always&quot;:[&quot;ls *&quot;],&quot;metadata&quot;:{&quot;command&quot;:&quot;ls&quot;},&quot;patterns&quot;:[&quot;ls&quot;],&quot;permission&quot;:&quot;bash&quot;}">ls</decision>
+      <decision nid="8" answer.list="['allow_session']" call.int="6" created.int="0" ended.int="0" kind="approval" request_id="per_1" status="answered" title="bash: ls" x-oc="{&quot;permission&quot;:&quot;bash&quot;,&quot;patterns&quot;:[&quot;ls&quot;],&quot;always&quot;:[&quot;ls *&quot;],&quot;metadata&quot;:{&quot;command&quot;:&quot;ls&quot;}}">ls</decision>
       <result nid="9">a
 b</result>
     </call>
-    <call nid="10" call_id="call_2" ended.int="15" started.int="14" status="error" tool="read" x-message="msg_a1" x-oc="{&quot;state&quot;:{&quot;status&quot;:&quot;error&quot;,&quot;time&quot;:{&quot;end&quot;:15,&quot;start&quot;:14}}}" x-part="prt_e1">
+    <call nid="10" call_id="call_2" ended.int="15" started.int="14" status="error" tool="read" x-message="msg_a1" x-oc="{&quot;state&quot;:{&quot;status&quot;:&quot;error&quot;,&quot;time&quot;:{&quot;start&quot;:14,&quot;end&quot;:15}}}" x-part="prt_e1">
       <input nid="11">{"path":"x"}</input>
       <result nid="12" is_error.bool="true">no such file</result>
     </call>
     <decision nid="13" answer.list="['A', 'B']" created.int="0" ended.int="0" kind="question" multi.bool="true" options.list="['A', 'B']" request_id="que_1" status="answered" title="Pick" x-custom.bool="false" x-index.int="0">Which?</decision>
     <decision nid="14" answer.list="['because']" created.int="0" ended.int="0" kind="question" multi.bool="false" options.list="[]" request_id="que_1" status="answered" x-index.int="1">Why?</decision>
     <decision nid="15" created.int="0" ended.int="0" kind="question" multi.bool="false" options.list="['yes']" request_id="que_2" status="cancelled" x-index.int="0">Continue?</decision>
-    <call nid="16" call_id="call_3" ended.int="17" started.int="16" status="done" tool="todowrite" x-message="msg_a1" x-oc="{&quot;state&quot;:{&quot;status&quot;:&quot;completed&quot;,&quot;time&quot;:{&quot;end&quot;:17,&quot;start&quot;:16}}}" x-part="prt_w1">
-      <input nid="17">{"todos":[{"content":"one","priority":"high","status":"completed"},{"content":"two","status":"weird"}]}</input>
+    <call nid="16" call_id="call_3" ended.int="17" started.int="16" status="done" tool="todowrite" x-message="msg_a1" x-oc="{&quot;state&quot;:{&quot;status&quot;:&quot;completed&quot;,&quot;time&quot;:{&quot;start&quot;:16,&quot;end&quot;:17}}}" x-part="prt_w1">
+      <input nid="17">{"todos":[{"content":"one","status":"completed","priority":"high"},{"content":"two","status":"weird"}]}</input>
       <result nid="18">ok</result>
     </call>
-    <call nid="21" call_id="call_4" ended.int="20" started.int="18" status="done" tool="task" x-message="msg_a1" x-oc="{&quot;state&quot;:{&quot;metadata&quot;:{&quot;sessionId&quot;:&quot;ses_child&quot;},&quot;status&quot;:&quot;completed&quot;,&quot;time&quot;:{&quot;end&quot;:20,&quot;start&quot;:18}}}" x-part="prt_k1">
+    <call nid="21" call_id="call_4" ended.int="20" started.int="18" status="done" tool="task" x-message="msg_a1" x-oc="{&quot;state&quot;:{&quot;status&quot;:&quot;completed&quot;,&quot;metadata&quot;:{&quot;sessionId&quot;:&quot;ses_child&quot;},&quot;time&quot;:{&quot;start&quot;:18,&quot;end&quot;:20}}}" x-part="prt_k1">
       <input nid="22">{"description":"delegate","subagent_type":"general"}</input>
       <job nid="23" agent="general" call.int="21" ended.int="20" kind="subagent" started.int="18" status="done" title="delegate" x-native-session="ses_child"/>
-      <decision nid="24" call.int="21" created.int="0" ended.int="0" kind="approval" request_id="per_2" status="cancelled" title="edit" x-oc="{&quot;always&quot;:[],&quot;metadata&quot;:{&quot;filepath&quot;:&quot;/w/a.rs&quot;},&quot;patterns&quot;:[],&quot;permission&quot;:&quot;edit&quot;}">/w/a.rs</decision>
+      <decision nid="24" call.int="21" created.int="0" ended.int="0" kind="approval" request_id="per_2" status="cancelled" title="edit" x-oc="{&quot;permission&quot;:&quot;edit&quot;,&quot;patterns&quot;:[],&quot;always&quot;:[],&quot;metadata&quot;:{&quot;filepath&quot;:&quot;/w/a.rs&quot;}}">/w/a.rs</decision>
       <result nid="25">done</result>
     </call>
-    <call nid="26" call_id="call_5" ended.int="0" started.int="21" status="cancelled" tool="task" x-message="msg_a1" x-oc="{&quot;state&quot;:{&quot;metadata&quot;:{&quot;sessionId&quot;:&quot;ses_child2&quot;},&quot;status&quot;:&quot;running&quot;,&quot;time&quot;:{&quot;start&quot;:21}}}" x-part="prt_k2">
+    <call nid="26" call_id="call_5" ended.int="0" started.int="21" status="cancelled" tool="task" x-message="msg_a1" x-oc="{&quot;state&quot;:{&quot;status&quot;:&quot;running&quot;,&quot;time&quot;:{&quot;start&quot;:21},&quot;metadata&quot;:{&quot;sessionId&quot;:&quot;ses_child2&quot;}}}" x-part="prt_k2">
       <input nid="27">{"description":"second"}</input>
       <job nid="28" call.int="26" ended.int="0" kind="subagent" started.int="21" status="cancelled" title="second" x-native-session="ses_child2"/>
     </call>
