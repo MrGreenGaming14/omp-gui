@@ -13,9 +13,11 @@ pub mod claude;
 pub mod codex;
 #[cfg(feature = "omp")]
 pub mod omp;
+#[cfg(feature = "omp2")]
+pub mod omp2;
 #[cfg(feature = "opencode")]
 pub mod opencode;
 #[cfg(feature = "testing")]
 pub mod testing;
 
-pub use registry::factories;
+pub use registry::{HarnessEnv, factories};

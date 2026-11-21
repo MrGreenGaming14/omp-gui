@@ -13,7 +13,7 @@ use loa_core::{Dom, ElementKind, attr};
 use loa_mcp::{HttpSpec, ServerSpec, Transport};
 use loa_contracts::surface::{MouseButton, SurfaceMode, SurfaceUri};
 use loa_surfaces::{HubConfig, McpEndpoint, Origin, SurfaceHub, SurfaceTools};
-use loa_ui_palette as palette;
+use loa_ui_shell::palette;
 use loa_ui_surface::{PointerInput, panel, picker};
 use serde_json::json;
 use tokio::sync::mpsc;

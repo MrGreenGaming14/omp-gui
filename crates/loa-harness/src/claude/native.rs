@@ -11,8 +11,8 @@
 //! Uncovered lines are `<ext>` holding the line verbatim. Elements without
 //! these attributes (written by the app) export as fresh lines.
 
-use crate::claude::HARNESS;
-use crate::kit::residual;
+use crate::claude::{HARNESS, USAGE};
+use crate::kit::{NativeCodec, NativeSession, native, residual};
 use loa_contracts::harness::{AdapterError, Result};
 use loa_core::{
     CallStatus, Dom, DomWriter, ElementKind as E, JobKind, JobStatus, MessageKind, MessageStatus, Node, NodeId,
@@ -24,9 +24,6 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 use uuid::Uuid;
 
-/// Residual names: `x-claude` holds the envelope, `x-claude-block` the block.
-const ENVELOPE: &str = "claude";
-const BLOCK: &str = "claude-block";
 const X_ENVELOPE: &str = "x-claude";
 const X_BLOCK: &str = "x-claude-block";
 const X_LINE: &str = "x-claude-line";
@@ -49,29 +46,55 @@ fn str_field(value: &J, name: &str) -> Option<String> {
     value.get(name)?.as_str().map(str::to_owned)
 }
 
-/// `block` without `fields`, as JSON text.
-fn leftover(block: &J, fields: &[&str]) -> String {
-    let mut rest = match block {
-        J::Object(object) => J::Object(residual::take(&mut object.clone(), fields)),
-        other => other.clone(),
-    };
-    rest.sort_all_objects();
-    rest.to_string()
+/// `value` as JSON text with the keys of every object sorted.
+fn sorted_text(mut value: J) -> String {
+    value.sort_all_objects();
+    value.to_string()
 }
 
-/// Result or compaction content as element text, its encoding, the `texts`
-/// lengths and the text blocks without their text.
-fn encode(content: Option<&J>) -> (String, &'static str, Vec<V>, Vec<J>) {
+/// `block` without `fields`, as JSON text.
+fn leftover(block: &J, fields: &[&str]) -> String {
+    sorted_text(match block {
+        J::Object(object) => J::Object(residual::take(&mut object.clone(), fields)),
+        other => other.clone(),
+    })
+}
+
+/// Result or compaction content as element text and the attributes saying how
+/// it was encoded (`format` = json too when `format`); `texts` content also
+/// gives its blocks without their text.
+fn encode(content: Option<&J>, format: bool) -> (String, Attrs, Option<Vec<J>>) {
     let is_text = |b: &J| b["type"] == "text" && b["text"].is_string();
-    match content {
-        None => (String::new(), "absent", Vec::new(), Vec::new()),
-        Some(J::String(text)) => (text.clone(), "string", Vec::new(), Vec::new()),
+    let (text, kind) = match content {
+        None => (String::new(), "absent"),
+        Some(J::String(text)) => (text.clone(), "string"),
         Some(J::Array(blocks)) if !blocks.is_empty() && blocks.iter().all(is_text) => {
             let (text, split) = residual::join_parts(blocks.iter().filter_map(|b| b["text"].as_str()), "\n");
             let items = blocks.iter().map(|b| J::Object(residual::take(&mut b.as_object().cloned().unwrap_or_default(), &["text"])));
-            (text, TEXTS, split, items.collect())
+            return (text, vec![(X_CONTENT, V::from(TEXTS)), (X_SPLIT, V::List(split))], Some(items.collect()));
         }
-        Some(other) => (other.to_string(), JSON, Vec::new(), Vec::new()),
+        Some(other) => (other.to_string(), JSON),
+    };
+    let mut attrs: Attrs = vec![(X_CONTENT, V::from(kind))];
+    attrs.extend((format && kind == JSON).then(|| (attr::FORMAT, V::from(JSON))));
+    (text, attrs, None)
+}
+
+/// Claude Code's [`NativeCodec`]: `~/.claude/projects/<project>/<uuid>.jsonl`.
+pub struct ClaudeNative;
+
+impl NativeCodec for ClaudeNative {
+    fn import(path: &Path, sink: &dyn PatchSink) -> Result<()> {
+        import(path, sink)
+    }
+
+    fn export(dom: &Dom, out: &Path) -> Result<()> {
+        export(dom, out)
+    }
+
+    fn discover(home: &Path) -> Vec<NativeSession> {
+        let files = native::walk(&home.join(".claude/projects"), 1, &|name| name.ends_with(".jsonl"));
+        files.into_iter().filter_map(|path| NativeSession::at(HARNESS, path.clone(), native::parent_name(&path), None)).collect()
     }
 }
 
@@ -80,11 +103,12 @@ fn encode(content: Option<&J>) -> (String, &'static str, Vec<V>, Vec<J>) {
 /// subagent `<job>` carries `x-claude-file` for the app to import as a child session.
 pub fn import(path: &Path, sink: &dyn PatchSink) -> Result<()> {
     let source = std::fs::read_to_string(path)?;
-    let lines: Vec<(&str, Option<J>)> =
-        source.split('\n').filter(|t| !t.trim().is_empty()).map(|t| {
-            let json = serde_json::from_str::<J>(t).ok().map(|mut value| { value.sort_all_objects(); value });
-            (t, json)
-        }).collect();
+    let parse = |text: &str| {
+        let mut value = serde_json::from_str::<J>(text).ok()?;
+        value.sort_all_objects();
+        Some(value)
+    };
+    let lines: Vec<(&str, Option<J>)> = source.split('\n').filter(|t| !t.trim().is_empty()).map(|t| (t, parse(t))).collect();
     let mut files = Vec::new();
     if let Some(dir) = side_dir(path).filter(|d| d.is_dir()) {
         let mut pending = vec![(dir, String::new())];
@@ -117,8 +141,6 @@ struct Subagent {
     agent_id: String,
     agent_type: Option<String>,
     description: Option<String>,
-    /// The subagent transcript relative to the side directory, when present.
-    file: Option<String>,
 }
 
 /// The line the elements being made come from.
@@ -134,9 +156,7 @@ impl Origin {
         if let Some(J::Object(message)) = envelope.get_mut("message") {
             message.remove("content");
         }
-        let mut envelope = J::Object(envelope);
-        envelope.sort_all_objects();
-        Self { index, envelope: envelope.to_string() }
+        Self { index, envelope: sorted_text(J::Object(envelope)) }
     }
 
     /// Ties an element to block `part` (`None`: the content isn't an array); the first carries the envelope.
@@ -202,10 +222,8 @@ impl<'a> Importer<'a> {
             let Some(agent_id) = path.strip_prefix("subagents/agent-").and_then(|rest| rest.strip_suffix(".meta.json")) else { continue };
             let Ok(meta) = serde_json::from_slice::<J>(bytes) else { continue };
             let Some(tool_use_id) = str_field(&meta, "toolUseId") else { continue };
-            let transcript = format!("subagents/agent-{agent_id}.jsonl");
-            let file = files.iter().any(|(p, _)| *p == transcript).then_some(transcript);
             let (agent_type, description) = (str_field(&meta, "agentType"), str_field(&meta, "description"));
-            subagents.insert(tool_use_id, Subagent { agent_id: agent_id.to_owned(), agent_type, description, file });
+            subagents.insert(tool_use_id, Subagent { agent_id: agent_id.to_owned(), agent_type, description });
         }
         let side_paths = files.iter().map(|(p, _)| p.clone()).collect();
         Ok(Self {
@@ -368,21 +386,13 @@ impl<'a> Importer<'a> {
     }
 
     fn result(&mut self, origin: &Origin, part: usize, block: &J, call: usize, agent: Option<&J>) -> Result<()> {
-        let (text, kind, split, items) = encode(block.get("content"));
+        let (text, mut attrs, items) = encode(block.get("content"), true);
         let is_error = block.get("is_error").and_then(J::as_bool);
-        let mut rest = block.as_object().cloned().unwrap_or_default();
         let fields: &[&str] = if is_error.is_some() { &["tool_use_id", "content", "is_error"] } else { &["tool_use_id", "content"] };
-        let mut rest = residual::take(&mut rest, fields);
-        if kind == TEXTS {
-            rest.insert("content".to_owned(), J::Array(items));
-        }
-        let mut attrs: Attrs = Vec::new();
-        attrs.extend((kind == JSON).then(|| (attr::FORMAT, V::from(JSON))));
+        let mut rest = residual::take(&mut block.as_object().cloned().unwrap_or_default(), fields);
+        rest.extend(items.map(|items| ("content".to_owned(), J::Array(items))));
         attrs.extend(is_error.map(|e| (attr::IS_ERROR, V::Bool(e))));
-        content_attrs(&mut attrs, kind, split);
-        let mut rest = J::Object(rest);
-        rest.sort_all_objects();
-        attrs.push((X_BLOCK, V::from(rest.to_string())));
+        attrs.push((X_BLOCK, V::from(sorted_text(J::Object(rest)))));
         attrs.extend(origin.attrs(Some(part)));
         let state = &self.calls[call];
         let (node, w) = (state.node, self.w());
@@ -397,21 +407,8 @@ impl<'a> Importer<'a> {
             }
             (None, Some(agent_id)) => {
                 let agent_type = agent.and_then(|a| str_field(a, "agentType"));
-                let input = state.input.as_ref();
-                let mut attrs: Attrs = vec![
-                    (attr::KIND, V::from(JobKind::Subagent)),
-                    (attr::STATUS, V::from(job_status)),
-                    (attr::ID, V::from(agent_id)),
-                    (attr::CALL, V::from(node)),
-                    (attr::STARTED, V::Int(state.started)),
-                    (attr::ENDED, V::Int(self.ts)),
-                ];
-                attrs.extend(agent_type.or_else(|| input.and_then(|i| str_field(i, "subagent_type"))).map(|a| (attr::AGENT, V::from(a))));
-                attrs.extend(input.and_then(|i| str_field(i, "description")).map(|t| (attr::TITLE, V::from(t))));
-                let transcript = format!("subagents/agent-{agent_id}.jsonl");
-                if self.side_paths.contains(&transcript) {
-                    attrs.push((X_FILE, V::from(transcript)));
-                }
+                let mut attrs = self.job_attrs(agent_id, node, state.input.as_ref(), agent_type, None);
+                attrs.extend([(attr::STATUS, V::from(job_status)), (attr::STARTED, V::Int(state.started)), (attr::ENDED, V::Int(self.ts))]);
                 Some(w.insert(node, E::Job, attrs, "")?)
             }
             (None, None) => None,
@@ -459,13 +456,7 @@ impl<'a> Importer<'a> {
             }
         }
         if first_line && let Some(usage) = message.and_then(|m| m.get("usage")?.as_object()) {
-            let keys = [
-                (attr::INPUT_TOKENS, "input_tokens"),
-                (attr::OUTPUT_TOKENS, "output_tokens"),
-                (attr::CACHE_READ_TOKENS, "cache_read_input_tokens"),
-                (attr::CACHE_WRITE_TOKENS, "cache_creation_input_tokens"),
-            ];
-            let mut attrs: Attrs = keys.into_iter().filter_map(|(name, key)| Some((name, V::Int(usage.get(key)?.as_i64()?)))).collect();
+            let mut attrs: Attrs = USAGE.into_iter().filter_map(|(name, key)| Some((name, V::Int(usage.get(key)?.as_i64()?)))).collect();
             attrs.extend(model.map(|m| (attr::MODEL, V::from(m))));
             self.w().insert(usage_parent, E::Usage, attrs, "")?;
         }
@@ -490,17 +481,8 @@ impl<'a> Importer<'a> {
         }
         let mut job = None;
         if let Some(subagent) = self.subagents.get(id) {
-            let from_input = |key| input.and_then(|i| str_field(i, key));
-            let mut attrs: Attrs = vec![
-                (attr::KIND, V::from(JobKind::Subagent)),
-                (attr::STATUS, V::from(JobStatus::Running)),
-                (attr::ID, V::from(subagent.agent_id.as_str())),
-                (attr::CALL, V::from(node)),
-                (attr::STARTED, V::Int(self.ts)),
-            ];
-            attrs.extend(subagent.agent_type.clone().or_else(|| from_input("subagent_type")).map(|a| (attr::AGENT, V::from(a))));
-            attrs.extend(subagent.description.clone().or_else(|| from_input("description")).map(|t| (attr::TITLE, V::from(t))));
-            attrs.extend(subagent.file.as_deref().map(|f| (X_FILE, V::from(f))));
+            let mut attrs = self.job_attrs(&subagent.agent_id, node, input, subagent.agent_type.clone(), subagent.description.clone());
+            attrs.extend([(attr::STATUS, V::from(JobStatus::Running)), (attr::STARTED, V::Int(self.ts))]);
             job = Some(w.insert(node, E::Job, attrs, "")?);
         }
         self.call_index.insert(id.to_owned(), self.calls.len());
@@ -508,15 +490,23 @@ impl<'a> Importer<'a> {
         Ok(node)
     }
 
+    /// A subagent `<job>` of `call`, its agent type and title defaulting to the call's input.
+    fn job_attrs(&self, id: &str, call: NodeId, input: Option<&J>, agent: Option<String>, title: Option<String>) -> Attrs {
+        let from_input = |key| input.and_then(|i| str_field(i, key));
+        let mut attrs: Attrs = vec![(attr::KIND, V::from(JobKind::Subagent)), (attr::ID, V::from(id)), (attr::CALL, V::from(call))];
+        attrs.extend(agent.or_else(|| from_input("subagent_type")).map(|a| (attr::AGENT, V::from(a))));
+        attrs.extend(title.or_else(|| from_input("description")).map(|t| (attr::TITLE, V::from(t))));
+        let transcript = format!("subagents/agent-{id}.jsonl");
+        attrs.extend(self.side_paths.contains(&transcript).then(|| (X_FILE, V::from(transcript))));
+        attrs
+    }
+
     fn compaction(&mut self, origin: &Origin, content: Option<&J>) -> Result<()> {
         self.close_turn()?;
-        let (text, kind, split, items) = encode(content);
-        let mut attrs: Attrs = vec![(attr::COVERS, V::List(std::mem::take(&mut self.uncompacted))), (attr::CREATED, V::Int(self.ts))];
+        let (text, mut attrs, items) = encode(content, false);
+        attrs.extend([(attr::COVERS, V::List(std::mem::take(&mut self.uncompacted))), (attr::CREATED, V::Int(self.ts))]);
         attrs.extend(self.pre_tokens.take().map(|t| (attr::TOKENS_BEFORE, V::Int(t))));
-        if kind == TEXTS {
-            attrs.push((X_BLOCK, V::from(json!({ "content": items }).to_string())));
-        }
-        content_attrs(&mut attrs, kind, split);
+        attrs.extend(items.map(|items| (X_BLOCK, V::from(json!({ "content": items }).to_string()))));
         attrs.extend(origin.attrs(None));
         self.w().insert(self.root, E::Compaction, attrs, text)?;
         Ok(())
@@ -546,13 +536,6 @@ impl<'a> Importer<'a> {
             w.set(self.root, attr::TITLE, title)?;
         }
         Ok(())
-    }
-}
-
-fn content_attrs(attrs: &mut Attrs, kind: &'static str, split: Vec<V>) {
-    attrs.push((X_CONTENT, V::from(kind)));
-    if kind == TEXTS {
-        attrs.push((X_SPLIT, V::List(split)));
     }
 }
 
@@ -608,10 +591,7 @@ pub fn export(dom: &Dom, out: &Path) -> Result<()> {
     for node in fresh {
         writer.fresh(node)?;
     }
-    if let Some(parent) = out.parent().filter(|p| !p.as_os_str().is_empty()) {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(out, writer.out)?;
+    write_file(out, writer.out)?;
     if files.is_empty() {
         return Ok(());
     }
@@ -620,13 +600,17 @@ pub fn export(dom: &Dom, out: &Path) -> Result<()> {
         if path.is_empty() || !Path::new(path).components().all(|c| matches!(c, Component::Normal(_))) {
             return Err(AdapterError::Format(format!("side file path `{path}` leaves the side directory")));
         }
-        let target = dir.join(path);
-        if let Some(parent) = target.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(target, bytes)?;
+        write_file(&dir.join(path), bytes)?;
     }
     Ok(())
+}
+
+/// Writes `bytes` to `path`, creating its folder.
+fn write_file(path: &Path, bytes: impl AsRef<[u8]>) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    Ok(std::fs::write(path, bytes)?)
 }
 
 /// JSON text of an element, or the text as a JSON string when it doesn't parse.
@@ -636,16 +620,10 @@ fn json_or_string(text: &str) -> J {
 
 /// The `x-claude-block` object of an element, or `{"type": default_type}`.
 fn block_residual(node: &Node, default_type: &str) -> Map<String, J> {
-    let block = residual::restore(node, BLOCK);
-    if block.is_empty() && !node.str_attr(X_BLOCK).is_some_and(|text| matches!(serde_json::from_str::<J>(text), Ok(J::Object(_)))) {
-        Map::from_iter([("type".to_owned(), J::from(default_type))])
-    } else {
-        block
+    match node.str_attr(X_BLOCK).map(serde_json::from_str) {
+        Some(Ok(J::Object(block))) => block,
+        _ => Map::from_iter([("type".to_owned(), J::from(default_type))]),
     }
-}
-
-fn is_thinking(node: &Node) -> bool {
-    node.str_attr(attr::KIND) == Some(MessageKind::Thinking.as_str())
 }
 
 struct Writer<'d> {
@@ -699,14 +677,12 @@ impl Writer<'_> {
             }
             return Ok(());
         };
-        let mut line = residual::restore(head, ENVELOPE);
-        if line.is_empty() && let Some(text) = head.str_attr(X_ENVELOPE) {
-            match serde_json::from_str::<J>(text) {
-                Ok(J::Object(_)) => {}
-                Ok(_) => return Err(AdapterError::Format(format!("{X_ENVELOPE} isn't a JSON object"))),
-                Err(err) => return Err(AdapterError::Format(format!("{X_ENVELOPE}: {err}"))),
-            }
-        }
+        let mut line = match head.str_attr(X_ENVELOPE).map(serde_json::from_str) {
+            None => Map::new(),
+            Some(Ok(J::Object(line))) => line,
+            Some(Ok(_)) => return Err(AdapterError::Format(format!("{X_ENVELOPE} isn't a JSON object"))),
+            Some(Err(err)) => return Err(AdapterError::Format(format!("{X_ENVELOPE}: {err}"))),
+        };
         let content = match nodes {
             [node] if node.attr(X_PART).is_none() => self.whole(node),
             _ => Some(J::Array(nodes.iter().map(|n| self.block(n)).collect())),
@@ -738,7 +714,7 @@ impl Writer<'_> {
     fn block(&self, node: &Node) -> J {
         match node.kind {
             E::Message => {
-                let field = if is_thinking(node) { "thinking" } else { "text" };
+                let field = if node.str_attr(attr::KIND) == Some(MessageKind::Thinking.as_str()) { "thinking" } else { "text" };
                 let mut block = block_residual(node, field);
                 block.insert(field.to_owned(), J::String(node.text.clone()));
                 J::Object(block)
@@ -753,10 +729,10 @@ impl Writer<'_> {
     /// Rebuilds content from element text; `None` for absent content. Text
     /// that no longer matches its `texts` split becomes one text block.
     fn content(&self, node: &Node, items: Option<J>) -> Option<J> {
-        let string = || J::String(node.text.clone());
-        match node.str_attr(X_CONTENT) {
+        let kind = node.str_attr(X_CONTENT);
+        match kind {
             Some("absent") => None,
-            Some(JSON) => Some(json_or_string(&node.text)),
+            _ if kind == Some(JSON) || (kind.is_none() && node.str_attr(attr::FORMAT) == Some(JSON)) => Some(json_or_string(&node.text)),
             Some(TEXTS) => {
                 let items = match items {
                     Some(J::Array(items)) => items,
@@ -774,9 +750,7 @@ impl Writer<'_> {
                     None => vec![json!({ "type": "text", "text": node.text })],
                 }))
             }
-            Some(_) => Some(string()),
-            None if node.str_attr(attr::FORMAT) == Some(JSON) => Some(json_or_string(&node.text)),
-            None => Some(string()),
+            _ => Some(J::String(node.text.clone())),
         }
     }
 

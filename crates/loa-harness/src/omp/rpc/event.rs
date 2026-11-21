@@ -1,24 +1,8 @@
-//! Frames omp writes to stdout: responses, session events, UI requests and
-//! host callbacks.
+//! Frames omp writes to stdout: session events, UI requests and host tool calls.
 
 use super::command::{CompactionResult, ModelInfo, TodoItem};
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
-
-/// The answer to a command.
-#[derive(Clone, Debug, PartialEq, Deserialize)]
-pub struct Response {
-    #[serde(default)]
-    pub id: Option<String>,
-    pub command: String,
-    pub success: bool,
-    #[serde(default)]
-    pub data: Option<Value>,
-    #[serde(default)]
-    pub error: Option<String>,
-    #[serde(default)]
-    pub code: Option<String>,
-}
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -30,42 +14,21 @@ pub struct HostToolCall {
     pub arguments: Value,
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum UriOperation {
-    Read,
-    Write,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
-pub struct HostUriRequest {
-    pub id: String,
-    pub operation: UriOperation,
-    pub url: String,
-    /// The replacement text of a write.
-    #[serde(default)]
-    pub content: Option<String>,
-}
-
 /// A streaming step of an assistant message (`assistantMessageEvent`).
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", rename_all_fields = "camelCase")]
 pub enum AssistantEvent {
-    Start,
     TextStart { content_index: u32 },
     TextDelta { content_index: u32, delta: String },
     TextEnd { content_index: u32, content: String },
     ThinkingStart { content_index: u32 },
     ThinkingDelta { content_index: u32, delta: String },
     ThinkingEnd { content_index: u32, content: String },
-    ImageEnd { content_index: u32 },
     ToolcallStart {
         content_index: u32,
         /// The tool call shell (id, name) in `delta` projection mode.
-        #[serde(default)]
         block: Option<Value>,
         /// The accumulated message in `full` mode, which also carries the shell.
-        #[serde(default)]
         partial: Option<Value>,
     },
     ToolcallDelta { content_index: u32, delta: String },
@@ -88,13 +51,10 @@ pub enum PromptStatus {
 #[serde(rename_all = "camelCase")]
 pub struct PromptError {
     pub message: String,
-    #[serde(default)]
     pub provider: Option<String>,
-    #[serde(default)]
     pub model: Option<String>,
     #[serde(default)]
     pub retryable: bool,
-    #[serde(default)]
     pub code: Option<String>,
 }
 
@@ -112,17 +72,9 @@ pub enum SubagentStatus {
 pub struct SubagentLifecycle {
     pub id: String,
     pub agent: String,
-    #[serde(default)]
     pub description: Option<String>,
     pub status: SubagentStatus,
-    #[serde(default)]
     pub session_file: Option<String>,
-    #[serde(default)]
-    pub parent_tool_call_id: Option<String>,
-    #[serde(default)]
-    pub index: i64,
-    #[serde(default)]
-    pub detached: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
@@ -133,11 +85,9 @@ pub struct SubagentProgress {
     pub agent: String,
     #[serde(default)]
     pub task: String,
-    #[serde(default)]
     pub parent_tool_call_id: Option<String>,
     #[serde(default)]
     pub progress: Value,
-    #[serde(default)]
     pub session_file: Option<String>,
 }
 
@@ -148,9 +98,7 @@ pub struct SubagentProgress {
 #[serde(tag = "type", rename_all = "snake_case", rename_all_fields = "camelCase")]
 pub enum Event {
     AgentStart,
-    AgentEnd,
     TurnStart,
-    TurnEnd,
     MessageStart {
         #[serde(default)]
         message: Value,
@@ -178,8 +126,6 @@ pub enum Event {
         #[serde(default)]
         is_error: bool,
     },
-    #[serde(rename = "auto_compaction_start", alias = "manual_compaction_start")]
-    CompactionStart { reason: Option<String> },
     #[serde(rename = "auto_compaction_end", alias = "manual_compaction_end")]
     CompactionEnd {
         result: Option<CompactionResult>,
@@ -189,7 +135,6 @@ pub enum Event {
         skipped: bool,
         error_message: Option<String>,
     },
-    ModelChanged,
     ThinkingLevelChanged { thinking_level: Option<String> },
     TodoReminder {
         #[serde(default)]
@@ -260,16 +205,13 @@ pub enum Frame {
 }
 
 impl Frame {
+    /// A UI request this client doesn't model (status lines, widgets, …)
+    /// stays an [`Event::Unknown`].
     pub fn from_json(frame: Value) -> Frame {
         match frame["type"] == "extension_ui_request" {
             true => UiRequest::deserialize(&frame).map_or_else(|_| Frame::Event(Event::Unknown(frame)), Frame::Ui),
             false => Frame::Event(Event::from_json(frame)),
         }
-    }
-
-    /// Parses one stdout line.
-    pub fn parse(line: &[u8]) -> Result<Frame, serde_json::Error> {
-        serde_json::from_slice(line).map(Frame::from_json)
     }
 }
 
@@ -278,20 +220,17 @@ impl Frame {
 pub struct AskQuestion {
     pub id: String,
     pub question: String,
-    #[serde(default)]
     pub header: Option<String>,
     #[serde(default)]
     pub options: Vec<AskOption>,
     #[serde(default)]
     pub multi: bool,
-    #[serde(default)]
     pub recommended: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub struct AskOption {
     pub label: String,
-    #[serde(default)]
     pub description: Option<String>,
 }
 
@@ -299,93 +238,32 @@ pub struct AskOption {
 /// `editor`, `ask`) wait for a [`UiResponse`](super::UiResponse); the rest
 /// are fire and forget.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
-#[serde(tag = "method", rename_all_fields = "camelCase")]
+#[serde(tag = "method", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum UiRequest {
-    #[serde(rename = "select")]
-    Select {
-        id: String,
-        title: String,
-        options: Vec<String>,
-        #[serde(default)]
-        timeout: Option<u64>,
-        #[serde(default)]
-        selection_marker: Option<String>,
-        #[serde(default)]
-        checked_indices: Vec<u32>,
-        #[serde(default)]
-        initial_index: Option<u32>,
-    },
-    #[serde(rename = "confirm")]
+    Select { id: String, title: String, options: Vec<String>, timeout: Option<u64> },
     Confirm {
         id: String,
         title: String,
         #[serde(default)]
         message: String,
-        #[serde(default)]
         timeout: Option<u64>,
     },
-    #[serde(rename = "input")]
     Input {
         id: String,
         title: String,
-        #[serde(default)]
         placeholder: Option<String>,
-        #[serde(default)]
         timeout: Option<u64>,
         #[serde(default)]
         secret: bool,
     },
-    #[serde(rename = "editor")]
-    Editor {
-        id: String,
-        title: String,
-        #[serde(default)]
-        prefill: Option<String>,
-    },
-    #[serde(rename = "ask")]
-    Ask {
-        id: String,
-        questions: Vec<AskQuestion>,
-        #[serde(default)]
-        timeout: Option<u64>,
-    },
+    Editor { id: String, title: String, prefill: Option<String> },
+    Ask { id: String, questions: Vec<AskQuestion>, timeout: Option<u64> },
     /// omp closed the dialog `target_id` itself (timeout or abort).
-    #[serde(rename = "cancel")]
     Cancel { id: String, target_id: String },
-    #[serde(rename = "notify")]
-    Notify {
-        id: String,
-        message: String,
-        #[serde(default)]
-        notify_type: Option<String>,
-    },
-    #[serde(rename = "setStatus")]
-    SetStatus {
-        id: String,
-        status_key: String,
-        #[serde(default)]
-        status_text: Option<String>,
-    },
-    #[serde(rename = "setWidget")]
-    SetWidget {
-        id: String,
-        widget_key: String,
-        #[serde(default)]
-        widget_lines: Option<Vec<String>>,
-    },
-    #[serde(rename = "setTitle")]
+    Notify { id: String, message: String, notify_type: Option<String> },
     SetTitle { id: String, title: String },
-    #[serde(rename = "set_editor_text")]
-    SetEditorText { id: String, text: String },
     #[serde(rename = "open_url")]
-    OpenUrl {
-        id: String,
-        url: String,
-        #[serde(default)]
-        launch_url: Option<String>,
-        #[serde(default)]
-        instructions: Option<String>,
-    },
+    OpenUrl { id: String, url: String, launch_url: Option<String>, instructions: Option<String> },
 }
 
 impl UiRequest {
@@ -398,24 +276,14 @@ impl UiRequest {
             | UiRequest::Ask { id, .. }
             | UiRequest::Cancel { id, .. }
             | UiRequest::Notify { id, .. }
-            | UiRequest::SetStatus { id, .. }
-            | UiRequest::SetWidget { id, .. }
             | UiRequest::SetTitle { id, .. }
-            | UiRequest::SetEditorText { id, .. }
             | UiRequest::OpenUrl { id, .. } => id,
         }
     }
 
     /// Whether omp waits for an answer.
     pub fn is_dialog(&self) -> bool {
-        matches!(
-            self,
-            UiRequest::Select { .. }
-                | UiRequest::Confirm { .. }
-                | UiRequest::Input { .. }
-                | UiRequest::Editor { .. }
-                | UiRequest::Ask { .. }
-        )
+        matches!(self, UiRequest::Select { .. } | UiRequest::Confirm { .. } | UiRequest::Input { .. } | UiRequest::Editor { .. } | UiRequest::Ask { .. })
     }
 }
 
@@ -429,8 +297,8 @@ mod tests {
         let lifecycle = json!({"type":"subagent_lifecycle","payload":{"id":"s","agent":"a","status":"started"}});
         let Event::SubagentLifecycle(l) = Event::from_json(lifecycle) else { panic!() };
         assert_eq!((l.id.as_str(), l.status), ("s", SubagentStatus::Started));
-        let manual = json!({"type":"manual_compaction_start","reason":"r"});
-        assert_eq!(Event::from_json(manual), Event::CompactionStart { reason: Some("r".into()) });
+        let manual = json!({"type":"manual_compaction_end","skipped":true});
+        assert_eq!(Event::from_json(manual), Event::CompactionEnd { result: None, aborted: false, skipped: true, error_message: None });
         let bad = json!({"type":"prompt_result","status":"exploded"});
         assert_eq!(Event::from_json(bad.clone()), Event::Unknown(bad));
     }

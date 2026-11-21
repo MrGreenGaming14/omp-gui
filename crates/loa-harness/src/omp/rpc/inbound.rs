@@ -1,5 +1,5 @@
 //! Non-command frames the host writes: answers to UI requests and results of
-//! host tool and host URI callbacks.
+//! host tool callbacks.
 
 use super::command::ImageContent;
 use serde::Serialize;
@@ -30,21 +30,18 @@ pub enum UiResponse {
 
 impl UiResponse {
     pub(crate) fn to_json(&self) -> Value {
-        match self {
-            UiResponse::Value { id, value } => json!({"type": "extension_ui_response", "id": id, "value": value}),
-            UiResponse::Confirmed { id, confirmed } => {
-                json!({"type": "extension_ui_response", "id": id, "confirmed": confirmed})
-            }
-            UiResponse::Cancelled { id, timed_out: false } => {
-                json!({"type": "extension_ui_response", "id": id, "cancelled": true})
-            }
-            UiResponse::Cancelled { id, timed_out: true } => {
-                json!({"type": "extension_ui_response", "id": id, "cancelled": true, "timedOut": true})
-            }
-            UiResponse::Answers { id, answers } => {
-                json!({"type": "extension_ui_response", "id": id, "answers": answers})
-            }
+        let (id, answer) = match self {
+            UiResponse::Value { id, value } => (id, json!({"value": value})),
+            UiResponse::Confirmed { id, confirmed } => (id, json!({"confirmed": confirmed})),
+            UiResponse::Cancelled { id, timed_out: false } => (id, json!({"cancelled": true})),
+            UiResponse::Cancelled { id, timed_out: true } => (id, json!({"cancelled": true, "timedOut": true})),
+            UiResponse::Answers { id, answers } => (id, json!({"answers": answers})),
+        };
+        let mut frame = json!({"type": "extension_ui_response", "id": id});
+        if let (Value::Object(frame), Value::Object(answer)) = (&mut frame, answer) {
+            frame.extend(answer);
         }
+        frame
     }
 }
 
@@ -105,36 +102,5 @@ impl HostToolOutput {
             frame["isError"] = Value::Bool(true);
         }
         frame
-    }
-}
-
-/// Outcome of a host URI request.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum HostUriOutput {
-    /// A successful read.
-    Content { content: String, content_type: Option<String>, immutable: Option<bool> },
-    /// A successful write.
-    Written,
-    Error(String),
-}
-
-impl HostUriOutput {
-    pub(crate) fn result_json(&self, id: &str) -> Value {
-        match self {
-            HostUriOutput::Content { content, content_type, immutable } => {
-                let mut frame = json!({"type": "host_uri_result", "id": id, "content": content});
-                if let Some(content_type) = content_type {
-                    frame["contentType"] = content_type.as_str().into();
-                }
-                if let Some(immutable) = immutable {
-                    frame["immutable"] = (*immutable).into();
-                }
-                frame
-            }
-            HostUriOutput::Written => json!({"type": "host_uri_result", "id": id}),
-            HostUriOutput::Error(error) => {
-                json!({"type": "host_uri_result", "id": id, "isError": true, "error": error})
-            }
-        }
     }
 }

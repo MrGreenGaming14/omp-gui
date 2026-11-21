@@ -15,7 +15,7 @@ use loa_core::{
 };
 use loa_trust::NodeIdentity;
 use loa_ui_session::composer as composer;
-use loa_ui_palette as palette;
+use loa_ui_shell::palette;
 use loa_ui_panel::{agents, session_tree};
 use loa_ui_shell as shell;
 
@@ -333,7 +333,7 @@ fn deleting_a_recent_removes_it_and_its_journal() {
     assert!(journals.join(open.as_str()).exists());
 
     // The active session, from its sidebar row.
-    env.send(Message::Shell(shell::Message::Sidebar(shell::sidebar::Message::Delete(closed.to_string()))));
+    env.send(Message::Shell(shell::Message::Sidebar(shell::sidebar::Message::Emit(shell::sidebar::Event::DeleteSession(closed.to_string())))));
     assert!(active(&env.app).is_none());
     assert!(env.app.ctx.shell.sidebar().session(closed.as_str()).is_none());
     assert!(!journals.join(closed.as_str()).exists());
@@ -342,7 +342,7 @@ fn deleting_a_recent_removes_it_and_its_journal() {
     drop(env.app);
     let mut app = build(env.dir.path(), "fake-s", &env.seen, &env.reply);
     assert!(app.ctx.shell.sidebar().session(open.as_str()).is_some(), "listed in Recents");
-    update(&mut app, Message::Shell(shell::Message::Sidebar(shell::sidebar::Message::Delete(open.to_string()))));
+    update(&mut app, Message::Shell(shell::Message::Sidebar(shell::sidebar::Message::Emit(shell::sidebar::Event::DeleteSession(open.to_string())))));
     assert!(app.ctx.shell.sidebar().session(open.as_str()).is_none());
     assert!(!journals.join(open.as_str()).exists());
 }
@@ -516,10 +516,10 @@ fn plan_mode_blocks_changing_tools_and_raises_a_plan_review() {
         .expect("an approval");
     assert_eq!(approval.attr("answer"), Some(&Value::List(vec![Value::from(answer::DENY)])));
     let first = env.seen.lock().unwrap().prompts[0].clone();
-    assert!(first.starts_with("ask to write a.txt") && first.ends_with(loa_features::plan::PLAN_STEP), "{first}");
+    assert!(first.starts_with("ask to write a.txt") && first.ends_with(loa_harness::features::plan::PLAN_STEP), "{first}");
     let review = dom
         .iter()
-        .find(|node| loa_features::plan::is_app_plan(&dom, node.id))
+        .find(|node| loa_harness::features::plan::is_app_plan(&dom, node.id))
         .expect("a plan review under the session");
     assert_eq!(review.text, "1. Write a.txt\n2. Run the tests");
     let review = review.id;
@@ -532,7 +532,7 @@ fn plan_mode_blocks_changing_tools_and_raises_a_plan_review() {
     assert_eq!(root_attr(&dom, attr::MODE).as_deref(), Some("normal"));
     let prompts = env.seen.lock().unwrap().prompts.clone();
     assert!(prompts.last().unwrap().starts_with("The user approved this plan"), "{prompts:?}");
-    assert!(!prompts.last().unwrap().contains(loa_features::plan::PLAN_STEP), "plan mode is over");
+    assert!(!prompts.last().unwrap().contains(loa_harness::features::plan::PLAN_STEP), "plan mode is over");
 }
 
 #[test]
@@ -887,7 +887,7 @@ fn deleting_a_pinned_session_drops_its_pin() {
     let saved = |env: &Env| env.app.ctx.services.config.load().unwrap().pinned;
     assert!(saved(&env).contains(id.as_str()));
 
-    env.send(Message::Shell(shell::Message::Sidebar(shell::sidebar::Message::Delete(id.to_string()))));
+    env.send(Message::Shell(shell::Message::Sidebar(shell::sidebar::Message::Emit(shell::sidebar::Event::DeleteSession(id.to_string())))));
     assert!(!saved(&env).contains(id.as_str()), "the saved pin is gone");
     assert!(!env.app.ctx.shell.sidebar().pins().contains(id.as_str()));
 }

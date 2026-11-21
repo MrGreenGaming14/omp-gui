@@ -15,7 +15,7 @@ use iced::futures::{SinkExt, Stream};
 use loa_contracts::harness::HarnessSession;
 use loa_bus::{Event, Policy, SessionId, SessionWriter};
 use loa_core::{DecisionStatus, Dom, ElementKind, NodeId, Op, Patch, TurnStatus, attr};
-use loa_features::library::{Library, Live};
+use loa_harness::features::library::{Library, Live};
 use loa_bus::{JournalWriter, Listing};
 use loa_ui_shell::SessionSummary;
 

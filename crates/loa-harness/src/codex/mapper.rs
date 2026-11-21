@@ -83,15 +83,13 @@ const NOTIFICATIONS: &[(&str, Notification)] = &[
 const REQUESTS: &[(&str, Request)] = &[
     ("item/commandExecution/requestApproval", Mapper::command_approval),
     ("item/fileChange/requestApproval", |m, id, p, w| {
-        let target = m.decision_target(p, w)?;
         let diff = str_at(p, "itemId").and_then(|i| m.items.get(i)).map(|i| i.diff.clone()).unwrap_or_default();
-        m.approval(target, id, p, ("Apply patch".into(), diff), true, Pending::FileChange, w)
+        m.approval(id, p, ("Apply patch".into(), diff), Pending::FileChange, w)
     }),
     ("item/permissions/requestApproval", |m, id, p, w| {
-        let target = m.decision_target(p, w)?;
         let requested = p.get("permissions").cloned().unwrap_or(Json::Null);
         let body = ("Grant permissions".into(), canonical(requested.clone()));
-        m.approval(target, id, p, body, true, Pending::Permissions(requested), w)
+        m.approval(id, p, body, Pending::Permissions(requested), w)
     }),
     ("item/tool/requestUserInput", Mapper::user_input),
     ("mcpServer/elicitation/request", Mapper::elicitation),
@@ -129,8 +127,10 @@ fn reasoning_text(item: &Json) -> String {
     parts.filter_map(Json::as_str).collect::<Vec<_>>().join("\n\n")
 }
 
-fn change_kind(change: &Json) -> &str {
-    change.get("kind").and_then(|k| str_at(k, "type")).unwrap_or("update")
+/// `<kind> <path>` of one file change.
+fn change_line(change: &Json) -> String {
+    let kind = change.get("kind").and_then(|k| str_at(k, "type")).unwrap_or("update");
+    format!("{kind} {}", str_at(change, "path").unwrap_or_default())
 }
 
 fn changes(item: &Json) -> impl Iterator<Item = &Json> {
@@ -350,13 +350,9 @@ impl Mapper {
         }
         let mut attrs: Attrs =
             vec![(attr::ROLE, Role::Assistant.into()), (attr::STATUS, MessageStatus::Streaming.into()), (attr::ID, id.into())];
-        if kind == Kind::Thinking {
-            attrs.push((attr::KIND, MessageKind::Thinking.into()));
-        }
+        attrs.extend((kind == Kind::Thinking).then(|| (attr::KIND, MessageKind::Thinking.into())));
         attrs.extend(self.model.as_deref().map(|m| (attr::MODEL, m.into())));
-        if item_type == "plan" {
-            attrs.push(("x-codex-item", "plan".into()));
-        }
+        attrs.extend((item_type == "plan").then(|| ("x-codex-item", "plan".into())));
         let parent = self.ensure_turn(turn_id, w)?;
         let node = w.insert(parent, E::Message, attrs, "")?;
         self.track(id, node, kind);
@@ -419,13 +415,8 @@ impl Mapper {
                 (tool, None, item.get("arguments").cloned().unwrap_or_default())
             }
             "collabAgentToolCall" => {
-                let snake = str_at(item, "tool").unwrap_or("agent").chars().fold(String::new(), |mut out, c| {
-                    if c.is_ascii_uppercase() {
-                        out.push('_');
-                    }
-                    out.push(c.to_ascii_lowercase());
-                    out
-                });
+                let chars = str_at(item, "tool").unwrap_or("agent").chars();
+                let snake = chars.flat_map(|c| [c.is_ascii_uppercase().then_some('_'), Some(c.to_ascii_lowercase())]).flatten().collect();
                 let input = json!({ "prompt": item.get("prompt"), "model": item.get("model"), "receiverThreadIds": item.get("receiverThreadIds") });
                 (snake, str_at(item, "prompt").map(first_line), input)
             }
@@ -453,7 +444,8 @@ impl Mapper {
             && let Some(entry) = self.items.get_mut(id)
         {
             for change in changes(item) {
-                entry.diff.push_str(&format!("{} {}\n", change_kind(change), str_at(change, "path").unwrap_or_default()));
+                entry.diff.push_str(&change_line(change));
+                entry.diff.push('\n');
                 if let Some(diff) = str_at(change, "diff") {
                     entry.diff.push_str(diff);
                     if !diff.ends_with('\n') {
@@ -534,11 +526,7 @@ impl Mapper {
         let exit_code = item.get("exitCode").and_then(Json::as_i64).filter(|_| str_at(item, "type") == Some("commandExecution"));
         let (output, status) = match str_at(item, "type").unwrap_or_default() {
             "commandExecution" => (str_at(item, "aggregatedOutput").map(str::to_owned), CallStatus::Done),
-            "fileChange" => {
-                let summary: Vec<String> =
-                    changes(item).map(|c| format!("{} {}", change_kind(c), str_at(c, "path").unwrap_or_default())).collect();
-                (Some(summary.join("\n")), CallStatus::Done)
-            }
+            "fileChange" => (Some(changes(item).map(change_line).collect::<Vec<_>>().join("\n")), CallStatus::Done),
             "mcpToolCall" => match item.get("error").and_then(|e| str_at(e, "message")) {
                 Some(message) => (Some(message.to_owned()), CallStatus::Error),
                 None => (Some(content_text(item.pointer("/result/content"))), CallStatus::Done),
@@ -770,18 +758,10 @@ impl Mapper {
         Value::List(options.into_iter().flatten().map(Value::from).collect())
     }
 
-    /// An approval decision; `body` gets the request's `reason` appended.
-    #[allow(clippy::too_many_arguments)]
-    fn approval(
-        &mut self,
-        target: (NodeId, Option<NodeId>),
-        id: Json,
-        params: &Json,
-        (title, mut body): (String, String),
-        session: bool,
-        pending: Pending,
-        w: &DomWriter,
-    ) -> Result<Option<Reply>> {
+    /// An approval decision about `params`; `body` gets the request's `reason` appended.
+    fn approval(&mut self, id: Json, params: &Json, (title, mut body): (String, String), pending: Pending, w: &DomWriter) -> Result<Option<Reply>> {
+        let target = self.decision_target(params, w)?;
+        let session = !matches!(pending, Pending::Command { session_option: false });
         if let Some(reason) = str_at(params, "reason") {
             if !body.is_empty() {
                 body.push_str("\n\n");
@@ -794,7 +774,6 @@ impl Mapper {
     }
 
     fn command_approval(&mut self, id: Json, params: &Json, w: &DomWriter) -> Result<Option<Reply>> {
-        let target = self.decision_target(params, w)?;
         let session_option = str_at(params, "kind") != Some("humanCommand");
         let body = match params.get("networkApprovalContext").filter(|c| !c.is_null()) {
             Some(context) => {
@@ -803,7 +782,7 @@ impl Mapper {
             }
             None => ("Run command".to_owned(), str_at(params, "command").unwrap_or_default().to_owned()),
         };
-        self.approval(target, id, params, body, session_option, Pending::Command { session_option }, w)
+        self.approval(id, params, body, Pending::Command { session_option }, w)
     }
 
     fn user_input(&mut self, id: Json, params: &Json, w: &DomWriter) -> Result<Option<Reply>> {
@@ -876,15 +855,11 @@ impl Mapper {
             }
         };
         let reply = match self.decisions.remove(&decision) {
-            Some((_, Pending::Question { group, .. })) => match self.groups.get(&group) {
-                Some(entry) if entry.waiting == 0 => {
-                    let entry = self.groups.remove(&group).ok_or(AdapterError::UnknownDecision(decision))?;
-                    Some(Reply::Result { id: entry.rpc_id, result: json!({ "answers": entry.answers }) })
-                }
-                _ => None,
-            },
+            Some((_, Pending::Question { group, .. })) if self.groups.get(&group).is_some_and(|e| e.waiting == 0) => {
+                self.groups.remove(&group).map(|e| Reply::Result { id: e.rpc_id, result: json!({ "answers": e.answers }) })
+            }
+            Some((_, Pending::Question { .. })) | None => None,
             Some((id, _)) => Some(Reply::Result { id, result }),
-            None => None,
         };
         w.set(decision, attr::ANSWER, answer.values.clone())?;
         w.set(decision, attr::BY, answer.by.as_str())?;

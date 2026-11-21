@@ -12,7 +12,7 @@ use loa_core::{ElementKind, NodeId, Op};
 use loa_models::login::UrlOpener;
 use loa_models::opener::SystemUrlOpener;
 use loa_ui_session::decisions::{self as decisions, Desk, DesktopNotifier, TIMEOUT_BY, Unattended, desk, unattended};
-use loa_ui_palette as palette;
+use loa_ui_shell::palette;
 use loa_ui_shell::theme::style;
 
 use crate::area::{Area, AreaId, Ctx, Request, SessionEvent};
@@ -107,7 +107,7 @@ impl State {
             ctx.request(Request::Forward(Box::new(crate::app::Message::Tools(answer))));
             return Task::none();
         }
-        if loa_features::plan::is_app_plan(open.dom(), decision) {
+        if loa_harness::features::plan::is_app_plan(open.dom(), decision) {
             let answer = crate::areas::sessions::Message::AnswerPlan { session: open.id().clone(), decision, answer };
             ctx.request(Request::Forward(Box::new(crate::app::Message::Sessions(answer))));
             return Task::none();

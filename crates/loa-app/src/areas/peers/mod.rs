@@ -26,7 +26,7 @@ use loa_config::{NetworkSettings, Relay};
 use loa_trust::Resource;
 use adapter::{self as ui, Outcome};
 use loa_p2p::{Endpoint, LibrarySessions, Node, NodeConfig, NodeEvent, RelayConfig};
-use loa_ui_palette as palette;
+use loa_ui_shell::palette;
 use loa_ui_peers as peers;
 use loa_ui_shell::{NodeStatus, SessionSummary};
 
@@ -197,7 +197,7 @@ impl State {
     fn refresh(&mut self, ctx: &mut Ctx) {
         let local = &ctx.services.node;
         let Some(node) = &self.node else {
-            ctx.shell.set_nodes(vec![NodeStatus { key: local.key.clone(), name: local.label.clone(), online: false, local: true }]);
+            ctx.shell.sidebar_mut().set_nodes(vec![NodeStatus { key: local.key.clone(), name: local.label.clone(), online: false, local: true }]);
             ctx.peers.clear();
             return;
         };
@@ -211,15 +211,15 @@ impl State {
             online: peer.online,
             local: false,
         }));
-        ctx.shell.set_nodes(nodes);
+        ctx.shell.sidebar_mut().set_nodes(nodes);
         ctx.peers = peers;
         let sessions = node.remote_sessions();
         let ids: Vec<String> = sessions.iter().map(|session| recent_id(&session.peer.to_string(), &session.id)).collect();
         for stale in self.listed.iter().filter(|id| !ids.contains(id)) {
-            ctx.shell.remove_session(stale);
+            ctx.shell.sidebar_mut().remove_session(stale);
         }
         for (session, id) in sessions.into_iter().zip(&ids) {
-            ctx.shell.upsert_session(SessionSummary {
+            ctx.shell.sidebar_mut().upsert_session(SessionSummary {
                 id: id.clone(),
                 title: if session.title.is_empty() { format!("Session {}", session.id) } else { session.title },
                 project: None,

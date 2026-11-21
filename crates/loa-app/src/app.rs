@@ -16,7 +16,7 @@ use loa_bus::SessionId;
 use loa_core::{Dom, ElementKind, Op, SessionMode, TurnStatus, attr};
 use loa_ui_session::transcript as chat;
 use loa_ui_session::composer as composer;
-use loa_ui_palette as palette;
+use loa_ui_shell::palette;
 use loa_ui_panel::{diff, files};
 use loa_ui_shell as shell;
 use loa_ui_shell::theme::style;
@@ -30,8 +30,6 @@ use crate::session::{self, Change, Feed, dom_turns};
 /// Panel tabs the app draws itself, before the areas' tabs.
 /// How often the sidebar's usage meter re-reads `omp usage`.
 const USAGE_REFRESH: Duration = Duration::from_secs(300);
-
-const BUILTIN_TABS: [(&str, &str); 3] = [("diff", "Diff"), ("files", "Files"), ("terminal", "Terminal")];
 
 const TAB_COMMAND: &str = "tab.";
 const THEME_COMMAND: &str = "theme.";
@@ -226,7 +224,7 @@ impl App {
             services.set_active(active.name.clone(), active.cwd.clone());
         }
         let (shell, setup) =
-            shell::State::new(saved.appearance.clone(), shell::PanelPrefs { open: true, ..Default::default() });
+            shell::State::new(saved.appearance.clone());
         let theme = shell.theme();
         let mut composer = composer::State::new();
         let mut sessions = Sessions::default();
@@ -254,9 +252,9 @@ impl App {
         };
         ctx.shell.set_project_tabs(saved.project_tabs);
         ctx.shell.set_active_project(restored.map(|active| active.name));
-        ctx.shell.set_pins(saved.pinned);
-        ctx.shell.set_pinned_projects(saved.pinned_projects);
-        ctx.shell.set_sessions(recents);
+        ctx.shell.sidebar_mut().set_pins(saved.pinned);
+        ctx.shell.sidebar_mut().set_pinned_projects(saved.pinned_projects);
+        ctx.shell.sidebar_mut().set_sessions(recents);
         let (areas, area_tasks) = Areas::new(&mut ctx);
         let mut app = Self {
             ctx,
@@ -279,7 +277,7 @@ impl App {
             open_projects: Vec::new(),
             tabbed_sessions: HashSet::new(),
         };
-        let shown = app.tabs().into_iter().filter(|tab| tab.shown).map(|tab| shell::PanelTab::new(tab.id, tab.title)).collect();
+        let shown = app.tabs().into_iter().filter(|tab| tab.shown).map(|tab| shell::PanelTab::new(tab.id, tab.title, tab.icon)).collect();
         app.ctx.shell.set_tabs(shown);
         let folder = workspace(&app.ctx.services.cwd);
         app.ctx.composer.set_workspace(Some(folder));
@@ -293,8 +291,7 @@ impl App {
 
     /// Every panel tab: the built-in ones, then each area's.
     fn tabs(&self) -> Vec<crate::area::PanelTab> {
-        let mut tabs: Vec<_> =
-            BUILTIN_TABS.into_iter().map(|(id, title)| crate::area::PanelTab::new(id, title, true)).collect();
+        let mut tabs: Vec<_> = panes::REGISTRY.iter().map(|pane| pane.tab(self)).collect();
         for area_tabs in with_areas!(each_area!(self.areas, ref |area, wrap| area.panel_tabs())) {
             tabs.extend(area_tabs);
         }
@@ -309,7 +306,7 @@ impl App {
                 self.ctx.notify(format!("There is no {id} tab"));
                 return false;
             };
-            self.ctx.shell.add_tab(shell::PanelTab::new(tab.id, tab.title));
+            self.ctx.shell.add_tab(shell::PanelTab::new(tab.id, tab.title, tab.icon));
         }
         true
     }
@@ -592,9 +589,9 @@ impl App {
         self.ctx.composer.set_workspace(Some(workspace(&cwd)));
         self.chat.load(session.dom());
         if let Some(summary) = session.summary() {
-            self.ctx.shell.upsert_session(summary);
+            self.ctx.shell.sidebar_mut().upsert_session(summary);
         }
-        self.ctx.shell.set_active_session(Some(session.id().to_string()));
+        self.ctx.shell.sidebar_mut().set_active(Some(session.id().to_string()));
         self.ctx.shell.set_session_status(turn_status(session.dom()).map(str::to_owned));
         self.terminal_follow(cwd)
     }
@@ -611,7 +608,7 @@ impl App {
             Some(id) => terminal::state::Message::Select(id),
             None => terminal::state::Message::NewTab,
         };
-        self.terminal.update(message).0.map(Message::Terminal)
+        self.terminal.update(message).map(Message::Terminal)
     }
 
     /// The app's own reaction to a session event, then every area's.
@@ -623,7 +620,7 @@ impl App {
                 if self.ctx.sessions.is_active(id.as_str()) {
                     presented = self.present();
                 } else if let Some(summary) = self.ctx.sessions.get(id.as_str()).and_then(|session| session.summary()) {
-                    self.ctx.shell.upsert_session(summary);
+                    self.ctx.shell.sidebar_mut().upsert_session(summary);
                 }
             }
             SessionEvent::Patch(id, patch) => {
@@ -637,7 +634,7 @@ impl App {
                     }
                     if changes_summary(session.dom(), patch) {
                         if let Some(summary) = session.summary() {
-                            self.ctx.shell.upsert_session(summary);
+                            self.ctx.shell.sidebar_mut().upsert_session(summary);
                         }
                         if active {
                             self.ctx.shell.set_session_status(turn_status(session.dom()).map(str::to_owned));
@@ -916,12 +913,14 @@ impl App {
     /// Shows the permission picker for omp sessions, with the current level.
     fn sync_access(&mut self) {
         let harness = self.ctx.sessions.active().and_then(|session| session.harness_id()).or(self.ctx.sessions.harness.as_deref());
-        if harness != Some("omp") {
+        let modes = harness.map_or(&[][..], |harness| self.ctx.services.harnesses.traits(harness).approval_modes);
+        if modes.is_empty() {
             self.ctx.composer.set_access(Vec::new(), None);
             return;
         }
         let options = ACCESS
             .iter()
+            .filter(|(id, _, _)| modes.contains(id))
             .map(|(id, label, detail)| composer::AccessOption { id: (*id).to_owned(), label: (*label).to_owned(), detail: (*detail).to_owned() })
             .collect();
         let current = self.access.clone().unwrap_or_else(|| ACCESS_DEFAULT.to_owned());
@@ -968,40 +967,41 @@ impl App {
         }
         match message {
             Message::Shell(message) => {
+                use shell::sidebar::Event as Nav;
                 let (task, event) = self.ctx.shell.update(message);
-                if matches!(event, Some(shell::Event::NewSession | shell::Event::OpenSession(_) | shell::Event::OpenProject(_))) {
+                if matches!(event, Some(shell::Event::Sidebar(Nav::NewSession | Nav::OpenSession(_) | Nav::OpenProject(_)))) {
                     self.configs = None;
                     self.overlay = None;
                 }
                 let action = match event {
-                    Some(shell::Event::NewSession) => self.start(None),
-                    Some(shell::Event::OpenUsage) => {
+                    Some(shell::Event::Sidebar(Nav::NewSession)) => self.start(None),
+                    Some(shell::Event::Sidebar(Nav::OpenUsage)) => {
                         self.overlay = Some(windows::Overlay::Usage);
                         self.usage.refresh().map(Message::Usage)
                     }
-                    Some(shell::Event::OpenConfigs) => {
+                    Some(shell::Event::Sidebar(Nav::OpenConfigs)) => {
                         self.window_update(windows::WindowMessage::OpenConfigs(windows::ConfigsTab::Models))
                     }
-                    Some(shell::Event::OpenSettings) => {
+                    Some(shell::Event::Sidebar(Nav::OpenSettings)) => {
                         self.window_update(windows::WindowMessage::OpenSettings(windows::SettingsTab::General))
                     }
-                    Some(shell::Event::OpenTools) => self.update(Message::Tools(areas::tools::Message::Open)),
+                    Some(shell::Event::Sidebar(Nav::OpenTools)) => self.update(Message::Tools(areas::tools::Message::Open)),
                     Some(shell::Event::DetachTab(tab)) => self.detach(detach::Detached::Tab(tab)),
                     Some(shell::Event::ShowDetached(tab)) => self.show_detached_tab(&tab),
                     Some(shell::Event::ReattachTab(tab)) => self.reattach_tab(&tab),
-                    Some(shell::Event::OpenPeers) => {
+                    Some(shell::Event::Sidebar(Nav::OpenPeers)) => {
                         self.window_update(windows::WindowMessage::OpenSettings(windows::SettingsTab::Peers))
                     }
-                    Some(shell::Event::OpenUpdates) => self.update(Message::Updater(areas::updater::Message::Open)),
-                    Some(shell::Event::OpenSession(id)) if areas::peers::is_remote(&id) => {
+                    Some(shell::Event::Sidebar(Nav::OpenUpdates)) => self.update(Message::Updater(areas::updater::Message::Open)),
+                    Some(shell::Event::Sidebar(Nav::OpenSession(id))) if areas::peers::is_remote(&id) => {
                         self.update(Message::Peers(areas::peers::Message::OpenRecent(id)))
                     }
-                    Some(shell::Event::DeleteSession(id)) if areas::peers::is_remote(&id) => {
+                    Some(shell::Event::Sidebar(Nav::DeleteSession(id))) if areas::peers::is_remote(&id) => {
                         self.update(Message::Peers(areas::peers::Message::ForgetRecent(id)))
                     }
-                    Some(shell::Event::OpenSession(id)) => self.open_session(&id),
-                    Some(shell::Event::DeleteSession(id)) => self.update(Message::Sessions(areas::sessions::Message::Delete(id))),
-                    Some(shell::Event::OpenProject(project)) => {
+                    Some(shell::Event::Sidebar(Nav::OpenSession(id))) => self.open_session(&id),
+                    Some(shell::Event::Sidebar(Nav::DeleteSession(id))) => self.update(Message::Sessions(areas::sessions::Message::Delete(id))),
+                    Some(shell::Event::Sidebar(Nav::OpenProject(project))) => {
                         self.update(Message::Projects(areas::projects::Message::Open(project)))
                     }
                     Some(shell::Event::CloseProjectTab(project)) => {
@@ -1021,12 +1021,12 @@ impl App {
                         self.areas.decisions.set_theme(&active);
                         Task::none()
                     }
-                    Some(shell::Event::SetPinned { .. }) => {
+                    Some(shell::Event::Sidebar(Nav::SetPinned { .. })) => {
                         let pins = self.ctx.shell.sidebar().pins().clone();
                         self.save_ui(|config| config.pinned = pins);
                         Task::none()
                     }
-                    Some(shell::Event::SetProjectPinned { .. }) => {
+                    Some(shell::Event::Sidebar(Nav::SetProjectPinned { .. })) => {
                         let pins = self.ctx.shell.sidebar().pinned_projects().clone();
                         self.save_ui(|config| config.pinned_projects = pins);
                         Task::none()
@@ -1055,7 +1055,7 @@ impl App {
                 task.map(Message::Files)
             }
             Message::Diff(message) => self.diff.update(message).0.map(Message::Diff),
-            Message::Terminal(message) => self.terminal.update(message).0.map(Message::Terminal),
+            Message::Terminal(message) => self.terminal.update(message).map(Message::Terminal),
             Message::Palette(message) => {
                 if matches!(message, palette::Message::Open | palette::Message::OpenShortcuts)
                     || matches!(message, palette::Message::Toggle) && !self.palette.is_open()
@@ -1113,7 +1113,7 @@ impl App {
                 let (task, event) = self.usage.update(message);
                 match event {
                     Some(usage::Event::Close) => self.overlay = None,
-                    Some(usage::Event::Meter(meter)) => self.ctx.shell.set_usage(meter),
+                    Some(usage::Event::Meter(meter)) => self.ctx.shell.sidebar_mut().set_usage(meter),
                     None => {}
                 }
                 task.map(Message::Usage)
@@ -1319,11 +1319,9 @@ impl App {
     }
 
     fn view_tab<'a>(&'a self, tab: &'a str) -> Element<'a, Message> {
-        match tab {
-            "files" => self.files.view().map(Message::Files),
-            "diff" => self.diff.view().map(Message::Diff),
-            "terminal" => self.terminal.view().map(Message::Terminal),
-            _ => with_areas!(each_area!(self.areas, ref |area, wrap| area.view_tab(tab, &self.ctx).map(|view| view.map(wrap))))
+        match panes::find(self, tab) {
+            Some(pane) => pane.view(self),
+            None => with_areas!(each_area!(self.areas, ref |area, wrap| area.view_tab(tab, &self.ctx).map(|view| view.map(wrap))))
                 .into_iter()
                 .flatten()
                 .next()
@@ -1455,6 +1453,7 @@ async fn git_diff(cwd: &Path) -> Option<String> {
 }
 
 mod detach;
+mod panes;
 mod start;
 mod keys;
 mod usage;

@@ -15,7 +15,7 @@ use iced::widget::{button, column, container, row, scrollable, space, svg, text,
 use iced::{Element, Font, Length, Subscription, Task, Theme};
 use loa_contracts::harness::SessionConfig;
 use loa_core::PatchSink;
-use loa_features::library::Library;
+use loa_harness::features::library::Library;
 use loa_sandbox::isolation::{apply_patch, backend_name};
 use loa_sandbox::worker::WorkerJournal;
 use loa_sandbox::{
@@ -23,10 +23,10 @@ use loa_sandbox::{
     SandboxService,
 };
 use loa_ui_kit::icons::Icon;
-use loa_ui_palette as palette;
+use loa_ui_shell::palette;
 use loa_ui_panel::diff;
 use loa_ui_shell::theme::style;
-use loa_ui_tools::{DetailState, ToolDetail, ToolInfo};
+use loa_ui_panel::tools::{DetailState, ToolDetail, ToolInfo};
 use tokio::sync::broadcast;
 
 use crate::area::{Area, AreaId, Ctx, HostToolSet, PanelTab, Request, SessionEvent, Target};
@@ -107,8 +107,9 @@ pub enum View {
     Settings,
 }
 
-/// A text setting of the settings form.
+/// A text setting of the settings form. The VM ones show with `sandbox-vm`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(feature = "sandbox-vm"), allow(dead_code))]
 pub enum Field {
     DockerImage,
     FirecrackerKernel,
@@ -499,26 +500,19 @@ impl State {
                 .on_toggle(Message::Network),
         ]
         .spacing(8);
-        let firecracker = column![
-            field("Guest kernel", "/path/to/vmlinux", Field::FirecrackerKernel, &draft.firecracker_kernel),
-            field("Root filesystem", "/path/to/rootfs.ext4", Field::FirecrackerRootfs, &draft.firecracker_rootfs),
-        ]
-        .spacing(8);
-        let vm = column![
-            field("Disk image", "/path/to/disk.img", Field::VmDisk, &draft.vm_disk),
-            field("Kernel (optional)", "boot from the disk", Field::VmKernel, &draft.vm_kernel),
-        ]
-        .spacing(8);
         let ssh = field("Hosts", "the hosts of ~/.ssh/config", Field::SshHosts, &draft.ssh_hosts);
-        let sections = column![
-            self.provider(SandboxKind::Local, None),
-            self.provider(SandboxKind::Docker, Some(docker.into())),
-            self.provider(SandboxKind::Firecracker, Some(firecracker.into())),
-            self.provider(SandboxKind::Vm, Some(vm.into())),
-            self.provider(SandboxKind::Ssh, Some(ssh.into())),
-            self.provider(SandboxKind::Peer, None),
-        ]
-        .spacing(8);
+        let sections = column![self.provider(SandboxKind::Local, None), self.provider(SandboxKind::Docker, Some(docker.into()))];
+        #[cfg(feature = "sandbox-vm")]
+        let sections = sections
+            .push(self.provider(SandboxKind::Firecracker, Some(column![
+                field("Guest kernel", "/path/to/vmlinux", Field::FirecrackerKernel, &draft.firecracker_kernel),
+                field("Root filesystem", "/path/to/rootfs.ext4", Field::FirecrackerRootfs, &draft.firecracker_rootfs),
+            ].spacing(8).into())))
+            .push(self.provider(SandboxKind::Vm, Some(column![
+                field("Disk image", "/path/to/disk.img", Field::VmDisk, &draft.vm_disk),
+                field("Kernel (optional)", "boot from the disk", Field::VmKernel, &draft.vm_kernel),
+            ].spacing(8).into())));
+        let sections = sections.push(self.provider(SandboxKind::Ssh, Some(ssh.into()))).push(self.provider(SandboxKind::Peer, None)).spacing(8);
         let changed = draft.config() != *self.service.config();
         let save = button(text("Save").size(panel_style::TEXT_SIZE))
             .padding([4, 10])

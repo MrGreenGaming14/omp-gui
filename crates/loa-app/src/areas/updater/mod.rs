@@ -24,7 +24,7 @@ use iced::widget::{container, text};
 use iced::{Element, Fill, Subscription, Task};
 use loa_contracts::harness::{Prompt, SessionConfig};
 use loa_bus::SessionId;
-use loa_ui_palette as palette;
+use loa_ui_shell::palette;
 use loa_ui_updates as updates;
 use loa_updater::peers::{self, PeerInfo, PeerStanding};
 use loa_updater::swap::SwapOutcome;
@@ -137,7 +137,7 @@ impl State {
                 _ => None,
             })
             .collect();
-        ctx.shell.set_updates(waiting(&overview));
+        ctx.shell.sidebar_mut().set_updates(waiting(&overview));
         let peers = self.peers(ctx);
         self.screen.set_data(updates::Data::from_updater(&overview, &peers, self.running > 0, now_secs()));
     }

@@ -25,7 +25,7 @@ use iced::{Element, Subscription, Task};
 use loa_contracts::harness::{Capabilities, HarnessSession, HostToolSpec, HostTools, Prompt, SessionConfig};
 use loa_bus::SessionId;
 use loa_ui_session::composer as composer;
-use loa_ui_palette as palette;
+use loa_ui_shell::palette;
 use loa_ui_shell as shell;
 
 use crate::services::Services;
@@ -95,6 +95,7 @@ pub struct PanelTab {
     /// `terminal`.
     pub id: String,
     pub title: String,
+    pub icon: Option<loa_ui_kit::Icon>,
     /// Listed in the panel from the start. Other tabs are added when opened
     /// (palette "Open … tab" or [`Ctx::open_tab`]).
     pub shown: bool,
@@ -102,7 +103,16 @@ pub struct PanelTab {
 
 impl PanelTab {
     pub fn new(id: impl Into<String>, title: impl Into<String>, shown: bool) -> Self {
-        Self { id: id.into(), title: title.into(), shown }
+        Self { id: id.into(), title: title.into(), icon: None, shown }
+    }
+
+    /// The tab of a kit pane, named and drawn as the pane says.
+    pub fn of<P: loa_ui_kit::widgets::PanelPane>(pane: &P, shown: bool) -> Self {
+        Self { icon: Some(pane.icon()), ..Self::new(pane.id(), pane.title(), shown) }
+    }
+
+    pub fn icon(self, icon: loa_ui_kit::Icon) -> Self {
+        Self { icon: Some(icon), ..self }
     }
 }
 
@@ -182,7 +192,7 @@ pub struct Ctx {
     pub keymap: palette::Keymap,
     /// App tools areas serve to sessions, as the Tools panel lists them.
     /// Each area replaces its own entries by name ([`Ctx::set_app_tool`]).
-    pub app_tools: Vec<loa_ui_tools::ToolInfo>,
+    pub app_tools: Vec<loa_ui_panel::tools::ToolInfo>,
     /// Peers the peers area knows; refreshed by it.
     pub peers: Vec<loa_p2p::PeerInfo>,
     /// The running peer node, set by the peers area each time it opens one;
@@ -221,7 +231,7 @@ impl Ctx {
 
     /// Lists `info` among the app tools, replacing the entry of the same
     /// name.
-    pub fn set_app_tool(&mut self, info: loa_ui_tools::ToolInfo) {
+    pub fn set_app_tool(&mut self, info: loa_ui_panel::tools::ToolInfo) {
         match self.app_tools.iter_mut().find(|tool| tool.name == info.name) {
             Some(tool) => *tool = info,
             None => self.app_tools.push(info),
@@ -290,10 +300,10 @@ impl Ctx {
         }
         let session = session?;
         if delete {
-            self.shell.remove_session(id);
+            self.shell.sidebar_mut().remove_session(id);
         }
         if was_active {
-            self.shell.set_active_session(None);
+            self.shell.sidebar_mut().set_active(None);
             self.shell.set_session_status(None);
             self.events.push(SessionEvent::Activated(None));
         }

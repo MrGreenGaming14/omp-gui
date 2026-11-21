@@ -27,7 +27,8 @@ impl<'a> DomWriter<'a> {
         self.ts.unwrap_or_else(now_ms)
     }
 
-    fn commit(&self, draft: Draft) -> Result<NodeId, CommitError> {
+    /// Commits any draft, for writes the helpers below don't cover.
+    pub fn commit(&self, draft: Draft) -> Result<NodeId, CommitError> {
         Ok(self.sink.commit_at(draft, self.now())?.node)
     }
 
@@ -56,6 +57,10 @@ impl<'a> DomWriter<'a> {
 
     pub fn append(&self, node: NodeId, text: impl Into<String>) -> Result<(), CommitError> {
         self.commit(Draft::append(node, text)).map(drop)
+    }
+
+    pub fn set_text(&self, node: NodeId, text: impl Into<String>) -> Result<(), CommitError> {
+        self.commit(Draft::set_text(node, text)).map(drop)
     }
 
     /// Ends a turn, call, job or decision: `status`, then `ended`.

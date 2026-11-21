@@ -24,14 +24,12 @@ use loa_ui_models::screen::{self, Page};
 use loa_ui_models::settings::{self, ModelSettings, ValidationError};
 use loa_ui_models::signin::{self, LoginUpdate, ProviderEntry, ProviderKey};
 use loa_ui_models::{ModelInfo, ModelRef, RoleAssignment, SessionModel};
-use loa_ui_palette as palette;
+use loa_ui_shell::palette;
 
 use crate::area::{Area, AreaId, Ctx, Session, SessionEvent, Target};
 
 #[cfg(test)]
 mod tests;
-
-const OMP: &str = "omp";
 
 /// The composer lists every model of a harness offering at most this many;
 /// otherwise the current model and the ones serving a role. "All models…"
@@ -138,7 +136,7 @@ const PRE_SESSION_EFFORTS: [&str; 4] = ["low", "medium", "high", "xhigh"];
 
 impl State {
     pub fn new(ctx: &mut Ctx) -> (Self, Task<Message>) {
-        let executable = ctx.services.harnesses.get(OMP).and_then(|harness| harness.executable.clone());
+        let executable = ctx.services.harnesses.get(ctx.services.harnesses.roles_id()).and_then(|harness| harness.executable.clone());
         let launch = OmpLaunch {
             executable: executable.unwrap_or_else(|| OmpLaunch::default().executable),
             cwd: Some(ctx.services.cwd.clone()),
@@ -194,13 +192,13 @@ impl State {
     /// The harness model changes go to: the active session's, else the one
     /// new sessions start on.
     fn harness_id(ctx: &Ctx) -> &str {
-        ctx.sessions.active().and_then(Session::harness_id).or(ctx.sessions.harness.as_deref()).unwrap_or(OMP)
+        ctx.sessions.active().and_then(Session::harness_id).or(ctx.sessions.harness.as_deref()).unwrap_or_else(|| ctx.services.harnesses.roles_id())
     }
 
     fn load_picker(&mut self, ctx: &Ctx) -> Task<Message> {
         let harness = Self::harness_id(ctx).to_owned();
         self.picker = (harness.clone(), Load::Loading);
-        if harness == OMP {
+        if roles(ctx, &harness) {
             let backend = self.backend.clone();
             return Task::perform(async move { backend.catalog().await }, Message::Catalog);
         }
@@ -223,8 +221,8 @@ impl State {
     /// Opens the picker over the harness's models once they are known.
     fn open_picker(&mut self, ctx: &Ctx) {
         let (harness, _) = &self.picker;
-        let (catalog, ids) = if harness == OMP {
-            let Some(models) = self.listed.get(OMP) else { return };
+        let (catalog, ids) = if roles(ctx, harness) {
+            let Some(models) = self.listed.get(ctx.services.harnesses.roles_id()) else { return };
             let catalog = Catalog {
                 models: models.iter().map(|model| model_info(model, &ModelRef::parse(&model.id).unwrap_or_else(|| model_ref(model)))).collect(),
                 roles: self.roles.clone().unwrap_or_default(),
@@ -251,7 +249,7 @@ impl State {
                 return SessionModel { model: Some(model), role };
             }
             // A new omp session runs on the default role's model.
-            let default = (Self::harness_id(ctx) == OMP)
+            let default = roles(ctx, Self::harness_id(ctx))
                 .then(|| self.roles.as_deref().unwrap_or_default().iter().find(|role| role.role == "default"))
                 .flatten();
             return default.map_or_else(SessionModel::default, |role| SessionModel { model: Some(role.model.selector()), role: None });
@@ -342,7 +340,7 @@ impl State {
         let harness = Self::harness_id(ctx);
         let pending_effort = self.pending.locked().get(&session.map(|session| session.id().to_string())).and_then(|p| p.effort.clone());
         let effort = pending_effort.or_else(|| session.and_then(|session| session.dom().root()?.str_attr(attr::EFFORT).map(str::to_owned)));
-        let roles = if harness == OMP { self.roles.as_deref().unwrap_or_default() } else { &[] };
+        let roles = if roles(ctx, harness) { self.roles.as_deref().unwrap_or_default() } else { &[] };
         let role_of = |id: &str| roles.iter().find(|role| role.model.selector() == id).map(|role| role.role.clone());
         let listed = self.listed.get(harness).map_or(&[][..], Vec::as_slice);
         let shown = |model: &&HarnessModel| {
@@ -370,7 +368,7 @@ impl State {
         let mut efforts = current.model.as_ref().and_then(|id| listed.iter().find(|model| &model.id == id)).map(|model| model.efforts.clone()).unwrap_or_default();
         // omp's catalog doesn't say which levels a model takes; before a
         // session runs, offer omp's levels.
-        if efforts.is_empty() && session.is_none() && harness == OMP && current.model.is_some() {
+        if efforts.is_empty() && session.is_none() && self::roles(ctx, harness) && current.model.is_some() {
             efforts = PRE_SESSION_EFFORTS.iter().map(|level| (*level).to_owned()).collect();
         }
         if let Some(effort) = &effort
@@ -436,12 +434,17 @@ impl State {
         self.roles = None;
         self.sync(ctx);
         let listed = self.list_models(ctx);
-        if Self::harness_id(ctx) == OMP { Task::batch([listed, self.read_roles()]) } else { listed }
+        if roles(ctx, Self::harness_id(ctx)) { Task::batch([listed, self.read_roles()]) } else { listed }
     }
 }
 
 /// The picker's name for a harness model: its `provider/id` selector when
 /// the id is one, else the provider and the bare id.
+/// Whether `harness` has model roles, read through the omp models backend.
+fn roles(ctx: &Ctx, harness: &str) -> bool {
+    ctx.services.harnesses.traits(harness).has_roles
+}
+
 fn model_ref(model: &HarnessModel) -> ModelRef {
     ModelRef::parse(&model.id).filter(|parsed| parsed.provider == model.provider).unwrap_or_else(|| ModelRef::new(&model.provider, &model.id))
 }
@@ -513,7 +516,7 @@ impl Area for State {
             }
             Message::Listed { harness, result } => {
                 let models = result.unwrap_or_default();
-                let read_roles = harness == OMP && !models.is_empty() && self.roles.is_none();
+                let read_roles = roles(ctx, &harness) && !models.is_empty() && self.roles.is_none();
                 // omp's own list (with efforts) replaces the catalog's.
                 if !models.is_empty() || !self.listed.contains_key(&harness) {
                     self.listed.insert(harness.clone(), models);
@@ -533,7 +536,7 @@ impl Area for State {
                 match result {
                     Ok(catalog) => {
                         self.roles = Some(catalog.roles);
-                        let listed = self.listed.entry(OMP.to_owned()).or_default();
+                        let listed = self.listed.entry(ctx.services.harnesses.roles_id().to_owned()).or_default();
                         if listed.is_empty() {
                             *listed = catalog
                                 .models
@@ -546,12 +549,12 @@ impl Area for State {
                                 })
                                 .collect();
                         }
-                        if self.picker.0 == OMP && matches!(self.picker.1, Load::Loading) {
+                        if self.picker.0 == ctx.services.harnesses.roles_id() && matches!(self.picker.1, Load::Loading) {
                             self.open_picker(ctx);
                         }
                     }
                     Err(error) => {
-                        if self.picker.0 == OMP && matches!(self.picker.1, Load::Loading) {
+                        if self.picker.0 == ctx.services.harnesses.roles_id() && matches!(self.picker.1, Load::Loading) {
                             self.picker.1 = Load::Failed(format!("Can't read omp's models: {error}"));
                         }
                     }
@@ -569,7 +572,7 @@ impl Area for State {
                         }
                     }
                     Err(Failure::Unsupported(reason)) => {
-                        let harness = ctx.sessions.get(session.as_str()).and_then(Session::harness_id).unwrap_or(OMP).to_owned();
+                        let harness = ctx.sessions.get(session.as_str()).and_then(Session::harness_id).unwrap_or_else(|| ctx.services.harnesses.roles_id()).to_owned();
                         ctx.notify(format!("{reason}; new sessions start on {model}"));
                         self.pending.locked().insert(None, Pending { harness, model: Some((model, role)), effort: None });
                     }

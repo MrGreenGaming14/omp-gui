@@ -109,7 +109,7 @@ fn shortcuts_start_and_switch_sessions_show_tabs_and_open_the_palette() {
     assert!(app.palette.is_open() && app.palette.shortcuts_only());
     let listed: Vec<_> = app.palette.entries().collect();
     assert!(listed.len() > 15, "{}", listed.len());
-    assert!(listed.iter().all(|entry| app.palette.hint(entry.command).is_some()), "only rows with keys");
+    assert!(listed.iter().all(|command| app.palette.hint(command).is_some()), "only rows with keys");
     key(&mut app, escape());
 }
 
@@ -125,7 +125,7 @@ fn the_palette_lists_every_area_command_and_the_whole_keymap() {
     let ctx = &app.ctx;
     for area in with_areas!(each_area!(app.areas, ref |area, wrap| area.palette_commands(ctx))) {
         for command in area {
-            assert!(has(command.id.as_str()).is_some(), "area command {} missing", command.id);
+            assert!(has(command.id.as_str()).is_some(), "area command {:?} missing", command.id);
         }
     }
 
@@ -146,9 +146,9 @@ fn the_palette_lists_every_area_command_and_the_whole_keymap() {
         ids::FOCUS_PREVIOUS,
         ids::session_goto(1),
     ] {
-        let command = has(id.as_str()).unwrap_or_else(|| panic!("{id} missing"));
-        assert_eq!(command.shortcut, keymap.chord_for(&id), "{id} shows its chord");
-        assert!(command.shortcut.is_some(), "{id} is bound");
+        let command = has(id.as_str()).unwrap_or_else(|| panic!("{id:?} missing"));
+        assert_eq!(command.shortcut, keymap.chord_for(&id), "{id:?} shows its chord");
+        assert!(command.shortcut.is_some(), "{id:?} is bound");
     }
     let first_tab = &app.ctx.shell.tabs()[0];
     let open_tab = has(&format!("{TAB_COMMAND}{}", first_tab.id)).unwrap();

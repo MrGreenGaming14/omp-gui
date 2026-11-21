@@ -59,12 +59,20 @@ pub struct AcpAdapter {
     program: PathBuf,
     args: Vec<String>,
     learned: Mutex<Option<Learned>>,
+    /// What availability says when the program is missing.
+    missing: Option<String>,
 }
 
 impl AcpAdapter {
     /// An adapter that runs `program args…` for every session.
     pub fn new(program: impl Into<PathBuf>, args: impl IntoIterator<Item = impl Into<String>>) -> Self {
-        Self { program: program.into(), args: args.into_iter().map(Into::into).collect(), learned: Mutex::new(None) }
+        Self { program: program.into(), args: args.into_iter().map(Into::into).collect(), learned: Mutex::new(None), missing: None }
+    }
+
+    /// Says `hint` instead of "not found" when the program is missing.
+    pub fn with_missing_hint(mut self, hint: impl Into<String>) -> Self {
+        self.missing = Some(hint.into());
+        self
     }
 
     /// The capabilities every ACP agent is guaranteed to have.
@@ -273,7 +281,7 @@ impl Adapter for AcpAdapter {
                 Availability { detail: agent.or_else(|| Some("ACP agent".to_owned())), ..Availability::ready(None, None) }
             }
             Ok(Err(AdapterError::NotInstalled(program))) => {
-                Availability::unavailable(AvailabilityStatus::NotInstalled, format!("`{program}` not found"))
+                Availability::unavailable(AvailabilityStatus::NotInstalled, self.missing.clone().unwrap_or_else(|| format!("`{program}` not found")))
             }
             Ok(Err(AdapterError::Version { detail, .. })) => Availability::unavailable(AvailabilityStatus::Incompatible, detail),
             Ok(Err(error)) => Availability::unavailable(AvailabilityStatus::Failed, error.to_string()),

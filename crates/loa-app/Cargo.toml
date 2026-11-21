@@ -11,18 +11,13 @@ async-trait.workspace = true
 loa-core.workspace = true
 loa-contracts.workspace = true
 loa-bus = { path = "../loa-bus" }
-loa-features = { path = "../loa-features" }
 loa-config = { path = "../loa-config" }
-loa-harness = { workspace = true, features = ["omp", "acp", "claude", "codex"] }
-loa-adapter-omp2 = { path = "../loa-adapter-omp2" }
-loa-adapter-opencode = { path = "../loa-adapter-opencode" }
+loa-harness = { workspace = true, features = ["omp", "acp", "claude", "codex", "opencode", "omp2"] }
 tokio.workspace = true
 loa-ui-shell = { path = "../loa-ui-shell" }
 loa-ui-session = { path = "../loa-ui-session" }
 loa-ui-panel = { path = "../loa-ui-panel" }
 loa-ui-terminal = { path = "../loa-ui-terminal" }
-loa-ui-palette = { path = "../loa-ui-palette" }
-loa-ui-tools = { path = "../loa-ui-tools" }
 loa-ui-models = { path = "../loa-ui-models" }
 loa-models = { path = "../loa-models" }
 loa-ui-peers = { path = "../loa-ui-peers" }
@@ -47,6 +42,8 @@ serde_json.workspace = true
 [features]
 # Live video for peers: the "Live video" launcher toggle and in-process H.264.
 remote-video = ["loa-surfaces/remote-video", "loa-ui-surface/remote-video"]
+# The Firecracker and qemu sandbox providers and their settings.
+sandbox-vm = ["loa-sandbox/vm"]
 
 [dev-dependencies]
 loa-surfaces = { path = "../loa-surfaces", features = ["testkit"] }

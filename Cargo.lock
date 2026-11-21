@@ -575,6 +575,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "atomic-polyfill"
+version = "1.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8cf2bce30dfe09ef0bfaef228b9d414faaf7e563035494d7fe092dba54b300f4"
+dependencies = [
+ "critical-section",
+]
+
+[[package]]
 name = "atomic-waker"
 version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1653,6 +1662,12 @@ checksum = "2b929dd2a135771f40afabd1073f85eed59c800b7c61901e5c254270497dad64"
 dependencies = [
  "cfg-if 1.0.5",
 ]
+
+[[package]]
+name = "critical-section"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "790eea4361631c5e7d22598ecd5723ff611904e3344ce8720784c93e3d83d40b"
 
 [[package]]
 name = "crossbeam-deque"
@@ -3226,6 +3241,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "hash32"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b0c35f58762feb77d74ebe43bdbc3210f09be9fe6742234d573bacc26ed92b67"
+dependencies = [
+ "byteorder",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.14.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3372,6 +3396,20 @@ dependencies = [
  "rustc-hash 2.1.3",
  "smallvec",
  "zune-jpeg 0.5.15",
+]
+
+[[package]]
+name = "heapless"
+version = "0.7.17"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cdc6457c0eb62c71aac4bc17216026d8410337c4126773b9c5daba343f17964f"
+dependencies = [
+ "atomic-polyfill",
+ "hash32",
+ "rustc_version",
+ "serde",
+ "spin 0.9.9",
+ "stable_deref_trait",
 ]
 
 [[package]]
@@ -4571,40 +4609,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4744e383959f0db86ede514b809b1c53251889093803c05267acc7d4e7030d70"
 
 [[package]]
-name = "loa-adapter-omp2"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "base64 0.23.1",
- "loa-contracts",
- "loa-core",
- "loa-util",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
-]
-
-[[package]]
-name = "loa-adapter-opencode"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "axum",
- "futures",
- "loa-contracts",
- "loa-core",
- "loa-util",
- "reqwest",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "loa-app"
 version = "0.1.0"
 dependencies = [
@@ -4615,13 +4619,10 @@ dependencies = [
  "iced_futures",
  "iced_runtime",
  "iced_test",
- "loa-adapter-omp2",
- "loa-adapter-opencode",
  "loa-bus",
  "loa-config",
  "loa-contracts",
  "loa-core",
- "loa-features",
  "loa-harness",
  "loa-mcp",
  "loa-models",
@@ -4633,7 +4634,6 @@ dependencies = [
  "loa-trust",
  "loa-ui-kit",
  "loa-ui-models",
- "loa-ui-palette",
  "loa-ui-panel",
  "loa-ui-peers",
  "loa-ui-projects",
@@ -4641,7 +4641,6 @@ dependencies = [
  "loa-ui-shell",
  "loa-ui-surface",
  "loa-ui-terminal",
- "loa-ui-tools",
  "loa-ui-updates",
  "loa-updater",
  "loa-util",
@@ -4713,31 +4712,19 @@ dependencies = [
 ]
 
 [[package]]
-name = "loa-features"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "loa-bus",
- "loa-contracts",
- "loa-core",
- "loa-projects",
- "loa-util",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
-]
-
-[[package]]
 name = "loa-harness"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "axum",
  "base64 0.23.1",
+ "futures",
+ "loa-bus",
  "loa-contracts",
  "loa-core",
  "loa-harness",
  "loa-util",
+ "reqwest",
  "serde",
  "serde_json",
  "tempfile",
@@ -4810,7 +4797,7 @@ dependencies = [
  "loa-bus",
  "loa-config",
  "loa-core",
- "loa-features",
+ "loa-harness",
  "loa-trust",
  "loa-util",
  "mdns-sd",
@@ -4888,26 +4875,23 @@ dependencies = [
  "loa-contracts",
  "loa-core",
  "loa-util",
+ "postcard",
+ "schemars",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]
 name = "loa-sandbox-stub"
 version = "0.1.0"
 dependencies = [
- "async-trait",
  "libc",
- "loa-contracts",
- "loa-core",
  "loa-sandbox",
  "loa-util",
- "serde_json",
- "tempfile",
- "tokio",
 ]
 
 [[package]]
@@ -5002,25 +4986,17 @@ dependencies = [
 ]
 
 [[package]]
-name = "loa-ui-palette"
-version = "0.1.0"
-dependencies = [
- "iced",
- "iced_test",
- "loa-ui-kit",
- "thiserror 2.0.21",
-]
-
-[[package]]
 name = "loa-ui-panel"
 version = "0.1.0"
 dependencies = [
  "iced",
+ "iced_test",
  "ignore",
+ "loa-contracts",
  "loa-core",
  "loa-ui-kit",
+ "shell-words",
  "similar",
- "tempfile",
  "thiserror 2.0.21",
 ]
 
@@ -5069,8 +5045,6 @@ dependencies = [
  "iced_test",
  "loa-core",
  "loa-ui-kit",
- "png 0.18.1",
- "tempfile",
 ]
 
 [[package]]
@@ -5110,17 +5084,6 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
-]
-
-[[package]]
-name = "loa-ui-tools"
-version = "0.1.0"
-dependencies = [
- "iced",
- "iced_test",
- "loa-contracts",
- "loa-ui-kit",
- "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -7079,6 +7042,7 @@ dependencies = [
  "cobs",
  "embedded-io 0.4.0",
  "embedded-io 0.6.1",
+ "heapless",
  "postcard-derive",
  "serde",
 ]

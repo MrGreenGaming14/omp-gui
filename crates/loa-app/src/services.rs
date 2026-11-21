@@ -9,14 +9,14 @@ use std::sync::{Arc, RwLock};
 use loa_bus::{Authorize, Bus, Denied, NodeKey, SessionId};
 use loa_config::ConfigStore;
 use loa_core::{Dom, Draft};
-use loa_features::library::Library;
+use loa_harness::features::library::Library;
 use loa_trust::{KeySource, NodeIdentity, load_app_identity};
 use loa_bus::{JournalOptions, Store};
 
 mod harness;
 mod host;
 
-pub use harness::{CHECKING, Harness, Harnesses, OPENCODE_URL};
+pub use harness::{CHECKING, Harness, Harnesses};
 pub use host::hostname;
 
 /// This node: its ed25519 identity and the label people see.

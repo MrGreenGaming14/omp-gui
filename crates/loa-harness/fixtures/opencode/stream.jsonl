@@ -1,0 +1,23 @@
+# A prompt from another client streams text and reasoning, with usage and a title.
+{"id":"e1","type":"server.connected","properties":{}}
+{"type":"message.updated","properties":{"sessionID":"ses_1","info":{"id":"msg_u1","sessionID":"ses_1","role":"user","time":{"created":10},"agent":"build","model":{"providerID":"p","modelID":"m"}}}}
+{"type":"message.part.updated","properties":{"sessionID":"ses_1","part":{"id":"prt_u1","sessionID":"ses_1","messageID":"msg_u1","type":"text","text":"Explain the code"}}}
+{"type":"message.updated","properties":{"sessionID":"ses_1","info":{"id":"msg_a1","sessionID":"ses_1","role":"assistant","parentID":"msg_u1","providerID":"p","modelID":"m","time":{"created":11}}}}
+{"type":"message.part.updated","properties":{"sessionID":"ses_1","part":{"id":"prt_s1","sessionID":"ses_1","messageID":"msg_a1","type":"step-start","snapshot":"abc"}}}
+{"type":"message.part.updated","properties":{"sessionID":"ses_1","part":{"id":"prt_r1","sessionID":"ses_1","messageID":"msg_a1","type":"reasoning","text":"","time":{"start":12}}}}
+{"type":"message.part.delta","properties":{"sessionID":"ses_1","messageID":"msg_a1","partID":"prt_r1","field":"text","delta":"Let me "}}
+{"type":"message.part.delta","properties":{"sessionID":"ses_1","messageID":"msg_a1","partID":"prt_r1","field":"text","delta":"think."}}
+{"type":"message.part.updated","properties":{"sessionID":"ses_1","part":{"id":"prt_r1","sessionID":"ses_1","messageID":"msg_a1","type":"reasoning","text":"Let me think.","time":{"start":12,"end":13}}}}
+{"type":"message.part.updated","properties":{"sessionID":"ses_1","part":{"id":"prt_t1","sessionID":"ses_1","messageID":"msg_a1","type":"text","text":"It ","time":{"start":14}}}}
+{"type":"message.part.delta","properties":{"sessionID":"ses_1","messageID":"msg_a1","partID":"prt_t1","field":"text","delta":"sorts."}}
+{"type":"message.part.delta","properties":{"sessionID":"ses_1","messageID":"msg_a1","partID":"prt_t1","field":"metadata","delta":"ignored"}}
+{"type":"message.part.updated","properties":{"sessionID":"ses_1","part":{"id":"prt_t1","sessionID":"ses_1","messageID":"msg_a1","type":"text","text":"It sorts lists.","time":{"start":14,"end":15},"metadata":{"x":1}}}}
+{"type":"message.part.updated","properties":{"sessionID":"ses_1","part":{"id":"prt_f1","sessionID":"ses_1","messageID":"msg_a1","type":"step-finish","reason":"stop","cost":0.5,"tokens":{"input":10,"output":20,"reasoning":3,"cache":{"read":4,"write":5}}}}}
+{"type":"message.updated","properties":{"sessionID":"ses_1","info":{"id":"msg_a1","sessionID":"ses_1","role":"assistant","parentID":"msg_u1","providerID":"p","modelID":"m","time":{"created":11,"completed":16}}}}
+{"type":"session.updated","properties":{"info":{"id":"ses_1","title":"Sorting","time":{"created":1,"updated":16},"version":"1"}}}
+{"type":"session.diff","properties":{"sessionID":"ses_1","diff":[]}}
+{"type":"session.next.step","properties":{"sessionID":"ses_1"}}
+{"type":"session.status","properties":{"sessionID":"ses_1","status":{"type":"busy"}}}
+{"type":"session.status","properties":{"sessionID":"ses_1","status":{"type":"idle"}}}
+{"type":"message.updated","properties":{"sessionID":"ses_other","info":{"id":"msg_x","sessionID":"ses_other","role":"user","time":{"created":17}}}}
+{"type":"server.heartbeat","properties":{}}

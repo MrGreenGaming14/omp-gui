@@ -370,7 +370,7 @@ fn sidebar_tools_button_opens_the_tools_area_tab() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = fake_app(dir.path(), &["fake-a"]);
     let _ = app.command(&palette::CommandId::new("tab.diff"));
-    update(&mut app, Message::Shell(shell::Message::Sidebar(shell::sidebar::Message::OpenTools)));
+    update(&mut app, Message::Shell(shell::Message::Sidebar(shell::sidebar::Message::Emit(shell::sidebar::Event::OpenTools))));
     assert_eq!(app.ctx.shell.active_tab(), Some("tools"));
 }
 
@@ -518,12 +518,12 @@ fn a_project_pin_survives_a_restart() {
     let dir = tempfile::tempdir().unwrap();
     {
         let mut app = fake_app(dir.path(), &["fake-a"]);
-        app.ctx.shell.set_projects(["alpha".to_owned(), "beta".to_owned()]);
+        app.ctx.shell.sidebar_mut().set_projects(["alpha".to_owned(), "beta".to_owned()]);
         update(&mut app, Message::Shell(shell::Message::Sidebar(shell::sidebar::Message::ToggleProjectPin("beta".into()))));
         assert_eq!(app.ctx.shell.sidebar().projects(), ["beta", "alpha"]);
     }
     let mut app = fake_app(dir.path(), &["fake-a"]);
-    app.ctx.shell.set_projects(["alpha".to_owned(), "beta".to_owned()]);
+    app.ctx.shell.sidebar_mut().set_projects(["alpha".to_owned(), "beta".to_owned()]);
     assert_eq!(app.ctx.shell.sidebar().projects(), ["beta", "alpha"], "the project pin was saved");
 }
 
@@ -667,7 +667,7 @@ fn panel_tabs_detach_into_windows_and_reattach() {
     assert!(shows(&app, "Terminal is in its own window"), "the panel shows a placeholder");
 
     // Popping out again brings the same window forward instead of a second one.
-    let _ = app.update(Message::Shell(shell::Message::Detach("terminal".into())));
+    let _ = app.update(Message::Shell(shell::Message::Emit(shell::Event::DetachTab("terminal".into()))));
     assert_eq!(app.detached.len(), 1);
 
     let id = app.detached[0].0;
@@ -690,8 +690,8 @@ fn closing_a_detached_window_reattaches_and_closing_main_quits() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = fake_app(dir.path(), &["fake-a"]);
     let _ = app.open_main();
-    let _ = app.update(Message::Shell(shell::Message::Detach("files".into())));
-    let _ = app.update(Message::Shell(shell::Message::Detach("diff".into())));
+    let _ = app.update(Message::Shell(shell::Message::Emit(shell::Event::DetachTab("files".into()))));
+    let _ = app.update(Message::Shell(shell::Message::Emit(shell::Event::DetachTab("diff".into()))));
     assert_eq!(app.detached.iter().map(|(_, what)| what.clone()).collect::<Vec<_>>(), [Detached::Tab("files".into()), Detached::Tab("diff".into())]);
 
     let files = app.detached[0].0;

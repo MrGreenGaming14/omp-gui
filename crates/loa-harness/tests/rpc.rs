@@ -3,8 +3,9 @@
 use async_trait::async_trait;
 use base64::Engine as _;
 use loa_harness::omp::rpc::{
-    AssistantEvent, Command, Event, Events, HostHandler, HostToolCall, HostToolDefinition, HostToolOutput, Incoming,
-    RpcClient, RpcError, SpawnOptions, StreamingBehavior, UiRequest, UiResponse, omp_version,
+    AssistantEvent, CancellationResult, Command, Event, Events, HostHandler, HostToolCall, HostToolDefinition,
+    HostToolOutput, Incoming, ModelList, PromptAck, RpcClient, RpcError, SessionState, SpawnOptions, StreamingBehavior,
+    UiRequest, UiResponse, omp_version,
 };
 use loa_harness::testing::{FakeProcess, READY_V2, handshake_v2};
 use serde_json::json;
@@ -80,18 +81,19 @@ async fn requests_match_by_id_fail_with_codes_and_reassemble_chunks() {
     );
     let (_dir, omp, opts) = fake(&script);
     let (client, _events) = RpcClient::spawn(opts).await.unwrap();
-    let (state, models) = tokio::join!(client.get_state(), async {
+    let (state, models) = tokio::join!(client.request::<SessionState>(Command::GetState), async {
         tokio::task::yield_now().await;
-        client.get_available_models().await
+        client.request::<ModelList>(Command::GetAvailableModels).await
     });
-    assert_eq!((state.unwrap().thinking_level.as_deref(), models.unwrap()[0].selector()), (Some("high"), "p/m1".to_owned()));
-    let err = client.fork(None).await.unwrap_err();
+    assert_eq!((state.unwrap().thinking_level.as_deref(), models.unwrap().models[0].selector()), (Some("high"), "p/m1".to_owned()));
+    let err = client.request::<CancellationResult>(Command::Fork { entry_id: None }).await.unwrap_err();
     assert_eq!((err.code(), err.to_string().contains("busy")), (Some("session_busy"), true));
-    assert_eq!(client.get_state().await.unwrap().session_id, "big");
+    assert_eq!(client.request::<SessionState>(Command::GetState).await.unwrap().session_id, "big");
     let id = client.reserve_id();
     assert_ne!(client.reserve_id(), id, "ids are never reused");
     // omp 19 answers an accepted prompt with no `data` at all.
-    let ack = client.prompt_as(id.clone(), "hi", Vec::new(), Some(StreamingBehavior::FollowUp)).await.unwrap();
+    let prompt = Command::Prompt { message: "hi".into(), images: Vec::new(), streaming_behavior: Some(StreamingBehavior::FollowUp) };
+    let ack: PromptAck = client.request_as(id.clone(), prompt).await.unwrap();
     assert_eq!(ack.agent_invoked, None);
     client.shutdown(Duration::from_secs(10)).await.unwrap();
     let prompt = omp.received().into_iter().find(|frame| frame["type"] == "prompt").unwrap();
@@ -138,10 +140,11 @@ async fn events_ui_requests_and_host_tools_flow_in_order_until_exit() {
         hidden: None,
         load_mode: None,
     };
-    assert_eq!(client.set_host_tools(vec![tool]).await.unwrap(), ["project_search"]);
+    let registered: serde_json::Value = client.request(Command::SetHostTools { tools: vec![tool] }).await.unwrap();
+    assert_eq!(registered["toolNames"], json!(["project_search"]));
     let Incoming::Exited { status, stderr } = next(&mut events).await else { panic!() };
     assert_eq!((status.and_then(|s| s.code()), stderr.contains("out of memory")), (Some(9), true));
-    assert!(client.has_exited() && matches!(client.request_unit(Command::Abort).await, Err(RpcError::Exited { .. })));
+    assert!(client.has_exited() && matches!(client.request::<serde_json::Value>(Command::Abort).await, Err(RpcError::Exited { .. })));
     let sent = omp.received();
     assert_eq!(sent[1], json!({"type":"extension_ui_response","id":"ui1","confirmed":true}));
     assert_eq!(sent[2]["tools"][0]["parameters"], json!({"type":"object"}));

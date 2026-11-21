@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<session nid="1" created.int="1" harness="opencode" id="s" native_id="ses_1" node="owner" schema.int="1" title="T" x-oc="{&quot;time&quot;:{}}">
+  <turn nid="2" ended.int="0" id="msg_u1" started.int="10" status="error" x-oc="{&quot;time&quot;:{}}">
+    <message nid="3" id="prt_u1" role="user" status="done" x-message="msg_u1">one</message>
+    <ext nid="7" harness="opencode" type="session.status">{"type":"retry","attempt":1,"message":"overloaded"}</ext>
+    <ext nid="9" harness="opencode" type="session.error">{"name":"APIError","data":{"message":"boom"}}</ext>
+  </turn>
+  <ext nid="8" harness="opencode" type="lsp.updated">{"sessionID":"ses_1","x":1}</ext>
+  <turn nid="14" ended.int="0" id="msg_u3" started.int="30" status="done" x-oc="{&quot;time&quot;:{}}">
+    <ext nid="15" harness="opencode" type="message" x-message="msg_a3">{"time":{"created":31,"completed":32},"modelID":"small","role":"assistant","parentID":"msg_u3","summary":true,"providerID":"p"}</ext>
+    <message nid="16" id="prt_a3" model="p/small" role="assistant" status="done" x-message="msg_a3" x-oc="{&quot;time&quot;:{&quot;start&quot;:31}}">Summary: we did one.</message>
+  </turn>
+  <compaction nid="17" covers.list="[2, 10]" created.int="0" model="p/small">Summary: we did one.</compaction>
+  <turn nid="18" ended.int="0" started.int="0" status="done">
+    <ext nid="19" harness="opencode" type="message" x-message="msg_a9">{"time":{"created":40},"role":"assistant"}</ext>
+  </turn>
+</session>
