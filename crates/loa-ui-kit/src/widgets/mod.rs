@@ -117,12 +117,15 @@ pub fn collapsible<'a, M: Clone + 'a>(title: impl text::IntoFragment<'a>, open: 
     if open { column![head, body()].spacing(sp(SpaceRole::Xs)).into() } else { head.into() }
 }
 
-/// One tab of a [`tab_strip`].
+/// One tab of a [`tab_strip`]: `trailing` (a close button, a marker) sits after the pill,
+/// and `id` names the pill's container.
 pub struct Tab<'a, M> {
     pub label: &'a str,
     pub icon: Option<Icon>,
     pub active: bool,
     pub on: M,
+    pub id: Option<String>,
+    pub trailing: Option<Element<'a, M>>,
 }
 
 /// A row of pill tabs.
@@ -131,7 +134,9 @@ pub fn tab_strip<'a, M: Clone + 'a>(tabs: impl IntoIterator<Item = Tab<'a, M>>) 
         let mut r = row![].spacing(sp(SpaceRole::Xs)).align_y(Alignment::Center);
         if let Some(i) = t.icon { r = r.push(tinted(i, TextRole::Label, if t.active { Tone::Normal } else { Tone::Muted })) }
         let r = r.push(text(t.label).size(size(TextRole::Label)));
-        button(r).padding([sp(SpaceRole::Xs), sp(SpaceRole::S)]).style(style::button(ButtonKind::Tab { active: t.active })).on_press(t.on).into()
+        let pill = button(r).padding([sp(SpaceRole::Xs), sp(SpaceRole::S)]).style(style::button(ButtonKind::Tab { active: t.active })).on_press(t.on);
+        let pill = match t.id { Some(id) => container(pill).id(id), None => container(pill) };
+        row![pill].push(t.trailing).align_y(Alignment::Center).into()
     });
     row(pills).spacing(sp(SpaceRole::Xs)).align_y(Alignment::Center).into()
 }
@@ -143,8 +148,11 @@ pub fn side_nav<'a, T: Copy + PartialEq + std::fmt::Display, M: Clone + 'a>(item
     row![nav.style(style::container(Surface::Side)), rule::vertical(1).style(style::rule), container(body).width(Fill).padding(sp(SpaceRole::L))].into()
 }
 
+/// Width of a [`splitter_edge`] grab area.
+pub fn splitter_width() -> f32 { sp(SpaceRole::Xs) + 2.0 }
+
 /// A grab area on a pane edge, drawn as the 1px divider.
 pub fn splitter_edge<'a, M: Clone + 'a>(on_press: M) -> Element<'a, M> {
-    let line = container(rule::vertical(1).style(style::rule)).center_x(sp(SpaceRole::Xs) + 2.0).height(Fill);
+    let line = container(rule::vertical(1).style(style::rule)).center_x(splitter_width()).height(Fill);
     mouse_area(line).on_press(on_press).interaction(mouse::Interaction::ResizingHorizontally).into()
 }
