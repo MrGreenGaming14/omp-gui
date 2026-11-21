@@ -63,7 +63,7 @@ pub enum Error {
     UnsafeEntry { entry: String, reason: &'static str },
     #[error("archive: {0}")]
     Archive(String),
-    #[error("{product} has no previous version to roll back to")]
+    #[error("{0} has no previous version to roll back to")]
     NoPrevious(String),
     #[error("signature check failed: {} has no signature", .0.display())]
     Unsigned(PathBuf),

@@ -141,7 +141,7 @@ pub trait Probe: ToolCatalog + FormatProbe + RpcProbe + ContractRunner {}
 impl<T: ToolCatalog + FormatProbe + RpcProbe + ContractRunner> Probe for T {}
 
 /// Builds the gate adapters of one gate run; the app plugs in the omp-backed ones.
-pub trait GatePorts: Send + Sync {
+pub trait GatePorts: Send + Sync + fmt::Debug {
     fn probe(&self, gates: &OmpGates, timeout: Duration) -> Box<dyn Probe>;
     /// A reviewer running `model` on the `reviewer` executable.
     fn reviewer(&self, reviewer: &Path, model: &str, timeout: Duration) -> Box<dyn ChangelogSummarizer>;
