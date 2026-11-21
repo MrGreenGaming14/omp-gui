@@ -32,7 +32,7 @@ fn app(dir: &std::path::Path, name: &str) -> App {
     settings.network.discovery.mdns = false;
     settings.network.discovery.tailscale = false;
     config.save(&settings).unwrap();
-    let mut harnesses = Harnesses { registry: loa_adapter::Registry::new(), list: Vec::new() };
+    let mut harnesses = Harnesses { registry: loa_contracts::harness::Registry::new(), list: Vec::new() };
     harnesses.add(Arc::new(FakeAdapter::new("omp")), "omp", true, None, None);
     let node = Node::new(NodeIdentity::generate().unwrap(), name.to_owned());
     let mut app = App::build(Services::new(node, dirs, harnesses, dir.to_owned()).unwrap()).0;

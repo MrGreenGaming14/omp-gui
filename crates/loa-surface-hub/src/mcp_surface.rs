@@ -15,7 +15,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use loa_mcp::model::ResourceContents;
 use loa_mcp::{AllowAll, Manager};
-use loa_surface::{
+use loa_contracts::surface::{
     Document, Encoding, Frame, Input, InputEvent, MouseButton, Rect, Surface, SurfaceError, SurfaceInfo, SurfaceMode,
 };
 use loa_surface_proto::mcp as proto;
@@ -43,7 +43,7 @@ struct Shared {
 }
 
 impl Shared {
-    async fn call(&self, tool: &str, arguments: Value) -> loa_surface::Result<ToolResult> {
+    async fn call(&self, tool: &str, arguments: Value) -> loa_contracts::surface::Result<ToolResult> {
         let arguments = match arguments {
             Value::Object(map) => Some(map),
             _ => None,
@@ -65,7 +65,7 @@ impl Shared {
         self.info.locked().uri.as_str().to_owned()
     }
 
-    async fn screenshot(&self) -> loa_surface::Result<Bytes> {
+    async fn screenshot(&self) -> loa_contracts::surface::Result<Bytes> {
         let result = self.call(proto::SCREENSHOT, json!({ "uri": self.uri() })).await?;
         result
             .image()
@@ -74,7 +74,7 @@ impl Shared {
     }
 
     /// Takes a screenshot and publishes it as a PNG keyframe.
-    async fn publish(&self) -> loa_surface::Result<()> {
+    async fn publish(&self) -> loa_contracts::surface::Result<()> {
         let input_seq = self.input_done.load(Ordering::Acquire);
         let png = self.screenshot().await?;
         let (width, height) =
@@ -99,7 +99,7 @@ impl Shared {
         Ok(())
     }
 
-    async fn input(&self, event: &InputEvent) -> loa_surface::Result<()> {
+    async fn input(&self, event: &InputEvent) -> loa_contracts::surface::Result<()> {
         let uri = self.uri();
         let button_name = |button: MouseButton| match button {
             MouseButton::Left => Ok("left"),
@@ -109,7 +109,7 @@ impl Shared {
                 Err(SurfaceError::Backend(format!("{} takes left, middle and right clicks", proto::CLICK)))
             }
         };
-        let modifier_names = |m: &loa_surface::Modifiers| {
+        let modifier_names = |m: &loa_contracts::surface::Modifiers| {
             [(m.shift, "shift"), (m.ctrl, "ctrl"), (m.alt, "alt"), (m.meta, "meta")]
                 .into_iter()
                 .filter_map(|(on, name)| on.then_some(name))
@@ -203,7 +203,7 @@ impl Surface for McpSurface {
         self.shared.info.locked().clone()
     }
 
-    fn frames(&self) -> loa_surface::Result<broadcast::Receiver<Arc<Frame>>> {
+    fn frames(&self) -> loa_contracts::surface::Result<broadcast::Receiver<Arc<Frame>>> {
         let info = self.info();
         if info.mode != SurfaceMode::Pixel {
             return Err(SurfaceError::Mode { uri: info.uri, mode: info.mode });
@@ -213,12 +213,12 @@ impl Surface for McpSurface {
         Ok(receiver)
     }
 
-    async fn request_keyframe(&self) -> loa_surface::Result<()> {
+    async fn request_keyframe(&self) -> loa_contracts::surface::Result<()> {
         self.shared.wake.notify_one();
         Ok(())
     }
 
-    async fn input(&self, event: InputEvent) -> loa_surface::Result<()> {
+    async fn input(&self, event: InputEvent) -> loa_contracts::surface::Result<()> {
         let info = self.info();
         if info.mode != SurfaceMode::Pixel {
             return Err(SurfaceError::Mode { uri: info.uri, mode: info.mode });
@@ -226,7 +226,7 @@ impl Surface for McpSurface {
         self.shared.input(&event).await
     }
 
-    async fn document(&self) -> loa_surface::Result<Document> {
+    async fn document(&self) -> loa_contracts::surface::Result<Document> {
         use base64::Engine;
         let info = self.info();
         if info.mode != SurfaceMode::Document {
@@ -253,7 +253,7 @@ impl Surface for McpSurface {
         Ok(Document { name: info.name, mime, data })
     }
 
-    async fn screenshot(&self) -> loa_surface::Result<Bytes> {
+    async fn screenshot(&self) -> loa_contracts::surface::Result<Bytes> {
         self.shared.screenshot().await
     }
 }

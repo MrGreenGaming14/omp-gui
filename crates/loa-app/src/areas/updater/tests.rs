@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
-use loa_adapter::Capabilities;
+use loa_contracts::harness::Capabilities;
 use loa_bus::Policy;
 use loa_ui_decisions::desk;
 use loa_updater::{Feed, Gates, Installed, PrereleasePolicy, Product, ProductSpec};

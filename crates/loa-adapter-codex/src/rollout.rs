@@ -16,7 +16,7 @@
 use crate::HARNESS;
 use crate::json::{str_at, take_str};
 use loa_util::time::{format_iso_ms, parse_iso_ms};
-use loa_adapter::{AdapterError, Result};
+use loa_contracts::harness::{AdapterError, Result};
 use loa_core::{
     CallStatus, Dom, Draft, ElementKind, MessageKind, MessageStatus, Node, NodeId, PatchSink, Role, SCHEMA_VERSION,
     SessionMode, TurnStatus, Value, attr,

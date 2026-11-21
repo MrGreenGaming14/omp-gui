@@ -15,7 +15,7 @@ use futures::Stream;
 use iced::widget::image::Handle;
 use iced::widget::{button, canvas, column, container, image, row, scrollable, space, text};
 use iced::{Center, Element, Fill, Point, Size, Task};
-use loa_surface::{
+use loa_contracts::surface::{
     Document, Encoding, Frame, Input, InputEvent, Modifiers, MouseButton, Surface, SurfaceInfo,
     SurfaceMode, SurfaceUri, StreamInfo,
 };

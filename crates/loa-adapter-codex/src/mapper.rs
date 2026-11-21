@@ -7,7 +7,7 @@
 
 use crate::HARNESS;
 use crate::json::{int_at, str_at};
-use loa_adapter::{AdapterError, Answer, Prompt, Result, SessionConfig, SessionState};
+use loa_contracts::harness::{AdapterError, Answer, Prompt, Result, SessionConfig, SessionState};
 use loa_core::{
     CallStatus, DecisionKind, DecisionStatus, Dom, Draft, ElementKind, JobKind, JobStatus, MessageKind, MessageStatus,
     NodeId, PatchSink, Role, SCHEMA_VERSION, SessionMode, TodoState, TurnStatus, Value, answer, attr, now_ms,

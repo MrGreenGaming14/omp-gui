@@ -12,7 +12,7 @@ use crate::settings::{ProjectSettings, SettingsStore, exclude_draft, is_excluded
 use crate::source::{Access, Requester, SessionInfo, visible_sessions};
 use crate::tools::ProjectTools;
 use crate::{Error, Result};
-use loa_adapter::{HostToolSpec, HostTools};
+use loa_contracts::harness::{HostToolSpec, HostTools};
 use loa_core::{Dom, ElementKind, attr};
 use std::collections::BTreeMap;
 use std::sync::Arc;

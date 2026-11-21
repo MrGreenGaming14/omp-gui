@@ -4577,27 +4577,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4744e383959f0db86ede514b809b1c53251889093803c05267acc7d4e7030d70"
 
 [[package]]
-name = "loa-adapter"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "bytes",
- "loa-adapter",
- "loa-core",
- "loa-util",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
-]
-
-[[package]]
 name = "loa-adapter-acp"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "loa-adapter",
+ "loa-contracts",
  "loa-core",
  "loa-util",
  "serde",
@@ -4613,7 +4597,7 @@ name = "loa-adapter-claude"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "loa-adapter",
+ "loa-contracts",
  "loa-core",
  "loa-util",
  "serde_json",
@@ -4628,7 +4612,7 @@ name = "loa-adapter-codex"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "loa-adapter",
+ "loa-contracts",
  "loa-core",
  "loa-util",
  "serde_json",
@@ -4643,7 +4627,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
- "loa-adapter",
+ "loa-contracts",
  "loa-core",
  "loa-omp-rpc",
  "loa-util",
@@ -4661,7 +4645,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
- "loa-adapter",
+ "loa-contracts",
  "loa-core",
  "loa-util",
  "serde",
@@ -4678,7 +4662,7 @@ dependencies = [
  "async-trait",
  "axum",
  "futures",
- "loa-adapter",
+ "loa-contracts",
  "loa-core",
  "loa-util",
  "reqwest",
@@ -4700,7 +4684,6 @@ dependencies = [
  "iced_runtime",
  "iced_test",
  "image",
- "loa-adapter",
  "loa-adapter-acp",
  "loa-adapter-claude",
  "loa-adapter-codex",
@@ -4709,6 +4692,7 @@ dependencies = [
  "loa-adapter-opencode",
  "loa-bus",
  "loa-config",
+ "loa-contracts",
  "loa-core",
  "loa-features",
  "loa-grants",
@@ -4721,7 +4705,6 @@ dependencies = [
  "loa-projects",
  "loa-remote",
  "loa-sandbox",
- "loa-surface",
  "loa-surface-bench",
  "loa-surface-hub",
  "loa-ui-chat",
@@ -4764,7 +4747,7 @@ dependencies = [
 name = "loa-config"
 version = "0.1.0"
 dependencies = [
- "loa-adapter",
+ "loa-contracts",
  "loa-core",
  "loa-util",
  "serde",
@@ -4774,6 +4757,23 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "toml",
+]
+
+[[package]]
+name = "loa-contracts"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "loa-contracts",
+ "loa-core",
+ "loa-util",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
 ]
 
 [[package]]
@@ -4791,8 +4791,8 @@ name = "loa-features"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "loa-adapter",
  "loa-bus",
+ "loa-contracts",
  "loa-core",
  "loa-journal",
  "loa-projects",
@@ -4812,8 +4812,8 @@ dependencies = [
  "futures",
  "getrandom 0.3.4",
  "hex",
+ "loa-contracts",
  "loa-core",
- "loa-surface",
  "loa-util",
  "rusqlite",
  "serde",
@@ -4861,9 +4861,8 @@ dependencies = [
  "futures",
  "http",
  "libtest-mimic",
- "loa-adapter",
  "loa-config",
- "loa-surface",
+ "loa-contracts",
  "loa-util",
  "process-wrap",
  "reqwest",
@@ -4957,7 +4956,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
- "loa-adapter",
+ "loa-contracts",
  "loa-util",
  "rmcp",
  "serde",
@@ -4990,8 +4989,8 @@ name = "loa-projects"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "loa-adapter",
  "loa-bus",
+ "loa-contracts",
  "loa-core",
  "loa-journal",
  "loa-util",
@@ -5014,8 +5013,8 @@ dependencies = [
  "futures",
  "hmac 0.12.1",
  "http",
- "loa-adapter",
  "loa-config",
+ "loa-contracts",
  "loa-core",
  "loa-mcp",
  "loa-util",
@@ -5041,7 +5040,7 @@ name = "loa-sandbox"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "loa-adapter",
+ "loa-contracts",
  "loa-core",
  "loa-util",
  "serde",
@@ -5057,7 +5056,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "libc",
- "loa-adapter",
+ "loa-contracts",
  "loa-core",
  "loa-sandbox",
  "loa-util",
@@ -5081,18 +5080,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "loa-surface"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "bytes",
- "loa-core",
- "serde",
- "thiserror 2.0.21",
- "tokio",
-]
-
-[[package]]
 name = "loa-surface-bench"
 version = "0.1.0"
 dependencies = [
@@ -5100,7 +5087,7 @@ dependencies = [
  "bytes",
  "jpeg-decoder",
  "jpeg-encoder",
- "loa-surface",
+ "loa-contracts",
  "loa-util",
  "png 0.18.1",
  "rusty_h264",
@@ -5122,7 +5109,7 @@ dependencies = [
  "chromiumoxide",
  "futures",
  "jpeg-decoder",
- "loa-surface",
+ "loa-contracts",
  "loa-util",
  "serde",
  "serde_json",
@@ -5144,7 +5131,7 @@ dependencies = [
  "docx-rs",
  "hayro",
  "image",
- "loa-surface",
+ "loa-contracts",
  "loa-util",
  "quick-xml 0.42.0",
  "rust_xlsxwriter",
@@ -5165,10 +5152,9 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "image",
- "loa-adapter",
+ "loa-contracts",
  "loa-core",
  "loa-mcp",
- "loa-surface",
  "loa-surface-bench",
  "loa-surface-browser",
  "loa-surface-docs",
@@ -5192,7 +5178,7 @@ dependencies = [
  "base64 0.23.1",
  "bytes",
  "crc32fast",
- "loa-surface",
+ "loa-contracts",
  "loa-surface-bench",
  "loa-util",
  "prost 0.14.6",
@@ -5209,7 +5195,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "flate2",
- "loa-surface",
+ "loa-contracts",
  "loa-util",
  "png 0.18.1",
  "thiserror 2.0.21",
@@ -5234,7 +5220,7 @@ version = "0.1.0"
 dependencies = [
  "iced",
  "iced_test",
- "loa-adapter",
+ "loa-contracts",
  "loa-core",
  "loa-ui-icons",
  "loa-ui-shell",
@@ -5246,8 +5232,8 @@ version = "0.1.0"
 dependencies = [
  "iced",
  "iced_test",
- "loa-adapter",
  "loa-config",
+ "loa-contracts",
  "loa-core",
  "loa-ui-icons",
  "loa-util",
@@ -5349,7 +5335,7 @@ dependencies = [
  "iced_test",
  "image",
  "jpeg-decoder",
- "loa-surface",
+ "loa-contracts",
  "loa-surface-bench",
  "loa-surface-docs",
  "loa-surface-hub",
@@ -5386,7 +5372,7 @@ version = "0.1.0"
 dependencies = [
  "iced",
  "iced_test",
- "loa-adapter",
+ "loa-contracts",
  "loa-ui-icons",
  "thiserror 2.0.21",
 ]

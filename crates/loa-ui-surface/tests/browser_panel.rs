@@ -6,7 +6,7 @@
 use futures::StreamExt;
 use iced::{Point, Size, Task};
 use iced_runtime::Action;
-use loa_surface::MouseButton;
+use loa_contracts::surface::MouseButton;
 use loa_surface_hub::{HubConfig, SurfaceHub};
 use loa_ui_surface::panel::Message;
 use loa_ui_surface::{BrowserStatus, Message as SurfaceMessage, Panel, PanelOptions, PointerInput};

@@ -22,7 +22,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use iced::{Element, Subscription, Task};
-use loa_adapter::{Capabilities, HarnessSession, HostToolSpec, HostTools, Prompt, SessionConfig};
+use loa_contracts::harness::{Capabilities, HarnessSession, HostToolSpec, HostTools, Prompt, SessionConfig};
 use loa_bus::SessionId;
 use loa_ui_composer as composer;
 use loa_ui_palette as palette;

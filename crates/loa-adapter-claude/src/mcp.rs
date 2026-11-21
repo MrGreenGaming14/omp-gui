@@ -5,7 +5,7 @@
 //! `mcp_message` control request on the same stdio it already uses. No
 //! extra process or port is involved.
 
-use loa_adapter::{HostToolSpec, HostTools};
+use loa_contracts::harness::{HostToolSpec, HostTools};
 use serde_json::{Value, json};
 
 /// Name of the host tool server in the MCP config. Claude Code shows its

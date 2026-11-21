@@ -7,7 +7,7 @@ use std::path::Path;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 
-use loa_adapter::{Adapter, AdapterError, Answer, Capabilities, HarnessSession, HostTools, Prompt, Registry, SessionConfig, SessionState};
+use loa_contracts::harness::{Adapter, AdapterError, Answer, Capabilities, HarnessSession, HostTools, Prompt, Registry, SessionConfig, SessionState};
 use loa_core::{Dom, Draft, ElementKind, NodeId, PatchSink, Role, TurnStatus, Value, now_ms};
 use loa_identity::NodeIdentity;
 use loa_sandbox::provider::local::find_stub;
@@ -42,7 +42,7 @@ impl Adapter for Scripted {
         Capabilities { host_tools: true, ..Capabilities::default() }
     }
 
-    async fn start(&self, config: SessionConfig, sink: Arc<dyn PatchSink>) -> loa_adapter::Result<Box<dyn HarnessSession>> {
+    async fn start(&self, config: SessionConfig, sink: Arc<dyn PatchSink>) -> loa_contracts::harness::Result<Box<dyn HarnessSession>> {
         let names: Vec<String> = config.host_tools.iter().map(|tool| tool.name.clone()).collect();
         let worker = !names.iter().any(|name| name == "sandbox_task");
         if !worker {
@@ -59,7 +59,7 @@ impl Adapter for Scripted {
         Ok(Box::new(ScriptedSession { sink, root, tools, id: config.session_id, worker, peer: Arc::clone(&self.peer) }))
     }
 
-    async fn resume(&self, _: SessionConfig, _: &Dom, _: Arc<dyn PatchSink>) -> loa_adapter::Result<Box<dyn HarnessSession>> {
+    async fn resume(&self, _: SessionConfig, _: &Dom, _: Arc<dyn PatchSink>) -> loa_contracts::harness::Result<Box<dyn HarnessSession>> {
         Err(AdapterError::Unsupported { harness: "scripted", what: "resume" })
     }
 }
@@ -93,7 +93,7 @@ impl ScriptedSession {
 
 #[async_trait::async_trait]
 impl HarnessSession for ScriptedSession {
-    async fn send(&self, prompt: Prompt) -> loa_adapter::Result<()> {
+    async fn send(&self, prompt: Prompt) -> loa_contracts::harness::Result<()> {
         let turn = self.sink.commit(Draft::insert(self.root, ElementKind::Turn, [("status", Value::from(TurnStatus::Running))], ""))?.node;
         self.sink.commit(Draft::insert(turn, ElementKind::Message, [("role", Value::from(Role::User))], prompt.text.as_str()))?;
         let reply = self.work(&prompt.text).await.unwrap_or_else(|error| format!("failed: {error}"));
@@ -102,11 +102,11 @@ impl HarnessSession for ScriptedSession {
         Ok(())
     }
 
-    async fn interrupt(&self) -> loa_adapter::Result<()> {
+    async fn interrupt(&self) -> loa_contracts::harness::Result<()> {
         Ok(())
     }
 
-    async fn answer(&self, decision: NodeId, _: Answer) -> loa_adapter::Result<()> {
+    async fn answer(&self, decision: NodeId, _: Answer) -> loa_contracts::harness::Result<()> {
         Err(AdapterError::UnknownDecision(decision))
     }
 
@@ -118,11 +118,11 @@ impl HarnessSession for ScriptedSession {
         SessionState::Idle
     }
 
-    async fn wait_idle(&self) -> loa_adapter::Result<()> {
+    async fn wait_idle(&self) -> loa_contracts::harness::Result<()> {
         Ok(())
     }
 
-    async fn shutdown(&self) -> loa_adapter::Result<()> {
+    async fn shutdown(&self) -> loa_contracts::harness::Result<()> {
         Ok(())
     }
 }

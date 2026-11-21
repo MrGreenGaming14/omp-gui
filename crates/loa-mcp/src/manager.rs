@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use loa_surface::SurfaceUri;
+use loa_contracts::surface::SurfaceUri;
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, ClientCapabilities, ClientConfig, Implementation, JsonObject,
     ReadResourceRequestParams, Resource, ResourceContents, Tool,

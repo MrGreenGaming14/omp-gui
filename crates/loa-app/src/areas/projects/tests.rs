@@ -3,7 +3,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use iced::widget::text_editor::{Action, Edit};
-use loa_adapter::{Adapter, AdapterError, Answer, Capabilities, HarnessSession, Prompt, SessionState};
+use loa_contracts::harness::{Adapter, AdapterError, Answer, Capabilities, HarnessSession, Prompt, SessionState};
 use loa_bus::Policy;
 use loa_core::{Dom, Draft, ElementKind, NodeId, PatchSink, Role, TurnStatus, Value, attr, now_ms};
 use loa_projects::{PROJECT_READ, PROJECT_SEARCH, SummaryAnswer};
@@ -31,7 +31,7 @@ impl Adapter for ProjectAdapter {
         Capabilities { host_tools: true, ..Capabilities::default() }
     }
 
-    async fn start(&self, config: SessionConfig, sink: Arc<dyn PatchSink>) -> loa_adapter::Result<Box<dyn HarnessSession>> {
+    async fn start(&self, config: SessionConfig, sink: Arc<dyn PatchSink>) -> loa_contracts::harness::Result<Box<dyn HarnessSession>> {
         let attrs: [(&str, Value); 6] = [
             (attr::ID, config.session_id.clone().into()),
             (attr::NODE, config.node.clone().into()),
@@ -45,7 +45,7 @@ impl Adapter for ProjectAdapter {
         Ok(Box::new(Turns { sink, root }))
     }
 
-    async fn resume(&self, _: SessionConfig, _: &Dom, _: Arc<dyn PatchSink>) -> loa_adapter::Result<Box<dyn HarnessSession>> {
+    async fn resume(&self, _: SessionConfig, _: &Dom, _: Arc<dyn PatchSink>) -> loa_contracts::harness::Result<Box<dyn HarnessSession>> {
         Err(AdapterError::Unsupported { harness: HARNESS, what: "resume" })
     }
 }
@@ -57,7 +57,7 @@ struct Turns {
 
 #[async_trait::async_trait]
 impl HarnessSession for Turns {
-    async fn send(&self, prompt: Prompt) -> loa_adapter::Result<()> {
+    async fn send(&self, prompt: Prompt) -> loa_contracts::harness::Result<()> {
         let started: [(&str, Value); 2] = [(attr::STATUS, TurnStatus::Running.into()), (attr::STARTED, now_ms().into())];
         let turn = self.sink.commit(Draft::insert(self.root, ElementKind::Turn, started, ""))?.node;
         self.sink.commit(Draft::insert(turn, ElementKind::Message, [(attr::ROLE, Value::from(Role::User))], prompt.text.as_str()))?;
@@ -68,11 +68,11 @@ impl HarnessSession for Turns {
         Ok(())
     }
 
-    async fn interrupt(&self) -> loa_adapter::Result<()> {
+    async fn interrupt(&self) -> loa_contracts::harness::Result<()> {
         Ok(())
     }
 
-    async fn answer(&self, decision: NodeId, _: Answer) -> loa_adapter::Result<()> {
+    async fn answer(&self, decision: NodeId, _: Answer) -> loa_contracts::harness::Result<()> {
         Err(AdapterError::UnknownDecision(decision))
     }
 
@@ -84,11 +84,11 @@ impl HarnessSession for Turns {
         SessionState::Idle
     }
 
-    async fn wait_idle(&self) -> loa_adapter::Result<()> {
+    async fn wait_idle(&self) -> loa_contracts::harness::Result<()> {
         Ok(())
     }
 
-    async fn shutdown(&self) -> loa_adapter::Result<()> {
+    async fn shutdown(&self) -> loa_contracts::harness::Result<()> {
         Ok(())
     }
 }

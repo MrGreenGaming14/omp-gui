@@ -12,7 +12,7 @@ use chromiumoxide::cdp::browser_protocol::page::{
 };
 use chromiumoxide::listeners::EventStream;
 use futures::StreamExt;
-use loa_surface::{Encoding, Rect};
+use loa_contracts::surface::{Encoding, Rect};
 use std::sync::{Arc, Mutex};
 
 /// Starts the screencast at `width` x `height`. Chrome sends a frame on each

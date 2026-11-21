@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use bytes::Bytes;
-use loa_adapter::{HostToolContent, HostToolSpec, HostTools};
+use loa_contracts::harness::{OutputBlock, HostToolSpec, HostTools};
 use rmcp::model::{CallToolResult, ContentBlock, ResourceContents};
 
 use crate::{Manager, Status, ToolFilter};
@@ -110,34 +110,34 @@ fn block_text(block: &ContentBlock) -> Option<String> {
 }
 
 /// The blocks of a result, structured content first when the server gave no text.
-fn content(result: &CallToolResult) -> Vec<HostToolContent> {
+fn content(result: &CallToolResult) -> Vec<OutputBlock> {
     let mut out = Vec::with_capacity(result.content.len());
     for block in &result.content {
         if let ContentBlock::Image(image) = block {
             match STANDARD.decode(image.data.as_bytes()) {
                 Ok(data) => {
-                    out.push(HostToolContent::Image { mime: image.mime_type.clone(), data: Bytes::from(data) });
+                    out.push(OutputBlock::Image { mime: image.mime_type.clone(), data: Bytes::from(data) });
                 }
-                Err(e) => out.push(HostToolContent::Text(format!("[undecodable {} image: {e}]", image.mime_type))),
+                Err(e) => out.push(OutputBlock::Text(format!("[undecodable {} image: {e}]", image.mime_type))),
             }
         } else if let Some(text) = block_text(block) {
-            out.push(HostToolContent::Text(text));
+            out.push(OutputBlock::Text(text));
         }
     }
     if out.is_empty()
         && let Some(value) = &result.structured_content
     {
-        out.push(HostToolContent::Text(value.to_string()));
+        out.push(OutputBlock::Text(value.to_string()));
     }
     out
 }
 
-fn text(content: &[HostToolContent]) -> String {
+fn text(content: &[OutputBlock]) -> String {
     content
         .iter()
         .map(|block| match block {
-            HostToolContent::Text(text) => text.clone(),
-            HostToolContent::Image { mime, data } => format!("[{mime} image, {} bytes]", data.len()),
+            OutputBlock::Text(text) => text.clone(),
+            OutputBlock::Image { mime, data } => format!("[{mime} image, {} bytes]", data.len()),
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -151,7 +151,7 @@ impl HostTools for McpHostTools {
         if result.is_error == Some(true) { Err(out) } else { Ok(out) }
     }
 
-    async fn call_content(&self, _session_id: &str, tool: &str, args: &str) -> Result<Vec<HostToolContent>, String> {
+    async fn call_content(&self, _session_id: &str, tool: &str, args: &str) -> Result<Vec<OutputBlock>, String> {
         let result = self.run(tool, args).await?;
         let blocks = content(&result);
         if result.is_error == Some(true) { Err(text(&blocks)) } else { Ok(blocks) }

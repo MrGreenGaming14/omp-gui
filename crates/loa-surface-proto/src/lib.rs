@@ -23,7 +23,7 @@ pub use viewer::{
 };
 pub use wire::{RejectCode, VERSION};
 
-use loa_surface::SurfaceError;
+use loa_contracts::surface::SurfaceError;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProtoError {

@@ -1,4 +1,4 @@
-use loa_adapter::{Adapter, Answer, HarnessSession, Prompt, SessionConfig, SessionState};
+use loa_contracts::harness::{Adapter, Answer, HarnessSession, Prompt, SessionConfig, SessionState};
 use loa_adapter_omp::{OmpAdapter, OmpAdapterConfig};
 use loa_core::{attr, ElementKind, MemorySink};
 use loa_omp_rpc::fake::{FakeOmp, handshake_v2};
@@ -219,7 +219,7 @@ async fn set_model_and_set_effort_update_the_session() {
     assert_eq!(sink.dom().root().unwrap().str_attr(attr::MODEL), Some("anthropic/claude-haiku-5-5"), "the model omp started with");
     let models = session.models().await.unwrap();
     assert_eq!(models.iter().map(|m| (m.id.as_str(), m.name.as_str(), m.efforts.len())).collect::<Vec<_>>(), [("anthropic/claude-sonnet-4-5", "Claude Sonnet 4.5", 2), ("openai/gpt-x", "gpt-x", 0)]);
-    session.set_model(loa_adapter::ModelSelection { model: "anthropic/claude-sonnet-4-5".into(), role: None }).await.unwrap();
+    session.set_model(loa_contracts::harness::ModelSelection { model: "anthropic/claude-sonnet-4-5".into(), role: None }).await.unwrap();
     assert_eq!(sink.dom().root().unwrap().str_attr(attr::MODEL), Some("anthropic/claude-sonnet-4-5"));
     session.set_effort("low".into()).await.unwrap();
     assert_eq!(sink.dom().root().unwrap().str_attr(attr::EFFORT), Some("low"));
@@ -232,13 +232,13 @@ async fn set_model_and_set_effort_update_the_session() {
 struct Screenshot;
 
 #[async_trait::async_trait]
-impl loa_adapter::HostTools for Screenshot {
+impl loa_contracts::harness::HostTools for Screenshot {
     async fn call(&self, _: &str, _: &str, _: &str) -> Result<String, String> { Err("images only".into()) }
 
-    async fn call_content(&self, session: &str, tool: &str, _: &str) -> Result<Vec<loa_adapter::HostToolContent>, String> {
+    async fn call_content(&self, session: &str, tool: &str, _: &str) -> Result<Vec<loa_contracts::harness::OutputBlock>, String> {
         Ok(vec![
-            loa_adapter::HostToolContent::Text(format!("{tool} for {session}")),
-            loa_adapter::HostToolContent::Image { mime: "image/png".into(), data: b"\x89PNG".to_vec().into() },
+            loa_contracts::harness::OutputBlock::Text(format!("{tool} for {session}")),
+            loa_contracts::harness::OutputBlock::Image { mime: "image/png".into(), data: b"\x89PNG".to_vec().into() },
         ])
     }
 }
@@ -259,7 +259,7 @@ async fn host_tool_images_reach_omp_as_image_blocks() {
     let session = OmpAdapter::new(config).start(SessionConfig {
         session_id: "app-1".into(),
         cwd: dir.path().to_owned(),
-        host_tools: vec![loa_adapter::HostToolSpec { name: "screenshot".into(), description: "Capture the screen".into(), input_schema: r#"{"type":"object"}"#.into() }],
+        host_tools: vec![loa_contracts::harness::HostToolSpec { name: "screenshot".into(), description: "Capture the screen".into(), input_schema: r#"{"type":"object"}"#.into() }],
         host_tool_handler: Some(Arc::new(Screenshot)),
         ..Default::default()
     }, Arc::new(MemorySink::new())).await.unwrap();
@@ -325,8 +325,8 @@ async fn an_at_mention_of_a_text_file_stays_a_path_and_an_image_goes_as_an_image
     let notes = dir.path().join("notes.md");
     let text = format!("Summarize @{} and @{}", notes.display(), image.display());
     let attachments = vec![
-        loa_adapter::Attachment { path: notes, mime: None },
-        loa_adapter::Attachment { path: image, mime: Some("image/png".into()) },
+        loa_contracts::harness::Attachment { path: notes, mime: None },
+        loa_contracts::harness::Attachment { path: image, mime: Some("image/png".into()) },
     ];
     session.send(Prompt { text: text.clone(), attachments, by: "owner".into() }).await.expect("a text file mention doesn't fail the send");
     tokio::time::timeout(WAIT, session.wait_idle()).await.unwrap().unwrap();

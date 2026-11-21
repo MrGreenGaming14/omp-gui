@@ -1,6 +1,6 @@
 //! Handwritten Claude Code transcript fixtures: no real user session data.
 
-use loa_adapter::{Adapter, SessionConfig};
+use loa_contracts::harness::{Adapter, SessionConfig};
 use loa_adapter_claude::{ClaudeAdapter, native};
 use loa_core::{Draft, ElementKind, MemorySink, PatchSink, Role, Value, attr};
 use serde_json::{Value as Json, json};

@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use loa_adapter::{Adapter, AdapterError, Capabilities, Feature, HarnessSession, ModelSelection, ModelSwitch, Prompt, SessionConfig, SessionState};
+use loa_contracts::harness::{Adapter, AdapterError, Capabilities, Feature, HarnessSession, ModelSelection, ModelSwitch, Prompt, SessionConfig, SessionState};
 use loa_core::{attr, Dom, Draft, ElementKind as K, MemorySink, NodeId, PatchSink, Value};
 use loa_features::{PlanPermit, ReadOnlyTools, Result, SessionStore, Summarizer};
 use std::{sync::{Arc, Mutex}, collections::HashMap};
@@ -38,20 +38,20 @@ struct Harness {
 
 #[async_trait]
 impl HarnessSession for Harness {
-    async fn send(&self, prompt: Prompt) -> loa_adapter::Result<()> {
+    async fn send(&self, prompt: Prompt) -> loa_contracts::harness::Result<()> {
         self.prompts.lock().unwrap().push(prompt.text);
         Ok(())
     }
-    async fn interrupt(&self) -> loa_adapter::Result<()> { Ok(()) }
-    async fn answer(&self, _: NodeId, _: loa_adapter::Answer) -> loa_adapter::Result<()> { Ok(()) }
-    async fn set_model(&self, selection: ModelSelection) -> loa_adapter::Result<()> {
+    async fn interrupt(&self) -> loa_contracts::harness::Result<()> { Ok(()) }
+    async fn answer(&self, _: NodeId, _: loa_contracts::harness::Answer) -> loa_contracts::harness::Result<()> { Ok(()) }
+    async fn set_model(&self, selection: ModelSelection) -> loa_contracts::harness::Result<()> {
         self.selected.lock().unwrap().push(selection.model);
         Ok(())
     }
     fn harness(&self) -> &'static str { "test" }
     fn state(&self) -> SessionState { self.state }
-    async fn wait_idle(&self) -> loa_adapter::Result<()> { Ok(()) }
-    async fn shutdown(&self) -> loa_adapter::Result<()> { Ok(()) }
+    async fn wait_idle(&self) -> loa_contracts::harness::Result<()> { Ok(()) }
+    async fn shutdown(&self) -> loa_contracts::harness::Result<()> { Ok(()) }
 }
 
 struct TestAdapter {
@@ -75,7 +75,7 @@ impl Adapter for TestAdapter {
     fn capabilities(&self) -> Capabilities {
         Capabilities { features: if self.native_fork { vec![Feature::Fork] } else { vec![] }, model_switch: ModelSwitch::PerCall, ..Default::default() }
     }
-    async fn start(&self, config: SessionConfig, sink: Arc<dyn PatchSink>) -> loa_adapter::Result<Box<dyn HarnessSession>> {
+    async fn start(&self, config: SessionConfig, sink: Arc<dyn PatchSink>) -> loa_contracts::harness::Result<Box<dyn HarnessSession>> {
         sink.commit(Draft::insert(NodeId::DOCUMENT, K::Session, [
             (attr::ID, Value::from(config.session_id)),
             (attr::HARNESS, Value::from("test")),
@@ -84,10 +84,10 @@ impl Adapter for TestAdapter {
         ], ""))?;
         Ok(self.harness())
     }
-    async fn resume(&self, _: SessionConfig, _: &Dom, _: Arc<dyn PatchSink>) -> loa_adapter::Result<Box<dyn HarnessSession>> {
+    async fn resume(&self, _: SessionConfig, _: &Dom, _: Arc<dyn PatchSink>) -> loa_contracts::harness::Result<Box<dyn HarnessSession>> {
         Err(AdapterError::Unsupported { harness: "test", what: "resume" })
     }
-    async fn fork(&self, config: SessionConfig, dom: &Dom, sink: Arc<dyn PatchSink>) -> loa_adapter::Result<Box<dyn HarnessSession>> {
+    async fn fork(&self, config: SessionConfig, dom: &Dom, sink: Arc<dyn PatchSink>) -> loa_contracts::harness::Result<Box<dyn HarnessSession>> {
         assert_eq!(dom.root().unwrap().str_attr(attr::ID), Some(config.session_id.as_str()));
         assert_eq!(dom.seq(), sink_as_seq(&sink, dom.seq()));
         Ok(self.harness())

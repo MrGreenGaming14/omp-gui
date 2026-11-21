@@ -11,7 +11,7 @@ use std::time::Duration;
 use iced::keyboard::{self, key};
 use iced::widget::{column, container, stack, text};
 use iced::{Element, Fill, Font, Padding, Subscription, Task, Theme};
-use loa_adapter::{AdapterError, HarnessSession, HostToolRouter, Prompt, SessionConfig};
+use loa_contracts::harness::{AdapterError, HarnessSession, HostToolRouter, Prompt, SessionConfig};
 use loa_bus::SessionId;
 use loa_core::{Dom, ElementKind, Op, SessionMode, TurnStatus, attr};
 use loa_ui_chat as chat;

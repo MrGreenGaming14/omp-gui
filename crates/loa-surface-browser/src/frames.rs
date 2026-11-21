@@ -2,7 +2,7 @@
 
 use loa_util::LockExt;
 use bytes::Bytes;
-use loa_surface::{Encoding, Frame, Rect};
+use loa_contracts::surface::{Encoding, Frame, Rect};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};

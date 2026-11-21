@@ -12,7 +12,7 @@ use chromiumoxide::browser::{Browser, BrowserConfig as CdpConfig};
 use chromiumoxide::cdp::browser_protocol::page::EventScreencastFrame;
 use chromiumoxide::Page;
 use futures::StreamExt;
-use loa_surface::{Surface, SurfaceInfo, SurfaceServer, SurfaceUri};
+use loa_contracts::surface::{Surface, SurfaceInfo, SurfaceServer, SurfaceUri};
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -330,13 +330,13 @@ impl SurfaceServer for BrowserServer {
         SERVER_NAME
     }
 
-    async fn list(&self) -> loa_surface::Result<Vec<SurfaceInfo>> {
+    async fn list(&self) -> loa_contracts::surface::Result<Vec<SurfaceInfo>> {
         Ok(self.tabs().iter().map(|t| t.info()).collect())
     }
 
-    async fn open(&self, uri: &SurfaceUri) -> loa_surface::Result<Arc<dyn Surface>> {
+    async fn open(&self, uri: &SurfaceUri) -> loa_contracts::surface::Result<Arc<dyn Surface>> {
         if uri.server() != SERVER_NAME {
-            return Err(loa_surface::SurfaceError::NotFound(uri.clone()));
+            return Err(loa_contracts::surface::SurfaceError::NotFound(uri.clone()));
         }
         Ok(self.tab(uri)?)
     }

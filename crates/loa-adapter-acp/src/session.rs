@@ -11,7 +11,7 @@ use crate::wire::{
     TerminalRef, WriteTextFileRequest, code,
 };
 use async_trait::async_trait;
-use loa_adapter::{AdapterError, Answer, HarnessModel, HarnessSession, ModelSelection, Prompt, Result, SessionState};
+use loa_contracts::harness::{AdapterError, Answer, HarnessModel, HarnessSession, ModelSelection, Prompt, Result, SessionState};
 use loa_core::{NodeId, SessionMode, answer};
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};

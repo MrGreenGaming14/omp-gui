@@ -1,7 +1,7 @@
 //! Encoding negotiation over `omp/surface/1`: the viewer's `Open.encodings`
 //! pick what a live surface streams, and `Accept` says what that is.
 
-use loa_surface::{Encoding, Surface};
+use loa_contracts::surface::{Encoding, Surface};
 use loa_surface_bench::encode::probe;
 use loa_surface_bench::live::{LiveVideo, SOURCE, VideoSurface};
 use loa_surface_bench::synthetic::{SyntheticConfig, SyntheticSurface};
@@ -25,7 +25,7 @@ async fn viewer(surface: Arc<VideoSurface>, encodings: Vec<Encoding>) -> PixelVi
     viewer
 }
 
-async fn next_frame(viewer: &mut PixelViewer) -> loa_surface::Frame {
+async fn next_frame(viewer: &mut PixelViewer) -> loa_contracts::surface::Frame {
     loop {
         let event = tokio::time::timeout(Duration::from_secs(10), viewer.next_event()).await.unwrap().unwrap();
         if let ViewerEvent::Frame(frame) = event {

@@ -11,7 +11,7 @@
 use crate::ids;
 use crate::json;
 use crate::mapper::{EventMapper, HARNESS, RootInfo, ext, xattr};
-use loa_adapter::{AdapterError, Result};
+use loa_contracts::harness::{AdapterError, Result};
 use loa_core::{CallStatus, Dom, ElementKind as K, MessageKind, Node, NodeId, PatchSink, attr};
 use serde::Deserialize;
 use serde_json::{Map, Value as Json, json};

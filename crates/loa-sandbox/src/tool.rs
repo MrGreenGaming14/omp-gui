@@ -7,7 +7,7 @@ use crate::sync;
 use crate::worker::{SandboxTools, WorkerJournal, WorkerRequest, run_worker};
 use crate::{Result, SandboxError};
 use async_trait::async_trait;
-use loa_adapter::{Adapter, HostToolSpec, HostTools, SessionConfig};
+use loa_contracts::harness::{Adapter, HostToolSpec, HostTools, SessionConfig};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;

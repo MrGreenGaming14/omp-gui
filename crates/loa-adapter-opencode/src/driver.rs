@@ -6,7 +6,7 @@ use crate::ids;
 use crate::mapper::{ChildSessions, EventMapper, Reply, RootInfo};
 use crate::native;
 use async_trait::async_trait;
-use loa_adapter::{Adapter, AdapterError, Answer, Availability, AvailabilityStatus, Capabilities, ContextDelivery, Feature, HarnessModel, HarnessSession, ModelSelection, ModelSwitch, Prompt, Result, SessionConfig, SessionState};
+use loa_contracts::harness::{Adapter, AdapterError, Answer, Availability, AvailabilityStatus, Capabilities, ContextDelivery, Feature, HarnessModel, HarnessSession, ModelSelection, ModelSwitch, Prompt, Result, SessionConfig, SessionState};
 use loa_core::{DecisionKind, Dom, NodeId, PatchSink, SCHEMA_VERSION, SessionMode, attr, now_ms};
 use serde_json::{Value as Json, json};
 use std::path::Path;
@@ -120,8 +120,8 @@ impl Adapter for OpenCodeAdapter {
         let native = client.create_session(json!({})).await?;
         for server in &config.mcp_servers {
             let transport = match &server.transport {
-                loa_adapter::McpTransport::Http { url, headers } => json!({ "type": "remote", "url": url, "headers": headers }),
-                loa_adapter::McpTransport::Stdio { command, args, env } => json!({ "type": "local", "command": std::iter::once(command.clone()).chain(args.iter().cloned()).collect::<Vec<_>>(), "environment": env }),
+                loa_contracts::harness::McpTransport::Http { url, headers } => json!({ "type": "remote", "url": url, "headers": headers }),
+                loa_contracts::harness::McpTransport::Stdio { command, args, env } => json!({ "type": "local", "command": std::iter::once(command.clone()).chain(args.iter().cloned()).collect::<Vec<_>>(), "environment": env }),
             };
             client.add_mcp(&server.name, transport).await?;
         }

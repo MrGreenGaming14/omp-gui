@@ -95,7 +95,7 @@ impl VideoEncoder for SoftwareH264 {
 mod tests {
     use super::*;
     use crate::decode::FrameDecoder;
-    use loa_surface::{Encoding, Frame, Rect};
+    use loa_contracts::surface::{Encoding, Frame, Rect};
 
     fn frame(unit: &AccessUnit, width: u32, height: u32) -> Frame {
         Frame {

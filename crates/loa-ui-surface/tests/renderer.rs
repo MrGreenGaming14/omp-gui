@@ -6,7 +6,7 @@ use bytes::Bytes;
 use futures::StreamExt;
 use iced::{Point, Size, Task};
 use iced_runtime::Action;
-use loa_surface::{
+use loa_contracts::surface::{
     Document, Encoding, Frame, Input, InputEvent, Modifiers, MouseButton, Rect, Surface,
     SurfaceError, SurfaceInfo, SurfaceMode, SurfaceUri,
 };
@@ -32,7 +32,7 @@ impl Surface for FakeSurface {
         self.info.clone()
     }
 
-    fn frames(&self) -> loa_surface::Result<broadcast::Receiver<Arc<Frame>>> {
+    fn frames(&self) -> loa_contracts::surface::Result<broadcast::Receiver<Arc<Frame>>> {
         match self.info.mode {
             SurfaceMode::Pixel => Ok(self.frames.subscribe()),
             mode => Err(SurfaceError::Mode {
@@ -42,23 +42,23 @@ impl Surface for FakeSurface {
         }
     }
 
-    async fn request_keyframe(&self) -> loa_surface::Result<()> {
+    async fn request_keyframe(&self) -> loa_contracts::surface::Result<()> {
         self.keyframes.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
 
-    async fn input(&self, event: InputEvent) -> loa_surface::Result<()> {
+    async fn input(&self, event: InputEvent) -> loa_contracts::surface::Result<()> {
         self.inputs.send(event).map_err(|_| SurfaceError::Closed)
     }
 
-    async fn document(&self) -> loa_surface::Result<Document> {
+    async fn document(&self) -> loa_contracts::surface::Result<Document> {
         self.document.clone().ok_or(SurfaceError::Mode {
             uri: self.info.uri.clone(),
             mode: self.info.mode,
         })
     }
 
-    async fn screenshot(&self) -> loa_surface::Result<Bytes> {
+    async fn screenshot(&self) -> loa_contracts::surface::Result<Bytes> {
         Err(SurfaceError::Backend("not needed".into()))
     }
 }

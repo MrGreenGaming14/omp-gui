@@ -1,7 +1,7 @@
 use super::{OpenCodeAdapter, event::Event, mapper::{EventMapper, RootInfo}, native};
 use axum::{Json, Router, extract::{Path, State}, response::sse::{Event as SseEvent, Sse}, routing::{get, post}};
 use futures::stream;
-use loa_adapter::{Adapter, Answer, Prompt, SessionConfig};
+use loa_contracts::harness::{Adapter, Answer, Prompt, SessionConfig};
 use loa_core::{ElementKind as K, MemorySink, attr};
 use serde_json::{Value as JsonValue, json};
 use std::{convert::Infallible, sync::{Arc, Mutex}};
@@ -138,7 +138,7 @@ async fn http_driver_prompts_receives_events_replies_and_aborts() {
 
 #[tokio::test]
 async fn availability_probes_the_server_and_models_come_from_its_providers() {
-    use loa_adapter::AvailabilityStatus;
+    use loa_contracts::harness::AvailabilityStatus;
     // A port nothing listens on: bind, read the port, close.
     let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap().local_addr().unwrap();
     let down = OpenCodeAdapter::new(format!("http://{closed}"), None).availability().await;

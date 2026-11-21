@@ -10,8 +10,8 @@ use crate::hub::{Listed, SurfaceHub};
 use crate::{HubError, Result};
 use async_trait::async_trait;
 use bytes::Bytes;
-use loa_adapter::{HostToolContent, HostToolSpec, HostTools};
-use loa_surface::{SurfaceMode, SurfaceUri};
+use loa_contracts::harness::{OutputBlock, HostToolSpec, HostTools};
+use loa_contracts::surface::{SurfaceMode, SurfaceUri};
 use loa_surface_docs::DataQuery;
 use loa_surface_proto::mcp::{self as proto, ToolCall, ToolRunner};
 use serde::Deserialize;
@@ -263,7 +263,7 @@ impl SurfaceTools {
 
     async fn try_call(&self, name: &str, args: &Value, scope: Option<&str>) -> Result<ToolResult, String> {
         let in_scope = |uri: &str| -> Result<SurfaceUri, String> {
-            let uri: SurfaceUri = uri.parse().map_err(|e: loa_surface::SurfaceError| e.to_string())?;
+            let uri: SurfaceUri = uri.parse().map_err(|e: loa_contracts::surface::SurfaceError| e.to_string())?;
             match scope {
                 Some(scope) if uri.server() != scope => Err(format!("{uri} isn't a {scope} surface")),
                 _ => Ok(uri),
@@ -335,7 +335,7 @@ impl SurfaceTools {
     /// Saves a screenshot for a text-only result and describes it.
     fn save_screenshot(&self, png: &[u8]) -> Result<PathBuf, HubError> {
         let dir = &self.hub.config().screenshot_dir;
-        let io = |e: std::io::Error| HubError::Surface(loa_surface::SurfaceError::Backend(format!("saving the screenshot: {e}")));
+        let io = |e: std::io::Error| HubError::Surface(loa_contracts::surface::SurfaceError::Backend(format!("saving the screenshot: {e}")));
         std::fs::create_dir_all(dir).map_err(io)?;
         let n = self.shots.fetch_add(1, Ordering::Relaxed) + 1;
         let path = dir.join(format!("surface-{}-{n}.png", std::process::id()));
@@ -396,7 +396,7 @@ impl HostTools for SurfaceTools {
         if result.is_error { Err(text) } else { Ok(text) }
     }
 
-    async fn call_content(&self, _session_id: &str, tool: &str, args: &str) -> Result<Vec<HostToolContent>, String> {
+    async fn call_content(&self, _session_id: &str, tool: &str, args: &str) -> Result<Vec<OutputBlock>, String> {
         let result = self.run(tool, &args_json(args)?, None).await;
         if result.is_error {
             return Err(result.joined_text());
@@ -405,8 +405,8 @@ impl HostTools for SurfaceTools {
             .content
             .into_iter()
             .map(|block| match block {
-                ToolContent::Text(text) => HostToolContent::Text(text),
-                ToolContent::Image { mime, data } => HostToolContent::Image { mime, data },
+                ToolContent::Text(text) => OutputBlock::Text(text),
+                ToolContent::Image { mime, data } => OutputBlock::Image { mime, data },
             })
             .collect())
     }

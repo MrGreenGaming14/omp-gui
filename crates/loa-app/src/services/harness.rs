@@ -6,7 +6,8 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use loa_adapter::{Adapter, Availability, AvailabilityStatus, Registry, find_executable};
+use loa_contracts::harness::{Adapter, Availability, AvailabilityStatus, Registry};
+use loa_util::exec::which as find_executable;
 use loa_ui_composer::HarnessOption;
 
 /// Address `opencode serve` listens on by default.
@@ -73,7 +74,7 @@ impl Harnesses {
     /// for `detail`) until [`Harnesses::set_availability`] reports a probe.
     pub fn add(&mut self, adapter: Arc<dyn Adapter>, label: &str, available: bool, detail: Option<String>, executable: Option<PathBuf>) {
         let id = adapter.harness();
-        self.registry.register(adapter);
+        self.registry.register(id, adapter);
         let harness = Harness {
             option: HarnessOption { id: id.to_owned(), label: label.to_owned(), available, detail },
             executable,

@@ -8,7 +8,7 @@
 
 use super::{X_BLOCK, X_CONTENT, X_ENVELOPE, X_LINE, X_PART, X_PATH, X_SPLIT, content, take_field, time};
 use crate::HARNESS;
-use loa_adapter::{AdapterError, Result};
+use loa_contracts::harness::{AdapterError, Result};
 use loa_core::{Dom, ElementKind, MessageKind, Node, NodeId, Role, Value, attr};
 use serde_json::{Map, Value as J, json};
 use std::collections::{BTreeMap, HashMap};

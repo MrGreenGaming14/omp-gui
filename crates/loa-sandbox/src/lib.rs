@@ -69,7 +69,7 @@ pub enum SandboxError {
     #[error("no provider for sandbox kind `{0}`")]
     NoProvider(String),
     #[error(transparent)]
-    Adapter(#[from] loa_adapter::AdapterError),
+    Adapter(#[from] loa_contracts::harness::AdapterError),
 }
 
 #[cfg(feature = "host")]
@@ -78,7 +78,7 @@ pub type Result<T, E = SandboxError> = std::result::Result<T, E>;
 #[cfg(all(test, feature = "host"))]
 mod tests {
     use async_trait::async_trait;
-    use loa_adapter::{Adapter, AdapterError, Capabilities, HarnessSession, SessionConfig};
+    use loa_contracts::harness::{Adapter, AdapterError, Capabilities, HarnessSession, SessionConfig};
     use loa_core::{Dom, PatchSink};
     use std::sync::Arc;
 
@@ -89,10 +89,10 @@ mod tests {
     impl Adapter for NoAdapter {
         fn harness(&self) -> &'static str { "none" }
         fn capabilities(&self) -> Capabilities { Capabilities::default() }
-        async fn start(&self, _: SessionConfig, _: Arc<dyn PatchSink>) -> loa_adapter::Result<Box<dyn HarnessSession>> {
+        async fn start(&self, _: SessionConfig, _: Arc<dyn PatchSink>) -> loa_contracts::harness::Result<Box<dyn HarnessSession>> {
             Err(AdapterError::Format("no harness in this test".into()))
         }
-        async fn resume(&self, _: SessionConfig, _: &Dom, _: Arc<dyn PatchSink>) -> loa_adapter::Result<Box<dyn HarnessSession>> {
+        async fn resume(&self, _: SessionConfig, _: &Dom, _: Arc<dyn PatchSink>) -> loa_contracts::harness::Result<Box<dyn HarnessSession>> {
             Err(AdapterError::Format("no harness in this test".into()))
         }
     }

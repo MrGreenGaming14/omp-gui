@@ -11,7 +11,7 @@ path = "src/bin/latency-gate.rs"
 
 [dependencies]
 loa-util.workspace = true
-loa-surface.workspace = true
+loa-contracts.workspace = true
 async-trait.workspace = true
 bytes.workspace = true
 serde.workspace = true

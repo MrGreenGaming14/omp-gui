@@ -8,10 +8,10 @@ use std::time::Duration;
 use iced::futures::StreamExt;
 use iced::{Point, Size, Task};
 use iced_runtime::Action;
-use loa_adapter::{Capabilities, HostToolContent, SessionConfig};
+use loa_contracts::harness::{Capabilities, OutputBlock, SessionConfig};
 use loa_core::{Dom, ElementKind, attr};
 use loa_mcp::{HttpSpec, ServerSpec, Transport};
-use loa_surface::{MouseButton, SurfaceMode, SurfaceUri};
+use loa_contracts::surface::{MouseButton, SurfaceMode, SurfaceUri};
 use loa_surface_hub::{HubConfig, McpEndpoint, Origin, SurfaceHub, SurfaceTools};
 use loa_ui_palette as palette;
 use loa_ui_surface::{PointerInput, panel, picker};
@@ -303,7 +303,7 @@ async fn a_browser_tab_opens_from_a_url_takes_clicks_and_the_agent_drives_it() {
     let session = driver.app.ctx.sessions.active_id().unwrap().to_string();
     let args = json!({ "uri": uri.as_str() }).to_string();
     let shot = set.handler.call_content(&session, "surface_screenshot", &args).await.unwrap();
-    assert!(shot.iter().any(|c| matches!(c, HostToolContent::Image { data, .. } if data.starts_with(b"\x89PNG"))));
+    assert!(shot.iter().any(|c| matches!(c, OutputBlock::Image { data, .. } if data.starts_with(b"\x89PNG"))));
     let args = json!({ "url": "data:text/html,<title>Agent</title><h1>agent</h1>" }).to_string();
     set.handler.call_content(&session, "surface_open_browser", &args).await.unwrap();
     driver
@@ -380,8 +380,8 @@ fn stream_label(app: &App, uri: &SurfaceUri) -> Option<String> {
 /// The first frame of `frames` in `encoding`, decoded, with `rgb` in the
 /// middle of the picture.
 async fn decoded(
-    frames: &mut tokio::sync::broadcast::Receiver<Arc<loa_surface::Frame>>,
-    encoding: loa_surface::Encoding,
+    frames: &mut tokio::sync::broadcast::Receiver<Arc<loa_contracts::surface::Frame>>,
+    encoding: loa_contracts::surface::Encoding,
     rgb: [u8; 3],
 ) {
     let (mut decoder, mut canvas) = (loa_surface_bench::decode::FrameDecoder::new(), loa_surface_bench::canvas::Canvas::new(0, 0));
@@ -414,7 +414,7 @@ async fn a_browser_tab_shows_source_frames_here_streams_video_to_peers_and_the_t
     let video = driver.area().panel().video().clone();
     assert!(video.enabled);
     let encoder = video.encoder.clone().unwrap();
-    assert_eq!(encoder.encoding, loa_surface::Encoding::H264);
+    assert_eq!(encoder.encoding, loa_contracts::surface::Encoding::H264);
     eprintln!("launcher: {} ({}), hardware encoders: {:?}", encoder.encoder, encoder.hardware, video.hardware);
 
     let page = "data:text/html,<body style='margin:0;height:100vh;background:rgb(255,0,0)' onmousedown=\"document.body.style.background='rgb(0,0,255)'\"></body>";
@@ -442,15 +442,15 @@ async fn a_browser_tab_shows_source_frames_here_streams_video_to_peers_and_the_t
     // A peer's viewer that decodes H.264 gets video from the launcher's encoder.
     let network = hub.network_surface(&uri).await.unwrap();
     let mut frames = network.frames().unwrap();
-    let accepted = [loa_surface::Encoding::H264, loa_surface::Encoding::Jpeg, loa_surface::Encoding::Png, loa_surface::Encoding::Rgba];
+    let accepted = [loa_contracts::surface::Encoding::H264, loa_contracts::surface::Encoding::Jpeg, loa_contracts::surface::Encoding::Png, loa_contracts::surface::Encoding::Rgba];
     assert_eq!(network.negotiate(&accepted).await.unwrap().as_ref(), Some(&encoder));
-    decoded(&mut frames, loa_surface::Encoding::H264, [0, 0, 255]).await;
+    decoded(&mut frames, loa_contracts::surface::Encoding::H264, [0, 0, 255]).await;
     assert_eq!(stream_label(&driver.app, &uri).as_deref(), Some("JPEG"));
 
     // Off: the peer gets the JPEG screencast too, and it is saved.
     let switched = async |video: bool| {
         let wait = async {
-            while network.stream().is_none_or(|s| (s.encoding == loa_surface::Encoding::H264) != video) {
+            while network.stream().is_none_or(|s| (s.encoding == loa_contracts::surface::Encoding::H264) != video) {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         };
@@ -459,12 +459,12 @@ async fn a_browser_tab_shows_source_frames_here_streams_video_to_peers_and_the_t
     driver.surfaces(panel::Message::Video(false));
     switched(false).await;
     assert_eq!(network.stream().unwrap().encoder, loa_surface_bench::live::SOURCE);
-    decoded(&mut frames, loa_surface::Encoding::Jpeg, [0, 0, 255]).await;
+    decoded(&mut frames, loa_contracts::surface::Encoding::Jpeg, [0, 0, 255]).await;
     assert!(!hub.video());
     assert!(!driver.app.ctx.services.config.load().unwrap().config.surfaces.video);
     driver.surfaces(panel::Message::Video(true));
     switched(true).await;
-    decoded(&mut frames, loa_surface::Encoding::H264, [0, 0, 255]).await;
+    decoded(&mut frames, loa_contracts::surface::Encoding::H264, [0, 0, 255]).await;
     assert!(driver.app.ctx.services.config.load().unwrap().config.surfaces.video);
     assert_eq!(stream_label(&driver.app, &uri).as_deref(), Some("JPEG"));
     hub.shutdown().await;

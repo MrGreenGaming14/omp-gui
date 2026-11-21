@@ -3,7 +3,7 @@
 use loa_util::LockExt;
 use crate::{PasswordSource, RfbSurface};
 use async_trait::async_trait;
-use loa_surface::{Surface, SurfaceError, SurfaceInfo, SurfaceMode, SurfaceServer, SurfaceUri};
+use loa_contracts::surface::{Surface, SurfaceError, SurfaceInfo, SurfaceMode, SurfaceServer, SurfaceUri};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
@@ -85,7 +85,7 @@ impl RfbServer {
     /// Adds `endpoint`, replacing one with the same name, and returns its uri.
     /// When the address changed, the next open connects to the new address;
     /// surfaces already open keep their connection until dropped.
-    pub fn add_endpoint(&self, endpoint: RfbEndpoint) -> loa_surface::Result<SurfaceUri> {
+    pub fn add_endpoint(&self, endpoint: RfbEndpoint) -> loa_contracts::surface::Result<SurfaceUri> {
         let uri = SurfaceUri::new(SERVER_NAME, &endpoint.name)?;
         let mut endpoints = self.endpoints.locked();
         match endpoints.iter_mut().find(|e| e.name == endpoint.name) {
@@ -112,7 +112,7 @@ impl RfbServer {
     }
 
     /// Opens `uri` with the RFB specific API (cursor shape, connection state).
-    pub async fn open_rfb(&self, uri: &SurfaceUri) -> loa_surface::Result<Arc<RfbSurface>> {
+    pub async fn open_rfb(&self, uri: &SurfaceUri) -> loa_contracts::surface::Result<Arc<RfbSurface>> {
         let not_found = || SurfaceError::NotFound(uri.clone());
         if uri.server() != SERVER_NAME {
             return Err(not_found());
@@ -153,7 +153,7 @@ impl SurfaceServer for RfbServer {
 
     /// Every configured endpoint. A surface that is not open reports a 0x0
     /// size, since the size is only known after connecting.
-    async fn list(&self) -> loa_surface::Result<Vec<SurfaceInfo>> {
+    async fn list(&self) -> loa_contracts::surface::Result<Vec<SurfaceInfo>> {
         let endpoints = self.endpoints.locked().clone();
         endpoints
             .iter()
@@ -171,7 +171,7 @@ impl SurfaceServer for RfbServer {
             .collect()
     }
 
-    async fn open(&self, uri: &SurfaceUri) -> loa_surface::Result<Arc<dyn Surface>> {
+    async fn open(&self, uri: &SurfaceUri) -> loa_contracts::surface::Result<Arc<dyn Surface>> {
         Ok(self.open_rfb(uri).await?)
     }
 }

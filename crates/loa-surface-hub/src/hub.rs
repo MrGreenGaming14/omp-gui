@@ -5,7 +5,7 @@ use crate::mcp_surface::McpSurface;
 use crate::{HubError, Result};
 use async_trait::async_trait;
 use loa_mcp::{AllowAll, Manager, Status};
-use loa_surface::{Surface, SurfaceInfo, SurfaceMode, SurfaceServer, SurfaceUri};
+use loa_contracts::surface::{Surface, SurfaceInfo, SurfaceMode, SurfaceServer, SurfaceUri};
 use loa_surface_bench::encode::ffmpeg::FfmpegConfig;
 use loa_surface_bench::live::{LiveVideo, VideoSurface};
 use loa_surface_browser::{BrowserConfig, BrowserServer, Capture, Tab, VirtualDisplayConfig};

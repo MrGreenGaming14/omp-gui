@@ -22,7 +22,7 @@ use std::time::Duration;
 
 use iced::widget::{container, text};
 use iced::{Element, Fill, Subscription, Task};
-use loa_adapter::{Prompt, SessionConfig};
+use loa_contracts::harness::{Prompt, SessionConfig};
 use loa_bus::SessionId;
 use loa_ui_palette as palette;
 use loa_ui_updates as updates;

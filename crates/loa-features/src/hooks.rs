@@ -1,5 +1,5 @@
 //! Rules and advisor as hooks around each turn, for harnesses that lack
-//! them ([`loa_adapter::Feature::AdvisorRules`] missing).
+//! them ([`loa_contracts::harness::Feature::AdvisorRules`] missing).
 //!
 //! What the app runs:
 //! - Rules are the omp rule files: `~/.omp/agent/rules/*.md` and the
@@ -17,7 +17,7 @@
 
 use crate::smol::OneShot;
 use crate::{Result, turn_transcript};
-use loa_adapter::SessionConfig;
+use loa_contracts::harness::SessionConfig;
 use loa_core::{Dom, Draft, ElementKind, MessageStatus, NodeId, PatchSink, Role, Value, attr};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

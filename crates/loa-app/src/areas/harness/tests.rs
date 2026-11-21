@@ -8,7 +8,7 @@ use std::time::Duration;
 use iced::Task;
 use iced::futures::StreamExt;
 use iced_runtime::Action as RuntimeAction;
-use loa_adapter::{
+use loa_contracts::harness::{
     Adapter, Availability, AvailabilityStatus, Capabilities, HarnessSession, Registry, Result as AdapterResult,
     SessionConfig,
 };
@@ -43,11 +43,11 @@ impl Adapter for Probed {
     }
 
     async fn start(&self, _: SessionConfig, _: Arc<dyn PatchSink>) -> AdapterResult<Box<dyn HarnessSession>> {
-        Err(loa_adapter::AdapterError::Unsupported { harness: self.id, what: "sessions" })
+        Err(loa_contracts::harness::AdapterError::Unsupported { harness: self.id, what: "sessions" })
     }
 
     async fn resume(&self, _: SessionConfig, _: &Dom, _: Arc<dyn PatchSink>) -> AdapterResult<Box<dyn HarnessSession>> {
-        Err(loa_adapter::AdapterError::Unsupported { harness: self.id, what: "sessions" })
+        Err(loa_contracts::harness::AdapterError::Unsupported { harness: self.id, what: "sessions" })
     }
 }
 

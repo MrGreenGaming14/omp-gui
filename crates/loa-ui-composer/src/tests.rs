@@ -3,7 +3,7 @@ use iced::keyboard::key::{Named, NativeCode, Physical};
 use iced::keyboard::{self, Key, Modifiers};
 use iced::widget::text_editor::Motion;
 use iced_test::selector::id;
-use loa_adapter::Attachment;
+use loa_contracts::harness::Attachment;
 
 fn act(state: &mut State, message: Message) -> Option<Event> {
     state.update(message).1

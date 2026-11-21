@@ -1,7 +1,7 @@
 //! Input-to-decoded-pixels measurement for any pixel surface.
 
 use crate::{canvas::Canvas, decode::FrameDecoder, BenchError, Result};
-use loa_surface::{Frame, Input, InputEvent, Modifiers, MouseButton, Rect, Surface};
+use loa_contracts::surface::{Frame, Input, InputEvent, Modifiers, MouseButton, Rect, Surface};
 use std::time::{Duration, Instant};
 use tokio::sync::broadcast::error::RecvError;
 

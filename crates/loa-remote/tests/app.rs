@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
-use loa_adapter::{HostTools, McpTransport};
+use loa_contracts::harness::{HostTools, McpTransport};
 use loa_remote::audit::{Action, AuditLog, AuditQuery, Outcome};
 use loa_remote::connection::ConnectorConfig;
 use loa_remote::host_tools::{RemoteHostTools, specs};

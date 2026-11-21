@@ -24,7 +24,7 @@ use card::{Card, Reply};
 use iced::keyboard::{self, key};
 use iced::widget::{column, container, markdown, text, text_editor};
 use iced::{Element, Subscription, Task, Theme};
-use loa_adapter::Answer;
+use loa_contracts::harness::Answer;
 use loa_core::{Dom, NodeId};
 use std::collections::BTreeMap;
 

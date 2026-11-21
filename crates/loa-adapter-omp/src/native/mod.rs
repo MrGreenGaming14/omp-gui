@@ -20,7 +20,7 @@ use loa_util::time;
 
 pub(crate) use import::content_text;
 
-use loa_adapter::AdapterError;
+use loa_contracts::harness::AdapterError;
 use loa_core::{Dom, PatchSink};
 use std::path::Path;
 

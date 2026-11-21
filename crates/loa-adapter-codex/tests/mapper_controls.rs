@@ -1,4 +1,4 @@
-use loa_adapter::{Answer, Prompt, SessionConfig, SessionState};
+use loa_contracts::harness::{Answer, Prompt, SessionConfig, SessionState};
 use loa_adapter_codex::mapper::{Mapper, Reply};
 use loa_core::{ElementKind, MemorySink, PatchSink, attr};
 use serde_json::json;

@@ -8,7 +8,7 @@ use loa_util::LockExt;
 use crate::mapper::{Mapper, Reply, host_tool_result};
 use crate::{CodexAdapter, HARNESS};
 use async_trait::async_trait;
-use loa_adapter::{
+use loa_contracts::harness::{
     AdapterError, Answer, Attachment, HarnessModel, HarnessSession, HostTools, McpTransport, ModelSelection, Prompt,
     Result, SessionConfig, SessionState,
 };

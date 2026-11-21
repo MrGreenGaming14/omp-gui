@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use loa_adapter::{HostToolSpec, HostTools};
+use loa_contracts::harness::{HostToolSpec, HostTools};
 use rmcp::model::{CallToolResult, ContentBlock};
 use tokio_util::sync::CancellationToken;
 

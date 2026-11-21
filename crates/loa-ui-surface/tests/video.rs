@@ -4,7 +4,7 @@
 use futures::StreamExt;
 use iced::Task;
 use iced_runtime::Action;
-use loa_surface::{Encoding, Input, InputEvent, Modifiers, MouseButton, Surface};
+use loa_contracts::surface::{Encoding, Input, InputEvent, Modifiers, MouseButton, Surface};
 use loa_surface_bench::encode::probe;
 use loa_surface_bench::live::{LiveVideo, VideoSurface};
 use loa_surface_bench::synthetic::{SyntheticConfig, SyntheticSurface};

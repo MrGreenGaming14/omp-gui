@@ -14,7 +14,7 @@ mod view;
 use std::collections::{BTreeSet, HashMap};
 
 use iced::Task;
-use loa_adapter::McpServerSpec;
+use loa_contracts::harness::McpServerSpec;
 
 pub use catalog::{Catalog, Filter, PeerMatrix, Toggle};
 pub use form::{

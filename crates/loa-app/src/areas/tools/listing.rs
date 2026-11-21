@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 
-use loa_adapter::McpTransport;
+use loa_contracts::harness::McpTransport;
 use loa_grants::{Action, IssuedRecord, Resource};
 use loa_mcp::import::{App, Found, ImportReport, Outcome};
 use loa_mcp::{ServerView, Status, central};

@@ -11,7 +11,7 @@ pub mod rollout;
 pub mod session;
 
 use async_trait::async_trait;
-use loa_adapter::{
+use loa_contracts::harness::{
     Adapter, AdapterError, Availability, Capabilities, ContextDelivery, Feature, HarnessSession, ModelSwitch, Result,
     SessionConfig,
 };
@@ -108,7 +108,7 @@ impl Adapter for CodexAdapter {
 
     /// `codex --version` of the configured executable.
     async fn availability(&self) -> Availability {
-        loa_adapter::probe_cli(&self.executable, &["--version"]).await
+        loa_contracts::harness::Availability::probe(&self.executable, &["--version"]).await
     }
 
     fn capabilities(&self) -> Capabilities {

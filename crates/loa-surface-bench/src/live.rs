@@ -19,7 +19,7 @@ use crate::encode::{
 };
 use async_trait::async_trait;
 use bytes::Bytes;
-use loa_surface::{Document, Encoding, Frame, Input, InputEvent, StreamInfo, Surface, SurfaceInfo};
+use loa_contracts::surface::{Document, Encoding, Frame, Input, InputEvent, StreamInfo, Surface, SurfaceInfo};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, Weak};
@@ -213,7 +213,7 @@ impl VideoSurface {
     /// Wraps the pixel surface `inner`. Until a viewer negotiates video (and
     /// while `enabled` is off) it passes the source frames on. Needs a Tokio
     /// runtime (keyframe requests to `inner` run on it).
-    pub fn new(inner: Arc<dyn Surface>, live: Arc<LiveVideo>, enabled: bool) -> loa_surface::Result<Arc<Self>> {
+    pub fn new(inner: Arc<dyn Surface>, live: Arc<LiveVideo>, enabled: bool) -> loa_contracts::surface::Result<Arc<Self>> {
         let source = inner.frames()?;
         let shared = Arc::new(Shared {
             live,
@@ -239,7 +239,7 @@ impl VideoSurface {
         std::thread::Builder::new()
             .name("surface-video".into())
             .spawn(move || worker.run(source))
-            .map_err(|e| loa_surface::SurfaceError::Backend(format!("starting the video encoder thread: {e}")))?;
+            .map_err(|e| loa_contracts::surface::SurfaceError::Backend(format!("starting the video encoder thread: {e}")))?;
         Ok(Arc::new(Self { inner, shared, frames }))
     }
 
@@ -250,7 +250,7 @@ impl VideoSurface {
 
     /// Turns video on or off for the viewers already watching: their last
     /// negotiation is redone.
-    pub async fn set_video(&self, enabled: bool) -> loa_surface::Result<Option<StreamInfo>> {
+    pub async fn set_video(&self, enabled: bool) -> loa_contracts::surface::Result<Option<StreamInfo>> {
         self.shared.enabled.store(enabled, Ordering::Release);
         let accepted = self.shared.accepted.locked().clone();
         if accepted.is_empty() {
@@ -274,14 +274,14 @@ impl Surface for VideoSurface {
 
     /// A new subscriber gets the current picture without asking: the
     /// source is asked for a keyframe.
-    fn frames(&self) -> loa_surface::Result<broadcast::Receiver<Arc<Frame>>> {
+    fn frames(&self) -> loa_contracts::surface::Result<broadcast::Receiver<Arc<Frame>>> {
         let frames = self.frames.subscribe();
         self.shared.keyframe.store(true, Ordering::Release);
         self.shared.source_keyframe();
         Ok(frames)
     }
 
-    async fn request_keyframe(&self) -> loa_surface::Result<()> {
+    async fn request_keyframe(&self) -> loa_contracts::surface::Result<()> {
         self.shared.keyframe.store(true, Ordering::Release);
         // The worker codes on source frames: have the source send its
         // current picture even when nothing changes on it.
@@ -291,7 +291,7 @@ impl Surface for VideoSurface {
     /// A resize request starts the video encoder for the new size right
     /// away, so it is up (or nearly) when the first picture of that size
     /// comes.
-    async fn input(&self, event: InputEvent) -> loa_surface::Result<()> {
+    async fn input(&self, event: InputEvent) -> loa_contracts::surface::Result<()> {
         if let &Input::Resize { width, height } = &event.input
             && width.is_multiple_of(2)
             && height.is_multiple_of(2)
@@ -303,15 +303,15 @@ impl Surface for VideoSurface {
         self.inner.input(event).await
     }
 
-    async fn document(&self) -> loa_surface::Result<Document> {
+    async fn document(&self) -> loa_contracts::surface::Result<Document> {
         self.inner.document().await
     }
 
-    async fn screenshot(&self) -> loa_surface::Result<Bytes> {
+    async fn screenshot(&self) -> loa_contracts::surface::Result<Bytes> {
         self.inner.screenshot().await
     }
 
-    async fn negotiate(&self, accepted: &[Encoding]) -> loa_surface::Result<Option<StreamInfo>> {
+    async fn negotiate(&self, accepted: &[Encoding]) -> loa_contracts::surface::Result<Option<StreamInfo>> {
         *self.shared.accepted.locked() = accepted.to_vec();
         let enabled = self.shared.enabled.load(Ordering::Acquire);
         let chosen = if enabled { self.shared.live.choose(accepted) } else { None };

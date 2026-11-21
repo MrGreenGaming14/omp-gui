@@ -33,7 +33,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use iced::{Element, Subscription, Task};
-use loa_adapter::{Answer, Capabilities, Feature, Prompt, SessionConfig};
+use loa_contracts::harness::{Answer, Capabilities, Feature, Prompt, SessionConfig};
 use loa_bus::SessionId;
 use loa_core::{Dom, Draft, ElementKind, JobStatus, NodeId, Op, PatchSink, SessionMode, TurnStatus, answer, attr};
 use loa_features::hooks::{self, Advisor, TurnHooks};

@@ -2,7 +2,7 @@
 
 use crate::keysym::{self, ALT_L, CONTROL_L, SHIFT_L, SUPER_L};
 use crate::{RfbError, proto};
-use loa_surface::{Input, Modifiers, MouseButton};
+use loa_contracts::surface::{Input, Modifiers, MouseButton};
 
 const WHEEL_UP: u8 = 1 << 3;
 const WHEEL_DOWN: u8 = 1 << 4;

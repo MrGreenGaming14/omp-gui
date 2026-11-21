@@ -7,7 +7,7 @@
 //! until the next keyframe and ask for one.
 
 use bytes::{Bytes, BytesMut};
-use loa_surface::Frame;
+use loa_contracts::surface::Frame;
 use prost::Message;
 use prost::encoding::encoded_len_varint;
 use std::collections::VecDeque;
@@ -223,7 +223,7 @@ fn join(parts: Vec<Option<Bytes>>) -> Bytes {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use loa_surface::{Encoding, Rect};
+    use loa_contracts::surface::{Encoding, Rect};
 
     fn frame(seq: u64, encoding: Encoding, keyframe: bool, len: usize) -> Frame {
         Frame {

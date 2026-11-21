@@ -4,7 +4,7 @@
 mod common;
 
 use common::*;
-use loa_surface::{Encoding, Input, Modifiers, MouseButton, Surface, SurfaceError, SurfaceMode, SurfaceServer, SurfaceUri};
+use loa_contracts::surface::{Encoding, Input, Modifiers, MouseButton, Surface, SurfaceError, SurfaceMode, SurfaceServer, SurfaceUri};
 use loa_surface_browser::{BrowserError, Tab};
 use std::sync::Arc;
 

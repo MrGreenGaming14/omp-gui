@@ -2,7 +2,7 @@
 
 use iced::keyboard::{self, Key, key};
 use iced::mouse;
-use loa_surface::{Input, Modifiers, MouseButton};
+use loa_contracts::surface::{Input, Modifiers, MouseButton};
 
 /// Pixels one wheel line scrolls.
 pub const LINE_PX: f32 = 40.0;

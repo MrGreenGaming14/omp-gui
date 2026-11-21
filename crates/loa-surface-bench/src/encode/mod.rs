@@ -13,7 +13,7 @@ pub mod software;
 
 use crate::{BenchError, Result};
 use bytes::Bytes;
-use loa_surface::{Encoding, Frame, Rect};
+use loa_contracts::surface::{Encoding, Frame, Rect};
 use region::{DamageTracker, RegionEncoder};
 use serde::Serialize;
 use std::time::{Duration, Instant};

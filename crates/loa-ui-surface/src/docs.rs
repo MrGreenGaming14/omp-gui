@@ -3,7 +3,7 @@
 
 use crate::document::{PageError, PageRenderer, PageRenderers, RgbaPage};
 use iced::Size;
-use loa_surface::Document;
+use loa_contracts::surface::Document;
 use loa_surface_docs::{Fonts, Format, Paged, open_pages};
 
 /// Opens documents with the `loa-surface-docs` parsers and renders their

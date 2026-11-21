@@ -30,11 +30,11 @@ impl RpcError {
     }
 }
 
-impl From<RpcError> for loa_adapter::AdapterError {
+impl From<RpcError> for loa_contracts::harness::AdapterError {
     fn from(e: RpcError) -> Self {
         match e {
-            RpcError::Remote { .. } => loa_adapter::AdapterError::Protocol(e.to_string()),
-            RpcError::Closed => loa_adapter::AdapterError::Closed,
+            RpcError::Remote { .. } => loa_contracts::harness::AdapterError::Protocol(e.to_string()),
+            RpcError::Closed => loa_contracts::harness::AdapterError::Closed,
         }
     }
 }

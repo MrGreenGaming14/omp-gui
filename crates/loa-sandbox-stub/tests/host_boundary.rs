@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use loa_adapter::{Adapter, AdapterError, Answer, Capabilities, HarnessSession, HostTools, Prompt, SessionConfig, SessionState};
+use loa_contracts::harness::{Adapter, AdapterError, Answer, Capabilities, HarnessSession, HostTools, Prompt, SessionConfig, SessionState};
 use loa_core::{Dom, NodeId, PatchSink, SessionMode};
 use loa_sandbox::provider::local::LocalProvider;
 use loa_sandbox::tool::{SandboxTask, SandboxTaskArgs};
@@ -21,21 +21,21 @@ struct TestSession {
 impl Adapter for TestAdapter {
     fn harness(&self) -> &'static str { "test" }
     fn capabilities(&self) -> Capabilities { Capabilities::default() }
-    async fn start(&self, config: SessionConfig, _sink: Arc<dyn PatchSink>) -> loa_adapter::Result<Box<dyn HarnessSession>> {
+    async fn start(&self, config: SessionConfig, _sink: Arc<dyn PatchSink>) -> loa_contracts::harness::Result<Box<dyn HarnessSession>> {
         assert_eq!(config.env.get("HOST_API_KEY").map(String::as_str), Some("host-only-value"));
         assert!(config.mcp_servers.is_empty());
         assert!(config.disabled_tools.iter().any(|name| name == "bash"));
         let tools = config.host_tool_handler.ok_or_else(|| AdapterError::Format("worker has no sandbox tools".into()))?;
         Ok(Box::new(TestSession { tools, observed: Arc::clone(&self.observed), id: config.session_id }))
     }
-    async fn resume(&self, _: SessionConfig, _: &Dom, _: Arc<dyn PatchSink>) -> loa_adapter::Result<Box<dyn HarnessSession>> {
+    async fn resume(&self, _: SessionConfig, _: &Dom, _: Arc<dyn PatchSink>) -> loa_contracts::harness::Result<Box<dyn HarnessSession>> {
         Err(AdapterError::Format("unexpected resume".into()))
     }
 }
 
 #[async_trait]
 impl HarnessSession for TestSession {
-    async fn send(&self, _: Prompt) -> loa_adapter::Result<()> {
+    async fn send(&self, _: Prompt) -> loa_contracts::harness::Result<()> {
         let env = self.tools.call(&self.id, "sandbox_bash", r#"{"command":"printf '%s' \"${HOST_API_KEY-unset}\""}"#)
             .await.map_err(AdapterError::Protocol)?;
         let files = self.tools.call(&self.id, "sandbox_list", r#"{"path":"."}"#)
@@ -45,13 +45,13 @@ impl HarnessSession for TestSession {
         self.observed.lock().unwrap().extend([env, files, read]);
         Ok(())
     }
-    async fn interrupt(&self) -> loa_adapter::Result<()> { Ok(()) }
-    async fn answer(&self, _: NodeId, _: Answer) -> loa_adapter::Result<()> { Ok(()) }
-    async fn set_mode(&self, _: SessionMode) -> loa_adapter::Result<()> { Ok(()) }
+    async fn interrupt(&self) -> loa_contracts::harness::Result<()> { Ok(()) }
+    async fn answer(&self, _: NodeId, _: Answer) -> loa_contracts::harness::Result<()> { Ok(()) }
+    async fn set_mode(&self, _: SessionMode) -> loa_contracts::harness::Result<()> { Ok(()) }
     fn harness(&self) -> &'static str { "test" }
     fn state(&self) -> SessionState { SessionState::Idle }
-    async fn wait_idle(&self) -> loa_adapter::Result<()> { Ok(()) }
-    async fn shutdown(&self) -> loa_adapter::Result<()> { Ok(()) }
+    async fn wait_idle(&self) -> loa_contracts::harness::Result<()> { Ok(()) }
+    async fn shutdown(&self) -> loa_contracts::harness::Result<()> { Ok(()) }
 }
 
 #[tokio::test]

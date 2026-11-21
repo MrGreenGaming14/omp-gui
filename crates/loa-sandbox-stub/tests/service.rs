@@ -3,7 +3,7 @@
 //! that comes back, with a scripted harness standing in for the model.
 
 use async_trait::async_trait;
-use loa_adapter::{Adapter, AdapterError, Answer, Capabilities, HarnessSession, HostTools, Prompt, SessionConfig, SessionState};
+use loa_contracts::harness::{Adapter, AdapterError, Answer, Capabilities, HarnessSession, HostTools, Prompt, SessionConfig, SessionState};
 use loa_core::{Dom, Draft, ElementKind, NodeId, PatchSink, SessionMode, Value, attr};
 use loa_sandbox::isolation::{apply_patch, patch_files};
 use loa_sandbox::worker::MemoryJournal;
@@ -24,32 +24,32 @@ struct ScriptedSession {
 impl Adapter for ScriptedAdapter {
     fn harness(&self) -> &'static str { "scripted" }
     fn capabilities(&self) -> Capabilities { Capabilities::default() }
-    async fn start(&self, config: SessionConfig, _sink: Arc<dyn PatchSink>) -> loa_adapter::Result<Box<dyn HarnessSession>> {
+    async fn start(&self, config: SessionConfig, _sink: Arc<dyn PatchSink>) -> loa_contracts::harness::Result<Box<dyn HarnessSession>> {
         assert!(config.host_tools.iter().all(|tool| tool.name.starts_with("sandbox_") && tool.name != "sandbox_task"));
         let tools = config.host_tool_handler.ok_or_else(|| AdapterError::Format("worker has no sandbox tools".into()))?;
         Ok(Box::new(ScriptedSession { tools, id: config.session_id }))
     }
-    async fn resume(&self, _: SessionConfig, _: &Dom, _: Arc<dyn PatchSink>) -> loa_adapter::Result<Box<dyn HarnessSession>> {
+    async fn resume(&self, _: SessionConfig, _: &Dom, _: Arc<dyn PatchSink>) -> loa_contracts::harness::Result<Box<dyn HarnessSession>> {
         Err(AdapterError::Format("unexpected resume".into()))
     }
 }
 
 #[async_trait]
 impl HarnessSession for ScriptedSession {
-    async fn send(&self, _: Prompt) -> loa_adapter::Result<()> {
+    async fn send(&self, _: Prompt) -> loa_contracts::harness::Result<()> {
         self.tools.call(&self.id, "sandbox_write", r#"{"path":"notes/hello.txt","content":"from the sandbox\n"}"#)
             .await.map_err(AdapterError::Protocol)?;
         self.tools.call(&self.id, "sandbox_bash", r#"{"command":"printf 'changed\\n' > tracked.txt"}"#)
             .await.map_err(AdapterError::Protocol)?;
         Ok(())
     }
-    async fn interrupt(&self) -> loa_adapter::Result<()> { Ok(()) }
-    async fn answer(&self, _: NodeId, _: Answer) -> loa_adapter::Result<()> { Ok(()) }
-    async fn set_mode(&self, _: SessionMode) -> loa_adapter::Result<()> { Ok(()) }
+    async fn interrupt(&self) -> loa_contracts::harness::Result<()> { Ok(()) }
+    async fn answer(&self, _: NodeId, _: Answer) -> loa_contracts::harness::Result<()> { Ok(()) }
+    async fn set_mode(&self, _: SessionMode) -> loa_contracts::harness::Result<()> { Ok(()) }
     fn harness(&self) -> &'static str { "scripted" }
     fn state(&self) -> SessionState { SessionState::Idle }
-    async fn wait_idle(&self) -> loa_adapter::Result<()> { Ok(()) }
-    async fn shutdown(&self) -> loa_adapter::Result<()> { Ok(()) }
+    async fn wait_idle(&self) -> loa_contracts::harness::Result<()> { Ok(()) }
+    async fn shutdown(&self) -> loa_contracts::harness::Result<()> { Ok(()) }
 }
 
 fn git(dir: &Path, args: &[&str]) {
@@ -142,19 +142,19 @@ struct AskingSession {
 impl Adapter for AskingAdapter {
     fn harness(&self) -> &'static str { "asking" }
     fn capabilities(&self) -> Capabilities { Capabilities::default() }
-    async fn start(&self, config: SessionConfig, sink: Arc<dyn PatchSink>) -> loa_adapter::Result<Box<dyn HarnessSession>> {
+    async fn start(&self, config: SessionConfig, sink: Arc<dyn PatchSink>) -> loa_contracts::harness::Result<Box<dyn HarnessSession>> {
         let tools = config.host_tool_handler.ok_or_else(|| AdapterError::Format("worker has no sandbox tools".into()))?;
         let answers = Arc::clone(&self.answers);
         Ok(Box::new(AskingSession { tools, id: config.session_id, sink, answered: tokio::sync::Notify::new(), answers }))
     }
-    async fn resume(&self, _: SessionConfig, _: &Dom, _: Arc<dyn PatchSink>) -> loa_adapter::Result<Box<dyn HarnessSession>> {
+    async fn resume(&self, _: SessionConfig, _: &Dom, _: Arc<dyn PatchSink>) -> loa_contracts::harness::Result<Box<dyn HarnessSession>> {
         Err(AdapterError::Format("unexpected resume".into()))
     }
 }
 
 #[async_trait]
 impl HarnessSession for AskingSession {
-    async fn send(&self, _: Prompt) -> loa_adapter::Result<()> {
+    async fn send(&self, _: Prompt) -> loa_contracts::harness::Result<()> {
         let session_attrs = [
             (attr::ID, Value::Str(self.id.clone())),
             (attr::HARNESS, Value::Str("asking".into())),
@@ -166,22 +166,22 @@ impl HarnessSession for AskingSession {
         self.sink.commit(Draft::insert(session.node, ElementKind::Decision, attrs, "Allow tool: sandbox_write")).unwrap();
         Ok(())
     }
-    async fn interrupt(&self) -> loa_adapter::Result<()> { Ok(()) }
-    async fn answer(&self, decision: NodeId, answer: Answer) -> loa_adapter::Result<()> {
+    async fn interrupt(&self) -> loa_contracts::harness::Result<()> { Ok(()) }
+    async fn answer(&self, decision: NodeId, answer: Answer) -> loa_contracts::harness::Result<()> {
         self.answers.lock().unwrap().push((decision, answer));
         self.answered.notify_one();
         Ok(())
     }
-    async fn set_mode(&self, _: SessionMode) -> loa_adapter::Result<()> { Ok(()) }
+    async fn set_mode(&self, _: SessionMode) -> loa_contracts::harness::Result<()> { Ok(()) }
     fn harness(&self) -> &'static str { "asking" }
     fn state(&self) -> SessionState { SessionState::Idle }
-    async fn wait_idle(&self) -> loa_adapter::Result<()> {
+    async fn wait_idle(&self) -> loa_contracts::harness::Result<()> {
         self.answered.notified().await;
         self.tools.call(&self.id, "sandbox_write", r#"{"path":"approved.txt","content":"approved\n"}"#)
             .await.map_err(AdapterError::Protocol)?;
         Ok(())
     }
-    async fn shutdown(&self) -> loa_adapter::Result<()> { Ok(()) }
+    async fn shutdown(&self) -> loa_contracts::harness::Result<()> { Ok(()) }
 }
 
 #[tokio::test(flavor = "multi_thread")]

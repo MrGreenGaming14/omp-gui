@@ -26,7 +26,7 @@ use iced::keyboard::{self, Key, key::Named};
 use iced::widget::text_editor::{Action, Content, Cursor, Edit, Position};
 use iced::widget::{button, column, container, row, space, text, text_input};
 use iced::{Element, Length, Subscription, Task};
-use loa_adapter::Prompt;
+use loa_contracts::harness::Prompt;
 use loa_core::SessionMode;
 use loa_ui_icons::{Icon, icon, muted};
 

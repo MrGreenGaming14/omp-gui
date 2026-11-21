@@ -2,7 +2,7 @@
 
 use crate::codec::UnknownKey;
 use crate::{Result, invalid};
-use loa_adapter::{McpServerSpec, McpTransport};
+use loa_contracts::harness::{McpServerSpec, McpTransport};
 use loa_core::{DecisionKind, answer};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -126,7 +126,7 @@ pub enum BrowserCapture {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HarnessSettings {
-    /// Harness name as registered in `loa_adapter::Registry`.
+    /// Harness name as registered in `loa_contracts::harness::Registry`.
     pub default: String,
     /// Executable per harness name, used instead of the one on `PATH`.
     pub executables: BTreeMap<String, PathBuf>,
@@ -589,7 +589,7 @@ impl Config {
     /// harness executable override. Servers, tools and an executable the
     /// caller already set are kept. Disabled MCP tools are filtered by the MCP
     /// client.
-    pub fn apply_to_session(&self, harness: &str, session: &mut loa_adapter::SessionConfig) {
+    pub fn apply_to_session(&self, harness: &str, session: &mut loa_contracts::harness::SessionConfig) {
         session.mcp_servers.extend(self.mcp_specs());
         if let Some(project) = session.project.as_deref().and_then(|p| self.projects.get(p)) {
             session.disabled_tools.extend(project.disabled_tools.iter().cloned());

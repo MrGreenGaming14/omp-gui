@@ -9,7 +9,7 @@
 //! `prompt_result`. omp's own `turn_end`/`agent_end` are model steps inside
 //! it.
 
-use loa_adapter::{AdapterError, Answer, Prompt, Result};
+use loa_contracts::harness::{AdapterError, Answer, Prompt, Result};
 use loa_core::{answer, attr, CallStatus, DecisionKind, DecisionStatus, Draft, ElementKind as K, JobStatus, MessageKind, MessageStatus, NodeId, Op, Patch, TodoState, TurnStatus, Value};
 use loa_core::schema::TEXT;
 use loa_omp_rpc::{AskAnswer, AskQuestion, AssistantEvent, Event, PromptError, PromptStatus, SubagentStatus, TodoItem, TodoStatus, UiRequest, UiResponse};

@@ -1,4 +1,4 @@
-use loa_surface::{SurfaceError, SurfaceUri};
+use loa_contracts::surface::{SurfaceError, SurfaceUri};
 
 /// Everything that can go wrong driving Chrome or a virtual display.
 #[derive(Debug, thiserror::Error)]

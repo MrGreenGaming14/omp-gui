@@ -11,7 +11,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
-/// Harness ids, as [`loa_adapter::Adapter::harness`] returns them.
+/// Harness ids, as [`loa_contracts::harness::Adapter::harness`] returns them.
 pub const OMP: &str = "omp";
 pub const CLAUDE: &str = "claude-code";
 pub const CODEX: &str = "codex";

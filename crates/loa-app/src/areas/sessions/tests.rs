@@ -4,7 +4,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use loa_adapter::{
+use loa_contracts::harness::{
     Adapter, AdapterError, Answer, Capabilities, HarnessSession, ModelSelection, ModelSwitch, Prompt, Registry, SessionConfig,
     SessionState,
 };
@@ -54,19 +54,19 @@ impl Adapter for TestAdapter {
         Capabilities { model_switch: ModelSwitch::PerCall, import: true, export: true, ..Capabilities::default() }
     }
 
-    async fn start(&self, config: SessionConfig, sink: Arc<dyn PatchSink>) -> loa_adapter::Result<Box<dyn HarnessSession>> {
+    async fn start(&self, config: SessionConfig, sink: Arc<dyn PatchSink>) -> loa_contracts::harness::Result<Box<dyn HarnessSession>> {
         let root = sink.commit(root_draft(self.id, &config.session_id, &config.node))?.node;
         self.seen.lock().unwrap().configs.push(config);
         Ok(Box::new(TestSession::new(self, sink, root)))
     }
 
-    async fn resume(&self, config: SessionConfig, dom: &Dom, sink: Arc<dyn PatchSink>) -> loa_adapter::Result<Box<dyn HarnessSession>> {
+    async fn resume(&self, config: SessionConfig, dom: &Dom, sink: Arc<dyn PatchSink>) -> loa_contracts::harness::Result<Box<dyn HarnessSession>> {
         let root = dom.root().map(|root| root.id).ok_or_else(|| AdapterError::Format("empty DOM".into()))?;
         self.seen.lock().unwrap().configs.push(config);
         Ok(Box::new(TestSession::new(self, sink, root)))
     }
 
-    fn import(&self, native: &Path, sink: &dyn PatchSink) -> loa_adapter::Result<()> {
+    fn import(&self, native: &Path, sink: &dyn PatchSink) -> loa_contracts::harness::Result<()> {
         let text = std::fs::read_to_string(native).map_err(|error| AdapterError::Format(error.to_string()))?;
         let root = sink.commit(root_draft(self.id, "native-imported", "elsewhere"))?.node;
         for line in text.lines().skip(1) {
@@ -76,7 +76,7 @@ impl Adapter for TestAdapter {
         Ok(())
     }
 
-    fn export(&self, dom: &Dom, out: &Path) -> loa_adapter::Result<()> {
+    fn export(&self, dom: &Dom, out: &Path) -> loa_contracts::harness::Result<()> {
         let lines: Vec<&str> = dom
             .iter()
             .filter(|node| node.kind == ElementKind::Message && node.str_attr(attr::ROLE) == Some("user"))
@@ -113,7 +113,7 @@ impl TestSession {
         }
     }
 
-    fn end(&self, turn: NodeId) -> loa_adapter::Result<()> {
+    fn end(&self, turn: NodeId) -> loa_contracts::harness::Result<()> {
         let reply = self.reply.lock().unwrap().clone();
         let attrs: [(&str, Value); 2] = [("role", Role::Assistant.into()), ("status", "done".into())];
         self.sink.commit(Draft::insert(turn, ElementKind::Message, attrs, reply.as_str()))?;
@@ -124,7 +124,7 @@ impl TestSession {
 
 #[async_trait]
 impl HarnessSession for TestSession {
-    async fn send(&self, prompt: Prompt) -> loa_adapter::Result<()> {
+    async fn send(&self, prompt: Prompt) -> loa_contracts::harness::Result<()> {
         self.seen.lock().unwrap().prompts.push(prompt.text.clone());
         let turn = self.sink.commit(Draft::insert(self.root, ElementKind::Turn, [("status", Value::from(TurnStatus::Running))], ""))?.node;
         self.sink.commit(Draft::insert(turn, ElementKind::Message, [("role", Value::from(Role::User))], prompt.text.as_str()))?;
@@ -139,11 +139,11 @@ impl HarnessSession for TestSession {
         self.end(turn)
     }
 
-    async fn interrupt(&self) -> loa_adapter::Result<()> {
+    async fn interrupt(&self) -> loa_contracts::harness::Result<()> {
         Ok(())
     }
 
-    async fn answer(&self, decision: NodeId, answer: Answer) -> loa_adapter::Result<()> {
+    async fn answer(&self, decision: NodeId, answer: Answer) -> loa_contracts::harness::Result<()> {
         let values = Value::List(answer.values.into_iter().map(Value::from).collect());
         self.sink.commit(Draft::set(decision, "answer", values))?;
         self.sink.commit(Draft::set(decision, "status", DecisionStatus::Answered))?;
@@ -152,7 +152,7 @@ impl HarnessSession for TestSession {
         self.end(turn)
     }
 
-    async fn set_model(&self, selection: ModelSelection) -> loa_adapter::Result<()> {
+    async fn set_model(&self, selection: ModelSelection) -> loa_contracts::harness::Result<()> {
         if selection.model.starts_with("gone/") {
             return Err(AdapterError::Format(format!("unknown model {}", selection.model)));
         }
@@ -168,11 +168,11 @@ impl HarnessSession for TestSession {
         SessionState::Idle
     }
 
-    async fn wait_idle(&self) -> loa_adapter::Result<()> {
+    async fn wait_idle(&self) -> loa_contracts::harness::Result<()> {
         Ok(())
     }
 
-    async fn shutdown(&self) -> loa_adapter::Result<()> {
+    async fn shutdown(&self) -> loa_contracts::harness::Result<()> {
         Ok(())
     }
 }

@@ -7,7 +7,7 @@ publish.workspace = true
 
 [dependencies]
 loa-util.workspace = true
-loa-surface.workspace = true
+loa-contracts.workspace = true
 async-trait.workspace = true
 bytes.workspace = true
 thiserror.workspace = true

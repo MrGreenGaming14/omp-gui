@@ -29,7 +29,7 @@ mod export;
 mod import;
 use loa_util::time;
 
-use loa_adapter::Result;
+use loa_contracts::harness::Result;
 use loa_core::{Dom, PatchSink};
 use std::path::{Path, PathBuf};
 

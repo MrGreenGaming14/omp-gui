@@ -7,7 +7,7 @@
 //! H.264 only; HEVC streams go to viewers that decode it themselves.
 
 use crate::{BenchError, Result, yuv};
-use loa_surface::{Encoding, Frame, Rect};
+use loa_contracts::surface::{Encoding, Frame, Rect};
 use rusty_h264::Decoder;
 
 /// Stateful H.264 decoder: references persist between access units of one

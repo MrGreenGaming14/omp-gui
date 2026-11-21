@@ -5,7 +5,7 @@
 use loa_util::LockExt;
 use crate::{Error, Result, SessionStore};
 use async_trait::async_trait;
-use loa_adapter::Adapter;
+use loa_contracts::harness::Adapter;
 use loa_bus::{Authorize, Bus, NodeKey, SessionWriter, WriterConfig};
 use loa_core::{Dom, Draft, ElementKind, NodeId, Op, PatchSink, Value, attr};
 use loa_journal::{Journal, JournalPersist, JournalWriter, Store, SyncPolicy};

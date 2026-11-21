@@ -9,7 +9,7 @@ loa-util.workspace = true
 iced.workspace = true
 async-trait.workspace = true
 loa-core.workspace = true
-loa-adapter.workspace = true
+loa-contracts.workspace = true
 loa-bus = { path = "../loa-bus" }
 loa-journal = { path = "../loa-journal" }
 loa-identity = { path = "../loa-identity" }
@@ -35,7 +35,6 @@ loa-ui-models = { path = "../loa-ui-models" }
 loa-models = { path = "../loa-models" }
 loa-ui-peers = { path = "../loa-ui-peers" }
 loa-ui-surface = { path = "../loa-ui-surface" }
-loa-surface.workspace = true
 loa-surface-hub = { path = "../loa-surface-hub" }
 loa-surface-bench = { path = "../loa-surface-bench" }
 loa-projects = { path = "../loa-projects" }

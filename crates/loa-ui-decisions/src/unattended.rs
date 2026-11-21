@@ -9,7 +9,7 @@ use crate::form::Form;
 use iced::alignment::Vertical;
 use iced::widget::{column, pick_list, row, text, text_input, toggler};
 use iced::{Element, Fill, Length};
-use loa_adapter::Answer;
+use loa_contracts::harness::Answer;
 use loa_config::{DecisionDefault, UnattendedSettings};
 use loa_core::{DecisionKind, answer};
 use serde_json::Value as Json;

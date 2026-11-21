@@ -11,7 +11,7 @@ default = ["host"]
 # dependency tree stays std only.
 host = [
     "dep:loa-core",
-    "dep:loa-adapter",
+    "dep:loa-contracts",
     "dep:async-trait",
     "dep:serde",
     "dep:serde_json",
@@ -23,7 +23,7 @@ host = [
 [dependencies]
 loa-util.workspace = true
 loa-core = { workspace = true, optional = true }
-loa-adapter = { workspace = true, optional = true }
+loa-contracts = { workspace = true, optional = true }
 async-trait = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }

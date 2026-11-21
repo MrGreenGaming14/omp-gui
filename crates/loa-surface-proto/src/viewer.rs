@@ -4,7 +4,7 @@
 
 use loa_util::LockExt;
 use bytes::BytesMut;
-use loa_surface::{Document, Encoding, Frame, Input, InputEvent, StreamInfo, SurfaceInfo, SurfaceUri};
+use loa_contracts::surface::{Document, Encoding, Frame, Input, InputEvent, StreamInfo, SurfaceInfo, SurfaceUri};
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
@@ -79,7 +79,7 @@ pub async fn open(transport: Transport, uri: &SurfaceUri, options: ViewerOptions
         return Err(ProtoError::Protocol(format!("asked for {uri}, the server opened {}", info.uri)));
     }
     match info.mode {
-        loa_surface::SurfaceMode::Pixel => {
+        loa_contracts::surface::SurfaceMode::Pixel => {
             let (out, rx) = mpsc::unbounded_channel();
             tokio::spawn(write_loop(writer, rx));
             let size = (info.width, info.height);
@@ -93,7 +93,7 @@ pub async fn open(transport: Transport, uri: &SurfaceUri, options: ViewerOptions
                 input: InputSender { inner: Arc::new(Mutex::new(InputState { next_seq: 1, out })) },
             }))
         }
-        loa_surface::SurfaceMode::Document => {
+        loa_contracts::surface::SurfaceMode::Document => {
             Ok(Opened::Document(DocumentViewer { info, reader, writer, max: options.max_document }))
         }
     }

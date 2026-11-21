@@ -11,7 +11,7 @@ use crate::provider::ssh::SshProvider;
 use crate::provider::{SandboxKind, SandboxProvider};
 use crate::tool::{SandboxEvent, SandboxTask};
 use crate::worker::WorkerJournal;
-use loa_adapter::{Adapter, HostToolSpec, HostTools, SessionConfig};
+use loa_contracts::harness::{Adapter, HostToolSpec, HostTools, SessionConfig};
 use serde::{Deserialize, Serialize};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};

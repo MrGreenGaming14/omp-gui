@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex};
 
 use iced::futures::{Stream, stream};
 use iced::{Element, Subscription, Task};
-use loa_adapter::{HostToolSpec, HostTools, SessionConfig};
+use loa_contracts::harness::{HostToolSpec, HostTools, SessionConfig};
 use loa_projects::{
     FileSettingsStore, LiveSessions, LocalOnly, OmpSummarizer, ProjectOverview, ProjectService, ProjectSettings,
     ProjectSummary, RebuildOutcome, ServiceConfig, Summarizer, Trigger,

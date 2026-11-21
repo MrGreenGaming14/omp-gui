@@ -10,7 +10,7 @@ use crate::events::{Mapper, Output, UUID_ATTR, mcp_response};
 use crate::mcp::{self, HOST_SERVER};
 use crate::{HARNESS, native};
 use async_trait::async_trait;
-use loa_adapter::{
+use loa_contracts::harness::{
     Adapter, AdapterError, Answer, Availability, Capabilities, ContextDelivery, Feature, HarnessModel, HarnessSession,
     McpTransport, ModelSelection, ModelSwitch, Prompt, Result, SessionConfig, SessionState,
 };
@@ -154,7 +154,7 @@ impl Adapter for ClaudeAdapter {
 
     /// `claude --version`, or the configured executable's.
     async fn availability(&self) -> Availability {
-        loa_adapter::probe_cli(&self.executable, &["--version"]).await
+        loa_contracts::harness::Availability::probe(&self.executable, &["--version"]).await
     }
 
     fn capabilities(&self) -> Capabilities {

@@ -1,4 +1,4 @@
-use loa_adapter::{Adapter, Answer, Prompt, SessionConfig, SessionState};
+use loa_contracts::harness::{Adapter, Answer, Prompt, SessionConfig, SessionState};
 use loa_adapter_codex::{CodexAdapter, mapper::{Mapper, Reply}, rollout};
 use loa_core::{ElementKind, MemorySink, PatchSink, attr, answer};
 use serde_json::{Value as Json, json};
@@ -109,7 +109,7 @@ done
     let mut cfg = config();
     cfg.cwd = dir.path().to_path_buf();
     cfg.env.insert("TRACE_FILE".into(), trace.to_string_lossy().into_owned());
-    cfg.mcp_servers.push(loa_adapter::McpServerSpec { name: "inventory".into(), transport: loa_adapter::McpTransport::Stdio { command: "inventory-mcp".into(), args: vec!["--stdio".into()], env: Default::default() } });
+    cfg.mcp_servers.push(loa_contracts::harness::McpServerSpec { name: "inventory".into(), transport: loa_contracts::harness::McpTransport::Stdio { command: "inventory-mcp".into(), args: vec!["--stdio".into()], env: Default::default() } });
     let adapter = CodexAdapter::new("local-node").with_executable(script);
     let sink = Arc::new(MemorySink::new());
     let writer: Arc<dyn PatchSink> = sink.clone();
