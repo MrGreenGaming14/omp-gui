@@ -1,5 +1,9 @@
-//! Session features around the chat.
+//! Session features around the chat: the Agents and Session tree tabs, branching, plan mode,
+//! rules and the advisor, model roles, import and export.
 
+mod branch;
+mod hooks;
+mod plan;
 mod transfer;
 mod tree;
 #[cfg(test)]
@@ -7,37 +11,30 @@ mod tests;
 
 use loa_util::LockExt;
 use std::collections::HashMap;
-use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use iced::{Element, Subscription, Task};
-use loa_contracts::harness::{Answer, Capabilities, Feature, Prompt, SessionConfig};
-use loa_bus::SessionId;
-use loa_core::{Dom, Draft, ElementKind, JobStatus, NodeId, Op, PatchSink, SessionMode, TurnStatus, answer, attr};
-use loa_harness::features::hooks::{self, Advisor, TurnHooks};
-use loa_harness::features::plan::{self as plan_mode, Outcome, PlanGate, Verdict};
-use loa_harness::features::{Compaction, PlanPermit, native};
-use loa_bus::Listing;
-use loa_models::login::UrlOpener;
+use loa_bus::{Listing, SessionId};
+use loa_contracts::harness::{Answer, Capabilities, Prompt, SessionConfig};
+use loa_core::{Dom, ElementKind, JobStatus, NodeId, Op, SessionMode, TurnStatus, attr};
 use loa_harness::account_support::opener::SystemUrlOpener;
-use loa_ui_session::transcript as chat;
-use loa_ui_session::composer as composer;
+use loa_harness::features::hooks::TurnHooks;
+use loa_harness::features::plan::{self as plan_mode, PlanGate};
+use loa_models::login::UrlOpener;
 use loa_ui_panel::{agents, session_tree};
+use loa_ui_session::composer;
+use loa_ui_session::transcript as chat;
 use loa_ui_shell::SessionSummary;
 
-use crate::area::{perform, Area, AreaCommand, AreaMessage, Ctx, Listed, PanelTab, Request, SessionEvent, Spawn, SpawnStart, Target};
-use crate::session::new_session_id;
+use crate::area::{Area, AreaCommand, AreaMessage, Ctx, Listed, PanelTab, Request, SessionEvent, Target, perform};
+pub use plan::{Held, PlanNext};
 
-/// Model or omp role of the app's small-model calls: compaction summaries
-/// and advisor notes.
+/// Model or omp role of the app's small-model calls: compaction summaries and advisor notes.
 const SMALL_MODEL: &str = "@smol";
 /// How often the Agents tab advances elapsed times while a job runs.
 const TICK: Duration = Duration::from_secs(1);
-/// Palette command ids.
-const PLAN: &str = "sessions.plan";
-const ROLE: &str = "sessions.role.";
 
 #[derive(Clone, Debug)]
 pub enum Message {
@@ -63,48 +60,13 @@ pub enum Message {
     Done(Result<(), String>),
 }
 
-/// What follows a plan review.
-#[derive(Clone, Debug)]
-pub enum PlanNext {
-    Execute(String),
-    Revise { prompt: String, permit: Held, step: NodeId },
-}
-
-/// A plan permit carried by a message.
-#[derive(Clone)]
-pub struct Held(Arc<Mutex<Option<Box<dyn PlanPermit>>>>);
-
-impl Held {
-    fn new(permit: Box<dyn PlanPermit>) -> Self {
-        Self(Arc::new(Mutex::new(Some(permit))))
-    }
-
-    fn take(&self) -> Option<Box<dyn PlanPermit>> {
-        self.0.locked().take()
-    }
-}
-
-impl fmt::Debug for Held {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("Held")
-    }
-}
-
-/// A session in app plan mode.
-struct Plan {
-    /// Keeps the read-only gate on.
-    permit: Box<dyn PlanPermit>,
-    /// The open plan step; `None` while a plan waits for review.
-    step: Option<NodeId>,
-}
-
 pub struct State {
     agents: agents::State,
     tree: tree::Tree,
     transfer: transfer::State,
     /// Read-only tool gate of app plan mode.
     gate: Arc<PlanGate>,
-    plans: HashMap<String, Plan>,
+    plans: HashMap<String, plan::Plan>,
     /// Rules and advisor state per session whose harness lacks them.
     hooks: Mutex<HashMap<String, TurnHooks>>,
     /// The small model; `None` when omp, which runs it, isn't installed.
@@ -115,8 +77,7 @@ pub struct State {
     compacted: HashMap<String, String>,
     /// Opens links clicked in the transcript.
     opener: Arc<dyn UrlOpener>,
-    /// The fork or rewind being started, to show the Session tab once it
-    /// is active.
+    /// The fork or rewind being started, to show the Session tab once it is active.
     branching: Option<String>,
 }
 
@@ -133,255 +94,12 @@ impl State {
         self.restore_plan(ctx);
     }
 
-    /// Takes a reopened session that is in app plan mode back into it.
-    fn restore_plan(&mut self, ctx: &mut Ctx) {
-        let Some(session) = ctx.sessions.active() else { return };
-        let id = session.id().to_string();
-        let harness = session.harness_id().unwrap_or_default().to_owned();
-        if asks_first(ctx, &harness) {
-            self.gate.enforce_through_approvals(&id);
-        }
-        if mode(session.dom()) != SessionMode::Plan
-            || self.plans.contains_key(&id)
-            || capabilities(ctx, &harness).has(Feature::PlanMode)
-        {
-            return;
-        }
-        let step = plan_mode::open_step(session.dom());
-        match self.gate.permit(&id) {
-            Ok(permit) => {
-                self.plans.insert(id, Plan { permit, step });
-            }
-            Err(error) => ctx.notify(format!("Plan mode can't be enforced here: {error}")),
-        }
-    }
-
-    /// Compacts the active session, with `instructions` when there are any.
-    fn compact_with(&mut self, instructions: &str, ctx: &mut Ctx) -> Task<Message> {
-        self.compact(ctx, (!instructions.is_empty()).then(|| instructions.to_owned()))
-    }
-
-    /// Shows the import screen over the native sessions found now.
-    fn show_import(&mut self, ctx: &mut Ctx) -> Task<Message> {
-        self.transfer.refresh(&self.home);
-        self.transfer.status = None;
-        ctx.show_screen(Self::ID);
-        Task::none()
-    }
-
-    /// Switches the active session to `mode`, typed as `/plan` or `/normal`
-    /// or picked; the composer's picker follows.
-    fn pick_mode(&mut self, mode: SessionMode, ctx: &mut Ctx) -> Task<Message> {
-        ctx.composer.set_mode(mode);
-        self.set_mode(mode, ctx)
-    }
-
-    fn set_mode(&mut self, mode: SessionMode, ctx: &mut Ctx) -> Task<Message> {
-        let Some(session) = ctx.sessions.active() else { return Task::none() };
-        let id = session.id().to_string();
-        let harness = session.harness().cloned();
-        let harness_id = session.harness_id().unwrap_or_default().to_owned();
-        let current = self::mode(session.dom());
-        let busy = session.is_busy();
-        let writer = Arc::clone(session.writer());
-        let root = session.dom().root().map(|root| root.id);
-        if capabilities(ctx, &harness_id).has(Feature::PlanMode) {
-            // The harness has its own plan mode.
-            let Some(harness) = harness else {
-                ctx.notify("The mode changes once the session runs: send a message first");
-                ctx.composer.set_mode(current);
-                return Task::none();
-            };
-            return perform(async move { harness.set_mode(mode).await }, Message::Done);
-        }
-        match mode {
-            SessionMode::Plan if !self.plans.contains_key(&id) => {
-                if busy {
-                    ctx.notify("Plan mode starts between turns: wait for this one to end");
-                    ctx.composer.set_mode(SessionMode::Normal);
-                    return Task::none();
-                }
-                if asks_first(ctx, &harness_id) {
-                    self.gate.enforce_through_approvals(&id);
-                }
-                let entered = self.gate.permit(&id).and_then(|permit| {
-                    // `begin` commits through the writer, so it reads a copy:
-                    // committing under `with_dom` would deadlock on its lock.
-                    let dom = writer.with_dom(Dom::clone);
-                    let step = plan_mode::begin(&dom, writer.as_ref())?;
-                    Ok((permit, step))
-                });
-                match entered {
-                    Ok((permit, step)) => {
-                        self.plans.insert(id, Plan { permit, step: Some(step) });
-                        ctx.notify("Plan mode: tools that change files or run commands are blocked until you approve a plan");
-                    }
-                    Err(error) => {
-                        ctx.notify(format!("Can't enter plan mode on {}: {error}", ctx.services.harnesses.label(&harness_id)));
-                        ctx.composer.set_mode(SessionMode::Normal);
-                    }
-                }
-            }
-            SessionMode::Normal => {
-                if self.plans.remove(&id).is_some()
-                    && let Some(root) = root
-                    && let Err(error) = writer.commit(Draft::set(root, attr::MODE, SessionMode::Normal))
-                {
-                    ctx.notify(error.to_string());
-                }
-            }
-            SessionMode::Plan => {}
-        }
-        Task::none()
-    }
-
-    /// Branches the session `source` at `target`: a fork when `current` is
-    /// `None`, else a rewind from `current`.
-    fn branch(&mut self, ctx: &mut Ctx, source: &str, target: loa_harness::features::Result<Dom>, current: Option<Dom>) {
-        let verb = if current.is_some() { "rewind" } else { "fork" };
-        let target = match target {
-            Ok(target) => target,
-            Err(error) => {
-                ctx.notify(format!("Can't {verb} this session: {error}"));
-                return;
-            }
-        };
-        let Some(harness) = target.root().and_then(|root| root.str_attr(attr::HARNESS)).map(str::to_owned) else {
-            ctx.notify(format!("Can't {verb} a session that never started"));
-            return;
-        };
-        let Some(adapter) = ctx.services.harnesses.runnable(&harness) else {
-            ctx.notify(format!("Can't {verb}: {} is unavailable", ctx.services.harnesses.label(&harness)));
-            return;
-        };
-        let title = title_of(current.as_ref().unwrap_or(&target));
-        let title = match current {
-            Some(_) => format!("{title} (rewound)"),
-            None => format!("Fork of {title}"),
-        };
-        if ctx.sessions.get(source).is_some_and(|session| session.is_busy()) {
-            ctx.notify("The earlier branch keeps running; stop it from its own session if it should end");
-        }
-        let id = new_session_id();
-        let library = Arc::clone(&ctx.services.storage.library);
-        let target = Arc::new(target);
-        let current = current.map(Arc::new);
-        let new_id = id.clone();
-        let start: SpawnStart = Arc::new(move |config: SessionConfig| {
-            let (adapter, library, target, current, title, id) =
-                (Arc::clone(&adapter), Arc::clone(&library), Arc::clone(&target), current.clone(), title.clone(), new_id.clone());
-            Box::pin(async move {
-                let running = match current {
-                    None => loa_harness::features::fork(adapter.as_ref(), library.as_ref(), &target, config).await,
-                    Some(current) => loa_harness::features::rewind(adapter.as_ref(), library.as_ref(), &current, &target, config).await,
-                };
-                let running = running.map_err(|error| error.to_string())?;
-                name(&library, &id, &title)?;
-                Ok(Arc::from(running))
-            })
-        });
-        self.branching = Some(id.clone());
-        ctx.request(Request::Spawn(Spawn { id: SessionId::from(id), harness, start, prompt: None }));
-    }
-
-    fn fork_active(&mut self, ctx: &mut Ctx) {
-        let Some(id) = ctx.sessions.active_id().map(ToString::to_string) else {
-            ctx.notify("Open a session to fork it");
-            return;
-        };
-        let target = ctx.services.storage.library.load(&id);
-        self.branch(ctx, &id, target, None);
-    }
-
-    /// Rewinds session `id` to before the turn holding `node`.
-    fn rewind(&mut self, ctx: &mut Ctx, id: &str, node: NodeId) {
-        let current = match ctx.services.storage.library.load(id) {
-            Ok(current) => current,
-            Err(error) => {
-                ctx.notify(format!("Can't rewind this session: {error}"));
-                return;
-            }
-        };
-        let target = ctx.services.storage.library.before_turn(id, node);
-        self.branch(ctx, id, target, Some(current));
-    }
-
-    fn compact(&mut self, ctx: &mut Ctx, instructions: Option<String>) -> Task<Message> {
-        let Some(session) = ctx.sessions.active() else {
-            ctx.notify("Open a session to compact it");
-            return Task::none();
-        };
-        let Some(running) = session.harness().cloned() else {
-            ctx.notify("Compaction needs the session running: send a message to resume it first");
-            return Task::none();
-        };
-        if session.is_busy() {
-            ctx.notify("Wait for the turn to end before compacting");
-            return Task::none();
-        }
-        let harness = running.harness().to_owned();
-        let Some(adapter) = ctx.services.harnesses.registry.get(&harness) else { return Task::none() };
-        if adapter.capabilities().has(Feature::Compaction) {
-            ctx.notify("Compacting…");
-            return perform(async move { running.compact(instructions).await }, Message::Done);
-        }
-        let Some(small) = self.small.clone() else {
-            ctx.notify("Compaction needs a small model call through omp, and omp isn't installed");
-            return Task::none();
-        };
-        let old = session.id().to_string();
-        let source = Arc::new(session.writer().with_dom(Dom::clone));
-        let writer = Arc::clone(session.writer());
-        let title = format!("{} (compacted)", title_of(&source));
-        let id = new_session_id();
-        self.compacted.insert(id.clone(), old);
-        let library = Arc::clone(&ctx.services.storage.library);
-        let new_id = id.clone();
-        let start: SpawnStart = Arc::new(move |config: SessionConfig| {
-            let (adapter, library, small, running, source, writer, instructions, title, id) = (
-                Arc::clone(&adapter),
-                Arc::clone(&library),
-                small.clone(),
-                Arc::clone(&running),
-                Arc::clone(&source),
-                Arc::clone(&writer),
-                instructions.clone(),
-                title.clone(),
-                new_id.clone(),
-            );
-            Box::pin(async move {
-                let request = Compaction {
-                    running: running.as_ref(),
-                    source: &source,
-                    source_sink: writer.as_ref(),
-                    next: config,
-                    smol_model: SMALL_MODEL,
-                    instructions: instructions.as_deref(),
-                };
-                let compacted = loa_harness::features::compact(adapter.as_ref(), library.as_ref(), small.on(Some(SMALL_MODEL)).0.as_ref(), request)
-                    .await
-                    .map_err(|error| error.to_string())?
-                    .ok_or_else(|| "the harness compacted the session itself".to_owned())?;
-                name(&library, &id, &title)?;
-                Ok(Arc::from(compacted))
-            })
-        });
-        ctx.notify("Summarizing the session with the small model…");
-        ctx.request(Request::Spawn(Spawn { id: SessionId::from(id), harness, start, prompt: None }));
-        Task::none()
-    }
-
     fn delete(&mut self, ctx: &mut Ctx, id: &str) -> Task<Message> {
         self.tree.forget(id);
         self.plans.remove(id);
         self.hooks.locked().remove(id);
         let task = if ctx.sessions.get(id).is_some() {
-            match ctx.discard_session(id) {
-                Some(harness) => {
-                    perform(async move { harness.shutdown().await }, Message::Done)
-                }
-                None => Task::none(),
-            }
+            ctx.discard_session(id).map_or_else(Task::none, |harness| perform(async move { harness.shutdown().await }, Message::Done))
         } else {
             match ctx.services.storage.library.delete(id) {
                 Ok(()) => ctx.shell.sidebar_mut().remove_session(id),
@@ -390,11 +108,17 @@ impl State {
             Task::none()
         };
         if ctx.shell.sidebar().session(id).is_none() {
-            unpin(ctx, id);
+            // Drops the session from the sidebar's pins and the saved ones.
+            if ctx.shell.sidebar().pins().contains(id) {
+                let pins: Vec<String> = ctx.shell.sidebar().pins().iter().filter(|pin| *pin != id).cloned().collect();
+                ctx.shell.sidebar_mut().set_pins(pins);
+            }
+            ctx.edit_config("pins", |config| config.pinned.remove(id));
         }
         task
     }
 
+    /// Switches the active session to one of omp's model roles.
     fn role(&mut self, ctx: &mut Ctx, role: String) -> Task<Message> {
         let Some(session) = ctx.sessions.active() else {
             ctx.notify("Open a session to switch its model role");
@@ -405,63 +129,34 @@ impl State {
             return Task::none();
         };
         let Some(root) = session.dom().root().map(|root| root.id) else { return Task::none() };
-        let candidates = match model_roles(&self.home) {
-            Ok(roles) => match roles.iter().find(|(name, _)| *name == role) {
-                Some((_, models)) => models.clone(),
-                None => {
-                    let names: Vec<&str> = roles.iter().map(|(name, _)| name.as_str()).collect();
-                    ctx.notify(if role.is_empty() {
-                        format!("Name a model role: /role <{}>", names.join("|"))
-                    } else {
-                        format!("omp has no model role {role}; its roles: {}", names.join(", "))
-                    });
-                    return Task::none();
-                }
-            },
+        let writer = Arc::clone(session.writer());
+        let roles = match model_roles(&self.home) {
+            Ok(roles) => roles,
             Err(error) => {
                 ctx.notify(error);
                 return Task::none();
             }
         };
-        let capabilities = capabilities(ctx, harness.harness());
-        let writer = Arc::clone(session.writer());
+        let Some((_, candidates)) = roles.iter().find(|(name, _)| *name == role) else {
+            let names: Vec<&str> = roles.iter().map(|(name, _)| name.as_str()).collect();
+            ctx.notify(if role.is_empty() {
+                format!("Name a model role: /role <{}>", names.join("|"))
+            } else {
+                format!("omp has no model role {role}; its roles: {}", names.join(", "))
+            });
+            return Task::none();
+        };
+        let (capabilities, candidates) = (capabilities(ctx, harness.harness()), candidates.clone());
         perform(
-            async move {
-                loa_harness::features::select_role(harness.as_ref(), &capabilities, writer.as_ref(), root, &role, &candidates)
-                    .await
-                    .map(|model| (role, model))
-            },
+            async move { loa_harness::features::select_role(harness.as_ref(), &capabilities, writer.as_ref(), root, &role, &candidates).await.map(|model| (role, model)) },
             Message::RoleSet,
         )
     }
 
-    /// Opens the session behind a job of the Agents tab: a stored session
-    /// directly, else the harness's native subagent file imported as a
-    /// linked child of the active session.
-    fn open_child(&mut self, ctx: &mut Ctx, child: String) {
-        if let Some(id) = self.child_session(ctx, child) {
-            ctx.request(Request::OpenSession(id));
-        }
-    }
-
-    /// Opens a subagent's session in its own window, next to its parent.
-    fn detach_child(&mut self, ctx: &mut Ctx, child: String) {
-        if let Some(id) = self.child_session(ctx, child) {
-            ctx.request(Request::DetachSession(id));
-        }
-    }
-
-    /// The library id of a subagent's session: stored already, or imported
-    /// from the harness's session file on this machine.
+    /// The library id of a subagent's session: stored already, or imported from its harness's file here.
     fn child_session(&mut self, ctx: &mut Ctx, child: String) -> Option<String> {
-        let stored = ctx
-            .services
-            .storage
-            .library
-            .store()
-            .list()
-            .is_ok_and(|listings| listings.iter().any(|listing| matches!(listing, Listing::Session(info) if info.id == child)));
-        if stored {
+        let listings = ctx.services.storage.library.store().list();
+        if listings.is_ok_and(|listings| listings.iter().any(|listing| matches!(listing, Listing::Session(info) if info.id == child))) {
             return Some(child);
         }
         let path = PathBuf::from(&child);
@@ -476,212 +171,41 @@ impl State {
             return None;
         };
         let job = self.agents.jobs().find(|job| job.session() == Some(child.as_str())).map_or(NodeId::DOCUMENT, agents::Job::node);
-        match ctx.services.storage.library.import_child(adapter.as_ref(), &parent_id, job, &path, &ctx.services.node.key) {
-            Ok(id) => Some(id),
-            Err(error) => {
-                ctx.notify(format!("Can't open the subagent's session: {error}"));
-                None
-            }
+        let imported = ctx.services.storage.library.import_child(adapter.as_ref(), &parent_id, job, &path, &ctx.services.node.key);
+        ctx.report("Can't open the subagent's session", imported)
+    }
+
+    fn open_link(&self, ctx: &mut Ctx, link: &str) {
+        if !(link.starts_with("https://") || link.starts_with("http://")) {
+            ctx.notify(format!("Only web links open in the browser: {link}"));
+        } else if let Err(error) = self.opener.open_url(link) {
+            ctx.notify(format!("Can't open {link}: {error}"));
         }
-    }
-
-    fn transfer(&mut self, ctx: &mut Ctx, message: transfer::Message) {
-        match message {
-            transfer::Message::Path(path) => self.transfer.path = path,
-            transfer::Message::ExportPath(path) => self.transfer.export_path = path,
-            transfer::Message::Refresh => self.transfer.refresh(&self.home),
-            transfer::Message::Close => ctx.close_screen(),
-            transfer::Message::ImportPath => {
-                let path = PathBuf::from(self.transfer.path.trim());
-                self.import(ctx, &path);
-            }
-            transfer::Message::Import(path) => self.import(ctx, &path),
-            transfer::Message::Export { xml } => {
-                let path = Some(self.transfer.export_path.trim()).filter(|path| !path.is_empty()).map(PathBuf::from);
-                self.export(ctx, xml, path);
-            }
-        }
-    }
-
-    /// Reads the native session file at `path` into a new session and opens it.
-    fn import(&mut self, ctx: &mut Ctx, path: &Path) {
-        let result = (|| {
-            let harness = native::harness_of(path).ok_or_else(|| format!("{} isn't a session file of a known harness", path.display()))?;
-            let adapter = ctx
-                .services
-                .harnesses
-                .registry
-                .get(harness)
-                .filter(|adapter| adapter.capabilities().import)
-                .ok_or_else(|| format!("This app can't import {harness} sessions"))?;
-            let id = new_session_id();
-            ctx.services.storage.library.import(adapter.as_ref(), path, &id, &ctx.services.node.key).map_err(|error| error.to_string())?;
-            Ok::<_, String>(id)
-        })();
-        match result {
-            Ok(id) => {
-                self.transfer.status = Some(format!("Imported {}", path.display()));
-                ctx.request(Request::OpenSession(id));
-            }
-            Err(error) => {
-                self.transfer.status = Some(format!("Can't import: {error}"));
-                ctx.notify(format!("Can't import: {error}"));
-            }
-        }
-    }
-
-    /// Writes the active session to `path` (default: the app's exports
-    /// folder) as a native session of its harness or as XML.
-    fn export(&mut self, ctx: &mut Ctx, xml: bool, path: Option<PathBuf>) {
-        let Some(session) = ctx.sessions.active() else {
-            ctx.notify("Open a session to export it");
-            return;
-        };
-        let id = session.id().to_string();
-        let harness = session.harness_id().unwrap_or_default().to_owned();
-        let extension = if xml { "xml" } else { transfer::extension(&harness) };
-        let path = path.unwrap_or_else(|| ctx.services.storage.dirs.data.join("exports").join(format!("{id}.{extension}")));
-        let result = (|| {
-            if let Some(dir) = path.parent() {
-                std::fs::create_dir_all(dir).map_err(|error| format!("{}: {error}", dir.display()))?;
-            }
-            if xml {
-                return ctx.services.storage.library.export_xml(&id, &path).map_err(|error| error.to_string());
-            }
-            let adapter = ctx
-                .services
-                .harnesses
-                .registry
-                .get(&harness)
-                .filter(|adapter| adapter.capabilities().export)
-                .ok_or_else(|| format!("{} sessions can't be exported", ctx.services.harnesses.label(&harness)))?;
-            ctx.services.storage.library.export(adapter.as_ref(), &id, &path).map_err(|error| error.to_string())
-        })();
-        let status = match result {
-            Ok(()) => format!("Exported to {}", path.display()),
-            Err(error) => format!("Can't export: {error}"),
-        };
-        self.transfer.status = Some(status.clone());
-        ctx.notify(status);
-    }
-
-    /// Plan mode at the end of a turn: the plan the agent wrote goes up for
-    /// review.
-    fn submit_plan(&mut self, ctx: &mut Ctx, session: &SessionId, turn: NodeId) {
-        let Some(plan) = self.plans.get_mut(session.as_str()) else { return };
-        let Some(step) = plan.step else { return };
-        let Some(open) = ctx.sessions.get(session.as_str()) else { return };
-        let dom = open.dom();
-        let (Some(root), Some(text)) = (dom.root().map(|root| root.id), plan_mode::plan_text(dom, turn)) else { return };
-        let submitted = loa_harness::features::submit_plan(open.writer().as_ref(), root, step, text);
-        if ctx.report("Can't raise the plan review", submitted).is_some() {
-            plan.step = None;
-        }
-    }
-
-    fn answer_plan(&mut self, ctx: &mut Ctx, session: SessionId, decision: NodeId, answer: Answer) -> Task<Message> {
-        let Some(open) = ctx.sessions.get(session.as_str()) else { return Task::none() };
-        let Some(harness) = open.harness().cloned() else {
-            plan_failed(ctx, &session, decision, "The session isn't running: send a message to resume it, then answer the plan");
-            return Task::none();
-        };
-        let Some(plan) = self.plans.remove(session.as_str()) else {
-            plan_failed(ctx, &session, decision, "This session isn't in plan mode anymore");
-            return Task::none();
-        };
-        let reason = answer.reason.clone().unwrap_or_default();
-        let verdict = match answer.values.first().map(String::as_str) {
-            Some(answer::APPROVE) => Verdict::Approve,
-            Some(answer::EDIT) => Verdict::Edit(reason),
-            _ => Verdict::Reject(reason),
-        };
-        let dom = open.dom().clone();
-        let writer = Arc::clone(open.writer());
-        let by = if answer.by.is_empty() { ctx.services.node.key.clone() } else { answer.by };
-        let id = session.clone();
-        Task::perform(
-            async move {
-                let outcome = plan_mode::answer_plan(harness.as_ref(), &dom, writer.as_ref(), decision, &by, verdict, plan.permit)
-                    .await
-                    .map_err(|error| error.to_string())?;
-                Ok(match outcome {
-                    Outcome::Execute { prompt } => PlanNext::Execute(prompt),
-                    Outcome::Revise { prompt, permit, step } => PlanNext::Revise { prompt, permit: Held::new(permit), step },
-                })
-            },
-            move |result| Message::PlanAnswered { session: id.clone(), decision, result },
-        )
-    }
-
-    /// Asks the advisor about a finished turn of a session whose harness has
-    /// no advisor of its own.
-    fn advise(&self, ctx: &Ctx, session: &SessionId, turn: NodeId) -> Task<Message> {
-        let Some(small) = self.small.clone() else { return Task::none() };
-        let Some(open) = ctx.sessions.get(session.as_str()) else { return Task::none() };
-        if capabilities(ctx, open.harness_id().unwrap_or_default()).has(Feature::AdvisorRules) {
-            return Task::none();
-        }
-        let rules = self.hooks.locked().get(session.as_str()).and_then(|hooks| hooks.rules().map(str::to_owned));
-        let dom = open.dom().clone();
-        let id = session.clone();
-        perform(
-            async move {
-                Advisor::new(small.on(Some(SMALL_MODEL)).0).review(&dom, turn, rules.as_deref()).await
-            },
-            move |result| Message::Advised { session: id.clone(), turn, result },
-        )
-    }
-
-    /// The rules text for a session working in `cwd`.
-    fn rules(&self, cwd: &Path) -> Option<String> {
-        hooks::rules_context(&hooks::discover_rules(cwd, &self.home))
     }
 }
 
-/// The composer's `/` commands: the app's (`app`), then the harness's own
-/// from the latest list its adapter recorded in `dom` (omp's `commands`,
-/// ACP's `availableCommands`).
+/// The composer's `/` commands: the app's, then the harness's own from the latest list its adapter recorded in `dom`.
 fn composer_commands(app: &[composer::Command], dom: Option<&Dom>) -> Vec<composer::Command> {
     let mut commands = app.to_vec();
-    let listed = dom.and_then(|dom| {
-        dom.iter()
-            .filter(|node| node.kind == ElementKind::Ext && node.str_attr(attr::TYPE) == Some(chat::COMMANDS_EXT))
-            .max_by_key(|node| node.id)
-    });
+    let listed = dom.and_then(|dom| dom.iter().filter(|node| node.kind == ElementKind::Ext && node.str_attr(attr::TYPE) == Some(chat::COMMANDS_EXT)).max_by_key(|node| node.id));
     let Some(listed) = listed else { return commands };
     let harness = listed.str_attr(attr::HARNESS).unwrap_or("harness");
     let Ok(json) = serde_json::from_str::<serde_json::Value>(&listed.text) else { return commands };
+    // omp's `commands`, ACP's `availableCommands`.
     let list = json.get("commands").or_else(|| json.get("availableCommands")).and_then(serde_json::Value::as_array);
     for command in list.into_iter().flatten() {
         let Some(name) = command.get("name").and_then(serde_json::Value::as_str) else { continue };
-        if commands.iter().any(|known| known.name == name) {
-            continue;
+        if !commands.iter().any(|known| known.name == name) {
+            let description = command.get("description").and_then(serde_json::Value::as_str).unwrap_or_default();
+            commands.push(composer::Command { name: name.to_owned(), description: format!("{harness}: {description}") });
         }
-        let description = command.get("description").and_then(serde_json::Value::as_str).unwrap_or_default();
-        commands.push(composer::Command { name: name.to_owned(), description: format!("{harness}: {description}") });
     }
     commands
-}
-
-/// Drops session `id` from the sidebar's pins and the saved ones.
-fn unpin(ctx: &mut Ctx, id: &str) {
-    if ctx.shell.sidebar().pins().contains(id) {
-        let pins: Vec<String> = ctx.shell.sidebar().pins().iter().filter(|pin| *pin != id).cloned().collect();
-        ctx.shell.sidebar_mut().set_pins(pins);
-    }
-    ctx.edit_config("pins", |config| config.pinned.remove(id));
 }
 
 /// The session's mode, `normal` unless the DOM says otherwise.
 fn mode(dom: &Dom) -> SessionMode {
     dom.root().and_then(|root| root.str_attr(attr::MODE)).and_then(SessionMode::parse).unwrap_or(SessionMode::Normal)
-}
-
-/// Reopens the plan review card `decision` after its answer failed; the
-/// decisions area shows `error`.
-fn plan_failed(ctx: &mut Ctx, session: &SessionId, decision: NodeId, error: &str) {
-    let reopen = crate::areas::decisions::Message::Answered { session: session.to_string(), decision, result: Err(error.to_owned()) };
-    ctx.request(Request::Forward(Box::new(crate::app::Message::area(reopen))));
 }
 
 /// The session's title as the sidebar shows it.
@@ -693,20 +217,12 @@ fn capabilities(ctx: &Ctx, harness: &str) -> Capabilities {
     ctx.services.harnesses.registry.get(harness).map(|adapter| adapter.capabilities()).unwrap_or_default()
 }
 
-/// Titles the new session `id`.
+/// Whether `harness` runs on an approval mode that asks before tools that write or execute.
 fn asks_first(ctx: &Ctx, harness: &str) -> bool {
     !ctx.services.harnesses.traits(harness).approval_modes.is_empty()
 }
 
-fn name(library: &loa_harness::features::library::Library, id: &str, title: &str) -> Result<(), String> {
-    let live = library.live(id).ok_or_else(|| format!("session {id} isn't open"))?;
-    let root = live.writer.with_dom(|dom| dom.root().map(|root| root.id)).ok_or_else(|| format!("session {id} has no root"))?;
-    live.writer.commit(Draft::set(root, attr::TITLE, title)).map_err(|error| error.to_string())?;
-    Ok(())
-}
-
-/// omp's model roles (`modelRoles` in `~/.omp/agent/config.yml`) with their
-/// candidate models in order.
+/// omp's model roles (`modelRoles` in `~/.omp/agent/config.yml`) with their candidate models in order.
 fn model_roles(home: &Path) -> Result<Vec<(String, Vec<String>)>, String> {
     let path = home.join(".omp/agent/config.yml");
     let config = loa_harness::omp::config::OmpConfig::load(&path).map_err(|error| format!("Can't read {}: {error}", path.display()))?;
@@ -726,8 +242,7 @@ impl Area for State {
                 ctx.notify("Name the model: /model <provider/model>, or pick one in the model picker");
             } else {
                 let option = composer::ModelOption { id: model.to_owned(), name: model.to_owned(), provider: String::new(), role: None };
-                let pick = crate::areas::models::Message::Model(option);
-                ctx.request(Request::Forward(Box::new(crate::app::Message::area(pick))));
+                ctx.request(Request::Forward(Box::new(crate::app::Message::area(crate::areas::models::Message::Model(option)))));
             }
             Task::none()
         })
@@ -736,11 +251,12 @@ impl Area for State {
         AreaCommand::<Self>::new("sessions.role", "", "", |state, role, ctx| state.role(ctx, role.to_owned()))
             .listed(Listed::Never)
             .slash("role", "Switch to one of omp's model roles: /role <name>"),
-        // The palette lists Import, Fork, Compact…, the composer `/compact`,
-        // `/fork`…, `/import`: entries sharing an id run the same command,
-        // listed once in each order.
-        AreaCommand::<Self>::new("sessions.import", "Import native session…", "Session", |state, _, ctx| state.show_import(ctx)),
-        AreaCommand::<Self>::new("sessions.compact", "", "", |state, instructions, ctx| state.compact_with(instructions, ctx))
+        // Entries sharing an id run the same command, listed once in the palette's and once in the `/` list's order.
+        AreaCommand::<Self>::new("sessions.import", "Import native session…", "Session", |state, _, ctx| {
+            state.show_import(ctx);
+            Task::none()
+        }),
+        AreaCommand::<Self>::new("sessions.compact", "", "", |state, instructions, ctx| state.compact(ctx, instructions))
             .listed(Listed::Never)
             .slash("compact", "Summarize the session and continue with the summary"),
         AreaCommand::<Self>::new("sessions.fork", "Fork session", "Session", |state, _, ctx| {
@@ -749,16 +265,14 @@ impl Area for State {
         })
         .listed(Listed::Session)
         .slash("fork", "Fork the session into a new one"),
-        AreaCommand::<Self>::new("sessions.compact", "Compact session", "Session", |state, instructions, ctx| state.compact_with(instructions, ctx))
-            .listed(Listed::Session),
-        AreaCommand::<Self>::new(PLAN, "", "Session", |state, _, ctx| {
-            let active = ctx.sessions.active().map(|session| session.id().to_string());
-            let in_plan = active.as_ref().is_some_and(|id| state.plans.contains_key(id));
-            state.pick_mode(if in_plan { SessionMode::Normal } else { SessionMode::Plan }, ctx)
+        AreaCommand::<Self>::new("sessions.compact", "Compact session", "Session", |state, instructions, ctx| state.compact(ctx, instructions)).listed(Listed::Session),
+        AreaCommand::<Self>::new("sessions.plan", "", "Session", |state, _, ctx| {
+            let next = if state.in_plan(ctx) { SessionMode::Normal } else { SessionMode::Plan };
+            state.pick_mode(next, ctx)
         })
         .listed(Listed::When(|state, ctx| {
             let session = ctx.sessions.active()?;
-            let plan = state.plans.contains_key(session.id().as_str()) || mode(session.dom()) == SessionMode::Plan;
+            let plan = state.in_plan(ctx) || mode(session.dom()) == SessionMode::Plan;
             Some(if plan { "Leave plan mode" } else { "Enter plan mode" })
         })),
         AreaCommand::<Self>::new("sessions.mode.plan", "", "", |state, _, ctx| state.pick_mode(SessionMode::Plan, ctx))
@@ -784,10 +298,13 @@ impl Area for State {
         })
         .listed(Listed::Session)
         .slash("export-xml", "Export the session as XML for debugging"),
-        AreaCommand::<Self>::new("sessions.import", "", "", |state, _, ctx| state.show_import(ctx))
-            .listed(Listed::Never)
-            .slash("import", "Import a native session"),
-        AreaCommand::<Self>::new(ROLE, "", "Model roles", |state, role, ctx| state.role(ctx, role.to_owned())).listed(Listed::Each(|state, ctx| {
+        AreaCommand::<Self>::new("sessions.import", "", "", |state, _, ctx| {
+            state.show_import(ctx);
+            Task::none()
+        })
+        .listed(Listed::Never)
+        .slash("import", "Import a native session"),
+        AreaCommand::<Self>::new("sessions.role.", "", "Model roles", |state, role, ctx| state.role(ctx, role.to_owned())).listed(Listed::Each(|state, ctx| {
             let roles = ctx.sessions.active().and_then(|_| model_roles(&state.home).ok()).unwrap_or_default();
             let title = |role: &str, models: &[String]| format!("Model role: {role} ({})", models.first().map_or("no model", String::as_str));
             roles.into_iter().map(|(role, models)| (role.clone(), title(&role, &models))).collect()
@@ -797,7 +314,7 @@ impl Area for State {
     type Message = Message;
 
     fn new(ctx: &mut Ctx) -> (Self, Task<Message>) {
-        let home = std::env::var_os("HOME").map_or_else(|| PathBuf::from("."), PathBuf::from);
+        let home = loa_util::fs::home().unwrap_or_else(|| PathBuf::from("."));
         // Unit tests never make model calls: no small model.
         let small = if cfg!(test) {
             None
@@ -824,31 +341,27 @@ impl Area for State {
         match message {
             Message::Agents(message) => {
                 let (task, event) = self.agents.update(message);
-                match event {
-                    Some(agents::Event::OpenSession(child)) => self.open_child(ctx, child),
-                    Some(agents::Event::DetachSession(child)) => self.detach_child(ctx, child),
-                    Some(agents::Event::Cancel { .. }) => {
-                        // Harnesses stop jobs only with the turn that runs them.
-                        if let Some(harness) = ctx.sessions.active().and_then(|session| session.harness().cloned()) {
+                let child = match event {
+                    Some(agents::Event::OpenSession(child)) => self.child_session(ctx, child).map(Request::OpenSession),
+                    Some(agents::Event::DetachSession(child)) => self.child_session(ctx, child).map(Request::DetachSession),
+                    // Harnesses stop jobs only with the turn that runs them.
+                    Some(agents::Event::Cancel { .. }) => match ctx.sessions.active().and_then(|session| session.harness().cloned()) {
+                        Some(harness) => {
                             ctx.notify("Interrupting the turn that runs this job");
-                            return Task::batch([
-                                task.map(Message::Agents),
-                                perform(async move { harness.interrupt().await }, Message::Done),
-                            ]);
+                            return Task::batch([task.map(Message::Agents), perform(async move { harness.interrupt().await }, Message::Done)]);
                         }
-                    }
-                    None => {}
-                }
+                        None => None,
+                    },
+                    None => None,
+                };
+                child.into_iter().for_each(|request| ctx.request(request));
                 task.map(Message::Agents)
             }
             Message::Tree(message) => {
                 let (task, event) = self.tree.view.update(message);
                 match event {
                     Some(session_tree::Event::Open(id)) => ctx.request(Request::OpenSession(id)),
-                    Some(session_tree::Event::Fork { session, turn }) => {
-                        let target = ctx.services.storage.library.through_turn(&session, turn);
-                        self.branch(ctx, &session, target, None);
-                    }
+                    Some(session_tree::Event::Fork { session, turn }) => self.fork_at(ctx, &session, turn),
                     Some(session_tree::Event::Rewind { session, turn }) => self.rewind(ctx, &session, turn),
                     None => {}
                 }
@@ -861,51 +374,18 @@ impl Area for State {
                 Task::none()
             }
             Message::Chat(chat::Event::OpenLink(link)) => {
-                if !(link.starts_with("https://") || link.starts_with("http://")) {
-                    ctx.notify(format!("Only web links open in the browser: {link}"));
-                } else if let Err(error) = self.opener.open_url(&link) {
-                    ctx.notify(format!("Can't open {link}: {error}"));
-                }
+                self.open_link(ctx, &link);
                 Task::none()
             }
             Message::Mode(mode) => self.pick_mode(mode, ctx),
             Message::Delete(id) => self.delete(ctx, &id),
             Message::AnswerPlan { session, decision, answer } => self.answer_plan(ctx, session, decision, answer),
             Message::PlanAnswered { session, decision, result } => {
-                let prompt = match result {
-                    Ok(PlanNext::Execute(prompt)) => prompt,
-                    Ok(PlanNext::Revise { prompt, permit, step }) => {
-                        if let Some(permit) = permit.take() {
-                            self.plans.insert(session.to_string(), Plan { permit, step: Some(step) });
-                        }
-                        prompt
-                    }
-                    Err(error) => {
-                        plan_failed(ctx, &session, decision, &format!("Can't answer the plan: {error}"));
-                        self.restore_plan(ctx);
-                        return Task::none();
-                    }
-                };
-                if ctx.sessions.is_active(session.as_str()) {
-                    ctx.request(Request::Prompt(Prompt { text: prompt, by: ctx.services.node.key.clone(), ..Prompt::default() }));
-                }
+                self.plan_answered(ctx, session, decision, result);
                 Task::none()
             }
             Message::Advised { session, turn, result } => {
-                match result {
-                    Ok(Some(note)) => {
-                        if let Some(open) = ctx.sessions.get(session.as_str())
-                            && let Err(error) = hooks::record_note(open.writer().as_ref(), turn, &note)
-                        {
-                            ctx.notify(format!("Can't record the advisor's note: {error}"));
-                        }
-                        if let Some(hooks) = self.hooks.locked().get_mut(session.as_str()) {
-                            hooks.advise(note);
-                        }
-                    }
-                    Ok(None) => {}
-                    Err(error) => ctx.notify(format!("The advisor failed: {error}")),
-                }
+                self.advised(ctx, &session, turn, result);
                 Task::none()
             }
             Message::RoleSet(result) => {
@@ -947,26 +427,13 @@ impl Area for State {
 
     fn contribute(&self, config: &mut SessionConfig, target: &Target<'_>, ctx: &Ctx) {
         if asks_first(ctx, target.harness) {
-            // The app runs it on an approval mode that asks before every
-            // tool that writes or executes.
             self.gate.enforce_through_approvals(&config.session_id);
         }
-        if !target.capabilities.has(Feature::AdvisorRules) {
-            let rules = self.rules(&config.cwd);
-            let hooks = TurnHooks::start(config, rules);
-            self.hooks.locked().insert(config.session_id.clone(), hooks);
-        }
+        self.start_hooks(config, target);
     }
 
     fn before_send(&mut self, session: &SessionId, prompt: &mut Prompt, ctx: &mut Ctx) {
-        let Some(open) = ctx.sessions.get(session.as_str()) else { return };
-        if !capabilities(ctx, open.harness_id().unwrap_or_default()).has(Feature::AdvisorRules) {
-            let cwd = open.dom().root().and_then(|root| root.str_attr(attr::CWD)).map_or_else(|| ctx.services.cwd.clone(), PathBuf::from);
-            let rules = self.rules(&cwd);
-            let mut hooks = self.hooks.locked();
-            let hooks = hooks.entry(session.to_string()).or_insert_with(|| TurnHooks::resumed(rules.clone()));
-            prompt.text = hooks.before_turn(rules, &prompt.text);
-        }
+        self.hook_prompt(ctx, session, prompt);
         if self.gate.active(session.as_str()) && !prompt.text.contains(plan_mode::PLAN_STEP) {
             prompt.text = plan_mode::wrap_prompt(&prompt.text);
         }
@@ -986,33 +453,15 @@ impl Area for State {
                 self.reload(ctx);
             }
             SessionEvent::Loaded(id) if ctx.sessions.is_active(id.as_str()) => self.reload(ctx),
-            SessionEvent::Patch(id, patch) => {
-                let active = ctx.sessions.is_active(id.as_str());
-                let mut job_started = false;
-                if let Some(session) = ctx.sessions.get(id.as_str()).filter(|_| active) {
-                    let dom = session.dom();
-                    self.agents.apply(dom, patch);
-                    if let Op::Insert { kind, .. } = &patch.op {
-                        match kind {
-                            ElementKind::Job => job_started = true,
-                            ElementKind::Ext
-                                if dom.get(patch.node).and_then(|node| node.str_attr(attr::TYPE)) == Some(chat::COMMANDS_EXT) =>
-                            {
-                                ctx.composer.set_commands(composer_commands(&ctx.slash, Some(dom)));
-                            }
-                            _ => {}
-                        }
-                    }
-                    if let Op::Set { name, .. } = &patch.op
-                        && name == attr::MODE
-                        && dom.root().is_some_and(|root| root.id == patch.node)
-                    {
-                        let mode = mode(dom);
-                        ctx.composer.set_mode(mode);
-                    }
-                }
-                if job_started {
-                    ctx.reveal_tab("agents");
+            SessionEvent::Patch(id, patch) if ctx.sessions.is_active(id.as_str()) => {
+                let Some(dom) = ctx.sessions.get(id.as_str()).map(|session| session.dom()) else { return Task::none() };
+                self.agents.apply(dom, patch);
+                let ext = |node| dom.get(node).and_then(|node| node.str_attr(attr::TYPE)) == Some(chat::COMMANDS_EXT);
+                match &patch.op {
+                    Op::Insert { kind: ElementKind::Job, .. } => ctx.reveal_tab("agents"),
+                    Op::Insert { kind: ElementKind::Ext, .. } if ext(patch.node) => ctx.composer.set_commands(composer_commands(&ctx.slash, Some(dom))),
+                    Op::Set { name, .. } if name == attr::MODE && dom.root().is_some_and(|root| root.id == patch.node) => ctx.composer.set_mode(mode(dom)),
+                    _ => {}
                 }
             }
             SessionEvent::TurnStarted { session, .. } if ctx.sessions.is_active(session.as_str()) => self.tree.refresh(ctx),
@@ -1021,10 +470,7 @@ impl Area for State {
                 let (Some(node), Some(harness)) = (open.dom().get(*decision), open.harness().cloned()) else { return Task::none() };
                 if let Some(answer) = self.gate.verdict(session.as_str(), node) {
                     let decision = *decision;
-                    return perform(
-            async move { harness.answer(decision, answer).await },
-                        Message::Done,
-                    );
+                    return perform(async move { harness.answer(decision, answer).await }, Message::Done);
                 }
             }
             SessionEvent::TurnEnded { session, turn, status: TurnStatus::Done } => {
