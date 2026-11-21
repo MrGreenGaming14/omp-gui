@@ -165,9 +165,7 @@ fn write_state_file(dir: &Path, name: &str, content: &str) -> Result<PathBuf> {
     if std::fs::read_to_string(&path).is_ok_and(|existing| existing == content) {
         return Ok(path);
     }
-    let staging = dir.join(format!(".{name}.{}", std::process::id()));
-    std::fs::write(&staging, content)?;
-    std::fs::rename(&staging, &path)?;
+    loa_util::fs::write_atomic(&path, content.as_bytes(), None)?;
     Ok(path)
 }
 

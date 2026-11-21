@@ -237,7 +237,7 @@ impl DocSurface {
             };
             let bytes = xlsx.apply(&edits)?;
             let parsed = Parsed::parse(Format::Xlsx, &bytes)?;
-            write_atomically(&surface.0.path, &bytes)?;
+            loa_util::fs::write_atomic(&surface.0.path, &bytes, None).map_err(|source| DocsError::Io { path: surface.0.path.clone(), source })?;
             *surface.0.loaded.write_ok() =
                 Arc::new(Loaded { bytes: Bytes::from(bytes), parsed });
             Ok(())
@@ -259,18 +259,6 @@ async fn run_blocking<T: Send + 'static>(work: impl FnOnce() -> Result<T> + Send
     tokio::task::spawn_blocking(work)
         .await
         .map_err(|e| DocsError::Surface(SurfaceError::Backend(e.to_string())))?
-}
-
-fn write_atomically(path: &Path, bytes: &[u8]) -> Result<()> {
-    let io = |source| DocsError::Io { path: path.to_owned(), source };
-    let file_name = path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
-    let temp = path.with_file_name(format!(".{file_name}.{}.tmp", std::process::id()));
-    std::fs::write(&temp, bytes).map_err(io)?;
-    std::fs::rename(&temp, path).map_err(|e| {
-        // The temporary file is ours and useless once the rename failed.
-        let _ = std::fs::remove_file(&temp);
-        io(e)
-    })
 }
 
 #[async_trait]
