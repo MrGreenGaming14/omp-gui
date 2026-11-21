@@ -7,7 +7,7 @@ use loa_util::time::{ago, now_ms};
 
 use iced::widget::{Column, button, column, container, row, rule, space, text};
 use iced::{Alignment, Element, Fill, Length, Padding};
-use loa_ui_icons::{Icon, muted};
+use loa_ui_kit::icons::{Icon, muted};
 use loa_ui_shell::theme::style;
 
 use super::{App, COMPOSER_WIDTH, Message};

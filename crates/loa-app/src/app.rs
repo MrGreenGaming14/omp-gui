@@ -33,13 +33,6 @@ const USAGE_REFRESH: Duration = Duration::from_secs(300);
 
 const BUILTIN_TABS: [(&str, &str); 3] = [("diff", "Diff"), ("files", "Files"), ("terminal", "Terminal")];
 
-/// Theme choices offered in the palette, by command id suffix.
-const THEMES: [(&str, &str, shell::Preference); 3] = [
-    ("dark", "Dark", shell::Preference::Dark),
-    ("light", "Light", shell::Preference::Light),
-    ("system", "System", shell::Preference::System),
-];
-
 const TAB_COMMAND: &str = "tab.";
 const THEME_COMMAND: &str = "theme.";
 const NEW_SESSION: palette::CommandId = palette::CommandId::from_static("session.new");
@@ -233,13 +226,14 @@ impl App {
             services.set_active(active.name.clone(), active.cwd.clone());
         }
         let (shell, setup) =
-            shell::State::new(preference(&saved.appearance.theme), shell::PanelPrefs { open: true, ..Default::default() });
+            shell::State::new(saved.appearance.clone(), shell::PanelPrefs { open: true, ..Default::default() });
         let theme = shell.theme();
         let mut composer = composer::State::new();
         let mut sessions = Sessions::default();
         sessions.harness = services.harnesses.default_id();
         composer.set_harnesses(services.harnesses.options(), sessions.harness.as_deref());
-        let (recents, problems) = session::recents(&services.library);
+        let (recents, mut problems) = session::recents(&services.library);
+        problems.extend(shell.theme_state().errors().iter().map(|e| format!("Theme: {e}")));
         let metrics = terminal::canvas::Metrics::measure(Font::MONOSPACE, 13.0);
         let terminal = terminal::state::State::new(metrics, terminal::local::LocalShell::login_shell(services.cwd.clone()));
         let files = files::State::new(services.cwd.clone(), Box::new(files::LocalFs));
@@ -368,7 +362,7 @@ impl App {
             let id = palette::CommandId::new(format!("{TAB_COMMAND}{}", tab.id));
             palette::Command::new(id, format!("Open {} tab", tab.title), "Commands")
         }));
-        commands.extend(THEMES.into_iter().map(|(key, label, _)| {
+        commands.extend(self.ctx.shell.theme_state().themes().into_iter().map(|(key, label)| {
             palette::Command::new(palette::CommandId::new(format!("{THEME_COMMAND}{key}")), format!("Theme: {label}"), "Theme")
         }));
         commands.extend(self.keyboard_commands());
@@ -821,10 +815,8 @@ impl App {
         if let Some(tab) = id.strip_prefix(TAB_COMMAND) {
             return self.open_tab(tab);
         }
-        if let Some((_, _, preference)) =
-            id.strip_prefix(THEME_COMMAND).and_then(|theme| THEMES.into_iter().find(|(key, _, _)| *key == theme))
-        {
-            return self.update(Message::Shell(shell::Message::SetTheme(preference)));
+        if let Some(theme) = id.strip_prefix(THEME_COMMAND).filter(|t| self.ctx.shell.theme_state().themes().iter().any(|(k, _)| k == t)) {
+            return self.update(Message::Shell(shell::Message::SetTheme(shell::ThemeRef(theme.to_owned()))));
         }
         match id {
             "palette.toggle" => self.update(Message::Palette(palette::Message::Toggle)),
@@ -1016,8 +1008,8 @@ impl App {
                         self.close_project_tab(&project);
                         Task::none()
                     }
-                    Some(shell::Event::SetTheme(preference)) => {
-                        self.save_ui(|config| config.appearance.theme = theme_ref(preference));
+                    Some(shell::Event::SetTheme(theme)) => {
+                        self.save_ui(|config| config.appearance.theme = theme);
                         Task::none()
                     }
                     Some(shell::Event::SetPinned { .. }) => {
@@ -1409,18 +1401,6 @@ fn git_branch(dir: &Path) -> Option<String> {
         Some(branch) => Some(branch.to_owned()),
         None => head.get(..7).map(str::to_owned),
     }
-}
-
-/// The shell's preference for a saved theme, by the [`THEMES`] keys; an
-/// unknown theme follows the system. Temporary until the theme registry (P23).
-fn preference(theme: &loa_config::ThemeRef) -> shell::Preference {
-    THEMES.into_iter().find(|(key, _, _)| *key == theme.as_str()).map_or(shell::Preference::System, |(_, _, p)| p)
-}
-
-/// The saved theme for a shell preference.
-fn theme_ref(preference: shell::Preference) -> loa_config::ThemeRef {
-    let key = THEMES.into_iter().find(|(_, _, p)| *p == preference).map_or(loa_config::ThemeRef::SYSTEM, |(key, _, _)| key);
-    loa_config::ThemeRef(key.to_owned())
 }
 
 /// Whether `patch` may change the session's sidebar entry or status: its

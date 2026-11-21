@@ -496,7 +496,7 @@ fn pins_and_the_theme_survive_new_turns_and_a_restart() {
         id
     };
     let app = fake_app(dir.path(), &["fake-a"]);
-    assert_eq!(app.ctx.shell.theme_preference(), shell::Preference::Light);
+    assert_eq!(app.ctx.shell.theme_state().preference().as_str(), "light");
     let summary = app.ctx.shell.sidebar().session(id.as_str()).expect("listed after the restart");
     assert!(summary.pinned, "the pin was saved");
 }

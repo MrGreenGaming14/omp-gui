@@ -10,7 +10,7 @@ use std::collections::BTreeSet;
 
 use iced::widget::{Column, button, column, container, row, scrollable, space, text};
 use iced::{Alignment, Element, Fill, Length, Task};
-use loa_ui_icons::{Icon, muted};
+use loa_ui_kit::icons::{Icon, muted};
 use loa_ui_shell::UsageMeter;
 use loa_ui_shell::theme::style;
 use serde_json::Value;

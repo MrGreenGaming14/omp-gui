@@ -40,7 +40,7 @@ loa-mcp = { path = "../loa-mcp" }
 loa-remote = { path = "../loa-remote" }
 loa-trust = { path = "../loa-trust" }
 bytes.workspace = true
-loa-ui-icons = { path = "../loa-ui-icons" }
+loa-ui-kit = { path = "../loa-ui-kit" }
 loa-node = { path = "../loa-node" }
 loa-updater = { path = "../loa-updater" }
 loa-ui-updates = { path = "../loa-ui-updates" }

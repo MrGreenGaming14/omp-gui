@@ -17,7 +17,7 @@ use iced::widget::{Column, button, column, container, row, rule, scrollable, spa
 pub use crate::video::VideoStatus;
 use iced::{Center, Element, Fill, Task};
 use loa_contracts::surface::{Encoding, Surface, SurfaceInfo, SurfaceMode, SurfaceUri};
-use loa_ui_icons::{Icon, muted};
+use loa_ui_kit::icons::{Icon, muted};
 use loa_ui_shell::theme::style as shell;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -391,7 +391,7 @@ impl Panel {
         }
         if let Some(error) = &self.error {
             content = content.push(
-                container(row![loa_ui_icons::icon(Icon::TriangleAlert, 14.0), text(error).size(style::TEXT).style(style::danger)].spacing(8))
+                container(row![loa_ui_kit::icons::icon(Icon::TriangleAlert, 14.0), text(error).size(style::TEXT).style(style::danger)].spacing(8))
                     .padding([8, 10])
                     .width(Fill)
                     .style(shell::card),

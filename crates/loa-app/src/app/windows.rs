@@ -10,10 +10,10 @@ use std::path::{Path, PathBuf};
 
 use iced::widget::{Column, button, column, container, row, rule, scrollable, space, text};
 use iced::{Alignment, Element, Fill, Length, Task};
-use loa_ui_icons::{Icon, muted};
+use loa_ui_kit::icons::{Icon, muted};
 use loa_ui_models::screen::Page;
 use loa_ui_shell::theme::style;
-use loa_ui_shell::{Preference, layout};
+use loa_ui_shell::{ThemeRef, layout};
 
 use super::{App, Message};
 use crate::area::Area;
@@ -170,7 +170,7 @@ pub enum WindowMessage {
     ToggleDocFull,
     OpenSettings(SettingsTab),
     CloseSettings,
-    SetTheme(Preference),
+    SetTheme(ThemeRef),
 }
 
 impl App {
@@ -361,13 +361,14 @@ impl App {
     }
 
     fn general_settings(&self) -> Element<'_, Message> {
-        let current = self.ctx.shell.theme_preference();
+        let current = self.ctx.shell.theme_state().preference().as_str();
         let mut choices = row![].spacing(6);
-        for preference in Preference::ALL {
+        for (id, label) in self.ctx.shell.theme_state().themes() {
+            let selected = id == current;
             choices = choices.push(
-                button(text(preference.to_string()).size(13))
-                    .on_press(Message::Window(WindowMessage::SetTheme(preference)))
-                    .style(if preference == current { style::primary_button } else { style::secondary_button })
+                button(text(label).size(13))
+                    .on_press(Message::Window(WindowMessage::SetTheme(ThemeRef(id))))
+                    .style(if selected { style::primary_button } else { style::secondary_button })
                     .padding([6, 12]),
             );
         }

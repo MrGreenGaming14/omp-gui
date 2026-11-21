@@ -10,7 +10,7 @@ use std::fmt;
 
 use iced::widget::{checkbox, column, container, pick_list, row, scrollable, space, text};
 use iced::{Element, Fill, Task};
-use loa_ui_icons::Icon;
+use loa_ui_kit::icons::Icon;
 
 use crate::style::{self, BODY, NOTE, SMALL};
 

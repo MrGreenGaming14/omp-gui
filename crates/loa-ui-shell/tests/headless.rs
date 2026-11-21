@@ -5,7 +5,7 @@ use iced::widget::text;
 use iced::{Color, Element, Settings, Size, Theme};
 use iced_test::{Simulator, selector};
 use loa_ui_shell::layout::{PANEL_ID, SIDEBAR_WIDTH, project_tab_close_id, project_tab_id};
-use loa_ui_shell::{Event, Message, NodeFilter, NodeStatus, PanelPrefs, PanelTab, Preference, SessionSummary, State, sidebar, topbar};
+use loa_ui_shell::{Event, Message, NodeFilter, NodeStatus, PanelPrefs, PanelTab, SessionSummary, State, sidebar, topbar};
 
 const WINDOW: Size = Size::new(1280.0, 800.0);
 
@@ -22,7 +22,7 @@ fn session(id: &str, title: &str, node: &str, updated: i64, waiting: bool) -> Se
 }
 
 fn shell(panel_open: bool) -> State {
-    let (mut state, _) = State::new(Preference::System, PanelPrefs { open: panel_open, ..PanelPrefs::default() });
+    let (mut state, _) = State::new(Default::default(), PanelPrefs { open: panel_open, ..PanelPrefs::default() });
     state.set_nodes(vec![
         NodeStatus { key: "k-desk".into(), name: "desk".into(), online: true, local: true },
         NodeStatus { key: "k-laptop".into(), name: "laptop".into(), online: false, local: false },

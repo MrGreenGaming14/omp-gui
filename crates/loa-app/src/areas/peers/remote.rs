@@ -17,7 +17,7 @@ use loa_models::opener::SystemUrlOpener;
 use loa_node::RemoteView;
 use loa_ui_chat as chat;
 use loa_ui_decisions as cards;
-use loa_ui_icons::{Icon, icon};
+use loa_ui_kit::icons::{Icon, icon};
 use loa_ui_peers as peers;
 use loa_ui_shell::SessionSummary;
 use loa_ui_shell::theme::style;

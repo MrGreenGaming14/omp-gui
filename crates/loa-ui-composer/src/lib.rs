@@ -13,7 +13,6 @@ mod history;
 mod keys;
 mod mention;
 mod pickers;
-mod popover;
 mod popup;
 mod queue;
 mod style;
@@ -28,7 +27,7 @@ use iced::widget::{button, column, container, row, space, text, text_input};
 use iced::{Element, Length, Subscription, Task};
 use loa_contracts::harness::Prompt;
 use loa_core::SessionMode;
-use loa_ui_icons::{Icon, icon, muted};
+use loa_ui_kit::icons::{Icon, icon, muted};
 
 use history::{EditKind, History, Snapshot};
 use keys::KeyContext;
@@ -561,7 +560,7 @@ impl State {
             Some(workspace) => self.folder_bar(workspace),
             None => space().into(),
         };
-        popover::popover(column![queue, bar, frame].spacing(6), menu).into()
+        loa_ui_kit::widgets::popover(column![queue, bar, frame].spacing(6), menu).into()
     }
 
     /// A ghost bottom-row picker: a muted icon, its current choice and a

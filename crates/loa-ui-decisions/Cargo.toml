@@ -11,7 +11,7 @@ loa-core.workspace = true
 loa-contracts.workspace = true
 loa-config = { path = "../loa-config" }
 iced.workspace = true
-loa-ui-icons.workspace = true
+loa-ui-kit.workspace = true
 serde.workspace = true
 serde_json = { workspace = true, features = ["preserve_order"] }
 thiserror.workspace = true

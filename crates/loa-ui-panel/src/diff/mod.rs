@@ -15,7 +15,7 @@ pub use parse::{ParseError, Result, parse_unified};
 use crate::style;
 use iced::widget::{Id, button, column, container, operation, row, rule, scrollable, space, text};
 use iced::{Element, Font, Length, Task};
-use loa_ui_icons::Icon;
+use loa_ui_kit::icons::Icon;
 use std::ops::Range;
 
 /// Rows built above and below the viewport so fast scrolling doesn't show
@@ -216,7 +216,7 @@ impl State {
     /// and the unified/split switch on the right.
     fn toolbar<'a>(&'a self, file: &'a FileDiff) -> Element<'a, Message> {
         let chevron = if self.collapsed { Icon::ChevronRight } else { Icon::ChevronDown };
-        let collapse = button(loa_ui_icons::muted(chevron, 14.0))
+        let collapse = button(loa_ui_kit::icons::muted(chevron, 14.0))
             .padding(2)
             .style(style::row_button(false))
             .on_press(Message::ToggleCollapsed);

@@ -5,7 +5,7 @@
 
 use iced::widget::{button, container, pick_list, row, rule, scrollable, text, text_input};
 use iced::{Background, Border, Color, Element, Theme, border};
-use loa_ui_icons::Icon;
+use loa_ui_kit::icons::Icon;
 
 /// Corner radius of cards, fields and buttons.
 const RADIUS: f32 = 6.0;
@@ -202,12 +202,12 @@ pub fn filled_button<'a, M: 'a>(label: impl text::IntoFragment<'a>) -> button::B
 
 /// A small flat button holding only a muted icon.
 pub fn icon_button<'a, M: 'a>(icon: Icon) -> button::Button<'a, M> {
-    button(loa_ui_icons::muted(icon, 12.0)).padding(4).style(flat)
+    button(loa_ui_kit::icons::muted(icon, 12.0)).padding(4).style(flat)
 }
 
 /// A flat button with a leading icon.
 pub fn icon_label_button<'a, M: 'a>(icon: Icon, label: impl text::IntoFragment<'a>) -> button::Button<'a, M> {
-    button(row![loa_ui_icons::icon(icon, 12.0), text(label).size(SMALL)].spacing(6).align_y(iced::Center))
+    button(row![loa_ui_kit::icons::icon(icon, 12.0), text(label).size(SMALL)].spacing(6).align_y(iced::Center))
         .padding([4.0, 8.0])
         .style(flat)
 }
@@ -220,7 +220,7 @@ pub fn field<'a, M: Clone + 'a>(placeholder: &str, value: &str) -> text_input::T
 /// A raised search box with a magnifier icon around a borderless field.
 pub fn search_box<'a, M: Clone + 'a>(input: text_input::TextInput<'a, M>) -> Element<'a, M> {
     container(
-        row![loa_ui_icons::muted(Icon::Search, 14.0), input.size(BODY).padding(0.0).style(bare)]
+        row![loa_ui_kit::icons::muted(Icon::Search, 14.0), input.size(BODY).padding(0.0).style(bare)]
             .spacing(8)
             .align_y(iced::Center),
     )
