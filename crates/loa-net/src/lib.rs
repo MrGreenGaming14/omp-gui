@@ -16,3 +16,5 @@ pub mod tailscale;
 pub mod tcp;
 
 pub use error::{NetError, Result};
+/// Default port of every node, UDP and TCP; defined once in loa-config.
+pub use loa_config::DEFAULT_PORT;

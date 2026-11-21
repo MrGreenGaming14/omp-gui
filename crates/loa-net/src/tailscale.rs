@@ -1,7 +1,7 @@
 //! Tailscale supplies candidate MagicDNS names, never app identity. Only an
 //! authenticated application probe may turn a candidate into a discovered node.
 
-use crate::NodeId;
+use crate::{DEFAULT_PORT, NodeId};
 use crate::error::{NetError, Result};
 use async_trait::async_trait;
 use serde_json::Value;
@@ -9,8 +9,6 @@ use std::net::SocketAddr;
 use std::path::Path;
 use tokio::net::lookup_host;
 use tokio::process::Command;
-
-pub const DEFAULT_PORT: u16 = 31415;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TailnetPeer {

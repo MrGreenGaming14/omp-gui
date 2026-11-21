@@ -1,6 +1,6 @@
 //! Authenticated iroh QUIC transport with explicit relay policy.
 
-use crate::NodeId;
+use crate::{DEFAULT_PORT, NodeId};
 use crate::alpn::{self, Alpn};
 use crate::conn::{Connection, PeerConnection, Stream, Transport};
 use crate::error::{NetError, Result};
@@ -12,9 +12,6 @@ use iroh::{Endpoint, EndpointAddr, RelayMode, SecretKey};
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use tokio::task::JoinHandle;
-
-/// Default UDP listening port; use [`QuicNode::bind`] to override it.
-pub const DEFAULT_PORT: u16 = 31415;
 
 /// Only explicitly configured relays may carry peer traffic.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
