@@ -28,7 +28,7 @@ use loa_ui_kit::widgets::Screen;
 use loa_ui_settings::peers;
 use loa_ui_shell::{NodeStatus, SessionSummary};
 
-use crate::area::{Area, AreaCommand, AreaMessage, Ctx, PanelTab, Request};
+use crate::area::{perform, Area, AreaCommand, AreaMessage, Ctx, PanelTab, Request};
 use crate::watch::watch;
 
 pub use folder::FolderMessage;
@@ -60,8 +60,6 @@ pub enum Message {
     Stopped,
     /// A peer's session picked in Recents.
     OpenRecent(String),
-    /// Delete on a peer's session in Recents.
-    ForgetRecent(String),
     Remote(RemoteMessage),
     Folder(FolderMessage),
 }
@@ -148,7 +146,7 @@ impl State {
                 self.node = Some(node);
                 self.refresh(ctx);
                 Task::batch([
-                    Task::perform(async move { start.start().await.map_err(|error| error.to_string()) }, Message::Started),
+                    perform(async move { start.start().await }, Message::Started),
                     self.resources(ctx),
                 ])
             }
@@ -365,9 +363,7 @@ impl Area for State {
                 self.resources(ctx)
             }
             Message::Started(result) => {
-                if let Err(error) = result {
-                    ctx.notify(format!("The peer endpoint didn't start: {error}"));
-                }
+                let _ = ctx.report("The peer endpoint didn't start", result);
                 self.refresh(ctx);
                 Task::none()
             }
@@ -401,10 +397,6 @@ impl Area for State {
                     return Task::none();
                 }
                 self.apply(peers::Event::OpenRemote { peer: peer.to_owned(), session: session.to_owned() }, ctx)
-            }
-            Message::ForgetRecent(_) => {
-                ctx.notify("A peer's session is deleted on its own node; revoke or let the grant end to hide it");
-                Task::none()
             }
             Message::Remote(message) => self.remote_update(message, ctx),
             Message::Folder(message) => self.folder_update(message, ctx),

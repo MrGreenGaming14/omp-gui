@@ -20,7 +20,7 @@ use loa_contracts::surface::SurfaceUri;
 use loa_surfaces::{CaptureMode, HubConfig, HubEvent, Listed, McpEndpoint, Opened, SurfaceHub, SurfaceTools, dom};
 use loa_ui_surface::{Available, BrowserStatus, Capture, CaptureStatus, Options, Panel, panel};
 
-use crate::area::{Area, AreaCommand, AreaMessage, Ctx, HostToolSet, PanelTab, SessionEvent, Target};
+use crate::area::{perform, Area, AreaCommand, AreaMessage, Ctx, HostToolSet, PanelTab, SessionEvent, Target};
 use crate::watch::{PtrKey, watch};
 use crate::session::dom_turns;
 
@@ -104,8 +104,8 @@ impl State {
             unrecorded: Vec::new(),
             tools: Arc::clone(&tools),
         };
-        let endpoint = Task::perform(
-            async move { McpEndpoint::start(tools).await.map(|endpoint| Endpoint(Arc::new(endpoint))).map_err(|e| e.to_string()) },
+        let endpoint = perform(
+            async move { McpEndpoint::start(tools).await.map(|endpoint| Endpoint(Arc::new(endpoint))) },
             Message::Endpoint,
         );
         let task = Task::batch([endpoint, state.refresh_declared(), state.list(), encoders]);
@@ -159,19 +159,19 @@ impl State {
         let hub = Arc::clone(&self.hub);
         match event {
             panel::Event::OpenBrowser(url) => {
-                Task::perform(async move { hub.open_browser(&url).await.map_err(|e| e.to_string()) }, Message::Opened)
+                perform(async move { hub.open_browser(&url).await }, Message::Opened)
             }
             panel::Event::OpenDocument(path) => {
-                Task::perform(async move { hub.open_document(&path).await.map_err(|e| e.to_string()) }, Message::Opened)
+                perform(async move { hub.open_document(&path).await }, Message::Opened)
             }
             panel::Event::OpenVm { address, password } => {
-                Task::perform(async move { hub.open_vm(&address, password).await.map_err(|e| e.to_string()) }, Message::Opened)
+                perform(async move { hub.open_vm(&address, password).await }, Message::Opened)
             }
             panel::Event::Open(uri) => {
-                Task::perform(async move { hub.open(&uri).await.map_err(|e| e.to_string()) }, Message::Opened)
+                perform(async move { hub.open(&uri).await }, Message::Opened)
             }
             panel::Event::Close(uri) => {
-                Task::perform(async move { hub.close(&uri).await.map_err(|e| e.to_string()) }, Message::Closed)
+                perform(async move { hub.close(&uri).await }, Message::Closed)
             }
             #[cfg(feature = "remote-video")]
             panel::Event::SetVideo(enabled) => video::set(&self.hub, enabled, ctx),
@@ -305,9 +305,7 @@ impl Area for State {
                 Task::none()
             }
             Message::Closed(result) => {
-                if let Err(error) = result {
-                    ctx.notify(format!("Closing the surface failed: {error}"));
-                }
+                let _ = ctx.report("Closing the surface failed", result);
                 self.list()
             }
             Message::Hub(HubEvent::Opened { info, .. }) => {

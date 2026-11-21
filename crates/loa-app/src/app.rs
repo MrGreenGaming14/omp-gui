@@ -22,7 +22,7 @@ use loa_ui_shell as shell;
 use loa_ui_shell::theme::style;
 use loa_ui_terminal as terminal;
 
-use crate::area::{Area, AreaMsg, Ctx, Request, SessionEvent, Sessions, Spawn, Target};
+use crate::area::{perform, Area, AreaMsg, Ctx, Request, SessionEvent, Sessions, Spawn, Target};
 use crate::areas::{self, Registry};
 use crate::services::Services;
 use crate::session::{self, Change, Feed, dom_turns};
@@ -361,10 +361,10 @@ impl App {
         self.ctx.sessions.set_starting(Some(id.clone()));
         self.ctx.clear_notice();
         let config = self.session_config(id.as_str(), &harness, None);
-        Task::perform(
+        perform(
             async move {
                 let sink: Arc<dyn loa_core::PatchSink> = writer;
-                adapter.start(config, sink).await.map(Arc::from).map_err(|error| error.to_string())
+                adapter.start(config, sink).await.map(Arc::from)
             },
             move |result| Message::Started { id, result, prompt },
         )
@@ -420,7 +420,7 @@ impl App {
             session.set_busy(true);
         }
         self.ctx.composer.turn_started();
-        let send = Task::perform(async move { harness.send(prompt).await.map_err(|error| error.to_string()) }, Message::Operation);
+        let send = perform(async move { harness.send(prompt).await }, Message::Operation);
         Task::batch([send, self.settle()])
     }
 
@@ -441,7 +441,7 @@ impl App {
     fn interrupt(&mut self) -> Task<Message> {
         let Some(session) = self.ctx.sessions.active() else { return Task::none() };
         let Some(harness) = session.harness().filter(|_| session.is_busy()).cloned() else { return Task::none() };
-        Task::perform(async move { harness.interrupt().await.map_err(|error| error.to_string()) }, Message::Operation)
+        perform(async move { harness.interrupt().await }, Message::Operation)
     }
 
     /// Shows session `id`, loading it from its journal when needed.
@@ -844,7 +844,7 @@ impl App {
     fn restart_active_harness(&mut self) -> Task<Message> {
         self.restart_for_access = false;
         match self.ctx.sessions.active_mut().and_then(|session| session.detach()) {
-            Some(harness) => Task::perform(async move { harness.shutdown().await.map_err(|error| error.to_string()) }, Message::Operation),
+            Some(harness) => perform(async move { harness.shutdown().await }, Message::Operation),
             None => Task::none(),
         }
     }
@@ -882,7 +882,8 @@ impl App {
                         self.update(Message::area(areas::peers::Message::OpenRecent(id)))
                     }
                     Some(shell::Event::Sidebar(Nav::DeleteSession(id))) if areas::peers::is_remote(&id) => {
-                        self.update(Message::area(areas::peers::Message::ForgetRecent(id)))
+                        self.ctx.notify("A peer's session is deleted on its own node; revoke or let the grant end to hide it");
+                        Task::none()
                     }
                     Some(shell::Event::Sidebar(Nav::OpenSession(id))) => self.open_session(&id),
                     Some(shell::Event::Sidebar(Nav::DeleteSession(id))) => self.update(Message::area(areas::sessions::Message::Delete(id))),
@@ -1036,7 +1037,7 @@ impl App {
                     Err(error) => {
                         self.ctx.sessions.set_starting(None);
                         self.ctx.notify(error);
-                        Task::perform(async move { harness.shutdown().await.map_err(|error| error.to_string()) }, Message::Operation)
+                        perform(async move { harness.shutdown().await }, Message::Operation)
                     }
                 },
                 Err(error) => {
@@ -1065,7 +1066,7 @@ impl App {
                 };
                 let Some(session) = self.ctx.sessions.get_mut(id.as_str()) else {
                     // Discarded while starting.
-                    return Task::perform(async move { harness.shutdown().await.map_err(|error| error.to_string()) }, Message::Operation);
+                    return perform(async move { harness.shutdown().await }, Message::Operation);
                 };
                 session.attach(harness);
                 self.ctx.sessions.set_active(Some(id.clone()));
@@ -1080,7 +1081,7 @@ impl App {
                 match result {
                     Ok(harness) => {
                         let Some(session) = self.ctx.sessions.get_mut(id.as_str()) else {
-                            return Task::perform(async move { harness.shutdown().await.map_err(|error| error.to_string()) }, Message::Operation);
+                            return perform(async move { harness.shutdown().await }, Message::Operation);
                         };
                         session.attach(harness);
                         let open = self.open_session(id.as_str());

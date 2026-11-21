@@ -14,7 +14,7 @@ use loa_harness::account_support::opener::SystemUrlOpener;
 use loa_ui_session::decisions::{self as decisions, Desk, DesktopNotifier, TIMEOUT_BY, Unattended, desk, unattended};
 use loa_ui_shell::theme::style;
 
-use crate::area::{Area, AreaCommand, AreaMessage, Ctx, Listed, Request, SessionEvent};
+use crate::area::{perform, Area, AreaCommand, AreaMessage, Ctx, Listed, Request, SessionEvent};
 
 /// Width of the settings column on the settings screen.
 const SETTINGS_WIDTH: f32 = 720.0;
@@ -107,7 +107,7 @@ impl State {
             }
             return Task::none();
         };
-        Task::perform(async move { harness.answer(decision, answer).await.map_err(|error| error.to_string()) }, move |result| {
+        perform(async move { harness.answer(decision, answer).await }, move |result| {
             Message::Answered { session, decision, result }
         })
     }

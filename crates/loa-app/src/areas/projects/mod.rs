@@ -26,7 +26,7 @@ use loa_ui_kit::widgets::Screen;
 use loa_ui_settings::projects as screen;
 use tokio::sync::mpsc::UnboundedReceiver;
 
-use crate::area::{Area, AreaCommand, AreaMessage, Ctx, HostToolSet, Listed, Request, SessionEvent, Target};
+use crate::area::{perform, Area, AreaCommand, AreaMessage, Ctx, HostToolSet, Listed, Request, SessionEvent, Target};
 use crate::watch::{PtrKey, watch};
 
 #[cfg(test)]
@@ -132,7 +132,7 @@ impl State {
 
     fn list(&self) -> Task<Message> {
         let service = self.service.clone();
-        Task::perform(async move { service.projects().await.map_err(|error| error.to_string()) }, Message::Listed)
+        perform(async move { service.projects().await }, Message::Listed)
     }
 
     fn load_overview(&self, project: String) -> Task<Message> {

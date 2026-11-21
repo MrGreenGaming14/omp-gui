@@ -47,7 +47,7 @@ use loa_ui_session::composer as composer;
 use loa_ui_panel::{agents, session_tree};
 use loa_ui_shell::SessionSummary;
 
-use crate::area::{Area, AreaCommand, AreaMessage, Ctx, Listed, PanelTab, Request, SessionEvent, Spawn, SpawnStart, Target};
+use crate::area::{perform, Area, AreaCommand, AreaMessage, Ctx, Listed, PanelTab, Request, SessionEvent, Spawn, SpawnStart, Target};
 use crate::session::new_session_id;
 
 /// Model or omp role of the app's small-model calls: compaction summaries
@@ -195,6 +195,19 @@ impl State {
         }
     }
 
+    /// Compacts the active session, with `instructions` when there are any.
+    fn compact_with(&mut self, instructions: &str, ctx: &mut Ctx) -> Task<Message> {
+        self.compact(ctx, (!instructions.is_empty()).then(|| instructions.to_owned()))
+    }
+
+    /// Shows the import screen over the native sessions found now.
+    fn show_import(&mut self, ctx: &mut Ctx) -> Task<Message> {
+        self.transfer.refresh(&self.home);
+        self.transfer.status = None;
+        ctx.show_screen(Self::ID);
+        Task::none()
+    }
+
     /// Switches the active session to `mode`, typed as `/plan` or `/normal`
     /// or picked; the composer's picker follows.
     fn pick_mode(&mut self, mode: SessionMode, ctx: &mut Ctx) -> Task<Message> {
@@ -218,7 +231,7 @@ impl State {
                 ctx.composer.set_mode(current);
                 return Task::none();
             };
-            return Task::perform(async move { harness.set_mode(mode).await.map_err(|error| error.to_string()) }, Message::Done);
+            return perform(async move { harness.set_mode(mode).await }, Message::Done);
         }
         match mode {
             SessionMode::Plan if !self.plans.contains_key(&id) => {
@@ -349,7 +362,7 @@ impl State {
         let Some(adapter) = ctx.services.harnesses.registry.get(&harness) else { return Task::none() };
         if adapter.capabilities().has(Feature::Compaction) {
             ctx.notify("Compacting…");
-            return Task::perform(async move { running.compact(instructions).await.map_err(|error| error.to_string()) }, Message::Done);
+            return perform(async move { running.compact(instructions).await }, Message::Done);
         }
         let Some(small) = self.small.clone() else {
             ctx.notify("Compaction needs a small model call through omp, and omp isn't installed");
@@ -404,7 +417,7 @@ impl State {
         let task = if ctx.sessions.get(id).is_some() {
             match ctx.discard_session(id) {
                 Some(harness) => {
-                    Task::perform(async move { harness.shutdown().await.map_err(|error| error.to_string()) }, Message::Done)
+                    perform(async move { harness.shutdown().await }, Message::Done)
                 }
                 None => Task::none(),
             }
@@ -451,12 +464,11 @@ impl State {
         };
         let capabilities = capabilities(ctx, harness.harness());
         let writer = Arc::clone(session.writer());
-        Task::perform(
+        perform(
             async move {
                 loa_harness::features::select_role(harness.as_ref(), &capabilities, writer.as_ref(), root, &role, &candidates)
                     .await
                     .map(|model| (role, model))
-                    .map_err(|error| error.to_string())
             },
             Message::RoleSet,
         )
@@ -599,9 +611,9 @@ impl State {
         let Some(open) = ctx.sessions.get(session.as_str()) else { return };
         let dom = open.dom();
         let (Some(root), Some(text)) = (dom.root().map(|root| root.id), plan_mode::plan_text(dom, turn)) else { return };
-        match loa_harness::features::submit_plan(open.writer().as_ref(), root, step, text) {
-            Ok(_) => plan.step = None,
-            Err(error) => ctx.notify(format!("Can't raise the plan review: {error}")),
+        let submitted = loa_harness::features::submit_plan(open.writer().as_ref(), root, step, text);
+        if ctx.report("Can't raise the plan review", submitted).is_some() {
+            plan.step = None;
         }
     }
 
@@ -650,9 +662,9 @@ impl State {
         let rules = self.hooks.locked().get(session.as_str()).and_then(|hooks| hooks.rules().map(str::to_owned));
         let dom = open.dom().clone();
         let id = session.clone();
-        Task::perform(
+        perform(
             async move {
-                Advisor::new(small.on(Some(SMALL_MODEL)).0).review(&dom, turn, rules.as_deref()).await.map_err(|error| error.to_string())
+                Advisor::new(small.on(Some(SMALL_MODEL)).0).review(&dom, turn, rules.as_deref()).await
             },
             move |result| Message::Advised { session: id.clone(), turn, result },
         )
@@ -764,17 +776,21 @@ impl Area for State {
         AreaCommand::<Self>::new("sessions.role", "", "", |state, role, ctx| state.role(ctx, role.to_owned()))
             .listed(Listed::Never)
             .slash("role", "Switch to one of omp's model roles: /role <name>"),
-        AreaCommand::<Self>::new("sessions.compact", "Compact session", "Session", |state, instructions, ctx| {
-            state.compact(ctx, (!instructions.is_empty()).then(|| instructions.to_owned()))
-        })
-        .listed(Listed::Session)
-        .slash("compact", "Summarize the session and continue with the summary"),
+        // The palette lists Import, Fork, Compact…, the composer `/compact`,
+        // `/fork`…, `/import`: entries sharing an id run the same command,
+        // listed once in each order.
+        AreaCommand::<Self>::new("sessions.import", "Import native session…", "Session", |state, _, ctx| state.show_import(ctx)),
+        AreaCommand::<Self>::new("sessions.compact", "", "", |state, instructions, ctx| state.compact_with(instructions, ctx))
+            .listed(Listed::Never)
+            .slash("compact", "Summarize the session and continue with the summary"),
         AreaCommand::<Self>::new("sessions.fork", "Fork session", "Session", |state, _, ctx| {
             state.fork_active(ctx);
             Task::none()
         })
         .listed(Listed::Session)
         .slash("fork", "Fork the session into a new one"),
+        AreaCommand::<Self>::new("sessions.compact", "Compact session", "Session", |state, instructions, ctx| state.compact_with(instructions, ctx))
+            .listed(Listed::Session),
         AreaCommand::<Self>::new(PLAN, "", "Session", |state, _, ctx| {
             let active = ctx.sessions.active().map(|session| session.id().to_string());
             let in_plan = active.as_ref().is_some_and(|id| state.plans.contains_key(id));
@@ -808,13 +824,9 @@ impl Area for State {
         })
         .listed(Listed::Session)
         .slash("export-xml", "Export the session as XML for debugging"),
-        AreaCommand::<Self>::new("sessions.import", "Import native session…", "Session", |state, _, ctx| {
-            state.transfer.refresh(&state.home);
-            state.transfer.status = None;
-            ctx.show_screen(Self::ID);
-            Task::none()
-        })
-        .slash("import", "Import a native session"),
+        AreaCommand::<Self>::new("sessions.import", "", "", |state, _, ctx| state.show_import(ctx))
+            .listed(Listed::Never)
+            .slash("import", "Import a native session"),
         AreaCommand::<Self>::new(ROLE, "", "Model roles", |state, role, ctx| state.role(ctx, role.to_owned())).listed(Listed::Each(|state, ctx| {
             let roles = ctx.sessions.active().and_then(|_| model_roles(&state.home).ok()).unwrap_or_default();
             let title = |role: &str, models: &[String]| format!("Model role: {role} ({})", models.first().map_or("no model", String::as_str));
@@ -861,7 +873,7 @@ impl Area for State {
                             ctx.notify("Interrupting the turn that runs this job");
                             return Task::batch([
                                 task.map(Message::Agents),
-                                Task::perform(async move { harness.interrupt().await.map_err(|error| error.to_string()) }, Message::Done),
+                                perform(async move { harness.interrupt().await }, Message::Done),
                             ]);
                         }
                     }
@@ -937,9 +949,8 @@ impl Area for State {
                 Task::none()
             }
             Message::RoleSet(result) => {
-                match result {
-                    Ok((role, model)) => ctx.notify(format!("Model role {role}: {model}")),
-                    Err(error) => ctx.notify(format!("Can't switch the model role: {error}")),
+                if let Some((role, model)) = ctx.report("Can't switch the model role", result) {
+                    ctx.notify(format!("Model role {role}: {model}"));
                 }
                 Task::none()
             }
@@ -1050,8 +1061,8 @@ impl Area for State {
                 let (Some(node), Some(harness)) = (open.dom().get(*decision), open.harness().cloned()) else { return Task::none() };
                 if let Some(answer) = self.gate.verdict(session.as_str(), node) {
                     let decision = *decision;
-                    return Task::perform(
-                        async move { harness.answer(decision, answer).await.map_err(|error| error.to_string()) },
+                    return perform(
+            async move { harness.answer(decision, answer).await },
                         Message::Done,
                     );
                 }

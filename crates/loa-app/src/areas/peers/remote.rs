@@ -22,7 +22,7 @@ use loa_ui_shell::SessionSummary;
 use loa_ui_shell::theme::style;
 
 use super::{Message, State};
-use crate::area::{Area, Ctx};
+use crate::area::{perform, Area, Ctx};
 use crate::session::{Feed, WriterFeed};
 use crate::watch::{PtrKey, watch};
 
@@ -224,8 +224,8 @@ impl State {
                 let answer = match event {
                     Some(cards::Event::Answer { decision, answer }) => {
                         let view = Arc::clone(&remote.view);
-                        Task::perform(
-                            async move { view.answer(decision, answer.values, answer.reason).await.map_err(|error| error.to_string()) },
+                        perform(
+            async move { view.answer(decision, answer.values, answer.reason).await },
                             move |result| Message::Remote(RemoteMessage::Answered(decision, result)),
                         )
                     }
@@ -257,7 +257,7 @@ impl State {
                 }
                 remote.sending = true;
                 let view = Arc::clone(&remote.view);
-                Task::perform(async move { view.prompt(&text).await.map_err(|error| error.to_string()) }, |result| {
+                perform(async move { view.prompt(&text).await }, |result| {
                     Message::Remote(RemoteMessage::Sent(result))
                 })
             }

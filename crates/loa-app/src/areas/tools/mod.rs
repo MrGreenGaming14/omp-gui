@@ -29,7 +29,7 @@ use loa_ui_terminal as terminal;
 use loa_ui_panel::tools;
 
 use self::remote::{Remote, SshPaths, SshPty};
-use crate::area::{Area, AreaCommand, AreaMessage, Ctx, HostToolSet, Listed, PanelTab, SessionEvent, Target};
+use crate::area::{perform, Area, AreaCommand, AreaMessage, Ctx, HostToolSet, Listed, PanelTab, SessionEvent, Target};
 use crate::watch::{PtrKey, watch};
 
 /// Id of the Tools panel tab.
@@ -161,14 +161,13 @@ impl State {
         }
         let mut config = OmpBridgeConfig::new(ctx.services.cwd.clone(), ctx.services.dirs.data.join("omp-bridge").join("tools"));
         config.program = program;
-        Task::perform(
+        perform(
             async move {
                 bridge::list_omp_tools(&config)
                     .await
                     .map(|specs| {
                         specs.into_iter().map(|spec| tools::ToolInfo::new(spec.name, listing::short_description(&spec.description))).collect()
                     })
-                    .map_err(|error| error.to_string())
             },
             |result| Message::HarnessTools { harness: OMP.to_owned(), result },
         )
@@ -364,7 +363,7 @@ impl State {
             }
             tools::Event::Server { name, action } => {
                 let Some(servers) = self.servers_or_notice(ctx) else { return Task::none() };
-                Task::perform(
+                perform(
                     async move {
                         let result = match action {
                             tools::ServerAction::Start => servers.set_enabled(&name, true).await,
@@ -413,10 +412,7 @@ impl State {
             tools::Event::ImportServers(chosen) => {
                 let Some(servers) = self.servers_or_notice(ctx) else { return Task::none() };
                 let picked = listing::picked(&self.found, &chosen);
-                Task::perform(
-                    async move { servers.import_found(picked).await.map_err(|error| error.to_string()) },
-                    Message::Imported,
-                )
+                perform(async move { servers.import_found(picked).await }, Message::Imported)
             }
             tools::Event::ImportSshHosts => {
                 let resolver = Arc::clone(&self.ssh.resolver);
@@ -552,13 +548,13 @@ impl Area for State {
         state.refresh_servers(ctx);
         let store = ConfigServers::new(ctx.services.config.clone());
         let manager = state.mcp.clone();
-        let open = Task::perform(
-            async move { Registry::open(store, manager).await.map(|servers| Shared(Arc::new(servers))).map_err(|error| error.to_string()) },
+        let open = perform(
+            async move { Registry::open(store, manager).await.map(|servers| Shared(Arc::new(servers))) },
             Message::ServersOpened,
         );
         let remote_tools = state.remote.tools.clone();
-        let serve = Task::perform(
-            async move { RemoteHttp::start(remote_tools).await.map(Arc::new).map_err(|error| error.to_string()) },
+        let serve = perform(
+            async move { RemoteHttp::start(remote_tools).await.map(Arc::new) },
             Message::RemoteServing,
         );
         (state, Task::batch([open, serve, harness]))

@@ -25,7 +25,7 @@ use loa_ui_kit::widgets::{Msg, Screen};
 use loa_ui_settings::models::{self as screen, Catalog, ModelInfo, ModelRef, Page, RoleAssignment, SessionModel, picker, role_draft, settings, signin};
 use loa_ui_settings::models::signin::{LoginUpdate, ProviderEntry, ProviderKey};
 
-use crate::area::{Area, AreaCommand, AreaMessage, Ctx, Session, SessionEvent, Target};
+use crate::area::{perform, Area, AreaCommand, AreaMessage, Ctx, Session, SessionEvent, Target};
 
 #[cfg(test)]
 mod tests;
@@ -192,7 +192,7 @@ impl State {
             return Task::none();
         }
         match ctx.sessions.active().and_then(Session::harness).cloned() {
-            Some(session) => Task::perform(async move { session.models().await.map_err(|error| error.to_string()) }, {
+            Some(session) => perform(async move { session.models().await }, {
                 move |result| Message::Listed { harness: harness.clone(), result }
             }),
             None => {
@@ -300,7 +300,7 @@ impl State {
             return Task::none();
         }
         let harness = harness.to_owned();
-        Task::perform(async move { running.models().await.map_err(|error| error.to_string()) }, move |result| Message::Listed {
+        perform(async move { running.models().await }, move |result| Message::Listed {
             harness: harness.clone(),
             result,
         })
