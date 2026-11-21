@@ -51,10 +51,12 @@ fn str_field(value: &J, name: &str) -> Option<String> {
 
 /// `block` without `fields`, as JSON text.
 fn leftover(block: &J, fields: &[&str]) -> String {
-    match block {
-        J::Object(object) => J::Object(residual::take(&mut object.clone(), fields)).to_string(),
-        other => other.to_string(),
-    }
+    let mut rest = match block {
+        J::Object(object) => J::Object(residual::take(&mut object.clone(), fields)),
+        other => other.clone(),
+    };
+    rest.sort_all_objects();
+    rest.to_string()
 }
 
 /// Result or compaction content as element text, its encoding, the `texts`
@@ -79,7 +81,10 @@ fn encode(content: Option<&J>) -> (String, &'static str, Vec<V>, Vec<J>) {
 pub fn import(path: &Path, sink: &dyn PatchSink) -> Result<()> {
     let source = std::fs::read_to_string(path)?;
     let lines: Vec<(&str, Option<J>)> =
-        source.split('\n').filter(|t| !t.trim().is_empty()).map(|t| (t, serde_json::from_str(t).ok())).collect();
+        source.split('\n').filter(|t| !t.trim().is_empty()).map(|t| {
+            let json = serde_json::from_str::<J>(t).ok().map(|mut value| { value.sort_all_objects(); value });
+            (t, json)
+        }).collect();
     let mut files = Vec::new();
     if let Some(dir) = side_dir(path).filter(|d| d.is_dir()) {
         let mut pending = vec![(dir, String::new())];
@@ -129,7 +134,9 @@ impl Origin {
         if let Some(J::Object(message)) = envelope.get_mut("message") {
             message.remove("content");
         }
-        Self { index, envelope: J::Object(envelope).to_string() }
+        let mut envelope = J::Object(envelope);
+        envelope.sort_all_objects();
+        Self { index, envelope: envelope.to_string() }
     }
 
     /// Ties an element to block `part` (`None`: the content isn't an array); the first carries the envelope.
@@ -373,7 +380,9 @@ impl<'a> Importer<'a> {
         attrs.extend((kind == JSON).then(|| (attr::FORMAT, V::from(JSON))));
         attrs.extend(is_error.map(|e| (attr::IS_ERROR, V::Bool(e))));
         content_attrs(&mut attrs, kind, split);
-        attrs.push((X_BLOCK, V::from(J::Object(rest).to_string())));
+        let mut rest = J::Object(rest);
+        rest.sort_all_objects();
+        attrs.push((X_BLOCK, V::from(rest.to_string())));
         attrs.extend(origin.attrs(Some(part)));
         let state = &self.calls[call];
         let (node, w) = (state.node, self.w());

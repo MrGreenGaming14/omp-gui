@@ -325,7 +325,8 @@ impl Mapper {
     }
 
     /// Maps one stdout line; lines of unexpected shape are kept as `<ext>`.
-    pub fn handle(&mut self, raw: Value) -> Result<Option<Output>> {
+    pub fn handle(&mut self, mut raw: Value) -> Result<Option<Output>> {
+        raw.sort_all_objects();
         let kind = raw.get("type").and_then(Value::as_str).unwrap_or_default();
         let normalized;
         let event = match Event::deserialize(&raw) {

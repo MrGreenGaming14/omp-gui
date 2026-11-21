@@ -250,10 +250,14 @@ pub struct Permission<'a> {
 
 /// A successful `control_response` line.
 pub fn control_success(request_id: &str, response: Value) -> Value {
-    json!({"type": "control_response", "response": {"subtype": "success", "request_id": request_id, "response": response}})
+    let mut line = json!({"type": "control_response", "response": {"subtype": "success", "request_id": request_id, "response": response}});
+    line.sort_all_objects();
+    line
 }
 
 /// A failed `control_response` line.
 pub fn control_error(request_id: &str, error: &str) -> Value {
-    json!({"type": "control_response", "response": {"subtype": "error", "request_id": request_id, "error": error}})
+    let mut line = json!({"type": "control_response", "response": {"subtype": "error", "request_id": request_id, "error": error}});
+    line.sort_all_objects();
+    line
 }
