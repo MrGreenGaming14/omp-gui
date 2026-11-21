@@ -1,0 +1,3 @@
+# Byte-exact transcript fixtures and the versioned API listing use LF on every OS.
+*.golden text eol=lf
+/crates/loa-view/api.txt text eol=lf

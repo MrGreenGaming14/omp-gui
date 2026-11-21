@@ -137,12 +137,20 @@ async fn harness_update_end_to_end() {
     assert_eq!(updater.rollback("tool", &turns).unwrap(), SwapOutcome::Swapped { from: Some(v("1.2.0")), to: v("1.1.0") });
 
     // npm: deprecated versions and versions above `latest` are skipped; the tarball's `package/` is stripped.
-    let pkg = |text: &[u8]| tgz(&[("package/bin/pkg", Err(text)), ("package/bin/alias", Ok("pkg"))]);
+    let pkg = |text: &[u8]| {
+        if cfg!(windows) {
+            tgz(&[("package/bin/pkg", Err(text))])
+        } else {
+            tgz(&[("package/bin/pkg", Err(text)), ("package/bin/alias", Ok("pkg"))])
+        }
+    };
     feed.npm("pkg", "1.0.0", &[("0.9.0", &pkg(b"old"), false), ("1.0.0", &pkg(b"new"), false), ("1.1.0", &pkg(b"x"), true), ("2.0.0", &pkg(b"y"), false)]);
     assert_eq!(updater.check("pkg").await.unwrap().map(|r| r.version), Some(v("1.0.0")));
     updater.stage("pkg").await.unwrap();
     let payload = dir.path().join("updates/versions/pkg/1.0.0/payload/bin");
-    assert_eq!((std::fs::read(payload.join("pkg")).unwrap(), std::fs::read(payload.join("alias")).unwrap()), (b"new".to_vec(), b"new".to_vec()));
+    assert_eq!(std::fs::read(payload.join("pkg")).unwrap(), b"new".to_vec());
+    #[cfg(unix)]
+    assert_eq!(std::fs::read(payload.join("alias")).unwrap(), b"new".to_vec());
 
     // Decisions, reports and offers survive a restart.
     let status = &Updater::open(config).unwrap().overview().products[0];
@@ -161,6 +169,16 @@ fn archives_cannot_escape_the_payload() {
         let error = TarGz { strip: 0 }.unpack(&artifact, &dir.path().join(format!("payload{i}"))).unwrap_err();
         assert!(matches!(error, Error::UnsafeEntry { .. }), "{i}: {error}");
     }
+}
+
+#[cfg(windows)]
+#[test]
+fn symlink_archives_are_rejected_on_windows() {
+    let dir = tempfile::tempdir().unwrap();
+    let archive = dir.path().join("package.tgz");
+    std::fs::write(&archive, tgz(&[("package/bin/pkg", Err(b"new")), ("package/bin/alias", Ok("pkg"))])).unwrap();
+    let error = TarGz { strip: 1 }.unpack(&archive, &dir.path().join("payload")).unwrap_err();
+    assert!(matches!(error, Error::UnsafeEntry { .. }), "{error}");
 }
 
 #[cfg(unix)]
@@ -191,11 +209,12 @@ fn symlink_parents_cannot_escape_to_a_staged_artifact() {
 async fn app_updates_need_a_trusted_signature() {
     let dir = tempfile::tempdir().unwrap();
     let (feed, mut config) = setup(dir.path()).await;
-    let app = spec("app", ProductKind::App, github("app"), Some("app-{version}"), Installed::Running(v("0.1.0")), Gates::None);
+    let app = spec("app", ProductKind::App, github("app"), Some(&format!("app-{{version}}{ASSET_EXT}")), Installed::Running(v("0.1.0")), Gates::None);
     config.products = vec![app];
     config.trusted_keys = vec![key(7).verifying_key()];
     let bytes = b"#!/bin/sh\necho loa 0.2.0\n";
-    feed.release("app", "0.2.0", "- faster", bytes, &[("app-0.2.0.sig", sign_digest(bytes, &key(7)))]);
+    let signature = format!("app-0.2.0{ASSET_EXT}.sig");
+    feed.release("app", "0.2.0", "- faster", bytes, &[(signature.as_str(), sign_digest(bytes, &key(7)))]);
     let updater = Updater::open(config.clone()).unwrap();
     updater.check("app").await.unwrap();
     updater.stage("app").await.unwrap();
