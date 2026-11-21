@@ -91,7 +91,14 @@ impl SessionController {
     /// Handles a lifecycle message.
     pub fn update(&mut self, ctx: &mut Ctx, areas: &mut Registry, message: Message) -> Task<AppMessage> {
         match message {
-            Message::Feed(id, feed) => self.run(ctx, areas, Command::Feed { id, feed }),
+            Message::Feed(id, feed) => {
+                let mut batch = ctx.runtime.begin_feed(id, feed);
+                let mut tasks = Vec::new();
+                while let Some(transition) = ctx.runtime.advance_feed(&mut batch) {
+                    tasks.push(self.apply(ctx, areas, transition));
+                }
+                Task::batch(tasks)
+            }
             Message::Completed(completion) => self.run(ctx, areas, Command::Completed(completion)),
         }
     }

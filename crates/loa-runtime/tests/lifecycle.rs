@@ -21,6 +21,16 @@ use loa_session::library::Library;
 
 const HARNESS: &str = "scripted";
 
+fn deliver_feed(runtime: &mut Runtime, id: &SessionId, feed: Feed) -> Vec<RuntimeEvent> {
+    let mut batch = runtime.begin_feed(id.clone(), feed);
+    let mut events = Vec::new();
+    while let Some(transition) = runtime.advance_feed(&mut batch) {
+        assert!(transition.effects.is_empty());
+        events.extend(transition.events);
+    }
+    events
+}
+
 struct Nobody;
 impl Authorize for Nobody {
     fn authorize(&self, _: &SessionId, _: &NodeKey, _: &Draft, _: &Dom) -> Result<(), Denied> {
@@ -358,7 +368,7 @@ async fn feed_skips_stale_patches_merges_appends_resyncs_and_ends() {
     let root = writer.with_dom(|dom| dom.root().unwrap().id);
     let turn = writer.commit(Draft::insert(root, ElementKind::Turn, [(attr::STATUS, Value::from(TurnStatus::Done))], "")).unwrap().node;
     let mut feed = WriterFeed::new(Arc::clone(&writer), Policy::coalescing(3));
-    let dispatch = |runtime: &mut Runtime, feed: Feed| runtime.dispatch(Command::Feed { id: id.clone(), feed }).events;
+    let dispatch = |runtime: &mut Runtime, feed: Feed| deliver_feed(runtime, &id, feed);
 
     // The feed starts from the writer's DOM, which is ahead of the runtime's copy.
     let synced = feed.next().await.unwrap();
@@ -457,12 +467,22 @@ async fn a_batch_keeps_each_patch_before_its_event_and_reacts_to_the_turn_once()
     let root = writer.with_dom(|dom| dom.root().unwrap().id);
     let mut feed = WriterFeed::new(Arc::clone(&writer), Policy::coalescing(4096));
     let synced = feed.next().await.unwrap();
-    runtime.dispatch(Command::Feed { id: id.clone(), feed: synced });
+    deliver_feed(&mut runtime, &id, synced);
 
     let turn = writer.commit(Draft::insert(root, ElementKind::Turn, [(attr::STATUS, Value::from(TurnStatus::Running))], "")).unwrap().node;
     writer.commit(Draft::insert(turn, ElementKind::Message, [(attr::ROLE, Value::from(Role::User))], "Plan the release")).unwrap();
     let batch = feed.next().await.unwrap();
-    let events = runtime.dispatch(Command::Feed { id: id.clone(), feed: batch }).events;
+    let mut batch = runtime.begin_feed(id.clone(), batch);
+    let mut events = Vec::new();
+    while let Some(transition) = runtime.advance_feed(&mut batch) {
+        for event in &transition.events {
+            if let RuntimeEvent::Session(SessionEvent::Patch(_, patch)) = event && patch.node == turn && matches!(patch.op, loa_core::Op::Insert { .. }) {
+                assert_eq!(runtime.sessions().active().unwrap().dom().children(turn).count(), 0,
+                    "turn insertion reactions must not see the later message insertion");
+            }
+        }
+        events.extend(transition.events);
+    }
     let names: Vec<&str> = events
         .iter()
         .map(|event| match event {
@@ -482,7 +502,7 @@ async fn a_batch_keeps_each_patch_before_its_event_and_reacts_to_the_turn_once()
     writer.commit(Draft::set(turn, attr::ENDED, Value::Int(5))).unwrap();
     writer.commit(Draft::set(turn, attr::STATUS, Value::from(TurnStatus::Done))).unwrap();
     let batch = feed.next().await.unwrap();
-    let events = runtime.dispatch(Command::Feed { id: id.clone(), feed: batch }).events;
+    let events = deliver_feed(&mut runtime, &id, batch);
     let ended = events.iter().filter(|event| matches!(event, RuntimeEvent::TurnEnded(_))).count();
     assert_eq!(ended, 1);
     assert!(matches!(events.last(), Some(RuntimeEvent::TurnEnded(session)) if *session == id), "the turn reaction comes last");

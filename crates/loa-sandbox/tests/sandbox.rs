@@ -19,15 +19,20 @@ use tokio::sync::Notify;
 /// The stub binary, built on first use: it lives in its own package, so cargo
 /// gives this one no `CARGO_BIN_EXE_` for it.
 static STUB: LazyLock<PathBuf> = LazyLock::new(|| {
-    let status = std::process::Command::new(env!("CARGO"))
-        .args(["build", "--quiet", "-p", "loa-sandbox-stub"])
+    let output = std::process::Command::new(env!("CARGO"))
+        .args(["build", "--quiet", "-p", "loa-sandbox-stub", "--message-format=json"])
         .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .status()
+        .stderr(std::process::Stdio::inherit())
+        .output()
         .unwrap();
-    assert!(status.success(), "building the stub");
-    // Tests run from <target>/<profile>/deps.
-    let exe = std::env::current_exe().unwrap();
-    exe.parent().and_then(Path::parent).unwrap().join(format!("loa-sandbox-stub{}", std::env::consts::EXE_SUFFIX))
+    assert!(output.status.success(), "building the stub");
+    // Cargo owns the artifact layout; test executables need not live in `deps`.
+    output.stdout.split(|byte| *byte == b'\n').filter_map(|line| serde_json::from_slice::<serde_json::Value>(line).ok())
+        .find_map(|message| {
+            (message["reason"] == "compiler-artifact" && message["target"]["name"] == "loa-sandbox-stub")
+                .then(|| message["executable"].as_str().map(PathBuf::from)).flatten()
+        })
+        .expect("cargo reports the stub executable")
 });
 
 fn stub() -> PathBuf { STUB.clone() }

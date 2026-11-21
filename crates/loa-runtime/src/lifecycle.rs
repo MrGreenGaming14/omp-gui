@@ -4,7 +4,8 @@
 //! The app hands each [`Command`] to [`Runtime::dispatch`] and gets a
 //! [`Transition`] back: futures to run, each resolving to a [`Completion`]
 //! the app dispatches as [`Command::Completed`], and the events to react to,
-//! in order.
+//! in order. Feeds use [`Runtime::begin_feed`] and [`Runtime::advance_feed`]
+//! so consumers react to each patch before the next one changes the DOM.
 //!
 //! Starting, resuming and spawning a session is a handshake: the runtime
 //! builds the base [`SessionConfig`] and emits [`RuntimeEvent::PrepareSession`];
@@ -104,8 +105,6 @@ pub enum Command {
     Close { id: SessionId, delete: bool },
     /// Run new sessions, and the open one, on this approval mode.
     SetAccess(String),
-    /// A session's feed delivered something.
-    Feed { id: SessionId, feed: Feed },
     /// The full config of a prepared operation: launch it.
     Prepared { operation: OperationId, config: Box<SessionConfig> },
     /// An [`Effect`] finished.
@@ -178,6 +177,17 @@ pub(crate) struct Operations {
     next: OperationId,
 }
 
+/// A frame of feed events, applied one at a time so reactions see the post-patch DOM.
+/// Drain with [`Runtime::advance_feed`] before processing another feed.
+pub struct FeedBatch {
+    id: SessionId,
+    synced: Option<Arc<Dom>>,
+    events: std::vec::IntoIter<loa_bus::Event>,
+    active: bool,
+    was_busy: bool,
+    finished: bool,
+}
+
 impl Runtime {
     /// Applies `command` and returns the work and events it leads to.
     pub fn dispatch(&mut self, command: Command) -> Transition {
@@ -190,7 +200,6 @@ impl Runtime {
             Command::Interrupt => self.interrupt(&mut out),
             Command::Close { id, delete } => self.close(&id, delete, &mut out),
             Command::SetAccess(id) => self.change_access(id, &mut out),
-            Command::Feed { id, feed } => self.feed(id, feed, &mut out),
             Command::Prepared { operation, config } => {
                 if let Some(launch) = self.operations.pending.get_mut(&operation).and_then(|pending| pending.launch.take()) {
                     out.effects.push(launch(operation, *config));
@@ -351,36 +360,46 @@ impl Runtime {
         }
     }
 
-    /// Applies a session feed. Every event of a batch is applied and reacted to in order (a
-    /// patch before the event it stands for); the reactions to the active session starting or
-    /// finishing a turn come once, after the batch.
-    fn feed(&mut self, id: SessionId, feed: Feed, out: &mut Transition) {
+    /// Begins a feed frame without applying its patches yet.
+    pub fn begin_feed(&self, id: SessionId, feed: Feed) -> FeedBatch {
         let active = self.sessions.is_active(id.as_str());
-        let busy = |runtime: &Self| active && runtime.sessions.active().is_some_and(|session| session.is_busy());
-        let was_busy = busy(self);
-        match feed {
-            Feed::Synced(dom) => {
-                let change = self.sessions.sync(id.as_str(), dom);
-                self.changed(&id, change, out);
+        let was_busy = active && self.sessions.active().is_some_and(|session| session.is_busy());
+        let (synced, events, finished) = match feed {
+            Feed::Synced(dom) => (Some(dom), Vec::new(), false),
+            Feed::Events(events) => (None, events, false),
+            Feed::Ended => (None, Vec::new(), true),
+        };
+        FeedBatch { id, synced, events: events.into_iter(), active, was_busy, finished }
+    }
+
+    /// Applies the next event, or finishes the frame's once-only turn reaction.
+    /// React to the returned transition before calling again: its DOM is valid only until
+    /// the next patch. `None` means the frame is fully drained.
+    pub fn advance_feed(&mut self, batch: &mut FeedBatch) -> Option<Transition> {
+        if batch.finished {
+            return None;
+        }
+        let mut out = Transition::default();
+        if let Some(dom) = batch.synced.take() {
+            let change = self.sessions.sync(batch.id.as_str(), dom);
+            self.changed(&batch.id, change, &mut out);
+        } else if let Some(event) = batch.events.next() {
+            let change = self.sessions.apply(batch.id.as_str(), event);
+            self.changed(&batch.id, change, &mut out);
+        } else {
+            batch.finished = true;
+            let now_busy = batch.active && self.sessions.active().is_some_and(|session| session.is_busy());
+            if now_busy && !batch.was_busy {
+                out.events.push(RuntimeEvent::TurnStarted(batch.id.clone()));
             }
-            Feed::Events(events) => {
-                for event in events {
-                    let change = self.sessions.apply(id.as_str(), event);
-                    self.changed(&id, change, out);
+            if batch.was_busy && !now_busy {
+                if self.restart_for_access {
+                    self.restart(&mut out);
                 }
+                out.events.push(RuntimeEvent::TurnEnded(batch.id.clone()));
             }
-            Feed::Ended => return,
         }
-        let now_busy = busy(self);
-        if now_busy && !was_busy {
-            out.events.push(RuntimeEvent::TurnStarted(id.clone()));
-        }
-        if was_busy && !now_busy {
-            if self.restart_for_access {
-                self.restart(out);
-            }
-            out.events.push(RuntimeEvent::TurnEnded(id));
-        }
+        Some(out)
     }
 
     /// The events of one change of session `id`: its sidebar entry and status first, then the
