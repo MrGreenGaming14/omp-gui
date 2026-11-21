@@ -3,30 +3,24 @@
 use crate::{Error, Result};
 use async_trait::async_trait;
 use loa_core::{Dom, Draft, attr};
-use loa_util::LockExt;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::path::PathBuf;
 
-/// A file every chat of the project should know about.
+/// A file every chat of the project should know about, with why it is pinned.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PinnedFile {
     pub path: String,
-    /// Why it is pinned, shown next to the path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
 }
 
-/// Settings shared by every session of a project, like a CLAUDE.md for the whole project.
+/// Settings shared by every session of a project; `digest_model` `None` uses the summarizer's default.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectSettings {
-    /// Markdown instructions delivered with the project context.
     #[serde(default)]
     pub instructions: String,
     #[serde(default)]
     pub pinned: Vec<PinnedFile>,
-    /// Model or role for digests; `None` uses the summarizer's default (`@smol`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub digest_model: Option<String>,
 }
@@ -38,43 +32,15 @@ pub trait SettingsStore: Send + Sync {
     async fn save(&self, project: &str, settings: &ProjectSettings) -> Result<()>;
 }
 
-/// Settings kept in memory, for previews and tests.
-#[derive(Debug, Default)]
-pub struct MemorySettingsStore(Mutex<HashMap<String, ProjectSettings>>);
-
-impl MemorySettingsStore {
-    pub fn new() -> Self {
-        Self::default()
-    }
-}
-
-#[async_trait]
-impl SettingsStore for MemorySettingsStore {
-    async fn load(&self, project: &str) -> Result<ProjectSettings> {
-        Ok(self.0.locked().get(project).cloned().unwrap_or_default())
-    }
-
-    async fn save(&self, project: &str, settings: &ProjectSettings) -> Result<()> {
-        self.0.locked().insert(project.to_owned(), settings.clone());
-        Ok(())
-    }
-}
-
-/// One JSON file per project in a directory, written atomically, named by the
-/// project id with every byte but `[A-Za-z0-9_-]` percent encoded.
+/// One JSON file per project in `dir`, written atomically, named by the project percent encoded.
 #[derive(Clone, Debug)]
 pub struct FileSettingsStore {
     dir: PathBuf,
 }
 
 impl FileSettingsStore {
-    /// `dir` is created on the first save.
     pub fn new(dir: impl Into<PathBuf>) -> Self {
         Self { dir: dir.into() }
-    }
-
-    pub fn dir(&self) -> &Path {
-        &self.dir
     }
 
     fn path(&self, project: &str) -> PathBuf {

@@ -1,7 +1,5 @@
 //! Session digests, project context, and the `project_search` / `project_read` tools.
-//!
-//! Every path that shows sessions goes through [`source::visible_sessions`], so a session
-//! the [`Access`] port denies never influences results, counts, snippets or digests.
+//! Every path that shows sessions starts at [`source::visible_sessions`], so a denied session never leaks.
 
 pub mod context;
 pub mod digest;
@@ -20,23 +18,16 @@ mod testing;
 #[cfg(test)]
 mod tests;
 
-pub use context::{ContextRequest, PackedContext, build_context, render_markdown};
-pub use digest::{Digest, DigestContent, DigestState, FileNote, digest_of, digest_state, mark_stale_draft, write_drafts};
-pub use digester::{Digester, PromptLimits, Summarizer, Summarizers};
+pub use digest::{DigestContent, DigestState};
+pub use digester::{Summarizer, Summarizers};
 pub use loa_harness::omp::OneShot as OmpSummarizer;
-pub use rank::{Bm25, Candidate, RankParams, Ranked, Recency, Scorer, Weighted, estimate_tokens, rank_and_pack};
-pub use read::{ReadPage, ReadRequest, read_subtree};
-pub use rebuild::{Decision, RebuildDriver, RebuildHandle, RebuildOutcome, SessionWriter, Trigger, decide};
-pub use search::{AttrFilter, PathStep, SearchHit, SearchPage, SearchQuery, TextMode, search};
+pub use rebuild::RebuildOutcome;
 pub use service::{ProjectOverview, ProjectService, ProjectSummary, ServiceConfig, SessionRow};
 pub use sessions::LiveSessions;
-pub use settings::{
-    FileSettingsStore, MemorySettingsStore, PinnedFile, ProjectSettings, SettingsStore, exclude_draft, is_excluded,
-};
-pub use source::{Access, LocalOnly, SessionInfo, SessionSource, project_name, session_project, visible_sessions};
-pub use tools::{PROJECT_READ, PROJECT_SEARCH, ProjectRead, ProjectSearch, tool_set};
+pub use settings::{FileSettingsStore, PinnedFile, ProjectSettings, is_excluded};
+pub use source::LocalOnly;
+pub use tools::{PROJECT_READ, PROJECT_SEARCH};
 
-/// Errors of this crate.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// A port (session source, settings store, writer) failed.

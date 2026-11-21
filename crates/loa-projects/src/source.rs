@@ -6,11 +6,10 @@ use loa_core::{Dom, ElementKind, Role, attr};
 use std::path::Path;
 use std::sync::Arc;
 
-/// What a project listing knows about a session without loading its DOM.
+/// What a project listing knows about a session.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SessionInfo {
     pub id: String,
-    /// See [`session_project`].
     pub project: String,
     /// Owner node key.
     pub node: String,
@@ -29,33 +28,23 @@ impl SessionInfo {
             let prompt = dom.iter().find(|n| n.kind == ElementKind::Message && n.str_attr(attr::ROLE) == user)?;
             Some(loa_util::text::first_line(&prompt.text, 60)).filter(|t| !t.is_empty())
         });
-        Some(Self {
-            id: root.str_attr(attr::ID)?.to_owned(),
-            project: session_project(dom)?,
-            node: root.str_attr(attr::NODE).unwrap_or_default().to_owned(),
-            created: root.int_attr(attr::CREATED).unwrap_or(0),
-            title,
-        })
+        let node = root.str_attr(attr::NODE).unwrap_or_default().to_owned();
+        Some(Self { id: root.str_attr(attr::ID)?.to_owned(), project: session_project(dom)?, node, created: root.int_attr(attr::CREATED).unwrap_or(0), title })
     }
 }
 
-/// The session's `<session project>`, else the name of its `<session cwd>`.
+/// The session's `<session project>`, else the last component of its `<session cwd>` (`/` stays whole).
 pub fn session_project(dom: &Dom) -> Option<String> {
     let root = dom.root()?;
-    match root.str_attr(attr::PROJECT).filter(|p| !p.trim().is_empty()) {
-        Some(project) => Some(project.to_owned()),
-        None => root.str_attr(attr::CWD).and_then(project_name),
+    if let Some(project) = root.str_attr(attr::PROJECT).filter(|p| !p.trim().is_empty()) {
+        return Some(project.to_owned());
     }
-}
-
-/// The project name of a working directory: its last component, or the whole path for `/`.
-pub fn project_name(cwd: &str) -> Option<String> {
-    let cwd = cwd.trim();
+    let cwd = root.str_attr(attr::CWD)?.trim();
     let name = Path::new(cwd).file_name().map_or_else(|| cwd.to_owned(), |n| n.to_string_lossy().into_owned());
     (!cwd.is_empty()).then_some(name)
 }
 
-/// Loads the sessions of a project. `loa-app` backs it with the journal.
+/// Loads the sessions of a project.
 #[async_trait]
 pub trait SessionSource: Send + Sync {
     /// Every session of `project`, in any order.
@@ -76,8 +65,7 @@ impl Access for LocalOnly {
     fn can_open(&self, _: &SessionInfo) -> bool { true }
 }
 
-/// The visible sessions of `project`, newest first (ties by id). Every search, read and
-/// context build starts here, so a denied session is dropped before its content is read.
+/// The visible sessions of `project`, newest first (ties by id).
 pub async fn visible_sessions(source: &dyn SessionSource, access: &dyn Access, project: &str) -> Result<Vec<SessionInfo>> {
     let mut sessions = source.list(project).await?;
     sessions.retain(|s| s.project == project && access.can_open(s));

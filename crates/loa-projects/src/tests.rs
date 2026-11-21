@@ -1,5 +1,11 @@
+use crate::digest::{digest_of, digest_state};
 use crate::digester::{Digester, PromptLimits, build_prompt, parse_answer};
-use crate::rebuild::{Decision, RebuildDriver, RebuildOutcome, SessionWriter, Trigger, decide};
+use crate::rank::{Bm25, Candidate, RankParams, Recency, Scorer, Weighted, rank_and_pack};
+use crate::read::{ReadRequest, read_subtree};
+use crate::rebuild::{Decision, RebuildDriver, SessionWriter, decide};
+use crate::search::{AttrFilter, SearchQuery, TextMode, search};
+use crate::settings::exclude_draft;
+use crate::source::{Access, SessionSource, visible_sessions};
 use crate::testing::{Builder, Fake, MemorySource, Only, live};
 use crate::*;
 use loa_bus::{Bus, JournalOptions, Store};
@@ -157,8 +163,9 @@ async fn digest_staleness_and_rebuilds() {
         let source = Arc::new(MemorySource::with([&s]));
         let fake = Arc::new(Fake { fail, ..Default::default() });
         let digester = Digester::new(Arc::new(fake.clone()), PromptLimits::default());
-        let (handle, mut out) = RebuildDriver::new(source.clone(), source.clone(), digester, Duration::from_millis(20)).spawn();
-        (0..3).for_each(|_| assert!(handle.notify("s", Trigger::TurnEnd)));
+        let driver = RebuildDriver { source: source.clone(), writer: source, digester, debounce: Duration::from_millis(20), settings: None };
+        let (tx, mut out) = driver.spawn();
+        (0..3).for_each(|_| tx.send("s".into()).unwrap());
         let outcome = out.recv().await.unwrap();
         assert_eq!((fake.calls.load(Ordering::SeqCst), matches!(outcome, RebuildOutcome::Failed { .. })), (1, fail));
         let digest = digest_of(&s.dom()).unwrap();

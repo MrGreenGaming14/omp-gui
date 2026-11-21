@@ -46,21 +46,14 @@ pub struct SearchQuery {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PathStep {
-    pub node: NodeId,
-    pub kind: ElementKind,
-    pub label: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SearchHit {
     pub session: String,
     pub session_title: Option<String>,
     pub node: NodeId,
     pub kind: ElementKind,
     pub snippet: String,
-    /// Ancestors from the `<session>` down to the hit's parent.
-    pub path: Vec<PathStep>,
+    /// Ancestor labels from the `<session>` down to the hit's parent, joined by ` > `.
+    pub path: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -96,8 +89,9 @@ pub async fn search(source: &dyn SessionSource, access: &dyn Access, project: &s
             let Some(snippet) = matcher.matches(&dom, node) else { continue };
             total += 1;
             if total > skip && hits.len() < limit {
-                let mut path: Vec<PathStep> = dom.ancestors(node.id).map(|n| PathStep { node: n.id, kind: n.kind, label: label(n) }).collect();
+                let mut path: Vec<String> = dom.ancestors(node.id).map(label).collect();
                 path.reverse();
+                let path = path.join(" > ");
                 hits.push(SearchHit { session: info.id.clone(), session_title: info.title.clone(), node: node.id, kind: node.kind, snippet, path });
             }
         }

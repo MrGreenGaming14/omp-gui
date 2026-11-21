@@ -39,11 +39,7 @@ pub async fn build_context(source: &dyn SessionSource, access: &dyn Access, sett
         }
     }
     let header = estimate_tokens(&render_header(request.project, &settings, true));
-    let params = RankParams {
-        exclude_session: request.session.map(str::to_owned),
-        ..RankParams::new(request.now, request.budget_tokens.saturating_sub(header))
-    };
-    let digests = rank_and_pack(candidates, request.query, &params);
+    let digests = rank_and_pack(candidates, request.query, &RankParams::new(request.now, request.budget_tokens.saturating_sub(header)));
     Ok(PackedContext { project: request.project.to_owned(), settings, digests })
 }
 

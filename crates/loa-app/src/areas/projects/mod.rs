@@ -22,7 +22,7 @@ use iced::{Element, Subscription, Task};
 use loa_contracts::harness::{HostToolSpec, HostTools, SessionConfig};
 use loa_projects::{
     FileSettingsStore, LiveSessions, LocalOnly, OmpSummarizer, ProjectOverview, ProjectService, ProjectSettings,
-    ProjectSummary, RebuildOutcome, ServiceConfig, Summarizers, Trigger,
+    ProjectSummary, RebuildOutcome, ServiceConfig, Summarizers,
 };
 use loa_ui_palette as palette;
 use loa_ui_projects as screen;
@@ -380,11 +380,11 @@ impl Area for State {
     fn on_session_event(&mut self, event: &SessionEvent, _: &mut Ctx) -> Task<Message> {
         match event {
             SessionEvent::TurnEnded { session, .. } => {
-                self.service.notify(session.as_str(), Trigger::TurnEnd);
+                self.service.notify(session.as_str());
                 Task::batch([self.list(), self.reload_screen()])
             }
             SessionEvent::Compaction { session, .. } => {
-                self.service.notify(session.as_str(), Trigger::Compaction);
+                self.service.notify(session.as_str());
                 Task::none()
             }
             SessionEvent::Activated(Some(_)) | SessionEvent::Closed(_) => self.list(),

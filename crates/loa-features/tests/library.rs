@@ -296,14 +296,17 @@ async fn plan_mode_denies_tool_approvals_until_the_plan_is_approved() {
     assert_eq!(adapter.modes.lock().unwrap().as_slice(), [SessionMode::Plan, SessionMode::Normal]);
 }
 
+/// Prompts asked, each with the model it was asked of.
+type Asked = Arc<Mutex<Vec<(String, Option<String>)>>>;
+
 /// A model that answers from a script and records the prompts.
 #[derive(Default)]
 struct Scripted {
     answers: Mutex<Vec<String>>,
-    asked: Arc<Mutex<Vec<(String, Option<String>)>>>,
+    asked: Asked,
 }
 
-struct Reply(String, Option<String>, Arc<Mutex<Vec<(String, Option<String>)>>>);
+struct Reply(String, Option<String>, Asked);
 
 #[async_trait]
 impl loa_projects::Summarizer for Reply {

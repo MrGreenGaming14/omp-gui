@@ -128,22 +128,19 @@ impl Scorer for Weighted {
     }
 }
 
+/// `now` in Unix ms; `relevance_weight` is relevance's share (0 to 1), recency gets the rest.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RankParams {
-    /// Unix milliseconds, for recency.
     pub now: i64,
     pub half_life_ms: i64,
-    /// Share of relevance in the score, 0 to 1.
     pub relevance_weight: f64,
     pub budget_tokens: usize,
-    /// The chat the context is for; its own digest is left out.
-    pub exclude_session: Option<String>,
 }
 
 impl RankParams {
     /// A week's half life and 70 % relevance.
     pub fn new(now: i64, budget_tokens: usize) -> Self {
-        Self { now, half_life_ms: 7 * 24 * 3600 * 1000, relevance_weight: 0.7, budget_tokens, exclude_session: None }
+        Self { now, half_life_ms: 7 * 24 * 3600 * 1000, relevance_weight: 0.7, budget_tokens }
     }
 }
 
@@ -153,40 +150,30 @@ pub struct Ranked {
     pub candidate: Candidate,
     pub score: f64,
     pub section: String,
-    pub tokens: usize,
 }
 
+/// Four bytes per token.
 pub fn estimate_tokens(text: &str) -> usize {
     text.len().div_ceil(4)
 }
 
 /// Ranks `candidates` against `query` and keeps, best first, those that fit the budget.
 /// Excluded sessions are dropped before fitting, so they don't shift other scores.
-pub fn rank_and_pack(candidates: Vec<Candidate>, query: &str, params: &RankParams) -> Vec<Ranked> {
-    let mut candidates = candidates;
-    candidates.retain(|c| !c.excluded && params.exclude_session.as_deref() != Some(c.session.as_str()));
+pub fn rank_and_pack(mut candidates: Vec<Candidate>, query: &str, params: &RankParams) -> Vec<Ranked> {
+    candidates.retain(|c| !c.excluded);
     let mut query: Vec<String> = words(query).collect();
     query.sort();
     query.dedup();
-    let w = params.relevance_weight;
-    let scorer = Weighted(vec![
-        (w, Box::new(Bm25::fit(&candidates, &query))),
-        (1.0 - w, Box::new(Recency { now: params.now, half_life_ms: params.half_life_ms })),
-    ]);
-    let mut ranked: Vec<Ranked> = candidates
-        .into_iter()
-        .map(|candidate| {
-            let section = render_digest_section(&candidate);
-            Ranked { score: scorer.score(&query, &candidate), tokens: estimate_tokens(&section), candidate, section }
-        })
-        .collect();
+    let (w, recency) = (params.relevance_weight, Recency { now: params.now, half_life_ms: params.half_life_ms });
+    let scorer = Weighted(vec![(w, Box::new(Bm25::fit(&candidates, &query))), (1.0 - w, Box::new(recency))]);
+    let mut ranked: Vec<Ranked> = candidates.into_iter().map(|c| Ranked { score: scorer.score(&query, &c), section: render_digest_section(&c), candidate: c }).collect();
     ranked.sort_by(|a, b| {
         let (ca, cb) = (&a.candidate, &b.candidate);
         b.score.total_cmp(&a.score).then(cb.last_active.cmp(&ca.last_active)).then_with(|| ca.session.cmp(&cb.session))
     });
     let mut left = params.budget_tokens;
-    ranked.retain(|r| r.tokens <= left && {
-        left -= r.tokens;
+    ranked.retain(|r| estimate_tokens(&r.section) <= left && {
+        left -= estimate_tokens(&r.section);
         true
     });
     ranked

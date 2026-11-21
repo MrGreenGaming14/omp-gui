@@ -117,10 +117,8 @@ impl Tool for ProjectSearch {
             search(&*self.0.source, &*self.0.access, &project, &query).await
         };
         let page = run.await.map_err(|e| e.to_string())?;
-        let hits: Vec<serde_json::Value> = page.hits.iter().map(|h| {
-            let path: Vec<&str> = h.path.iter().map(|p| p.label.as_str()).collect();
-            json!({"session": h.session, "session_title": h.session_title, "node": h.node.0, "element": h.kind.as_str(), "snippet": h.snippet, "path": path.join(" > ")})
-        }).collect();
+        let hit = |h: &crate::search::SearchHit| json!({"session": h.session, "session_title": h.session_title, "node": h.node.0, "element": h.kind.as_str(), "snippet": h.snippet, "path": h.path});
+        let hits: Vec<serde_json::Value> = page.hits.iter().map(hit).collect();
         Ok(ToolOutput::text(json!({"total": page.total, "hits": hits, "next_cursor": page.next_cursor}).to_string()))
     }
 }

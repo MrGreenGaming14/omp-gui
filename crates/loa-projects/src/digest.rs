@@ -48,7 +48,6 @@ pub struct Digest {
     /// Flagged stale, or the session moved on.
     pub stale: bool,
     pub model: Option<String>,
-    pub created: Option<i64>,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -86,7 +85,6 @@ pub fn digest_of(dom: &Dom) -> Option<Digest> {
         source_seq: uint(node, attr::SOURCE_SEQ),
         stale: is_stale(dom, node),
         model: node.str_attr(attr::MODEL).map(str::to_owned),
-        created: node.int_attr(attr::CREATED),
     })
 }
 
