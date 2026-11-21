@@ -68,6 +68,11 @@ pub fn badge<'a, M: 'a>(s: impl text::IntoFragment<'a>, tone: Tone) -> Element<'
     container(label(s, TextRole::Caption, tone)).padding(Padding::ZERO.left(sp(SpaceRole::Xs)).right(sp(SpaceRole::Xs))).style(style::container(Surface::Badge)).into()
 }
 
+/// A labelled button of `kind`; disabled without `on`.
+pub fn text_button<'a, M: Clone + 'a>(s: impl text::IntoFragment<'a>, kind: ButtonKind, on: Option<M>) -> Element<'a, M> {
+    button(text(s).size(size(TextRole::Label))).padding([sp(SpaceRole::Xs), sp(SpaceRole::S)]).style(style::button(kind)).on_press_maybe(on).into()
+}
+
 /// A ghost icon button with a tooltip; disabled without `on`.
 pub fn icon_button<'a, M: Clone + 'a>(icon: Icon, tip: &'a str, on: Option<M>) -> Element<'a, M> {
     let b = button(tinted(icon, TextRole::Body, Tone::Muted)).padding(sp(SpaceRole::Xs)).style(style::button(ButtonKind::Ghost)).on_press_maybe(on);
@@ -155,11 +160,25 @@ pub fn tab_strip<'a, M: Clone + 'a>(tabs: impl IntoIterator<Item = Tab<'a, M>>) 
     row(pills).spacing(sp(SpaceRole::Xs)).align_y(Alignment::Center).into()
 }
 
-/// A settings-style window body: a nav column of `items` beside `body`.
-pub fn side_nav<'a, T: Copy + PartialEq + std::fmt::Display, M: Clone + 'a>(items: &[T], selected: T, on: impl Fn(T) -> M, body: Element<'a, M>) -> Element<'a, M> {
-    let nav = column(items.iter().map(|&i| menu_row(None, i.to_string(), i == selected, on(i)))).spacing(sp(SpaceRole::Xs));
+/// An entry of a [`side_nav`]: its label and the group heading it sits under.
+pub trait NavItem: Copy + PartialEq {
+    fn label(self) -> &'static str;
+    fn group(self) -> Option<&'static str> { None }
+}
+
+/// A settings-style window body: a nav column of `items` (under `title`, grouped) beside `body`.
+pub fn side_nav<'a, T: NavItem, M: Clone + 'a>(title: Option<&'a str>, items: &[T], selected: T, on: impl Fn(T) -> M, body: Element<'a, M>) -> Element<'a, M> {
+    let mut nav = column![].push(title.map(|t| container(label(t, TextRole::Heading, Tone::Normal)).padding(sp(SpaceRole::S)))).spacing(sp(SpaceRole::Xs));
+    let mut group = None;
+    for &item in items {
+        if item.group().is_some() && item.group() != group {
+            group = item.group();
+            nav = nav.push(container(label(group.unwrap_or_default(), TextRole::Caption, Tone::Faint)).padding(sp(SpaceRole::S)));
+        }
+        nav = nav.push(menu_row(None, item.label(), item == selected, on(item)));
+    }
     let nav = container(nav).width(tokens().layout(LayoutRole::NavWidth) * 0.75).height(Fill).padding(sp(SpaceRole::S));
-    row![nav.style(style::container(Surface::Side)), rule::vertical(1).style(style::rule), container(body).width(Fill).padding(sp(SpaceRole::L))].into()
+    row![nav.style(style::container(Surface::Side)), rule::vertical(1).style(style::rule), container(body).width(Fill).height(Fill).padding(sp(SpaceRole::L))].into()
 }
 
 /// Width of a [`splitter_edge`] grab area.

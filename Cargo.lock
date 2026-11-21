@@ -4618,7 +4618,6 @@ dependencies = [
  "iced",
  "iced_futures",
  "iced_runtime",
- "iced_test",
  "loa-bus",
  "loa-config",
  "loa-contracts",
@@ -4641,14 +4640,10 @@ dependencies = [
  "loa-ui-terminal",
  "loa-updater",
  "loa-util",
- "rand 0.10.4",
- "russh",
- "russh-sftp",
  "semver",
  "serde_json",
  "tempfile",
  "tokio",
- "tokio-stream",
 ]
 
 [[package]]

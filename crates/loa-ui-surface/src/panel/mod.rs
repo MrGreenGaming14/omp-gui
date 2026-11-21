@@ -38,14 +38,7 @@ pub enum BrowserStatus {
 pub type NewDecoder = Arc<dyn Fn() -> Box<dyn FrameDecoder> + Send + Sync>;
 
 /// How browser frames are captured.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Capture {
-    /// Headless Chrome's own JPEG screencast.
-    #[default]
-    Screencast,
-    /// Headed Chrome on an Xvfb virtual display, captured raw.
-    VirtualDisplay,
-}
+pub use loa_surfaces::CaptureMode as Capture;
 
 /// The browser capture choice, as the launcher shows it.
 #[derive(Clone, Debug, PartialEq, Eq)]

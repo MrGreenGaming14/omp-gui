@@ -116,7 +116,7 @@ pub struct State {
 impl State {
     /// The settings of `project` in the central config.
     fn settings(project: &str, ctx: &Ctx) -> ProjectSettings {
-        ctx.services.config.load().unwrap_or_default().project(project)
+        ctx.services.storage.config.load().unwrap_or_default().project(project)
     }
 
     /// The harness the Built in section describes: the active session's,
@@ -159,7 +159,7 @@ impl State {
         if std::mem::replace(&mut self.omp_loading, true) {
             return Task::none();
         }
-        let mut config = OmpBridgeConfig::new(ctx.services.cwd.clone(), ctx.services.dirs.data.join("omp-bridge").join("tools"));
+        let mut config = OmpBridgeConfig::new(ctx.services.cwd.clone(), ctx.services.storage.dirs.data.join("omp-bridge").join("tools"));
         config.program = program;
         perform(
             async move {
@@ -232,7 +232,7 @@ impl State {
     /// What each peer may use of `servers` and the built in tools, from
     /// the grants this node issued.
     fn refresh_peers(&mut self, servers: &[tools::McpServer], ctx: &mut Ctx) {
-        let issued = match ctx.services.grants.issued() {
+        let issued = match ctx.services.node.grants.issued() {
             Ok(issued) => issued,
             Err(error) => {
                 self.panel.set_peers(Vec::new());
@@ -240,13 +240,13 @@ impl State {
                 return;
             }
         };
-        let hosts: Vec<String> = ctx.services.config.load().unwrap_or_default().remote_hosts.into_keys().collect();
+        let hosts: Vec<String> = ctx.services.storage.config.load().unwrap_or_default().remote_hosts.into_keys().collect();
         self.panel.set_peers(listing::peer_tools(&issued, servers, &hosts, loa_core::now_ms()));
     }
 
     /// The project selector and the toggles of the selected project.
     fn refresh_projects(&mut self, ctx: &Ctx) {
-        let config = ctx.services.config.load().unwrap_or_default();
+        let config = ctx.services.storage.config.load().unwrap_or_default();
         let mut ids: BTreeSet<String> = config.projects.keys().cloned().collect();
         ids.insert(ctx.services.project.clone());
         ids.insert(self.project.clone());
@@ -471,7 +471,7 @@ impl State {
     fn bridge_spec(config: &SessionConfig, settings: &ProjectSettings, ctx: &Ctx) -> Option<loa_contracts::harness::McpServerSpec> {
         let program = Self::omp(ctx)?;
         let exe = std::env::current_exe().ok()?;
-        let state = ctx.services.dirs.data.join("omp-bridge").join(&config.session_id);
+        let state = ctx.services.storage.dirs.data.join("omp-bridge").join(&config.session_id);
         let mut bridge = OmpBridgeConfig::new(config.cwd.clone(), state);
         bridge.program = program;
         bridge.tools.retain(|tool| settings.mcp_tool_enabled(loa_mcp::bridge::SERVER_NAME, tool));
@@ -513,7 +513,7 @@ impl Area for State {
             Task::batch([task, state.panel_event(tools::Event::ImportSshHosts, ctx)])
         }),
         AreaCommand::<Self>::new("tools.shell.", "", "Tools", |state, host, ctx| state.open_shell(host.to_owned(), ctx)).listed(Listed::Each(|_, ctx| {
-            let hosts = ctx.services.config.load().map(|config| config.remote_hosts.into_keys().collect()).unwrap_or_else(|_| Vec::new());
+            let hosts = ctx.services.storage.config.load().map(|config| config.remote_hosts.into_keys().collect()).unwrap_or_else(|_| Vec::new());
             hosts.into_iter().map(|host| (host.clone(), format!("Open a shell on {host}"))).collect()
         })),
     ];
@@ -522,7 +522,7 @@ impl Area for State {
 
     fn new(ctx: &mut Ctx) -> (Self, Task<Message>) {
         let ssh = SshPaths::from_env();
-        let (remote, warning) = Remote::new(&ctx.services.dirs.data, RemoteServiceConfig::from_home(&ssh.home));
+        let (remote, warning) = Remote::new(&ctx.services.storage.dirs.data, RemoteServiceConfig::from_home(&ssh.home));
         if let Some(warning) = warning {
             ctx.notify(warning);
         }
@@ -531,7 +531,7 @@ impl Area for State {
             .with_remote(Arc::new(SshPty(Arc::clone(&remote.service))));
         let mut state = Self {
             panel: tools::State::new(),
-            mcp: ctx.services.mcp.clone(),
+            mcp: ctx.services.node.mcp.clone(),
             servers: None,
             remote,
             ssh,
@@ -546,7 +546,7 @@ impl Area for State {
         state.refresh_projects(ctx);
         let harness = state.refresh_builtin(ctx);
         state.refresh_servers(ctx);
-        let store = ConfigServers::new(ctx.services.config.clone());
+        let store = ConfigServers::new(ctx.services.storage.config.clone());
         let manager = state.mcp.clone();
         let open = perform(
             async move { Registry::open(store, manager).await.map(|servers| Shared(Arc::new(servers))) },

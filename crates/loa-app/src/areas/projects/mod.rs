@@ -4,12 +4,6 @@
 //! files, sessions with their digests and exclude toggle), digest rebuilds
 //! at turn end and compaction, the project context new chats receive, and
 //! the `project_search` / `project_read` host tools.
-//!
-//! [`ProjectService`] does the work. Its rebuild driver runs on the app's
-//! tokio runtime when there is one, otherwise on a small runtime of its own;
-//! its outcomes arrive through [`Area::subscription`]. `contribute` is
-//! synchronous, so the context of each project is kept in a cache that is
-//! refreshed after listing, rebuilds, settings saves and exclude toggles.
 
 use loa_util::LockExt;
 use std::collections::HashMap;
@@ -90,9 +84,9 @@ impl State {
 
     /// The projects of this node with digests from `summarizer`.
     pub fn with(ctx: &mut Ctx, summarizer: Arc<dyn Summarizers>, config: ServiceConfig) -> (Self, Task<Message>) {
-        let library = &ctx.services.library;
+        let library = &ctx.services.storage.library;
         let sessions = LiveSessions::new(Arc::clone(library.bus()), library.store().clone());
-        let settings = Arc::new(FileSettingsStore::new(ctx.services.dirs.data.join("projects")));
+        let settings = Arc::new(FileSettingsStore::new(ctx.services.storage.dirs.data.join("projects")));
         let (runtime, handle) = OwnRuntime::current_or_new();
         let _entered = handle.enter();
         let (service, outcomes) = ProjectService::start(sessions, settings, Arc::new(LocalOnly), summarizer, config);
@@ -278,7 +272,7 @@ impl Area for State {
     /// The projects of this node, digests built by omp's `smol` role.
     fn new(ctx: &mut Ctx) -> (Self, Task<Message>) {
         let omp = ctx.services.harnesses.get("omp").and_then(|harness| harness.executable.clone());
-        let summarizer = OmpSummarizer::new(omp.unwrap_or_else(|| PathBuf::from("omp")), ctx.services.dirs.data.clone());
+        let summarizer = OmpSummarizer::new(omp.unwrap_or_else(|| PathBuf::from("omp")), ctx.services.storage.dirs.data.clone());
         Self::with(ctx, Arc::new(summarizer), ServiceConfig::default())
     }
 
@@ -401,8 +395,7 @@ impl Area for State {
 }
 
 /// A runtime of the area's own, made only when the app has none (tests,
-/// tools that build the app headless). Shut down without waiting on drop,
-/// which is allowed from inside another runtime.
+/// tools that build the app headless).
 struct OwnRuntime(Option<tokio::runtime::Runtime>);
 
 impl OwnRuntime {

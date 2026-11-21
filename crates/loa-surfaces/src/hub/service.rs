@@ -35,15 +35,7 @@ pub struct HubConfig {
     pub virtual_display: Result<VirtualDisplaySetup, String>,
 }
 
-/// How browser tabs are captured.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum CaptureMode {
-    /// Headless Chrome's JPEG screencast.
-    #[default]
-    Screencast,
-    /// Headed Chrome on an Xvfb virtual display per tab, captured raw.
-    VirtualDisplay,
-}
+pub use crate::feed::CaptureMode;
 
 /// Xvfb and a Chrome that can run headed.
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -4,10 +4,6 @@
 //! folders), peers' sessions in Recents tagged by node, a peer's session
 //! opened in the center to watch, prompt, answer or fork, and a peer's shared
 //! folder browsed in the center, its files opened and (with drive) saved.
-//!
-//! The node checks every peer request on this node's sessions against the
-//! grants in `Services::grants`; peers' prompts and decision answers run
-//! through this app's harness like the user's own.
 
 mod adapter;
 mod folder;
@@ -96,7 +92,7 @@ fn parse_recent(id: &str) -> Option<(&str, &str)> {
 /// relay, and which discovery runs.
 pub(crate) fn node_config(ctx: &Ctx, network: &NetworkSettings) -> NodeConfig {
     let services = &ctx.services;
-    let mut config = NodeConfig::new(loa_p2p::data_dir(&services.dirs.data), services.node.label.clone(), env!("CARGO_PKG_VERSION"));
+    let mut config = NodeConfig::new(loa_p2p::data_dir(&services.storage.dirs.data), services.node.label.clone(), env!("CARGO_PKG_VERSION"));
     config.bind = SocketAddr::from((Ipv4Addr::UNSPECIFIED, network.port));
     // loa-p2p reaches peers through relays the user runs; it has no public ones.
     config.relay = match &network.relay {
@@ -108,7 +104,7 @@ pub(crate) fn node_config(ctx: &Ctx, network: &NetworkSettings) -> NodeConfig {
     if !network.discovery.tailscale {
         config.tailscale = None;
     }
-    config.sessions = Some(services.library.store().clone());
+    config.sessions = Some(services.storage.library.store().clone());
     config
 }
 
@@ -130,17 +126,17 @@ impl State {
     fn open(&mut self, ctx: &mut Ctx, config: NodeConfig) -> Task<Message> {
         self.generation += 1;
         let services = &ctx.services;
-        let sessions = Arc::new(LibrarySessions::new(Arc::clone(&services.library)));
+        let sessions = Arc::new(LibrarySessions::new(Arc::clone(&services.storage.library)));
         let opened = Node::open_with_grants(
             config,
             &services.node.identity,
             services.node.key_source.clone(),
             sessions,
-            Arc::clone(&services.grants),
+            Arc::clone(&services.node.grants),
         );
         match opened {
             Ok(node) => {
-                services.peer_access.set(node.authorizer());
+                services.node.peer_access.set(node.authorizer());
                 ctx.node.set(Some(node.clone()));
                 let start = node.clone();
                 self.node = Some(node);
@@ -207,7 +203,7 @@ impl State {
             return Task::none();
         }
         let hosts: Vec<String> = ctx.read_config("SSH hosts").unwrap_or_default().remote_hosts.into_keys().collect();
-        let mcp = ctx.services.mcp.clone();
+        let mcp = ctx.services.node.mcp.clone();
         Task::perform(
             async move {
                 let mut resources: Vec<(Resource, String)> =

@@ -1,9 +1,4 @@
-//! Live sessions. Each open session is a loa-bus [`SessionWriter`] whose
-//! [`Persist`](loa_bus::Persist) port appends to its journal, so
-//! every patch an adapter commits is on disk before the UI sees it. The UI
-//! keeps its own copy of each DOM, fed by the writer's subscription
-//! ([`Sessions::watch`]); [`Sessions::feed`] applies what arrives and names
-//! the [`SessionEvent`]s areas react to.
+//! Live sessions.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -24,17 +19,15 @@ use crate::watch::{PtrKey, Source, watch};
 const FEED_CAPACITY: usize = 4096;
 
 /// What happened to a session, as every area sees it through
-/// [`Area::on_session_event`](crate::area::Area::on_session_event). When an
-/// event arrives the session's DOM in `Ctx` already reflects it.
+/// [`Area::on_session_event`](crate::area::Area::on_session_event).
 #[derive(Clone, Debug)]
 pub enum SessionEvent {
     /// This session became the one the chat shows; `None` when none is.
     Activated(Option<SessionId>),
     /// The session's DOM was replaced wholesale: started, opened from its
-    /// journal, or resynced after its feed fell behind. Rebuild from the DOM.
+    /// journal, or resynced after its feed fell behind.
     Loaded(SessionId),
-    /// One patch was applied. Merged streaming appends arrive as one
-    /// `append` patch carrying the merged text and the first merged `seq`.
+    /// One patch was applied.
     Patch(SessionId, Arc<Patch>),
     /// A `<turn>` was inserted.
     TurnStarted { session: SessionId, turn: NodeId },
@@ -271,11 +264,10 @@ impl Sessions {
         self.starting = id;
     }
 
-    /// Creates a new session's journal and writer. It has no DOM root until
-    /// its adapter starts.
+    /// Creates a new session's journal and writer.
     pub(crate) fn create(&mut self, services: &Services) -> Result<(SessionId, Arc<SessionWriter>), String> {
         let id = new_session_id();
-        let live = services.library.create(&id).map_err(|error| format!("Can't create session {id}: {error}"))?;
+        let live = services.storage.library.create(&id).map_err(|error| format!("Can't create session {id}: {error}"))?;
         let writer = Arc::clone(&live.writer);
         let id = SessionId::from(id);
         self.open.insert(id.clone(), Session::new(id.clone(), live, Dom::new()));
@@ -287,7 +279,7 @@ impl Sessions {
         if self.open.contains_key(id) {
             return Ok(());
         }
-        let live = services.library.open(id).map_err(|error| format!("Can't open session {id}: {error}"))?;
+        let live = services.storage.library.open(id).map_err(|error| format!("Can't open session {id}: {error}"))?;
         let dom = live.writer.with_dom(Dom::clone);
         let id = SessionId::from(id);
         self.open.insert(id.clone(), Session::new(id, live, dom));
@@ -295,8 +287,7 @@ impl Sessions {
     }
 
     /// Closes a session's writer and releases its journal, deleting the
-    /// journal too when `delete` is set. Returns the session (its harness,
-    /// if any, is for the caller to shut down) and what went wrong.
+    /// journal too when `delete` is set.
     pub(crate) fn close(&mut self, services: &Services, id: &str, delete: bool) -> (Option<Session>, Option<String>) {
         let session = self.open.remove(id);
         if self.is_active(id) {
@@ -305,7 +296,7 @@ impl Sessions {
         if self.starting.as_ref().is_some_and(|starting| starting.as_str() == id) {
             self.starting = None;
         }
-        let closed = if delete { services.library.delete(id) } else { services.library.close(id).map(drop) };
+        let closed = if delete { services.storage.library.delete(id) } else { services.storage.library.close(id).map(drop) };
         (session, closed.err().map(|error| format!("Can't close session {id}: {error}")))
     }
 
@@ -357,10 +348,7 @@ fn keeps_history(dom: &Dom) -> bool {
 }
 
 /// Lists the library's sessions for Recents, newest first, with titles from
-/// their DOMs. Sessions without a turn hold nothing to keep and are deleted,
-/// unless they continue another session (a fork, rewind or compaction that
-/// carries its history as context).
-/// Returns the summaries and a note per session that couldn't be read.
+/// their DOMs.
 pub(crate) fn recents(library: &Library) -> (Vec<SessionSummary>, Vec<String>) {
     let mut summaries = Vec::new();
     let mut problems = Vec::new();

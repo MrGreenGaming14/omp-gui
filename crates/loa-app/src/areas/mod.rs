@@ -1,5 +1,4 @@
-//! The feature areas. Each directory is owned by one area; the app holds
-//! them all in one [`Registry`], built from [`AREAS`].
+//! The feature areas.
 
 use std::any::Any;
 

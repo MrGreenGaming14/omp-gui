@@ -7,7 +7,7 @@ fn unattended_prompts_toggle_from_the_palette_and_are_saved() {
     assert!(test.palette_titles().contains(&on.to_owned()));
     test.command("decisions.unattended.on");
     assert!(test.palette_titles().contains(&"Unattended prompts: wait for someone".to_owned()));
-    assert!(test.app.ctx.services.config.load().unwrap().unattended != loa_config::Config::default().unattended, "saved");
+    assert!(test.app.ctx.services.storage.config.load().unwrap().unattended != loa_config::Config::default().unattended, "saved");
     test.command("decisions.settings");
     assert_eq!(test.app.ctx.screen(), Some("decisions"));
     test.click("Done");

@@ -1,13 +1,6 @@
 //! The Surfaces panel tab: browser tabs, documents, VMs and surfaces MCP
 //! servers declare, drawn by the generic surface renderer, and the
 //! `surface_*` tools sessions drive them with.
-//!
-//! - The [`SurfaceHub`] opens and keeps the surfaces, whoever opened them
-//!   (the launcher in the tab, or an agent tool call).
-//! - Sessions get the tools as host tools when their harness takes them,
-//!   else as the loopback [`McpEndpoint`]'s MCP servers.
-//! - Every surface opened is recorded as a `<surface>` element in the active
-//!   session, under its running turn, and marked closed when it closes.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -98,7 +91,7 @@ impl State {
         let state = Self {
             hub,
             endpoint: None,
-            mcp: ctx.services.mcp.clone(),
+            mcp: ctx.services.node.mcp.clone(),
             panel,
             recorded: HashMap::new(),
             unrecorded: Vec::new(),
@@ -131,17 +124,13 @@ impl State {
     }
 
     fn set_capture(&mut self, capture: Capture, ctx: &mut Ctx) -> Task<Message> {
-        let mode = match capture {
-            Capture::Screencast => CaptureMode::Screencast,
-            Capture::VirtualDisplay => CaptureMode::VirtualDisplay,
-        };
-        if let Err(error) = self.hub.set_capture(mode) {
+        if let Err(error) = self.hub.set_capture(capture) {
             ctx.notify(error.to_string());
             self.panel.set_capture(capture_status(&self.hub, false));
             return Task::none();
         }
         save(ctx, |settings| {
-            settings.browser_capture = match mode {
+            settings.browser_capture = match capture {
                 CaptureMode::Screencast => loa_config::BrowserCapture::Screencast,
                 CaptureMode::VirtualDisplay => loa_config::BrowserCapture::VirtualDisplay,
             };
@@ -252,10 +241,7 @@ fn browser_status(hub: &SurfaceHub) -> BrowserStatus {
 /// What the launcher says about the browser capture.
 fn capture_status(hub: &SurfaceHub, pending: bool) -> CaptureStatus {
     CaptureStatus {
-        selected: match hub.capture() {
-            CaptureMode::Screencast => Capture::Screencast,
-            CaptureMode::VirtualDisplay => Capture::VirtualDisplay,
-        },
+        selected: hub.capture(),
         virtual_display_missing: hub.config().virtual_display.as_ref().err().cloned(),
         pending,
     }
@@ -281,7 +267,7 @@ impl Area for State {
     type Message = Message;
 
     fn new(ctx: &mut Ctx) -> (Self, Task<Message>) {
-        let mut config = HubConfig::discover(&ctx.services.dirs.data.join("surfaces"));
+        let mut config = HubConfig::discover(&ctx.services.storage.dirs.data.join("surfaces"));
         if let Some(settings) = ctx.read_config("surface settings").map(|config| config.surfaces) {
             #[cfg(feature = "remote-video")]
             video::configure(&mut config, &settings);

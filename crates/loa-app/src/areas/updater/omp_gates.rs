@@ -1,8 +1,4 @@
-//! The omp-backed gate ports of the updater. Probes read an installed omp without any model call
-//! (tool schemas from `get_state`, the session format from a forked golden session, config keys
-//! from `config list --json`, golden round trips over RPC); every process runs in a fresh
-//! temporary directory, so the user's sessions are never touched. Changelogs are reviewed by
-//! a one-shot call on the `smol` role.
+//! The omp-backed gate ports of the updater.
 
 use async_trait::async_trait;
 use loa_contracts::Summarizer;

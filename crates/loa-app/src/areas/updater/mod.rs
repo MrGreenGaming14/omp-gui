@@ -3,16 +3,6 @@
 //! user), feed checks at startup and every `[updater].check_interval_secs`,
 //! staging, gate checks, hold choices, swaps between turns, rollback and the
 //! peers that are behind.
-//!
-//! Swaps never happen mid turn: the area counts running turns from session
-//! events and swaps cleared versions once none runs. New sessions of omp and
-//! the harnesses start the version the updater made current; running
-//! sessions keep theirs.
-//!
-//! Pins live in the central config (`[updater].pins`); the updater's own
-//! state mirrors them. `[updater].github_token` raises GitHub's rate limit
-//! and `[updater].trusted_keys` are the keys app releases must be signed
-//! with.
 
 use loa_util::time::now_secs;
 use std::collections::BTreeMap;
@@ -272,9 +262,9 @@ impl Area for State {
     /// Opens the updater under `<data>/updates` and checks every feed.
     fn new(ctx: &mut Ctx) -> (Self, Task<Message>) {
         let version = Version::parse(env!("CARGO_PKG_VERSION")).expect("the crate version is semver");
-        let root = ctx.services.dirs.data.join("updates");
+        let root = ctx.services.storage.dirs.data.join("updates");
         let mut problems = Vec::new();
-        let settings = match ctx.services.config.load() {
+        let settings = match ctx.services.storage.config.load() {
             Ok(config) => config.updater,
             Err(error) => {
                 problems.push(format!("Update settings unreadable ({error}); using defaults"));

@@ -20,7 +20,7 @@ impl State {
         let add = self.add_server.as_ref().map(|f| {
             let kind = |label: &'static str, k: TransportKind| button(text(label).size(ts(T::Caption))).padding([sp(Sp::Xs), sp(Sp::S)]).style(style::button(ButtonKind::Tab { active: f.spec.kind == k })).on_press(Message::TransportPicked(k));
             let kinds = row![kind("stdio", TransportKind::Stdio), kind("HTTP", TransportKind::Http)].spacing(sp(Sp::Xs) / 2.0);
-            form_card("Add server", Some(kinds.into()), form_view(&f.spec, &f.errors, |k, v| Message::FormEdit(FormId::Server, k, v)), "Add", FormId::Server)
+            form_card("Add server", Some(kinds.into()), form_view(&f.spec, &f.errors, |k, v| Message::FormEdit(FormId::Server, k, v), None), "Add", FormId::Server)
         });
         let servers = grid(catalog.servers.into_iter().map(|s| self.server_view(s)).collect(), wide);
         column![header.spacing(sp(Sp::Xs)).align_y(Alignment::Center), add, self.import_view(), empty, servers].spacing(sp(Sp::S)).into()

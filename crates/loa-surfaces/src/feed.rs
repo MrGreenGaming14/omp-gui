@@ -8,6 +8,16 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::broadcast;
 
+/// How browser tabs are captured; the surface launcher shows the same choice.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CaptureMode {
+    /// Headless Chrome's JPEG screencast.
+    #[default]
+    Screencast,
+    /// Headed Chrome on an Xvfb virtual display per tab, captured raw.
+    VirtualDisplay,
+}
+
 /// Inputs remembered for stamping frames captured a little after them.
 const INPUT_HISTORY: usize = 256;
 

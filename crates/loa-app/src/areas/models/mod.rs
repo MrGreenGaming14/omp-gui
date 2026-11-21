@@ -1,11 +1,5 @@
 //! Models (M1): the sign in, model and model settings screens, and the
 //! composer's model and effort pickers.
-//!
-//! The screens come from loa-ui-settings and talk to omp through its
-//! [`Backend`] (a dedicated `omp --mode rpc` process, omp's config files).
-//! Model and effort changes go to the active session's harness; a session
-//! whose harness isn't running gets them in its config when it starts or
-//! resumes.
 
 use loa_util::LockExt;
 use std::collections::HashMap;
@@ -31,8 +25,7 @@ use crate::area::{perform, Area, AreaCommand, AreaMessage, Ctx, Session, Session
 mod tests;
 
 /// The composer lists every model of a harness offering at most this many;
-/// otherwise the current model and the ones serving a role. "All models…"
-/// opens the full picker.
+/// otherwise the current model and the ones serving a role.
 const COMPOSER_MODELS: usize = 12;
 
 /// Rows under the composer's model choices, by [`composer::PickerAction`] id.
@@ -117,8 +110,7 @@ pub struct State {
     /// The harness whose models the picker shows, and the picker.
     picker: (String, Load<Picker>),
     settings: Load<settings::State>,
-    /// The models each harness listed, by harness id. An empty list stands
-    /// for a harness that can't list them.
+    /// The models each harness listed, by harness id.
     listed: HashMap<String, Vec<HarnessModel>>,
     /// omp's role assignments; `None` until read.
     roles: Option<Vec<RoleAssignment>>,
@@ -307,7 +299,7 @@ impl State {
     }
 
     /// Reads omp's catalog so the composer offers models before any session
-    /// runs. The app calls it once at startup.
+    /// runs.
     pub(crate) fn read_catalog(&self) -> Task<Message> {
         self.read_roles()
     }
@@ -447,7 +439,7 @@ fn model_info(model: &HarnessModel, reference: &ModelRef) -> ModelInfo {
 }
 
 /// Records on `session` the role its model was picked through, or that it
-/// no longer follows one. The harness records the model itself.
+/// no longer follows one.
 fn record_role(session: &Session, role: Option<String>) -> Result<(), String> {
     let writer = session.writer();
     match writer.with_dom(|dom: &Dom| role_draft(dom, role.as_deref())) {

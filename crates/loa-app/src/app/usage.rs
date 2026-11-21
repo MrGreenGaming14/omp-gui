@@ -1,22 +1,50 @@
-//! The Usage window: provider limits and saved resets from `omp usage --json`,
-//! the same data omp's `/usage` prints.
-//!
-//! Providers start collapsed, each summarized by its tightest limit; a click
-//! expands its accounts. The tightest limit across providers also feeds the
-//! sidebar's usage meter.
+//! The Usage window: provider limits and saved resets from `omp usage --json`.
 
 use loa_util::time::{ago, now_ms, until};
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
-use iced::widget::{Column, button, column, container, row, scrollable, space, text};
-use iced::{Alignment, Element, Fill, Length, Task};
-use loa_ui_kit::icons::{Icon, muted};
+use async_trait::async_trait;
+use iced::widget::{column, container, row, rule, scrollable};
+use iced::{Alignment, Element, Fill, Task};
+use loa_ui_kit::style::{self, ButtonKind, Surface, Tone};
+use loa_ui_kit::theme::{LayoutRole, SpaceRole, TextRole, sp, width};
+use loa_ui_kit::widgets::{card, collapsible, icon_button, label, meter, section_header, text_button};
+use loa_ui_kit::Icon;
 use loa_ui_shell::UsageMeter;
-use loa_ui_shell::theme::style;
 use serde_json::Value;
 
-/// Width of the window.
-const WIDTH: f32 = 660.0;
+/// Where usage comes from and where saved resets are spent.
+#[async_trait]
+pub trait UsageSource: Send + Sync {
+    async fn fetch(&self) -> Result<Usage, String>;
+    /// Spends a saved reset of account `target` (`<provider>/<credential id>`).
+    async fn spend(&self, target: &str) -> Result<(), String>;
+}
+
+/// [`UsageSource`] over the `omp usage` command.
+pub struct OmpUsage;
+
+#[async_trait]
+impl UsageSource for OmpUsage {
+    async fn fetch(&self) -> Result<Usage, String> {
+        parse(&omp(&["usage", "--json"]).await?)
+    }
+
+    async fn spend(&self, target: &str) -> Result<(), String> {
+        omp(&["usage", "reset", target]).await.map(drop)
+    }
+}
+
+/// Runs `omp <args>`; its stdout, or its stderr as the error.
+async fn omp(args: &[&str]) -> Result<String, String> {
+    let what = args[..2].join(" ");
+    let output = tokio::process::Command::new("omp").args(args).output().await.map_err(|error| format!("Couldn't run omp {what}: {error}"))?;
+    if !output.status.success() {
+        return Err(format!("omp {what} failed: {}", String::from_utf8_lossy(&output.stderr).trim()));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
 
 /// One limit window of an account, e.g. "Claude 7 Day" at 51%.
 #[derive(Debug, Clone, PartialEq)]
@@ -41,7 +69,6 @@ pub struct Account {
     pub resets: (u64, u64),
 }
 
-/// A provider with its accounts.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Provider {
     pub id: String,
@@ -58,7 +85,6 @@ impl Provider {
     }
 }
 
-/// A usage snapshot.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Usage {
     pub generated_at: i64,
@@ -81,16 +107,11 @@ impl Usage {
 /// Reads `omp usage --json`.
 pub fn parse(json: &str) -> Result<Usage, String> {
     let root: Value = serde_json::from_str(json).map_err(|error| format!("omp usage printed invalid JSON: {error}"))?;
-    let generated_at = root["generatedAt"].as_i64().unwrap_or_default();
     let mut providers: Vec<Provider> = Vec::new();
     for report in root["reports"].as_array().into_iter().flatten() {
         let id = report["provider"].as_str().unwrap_or("unknown").to_owned();
         let metadata = &report["metadata"];
-        let label = ["orgName", "email", "accountId"]
-            .iter()
-            .find_map(|key| metadata[*key].as_str().filter(|value| !value.is_empty()))
-            .unwrap_or("Account")
-            .to_owned();
+        let label = ["orgName", "email", "accountId"].iter().find_map(|key| metadata[*key].as_str().filter(|value| !value.is_empty())).unwrap_or("Account").to_owned();
         let reset_target = metadata["credentialId"].as_str().map(|credential| format!("{id}/{credential}"));
         let limits = report["limits"]
             .as_array()
@@ -111,25 +132,19 @@ pub fn parse(json: &str) -> Result<Usage, String> {
             None => providers.push(Provider { name: provider_name(&id), id, accounts: vec![account], capacity: None }),
         }
     }
-    if let Some(capacity) = root["capacity"].as_object() {
-        for provider in &mut providers {
-            let Some(windows) = capacity.get(&provider.id).and_then(Value::as_array) else { continue };
-            let parts: Vec<String> = windows
-                .iter()
-                .map(|window| {
-                    let name = window["window"].as_str().unwrap_or("");
-                    let meter = window["meter"].as_str().map(|meter| format!(" {meter}")).unwrap_or_default();
-                    let used = window["usedAccounts"].as_f64().unwrap_or(0.0);
-                    let accounts = window["accounts"].as_u64().unwrap_or(0);
-                    format!("{name}{meter} {used:.2} of {accounts} used")
-                })
-                .collect();
-            if !parts.is_empty() {
-                provider.capacity = Some(parts.join(" · "));
-            }
-        }
+    for provider in &mut providers {
+        let Some(windows) = root["capacity"].get(&provider.id).and_then(Value::as_array) else { continue };
+        let parts: Vec<String> = windows
+            .iter()
+            .map(|window| {
+                let meter = window["meter"].as_str().map(|meter| format!(" {meter}")).unwrap_or_default();
+                let (used, accounts) = (window["usedAccounts"].as_f64().unwrap_or(0.0), window["accounts"].as_u64().unwrap_or(0));
+                format!("{}{meter} {used:.2} of {accounts} used", window["window"].as_str().unwrap_or(""))
+            })
+            .collect();
+        provider.capacity = (!parts.is_empty()).then(|| parts.join(" · "));
     }
-    Ok(Usage { generated_at, providers })
+    Ok(Usage { generated_at: root["generatedAt"].as_i64().unwrap_or_default(), providers })
 }
 
 fn provider_name(id: &str) -> String {
@@ -142,34 +157,6 @@ fn provider_name(id: &str) -> String {
             let mut chars = other.chars();
             chars.next().map(|first| first.to_uppercase().collect::<String>() + chars.as_str()).unwrap_or_default()
         }
-    }
-}
-
-/// Runs `omp usage --json`.
-pub async fn fetch() -> Result<Usage, String> {
-    let output = tokio::process::Command::new("omp")
-        .args(["usage", "--json"])
-        .output()
-        .await
-        .map_err(|error| format!("Couldn't run omp usage: {error}"))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("omp usage failed: {}", stderr.trim()));
-    }
-    parse(&String::from_utf8_lossy(&output.stdout))
-}
-
-/// Spends a saved reset with `omp usage reset <target>`.
-pub async fn spend(target: String) -> Result<(), String> {
-    let output = tokio::process::Command::new("omp")
-        .args(["usage", "reset", &target])
-        .output()
-        .await
-        .map_err(|error| format!("Couldn't run omp usage reset: {error}"))?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err(format!("omp usage reset failed: {}", String::from_utf8_lossy(&output.stderr).trim()))
     }
 }
 
@@ -189,8 +176,8 @@ pub enum Event {
     Meter(Option<UsageMeter>),
 }
 
-#[derive(Debug, Default)]
 pub struct State {
+    source: Arc<dyn UsageSource>,
     usage: Option<Result<Usage, String>>,
     loading: bool,
     open: BTreeSet<String>,
@@ -198,10 +185,15 @@ pub struct State {
 }
 
 impl State {
+    pub fn new(source: Arc<dyn UsageSource>) -> Self {
+        Self { source, usage: None, loading: false, open: BTreeSet::new(), spending: None }
+    }
+
     /// Starts a fetch.
     pub fn refresh(&mut self) -> Task<Message> {
         self.loading = true;
-        Task::perform(fetch(), Message::Loaded)
+        let source = Arc::clone(&self.source);
+        Task::perform(async move { source.fetch().await }, Message::Loaded)
     }
 
     pub fn update(&mut self, message: Message) -> (Task<Message>, Option<Event>) {
@@ -221,7 +213,8 @@ impl State {
             }
             Message::Spend(target) => {
                 self.spending = Some(target.clone());
-                (Task::perform(spend(target), Message::Spent), None)
+                let source = Arc::clone(&self.source);
+                (Task::perform(async move { source.spend(&target).await }, Message::Spent), None)
             }
             Message::Spent(result) => {
                 self.spending = None;
@@ -234,7 +227,6 @@ impl State {
         }
     }
 
-    /// Draws the window.
     pub fn view(&self) -> Element<'_, Message> {
         let now = now_ms();
         let updated = match &self.usage {
@@ -242,137 +234,69 @@ impl State {
             Some(Ok(usage)) => format!("Updated {}", ago(now, usage.generated_at)),
             _ => String::new(),
         };
-        let header = row![
-            text("Usage").size(18).font(semibold()).width(Fill),
-            text(updated).size(12).style(style::faint),
-            button(text("Refresh").size(13)).on_press(Message::Refresh).style(style::ghost_button).padding([5, 10]),
-            button(muted(Icon::X, 15.0)).on_press(Message::Close).style(style::ghost_button).padding(6),
-        ]
-        .spacing(8)
-        .align_y(Alignment::Center);
-
-        let mut body = Column::new();
-        match &self.usage {
-            None => body = body.push(container(text("Reading usage from omp…").style(style::muted)).padding(20)),
-            Some(Err(error)) => body = body.push(container(text(error.as_str()).style(style::muted)).padding(20)),
-            Some(Ok(usage)) if usage.providers.is_empty() => {
-                body = body.push(container(text("No signed-in providers report usage.").style(style::muted)).padding(20))
-            }
-            Some(Ok(usage)) => {
-                for provider in &usage.providers {
-                    body = body.push(iced::widget::rule::horizontal(1).style(style::divider));
-                    body = body.push(self.provider(provider, now));
-                }
-            }
-        }
-        body = body.push(iced::widget::rule::horizontal(1).style(style::divider));
-        body = body.push(
-            container(text("Same numbers as omp’s /usage. Resets apply to an account, not a session.").size(12).style(style::faint))
-                .padding([12, 20]),
-        );
-
-        container(column![container(header).padding([14, 14]), scrollable(body).height(Length::Shrink)])
-            .style(style::window)
-            .width(WIDTH)
-            .max_height(760)
-            .into()
+        let actions = [
+            label(updated, TextRole::Caption, Tone::Faint).into(),
+            text_button("Refresh", ButtonKind::Ghost, Some(Message::Refresh)),
+            icon_button(Icon::X, "Close", Some(Message::Close)),
+        ];
+        let note = |s: &str| -> Element<'_, Message> { label(s.to_owned(), TextRole::Body, Tone::Muted).into() };
+        let body: Vec<Element<'_, Message>> = match &self.usage {
+            None => vec![note("Reading usage from omp…")],
+            Some(Err(error)) => vec![note(error.as_str())],
+            Some(Ok(usage)) if usage.providers.is_empty() => vec![note("No signed-in providers report usage.")],
+            Some(Ok(usage)) => usage.providers.iter().map(|provider| self.provider(provider, now)).collect(),
+        };
+        let footer = label("Same numbers as omp’s /usage. Resets apply to an account, not a session.", TextRole::Caption, Tone::Faint);
+        let body = column(body).push(rule::horizontal(1).style(style::rule)).push(footer).spacing(sp(SpaceRole::M));
+        let window = column![section_header("Usage", actions), scrollable(body)].spacing(sp(SpaceRole::M));
+        container(window).padding(sp(SpaceRole::L)).style(style::container(Surface::Popup)).width(width(LayoutRole::DialogWidth)).max_height(width(LayoutRole::TallHeight)).into()
     }
 
     fn provider<'a>(&'a self, provider: &'a Provider, now: i64) -> Element<'a, Message> {
-        let open = self.open.contains(&provider.id);
         let peak = provider.peak().unwrap_or(0.0);
         let accounts = match provider.accounts.len() {
             1 => "1 account".to_owned(),
             n => format!("{n} accounts"),
         };
-        let header = button(
-            row![
-                muted(if open { Icon::ChevronDown } else { Icon::ChevronRight }, 14.0),
-                column![text(provider.name.as_str()).size(14).font(semibold()), text(accounts).size(12).style(style::faint)]
-                    .width(Fill),
-                meter(peak, 90.0),
-                container(text!("Highest {:.0}% used", peak * 100.0).size(13).style(if peak >= 0.5 { style::waiting_text } else { style::muted }))
-                    .width(130)
-                    .align_right(130),
-            ]
-            .spacing(12)
-            .align_y(Alignment::Center),
-        )
-        .on_press(Message::Toggle(provider.id.clone()))
-        .style(style::row)
-        .padding([10, 14])
-        .width(Fill);
-
-        let mut section = column![header].spacing(8);
-        if open {
-            let mut accounts = Column::new().spacing(10);
-            for account in &provider.accounts {
-                accounts = accounts.push(self.account(account, now));
-            }
-            if let Some(capacity) = &provider.capacity {
-                accounts = accounts.push(text(capacity.as_str()).size(12).style(style::faint));
-            }
-            section = section.push(container(accounts).padding([0, 20]));
-        }
-        container(section).padding([4, 6]).into()
+        let title = format!("{} · {accounts}", provider.name);
+        let summary = row![
+            container(meter(peak)).width(width(LayoutRole::LabelColumn) / 2.0),
+            label(format!("Highest {:.0}% used", peak * 100.0), TextRole::Label, if peak >= 0.5 { Tone::Warn } else { Tone::Muted }),
+        ];
+        let body = || {
+            let accounts = column(provider.accounts.iter().map(|account| self.account(account, now)));
+            let capacity = provider.capacity.as_deref().map(|capacity| label(capacity, TextRole::Caption, Tone::Faint));
+            accounts.push(capacity).spacing(sp(SpaceRole::S)).into()
+        };
+        let head = collapsible(title, self.open.contains(&provider.id), Message::Toggle(provider.id.clone()), body);
+        column![summary.spacing(sp(SpaceRole::S)).align_y(Alignment::Center), head].spacing(sp(SpaceRole::Xs)).into()
     }
 
     fn account<'a>(&'a self, account: &'a Account, now: i64) -> Element<'a, Message> {
-        let (left, now_usable) = account.resets;
-        let resets = match (left, now_usable) {
+        let (left, usable) = account.resets;
+        let resets = match (left, usable) {
             (0, _) => "No saved resets".to_owned(),
             (1, 0) => "1 saved reset".to_owned(),
             (n, 0) => format!("{n} saved resets"),
             (n, usable) => format!("{n} saved resets, {usable} usable now"),
         };
-        let mut head = row![text(account.label.as_str()).size(14).width(Fill), text(resets).size(12).style(style::muted)]
-            .spacing(10)
-            .align_y(Alignment::Center);
-        if now_usable > 0
-            && let Some(target) = &account.reset_target
-        {
+        let spend = account.reset_target.as_ref().filter(|_| usable > 0).map(|target| {
             let busy = self.spending.as_deref() == Some(target.as_str());
-            head = head.push(
-                button(text(if busy { "Using…" } else { "Use a reset" }).size(12))
-                    .on_press_maybe((!busy).then(|| Message::Spend(target.clone())))
-                    .style(style::secondary_button)
-                    .padding([4, 10]),
-            );
-        }
-        let mut limits = Column::new().spacing(12);
-        for limit in &account.limits {
-            let (pct, color): (String, fn(&iced::Theme) -> text::Style) = match limit.fraction {
-                Some(fraction) => (format!("{:.0}% used", fraction * 100.0), if fraction >= 0.5 { style::waiting_text } else { style::muted }),
-                None => ("Not reported".to_owned(), style::faint),
+            text_button(if busy { "Using…" } else { "Use a reset" }, ButtonKind::Secondary, (!busy).then(|| Message::Spend(target.clone())))
+        });
+        let head = row![label(account.label.as_str(), TextRole::Body, Tone::Normal).width(Fill), label(resets, TextRole::Caption, Tone::Muted)].push(spend);
+        let limits = account.limits.iter().map(|limit| {
+            let (used, tone) = match limit.fraction {
+                Some(fraction) => (format!("{:.0}% used", fraction * 100.0), if fraction >= 0.5 { Tone::Warn } else { Tone::Muted }),
+                None => ("Not reported".to_owned(), Tone::Faint),
             };
-            let mut item = column![
-                row![text(limit.label.as_str()).size(13).width(Fill), text(pct).size(13).style(color)],
-                meter(limit.fraction.unwrap_or(0.0), f32::INFINITY),
-            ]
-            .spacing(5);
-            if let (Some(at), Some(_)) = (limit.resets_at, limit.fraction) {
-                item = item.push(text!("Resets in {}", until(at - now)).size(12).style(style::faint));
-            }
-            limits = limits.push(item);
-        }
-        container(column![head, limits].spacing(12)).style(style::card).padding(14).width(Fill).into()
+            let resets = limit.resets_at.filter(|_| limit.fraction.is_some()).map(|at| label(format!("Resets in {}", until(at - now)), TextRole::Caption, Tone::Faint));
+            let title = row![label(limit.label.as_str(), TextRole::Label, Tone::Normal).width(Fill), label(used, TextRole::Label, tone)];
+            column![title, meter(limit.fraction.unwrap_or(0.0))].push(resets).spacing(sp(SpaceRole::Xs)).into()
+        });
+        let head = head.spacing(sp(SpaceRole::S)).align_y(Alignment::Center);
+        card(column![head].extend(limits).spacing(sp(SpaceRole::M))).width(Fill).into()
     }
-}
-
-fn meter<'a>(fraction: f32, width: f32) -> Element<'a, Message> {
-    let fraction = fraction.clamp(0.0, 1.0);
-    let track = |w: Length| container(space()).width(w).height(6).style(style::meter_track);
-    let fill = container(space()).width(Length::FillPortion(((fraction * 1000.0) as u16).max(if fraction > 0.0 { 10 } else { 0 })))
-        .height(6)
-        .style(style::meter_fill(fraction));
-    let rest = space().width(Length::FillPortion(1000 - ((fraction * 1000.0) as u16).min(1000)));
-    let bar = iced::widget::stack![track(Length::Fill), row![fill, rest]];
-    let width = if width.is_finite() { Length::Fixed(width) } else { Length::Fill };
-    container(bar).width(width).height(6).into()
-}
-
-fn semibold() -> iced::Font {
-    iced::Font { weight: iced::font::Weight::Bold, ..iced::Font::default() }
 }
 
 #[cfg(test)]
@@ -410,22 +334,6 @@ mod tests {
         assert_eq!(anthropic.accounts[1].limits[0].fraction, None, "unreported limits stay unknown");
         assert_eq!(anthropic.capacity.as_deref(), Some("7d 0.70 of 2 used"));
         assert_eq!(anthropic.peak(), Some(0.51));
-    }
-
-    #[test]
-    fn meter_takes_the_tightest_limit() {
-        let usage = parse(SAMPLE).expect("parse");
-        assert_eq!(usage.meter(), Some(UsageMeter { fraction: 0.51, label: "7d".into() }));
-    }
-
-    #[test]
-    fn providers_start_collapsed_and_toggle() {
-        let mut state = State::default();
-        let _ = state.update(Message::Loaded(parse(SAMPLE)));
-        assert!(state.open.is_empty());
-        let _ = state.update(Message::Toggle("anthropic".into()));
-        assert!(state.open.contains("anthropic"));
-        let _ = state.update(Message::Toggle("anthropic".into()));
-        assert!(state.open.is_empty());
+        assert_eq!(usage.meter(), Some(UsageMeter { fraction: 0.51, label: "7d".into() }), "the meter takes the tightest limit");
     }
 }

@@ -3,7 +3,9 @@
 //! harness sessions run on, [`TwoNodes`] two apps whose peer nodes talk over
 //! loopback.
 
-use std::sync::Arc;
+use loa_util::LockExt;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use iced::Task;
@@ -27,10 +29,12 @@ use loa_projects::{ServiceConfig, Summarizer, Summarizers};
 use tempfile::TempDir;
 use tokio::runtime::Runtime;
 
+use crate::app::usage::{Usage, UsageSource, parse};
+use crate::app::workspace::{FolderPicker, GitProbe};
 use crate::app::{App, Message};
 use crate::area::Area;
 use crate::areas::{models, projects, sessions};
-use crate::services::{Dirs, Harnesses, Node, Services};
+use crate::services::{Dirs, Harnesses, Host, NodeServices, Services};
 
 /// The scripted harness of [`TestApp`] sessions.
 pub(crate) type FakeHarness = ScriptedAdapter;
@@ -41,6 +45,7 @@ const PATIENCE: Duration = Duration::from_secs(10);
 pub(crate) struct TestApp {
     pub app: App,
     pub harness: FakeHarness,
+    pub usage: Arc<FakeUsage>,
     pub dir: TempDir,
     runtime: Arc<Runtime>,
     tracker: Tracker,
@@ -88,8 +93,13 @@ impl TestApp {
         config.save(&settings).expect("config saved");
         let mut harnesses = Harnesses { registry: loa_contracts::harness::Registry::new(), list: Vec::new() };
         harnesses.add(Arc::new(harness.clone()), harness_id(&harness), true, None, None);
-        let node = Node::new(NodeIdentity::from_secret_bytes(&[name.len() as u8; 32]), name.to_owned());
-        let services = Services::new(node, dirs, harnesses, dir.path().to_owned()).expect("services");
+        let identity = NodeIdentity::from_secret_bytes(&[name.len() as u8; 32]);
+        let key_source = loa_trust::KeySource::Memory { reason: "the key was handed in".into() };
+        let node = NodeServices::open(identity, name.to_owned(), key_source, &dirs.data).expect("the node");
+        // Nothing reaches git, a folder dialog or omp's usage.
+        let usage = Arc::new(FakeUsage::default());
+        let host = Host { git: Arc::new(Offline), picker: Arc::new(Offline), usage: usage.clone() };
+        let services = Services::new(node, dirs, harnesses, host, dir.path().to_owned()).expect("services");
         let _entered = runtime.enter();
         // The startup tasks (harness probes, update checks) reach outside the test: dropped.
         let (mut app, _startup) = App::build(services);
@@ -105,8 +115,9 @@ impl TestApp {
         *app.areas.get_mut::<models::State>() = models::State::with_backend(Backend::new(parts));
         let (projects, _rebuilds) = projects::State::with(&mut app.ctx, Arc::new(Offline), ServiceConfig::default());
         *app.areas.get_mut::<projects::State>() = projects;
-        app.areas.get_mut::<sessions::State>().home = dir.path().join("home");
-        Self { app, harness, dir, runtime, tracker: Tracker::new(), feed: mpsc::channel(256) }
+        let sessions = app.areas.get_mut::<sessions::State>();
+        (sessions.home, sessions.opener) = (dir.path().join("home"), Arc::new(Offline));
+        Self { app, harness, usage, dir, runtime, tracker: Tracker::new(), feed: mpsc::channel(256) }
     }
 
     pub fn area<A: Area>(&self) -> &A {
@@ -249,7 +260,7 @@ impl TwoNodes {
         let open = |name: &str| {
             let mut test = TestApp::on(Arc::clone(&runtime), FakeHarness::new("omp"), name, |_| {});
             // `[network] port` can't be 0: the node opens again on a free port.
-            let mut network = test.app.ctx.services.config.load().expect("the config").network;
+            let mut network = test.app.ctx.services.storage.config.load().expect("the config").network;
             network.port = 0;
             let config = crate::areas::peers::node_config(&test.app.ctx, &network);
             let (peers, start) = crate::areas::peers::State::with_config(&mut test.app.ctx, config);
@@ -298,5 +309,43 @@ impl UrlOpener for Offline {
 impl EnvironmentPresence for Offline {
     fn contains(&self, _: &str) -> bool {
         false
+    }
+}
+
+#[async_trait::async_trait]
+impl GitProbe for Offline {
+    fn branch(&self, _: &Path) -> Option<String> {
+        None
+    }
+
+    async fn diff(&self, _: &Path) -> Option<String> {
+        None
+    }
+}
+
+#[async_trait::async_trait]
+impl FolderPicker for Offline {
+    async fn pick(&self, _: &Path) -> Result<Option<PathBuf>, String> {
+        Err("no folder dialog in tests".to_owned())
+    }
+}
+
+/// One account with a usable saved reset; records the resets spent.
+#[derive(Default)]
+pub(crate) struct FakeUsage {
+    pub spent: Mutex<Vec<String>>,
+}
+
+#[async_trait::async_trait]
+impl UsageSource for FakeUsage {
+    async fn fetch(&self) -> Result<Usage, String> {
+        let report = r#"{"provider": "anthropic", "metadata": {"orgName": "Personal", "credentialId": "c1"}, "resetCredits": {"availableCount": 2, "redeemableCount": 1},
+            "limits": [{"label": "Claude 7 Day", "window": {"id": "7d", "resetsAt": 9000}, "amount": {"usedFraction": 0.6}}]}"#;
+        parse(&format!(r#"{{"generatedAt": 1, "reports": [{report}]}}"#))
+    }
+
+    async fn spend(&self, target: &str) -> Result<(), String> {
+        self.spent.locked().push(target.to_owned());
+        Ok(())
     }
 }

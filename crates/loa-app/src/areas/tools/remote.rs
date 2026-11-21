@@ -62,8 +62,7 @@ pub(crate) struct Remote {
 
 impl Remote {
     /// The service over `config` (the machine's `known_hosts` and
-    /// `ssh-agent`), with its audit log at `<data>/remote-audit.db`. Returns
-    /// a warning when the log can't be opened and an in-memory one is used.
+    /// `ssh-agent`), with its audit log at `<data>/remote-audit.db`.
     pub(crate) fn new(data: &Path, config: RemoteServiceConfig) -> (Self, Option<String>) {
         let path = data.join("remote-audit.db");
         let (audit, warning): (Arc<dyn AuditSink>, _) = match SqliteAudit::open(&path) {
@@ -99,7 +98,6 @@ impl Remote {
 
     /// Brings the cards in line with the waiting questions: raises a card
     /// for each new one, cancels the cards of questions that went away.
-    /// Returns the questions for the panel and whether any is new.
     pub(crate) fn sync(&mut self, ctx: &Ctx) -> (Vec<tools::RemotePrompt>, bool) {
         let pending = self.queue.pending();
         let ids: BTreeSet<u64> = pending.iter().map(|prompt| prompt.id).collect();
@@ -140,8 +138,7 @@ impl Remote {
         taken
     }
 
-    /// Answers the question behind card `decision` of `session`. `Err` when
-    /// it no longer waits; its card is then cancelled.
+    /// Answers the question behind card `decision` of `session`.
     pub(crate) fn answer_card(&mut self, session: &SessionId, decision: NodeId, answer: &Answer, ctx: &Ctx) -> Result<(), String> {
         let id = self.cards.iter().find(|(_, card)| &card.session == session && card.decision == decision).map(|(id, _)| *id);
         let card = Card { session: session.clone(), decision };
@@ -239,8 +236,7 @@ fn raise(prompt: &PromptView, ctx: &Ctx) -> Option<Card> {
     Some(Card { session: session.id().clone(), decision: committed.node })
 }
 
-/// Closes a card: answered with `answer`, or cancelled. Leaves cards that
-/// no longer wait alone.
+/// Closes a card: answered with `answer`, or cancelled.
 fn finish(ctx: &Ctx, card: &Card, status: DecisionStatus, answer: Option<&Answer>) {
     let Some(session) = ctx.sessions.get(card.session.as_str()) else { return };
     let writer = session.writer();

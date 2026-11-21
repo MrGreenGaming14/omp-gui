@@ -1,10 +1,8 @@
 //! Decision cards: approvals, questions, plan reviews and forms of every open
 //! session, drawn inline in the transcript and answered through the session's
 //! harness (or the sessions area, for plan reviews the app raised itself).
-//! Also the waiting notifications while the window is in the background, the
-//! unattended timeouts and their settings screen.
 
-use iced::widget::{button, column, container, row, scrollable, space, text};
+use iced::widget::{column, container, scrollable};
 use iced::{Element, Fill, Subscription, Task, Theme};
 use loa_contracts::harness::Answer;
 use loa_bus::SessionId;
@@ -12,12 +10,12 @@ use loa_core::{ElementKind, NodeId, Op};
 use loa_models::login::UrlOpener;
 use loa_harness::account_support::opener::SystemUrlOpener;
 use loa_ui_session::decisions::{self as decisions, Desk, DesktopNotifier, TIMEOUT_BY, Unattended, desk, unattended};
-use loa_ui_shell::theme::style;
+use loa_ui_kit::style::{ButtonKind, Tone};
+use loa_ui_kit::theme::{LayoutRole, SpaceRole, TextRole, sp, width};
+use loa_ui_kit::widgets::{card, label, section_header, text_button};
 
 use crate::area::{perform, Area, AreaCommand, AreaMessage, Ctx, Listed, Request, SessionEvent};
 
-/// Width of the settings column on the settings screen.
-const SETTINGS_WIDTH: f32 = 720.0;
 
 #[derive(Clone, Debug)]
 pub enum Message {
@@ -197,24 +195,15 @@ impl Area for State {
     }
 
     fn view_screen<'a>(&'a self, _ctx: &'a Ctx) -> Option<Element<'a, Message>> {
-        let header = row![
-            text("Unattended prompts").size(20).width(Fill),
-            button(text("Done").size(13)).style(button::secondary).on_press(Message::CloseSettings),
-        ]
-        .align_y(iced::alignment::Vertical::Center);
         let waiting = match self.desk.total() {
             0 => "No prompt is waiting.".to_owned(),
             1 => "1 prompt is waiting.".to_owned(),
             n => format!("{n} prompts are waiting."),
         };
-        let body = column![
-            header,
-            container(self.desk.settings_view().map(Message::Desk)).style(style::card).padding(16).width(Fill),
-            text(waiting).size(12).style(style::muted),
-        ]
-        .spacing(16)
-        .max_width(SETTINGS_WIDTH);
-        Some(scrollable(container(column![space().height(24), body]).center_x(Fill).padding([0, 24])).height(Fill).into())
+        let header = section_header("Unattended prompts", [text_button("Done", ButtonKind::Secondary, Some(Message::CloseSettings))]);
+        let body = column![header, card(self.desk.settings_view().map(Message::Desk)).width(Fill), label(waiting, TextRole::Caption, Tone::Muted)];
+        let body = body.spacing(sp(SpaceRole::L)).max_width(width(LayoutRole::ContentWidth));
+        Some(scrollable(container(body).center_x(Fill).padding(sp(SpaceRole::Xl))).height(Fill).into())
     }
 
     fn on_session_event(&mut self, event: &SessionEvent, ctx: &mut Ctx) -> Task<Message> {

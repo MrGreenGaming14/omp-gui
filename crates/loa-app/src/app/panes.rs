@@ -1,6 +1,5 @@
 //! The registry of the right panel panes the app owns: each is a kit `PanelPane` on the app,
-//! named, iconed and drawn by itself, its messages lifted into the app's. Area panes follow
-//! through their areas.
+//! named, iconed and drawn by itself, its messages lifted into the app's.
 
 use super::{App, Message};
 use crate::area::PanelTab;

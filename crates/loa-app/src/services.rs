@@ -1,49 +1,49 @@
-//! Long-lived services created once at startup and shared by every area: the
-//! node identity, data directories, the session library (journal store and
-//! bus) and the harness registry.
+//! Long-lived services created once at startup and shared by every area through `Ctx`.
 
 use loa_util::RwLockExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
-use loa_bus::{Authorize, Bus, Denied, NodeKey, SessionId};
+use loa_bus::{Authorize, Bus, Denied, JournalOptions, NodeKey, SessionId, Store};
 use loa_config::ConfigStore;
 use loa_core::{Dom, Draft};
 use loa_harness::features::library::Library;
 use loa_trust::{KeySource, NodeIdentity, load_app_identity};
-use loa_bus::{JournalOptions, Store};
 
 mod harness;
 mod host;
 
 pub use harness::{CHECKING, Harness, Harnesses};
-pub use host::hostname;
+pub use host::{Host, hostname};
 
-/// This node: its ed25519 identity and the label people see.
-pub struct Node {
+/// This node: its identity, the grants it issued and received, and the MCP servers it runs.
+pub struct NodeServices {
     pub identity: NodeIdentity,
-    /// Public key as text, written to `<session node>` and used as the
-    /// node's key in the sidebar.
+    /// Public key as text, written to `<session node>`.
     pub key: String,
     /// Human name, the machine's host name.
     pub label: String,
-    /// Where the key is kept between runs.
     pub key_source: KeySource,
+    /// Decides peer requests on sessions this node owns.
+    pub peer_access: Arc<PeerAccess>,
+    /// `<data>/grants.db`.
+    pub grants: Arc<loa_trust::GrantStore>,
+    pub mcp: loa_mcp::Manager,
 }
 
-impl Node {
-    /// A node over a key handed in, kept nowhere (tests).
-    pub fn new(identity: NodeIdentity, label: String) -> Self {
-        Self::stored(identity, label, KeySource::Memory { reason: "the key was handed in".into() })
-    }
-
-    /// A node over a key loaded from `key_source`.
-    pub fn stored(identity: NodeIdentity, label: String, key_source: KeySource) -> Self {
+impl NodeServices {
+    /// The node over `identity`, its grant store in `data`.
+    pub fn open(identity: NodeIdentity, label: String, key_source: KeySource, data: &Path) -> Result<Self, String> {
+        // On a first run nothing has created the data directory yet.
+        std::fs::create_dir_all(data).map_err(|error| format!("Can't create the data directory {}: {error}", data.display()))?;
+        let grants_path = data.join("grants.db");
+        let grants = loa_trust::GrantStore::open(&grants_path).map_err(|error| format!("Can't open the grant store {}: {error}", grants_path.display()))?;
+        let mcp = loa_mcp::Manager::new(loa_mcp::Options::default()).map_err(|error| format!("Can't set up the MCP client: {error}"))?;
         let key = identity.public_key().to_string();
-        Self { identity, key, label, key_source }
+        Ok(Self { identity, key, label, key_source, peer_access: Arc::new(PeerAccess::default()), grants: Arc::new(grants), mcp })
     }
 
-    /// The node key in the form the session bus checks writers against.
+    /// The node key the session bus checks writers against.
     pub fn bus_key(&self) -> NodeKey {
         self.identity.public_key().into()
     }
@@ -66,106 +66,85 @@ impl Dirs {
     }
 }
 
-/// The services, built once and handed to every area through `Ctx`.
-pub struct Services {
-    pub node: Node,
+/// What the app keeps on disk: the session library and the central config.
+pub struct Storage {
     pub dirs: Dirs,
     /// Session journals under `dirs.sessions`, opened as writers on one bus.
-    /// Also the `SessionStore` fork, rewind, compaction and subagents use.
     pub library: Arc<Library>,
-    /// Decides peer requests on sessions this node owns.
-    pub peer_access: Arc<PeerAccess>,
+    /// `<data>/config.toml`; each area saves only the table it owns.
+    pub config: ConfigStore,
+}
+
+impl Storage {
+    /// Opens the session store in `dirs`, its writers checked by `node`.
+    pub fn open(dirs: Dirs, node: &NodeServices) -> Result<Self, String> {
+        let store = Store::new(&dirs.sessions, JournalOptions::default())
+            .map_err(|error| format!("Can't open the session store {}: {error}", dirs.sessions.display()))?;
+        let library = Library::new(store, Arc::new(Bus::new()), node.bus_key(), Arc::clone(&node.peer_access) as Arc<dyn Authorize>);
+        Ok(Self { config: ConfigStore::in_dir(&dirs.data), library: Arc::new(library), dirs })
+    }
+}
+
+pub struct Services {
+    pub node: NodeServices,
+    pub storage: Storage,
     pub harnesses: Harnesses,
+    /// The processes the app asks about the machine: git, the folder dialog, `omp usage`.
+    pub host: Host,
     /// Directory new sessions run in; the active project's folder.
     pub cwd: PathBuf,
-    /// Name of the active project. At launch the last component of `cwd`.
+    /// Name of the active project.
     pub project: String,
     /// The folder the app was launched in, the workspace project's folder.
     pub workspace: PathBuf,
-    /// The central config file, `<data>/config.toml`. Each area reads it
-    /// and saves only the table it owns.
-    pub config: ConfigStore,
-    /// The MCP servers the app runs (registered in the `mcp_servers`
-    /// table, plus the app-hosted ones). The Tools area registers and
-    /// controls them; other areas read their tools and resources.
-    pub mcp: loa_mcp::Manager,
-    /// The grants this node issued and received, `<data>/grants.db`. The
-    /// peers area issues and revokes into it; the Tools area reads what each
-    /// peer may use.
-    pub grants: Arc<loa_trust::GrantStore>,
 }
 
 impl Services {
-    /// Builds the services of this machine: the node key from the OS
-    /// keychain, the data directory and the installed harnesses. Returns
-    /// the services and warnings to show the user.
+    /// The services of this machine, with warnings to show the user.
     pub fn load() -> Result<(Self, Vec<String>), String> {
         let mut warnings = Vec::new();
         let dirs = Dirs::new(host::data_dir());
-        // The OS keychain, else `<data>/node.key`; a key in memory only when neither works.
-        let node = match load_app_identity(&dirs.data) {
-            Ok((identity, source)) => Node::stored(identity, hostname(), source),
+        let (identity, source) = match load_app_identity(&dirs.data) {
+            Ok(loaded) => loaded,
             Err(error) => {
                 warnings.push(format!("Neither the OS keychain nor the key file works ({error}); this node uses a temporary key until restart"));
                 let identity = NodeIdentity::generate().map_err(|error| format!("Can't create a node key: {error}"))?;
-                Node::stored(identity, hostname(), KeySource::Memory { reason: error.to_string() })
+                (identity, KeySource::Memory { reason: error.to_string() })
             }
         };
+        let node = NodeServices::open(identity, hostname(), source, &dirs.data)?;
         let harnesses = Harnesses::detect(&node.key, &dirs.omp);
         let cwd = starting_folder(std::env::args().nth(1), std::env::temp_dir());
-        Ok((Self::new(node, dirs, harnesses, cwd)?, warnings))
+        Ok((Self::new(node, dirs, harnesses, Host::system(), cwd)?, warnings))
     }
 
-    /// Services over explicit parts; creates the session store. Peer
-    /// requests on this node's sessions are refused until grants exist.
-    pub fn new(node: Node, dirs: Dirs, harnesses: Harnesses, cwd: PathBuf) -> Result<Self, String> {
-        let store = Store::new(&dirs.sessions, JournalOptions::default())
-            .map_err(|error| format!("Can't open the session store {}: {error}", dirs.sessions.display()))?;
-        let peer_access = Arc::new(PeerAccess::default());
-        let library = Library::new(store, Arc::new(Bus::new()), node.bus_key(), Arc::clone(&peer_access) as Arc<dyn Authorize>);
-        let project = cwd.file_name().map_or_else(|| cwd.display().to_string(), |name| name.to_string_lossy().into_owned());
-        let config = ConfigStore::in_dir(&dirs.data);
-        let mcp = loa_mcp::Manager::new(loa_mcp::Options::default())
-            .map_err(|error| format!("Can't set up the MCP client: {error}"))?;
-        let grants_path = dirs.data.join("grants.db");
-        let grants = loa_trust::GrantStore::open(&grants_path)
-            .map_err(|error| format!("Can't open the grant store {}: {error}", grants_path.display()))?;
-        Ok(Self {
-            node,
-            dirs,
-            library: Arc::new(library),
-            peer_access,
-            harnesses,
-            workspace: cwd.clone(),
-            cwd,
-            project,
-            config,
-            mcp,
-            grants: Arc::new(grants),
-        })
+    /// Services over explicit parts; peer requests are refused until grants exist.
+    pub fn new(node: NodeServices, dirs: Dirs, harnesses: Harnesses, host: Host, cwd: PathBuf) -> Result<Self, String> {
+        let storage = Storage::open(dirs, &node)?;
+        Ok(Self { node, storage, harnesses, host, project: folder_name(&cwd), workspace: cwd.clone(), cwd })
     }
 
-    /// Name of the workspace project, the last component of `workspace`.
+    /// Name of the workspace project.
     pub fn workspace_project(&self) -> String {
-        self.workspace
-            .file_name()
-            .map_or_else(|| self.workspace.display().to_string(), |name| name.to_string_lossy().into_owned())
+        folder_name(&self.workspace)
     }
 
-    /// Makes `project` and its folder `cwd` the active ones: new sessions
-    /// start there. Running sessions keep their own folder.
+    /// Makes `project` and its folder `cwd` the active ones.
     pub fn set_active(&mut self, project: String, cwd: PathBuf) {
         self.project = project;
         self.cwd = cwd;
     }
 }
 
-/// The access check every session writer asks about peer requests. Refuses
-/// everything until [`PeerAccess::set`] installs a grants-backed check.
+/// The last component of `path`, the whole path when it has none.
+pub fn folder_name(path: &Path) -> String {
+    path.file_name().map_or_else(|| path.display().to_string(), |name| name.to_string_lossy().into_owned())
+}
+
+/// The access check every session writer asks about peer requests; refuses all until [`PeerAccess::set`].
 pub struct PeerAccess(RwLock<Arc<dyn Authorize>>);
 
 impl PeerAccess {
-    /// Decides peer requests with `authorize` from now on, on every session.
     pub fn set(&self, authorize: Arc<dyn Authorize>) {
         *self.0.write_ok() = authorize;
     }
@@ -193,17 +172,23 @@ impl Authorize for NoGrants {
     }
 }
 
-/// The folder the app starts in: a folder given as the first argument
-/// (`loa-app ~/code/project`), else the system's temporary folder
-/// (`$TMPDIR`, usually `/tmp`), so nothing lands in wherever the app
-/// happened to be launched from until a folder is picked.
+/// The folder the app starts in: the folder given as the first argument, else the temp folder.
 pub fn starting_folder(arg: Option<String>, temp: PathBuf) -> PathBuf {
     arg.map(PathBuf::from).filter(|path| path.is_dir()).and_then(|path| path.canonicalize().ok()).unwrap_or(temp)
 }
 
 #[cfg(test)]
-mod starting_folder_tests {
-    use super::starting_folder;
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_first_run_creates_the_data_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("loa");
+        let key_source = KeySource::Memory { reason: "test".into() };
+        NodeServices::open(NodeIdentity::from_secret_bytes(&[1; 32]), "node".into(), key_source, &data).expect("the node opens");
+        assert!(data.join("grants.db").exists());
+    }
 
     #[test]
     fn starts_in_the_temp_folder_unless_a_folder_is_given() {

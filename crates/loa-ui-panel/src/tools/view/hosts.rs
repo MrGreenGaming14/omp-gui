@@ -21,7 +21,7 @@ impl State {
             let head = row![label("Waiting for you", T::Caption, Tone::Warn), label(self.prompts.len().to_string(), T::Caption, Tone::Faint)].spacing(sp(Sp::Xs));
             Column::new().push(head).extend(self.prompts.iter().map(prompt_card)).spacing(sp(Sp::Xs))
         });
-        let add = self.add_host.as_ref().map(|f| form_card("Add host", None, form_view(&f.spec, &f.errors, |k, v| Message::FormEdit(FormId::Host, k, v)), "Add", FormId::Host));
+        let add = self.add_host.as_ref().map(|f| form_card("Add host", None, form_view(&f.spec, &f.errors, |k, v| Message::FormEdit(FormId::Host, k, v), None), "Add", FormId::Host));
         let hosts = self.visible_hosts();
         let actions = row![action("Import from ssh config", Message::ImportSshHosts), ghost("Add host", Some(Icon::Plus)).on_press(Message::FormOpen(FormId::Host))].spacing(sp(Sp::Xs) / 2.0);
         let header = self.block_header("hosts", "Hosts".to_owned(), hosts.len(), Some(actions.into()));

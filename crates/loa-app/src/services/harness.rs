@@ -1,7 +1,5 @@
 //! The harnesses the app can route sessions to, built from the
-//! [`loa_harness::factories`] registry. Whether each can run here comes from
-//! its own [`Adapter::availability`] probe, which the harness area runs at
-//! startup and on demand.
+//! [`loa_harness::factories`] registry.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -43,8 +41,6 @@ fn factory(id: &str, env: &HarnessEnv) -> Option<Arc<dyn HarnessFactory>> {
 
 impl Harnesses {
     /// Registers every harness of the registry on its default executable.
-    /// Until their probes answer, CLI harnesses count as available when
-    /// their executable is on `PATH`.
     pub fn detect(node: &str, omp_dir: &Path) -> Self {
         let mut harnesses = Self { registry: Registry::new(), list: Vec::new() };
         for factory in factories(&HarnessEnv { node: node.to_owned(), omp_dir: omp_dir.to_owned() }) {
@@ -74,8 +70,7 @@ impl Harnesses {
     }
 
     /// (Re)registers the known harness `id` running `executable`, or its
-    /// default when `None`; it waits for a new probe. Returns whether `id`
-    /// is known.
+    /// default when `None`; it waits for a new probe.
     pub fn set_executable(&mut self, id: &str, executable: Option<PathBuf>, node: &str, omp_dir: &Path) -> bool {
         let Some(factory) = factory(id, &HarnessEnv { node: node.to_owned(), omp_dir: omp_dir.to_owned() }) else { return false };
         self.register(factory.as_ref(), executable);
@@ -93,8 +88,7 @@ impl Harnesses {
     }
 
     /// Records what harness `id`'s probe found: whether it can be picked,
-    /// the note beside it and the executable sessions run. An adapter that
-    /// can't tell keeps what it was registered with.
+    /// the note beside it and the executable sessions run.
     pub fn set_availability(&mut self, id: &str, availability: Availability) {
         let Some(harness) = self.list.iter_mut().find(|harness| harness.option.id == id) else { return };
         if availability.status != AvailabilityStatus::Unknown {
