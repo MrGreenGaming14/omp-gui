@@ -83,6 +83,9 @@ pub enum Sniff {
     Image(ImageFormat),
 }
 
+/// Parses a file's bytes into a paged document.
+pub type Opener = fn(Format, &[u8]) -> Result<Box<dyn Paged>>;
+
 /// One registered format.
 pub struct DocFormat {
     pub format: Format,
@@ -90,7 +93,7 @@ pub struct DocFormat {
     pub mime: &'static str,
     pub exts: &'static [&'static str],
     pub sniff: Sniff,
-    pub open: fn(Format, &[u8]) -> Result<Box<dyn Paged>>,
+    pub open: Opener,
 }
 
 macro_rules! formats {

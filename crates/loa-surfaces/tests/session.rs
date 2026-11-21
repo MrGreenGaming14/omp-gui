@@ -173,7 +173,8 @@ async fn documents_arrive_in_chunks_and_corrupted_truncated_or_oversized_ones_ar
     let data = Bytes::from_static(b"%PDF-1.7 hello");
     let (len, crc) = (data.len() as u64, crc32fast::hash(&data));
     // (header length, header crc, close after the chunk, viewer limit, expected error)
-    let cases: [(u64, u32, Option<&str>, u64, fn(&ProtoError) -> bool); 3] = [
+    type Case = (u64, u32, Option<&'static str>, u64, fn(&ProtoError) -> bool);
+    let cases: [Case; 3] = [
         (len, crc ^ 1, None, 1 << 20, |e| matches!(e, ProtoError::Checksum)),
         (len + 10, crc, Some("crashed"), 1 << 20, |e| matches!(e, ProtoError::Closed(r) if r == "crashed")),
         (10_000, 0, None, 1000, |e| matches!(e, ProtoError::TooLarge { len: 10_000, max: 1000 })),

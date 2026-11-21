@@ -226,7 +226,7 @@ pub mod rfb {
     }
 
     fn pixels(img: &RgbaImage) -> impl Iterator<Item = &[u8]> {
-        img.data.chunks_exact(4)
+        img.data.as_chunks::<4>().0.iter().map(|p| p.as_slice())
     }
 
     pub fn raw(img: &RgbaImage) -> Vec<u8> {
@@ -299,7 +299,7 @@ pub mod rfb {
                     if flags & 16 != 0 {
                         out.extend(pixel(p));
                     }
-                    out.extend([((i as u32 % t.width) << 4 | i as u32 / t.width) as u8, 0]);
+                    out.extend([(((i as u32 % t.width) << 4) | (i as u32 / t.width)) as u8, 0]);
                 }
             }
             bg = Some(c[0].to_vec());
@@ -341,7 +341,7 @@ pub mod rfb {
                     };
                     for row in t.data.chunks_exact(t.width as usize * 4) {
                         let mut packed = vec![0u8; (t.width as usize * bits).div_ceil(8)];
-                        for (x, p) in row.chunks_exact(4).enumerate() {
+                        for (x, p) in row.as_chunks::<4>().0.iter().enumerate() {
                             packed[x * bits / 8] |= (index(p) as u8) << (8 - bits - x * bits % 8);
                         }
                         tiles_out.extend(packed);

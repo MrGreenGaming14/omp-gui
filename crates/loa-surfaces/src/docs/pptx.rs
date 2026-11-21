@@ -173,7 +173,7 @@ impl Paged for PptxDoc {
 
     fn query(&self, query: &DataQuery) -> Option<Result<serde_json::Value>> {
         Some(match query {
-            DataQuery::Text { page: Some(index) } => self.slide(*index).and_then(|s| json(s)),
+            DataQuery::Text { page: Some(index) } => self.slide(*index).and_then(json),
             DataQuery::Text { page: None } => json(&self.text()),
             DataQuery::Slides => json(&self.slides),
             _ => return None,
