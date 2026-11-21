@@ -244,9 +244,9 @@ fn fifty_thousand_line_diff_builds_only_the_rows_in_view() {
     let _ = state.update(Message::Expand(fold));
     assert!(state.rows().len() > 25_000);
 
-    let _ = state.update(Message::Scrolled { offset: 20_000.0 * style::ROW_HEIGHT, height: 600.0 });
+    let _ = state.update(Message::Scrolled { offset: 20_000.0 * crate::row_height(), height: 600.0 });
     let range = state.visible_rows();
-    assert!(range.len() <= 600 / style::ROW_HEIGHT as usize + 2 * OVERSCAN + 1, "{range:?}");
+    assert!(range.len() <= 600 / crate::row_height() as usize + 2 * OVERSCAN + 1, "{range:?}");
     assert!(range.contains(&20_000));
     let file = state.selected().unwrap();
     assert_eq!(state.rows()[20_000], Row::Line(19_999));

@@ -15,9 +15,10 @@ use iced::widget::operation::{self, AbsoluteOffset};
 use iced::widget::scrollable::Viewport;
 use iced::widget::{Id, Space, button, column, container, row, scrollable, text};
 use iced::{Alignment, Element, Length, Task};
-use loa_ui_kit::icons::Icon;
+use loa_ui_kit::icons::{Icon, icon, muted};
 
-use crate::style;
+use loa_ui_kit::style::{self as kit, ButtonKind, Tone};
+use loa_ui_kit::theme::{SpaceRole as Sp, TextRole as T, sp, text_size as ts};
 
 /// Tallest the sidebar's compact file list grows before it scrolls.
 pub const COMPACT_MAX_HEIGHT: f32 = 240.0;
@@ -328,7 +329,7 @@ impl State {
     }
 
     pub fn view(&self) -> Element<'_, Message> {
-        scrollable(column(self.row_elements()).width(Length::Fill).padding([0, 6]))
+        scrollable(column(self.row_elements()).width(Length::Fill).padding(iced::Padding::ZERO.left(sp(Sp::S)).right(sp(Sp::S))))
             .id(self.scroll_id.clone())
             .on_scroll(Message::Scrolled)
             .width(Length::Fill)
@@ -341,7 +342,7 @@ impl State {
     /// has no id and does not report scrolling, so it never disturbs the
     /// keyboard reveal of the Files tab.
     pub fn view_compact(&self) -> Element<'_, Message> {
-        let rows = column(self.row_elements()).width(Length::Fill).padding([0, 6]);
+        let rows = column(self.row_elements()).width(Length::Fill).padding(iced::Padding::ZERO.left(sp(Sp::S)).right(sp(Sp::S)));
         container(scrollable(rows).width(Length::Fill)).max_height(COMPACT_MAX_HEIGHT).width(Length::Fill).into()
     }
 
@@ -355,34 +356,34 @@ impl State {
     fn node_row(&self, index: usize) -> Element<'_, Message> {
         let node = &self.nodes[index];
         let chevron: Element<'_, Message> = match (node.is_dir, node.expanded) {
-            (false, _) => Space::new().width(style::INDENT).into(),
-            (true, false) => loa_ui_kit::icons::muted(Icon::ChevronRight, 12.0).width(style::INDENT).into(),
-            (true, true) => loa_ui_kit::icons::muted(Icon::ChevronDown, 12.0).width(style::INDENT).into(),
+            (false, _) => Space::new().width(crate::indent()).into(),
+            (true, false) => muted(Icon::ChevronRight, ts(T::Caption)).width(crate::indent()).into(),
+            (true, true) => muted(Icon::ChevronDown, ts(T::Caption)).width(crate::indent()).into(),
         };
         let kind = if node.is_dir { Icon::Folder } else { Icon::FileText };
         let marker: Element<'_, Message> = match node.mark {
             Mark::None => Space::new().into(),
-            Mark::Contains => loa_ui_kit::icons::muted(Icon::CircleDot, 12.0).into(),
-            Mark::Touched => loa_ui_kit::icons::icon(Icon::CircleDot, 12.0).into(),
+            Mark::Contains => muted(Icon::CircleDot, ts(T::Caption)).into(),
+            Mark::Touched => icon(Icon::CircleDot, ts(T::Caption)).into(),
         };
         let content = row![
-            Space::new().width((node.depth - 1) as f32 * style::INDENT),
+            Space::new().width((node.depth - 1) as f32 * crate::indent()),
             chevron,
-            loa_ui_kit::icons::icon(kind, 14.0),
+            icon(kind, ts(T::Body)),
             text(node.name.as_str())
-                .size(style::LIST_TEXT_SIZE)
+                .size(ts(T::Body))
                 .wrapping(text::Wrapping::None)
                 .width(Length::Fill),
             marker,
         ]
-        .spacing(6)
+        .spacing(sp(Sp::S))
         .align_y(Alignment::Center)
         .height(Length::Fill);
         button(content)
             .width(Length::Fill)
-            .height(style::LIST_ROW_HEIGHT)
-            .padding([0, 8])
-            .style(style::row_button(self.selected == Some(index)))
+            .height(crate::list_row_height())
+            .padding(iced::Padding::ZERO.left(sp(Sp::S)).right(sp(Sp::S)))
+            .style(kit::button(ButtonKind::Row { selected: self.selected == Some(index) }))
             .on_press(Message::Click(index))
             .into()
     }
@@ -391,18 +392,18 @@ impl State {
         let node = &self.nodes[index];
         let message = node.error.as_deref().unwrap_or_default();
         let content = row![
-            Space::new().width(node.depth as f32 * style::INDENT + style::INDENT + 32.0),
+            Space::new().width(node.depth as f32 * crate::indent() + crate::indent() + sp(Sp::Xl) + sp(Sp::S)),
             text(message)
-                .size(style::LIST_TEXT_SIZE)
+                .size(ts(T::Body))
                 .wrapping(text::Wrapping::None)
-                .style(style::danger_text),
+                .style(kit::text(Tone::Danger)),
         ]
         .align_y(Alignment::Center)
         .height(Length::Fill);
         container(content)
             .width(Length::Fill)
-            .height(style::LIST_ROW_HEIGHT)
-            .padding([0, 8])
+            .height(crate::list_row_height())
+            .padding(iced::Padding::ZERO.left(sp(Sp::S)).right(sp(Sp::S)))
             .into()
     }
 
@@ -565,8 +566,8 @@ impl State {
         let Some(row) = self.selected_row else {
             return Task::none();
         };
-        let top = row as f32 * style::LIST_ROW_HEIGHT;
-        let bottom = top + style::LIST_ROW_HEIGHT;
+        let top = row as f32 * crate::list_row_height();
+        let bottom = top + crate::list_row_height();
         let target = if top < self.scroll_offset {
             top
         } else if self.viewport_height > 0.0 && bottom > self.scroll_offset + self.viewport_height {
