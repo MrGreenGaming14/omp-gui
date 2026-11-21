@@ -2,7 +2,7 @@
 //! context delivery and session selection, as CLI arguments.
 
 use loa_contracts::harness::{AdapterError, Result, SessionConfig};
-use loa_omp_rpc::{Mode, SpawnOptions};
+use loa_harness::omp::rpc::{Mode, SpawnOptions};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::time::Duration;

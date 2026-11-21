@@ -1,7 +1,7 @@
 //! Non-command frames the host writes: answers to UI requests and results of
 //! host tool and host URI callbacks.
 
-use crate::command::ImageContent;
+use super::command::ImageContent;
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -95,26 +95,16 @@ impl HostToolOutput {
         Self { content, is_error: false, details: None }
     }
 
-    fn payload(&self) -> Value {
-        let mut payload = json!({"content": self.content});
-        if let (Some(details), Some(map)) = (&self.details, payload.as_object_mut()) {
-            map.insert("details".to_owned(), details.clone());
-        }
-        payload
-    }
-
     pub(crate) fn result_json(&self, id: &str) -> Value {
-        let mut frame = json!({"type": "host_tool_result", "id": id, "result": self.payload()});
-        if self.is_error
-            && let Some(map) = frame.as_object_mut()
-        {
-            map.insert("isError".to_owned(), Value::Bool(true));
+        let mut result = json!({"content": self.content});
+        if let Some(details) = &self.details {
+            result["details"] = details.clone();
+        }
+        let mut frame = json!({"type": "host_tool_result", "id": id, "result": result});
+        if self.is_error {
+            frame["isError"] = Value::Bool(true);
         }
         frame
-    }
-
-    pub(crate) fn update_json(&self, id: &str) -> Value {
-        json!({"type": "host_tool_update", "id": id, "partialResult": self.payload()})
     }
 }
 
@@ -133,13 +123,11 @@ impl HostUriOutput {
         match self {
             HostUriOutput::Content { content, content_type, immutable } => {
                 let mut frame = json!({"type": "host_uri_result", "id": id, "content": content});
-                if let Some(map) = frame.as_object_mut() {
-                    if let Some(content_type) = content_type {
-                        map.insert("contentType".to_owned(), Value::String(content_type.clone()));
-                    }
-                    if let Some(immutable) = immutable {
-                        map.insert("immutable".to_owned(), Value::Bool(*immutable));
-                    }
+                if let Some(content_type) = content_type {
+                    frame["contentType"] = content_type.as_str().into();
+                }
+                if let Some(immutable) = immutable {
+                    frame["immutable"] = (*immutable).into();
                 }
                 frame
             }

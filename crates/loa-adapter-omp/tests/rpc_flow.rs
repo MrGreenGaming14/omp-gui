@@ -1,7 +1,7 @@
 use loa_contracts::harness::{Adapter, Answer, HarnessSession, Prompt, SessionConfig, SessionState};
 use loa_adapter_omp::{OmpAdapter, OmpAdapterConfig};
 use loa_core::{attr, ElementKind, MemorySink};
-use loa_omp_rpc::fake::{FakeOmp, handshake_v2};
+use loa_harness::testing::{FakeProcess as FakeOmp, handshake_v2};
 use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;

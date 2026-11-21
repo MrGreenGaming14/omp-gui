@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use base64::Engine;
 use loa_contracts::harness::{Adapter, AdapterError, Answer, Availability, Capabilities, ContextDelivery, Feature, HarnessModel, HarnessSession, OutputBlock, HostTools, ModelSelection, Prompt, Result, SessionConfig, SessionState};
 use loa_core::{DecisionKind, Draft, ElementKind, NodeId, PatchSink, SCHEMA_VERSION, SessionMode, Value, attr, now_ms};
-use loa_omp_rpc::{Event, HostHandler, HostToolCall, HostToolDefinition, HostToolOutput, HostUriRequest, HostUriOutput, ImageContent, Incoming, MessageUpdates, ModelInfo, PromptStatus, RpcClient, RpcError, StreamingBehavior, SubagentLevel, ToolContent};
+use loa_harness::omp::rpc::{Event, HostHandler, HostToolCall, HostToolDefinition, HostToolOutput, HostUriRequest, HostUriOutput, ImageContent, Incoming, MessageUpdates, ModelInfo, PromptStatus, RpcClient, RpcError, StreamingBehavior, SubagentLevel, ToolContent};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;

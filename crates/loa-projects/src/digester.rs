@@ -19,11 +19,7 @@ use loa_core::{
     CallStatus, DecisionStatus, Dom, ElementKind as K, MessageKind, Node, NodeId, Role, TodoState, attr,
 };
 use std::fmt::Write as _;
-use std::path::PathBuf;
-use std::process::Stdio;
 use std::sync::Arc;
-use std::time::Duration;
-use tokio::io::AsyncWriteExt;
 
 /// What a summarizer answered.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -319,107 +315,15 @@ pub fn parse_answer(text: &str, prompt: &DigestPrompt) -> Result<DigestContent> 
     })
 }
 
-/// [`Summarizer`] that runs `omp -p` once per digest.
-///
-/// The prompt goes in on stdin and the answer is the printed text. The run
-/// uses the configured model role (`@smol` unless set per project), saves no
-/// session, loads no tools, context files, rules, skills or extensions, and
-/// turns omp's memory off through a `--config` overlay so digests never
-/// reach omp's own history or memory.
-#[derive(Clone, Debug)]
-pub struct OmpSummarizer {
-    executable: PathBuf,
-    cwd: PathBuf,
-    model: String,
-    timeout: Duration,
-}
-
-/// `--config` overlay that switches omp's memory off for the run. `"off"` is
-/// quoted: a YAML 1.1 parser reads a bare `off` as the boolean `false`.
-const MEMORY_OFF: &str = "memory:\n  backend: \"off\"\n";
-
-impl OmpSummarizer {
-    /// `executable` is the omp binary, `cwd` the directory omp starts in.
-    pub fn new(executable: impl Into<PathBuf>, cwd: impl Into<PathBuf>) -> Self {
-        Self {
-            executable: executable.into(),
-            cwd: cwd.into(),
-            model: "@smol".to_owned(),
-            timeout: Duration::from_secs(180),
-        }
-    }
-
-    /// Model or role passed to `--model`, e.g. `@smol` or a model id for a
-    /// project that sets its own digest model.
-    pub fn with_model(mut self, model: impl Into<String>) -> Self {
-        self.model = model.into();
-        self
-    }
-
-    pub fn with_timeout(mut self, timeout: Duration) -> Self {
-        self.timeout = timeout;
-        self
-    }
-
-    /// The command line after the executable.
-    fn args(&self, model: &str, overlay: &std::path::Path) -> Vec<std::ffi::OsString> {
-        let mut args: Vec<std::ffi::OsString> = [
-            "-p",
-            "--mode",
-            "text",
-            "--no-session",
-            "--no-tools",
-            "--no-title",
-            "--no-context-files",
-            "--no-rules",
-            "--no-skills",
-            "--no-extensions",
-            "--no-lsp",
-            "--model",
-        ]
-        .into_iter()
-        .map(Into::into)
-        .collect();
-        args.push(model.into());
-        args.push("--config".into());
-        args.push(overlay.into());
-        args.push("--cwd".into());
-        args.push(self.cwd.clone().into());
-        args
-    }
-}
+/// The `omp -p` one-shot call (on the `smol` role unless a project sets its
+/// own digest model).
+pub use loa_harness::omp::OneShot as OmpSummarizer;
 
 #[async_trait]
 impl Summarizer for OmpSummarizer {
     async fn summarize(&self, prompt: &str, model: Option<&str>) -> Result<SummaryAnswer> {
-        let model = model.map(str::trim).filter(|m| !m.is_empty()).unwrap_or(&self.model);
-        let mut overlay = tempfile::Builder::new().prefix("loa-digest-").suffix(".yml").tempfile()?;
-        std::io::Write::write_all(&mut overlay, MEMORY_OFF.as_bytes())?;
-        let mut child = tokio::process::Command::new(&self.executable)
-            .args(self.args(model, overlay.path()))
-            .current_dir(&self.cwd)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|e| Error::Summarizer(format!("can't run {}: {e}", self.executable.display())))?;
-        let mut stdin = child.stdin.take().ok_or_else(|| Error::Summarizer("no stdin pipe".into()))?;
-        let feed = async move {
-            stdin.write_all(prompt.as_bytes()).await?;
-            stdin.shutdown().await
-        };
-        let run = async { tokio::join!(feed, child.wait_with_output()) };
-        let (fed, output) = tokio::time::timeout(self.timeout, run)
-            .await
-            .map_err(|_| Error::Summarizer(format!("omp gave no answer within {:?}", self.timeout)))?;
-        let output = output?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(Error::Summarizer(format!("omp exited with {}: {}", output.status, clip(stderr.trim(), 2000))));
-        }
-        fed.map_err(|e| Error::Summarizer(format!("writing the prompt to omp: {e}")))?;
-        let text = String::from_utf8(output.stdout).map_err(|_| Error::Summarizer("omp printed invalid UTF-8".into()))?;
+        let model = self.pick(model);
+        let text = self.ask(model, prompt).await.map_err(Error::Summarizer)?;
         Ok(SummaryAnswer { text, model: Some(model.trim_start_matches('@').to_owned()) })
     }
 }
@@ -519,66 +423,5 @@ mod tests {
         let empty = r#"{"summary":" ","decisions":[],"files":[],"open_items":[],"pointers":[]}"#;
         assert!(matches!(parse_answer(empty, &prompt), Err(Error::InvalidAnswer(_))));
         assert!(matches!(parse_answer("I can't do that", &prompt), Err(Error::InvalidAnswer(_))));
-    }
-
-    /// A fake `omp` that records its arguments, stdin and the overlay, then
-    /// prints a fixed answer.
-    fn fake_omp(dir: &std::path::Path, body: &str) -> PathBuf {
-        let path = dir.join("omp");
-        let script = format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"{d}/args\"\ncat > \"{d}/stdin\"\n\
-             while [ $# -gt 0 ]; do if [ \"$1\" = --config ]; then cp \"$2\" \"{d}/overlay\"; fi; shift; done\n{body}\n",
-            d = dir.display()
-        );
-        loa_util::exec::write_executable(&path, script).unwrap();
-        path
-    }
-
-    #[tokio::test]
-    async fn omp_summarizer_runs_one_shot_smol_without_session_or_memory() {
-        let dir = tempfile::tempdir().unwrap();
-        let answer = r#"{"summary":"Did things.","decisions":[],"files":[],"open_items":[],"pointers":["T1"]}"#;
-        let exe = fake_omp(dir.path(), &format!("printf '%s' '{answer}'"));
-        let summarizer = Arc::new(OmpSummarizer::new(&exe, dir.path()));
-        let b = Builder::new("s1", "p", 1);
-        let turn = b.turn("build the thing", "done", 2);
-        let digester = Digester::new(summarizer, PromptLimits::default());
-        let built = digester.digest(&b.dom(), None).await.unwrap();
-        assert_eq!(built.content.summary, "Did things.");
-        assert_eq!(built.content.pointers, vec![turn]);
-        assert_eq!(built.model.as_deref(), Some("smol"));
-        assert_eq!(built.source_seq, b.dom().seq());
-
-        let args = std::fs::read_to_string(dir.path().join("args")).unwrap();
-        let args: Vec<&str> = args.lines().collect();
-        for flag in ["-p", "--no-session", "--no-tools", "--no-title"] {
-            assert!(args.contains(&flag), "missing {flag} in {args:?}");
-        }
-        let model_at = args.iter().position(|a| *a == "--model").unwrap();
-        assert_eq!(args[model_at + 1], "@smol");
-        assert_eq!(std::fs::read_to_string(dir.path().join("overlay")).unwrap(), MEMORY_OFF);
-        let stdin = std::fs::read_to_string(dir.path().join("stdin")).unwrap();
-        assert!(stdin.contains("User: build the thing"));
-
-        // A project's digest model replaces the role for that call.
-        let built = digester.digest(&b.dom(), Some("anthropic/claude-haiku-5-5")).await.unwrap();
-        assert_eq!(built.model.as_deref(), Some("anthropic/claude-haiku-5-5"));
-        let args = std::fs::read_to_string(dir.path().join("args")).unwrap();
-        assert!(args.lines().any(|a| a == "anthropic/claude-haiku-5-5"), "{args}");
-    }
-
-    #[tokio::test]
-    async fn omp_failure_is_reported_with_stderr() {
-        let dir = tempfile::tempdir().unwrap();
-        let exe = fake_omp(dir.path(), "echo 'no smol model configured' >&2; exit 2");
-        let err = OmpSummarizer::new(&exe, dir.path()).summarize("hi", None).await.unwrap_err();
-        assert!(matches!(&err, Error::Summarizer(m) if m.contains("no smol model configured")), "{err}");
-    }
-
-    #[tokio::test]
-    async fn missing_omp_is_a_summarizer_error() {
-        let dir = tempfile::tempdir().unwrap();
-        let err = OmpSummarizer::new(dir.path().join("absent"), dir.path()).summarize("hi", None).await.unwrap_err();
-        assert!(matches!(err, Error::Summarizer(_)));
     }
 }

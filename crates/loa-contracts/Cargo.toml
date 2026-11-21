@@ -16,10 +16,5 @@ serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 
-[features]
-# Contract checks for adapter tests (DOM invariants, WatchedSink).
-testing = []
-
 [dev-dependencies]
-loa-contracts = { path = ".", features = ["testing"] }
 tempfile.workspace = true

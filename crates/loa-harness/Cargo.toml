@@ -1,0 +1,33 @@
+[package]
+name = "loa-harness"
+description = "Harness adapters on one protocol kit: omp, claude, codex, opencode, acp"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[features]
+default = ["omp", "claude", "codex", "opencode", "acp"]
+omp = ["dep:base64"]
+claude = []
+codex = []
+opencode = []
+acp = []
+# Test doubles: FakeProcess, WatchSink, check_dom, replay and round_trip.
+testing = []
+
+[dependencies]
+loa-util.workspace = true
+loa-core.workspace = true
+loa-contracts.workspace = true
+async-trait.workspace = true
+base64 = { version = "0.23", optional = true }
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+loa-harness = { path = ".", features = ["testing"] }
+base64 = "0.23"

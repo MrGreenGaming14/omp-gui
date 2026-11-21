@@ -3,8 +3,6 @@
 mod account;
 mod capabilities;
 mod host_tools;
-#[cfg(feature = "testing")]
-pub mod testing;
 
 pub use crate::availability::{Availability, AvailabilityStatus};
 pub use crate::tools::OutputBlock;

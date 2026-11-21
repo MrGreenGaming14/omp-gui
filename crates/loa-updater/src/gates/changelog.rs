@@ -2,11 +2,9 @@
 
 use super::{CheckResult, GateCheck};
 use semver::Version;
+use loa_contracts::Summarizer;
+use loa_harness::omp::OneShot;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
-use std::process::Stdio;
-use std::time::Duration;
-use tokio::process::Command;
 
 /// Changelog entries the reviewer flagged.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,16 +39,10 @@ pub trait ChangelogSummarizer: Send + Sync {
     async fn review(&self, changelog: &str) -> Result<ChangelogReview, String>;
 }
 
-/// Runs omp once in print mode on the `smol` model role (or another
-/// model), without tools, project context or a saved session, and parses
-/// its reply with [`parse_review`].
-#[derive(Clone, Debug)]
-pub struct OmpSmolSummarizer {
-    pub executable: PathBuf,
-    pub timeout: Duration,
-    /// `--model` selector: `@smol` for the role, or a concrete model.
-    pub model: String,
-}
+/// Reviews changelogs through a one-shot model call; the app uses omp's
+/// ([`OneShot`]) on the `smol` model role. The reply is parsed with
+/// [`parse_review`].
+pub struct SmolReviewer<S = OneShot>(pub S);
 
 const REVIEW_PROMPT: &str = "\
 You review a changelog for an app that drives this coding agent through its \
@@ -66,52 +58,10 @@ Changelog:
 
 ";
 
-/// Flags that keep a review from loading project context, skills, rules or
-/// language servers, or naming a session.
-const REVIEW_FLAGS: [&str; 5] =
-    ["--no-context-files", "--no-rules", "--no-skills", "--no-title", "--no-lsp"];
-
-impl OmpSmolSummarizer {
-    /// A reviewer on the `smol` model role.
-    pub fn new(executable: impl Into<PathBuf>, timeout: Duration) -> Self {
-        Self { executable: executable.into(), timeout, model: "@smol".to_owned() }
-    }
-
-    /// Arguments passed to omp for one review.
-    fn args(&self, changelog: &str) -> Vec<String> {
-        let mut args: Vec<String> =
-            ["-p", "--model", &self.model, "--no-session", "--no-tools"].map(String::from).into();
-        args.extend(REVIEW_FLAGS.map(String::from));
-        args.push(format!("{REVIEW_PROMPT}{changelog}"));
-        args
-    }
-}
-
 #[async_trait::async_trait]
-impl ChangelogSummarizer for OmpSmolSummarizer {
+impl<S: Summarizer> ChangelogSummarizer for SmolReviewer<S> {
     async fn review(&self, changelog: &str) -> Result<ChangelogReview, String> {
-        let child = loa_util::exec::retry_busy(|| {
-            Command::new(&self.executable)
-                .args(self.args(changelog))
-                .stdin(Stdio::null())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .kill_on_drop(true)
-                .spawn()
-        })
-        .map_err(|e| format!("cannot start {}: {e}", self.executable.display()))?;
-        // On timeout the future is dropped, which kills the child.
-        let output = tokio::time::timeout(self.timeout, child.wait_with_output())
-            .await
-            .map_err(|_| format!("no review within {:?}", self.timeout))?
-            .map_err(|e| format!("running {}: {e}", self.executable.display()))?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(format!("reviewer exited with {}: {}", output.status, stderr.trim()));
-        }
-        let stdout =
-            String::from_utf8(output.stdout).map_err(|_| "reviewer output is not UTF-8".to_string())?;
-        parse_review(&stdout)
+        parse_review(&self.0.summarize(REVIEW_PROMPT, changelog).await?)
     }
 }
 
@@ -179,39 +129,20 @@ mod tests {
         assert_eq!(r.details, vec!["- removed: drop `grep`"]);
     }
 
-    fn script(dir: &std::path::Path, body: &str) -> PathBuf {
-        let path = dir.join("omp");
-        loa_util::exec::write_executable(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-        path
+    struct Canned(&'static str);
+
+    #[async_trait::async_trait]
+    impl Summarizer for Canned {
+        async fn summarize(&self, instructions: &str, input: &str) -> Result<String, String> {
+            assert!(instructions.ends_with("Changelog:\n\n") && input.contains("- fix"));
+            Ok(self.0.to_owned())
+        }
     }
 
     #[tokio::test]
-    async fn smol_summarizer_parses_reply_and_passes_flags() {
-        let dir = tempfile::tempdir().unwrap();
-        let args_file = dir.path().join("args");
-        let exe = script(
-            dir.path(),
-            &format!(
-                "for a in \"$@\"; do printf '%s\\n' \"$a\"; done > '{}'\n\
-                 echo '{{\"breaking\": [\"edit: path renamed\"], \"removed\": []}}'",
-                args_file.display()
-            ),
-        );
-        let summarizer = OmpSmolSummarizer::new(exe, Duration::from_secs(10));
-        let review = summarizer.review("## 2.0.0\n\n- edit: path renamed").await.unwrap();
-        assert_eq!(review.breaking, vec!["edit: path renamed"]);
-
-        let args = std::fs::read_to_string(&args_file).unwrap();
-        let lines: Vec<&str> = args.lines().collect();
-        assert_eq!(&lines[..5], ["-p", "--model", "@smol", "--no-session", "--no-tools"]);
-        assert!(args.contains("- edit: path renamed"));
-    }
-
-    #[tokio::test]
-    async fn smol_summarizer_rejects_junk() {
-        let dir = tempfile::tempdir().unwrap();
-        let exe = script(dir.path(), "echo 'Sure! Nothing breaking here.'");
-        let summarizer = OmpSmolSummarizer::new(exe, Duration::from_secs(10));
-        assert!(summarizer.review("## 1.0.1\n\n- fix").await.is_err());
+    async fn smol_reviewer_parses_the_reply_and_rejects_junk() {
+        let review = SmolReviewer(Canned(r#"{"breaking": ["edit: path renamed"], "removed": []}"#));
+        assert_eq!(review.review("## 2.0.0\n\n- fix").await.unwrap().breaking, vec!["edit: path renamed"]);
+        assert!(SmolReviewer(Canned("Sure! Nothing breaking here.")).review("- fix").await.is_err());
     }
 }
