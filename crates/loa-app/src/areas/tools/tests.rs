@@ -575,7 +575,7 @@ fn remote_hosts_import_add_limit_and_remove_through_the_central_config() {
     assert!(rig.app.areas.tools.remote.service.hosts().get("bastion").is_none());
 
     // One palette command per host opens a shell on it.
-    rig.update(AppMessage::Palette(loa_ui_palette::Message::Open));
+    rig.update(AppMessage::Palette(loa_ui_shell::palette::Message::Open));
     assert!(rig.app.palette.commands().iter().any(|command| command.id.as_str() == "tools.shell.build"));
 }
 

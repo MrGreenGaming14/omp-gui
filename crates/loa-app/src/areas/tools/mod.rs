@@ -28,7 +28,7 @@ use loa_remote::http::RemoteHttp;
 use loa_remote::mcp::SERVER_NAME as REMOTE_SERVER;
 use loa_remote::ports::PromptQueue;
 use loa_remote::RemoteServiceConfig;
-use loa_ui_palette as palette;
+use loa_ui_shell::palette;
 use loa_ui_terminal as terminal;
 use loa_ui_tools as tools;
 

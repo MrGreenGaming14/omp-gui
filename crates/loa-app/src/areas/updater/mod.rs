@@ -24,7 +24,7 @@ use iced::widget::{container, text};
 use iced::{Element, Fill, Subscription, Task};
 use loa_contracts::harness::{Prompt, SessionConfig};
 use loa_bus::SessionId;
-use loa_ui_palette as palette;
+use loa_ui_shell::palette;
 use loa_ui_updates as updates;
 use loa_updater::peers::{self, PeerInfo, PeerStanding};
 use loa_updater::swap::SwapOutcome;

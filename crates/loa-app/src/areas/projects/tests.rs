@@ -249,7 +249,7 @@ fn project_tabs_list_activated_projects_and_the_shortcuts_switch_between_them() 
     assert_eq!(app.ctx.shell.open_projects(), ["alpha", "beta"], "both projects have a tab");
 
     // The palette toggle turns the strip on and saves it.
-    let toggle = loa_ui_palette::CommandId::new("project.tabs.toggle");
+    let toggle = loa_ui_shell::palette::CommandId::new("project.tabs.toggle");
     let task = app.command(&toggle);
     run(&mut app, task);
     assert!(app.ctx.shell.project_tabs());
@@ -258,13 +258,13 @@ fn project_tabs_list_activated_projects_and_the_shortcuts_switch_between_them() 
     // Next and previous switch the active project, wrapping around.
     open_from_sidebar(&mut app, "alpha");
     assert_eq!(app.ctx.services.project, "alpha");
-    let task = app.command(&loa_ui_palette::ids::PROJECT_TAB_NEXT);
+    let task = app.command(&loa_ui_shell::palette::ids::PROJECT_TAB_NEXT);
     run(&mut app, task);
     assert_eq!((app.ctx.services.project.as_str(), app.ctx.services.cwd.clone()), ("beta", b.clone()));
-    let task = app.command(&loa_ui_palette::ids::PROJECT_TAB_NEXT);
+    let task = app.command(&loa_ui_shell::palette::ids::PROJECT_TAB_NEXT);
     run(&mut app, task);
     assert_eq!(app.ctx.services.project, "alpha", "wraps to the first tab");
-    let task = app.command(&loa_ui_palette::ids::PROJECT_TAB_PREVIOUS);
+    let task = app.command(&loa_ui_shell::palette::ids::PROJECT_TAB_PREVIOUS);
     run(&mut app, task);
     assert_eq!(app.ctx.services.project, "beta");
 

@@ -15,7 +15,7 @@ use loa_contracts::harness::{
 use loa_core::{Dom, PatchSink};
 use loa_trust::NodeIdentity;
 use loa_ui_composer as composer;
-use loa_ui_palette as palette;
+use loa_ui_shell::palette;
 
 use super::{Message as HarnessMessage, TAB};
 use crate::app::{App, Message};

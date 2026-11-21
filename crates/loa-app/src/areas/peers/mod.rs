@@ -26,7 +26,7 @@ use loa_config::{NetworkSettings, Relay};
 use loa_trust::Resource;
 use adapter::{self as ui, Outcome};
 use loa_p2p::{Endpoint, LibrarySessions, Node, NodeConfig, NodeEvent, RelayConfig};
-use loa_ui_palette as palette;
+use loa_ui_shell::palette;
 use loa_ui_peers as peers;
 use loa_ui_shell::{NodeStatus, SessionSummary};
 

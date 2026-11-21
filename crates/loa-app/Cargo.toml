@@ -26,7 +26,6 @@ loa-ui-composer = { path = "../loa-ui-composer" }
 loa-ui-decisions = { path = "../loa-ui-decisions" }
 loa-ui-panel = { path = "../loa-ui-panel" }
 loa-ui-terminal = { path = "../loa-ui-terminal" }
-loa-ui-palette = { path = "../loa-ui-palette" }
 loa-ui-tools = { path = "../loa-ui-tools" }
 loa-ui-models = { path = "../loa-ui-models" }
 loa-models = { path = "../loa-models" }

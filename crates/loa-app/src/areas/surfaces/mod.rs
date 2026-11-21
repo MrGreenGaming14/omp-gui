@@ -19,7 +19,7 @@ use loa_bus::SessionId;
 use loa_core::{NodeId, PatchSink, TurnStatus, attr};
 use loa_contracts::surface::SurfaceUri;
 use loa_surface_hub::{CaptureMode, HubConfig, HubEvent, Listed, McpEndpoint, Opened, SurfaceHub, SurfaceTools, dom};
-use loa_ui_palette as palette;
+use loa_ui_shell::palette;
 use loa_ui_surface::{Available, BrowserStatus, Capture, CaptureStatus, DocsRenderers, Panel, PanelOptions, panel};
 use tokio::sync::broadcast::error::RecvError;
 
@@ -385,7 +385,7 @@ impl Area for State {
     }
 
     fn panel_tabs(&self) -> Vec<PanelTab> {
-        vec![PanelTab::new(TAB, "Surfaces", false)]
+        vec![PanelTab::new(TAB, "Surfaces", false).icon(loa_ui_kit::Icon::Globe)]
     }
 
     fn view_tab<'a>(&'a self, id: &str, _: &'a Ctx) -> Option<Element<'a, Message>> {

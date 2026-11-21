@@ -16,7 +16,7 @@ use loa_bus::SessionId;
 use loa_core::{Dom, ElementKind, Op, SessionMode, TurnStatus, attr};
 use loa_ui_chat as chat;
 use loa_ui_composer as composer;
-use loa_ui_palette as palette;
+use loa_ui_shell::palette;
 use loa_ui_panel::{diff, files};
 use loa_ui_shell as shell;
 use loa_ui_shell::theme::style;
@@ -226,7 +226,7 @@ impl App {
             services.set_active(active.name.clone(), active.cwd.clone());
         }
         let (shell, setup) =
-            shell::State::new(saved.appearance.clone(), shell::PanelPrefs { open: true, ..Default::default() });
+            shell::State::new(saved.appearance.clone());
         let theme = shell.theme();
         let mut composer = composer::State::new();
         let mut sessions = Sessions::default();
@@ -279,7 +279,7 @@ impl App {
             open_projects: Vec::new(),
             tabbed_sessions: HashSet::new(),
         };
-        let shown = app.tabs().into_iter().filter(|tab| tab.shown).map(|tab| shell::PanelTab::new(tab.id, tab.title)).collect();
+        let shown = app.tabs().into_iter().filter(|tab| tab.shown).map(|tab| shell::PanelTab::new(tab.id, tab.title, tab.icon)).collect();
         app.ctx.shell.set_tabs(shown);
         let folder = workspace(&app.ctx.services.cwd);
         app.ctx.composer.set_workspace(Some(folder));
@@ -309,7 +309,7 @@ impl App {
                 self.ctx.notify(format!("There is no {id} tab"));
                 return false;
             };
-            self.ctx.shell.add_tab(shell::PanelTab::new(tab.id, tab.title));
+            self.ctx.shell.add_tab(shell::PanelTab::new(tab.id, tab.title, tab.icon));
         }
         true
     }
@@ -968,40 +968,41 @@ impl App {
         }
         match message {
             Message::Shell(message) => {
+                use shell::sidebar::Event as Nav;
                 let (task, event) = self.ctx.shell.update(message);
-                if matches!(event, Some(shell::Event::NewSession | shell::Event::OpenSession(_) | shell::Event::OpenProject(_))) {
+                if matches!(event, Some(shell::Event::Sidebar(Nav::NewSession | Nav::OpenSession(_) | Nav::OpenProject(_)))) {
                     self.configs = None;
                     self.overlay = None;
                 }
                 let action = match event {
-                    Some(shell::Event::NewSession) => self.start(None),
-                    Some(shell::Event::OpenUsage) => {
+                    Some(shell::Event::Sidebar(Nav::NewSession)) => self.start(None),
+                    Some(shell::Event::Sidebar(Nav::OpenUsage)) => {
                         self.overlay = Some(windows::Overlay::Usage);
                         self.usage.refresh().map(Message::Usage)
                     }
-                    Some(shell::Event::OpenConfigs) => {
+                    Some(shell::Event::Sidebar(Nav::OpenConfigs)) => {
                         self.window_update(windows::WindowMessage::OpenConfigs(windows::ConfigsTab::Models))
                     }
-                    Some(shell::Event::OpenSettings) => {
+                    Some(shell::Event::Sidebar(Nav::OpenSettings)) => {
                         self.window_update(windows::WindowMessage::OpenSettings(windows::SettingsTab::General))
                     }
-                    Some(shell::Event::OpenTools) => self.update(Message::Tools(areas::tools::Message::Open)),
+                    Some(shell::Event::Sidebar(Nav::OpenTools)) => self.update(Message::Tools(areas::tools::Message::Open)),
                     Some(shell::Event::DetachTab(tab)) => self.detach(detach::Detached::Tab(tab)),
                     Some(shell::Event::ShowDetached(tab)) => self.show_detached_tab(&tab),
                     Some(shell::Event::ReattachTab(tab)) => self.reattach_tab(&tab),
-                    Some(shell::Event::OpenPeers) => {
+                    Some(shell::Event::Sidebar(Nav::OpenPeers)) => {
                         self.window_update(windows::WindowMessage::OpenSettings(windows::SettingsTab::Peers))
                     }
-                    Some(shell::Event::OpenUpdates) => self.update(Message::Updater(areas::updater::Message::Open)),
-                    Some(shell::Event::OpenSession(id)) if areas::peers::is_remote(&id) => {
+                    Some(shell::Event::Sidebar(Nav::OpenUpdates)) => self.update(Message::Updater(areas::updater::Message::Open)),
+                    Some(shell::Event::Sidebar(Nav::OpenSession(id))) if areas::peers::is_remote(&id) => {
                         self.update(Message::Peers(areas::peers::Message::OpenRecent(id)))
                     }
-                    Some(shell::Event::DeleteSession(id)) if areas::peers::is_remote(&id) => {
+                    Some(shell::Event::Sidebar(Nav::DeleteSession(id))) if areas::peers::is_remote(&id) => {
                         self.update(Message::Peers(areas::peers::Message::ForgetRecent(id)))
                     }
-                    Some(shell::Event::OpenSession(id)) => self.open_session(&id),
-                    Some(shell::Event::DeleteSession(id)) => self.update(Message::Sessions(areas::sessions::Message::Delete(id))),
-                    Some(shell::Event::OpenProject(project)) => {
+                    Some(shell::Event::Sidebar(Nav::OpenSession(id))) => self.open_session(&id),
+                    Some(shell::Event::Sidebar(Nav::DeleteSession(id))) => self.update(Message::Sessions(areas::sessions::Message::Delete(id))),
+                    Some(shell::Event::Sidebar(Nav::OpenProject(project))) => {
                         self.update(Message::Projects(areas::projects::Message::Open(project)))
                     }
                     Some(shell::Event::CloseProjectTab(project)) => {
@@ -1021,12 +1022,12 @@ impl App {
                         self.areas.decisions.set_theme(&active);
                         Task::none()
                     }
-                    Some(shell::Event::SetPinned { .. }) => {
+                    Some(shell::Event::Sidebar(Nav::SetPinned { .. })) => {
                         let pins = self.ctx.shell.sidebar().pins().clone();
                         self.save_ui(|config| config.pinned = pins);
                         Task::none()
                     }
-                    Some(shell::Event::SetProjectPinned { .. }) => {
+                    Some(shell::Event::Sidebar(Nav::SetProjectPinned { .. })) => {
                         let pins = self.ctx.shell.sidebar().pinned_projects().clone();
                         self.save_ui(|config| config.pinned_projects = pins);
                         Task::none()

@@ -15,7 +15,7 @@ use loa_core::{
 };
 use loa_trust::NodeIdentity;
 use loa_ui_composer as composer;
-use loa_ui_palette as palette;
+use loa_ui_shell::palette;
 use loa_ui_panel::{agents, session_tree};
 use loa_ui_shell as shell;
 

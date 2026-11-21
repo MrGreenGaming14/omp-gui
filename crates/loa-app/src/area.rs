@@ -25,7 +25,7 @@ use iced::{Element, Subscription, Task};
 use loa_contracts::harness::{Capabilities, HarnessSession, HostToolSpec, HostTools, Prompt, SessionConfig};
 use loa_bus::SessionId;
 use loa_ui_composer as composer;
-use loa_ui_palette as palette;
+use loa_ui_shell::palette;
 use loa_ui_shell as shell;
 
 use crate::services::Services;
@@ -95,6 +95,7 @@ pub struct PanelTab {
     /// `terminal`.
     pub id: String,
     pub title: String,
+    pub icon: Option<loa_ui_kit::Icon>,
     /// Listed in the panel from the start. Other tabs are added when opened
     /// (palette "Open … tab" or [`Ctx::open_tab`]).
     pub shown: bool,
@@ -102,7 +103,16 @@ pub struct PanelTab {
 
 impl PanelTab {
     pub fn new(id: impl Into<String>, title: impl Into<String>, shown: bool) -> Self {
-        Self { id: id.into(), title: title.into(), shown }
+        Self { id: id.into(), title: title.into(), icon: None, shown }
+    }
+
+    /// The tab of a kit pane, named and drawn as the pane says.
+    pub fn of<P: loa_ui_kit::widgets::PanelPane>(pane: &P, shown: bool) -> Self {
+        Self { icon: Some(pane.icon()), ..Self::new(pane.id(), pane.title(), shown) }
+    }
+
+    pub fn icon(self, icon: loa_ui_kit::Icon) -> Self {
+        Self { icon: Some(icon), ..self }
     }
 }
 

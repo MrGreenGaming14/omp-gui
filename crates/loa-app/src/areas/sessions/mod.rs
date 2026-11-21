@@ -45,7 +45,7 @@ use loa_models::login::UrlOpener;
 use loa_models::opener::SystemUrlOpener;
 use loa_ui_chat as chat;
 use loa_ui_composer as composer;
-use loa_ui_palette as palette;
+use loa_ui_shell::palette;
 use loa_ui_panel::{agents, session_tree};
 use loa_ui_shell::SessionSummary;
 

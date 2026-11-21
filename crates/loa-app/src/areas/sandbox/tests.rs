@@ -11,7 +11,7 @@ use loa_contracts::harness::{Adapter, AdapterError, Answer, Capabilities, Harnes
 use loa_core::{Dom, Draft, ElementKind, NodeId, PatchSink, Role, TurnStatus, Value, now_ms};
 use loa_trust::NodeIdentity;
 use loa_sandbox::provider::local::find_stub;
-use loa_ui_palette as palette;
+use loa_ui_shell::palette;
 use loa_ui_tools::DetailState;
 
 use super::{Field, Message, TAB, View};

@@ -4704,7 +4704,6 @@ dependencies = [
  "loa-ui-decisions",
  "loa-ui-kit",
  "loa-ui-models",
- "loa-ui-palette",
  "loa-ui-panel",
  "loa-ui-peers",
  "loa-ui-projects",
@@ -5175,16 +5174,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "loa-ui-palette"
-version = "0.1.0"
-dependencies = [
- "iced",
- "iced_test",
- "loa-ui-kit",
- "thiserror 2.0.21",
-]
-
-[[package]]
 name = "loa-ui-panel"
 version = "0.1.0"
 dependencies = [
@@ -5225,8 +5214,6 @@ dependencies = [
  "iced_test",
  "loa-core",
  "loa-ui-kit",
- "png 0.18.1",
- "tempfile",
 ]
 
 [[package]]

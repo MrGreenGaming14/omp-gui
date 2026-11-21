@@ -24,7 +24,7 @@ use loa_ui_models::screen::{self, Page};
 use loa_ui_models::settings::{self, ModelSettings, ValidationError};
 use loa_ui_models::signin::{self, LoginUpdate, ProviderEntry, ProviderKey};
 use loa_ui_models::{ModelInfo, ModelRef, RoleAssignment, SessionModel};
-use loa_ui_palette as palette;
+use loa_ui_shell::palette;
 
 use crate::area::{Area, AreaId, Ctx, Session, SessionEvent, Target};
 

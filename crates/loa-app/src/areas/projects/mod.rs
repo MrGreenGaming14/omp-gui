@@ -24,7 +24,7 @@ use loa_projects::{
     FileSettingsStore, LiveSessions, LocalOnly, OmpSummarizer, ProjectOverview, ProjectService, ProjectSettings,
     ProjectSummary, RebuildOutcome, ServiceConfig, Summarizers,
 };
-use loa_ui_palette as palette;
+use loa_ui_shell::palette;
 use loa_ui_projects as screen;
 use tokio::sync::mpsc::UnboundedReceiver;
 
