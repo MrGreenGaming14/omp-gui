@@ -49,7 +49,7 @@ Everything else builds on these three. Their existing public items change only w
 | --- | --- |
 | `loa-view` | The stable, versioned presentation API (`loa_view::VERSION`, snapshot in `crates/loa-view/api.txt`). One module per screen family: `theme` (`Appearance`, `ThemeRef`, `Icon`), `settings::{models, projects, peers, updates, agents}`, `session`, `shell`, `panel`, `terminal`, `surface`. Each holds plain view models (`Clone + Debug + PartialEq`, public fields), the screen's `Intent` (what the UI emits to the app) and, under `port`, the traits the UI needs and the app implements (decoders, document renderer, PTY, file system, notifier, surface transport). Foundation values the UI needs as they are (`Prompt`, `Answer`, `SessionSummary`, surface protocol values, …) are re-exported from the matching module. Depends only on `loa-util`, `loa-core` and `loa-contracts` |
 
-Transcript `*.golden` fixtures and `loa-view/api.txt` are byte-exact LF files on every platform, enforced by `.gitattributes`; Windows checkout conversion must not change their contents.
+Transcript `*.golden` files and `loa-view/api.txt` use LF on every platform. Recorded inputs and sidecars under `loa-harness/fixtures` retain their exact committed bytes: native import/export preserves raw JSONL and file contents. `.gitattributes` prevents Windows checkout conversion from changing these fixtures.
 
 ### UI
 

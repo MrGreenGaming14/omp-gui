@@ -1,3 +1,5 @@
 # Byte-exact transcript fixtures and the versioned API listing use LF on every OS.
 *.golden text eol=lf
 /crates/loa-view/api.txt text eol=lf
+# Native transcript imports preserve source bytes, including raw JSONL and sidecars.
+/crates/loa-harness/fixtures/** -text
