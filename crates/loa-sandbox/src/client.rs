@@ -1,6 +1,6 @@
 //! The host side of the stub protocol.
 
-use crate::proto::{self, Command, DirEntry, ExecRequest, ExitStatus, Metadata, Request, Response};
+use crate::proto::{self, DirEntry, ExecRequest, ExitStatus, Request, Response};
 use crate::provider::Channel;
 use crate::{Result, SandboxError};
 use loa_util::LockExt;
@@ -27,52 +27,6 @@ pub struct ExecOutput {
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
     pub status: ExitStatus,
-}
-
-/// Output of a running command, as it arrives.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ExecEvent {
-    Stdout(Vec<u8>),
-    Stderr(Vec<u8>),
-    Exit(ExitStatus),
-}
-
-/// A command started with [`StubClient::spawn`].
-pub struct ExecHandle {
-    pub id: u32,
-    rx: mpsc::UnboundedReceiver<Response>,
-    exited: bool,
-}
-
-impl ExecHandle {
-    /// The next chunk of output, then the exit status, then `None`.
-    pub async fn next(&mut self) -> Result<Option<ExecEvent>> {
-        if self.exited {
-            return Ok(None);
-        }
-        Ok(Some(match self.rx.recv().await.ok_or(SandboxError::Disconnected)? {
-            Response::Stdout { data, .. } => ExecEvent::Stdout(data),
-            Response::Stderr { data, .. } => ExecEvent::Stderr(data),
-            Response::Exit { status, .. } => {
-                self.exited = true;
-                ExecEvent::Exit(status)
-            }
-            other => return Err(refused(other)),
-        }))
-    }
-
-    /// Collects the rest of the output.
-    pub async fn wait(mut self) -> Result<ExecOutput> {
-        let mut out = ExecOutput::default();
-        while let Some(event) = self.next().await? {
-            match event {
-                ExecEvent::Stdout(data) => out.stdout.extend(data),
-                ExecEvent::Stderr(data) => out.stderr.extend(data),
-                ExecEvent::Exit(status) => out.status = status,
-            }
-        }
-        Ok(out)
-    }
 }
 
 /// The error for an answer that isn't the one asked for.
@@ -103,39 +57,32 @@ impl StubClient {
     }
 
     /// Registers a route for a new id, then sends the request made with it.
-    async fn call(&self, make: impl FnOnce(u32) -> Request) -> Result<(u32, mpsc::UnboundedReceiver<Response>)> {
+    async fn call(&self, make: impl FnOnce(u32) -> Request) -> Result<mpsc::UnboundedReceiver<Response>> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = mpsc::unbounded_channel();
         self.routes.locked().as_mut().ok_or(SandboxError::Disconnected)?.insert(id, tx);
         self.send(&make(id)).await?;
-        Ok((id, rx))
+        Ok(rx)
     }
 
     /// Sends a request and picks the value out of its one answer.
     async fn request<T>(&self, make: impl FnOnce(u32) -> Request, pick: fn(Response) -> Result<T, Response>) -> Result<T> {
-        let (_, mut rx) = self.call(make).await?;
+        let mut rx = self.call(make).await?;
         pick(rx.recv().await.ok_or(SandboxError::Disconnected)?).map_err(refused)
     }
 
-    /// Starts a command and returns its output stream.
-    pub async fn spawn(&self, exec: ExecRequest) -> Result<ExecHandle> {
-        let (id, rx) = self.call(|id| Request::Exec { id, exec }).await?;
-        Ok(ExecHandle { id, rx, exited: false })
-    }
-
-    /// Runs a command to the end.
+    /// Runs a command to the end, collecting its output.
     pub async fn exec(&self, exec: ExecRequest) -> Result<ExecOutput> {
-        self.spawn(exec).await?.wait().await
-    }
-
-    /// Runs a shell script in the stub root.
-    pub async fn sh(&self, script: &str, timeout_ms: Option<u64>) -> Result<ExecOutput> {
-        self.exec(ExecRequest { timeout_ms, ..ExecRequest::new(Command::Shell(script.to_owned())) }).await
-    }
-
-    /// Kills a command started with [`StubClient::spawn`].
-    pub async fn kill(&self, exec_id: u32) -> Result<()> {
-        self.send(&Request::Kill { id: exec_id }).await
+        let mut rx = self.call(|id| Request::Exec { id, exec }).await?;
+        let mut out = ExecOutput::default();
+        loop {
+            match rx.recv().await.ok_or(SandboxError::Disconnected)? {
+                Response::Stdout { data, .. } => out.stdout.extend(data),
+                Response::Stderr { data, .. } => out.stderr.extend(data),
+                Response::Exit { status, .. } => return Ok(ExecOutput { status, ..out }),
+                other => return Err(refused(other)),
+            }
+        }
     }
 
     pub async fn read_file(&self, path: &str, limit: Option<u64>) -> Result<Vec<u8>> {
@@ -143,20 +90,14 @@ impl StubClient {
         self.request(|id| Request::ReadFile { id, path, limit }, |r| if let Response::Data { data, .. } = r { Ok(data) } else { Err(r) }).await
     }
 
-    pub async fn write_file(&self, path: &str, data: Vec<u8>, mode: Option<u32>) -> Result<()> {
+    pub async fn write_file(&self, path: &str, data: Vec<u8>) -> Result<()> {
         let path = path.to_owned();
-        self.request(|id| Request::WriteFile { id, path, data, mode }, |r| if let Response::Done { .. } = r { Ok(()) } else { Err(r) }).await
+        self.request(|id| Request::WriteFile { id, path, data }, |r| if let Response::Done { .. } = r { Ok(()) } else { Err(r) }).await
     }
 
     pub async fn list_dir(&self, path: &str) -> Result<Vec<DirEntry>> {
         let path = path.to_owned();
         self.request(|id| Request::ListDir { id, path }, |r| if let Response::Entries { entries, .. } = r { Ok(entries) } else { Err(r) }).await
-    }
-
-    /// `None` when `path` doesn't exist.
-    pub async fn stat(&self, path: &str) -> Result<Option<Metadata>> {
-        let path = path.to_owned();
-        self.request(|id| Request::Stat { id, path }, |r| if let Response::Stat { meta, .. } = r { Ok(meta) } else { Err(r) }).await
     }
 
     /// Asks the stub to kill its commands and exit.

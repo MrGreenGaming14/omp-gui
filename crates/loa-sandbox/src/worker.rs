@@ -185,7 +185,7 @@ impl Tool for SandboxWrite {
     fn description(&self) -> &str { "Writes a file in the sandbox workspace, creating parent directories." }
     async fn run(&self, _: &CallCtx, args: WriteArgs) -> Result<ToolOutput, String> {
         let len = args.content.len();
-        self.0.write_file(&args.path, args.content.into_bytes(), None).await.map_err(failed)?;
+        self.0.write_file(&args.path, args.content.into_bytes()).await.map_err(failed)?;
         Ok(ToolOutput::text(format!("wrote {len} bytes to {}", args.path)))
     }
 }
@@ -199,8 +199,8 @@ impl Tool for SandboxList {
         let entries = self.0.list_dir(args.path.as_deref().unwrap_or(".")).await.map_err(failed)?;
         let mut text = String::new();
         for entry in entries {
-            let suffix = match entry.meta.kind { FileKind::Dir => "/", FileKind::Symlink => "@", _ => "" };
-            let _ = writeln!(text, "{}{suffix}\t{}", entry.name, entry.meta.size);
+            let suffix = match entry.kind { FileKind::Dir => "/", FileKind::Symlink => "@", _ => "" };
+            let _ = writeln!(text, "{}{suffix}\t{}", entry.name, entry.size);
         }
         Ok(ToolOutput::text(text))
     }

@@ -1,24 +1,23 @@
 //! Thin exec stub that runs inside a sandbox.
 //!
 //! Speaks [`loa_sandbox::proto`] on stdin and stdout: runs commands, reads,
-//! writes, lists and stats files under its root directory. It holds no
+//! writes and lists files under its root directory. It holds no
 //! secrets and opens no connections; the environment it was started with is
 //! all its commands see.
 //!
 //! Usage: `loa-sandbox-stub [ROOT]`. `ROOT` defaults to the current directory.
 
-use loa_sandbox::proto::{self, Command, DirEntry, ExecRequest, ExitStatus, FileKind, Metadata, Request, Response};
+use loa_sandbox::proto::{self, Command, DirEntry, ExecRequest, ExitStatus, FileKind, Request, Response};
 use loa_util::LockExt;
 use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Read, Write};
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{self as sys, Child, Stdio};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 /// Output chunk size for command stdout and stderr.
 const CHUNK: usize = 32 * 1024;
@@ -70,27 +69,16 @@ impl Stub {
                     self.out.send(&Response::Error { id, message: format!("spawn: {e}") });
                 }
             }
-            Request::Kill { id } => {
-                if let Some(pgid) = self.running.locked().get(&id) {
-                    kill_group(*pgid);
-                }
-            }
             Request::ReadFile { id, path, limit } => {
                 self.out.reply(id, &path, read_file(&at(&path), limit), |data| Response::Data { id, data });
             }
-            Request::WriteFile { id, path, data, mode } => {
-                self.out.reply(id, &path, write_file(&at(&path), &data, mode), |()| Response::Done { id });
+            Request::WriteFile { id, path, data } => {
+                let path_buf = at(&path);
+                let written = path_buf.parent().map_or(Ok(()), fs::create_dir_all).and_then(|()| fs::write(&path_buf, &data));
+                self.out.reply(id, &path, written, |()| Response::Done { id });
             }
             Request::ListDir { id, path } => {
                 self.out.reply(id, &path, list_dir(&at(&path)), |entries| Response::Entries { id, entries });
-            }
-            Request::Stat { id, path } => {
-                let meta = match fs::symlink_metadata(at(&path)) {
-                    Ok(meta) => Ok(Some(metadata(&meta))),
-                    Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
-                    Err(e) => Err(e),
-                };
-                self.out.reply(id, &path, meta, |meta| Response::Stat { id, meta });
             }
             Request::Shutdown => return false,
         }
@@ -192,36 +180,18 @@ fn read_file(path: &Path, limit: Option<u64>) -> io::Result<Vec<u8>> {
     Ok(data)
 }
 
-fn write_file(path: &Path, data: &[u8], mode: Option<u32>) -> io::Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(path, data)?;
-    mode.map_or(Ok(()), |mode| fs::set_permissions(path, fs::Permissions::from_mode(mode)))
-}
-
+/// Entries sorted by name; symlinks are not followed.
 fn list_dir(path: &Path) -> io::Result<Vec<DirEntry>> {
     let mut entries = fs::read_dir(path)?
         .map(|entry| {
             let entry = entry?;
-            Ok(DirEntry { name: entry.file_name().to_string_lossy().into_owned(), meta: metadata(&entry.metadata()?) })
+            let t = entry.file_type()?;
+            let kind = if t.is_symlink() { FileKind::Symlink } else if t.is_dir() { FileKind::Dir } else if t.is_file() { FileKind::File } else { FileKind::Other };
+            Ok(DirEntry { name: entry.file_name().to_string_lossy().into_owned(), kind, size: entry.metadata()?.len() })
         })
         .collect::<io::Result<Vec<_>>>()?;
     entries.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(entries)
-}
-
-fn metadata(meta: &fs::Metadata) -> Metadata {
-    let ft = meta.file_type();
-    let kind = match () {
-        () if ft.is_symlink() => FileKind::Symlink,
-        () if ft.is_dir() => FileKind::Dir,
-        () if ft.is_file() => FileKind::File,
-        () => FileKind::Other,
-    };
-    let since = meta.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok());
-    let mtime_ms = since.map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
-    Metadata { kind, size: meta.len(), mode: meta.mode() & 0o7777, mtime_ms }
 }
 
 fn main() {

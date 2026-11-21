@@ -5,9 +5,9 @@
 use async_trait::async_trait;
 use loa_contracts::harness::{Adapter, AdapterError, Answer, Capabilities, HarnessSession, HostTools, Prompt, Result, SessionConfig, SessionState};
 use loa_core::{Dom, Draft, ElementKind, NodeId, PatchSink, SessionMode, Value, attr};
-use loa_sandbox::client::{ExecEvent, StubClient};
+use loa_sandbox::client::StubClient;
 use loa_sandbox::isolation::{apply_patch, patch_files};
-use loa_sandbox::proto::{Command, ExecRequest, FileKind};
+use loa_sandbox::proto::{Command, DirEntry, ExecRequest, FileKind};
 use loa_sandbox::provider::local::LocalProvider;
 use loa_sandbox::provider::{Sandbox, SandboxProvider, SandboxSpec};
 use loa_sandbox::tool::{SandboxTask, SandboxTaskArgs};
@@ -154,23 +154,14 @@ async fn the_stub_streams_output_and_reports_the_exit_status() {
     let root = tempfile::tempdir().unwrap();
     let (client, sandbox) = connect(root.path()).await;
     let script = "printf out; printf err >&2; exit 7";
-    let mut command = client.spawn(ExecRequest::new(Command::Argv(vec!["/bin/sh".into(), "-c".into(), script.into()]))).await.unwrap();
-    let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
-    let status = loop {
-        match command.next().await.unwrap().unwrap() {
-            ExecEvent::Stdout(bytes) => stdout.extend(bytes),
-            ExecEvent::Stderr(bytes) => stderr.extend(bytes),
-            ExecEvent::Exit(status) => break status,
-        }
-    };
-    assert_eq!((stdout.as_slice(), stderr.as_slice(), status.code), (&b"out"[..], &b"err"[..], Some(7)));
+    let output = client.exec(ExecRequest::new(Command::Argv(vec!["/bin/sh".into(), "-c".into(), script.into()]))).await.unwrap();
+    assert_eq!((output.stdout.as_slice(), output.stderr.as_slice(), output.status.code), (&b"out"[..], &b"err"[..], Some(7)));
 
-    client.write_file("nested/data.txt", b"abc".to_vec(), Some(0o600)).await.unwrap();
-    assert_eq!(client.read_file("nested/data.txt", None).await.unwrap(), b"abc");
+    client.write_file("nested/data.txt", b"abc".to_vec()).await.unwrap();
+    assert_eq!(client.read_file("nested/data.txt", Some(2)).await.unwrap(), b"ab");
     let entries = client.list_dir("nested").await.unwrap();
-    assert_eq!(entries.iter().map(|entry| entry.name.as_str()).collect::<Vec<_>>(), ["data.txt"]);
-    assert_eq!(client.stat("nested/data.txt").await.unwrap().unwrap().kind, FileKind::File);
-    assert!(client.stat("nested/missing").await.unwrap().is_none());
+    assert_eq!(entries, [DirEntry { name: "data.txt".into(), kind: FileKind::File, size: 3 }]);
+    assert!(client.read_file("nested/missing", None).await.is_err());
 
     let output = client.exec(ExecRequest { timeout_ms: Some(30), ..ExecRequest::new(Command::Shell("while :; do :; done".into())) }).await.unwrap();
     assert!(output.status.timed_out && !output.status.success());
@@ -187,7 +178,7 @@ async fn copied_workspaces_go_in_and_come_back_without_git_data() {
     let (client, sandbox) = connect(root.path()).await;
     loa_sandbox::sync::copy_in(&client, workspace.path()).await.unwrap();
     assert!(!root.path().join(".git").exists() && root.path().join("kept.txt").exists());
-    client.sh("rm gone.txt && mkdir new && echo new > new/file", None).await.unwrap();
+    client.exec(ExecRequest::new(Command::Shell("rm gone.txt && mkdir new && echo new > new/file".into()))).await.unwrap();
     loa_sandbox::sync::copy_out(&client, workspace.path()).await.unwrap();
     let mut names: Vec<_> = std::fs::read_dir(workspace.path()).unwrap().map(|entry| entry.unwrap().file_name()).collect();
     names.sort();

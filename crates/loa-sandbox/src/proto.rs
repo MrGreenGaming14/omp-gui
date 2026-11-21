@@ -47,16 +47,12 @@ impl ExecRequest {
 pub enum Request {
     /// Answered by `Stdout`/`Stderr` chunks, then `Exit`.
     Exec { id: u32, exec: ExecRequest },
-    /// Kills the process group of the running exec `id`. Its `Exit` follows.
-    Kill { id: u32 },
     /// Reads at most `limit` bytes. Answered by `Data`.
     ReadFile { id: u32, path: String, limit: Option<u64> },
     /// Creates parent directories. Answered by `Done`.
-    WriteFile { id: u32, path: String, data: Vec<u8>, mode: Option<u32> },
+    WriteFile { id: u32, path: String, data: Vec<u8> },
     /// Answered by `Entries`.
     ListDir { id: u32, path: String },
-    /// Answered by `Stat`, without following a final symlink.
-    Stat { id: u32, path: String },
     /// Kills every running exec and ends the stub.
     Shutdown,
 }
@@ -70,18 +66,10 @@ pub enum FileKind {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Metadata {
-    pub kind: FileKind,
-    pub size: u64,
-    /// Unix permission bits.
-    pub mode: u32,
-    pub mtime_ms: i64,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DirEntry {
     pub name: String,
-    pub meta: Metadata,
+    pub kind: FileKind,
+    pub size: u64,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -109,8 +97,6 @@ pub enum Response {
     Data { id: u32, data: Vec<u8> },
     Done { id: u32 },
     Entries { id: u32, entries: Vec<DirEntry> },
-    /// `None` when the path doesn't exist.
-    Stat { id: u32, meta: Option<Metadata> },
     Error { id: u32, message: String },
 }
 
@@ -120,8 +106,7 @@ impl Response {
         use Response::*;
         match self {
             Ready { .. } => None,
-            Stdout { id, .. } | Stderr { id, .. } | Exit { id, .. } | Data { id, .. } | Done { id } | Entries { id, .. }
-            | Stat { id, .. } | Error { id, .. } => Some(*id),
+            Stdout { id, .. } | Stderr { id, .. } | Exit { id, .. } | Data { id, .. } | Done { id } | Entries { id, .. } | Error { id, .. } => Some(*id),
         }
     }
 }
