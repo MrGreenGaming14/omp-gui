@@ -1,696 +1,238 @@
-use super::*;
-use iced::widget::text;
-use iced_test::simulator;
-use loa_core::{Draft, Value};
+use crate::transcript::*;
+use iced::widget::{markdown, text};
+use iced::{Element, Theme};
+use loa_core::{Attrs, Dom, Draft, ElementKind as K, NodeId, Value, attrs};
 
 /// A session DOM and a transcript fed every patch committed to it.
-struct Session {
+struct S {
     dom: Dom,
     chat: State,
     session: NodeId,
 }
 
-impl Session {
+impl S {
     fn new() -> Self {
-        let mut dom = Dom::new();
-        let mut chat = State::new(&Theme::Dark);
-        let attrs: [(&str, Value); 4] = [
-            ("id", "s1".into()),
-            ("harness", "omp".into()),
-            ("node", "n1".into()),
-            ("created", Value::Int(0)),
-        ];
-        let patch = dom
-            .commit(
-                Draft::insert(NodeId::DOCUMENT, ElementKind::Session, attrs, ""),
-                0,
-            )
-            .unwrap();
-        chat.apply(&patch, &dom);
-        Self {
-            dom,
-            chat,
-            session: patch.node,
-        }
+        let mut s = Self { dom: Dom::new(), chat: State::new(&Theme::Dark), session: NodeId::DOCUMENT };
+        s.session = s.add(NodeId::DOCUMENT, K::Session, attrs! { ID: "s1", HARNESS: "omp", NODE: "n1", CREATED: 0i64 }, "");
+        s
     }
-
     fn commit(&mut self, draft: Draft) -> NodeId {
         let patch = self.dom.commit(draft, 0).unwrap();
         self.chat.apply(&patch, &self.dom);
         patch.node
     }
-
-    fn insert(
-        &mut self,
-        parent: NodeId,
-        kind: ElementKind,
-        attrs: &[(&str, Value)],
-        text: &str,
-    ) -> NodeId {
-        self.commit(Draft::insert(parent, kind, attrs.iter().cloned(), text))
-    }
-
-    fn turn(&mut self) -> NodeId {
-        self.insert(
-            self.session,
-            ElementKind::Turn,
-            &[("status", "running".into())],
-            "",
-        )
-    }
-
-    fn user(&mut self, turn: NodeId, text: &str) -> NodeId {
-        self.insert(turn, ElementKind::Message, &[("role", "user".into())], text)
-    }
-
-    fn call(
-        &mut self,
-        turn: NodeId,
-        tool: &str,
-        started: i64,
-        ended: i64,
-        input: &str,
-        result: &str,
-    ) -> NodeId {
-        let attrs = [
-            ("tool", Value::from(tool)),
-            ("status", "done".into()),
-            ("started", Value::Int(started)),
-            ("ended", Value::Int(ended)),
-        ];
-        let call = self.insert(turn, ElementKind::Call, &attrs, "");
-        self.insert(call, ElementKind::Input, &[], input);
-        self.insert(call, ElementKind::Result, &[], result);
+    fn add(&mut self, parent: NodeId, kind: K, attrs: Attrs, text: &str) -> NodeId { self.commit(Draft::insert(parent, kind, attrs, text)) }
+    fn turn(&mut self) -> NodeId { self.add(self.session, K::Turn, attrs! {}, "") }
+    fn msg(&mut self, turn: NodeId, role: &str, text: &str) -> NodeId { self.add(turn, K::Message, attrs! { ROLE: role }, text) }
+    fn call(&mut self, turn: NodeId, tool: &str, span: (i64, i64), result: &str) -> NodeId {
+        let call = self.add(turn, K::Call, attrs! { TOOL: tool, STATUS: "done", STARTED: span.0, ENDED: span.1 }, "");
+        self.add(call, K::Input, attrs! {}, "{}");
+        self.add(call, K::Result, attrs! {}, result);
         call
     }
-
-    fn rows(&self) -> Vec<(ItemKind, NodeId, Vec<NodeId>)> {
-        self.chat
-            .items
-            .iter()
-            .map(|i| (i.kind, i.key, i.calls.clone()))
-            .collect()
-    }
-
-    /// Messages a click on the text `label` produces.
-    fn click(&self, label: &str) -> Vec<Message> {
-        let mut ui = simulator(self.view());
-        ui.click(label)
-            .unwrap_or_else(|e| panic!("click {label:?}: {e}"));
-        ui.into_messages().collect()
-    }
-
-    fn shows(&self, label: &str) -> bool {
-        simulator(self.view()).find(label).is_ok()
-    }
-
-    fn view(&self) -> Element<'_, Message> {
-        self.chat.view(
-            &self.dom,
-            |m| m,
-            |slot| text(format!("card for {}", slot.node)).into(),
-        )
-    }
-
-    fn send(&mut self, message: Message) -> Option<Event> {
-        self.chat.update(message).1
+    fn view(&self) -> Element<'_, Message> { self.chat.view(&self.dom, |m| m, |slot| text(format!("card for {}", slot.node)).into()) }
+    fn shows(&self, label: &str) -> bool { iced_test::simulator(self.view()).find(label).is_ok() }
+    fn send(&mut self, m: Message) -> Option<Event> { self.chat.update(m).1 }
+    fn scroll(&mut self, offset: f32, viewport: f32) {
+        let content = self.chat.heights.total() as f32;
+        self.send(Message::Scrolled(ScrollMetrics { offset, viewport, content }));
     }
 }
 
-// #55 Streaming markdown with incremental parsing
-
-#[test]
-fn streaming_feeds_each_chunk_to_the_parser_once() {
-    let mut s = Session::new();
-    let turn = s.turn();
-    s.user(turn, "explain");
-    let reply = s.insert(
-        turn,
-        ElementKind::Message,
-        &[("role", "assistant".into())],
-        "",
-    );
-    let mut full = String::new();
-    for i in 0..400 {
-        let chunk = match i % 4 {
-            0 => format!("## Part {i}\n\n"),
-            1 => format!("Some **bold {i}** and `code` "),
-            2 => "- item one\n- item two\n\n".to_owned(),
-            _ => "```rust\nfn main() {}\n```\n\n".to_owned(),
-        };
-        full.push_str(&chunk);
-        s.commit(Draft::append(reply, chunk));
-        if i == 200 {
-            // A structural change elsewhere in the same turn rebuilds the
-            // turn's rows; the reply must keep its parse.
-            s.commit(Draft::insert_at(
-                turn,
-                0,
-                ElementKind::Ext,
-                [("harness", Value::from("omp"))],
-                "x",
-            ));
-        }
-    }
-    let streamed = &s.chat.streamed[&reply];
-    // Re-parsing the whole message per token would feed ~N²/2 bytes.
-    assert_eq!(streamed.fed(), full.len());
-    let whole = markdown::Content::parse(&crate::stream::hard_breaks(&full));
-    assert_eq!(
-        format!("{:?}", streamed.items()),
-        format!("{:?}", whole.items())
-    );
-}
-
-#[test]
-fn replacing_a_message_text_reparses_it() {
-    let mut s = Session::new();
-    let turn = s.turn();
-    let reply = s.insert(
-        turn,
-        ElementKind::Message,
-        &[("role", "assistant".into())],
-        "first draft",
-    );
-    s.commit(Draft::set_text(reply, "# Final"));
-    let streamed = &s.chat.streamed[&reply];
-    assert_eq!(streamed.fed(), "# Final".len());
-    assert!(matches!(streamed.items(), [markdown::Item::Heading(..)]));
-}
-
-#[test]
-fn thinking_is_collapsed_until_clicked() {
-    let mut s = Session::new();
-    let turn = s.turn();
-    let thought = s.insert(
-        turn,
-        ElementKind::Message,
-        &[
-            ("role", "assistant".into()),
-            ("kind", "thinking".into()),
-            ("status", "done".into()),
-        ],
-        "weighing the options",
-    );
-    assert!(s.shows("Thought"));
-    assert!(!s.shows("weighing the options"));
-    assert_eq!(s.click("Thought"), vec![Message::Toggle(thought)]);
-    s.send(Message::Toggle(thought));
-    assert!(s.shows("weighing the options"));
-}
-
-// #56 Collapsed tool rows that expand on click
-
-#[test]
-fn consecutive_reads_collapse_into_one_row_that_expands_on_click() {
-    let mut s = Session::new();
-    let turn = s.turn();
-    let a = s.call(
-        turn,
-        "read",
-        1_000,
-        4_000,
-        r#"{"path":"a.rs"}"#,
-        "fn a() {}",
-    );
-    let b = s.call(
-        turn,
-        "read",
-        2_000,
-        9_000,
-        r#"{"path":"b.rs"}"#,
-        "fn b() {}",
-    );
-    let c = s.call(
-        turn,
-        "read",
-        3_000,
-        13_000,
-        r#"{"path":"c.rs"}"#,
-        "fn c() {}",
-    );
-    assert_eq!(s.rows(), vec![(ItemKind::Calls, a, vec![a, b, c])]);
-    assert!(s.shows("Read 3 files"));
-    assert!(s.shows("12s"));
-    assert!(!s.shows("fn b() {}"));
-
-    let clicked = s.click("Read 3 files");
-    assert_eq!(clicked, vec![Message::Toggle(a)]);
-    s.send(Message::Toggle(a));
-    assert!(s.shows(r#"{"path":"b.rs"}"#));
-    assert!(s.shows("fn b() {}"));
-
-    s.send(Message::Toggle(a));
-    assert!(!s.shows("fn b() {}"));
-}
-
-#[test]
-fn a_failed_call_is_marked_on_the_collapsed_row_and_in_its_details() {
-    let mut s = Session::new();
-    let turn = s.turn();
-    let call = s.insert(
-        turn,
-        ElementKind::Call,
-        &[("tool", "bash".into()), ("title", "cargo test".into())],
-        "",
-    );
-    s.commit(Draft::insert(
-        call,
-        ElementKind::Result,
-        [("is_error", Value::Bool(true))],
-        "exit 101",
-    ));
-    s.commit(Draft::set(call, "status", "error"));
-    assert!(s.shows("Ran cargo test"));
-    assert!(s.shows("1 failed"));
-    s.send(Message::Toggle(call));
-    assert!(s.shows("Error"));
-    assert!(s.shows("exit 101"));
-}
-
-#[test]
-fn a_call_joining_a_streaming_group_updates_the_same_row() {
-    let mut s = Session::new();
-    let turn = s.turn();
-    let first = s.call(turn, "grep", 0, 10, "{}", "");
-    assert!(s.shows("Searched 1 pattern"));
-    s.call(turn, "grep", 0, 10, "{}", "");
-    assert_eq!(s.chat.items.len(), 1);
-    assert_eq!(s.chat.items[0].key, first);
-    assert!(s.shows("Searched 2 patterns"));
-}
-
-#[test]
-fn jobs_todos_compactions_and_ext_get_compact_rows() {
-    let mut s = Session::new();
-    let turn = s.turn();
-    let job = s.insert(
-        turn,
-        ElementKind::Job,
-        &[
-            ("kind", "shell".into()),
-            ("status", "running".into()),
-            ("command", "npm run dev".into()),
-        ],
-        "",
-    );
-    s.commit(Draft::append(job, "listening on 3000\n"));
-    s.insert(
-        s.session,
-        ElementKind::Todo,
-        &[("state", "in_progress".into())],
-        "Write the parser",
-    );
-    s.insert(
-        s.session,
-        ElementKind::Compaction,
-        &[("covers", Value::List(vec![Value::Int(2), Value::Int(3)]))],
-        "sum",
-    );
-    s.insert(
-        turn,
-        ElementKind::Ext,
-        &[("harness", "claude".into()), ("type", "hook".into())],
-        "raw data",
-    );
-
-    assert!(s.shows("npm run dev"));
-    assert!(s.shows("running…"));
-    assert!(!s.shows("listening on 3000\n"));
-    s.send(Message::Toggle(job));
-    assert!(s.shows("listening on 3000\n"));
-
-    assert!(s.shows("Write the parser"));
-    assert!(s.shows("◐"));
-    assert!(s.shows("Compacted 2 turns"));
-    assert!(s.shows("hook"));
-    assert!(!s.shows("raw data"));
-}
-
-#[test]
-fn decisions_leave_a_slot_for_the_app_card() {
-    let mut s = Session::new();
-    let turn = s.turn();
-    let call = s.insert(turn, ElementKind::Call, &[("tool", "bash".into())], "");
-    let decision = s.insert(
-        call,
-        ElementKind::Decision,
-        &[("kind", "approval".into())],
-        "rm -rf target",
-    );
-    assert_eq!(
-        s.rows().last().map(|r| (r.0, r.1)),
-        Some((ItemKind::Decision, decision))
-    );
-    assert!(s.shows(&format!("card for {decision}")));
-    assert!(!s.shows("rm -rf target"));
-}
-
-#[test]
-fn clicking_a_user_message_asks_for_a_rewind_to_it() {
-    let mut s = Session::new();
-    let turn = s.turn();
-    let prompt = s.user(turn, "fix the build");
-    let clicked = s.click("fix the build");
-    assert_eq!(clicked, vec![Message::Rewind(prompt)]);
-    assert_eq!(s.send(Message::Rewind(prompt)), Some(Event::Rewind(prompt)));
-}
-
-// Incremental updates must land on the same rows a fresh load produces.
-
-#[test]
-fn incremental_rows_match_a_fresh_load_after_mixed_patches() {
-    let mut s = Session::new();
-    let t1 = s.turn();
-    s.user(t1, "one");
-    let r1 = s.call(t1, "read", 0, 1, "{}", "a");
-    s.call(t1, "read", 0, 1, "{}", "b");
-    let t2 = s.turn();
-    s.user(t2, "two");
-    let reply = s.insert(
-        t2,
-        ElementKind::Message,
-        &[("role", "assistant".into())],
-        "hi",
-    );
-    s.insert(
-        s.session,
-        ElementKind::Digest,
-        &[("source_seq", Value::Int(1))],
-        "digest",
-    );
-    // Inserts that are not at the end of the document.
-    s.commit(Draft::insert_at(
-        t1,
-        1,
-        ElementKind::Call,
-        [("tool", Value::from("read"))],
-        "",
-    ));
-    s.insert(t2, ElementKind::Call, &[("tool", "bash".into())], "");
-    s.insert(t2, ElementKind::Call, &[("tool", "bash".into())], "");
-    let t3 = s.turn();
-    s.user(t3, "three");
-    s.commit(Draft::set(r1, "tool", "edit"));
-    s.commit(Draft::set(reply, "kind", "thinking"));
-    s.commit(Draft::remove(t2));
-    s.insert(t3, ElementKind::Todo, &[], "later");
-
-    let fresh = State::from_dom(&s.dom, &Theme::Dark);
-    assert_eq!(s.chat.items, fresh.items);
-    for (index, row) in s.chat.items.iter().enumerate() {
-        assert_eq!(s.chat.pos[&row.key], index);
-    }
-    assert_eq!(s.chat.heights.len(), s.chat.items.len());
-    let total: f64 = (0..fresh.heights.len())
-        .map(|i| f64::from(fresh.heights.get(i).unwrap()))
-        .sum();
-    assert!((s.chat.heights.total() - total).abs() < 1e-3);
-}
-
-// #57 Virtualized variable height transcript
-
-fn long_session(turns: usize) -> Session {
-    let mut s = Session::new();
+fn long(turns: usize) -> S {
+    let mut s = S::new();
     for i in 0..turns {
-        let turn = s.turn();
-        s.user(turn, &format!("message {i}"));
+        let t = s.turn();
+        s.msg(t, "user", &format!("message {i}"));
     }
     s
 }
 
 #[test]
-fn a_huge_transcript_builds_only_the_rows_around_the_viewport() {
-    let mut s = long_session(10_000);
-    assert_eq!(s.chat.items.len(), 10_000);
-
-    // Following: the newest rows are built, the oldest are not.
-    let window = s.chat.window();
-    assert!(window.len() < 100, "built {} rows", window.len());
-    assert!(s.shows("message 9999"));
-    assert!(!s.shows("message 0"));
-    assert!(!s.shows("message 5000"));
-
-    // Scrolled to the middle: rows there are built, the ends are not.
-    let middle = s.chat.heights.prefix(5_000) as f32;
-    let content = s.chat.heights.total() as f32;
-    s.send(Message::Scrolled(ScrollMetrics {
-        offset: content - 700.0,
-        viewport: 700.0,
-        content,
-    }));
-    s.send(Message::Scrolled(ScrollMetrics {
-        offset: middle,
-        viewport: 700.0,
-        content,
-    }));
-    assert!(!s.chat.is_following());
-    let window = s.chat.window();
-    assert!(window.contains(&5_000), "{window:?}");
-    assert!(window.len() < 100, "built {} rows", window.len());
-    assert!(s.shows("message 5000"));
-    assert!(!s.shows("message 9999"));
-    assert!(!s.shows("message 0"));
-
-    // A token appended far below changes one row, not the window.
-    let last = s.chat.items[9_999].key;
-    s.commit(Draft::append(last, " more"));
-    assert_eq!(s.chat.window(), window);
-}
-
-#[test]
-fn measured_heights_replace_estimates_and_size_the_spacers() {
-    let mut s = long_session(50);
-    let key = s.chat.items[10].key;
-    let before = s.chat.heights.prefix(11);
-    let estimate = f64::from(s.chat.heights.get(10).unwrap());
-    s.send(Message::Measured { key, height: 300.0 });
-    assert!((s.chat.heights.prefix(11) - (before - estimate + 300.0)).abs() < 1e-3);
-    assert_eq!(s.chat.heights.get(10), Some(300.0));
-    // The measurement survives the turn's rows being rebuilt.
-    let turn = s.chat.items[10].top;
-    s.insert(turn, ElementKind::Ext, &[("harness", "omp".into())], "");
-    s.commit(Draft::insert_at(
-        turn,
-        0,
-        ElementKind::Ext,
-        [("harness", Value::from("omp"))],
-        "",
-    ));
-    assert_eq!(s.chat.heights.get(s.chat.pos[&key]), Some(300.0));
-}
-
-#[test]
-fn the_harness_command_list_is_no_transcript_row() {
-    let mut s = Session::new();
-    let list = [("harness", Value::from("omp")), ("type", Value::from(COMMANDS_EXT))];
-    s.insert(s.session, ElementKind::Ext, &list, r#"{"commands":[]}"#);
-    assert!(s.chat.items.is_empty());
-    let notice = [("harness", Value::from("omp")), ("type", Value::from("notice"))];
-    s.insert(s.session, ElementKind::Ext, &notice, "{}");
-    assert_eq!(s.chat.items.len(), 1, "other harness events stay rows");
-}
-
-#[test]
-fn a_row_growing_above_the_viewport_keeps_the_reading_position() {
-    let mut s = long_session(200);
-    let content = s.chat.heights.total() as f32;
-    s.send(Message::Scrolled(ScrollMetrics {
-        offset: content - 500.0,
-        viewport: 500.0,
-        content,
-    }));
-    let reading = s.chat.heights.prefix(150) as f32;
-    s.send(Message::Scrolled(ScrollMetrics {
-        offset: reading,
-        viewport: 500.0,
-        content,
-    }));
-    let first_visible = s.chat.heights.find(f64::from(reading)).unwrap();
-
-    let key = s.chat.items[3].key;
-    let old = s.chat.heights.get(3).unwrap();
-    s.send(Message::Measured {
-        key,
-        height: old + 120.0,
-    });
-    assert_eq!(s.chat.scroll.metrics.offset, reading + 120.0);
-    assert_eq!(
-        s.chat.heights.find(f64::from(s.chat.scroll.metrics.offset)),
-        Some(first_visible)
-    );
-}
-
-// #58 Auto scroll only when already at the bottom
-
-#[test]
-fn scrolling_up_pins_the_view_and_returning_to_the_bottom_follows_again() {
-    let mut s = long_session(300);
-    let content = s.chat.heights.total() as f32;
-    let bottom = ScrollMetrics {
-        offset: content - 600.0,
-        viewport: 600.0,
-        content,
-    };
-    s.send(Message::Scrolled(bottom));
-    assert!(s.chat.is_following());
-    assert!(!s.shows("Jump to latest ↓"));
-
-    // Content grows under a still viewport: still following.
-    s.send(Message::Scrolled(ScrollMetrics {
-        content: content + 400.0,
-        ..bottom
-    }));
-    assert!(s.chat.is_following());
-    s.send(Message::Scrolled(ScrollMetrics {
-        offset: content - 200.0,
-        content: content + 400.0,
-        ..bottom
-    }));
-    assert!(s.chat.is_following());
-
-    // The user scrolls up: pinned, with a way back.
-    let pinned = ScrollMetrics {
-        offset: 1_000.0,
-        viewport: 600.0,
-        content: content + 400.0,
-    };
-    s.send(Message::Scrolled(pinned));
-    assert!(!s.chat.is_following());
-    assert!(s.shows("Jump to latest ↓"));
-    let window = s.chat.window();
-
-    // New content arrives: the view stays where the user is.
-    let turn = s.turn();
-    s.user(turn, "new prompt");
-    s.send(Message::Scrolled(ScrollMetrics {
-        content: content + 800.0,
-        ..pinned
-    }));
-    assert!(!s.chat.is_following());
-    assert_eq!(s.chat.window(), window);
-    assert!(!s.shows("new prompt"));
-
-    // Scrolling back down to the end follows again.
-    s.send(Message::Scrolled(ScrollMetrics {
-        offset: content + 200.0,
-        viewport: 600.0,
-        content: content + 800.0,
-    }));
-    assert!(s.chat.is_following());
-    assert!(s.shows("new prompt"));
-}
-
-#[test]
-fn jump_to_latest_resumes_following() {
-    let mut s = long_session(300);
-    let content = s.chat.heights.total() as f32;
-    s.send(Message::Scrolled(ScrollMetrics {
-        offset: content - 600.0,
-        viewport: 600.0,
-        content,
-    }));
-    s.send(Message::Scrolled(ScrollMetrics {
-        offset: 0.0,
-        viewport: 600.0,
-        content,
-    }));
-    assert!(!s.chat.is_following());
-    assert_eq!(s.click("Jump to latest ↓"), vec![Message::JumpToLatest]);
-    s.send(Message::JumpToLatest);
-    assert!(s.chat.is_following());
-    assert!(s.shows("message 299"));
-}
-
-/// One step of a frame-by-frame run: changes the session before a frame.
-type Step = Box<dyn Fn(&mut Session)>;
-
-/// Renders `frames` one after another through one `UserInterface` cache and
-/// sends each frame events, the way the running app does. `iced_test`'s
-/// simulator builds every view from scratch, so it never diffs one frame
-/// against the last and misses widget-state mix-ups between frames.
-fn run_frames(session: &mut Session, steps: Vec<Step>) {
-    use iced::advanced::clipboard;
-    use iced::advanced::renderer::Headless;
-    use iced::{Font, Pixels, Point, Size, mouse};
-    use iced_runtime::user_interface::{Cache, UserInterface};
-
-    let mut renderer = iced::futures::executor::block_on(<iced::Renderer as Headless>::new(Font::DEFAULT, Pixels(16.0), None))
-        .expect("headless renderer");
-    let size = Size::new(900.0, 700.0);
-    let mut cache = Cache::default();
-    let events = [
-        iced::Event::Mouse(mouse::Event::CursorMoved { position: Point::new(400.0, 300.0) }),
-        iced::Event::Window(iced::window::Event::RedrawRequested(std::time::Instant::now())),
-    ];
-    let mut frame = |session: &mut Session, cache: Cache| -> Cache {
-        let mut messages = Vec::new();
-        let cache = {
-            let mut ui = UserInterface::build(session.view(), size, cache, &mut renderer);
-            let _ = ui.update(&events, mouse::Cursor::Available(Point::new(400.0, 300.0)), &mut renderer, &mut clipboard::Null, &mut messages);
-            ui.into_cache()
-        };
-        for message in messages {
-            session.send(message);
+fn streaming_feeds_each_chunk_to_the_parser_once() {
+    let mut s = S::new();
+    let t = s.turn();
+    let reply = s.msg(t, "assistant", "");
+    let mut full = String::new();
+    for i in 0..200 {
+        let chunk = ["## Part\n\n", "Some **bold** and `code` ", "- one\n- two\n\n", "```rust\nfn main() {}\n```\n\n"][i % 4];
+        full.push_str(chunk);
+        s.commit(Draft::append(reply, chunk));
+        if i == 100 {
+            // A structural change elsewhere in the turn rebuilds its rows; the reply keeps its parse.
+            s.commit(Draft::insert_at(t, 0, K::Ext, attrs! { HARNESS: "omp" }, "x"));
         }
-        cache
-    };
-    cache = frame(session, cache);
-    for step in steps {
-        step(session);
-        cache = frame(session, cache);
-        cache = frame(session, cache);
+    }
+    let streamed = &s.chat.streamed[&reply];
+    assert_eq!(streamed.fed, full.len(), "re-parsing per token would feed ~N²/2 bytes");
+    let whole = markdown::Content::parse(&full.replace('\n', "  \n"));
+    assert_eq!(format!("{:?}", streamed.items()), format!("{:?}", whole.items()));
+    s.commit(Draft::set_text(reply, "# Final"));
+    assert!(matches!(s.chat.streamed[&reply].items(), [markdown::Item::Heading(..)]));
+}
+
+#[test]
+fn rows_collapse_expand_and_report_clicks() {
+    let mut s = S::new();
+    let t = s.turn();
+    let prompt = s.msg(t, "user", "fix the build");
+    let a = s.call(t, "read", (1_000, 4_000), "fn a() {}");
+    s.call(t, "read", (2_000, 9_000), "fn b() {}");
+    s.call(t, "read", (3_000, 13_000), "fn c() {}");
+    let thought = s.add(t, K::Message, attrs! { ROLE: "assistant", KIND: "thinking", STATUS: "done" }, "weighing");
+    let bash = s.add(t, K::Call, attrs! { TOOL: "bash", TITLE: "cargo test", STATUS: "error" }, "");
+    s.add(bash, K::Result, attrs! { IS_ERROR: true }, "exit 101");
+    let decision = s.add(bash, K::Decision, attrs! { KIND: "approval" }, "rm -rf target");
+    s.add(s.session, K::Ext, attrs! { HARNESS: "omp", TYPE: COMMANDS_EXT }, "{}");
+    s.add(s.session, K::Todo, attrs! { STATE: "in_progress" }, "Write the parser");
+    s.add(s.session, K::Compaction, attrs! { COVERS: Value::List(vec![Value::Int(2), Value::Int(3)]) }, "sum");
+    let kinds: Vec<ItemKind> = s.chat.items.iter().map(|i| i.kind).collect();
+    use ItemKind::*;
+    assert_eq!(kinds, [User, Calls, Thinking, Calls, Decision, Todo, Compaction], "the command list is no row");
+    for label in ["Read 3 files", "12s", "Thought", "Ran cargo test", "1 failed", "◐", "Compacted 2 turns", &format!("card for {decision}")] {
+        assert!(s.shows(label), "{label}");
+    }
+    for hidden in ["fn b() {}", "weighing", "rm -rf target", "exit 101"] {
+        assert!(!s.shows(hidden), "{hidden}");
+    }
+    let click = |s: &S, label| loa_ui_kit::testkit::click_label(s.view(), label);
+    assert_eq!(click(&s, "Read 3 files"), [Message::Toggle(a)]);
+    assert_eq!(click(&s, "fix the build"), [Message::Rewind(prompt)]);
+    assert_eq!(s.send(Message::Rewind(prompt)), Some(Event::Rewind(prompt)));
+    for key in [a, thought, bash] {
+        s.send(Message::Toggle(key));
+    }
+    for label in ["fn b() {}", "weighing", "Error", "exit 101"] {
+        assert!(s.shows(label), "{label}");
     }
 }
 
 #[test]
+fn tool_verbs_read_like_claude_code() {
+    let cases: &[(&str, usize, &str)] = &[("Read", 3, "Read 3 files"), ("edit", 1, "Edited 1 file"), ("grep", 2, "Searched 2 patterns"), ("web_search", 2, "Searched the web for 2 queries"), ("mystery", 1, "mystery"), ("mystery", 2, "mystery 2 calls")];
+    for &(tool, n, label) in cases {
+        let mut s = S::new();
+        let t = s.turn();
+        for _ in 0..n {
+            s.call(t, tool, (0, 1), "");
+        }
+        assert_eq!(s.chat.items.len(), 1, "{tool}: one group");
+        assert!(s.shows(label), "{label}");
+    }
+}
+
+#[test]
+fn incremental_rows_match_a_fresh_load_after_mixed_patches() {
+    let mut s = S::new();
+    let t1 = s.turn();
+    s.msg(t1, "user", "one");
+    let r1 = s.call(t1, "read", (0, 1), "a");
+    s.call(t1, "read", (0, 1), "b");
+    let t2 = s.turn();
+    s.msg(t2, "user", "two");
+    let reply = s.msg(t2, "assistant", "hi");
+    s.add(s.session, K::Digest, attrs! { SOURCE_SEQ: 1i64 }, "digest");
+    s.commit(Draft::insert_at(t1, 1, K::Call, attrs! { TOOL: "read" }, ""));
+    s.add(t2, K::Call, attrs! { TOOL: "bash" }, "");
+    s.add(t2, K::Call, attrs! { TOOL: "bash" }, "");
+    let t3 = s.turn();
+    s.msg(t3, "user", "three");
+    s.commit(Draft::set(r1, "tool", "edit"));
+    s.commit(Draft::set(reply, "kind", "thinking"));
+    s.commit(Draft::remove(t2));
+    s.add(t3, K::Todo, attrs! {}, "later");
+    let fresh = State::from_dom(&s.dom, &Theme::Dark);
+    assert_eq!(s.chat.items, fresh.items);
+    assert!(s.chat.items.iter().enumerate().all(|(i, row)| s.chat.pos[&row.key] == i));
+    assert!((s.chat.heights.total() - fresh.heights.total()).abs() < 1e-3);
+}
+
+#[test]
+fn a_huge_transcript_builds_only_the_rows_around_the_viewport() {
+    let mut s = long(10_000);
+    let window = s.chat.window();
+    assert!(window.len() < 100, "built {} rows", window.len());
+    assert!(s.shows("message 9999") && !s.shows("message 0"));
+    let content = s.chat.heights.total() as f32;
+    s.scroll(content - 700.0, 700.0);
+    s.scroll(s.chat.heights.prefix(5_000) as f32, 700.0);
+    assert!(!s.chat.is_following());
+    let window = s.chat.window();
+    assert!(window.contains(&5_000) && window.len() < 100, "{window:?}");
+    assert!(s.shows("message 5000") && !s.shows("message 9999"));
+    let last = s.chat.items[9_999].key;
+    s.commit(Draft::append(last, " more"));
+    assert_eq!(s.chat.window(), window, "a token far below leaves the window alone");
+}
+
+#[test]
+fn a_row_growing_above_the_viewport_keeps_the_reading_position() {
+    let mut s = long(200);
+    let content = s.chat.heights.total() as f32;
+    s.scroll(content - 500.0, 500.0);
+    let reading = s.chat.heights.prefix(150) as f32;
+    s.scroll(reading, 500.0);
+    let first_visible = s.chat.heights.find(f64::from(reading));
+    let key = s.chat.items[3].key;
+    let old = s.chat.heights.get(3).unwrap();
+    s.send(Message::Measured { key, height: old + 120.0 });
+    assert_eq!(s.chat.scroll.metrics.offset, reading + 120.0);
+    assert_eq!(s.chat.heights.find(f64::from(s.chat.scroll.metrics.offset)), first_visible);
+    // The measurement survives the turn's rows being rebuilt.
+    let turn = s.chat.items[3].top;
+    s.commit(Draft::insert_at(turn, 0, K::Ext, attrs! { HARNESS: "omp" }, ""));
+    assert_eq!(s.chat.heights.get(s.chat.pos[&key]), Some(old + 120.0));
+}
+
+#[test]
+fn scrolling_up_pins_the_view_and_jump_to_latest_follows_again() {
+    let mut s = long(300);
+    let content = s.chat.heights.total() as f32;
+    s.scroll(content - 600.0, 600.0);
+    assert!(s.chat.is_following() && !s.shows("Jump to latest ↓"));
+    s.send(Message::Scrolled(ScrollMetrics { offset: content - 600.0, viewport: 600.0, content: content + 400.0 }));
+    assert!(s.chat.is_following(), "content growing under a still viewport keeps following");
+    s.scroll(1_000.0, 600.0);
+    assert!(!s.chat.is_following());
+    let window = s.chat.window();
+    let t = s.turn();
+    s.msg(t, "user", "new prompt");
+    assert_eq!(s.chat.window(), window);
+    assert!(!s.shows("new prompt"));
+    assert_eq!(loa_ui_kit::testkit::click_label(s.view(), "Jump to latest ↓"), [Message::JumpToLatest]);
+    s.send(Message::JumpToLatest);
+    assert!(s.chat.is_following() && s.shows("new prompt"));
+}
+
+#[test]
 fn a_new_sessions_first_reply_renders_frame_after_frame_without_a_state_mix_up() {
-    // The first reply of a new session adds rows while the visible window
-    // shifts; `keyed_column` paired a row's sensor with a spacer's state and
-    // the app panicked with "Downcast on stateless state" on every send.
-    let mut session = Session::new();
-    let turn = std::cell::Cell::new(NodeId::DOCUMENT);
-    let turn = std::rc::Rc::new(turn);
-    let (t1, t2, t3, t4) = (turn.clone(), turn.clone(), turn.clone(), turn.clone());
-    run_frames(
-        &mut session,
-        vec![
-            Box::new(move |s| {
-                t1.set(s.turn());
-                s.user(t1.get(), "Reply with the single word pong");
-            }),
-            Box::new(move |s| {
-                s.insert(t2.get(), ElementKind::Message, &[("role", "assistant".into())], "po");
-            }),
-            Box::new(move |s| {
-                s.call(t3.get(), "read", 1, 2, "{}", "file");
-                s.insert(t3.get(), ElementKind::Message, &[("role", "assistant".into())], "pong");
-            }),
-            Box::new(move |s| {
-                let next = s.turn();
-                t4.set(next);
-                s.user(next, "Now reply with ping");
-                s.insert(next, ElementKind::Message, &[("role", "assistant".into())], "ping");
-            }),
-        ],
-    );
-    assert_eq!(session.rows().iter().filter(|(kind, ..)| *kind == ItemKind::User).count(), 2, "both prompts are rows");
-}
-
-#[test]
-fn single_line_breaks_in_a_reply_stay_line_breaks() {
-    use iced::widget::markdown::Item;
-    let streamed = crate::stream::Streamed::new("1\n2\n3\n\nnext paragraph");
-    let paragraphs: Vec<_> = streamed.items().iter().filter(|item| matches!(item, Item::Paragraph(_))).collect();
-    assert_eq!(paragraphs.len(), 2, "a blank line still ends the paragraph");
-    let first = format!("{:?}", paragraphs[0]);
-    assert_eq!(first.matches(r#"text: "\n""#).count(), 2, "both line breaks kept: {first}");
-}
-
-#[test]
-fn look_rebuilds_after_a_theme_change() {
-    let state = State::new(&Theme::Dark);
-    let before = state.look().generation;
-    loa_ui_kit::theme::set_active((*tokens()).clone());
-    assert!(state.look().generation > before);
+    // A first reply adds rows while the window shifts; `keyed_column` once paired a row's sensor
+    // with a spacer's state and panicked with "Downcast on stateless state".
+    let mut s = S::new();
+    let step = |f: fn(&mut S, NodeId)| -> loa_ui_kit::testkit::Step<S> {
+        Box::new(move |s: &mut S| {
+            let last = s.dom.children(s.session).last().map_or(s.session, |n| n.id);
+            f(s, last)
+        })
+    };
+    let steps = vec![
+        step(|s, _| {
+            let t = s.turn();
+            s.msg(t, "user", "Reply with pong");
+        }),
+        step(|s, t| {
+            s.msg(t, "assistant", "po");
+        }),
+        step(|s, t| {
+            s.call(t, "read", (1, 2), "file");
+            s.msg(t, "assistant", "pong");
+        }),
+        step(|s, _| {
+            let t = s.turn();
+            s.msg(t, "user", "Now ping");
+            s.msg(t, "assistant", "ping");
+        }),
+    ];
+    loa_ui_kit::testkit::run_frames(&mut s, S::view, |s, m| drop(s.send(m)), steps);
+    assert_eq!(s.chat.items.iter().filter(|i| i.kind == ItemKind::User).count(), 2);
 }

@@ -1,615 +1,213 @@
-use super::*;
+use crate::decisions::desk::{self, Desk, Expired};
+use crate::decisions::unattended::{self, Duration};
+use crate::decisions::*;
+use iced::Theme;
+use iced::keyboard::{self, Modifiers, key::Named};
 use iced::widget::text_editor::{Action, Edit, Motion};
-use iced_test::simulator;
-use loa_core::{Draft, ElementKind, Value, answer, attr};
+use loa_config::{DecisionDefault, UnattendedSettings};
+use loa_contracts::harness::Answer;
+use loa_core::testkit::DomFixture;
+use loa_core::{Attrs, DecisionKind, Draft, ElementKind, NodeId, Value, answer, attrs};
 use std::sync::Arc;
 
-const DIFF: &str =
-    "--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,2 +1,2 @@\n-pub fn old() {}\n+pub fn new() {}\n";
+fn list(items: &[&str]) -> Value { Value::List(items.iter().map(|s| Value::from(*s)).collect()) }
 
-struct Fixture {
-    dom: Dom,
-    turn: NodeId,
-    call: NodeId,
+/// A session with one decision of `attrs` under a `bash` call.
+fn fixture(attrs: Attrs, body: &str) -> (DomFixture, NodeId) {
+    let mut f = DomFixture::session();
+    f.turn().call("bash", attrs! {});
+    let call = f.last;
+    let id = f.add(call, ElementKind::Decision, attrs, body);
+    (f, id)
 }
 
-impl Fixture {
-    fn new() -> Self {
-        let mut dom = Dom::new();
-        let root = dom
-            .commit(
-                Draft::insert(
-                    NodeId::DOCUMENT,
-                    ElementKind::Session,
-                    [
-                        (attr::ID, Value::from("s1")),
-                        (attr::HARNESS, "omp".into()),
-                        (attr::NODE, "node-a".into()),
-                        (attr::CREATED, 0i64.into()),
-                    ],
-                    "",
-                ),
-                0,
-            )
-            .unwrap()
-            .node;
-        let turn = dom
-            .commit(
-                Draft::insert(
-                    root,
-                    ElementKind::Turn,
-                    [(attr::STATUS, Value::from("waiting"))],
-                    "",
-                ),
-                0,
-            )
-            .unwrap()
-            .node;
-        let call = dom
-            .commit(
-                Draft::insert(
-                    turn,
-                    ElementKind::Call,
-                    [(attr::TOOL, Value::from("edit"))],
-                    "",
-                ),
-                0,
-            )
-            .unwrap()
-            .node;
-        Self { dom, turn, call }
-    }
-
-    fn decision(
-        &mut self,
-        parent: NodeId,
-        kind: &str,
-        mut attrs: Vec<(&str, Value)>,
-        body: &str,
-    ) -> NodeId {
-        attrs.push((attr::KIND, kind.into()));
-        attrs.push((attr::STATUS, "waiting".into()));
-        self.dom
-            .commit(Draft::insert(parent, ElementKind::Decision, attrs, body), 0)
-            .unwrap()
-            .node
-    }
-
-    fn approval(&mut self) -> NodeId {
-        let call = self.call;
-        self.decision(call, "approval", vec![], DIFF)
-    }
-
-    fn question(&mut self, options: &[&str], multi: bool) -> NodeId {
-        let turn = self.turn;
-        let options = Value::List(options.iter().map(|o| Value::from(*o)).collect());
-        self.decision(
-            turn,
-            "question",
-            vec![(attr::OPTIONS, options), (attr::MULTI, multi.into())],
-            "Which target?",
-        )
-    }
-
-    fn set(&mut self, node: NodeId, name: &str, value: impl Into<Value>) {
-        self.dom.commit(Draft::set(node, name, value), 0).unwrap();
-    }
-
-    fn state(&self, view_only: bool) -> State {
-        let mut state = State::new(
-            Viewer {
-                by: "node-me".into(),
-                view_only,
-            },
-            &Theme::Dark,
-        );
-        state.sync(&self.dom);
-        state
-    }
+fn state(f: &DomFixture, view_only: bool) -> State {
+    let mut s = State::new(Viewer { by: "me".into(), view_only }, &Theme::Dark);
+    s.sync(&f.dom);
+    s
 }
 
-fn send(state: &mut State, message: Message) -> Option<Event> {
-    state.update(message).1
-}
+fn shows(s: &State, id: NodeId, label: &str) -> bool { iced_test::simulator(s.view_card(id).unwrap()).find(label).is_ok() }
 
-fn answered(event: Option<Event>) -> (NodeId, Vec<String>, Option<String>) {
-    match event {
-        Some(Event::Answer { decision, answer }) => {
-            assert_eq!(answer.by, "node-me");
-            (decision, answer.values, answer.reason)
-        }
-        other => panic!("expected an answer, got {other:?}"),
-    }
-}
-
-fn press(key: keyboard::Key) -> Message {
-    let event = keyboard::Event::KeyPressed {
-        modified_key: key.clone(),
-        key,
-        physical_key: key::Physical::Unidentified(key::NativeCode::Unidentified),
-        location: keyboard::Location::Standard,
-        modifiers: keyboard::Modifiers::empty(),
-        text: None,
-        repeat: false,
+#[test]
+fn shortcuts_map_digits_enter_and_escape_but_not_chords() {
+    let event = |e: iced::Event| match e {
+        iced::Event::Keyboard(k) => k,
+        _ => unreachable!(),
     };
-    Message::Shortcut(shortcut(&event).expect("a card shortcut"))
-}
-
-fn digit(n: &str) -> Message {
-    press(keyboard::Key::Character(n.into()))
-}
-
-fn enter() -> Message {
-    press(keyboard::Key::Named(key::Named::Enter))
-}
-
-fn esc() -> Message {
-    press(keyboard::Key::Named(key::Named::Escape))
-}
-
-// #66 Approval card
-
-#[test]
-fn approval_buttons_answer_allow_once_and_allow_for_session() {
-    let mut fx = Fixture::new();
-    let a = fx.approval();
-    let b = fx.approval();
-    let mut state = fx.state(false);
-    assert_eq!(
-        answered(send(&mut state, Message::Choose(a, 0))),
-        (a, vec![answer::ALLOW_ONCE.into()], None)
-    );
-    assert_eq!(
-        answered(send(&mut state, Message::Choose(b, 1))),
-        (b, vec![answer::ALLOW_SESSION.into()], None)
-    );
-    assert!(
-        send(&mut state, Message::Choose(a, 0)).is_none(),
-        "an answered card can't answer twice"
-    );
+    let none = Modifiers::empty();
+    let cases = [
+        (loa_ui_kit::testkit::char("1", none), Some(Shortcut::Pick(0))),
+        (loa_ui_kit::testkit::char("9", none), Some(Shortcut::Pick(8))),
+        (loa_ui_kit::testkit::char("0", none), None),
+        (loa_ui_kit::testkit::char("1", Modifiers::CTRL), None),
+        (loa_ui_kit::testkit::named(Named::Enter, none), Some(Shortcut::Confirm)),
+        (loa_ui_kit::testkit::named(Named::Escape, none), Some(Shortcut::Dismiss)),
+        (loa_ui_kit::testkit::named(Named::Escape, Modifiers::ALT), None),
+    ];
+    for (e, expected) in cases {
+        assert_eq!(shortcut(&event(e.clone())), expected, "{e:?}");
+    }
+    assert!(matches!(event(loa_ui_kit::testkit::named(Named::Enter, none)), keyboard::Event::KeyPressed { .. }));
 }
 
 #[test]
-fn deny_sends_the_typed_reason_and_omits_a_blank_one() {
-    let mut fx = Fixture::new();
-    let a = fx.approval();
-    let b = fx.approval();
-    let mut state = fx.state(false);
-    send(
-        &mut state,
-        Message::Text(a, "  touches prod config ".into()),
-    );
-    assert_eq!(
-        answered(send(&mut state, Message::SubmitText(a))),
+fn every_kind_maps_clicks_keys_and_text_to_answers() {
+    use Message as M;
+    let form = r#"{"properties":{"tag":{"type":"string"},"env":{"enum":["dev","prod"]}},"required":["tag"]}"#;
+    type Step = fn(NodeId) -> Message;
+    let cases: Vec<(Attrs, &str, Vec<Step>, Option<(Vec<&str>, Option<&str>)>)> = vec![
+        (attrs! { KIND: "approval" }, "ls", vec![|d| M::Choose(d, 1)], Some((vec![answer::ALLOW_SESSION], None))),
+        (attrs! { KIND: "approval" }, "ls", vec![|d| M::Text(d, " prod ".into()), |d| M::Choose(d, 2)], Some((vec![answer::DENY], Some("prod")))),
+        (attrs! { KIND: "approval" }, "ls", vec![|_| M::Shortcut(Shortcut::Pick(0)), |_| M::Shortcut(Shortcut::Confirm)], Some((vec![answer::ALLOW_ONCE], None))),
+        (attrs! { KIND: "approval" }, "ls", vec![|d| M::Text(d, "  ".into()), |_| M::Shortcut(Shortcut::Dismiss)], Some((vec![answer::DENY], None))),
+        (attrs! { KIND: "question", OPTIONS: list(&["red", "blue"]) }, "Color?", vec![|d| M::Choose(d, 1)], Some((vec!["blue"], None))),
+        (attrs! { KIND: "question", OPTIONS: list(&["a", "b", "c"]), MULTI: true }, "?", vec![|d| M::Choose(d, 2), |_| M::Shortcut(Shortcut::Pick(0)), |d| M::Submit(d)], Some((vec!["a", "c"], None))),
+        (attrs! { KIND: "question" }, "?", vec![|d| M::SubmitText(d)], None),
+        (attrs! { KIND: "question" }, "?", vec![|d| M::Text(d, "green".into()), |d| M::SubmitText(d)], Some((vec!["green"], None))),
+        (attrs! { KIND: "question" }, "?", vec![|_| M::Shortcut(Shortcut::Dismiss)], Some((vec![], None))),
+        (attrs! { KIND: "plan" }, "1. Do", vec![|d| M::Choose(d, 0)], Some((vec![answer::APPROVE], None))),
+        (attrs! { KIND: "plan" }, "1. Do", vec![|d| M::Text(d, "split".into()), |d| M::Choose(d, 2)], Some((vec![answer::REJECT], Some("split")))),
+        (attrs! { KIND: "plan" }, "1. Do", vec![|d| M::Choose(d, 1), |_| M::Shortcut(Shortcut::Dismiss), |d| M::Choose(d, 1)], None),
         (
-            a,
-            vec![answer::DENY.into()],
-            Some("touches prod config".into())
-        )
-    );
-    send(&mut state, Message::Text(b, "   ".into()));
-    assert_eq!(
-        answered(send(&mut state, Message::Choose(b, 2))),
-        (b, vec![answer::DENY.into()], None)
-    );
-}
-
-#[test]
-fn approval_card_shows_tool_and_diff_and_clicks_answer() {
-    let mut fx = Fixture::new();
-    let a = fx.approval();
-    let mut state = fx.state(false);
-    let mut ui = simulator(state.view());
-    ui.find("edit").expect("tool name");
-    ui.find("+pub fn new() {}").expect("added line");
-    ui.find("-pub fn old() {}").expect("removed line");
-    ui.click("Allow for this session").unwrap();
-    let messages: Vec<Message> = ui.into_messages().collect();
-    let [message] = messages.as_slice() else {
-        panic!("one click, one message: {messages:?}")
-    };
-    assert_eq!(
-        answered(send(&mut state, message.clone())),
-        (a, vec![answer::ALLOW_SESSION.into()], None)
-    );
-}
-
-// #67 Question card
-
-#[test]
-fn single_choice_question_answers_the_clicked_label() {
-    let mut fx = Fixture::new();
-    let q = fx.question(&["staging", "production"], false);
-    let mut state = fx.state(false);
-    let mut ui = simulator(state.view());
-    ui.find("Which target?").expect("question text");
-    ui.click("production").unwrap();
-    let message = ui.into_messages().next().expect("click message");
-    assert_eq!(
-        answered(send(&mut state, message)),
-        (q, vec!["production".into()], None)
-    );
-}
-
-#[test]
-fn multi_choice_question_answers_every_ticked_option_in_order() {
-    let mut fx = Fixture::new();
-    let q = fx.question(&["lint", "test", "bench", "docs"], true);
-    let mut state = fx.state(false);
-    // docs on, lint on, bench on, bench off, test on.
-    for i in [3, 0, 2, 2, 1] {
-        assert!(
-            send(&mut state, Message::Choose(q, i)).is_none(),
-            "ticking does not submit"
-        );
+            attrs! { KIND: "plan" },
+            "1. Do",
+            vec![|d| M::Choose(d, 1), |d| M::EditPlan(d, Action::Move(Motion::DocumentEnd)), |d| M::EditPlan(d, Action::Edit(Edit::Paste(Arc::new("\n2. Test".into())))), |d| M::Submit(d)],
+            Some((vec![answer::EDIT], Some("1. Do\n2. Test"))),
+        ),
+        (attrs! { KIND: "form", FIELDS: form }, "", vec![|d| M::Submit(d)], None),
+        (attrs! { KIND: "form", FIELDS: form }, "", vec![|d| M::Field(d, 0, FieldInput::Text("v1".into())), |d| M::Field(d, 1, FieldInput::Choice(1)), |d| M::Submit(d)], Some((vec![r#"{"tag":"v1","env":"prod"}"#], None))),
+    ];
+    for (n, (attrs, body, steps, expected)) in cases.into_iter().enumerate() {
+        let (f, id) = fixture(attrs, body);
+        let mut s = state(&f, false);
+        let events: Vec<Event> = steps.into_iter().filter_map(|step| s.update(step(id)).1).collect();
+        let expected: Vec<Event> = expected.into_iter().map(|(values, reason)| Event::Answer { decision: id, answer: Answer { values: values.iter().map(|v| v.to_string()).collect(), reason: reason.map(str::to_owned), by: "me".into() } }).collect();
+        assert_eq!(events, expected, "case {n}");
     }
-    assert_eq!(
-        answered(send(&mut state, Message::Submit(q))),
-        (q, vec!["lint".into(), "test".into(), "docs".into()], None)
-    );
 }
 
 #[test]
-fn question_takes_a_typed_answer_but_not_an_empty_one() {
-    let mut fx = Fixture::new();
-    let q = fx.question(&["yes", "no"], false);
-    let mut state = fx.state(false);
-    send(&mut state, Message::Text(q, "  ".into()));
-    assert!(send(&mut state, Message::SubmitText(q)).is_none());
-    send(&mut state, Message::Text(q, "only on Fridays".into()));
-    assert_eq!(
-        answered(send(&mut state, Message::SubmitText(q))),
-        (q, vec!["only on Fridays".into()], None)
-    );
-}
-
-// #68 Plan review card
-
-const PLAN: &str = "# Plan\n\n- step 1\n- step 2";
-
-#[test]
-fn plan_approve_and_reject_with_feedback() {
-    let mut fx = Fixture::new();
-    let turn = fx.turn;
-    let p1 = fx.decision(turn, "plan", vec![], PLAN);
-    let p2 = fx.decision(turn, "plan", vec![], PLAN);
-    let mut state = fx.state(false);
-    assert_eq!(
-        answered(send(&mut state, Message::Choose(p1, 0))),
-        (p1, vec![answer::APPROVE.into()], None)
-    );
-    send(&mut state, Message::Text(p2, "split step 2".into()));
-    assert_eq!(
-        answered(send(&mut state, Message::Choose(p2, 2))),
-        (p2, vec![answer::REJECT.into()], Some("split step 2".into()))
-    );
-}
-
-#[test]
-fn plan_edit_returns_the_edited_text() {
-    let mut fx = Fixture::new();
-    let turn = fx.turn;
-    let p = fx.decision(turn, "plan", vec![], PLAN);
-    let mut state = fx.state(false);
-    assert!(
-        send(&mut state, Message::Choose(p, 1)).is_none(),
-        "edit opens the editor"
-    );
-    {
-        let mut ui = simulator(state.view());
-        assert!(
-            ui.find("Approve").is_err(),
-            "the review buttons give way to the editor"
-        );
-        ui.click("Submit edited plan").unwrap();
-        assert!(matches!(ui.into_messages().next(), Some(Message::Submit(id)) if id == p));
+fn cards_lock_while_sending_and_read_back_who_answered() {
+    let body = "--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-pub fn old() {}\n+pub fn new() {}\n";
+    let (mut f, id) = fixture(attrs! { KIND: "approval" }, body);
+    let mut s = state(&f, false);
+    for label in ["omp wants to run", "bash", "+pub fn new() {}", "-pub fn old() {}", "Allow once"] {
+        assert!(shows(&s, id, label), "{label}");
     }
-    send(
-        &mut state,
-        Message::EditPlan(p, Action::Move(Motion::DocumentEnd)),
-    );
-    send(
-        &mut state,
-        Message::EditPlan(p, Action::Edit(Edit::Paste(Arc::new("\n- step 3".into())))),
-    );
-    assert!(
-        send(&mut state, esc()).is_none(),
-        "Esc leaves the editor instead of rejecting"
-    );
-    assert!(send(&mut state, Message::Choose(p, 1)).is_none());
-    send(
-        &mut state,
-        Message::EditPlan(p, Action::Move(Motion::DocumentEnd)),
-    );
-    send(
-        &mut state,
-        Message::EditPlan(p, Action::Edit(Edit::Paste(Arc::new("\n- step 3".into())))),
-    );
-    assert_eq!(
-        answered(send(&mut state, Message::Submit(p))),
-        (
-            p,
-            vec![answer::EDIT.into()],
-            Some(format!("{PLAN}\n- step 3"))
-        )
-    );
+    assert!(s.update(Message::Choose(id, 0)).1.is_some());
+    assert!(s.update(Message::Choose(id, 0)).1.is_none(), "locked until the DOM records it");
+    assert!(shows(&s, id, "Sending answer…"));
+    s.answer_failed(id);
+    assert_eq!(s.focused(), Some(id));
+    let key = "k".repeat(40);
+    f.commit(Draft::set(id, "status", "answered")).commit(Draft::set(id, "answer", list(&[answer::DENY]))).commit(Draft::set(id, "by", key.as_str()));
+    s.sync(&f.dom);
+    assert!(shows(&s, id, "Denied by kkkkkkkk") && s.focused().is_none());
+    s.set_local_name(Some("laptop".into()));
+    s.set_viewer(Viewer { by: key.clone(), view_only: false });
+    assert!(shows(&s, id, "Denied by laptop"));
+    let (f, id) = fixture(attrs! { KIND: "approval" }, "ls");
+    let mut peer = state(&f, true);
+    assert!(peer.update(Message::Choose(id, 0)).1.is_none() && peer.focused().is_none());
+    assert!(shows(&peer, id, "View only: you can't answer this prompt"));
+    assert_eq!(node_name("timeout", "me", None), TIMEOUT_BY);
 }
 
-// #69 Form card
-
-const FIELDS: &str = r#"{"type":"object","properties":{
-    "name":{"type":"string","description":"Release name"},
-    "count":{"type":"integer","default":2},
-    "dry_run":{"type":"boolean","default":true},
-    "channel":{"enum":["beta","stable"]}
-},"required":["name","channel"]}"#;
+#[test]
+fn the_tracker_counts_notifies_and_fires_each_timeout_once() {
+    let mut f = DomFixture::session();
+    f.turn();
+    let turn = f.last;
+    let own = f.add(turn, ElementKind::Decision, attrs! { KIND: "approval", DEFAULT: list(&[answer::DENY]), TIMEOUT_MS: 5_000i64, CREATED: 1_000i64 }, "rm -rf /tmp/x");
+    let question = f.add(turn, ElementKind::Decision, attrs! { KIND: "question", OPTIONS: list(&["red", "green"]) }, "Color?");
+    f.add(turn, ElementKind::Decision, attrs! { KIND: "plan", DEFAULT: list(&[answer::EDIT]), TIMEOUT_MS: 1i64 }, "# P");
+    let mut tracker = Tracker::default();
+    assert!(tracker.observe(&f.dom, 4_000).is_empty(), "no notices in the foreground");
+    assert_eq!((tracker.badge("s1"), tracker.next_deadline()), (3, Some(6_000)));
+    assert!(tracker.tick(5_999).is_empty());
+    let fired = tracker.tick(6_000);
+    assert_eq!(fired, [Expired { session: "s1".into(), decision: own, answer: Answer { values: vec![answer::DENY.into()], reason: None, by: TIMEOUT_BY.into() } }]);
+    assert!(tracker.tick(100_000).is_empty(), "each default fires once; a misfit default never");
+    tracker.policy = Unattended(UnattendedSettings { question: Some(DecisionDefault { timeout_secs: 60, answer: "GREEN".into(), reason: None }), ..Default::default() });
+    assert_eq!(tracker.next_deadline(), Some(64_000), "a policy set later counts from when the wait began");
+    let fired = tracker.tick(64_000);
+    assert_eq!((fired.len(), fired[0].decision, fired[0].answer.values.as_slice()), (1, question, ["green".to_owned()].as_slice()));
+    assert!(tracker.tick(i64::MAX).is_empty());
+    tracker.background = true;
+    let call = f.add(turn, ElementKind::Call, attrs! { TOOL: "bash" }, "");
+    f.add(call, ElementKind::Decision, attrs! { KIND: "approval" }, "cargo publish\n");
+    let notices = tracker.observe(&f.dom, 70_000);
+    assert_eq!(notices.iter().map(|n| (n.heading(), n.summary.as_str())).collect::<Vec<_>>(), [("A session needs approval".to_owned(), "bash: cargo publish")]);
+    assert!(tracker.observe(&f.dom, 70_001).is_empty());
+    f.commit(Draft::set(own, "status", "answered"));
+    tracker.observe(&f.dom, 70_002);
+    assert_eq!(tracker.total(), 3);
+    tracker.forget("s1");
+    assert_eq!(tracker.total(), 0);
+}
 
 #[test]
-fn form_is_validated_before_submit_and_answers_one_json_object() {
-    let mut fx = Fixture::new();
-    let turn = fx.turn;
-    let f = fx.decision(
-        turn,
-        "form",
-        vec![(attr::FIELDS, FIELDS.into())],
-        "Release settings",
-    );
-    let mut state = fx.state(false);
-    send(
-        &mut state,
-        Message::Field(f, 1, FieldInput::Text("two".into())),
-    );
-    assert!(
-        send(&mut state, Message::Submit(f)).is_none(),
-        "missing and malformed fields block submit"
-    );
-    {
-        let mut ui = simulator(state.view());
-        ui.find("Required").expect("required error shown");
-        ui.find("Enter a whole number")
-            .expect("integer error shown");
-        ui.find("Release name").expect("field description shown");
+fn unattended_policy_answers_per_kind_and_the_desk_applies_it() {
+    let mut f = DomFixture::session();
+    f.turn();
+    let turn = f.last;
+    let fields = r#"{"properties":{"env":{"enum":["dev","prod"],"default":"prod"},"n":{"type":"integer"}},"required":["env"]}"#;
+    let ids: Vec<NodeId> = [attrs! { KIND: "approval" }, attrs! { KIND: "question", OPTIONS: list(&["red"]) }, attrs! { KIND: "plan" }, attrs! { KIND: "form", FIELDS: fields }].into_iter().map(|a| f.add(turn, ElementKind::Decision, a, "")).collect();
+    let decision = |i: usize| Decision::from_dom(&f.dom, ids[i]).unwrap();
+    let mut policy = Unattended::default();
+    policy.update(unattended::Message::Enabled(true));
+    let deny = policy.answer(&decision(0), "t").unwrap();
+    assert_eq!((deny.values, deny.reason.as_deref()), (vec![answer::DENY.to_owned()], Some("Nobody answered within 5 min")));
+    assert_eq!(policy.answer(&decision(2), "t").unwrap().values, [answer::REJECT]);
+    assert!(policy.answer(&decision(1), "t").is_none() && policy.answer(&decision(3), "t").is_none());
+    let edits = [(DecisionKind::Approval, answer::ALLOW_SESSION, answer::ALLOW_SESSION), (DecisionKind::Question, "RED", "red"), (DecisionKind::Question, "blue", "blue"), (DecisionKind::Form, r#"{"n":3}"#, r#"{"env":"prod","n":3}"#)];
+    for (kind, configured, expected) in edits {
+        policy.update(unattended::Message::Answer(kind, Some(configured.into())));
+        let i = [DecisionKind::Approval, DecisionKind::Question, DecisionKind::Plan, DecisionKind::Form].iter().position(|k| *k == kind).unwrap();
+        assert_eq!(policy.answer(&decision(i), "t").unwrap().values, [expected], "{kind:?}");
     }
-    send(
-        &mut state,
-        Message::Field(f, 0, FieldInput::Text("v1.2".into())),
-    );
-    send(
-        &mut state,
-        Message::Field(f, 1, FieldInput::Text("3".into())),
-    );
-    send(&mut state, Message::Field(f, 3, FieldInput::Choice(1)));
-    assert_eq!(
-        answered(send(&mut state, Message::Submit(f))),
-        (
-            f,
-            vec![r#"{"name":"v1.2","count":3,"dry_run":true,"channel":"stable"}"#.into()],
-            None
-        )
-    );
-}
+    policy.0.plan = Some(DecisionDefault { timeout_secs: 5, answer: answer::EDIT.into(), reason: None });
+    assert!(policy.answer(&decision(2), "t").is_none(), "hand-edited misfits are not applied");
+    assert_eq!((Duration(30).to_string(), Duration(120).to_string(), Duration(90).to_string()), ("30 s".into(), "2 min".into(), "90 s".into()));
 
-/// The shape the omp adapter gives an `ask` with several questions.
-const ASK_FIELDS: &str = r#"{"type":"object","properties":{
-    "color":{"title":"Which color?","description":"Theme","type":"string","enum":["red","green"],"default":"green"},
-    "langs":{"title":"Which languages?","type":"array","items":{"type":"string","enum":["rust","go","zig"]}},
-    "note":{"title":"Anything else?","type":"string"}
-},"required":["color","langs","note"]}"#;
-
-#[test]
-fn multi_select_form_fields_tick_options_and_answer_arrays() {
-    let mut fx = Fixture::new();
-    let turn = fx.turn;
-    let f = fx.decision(turn, "form", vec![(attr::FIELDS, ASK_FIELDS.into())], "");
-    let mut state = fx.state(false);
-    {
-        let mut ui = simulator(state.view());
-        ui.find("Which languages? *").expect("multi field label");
-        ui.click("zig").expect("an option checkbox");
+    let mut desk = Desk::new("me", &Theme::Dark, Unattended::default(), NullNotifier);
+    let events = desk.update(desk::Message::Settings(unattended::Message::Answer(DecisionKind::Approval, Some(answer::ALLOW_ONCE.into()))));
+    assert!(matches!(events.as_slice(), [desk::Event::PolicyChanged(p)] if p.timeout_ms(DecisionKind::Approval) == Some(300_000)));
+    desk.update(desk::Message::Settings(unattended::Message::Timeout(DecisionKind::Approval, Duration(30))));
+    assert!(desk.update(desk::Message::Settings(unattended::Message::Timeout(DecisionKind::Approval, Duration(30)))).is_empty(), "no change");
+    desk.sync(&f.dom, 1_000);
+    desk.set_active(Some("s1".into()));
+    assert_eq!((desk.badge("s1"), desk.focused()), (4, Some(ids[0])));
+    assert!(desk.update(desk::Message::Tick(30_999)).is_empty());
+    let events = desk.update(desk::Message::Tick(31_000));
+    assert_eq!(events, [desk::Event::Answer { session: "s1".into(), decision: ids[0], answer: Answer { values: vec![answer::ALLOW_ONCE.into()], reason: None, by: TIMEOUT_BY.into() } }]);
+    assert_eq!(desk.focused(), Some(ids[1]), "the sent card is locked");
+    let events = desk.update(desk::Message::Card("s1".into(), Message::Choose(ids[1], 0)));
+    assert!(matches!(events.as_slice(), [desk::Event::Answer { session, answer, .. }] if session == "s1" && answer.values == ["red"] && answer.by == "me"));
+    assert_eq!(desk.update(desk::Message::Notified(Err(NotifyError("no daemon".into())))), [desk::Event::NotifyFailed("system notification failed: no daemon".into())]);
+    let mut ui = iced_test::simulator(desk.settings_view());
+    for label in ["Answer waiting prompts after a timeout", "Approvals", "Plan reviews", "Forms"] {
+        assert!(ui.find(label).is_ok(), "{label}");
     }
-    send(&mut state, Message::Field(f, 1, FieldInput::Toggle(2)));
-    send(&mut state, Message::Field(f, 1, FieldInput::Toggle(0)));
-    send(&mut state, Message::Field(f, 2, FieldInput::Text("no".into())));
-    send(&mut state, Message::Field(f, 1, FieldInput::Toggle(2)));
-    send(&mut state, Message::Field(f, 1, FieldInput::Toggle(2)));
-    assert_eq!(
-        answered(send(&mut state, Message::Submit(f))),
-        (f, vec![r#"{"color":"green","langs":["rust","zig"],"note":"no"}"#.into()], None)
-    );
-}
-
-// #70 Shortcuts
-
-#[test]
-fn number_key_then_enter_confirms_and_esc_denies() {
-    let mut fx = Fixture::new();
-    let a = fx.approval();
-    let b = fx.approval();
-    let mut state = fx.state(false);
-    assert!(
-        send(&mut state, enter()).is_none(),
-        "Enter with nothing picked does nothing"
-    );
-    assert!(
-        send(&mut state, digit("2")).is_none(),
-        "a number key only picks"
-    );
-    assert_eq!(
-        answered(send(&mut state, enter())),
-        (a, vec![answer::ALLOW_SESSION.into()], None)
-    );
-    assert_eq!(
-        state.focused(),
-        Some(b),
-        "focus moves to the next waiting card"
-    );
-    assert_eq!(
-        answered(send(&mut state, esc())),
-        (b, vec![answer::DENY.into()], None)
-    );
-    assert_eq!(state.focused(), None);
 }
 
 #[test]
-fn only_the_oldest_waiting_card_takes_keys() {
-    let mut fx = Fixture::new();
-    let q = fx.question(&["a", "b", "c"], false);
-    let a = fx.approval();
-    let mut state = fx.state(false);
-    assert_eq!(state.focused(), Some(q));
-    send(&mut state, digit("3"));
-    assert_eq!(
-        answered(send(&mut state, enter())),
-        (q, vec!["c".into()], None)
-    );
-    assert!(
-        send(&mut state, digit("9")).is_none(),
-        "out of range numbers are ignored"
-    );
-    assert!(send(&mut state, enter()).is_none());
-    assert!(send(&mut state, digit("1")).is_none());
-    assert_eq!(
-        answered(send(&mut state, enter())),
-        (a, vec![answer::ALLOW_ONCE.into()], None)
-    );
-}
-
-#[test]
-fn esc_skips_questions_and_forms_and_rejects_plans() {
-    let mut fx = Fixture::new();
-    let turn = fx.turn;
-    let q = fx.question(&["a", "b"], true);
-    let f = fx.decision(turn, "form", vec![(attr::FIELDS, FIELDS.into())], "");
-    let p = fx.decision(turn, "plan", vec![], PLAN);
-    let mut state = fx.state(false);
-    send(&mut state, digit("1"));
-    assert_eq!(answered(send(&mut state, esc())), (q, vec![], None));
-    assert_eq!(answered(send(&mut state, esc())), (f, vec![], None));
-    assert_eq!(
-        answered(send(&mut state, esc())),
-        (p, vec![answer::REJECT.into()], None)
-    );
-}
-
-#[test]
-fn keys_typed_into_a_text_field_are_not_shortcuts() {
-    let mut fx = Fixture::new();
-    let a = fx.approval();
-    let state = fx.state(false);
-    let mut ui = simulator(state.view());
-    assert_eq!(
-        ui.tap_key(keyboard::Key::Character("1".into())),
-        iced::event::Status::Ignored
-    );
-    ui.click(text_field_id(a)).unwrap();
-    assert_eq!(
-        ui.typewrite("1"),
-        iced::event::Status::Captured,
-        "the field consumes the digit"
-    );
-    assert_eq!(
-        ui.tap_key(key::Named::Enter),
-        iced::event::Status::Captured,
-        "Enter submits the field"
-    );
-    assert_eq!(
-        ui.tap_key(key::Named::Escape),
-        iced::event::Status::Captured,
-        "Esc unfocuses the field"
-    );
-    let messages: Vec<Message> = ui.into_messages().collect();
-    assert!(
-        matches!(messages.as_slice(), [Message::Text(id, t), Message::SubmitText(id2)] if *id == a && t == "1" && *id2 == a),
-        "{messages:?}"
-    );
-}
-
-#[test]
-fn shortcuts_ignore_modified_keys() {
-    let event = keyboard::Event::KeyPressed {
-        key: keyboard::Key::Character("1".into()),
-        modified_key: keyboard::Key::Character("1".into()),
-        physical_key: key::Physical::Unidentified(key::NativeCode::Unidentified),
-        location: keyboard::Location::Standard,
-        modifiers: keyboard::Modifiers::CTRL,
-        text: None,
-        repeat: false,
-    };
-    assert_eq!(shortcut(&event), None);
-}
-
-// View only peers and read only cards
-
-#[test]
-fn view_only_peers_see_a_card_they_cannot_answer() {
-    let mut fx = Fixture::new();
-    let a = fx.approval();
-    let mut state = fx.state(true);
-    assert_eq!(state.focused(), None);
-    assert!(send(&mut state, Message::Choose(a, 0)).is_none());
-    assert!(send(&mut state, Message::Text(a, "x".into())).is_none());
-    let mut ui = simulator(state.view());
-    ui.find("View only: you can't answer this prompt")
-        .expect("view only notice");
-    ui.click("Allow once").unwrap();
-    assert_eq!(
-        ui.into_messages().count(),
-        0,
-        "disabled buttons publish nothing"
-    );
-}
-
-#[test]
-fn answered_decisions_render_read_only_with_who_answered() {
-    let mut fx = Fixture::new();
-    let a = fx.approval();
-    let q = fx.question(&["x", "y"], false);
-    let mut state = fx.state(false);
-    answered(send(&mut state, Message::Choose(a, 2)));
-    assert_eq!(
-        state.focused(),
-        Some(q),
-        "a card awaiting the DOM keeps no focus"
-    );
-
-    fx.set(a, attr::ANSWER, vec![answer::DENY.to_owned()]);
-    fx.set(a, attr::BY, TIMEOUT_BY);
-    fx.set(a, attr::STATUS, "answered");
-    fx.set(q, attr::ANSWER, vec!["y".to_owned()]);
-    fx.set(q, attr::BY, "node-bob");
-    fx.set(q, attr::STATUS, "answered");
-    state.sync(&fx.dom);
-    assert_eq!(state.focused(), None);
-    assert!(send(&mut state, Message::Choose(q, 0)).is_none());
-
-    let mut ui = simulator(state.view());
-    ui.find("Denied by timeout (default answer)")
-        .expect("timeout answer");
-    ui.find("y by node-bob").expect("peer answer");
-    assert!(
-        ui.find("Allow once").is_err(),
-        "no buttons on a read only card"
-    );
-}
-
-#[test]
-fn a_refused_answer_reopens_the_card() {
-    let mut fx = Fixture::new();
-    let a = fx.approval();
-    let mut state = fx.state(false);
-    answered(send(&mut state, Message::Choose(a, 0)));
-    assert!(send(&mut state, Message::Choose(a, 0)).is_none());
-    state.answer_failed(a);
-    assert_eq!(answered(send(&mut state, Message::Choose(a, 0))).0, a);
-}
-
-#[test]
-fn node_names_shorten_keys_and_name_the_local_node() {
-    let local = "a".repeat(64);
-    let peer = format!("0123abcd{}", "f".repeat(56));
-    assert_eq!(node_name(&local, &local, Some("desk")), "desk");
-    assert_eq!(node_name(&local, &local, None), "aaaaaaaa");
-    assert_eq!(node_name(&peer, &local, Some("desk")), "0123abcd");
-    assert_eq!(node_name("timeout", &local, Some("desk")), "timeout");
-    assert_eq!(node_name("alice", &local, Some("desk")), "alice");
+fn form_schemas_parse_validate_and_answer_typed_json() {
+    use form::{FieldError, Form, FormError};
+    let mut form = Form::parse(r#"{"properties":{"b":{"type":"string","default":"main"},"r":{"type":"integer"},"x":{"type":"number"},"f":{"type":"boolean"},"t":{"type":"array","items":{"enum":["a","b"]},"default":["b"]},"n":{"type":["string","null"]}},"required":["b","x","t"]}"#).unwrap();
+    let cases: &[(usize, form::FieldValue, Option<FieldError>)] = &[(0, form::FieldValue::Text(" ".into()), Some(FieldError::Required)), (1, form::FieldValue::Text("2.5".into()), Some(FieldError::NotInteger)), (2, form::FieldValue::Text("abc".into()), Some(FieldError::NotNumber))];
+    for (i, value, error) in cases {
+        form.set(*i, value.clone());
+        assert_eq!(form.submit(), None);
+        assert_eq!(form.errors[*i], *error, "field {i}");
+    }
+    for (i, v) in [(0, "dev"), (1, "5"), (2, "0.5")] {
+        form.set(i, form::FieldValue::Text(v.into()));
+    }
+    form.toggle(4, 0);
+    assert_eq!(form.submit().as_deref(), Some(r#"{"b":"dev","r":5,"x":0.5,"f":false,"t":["a","b"]}"#));
+    assert!(matches!(Form::parse("not json"), Err(FormError::Json(_))));
+    assert_eq!(Form::parse(r#"{"type":"string"}"#), Err(FormError::NotObject));
+    assert_eq!(Form::parse(r#"{"properties":{"t":{"type":"array"}}}"#), Err(FormError::Unsupported { field: "t".into(), ty: "array".into() }));
 }
