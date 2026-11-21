@@ -368,8 +368,7 @@ impl DocsServer {
 
     /// The open surface at `uri`, typed, for data queries and edits.
     pub fn surface(&self, uri: &SurfaceUri) -> Result<DocSurface> {
-        self.surfaces
-            .locked()
+        self.surfaces.locked()
             .get(uri)
             .cloned()
             .ok_or_else(|| DocsError::Surface(SurfaceError::NotFound(uri.clone())))

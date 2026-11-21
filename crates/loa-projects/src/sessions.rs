@@ -15,7 +15,7 @@ use loa_bus::Bus;
 use loa_core::{Dom, Draft, Patch, PatchSink, now_ms};
 use loa_journal::{Journal, Listing, Store};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex};
 
 /// Every session of this node, live or stored.
 #[derive(Clone)]
@@ -59,11 +59,6 @@ async fn blocking<T: Send + 'static>(work: impl FnOnce() -> Result<T> + Send + '
 }
 
 impl Inner {
-    fn cache(&self) -> MutexGuard<'_, HashMap<String, (u64, Arc<Dom>)>> {
-        // Inserting or cloning an entry can't leave the map half written.
-        self.cache.locked()
-    }
-
     fn live(&self, session: &str) -> Option<Arc<Dom>> {
         self.bus.get(session).map(|writer| Arc::new(writer.with_dom(Dom::clone)))
     }
@@ -90,18 +85,18 @@ impl Inner {
                 if let Some(dom) = self.live(session) {
                     return Ok(Some(dom));
                 }
-                return self.cache().get(session).map(|(_, dom)| Some(dom.clone())).ok_or(error);
+                return self.cache.locked().get(session).map(|(_, dom)| Some(dom.clone())).ok_or(error);
             }
         };
         let seq = journal.last_seq();
-        if let Some((cached, dom)) = self.cache().get(session)
+        if let Some((cached, dom)) = self.cache.locked().get(session)
             && *cached == seq
         {
             return Ok(Some(dom.clone()));
         }
         let dom = Arc::new(journal.load().map_err(port)?);
         drop(journal);
-        self.cache().insert(session.to_owned(), (seq, dom.clone()));
+        self.cache.locked().insert(session.to_owned(), (seq, dom.clone()));
         Ok(Some(dom))
     }
 
@@ -151,7 +146,7 @@ impl Inner {
         journal.sync().map_err(port)?;
         let seq = journal.last_seq();
         drop(journal);
-        self.cache().insert(session.to_owned(), (seq, Arc::new(dom)));
+        self.cache.locked().insert(session.to_owned(), (seq, Arc::new(dom)));
         Ok(patch)
     }
 }

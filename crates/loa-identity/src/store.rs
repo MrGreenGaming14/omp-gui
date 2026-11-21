@@ -43,20 +43,15 @@ impl MemoryKeyStore {
         }
     }
 
-    fn slot(&self) -> std::sync::MutexGuard<'_, Option<SecretBytes>> {
-        // A poisoned lock only means another thread panicked mid-access; the
-        // slot is a plain value that is always in a consistent state.
-        self.secret.locked()
-    }
 }
 
 impl KeyStore for MemoryKeyStore {
     fn load(&self) -> Result<Option<SecretBytes>> {
-        Ok(self.slot().clone())
+        Ok(self.secret.locked().clone())
     }
 
     fn store(&self, secret: &[u8]) -> Result<()> {
-        *self.slot() = Some(Zeroizing::new(secret.to_vec()));
+        *self.secret.locked() = Some(Zeroizing::new(secret.to_vec()));
         Ok(())
     }
 }
@@ -64,7 +59,7 @@ impl KeyStore for MemoryKeyStore {
 impl fmt::Debug for MemoryKeyStore {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("MemoryKeyStore")
-            .field("occupied", &self.slot().is_some())
+            .field("occupied", &self.secret.locked().is_some())
             .finish()
     }
 }

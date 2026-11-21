@@ -17,7 +17,7 @@ use serde_json::{Value as Json, json};
 use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{oneshot, watch};
@@ -406,9 +406,6 @@ impl CodexSession {
         self.shared.thread_id()
     }
 
-    fn mapper(&self) -> MutexGuard<'_, Mapper> {
-        self.shared.mapper.locked()
-    }
 }
 
 /// The request/response exchange that runs before the reader task owns stdout.
@@ -465,7 +462,7 @@ impl HarnessSession for CodexSession {
         if *self.state.borrow() == SessionState::Closed {
             return Err(AdapterError::Closed);
         }
-        self.mapper().begin_turn(&prompt)?;
+        self.shared.mapper.locked().begin_turn(&prompt)?;
         self.shared.publish_state();
         let mut params = json!({ "threadId": self.shared.thread_id(), "input": turn_input(&prompt) });
         {
@@ -492,10 +489,10 @@ impl HarnessSession for CodexSession {
         let outcome = self.shared.request("turn/start", params).await;
         let recorded = match &outcome {
             Ok(result) => match result.get("turn").and_then(|t| t.get("id")).and_then(Json::as_str) {
-                Some(turn_id) => self.mapper().turn_accepted(turn_id),
+                Some(turn_id) => self.shared.mapper.locked().turn_accepted(turn_id),
                 None => Ok(()),
             },
-            Err(error) => self.mapper().turn_rejected(&error.to_string()),
+            Err(error) => self.shared.mapper.locked().turn_rejected(&error.to_string()),
         };
         self.shared.publish_state();
         recorded?;
@@ -503,13 +500,13 @@ impl HarnessSession for CodexSession {
     }
 
     async fn interrupt(&self) -> Result<()> {
-        let Some(turn_id) = self.mapper().turn_id().map(str::to_owned) else { return Ok(()) };
+        let Some(turn_id) = self.shared.mapper.locked().turn_id().map(str::to_owned) else { return Ok(()) };
         self.shared.request("turn/interrupt", json!({ "threadId": self.shared.thread_id(), "turnId": turn_id })).await?;
         Ok(())
     }
 
     async fn answer(&self, decision: NodeId, answer: Answer) -> Result<()> {
-        let reply = self.mapper().answer(decision, &answer)?;
+        let reply = self.shared.mapper.locked().answer(decision, &answer)?;
         self.shared.publish_state();
         if let Some(reply) = reply {
             self.shared.send_reply(reply).await?;
@@ -522,12 +519,12 @@ impl HarnessSession for CodexSession {
             return Err(AdapterError::Unsupported { harness: HARNESS, what: "model roles" });
         }
         self.shared.settings.locked().model = Some(selection.model.clone());
-        self.mapper().set_model(&selection.model)
+        self.shared.mapper.locked().set_model(&selection.model)
     }
 
     async fn set_mode(&self, mode: SessionMode) -> Result<()> {
         self.shared.settings.locked().mode = Some(mode);
-        self.mapper().set_mode(mode)
+        self.shared.mapper.locked().set_mode(mode)
     }
 
     /// Every page of `model/list`.
@@ -555,7 +552,7 @@ impl HarnessSession for CodexSession {
     /// Codex takes the effort with each `turn/start`; it applies from the next turn.
     async fn set_effort(&self, effort: String) -> Result<()> {
         self.shared.settings.locked().effort = Some(effort.clone());
-        self.mapper().set_effort(&effort)
+        self.shared.mapper.locked().set_effort(&effort)
     }
 
     async fn compact(&self, instructions: Option<String>) -> Result<()> {

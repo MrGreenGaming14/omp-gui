@@ -53,7 +53,7 @@ use std::collections::{HashMap, HashSet};
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::sync::{Arc, Mutex, MutexGuard, Weak};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
@@ -420,14 +420,6 @@ impl Node {
         let _ = self.inner.events.send(event);
     }
 
-    fn state(&self) -> MutexGuard<'_, State> {
-        self.inner.state.locked()
-    }
-
-    fn peers_db(&self) -> MutexGuard<'_, PeerStore> {
-        self.inner.peers.locked()
-    }
-
     pub(crate) fn grant_store(&self) -> &Arc<GrantStore> {
         &self.inner.grants
     }
@@ -454,7 +446,7 @@ impl Node {
         if self.inner.net.locked().is_some() {
             return Ok(());
         }
-        self.state().endpoint = Endpoint::Starting;
+        self.inner.state.locked().endpoint = Endpoint::Starting;
         self.changed();
         let weak = Arc::downgrade(&self.inner);
         // Every node may open control (that is how grants and presence
@@ -471,7 +463,7 @@ impl Node {
         let net = match Network::bind(self.inner.seed, config.bind, config.relay.clone(), router).await {
             Ok(net) => Arc::new(net),
             Err(error) => {
-                self.state().endpoint = Endpoint::Failed(error.to_string());
+                self.inner.state.locked().endpoint = Endpoint::Failed(error.to_string());
                 self.changed();
                 return Err(error.into());
             }
@@ -499,7 +491,7 @@ impl Node {
         };
         tasks.push(tokio::spawn(background(weak, config.presence_interval)));
         {
-            let mut state = self.state();
+            let mut state = self.inner.state.locked();
             state.endpoint = Endpoint::Listening { udp, tcp };
             state.mdns = mdns;
             state.tasks = tasks;
@@ -510,7 +502,7 @@ impl Node {
 
     /// Stops discovery and closes the endpoint.
     pub async fn stop(&self) {
-        let tasks = std::mem::take(&mut self.state().tasks);
+        let tasks = std::mem::take(&mut self.inner.state.locked().tasks);
         for task in tasks {
             task.abort();
         }
@@ -519,7 +511,7 @@ impl Node {
             net.close().await;
         }
         {
-            let mut state = self.state();
+            let mut state = self.inner.state.locked();
             state.endpoint = Endpoint::Stopped;
             state.transports.clear();
             if matches!(state.mdns, Availability::Active(_)) {
@@ -530,7 +522,7 @@ impl Node {
     }
 
     pub fn status(&self) -> NodeStatus {
-        let state = self.state();
+        let state = self.inner.state.locked();
         NodeStatus {
             key: self.inner.key,
             name: self.inner.config.name.clone(),
@@ -559,11 +551,11 @@ impl Node {
         }
         let addresses = match address.map(str::trim).filter(|a| !a.is_empty()) {
             Some(address) => resolve(address).await?,
-            None => self.state().nearby.get(&key).map(|n| n.addresses.clone()).unwrap_or_default(),
+            None => self.inner.state.locked().nearby.get(&key).map(|n| n.addresses.clone()).unwrap_or_default(),
         };
-        let name = self.state().nearby.get(&key).and_then(|n| n.name.clone());
-        self.peers_db().add_peer(&key.to_string(), name.as_deref(), &addresses, DiscoverySource::Manual)?;
-        self.state().nearby.remove(&key);
+        let name = self.inner.state.locked().nearby.get(&key).and_then(|n| n.name.clone());
+        self.inner.peers.locked().add_peer(&key.to_string(), name.as_deref(), &addresses, DiscoverySource::Manual)?;
+        self.inner.state.locked().nearby.remove(&key);
         self.changed();
         self.probe(key).await;
         Ok(())
@@ -572,7 +564,7 @@ impl Node {
     /// Saves a node found on the LAN, the tailnet or that connected here.
     pub async fn add_nearby(&self, key: &str) -> Result<()> {
         let key = Self::parse_key(key)?;
-        let Some(nearby) = self.state().nearby.remove(&key) else {
+        let Some(nearby) = self.inner.state.locked().nearby.remove(&key) else {
             return Err(NodeError::UnknownPeer(key.to_string()));
         };
         let source = match nearby.source {
@@ -580,9 +572,9 @@ impl Node {
             NearbySource::Tailscale => DiscoverySource::Tailscale,
             NearbySource::Incoming => DiscoverySource::Manual,
         };
-        self.peers_db().add_peer(&key.to_string(), nearby.name.as_deref(), &nearby.addresses, source)?;
+        self.inner.peers.locked().add_peer(&key.to_string(), nearby.name.as_deref(), &nearby.addresses, source)?;
         if let Some(version) = &nearby.app_version {
-            self.peers_db().update_app_version(&key, version)?;
+            self.inner.peers.locked().update_app_version(&key, version)?;
         }
         self.changed();
         self.probe(key).await;
@@ -591,7 +583,7 @@ impl Node {
 
     pub fn rename_peer(&self, key: &str, name: &str) -> Result<()> {
         let key = Self::parse_key(key)?;
-        if !self.peers_db().rename(&key, name.trim())? {
+        if !self.inner.peers.locked().rename(&key, name.trim())? {
             return Err(NodeError::UnknownPeer(key.to_string()));
         }
         self.changed();
@@ -601,11 +593,11 @@ impl Node {
     /// Forgets a peer. Grants given to it stay until revoked.
     pub fn remove_peer(&self, key: &str) -> Result<()> {
         let key = Self::parse_key(key)?;
-        if !self.peers_db().remove(&key)? {
+        if !self.inner.peers.locked().remove(&key)? {
             return Err(NodeError::UnknownPeer(key.to_string()));
         }
         {
-            let mut state = self.state();
+            let mut state = self.inner.state.locked();
             state.transports.remove(&key);
             state.remote.remove(&key);
         }
@@ -614,8 +606,8 @@ impl Node {
     }
 
     pub fn peers(&self) -> Vec<PeerInfo> {
-        let peers = self.peers_db().list().unwrap_or_default();
-        let state = self.state();
+        let peers = self.inner.peers.locked().list().unwrap_or_default();
+        let state = self.inner.state.locked();
         peers
             .into_iter()
             .map(|peer| PeerInfo {
@@ -636,7 +628,7 @@ impl Node {
     }
 
     pub fn nearby(&self) -> Vec<NearbyPeer> {
-        let mut nearby: Vec<_> = self.state().nearby.values().cloned().collect();
+        let mut nearby: Vec<_> = self.inner.state.locked().nearby.values().cloned().collect();
         nearby.sort_by(|a, b| b.seen_ms.cmp(&a.seen_ms).then_with(|| a.key.cmp(&b.key)));
         nearby
     }
@@ -644,12 +636,12 @@ impl Node {
     /// A peer's display name: what the user named it, its own announced name,
     /// or the start of its key.
     pub fn peer_name(&self, key: &NodeId) -> String {
-        if let Ok(Some(peer)) = self.peers_db().lookup(key)
+        if let Ok(Some(peer)) = self.inner.peers.locked().lookup(key)
             && let Some(name) = peer.name.filter(|n| !n.is_empty())
         {
             return name;
         }
-        if let Some(name) = self.state().nearby.get(key).and_then(|n| n.name.clone()) {
+        if let Some(name) = self.inner.state.locked().nearby.get(key).and_then(|n| n.name.clone()) {
             return name;
         }
         key.fmt_short().to_string()
@@ -658,7 +650,7 @@ impl Node {
     /// Probes every saved peer, refreshes the sessions they share and
     /// delivers grants that were waiting for them.
     pub async fn refresh_presence(&self) {
-        let peers: Vec<NodeId> = self.peers_db().list().unwrap_or_default().into_iter().map(|p| p.key).collect();
+        let peers: Vec<NodeId> = self.inner.peers.locked().list().unwrap_or_default().into_iter().map(|p| p.key).collect();
         let mut probes = tokio::task::JoinSet::new();
         for peer in peers {
             let node = self.clone();
@@ -677,7 +669,7 @@ impl Node {
                     let _ = self.list_remote(&peer.to_string()).await;
                 } else {
                     // Its grants ended: its sessions leave Recents.
-                    let listed = self.state().remote.remove(&peer).is_some();
+                    let listed = self.inner.state.locked().remote.remove(&peer).is_some();
                     if listed {
                         self.changed();
                     }
@@ -685,8 +677,8 @@ impl Node {
             }
             Err(error) => {
                 tracing::debug!(%peer, %error, "peer unreachable");
-                let _ = self.peers_db().update_presence(&peer, false, now_ms());
-                self.state().transports.remove(&peer);
+                let _ = self.inner.peers.locked().update_presence(&peer, false, now_ms());
+                self.inner.state.locked().transports.remove(&peer);
                 self.changed();
             }
         }
@@ -700,7 +692,7 @@ impl Node {
     /// Records what a connection showed about `peer`.
     pub(crate) fn observe(&self, peer: NodeId, hello: &wire::Hello, transport: Transport) {
         let known = {
-            let db = self.peers_db();
+            let db = self.inner.peers.locked();
             let known = db.update_app_version(&peer, &hello.app_version).unwrap_or(false);
             if known {
                 if !hello.name.is_empty() {
@@ -711,7 +703,7 @@ impl Node {
             known
         };
         {
-            let mut state = self.state();
+            let mut state = self.inner.state.locked();
             state.transports.insert(peer, transport);
             let labels: Vec<String> =
                 hello.protocols.iter().map(|p| alpn::Alpn::new(p.name.as_str(), p.version).to_string()).collect();
@@ -743,8 +735,8 @@ impl Node {
     }
 
     fn hints(&self, peer: &NodeId) -> Vec<SocketAddr> {
-        let mut hints = self.peers_db().lookup(peer).ok().flatten().map(|p| p.addresses).unwrap_or_default();
-        if let Some(nearby) = self.state().nearby.get(peer) {
+        let mut hints = self.inner.peers.locked().lookup(peer).ok().flatten().map(|p| p.addresses).unwrap_or_default();
+        if let Some(nearby) = self.inner.state.locked().nearby.get(peer) {
             for address in &nearby.addresses {
                 if !hints.contains(address) {
                     hints.push(*address);
@@ -766,7 +758,7 @@ impl Node {
         let conn = tokio::time::timeout(CALL_TIMEOUT, net.dial(peer, protocol, versions, &hints, &hints))
             .await
             .map_err(|_| NodeError::Timeout("dialing the peer"))??;
-        self.state().transports.insert(peer, conn.transport());
+        self.inner.state.locked().transports.insert(peer, conn.transport());
         Ok(conn)
     }
 
@@ -795,14 +787,14 @@ impl Node {
         let found = match result {
             Ok(found) => found,
             Err(error) => {
-                self.state().tailscale = Availability::Failed(error.to_string());
+                self.inner.state.locked().tailscale = Availability::Failed(error.to_string());
                 self.changed();
                 return Err(error.into());
             }
         };
         let count = found.iter().filter(|p| p.node != self.inner.key).count();
         {
-            let mut state = self.state();
+            let mut state = self.inner.state.locked();
             for peer in found.into_iter().filter(|p| p.node != self.inner.key) {
                 let entry = state.nearby.entry(peer.node).or_insert_with(|| NearbyPeer {
                     key: peer.node,
@@ -824,13 +816,13 @@ impl Node {
             }
             state.tailscale = Availability::Active(format!("last scan found {count} node{}", if count == 1 { "" } else { "s" }));
         }
-        let peers = self.peers_db().list().unwrap_or_default();
+        let peers = self.inner.peers.locked().list().unwrap_or_default();
         for peer in peers {
-            if let Some(nearby) = self.state().nearby.get(&peer.key).filter(|n| n.source == NearbySource::Tailscale).cloned() {
+            if let Some(nearby) = self.inner.state.locked().nearby.get(&peer.key).filter(|n| n.source == NearbySource::Tailscale).cloned() {
                 let mut addresses = peer.addresses.clone();
                 addresses.extend(nearby.addresses.iter().copied().filter(|a| !peer.addresses.contains(a)));
-                let _ = self.peers_db().set_addresses(&peer.key, &addresses);
-                self.state().nearby.remove(&peer.key);
+                let _ = self.inner.peers.locked().set_addresses(&peer.key, &addresses);
+                self.inner.state.locked().nearby.remove(&peer.key);
             }
         }
         self.changed();
@@ -841,13 +833,13 @@ impl Node {
         if found.node == self.inner.key {
             return;
         }
-        let known = self.peers_db().lookup(&found.node).ok().flatten();
+        let known = self.inner.peers.locked().lookup(&found.node).ok().flatten();
         if let Some(peer) = known {
             if !found.addresses.is_empty() && peer.addresses != found.addresses {
-                let _ = self.peers_db().set_addresses(&found.node, &found.addresses);
+                let _ = self.inner.peers.locked().set_addresses(&found.node, &found.addresses);
             }
         } else {
-            let mut state = self.state();
+            let mut state = self.inner.state.locked();
             let entry = state.nearby.entry(found.node).or_insert_with(|| NearbyPeer {
                 key: found.node,
                 name: None,
@@ -894,7 +886,7 @@ impl Node {
     /// at the next patch: every check looks the revocation up.
     pub async fn revoke_grant(&self, id: &GrantId) -> Result<()> {
         self.inner.grants.revoke(&self.inner.grant_key.public(), id, now_ms())?;
-        self.state().undelivered.remove(id);
+        self.inner.state.locked().undelivered.remove(id);
         self.changed();
         let holder = self.inner.grants.issued()?.into_iter().find(|g| &g.id == id).and_then(|g| node_id(&g.holder));
         if let Some(holder) = holder {
@@ -910,21 +902,21 @@ impl Node {
         let delivery = Kind::GrantDelivery(wire::GrantDelivery { token, root: Vec::new() });
         match self.control_call(holder, delivery).await {
             Ok(Kind::Ack(ack)) if ack.error.is_empty() => {
-                self.state().undelivered.remove(id);
+                self.inner.state.locked().undelivered.remove(id);
             }
             Ok(other) => {
                 tracing::warn!(%holder, ?other, "grant delivery refused");
-                self.state().undelivered.insert(id.clone());
+                self.inner.state.locked().undelivered.insert(id.clone());
             }
             Err(error) => {
                 tracing::debug!(%holder, %error, "grant delivery deferred until the holder answers");
-                self.state().undelivered.insert(id.clone());
+                self.inner.state.locked().undelivered.insert(id.clone());
             }
         }
     }
 
     async fn deliver_waiting(&self, peer: NodeId) {
-        let waiting: Vec<GrantId> = self.state().undelivered.iter().cloned().collect();
+        let waiting: Vec<GrantId> = self.inner.state.locked().undelivered.iter().cloned().collect();
         if waiting.is_empty() {
             return;
         }
@@ -935,7 +927,7 @@ impl Node {
                 Ok(fresh) => self.deliver(peer, &record.id, fresh.token).await,
                 Err(error) => {
                     tracing::debug!(id = %record.id, %error, "waiting grant can no longer be delivered");
-                    self.state().undelivered.remove(&record.id);
+                    self.inner.state.locked().undelivered.remove(&record.id);
                 }
             }
         }
@@ -990,7 +982,7 @@ impl Node {
 
     /// Resources the app adds to grant pickers: SSH hosts, projects, surfaces.
     pub fn set_resources(&self, resources: Vec<(Resource, String)>) {
-        self.state().resources = resources;
+        self.inner.state.locked().resources = resources;
         self.changed();
     }
 
@@ -1015,7 +1007,7 @@ impl Node {
                 ));
             }
         }
-        let added = self.state().added.iter().map(|protocol| protocol.required.0.clone()).collect::<Vec<_>>();
+        let added = self.inner.state.locked().added.iter().map(|protocol| protocol.required.0.clone()).collect::<Vec<_>>();
         if added.contains(&Resource::Sandbox) {
             out.push((Resource::Sandbox, SANDBOX_LABEL.to_owned()));
         }
@@ -1036,7 +1028,7 @@ impl Node {
         folders.sort_unstable();
         folders.dedup();
         out.extend(folders.into_iter().map(|path| (Resource::Folder { path: path.clone() }, format!("Folder {path}"))));
-        out.extend(self.state().resources.iter().cloned());
+        out.extend(self.inner.state.locked().resources.iter().cloned());
         out
     }
 
@@ -1044,14 +1036,14 @@ impl Node {
     /// reaches `handler` once its requester proved a grant for `required`.
     /// Adding a name and version again replaces the earlier handler.
     pub fn add_protocol(&self, name: &'static str, version: u32, required: (Resource, Action), handler: Arc<dyn PeerProtocol>) {
-        let mut state = self.state();
+        let mut state = self.inner.state.locked();
         state.added.retain(|protocol| (protocol.name, protocol.version) != (name, version));
         state.added.push(AddedProtocol { name, version, required, handler });
     }
 
     /// The protocols added so far, to carry over to a node opened again.
     pub fn added_protocols(&self) -> Vec<AddedProtocol> {
-        self.state().added.clone()
+        self.inner.state.locked().added.clone()
     }
 
     /// A stream on `name`/`version` to `peer`, after presenting the grants
@@ -1118,14 +1110,14 @@ impl Node {
     pub async fn list_remote(&self, peer: &str) -> Result<Vec<RemoteSession>> {
         let peer = Self::parse_key(peer)?;
         let sessions = share::list(self, peer).await?;
-        self.state().remote.insert(peer, sessions.clone());
+        self.inner.state.locked().remote.insert(peer, sessions.clone());
         self.changed();
         Ok(sessions)
     }
 
     /// Every peer session last listed, for Recents (tagged by [`RemoteSession::peer`]).
     pub fn remote_sessions(&self) -> Vec<RemoteSession> {
-        let state = self.state();
+        let state = self.inner.state.locked();
         let mut out: Vec<_> = state.remote.values().flatten().cloned().collect();
         out.sort_by(|a, b| b.created_ms.cmp(&a.created_ms).then_with(|| a.id.cmp(&b.id)));
         out

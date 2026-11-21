@@ -64,8 +64,7 @@ pub(crate) struct ClientHandler {
 impl ClientHandler {
     fn reject(&self, reason: String) {
         *self
-            .rejection
-            .locked() = Some(reason);
+            .rejection.locked() = Some(reason);
     }
 }
 
@@ -198,7 +197,7 @@ impl Connector {
 
     /// Closes the pooled connection to `host`, if any.
     pub async fn disconnect(&self, host: &str) {
-        let slot = self.slots().remove(host);
+        let slot = self.pool.locked().remove(host);
         if let Some(slot) = slot
             && let Some(p) = slot.lock().await.take()
         {
@@ -210,16 +209,10 @@ impl Connector {
         }
     }
 
-    fn slots(&self) -> std::sync::MutexGuard<'_, HashMap<String, Slot>> {
-        // The map only holds Arcs; a poisoned lock leaves it consistent.
-        self.pool
-            .locked()
-    }
-
     /// A live connection to `host`: the pooled one, or a new one when there
     /// is none, it closed, or the host's hops changed.
     pub(crate) async fn session(&self, host: &Host) -> Result<Arc<Session>> {
-        let slot = self.slots().entry(host.name.clone()).or_default().clone();
+        let slot = self.pool.locked().entry(host.name.clone()).or_default().clone();
         let mut pooled = slot.lock().await;
         if let Some(p) = pooled.as_ref()
             && !p.session.handle.is_closed()
@@ -298,8 +291,7 @@ impl Connector {
             }
         };
         let mut handle = connected.map_err(|source| {
-            let reason = rejection
-                .locked()
+            let reason = rejection.locked()
                 .take();
             match reason {
                 Some(reason) => Error::HostKeyRejected {

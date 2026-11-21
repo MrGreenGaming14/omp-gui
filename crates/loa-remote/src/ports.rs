@@ -275,8 +275,7 @@ impl PromptQueue {
     /// Denies every approval a session is still waiting on (it ended).
     pub fn deny_session(&self, session_id: &str) {
         let ids: Vec<u64> = self
-            .queue
-            .locked()
+            .queue.locked()
             .pending
             .iter()
             .filter(|(_, (prompt, _))| prompt.session_id() == Some(session_id))

@@ -77,14 +77,9 @@ impl RfbServer {
 
     fn live(&self, name: &str) -> Option<Arc<RfbSurface>> {
         // The map holds plain data, a poisoned lock leaves it usable.
-        self.open
-            .locked()
+        self.open.locked()
             .get(name)
             .and_then(Weak::upgrade)
-    }
-
-    fn endpoints(&self) -> std::sync::MutexGuard<'_, Vec<RfbEndpoint>> {
-        self.endpoints.locked()
     }
 
     /// Adds `endpoint`, replacing one with the same name, and returns its uri.
@@ -92,13 +87,12 @@ impl RfbServer {
     /// surfaces already open keep their connection until dropped.
     pub fn add_endpoint(&self, endpoint: RfbEndpoint) -> loa_surface::Result<SurfaceUri> {
         let uri = SurfaceUri::new(SERVER_NAME, &endpoint.name)?;
-        let mut endpoints = self.endpoints();
+        let mut endpoints = self.endpoints.locked();
         match endpoints.iter_mut().find(|e| e.name == endpoint.name) {
             Some(existing) if *existing == endpoint => {}
             Some(existing) => {
                 *existing = endpoint;
-                self.open
-                    .locked()
+                self.open.locked()
                     .remove(&existing.name);
             }
             None => endpoints.push(endpoint),
@@ -109,11 +103,10 @@ impl RfbServer {
     /// Removes the endpoint `name`. Open surfaces keep their connection until
     /// dropped. `false` when there was none.
     pub fn remove_endpoint(&self, name: &str) -> bool {
-        let mut endpoints = self.endpoints();
+        let mut endpoints = self.endpoints.locked();
         let before = endpoints.len();
         endpoints.retain(|e| e.name != name);
-        self.open
-            .locked()
+        self.open.locked()
             .remove(name);
         endpoints.len() != before
     }
@@ -125,7 +118,7 @@ impl RfbServer {
             return Err(not_found());
         }
         let endpoint = self
-            .endpoints()
+            .endpoints.locked()
             .iter()
             .find(|e| e.name == uri.name())
             .cloned()
@@ -161,7 +154,7 @@ impl SurfaceServer for RfbServer {
     /// Every configured endpoint. A surface that is not open reports a 0x0
     /// size, since the size is only known after connecting.
     async fn list(&self) -> loa_surface::Result<Vec<SurfaceInfo>> {
-        let endpoints = self.endpoints().clone();
+        let endpoints = self.endpoints.locked().clone();
         endpoints
             .iter()
             .map(|e| match self.live(&e.name) {

@@ -170,8 +170,7 @@ impl KnownHosts {
         // Serialises writers in this process; the file is opened in append
         // mode so concurrent OpenSSH writers interleave whole lines.
         let _guard = self
-            .write_lock
-            .locked();
+            .write_lock.locked();
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| fail(e.to_string()))?;
         }

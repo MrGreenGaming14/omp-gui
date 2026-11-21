@@ -12,7 +12,7 @@ use crate::{GrantError, Result};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::Mutex;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS grants_issued (
@@ -157,12 +157,6 @@ impl GrantStore {
         Ok(Self { db: Mutex::new(db) })
     }
 
-    fn db(&self) -> MutexGuard<'_, Connection> {
-        // Every write is one statement, so a panic elsewhere can't leave the
-        // connection mid-transaction.
-        self.db.locked()
-    }
-
     /// Creates a grant for `holder` and mints its first token.
     pub fn issue(&self, issuer: &NodeKey, holder: NodePublicKey, spec: GrantSpec, now_ms: i64) -> Result<IssuedGrant> {
         if spec.scopes.is_empty() {
@@ -176,7 +170,7 @@ impl GrantStore {
         let expires_ms = spec.token_expiry(&id, now_ms)?;
         let token = mint(issuer, &id, &holder, &spec.scopes, expires_ms, spec.reshare)?;
         let definition = serde_json::to_string(&Definition::Root(spec))?;
-        self.db().execute(
+        self.db.locked().execute(
             "INSERT INTO grants_issued (id, holder, spec, parent, created_ms) VALUES (?1, ?2, ?3, NULL, ?4)",
             params![id.0, holder.to_hex(), definition, now_ms],
         )?;
@@ -187,7 +181,7 @@ impl GrantStore {
     /// holder may ask; a revoked grant is refused.
     pub fn renew(&self, issuer: &NodeKey, id: &GrantId, requester: &NodePublicKey, now_ms: i64) -> Result<IssuedGrant> {
         let row = self
-            .db()
+            .db.locked()
             .query_row(
                 "SELECT holder, spec, parent, revoked_ms FROM grants_issued WHERE id = ?1",
                 params![id.0],
@@ -227,7 +221,7 @@ impl GrantStore {
     /// the change reaches the holder without waiting for its next renewal.
     pub fn extend(&self, issuer: &NodeKey, id: &GrantId, until_ms: Option<i64>, now_ms: i64) -> Result<IssuedGrant> {
         let row = self
-            .db()
+            .db.locked()
             .query_row(
                 "SELECT holder, spec, parent, revoked_ms FROM grants_issued WHERE id = ?1",
                 params![id.0],
@@ -247,7 +241,7 @@ impl GrantStore {
         let holder = NodePublicKey::from_hex(&holder)?;
         let expires_ms = spec.token_expiry(id, now_ms)?;
         let token = mint(issuer, id, &holder, &spec.scopes, expires_ms, spec.reshare)?;
-        self.db().execute(
+        self.db.locked().execute(
             "UPDATE grants_issued SET spec = ?2 WHERE id = ?1",
             params![id.0, serde_json::to_string(&Definition::Root(spec))?],
         )?;
@@ -277,7 +271,7 @@ impl GrantStore {
         let id = GrantId::random()?;
         let issued = self.attenuate_from(holder, parent, id, new_holder, &narrowing, now_ms)?;
         let definition = serde_json::to_string(&Definition::Reshare(narrowing))?;
-        self.db().execute(
+        self.db.locked().execute(
             "INSERT INTO grants_issued (id, holder, spec, parent, created_ms) VALUES (?1, ?2, ?3, ?4, ?5)",
             params![issued.id.0, new_holder.to_hex(), definition, parent.0, now_ms],
         )?;
@@ -313,7 +307,7 @@ impl GrantStore {
     /// Revokes a grant this node issued: renewal is refused from now on and
     /// this node's verifier denies its tokens at once.
     pub fn revoke(&self, issuer: &NodePublicKey, id: &GrantId, now_ms: i64) -> Result<()> {
-        let db = self.db();
+        let db = self.db.locked();
         let changed = db.execute(
             "UPDATE grants_issued SET revoked_ms = ?2 WHERE id = ?1 AND revoked_ms IS NULL",
             params![id.0, now_ms],
@@ -334,7 +328,7 @@ impl GrantStore {
     /// Records a revocation notice from a peer (received on the control
     /// ALPN), so this node's verifier denies re-shares of that grant at once.
     pub fn record_revocation(&self, id: &GrantId, issuer: &NodePublicKey, revoked_ms: i64) -> Result<()> {
-        self.db().execute(
+        self.db.locked().execute(
             "INSERT OR IGNORE INTO grants_revocations (id, issuer, revoked_ms) VALUES (?1, ?2, ?3)",
             params![id.0, issuer.to_hex(), revoked_ms],
         )?;
@@ -343,7 +337,7 @@ impl GrantStore {
 
     /// Every grant this node issued, oldest first.
     pub fn issued(&self) -> Result<Vec<IssuedRecord>> {
-        let db = self.db();
+        let db = self.db.locked();
         let mut statement =
             db.prepare("SELECT id, holder, spec, parent, created_ms, revoked_ms FROM grants_issued ORDER BY created_ms, id")?;
         let rows = statement.query_map([], |r| {
@@ -426,7 +420,7 @@ impl GrantStore {
             reshare: last.reshare,
             refused_ms: None,
         };
-        self.db().execute(
+        self.db.locked().execute(
             "INSERT INTO grants_received (id, issuer, root, token, expires_ms, reshare, refused_ms)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL)
              ON CONFLICT(id) DO UPDATE SET token = excluded.token, expires_ms = excluded.expires_ms,
@@ -439,12 +433,12 @@ impl GrantStore {
 
     /// Marks a held grant as refused by its issuer: renewal stops trying.
     pub fn mark_refused(&self, id: &GrantId, now_ms: i64) -> Result<()> {
-        self.db().execute("UPDATE grants_received SET refused_ms = ?2 WHERE id = ?1", params![id.0, now_ms])?;
+        self.db.locked().execute("UPDATE grants_received SET refused_ms = ?2 WHERE id = ?1", params![id.0, now_ms])?;
         Ok(())
     }
 
     pub fn received(&self, id: &GrantId) -> Result<Option<ReceivedGrant>> {
-        let db = self.db();
+        let db = self.db.locked();
         let row = db
             .query_row(
                 "SELECT id, issuer, root, token, expires_ms, reshare, refused_ms FROM grants_received WHERE id = ?1",
@@ -457,7 +451,7 @@ impl GrantStore {
 
     /// Every grant this node holds, soonest expiry first.
     pub fn received_all(&self) -> Result<Vec<ReceivedGrant>> {
-        let db = self.db();
+        let db = self.db.locked();
         let mut statement = db.prepare(
             "SELECT id, issuer, root, token, expires_ms, reshare, refused_ms FROM grants_received ORDER BY expires_ms, id",
         )?;
@@ -495,7 +489,7 @@ impl Revocations for GrantStore {
     fn is_revoked(&self, grant: &GrantId) -> bool {
         // A read failure denies: a verifier that can't check revocations
         // must not let a possibly revoked token through.
-        self.db()
+        self.db.locked()
             .query_row("SELECT EXISTS(SELECT 1 FROM grants_revocations WHERE id = ?1)", params![grant.0], |r| r.get(0))
             .unwrap_or(true)
     }

@@ -15,7 +15,7 @@ use loa_util::LockExt;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex};
 
 use iced::futures::{Stream, stream};
 use iced::{Element, Subscription, Task};
@@ -137,11 +137,6 @@ impl State {
         self.screen.as_ref()
     }
 
-    fn new_chat(&self) -> MutexGuard<'_, Option<NewChat>> {
-        // Replacing the value can't leave it half written.
-        self.new_chat.locked()
-    }
-
     fn list(&self) -> Task<Message> {
         let service = self.service.clone();
         Task::perform(async move { service.projects().await.map_err(|error| error.to_string()) }, Message::Listed)
@@ -237,7 +232,7 @@ impl State {
                 Task::none()
             }
             screen::Event::NewChat { project, cwd } => {
-                *self.new_chat() = Some(NewChat { project, cwd: cwd.map(PathBuf::from) });
+                *self.new_chat.locked() = Some(NewChat { project, cwd: cwd.map(PathBuf::from) });
                 ctx.request(Request::NewSession);
                 Task::none()
             }
@@ -262,7 +257,7 @@ impl Area for State {
     fn update(&mut self, message: Message, ctx: &mut Ctx) -> Task<Message> {
         // A "New chat" that didn't start a session (no harness) is dropped.
         if !matches!(message, Message::Screen(_)) {
-            self.new_chat().take();
+            self.new_chat.locked().take();
         }
         match message {
             Message::Open(project) => self.open(project, ctx),
@@ -362,7 +357,7 @@ impl Area for State {
         if target.resume {
             return;
         }
-        if let Some(chat) = self.new_chat().take() {
+        if let Some(chat) = self.new_chat.locked().take() {
             config.project = Some(chat.project);
             if let Some(cwd) = chat.cwd {
                 config.cwd = cwd;

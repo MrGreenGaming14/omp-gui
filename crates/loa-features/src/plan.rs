@@ -24,7 +24,7 @@ use loa_core::{
     SessionMode, TodoState, Value, answer, attr,
 };
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex};
 
 /// The plan step, put before every prompt sent while a session is in plan mode.
 pub const PLAN_STEP: &str = "[Plan mode] Tools that change files or run commands are blocked until the user \
@@ -58,24 +58,20 @@ impl PlanGate {
         Arc::default()
     }
 
-    fn sessions(&self) -> MutexGuard<'_, HashMap<String, Entry>> {
-        self.sessions.locked()
-    }
-
     /// Declares that `session_id`'s harness asks the app before every tool
     /// that writes or executes, so denying those approvals makes it read-only.
     pub fn enforce_through_approvals(&self, session_id: &str) {
-        self.sessions().entry(session_id.to_owned()).or_default().enforced = true;
+        self.sessions.locked().entry(session_id.to_owned()).or_default().enforced = true;
     }
 
     /// Whether plan mode can be enforced for `session_id`.
     pub fn enforceable(&self, session_id: &str) -> bool {
-        self.sessions().get(session_id).is_some_and(|e| e.enforced)
+        self.sessions.locked().get(session_id).is_some_and(|e| e.enforced)
     }
 
     /// Whether `session_id` is in plan mode.
     pub fn active(&self, session_id: &str) -> bool {
-        self.sessions().get(session_id).is_some_and(|e| e.permits > 0)
+        self.sessions.locked().get(session_id).is_some_and(|e| e.permits > 0)
     }
 
     /// The answer the gate gives a waiting decision of `session_id`: a deny
@@ -95,7 +91,7 @@ impl PlanGate {
     /// closed for a session not registered with
     /// [`PlanGate::enforce_through_approvals`].
     pub fn permit(self: &Arc<Self>, session_id: &str) -> Result<Box<dyn PlanPermit>> {
-        let mut sessions = self.sessions();
+        let mut sessions = self.sessions.locked();
         let entry = sessions
             .get_mut(session_id)
             .filter(|e| e.enforced)
@@ -125,7 +121,7 @@ impl PlanPermit for Permit {}
 
 impl Drop for Permit {
     fn drop(&mut self) {
-        if let Some(entry) = self.gate.sessions().get_mut(&self.session) {
+        if let Some(entry) = self.gate.sessions.locked().get_mut(&self.session) {
             entry.permits = entry.permits.saturating_sub(1);
         }
     }

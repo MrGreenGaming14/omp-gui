@@ -237,13 +237,7 @@ impl RemoteService {
 
     /// Forgets "allow for session" answers given in `session_id`.
     pub fn end_session(&self, session_id: &str) {
-        self.grants().retain(|(s, _, _)| s != session_id);
-    }
-
-    fn grants(&self) -> std::sync::MutexGuard<'_, HashSet<(String, String, Class)>> {
-        // Holds plain keys; a poisoned set is still consistent.
-        self.session_grants
-            .locked()
+        self.session_grants.locked().retain(|(s, _, _)| s != session_id);
     }
 
     fn record(
@@ -289,7 +283,7 @@ impl RemoteService {
             return Ok(());
         };
         let key = (session_id.to_string(), host.name.clone(), class);
-        if self.grants().contains(&key) {
+        if self.session_grants.locked().contains(&key) {
             return Ok(());
         }
         let answer = self
@@ -305,7 +299,7 @@ impl RemoteService {
         match answer {
             Approval::AllowOnce => Ok(()),
             Approval::AllowSession => {
-                self.grants().insert(key);
+                self.session_grants.locked().insert(key);
                 Ok(())
             }
             Approval::Deny { reason } => Err(Error::Denied(reason)),

@@ -16,7 +16,7 @@ use loa_surface::{
 };
 use std::convert::Infallible;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, MutexGuard};
+use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
@@ -131,7 +131,7 @@ impl RfbSurface {
 #[async_trait]
 impl Surface for RfbSurface {
     fn info(&self) -> SurfaceInfo {
-        let pic = self.shared.picture();
+        let pic = self.shared.picture.locked();
         let name = if pic.desktop.is_empty() {
             &self.shared.endpoint.name
         } else {
@@ -154,7 +154,7 @@ impl Surface for RfbSurface {
     /// Publishes the local framebuffer copy as a keyframe right away; it is
     /// the complete picture, so no round trip to the server is needed.
     async fn request_keyframe(&self) -> loa_surface::Result<()> {
-        let mut pic = self.shared.picture();
+        let mut pic = self.shared.picture.locked();
         let full = pic.fb.full();
         self.shared.send(&mut pic, full);
         Ok(())
@@ -173,7 +173,7 @@ impl Surface for RfbSurface {
 
     async fn screenshot(&self) -> loa_surface::Result<Bytes> {
         let (width, height, rgba) = {
-            let pic = self.shared.picture();
+            let pic = self.shared.picture.locked();
             (pic.fb.width, pic.fb.height, pic.fb.pixels.clone())
         };
         let png = tokio::task::spawn_blocking(move || encode_png(width, height, &rgba))
@@ -220,14 +220,8 @@ async fn skip<R: AsyncRead + Unpin>(rd: &mut R, len: u64) -> Result<(), RfbError
 type Reader = BufReader<OwnedReadHalf>;
 
 impl Shared {
-    fn picture(&self) -> MutexGuard<'_, Picture> {
-        // Every critical section leaves the picture whole (plain copies), so a
-        // panic elsewhere cannot leave it inconsistent.
-        self.picture.locked()
-    }
-
     fn size(&self) -> (u32, u32) {
-        let pic = self.picture();
+        let pic = self.picture.locked();
         (pic.fb.width, pic.fb.height)
     }
 
@@ -251,7 +245,7 @@ impl Shared {
             .map_err(|_| RfbError::Timeout(address.clone()))??;
         let (rd, wr) = stream.into_split();
         {
-            let mut pic = self.picture();
+            let mut pic = self.picture.locked();
             let (width, height) = (u32::from(init.width), u32::from(init.height));
             if (pic.fb.width, pic.fb.height) != (width, height) {
                 pic.fb = Framebuffer::new(width, height);
@@ -363,7 +357,7 @@ impl Shared {
             match encoding {
                 ENC_DESKTOP_SIZE => {
                     (width, height) = (r.width, r.height);
-                    self.picture().fb = Framebuffer::new(width, height);
+                    self.picture.locked().fb = Framebuffer::new(width, height);
                     *full = true;
                     dirty = None;
                     continue;
@@ -394,7 +388,7 @@ impl Shared {
                             "CopyRect source {src_x},{src_y} outside"
                         )));
                     }
-                    self.picture().fb.copy_rect(src_x, src_y, r);
+                    self.picture.locked().fb.copy_rect(src_x, src_y, r);
                 }
                 ENC_RAW | ENC_RRE | ENC_HEXTILE | ENC_ZRLE => {
                     match encoding {
@@ -403,7 +397,7 @@ impl Shared {
                         ENC_HEXTILE => dec.hextile(rd, r).await?,
                         _ => dec.zrle(rd, r).await?,
                     }
-                    self.picture().fb.blit(r, &dec.scratch);
+                    self.picture.locked().fb.blit(r, &dec.scratch);
                 }
                 other => return Err(RfbError::Protocol(format!("unrequested encoding {other}"))),
             }
@@ -412,7 +406,7 @@ impl Shared {
             }
         }
 
-        let mut pic = self.picture();
+        let mut pic = self.picture.locked();
         pic.input_seq = input_seq;
         let region = if *full { Some(pic.fb.full()) } else { dirty };
         if let Some(region) = region {
