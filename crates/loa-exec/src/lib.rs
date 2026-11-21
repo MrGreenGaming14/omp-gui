@@ -139,7 +139,19 @@ pub fn find_executable(program: &Path) -> Option<PathBuf> {
 /// `program` unchanged so the spawn fails with its usual "not found" error.
 /// Spawning the resolved path is what makes npm `.cmd` shims run on Windows.
 pub fn resolve(program: &Path) -> PathBuf {
-    find_executable(program).unwrap_or_else(|| program.to_path_buf())
+    resolve_in(program, None)
+}
+
+/// [`resolve`] searching `path_var` (a child's own `PATH`) instead of the
+/// process `PATH` when given. `PATHEXT` is always the process's.
+pub fn resolve_in(program: &Path, path_var: Option<&OsStr>) -> PathBuf {
+    let process_path = std::env::var_os("PATH");
+    find_executable_in(
+        program,
+        path_var.or(process_path.as_deref()),
+        std::env::var_os("PATHEXT").as_deref(),
+    )
+    .unwrap_or_else(|| program.to_path_buf())
 }
 
 /// Testable core of [`find_executable`] with the `PATH` and `PATHEXT` values
@@ -160,16 +172,16 @@ pub fn find_executable_in(
         .find_map(|dir| first_executable(&dir.join(program), pathext, true))
 }
 
-/// Candidates for `base`: itself, then (Windows) with each extension appended.
-/// `searched` (bare-name search) tries `base` only when it already has
-/// an extension; an explicit path is always tried as given, and gets
-/// extensions appended only when it has none.
+/// Candidates for `base`: itself when it has an extension, then (Windows)
+/// with each extension appended. Windows can't start an extensionless file,
+/// so one never shadows `<base>.exe`. A bare-name search appends extensions
+/// always; an explicit path only when it has none.
 #[cfg_attr(not(windows), allow(unused_variables))]
 fn first_executable(base: &Path, pathext: Option<&OsStr>, searched: bool) -> Option<PathBuf> {
     #[cfg(windows)]
     {
         let has_ext = base.extension().is_some();
-        if (has_ext || !searched) && is_executable(base) {
+        if has_ext && is_executable(base) {
             return Some(base.to_path_buf());
         }
         if searched || !has_ext {
@@ -236,6 +248,20 @@ mod find_tests {
     }
 
     #[test]
+    fn resolve_in_prefers_given_path_over_process_path() {
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        write_executable(&a.path().join("omp-rin"), "#!/bin/sh\n").unwrap();
+        write_executable(&b.path().join("omp-rin"), "#!/bin/sh\n").unwrap();
+        let var = path_of(&[b.path(), a.path()]);
+        let got = resolve_in(Path::new("omp-rin"), Some(&var));
+        assert_eq!(norm(got.parent().map(Path::to_path_buf)), norm(Some(b.path().to_path_buf())));
+        let var = path_of(&[a.path()]);
+        let got = resolve_in(Path::new("omp-rin"), Some(&var));
+        assert_eq!(norm(got.parent().map(Path::to_path_buf)), norm(Some(a.path().to_path_buf())));
+    }
+
+    #[test]
     fn is_executable_rejects_missing_and_directories() {
         let dir = tempfile::tempdir().unwrap();
         assert!(!is_executable(&dir.path().join("nope")));
@@ -281,7 +307,7 @@ mod find_tests {
         let dir = tempfile::tempdir().unwrap();
         let sub = dir.path().join("sub");
         std::fs::create_dir(&sub).unwrap();
-        let want = make(&sub, "tool");
+        let want = make(&sub, &exe("tool"));
         let var = path_of(&[dir.path()]);
         assert_eq!(find_executable_in(&want, Some(&var), None), Some(want.clone()));
         // "sub/tool" relative to PATH dir must not be resolved via PATH.
@@ -348,6 +374,16 @@ mod find_tests {
         let want = make(dir.path(), "tool.exe");
         let ext = OsString::from(".EXE");
         assert_eq!(norm(find_executable_in(&dir.path().join("tool"), None, Some(&ext))), norm(Some(want)));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn an_extensionless_file_never_shadows_the_executable_on_windows() {
+        let dir = tempfile::tempdir().unwrap();
+        make(dir.path(), "ffmpeg");
+        let want = make(dir.path(), "ffmpeg.exe");
+        let ext = OsString::from(".EXE");
+        assert_eq!(norm(find_executable_in(&dir.path().join("ffmpeg"), None, Some(&ext))), norm(Some(want)));
     }
 
     #[test]

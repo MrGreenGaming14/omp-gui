@@ -86,7 +86,7 @@ pub(crate) async fn choose_folder(start: PathBuf) -> Result<Option<PathBuf>, Str
 /// branch read from the repository's HEAD.
 pub(super) fn workspace(cwd: &Path) -> composer::Workspace {
     let full = cwd.display().to_string();
-    let path = match std::env::var_os("HOME").map(PathBuf::from) {
+    let path = match loa_core::home_dir() {
         Some(home) if cwd.starts_with(&home) => match cwd.strip_prefix(&home) {
             Ok(rest) if rest.as_os_str().is_empty() => "~".to_owned(),
             Ok(rest) => format!("~/{}", rest.display()),
@@ -159,7 +159,7 @@ mod workspace_tests {
         let outside = tempfile::tempdir().unwrap();
         assert_eq!(git_branch(outside.path()), None);
 
-        if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+        if let Some(home) = loa_core::home_dir() {
             assert_eq!(workspace(&home.join("Projects/omp-gui")).path, "~/Projects/omp-gui");
         }
     }

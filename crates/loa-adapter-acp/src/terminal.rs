@@ -63,7 +63,11 @@ impl Terminals {
             Some(cwd) => resolve_inside(&self.root, cwd)?,
             None => self.root.clone(),
         };
-        let mut command = Command::new(loa_exec::resolve(std::path::Path::new(&request.command)));
+        let env = request.env.unwrap_or_default();
+        let is_path = |name: &str| if cfg!(windows) { name.eq_ignore_ascii_case("PATH") } else { name == "PATH" };
+        let path_var = env.iter().rev().find(|v| is_path(&v.name)).map(|v| std::ffi::OsString::from(&v.value));
+        let program = loa_exec::resolve_in(std::path::Path::new(&request.command), path_var.as_deref());
+        let mut command = Command::new(program);
         command
             .args(request.args.unwrap_or_default())
             .current_dir(&cwd)
@@ -71,7 +75,7 @@ impl Terminals {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        for var in request.env.unwrap_or_default() {
+        for var in env {
             command.env(var.name, var.value);
         }
         let start_failed = |e| RpcError::remote(code::INTERNAL, format!("can't run `{}`: {e}", request.command));

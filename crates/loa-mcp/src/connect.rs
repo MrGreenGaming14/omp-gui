@@ -103,7 +103,9 @@ pub(crate) async fn connect<H: ClientHandler>(
 }
 
 fn spawn(stdio: &StdioSpec) -> std::io::Result<(TokioChildProcess, Option<ChildStderr>)> {
-    let mut command = tokio::process::Command::new(loa_exec::resolve(std::path::Path::new(&stdio.command)));
+    let path_var = stdio.env.iter().find(|(k, _)| env_key_is_path(k)).map(|(_, v)| v);
+    let program = loa_exec::resolve_in(std::path::Path::new(&stdio.command), path_var.map(std::ffi::OsStr::new));
+    let mut command = tokio::process::Command::new(program);
     command.args(&stdio.args).envs(&stdio.env);
     if let Some(cwd) = &stdio.cwd {
         #[cfg(windows)]
@@ -120,6 +122,11 @@ fn spawn(stdio: &StdioSpec) -> std::io::Result<(TokioChildProcess, Option<ChildS
     #[cfg(windows)]
     command.wrap(process_wrap::tokio::KillOnDrop).wrap(process_wrap::tokio::JobObject);
     TokioChildProcess::builder(command).stderr(Stdio::piped()).spawn()
+}
+
+/// Whether `key` names `PATH`: case-insensitive on Windows, exact elsewhere.
+fn env_key_is_path(key: &str) -> bool {
+    if cfg!(windows) { key.eq_ignore_ascii_case("PATH") } else { key == "PATH" }
 }
 
 fn http_transport(

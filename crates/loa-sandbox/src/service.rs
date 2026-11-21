@@ -11,6 +11,7 @@ use crate::provider::docker::{DockerProvider, DockerStub};
 use crate::provider::firecracker::FirecrackerProvider;
 use crate::provider::local::{LocalProvider, find_stub};
 use crate::provider::peer::{PeerLink, PeerProvider};
+#[cfg(target_os = "linux")]
 use crate::provider::qemu::QemuProvider;
 use crate::provider::ssh::SshProvider;
 use crate::provider::{SandboxKind, SandboxProvider};
@@ -100,6 +101,8 @@ pub struct ProviderStatus {
 struct Machine {
     /// Directories searched for `docker`, `firecracker`, `qemu-system-*`, `ssh`.
     path: Option<OsString>,
+    // Only the Linux VM providers probe KVM.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     kvm_device: PathBuf,
     ssh_config: Option<PathBuf>,
 }
@@ -119,6 +122,7 @@ impl Machine {
         std::env::split_paths(paths).find_map(|dir| loa_exec::find_executable(&dir.join(name)))
     }
 
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     fn kvm(&self) -> bool {
         std::fs::OpenOptions::new().read(true).write(true).open(&self.kvm_device).is_ok()
     }
@@ -146,6 +150,7 @@ pub fn ssh_config_hosts(config: &str) -> Vec<String> {
     hosts
 }
 
+#[cfg(target_os = "linux")]
 const QEMU: &str = match std::env::consts::ARCH.as_bytes() {
     b"aarch64" => "qemu-system-aarch64",
     _ => "qemu-system-x86_64",
@@ -239,6 +244,7 @@ impl SandboxService {
                 providers.push(Arc::new(provider));
             }
         }
+        #[cfg(target_os = "linux")]
         if let (Some(qemu), Some(disk)) = (self.machine.which(QEMU), &self.config.vm_disk) {
             let mut provider = QemuProvider::new(disk);
             provider.qemu = qemu;
@@ -290,6 +296,7 @@ impl SandboxService {
             let status = |kind, availability, detail: String| ProviderStatus { kind, availability, detail };
             use Availability::{NotConfigured, Ready, Unavailable};
             let no_stub = || "loa-sandbox-stub was not found next to the app or on PATH (set LOA_SANDBOX_STUB)".to_owned();
+            #[cfg(target_os = "linux")]
             let kvm = machine.kvm();
             let mut statuses = Vec::with_capacity(SandboxKind::ALL.len());
 
@@ -321,11 +328,14 @@ impl SandboxService {
             #[cfg(not(target_os = "linux"))]
             statuses.push(status(SandboxKind::Firecracker, Unavailable, "Firecracker needs Linux (KVM)".into()));
 
+            #[cfg(target_os = "linux")]
             statuses.push(match (machine.which(QEMU), &config.vm_disk) {
                 (None, _) => status(SandboxKind::Vm, Unavailable, format!("{QEMU} is not installed")),
                 (Some(_), None) => status(SandboxKind::Vm, NotConfigured, "Set a guest disk image whose init runs loa-sandbox-stub on the first serial port".into()),
                 (Some(_), Some(disk)) => status(SandboxKind::Vm, Ready, format!("Disk {}, {}", disk.display(), if kvm { "KVM accelerated" } else { "without KVM (slow)" })),
             });
+            #[cfg(not(target_os = "linux"))]
+            statuses.push(status(SandboxKind::Vm, Unavailable, "The qemu VM provider needs Linux (KVM)".into()));
 
             statuses.push(match (cfg!(windows), machine.which("ssh"), &stub, ssh_hosts.as_slice()) {
                 (true, ..) => status(SandboxKind::Ssh, Unavailable, REMOTE_STUB_UNSUPPORTED.into()),
@@ -374,10 +384,10 @@ mod tests {
         loa_exec::write_executable(path, body).unwrap();
     }
 
-    /// Firecracker needs Linux (KVM); Docker and SSH need a stub the guest can run.
+    /// Firecracker and qemu need Linux (KVM); Docker and SSH need a stub the guest can run.
     fn supported(kind: SandboxKind) -> bool {
         match kind {
-            SandboxKind::Firecracker => cfg!(target_os = "linux"),
+            SandboxKind::Firecracker | SandboxKind::Vm => cfg!(target_os = "linux"),
             // A Windows host's stub is a Windows binary a Linux guest can't run.
             SandboxKind::Docker | SandboxKind::Ssh => !cfg!(windows),
             _ => true,
@@ -450,6 +460,7 @@ mod tests {
         std::fs::create_dir(&bin).unwrap();
         script(&bin.join("docker"), "#!/bin/sh\necho 27.1.0\n");
         script(&bin.join("firecracker"), "#!/bin/sh\n");
+        #[cfg(target_os = "linux")]
         script(&bin.join(QEMU), "#!/bin/sh\n");
         script(&bin.join("ssh"), "#!/bin/sh\n");
         std::fs::write(dir.path().join("kvm"), "").unwrap();
@@ -502,6 +513,7 @@ mod tests {
         std::fs::create_dir(&bin).unwrap();
         script(&bin.join("docker"), "#!/bin/sh\necho 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock.' >&2\nexit 1\n");
         script(&bin.join("firecracker"), "#!/bin/sh\n");
+        #[cfg(target_os = "linux")]
         script(&bin.join(QEMU), "#!/bin/sh\n");
         script(&bin.join("ssh"), "#!/bin/sh\n");
         std::fs::write(dir.path().join("kvm"), "").unwrap();
@@ -516,9 +528,9 @@ mod tests {
             assert_eq!((docker.availability, docker.detail.as_str()), (Availability::Unavailable, "The Docker daemon is not reachable: Cannot connect to the Docker daemon at unix:///var/run/docker.sock."));
         }
         for kind in [SandboxKind::Firecracker, SandboxKind::Vm, SandboxKind::Ssh] {
-            // Firecracker needs Linux: elsewhere it is unavailable, not unconfigured.
+            // Firecracker and qemu need Linux: elsewhere they are unavailable, not unconfigured.
             let expected = match kind {
-                SandboxKind::Firecracker if !cfg!(target_os = "linux") => Availability::Unavailable,
+                SandboxKind::Firecracker | SandboxKind::Vm if !cfg!(target_os = "linux") => Availability::Unavailable,
                 SandboxKind::Ssh if cfg!(windows) => Availability::Unavailable,
                 _ => Availability::NotConfigured,
             };

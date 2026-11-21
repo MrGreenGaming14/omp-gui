@@ -8,9 +8,10 @@ use loa_adapter::HostToolContent;
 use loa_mcp::{AllowAll, HttpSpec, Manager, ServerSpec, Status, Transport};
 use loa_surface::{Encoding, Frame, Input, InputEvent, Modifiers, MouseButton, SurfaceMode, SurfaceUri};
 use loa_surface_docs::Fonts;
+#[cfg(target_os = "linux")]
+use loa_surface_hub::CaptureMode;
 use loa_surface_hub::{
-    CaptureMode, HubConfig, HubEvent, LiveVideo, McpEndpoint, Origin, SurfaceHub, SurfaceTools, ToolContent,
-    VirtualDisplaySetup,
+    HubConfig, HubEvent, LiveVideo, McpEndpoint, Origin, SurfaceHub, SurfaceTools, ToolContent, VirtualDisplaySetup,
 };
 use serde_json::json;
 use std::path::Path;
@@ -459,12 +460,15 @@ async fn the_virtual_display_capture_is_refused_where_it_cant_run_and_tried_wher
 }
 
 /// Latency summary in milliseconds: median and 95th percentile.
+#[cfg(target_os = "linux")]
 fn percentiles(mut samples: Vec<Duration>) -> (u128, u128) {
     samples.sort();
     let at = |q: f64| samples[((samples.len() - 1) as f64 * q).round() as usize].as_millis();
     (at(0.5), at(0.95))
 }
 
+// Xvfb and X11 sockets exist only on Linux.
+#[cfg(target_os = "linux")]
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "runs a real Xvfb (from PATH), headed Chromium and this machine's video encoders; prints the latency"]
 async fn live_a_network_viewer_gets_video_of_a_virtual_display_tab_and_resizes_without_a_stall() {
