@@ -129,6 +129,11 @@ impl Harnesses {
         self.get(id).map_or(id, |harness| harness.option.label.as_str())
     }
 
+    /// The harness whose model catalog and roles the models area shows (omp); empty when none is compiled in.
+    pub fn roles_id(&self) -> &str {
+        self.list.iter().find(|harness| harness.traits.has_roles).map_or("", |harness| harness.option.id.as_str())
+    }
+
     /// The first harness with model roles (omp) when it can run, else the first that can.
     pub fn default_id(&self) -> Option<String> {
         let available = || self.list.iter().filter(|harness| harness.option.available);

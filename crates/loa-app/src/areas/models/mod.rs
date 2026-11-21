@@ -31,8 +31,6 @@ use crate::area::{Area, AreaId, Ctx, Session, SessionEvent, Target};
 #[cfg(test)]
 mod tests;
 
-const OMP: &str = "omp";
-
 /// The composer lists every model of a harness offering at most this many;
 /// otherwise the current model and the ones serving a role. "All models…"
 /// opens the full picker.
@@ -138,7 +136,7 @@ const PRE_SESSION_EFFORTS: [&str; 4] = ["low", "medium", "high", "xhigh"];
 
 impl State {
     pub fn new(ctx: &mut Ctx) -> (Self, Task<Message>) {
-        let executable = ctx.services.harnesses.get(OMP).and_then(|harness| harness.executable.clone());
+        let executable = ctx.services.harnesses.get(ctx.services.harnesses.roles_id()).and_then(|harness| harness.executable.clone());
         let launch = OmpLaunch {
             executable: executable.unwrap_or_else(|| OmpLaunch::default().executable),
             cwd: Some(ctx.services.cwd.clone()),
@@ -194,7 +192,7 @@ impl State {
     /// The harness model changes go to: the active session's, else the one
     /// new sessions start on.
     fn harness_id(ctx: &Ctx) -> &str {
-        ctx.sessions.active().and_then(Session::harness_id).or(ctx.sessions.harness.as_deref()).unwrap_or(OMP)
+        ctx.sessions.active().and_then(Session::harness_id).or(ctx.sessions.harness.as_deref()).unwrap_or_else(|| ctx.services.harnesses.roles_id())
     }
 
     fn load_picker(&mut self, ctx: &Ctx) -> Task<Message> {
@@ -224,7 +222,7 @@ impl State {
     fn open_picker(&mut self, ctx: &Ctx) {
         let (harness, _) = &self.picker;
         let (catalog, ids) = if roles(ctx, harness) {
-            let Some(models) = self.listed.get(OMP) else { return };
+            let Some(models) = self.listed.get(ctx.services.harnesses.roles_id()) else { return };
             let catalog = Catalog {
                 models: models.iter().map(|model| model_info(model, &ModelRef::parse(&model.id).unwrap_or_else(|| model_ref(model)))).collect(),
                 roles: self.roles.clone().unwrap_or_default(),
@@ -538,7 +536,7 @@ impl Area for State {
                 match result {
                     Ok(catalog) => {
                         self.roles = Some(catalog.roles);
-                        let listed = self.listed.entry(OMP.to_owned()).or_default();
+                        let listed = self.listed.entry(ctx.services.harnesses.roles_id().to_owned()).or_default();
                         if listed.is_empty() {
                             *listed = catalog
                                 .models
@@ -551,12 +549,12 @@ impl Area for State {
                                 })
                                 .collect();
                         }
-                        if self.picker.0 == OMP && matches!(self.picker.1, Load::Loading) {
+                        if self.picker.0 == ctx.services.harnesses.roles_id() && matches!(self.picker.1, Load::Loading) {
                             self.open_picker(ctx);
                         }
                     }
                     Err(error) => {
-                        if self.picker.0 == OMP && matches!(self.picker.1, Load::Loading) {
+                        if self.picker.0 == ctx.services.harnesses.roles_id() && matches!(self.picker.1, Load::Loading) {
                             self.picker.1 = Load::Failed(format!("Can't read omp's models: {error}"));
                         }
                     }
@@ -574,7 +572,7 @@ impl Area for State {
                         }
                     }
                     Err(Failure::Unsupported(reason)) => {
-                        let harness = ctx.sessions.get(session.as_str()).and_then(Session::harness_id).unwrap_or(OMP).to_owned();
+                        let harness = ctx.sessions.get(session.as_str()).and_then(Session::harness_id).unwrap_or_else(|| ctx.services.harnesses.roles_id()).to_owned();
                         ctx.notify(format!("{reason}; new sessions start on {model}"));
                         self.pending.locked().insert(None, Pending { harness, model: Some((model, role)), effort: None });
                     }
