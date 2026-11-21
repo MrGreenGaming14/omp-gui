@@ -39,7 +39,6 @@ impl LocalShell {
 }
 
 fn pty_size(s: GridSize) -> PtySize { PtySize { rows: s.rows, cols: s.cols, pixel_width: s.cell_width.saturating_mul(s.cols), pixel_height: s.cell_height.saturating_mul(s.rows) } }
-
 fn spawn_error(e: impl std::fmt::Display) -> Error { Error::Spawn(e.to_string()) }
 
 /// Starts `shell` on a new PTY; the channel must be driven inside a tokio runtime.

@@ -124,13 +124,9 @@ impl State {
     }
 
     pub fn subscription(&self) -> Subscription<Message> { theme::State::subscription().map(Message::SystemTheme) }
-
     pub fn theme(&self) -> Theme { self.theme.theme() }
-
     pub fn theme_state(&self) -> &theme::State { &self.theme }
-
     pub fn sidebar(&self) -> &sidebar::State { &self.sidebar }
-
     pub fn topbar(&self) -> &topbar::State { &self.topbar }
 
     pub fn set_sessions(&mut self, sessions: impl IntoIterator<Item = SessionSummary>) {
@@ -149,7 +145,6 @@ impl State {
     }
 
     pub fn set_pins(&mut self, pins: impl IntoIterator<Item = String>) { self.sidebar.set_pins(pins) }
-
     pub fn set_pinned_projects(&mut self, pinned: impl IntoIterator<Item = String>) { self.sidebar.set_pinned_projects(pinned) }
 
     /// Highlights the selected project in the sidebar and the project tab strip.
@@ -159,13 +154,9 @@ impl State {
     }
 
     pub fn set_project_tabs(&mut self, enabled: bool) { self.project_tabs = enabled }
-
     pub fn project_tabs(&self) -> bool { self.project_tabs }
-
     pub fn set_open_projects(&mut self, projects: Vec<String>) { self.open_projects = projects }
-
     pub fn open_projects(&self) -> &[String] { &self.open_projects }
-
     pub fn set_projects(&mut self, projects: impl IntoIterator<Item = String>) { self.sidebar.set_projects(projects) }
 
     pub fn set_nodes(&mut self, nodes: Vec<NodeStatus>) {
@@ -174,15 +165,10 @@ impl State {
     }
 
     pub fn set_updates(&mut self, count: usize) { self.sidebar.set_updates(count) }
-
     pub fn updates(&self) -> usize { self.sidebar.updates() }
-
     pub fn set_usage(&mut self, usage: Option<UsageMeter>) { self.sidebar.set_usage(usage) }
-
     pub fn full(&self) -> Option<Pane> { self.full }
-
     pub fn set_detached(&mut self, tabs: Vec<String>) { self.detached = tabs }
-
     pub fn is_detached(&self, tab: &str) -> bool { self.detached.iter().any(|d| d == tab) }
 
     pub fn set_active_session(&mut self, id: Option<String>) {

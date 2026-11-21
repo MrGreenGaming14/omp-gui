@@ -49,10 +49,8 @@ impl Emulator {
     }
 
     pub fn advance(&mut self, bytes: &[u8]) { self.parser.advance(&mut self.term, bytes) }
-
     /// Replies the program expects, title changes, clipboard stores, raised by output so far.
     pub fn take_events(&mut self) -> impl Iterator<Item = TermEvent> + '_ { self.events.try_iter() }
-
     pub fn size(&self) -> GridSize { self.size }
 
     /// Resizes, reflowing text; false when nothing changed.
@@ -64,10 +62,8 @@ impl Emulator {
     }
 
     pub fn scroll(&mut self, scroll: Scroll) { self.term.scroll_display(scroll) }
-
     /// Lines the view is scrolled up from the bottom.
     pub fn display_offset(&self) -> usize { self.term.grid().display_offset() }
-
     /// Modes the program set: cursor keys, bracketed paste, alternate screen, mouse.
     pub fn mode(&self) -> TermMode { *self.term.mode() }
 

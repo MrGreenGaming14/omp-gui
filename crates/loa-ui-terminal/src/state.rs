@@ -147,9 +147,7 @@ impl State {
     }
 
     pub fn with_backend(self, backend: Arc<dyn PtyBackend>) -> Self { Self { backend, ..self } }
-
     pub fn set_new_tab(&mut self, shell: LocalShell) { self.new_tab = shell }
-
     pub fn new_tab(&self) -> &LocalShell { &self.new_tab }
 
     /// Opens a terminal on `target` in a new sub tab and shows it.
@@ -168,22 +166,14 @@ impl State {
     }
 
     pub fn tabs(&self) -> impl Iterator<Item = TabId> + '_ { self.tabs.iter().map(|t| t.id) }
-
     pub fn active(&self) -> Option<TabId> { self.active }
-
     pub fn is_empty(&self) -> bool { self.tabs.is_empty() }
-
     /// The program's title if it set one, else the directory or host.
     pub fn title(&self, id: TabId) -> Option<&str> { self.tab(id).map(|t| t.title.as_str()) }
-
     pub fn status(&self, id: TabId) -> Option<&Status> { self.tab(id).map(|t| &t.status) }
-
     pub fn target(&self, id: TabId) -> Option<&Target> { self.tab(id).map(|t| &t.target) }
-
     pub fn emulator(&self, id: TabId) -> Option<&Emulator> { self.tab(id).map(|t| &t.emulator) }
-
     fn tab(&self, id: TabId) -> Option<&Tab> { self.tabs.iter().find(|t| t.id == id) }
-
     fn tab_mut(&mut self, id: TabId) -> Option<&mut Tab> { self.tabs.iter_mut().find(|t| t.id == id) }
 
     /// Removes a sub tab, hanging up its program; its neighbour becomes active.

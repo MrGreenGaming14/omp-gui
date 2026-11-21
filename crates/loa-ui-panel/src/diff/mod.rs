@@ -25,7 +25,6 @@ const DEFAULT_VIEWPORT: f32 = 1200.0;
 const FILE_LIST_HEIGHT: f32 = 140.0;
 
 fn char_width() -> f32 { ts(T::Mono) * 0.6 }
-
 /// File rows: label text plus vertical button padding.
 fn file_row_height() -> f32 { ts(T::Label) + 2.0 * sp(Sp::Xs) }
 
@@ -92,11 +91,8 @@ impl State {
     }
 
     pub fn files(&self) -> &[FileDiff] { &self.files }
-
     pub fn selected(&self) -> Option<&FileDiff> { self.files.get(self.selected) }
-
     pub fn mode(&self) -> Mode { self.mode }
-
     pub fn rows(&self) -> &[Row] { &self.rows }
 
     /// The rows the view builds at the current scroll position.

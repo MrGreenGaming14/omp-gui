@@ -97,18 +97,12 @@ impl State {
     }
 
     pub fn pins(&self) -> &BTreeSet<String> { &self.pins }
-
     pub fn remove_session(&mut self, id: &str) { self.sessions.retain(|(s, _)| s.id != id) }
-
     pub fn session(&self, id: &str) -> Option<&SessionSummary> { self.sessions.iter().map(|(s, _)| s).find(|s| s.id == id) }
-
     pub fn set_pinned_projects(&mut self, pinned: impl IntoIterator<Item = String>) { self.pinned_projects = pinned.into_iter().collect() }
-
     /// The pinned project names, including any no longer listed.
     pub fn pinned_projects(&self) -> &BTreeSet<String> { &self.pinned_projects }
-
     pub fn set_active_project(&mut self, project: Option<String>) { self.active_project = project }
-
     pub fn set_projects(&mut self, projects: impl IntoIterator<Item = String>) { self.projects = projects.into_iter().collect() }
 
     /// Replaces the node directory and refreshes the node names sessions are searched by.
@@ -119,20 +113,13 @@ impl State {
     }
 
     pub fn nodes(&self) -> &Nodes { &self.nodes }
-
     pub fn set_active(&mut self, id: Option<String>) { self.active = id }
-
     pub fn set_shown_project(&mut self, project: Option<String>) { self.shown_project = project }
-
     pub fn active(&self) -> Option<&str> { self.active.as_deref() }
-
     /// Updates waiting for the user; the Updates row shows while non-zero.
     pub fn set_updates(&mut self, count: usize) { self.updates = count }
-
     pub fn updates(&self) -> usize { self.updates }
-
     pub fn set_usage(&mut self, usage: Option<UsageMeter>) { self.usage = usage }
-
     pub fn query(&self) -> &str { &self.query }
 
     /// The listed machine: the user's pick, else this computer, else every machine.
@@ -141,10 +128,8 @@ impl State {
     }
 
     pub fn machines_open(&self) -> bool { self.machines_open }
-
     /// Pinned sessions on the chosen machine matching the search, newest first.
     pub fn pinned(&self) -> Vec<&SessionSummary> { self.section(true) }
-
     /// Unpinned sessions on the chosen machine matching the search, newest first.
     pub fn recents(&self) -> Vec<&SessionSummary> { self.section(false) }
 
@@ -339,7 +324,6 @@ fn footer_item<'a>(glyph: Icon, text: &'a str, trailing: Option<Element<'a, Mess
 }
 
 fn header(text: &str) -> Element<'_, Message> { container(label(text, T::Caption, Tone::Faint)).padding(Padding::from([sp(Sp::Xs), row_pad().left]).top(sp(Sp::M))).into() }
-
 fn hint(text: &str) -> Element<'_, Message> { container(label(text, T::Label, Tone::Faint)).padding(Padding::from([sp(Sp::Xs), row_pad().left])).into() }
 
 #[cfg(test)]

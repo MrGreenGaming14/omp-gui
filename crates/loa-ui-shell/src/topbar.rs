@@ -35,7 +35,6 @@ pub struct State {
 
 impl State {
     pub fn breadcrumb(&self) -> Option<&Breadcrumb> { self.crumb.as_ref() }
-
     /// The short session status shown, e.g. "Running".
     pub fn status(&self) -> Option<&str> { self.status.as_deref() }
 

@@ -15,13 +15,8 @@ use std::path::{Path, PathBuf};
 /// Tallest the sidebar's compact list grows before it scrolls.
 pub const COMPACT_MAX_HEIGHT: f32 = 240.0;
 
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    #[error(transparent)]
-    Io(#[from] std::io::Error),
-    #[error(transparent)]
-    Ignore(#[from] ignore::Error),
-}
+/// A listing failure; io errors convert into it.
+pub type Error = ignore::Error;
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -50,7 +45,7 @@ impl FileSystem for LocalFs {
             let entry = match item {
                 // A bad glob or one unreadable child leaves the rest listable.
                 Err(e) if e.is_partial() || e.depth().is_some_and(|d| d > 0) => continue,
-                Err(e) => return Err(e.into()),
+                Err(e) => return Err(e),
                 Ok(e) if e.depth() == 0 => continue,
                 Ok(e) => e,
             };
@@ -128,13 +123,10 @@ impl State {
     }
 
     pub fn root(&self) -> &Path { &self.root }
-
     /// Re-roots the tree, forgetting nodes, selection and touched files.
     pub fn set_root(&mut self, root: PathBuf) { *self = Self::new(root, std::mem::replace(&mut self.fs, Box::new(LocalFs))) }
-
     /// Root-relative paths of the visible rows, top to bottom.
     pub fn visible(&self) -> impl Iterator<Item = &Path> { self.rows.iter().filter_map(|r| if let Row::Node(i) = *r { Some(self.nodes[i].rel.as_path()) } else { None }) }
-
     pub fn selected_path(&self) -> Option<&Path> { self.selected.map(|i| self.nodes[i].rel.as_path()) }
 
     /// Replaces the files the session touched; absolute paths outside the root are ignored.
@@ -187,7 +179,6 @@ impl State {
     }
 
     pub fn view(&self) -> Element<'_, Message> { scrollable(self.list()).width(Fill).height(Fill).into() }
-
     /// The same rows sized to their content up to [`COMPACT_MAX_HEIGHT`], for the sidebar.
     pub fn view_compact(&self) -> Element<'_, Message> { container(scrollable(self.list()).width(Fill)).max_height(COMPACT_MAX_HEIGHT).width(Fill).into() }
 

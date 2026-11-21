@@ -133,7 +133,6 @@ fn tool_details(info: &ToolInfo) -> Element<'_, Message> {
 }
 
 fn detail_tone(state: DetailState) -> Tone { [Tone::Ok, Tone::Muted, Tone::Danger][state as usize] }
-
 fn row_pad() -> Padding { Padding::from([sp(Sp::S), sp(Sp::M)]) }
 
 /// Rows in a card with a divider between each two.
@@ -147,7 +146,6 @@ fn card<'a>(rows: impl IntoIterator<Item = Element<'a, Message>>) -> Element<'a,
 
 /// A form or an editor in a card.
 fn form_card<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> { container(content).padding(sp(Sp::M)).width(Fill).style(style::container(Surface::Card)).into() }
-
 /// An editor or log opened under a row.
 fn inset<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> { container(container(content).padding(sp(Sp::M)).width(Fill).style(style::container(Surface::Well))).padding(Padding::ZERO.bottom(sp(Sp::Xs))).into() }
 
@@ -165,7 +163,6 @@ fn grid(items: Vec<Element<'_, Message>>, wide: bool) -> Element<'_, Message> {
 
 /// A muted line in a card, for empty states and progress.
 fn note_row(s: &str) -> Element<'_, Message> { container(label(s, T::Label, Tone::Muted)).padding(row_pad()).width(Fill).into() }
-
 /// Content taking the rest of a line, cut at its edge.
 fn clipped<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> { container(content).width(Fill).clip(true).into() }
 

@@ -158,7 +158,6 @@ pub struct State {
 
 impl State {
     pub fn new() -> Self { Self::default() }
-
     /// The active harness's tools and the app tools.
     pub fn set_builtin(&mut self, builtin: BuiltinTools) { self.builtin = builtin }
 
@@ -176,7 +175,6 @@ impl State {
 
     /// Selects a project without emitting [`Event::ProjectSelected`].
     pub fn select_project(&mut self, id: impl Into<String>) { self.project = Some(id.into()) }
-
     /// The tools switched off in a project, as stored in the config.
     pub fn set_disabled_tools(&mut self, project: impl Into<String>, tools: impl IntoIterator<Item = ToolId>) { self.disabled.insert(project.into(), tools.into_iter().collect()); }
 
@@ -195,16 +193,11 @@ impl State {
     }
 
     pub fn set_hosts(&mut self, hosts: Vec<RemoteHost>) { self.hosts = hosts }
-
     pub fn set_audit(&mut self, host: impl Into<String>, rows: Vec<AuditRow>) { self.audit = Some((host.into(), rows)) }
-
     /// The questions the `remote` server waits on, oldest first.
     pub fn set_prompts(&mut self, prompts: Vec<RemotePrompt>) { self.prompts = prompts }
-
     pub fn prompts(&self) -> &[RemotePrompt] { &self.prompts }
-
     pub fn hosts(&self) -> &[RemoteHost] { &self.hosts }
-
     pub fn audit(&self) -> Option<(&str, &[AuditRow])> { self.audit.as_ref().map(|(h, r)| (h.as_str(), r.as_slice())) }
 
     /// The peer filter resets when its peer disappears.
@@ -215,19 +208,12 @@ impl State {
 
     /// The tools switched off in the selected project.
     pub fn disabled_tools(&self) -> Option<&BTreeSet<ToolId>> { self.project.as_ref().and_then(|id| self.disabled.get(id)) }
-
     pub fn catalog(&self) -> Catalog<'_> { catalog::catalog(&self.builtin, &self.servers, self.disabled_tools().unwrap_or(&BTreeSet::new()), &self.filter) }
-
     pub fn peer_matrix(&self) -> PeerMatrix<'_> { catalog::peer_matrix(&self.builtin, &self.servers, &self.peers, self.peer_filter.as_deref(), &self.filter) }
-
     pub fn imports(&self) -> Option<&[ImportEntry]> { self.imports.as_deref() }
-
     pub fn add_server(&self) -> Option<&FormState<AddServerForm>> { self.add_server.as_ref() }
-
     pub fn add_host(&self) -> Option<&FormState<AddHostForm>> { self.add_host.as_ref() }
-
     pub fn limits_draft(&self) -> Option<&LimitsDraft> { self.limits.as_ref() }
-
     pub fn update(&mut self, message: Message) -> (Task<Message>, Option<Event>) { (Task::none(), self.handle(message)) }
 
     fn handle(&mut self, message: Message) -> Option<Event> {

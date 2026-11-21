@@ -14,7 +14,6 @@ pub enum Platform {
 
 impl Platform {
     pub const fn current() -> Self { if cfg!(target_os = "macos") { Self::MacOs } else { Self::Other } }
-
     /// Cmd on macOS, Ctrl elsewhere.
     pub const fn primary(self) -> Modifiers { if let Self::MacOs = self { Modifiers::LOGO } else { Modifiers::CTRL } }
 }
@@ -47,7 +46,6 @@ impl Chord {
     }
 
     pub fn char(c: char, modifiers: Modifiers) -> Self { Self::new(ChordKey::Char(c), modifiers) }
-
     pub fn named(key: Named, modifiers: Modifiers) -> Self { Self::new(ChordKey::Named(key), modifiers) }
 
     /// The chord of a key press; characters on a non-latin layout map to the latin key at the
@@ -81,25 +79,14 @@ impl fmt::Display for Chord {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.write_str(&self.label(Platform::Other)) }
 }
 
-fn named_label(named: Named) -> Option<(&'static str, &'static str)> {
-    Some(match named {
-        Named::Escape => ("Esc", "⎋"),
-        Named::Enter => ("Enter", "↩"),
-        Named::Tab => ("Tab", "⇥"),
-        Named::Space => ("Space", "Space"),
-        Named::Backspace => ("Backspace", "⌫"),
-        Named::Delete => ("Delete", "⌦"),
-        Named::ArrowUp => ("Up", "↑"),
-        Named::ArrowDown => ("Down", "↓"),
-        Named::ArrowLeft => ("Left", "←"),
-        Named::ArrowRight => ("Right", "→"),
-        Named::PageUp => ("PageUp", "⇞"),
-        Named::PageDown => ("PageDown", "⇟"),
-        Named::Home => ("Home", "↖"),
-        Named::End => ("End", "↘"),
-        _ => return None,
-    })
-}
+/// The spelled out and macOS labels of named keys; others use iced's name (`F5`, `Insert`).
+const NAMED: [(Named, &str, &str); 14] = [
+    (Named::Escape, "Esc", "⎋"), (Named::Enter, "Enter", "↩"), (Named::Tab, "Tab", "⇥"), (Named::Space, "Space", "Space"), (Named::Backspace, "Backspace", "⌫"),
+    (Named::Delete, "Delete", "⌦"), (Named::ArrowUp, "Up", "↑"), (Named::ArrowDown, "Down", "↓"), (Named::ArrowLeft, "Left", "←"), (Named::ArrowRight, "Right", "→"),
+    (Named::PageUp, "PageUp", "⇞"), (Named::PageDown, "PageDown", "⇟"), (Named::Home, "Home", "↖"), (Named::End, "End", "↘"),
+];
+
+fn named_label(named: Named) -> Option<(&'static str, &'static str)> { NAMED.iter().find(|(n, ..)| *n == named).map(|&(_, w, g)| (w, g)) }
 
 /// Where a binding applies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -172,7 +159,6 @@ impl Keymap {
     }
 
     pub fn platform(&self) -> Platform { self.platform }
-
     pub fn bindings(&self) -> &[Binding] { &self.bindings }
 
     /// The command `chord` runs while `scope` has focus: the scope's own binding, else (for

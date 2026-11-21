@@ -123,21 +123,14 @@ impl FileDiff {
     }
 
     pub fn added(&self) -> usize { self.lines.iter().filter(|l| l.tag == Tag::Insert).count() }
-
     pub fn removed(&self) -> usize { self.lines.iter().filter(|l| l.tag == Tag::Delete).count() }
-
     pub fn lines(&self) -> &[Line] { &self.lines }
-
     pub fn folds(&self) -> &[Fold] { &self.folds }
-
     pub fn line_text(&self, i: usize) -> &str { self.lines.get(i).map_or("", |l| &self.text[l.text.clone()]) }
-
     /// Byte ranges of the changed words in line `i`, relative to its text.
     pub fn emphasis(&self, i: usize) -> &[Range<usize>] { self.lines.get(i).map_or(&[], |l| &self.emph[l.emph.clone()]) }
-
     /// Section text of a hunk header, such as the enclosing function.
     pub fn section(&self, h: &Hunk) -> &str { h.section.and_then(|b| self.breaks.get(b)).map_or("", |b| &self.text[b.section.clone()]) }
-
     /// Opens a fold; false when it was open or doesn't exist.
     pub fn expand(&mut self, fold: usize) -> bool { self.folds.get_mut(fold).is_some_and(|f| !std::mem::replace(&mut f.expanded, true)) }
 

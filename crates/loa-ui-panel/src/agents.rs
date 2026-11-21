@@ -191,12 +191,9 @@ impl State {
     }
 
     pub fn jobs(&self) -> impl Iterator<Item = &Job> { self.jobs.values() }
-
     pub fn job(&self, node: NodeId) -> Option<&Job> { self.jobs.get(&node) }
-
     /// A `wait` call blocks on the running jobs.
     pub fn waiting(&self) -> bool { !self.waits.is_empty() }
-
     pub fn is_awaited(&self, node: NodeId) -> bool { self.waiting() && self.jobs.get(&node).is_some_and(|j| j.status == JobStatus::Running) }
 
     /// How long the job ran: to `ended`, or to the last tick while it runs.
@@ -286,7 +283,6 @@ mod tests {
         }
 
         fn job(&mut self, parent: NodeId, attrs: Vec<(&str, Value)>) -> NodeId { self.commit(Draft::insert(parent, ElementKind::Job, attrs, "")) }
-
         fn shell(&mut self, parent: NodeId, command: &str) -> NodeId { self.job(parent, vec![(attr::KIND, JobKind::Shell.into()), (attr::STATUS, JobStatus::Running.into()), (attr::COMMAND, command.into()), (attr::STARTED, 1_000_i64.into())]) }
     }
 

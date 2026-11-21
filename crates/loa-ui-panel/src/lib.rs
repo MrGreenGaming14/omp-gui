@@ -14,10 +14,8 @@ use loa_ui_kit::theme::{AlphaRole, ColorRole, SpaceRole as Sp, TextRole as T, fo
 
 /// One diff row: a mono line, uniform so lists virtualize by arithmetic.
 pub(crate) fn row_height() -> f32 { ts(T::Mono) + 2.0 * sp(Sp::Xs) }
-
 /// One row of the files, session tree and agents lists.
 pub(crate) fn list_row_height() -> f32 { 2.0 * ts(T::Body) }
-
 /// Indentation per tree level.
 pub(crate) fn indent() -> f32 { sp(Sp::M) }
 

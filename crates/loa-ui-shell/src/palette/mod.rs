@@ -165,12 +165,9 @@ impl State {
     }
 
     pub fn commands(&self) -> &[Command] { &self.commands }
-
     /// While open, the app resolves keys in [`Scope::Palette`].
     pub fn is_open(&self) -> bool { self.open }
-
     pub fn query(&self) -> &str { &self.query }
-
     pub fn shortcuts_only(&self) -> bool { self.shortcuts_only }
 
     pub fn entries(&self) -> impl Iterator<Item = Entry<'_>> {
@@ -179,7 +176,6 @@ impl State {
     }
 
     pub fn selected(&self) -> Option<&Command> { self.selected.map(|i| &self.commands[self.rows[i].command]) }
-
     /// The shortcut hint for a command on this platform.
     pub fn hint(&self, c: &Command) -> Option<String> { c.keys.clone().or_else(|| c.shortcut.map(|s| s.label(self.platform))) }
 

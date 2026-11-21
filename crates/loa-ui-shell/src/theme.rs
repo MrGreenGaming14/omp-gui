@@ -6,14 +6,6 @@ pub use loa_ui_kit::theme::*;
 use iced::theme::Mode;
 use iced::{Subscription, Task, Theme};
 
-/// The builtin dark theme.
-pub fn dark() -> Theme { builtin(Variant::Dark) }
-
-/// The builtin light theme.
-pub fn light() -> Theme { builtin(Variant::Light) }
-
-fn builtin(v: Variant) -> Theme { builtin_tokens(v).theme() }
-
 /// The appearance the user picked, the system mode it may follow, and the resolved theme.
 #[derive(Clone)]
 pub struct State {
@@ -22,47 +14,31 @@ pub struct State {
     system: Mode,
     theme: Theme,
     variant: Variant,
-    generation: u64,
     errors: Vec<ThemeError>,
 }
 
 impl State {
-    pub fn new(appearance: Appearance) -> Self { Self::with_registry(ThemeRegistry::builtin(), appearance) }
-
-    /// Resolves through `registry`, which may carry extra sources and loaders.
-    pub fn with_registry(registry: ThemeRegistry, appearance: Appearance) -> Self {
-        let mut s = Self { registry: registry.into(), appearance, system: Mode::None, theme: Theme::Dark, variant: Variant::Dark, generation: 0, errors: vec![] };
+    pub fn new(appearance: Appearance) -> Self {
+        let mut s = Self { registry: ThemeRegistry::builtin().into(), appearance, system: Mode::None, theme: Theme::Dark, variant: Variant::Dark, errors: vec![] };
         s.refresh();
         s
     }
 
     /// Asks the system for its mode; feed the result to [`State::set_system_mode`].
     pub fn detect() -> Task<Mode> { iced::system::theme() }
-
     pub fn subscription() -> Subscription<Mode> { iced::system::theme_changes() }
-
     pub fn preference(&self) -> &ThemeRef { &self.appearance.theme }
-
-    pub fn appearance(&self) -> &Appearance { &self.appearance }
-
     /// `(id, label)` of every theme the registry offers.
     pub fn themes(&self) -> Vec<(String, String)> { self.registry.list() }
-
-    /// The generation of the active token set; bumps on every change.
-    pub fn generation(&self) -> u64 { self.generation }
-
     /// What failed in the last resolve: an unknown theme or bad overrides.
     pub fn errors(&self) -> &[ThemeError] { &self.errors }
+    /// The variant in effect; an unknown system mode counts as dark.
+    pub fn variant(&self) -> Variant { self.variant }
+    pub fn theme(&self) -> Theme { self.theme.clone() }
 
-    /// Picks a theme by ref; returns the new generation.
+    /// Picks a theme; returns the new token generation.
     pub fn set_preference(&mut self, theme: ThemeRef) -> u64 {
         self.appearance.theme = theme;
-        self.refresh()
-    }
-
-    /// Replaces the whole appearance, overrides included.
-    pub fn set_appearance(&mut self, appearance: Appearance) -> u64 {
-        self.appearance = appearance;
         self.refresh()
     }
 
@@ -71,31 +47,16 @@ impl State {
         self.refresh()
     }
 
-    /// The variant in effect; an unknown system mode counts as dark.
-    pub fn variant(&self) -> Variant { self.variant }
-
-    /// The `iced` theme to return from the application's `theme` function.
-    pub fn theme(&self) -> Theme { self.theme.clone() }
-
     fn refresh(&mut self) -> u64 {
         let preferred = if self.system == Mode::Light { Variant::Light } else { Variant::Dark };
         let (tokens, errors) = self.registry.tokens(&self.appearance, preferred);
-        self.theme = tokens.theme();
-        self.variant = tokens.variant;
-        self.errors = errors;
-        self.generation = set_active(tokens);
-        self.generation
+        (self.theme, self.variant, self.errors) = (tokens.theme(), tokens.variant, errors);
+        set_active(tokens)
     }
 }
 
 impl std::fmt::Debug for State {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("State").field("appearance", &self.appearance).field("generation", &self.generation).finish_non_exhaustive()
-    }
-}
-
-impl Default for State {
-    fn default() -> Self { Self::new(Appearance::default()) }
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.debug_struct("State").field("appearance", &self.appearance).finish_non_exhaustive() }
 }
 
 /// Legacy style functions over the kit recipes for loa-app and loa-ui-surface until P28/P30 port them.
@@ -147,19 +108,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn system_follows_the_mode_an_explicit_theme_wins_and_generations_advance() {
-        let named = |s: &str| Appearance { theme: ThemeRef(s.into()), ..Default::default() };
-        let mut state = State::new(Appearance::default());
-        assert_eq!(state.variant(), Variant::Dark, "unknown system mode falls back to dark");
-        let g = state.set_system_mode(Mode::Light);
-        assert_eq!((state.variant(), state.theme().palette()), (Variant::Light, light().palette()));
-        assert!(state.set_preference(ThemeRef("dark".into())) > g);
-        assert_eq!(state.variant(), Variant::Dark);
-        state.set_appearance(named("nope"));
-        assert_eq!((state.variant(), state.errors().len()), (Variant::Light, 1), "unknown themes fall back to system");
-        let mut accent = named("light");
-        accent.overrides.insert("color.accent".into(), "#ff0000".into());
-        state.set_appearance(accent);
-        assert_eq!(state.theme().palette().primary, iced::color!(0xff0000));
+    fn system_follows_the_mode_and_an_explicit_theme_wins() {
+        let mut s = State::new(Appearance::default());
+        assert_eq!(s.variant(), Variant::Dark, "an unknown system mode counts as dark");
+        let g = s.set_system_mode(Mode::Light);
+        assert_eq!(s.variant(), Variant::Light);
+        assert!(s.set_preference(ThemeRef("dark".into())) > g);
+        assert_eq!(s.variant(), Variant::Dark);
+        s.set_preference(ThemeRef("nope".into()));
+        assert_eq!((s.variant(), s.errors().len()), (Variant::Light, 1), "unknown themes fall back to the system");
     }
 }

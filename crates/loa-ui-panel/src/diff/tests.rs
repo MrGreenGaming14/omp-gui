@@ -1,11 +1,8 @@
 use super::*;
 
 fn numbered(n: usize) -> String { (1..=n).map(|i| format!("line {i}\n")).collect() }
-
 fn replace(text: &str, no: usize, with: &str) -> String { text.lines().enumerate().map(|(i, l)| format!("{}\n", if i + 1 == no { with } else { l })).collect() }
-
 fn hunks(rows: &[Row]) -> Vec<(u32, u32, u32, u32)> { rows.iter().filter_map(|r| if let Row::Hunk(h) = r { Some((h.old_start, h.old_len, h.new_start, h.new_len)) } else { None }).collect() }
-
 fn folds(rows: &[Row]) -> Vec<usize> { rows.iter().filter_map(|r| if let Row::Fold { hidden, .. } = r { Some(*hidden) } else { None }).collect() }
 
 fn emphasized(f: &FileDiff, tag: Tag) -> Vec<&str> {

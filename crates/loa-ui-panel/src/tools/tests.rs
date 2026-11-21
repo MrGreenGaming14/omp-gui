@@ -21,7 +21,6 @@ fn enabled(s: &State, id: &ToolId) -> bool {
 }
 
 fn project(id: &str) -> ProjectRef { ProjectRef { id: id.into(), name: format!("Project {id}") } }
-
 fn host(alias: &str) -> RemoteHost { RemoteHost { alias: alias.into(), hostname: format!("{alias}.lan"), user: None, port: None, proxy_jump: Some("bastion".into()), limits: HostLimits { allowed_paths: vec!["/srv".into()], read_only: true, ..Default::default() } } }
 
 #[test]
