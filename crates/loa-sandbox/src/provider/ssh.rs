@@ -2,6 +2,7 @@
 //! so keys stay in `ssh-agent` and `~/.ssh/config` applies (aliases,
 //! `ProxyJump`, ports). The stub is uploaded over the same command channel;
 //! the workspace is copied in and out by [`crate::sync`].
+use loa_util::exec::shell_quote;
 use super::serial::command_channel;
 use super::{Sandbox, SandboxKind, SandboxProvider, SandboxSpec, WorkspaceMode};
 use crate::{Result, SandboxError};
@@ -27,10 +28,6 @@ impl SshProvider {
     pub fn new(local_stub: impl Into<PathBuf>, hosts: Vec<String>) -> Self {
         Self { ssh: "ssh".into(), hosts, port: None, local_stub: local_stub.into(), remote_root: "/tmp/loa-sandbox".into() }
     }
-}
-
-pub(super) fn quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 /// An `ssh` invocation that never prompts: the app has no terminal to answer on.
@@ -74,7 +71,7 @@ impl SandboxProvider for SshProvider {
         let stub = format!("{root}/loa-sandbox-stub");
         let binary = tokio::fs::read(&self.local_stub).await?;
         // One round trip creates the private root and receives the stub on stdin.
-        let setup = format!("umask 077 && mkdir -p -- {root} && cat > {stub} && chmod 700 -- {stub}", root = quote(&root), stub = quote(&stub));
+        let setup = format!("umask 077 && mkdir -p -- {root} && cat > {stub} && chmod 700 -- {stub}", root = shell_quote(&root), stub = shell_quote(&stub));
         let mut upload = ssh(&self.ssh, self.port, host).arg(setup)
             .stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped()).kill_on_drop(true).spawn()?;
         let mut stdin = upload.stdin.take().expect("piped stdin");
@@ -86,7 +83,7 @@ impl SandboxProvider for SshProvider {
             return Err(failed("stub upload", &output));
         }
         let mut cmd = ssh(&self.ssh, self.port, host);
-        cmd.arg(format!("exec {} {}", quote(&stub), quote(&root)));
+        cmd.arg(format!("exec {} {}", shell_quote(&stub), shell_quote(&root)));
         let process = match command_channel(cmd, WorkspaceMode::Copied) {
             Ok(process) => process,
             Err(e) => { let _ = cleanup(&self.ssh, self.port, host, &root).await; return Err(e); }
@@ -96,7 +93,7 @@ impl SandboxProvider for SshProvider {
 }
 
 async fn cleanup(program: &PathBuf, port: Option<u16>, host: &str, root: &str) -> Result<()> {
-    let output = ssh(program, port, host).arg(format!("rm -rf -- {}", quote(root))).stdin(Stdio::null()).output().await?;
+    let output = ssh(program, port, host).arg(format!("rm -rf -- {}", shell_quote(root))).stdin(Stdio::null()).output().await?;
     if !output.status.success() { return Err(failed("remote cleanup", &output)); }
     Ok(())
 }
@@ -115,7 +112,7 @@ impl Drop for SshSandbox {
             let mut cmd = std::process::Command::new(&self.ssh);
             cmd.arg("-T").arg("-o").arg("BatchMode=yes");
             if let Some(port) = self.port { cmd.arg("-p").arg(port.to_string()); }
-            let _ = cmd.arg("--").arg(&self.host).arg(format!("rm -rf -- {}", quote(&self.root)))
+            let _ = cmd.arg("--").arg(&self.host).arg(format!("rm -rf -- {}", shell_quote(&self.root)))
                 .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
         }
     }
@@ -137,11 +134,6 @@ mod tests {
     use crate::provider::SandboxOptions;
     use std::os::unix::fs::PermissionsExt;
     use tokio::io::AsyncReadExt;
-
-    #[test]
-    fn shell_quote_handles_spaces_and_apostrophes() {
-        assert_eq!(quote("a b'c"), "'a b'\\''c'");
-    }
 
     fn script(path: &std::path::Path, body: &str) {
         loa_util::exec::write_executable(path, body).unwrap();

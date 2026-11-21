@@ -47,10 +47,10 @@ pub(super) fn run(text: &str, sink: &dyn PatchSink, node: &str) -> Result<(), Ad
         }
     }
 
-    header.ts = str_field(&header.json, "timestamp").and_then(time::parse_iso).unwrap_or(0);
+    header.ts = str_field(&header.json, "timestamp").and_then(time::parse_iso_ms).unwrap_or(0);
     let mut previous = header.ts;
     for entry in &mut entries {
-        entry.ts = str_field(&entry.json, "timestamp").and_then(time::parse_iso).unwrap_or(previous);
+        entry.ts = str_field(&entry.json, "timestamp").and_then(time::parse_iso_ms).unwrap_or(previous);
         previous = entry.ts;
     }
 

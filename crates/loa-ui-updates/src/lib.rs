@@ -298,7 +298,7 @@ impl State {
     fn view_details<'a>(&'a self, p: &'a Product) -> Element<'a, Message> {
         let mut facts: Vec<(&'static str, String)> = Vec::new();
         let checked = match p.last_check_unix {
-            Some(at) => format!("checked {}", ago(self.data.now_unix, at)),
+            Some(at) => format!("checked {}", loa_util::time::ago(self.data.now_unix as i64 * 1000, at as i64 * 1000)),
             None => "not checked yet".to_owned(),
         };
         facts.push(("Feed", format!("{} · {checked}", p.source)));
@@ -538,17 +538,6 @@ fn short_node(node: &str) -> String {
     match node.char_indices().nth(12) {
         Some((at, _)) => format!("{}…", &node[..at]),
         None => node.to_owned(),
-    }
-}
-
-/// "5 min ago" style age of `at` at `now`.
-fn ago(now: u64, at: u64) -> String {
-    let secs = now.saturating_sub(at);
-    match secs {
-        0..60 => "just now".to_owned(),
-        60..3600 => format!("{} min ago", secs / 60),
-        3600..86_400 => format!("{} h ago", secs / 3600),
-        _ => format!("{} d ago", secs / 86_400),
     }
 }
 

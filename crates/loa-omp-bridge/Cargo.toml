@@ -6,6 +6,7 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+loa-util.workspace = true
 async-trait.workspace = true
 bytes.workspace = true
 loa-adapter.workspace = true
@@ -15,7 +16,6 @@ thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 base64 = "0.22"
-getrandom = "0.3"
 http-body-util = "0.1"
 hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }

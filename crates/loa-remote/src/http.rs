@@ -39,12 +39,6 @@ impl std::fmt::Debug for RemoteHttp {
     }
 }
 
-fn token() -> std::io::Result<String> {
-    let mut bytes = [0u8; 32];
-    getrandom::fill(&mut bytes).map_err(|e| std::io::Error::other(e.to_string()))?;
-    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
-}
-
 async fn authenticate(State(tokens): State<Tokens>, mut request: Request, next: Next) -> Response {
     let session = request
         .headers()
@@ -100,7 +94,7 @@ impl RemoteHttp {
     /// own bearer token. Calling it again for the same session issues a new
     /// token and keeps the old one valid until [`RemoteHttp::forget`].
     pub fn session_spec(&self, session_id: &str) -> std::io::Result<McpServerSpec> {
-        let token = token()?;
+        let token = loa_util::text::random_hex(32);
         self.tokens.locked().insert(token.clone(), Arc::from(session_id));
         Ok(McpServerSpec {
             name: SERVER_NAME.to_owned(),

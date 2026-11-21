@@ -55,7 +55,7 @@ pub(super) fn run(dom: &Dom) -> Result<String, AdapterError> {
                 "type": "session",
                 "version": 3,
                 "id": id,
-                "timestamp": time::format_iso(session.int_attr(attr::CREATED).unwrap_or(0)),
+                "timestamp": time::format_iso_ms(session.int_attr(attr::CREATED).unwrap_or(0)),
                 "cwd": session.str_attr(attr::CWD).unwrap_or_default(),
             });
             if let (Some(title), Json::Object(fields)) = (session.str_attr(attr::TITLE), &mut header) {
@@ -112,7 +112,7 @@ impl Writer {
         entry.insert("type".to_owned(), Json::String(kind.to_owned()));
         entry.insert("id".to_owned(), Json::String(id.clone()));
         entry.insert("parentId".to_owned(), std::mem::replace(&mut self.parent, Json::String(id)));
-        entry.insert("timestamp".to_owned(), Json::String(time::format_iso(ts)));
+        entry.insert("timestamp".to_owned(), Json::String(time::format_iso_ms(ts)));
         for (name, value) in fields {
             entry.insert(name.to_owned(), value);
         }

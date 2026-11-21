@@ -16,7 +16,7 @@
 
 mod export;
 mod import;
-mod time;
+use loa_util::time;
 
 pub(crate) use import::content_text;
 

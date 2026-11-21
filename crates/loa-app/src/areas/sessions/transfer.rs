@@ -3,6 +3,7 @@
 //! included), and export of the active session as a native file or as
 //! debugging XML.
 
+use loa_util::time::ago;
 use std::path::{Path, PathBuf};
 
 use iced::widget::{button, column, container, row, scrollable, space, text, text_input};
@@ -136,8 +137,8 @@ fn found_row(session: &NativeSession, now: i64) -> Element<'_, Message> {
         .or_else(|| session.path.file_name().map(|name| name.to_string_lossy().into_owned()))
         .unwrap_or_default();
     let detail = match &session.project {
-        Some(project) => format!("{project} · {}", age(now - session.modified)),
-        None => age(now - session.modified),
+        Some(project) => format!("{project} · {}", ago(now, session.modified)),
+        None => ago(now, session.modified),
     };
     let harness = container(text(harness_label(session.harness)).size(12)).style(style::badge).padding([1, 5]);
     row![
@@ -162,17 +163,6 @@ fn harness_label(harness: &str) -> &str {
         native::CODEX => "Codex",
         native::OPENCODE => "OpenCode",
         other => other,
-    }
-}
-
-/// How long ago, from milliseconds.
-fn age(ms: i64) -> String {
-    let minutes = ms.max(0) / 60_000;
-    match minutes {
-        0 => "just now".to_owned(),
-        1..60 => format!("{minutes} min ago"),
-        60..1440 => format!("{} h ago", minutes / 60),
-        _ => format!("{} d ago", minutes / 1440),
     }
 }
 

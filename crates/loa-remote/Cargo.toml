@@ -10,7 +10,6 @@ loa-util.workspace = true
 async-trait.workspace = true
 axum = { version = "0.8", default-features = false, features = ["tokio", "http1"] }
 bytes.workspace = true
-getrandom = "0.3"
 http = "1"
 loa-adapter.workspace = true
 loa-config = { path = "../loa-config" }

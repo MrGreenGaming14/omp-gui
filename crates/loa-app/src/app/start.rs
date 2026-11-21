@@ -3,7 +3,7 @@
 //! there), a few starters that fill the composer, and the folder's recent
 //! sessions.
 
-use loa_util::time::now_ms;
+use loa_util::time::{ago, now_ms};
 
 use iced::widget::{Column, button, column, container, row, rule, space, text};
 use iced::{Alignment, Element, Fill, Length, Padding};
@@ -113,31 +113,5 @@ impl App {
         )
         .height(Length::Shrink);
         container(page).center(Fill).into()
-    }
-}
-
-/// "just now", "5m", "3h", "2d" since `then`, both in Unix milliseconds.
-pub fn ago(now: i64, then: i64) -> String {
-    let minutes = (now - then).max(0) / 60_000;
-    match minutes {
-        0 => "just now".to_owned(),
-        1..=59 => format!("{minutes}m ago"),
-        60..=1439 => format!("{}h ago", minutes / 60),
-        _ => format!("{}d ago", minutes / 1440),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::ago;
-
-    #[test]
-    fn ages_read_in_the_largest_whole_unit() {
-        let now = 10 * 86_400_000;
-        assert_eq!(ago(now, now - 20_000), "just now");
-        assert_eq!(ago(now, now - 5 * 60_000), "5m ago");
-        assert_eq!(ago(now, now - 3 * 3_600_000), "3h ago");
-        assert_eq!(ago(now, now - 2 * 86_400_000), "2d ago");
-        assert_eq!(ago(now, now + 60_000), "just now");
     }
 }

@@ -4644,6 +4644,7 @@ dependencies = [
  "loa-adapter",
  "loa-core",
  "loa-omp-rpc",
+ "loa-util",
  "serde",
  "serde_json",
  "tempfile",
@@ -4971,11 +4972,11 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "bytes",
- "getrandom 0.3.4",
  "http-body-util",
  "hyper",
  "hyper-util",
  "loa-adapter",
+ "loa-util",
  "rmcp",
  "serde",
  "serde_json",
@@ -5030,7 +5031,6 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "futures",
- "getrandom 0.3.4",
  "hmac 0.12.1",
  "http",
  "loa-adapter",
@@ -5193,7 +5193,6 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "bytes",
- "getrandom 0.3.4",
  "image",
  "loa-adapter",
  "loa-adapter-omp",
@@ -5356,6 +5355,7 @@ dependencies = [
  "iced_test",
  "loa-projects",
  "loa-ui-icons",
+ "loa-util",
 ]
 
 [[package]]
@@ -5432,6 +5432,7 @@ dependencies = [
  "iced_test",
  "loa-ui-icons",
  "loa-updater",
+ "loa-util",
  "semver",
 ]
 

@@ -3,6 +3,7 @@
 //! Every call runs: host lookup, limits (#100), approval, the SSH work, and
 //! an audit row (#101) whatever the outcome.
 
+use loa_util::exec::shell_quote;
 use loa_util::LockExt;
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -194,20 +195,6 @@ fn outcome_of(e: &Error) -> Outcome {
         Error::TimedOut => Outcome::TimedOut,
         _ => Outcome::Error,
     }
-}
-
-fn shell_quote(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push('\'');
-    for c in s.chars() {
-        if c == '\'' {
-            out.push_str("'\\''");
-        } else {
-            out.push(c);
-        }
-    }
-    out.push('\'');
-    out
 }
 
 fn preview(s: &str, max: usize) -> &str {
@@ -784,11 +771,6 @@ impl From<BashArgs> for BashRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn shell_quote_survives_single_quotes() {
-        assert_eq!(shell_quote("/srv/it's"), "'/srv/it'\\''s'");
-    }
 
     #[test]
     fn file_args_validation() {
