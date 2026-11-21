@@ -16,7 +16,9 @@ use loa_ui_shell as shell;
 
 use crate::app::Message;
 use crate::services::Services;
-pub use crate::session::{Session, SessionEvent, Sessions};
+use crate::services::harness;
+use loa_runtime::Runtime;
+use loa_runtime::session::{Session, SessionEvent};
 
 /// A message of one area; [`AreaMessage::Area`] handles it.
 pub trait AreaMessage: Clone + fmt::Debug + Send + 'static {
@@ -165,11 +167,12 @@ pub struct Spawn {
     pub prompt: Option<Prompt>,
 }
 
-/// What every area may read and change: the services, the sessions and the
-/// shared UI (shell frame, composer, keymap), plus app requests.
+/// What every area may read and change: the services, the runtime (sessions,
+/// harnesses, active project) and the shared UI (shell frame, composer,
+/// keymap), plus app requests.
 pub struct Ctx {
     pub services: Services,
-    pub sessions: Sessions,
+    pub runtime: Runtime,
     pub shell: shell::State,
     pub composer: composer::State,
     pub keymap: palette::Keymap,
@@ -263,10 +266,10 @@ impl Ctx {
     /// Points the composer's harness picker and new sessions at the active
     /// session's harness.
     pub fn show_harness(&mut self) {
-        if let Some(id) = self.sessions.active().and_then(Session::harness_id) {
-            self.sessions.harness = Some(id.to_owned());
+        if let Some(id) = self.runtime.sessions().active().and_then(Session::harness_id) {
+            self.runtime.sessions_mut().harness = Some(id.to_owned());
         }
-        self.composer.set_harnesses(self.services.harnesses.options(), self.sessions.harness.as_deref());
+        self.composer.set_harnesses(harness::options(self.runtime.harnesses()), self.runtime.sessions().harness.as_deref());
     }
 
     /// Closes session `id`: its writer stops and its journal is released; it
@@ -282,8 +285,8 @@ impl Ctx {
     }
 
     fn end_session(&mut self, id: &str, delete: bool) -> Option<Arc<dyn HarnessSession>> {
-        let was_active = self.sessions.is_active(id);
-        let (session, error) = self.sessions.close(&self.services, id, delete);
+        let was_active = self.runtime.sessions().is_active(id);
+        let (session, error) = self.runtime.close_session(id, delete);
         if let Some(error) = error {
             self.notify(error);
         }
@@ -429,7 +432,7 @@ impl<S, Run> CommandSpec<S, Run> {
         let fixed = |title| vec![row(palette::CommandId::from_static(self.id), title)];
         match self.listed {
             Listed::Always => fixed(self.title),
-            Listed::Session if ctx.sessions.active().is_some() => fixed(self.title),
+            Listed::Session if ctx.runtime.sessions().active().is_some() => fixed(self.title),
             Listed::Session | Listed::Never => Vec::new(),
             Listed::When(title) => title(state, ctx).map(fixed).unwrap_or_default(),
             Listed::Each(each) => {

@@ -81,7 +81,7 @@ pub(crate) const APP_COMMANDS: &[AppCommand] = &[
         app.session_order().iter().enumerate().map(|(index, id)| ((index + 1).to_string(), format!("Go to session: {}", title(id)))).collect()
     })),
     // The hover-only Pin / Unpin button of the active session's sidebar row.
-    command("sidebar.pin", "", "Session", |app, _| match app.ctx.sessions.active_id().map(ToString::to_string) {
+    command("sidebar.pin", "", "Session", |app, _| match app.ctx.runtime.sessions().active_id().map(ToString::to_string) {
         Some(id) => app.update(Message::Shell(shell::Message::Sidebar(shell::sidebar::Message::TogglePin(id)))),
         None => {
             app.ctx.notify("Open a session to pin it");
@@ -89,17 +89,17 @@ pub(crate) const APP_COMMANDS: &[AppCommand] = &[
         }
     })
     .listed(Listed::When(|app, ctx| {
-        let summary = ctx.sessions.active_id().and_then(|id| app.ctx.shell.sidebar().session(id.as_str()))?;
+        let summary = ctx.runtime.sessions().active_id().and_then(|id| app.ctx.shell.sidebar().session(id.as_str()))?;
         Some(if summary.pinned { "Unpin session" } else { "Pin session" })
     })),
     // The composer's pickers: the mode, the effort, the model by its index.
     command("composer.mode.", "", "Composer", |app, mode| app.pick(composer::PickerId::Mode, "composer.mode.", mode))
-        .listed(Listed::Each(|_, ctx| match ctx.sessions.active() {
+        .listed(Listed::Each(|_, ctx| match ctx.runtime.sessions().active() {
             Some(_) => SessionMode::ALL.iter().map(|mode| (mode.as_str().to_owned(), format!("Mode: {}", mode.as_str()))).collect(),
             None => Vec::new(),
         })),
     command("composer.effort.", "", "Composer", |app, effort| app.pick(composer::PickerId::Effort, "composer.effort.", effort))
-        .listed(Listed::Each(|_, ctx| match ctx.sessions.active() {
+        .listed(Listed::Each(|_, ctx| match ctx.runtime.sessions().active() {
             Some(_) => ctx.composer.efforts().0.iter().map(|effort| (effort.to_string(), format!("Effort: {effort}"))).collect(),
             None => Vec::new(),
         })),
@@ -109,7 +109,7 @@ pub(crate) const APP_COMMANDS: &[AppCommand] = &[
         }
         _ => app.unknown("composer.model.", index),
     })
-    .listed(Listed::Each(|_, ctx| match ctx.sessions.active() {
+    .listed(Listed::Each(|_, ctx| match ctx.runtime.sessions().active() {
         Some(_) => ctx.composer.models().0.iter().enumerate().map(|(index, model)| (index.to_string(), format!("Model: {model}"))).collect(),
         None => Vec::new(),
     })),
@@ -226,7 +226,7 @@ impl App {
         if self.ctx.screen().is_some() {
             self.ctx.close_screen();
         }
-        if self.ctx.sessions.active().is_none() {
+        if self.ctx.runtime.sessions().active().is_none() {
             self.ctx.notify("Start or open a session to type a prompt");
             return Task::none();
         }

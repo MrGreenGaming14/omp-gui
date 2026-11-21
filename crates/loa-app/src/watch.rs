@@ -6,8 +6,13 @@ use std::sync::{Arc, Mutex};
 
 use iced::Subscription;
 use iced::futures::{Stream, stream};
+use loa_bus::{Policy, SessionId};
+use loa_runtime::feed::Source;
+use loa_runtime::session::{Feed, Sessions, WriterFeed};
 use loa_util::LockExt;
-use tokio::sync::{broadcast, mpsc, watch};
+
+/// Undelivered patches a session feed may hold before it resubscribes.
+const FEED_CAPACITY: usize = 4096;
 
 /// A subscription key naming a shared value by its address: clones of one
 /// `Arc` are the same feed, a new value is a new one.
@@ -16,56 +21,6 @@ pub struct PtrKey<'a, T: ?Sized>(pub &'a Arc<T>);
 impl<T: ?Sized> Hash for PtrKey<'_, T> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         std::ptr::hash(Arc::as_ptr(self.0).cast::<()>(), state);
-    }
-}
-
-/// A feed a [`watch`] reads until it ends.
-pub trait Source: Send + 'static {
-    type Item: Send + 'static;
-
-    /// The next item; `None` once the feed ended.
-    fn next(&mut self) -> impl Future<Output = Option<Self::Item>> + Send;
-}
-
-impl<T: Clone + Send + 'static> Source for broadcast::Receiver<T> {
-    /// `Err(skipped)` after the receiver fell behind.
-    type Item = Result<T, u64>;
-
-    async fn next(&mut self) -> Option<Result<T, u64>> {
-        match self.recv().await {
-            Ok(item) => Some(Ok(item)),
-            Err(broadcast::error::RecvError::Lagged(skipped)) => Some(Err(skipped)),
-            Err(broadcast::error::RecvError::Closed) => None,
-        }
-    }
-}
-
-/// Each change of the watched value.
-impl<T: Send + Sync + 'static> Source for watch::Receiver<T> {
-    type Item = ();
-
-    async fn next(&mut self) -> Option<()> {
-        self.changed().await.ok()
-    }
-}
-
-impl<T: Send + 'static> Source for mpsc::UnboundedReceiver<T> {
-    type Item = T;
-
-    async fn next(&mut self) -> Option<T> {
-        self.recv().await
-    }
-}
-
-/// No feed ends at once.
-impl<S: Source> Source for Option<S> {
-    type Item = S::Item;
-
-    async fn next(&mut self) -> Option<S::Item> {
-        match self {
-            Some(source) => source.next().await,
-            None => None,
-        }
     }
 }
 
@@ -105,4 +60,13 @@ fn items<S: Source, M: Send + 'static>(watch: &Watch<S, M>) -> impl Stream<Item 
             }
         }
     })
+}
+
+/// One feed per open session: the writer's DOM, then every patch.
+pub fn sessions(sessions: &Sessions) -> Subscription<(SessionId, Feed)> {
+    Subscription::batch(sessions.iter().map(|session| {
+        let writer = Arc::clone(session.writer());
+        let open = move || WriterFeed::new(writer, Policy::coalescing(FEED_CAPACITY));
+        watch(PtrKey(session.writer()), open, |feed| (!matches!(feed, Feed::Ended)).then_some(feed)).with(session.id().clone())
+    }))
 }

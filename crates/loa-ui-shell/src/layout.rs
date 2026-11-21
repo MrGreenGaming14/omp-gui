@@ -1,6 +1,7 @@
 //! The app frame: sidebar, top bar over a center slot, and a resizable right panel with tabs.
 
-use crate::data::{NodeStatus, SessionSummary};
+use crate::data::NodeStatus;
+use loa_contracts::session::SessionSummary;
 use crate::theme::{self, Appearance, ThemeRef};
 use crate::{sidebar, topbar};
 use iced::theme::Mode;

@@ -22,7 +22,8 @@ use adapter::{self as ui, Outcome};
 use loa_p2p::{Endpoint, Node, NodeConfig, NodeEvent, RelayConfig};
 use loa_ui_kit::widgets::Screen;
 use loa_ui_settings::peers;
-use loa_ui_shell::{NodeStatus, SessionSummary};
+use loa_contracts::session::SessionSummary;
+use loa_ui_shell::NodeStatus;
 
 use crate::adapters::peer_sessions::LibrarySessions;
 use crate::area::{perform, Area, AreaCommand, AreaMessage, Ctx, PanelTab, Request};
@@ -105,7 +106,7 @@ pub(crate) fn node_config(ctx: &Ctx, network: &NetworkSettings) -> NodeConfig {
     if !network.discovery.tailscale {
         config.tailscale = None;
     }
-    config.sessions = Some(services.storage.library.store().clone());
+    config.sessions = Some(ctx.runtime.library().store().clone());
     config
 }
 
@@ -127,7 +128,7 @@ impl State {
     fn open(&mut self, ctx: &mut Ctx, config: NodeConfig) -> Task<Message> {
         self.generation += 1;
         let services = &ctx.services;
-        let sessions = Arc::new(LibrarySessions::new(Arc::clone(&services.storage.library)));
+        let sessions = Arc::new(LibrarySessions::new(Arc::clone(ctx.runtime.library())));
         let opened = Node::open_with_grants(
             config,
             &services.node.identity,
@@ -397,8 +398,8 @@ impl Area for State {
         self.remote.as_ref().map(|remote| remote.view().map(Message::Remote))
     }
 
-    fn on_session_event(&mut self, event: &crate::area::SessionEvent, ctx: &mut Ctx) -> Task<Message> {
-        use crate::area::SessionEvent;
+    fn on_session_event(&mut self, event: &loa_runtime::session::SessionEvent, ctx: &mut Ctx) -> Task<Message> {
+        use loa_runtime::session::SessionEvent;
         // New sessions and prompts become resources grants can name.
         if matches!(event, SessionEvent::Loaded(_) | SessionEvent::TurnStarted { .. } | SessionEvent::Closed(_)) {
             self.refresh(ctx);

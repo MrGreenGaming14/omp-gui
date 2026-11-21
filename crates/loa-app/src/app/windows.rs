@@ -218,7 +218,7 @@ impl App {
         match message {
             WindowMessage::OpenConfigs(tab) => {
                 (windows.configs, windows.overlay) = (Some(tab), None);
-                windows.docs = Docs { files: scan(tab, &self.ctx.services.cwd, loa_util::fs::home().as_deref()), selected: 0, full: false };
+                windows.docs = Docs { files: scan(tab, self.ctx.runtime.cwd(), loa_util::fs::home().as_deref()), selected: 0, full: false };
                 let load = match tab {
                     ConfigsTab::Models => self.update(Message::area(areas::models::Message::Show(Page::Settings))),
                     _ => Task::none(),
@@ -312,11 +312,11 @@ impl App {
 
     /// Loads a session without making it active and shows it in a window.
     pub(super) fn detach_session(&mut self, session: &str) -> Task<Message> {
-        if let Err(error) = self.ctx.sessions.load(&self.ctx.services, session) {
+        if let Err(error) = self.ctx.runtime.load_session(session) {
             self.ctx.notify(error);
             return Task::none();
         }
-        if let Some(open) = self.ctx.sessions.get(session) {
+        if let Some(open) = self.ctx.runtime.sessions().get(session) {
             let theme = self.theme();
             self.sessions.detached.entry(session.to_owned()).or_insert_with(|| loa_ui_session::transcript::State::from_dom(open.dom(), &theme));
         }
@@ -355,7 +355,7 @@ impl App {
 
     fn detached_session(&self, session: &str) -> Element<'_, Message> {
         let center = |s| container(label(s, TextRole::Body, Tone::Muted)).center(Fill).into();
-        let Some(open) = self.ctx.sessions.get(session) else { return center("This session is no longer loaded") };
+        let Some(open) = self.ctx.runtime.sessions().get(session) else { return center("This session is no longer loaded") };
         let Some(chat) = self.sessions.detached.get(session) else { return center("Loading…") };
         let owned = session.to_owned();
         chat.view(open.dom(), move |message| Message::DetachedChat(owned.clone(), message), |slot| self.decision_card(open.id().as_str(), slot.node))

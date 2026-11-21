@@ -29,7 +29,8 @@ use loa_ui_terminal as terminal;
 use loa_ui_panel::tools;
 
 use self::remote::{Remote, SshPaths, SshPty};
-use crate::area::{perform, Area, AreaCommand, AreaMessage, Ctx, HostToolSet, Listed, PanelTab, SessionEvent, Target};
+use crate::area::{perform, Area, AreaCommand, AreaMessage, Ctx, HostToolSet, Listed, PanelTab, Target};
+use loa_runtime::session::SessionEvent;
 use crate::watch::{PtrKey, watch};
 
 /// Id of the Tools panel tab.
@@ -122,13 +123,13 @@ impl State {
     /// The harness the Built in section describes: the active session's,
     /// else the one new sessions start on.
     fn harness(ctx: &Ctx) -> Option<String> {
-        ctx.sessions.active().and_then(|session| session.harness_id()).map(str::to_owned).or_else(|| ctx.sessions.harness.clone())
+        ctx.runtime.sessions().active().and_then(|session| session.harness_id()).map(str::to_owned).or_else(|| ctx.runtime.sessions().harness.clone())
     }
 
     /// The omp executable, when omp runs here.
     fn omp(ctx: &Ctx) -> Option<PathBuf> {
-        ctx.services.harnesses.runnable(OMP)?;
-        Some(ctx.services.harnesses.get(OMP).and_then(|harness| harness.executable.clone()).unwrap_or_else(|| PathBuf::from(OMP)))
+        ctx.runtime.harnesses().runnable(OMP)?;
+        Some(ctx.runtime.harnesses().get(OMP).and_then(|harness| harness.executable.clone()).unwrap_or_else(|| PathBuf::from(OMP)))
     }
 
     /// Shows the harness and app tools; starts reading the harness's tools
@@ -136,7 +137,7 @@ impl State {
     fn refresh_builtin(&mut self, ctx: &Ctx) -> Task<Message> {
         let harness = Self::harness(ctx);
         self.shown = (harness.clone(), ctx.app_tools.clone());
-        let label = harness.as_deref().map(|id| ctx.services.harnesses.label(id).to_owned()).unwrap_or_default();
+        let label = harness.as_deref().map(|id| ctx.runtime.harnesses().label(id).to_owned()).unwrap_or_default();
         let (harness_tools, harness_note, load) = match harness.as_deref() {
             None => (Vec::new(), Some("No harness is available".to_owned()), None),
             Some(OMP) => match self.harness_tools.get(OMP) {
@@ -159,7 +160,7 @@ impl State {
         if std::mem::replace(&mut self.omp_loading, true) {
             return Task::none();
         }
-        let mut config = OmpBridgeConfig::new(ctx.services.cwd.clone(), ctx.services.storage.dirs.data.join("omp-bridge").join("tools"));
+        let mut config = OmpBridgeConfig::new(ctx.runtime.cwd().to_path_buf(), ctx.services.storage.dirs.data.join("omp-bridge").join("tools"));
         config.program = program;
         perform(
             async move {
@@ -248,7 +249,7 @@ impl State {
     fn refresh_projects(&mut self, ctx: &Ctx) {
         let config = ctx.services.storage.config.load().unwrap_or_default();
         let mut ids: BTreeSet<String> = config.projects.keys().cloned().collect();
-        ids.insert(ctx.services.project.clone());
+        ids.insert(ctx.runtime.project().to_owned());
         ids.insert(self.project.clone());
         self.panel.set_projects(ids.into_iter().map(|id| tools::ProjectRef { name: id.clone(), id }).collect());
         self.panel.select_project(self.project.clone());
@@ -391,7 +392,7 @@ impl State {
                 )
             }
             tools::Event::ScanImports => {
-                let files = import::defaults(&self.ssh.home, Some(&ctx.services.cwd));
+                let files = import::defaults(&self.ssh.home, Some(ctx.runtime.cwd()));
                 Task::perform(
                     async move {
                         let scan = tokio::task::spawn_blocking(move || import::scan(&files)).await;
@@ -527,7 +528,7 @@ impl Area for State {
             ctx.notify(warning);
         }
         let metrics = terminal::canvas::Metrics::measure(Font::MONOSPACE, 13.0);
-        let terminal = terminal::state::State::new(metrics, terminal::LocalShell::login_shell(ctx.services.cwd.clone()))
+        let terminal = terminal::state::State::new(metrics, terminal::LocalShell::login_shell(ctx.runtime.cwd().to_path_buf()))
             .with_remote(Arc::new(SshPty(Arc::clone(&remote.service))));
         let mut state = Self {
             panel: tools::State::new(),
@@ -539,7 +540,7 @@ impl Area for State {
             omp_loading: false,
             shown: (None, Vec::new()),
             found: Vec::new(),
-            project: ctx.services.project.clone(),
+            project: ctx.runtime.project().to_owned(),
             terminal,
         };
         state.reload_hosts(ctx);
@@ -682,7 +683,7 @@ impl Area for State {
         if !capabilities.mcp_servers && !capabilities.host_tools {
             return;
         }
-        let project = config.project.clone().unwrap_or_else(|| ctx.services.project.clone());
+        let project = config.project.clone().unwrap_or_else(|| ctx.runtime.project().to_owned());
         let settings = Self::settings(&project, ctx);
         for name in central::session_disabled_tools(&settings) {
             if !config.disabled_tools.contains(&name) {
@@ -708,7 +709,7 @@ impl Area for State {
         if !target.capabilities.host_tools || target.capabilities.mcp_servers {
             return None;
         }
-        let project = config.project.clone().unwrap_or_else(|| ctx.services.project.clone());
+        let project = config.project.clone().unwrap_or_else(|| ctx.runtime.project().to_owned());
         let settings = Self::settings(&project, ctx);
         let mut router = HostToolRouter::new();
         let mcp = Arc::new(McpHostTools::new(self.mcp.clone(), Arc::new(ProjectFilter::new(settings.clone()))));

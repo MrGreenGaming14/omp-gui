@@ -1,0 +1,15 @@
+[package]
+name = "loa-runtime"
+description = "The headless app runtime: live sessions, the harness registry and the active project"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+loa-util.workspace = true
+loa-core.workspace = true
+loa-contracts.workspace = true
+loa-bus = { path = "../loa-bus" }
+loa-session = { path = "../loa-session" }
+tokio.workspace = true
+futures.workspace = true

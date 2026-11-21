@@ -14,6 +14,7 @@ loa-bus = { path = "../loa-bus" }
 loa-config = { path = "../loa-config" }
 loa-harness = { workspace = true, features = ["omp", "acp", "claude", "codex", "opencode", "omp2"] }
 loa-session = { path = "../loa-session" }
+loa-runtime = { path = "../loa-runtime" }
 tokio.workspace = true
 loa-ui-shell = { path = "../loa-ui-shell" }
 loa-ui-session = { path = "../loa-ui-session" }

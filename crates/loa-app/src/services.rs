@@ -10,10 +10,9 @@ use loa_core::{Dom, Draft};
 use loa_session::library::Library;
 use loa_trust::{KeySource, NodeIdentity, load_app_identity};
 
-mod harness;
+pub mod harness;
 mod host;
 
-pub use harness::{CHECKING, Harness, Harnesses};
 pub use host::{Host, hostname};
 
 /// This node: its identity, the grants it issued and received, and the MCP servers it runs.
@@ -66,35 +65,32 @@ impl Dirs {
     }
 }
 
-/// What the app keeps on disk: the session library and the central config.
+/// What the app keeps on disk besides the session library: the central config.
 pub struct Storage {
     pub dirs: Dirs,
-    /// Session journals under `dirs.sessions`, opened as writers on one bus.
-    pub library: Arc<Library>,
     /// `<data>/config.toml`; each area saves only the table it owns.
     pub config: ConfigStore,
 }
 
 impl Storage {
-    /// Opens the session store in `dirs`, its writers checked by `node`.
-    pub fn open(dirs: Dirs, node: &NodeServices) -> Result<Self, String> {
-        let store = Store::new(&dirs.sessions, JournalOptions::default())
-            .map_err(|error| format!("Can't open the session store {}: {error}", dirs.sessions.display()))?;
-        let library = Library::new(store, Arc::new(Bus::new()), node.bus_key(), Arc::clone(&node.peer_access) as Arc<dyn Authorize>);
-        Ok(Self { config: ConfigStore::in_dir(&dirs.data), library: Arc::new(library), dirs })
+    pub fn new(dirs: Dirs) -> Self {
+        Self { config: ConfigStore::in_dir(&dirs.data), dirs }
     }
+}
+
+/// Opens the session store in `dirs`, its writers checked by `node`.
+pub fn open_library(dirs: &Dirs, node: &NodeServices) -> Result<Arc<Library>, String> {
+    let store = Store::new(&dirs.sessions, JournalOptions::default())
+        .map_err(|error| format!("Can't open the session store {}: {error}", dirs.sessions.display()))?;
+    let library = Library::new(store, Arc::new(Bus::new()), node.bus_key(), Arc::clone(&node.peer_access) as Arc<dyn Authorize>);
+    Ok(Arc::new(library))
 }
 
 pub struct Services {
     pub node: NodeServices,
     pub storage: Storage,
-    pub harnesses: Harnesses,
     /// The processes the app asks about the machine: git, the folder dialog, `omp usage`.
     pub host: Host,
-    /// Directory new sessions run in; the active project's folder.
-    pub cwd: PathBuf,
-    /// Name of the active project.
-    pub project: String,
     /// The folder the app was launched in, the workspace project's folder.
     pub workspace: PathBuf,
 }
@@ -113,26 +109,18 @@ impl Services {
             }
         };
         let node = NodeServices::open(identity, hostname(), source, &dirs.data)?;
-        let harnesses = Harnesses::detect(&node.key, &dirs.omp);
         let cwd = starting_folder(std::env::args().nth(1), std::env::temp_dir());
-        Ok((Self::new(node, dirs, harnesses, Host::system(), cwd)?, warnings))
+        Ok((Self::new(node, dirs, Host::system(), cwd), warnings))
     }
 
-    /// Services over explicit parts; peer requests are refused until grants exist.
-    pub fn new(node: NodeServices, dirs: Dirs, harnesses: Harnesses, host: Host, cwd: PathBuf) -> Result<Self, String> {
-        let storage = Storage::open(dirs, &node)?;
-        Ok(Self { node, storage, harnesses, host, project: folder_name(&cwd), workspace: cwd.clone(), cwd })
+    /// Services over explicit parts, launched in `workspace`; peer requests are refused until grants exist.
+    pub fn new(node: NodeServices, dirs: Dirs, host: Host, workspace: PathBuf) -> Self {
+        Self { node, storage: Storage::new(dirs), host, workspace }
     }
 
     /// Name of the workspace project.
     pub fn workspace_project(&self) -> String {
         folder_name(&self.workspace)
-    }
-
-    /// Makes `project` and its folder `cwd` the active ones.
-    pub fn set_active(&mut self, project: String, cwd: PathBuf) {
-        self.project = project;
-        self.cwd = cwd;
     }
 }
 

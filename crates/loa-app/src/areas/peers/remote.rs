@@ -18,11 +18,11 @@ use loa_ui_kit::style::{self, ButtonKind, Tone};
 use loa_ui_kit::widgets::{icon_button, label, text_button};
 use loa_ui_kit::theme::{LayoutRole, SpaceRole, TextRole, sp, text_size as ts, width};
 use loa_ui_settings::peers;
-use loa_ui_shell::SessionSummary;
+use loa_contracts::session::SessionSummary;
 
 use super::{Message, State};
 use crate::area::{perform, Area, Ctx};
-use crate::session::{Feed, WriterFeed};
+use loa_runtime::session::{Feed, WriterFeed};
 use crate::watch::{PtrKey, watch};
 
 /// Patches the mirror's feed may hold before it resubscribes.

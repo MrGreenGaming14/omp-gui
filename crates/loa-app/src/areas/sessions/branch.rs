@@ -11,7 +11,7 @@ use loa_session::library::Library;
 
 use super::{Message, SMALL_MODEL, State, title_of};
 use crate::area::{Ctx, Request, Spawn, SpawnStart, perform};
-use crate::session::new_session_id;
+use loa_runtime::session::new_session_id;
 
 /// How a new session branches off its source.
 pub(super) enum Branch {
@@ -71,8 +71,8 @@ impl State {
             ctx.notify(format!("Can't {verb} a session that never started"));
             return;
         };
-        let Some(adapter) = ctx.services.harnesses.runnable(&harness) else {
-            ctx.notify(format!("Can't {verb}: {} is unavailable", ctx.services.harnesses.label(&harness)));
+        let Some(adapter) = ctx.runtime.harnesses().runnable(&harness) else {
+            ctx.notify(format!("Can't {verb}: {} is unavailable", ctx.runtime.harnesses().label(&harness)));
             return;
         };
         let id = new_session_id();
@@ -80,12 +80,12 @@ impl State {
             self.compacted.insert(id.clone(), source.to_owned());
             ctx.notify("Summarizing the session with the small model…");
         } else {
-            if ctx.sessions.get(source).is_some_and(|session| session.is_busy()) {
+            if ctx.runtime.sessions().get(source).is_some_and(|session| session.is_busy()) {
                 ctx.notify("The earlier branch keeps running; stop it from its own session if it should end");
             }
             self.branching = Some(id.clone());
         }
-        let (title, library, branch, new_id) = (branch.title(), Arc::clone(&ctx.services.storage.library), Arc::new(branch), id.clone());
+        let (title, library, branch, new_id) = (branch.title(), Arc::clone(ctx.runtime.library()), Arc::new(branch), id.clone());
         let start: SpawnStart = Arc::new(move |config: SessionConfig| {
             let (adapter, library, branch, title, id) = (Arc::clone(&adapter), Arc::clone(&library), Arc::clone(&branch), title.clone(), new_id.clone());
             Box::pin(async move {
@@ -99,11 +99,11 @@ impl State {
 
     /// Forks the active session as it is now.
     pub(super) fn fork_active(&mut self, ctx: &mut Ctx) {
-        let Some(id) = ctx.sessions.active_id().map(ToString::to_string) else {
+        let Some(id) = ctx.runtime.sessions().active_id().map(ToString::to_string) else {
             ctx.notify("Open a session to fork it");
             return;
         };
-        match ctx.services.storage.library.load(&id) {
+        match ctx.runtime.library().load(&id) {
             Ok(target) => self.spawn_branch(ctx, &id, Branch::Fork(target)),
             Err(error) => ctx.notify(format!("Can't fork this session: {error}")),
         }
@@ -111,7 +111,7 @@ impl State {
 
     /// Forks session `id` through turn `turn`.
     pub(super) fn fork_at(&mut self, ctx: &mut Ctx, id: &str, turn: NodeId) {
-        match ctx.services.storage.library.through_turn(id, turn) {
+        match ctx.runtime.library().through_turn(id, turn) {
             Ok(target) => self.spawn_branch(ctx, id, Branch::Fork(target)),
             Err(error) => ctx.notify(format!("Can't fork this session: {error}")),
         }
@@ -119,7 +119,7 @@ impl State {
 
     /// Rewinds session `id` to before the turn holding `node`.
     pub(super) fn rewind(&mut self, ctx: &mut Ctx, id: &str, node: NodeId) {
-        let library = &ctx.services.storage.library;
+        let library = ctx.runtime.library();
         match library.load(id).and_then(|current| Ok(Branch::Rewind { target: library.before_turn(id, node)?, current })) {
             Ok(branch) => self.spawn_branch(ctx, id, branch),
             Err(error) => ctx.notify(format!("Can't rewind this session: {error}")),
@@ -129,7 +129,7 @@ impl State {
     /// Compacts the active session: natively when its harness can, else into a summarized new session.
     pub(super) fn compact(&mut self, ctx: &mut Ctx, instructions: &str) -> Task<Message> {
         let instructions = (!instructions.is_empty()).then(|| instructions.to_owned());
-        let Some(session) = ctx.sessions.active() else {
+        let Some(session) = ctx.runtime.sessions().active() else {
             ctx.notify("Open a session to compact it");
             return Task::none();
         };

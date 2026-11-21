@@ -23,7 +23,8 @@ use loa_updater::swap::SwapOutcome;
 use loa_updater::{Error as UpdaterError, InstalledStatus, Overview, ProductKind, TurnGate, Updater, UpdaterConfig, default_products};
 use semver::Version;
 
-use crate::area::{Area, AreaCommand, AreaMessage, Ctx, SessionEvent, Target};
+use crate::area::{Area, AreaCommand, AreaMessage, Ctx, Target};
+use loa_runtime::session::SessionEvent;
 
 mod omp_gates;
 pub use omp_gates::OmpPorts;
@@ -346,7 +347,7 @@ impl Area for State {
 
     fn before_send(&mut self, session: &SessionId, _: &mut Prompt, ctx: &mut Ctx) {
         // The turn starts now; a swap must not slip in before its patch.
-        let others = ctx.sessions.iter().filter(|open| open.is_busy() && open.id() != session).count();
+        let others = ctx.runtime.sessions().iter().filter(|open| open.is_busy() && open.id() != session).count();
         self.set_running(others + 1, ctx);
     }
 
@@ -355,7 +356,7 @@ impl Area for State {
             event,
             SessionEvent::TurnStarted { .. } | SessionEvent::TurnEnded { .. } | SessionEvent::Closed(_) | SessionEvent::Loaded(_)
         ) {
-            let running = ctx.sessions.iter().filter(|open| open.is_busy()).count();
+            let running = ctx.runtime.sessions().iter().filter(|open| open.is_busy()).count();
             self.set_running(running, ctx);
         }
         Task::none()

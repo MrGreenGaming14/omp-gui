@@ -4628,6 +4628,7 @@ dependencies = [
  "loa-p2p",
  "loa-projects",
  "loa-remote",
+ "loa-runtime",
  "loa-sandbox",
  "loa-session",
  "loa-surfaces",
@@ -4860,6 +4861,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "loa-runtime"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "loa-bus",
+ "loa-contracts",
+ "loa-core",
+ "loa-session",
+ "loa-util",
+ "tokio",
+]
+
+[[package]]
 name = "loa-sandbox"
 version = "0.1.0"
 dependencies = [
@@ -5028,6 +5042,7 @@ version = "0.1.0"
 dependencies = [
  "iced",
  "iced_test",
+ "loa-contracts",
  "loa-core",
  "loa-ui-kit",
 ]

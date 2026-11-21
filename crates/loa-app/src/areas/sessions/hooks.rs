@@ -29,11 +29,11 @@ impl State {
 
     /// Adds the rules (and an advisor note) to `prompt` before it goes to `session`.
     pub(super) fn hook_prompt(&self, ctx: &Ctx, session: &SessionId, prompt: &mut Prompt) {
-        let Some(open) = ctx.sessions.get(session.as_str()) else { return };
+        let Some(open) = ctx.runtime.sessions().get(session.as_str()) else { return };
         if capabilities(ctx, open.harness_id().unwrap_or_default()).has(Feature::AdvisorRules) {
             return;
         }
-        let cwd = open.dom().root().and_then(|root| root.str_attr(attr::CWD)).map_or_else(|| ctx.services.cwd.clone(), PathBuf::from);
+        let cwd = open.dom().root().and_then(|root| root.str_attr(attr::CWD)).map_or_else(|| ctx.runtime.cwd().to_path_buf(), PathBuf::from);
         let rules = self.rules(&cwd);
         let mut hooks = self.hooks.locked();
         let hooks = hooks.entry(session.to_string()).or_insert_with(|| TurnHooks::resumed(rules.clone()));
@@ -42,7 +42,7 @@ impl State {
 
     /// Asks the advisor about a finished turn of a session whose harness has no advisor.
     pub(super) fn advise(&self, ctx: &Ctx, session: &SessionId, turn: NodeId) -> Task<Message> {
-        let (Some(small), Some(open)) = (self.small.clone(), ctx.sessions.get(session.as_str())) else { return Task::none() };
+        let (Some(small), Some(open)) = (self.small.clone(), ctx.runtime.sessions().get(session.as_str())) else { return Task::none() };
         if capabilities(ctx, open.harness_id().unwrap_or_default()).has(Feature::AdvisorRules) {
             return Task::none();
         }
@@ -56,7 +56,7 @@ impl State {
     /// Records the advisor's note on `turn`; the next prompt carries it.
     pub(super) fn advised(&mut self, ctx: &mut Ctx, session: &SessionId, turn: NodeId, result: Result<Option<String>, String>) {
         let Some(note) = ctx.report("The advisor failed", result).flatten() else { return };
-        if let Some(open) = ctx.sessions.get(session.as_str())
+        if let Some(open) = ctx.runtime.sessions().get(session.as_str())
             && let Err(error) = hooks::record_note(open.writer().as_ref(), turn, &note)
         {
             ctx.notify(format!("Can't record the advisor's note: {error}"));

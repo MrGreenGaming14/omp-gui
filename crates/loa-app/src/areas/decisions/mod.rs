@@ -14,7 +14,8 @@ use loa_ui_kit::style::{ButtonKind, Tone};
 use loa_ui_kit::theme::{LayoutRole, SpaceRole, TextRole, sp, width};
 use loa_ui_kit::widgets::{card, label, section_header, text_button};
 
-use crate::area::{perform, Area, AreaCommand, AreaMessage, Ctx, Listed, Request, SessionEvent};
+use crate::area::{perform, Area, AreaCommand, AreaMessage, Ctx, Listed, Request};
+use loa_runtime::session::SessionEvent;
 
 
 #[derive(Clone, Debug)]
@@ -66,7 +67,7 @@ impl State {
     /// DOM; raises a system notification for new waiting cards while the
     /// window is in the background.
     fn sync(&mut self, session: &SessionId, ctx: &Ctx) -> Task<Message> {
-        let Some(session) = ctx.sessions.get(session.as_str()) else { return Task::none() };
+        let Some(session) = ctx.runtime.sessions().get(session.as_str()) else { return Task::none() };
         let theme = ctx.shell.theme();
         if theme != self.theme {
             self.set_theme(&theme);
@@ -76,7 +77,7 @@ impl State {
     }
 
     fn answer(&mut self, session: String, decision: NodeId, answer: Answer, ctx: &mut Ctx) -> Task<Message> {
-        let Some(open) = ctx.sessions.get(&session) else {
+        let Some(open) = ctx.runtime.sessions().get(&session) else {
             self.desk.answer_failed(&session, decision);
             return Task::none();
         };
@@ -216,8 +217,7 @@ impl Area for State {
             SessionEvent::Patch(id, patch) => {
                 let touches_decision = match &patch.op {
                     Op::Insert { kind, .. } => *kind == ElementKind::Decision,
-                    Op::Set { .. } => ctx
-                        .sessions
+                    Op::Set { .. } => ctx.runtime.sessions()
                         .get(id.as_str())
                         .and_then(|session| session.dom().get(patch.node))
                         .is_some_and(|node| node.kind == ElementKind::Decision),

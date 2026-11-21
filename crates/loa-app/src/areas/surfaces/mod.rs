@@ -13,9 +13,9 @@ use loa_contracts::surface::SurfaceUri;
 use loa_surfaces::{CaptureMode, HubConfig, HubEvent, Listed, McpEndpoint, Opened, SurfaceHub, SurfaceTools, dom};
 use loa_ui_surface::{Available, BrowserStatus, Capture, CaptureStatus, Options, Panel, panel};
 
-use crate::area::{perform, Area, AreaCommand, AreaMessage, Ctx, HostToolSet, PanelTab, SessionEvent, Target};
+use crate::area::{perform, Area, AreaCommand, AreaMessage, Ctx, HostToolSet, PanelTab, Target};
 use crate::watch::{PtrKey, watch};
-use crate::session::dom_turns;
+use loa_runtime::session::{SessionEvent, dom_turns};
 
 /// Id of the Surfaces panel tab.
 pub const TAB: &str = "surfaces";
@@ -82,7 +82,7 @@ impl State {
         let mut options = Options { fonts: hub.config().fonts.clone(), ..Options::default() };
         #[cfg(feature = "remote-video")]
         video::options(&mut options);
-        let mut panel = Panel::new(options, browser_status(&hub), ctx.services.cwd.clone());
+        let mut panel = Panel::new(options, browser_status(&hub), ctx.runtime.cwd().to_path_buf());
         #[cfg(feature = "remote-video")]
         let encoders = video::start(&hub, &mut panel);
         #[cfg(not(feature = "remote-video"))]
@@ -189,7 +189,7 @@ impl State {
     /// Records `<surface>` for `opened` in the active session, under its
     /// running turn, or keeps it for the next session shown.
     fn record(&mut self, opened: &Opened, ctx: &mut Ctx) {
-        let Some(session) = ctx.sessions.active() else {
+        let Some(session) = ctx.runtime.sessions().active() else {
             if !self.unrecorded.contains(&opened.info.uri) {
                 self.unrecorded.push(opened.info.uri.clone());
             }
@@ -217,7 +217,7 @@ impl State {
     fn record_closed(&mut self, uri: &SurfaceUri, ctx: &mut Ctx) {
         self.unrecorded.retain(|open| open != uri);
         for (session, node) in self.recorded.remove(uri).unwrap_or_default() {
-            let Some(session) = ctx.sessions.get(session.as_str()) else { continue };
+            let Some(session) = ctx.runtime.sessions().get(session.as_str()) else { continue };
             if let Err(error) = session.writer().commit(dom::closed(node)) {
                 ctx.notify(format!("Can't record {uri} closed in the session: {error}"));
             }

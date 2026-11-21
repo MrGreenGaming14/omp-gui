@@ -43,7 +43,7 @@ impl Tree {
 
     /// Rebuilds the tab for the active session's family.
     pub fn refresh(&mut self, ctx: &Ctx) {
-        let Some(active) = ctx.sessions.active() else {
+        let Some(active) = ctx.runtime.sessions().active() else {
             self.view.set_family(Vec::new(), "");
             return;
         };
@@ -52,7 +52,7 @@ impl Tree {
         if !self.scanned {
             self.scan(ctx);
         }
-        for session in ctx.sessions.iter() {
+        for session in ctx.runtime.sessions().iter() {
             self.links.insert(session.id().to_string(), Link::of(session.dom()));
         }
 
@@ -97,7 +97,7 @@ impl Tree {
 
     /// Reads the links of every stored session.
     fn scan(&mut self, ctx: &Ctx) {
-        let library = &ctx.services.storage.library;
+        let library = ctx.runtime.library();
         if let Ok(listings) = library.store().list() {
             for listing in listings {
                 let Listing::Session(info) = listing else { continue };
@@ -115,10 +115,10 @@ impl Tree {
 
 /// The turns of session `id` with the journal sequence that started each.
 fn turns(ctx: &Ctx, id: &str) -> Vec<TurnInfo> {
-    let library = &ctx.services.storage.library;
+    let library = ctx.runtime.library();
     let Ok(seqs) = library.turn_seqs(id) else { return Vec::new() };
     let loaded;
-    let dom = match ctx.sessions.get(id) {
+    let dom = match ctx.runtime.sessions().get(id) {
         Some(session) => session.dom(),
         None => match library.load(id) {
             Ok(dom) => {

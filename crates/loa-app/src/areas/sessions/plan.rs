@@ -42,7 +42,7 @@ pub(super) struct Plan {
 impl State {
     /// Takes a reopened session that is in app plan mode back into it.
     pub(super) fn restore_plan(&mut self, ctx: &mut Ctx) {
-        let Some(session) = ctx.sessions.active() else { return };
+        let Some(session) = ctx.runtime.sessions().active() else { return };
         let id = session.id().to_string();
         let harness = session.harness_id().unwrap_or_default();
         if asks_first(ctx, harness) {
@@ -63,7 +63,7 @@ impl State {
     /// Switches the active session to `mode`, typed or picked; the composer's picker follows.
     pub(super) fn pick_mode(&mut self, mode: SessionMode, ctx: &mut Ctx) -> Task<Message> {
         ctx.composer.set_mode(mode);
-        let Some(session) = ctx.sessions.active() else { return Task::none() };
+        let Some(session) = ctx.runtime.sessions().active() else { return Task::none() };
         let id = session.id().to_string();
         let harness_id = session.harness_id().unwrap_or_default().to_owned();
         let writer = Arc::clone(session.writer());
@@ -95,7 +95,7 @@ impl State {
                         ctx.notify("Plan mode: tools that change files or run commands are blocked until you approve a plan");
                     }
                     Err(error) => {
-                        ctx.notify(format!("Can't enter plan mode on {}: {error}", ctx.services.harnesses.label(&harness_id)));
+                        ctx.notify(format!("Can't enter plan mode on {}: {error}", ctx.runtime.harnesses().label(&harness_id)));
                         ctx.composer.set_mode(SessionMode::Normal);
                     }
                 }
@@ -116,13 +116,13 @@ impl State {
 
     /// Whether the active session is in app plan mode.
     pub(super) fn in_plan(&self, ctx: &Ctx) -> bool {
-        ctx.sessions.active().is_some_and(|session| self.plans.contains_key(session.id().as_str()))
+        ctx.runtime.sessions().active().is_some_and(|session| self.plans.contains_key(session.id().as_str()))
     }
 
     /// At the end of a turn in plan mode, the plan the agent wrote goes up for review.
     pub(super) fn submit_plan(&mut self, ctx: &mut Ctx, session: &SessionId, turn: NodeId) {
         let Some(plan) = self.plans.get_mut(session.as_str()) else { return };
-        let (Some(step), Some(open)) = (plan.step, ctx.sessions.get(session.as_str())) else { return };
+        let (Some(step), Some(open)) = (plan.step, ctx.runtime.sessions().get(session.as_str())) else { return };
         let dom = open.dom();
         let (Some(root), Some(text)) = (dom.root().map(|root| root.id), plan_mode::plan_text(dom, turn)) else { return };
         let submitted = loa_session::submit_plan(open.writer().as_ref(), root, step, text);
@@ -132,7 +132,7 @@ impl State {
     }
 
     pub(super) fn answer_plan(&mut self, ctx: &mut Ctx, session: SessionId, decision: NodeId, answer: Answer) -> Task<Message> {
-        let Some(open) = ctx.sessions.get(session.as_str()) else { return Task::none() };
+        let Some(open) = ctx.runtime.sessions().get(session.as_str()) else { return Task::none() };
         let Some(harness) = open.harness().cloned() else {
             plan_failed(ctx, &session, decision, "The session isn't running: send a message to resume it, then answer the plan");
             return Task::none();
@@ -177,7 +177,7 @@ impl State {
                 return self.restore_plan(ctx);
             }
         };
-        if ctx.sessions.is_active(session.as_str()) {
+        if ctx.runtime.sessions().is_active(session.as_str()) {
             ctx.request(Request::Prompt(Prompt { text: prompt, by: ctx.services.node.key.clone(), ..Prompt::default() }));
         }
     }

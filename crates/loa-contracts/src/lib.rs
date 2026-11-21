@@ -2,6 +2,7 @@
 
 pub mod availability;
 pub mod harness;
+pub mod session;
 pub mod surface;
 pub mod tools;
 

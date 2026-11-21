@@ -34,7 +34,8 @@ use crate::app::workspace::{FolderPicker, GitProbe};
 use crate::app::{App, Message};
 use crate::area::Area;
 use crate::areas::{models, projects, sessions};
-use crate::services::{Dirs, Harnesses, Host, NodeServices, Services};
+use crate::services::{Dirs, Host, NodeServices, Services, open_library};
+use loa_runtime::harnesses::Harnesses;
 
 /// The scripted harness of [`TestApp`] sessions.
 pub(crate) type FakeHarness = ScriptedAdapter;
@@ -91,18 +92,19 @@ impl TestApp {
         settings.network.discovery.tailscale = false;
         setup(&mut settings);
         config.save(&settings).expect("config saved");
-        let mut harnesses = Harnesses { registry: loa_contracts::harness::Registry::new(), list: Vec::new() };
-        harnesses.add(Arc::new(harness.clone()), harness_id(&harness), true, None, None);
+        let mut harnesses = Harnesses::default();
+        crate::services::harness::add(&mut harnesses, Arc::new(harness.clone()), harness_id(&harness), true, None, None);
         let identity = NodeIdentity::from_secret_bytes(&[name.len() as u8; 32]);
         let key_source = loa_trust::KeySource::Memory { reason: "the key was handed in".into() };
         let node = NodeServices::open(identity, name.to_owned(), key_source, &dirs.data).expect("the node");
         // Nothing reaches git, a folder dialog or omp's usage.
         let usage = Arc::new(FakeUsage::default());
         let host = Host { git: Arc::new(Offline), picker: Arc::new(Offline), usage: usage.clone() };
-        let services = Services::new(node, dirs, harnesses, host, dir.path().to_owned()).expect("services");
+        let services = Services::new(node, dirs, host, dir.path().to_owned());
+        let library = open_library(&services.storage.dirs, &services.node).expect("the session library");
         let _entered = runtime.enter();
         // The startup tasks (harness probes, update checks) reach outside the test: dropped.
-        let (mut app, _startup) = App::build(services);
+        let (mut app, _startup) = App::build(services, library, harnesses);
         // Nothing reaches omp, a model or the developer's home.
         let parts = Parts {
             rpc: Arc::new(FakeOmp::default()),
@@ -222,12 +224,12 @@ impl TestApp {
     /// Starts a session with `text` and waits for its turn to end.
     pub fn session(&mut self, text: &str) -> String {
         self.prompt(text);
-        self.until("the session ran", |app| app.ctx.sessions.active().is_some_and(|session| !session.is_busy()));
+        self.until("the session ran", |app| app.ctx.runtime.sessions().active().is_some_and(|session| !session.is_busy()));
         self.active().expect("an active session").to_owned()
     }
 
     pub fn active(&self) -> Option<&str> {
-        self.app.ctx.sessions.active_id().map(|id| id.as_str())
+        self.app.ctx.runtime.sessions().active_id().map(|id| id.as_str())
     }
 
     pub fn notice(&self) -> &str {

@@ -1,6 +1,7 @@
 //! The left sidebar: machine switcher, New session, Search, Projects, Pinned, Recents and a footer.
 
-use crate::data::{NodeFilter, NodeStatus, Nodes, SessionSummary, UsageMeter};
+use crate::data::{NodeFilter, NodeStatus, Nodes, UsageMeter};
+use loa_contracts::session::SessionSummary;
 use iced::widget::{Column, button, column, container, hover, row, rule, scrollable, space, text, text_input};
 use iced::{Alignment, Element, Fill, Padding, Task};
 use loa_ui_kit::icons::{Icon, tinted};

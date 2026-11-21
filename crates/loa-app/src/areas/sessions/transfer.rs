@@ -13,7 +13,7 @@ use loa_ui_kit::widgets::{badge, card, label, section_header, text_button};
 
 use super::State as Sessions;
 use crate::area::{Area, Ctx, Request};
-use crate::session::new_session_id;
+use loa_runtime::session::new_session_id;
 
 /// Discovered sessions listed at once; older ones are picked by path.
 const LISTED: usize = 200;
@@ -72,13 +72,13 @@ impl Sessions {
 
     /// Reads the native session file at `path` into a new session and opens it.
     fn import(&mut self, ctx: &mut Ctx, path: &Path) {
-        let services = &ctx.services;
+        let (services, runtime) = (&ctx.services, &ctx.runtime);
         let result = native::harness_of(path)
             .ok_or_else(|| format!("{} isn't a session file of a known harness", path.display()))
-            .and_then(|harness| services.harnesses.registry.get(harness).filter(|adapter| adapter.capabilities().import).ok_or_else(|| format!("This app can't import {harness} sessions")))
+            .and_then(|harness| runtime.harnesses().registry.get(harness).filter(|adapter| adapter.capabilities().import).ok_or_else(|| format!("This app can't import {harness} sessions")))
             .and_then(|adapter| {
                 let id = new_session_id();
-                services.storage.library.import(adapter.as_ref(), path, &id, &services.node.key).map(|_| id).map_err(|error| error.to_string())
+                runtime.library().import(adapter.as_ref(), path, &id, &services.node.key).map(|_| id).map_err(|error| error.to_string())
             });
         match result {
             Ok(id) => {
@@ -94,21 +94,21 @@ impl Sessions {
 
     /// Writes the active session to `path` (default: the exports folder) natively or as XML.
     pub(super) fn export(&mut self, ctx: &mut Ctx, xml: bool, path: Option<PathBuf>) {
-        let Some(session) = ctx.sessions.active() else {
+        let Some(session) = ctx.runtime.sessions().active() else {
             ctx.notify("Open a session to export it");
             return;
         };
         let (id, harness) = (session.id().to_string(), session.harness_id().unwrap_or_default().to_owned());
         let extension = if xml { "xml" } else if harness == native::OPENCODE { "json" } else { "jsonl" };
-        let services = &ctx.services;
+        let (services, runtime) = (&ctx.services, &ctx.runtime);
         let path = path.unwrap_or_else(|| services.storage.dirs.data.join("exports").join(format!("{id}.{extension}")));
-        let library = &services.storage.library;
+        let library = runtime.library();
         let result = path.parent().map_or(Ok(()), |dir| std::fs::create_dir_all(dir).map_err(|error| format!("{}: {error}", dir.display()))).and_then(|()| {
             if xml {
                 return library.export_xml(&id, &path).map_err(|error| error.to_string());
             }
-            let adapter = services.harnesses.registry.get(&harness).filter(|adapter| adapter.capabilities().export);
-            let adapter = adapter.ok_or_else(|| format!("{} sessions can't be exported", services.harnesses.label(&harness)))?;
+            let adapter = runtime.harnesses().registry.get(&harness).filter(|adapter| adapter.capabilities().export);
+            let adapter = adapter.ok_or_else(|| format!("{} sessions can't be exported", runtime.harnesses().label(&harness)))?;
             library.export(adapter.as_ref(), &id, &path).map_err(|error| error.to_string())
         });
         let status = match result {

@@ -115,18 +115,17 @@ impl App {
             self.ctx.notify(format!("{} isn't a folder", path.display()));
             return Task::none();
         }
-        if path == self.ctx.services.cwd {
+        if path == self.ctx.runtime.cwd() {
             return Task::none();
         }
         let moved = self.set_folder(path);
-        let start = if self.ctx.sessions.active().is_some() { self.lifecycle(|s, ctx, areas| s.start(ctx, areas, None)) } else { Task::none() };
+        let start = if self.ctx.runtime.sessions().active().is_some() { self.lifecycle(|s, ctx, areas| s.start(ctx, areas, None)) } else { Task::none() };
         Task::batch([moved, start])
     }
 
     /// Points Files, Changes, the terminal, the composer and new sessions at `path`.
     pub(super) fn set_folder(&mut self, path: PathBuf) -> Task<Message> {
-        self.ctx.services.project = folder_name(&path);
-        self.ctx.services.cwd = path.clone();
+        self.ctx.runtime.set_active(folder_name(&path), path.clone());
         let _ = self.diff.set_note(Some("Reading changes…".to_owned()));
         self.files = files::State::new(path.clone(), Box::new(files::LocalFs));
         self.remember(&path);
@@ -163,10 +162,10 @@ impl App {
     pub(super) fn activate_project(&mut self, project: String, cwd: PathBuf) -> Task<Message> {
         self.ctx.shell.set_active_project(Some(project.clone()));
         self.add_project_tab(&project);
-        if self.ctx.services.project == project && self.ctx.services.cwd == cwd {
+        if self.ctx.runtime.project() == project && self.ctx.runtime.cwd() == cwd {
             return Task::none();
         }
-        self.ctx.services.set_active(project.clone(), cwd.clone());
+        self.ctx.runtime.set_active(project.clone(), cwd.clone());
         self.files.set_root(cwd.clone());
         self.remember(&cwd);
         let saved = loa_config::ActiveProject { name: project.clone(), cwd: cwd.clone() };
@@ -177,14 +176,14 @@ impl App {
 
     /// Reads the working tree diff of the current folder for the Diff tab.
     pub(super) fn working_diff(&self) -> Task<Message> {
-        let (git, cwd) = (self.ctx.services.host.git.clone(), self.ctx.services.cwd.clone());
+        let (git, cwd) = (self.ctx.services.host.git.clone(), self.ctx.runtime.cwd().to_path_buf());
         Task::perform(async move { git.diff(&cwd).await }, Message::WorkingDiff)
     }
 
     pub(super) fn show_diff(&mut self, patch: Option<String>) -> Task<Message> {
         let Some(patch) = patch else {
             // Not a git repository (or no commit yet): say so instead of keeping another folder's changes.
-            let folder = chip(self.ctx.services.host.git.as_ref(), &self.ctx.services.cwd).path;
+            let folder = chip(self.ctx.services.host.git.as_ref(), self.ctx.runtime.cwd()).path;
             return self.diff.set_note(Some(format!("No git changes to show: {folder} isn't a git repository with a commit"))).map(Message::Diff);
         };
         match diff::parse_unified(&patch) {
@@ -201,7 +200,7 @@ impl App {
 
     /// Asks for a folder with the desktop's folder dialog.
     pub(super) fn browse(&self) -> Task<Message> {
-        let (picker, cwd) = (self.ctx.services.host.picker.clone(), self.ctx.services.cwd.clone());
+        let (picker, cwd) = (self.ctx.services.host.picker.clone(), self.ctx.runtime.cwd().to_path_buf());
         Task::perform(async move { picker.pick(&cwd).await }, Message::FolderChosen)
     }
 
@@ -222,7 +221,7 @@ impl App {
     /// Gives a tab to the project of every session opened since the last call.
     pub(super) fn sync_project_tabs(&mut self) {
         let mut seen = Vec::new();
-        for session in self.ctx.sessions.iter().filter(|session| !self.workspace.tabbed.contains(session.id().as_str())) {
+        for session in self.ctx.runtime.sessions().iter().filter(|session| !self.workspace.tabbed.contains(session.id().as_str())) {
             // A session whose journal has no root yet is looked at again next time.
             if let Some(project) = session.writer().with_dom(|dom| dom.root().map(|root| root.str_attr(attr::PROJECT).map(str::to_owned))) {
                 seen.push((session.id().to_string(), project));
@@ -247,7 +246,7 @@ impl App {
             self.ctx.notify("No project tabs are open");
             return Task::none();
         };
-        let index = match (tabs.iter().position(|open| *open == self.ctx.services.project), forward) {
+        let index = match (tabs.iter().position(|open| *open == self.ctx.runtime.project()), forward) {
             (Some(index), true) => if index == last { 0 } else { index + 1 },
             (Some(index), false) => index.checked_sub(1).unwrap_or(last),
             (None, true) => 0,

@@ -12,9 +12,9 @@ use loa_ui_session::composer;
 use loa_ui_session::transcript as chat;
 
 use super::Message as AppMessage;
-use crate::area::{Ctx, SessionEvent, Spawn, Target, perform};
+use crate::area::{Ctx, Spawn, Target, perform};
 use crate::areas::Registry;
-use crate::session::{Change, Feed, dom_turns};
+use loa_runtime::session::{Change, Feed, SessionEvent, dom_turns};
 
 /// The permission picker's choices: omp's approval modes, as id, label and detail.
 const ACCESS: [(&str, &str, &str); 4] = [
@@ -76,10 +76,6 @@ pub(crate) struct SessionController {
     pub(crate) chat: chat::State,
     /// Transcripts of sessions shown in their own window.
     pub(crate) detached: HashMap<String, chat::State>,
-    /// omp's approval mode for new sessions; `None` is the adapter's default.
-    access: Option<String>,
-    /// The active session restarts on the new approval mode once its turn ends.
-    restart_for_access: bool,
     pub(super) after: Vec<After>,
 }
 
@@ -88,27 +84,27 @@ fn wrap(message: Message) -> AppMessage {
 }
 
 impl SessionController {
-    pub fn new(theme: &Theme, access: Option<String>) -> Self {
+    pub fn new(theme: &Theme) -> Self {
         let mut chat = chat::State::new(theme);
         chat.set_bottom_inset(loa_ui_kit::theme::width(loa_ui_kit::theme::LayoutRole::ComposerInset));
-        Self { chat, detached: HashMap::new(), access, restart_for_access: false, after: Vec::new() }
+        Self { chat, detached: HashMap::new(), after: Vec::new() }
     }
 
     /// The config of a session on `harness`, resumed from `dom` when given, with every area's contribution.
     fn config(&self, ctx: &mut Ctx, areas: &Registry, session_id: &str, harness: &str, dom: Option<&Dom>) -> SessionConfig {
-        let services = &ctx.services;
+        let runtime = &ctx.runtime;
         let attr = |name| dom.and_then(Dom::root).and_then(|root| root.str_attr(name));
         let mut config = SessionConfig {
             session_id: session_id.to_owned(),
-            node: services.node.key.clone(),
-            cwd: attr(attr::CWD).map_or_else(|| services.cwd.clone(), PathBuf::from),
-            project: Some(attr(attr::PROJECT).unwrap_or(&services.project).to_owned()),
+            node: runtime.node().to_owned(),
+            cwd: attr(attr::CWD).map_or_else(|| runtime.cwd().to_path_buf(), PathBuf::from),
+            project: Some(attr(attr::PROJECT).unwrap_or(runtime.project()).to_owned()),
             mode: Some(attr(attr::MODE).and_then(SessionMode::parse).unwrap_or(SessionMode::Normal)),
-            executable: services.harnesses.get(harness).and_then(|entry| entry.executable.clone()),
-            approval_mode: self.access.clone(),
+            executable: runtime.harnesses().get(harness).and_then(|entry| entry.executable.clone()),
+            approval_mode: runtime.access().map(str::to_owned),
             ..SessionConfig::default()
         };
-        let capabilities = services.harnesses.registry.get(harness).map(|adapter| adapter.capabilities()).unwrap_or_default();
+        let capabilities = runtime.harnesses().registry.get(harness).map(|adapter| adapter.capabilities()).unwrap_or_default();
         let target = Target { harness, capabilities: &capabilities, resume: dom.is_some() };
         areas.iter().for_each(|area| area.contribute(&mut config, &target, ctx));
         let mut router = HostToolRouter::new();
@@ -129,25 +125,25 @@ impl SessionController {
 
     /// Starts a session on the selected harness; `prompt` is sent once it runs.
     pub fn start(&mut self, ctx: &mut Ctx, areas: &Registry, prompt: Option<Prompt>) -> Task<AppMessage> {
-        if ctx.sessions.starting().is_some() {
+        if ctx.runtime.sessions().starting().is_some() {
             return Task::none();
         }
-        let Some(harness) = ctx.sessions.harness.clone() else {
+        let Some(harness) = ctx.runtime.sessions().harness.clone() else {
             ctx.notify("No harness is available on this machine");
             return Task::none();
         };
-        let Some(adapter) = ctx.services.harnesses.runnable(&harness) else {
-            ctx.notify(format!("{} is unavailable", ctx.services.harnesses.label(&harness)));
+        let Some(adapter) = ctx.runtime.harnesses().runnable(&harness) else {
+            ctx.notify(format!("{} is unavailable", ctx.runtime.harnesses().label(&harness)));
             return Task::none();
         };
-        let (id, writer) = match ctx.sessions.create(&ctx.services) {
+        let (id, writer) = match ctx.runtime.create_session() {
             Ok(created) => created,
             Err(error) => {
                 ctx.notify(error);
                 return Task::none();
             }
         };
-        ctx.sessions.set_starting(Some(id.clone()));
+        ctx.runtime.sessions_mut().set_starting(Some(id.clone()));
         ctx.clear_notice();
         let config = self.config(ctx, areas, id.as_str(), &harness, None);
         perform(
@@ -161,14 +157,14 @@ impl SessionController {
 
     /// Resumes the active session on its harness, then sends `prompt`; else continues in a new session.
     fn resume(&mut self, ctx: &mut Ctx, areas: &Registry, prompt: Prompt) -> Task<AppMessage> {
-        if ctx.sessions.starting().is_some() {
+        if ctx.runtime.sessions().starting().is_some() {
             ctx.notify("A session is already starting");
             return Task::none();
         }
-        let Some(session) = ctx.sessions.active() else { return Task::none() };
+        let Some(session) = ctx.runtime.sessions().active() else { return Task::none() };
         let id = session.id().clone();
         let harness = session.harness_id().map(str::to_owned);
-        let adapter = harness.as_deref().and_then(|harness| ctx.services.harnesses.runnable(harness));
+        let adapter = harness.as_deref().and_then(|harness| ctx.runtime.harnesses().runnable(harness));
         let (Some(harness), Some(adapter)) = (harness, adapter) else {
             ctx.notify("This session's harness isn't available here; continuing in a new session");
             return self.start(ctx, areas, Some(prompt));
@@ -176,8 +172,8 @@ impl SessionController {
         let dom = session.dom().clone();
         let sink: Arc<dyn loa_core::PatchSink> = Arc::clone(session.writer()) as _;
         let config = self.config(ctx, areas, id.as_str(), &harness, Some(&dom));
-        ctx.sessions.set_starting(Some(id.clone()));
-        ctx.sessions.harness = Some(harness);
+        ctx.runtime.sessions_mut().set_starting(Some(id.clone()));
+        ctx.runtime.sessions_mut().harness = Some(harness);
         Task::perform(async move { adapter.resume(config, &dom, sink).await.map(Arc::from).map_err(ResumeError::from) }, move |result| {
             wrap(Message::Resumed { id, result, prompt })
         })
@@ -185,17 +181,17 @@ impl SessionController {
 
     /// Continues the active session's conversation in a new session in its folder.
     fn continue_in_new_session(&mut self, ctx: &Ctx, prompt: Prompt) {
-        let folder = ctx.sessions.active().and_then(|session| session_cwd(session.dom())).filter(|folder| folder.is_dir() && *folder != ctx.services.cwd);
+        let folder = ctx.runtime.sessions().active().and_then(|session| session_cwd(session.dom())).filter(|folder| folder.is_dir() && *folder != ctx.runtime.cwd());
         self.after.push(After::Continue(folder, prompt));
     }
 
     /// Sends `prompt` to the active session, resuming it first when no harness runs it.
     pub fn send(&mut self, ctx: &mut Ctx, areas: &mut Registry, mut prompt: Prompt) -> Task<AppMessage> {
-        let Some(session) = ctx.sessions.active() else { return Task::none() };
+        let Some(session) = ctx.runtime.sessions().active() else { return Task::none() };
         let Some(harness) = session.harness().cloned() else { return self.resume(ctx, areas, prompt) };
         let id = session.id().clone();
         areas.iter_mut().for_each(|area| area.before_send(&id, &mut prompt, ctx));
-        if let Some(session) = ctx.sessions.get_mut(id.as_str()) {
+        if let Some(session) = ctx.runtime.sessions_mut().get_mut(id.as_str()) {
             session.set_busy(true);
         }
         ctx.composer.turn_started();
@@ -204,43 +200,43 @@ impl SessionController {
 
     /// Starts a session an area creates itself, with every area's contribution.
     pub fn spawn(&mut self, ctx: &mut Ctx, areas: &Registry, spawn: Spawn) -> Task<AppMessage> {
-        if ctx.sessions.starting().is_some() {
+        if ctx.runtime.sessions().starting().is_some() {
             ctx.notify("A session is already starting");
             return Task::none();
         }
         let Spawn { id, harness, start, prompt } = spawn;
         let config = self.config(ctx, areas, id.as_str(), &harness, None);
-        ctx.sessions.set_starting(Some(id.clone()));
+        ctx.runtime.sessions_mut().set_starting(Some(id.clone()));
         ctx.clear_notice();
         Task::perform(start(config), move |result| wrap(Message::Spawned { id, result, prompt }))
     }
 
     pub fn interrupt(&mut self, ctx: &Ctx) -> Task<AppMessage> {
-        let Some(session) = ctx.sessions.active() else { return Task::none() };
+        let Some(session) = ctx.runtime.sessions().active() else { return Task::none() };
         let Some(harness) = session.harness().filter(|_| session.is_busy()).cloned() else { return Task::none() };
         perform(async move { harness.interrupt().await }, |result| wrap(Message::Done(result)))
     }
 
     /// Shows session `id`, loading it from its journal when needed.
     pub fn open(&mut self, ctx: &mut Ctx, areas: &mut Registry, id: &str) -> Task<AppMessage> {
-        if ctx.sessions.is_active(id) {
+        if ctx.runtime.sessions().is_active(id) {
             return Task::none();
         }
-        if let Err(error) = ctx.sessions.load(&ctx.services, id) {
+        if let Err(error) = ctx.runtime.load_session(id) {
             ctx.notify(error);
             return Task::none();
         }
         let id = SessionId::from(id);
-        ctx.sessions.set_active(Some(id.clone()));
+        ctx.runtime.sessions_mut().set_active(Some(id.clone()));
         ctx.close_screen();
         self.dispatch(ctx, areas, SessionEvent::Activated(Some(id)))
     }
 
     /// Loads the active session's DOM into the chat and the frame.
     fn present(&mut self, ctx: &mut Ctx) {
-        let Some(session) = ctx.sessions.active() else {
+        let Some(session) = ctx.runtime.sessions().active() else {
             self.chat.load(&Dom::new());
-            self.after.push(After::Present(ctx.services.cwd.clone()));
+            self.after.push(After::Present(ctx.runtime.cwd().to_path_buf()));
             return;
         };
         self.chat.load(session.dom());
@@ -250,22 +246,22 @@ impl SessionController {
         }
         sidebar.set_active(Some(session.id().to_string()));
         ctx.shell.set_session_status(turn_status(session.dom()).map(str::to_owned));
-        self.after.push(After::Present(session_cwd(session.dom()).unwrap_or_else(|| ctx.services.cwd.clone())));
+        self.after.push(After::Present(session_cwd(session.dom()).unwrap_or_else(|| ctx.runtime.cwd().to_path_buf())));
     }
 
     /// The app's own reaction to a session event, then every area's.
     pub fn dispatch(&mut self, ctx: &mut Ctx, areas: &mut Registry, event: SessionEvent) -> Task<AppMessage> {
         match &event {
             SessionEvent::Activated(_) => self.present(ctx),
-            SessionEvent::Loaded(id) if ctx.sessions.is_active(id.as_str()) => self.present(ctx),
+            SessionEvent::Loaded(id) if ctx.runtime.sessions().is_active(id.as_str()) => self.present(ctx),
             SessionEvent::Loaded(id) => {
-                if let Some(summary) = ctx.sessions.get(id.as_str()).and_then(|session| session.summary()) {
+                if let Some(summary) = ctx.runtime.sessions().get(id.as_str()).and_then(|session| session.summary()) {
                     ctx.shell.sidebar_mut().upsert_session(summary);
                 }
             }
             SessionEvent::Patch(id, patch) => {
-                let active = ctx.sessions.is_active(id.as_str());
-                if let Some(session) = ctx.sessions.get(id.as_str()) {
+                let active = ctx.runtime.sessions().is_active(id.as_str());
+                if let Some(session) = ctx.runtime.sessions().get(id.as_str()) {
                     if active {
                         self.chat.apply(patch, session.dom());
                     }
@@ -290,10 +286,10 @@ impl SessionController {
 
     /// Applies a session feed and reacts to the active session starting or finishing a turn.
     fn feed(&mut self, ctx: &mut Ctx, areas: &mut Registry, id: SessionId, feed: Feed) -> Task<AppMessage> {
-        let active = ctx.sessions.is_active(id.as_str());
-        let busy = |ctx: &Ctx| active && ctx.sessions.active().is_some_and(|session| session.is_busy());
+        let active = ctx.runtime.sessions().is_active(id.as_str());
+        let busy = |ctx: &Ctx| active && ctx.runtime.sessions().active().is_some_and(|session| session.is_busy());
         let was_busy = busy(ctx);
-        let task = match ctx.sessions.feed(id.as_str(), feed) {
+        let task = match ctx.runtime.sessions_mut().feed(id.as_str(), feed) {
             Change::None => return Task::none(),
             Change::Loaded => self.dispatch(ctx, areas, SessionEvent::Loaded(id)),
             Change::Patch(patch, derived) => {
@@ -307,7 +303,7 @@ impl SessionController {
             ctx.composer.turn_started();
         }
         if was_busy && !now_busy {
-            let restart = if self.restart_for_access { self.restart(ctx) } else { Task::none() };
+            let restart = if ctx.runtime.restart_for_access() { self.restart(ctx) } else { Task::none() };
             self.after.extend([After::Diff, After::TurnEnded]);
             return Task::batch([task, restart]);
         }
@@ -318,36 +314,36 @@ impl SessionController {
     pub fn update(&mut self, ctx: &mut Ctx, areas: &mut Registry, message: Message) -> Task<AppMessage> {
         match message {
             Message::Feed(id, feed) => self.feed(ctx, areas, id, feed),
-            Message::Spawned { id, result: Ok(harness), prompt } => match ctx.sessions.load(&ctx.services, id.as_str()) {
+            Message::Spawned { id, result: Ok(harness), prompt } => match ctx.runtime.load_session(id.as_str()) {
                 Ok(()) => self.update(ctx, areas, Message::Started { id, result: Ok(harness), prompt }),
                 Err(error) => {
-                    ctx.sessions.set_starting(None);
+                    ctx.runtime.sessions_mut().set_starting(None);
                     ctx.notify(error);
                     shutdown(harness)
                 }
             },
             Message::Spawned { id, result: Err(error), .. } => {
-                ctx.sessions.set_starting(None);
+                ctx.runtime.sessions_mut().set_starting(None);
                 // Leave no half created session behind; it may not exist.
-                let _ = ctx.services.storage.library.delete(id.as_str());
+                let _ = ctx.runtime.library().delete(id.as_str());
                 ctx.notify(error);
                 Task::none()
             }
             Message::Started { id, result: Err(error), .. } => {
-                ctx.sessions.set_starting(None);
+                ctx.runtime.sessions_mut().set_starting(None);
                 // Nothing ran: drop the journal it was given.
-                let (_, closed) = ctx.sessions.close(&ctx.services, id.as_str(), true);
+                let (_, closed) = ctx.runtime.close_session(id.as_str(), true);
                 ctx.notify(closed.map_or_else(|| error.clone(), |closed| format!("{error}; {closed}")));
                 ctx.show_harness();
                 let _ = ctx.composer.turn_ended();
                 Task::none()
             }
             Message::Started { id, result: Ok(harness), prompt } => {
-                ctx.sessions.set_starting(None);
+                ctx.runtime.sessions_mut().set_starting(None);
                 // Discarded while starting.
-                let Some(session) = ctx.sessions.get_mut(id.as_str()) else { return shutdown(harness) };
+                let Some(session) = ctx.runtime.sessions_mut().get_mut(id.as_str()) else { return shutdown(harness) };
                 session.attach(harness);
-                ctx.sessions.set_active(Some(id.clone()));
+                ctx.runtime.sessions_mut().set_active(Some(id.clone()));
                 ctx.close_screen();
                 self.after.extend([After::RefreshFiles, After::Diff]);
                 let activated = self.dispatch(ctx, areas, SessionEvent::Activated(Some(id)));
@@ -355,10 +351,10 @@ impl SessionController {
                 Task::batch([activated, send])
             }
             Message::Resumed { id, result, prompt } => {
-                ctx.sessions.set_starting(None);
+                ctx.runtime.sessions_mut().set_starting(None);
                 match result {
                     Ok(harness) => {
-                        let Some(session) = ctx.sessions.get_mut(id.as_str()) else { return shutdown(harness) };
+                        let Some(session) = ctx.runtime.sessions_mut().get_mut(id.as_str()) else { return shutdown(harness) };
                         session.attach(harness);
                         let open = self.open(ctx, areas, id.as_str());
                         Task::batch([open, self.send(ctx, areas, prompt)])
@@ -383,7 +379,7 @@ impl SessionController {
             }
             Message::Done(result) => {
                 if let Err(error) = result {
-                    if let Some(session) = ctx.sessions.active_mut() {
+                    if let Some(session) = ctx.runtime.sessions_mut().active_mut() {
                         session.set_busy(false);
                     }
                     ctx.notify(error);
@@ -395,28 +391,28 @@ impl SessionController {
 
     /// Shows the permission picker for harnesses with approval modes, with the current level.
     pub fn sync_access(&self, ctx: &mut Ctx) {
-        let harness = ctx.sessions.active().and_then(|session| session.harness_id()).or(ctx.sessions.harness.as_deref());
-        let modes = harness.map_or(&[][..], |harness| ctx.services.harnesses.traits(harness).approval_modes);
+        let harness = ctx.runtime.sessions().active().and_then(|session| session.harness_id()).or(ctx.runtime.sessions().harness.as_deref());
+        let modes = harness.map_or(&[][..], |harness| ctx.runtime.harnesses().traits(harness).approval_modes);
         let options: Vec<_> = ACCESS
             .iter()
             .filter(|(id, _, _)| modes.contains(id))
             .map(|(id, label, detail)| composer::AccessOption { id: (*id).to_owned(), label: (*label).to_owned(), detail: (*detail).to_owned() })
             .collect();
-        let current = (!options.is_empty()).then(|| self.access.clone().unwrap_or_else(|| ACCESS_DEFAULT.to_owned()));
+        let current = (!options.is_empty()).then(|| ctx.runtime.access().unwrap_or(ACCESS_DEFAULT).to_owned());
         ctx.composer.set_access(options, current.as_deref());
     }
 
     /// A permission level was picked: new sessions start on it, the open one restarts on it.
     pub fn set_access(&mut self, ctx: &mut Ctx, id: String) -> Task<AppMessage> {
-        if id == self.access.as_deref().unwrap_or(ACCESS_DEFAULT) {
+        if id == ctx.runtime.access().unwrap_or(ACCESS_DEFAULT) {
             return Task::none();
         }
-        self.access = Some(id.clone());
+        ctx.runtime.set_access(Some(id.clone()));
         ctx.edit_config("settings", |config| config.harness.approval_mode = Some(id.clone()));
         let label = ACCESS.iter().find(|(each, _, _)| *each == id).map_or("", |(_, label, _)| *label);
-        let running = ctx.sessions.active().is_some_and(|session| session.harness().is_some());
-        if running && ctx.sessions.active().is_some_and(|session| session.is_busy()) {
-            self.restart_for_access = true;
+        let running = ctx.runtime.sessions().active().is_some_and(|session| session.harness().is_some());
+        if running && ctx.runtime.sessions().active().is_some_and(|session| session.is_busy()) {
+            ctx.runtime.set_restart_for_access(true);
             ctx.notify(format!("{label}: applies once this turn ends"));
             return Task::none();
         }
@@ -426,8 +422,8 @@ impl SessionController {
 
     /// Stops the active session's harness; the next send resumes it on a new one.
     fn restart(&mut self, ctx: &mut Ctx) -> Task<AppMessage> {
-        self.restart_for_access = false;
-        ctx.sessions.active_mut().and_then(|session| session.detach()).map_or_else(Task::none, shutdown)
+        ctx.runtime.set_restart_for_access(false);
+        ctx.runtime.sessions_mut().active_mut().and_then(|session| session.detach()).map_or_else(Task::none, shutdown)
     }
 }
 

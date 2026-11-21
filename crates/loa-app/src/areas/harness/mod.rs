@@ -15,8 +15,10 @@ use loa_ui_kit::style::{self, ButtonKind, Tone};
 use loa_ui_kit::theme::{SpaceRole, TextRole, sp};
 use loa_ui_kit::widgets::{card, label, section_header, text_button};
 
-use crate::area::{perform, Area, AreaCommand, AreaMessage, Ctx, Listed, PanelTab, Request, SessionEvent};
-use crate::services::Harness;
+use crate::area::{perform, Area, AreaCommand, AreaMessage, Ctx, Listed, PanelTab, Request};
+use crate::services::harness::set_executable;
+use loa_runtime::harnesses::Harness;
+use loa_runtime::session::SessionEvent;
 
 #[cfg(test)]
 pub(crate) mod tests;
@@ -58,28 +60,28 @@ pub struct State {
 
 impl State {
     fn apply(&mut self, settings: &HarnessSettings, ctx: &mut Ctx) {
-        let services = &mut ctx.services;
+        let (services, runtime) = (&ctx.services, &mut ctx.runtime);
         for (id, executable) in &settings.executables {
-            if services.harnesses.set_executable(id, Some(executable.clone()), &services.node.key, &services.storage.dirs.omp) {
+            if set_executable(runtime.harnesses_mut(), id, Some(executable.clone()), &services.node.key, &services.storage.dirs.omp) {
                 self.drafts.insert(id.clone(), executable.display().to_string());
             }
         }
         self.default = Some(settings.default.clone());
-        if ctx.sessions.active().is_none() && services.harnesses.get(&settings.default).is_some_and(|harness| harness.option.available) {
-            ctx.sessions.harness = Some(settings.default.clone());
+        if ctx.runtime.sessions().active().is_none() && ctx.runtime.harnesses().get(&settings.default).is_some_and(|harness| harness.available) {
+            ctx.runtime.sessions_mut().harness = Some(settings.default.clone());
         }
-        ctx.composer.set_harnesses(ctx.services.harnesses.options(), ctx.sessions.harness.as_deref());
+        ctx.composer.set_harnesses(crate::services::harness::options(ctx.runtime.harnesses()), ctx.runtime.sessions().harness.as_deref());
     }
 
     /// Probes every registered harness.
     fn probe_all(&mut self, ctx: &Ctx) -> Task<Message> {
-        let ids: Vec<_> = ctx.services.harnesses.list.iter().map(|harness| harness.option.id.clone()).collect();
+        let ids: Vec<_> = ctx.runtime.harnesses().list.iter().map(|harness| harness.id.clone()).collect();
         Task::batch(ids.into_iter().map(|id| self.probe(id, ctx)))
     }
 
     /// Runs harness `id`'s availability probe in the background.
     fn probe(&mut self, id: String, ctx: &Ctx) -> Task<Message> {
-        let Some(adapter) = ctx.services.harnesses.registry.get(&id) else { return Task::none() };
+        let Some(adapter) = ctx.runtime.harnesses().registry.get(&id) else { return Task::none() };
         self.next_probe += 1;
         let probe = self.next_probe;
         self.probes.insert(id.clone(), probe);
@@ -95,36 +97,36 @@ impl State {
             return;
         }
         self.probing.retain(|probing| probing != id);
-        ctx.services.harnesses.set_availability(id, availability);
-        let harnesses = &ctx.services.harnesses;
-        let runnable = |id: &str| harnesses.get(id).is_some_and(|harness| harness.option.available);
-        if ctx.sessions.active().is_none() && ctx.sessions.starting().is_none() && !ctx.sessions.harness.as_deref().is_some_and(runnable) {
-            ctx.sessions.harness = self.default.clone().filter(|default| runnable(default)).or_else(|| harnesses.default_id());
+        ctx.runtime.harnesses_mut().set_availability(id, availability);
+        let harnesses = ctx.runtime.harnesses();
+        let runnable = |id: &str| harnesses.get(id).is_some_and(|harness| harness.available);
+        if ctx.runtime.sessions().active().is_none() && ctx.runtime.sessions().starting().is_none() && !ctx.runtime.sessions().harness.as_deref().is_some_and(runnable) {
+            ctx.runtime.sessions_mut().harness = self.default.clone().filter(|default| runnable(default)).or_else(|| harnesses.default_id());
         }
-        ctx.composer.set_harnesses(ctx.services.harnesses.options(), ctx.sessions.harness.as_deref());
+        ctx.composer.set_harnesses(crate::services::harness::options(ctx.runtime.harnesses()), ctx.runtime.sessions().harness.as_deref());
     }
 
     /// Routes new sessions to harness `id` and makes it the default.
     fn switch(&mut self, id: String, ctx: &mut Ctx) -> Task<Message> {
-        let harnesses = &ctx.services.harnesses;
-        if !harnesses.get(&id).is_some_and(|harness| harness.option.available) {
+        let harnesses = ctx.runtime.harnesses();
+        if !harnesses.get(&id).is_some_and(|harness| harness.available) {
             let label = harnesses.label(&id).to_owned();
             ctx.notify(format!("{label} is unavailable"));
             return Task::none();
         }
-        if ctx.sessions.starting().is_some() {
+        if ctx.runtime.sessions().starting().is_some() {
             ctx.notify("A session is already starting");
             ctx.show_harness();
             return Task::none();
         }
-        ctx.sessions.harness = Some(id.clone());
-        ctx.composer.set_harnesses(ctx.services.harnesses.options(), Some(&id));
+        ctx.runtime.sessions_mut().harness = Some(id.clone());
+        ctx.composer.set_harnesses(crate::services::harness::options(ctx.runtime.harnesses()), Some(&id));
         if self.default.as_deref() != Some(id.as_str())
             && ctx.edit_config("harness settings", |config| config.harness.default.clone_from(&id)).is_some()
         {
             self.default = Some(id.clone());
         }
-        let Some(session) = ctx.sessions.active() else {
+        let Some(session) = ctx.runtime.sessions().active() else {
             ctx.request(Request::NewSession);
             return Task::none();
         };
@@ -153,25 +155,25 @@ impl State {
         if saved.is_none() {
             return Task::none();
         }
-        let services = &mut ctx.services;
-        if !services.harnesses.set_executable(&id, executable, &services.node.key, &services.storage.dirs.omp) {
+        let (services, runtime) = (&ctx.services, &mut ctx.runtime);
+        if !set_executable(runtime.harnesses_mut(), &id, executable, &services.node.key, &services.storage.dirs.omp) {
             return Task::none();
         }
-        ctx.composer.set_harnesses(ctx.services.harnesses.options(), ctx.sessions.harness.as_deref());
+        ctx.composer.set_harnesses(crate::services::harness::options(ctx.runtime.harnesses()), ctx.runtime.sessions().harness.as_deref());
         self.probe(id, ctx)
     }
 
     fn view<'a>(&'a self, ctx: &'a Ctx) -> Element<'a, Message> {
         let checking = !self.probing.is_empty();
         let recheck = text_button(if checking { "Checking…" } else { "Recheck" }, ButtonKind::Secondary, (!checking).then_some(Message::Recheck));
-        let selected = ctx.sessions.harness.as_deref();
-        let rows = ctx.services.harnesses.list.iter().map(|harness| self.harness_row(harness, selected));
+        let selected = ctx.runtime.sessions().harness.as_deref();
+        let rows = ctx.runtime.harnesses().list.iter().map(|harness| self.harness_row(harness, selected));
         let body = column![section_header("Harnesses", [recheck]), column(rows).spacing(sp(SpaceRole::S))];
         scrollable(body.spacing(sp(SpaceRole::M)).padding(sp(SpaceRole::M))).height(Fill).into()
     }
 
     fn harness_row<'a>(&'a self, harness: &'a Harness, selected: Option<&str>) -> Element<'a, Message> {
-        let id = harness.option.id.as_str();
+        let id = harness.id.as_str();
         let probing = self.probing.iter().any(|probing| probing == id);
         let status = harness.availability.as_ref().filter(|_| !probing).map(|availability| availability.status);
         let (icon, tone) = match status {
@@ -182,12 +184,12 @@ impl State {
         let action = if selected == Some(id) {
             Some(label("New sessions", TextRole::Label, Tone::Accent).into())
         } else {
-            harness.option.available.then(|| text_button("Use", ButtonKind::Secondary, Some(Message::Pick(id.to_owned()))))
+            harness.available.then(|| text_button("Use", ButtonKind::Secondary, Some(Message::Pick(id.to_owned()))))
         };
-        let title = row![tinted(icon, TextRole::Body, tone), label(harness.option.label.as_str(), TextRole::Body, Tone::Normal), label(status_word(status), TextRole::Label, tone), space::horizontal()];
+        let title = row![tinted(icon, TextRole::Body, tone), label(harness.label.as_str(), TextRole::Body, Tone::Normal), label(status_word(status), TextRole::Label, tone), space::horizontal()];
         let note = |s: String| label(s, TextRole::Label, Tone::Muted);
         let version = harness.availability.as_ref().and_then(|availability| availability.version.as_deref());
-        let detail = harness.option.detail.as_deref().filter(|detail| Some(*detail) != version).map(|detail| note(detail.to_owned()));
+        let detail = harness.detail.as_deref().filter(|detail| Some(*detail) != version).map(|detail| note(detail.to_owned()));
         let body = column![title.push(action).spacing(sp(SpaceRole::S)).align_y(Alignment::Center)].push(detail).push(version.map(|version| note(format!("Version {version}"))));
         let body = if harness.traits.server_url {
             body.push(note(format!("Server {}", harness.program)))
@@ -229,8 +231,8 @@ impl Area for State {
     const ID: &'static str = "harness";
     const COMMANDS: &'static [AreaCommand<Self>] = &[
         AreaCommand::<Self>::new("harness.", "", "Harness", |state, id, ctx| state.switch(id.to_owned(), ctx)).listed(Listed::Each(|_, ctx| {
-            let available = ctx.services.harnesses.list.iter().filter(|harness| harness.option.available);
-            available.map(|harness| (harness.option.id.clone(), format!("Switch harness: {}", harness.option.label))).collect()
+            let available = ctx.runtime.harnesses().list.iter().filter(|harness| harness.available);
+            available.map(|harness| (harness.id.clone(), format!("Switch harness: {}", harness.label))).collect()
         })),
         AreaCommand::<Self>::new(RECHECK, "Recheck harness availability", "Harness", |state, _, ctx| {
             ctx.open_tab(TAB);

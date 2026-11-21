@@ -19,7 +19,8 @@ use loa_ui_kit::widgets::{Msg, Screen};
 use loa_ui_settings::models::{self as screen, Catalog, ModelInfo, ModelRef, Page, RoleAssignment, SessionModel, picker, role_draft, settings, signin};
 use loa_ui_settings::models::signin::{LoginUpdate, ProviderEntry, ProviderKey};
 
-use crate::area::{perform, Area, AreaCommand, AreaMessage, Ctx, Session, SessionEvent, Target};
+use crate::area::{perform, Area, AreaCommand, AreaMessage, Ctx, Target};
+use loa_runtime::session::{Session, SessionEvent};
 
 #[cfg(test)]
 mod tests;
@@ -169,7 +170,7 @@ impl State {
     /// The harness model changes go to: the active session's, else the one
     /// new sessions start on.
     fn harness_id(ctx: &Ctx) -> &str {
-        ctx.sessions.active().and_then(Session::harness_id).or(ctx.sessions.harness.as_deref()).unwrap_or_else(|| ctx.services.harnesses.roles_id())
+        ctx.runtime.sessions().active().and_then(Session::harness_id).or(ctx.runtime.sessions().harness.as_deref()).unwrap_or_else(|| ctx.runtime.harnesses().roles_id())
     }
 
     fn load_picker(&mut self, ctx: &Ctx) -> Task<Message> {
@@ -183,12 +184,12 @@ impl State {
             self.open_picker(ctx);
             return Task::none();
         }
-        match ctx.sessions.active().and_then(Session::harness).cloned() {
+        match ctx.runtime.sessions().active().and_then(Session::harness).cloned() {
             Some(session) => perform(async move { session.models().await }, {
                 move |result| Message::Listed { harness: harness.clone(), result }
             }),
             None => {
-                let label = ctx.services.harnesses.label(&harness);
+                let label = ctx.runtime.harnesses().label(&harness);
                 self.picker.1 = Load::Failed(format!("{label} lists its models once the session runs"));
                 Task::none()
             }
@@ -199,7 +200,7 @@ impl State {
     fn open_picker(&mut self, ctx: &Ctx) {
         let (harness, _) = &self.picker;
         let (catalog, ids) = if roles(ctx, harness) {
-            let Some(models) = self.listed.get(ctx.services.harnesses.roles_id()) else { return };
+            let Some(models) = self.listed.get(ctx.runtime.harnesses().roles_id()) else { return };
             let catalog = Catalog {
                 models: models.iter().map(|model| model_info(model, &ModelRef::parse(&model.id).unwrap_or_else(|| model_ref(model)))).collect(),
                 roles: self.roles.clone().unwrap_or_default(),
@@ -221,7 +222,7 @@ impl State {
 
     /// The active session's model and role, with a pending pick on top.
     fn current(&self, ctx: &Ctx) -> SessionModel {
-        let Some(session) = ctx.sessions.active() else {
+        let Some(session) = ctx.runtime.sessions().active() else {
             if let Some((model, role)) = self.pending.locked().get(&None).and_then(|pending| pending.model.clone()) {
                 return SessionModel { model: Some(model), role };
             }
@@ -242,7 +243,7 @@ impl State {
     /// through `role` when that is set.
     fn choose(&mut self, model: String, role: Option<String>, ctx: &mut Ctx) -> Task<Message> {
         let harness = Self::harness_id(ctx).to_owned();
-        let Some(session) = ctx.sessions.active() else {
+        let Some(session) = ctx.runtime.sessions().active() else {
             ctx.notify(format!("The next session starts on {model}"));
             self.pending.locked().insert(None, Pending { harness, model: Some((model, role)), effort: None });
             return Task::none();
@@ -262,7 +263,7 @@ impl State {
 
     fn set_effort(&mut self, effort: String, ctx: &mut Ctx) -> Task<Message> {
         let harness = Self::harness_id(ctx).to_owned();
-        let Some(session) = ctx.sessions.active() else {
+        let Some(session) = ctx.runtime.sessions().active() else {
             self.pending.locked().entry(None).or_insert_with(|| Pending { harness, ..Pending::default() }).effort = Some(effort);
             self.sync(ctx);
             return Task::none();
@@ -286,7 +287,7 @@ impl State {
     /// Asks the active session's running harness for its models, once per
     /// harness.
     fn list_models(&self, ctx: &Ctx) -> Task<Message> {
-        let Some(session) = ctx.sessions.active() else { return Task::none() };
+        let Some(session) = ctx.runtime.sessions().active() else { return Task::none() };
         let (Some(harness), Some(running)) = (session.harness_id(), session.harness().cloned()) else { return Task::none() };
         if self.listed.contains_key(harness) {
             return Task::none();
@@ -313,7 +314,7 @@ impl State {
     /// with the harness's models to switch to.
     fn sync(&self, ctx: &mut Ctx) {
         let current = self.current(ctx);
-        let session = ctx.sessions.active();
+        let session = ctx.runtime.sessions().active();
         let harness = Self::harness_id(ctx);
         let pending_effort = self.pending.locked().get(&session.map(|session| session.id().to_string())).and_then(|p| p.effort.clone());
         let effort = pending_effort.or_else(|| session.and_then(|session| session.dom().root()?.str_attr(attr::EFFORT).map(str::to_owned)));
@@ -425,7 +426,7 @@ impl State {
 
 /// Whether `harness` has model roles, read through the omp models backend.
 fn roles(ctx: &Ctx, harness: &str) -> bool {
-    ctx.services.harnesses.traits(harness).has_roles
+    ctx.runtime.harnesses().traits(harness).has_roles
 }
 
 /// The picker's name for a harness model: its `provider/id` selector when
@@ -489,14 +490,14 @@ impl Area for State {
     type Message = Message;
 
     fn new(ctx: &mut Ctx) -> (Self, Task<Message>) {
-        let executable = ctx.services.harnesses.get(ctx.services.harnesses.roles_id()).and_then(|harness| harness.executable.clone());
+        let executable = ctx.runtime.harnesses().get(ctx.runtime.harnesses().roles_id()).and_then(|harness| harness.executable.clone());
         let launch = OmpLaunch {
             executable: executable.unwrap_or_else(|| OmpLaunch::default().executable),
-            cwd: Some(ctx.services.cwd.clone()),
+            cwd: Some(ctx.runtime.cwd().to_path_buf()),
             env: Vec::new(),
         };
         let env = loa_harness::HarnessEnv { node: ctx.services.node.key.clone(), omp_dir: ctx.services.storage.dirs.omp.clone() };
-        let backend = crate::adapters::models::models_backend(launch, &ctx.services.harnesses, &loa_harness::factories(&env));
+        let backend = crate::adapters::models::models_backend(launch, ctx.runtime.harnesses(), &loa_harness::factories(&env));
         (Self::with_backend(backend), Task::none())
     }
 
@@ -524,7 +525,7 @@ impl Area for State {
                     if self.listed.get(&harness).is_some_and(|models| !models.is_empty()) {
                         self.open_picker(ctx);
                     } else {
-                        let label = ctx.services.harnesses.label(&harness);
+                        let label = ctx.runtime.harnesses().label(&harness);
                         self.picker.1 = Load::Failed(format!("{label} doesn't list the models it can switch to"));
                     }
                 }
@@ -535,7 +536,7 @@ impl Area for State {
                 match result {
                     Ok(catalog) => {
                         self.roles = Some(catalog.roles);
-                        let listed = self.listed.entry(ctx.services.harnesses.roles_id().to_owned()).or_default();
+                        let listed = self.listed.entry(ctx.runtime.harnesses().roles_id().to_owned()).or_default();
                         if listed.is_empty() {
                             *listed = catalog
                                 .models
@@ -548,12 +549,12 @@ impl Area for State {
                                 })
                                 .collect();
                         }
-                        if self.picker.0 == ctx.services.harnesses.roles_id() && matches!(self.picker.1, Load::Loading) {
+                        if self.picker.0 == ctx.runtime.harnesses().roles_id() && matches!(self.picker.1, Load::Loading) {
                             self.open_picker(ctx);
                         }
                     }
                     Err(error) => {
-                        if self.picker.0 == ctx.services.harnesses.roles_id() && matches!(self.picker.1, Load::Loading) {
+                        if self.picker.0 == ctx.runtime.harnesses().roles_id() && matches!(self.picker.1, Load::Loading) {
                             self.picker.1 = Load::Failed(format!("Can't read omp's models: {error}"));
                         }
                     }
@@ -564,14 +565,14 @@ impl Area for State {
             Message::ModelSet { session, model, role, result } => {
                 match result {
                     Ok(()) => {
-                        if let Some(session) = ctx.sessions.get(session.as_str())
+                        if let Some(session) = ctx.runtime.sessions().get(session.as_str())
                             && let Err(error) = record_role(session, role)
                         {
                             ctx.notify(format!("Switched to {model}, but the role wasn't recorded: {error}"));
                         }
                     }
                     Err(Failure::Unsupported(reason)) => {
-                        let harness = ctx.sessions.get(session.as_str()).and_then(Session::harness_id).unwrap_or_else(|| ctx.services.harnesses.roles_id()).to_owned();
+                        let harness = ctx.runtime.sessions().get(session.as_str()).and_then(Session::harness_id).unwrap_or_else(|| ctx.runtime.harnesses().roles_id()).to_owned();
                         ctx.notify(format!("{reason}; new sessions start on {model}"));
                         self.pending.locked().insert(None, Pending { harness, model: Some((model, role)), effort: None });
                     }
@@ -683,12 +684,12 @@ impl Area for State {
     fn on_session_event(&mut self, event: &SessionEvent, ctx: &mut Ctx) -> Task<Message> {
         let sync = match event {
             SessionEvent::Activated(_) => true,
-            SessionEvent::Loaded(id) => ctx.sessions.is_active(id.as_str()),
+            SessionEvent::Loaded(id) => ctx.runtime.sessions().is_active(id.as_str()),
             // The model, role and effort are attributes of `<session>`.
             SessionEvent::Patch(id, patch) => {
-                ctx.sessions.is_active(id.as_str())
+                ctx.runtime.sessions().is_active(id.as_str())
                     && !matches!(patch.op, Op::Append { .. })
-                    && ctx.sessions.get(id.as_str()).and_then(|session| session.dom().root()).is_some_and(|root| root.id == patch.node)
+                    && ctx.runtime.sessions().get(id.as_str()).and_then(|session| session.dom().root()).is_some_and(|root| root.id == patch.node)
             }
             _ => false,
         };

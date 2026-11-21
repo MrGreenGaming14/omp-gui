@@ -7,6 +7,6 @@ pub mod sidebar;
 pub mod theme;
 pub mod topbar;
 
-pub use data::{NodeFilter, NodeStatus, Nodes, SessionSummary, UsageMeter};
+pub use data::{NodeFilter, NodeStatus, Nodes, UsageMeter};
 pub use layout::{Event, Message, PanelTab, State};
 pub use theme::{Appearance, ThemeRef};

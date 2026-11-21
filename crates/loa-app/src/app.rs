@@ -2,6 +2,7 @@
 //! session, the palette, the built-in panel tabs and the areas.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use iced::keyboard::{self, key};
@@ -19,12 +20,15 @@ use loa_ui_session::transcript as chat;
 use loa_ui_shell::sidebar::Event as Nav;
 use loa_ui_shell::theme::style;
 use loa_ui_shell::{self as shell, ThemeRef, palette};
+use loa_runtime::harnesses::Harnesses;
+use loa_runtime::{Runtime, RuntimeParts};
+use loa_session::library::Library;
 use loa_ui_terminal as terminal;
 use loa_util::time::{ago, now_ms};
 
-use crate::area::{Area, AreaMsg, Ctx, Request, Sessions};
+use crate::area::{Area, AreaMsg, Ctx, Request};
 use crate::areas::{self, Registry};
-use crate::services::Services;
+use crate::services::{Services, harness, open_library};
 
 mod keys;
 pub(crate) mod lifecycle;
@@ -177,36 +181,47 @@ impl App {
     /// The app on this machine's services.
     pub fn new() -> (Self, Task<Message>) {
         let (services, warnings) = Services::load().unwrap_or_else(|error| panic!("{error}"));
-        let (mut app, task) = Self::build(services);
+        let library = open_library(&services.storage.dirs, &services.node).unwrap_or_else(|error| panic!("{error}"));
+        let harnesses = harness::detect(&services.node.key, &services.storage.dirs.omp);
+        let (mut app, task) = Self::build(services, library, harnesses);
         if !warnings.is_empty() {
             app.ctx.notify(warnings.join("; "));
         }
         (app, task)
     }
 
-    /// The app over `services`: Recents from the session store, every area registered.
-    pub fn build(mut services: Services) -> (Self, Task<Message>) {
+    /// The app over `services`, the session `library` and the `harnesses`:
+    /// Recents from the session store, every area registered.
+    pub fn build(services: Services, library: Arc<Library>, harnesses: Harnesses) -> (Self, Task<Message>) {
         let saved = services.storage.config.load().unwrap_or_default();
         // The project selected last run, while its folder still exists, is the active one from the start.
         let restored = saved.active_project.filter(|active| active.cwd.is_dir());
-        if let Some(active) = &restored {
-            services.set_active(active.name.clone(), active.cwd.clone());
-        }
+        let (project, cwd) = match &restored {
+            Some(active) => (active.name.clone(), active.cwd.clone()),
+            None => (services.workspace_project(), services.workspace.clone()),
+        };
+        let mut runtime = Runtime::new(RuntimeParts {
+            library,
+            harnesses,
+            node: services.node.key.clone(),
+            cwd,
+            project,
+            access: saved.harness.approval_mode.clone(),
+        });
         let (shell, setup) = shell::State::new(saved.appearance.clone());
         let theme = shell.theme();
         let mut composer = composer::State::new();
-        let mut sessions = Sessions::default();
-        sessions.harness = services.harnesses.default_id();
-        composer.set_harnesses(services.harnesses.options(), sessions.harness.as_deref());
-        let (recents, mut problems) = crate::session::recents(&services.storage.library);
+        runtime.sessions_mut().harness = runtime.harnesses().default_id();
+        composer.set_harnesses(harness::options(runtime.harnesses()), runtime.sessions().harness.as_deref());
+        let (recents, mut problems) = loa_runtime::session::recents(runtime.library());
         problems.extend(shell.theme_state().errors().iter().map(|e| format!("Theme: {e}")));
         let metrics = terminal::canvas::Metrics::measure(Font::MONOSPACE, loa_ui_kit::theme::text_size(TextRole::Label));
-        let terminal = terminal::state::State::new(metrics, terminal::local::LocalShell::login_shell(services.cwd.clone()));
-        let files = files::State::new(services.cwd.clone(), Box::new(files::LocalFs));
+        let terminal = terminal::state::State::new(metrics, terminal::local::LocalShell::login_shell(runtime.cwd().to_path_buf()));
+        let files = files::State::new(runtime.cwd().to_path_buf(), Box::new(files::LocalFs));
         let usage = usage::State::new(services.host.usage.clone());
         let mut ctx = Ctx {
             services,
-            sessions,
+            runtime,
             shell,
             composer,
             keymap: palette::Keymap::defaults(palette::Platform::current()),
@@ -230,7 +245,7 @@ impl App {
         let mut app = Self {
             ctx,
             areas,
-            sessions: SessionController::new(&theme, saved.harness.approval_mode.clone()),
+            sessions: SessionController::new(&theme),
             workspace: Workspace::default(),
             palette: palette::State::new(palette::Platform::current()),
             files,
@@ -241,7 +256,7 @@ impl App {
         };
         let shown = app.tabs().into_iter().filter(|tab| tab.shown).map(|tab| shell::PanelTab::new(tab.id, tab.title, tab.icon)).collect();
         app.ctx.shell.set_tabs(shown);
-        let cwd = app.ctx.services.cwd.clone();
+        let cwd = app.ctx.runtime.cwd().to_path_buf();
         app.ctx.composer.set_workspace(Some(workspace::chip(app.ctx.services.host.git.as_ref(), &cwd)));
         app.remember(&cwd);
         app.refresh_commands();
@@ -399,7 +414,7 @@ impl App {
                     let next = self.ctx.composer.turn_ended();
                     Task::batch([task, self.composer_event(next)])
                 }
-                None if self.ctx.sessions.active().is_none() => self.lifecycle(|s, ctx, areas| s.start(ctx, areas, Some(prompt))),
+                None if self.ctx.runtime.sessions().active().is_none() => self.lifecycle(|s, ctx, areas| s.start(ctx, areas, Some(prompt))),
                 None => self.lifecycle(|s, ctx, areas| s.send(ctx, areas, prompt)),
             },
             Intent::Interrupt => self.lifecycle(|s, ctx, _| s.interrupt(ctx)),
@@ -597,7 +612,7 @@ impl App {
             self.configs_view(tab)
         } else if let Some(screen) = screen {
             screen
-        } else if let Some(session) = ctx.sessions.active() {
+        } else if let Some(session) = ctx.runtime.sessions().active() {
             let transcript = self.sessions.chat.view(session.dom(), Message::Chat, |slot| self.decision_card(session.id().as_str(), slot.node));
             // The composer floats over the transcript's bottom edge; the transcript scrolls on underneath it.
             let composer = container(container(ctx.composer.view().map(Message::Composer)).width(Fill).max_width(width(LayoutRole::ComposerWidth)));
@@ -611,7 +626,7 @@ impl App {
             None => center,
         };
         // A peer's project never lists its files: its disk is only reached through the grant-checked folder path.
-        let project_files = (!areas::peers::is_remote(&ctx.services.project)).then(|| self.files.view_compact().map(Message::Files));
+        let project_files = (!areas::peers::is_remote(ctx.runtime.project())).then(|| self.files.view_compact().map(Message::Files));
         let frame = ctx.shell.view(center, |tab| self.view_tab(tab), project_files, Message::Shell);
         let frame: Element<'_, Message> = match self.windows.overlay {
             Some(overlay) => {
@@ -631,8 +646,8 @@ impl App {
     /// The center with no session open: a heading, the composer, starters and recent sessions here.
     fn start_view(&self) -> Element<'_, Message> {
         let ctx = &self.ctx;
-        let starting = ctx.sessions.starting().is_some();
-        let project = ctx.services.project.as_str();
+        let starting = ctx.runtime.sessions().starting().is_some();
+        let project = ctx.runtime.project();
         let starters = STARTERS.iter().enumerate().map(|(index, (icon, title, _))| {
             let content = row![tinted(*icon, TextRole::Body, Tone::Muted), label(*title, TextRole::Body, Tone::Normal).width(Fill), tinted(Icon::ChevronRight, TextRole::Body, Tone::Muted)];
             list_row(content, (!starting).then_some(Message::Starter(index)))
@@ -663,13 +678,13 @@ impl App {
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
-        let busy = self.ctx.sessions.active().is_some_and(|session| session.is_busy());
+        let busy = self.ctx.runtime.sessions().active().is_some_and(|session| session.is_busy());
         let areas = self.areas.iter().map(|area| area.subscription());
         let own = [
             self.ctx.shell.subscription().map(Message::Shell),
             self.ctx.composer.subscription().map(Message::Composer),
             iced::keyboard::listen().map(Message::Keyboard),
-            self.ctx.sessions.watch().map(|(id, feed)| Message::Session(lifecycle::Message::Feed(id, feed))),
+            crate::watch::sessions(self.ctx.runtime.sessions()).map(|(id, feed)| Message::Session(lifecycle::Message::Feed(id, feed))),
             if busy { iced::time::every(TICK).map(|_| Message::Tick) } else { Subscription::none() },
             iced::time::every(USAGE_REFRESH).map(|_| Message::Usage(usage::Message::Refresh)),
             iced::window::close_events().map(|id| Message::Window(WindowMessage::Closed(id))),

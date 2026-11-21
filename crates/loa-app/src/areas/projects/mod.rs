@@ -22,7 +22,8 @@ use loa_ui_kit::widgets::Screen;
 use loa_ui_settings::projects as screen;
 use tokio::sync::mpsc::UnboundedReceiver;
 
-use crate::area::{perform, Area, AreaCommand, AreaMessage, Ctx, HostToolSet, Listed, Request, SessionEvent, Target};
+use crate::area::{perform, Area, AreaCommand, AreaMessage, Ctx, HostToolSet, Listed, Request, Target};
+use loa_runtime::session::SessionEvent;
 use crate::watch::{PtrKey, watch};
 
 #[cfg(test)]
@@ -86,7 +87,7 @@ impl State {
 
     /// The projects of this node with digests from `summarizer`.
     pub fn with(ctx: &mut Ctx, summarizer: Arc<dyn Summarizers>, config: ServiceConfig) -> (Self, Task<Message>) {
-        let library = &ctx.services.storage.library;
+        let library = ctx.runtime.library();
         let sessions = LiveSessions::new(Arc::clone(library.bus()), library.store().clone());
         let settings = Arc::new(FileSettingsStore::new(ctx.services.storage.dirs.data.join("projects")));
         let (runtime, handle) = OwnRuntime::current_or_new();
@@ -107,7 +108,7 @@ impl State {
             new_chat: Mutex::new(None),
             _runtime: runtime,
         };
-        let task = Task::batch([state.list(), state.refresh_context(ctx.services.project.clone())]);
+        let task = Task::batch([state.list(), state.refresh_context(ctx.runtime.project().to_owned())]);
         (state, task)
     }
 
@@ -273,7 +274,7 @@ impl Area for State {
 
     /// The projects of this node, digests built by omp's `smol` role.
     fn new(ctx: &mut Ctx) -> (Self, Task<Message>) {
-        let omp = ctx.services.harnesses.get("omp").and_then(|harness| harness.executable.clone());
+        let omp = ctx.runtime.harnesses().get("omp").and_then(|harness| harness.executable.clone());
         let summarizer = OmpSummarizers(OneShot::new(omp.unwrap_or_else(|| PathBuf::from("omp")), ctx.services.storage.dirs.data.clone()));
         Self::with(ctx, Arc::new(summarizer), ServiceConfig::default())
     }

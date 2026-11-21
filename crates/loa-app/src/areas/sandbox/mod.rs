@@ -21,7 +21,8 @@ use loa_ui_panel::diff;
 use loa_ui_panel::tools::{DetailState, ToolDetail, ToolInfo};
 use tokio::sync::broadcast;
 
-use crate::area::{Area, AreaCommand, AreaMessage, Ctx, HostToolSet, PanelTab, Request, SessionEvent, Target};
+use crate::area::{Area, AreaCommand, AreaMessage, Ctx, HostToolSet, PanelTab, Request, Target};
+use loa_runtime::session::SessionEvent;
 use crate::watch::{PtrKey, watch};
 
 mod peer;
@@ -230,12 +231,12 @@ impl State {
         let Some(entry) = ended.and_then(|run| self.runs.get(run)) else { return Task::none() };
         let (run, worker) = (entry.run.run, entry.run.worker.clone());
         // The worker is done: release its journal unless the user opened it.
-        if ctx.sessions.get(&worker).is_none()
-            && let Err(error) = ctx.services.storage.library.close(&worker)
+        if ctx.runtime.sessions().get(&worker).is_none()
+            && let Err(error) = ctx.runtime.library().close(&worker)
         {
             ctx.notify(format!("Can't close the worker session {worker}: {error}"));
         }
-        if entry.pending_patch().is_none() || !ctx.sessions.is_active(&entry.run.parent) {
+        if entry.pending_patch().is_none() || !ctx.runtime.sessions().is_active(&entry.run.parent) {
             return Task::none();
         }
         self.view = View::Runs;
@@ -335,7 +336,7 @@ impl State {
                 (Icon::Check, Tone::Ok, summary)
             }
         };
-        let session = ctx.sessions.get(&run.parent).and_then(|session| session.summary()).map_or_else(|| run.parent.clone(), |summary| summary.title);
+        let session = ctx.runtime.sessions().get(&run.parent).and_then(|session| session.summary()).map_or_else(|| run.parent.clone(), |summary| summary.title);
         let title = row![tinted(icon, TextRole::Body, tone), badge(kind_label(run.kind), Tone::Normal), label(loa_util::text::first_line(&run.task, 72), TextRole::Label, Tone::Normal)];
         let meta = label(format!("{summary} · {session}"), TextRole::Caption, Tone::Muted);
         let content = column![title.spacing(sp(SpaceRole::S)).align_y(Alignment::Center), meta];
@@ -435,7 +436,7 @@ impl Area for State {
             ctx.notify(format!("Can't read the sandbox settings {}: {error}; using the defaults", settings.display()));
             SandboxConfig::default()
         });
-        let journal = Arc::new(LibraryJournal(Arc::clone(&ctx.services.storage.library)));
+        let journal = Arc::new(LibraryJournal(Arc::clone(ctx.runtime.library())));
         let service = SandboxService::new(config, journal).with_peers(Arc::new(peer::NodeLink(ctx.node.clone())));
         let (failures, served) = broadcast::channel(16);
         peer::register(&ctx.node, Arc::new(peer::ServeStub { stub: service.stub().map(PathBuf::from), failures }));
@@ -502,7 +503,7 @@ impl Area for State {
         if !target.capabilities.host_tools {
             return None;
         }
-        let adapter = ctx.services.harnesses.registry.get(target.harness)?;
+        let adapter = ctx.runtime.harnesses().registry.get(target.harness)?;
         let (spec, handler) = self.service.host_tool(adapter, config)?;
         Some(HostToolSet { specs: vec![spec], handler })
     }

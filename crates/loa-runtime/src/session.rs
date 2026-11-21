@@ -4,22 +4,15 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use iced::Subscription;
+use loa_bus::{Event, JournalWriter, Listing, Policy, SessionId, SessionWriter};
 use loa_contracts::harness::HarnessSession;
-use loa_bus::{Event, Policy, SessionId, SessionWriter};
+use loa_contracts::session::SessionSummary;
 use loa_core::{DecisionStatus, Dom, ElementKind, NodeId, Op, Patch, TurnStatus, attr};
 use loa_session::library::{Library, Live};
-use loa_bus::{JournalWriter, Listing};
-use loa_ui_shell::SessionSummary;
 
-use crate::services::Services;
-use crate::watch::{PtrKey, Source, watch};
+use crate::feed::Source;
 
-/// Undelivered patches a session feed may hold before it resubscribes.
-const FEED_CAPACITY: usize = 4096;
-
-/// What happened to a session, as every area sees it through
-/// [`Area::on_session_event`](crate::area::Area::on_session_event).
+/// What happened to a session, as every app area sees it.
 #[derive(Clone, Debug)]
 pub enum SessionEvent {
     /// This session became the one the chat shows; `None` when none is.
@@ -155,13 +148,13 @@ impl Session {
         SessionSummary::from_dom(&self.dom, false)
     }
 
-    pub(crate) fn set_busy(&mut self, busy: bool) {
+    pub fn set_busy(&mut self, busy: bool) {
         self.busy = busy;
     }
 
     /// Attaches the harness that now drives the session and catches the
     /// DOM up with what it wrote while starting.
-    pub(crate) fn attach(&mut self, harness: Arc<dyn HarnessSession>) {
+    pub fn attach(&mut self, harness: Arc<dyn HarnessSession>) {
         self.harness = Some(harness);
         self.dom = self.writer.with_dom(Dom::clone);
         self.busy = dom_busy(&self.dom);
@@ -169,7 +162,7 @@ impl Session {
 
     /// Takes the running harness off the session; the next send resumes it
     /// on a fresh harness.
-    pub(crate) fn detach(&mut self) -> Option<Arc<dyn HarnessSession>> {
+    pub fn detach(&mut self) -> Option<Arc<dyn HarnessSession>> {
         self.harness.take()
     }
 
@@ -204,7 +197,7 @@ impl Session {
 }
 
 /// What [`Sessions::feed`] did.
-pub(crate) enum Change {
+pub enum Change {
     None,
     Loaded,
     Patch(Arc<Patch>, Option<SessionEvent>),
@@ -256,39 +249,39 @@ impl Sessions {
         self.open.values()
     }
 
-    pub(crate) fn set_active(&mut self, id: Option<SessionId>) {
+    pub fn set_active(&mut self, id: Option<SessionId>) {
         self.active = id;
     }
 
-    pub(crate) fn set_starting(&mut self, id: Option<SessionId>) {
+    pub fn set_starting(&mut self, id: Option<SessionId>) {
         self.starting = id;
     }
 
-    /// Creates a new session's journal and writer.
-    pub(crate) fn create(&mut self, services: &Services) -> Result<(SessionId, Arc<SessionWriter>), String> {
+    /// Creates a new session's journal in `library` and its writer.
+    pub fn create(&mut self, library: &Library) -> Result<(SessionId, Arc<SessionWriter>), String> {
         let id = new_session_id();
-        let live = services.storage.library.create(&id).map_err(|error| format!("Can't create session {id}: {error}"))?;
+        let live = library.create(&id).map_err(|error| format!("Can't create session {id}: {error}"))?;
         let writer = Arc::clone(&live.writer);
         let id = SessionId::from(id);
         self.open.insert(id.clone(), Session::new(id.clone(), live, Dom::new()));
         Ok((id, writer))
     }
 
-    /// Opens a session from its journal unless it is open already.
-    pub(crate) fn load(&mut self, services: &Services, id: &str) -> Result<(), String> {
+    /// Opens a session from its journal in `library` unless it is open already.
+    pub fn load(&mut self, library: &Library, id: &str) -> Result<(), String> {
         if self.open.contains_key(id) {
             return Ok(());
         }
-        let live = services.storage.library.open(id).map_err(|error| format!("Can't open session {id}: {error}"))?;
+        let live = library.open(id).map_err(|error| format!("Can't open session {id}: {error}"))?;
         let dom = live.writer.with_dom(Dom::clone);
         let id = SessionId::from(id);
         self.open.insert(id.clone(), Session::new(id, live, dom));
         Ok(())
     }
 
-    /// Closes a session's writer and releases its journal, deleting the
-    /// journal too when `delete` is set.
-    pub(crate) fn close(&mut self, services: &Services, id: &str, delete: bool) -> (Option<Session>, Option<String>) {
+    /// Closes a session's writer and releases its journal in `library`,
+    /// deleting the journal too when `delete` is set.
+    pub fn close(&mut self, library: &Library, id: &str, delete: bool) -> (Option<Session>, Option<String>) {
         let session = self.open.remove(id);
         if self.is_active(id) {
             self.active = None;
@@ -296,12 +289,12 @@ impl Sessions {
         if self.starting.as_ref().is_some_and(|starting| starting.as_str() == id) {
             self.starting = None;
         }
-        let closed = if delete { services.storage.library.delete(id) } else { services.storage.library.close(id).map(drop) };
+        let closed = if delete { library.delete(id) } else { library.close(id).map(drop) };
         (session, closed.err().map(|error| format!("Can't close session {id}: {error}")))
     }
 
-    /// Applies what a session's feed delivered to the UI's copy.
-    pub(crate) fn feed(&mut self, id: &str, feed: Feed) -> Change {
+    /// Applies what a session's feed delivered to the runtime's copy.
+    pub fn feed(&mut self, id: &str, feed: Feed) -> Change {
         let Some(session) = self.open.get_mut(id) else { return Change::None };
         match feed {
             Feed::Synced(dom) => {
@@ -331,15 +324,6 @@ impl Sessions {
             },
         }
     }
-
-    /// One feed per open session: the writer's DOM, then every patch.
-    pub(crate) fn watch(&self) -> Subscription<(SessionId, Feed)> {
-        Subscription::batch(self.open.values().map(|session| {
-            let writer = Arc::clone(&session.writer);
-            let open = move || WriterFeed::new(writer, Policy::coalescing(FEED_CAPACITY));
-            watch(PtrKey(&session.writer), open, |feed| (!matches!(feed, Feed::Ended)).then_some(feed)).with(session.id.clone())
-        }))
-    }
 }
 
 /// The session holds turns, or continues another session.
@@ -349,7 +333,7 @@ fn keeps_history(dom: &Dom) -> bool {
 
 /// Lists the library's sessions for Recents, newest first, with titles from
 /// their DOMs.
-pub(crate) fn recents(library: &Library) -> (Vec<SessionSummary>, Vec<String>) {
+pub fn recents(library: &Library) -> (Vec<SessionSummary>, Vec<String>) {
     let mut summaries = Vec::new();
     let mut problems = Vec::new();
     let listings = match library.store().list() {
@@ -434,7 +418,7 @@ fn derive(session: &SessionId, dom: &Dom, patch: &Patch) -> Option<SessionEvent>
 }
 
 /// A unique session id: creation time, process and a counter.
-pub(crate) fn new_session_id() -> String {
+pub fn new_session_id() -> String {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     format!("loa-{}-{}-{}", loa_core::now_ms(), std::process::id(), COUNTER.fetch_add(1, Ordering::Relaxed))
 }

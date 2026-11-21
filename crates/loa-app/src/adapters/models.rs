@@ -9,8 +9,7 @@ use loa_harness::omp::account::{OmpAccount, OmpLaunch, OmpService};
 use loa_harness::omp::validate::OmpSettingsValidator;
 use loa_models::keys::ProcessEnvironment;
 use loa_models::service::{Backend, FilesSource, OMP, Parts};
-
-use crate::services::Harnesses;
+use loa_runtime::harnesses::Harnesses;
 
 /// omp started from `launch` (one RPC process, owned by omp's account),
 /// omp's active agent directory, validation by omp, the platform browser and

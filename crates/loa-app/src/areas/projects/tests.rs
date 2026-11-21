@@ -4,7 +4,7 @@ use crate::testing::TestApp;
 fn projects_open_and_pin_from_the_palette() {
     let mut test = TestApp::new();
     test.session("hello");
-    let project = test.app.ctx.services.project.clone();
+    let project = test.app.ctx.runtime.project().to_owned();
     let titles = test.palette_titles();
     let open = format!("Open project: {project}");
     let pin = format!("Pin project: {project}");

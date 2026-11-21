@@ -109,7 +109,7 @@ fn sessions_run_on_the_harness_stream_their_feed_and_survive_a_restart() {
     assert_eq!(test.harness.seen().prompts, ["hello"]);
     assert_eq!(test.app.ctx.shell.sidebar().active(), Some(id.as_str()));
     test.prompt("ask");
-    test.until("the approval waits", |app| turn_status(app.ctx.sessions.active().unwrap().dom()) == Some("Waiting"));
+    test.until("the approval waits", |app| turn_status(app.ctx.runtime.sessions().active().unwrap().dom()) == Some("Waiting"));
     // Esc dismisses the focused card first, then interrupts the turn.
     test.key(Key::Named(Named::Escape), Modifiers::empty());
     assert_eq!(test.harness.seen().interrupts, 0);

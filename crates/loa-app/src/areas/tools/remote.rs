@@ -26,7 +26,7 @@ use loa_ui_terminal as terminal;
 use loa_ui_panel::tools;
 
 use crate::area::Ctx;
-use crate::session::dom_turns;
+use loa_runtime::session::{Session, dom_turns};
 
 /// Prefix of the `request_id` of the cards this module raises.
 pub(super) const REQUEST_PREFIX: &str = "remote:";
@@ -169,7 +169,7 @@ impl Remote {
     /// Cancels waiting remote cards of `session` this run didn't raise:
     /// leftovers of an earlier run, whose question died with it.
     pub(crate) fn cancel_stale(&self, session: &SessionId, ctx: &Ctx) {
-        let Some(open) = ctx.sessions.get(session.as_str()) else { return };
+        let Some(open) = ctx.runtime.sessions().get(session.as_str()) else { return };
         let stale: Vec<NodeId> = open.writer().with_dom(|dom| {
             dom.iter()
                 .filter(|node| {
@@ -202,14 +202,13 @@ impl Remote {
 
 /// The session a question belongs to: an approval's own, a host key
 /// question's the active session's (else any session's) running turn.
-fn target_session<'a>(prompt: &'a Prompt, ctx: &'a Ctx) -> Option<&'a crate::area::Session> {
+fn target_session<'a>(prompt: &'a Prompt, ctx: &'a Ctx) -> Option<&'a Session> {
     match prompt {
-        Prompt::Approval(request) => ctx.sessions.get(&request.session_id),
-        Prompt::HostKey(_) => ctx
-            .sessions
+        Prompt::Approval(request) => ctx.runtime.sessions().get(&request.session_id),
+        Prompt::HostKey(_) => ctx.runtime.sessions()
             .active()
             .filter(|session| session.is_busy())
-            .or_else(|| ctx.sessions.iter().find(|session| session.is_busy())),
+            .or_else(|| ctx.runtime.sessions().iter().find(|session| session.is_busy())),
     }
 }
 
@@ -238,7 +237,7 @@ fn raise(prompt: &PromptView, ctx: &Ctx) -> Option<Card> {
 
 /// Closes a card: answered with `answer`, or cancelled.
 fn finish(ctx: &Ctx, card: &Card, status: DecisionStatus, answer: Option<&Answer>) {
-    let Some(session) = ctx.sessions.get(card.session.as_str()) else { return };
+    let Some(session) = ctx.runtime.sessions().get(card.session.as_str()) else { return };
     let writer = session.writer();
     let waiting = writer.with_dom(|dom| {
         dom.get(card.decision).is_some_and(|node| node.str_attr(attr::STATUS) == Some(DecisionStatus::Waiting.as_str()))
