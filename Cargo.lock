@@ -4995,7 +4995,6 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "loa-adapter",
- "loa-adapter-omp",
  "loa-bus",
  "loa-core",
  "loa-journal",

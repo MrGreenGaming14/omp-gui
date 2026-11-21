@@ -1,19 +1,11 @@
 //! Project context: shared instructions, pinned files and ranked digests,
-//! rendered as markdown and delivered the way the harness takes it.
+//! rendered as markdown.
 
 use crate::rank::{Candidate, RankParams, Ranked, estimate_tokens, rank_and_pack};
 use crate::settings::{ProjectSettings, SettingsStore};
 use crate::source::{Access, Requester, SessionSource, visible_sessions};
 use crate::Result;
-use loa_adapter::ContextDelivery;
 use std::fmt::Write as _;
-use std::path::{Path, PathBuf};
-
-/// File name of the context file written for harnesses that read one.
-pub const CONTEXT_FILE_NAME: &str = "loa-project-context.md";
-
-/// MIME type of the rendered context.
-pub const CONTEXT_MIME: &str = "text/markdown";
 
 /// What to build context for.
 #[derive(Clone, Debug)]
@@ -142,58 +134,6 @@ pub fn render_markdown(context: &PackedContext) -> String {
     out
 }
 
-/// An MCP resource carrying the context.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct McpResource {
-    pub uri: String,
-    pub name: String,
-    pub mime_type: &'static str,
-    pub text: String,
-}
-
-/// How the context reached the harness.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Delivered {
-    /// Text for `SessionConfig::context`, added to the system prompt.
-    SystemPrompt(String),
-    /// The file written; the harness reads it as a context file.
-    ContextFile(PathBuf),
-    /// A resource for the app's MCP server to serve.
-    McpResource(McpResource),
-}
-
-/// Delivers `markdown` the first way the harness declares (`ways` is best
-/// first, as in `Capabilities::context_delivery`). A context file is written
-/// atomically to `context_dir`/[`CONTEXT_FILE_NAME`]. `None` when the
-/// harness declares no way.
-pub fn deliver(
-    markdown: String,
-    ways: &[ContextDelivery],
-    project: &str,
-    context_dir: &Path,
-) -> Result<Option<Delivered>> {
-    let Some(way) = ways.first() else { return Ok(None) };
-    Ok(Some(match way {
-        ContextDelivery::SystemPrompt => Delivered::SystemPrompt(markdown),
-        ContextDelivery::ContextFile => {
-            let path = context_dir.join(CONTEXT_FILE_NAME);
-            loa_util::fs::write_atomic(&path, markdown.as_bytes(), None)?;
-            Delivered::ContextFile(path)
-        }
-        ContextDelivery::McpResource => Delivered::McpResource(McpResource {
-            uri: resource_uri(project),
-            name: format!("Project context: {project}"),
-            mime_type: CONTEXT_MIME,
-            text: markdown,
-        }),
-    }))
-}
-
-/// `loa://projects/<project>/context`, the project id percent encoded.
-pub fn resource_uri(project: &str) -> String {
-    format!("loa://projects/{}/context", loa_util::text::percent_encode(project))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -320,32 +260,5 @@ mod tests {
         let baseline = build_context(&without, &access, &store, &request(&peer)).await.unwrap();
         assert_eq!(seen, baseline);
         assert_eq!(render_markdown(&seen), render_markdown(&baseline));
-    }
-
-    #[test]
-    fn delivers_each_way_the_harness_declares() {
-        let dir = tempfile::tempdir().unwrap();
-        let md = "# Project context: p\n".to_owned();
-        assert_eq!(
-            deliver(md.clone(), &[ContextDelivery::SystemPrompt, ContextDelivery::ContextFile], "p", dir.path()).unwrap(),
-            Some(Delivered::SystemPrompt(md.clone()))
-        );
-        let target = dir.path().join("ctx");
-        let Some(Delivered::ContextFile(path)) = deliver(md.clone(), &[ContextDelivery::ContextFile], "p", &target).unwrap()
-        else {
-            panic!("expected a context file");
-        };
-        assert_eq!(path, target.join(CONTEXT_FILE_NAME));
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), md);
-        // A second delivery replaces the file.
-        deliver("new".into(), &[ContextDelivery::ContextFile], "p", &target).unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new");
-        let Some(Delivered::McpResource(resource)) = deliver(md.clone(), &[ContextDelivery::McpResource], "my proj", dir.path()).unwrap()
-        else {
-            panic!("expected a resource");
-        };
-        assert_eq!(resource.uri, "loa://projects/my%20proj/context");
-        assert_eq!(resource.text, md);
-        assert_eq!(deliver(md, &[], "p", dir.path()).unwrap(), None);
     }
 }
