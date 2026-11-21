@@ -12,7 +12,6 @@ use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use iced::futures::SinkExt;
 use iced::{Element, Font, Subscription, Task};
 use loa_contracts::harness::{Answer, HostToolRouter, McpTransport, SessionConfig};
 use loa_bus::SessionId;
@@ -25,13 +24,13 @@ use loa_mcp::{AllowAll, Registry};
 use loa_mcp::bridge::{self, OmpBridgeConfig};
 use loa_remote::RemoteServiceConfig;
 use loa_remote::http::RemoteHttp;
-use loa_remote::ports::PromptQueue;
 use loa_remote::tools::SERVER_NAME as REMOTE_SERVER;
 use loa_ui_terminal as terminal;
 use loa_ui_panel::tools;
 
 use self::remote::{Remote, SshPaths, SshPty};
 use crate::area::{Area, AreaCommand, AreaMessage, Ctx, HostToolSet, Listed, PanelTab, SessionEvent, Target};
+use crate::watch::{PtrKey, watch};
 
 /// Id of the Tools panel tab.
 const TAB: &str = "tools";
@@ -745,55 +744,13 @@ impl Area for State {
         Task::none()
     }
 
+    /// Every change of the app's MCP servers and of the remote question
+    /// queue.
     fn subscription(&self) -> Subscription<Message> {
+        let (mcp, queue) = (self.mcp.clone(), Arc::clone(&self.remote.queue));
         Subscription::batch([
-            Subscription::run_with(McpWatch(self.mcp.clone()), mcp_events),
-            Subscription::run_with(QueueWatch(Arc::clone(&self.remote.queue)), prompt_changes),
+            watch("tools.mcp", move || mcp.events(), |_| Some(Message::ServersChanged)),
+            watch(PtrKey(&self.remote.queue), move || queue.subscribe(), |()| Some(Message::PromptsChanged)),
         ])
     }
-}
-
-/// The app's one MCP manager, as a subscription key.
-struct McpWatch(loa_mcp::Manager);
-
-impl std::hash::Hash for McpWatch {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        "tools.mcp".hash(state);
-    }
-}
-
-fn mcp_events(watch: &McpWatch) -> impl iced::futures::Stream<Item = Message> + use<> {
-    let mut events = watch.0.events();
-    iced::stream::channel(16, async move |mut out: iced::futures::channel::mpsc::Sender<Message>| {
-        loop {
-            match events.recv().await {
-                Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                    if out.send(Message::ServersChanged).await.is_err() {
-                        return;
-                    }
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
-            }
-        }
-    })
-}
-
-/// The remote question queue, as a subscription key.
-struct QueueWatch(Arc<PromptQueue>);
-
-impl std::hash::Hash for QueueWatch {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        std::ptr::hash(Arc::as_ptr(&self.0), state);
-    }
-}
-
-fn prompt_changes(watch: &QueueWatch) -> impl iced::futures::Stream<Item = Message> + use<> {
-    let mut changes = watch.0.subscribe();
-    iced::stream::channel(16, async move |mut out: iced::futures::channel::mpsc::Sender<Message>| {
-        while changes.changed().await.is_ok() {
-            if out.send(Message::PromptsChanged).await.is_err() {
-                return;
-            }
-        }
-    })
 }

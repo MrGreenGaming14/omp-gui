@@ -18,7 +18,7 @@ use loa_ui_surface::{PointerInput, panel, picker};
 use serde_json::json;
 use tokio::sync::mpsc;
 
-use super::{HubWatch, McpWatch, State, TAB, hub_events, mcp_events};
+use super::{State, TAB};
 use crate::app::tests::fake_app;
 use crate::app::{App, Message as AppMessage};
 use crate::area::{Area, Target};
@@ -46,8 +46,10 @@ impl Driver {
         let (out, messages) = mpsc::unbounded_channel();
         let driver = Self { app, out, messages };
         driver.spawn(task.map(AppMessage::area));
-        driver.forward(hub_events(&HubWatch(hub)));
-        driver.forward(mcp_events(&McpWatch(driver.app.ctx.services.mcp.clone())));
+        let _ = hub;
+        for recipe in iced_futures::subscription::into_recipes(crate::area::Area::subscription(driver.area())) {
+            driver.forward(recipe.stream(iced::futures::StreamExt::boxed(iced::futures::stream::pending())));
+        }
         driver
     }
 

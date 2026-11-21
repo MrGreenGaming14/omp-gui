@@ -12,7 +12,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use iced::futures::{Stream, stream};
 use iced::{Element, Subscription, Task};
 use loa_contracts::harness::SessionConfig;
 use loa_bus::SessionId;
@@ -20,9 +19,9 @@ use loa_core::{NodeId, PatchSink, TurnStatus, attr};
 use loa_contracts::surface::SurfaceUri;
 use loa_surfaces::{CaptureMode, HubConfig, HubEvent, Listed, McpEndpoint, Opened, SurfaceHub, SurfaceTools, dom};
 use loa_ui_surface::{Available, BrowserStatus, Capture, CaptureStatus, Options, Panel, panel};
-use tokio::sync::broadcast::error::RecvError;
 
 use crate::area::{Area, AreaCommand, AreaMessage, Ctx, HostToolSet, PanelTab, SessionEvent, Target};
+use crate::watch::{PtrKey, watch};
 use crate::session::dom_turns;
 
 /// Id of the Surfaces panel tab.
@@ -420,53 +419,18 @@ impl Area for State {
         Task::none()
     }
 
+    /// The hub's events, a resync after falling behind; and the changes of
+    /// the app's MCP servers, which re-read the declared surfaces.
     fn subscription(&self) -> Subscription<Message> {
+        let (hub, mcp) = (Arc::clone(&self.hub), self.mcp.clone());
         Subscription::batch([
-            Subscription::run_with(HubWatch(Arc::clone(&self.hub)), hub_events),
-            Subscription::run_with(McpWatch(self.mcp.clone()), mcp_events),
+            watch(PtrKey(&self.hub), move || hub.events(), |event| Some(event.map_or(Message::Resync, Message::Hub))),
+            watch("surfaces.mcp", move || mcp.events(), |event| match event {
+                Ok(loa_mcp::Event::Status { status: loa_mcp::Status::Starting, .. } | loa_mcp::Event::ToolsChanged { .. }) => None,
+                Ok(_) | Err(_) => Some(Message::Mcp),
+            }),
         ])
     }
-}
-
-/// The hub whose events the subscription streams; one per app.
-struct HubWatch(Arc<SurfaceHub>);
-
-impl std::hash::Hash for HubWatch {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        Arc::as_ptr(&self.0).hash(state);
-    }
-}
-
-fn hub_events(watch: &HubWatch) -> impl Stream<Item = Message> + use<> {
-    stream::unfold(watch.0.events(), |mut events| async move {
-        let message = match events.recv().await {
-            Ok(event) => Message::Hub(event),
-            Err(RecvError::Lagged(_)) => Message::Resync,
-            Err(RecvError::Closed) => return None,
-        };
-        Some((message, events))
-    })
-}
-
-/// The app's MCP servers, whose changes re-read the declared surfaces.
-struct McpWatch(loa_mcp::Manager);
-
-impl std::hash::Hash for McpWatch {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        "surfaces.mcp".hash(state);
-    }
-}
-
-fn mcp_events(watch: &McpWatch) -> impl Stream<Item = Message> + use<> {
-    stream::unfold(watch.0.events(), |mut events| async move {
-        loop {
-            match events.recv().await {
-                Ok(loa_mcp::Event::Status { status: loa_mcp::Status::Starting, .. } | loa_mcp::Event::ToolsChanged { .. }) => {}
-                Ok(_) | Err(RecvError::Lagged(_)) => return Some((Message::Mcp, events)),
-                Err(RecvError::Closed) => return None,
-            }
-        }
-    })
 }
 
 #[cfg(test)]

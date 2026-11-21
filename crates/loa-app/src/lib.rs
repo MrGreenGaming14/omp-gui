@@ -7,9 +7,11 @@
 //! - [`areas`]: one module per feature area
 //! - [`services`]: identity, data directories, journal store, bus, harnesses
 //! - [`session`]: live sessions persisted through their journals
+//! - [`watch`]: subscriptions over shared feeds
 
 pub mod app;
 pub mod area;
 pub mod areas;
 pub mod services;
 pub mod session;
+pub mod watch;

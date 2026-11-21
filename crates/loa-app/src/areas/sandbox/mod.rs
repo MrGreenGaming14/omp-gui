@@ -6,11 +6,9 @@
 //! (`<data>/sandbox.json`). Worker sessions are journaled in the session
 //! library like any other session and open from their run.
 
-use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use iced::futures::{SinkExt, Stream};
 use iced::widget::{button, column, container, row, scrollable, space, svg, text, text_input, toggler};
 use iced::{Element, Font, Length, Subscription, Task, Theme};
 use loa_contracts::harness::SessionConfig;
@@ -29,6 +27,7 @@ use loa_ui_panel::tools::{DetailState, ToolDetail, ToolInfo};
 use tokio::sync::broadcast;
 
 use crate::area::{Area, AreaCommand, AreaMessage, Ctx, HostToolSet, PanelTab, Request, SessionEvent, Target};
+use crate::watch::{PtrKey, watch};
 
 #[cfg(test)]
 mod tests;
@@ -661,37 +660,13 @@ impl Area for State {
         Task::none()
     }
 
+    /// Every run event and peer failure from now on; skips what a feed fell
+    /// behind on.
     fn subscription(&self) -> Subscription<Message> {
+        let (events, served) = (Arc::clone(&self.events), Arc::clone(&self.served));
         Subscription::batch([
-            Subscription::run_with(Events(Arc::clone(&self.events)), events).map(Message::Event),
-            Subscription::run_with(Events(Arc::clone(&self.served)), events).map(Message::PeerFailed),
+            watch(PtrKey(&self.events), move || events.resubscribe(), |event| event.ok().map(Message::Event)),
+            watch(PtrKey(&self.served), move || served.resubscribe(), |failure| failure.ok().map(Message::PeerFailed)),
         ])
     }
-}
-
-/// A broadcast feed, identified by the receiver it subscribes from.
-struct Events<T>(Arc<broadcast::Receiver<T>>);
-
-impl<T> Hash for Events<T> {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        std::ptr::hash(Arc::as_ptr(&self.0), state);
-    }
-}
-
-/// Every item from now on; skips what it fell behind on.
-fn events<T: Clone + Send + 'static>(events: &Events<T>) -> impl Stream<Item = T> + use<T> {
-    let mut receiver = events.0.resubscribe();
-    iced::stream::channel(64, async move |mut out: iced::futures::channel::mpsc::Sender<T>| {
-        loop {
-            match receiver.recv().await {
-                Ok(event) => {
-                    if out.send(event).await.is_err() {
-                        return;
-                    }
-                }
-                Err(broadcast::error::RecvError::Lagged(_)) => {}
-                Err(broadcast::error::RecvError::Closed) => return,
-            }
-        }
-    })
 }

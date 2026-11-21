@@ -370,7 +370,7 @@ fn project_screen_lists_sessions_saves_settings_and_excludes() {
 fn a_turn_end_digest_reaches_the_next_chat_with_project_search() {
     let dir = tempfile::tempdir().unwrap();
     let (mut app, configs) = project_app(dir.path());
-    let mut outcomes = app.areas.get::<crate::areas::projects::State>().outcomes.take().expect("the subscription hasn't taken them");
+    let mut outcomes = app.areas.get::<crate::areas::projects::State>().outcomes.locked().take().expect("the subscription hasn't taken them");
     let first = chat_in(&mut app, "alpha", "set up iroh");
 
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();

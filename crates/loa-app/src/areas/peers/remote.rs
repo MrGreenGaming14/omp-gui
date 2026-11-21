@@ -3,14 +3,12 @@
 //! answer its decision cards; fork grants copy the session to this node. The
 //! owner stays the single writer: nothing here writes the mirror.
 
-use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
-use iced::futures::{SinkExt, Stream};
 use iced::widget::{button, column, container, row, text, text_input};
 use iced::{Alignment, Element, Fill, Subscription, Task, Theme};
-use loa_bus::{Event, Policy, SessionWriter};
-use loa_core::{Dom, NodeId, Op, Patch, attr};
+use loa_bus::{Event, Policy};
+use loa_core::{Dom, NodeId, Op, attr};
 use loa_trust::Action;
 use loa_models::login::UrlOpener;
 use loa_harness::account_support::opener::SystemUrlOpener;
@@ -25,19 +23,11 @@ use loa_ui_shell::theme::style;
 
 use super::{Message, State};
 use crate::area::{Area, Ctx};
+use crate::session::{Feed, WriterFeed};
+use crate::watch::{PtrKey, watch};
 
 /// Patches the mirror's feed may hold before it resubscribes.
 const FEED_CAPACITY: usize = 4096;
-
-/// What the mirror's feed delivers.
-#[derive(Clone, Debug)]
-pub enum Feed {
-    /// The mirror's DOM when the feed (re)subscribed.
-    Synced(Arc<Dom>),
-    Patch(Arc<Patch>),
-    /// The view stopped following the owner.
-    Ended,
-}
 
 #[derive(Clone, Debug)]
 pub enum RemoteMessage {
@@ -113,7 +103,7 @@ impl Remote {
                     self.reload(Arc::unwrap_or_clone(dom));
                 }
             }
-            Feed::Patch(patch) => {
+            Feed::Event(Event::Patch(patch)) => {
                 if patch.seq <= self.dom.seq() {
                     return;
                 }
@@ -128,6 +118,8 @@ impl Remote {
                     self.cards.sync(&self.dom);
                 }
             }
+            // Merged appends only reach coalescing feeds; take the DOM.
+            Feed::Event(_) => self.reload(self.view.writer().with_dom(Dom::clone)),
             Feed::Ended => {
                 self.ended = Some(self.view.ended().unwrap_or_else(|| "the owner closed the session".to_owned()));
                 self.cards.set_viewer(cards::Viewer { by: String::new(), view_only: true });
@@ -140,8 +132,12 @@ impl Remote {
         self.ended.is_none() && self.view.can(Action::Drive)
     }
 
+    /// The mirror's DOM, then each patch; resubscribes after falling behind
+    /// and reports the end when the view stops following the owner. Another
+    /// view gets a new feed.
     pub fn subscription(&self) -> Subscription<RemoteMessage> {
-        Subscription::run_with(Watch(Arc::clone(self.view.writer())), feed).map(RemoteMessage::Feed)
+        let writer = Arc::clone(self.view.writer());
+        watch(PtrKey(self.view.writer()), move || WriterFeed::new(writer, Policy::every_patch(FEED_CAPACITY)), |feed| Some(RemoteMessage::Feed(feed)))
     }
 
     pub fn view(&self) -> Element<'_, RemoteMessage> {
@@ -284,42 +280,4 @@ impl State {
             }
         }
     }
-}
-
-/// Identifies the mirror's feed: another view gets a new one.
-pub(crate) struct Watch(pub(crate) Arc<SessionWriter>);
-
-impl Hash for Watch {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        std::ptr::hash(Arc::as_ptr(&self.0), state);
-    }
-}
-
-/// The mirror's DOM, then each patch; resubscribes after falling behind and
-/// reports the end when the view stops following the owner.
-pub(crate) fn feed(watch: &Watch) -> impl Stream<Item = Feed> + use<> {
-    let writer = Arc::clone(&watch.0);
-    iced::stream::channel(64, async move |mut out: iced::futures::channel::mpsc::Sender<Feed>| {
-        loop {
-            let (dom, mut subscription) = writer.subscribe(Policy::every_patch(FEED_CAPACITY));
-            if out.send(Feed::Synced(Arc::new(dom))).await.is_err() {
-                return;
-            }
-            loop {
-                match subscription.recv().await {
-                    None => {
-                        let _ = out.send(Feed::Ended).await;
-                        return;
-                    }
-                    Some(Event::Lagged { .. }) => break,
-                    Some(Event::Patch(patch)) => {
-                        if out.send(Feed::Patch(patch)).await.is_err() {
-                            return;
-                        }
-                    }
-                    Some(Event::Appends(_)) => break,
-                }
-            }
-        }
-    })
 }

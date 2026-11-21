@@ -13,11 +13,9 @@
 
 use loa_util::LockExt;
 use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use iced::futures::{Stream, stream};
 use iced::{Element, Subscription, Task};
 use loa_contracts::harness::{HostToolSpec, HostTools, SessionConfig};
 use loa_projects::{
@@ -29,6 +27,7 @@ use loa_ui_settings::projects as screen;
 use tokio::sync::mpsc::UnboundedReceiver;
 
 use crate::area::{Area, AreaCommand, AreaMessage, Ctx, HostToolSet, Listed, Request, SessionEvent, Target};
+use crate::watch::{PtrKey, watch};
 
 #[cfg(test)]
 mod tests;
@@ -70,7 +69,8 @@ pub struct State {
     service: ProjectService,
     /// `project_search` and `project_read`, served to every session.
     tools: (Vec<HostToolSpec>, Arc<dyn HostTools>),
-    outcomes: Outcomes,
+    /// The rebuild driver's outcomes, until the subscription takes them.
+    outcomes: Arc<Mutex<Option<UnboundedReceiver<RebuildOutcome>>>>,
     projects: Vec<ProjectSummary>,
     /// The project screen, drawn while the app shows this area's screen.
     screen: Option<screen::State>,
@@ -104,7 +104,7 @@ impl State {
         let state = Self {
             service,
             tools,
-            outcomes: Outcomes(Arc::new(Mutex::new(Some(outcomes)))),
+            outcomes: Arc::new(Mutex::new(Some(outcomes))),
             projects: Vec::new(),
             screen: None,
             contexts: HashMap::new(),
@@ -393,33 +393,11 @@ impl Area for State {
         }
     }
 
+    /// The rebuild driver's outcomes; the receiver is taken once.
     fn subscription(&self) -> Subscription<Message> {
-        Subscription::run_with(self.outcomes.clone(), rebuilds)
+        let outcomes = Arc::clone(&self.outcomes);
+        watch(PtrKey(&self.outcomes), move || outcomes.locked().take(), |outcome| Some(Message::Rebuild(outcome)))
     }
-}
-
-/// The rebuild driver's outcomes, taken once by the subscription.
-#[derive(Clone)]
-struct Outcomes(Arc<Mutex<Option<UnboundedReceiver<RebuildOutcome>>>>);
-
-impl Outcomes {
-    fn take(&self) -> Option<UnboundedReceiver<RebuildOutcome>> {
-        self.0.locked().take()
-    }
-}
-
-impl Hash for Outcomes {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        (Arc::as_ptr(&self.0) as usize).hash(state);
-    }
-}
-
-fn rebuilds(outcomes: &Outcomes) -> impl Stream<Item = Message> + use<> {
-    stream::unfold(outcomes.take(), |receiver| async move {
-        let mut receiver = receiver?;
-        let outcome = receiver.recv().await?;
-        Some((Message::Rebuild(outcome), Some(receiver)))
-    })
 }
 
 /// A runtime of the area's own, made only when the app has none (tests,

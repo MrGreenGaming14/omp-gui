@@ -15,11 +15,9 @@ mod remote;
 #[cfg(test)]
 mod tests;
 
-use std::hash::{Hash, Hasher};
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 
-use iced::futures::{SinkExt, Stream};
 use iced::{Element, Subscription, Task};
 use loa_contracts::harness::{Answer, Prompt};
 use loa_config::{NetworkSettings, Relay};
@@ -31,9 +29,10 @@ use loa_ui_settings::peers;
 use loa_ui_shell::{NodeStatus, SessionSummary};
 
 use crate::area::{Area, AreaCommand, AreaMessage, Ctx, PanelTab, Request};
+use crate::watch::watch;
 
 pub use folder::FolderMessage;
-pub use remote::{Feed, RemoteMessage};
+pub use remote::RemoteMessage;
 
 /// Id of the Peers panel tab.
 const TAB: &str = "peers";
@@ -436,41 +435,14 @@ impl Area for State {
         Task::none()
     }
 
+    /// The node's events, a feed that fell behind reporting a change; a
+    /// node opened again gets a new feed.
     fn subscription(&self) -> Subscription<Message> {
-        let events = self
-            .node
-            .as_ref()
-            .map_or_else(Subscription::none, |node| Subscription::run_with(Events(node.clone(), self.generation), events).map(Message::Node));
+        let events = self.node.as_ref().map_or_else(Subscription::none, |node| {
+            let opened = node.clone();
+            watch((node.key(), self.generation), move || opened.events(), |event| Some(Message::Node(event.unwrap_or(NodeEvent::Changed))))
+        });
         let remote = self.remote.as_ref().map_or_else(Subscription::none, |remote| remote.subscription().map(Message::Remote));
         Subscription::batch([events, remote])
     }
-}
-
-/// The node's event feed; a node opened again gets a new one.
-pub(crate) struct Events(pub(crate) Node, pub(crate) u64);
-
-impl Hash for Events {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.0.key().hash(state);
-        self.1.hash(state);
-    }
-}
-
-/// Every event of the node; a feed that fell behind reports a change.
-pub(crate) fn events(events: &Events) -> impl Stream<Item = NodeEvent> + use<> {
-    let node = events.0.clone();
-    iced::stream::channel(64, async move |mut out: iced::futures::channel::mpsc::Sender<NodeEvent>| {
-        let mut receiver = node.events();
-        drop(node);
-        loop {
-            let event = match receiver.recv().await {
-                Ok(event) => event,
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => NodeEvent::Changed,
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
-            };
-            if out.send(event).await.is_err() {
-                return;
-            }
-        }
-    })
 }

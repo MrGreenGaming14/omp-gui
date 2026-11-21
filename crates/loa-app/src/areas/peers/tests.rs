@@ -18,7 +18,8 @@ use loa_ui_settings::peers::{self as panel, Confirm, Local};
 use loa_ui_shell as shell;
 use tokio::runtime::Runtime;
 
-use super::{Feed, Message as Peers, RemoteMessage, is_remote, recent_id};
+use super::{Message as Peers, RemoteMessage, is_remote, recent_id};
+use crate::session::Feed;
 use crate::app::tests::{FakeAdapter, active};
 use crate::app::{App, Message};
 use crate::services::{Dirs, Harnesses, Node, Services};
