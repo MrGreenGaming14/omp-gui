@@ -5,6 +5,7 @@
 //! servers, agent definitions, skills and rules, at project or global scope.
 //! Settings is for the app itself: theme, peers, harness sign-in, updates.
 
+use loa_util::fs::home;
 use std::path::{Path, PathBuf};
 
 use iced::widget::{Column, button, column, container, row, rule, scrollable, space, text};
@@ -159,10 +160,6 @@ pub fn scan(tab: ConfigsTab, project: &Path, home: Option<&Path>) -> Vec<DocFile
         ConfigsTab::Models | ConfigsTab::Tools => {}
     }
     out
-}
-
-fn home() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(PathBuf::from)
 }
 
 #[derive(Debug, Clone)]

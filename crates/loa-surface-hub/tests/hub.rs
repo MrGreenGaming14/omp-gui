@@ -203,15 +203,7 @@ async fn a_vm_opens_from_host_and_port_streams_and_takes_agent_clicks() {
 }
 
 fn html(body: &str) -> String {
-    let mut url = String::from("data:text/html,");
-    for byte in body.bytes() {
-        if byte.is_ascii_alphanumeric() {
-            url.push(byte as char);
-        } else {
-            url.push_str(&format!("%{byte:02X}"));
-        }
-    }
-    url
+    format!("data:text/html,{}", loa_util::text::percent_encode(body))
 }
 
 #[tokio::test(flavor = "multi_thread")]

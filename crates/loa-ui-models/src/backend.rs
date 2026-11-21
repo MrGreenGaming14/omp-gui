@@ -11,6 +11,7 @@
 //! session's own harness connection (`HarnessSession::set_model`), which
 //! records the new `model` on the `<session>`.
 
+use loa_util::fs::home;
 use loa_util::LockExt;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -207,10 +208,6 @@ impl std::fmt::Debug for Backend {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Backend").finish_non_exhaustive()
     }
-}
-
-fn home() -> Option<PathBuf> {
-    std::env::var_os("HOME").filter(|h| !h.is_empty()).map(PathBuf::from)
 }
 
 fn dir_from_env(var: &str, home_dir: &str) -> PathBuf {

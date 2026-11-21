@@ -191,16 +191,7 @@ pub fn deliver(
 
 /// `loa://projects/<project>/context`, the project id percent encoded.
 pub fn resource_uri(project: &str) -> String {
-    let mut uri = String::from("loa://projects/");
-    for byte in project.bytes() {
-        if byte.is_ascii_alphanumeric() || b"-._~".contains(&byte) {
-            uri.push(byte as char);
-        } else {
-            let _ = write!(uri, "%{byte:02X}");
-        }
-    }
-    uri.push_str("/context");
-    uri
+    format!("loa://projects/{}/context", loa_util::text::percent_encode(project))
 }
 
 #[cfg(test)]

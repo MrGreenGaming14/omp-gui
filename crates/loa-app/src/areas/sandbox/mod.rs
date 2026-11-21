@@ -426,7 +426,7 @@ impl State {
             .get(&run.parent)
             .and_then(|session| session.summary())
             .map_or_else(|| run.parent.clone(), |summary| summary.title);
-        let title = row![mark, kind, text(first_line(&run.task)).size(panel_style::TEXT_SIZE)].spacing(8).align_y(iced::Center);
+        let title = row![mark, kind, text(loa_util::text::first_line(&run.task, 72)).size(panel_style::TEXT_SIZE)].spacing(8).align_y(iced::Center);
         let meta = text(format!("{summary} · {session}")).size(12).style(panel_style::muted);
         button(column![title, meta].spacing(2))
             .width(Length::Fill)
@@ -571,16 +571,6 @@ fn kind_label(kind: SandboxKind) -> &'static str {
         SandboxKind::Vm => "VM (qemu)",
         SandboxKind::Ssh => "SSH host",
         SandboxKind::Peer => "Peer",
-    }
-}
-
-/// The first line of `text`, cut to a list row's length.
-fn first_line(text: &str) -> String {
-    const MAX: usize = 72;
-    let line = text.lines().find(|line| !line.trim().is_empty()).unwrap_or_default().trim();
-    match line.char_indices().nth(MAX) {
-        Some((cut, _)) => format!("{}…", &line[..cut]),
-        None => line.to_owned(),
     }
 }
 

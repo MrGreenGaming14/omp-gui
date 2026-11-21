@@ -130,6 +130,5 @@ pub trait Sandbox: Send {
 }
 
 /// Whether this process may use `/dev/kvm` (read and write access).
-pub fn kvm_available() -> bool {
-    std::fs::OpenOptions::new().read(true).write(true).open("/dev/kvm").is_ok()
-}
+pub use loa_util::exec::kvm_available;
+

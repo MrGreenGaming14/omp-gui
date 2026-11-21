@@ -38,15 +38,7 @@ pub async fn server(width: u32, height: u32) -> Option<BrowserServer> {
 
 /// `data:` URL of an HTML document.
 pub fn html(body: &str) -> String {
-    let mut url = String::from("data:text/html,");
-    for byte in body.bytes() {
-        if byte.is_ascii_alphanumeric() || b"-_.~!*'();:@=+$,/?".contains(&byte) {
-            url.push(byte as char);
-        } else {
-            url.push_str(&format!("%{byte:02X}"));
-        }
-    }
-    url
+    format!("data:text/html,{}", loa_util::text::percent_encode(body))
 }
 
 /// Serves `pages` (path, HTML) on 127.0.0.1 port 0. Returns the base URL.
