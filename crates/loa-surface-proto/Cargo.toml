@@ -1,6 +1,6 @@
 [package]
 name = "loa-surface-proto"
-description = "omp/surface/1 wire format, streams, datagrams and MCP declaration"
+description = "omp/surface/1 networking and live H.264/HEVC video for remote viewers (the remote-video feature)"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
@@ -9,15 +9,17 @@ publish.workspace = true
 loa-util.workspace = true
 loa-contracts.workspace = true
 async-trait.workspace = true
-base64 = "0.23"
 bytes.workspace = true
 crc32fast = "1.5"
 prost.workspace = true
-serde.workspace = true
-serde_json.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
 tokio = { workspace = true, features = ["io-util", "sync", "rt", "macros"] }
+# Pure Rust H.264. The `global-alloc` default feature installs a process wide
+# allocator, so defaults stay off.
+rusty_h264 = { version = "0.17.3", default-features = false, features = ["std", "asm"] }
+jpeg-decoder = { version = "0.3", default-features = false }
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
-loa-surface-bench = { path = "../loa-surface-bench" }

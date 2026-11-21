@@ -93,7 +93,7 @@ impl ServerHandler for Scoped {
         let resources = listed
             .iter()
             .filter(|l| l.info.uri.server() == self.scope)
-            .filter_map(|l| serde_json::from_value::<Resource>(loa_surface_proto::mcp::resource(&l.info)).ok())
+            .filter_map(|l| serde_json::from_value::<Resource>(crate::mcp::resource(&l.info)).ok())
             .collect();
         Ok(ListResourcesResult::with_all_items(resources))
     }

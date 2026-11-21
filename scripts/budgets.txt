@@ -50,7 +50,6 @@ map loa-surface-docs      loa-surfaces
 map loa-surface-rfb       loa-surfaces
 map loa-surface-hub       loa-surfaces
 map loa-surface-proto     loa-surfaces
-map loa-surface-bench     loa-surfaces
 map loa-identity          loa-trust
 map loa-grants            loa-trust
 map loa-net               loa-p2p

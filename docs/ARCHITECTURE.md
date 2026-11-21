@@ -31,9 +31,8 @@ Everything else builds on these three. Their existing public items change only w
 | `loa-mcp` | tools | rmcp client, server registry, config import |
 | `loa-remote` | tools | `remote` MCP server: `remote_bash`, `remote_file` over russh |
 | `loa-omp-bridge` | tools | omp tools served to other harnesses as an MCP server |
-| `loa-surface-proto` | surfaces | `omp/surface/1` framing, datagrams, MCP declaration |
+| `loa-surface-proto` | surfaces | `omp/surface/1` framing and datagrams, live H.264/HEVC video (app feature `remote-video`, off by default) |
 | `loa-surface-browser`, `-docs`, `-rfb` | surfaces | Built in surface servers |
-| `loa-surface-bench` | surfaces | Input to pixels benchmark, 50 ms gate, video encode |
 | `loa-surface-hub` | surfaces | The app's surface service: built-in servers, MCP declared surfaces, `surface_*` agent tools as host tools and a loopback MCP endpoint, `<surface>` drafts |
 | `loa-models` | models | Sign in, model listing and settings through omp and other harnesses |
 | `loa-projects` | projects | Digests, context ranking, `project_search`, `project_read`, project settings, `ProjectService` over the bus and journal |

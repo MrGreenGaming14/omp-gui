@@ -2,7 +2,7 @@
 //!
 //! Every surface server offers `surface_screenshot` and, for pixel surfaces,
 //! `surface_click`, `surface_type` and `surface_scroll` (the shapes of
-//! [`loa_surface_proto::mcp`]). On top of those each server offers the
+//! [`crate::mcp`]). On top of those each server offers the
 //! structured data it has: the browser its URL, page text and interactive
 //! elements, documents their text, cells, outline and slides.
 
@@ -13,7 +13,7 @@ use bytes::Bytes;
 use loa_contracts::harness::{OutputBlock, HostToolSpec, HostTools};
 use loa_contracts::surface::{SurfaceMode, SurfaceUri};
 use loa_surface_docs::DataQuery;
-use loa_surface_proto::mcp::{self as proto, ToolCall, ToolRunner};
+use crate::mcp::{self as proto, ToolCall, ToolRunner};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::path::PathBuf;

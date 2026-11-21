@@ -4342,12 +4342,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "00810f1d8b74be64b13dbf3db89ac67740615d6c891f0e7b6179326533011a07"
 
 [[package]]
-name = "jpeg-encoder"
-version = "0.7.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a0370574b86f7eca156b9f298392b5e69a23f8c86f3f865add60bbc2e79467a6"
-
-[[package]]
 name = "js-sys"
 version = "0.3.107"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4704,7 +4698,6 @@ dependencies = [
  "loa-projects",
  "loa-remote",
  "loa-sandbox",
- "loa-surface-bench",
  "loa-surface-hub",
  "loa-ui-chat",
  "loa-ui-composer",
@@ -5066,26 +5059,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "loa-surface-bench"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "bytes",
- "jpeg-decoder",
- "jpeg-encoder",
- "loa-contracts",
- "loa-util",
- "png 0.18.1",
- "rusty_h264",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "loa-surface-browser"
 version = "0.1.0"
 dependencies = [
@@ -5141,7 +5114,6 @@ dependencies = [
  "loa-contracts",
  "loa-core",
  "loa-mcp",
- "loa-surface-bench",
  "loa-surface-browser",
  "loa-surface-docs",
  "loa-surface-proto",
@@ -5161,17 +5133,17 @@ name = "loa-surface-proto"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "base64 0.23.1",
  "bytes",
  "crc32fast",
+ "image",
+ "jpeg-decoder",
  "loa-contracts",
- "loa-surface-bench",
  "loa-util",
  "prost 0.14.6",
- "serde",
- "serde_json",
+ "rusty_h264",
  "thiserror 2.0.21",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -5322,9 +5294,9 @@ dependencies = [
  "image",
  "jpeg-decoder",
  "loa-contracts",
- "loa-surface-bench",
  "loa-surface-docs",
  "loa-surface-hub",
+ "loa-surface-proto",
  "loa-ui-icons",
  "loa-ui-shell",
  "rust_xlsxwriter",

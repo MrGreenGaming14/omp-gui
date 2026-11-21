@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::now_us;
+use loa_util::time::now_us;
 
 /// `_meta` key of the surface fields on a resource.
 pub const META_KEY: &str = "omp/surface";
@@ -35,8 +35,6 @@ pub enum McpError {
     Mode(String),
     #[error(transparent)]
     Uri(#[from] loa_contracts::surface::SurfaceError),
-    #[error("`resources` is missing from the resources/list result")]
-    List,
     #[error("bad arguments for {tool}: {source}")]
     Arguments { tool: &'static str, source: serde_json::Error },
 }
@@ -60,11 +58,6 @@ pub fn resource(info: &SurfaceInfo) -> Value {
         resource["mimeType"] = json!(mime);
     }
     resource
-}
-
-/// A `resources/list` result declaring `surfaces`.
-pub fn resource_list<'a>(surfaces: impl IntoIterator<Item = &'a SurfaceInfo>) -> Value {
-    json!({ "resources": surfaces.into_iter().map(resource).collect::<Vec<_>>() })
 }
 
 #[derive(Deserialize)]
@@ -101,16 +94,6 @@ pub fn parse_resource(resource: &Value) -> Result<Option<SurfaceInfo>> {
         .ok_or_else(|| McpError::Meta { uri: r.uri.clone() })?;
     let mode = SurfaceMode::parse(&meta.mode).ok_or(McpError::Mode(meta.mode))?;
     Ok(Some(SurfaceInfo { uri, name: r.name, width: meta.width, height: meta.height, mode, mime: r.mime }))
-}
-
-/// Every surface in a `resources/list` result, skipping other resources.
-pub fn parse_resource_list(result: &Value) -> Result<Vec<SurfaceInfo>> {
-    let resources = result.get("resources").and_then(Value::as_array).ok_or(McpError::List)?;
-    let mut surfaces = Vec::new();
-    for resource in resources {
-        surfaces.extend(parse_resource(resource)?);
-    }
-    Ok(surfaces)
 }
 
 /// MCP tool definitions (`name`, `description`, `inputSchema`) of the
@@ -381,5 +364,28 @@ fn modifiers(keys: &[ModifierKey]) -> Modifiers {
         ctrl: keys.contains(&ModifierKey::Ctrl),
         alt: keys.contains(&ModifierKey::Alt),
         meta: keys.contains(&ModifierKey::Meta),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn surface_resources_round_trip_and_bad_calls_are_refused() {
+        let info = SurfaceInfo {
+            uri: "surface://docs/a.pdf".parse().unwrap(),
+            name: "a.pdf".into(),
+            width: 64,
+            height: 48,
+            mode: SurfaceMode::Document,
+            mime: Some("application/pdf".into()),
+        };
+        assert_eq!(parse_resource(&resource(&info)).unwrap(), Some(info));
+        assert_eq!(parse_resource(&json!({ "uri": "file:///notes.txt", "name": "n" })).unwrap(), None);
+        assert!(matches!(parse_resource(&json!({ "uri": "surface://t/x", "name": "x" })), Err(McpError::Meta { .. })));
+        assert!(ToolCall::parse(CLICK, &json!({ "uri": "surface://t/a", "x": 1, "y": 1, "count": 9 })).is_err());
+        assert!(ToolCall::parse(TYPE, &json!({ "uri": "surface://t/a", "text": "x", "extra": 1 })).is_err());
+        assert_eq!(ToolCall::parse("browser_dom", &json!({})).unwrap(), None);
     }
 }

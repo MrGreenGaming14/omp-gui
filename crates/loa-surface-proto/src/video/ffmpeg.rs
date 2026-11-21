@@ -4,8 +4,9 @@
 //! picture; a short quiet period after receiving a complete picture allows
 //! returning it without waiting for the *next* input frame.
 
-use super::{Accel, AccessUnit, Codec, EncoderInfo, EncoderSettings, ProbeResult, VideoEncoder, nal};
-use crate::{BenchError, Result};
+use super::encode::{Accel, AccessUnit, Codec, EncoderInfo, EncoderSettings, ProbeResult, VideoEncoder, has_picture, is_keyframe, nal_types};
+use super::video_error;
+use crate::Result;
 use bytes::Bytes;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -68,11 +69,11 @@ pub fn probe(config: &FfmpegConfig) -> Vec<ProbeResult> {
         let second = vec![128u8; settings.frame_len()];
         let initial = encoder.encode(&first, false)?;
         if !initial.keyframe || !has_parameter_sets(known.codec, &initial.data) {
-            return Err(BenchError::Encode("first picture lacks a keyframe or parameter sets".into()));
+            return Err(video_error("first picture lacks a keyframe or parameter sets"));
         }
         let following = encoder.encode(&second, false)?;
-        if !nal::has_picture(known.codec, &following.data) {
-            return Err(BenchError::Encode("second picture has no coded slice".into()));
+        if !has_picture(known.codec, &following.data) {
+            return Err(video_error("second picture has no coded slice"));
         }
         Ok(())
     };
@@ -94,7 +95,7 @@ pub fn probe(config: &FfmpegConfig) -> Vec<ProbeResult> {
 }
 
 fn has_parameter_sets(codec: Codec, data: &[u8]) -> bool {
-    let types: Vec<_> = nal::units(data).filter_map(|unit| nal::unit_type(codec, unit)).collect();
+    let types: Vec<_> = nal_types(codec, data).collect();
     match codec {
         Codec::H264 => types.contains(&7) && types.contains(&8),
         Codec::Hevc => types.contains(&32) && types.contains(&33) && types.contains(&34),
@@ -116,7 +117,7 @@ impl FfmpegEncoder {
     pub fn spawn(config: &FfmpegConfig, name: &str, settings: &EncoderSettings) -> Result<Self> {
         settings.check_video_size()?;
         let known = *KNOWN.iter().find(|known| known.name == name)
-            .ok_or_else(|| BenchError::Encode(format!("unknown ffmpeg encoder {name}")))?;
+            .ok_or_else(|| video_error(format!("unknown ffmpeg encoder {name}")))?;
         let (child, stdin, output) = start(&config.binary, known, settings)?;
         Ok(Self { config: config.clone(), known, settings: settings.clone(), child, stdin, output, pending: Vec::new(), frames: 0 })
     }
@@ -143,25 +144,25 @@ impl FfmpegEncoder {
             if let Some(boundary) = next_access_unit(self.known.codec, &self.pending) {
                 return Ok(self.pending.drain(..boundary).collect());
             }
-            if nal::has_picture(self.known.codec, &self.pending)
+            if has_picture(self.known.codec, &self.pending)
                 && last_data.elapsed() >= Duration::from_millis(4)
             {
                 return Ok(std::mem::take(&mut self.pending));
             }
             let now = Instant::now();
             if now >= deadline {
-                return Err(BenchError::Encode(format!("{}: timed out waiting for a coded picture", self.known.name)));
+                return Err(video_error(format!("{}: timed out waiting for a coded picture", self.known.name)));
             }
-            let wait = if nal::has_picture(self.known.codec, &self.pending) {
+            let wait = if has_picture(self.known.codec, &self.pending) {
                 Duration::from_millis(4).saturating_sub(last_data.elapsed())
             } else {
                 deadline - now
             };
             match self.output.recv_timeout(wait.max(Duration::from_micros(100))) {
                 Ok(Ok(chunk)) => { self.pending.extend_from_slice(&chunk); last_data = Instant::now(); }
-                Ok(Err(error)) => return Err(BenchError::Encode(format!("{}: {error}", self.known.name))),
+                Ok(Err(error)) => return Err(video_error(format!("{}: {error}", self.known.name))),
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    return Err(BenchError::Encode(format!("{}: ffmpeg exited before producing a picture", self.known.name)));
+                    return Err(video_error(format!("{}: ffmpeg exited before producing a picture", self.known.name)));
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
             }
@@ -176,16 +177,16 @@ impl VideoEncoder for FfmpegEncoder {
 
     fn encode(&mut self, rgba: &[u8], keyframe: bool) -> Result<AccessUnit> {
         if rgba.len() != self.settings.frame_len() {
-            return Err(BenchError::Encode(format!("{} bytes for a {}x{} picture", rgba.len(), self.settings.width, self.settings.height)));
+            return Err(video_error(format!("{} bytes for a {}x{} picture", rgba.len(), self.settings.width, self.settings.height)));
         }
         // ffmpeg's rawvideo pipe offers no per-picture force-IDR control.
         // A fresh process gives an independently decodable IDR/IRAP with new
         // parameter sets, without forcing *all* subsequent frames to be intra.
         if keyframe && self.frames != 0 { self.restart()?; }
-        self.stdin.write_all(rgba).map_err(|error| BenchError::Encode(format!("{}: {error}", self.known.name)))?;
+        self.stdin.write_all(rgba).map_err(|error| video_error(format!("{}: {error}", self.known.name)))?;
         let data = self.read_picture()?;
         self.frames += 1;
-        let keyframe = nal::is_keyframe(self.known.codec, &data) && has_parameter_sets(self.known.codec, &data);
+        let keyframe = is_keyframe(self.known.codec, &data) && has_parameter_sets(self.known.codec, &data);
         Ok(AccessUnit { data: Bytes::from(data), keyframe })
     }
 }
@@ -208,7 +209,7 @@ fn start(binary: &Path, known: KnownEncoder, settings: &EncoderSettings)
         let device = std::fs::read_dir("/dev/dri")
             .ok().and_then(|entries| entries.flatten().map(|entry| entry.path())
                 .find(|path| path.file_name().is_some_and(|name| name.to_string_lossy().starts_with("renderD"))));
-        let device = device.ok_or_else(|| BenchError::Encode("no VA-API render device in /dev/dri".into()))?;
+        let device = device.ok_or_else(|| video_error("no VA-API render device in /dev/dri"))?;
         command.arg("-vaapi_device").arg(device)
             .args(["-vf", "format=nv12,hwupload"]);
         // Default parallelism holds each picture back until the next one
@@ -238,9 +239,9 @@ fn start(binary: &Path, known: KnownEncoder, settings: &EncoderSettings)
         "-bf", "0", "-q:v", &settings.qp.to_string(), "-flags", "+low_delay",
         "-bsf:v", bitstream_filter, "-flush_packets", "1", "-f", format, "pipe:1"])
         .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
-    let mut child = command.spawn().map_err(|error| BenchError::Encode(format!("starting {}: {error}", known.name)))?;
-    let stdin = child.stdin.take().ok_or_else(|| BenchError::Encode("ffmpeg has no stdin".into()))?;
-    let mut stdout = child.stdout.take().ok_or_else(|| BenchError::Encode("ffmpeg has no stdout".into()))?;
+    let mut child = command.spawn().map_err(|error| video_error(format!("starting {}: {error}", known.name)))?;
+    let stdin = child.stdin.take().ok_or_else(|| video_error("ffmpeg has no stdin"))?;
+    let mut stdout = child.stdout.take().ok_or_else(|| video_error("ffmpeg has no stdout"))?;
     let (sender, receiver) = mpsc::channel();
     thread::spawn(move || {
         let mut buffer = [0u8; 65536];

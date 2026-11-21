@@ -1,18 +1,18 @@
-//! omp/surface/1 wire format, streams, datagrams and MCP declaration.
+//! Remote viewing (the app's `remote-video` feature): `omp/surface/1` and
+//! live video for viewers across the network.
 //!
-//! - [`mcp`]: surfaces as `surface://` MCP resources and the agent tools
-//!   every surface server exposes
 //! - [`wire`]: the protobuf messages of `omp/surface/1`
 //! - [`transport`]: the connection port (ordered stream plus datagrams) and
 //!   an in-memory pair for tests and same process surfaces
 //! - [`fragment`]: frames split into datagrams, reassembled, late ones dropped
 //! - [`serve`] / [`serve_from`] on the server, [`open`] on the viewer, which
 //!   yields a [`PixelViewer`] or a [`DocumentViewer`] by surface mode
+//! - [`video`]: live surfaces coded as H.264/HEVC for viewers that decode it
 
 pub mod fragment;
-pub mod mcp;
 mod server;
 pub mod transport;
+pub mod video;
 mod viewer;
 pub mod wire;
 
@@ -49,6 +49,8 @@ pub enum ProtoError {
     Closed(String),
     #[error("document checksum mismatch")]
     Checksum,
+    #[error("video: {0}")]
+    Video(String),
 }
 
 pub type Result<T, E = ProtoError> = std::result::Result<T, E>;

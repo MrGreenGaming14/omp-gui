@@ -226,17 +226,9 @@ mod tests {
     use loa_contracts::surface::{Encoding, Rect};
 
     fn frame(seq: u64, encoding: Encoding, keyframe: bool, len: usize) -> Frame {
-        Frame {
-            seq,
-            captured_us: seq * 16_000,
-            input_seq: seq,
-            width: 64,
-            height: 32,
-            region: Rect { x: 0, y: 0, width: 64, height: 32 },
-            encoding,
-            keyframe,
-            data: (0..len).map(|i| (i * 7 + seq as usize) as u8).collect::<Vec<_>>().into(),
-        }
+        let region = Rect { x: 0, y: 0, width: 64, height: 32 };
+        let data = (0..len).map(|i| (i * 7 + seq as usize) as u8).collect::<Vec<_>>().into();
+        Frame { seq, captured_us: seq, input_seq: seq, width: 64, height: 32, region, encoding, keyframe, data }
     }
 
     fn datagrams(frame: &Frame, max: usize) -> Vec<Bytes> {
@@ -250,106 +242,46 @@ mod tests {
     }
 
     #[test]
-    fn a_large_frame_splits_into_datagrams_within_the_limit_and_comes_back_whole() {
+    fn frames_split_within_the_limit_and_come_back_once_whatever_the_order() {
         let original = frame(1, Encoding::Jpeg, true, 10_000);
-        let parts = datagrams(&original, 1200);
-        assert_eq!(parts.len(), 9);
-        assert!(parts.iter().all(|d| d.len() <= 1200));
-        let mut r = Reassembler::new();
-        let mut delivered = Vec::new();
-        for d in parts {
-            delivered.extend(r.push_datagram(d).frame);
-        }
-        assert_eq!(delivered, vec![original]);
-    }
-
-    #[test]
-    fn a_limit_too_small_for_the_header_is_an_error_not_a_hang() {
-        let f = frame(1, Encoding::Png, true, 10);
-        assert!(matches!(fragment(&f, 20, |_| Ok(())), Err(ProtoError::DatagramTooSmall(20))));
-    }
-
-    #[test]
-    fn reordered_and_duplicated_fragments_still_yield_each_frame_once() {
-        let f = frame(1, Encoding::Rgba, true, 3000);
-        let mut parts = datagrams(&f, 500);
+        let mut parts = datagrams(&original, 1200);
+        assert!(parts.len() == 9 && parts.iter().all(|d| d.len() <= 1200));
         parts.reverse();
-        let dup = parts[2].clone();
-        parts.insert(4, dup);
+        parts.insert(4, parts[2].clone());
         let mut r = Reassembler::new();
         let delivered: Vec<_> = parts.into_iter().filter_map(|d| r.push_datagram(d).frame).collect();
-        assert_eq!(delivered, vec![f]);
+        assert_eq!(delivered, vec![original]);
+        assert!(matches!(fragment(&frame(1, Encoding::Png, true, 10), 20, |_| Ok(())), Err(ProtoError::DatagramTooSmall(20))));
+        let bogus = Fragment { seq: 9, index: 3, count: 2, header: None, data: Bytes::new() };
+        let bogus = Datagram { kind: Some(DatagramKind::Fragment(bogus)) };
+        assert_eq!(r.push_datagram(bogus.encode_to_vec().into()), Pushed::default());
+        assert_eq!(r.push_datagram(Bytes::from_static(&[0xff, 0xff, 0xff])), Pushed::default());
     }
 
     #[test]
-    fn a_frame_missing_a_fragment_is_dropped_once_a_newer_one_completes() {
-        let f1 = frame(1, Encoding::Jpeg, true, 2000);
-        let f2 = frame(2, Encoding::Jpeg, true, 2000);
-        let f3 = frame(3, Encoding::Jpeg, true, 2000);
+    fn incomplete_and_older_frames_are_dropped_once_a_newer_one_completes() {
         let mut r = Reassembler::new();
-        for d in datagrams(&f1, 600) {
-            r.push_datagram(d);
-        }
-        let mut late = datagrams(&f2, 600);
+        let mut late = datagrams(&frame(2, Encoding::Jpeg, true, 2000), 600);
         let missing = late.remove(1);
-        for d in late {
-            assert_eq!(r.push_datagram(d).frame, None);
-        }
+        assert!(late.into_iter().all(|d| r.push_datagram(d).frame.is_none()));
+        let f3 = frame(3, Encoding::Jpeg, true, 2000);
         let shown: Vec<_> = datagrams(&f3, 600).into_iter().filter_map(|d| r.push_datagram(d).frame).collect();
         assert_eq!(shown, vec![f3]);
-        // The missing piece shows up too late: frame 2 is never shown.
         assert_eq!(r.push_datagram(missing), Pushed::default());
-    }
-
-    #[test]
-    fn a_frame_older_than_the_last_shown_is_dropped() {
-        let f1 = frame(1, Encoding::Png, true, 100);
-        let f2 = frame(2, Encoding::Png, true, 100);
-        let mut r = Reassembler::new();
-        assert_eq!(r.push_frame(f2.clone()).frame, Some(f2));
-        assert_eq!(r.push_frame(f1), Pushed::default());
+        assert_eq!(r.push_frame(frame(1, Encoding::Png, true, 100)), Pushed::default());
+        // Region updates keep flowing after a loss and ask for a refresh.
+        let region = frame(5, Encoding::Png, false, 10);
+        assert_eq!(r.push_frame(region.clone()), Pushed { frame: Some(region), request_keyframe: true });
     }
 
     #[test]
     fn video_loss_skips_deltas_until_a_keyframe_and_asks_for_one() {
         let mut r = Reassembler::new();
-        // Deltas before the first keyframe can't be decoded.
-        assert_eq!(r.push_frame(frame(1, Encoding::H264, false, 50)), Pushed::default());
-        let key = frame(2, Encoding::H264, true, 50);
-        assert_eq!(r.push_frame(key.clone()).frame, Some(key));
-        let d3 = frame(3, Encoding::H264, false, 50);
-        assert_eq!(r.push_frame(d3.clone()).frame, Some(d3));
-        // Frame 4 is lost.
-        let after_loss = r.push_frame(frame(5, Encoding::H264, false, 50));
-        assert_eq!(after_loss, Pushed { frame: None, request_keyframe: true });
-        assert_eq!(r.push_frame(frame(6, Encoding::H264, false, 50)), Pushed::default());
-        let key = frame(7, Encoding::H264, true, 50);
-        assert_eq!(r.push_frame(key.clone()), Pushed { frame: Some(key), request_keyframe: false });
-        let d8 = frame(8, Encoding::H264, false, 50);
-        assert_eq!(r.push_frame(d8.clone()).frame, Some(d8));
-    }
-
-    #[test]
-    fn region_updates_keep_flowing_after_a_loss_and_ask_for_a_full_refresh() {
-        let mut r = Reassembler::new();
-        r.push_frame(frame(1, Encoding::Png, true, 10));
-        let region = frame(3, Encoding::Png, false, 10);
-        assert_eq!(r.push_frame(region.clone()), Pushed { frame: Some(region), request_keyframe: true });
-    }
-
-    #[test]
-    fn garbage_datagrams_are_ignored() {
-        let mut r = Reassembler::new();
-        assert_eq!(r.push_datagram(Bytes::from_static(&[0xff, 0xff, 0xff])), Pushed::default());
-        let bogus = Datagram {
-            kind: Some(DatagramKind::Fragment(Fragment {
-                seq: 1,
-                index: 3,
-                count: 2,
-                header: None,
-                data: Bytes::new(),
-            })),
-        };
-        assert_eq!(r.push_datagram(bogus.encode_to_vec().into()), Pushed::default());
+        let mut push = |seq, keyframe| r.push_frame(frame(seq, Encoding::H264, keyframe, 50));
+        assert_eq!(push(1, false), Pushed::default());
+        assert!(push(2, true).frame.is_some() && push(3, false).frame.is_some());
+        assert_eq!(push(5, false), Pushed { frame: None, request_keyframe: true });
+        assert_eq!(push(6, false), Pushed::default());
+        assert!(push(7, true).frame.is_some() && push(8, false).frame.is_some());
     }
 }

@@ -374,27 +374,26 @@ pub struct DocumentChunk {
     pub data: Bytes,
 }
 
-pub fn encoding_to_wire(encoding: Encoding) -> WireEncoding {
-    match encoding {
-        Encoding::Rgba => WireEncoding::Rgba,
-        Encoding::Jpeg => WireEncoding::Jpeg,
-        Encoding::Png => WireEncoding::Png,
-        Encoding::H264 => WireEncoding::H264,
-        Encoding::Hevc => WireEncoding::Hevc,
-    }
+/// Maps a contract enum to its wire enum and back (`None` for wire values
+/// this version doesn't know, or `Unspecified`).
+macro_rules! wire_enum {
+    ($to:ident, $from:ident, $ty:ty, $wire:ident: $($v:ident),*) => {
+        pub fn $to(value: $ty) -> $wire {
+            match value { $(<$ty>::$v => $wire::$v,)* }
+        }
+
+        pub fn $from(value: i32) -> Option<$ty> {
+            match $wire::try_from(value).ok()? {
+                $wire::Unspecified => None,
+                $($wire::$v => Some(<$ty>::$v),)*
+            }
+        }
+    };
 }
 
-/// `None` for encodings this version does not know.
-pub fn encoding_from_wire(value: i32) -> Option<Encoding> {
-    match WireEncoding::try_from(value).ok()? {
-        WireEncoding::Unspecified => None,
-        WireEncoding::Rgba => Some(Encoding::Rgba),
-        WireEncoding::Jpeg => Some(Encoding::Jpeg),
-        WireEncoding::Png => Some(Encoding::Png),
-        WireEncoding::H264 => Some(Encoding::H264),
-        WireEncoding::Hevc => Some(Encoding::Hevc),
-    }
-}
+wire_enum!(encoding_to_wire, encoding_from_wire, Encoding, WireEncoding: Rgba, Jpeg, Png, H264, Hevc);
+wire_enum!(button_to_wire, button_from_wire, MouseButton, WireButton: Left, Middle, Right, Back, Forward);
+wire_enum!(mode_to_wire, mode_from_wire, SurfaceMode, WireMode: Pixel, Document);
 
 /// Video codecs need every frame since the last keyframe to decode.
 pub fn is_video(encoding: Encoding) -> bool {
@@ -408,10 +407,7 @@ impl From<&SurfaceInfo> for SurfaceInfoMsg {
             name: info.name.clone(),
             width: info.width,
             height: info.height,
-            mode: match info.mode {
-                SurfaceMode::Pixel => WireMode::Pixel,
-                SurfaceMode::Document => WireMode::Document,
-            } as i32,
+            mode: mode_to_wire(info.mode) as i32,
             mime: info.mime.clone(),
         }
     }
@@ -421,11 +417,7 @@ impl TryFrom<SurfaceInfoMsg> for SurfaceInfo {
     type Error = ProtoError;
 
     fn try_from(msg: SurfaceInfoMsg) -> Result<Self> {
-        let mode = match WireMode::try_from(msg.mode) {
-            Ok(WireMode::Pixel) => SurfaceMode::Pixel,
-            Ok(WireMode::Document) => SurfaceMode::Document,
-            _ => return Err(ProtoError::Protocol(format!("unknown surface mode {}", msg.mode))),
-        };
+        let mode = mode_from_wire(msg.mode).ok_or_else(|| ProtoError::Protocol(format!("unknown surface mode {}", msg.mode)))?;
         Ok(Self {
             uri: msg.uri.parse::<SurfaceUri>()?,
             name: msg.name,
@@ -488,27 +480,6 @@ fn modifiers_from_wire(bits: u32) -> Modifiers {
         ctrl: bits & MOD_CTRL != 0,
         alt: bits & MOD_ALT != 0,
         meta: bits & MOD_META != 0,
-    }
-}
-
-fn button_to_wire(button: MouseButton) -> WireButton {
-    match button {
-        MouseButton::Left => WireButton::Left,
-        MouseButton::Middle => WireButton::Middle,
-        MouseButton::Right => WireButton::Right,
-        MouseButton::Back => WireButton::Back,
-        MouseButton::Forward => WireButton::Forward,
-    }
-}
-
-fn button_from_wire(value: i32) -> Option<MouseButton> {
-    match WireButton::try_from(value).ok()? {
-        WireButton::Unspecified => None,
-        WireButton::Left => Some(MouseButton::Left),
-        WireButton::Middle => Some(MouseButton::Middle),
-        WireButton::Right => Some(MouseButton::Right),
-        WireButton::Back => Some(MouseButton::Back),
-        WireButton::Forward => Some(MouseButton::Forward),
     }
 }
 
