@@ -2,11 +2,12 @@
 //! peer's grants with the grant form, and grants received.
 
 use super::state::{Confirm, Local, Message, State};
-use super::{Event, GrantDirection, GrantScope, Peer, PeerSort, Permission, Presence, ResourceChoice, grant_summary};
+use super::{PeerSort, grant_summary};
 use crate::{action, check, dot, field, pick, section};
 use iced::widget::{Column, column, row, rule};
 use iced::{Alignment, Element, Fill};
-use loa_ui_kit::Icon;
+use loa_view::settings::peers::{GrantDirection, GrantScope, Intent, Peer, Permission, Presence, ResourceChoice};
+use loa_view::theme::Icon;
 use loa_ui_kit::style::{self, ButtonKind, Tone};
 use loa_ui_kit::theme::{LayoutRole, SpaceRole, TextRole, sp, width};
 use loa_ui_kit::widgets::{Msg, label, menu_row};
@@ -15,7 +16,7 @@ use loa_ui_kit::widgets::{Msg, label, menu_row};
 const RESOURCE_ROWS: usize = 8;
 
 fn local(m: Local) -> Option<Message> { Some(Msg::Local(m)) }
-fn emit(e: Event) -> Option<Message> { Some(Msg::Emit(e)) }
+fn emit(e: Intent) -> Option<Message> { Some(Msg::Emit(e)) }
 fn caption<'a>(s: impl iced::widget::text::IntoFragment<'a>) -> iced::widget::Text<'a> { label(s, TextRole::Caption, Tone::Muted) }
 fn online(on: bool) -> Tone { if on { Tone::Ok } else { Tone::Faint } }
 
@@ -64,8 +65,8 @@ impl State {
         let node = &self.data.node;
         let status = |name: &'static str, value: &str, tone: Tone| row![dot(tone), caption(name).width(width(LayoutRole::LabelColumn) / 2.0), label(value.to_owned(), TextRole::Caption, Tone::Normal)].spacing(sp(SpaceRole::S)).align_y(Alignment::Center);
         let endpoint_tone = if node.endpoint_ok { Tone::Ok } else if node.endpoint.is_empty() { Tone::Faint } else { Tone::Danger };
-        let actions = row![action("Copy key", ButtonKind::Ghost, emit(Event::CopyKey(node.key.clone()))), action("Refresh", ButtonKind::Ghost, emit(Event::Refresh))];
-        let actions = actions.push(node.tailscale_available.then(|| action("Scan tailnet", ButtonKind::Ghost, emit(Event::ScanTailscale))));
+        let actions = row![action("Copy key", ButtonKind::Ghost, emit(Intent::CopyKey(node.key.clone()))), action("Refresh", ButtonKind::Ghost, emit(Intent::Refresh))];
+        let actions = actions.push(node.tailscale_available.then(|| action("Scan tailnet", ButtonKind::Ghost, emit(Intent::ScanTailscale))));
         let name = row![label(node.name.as_str(), TextRole::Body, Tone::Normal), caption(node.key.chars().take(12).collect::<String>())].spacing(sp(SpaceRole::S));
         let lines = column![
             name,
@@ -80,9 +81,9 @@ impl State {
 
     fn peer_row<'a>(&'a self, peer: &'a Peer, nearby: bool) -> Element<'a, Message> {
         let key = || peer.key.clone();
-        let mut actions = row![action("Copy full key", ButtonKind::Ghost, emit(Event::CopyKey(key())))].spacing(sp(SpaceRole::Xs));
+        let mut actions = row![action("Copy full key", ButtonKind::Ghost, emit(Intent::CopyKey(key())))].spacing(sp(SpaceRole::Xs));
         actions = if nearby {
-            actions.push(action("Add", ButtonKind::Ghost, emit(Event::AddDiscovered(key()))))
+            actions.push(action("Add", ButtonKind::Ghost, emit(Intent::AddDiscovered(key()))))
         } else {
             let remove = action("Remove", ButtonKind::Danger, local(Local::Ask(Confirm::RemovePeer(key()))));
             actions.push(action("Grants", ButtonKind::Ghost, local(Local::SelectPeer(key())))).push(action("Rename", ButtonKind::Ghost, local(Local::BeginRename(key())))).push(remove)
@@ -102,10 +103,10 @@ impl State {
     /// Peers' sessions this node may open, drive or fork.
     fn shared_view(&self) -> Element<'_, Message> {
         let items = self.data.remote_sessions.iter().map(|r| {
-            let at = |e: Event| r.online.then_some(Msg::Emit(e));
+            let at = |e: Intent| r.online.then_some(Msg::Emit(e));
             let (peer, session) = (r.peer_key.clone(), r.session.clone());
-            let open = action(if r.can_drive { "Open and drive" } else { "Open" }, ButtonKind::Ghost, at(Event::OpenRemote { peer: peer.clone(), session: session.clone() }));
-            let fork = r.can_fork.then(|| action("Fork to this node", ButtonKind::Ghost, at(Event::ForkRemote { peer, session })));
+            let open = action(if r.can_drive { "Open and drive" } else { "Open" }, ButtonKind::Ghost, at(Intent::OpenRemote { peer: peer.clone(), session: session.clone() }));
+            let fork = r.can_fork.then(|| action("Fork to this node", ButtonKind::Ghost, at(Intent::ForkRemote { peer, session })));
             item(online(r.online), r.title.as_str(), column![caption(format!("{} · {} · {}", r.peer_name, r.harness, r.access)), row![open, fork].spacing(sp(SpaceRole::Xs))])
         });
         let empty = self.data.remote_sessions.is_empty().then(|| caption("No peer has shared a session with this node"));
@@ -115,7 +116,7 @@ impl State {
     /// Peers' folders this node may browse, read and (with drive) write.
     fn folders_view(&self) -> Element<'_, Message> {
         let items = self.data.shared_folders.iter().map(|f| {
-            let browse = f.online.then(|| Msg::Emit(Event::BrowseFolder { peer: f.peer_key.clone(), folder: f.path.clone() }));
+            let browse = f.online.then(|| Msg::Emit(Intent::BrowseFolder { peer: f.peer_key.clone(), folder: f.path.clone() }));
             let browse = iced::widget::button(row![loa_ui_kit::icons::tinted(Icon::Folder, TextRole::Caption, Tone::Muted), caption("Browse")].spacing(sp(SpaceRole::Xs))).style(style::button(ButtonKind::Ghost)).on_press_maybe(browse);
             item(online(f.online), f.path.as_str(), column![caption(format!("{} · {}", f.peer_name, if f.can_write { "read, write" } else { "read" })), browse])
         });
@@ -140,7 +141,7 @@ impl State {
             let reshare = if g.reshare { "re-share allowed" } else { "no re-share" };
             let line = row![caption(format!("{}: {} · {} · {reshare}", g.direction, grant_summary(g), g.expiry_text(self.data.now))).width(Fill)].spacing(sp(SpaceRole::S)).align_y(Alignment::Center);
             let given = g.direction == GrantDirection::Given;
-            let line = line.push(given.then(|| action("Renew", ButtonKind::Ghost, emit(Event::RenewGrant(g.id.clone()))))).push((given && !g.ended).then(|| action("Revoke", ButtonKind::Danger, local(Local::Ask(Confirm::RevokeGrant(g.id.clone()))))));
+            let line = line.push(given.then(|| action("Renew", ButtonKind::Ghost, emit(Intent::RenewGrant(g.id.clone()))))).push((given && !g.ended).then(|| action("Revoke", ButtonKind::Danger, local(Local::Ask(Confirm::RevokeGrant(g.id.clone()))))));
             let revoking = (self.confirm == Some(Confirm::RevokeGrant(g.id.clone()))).then(|| confirm("Revoke this grant?", "Confirm revoke"));
             column![line, revoking].into()
         });

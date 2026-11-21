@@ -1,29 +1,20 @@
 //! The model picker: a searchable popup of the models grouped by provider, showing the roles
 //! each serves. It picks the session's model (directly or through a role) or a role's model.
 
-use super::session::SessionModelChange;
-use super::{Catalog, ModelRef};
+use loa_view::settings::models::picker::{Intent, Target};
+use loa_view::settings::models::{Catalog, ModelRef, SessionModelChange};
 use iced::event::{self, Event as RuntimeEvent};
 use iced::keyboard::{self, key::Named};
 use iced::widget::operation::{self, RelativeOffset};
 use iced::widget::{Column, column, container, row, scrollable};
 use iced::{Alignment, Element, Subscription, Task};
-use loa_ui_kit::Icon;
+use loa_view::theme::Icon;
 use loa_ui_kit::style::{self, Surface, Tone};
 use loa_ui_kit::theme::{LayoutRole, SpaceRole, TextRole, sp, width};
 use loa_ui_kit::widgets::{Msg, Screen, icon_button, label, two_line_row};
 
 const SEARCH_ID: &str = "loa-model-picker-search";
 const LIST_ID: &str = "loa-model-picker-list";
-
-/// What a pick changes.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Target {
-    /// The session's model; roles are rows too, and picking one makes the session follow it.
-    Session,
-    /// The model a role resolves to.
-    Role(String),
-}
 
 /// One line of the filtered list: an index into the catalog's roles or models.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -43,17 +34,7 @@ pub enum Local {
     Pick(usize),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Event {
-    /// Switch the session's model (see [`super::role_draft`] for the role).
-    SetSessionModel(SessionModelChange),
-    /// Assign `model` to `role` in the harness config.
-    SetRoleModel { role: String, model: ModelRef },
-    /// Dismissed without a pick.
-    Close,
-}
-
-pub type Message = Msg<Local, Event>;
+pub type Message = Msg<Local, Intent>;
 
 #[derive(Clone, Debug)]
 pub struct State {
@@ -122,7 +103,7 @@ impl State {
             RuntimeEvent::Keyboard(keyboard::Event::KeyPressed { key: keyboard::Key::Named(named), .. }) => match named {
                 Named::ArrowUp => Some(Msg::Local(Local::Up)),
                 Named::ArrowDown => Some(Msg::Local(Local::Down)),
-                Named::Escape => Some(Msg::Emit(Event::Close)),
+                Named::Escape => Some(Msg::Emit(Intent::Close)),
                 _ => None,
             },
             _ => None,
@@ -141,7 +122,7 @@ impl State {
         });
         let empty = self.rows.is_empty().then(|| label("No models match", TextRole::Label, Tone::Muted));
         let list = Column::with_children(groups).push(empty).spacing(sp(SpaceRole::S));
-        let head = row![label(heading, TextRole::Body, Tone::Normal), iced::widget::Space::new().width(iced::Fill), icon_button(Icon::X, "Close", Some(Msg::Emit(Event::Close)))].align_y(Alignment::Center);
+        let head = row![label(heading, TextRole::Body, Tone::Normal), iced::widget::Space::new().width(iced::Fill), icon_button(Icon::X, "Close", Some(Msg::Emit(Intent::Close)))].align_y(Alignment::Center);
         let list = scrollable(list).id(LIST_ID).height(width(LayoutRole::ListWidth)).style(style::scrollbar(false));
         let body = column![head, search, list].spacing(sp(SpaceRole::S));
         container(body).padding(sp(SpaceRole::S)).width(width(LayoutRole::PopupWidth)).style(style::container(Surface::Popup)).into()
@@ -160,14 +141,14 @@ impl State {
         two_line_row(title, detail, index == self.selected, Msg::Local(Local::Pick(index)))
     }
 
-    fn pick(&self, index: usize) -> Option<Event> {
+    fn pick(&self, index: usize) -> Option<Intent> {
         Some(match (*self.rows.get(index)?, &self.target) {
             (Row::Role(r), Target::Session) => {
                 let role = &self.catalog.roles[r];
-                Event::SetSessionModel(SessionModelChange { model: role.model.clone(), role: Some(role.role.clone()) })
+                Intent::SetSessionModel(SessionModelChange { model: role.model.clone(), role: Some(role.role.clone()) })
             }
-            (Row::Model(m), Target::Session) => Event::SetSessionModel(SessionModelChange { model: self.catalog.models[m].model.clone(), role: None }),
-            (Row::Model(m), Target::Role(role)) => Event::SetRoleModel { role: role.clone(), model: self.catalog.models[m].model.clone() },
+            (Row::Model(m), Target::Session) => Intent::SetSessionModel(SessionModelChange { model: self.catalog.models[m].model.clone(), role: None }),
+            (Row::Model(m), Target::Role(role)) => Intent::SetRoleModel { role: role.clone(), model: self.catalog.models[m].model.clone() },
             // Role rows exist only for the session target.
             (Row::Role(_), Target::Role(_)) => return None,
         })
@@ -186,9 +167,9 @@ impl State {
 
 impl Screen for State {
     type Local = Local;
-    type Event = Event;
+    type Event = Intent;
 
-    fn reduce(&mut self, m: Local) -> Option<Event> {
+    fn reduce(&mut self, m: Local) -> Option<Intent> {
         match m {
             Local::Query(query) => {
                 self.query = query;
@@ -204,13 +185,13 @@ impl Screen for State {
     }
 
     /// Only closing is emitted directly.
-    fn guard(&self, e: &Event) -> bool { *e == Event::Close }
+    fn guard(&self, e: &Intent) -> bool { *e == Intent::Close }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use loa_settings::models::selector::{ModelInfo, RoleAssignment};
+    use loa_view::settings::models::{ModelInfo, RoleAssignment};
     use loa_ui_kit::testkit::click_label;
 
     fn catalog() -> Catalog {
@@ -226,7 +207,7 @@ mod tests {
     }
 
     fn group(title: &str, rows: &[&str]) -> (String, Vec<String>) { (title.into(), rows.iter().map(|r| (*r).into()).collect()) }
-    fn session(provider: &str, id: &str, role: Option<&str>) -> Option<Event> { Some(Event::SetSessionModel(SessionModelChange { model: ModelRef::new(provider, id), role: role.map(Into::into) })) }
+    fn session(provider: &str, id: &str, role: Option<&str>) -> Option<Intent> { Some(Intent::SetSessionModel(SessionModelChange { model: ModelRef::new(provider, id), role: role.map(Into::into) })) }
 
     #[test]
     fn search_groups_by_provider_and_finds_roles() {
@@ -243,15 +224,15 @@ mod tests {
     fn keys_and_picks_reduce_to_model_changes() {
         // (target, current model, messages, selected afterwards, last event)
         let local = |l| Msg::Local(l);
-        type Case = (Target, Option<ModelRef>, Vec<Message>, Option<usize>, Option<Event>);
+        type Case = (Target, Option<ModelRef>, Vec<Message>, Option<usize>, Option<Intent>);
         let cases: Vec<Case> = vec![
             (Target::Session, None, vec![local(Local::Up)], Some(0), None),
             (Target::Session, None, std::iter::repeat_n(local(Local::Down), 10).chain([local(Local::Submit)]).collect(), Some(5), session("openai", "gpt-5-mini", None)),
             (Target::Session, None, vec![local(Local::Pick(1))], Some(0), session("anthropic", "claude-haiku", Some("smol"))),
-            (Target::Role("plan".into()), Some(ModelRef::new("openai", "gpt-5")), vec![local(Local::Submit)], Some(2), Some(Event::SetRoleModel { role: "plan".into(), model: ModelRef::new("openai", "gpt-5") })),
+            (Target::Role("plan".into()), Some(ModelRef::new("openai", "gpt-5")), vec![local(Local::Submit)], Some(2), Some(Intent::SetRoleModel { role: "plan".into(), model: ModelRef::new("openai", "gpt-5") })),
             (Target::Session, Some(ModelRef::new("openai", "gpt-5-mini")), vec![local(Local::Query("gpt".into())), local(Local::Submit)], Some(0), session("openai", "gpt-5", None)),
             (Target::Session, None, vec![local(Local::Query("nothing like this".into())), local(Local::Submit)], None, None),
-            (Target::Session, None, vec![Msg::Emit(Event::Close)], Some(0), Some(Event::Close)),
+            (Target::Session, None, vec![Msg::Emit(Intent::Close)], Some(0), Some(Intent::Close)),
         ];
         for (i, (target, current, messages, selected, event)) in cases.into_iter().enumerate() {
             let (mut s, _) = State::open(catalog(), target, current);
@@ -263,7 +244,7 @@ mod tests {
     #[test]
     fn clicking_a_model_switches_the_session() {
         let (mut s, _) = State::open(catalog(), Target::Session, None);
-        let events: Vec<Event> = click_label(s.view(), "GPT-5 mini").into_iter().filter_map(|m| s.update(m)).collect();
+        let events: Vec<Intent> = click_label(s.view(), "GPT-5 mini").into_iter().filter_map(|m| s.update(m)).collect();
         assert_eq!(events, [session("openai", "gpt-5-mini", None).unwrap()]);
     }
 }

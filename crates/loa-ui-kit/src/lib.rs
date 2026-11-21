@@ -9,5 +9,4 @@ pub mod text;
 pub mod theme;
 pub mod widgets;
 
-pub use icons::Icon;
 pub use style::{ButtonKind, Surface, Tone};

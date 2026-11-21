@@ -7,13 +7,11 @@ publish.workspace = true
 
 [dependencies]
 iced.workspace = true
-loa-settings = { path = "../loa-settings" }
-loa-contracts.workspace = true
 loa-core.workspace = true
 loa-ui-kit.workspace = true
 loa-ui-panel = { path = "../loa-ui-panel" }
 loa-util.workspace = true
-notify-rust = "4.19"
+loa-view.workspace = true
 serde_json = { workspace = true, features = ["preserve_order"] }
 
 [dev-dependencies]

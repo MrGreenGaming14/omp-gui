@@ -6,18 +6,14 @@ use iced::widget::text::Wrapping;
 use iced::widget::{button, column, container, row, scrollable, space, text};
 use iced::{Center, Element, Fill, Task};
 use loa_core::NodeId;
-use loa_ui_kit::icons::{Icon, muted};
+use loa_ui_kit::icons::muted;
+use loa_view::panel::{SessionInfo, SessionTreeIntent};
+use loa_view::theme::Icon;
 use loa_ui_kit::style::{self as kit, ButtonKind, Tone};
 use loa_ui_kit::theme::{SpaceRole as Sp, TextRole as T, pad_x, sp, text_size as ts};
 use loa_ui_kit::widgets::{icon_button, label};
 use std::collections::{HashMap, HashSet};
 
-/// A session of the family: `parent` is `parent_session`, `forked_at` the parent's sequence the fork starts after.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SessionInfo { pub id: String, pub parent: Option<String>, pub forked_at: Option<u64>, pub title: String, pub turns: Vec<TurnInfo> }
-/// A turn element, the target of rewind and fork, and the sequence that inserted it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TurnInfo { pub node: NodeId, pub seq: u64, pub first_line: String }
 /// One visible row; `index` is stable under collapsing and is what messages carry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Row<'a> { pub index: usize, pub depth: u16, pub kind: RowKind<'a> }
@@ -32,9 +28,6 @@ pub enum RowKind<'a> {
 /// Every `usize` is a [`Row::index`].
 #[derive(Debug, Clone)]
 pub enum Message { Toggle(usize), Rewind(usize), Fork(usize), Open(usize), Select(usize) }
-/// `Rewind` rewinds `session` to just before `turn`.
-#[derive(Debug, Clone, PartialEq)]
-pub enum Event { Rewind { session: String, turn: NodeId }, Fork { session: String, turn: NodeId }, Open(String) }
 /// A layout row as indices into the family.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Slot { Session(usize), ForkPoint { session: usize, seq: u64, turn: Option<usize> }, Turn { session: usize, turn: usize } }
@@ -69,17 +62,17 @@ impl State {
         self.refresh_visible();
     }
     pub fn rows(&self) -> impl Iterator<Item = Row<'_>> + '_ { self.visible.iter().map(|&i| self.row(i)) }
-    pub fn update(&mut self, message: Message) -> (Task<Message>, Option<Event>) {
+    pub fn update(&mut self, message: Message) -> (Task<Message>, Option<SessionTreeIntent>) {
         let event = match message {
             Message::Toggle(i) => {
                 if let Some(&(_, Slot::Session(s))) = self.layout.get(i) && !self.collapsed.remove(&self.sessions[s].id) { self.collapsed.insert(self.sessions[s].id.clone()); }
                 self.refresh_visible();
                 None
             }
-            Message::Rewind(i) => self.current_turn(i).map(|(session, turn)| Event::Rewind { session, turn }),
-            Message::Fork(i) => self.current_turn(i).map(|(session, turn)| Event::Fork { session, turn }),
+            Message::Rewind(i) => self.current_turn(i).map(|(session, turn)| SessionTreeIntent::Rewind { session, turn }),
+            Message::Fork(i) => self.current_turn(i).map(|(session, turn)| SessionTreeIntent::Fork { session, turn }),
             Message::Open(i) => match self.layout.get(i) {
-                Some(&(_, Slot::Session(s))) if self.current != Some(s) => Some(Event::Open(self.sessions[s].id.clone())),
+                Some(&(_, Slot::Session(s))) if self.current != Some(s) => Some(SessionTreeIntent::Open(self.sessions[s].id.clone())),
                 _ => None,
             },
             Message::Select(i) => { self.selected = Some(i).filter(|&i| i < self.layout.len()).or(self.selected); None }
@@ -175,6 +168,7 @@ impl Tree<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use loa_view::panel::TurnInfo;
     fn turns(list: &[(u64, u64, &str)]) -> Vec<TurnInfo> { list.iter().map(|&(n, seq, l)| TurnInfo { node: NodeId(n), seq, first_line: l.into() }).collect() }
     fn session(id: &str, parent: Option<(&str, u64)>, turns: Vec<TurnInfo>) -> SessionInfo { SessionInfo { id: id.into(), parent: parent.map(|(p, _)| p.into()), forked_at: parent.map(|(_, at)| at), title: String::new(), turns } }
     fn root() -> SessionInfo { session("root", None, turns(&[(10, 1, "one"), (20, 5, "two"), (30, 9, "three")])) }
@@ -205,7 +199,7 @@ mod tests {
         }
         let mut s = State::new();
         s.set_family(vec![root(), session("orphan", Some(("gone", 3)), vec![])], "root");
-        assert_eq!(s.update(Message::Rewind(2)).1, Some(Event::Rewind { session: "root".into(), turn: NodeId(20) }));
+        assert_eq!(s.update(Message::Rewind(2)).1, Some(SessionTreeIntent::Rewind { session: "root".into(), turn: NodeId(20) }));
         let _ = s.update(Message::Toggle(0));
         assert_eq!(outline(&s), ["S root*", "S orphan"]);
     }

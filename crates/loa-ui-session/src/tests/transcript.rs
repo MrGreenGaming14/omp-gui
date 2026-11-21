@@ -2,6 +2,7 @@ use crate::transcript::*;
 use iced::widget::{markdown, text};
 use iced::{Element, Theme};
 use loa_core::{Attrs, Dom, Draft, ElementKind as K, NodeId, Value, attrs};
+use loa_view::session::transcript::Intent;
 
 /// A session DOM and a transcript fed every patch committed to it.
 struct S {
@@ -32,7 +33,7 @@ impl S {
     }
     fn view(&self) -> Element<'_, Message> { self.chat.view(&self.dom, |m| m, |slot| text(format!("card for {}", slot.node)).into()) }
     fn shows(&self, label: &str) -> bool { iced_test::simulator(self.view()).find(label).is_ok() }
-    fn send(&mut self, m: Message) -> Option<Event> { self.chat.update(m).1 }
+    fn send(&mut self, m: Message) -> Option<Intent> { self.chat.update(m).1 }
     fn scroll(&mut self, offset: f32, viewport: f32) {
         let content = self.chat.heights.total() as f32;
         self.send(Message::Scrolled(ScrollMetrics { offset, viewport, content }));
@@ -98,7 +99,7 @@ fn rows_collapse_expand_and_report_clicks() {
     let click = |s: &S, label| loa_ui_kit::testkit::click_label(s.view(), label);
     assert_eq!(click(&s, "Read 3 files"), [Message::Toggle(a)]);
     assert_eq!(click(&s, "fix the build"), [Message::Rewind(prompt)]);
-    assert_eq!(s.send(Message::Rewind(prompt)), Some(Event::Rewind(prompt)));
+    assert_eq!(s.send(Message::Rewind(prompt)), Some(Intent::Rewind(prompt)));
     for key in [a, thought, bash] {
         s.send(Message::Toggle(key));
     }

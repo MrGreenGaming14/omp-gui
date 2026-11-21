@@ -6,8 +6,7 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
-loa-core.workspace = true
-loa-contracts.workspace = true
+loa-view.workspace = true
 loa-ui-kit.workspace = true
 iced.workspace = true
 

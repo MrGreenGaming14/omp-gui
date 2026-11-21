@@ -13,13 +13,12 @@ use loa_core::NodeId;
 use loa_ui_kit::style::{ButtonKind, Surface, Tone};
 use loa_ui_kit::theme::{LayoutRole, SpaceRole, TextRole, pad_x, sp, width};
 use loa_ui_kit::widgets::label;
-use loa_ui_kit::{Icon, icons::tinted};
+use loa_ui_kit::icons::tinted;
 use loa_ui_panel::{diff, files};
 use loa_ui_session::composer;
 use loa_ui_session::transcript as chat;
-use loa_ui_shell::sidebar::Event as Nav;
 use loa_ui_shell::theme::style;
-use loa_ui_shell::{self as shell, ThemeRef, palette};
+use loa_ui_shell::{self as shell, palette};
 use loa_bus::SessionId;
 use loa_harness::account_support::opener::SystemUrlOpener;
 use loa_harness::omp::OneShot;
@@ -33,6 +32,10 @@ use loa_runtime::{Runtime, RuntimeParts};
 use loa_session::library::Library;
 use loa_ui_terminal as terminal;
 use loa_util::time::{ago, now_ms};
+use loa_view::session::composer::Intent as ComposerIntent;
+use loa_view::session::transcript::Intent as ChatIntent;
+use loa_view::shell::{Intent as ShellIntent, PanelTab, SidebarIntent as Nav};
+use loa_view::theme::{Icon, ThemeRef};
 
 use crate::adapters::summarizer::OmpSummarizers;
 use crate::area::{Area, AreaMsg, Backends, Ctx, Request};
@@ -169,51 +172,51 @@ enum Intent {
 }
 
 /// The route table from shell events to intents.
-fn route(event: shell::Event) -> Option<Intent> {
+fn route(event: ShellIntent) -> Option<Intent> {
     let window = |message| Intent::Forward(Message::Window(message));
     Some(match event {
-        shell::Event::Sidebar(Nav::NewSession) => Intent::Start,
-        shell::Event::Sidebar(Nav::OpenUsage) => Intent::Usage,
-        shell::Event::Sidebar(Nav::OpenConfigs) => window(WindowMessage::OpenConfigs(ConfigsTab::Models)),
-        shell::Event::Sidebar(Nav::OpenSettings) => window(WindowMessage::OpenSettings(SettingsTab::General)),
-        shell::Event::Sidebar(Nav::OpenPeers) => window(WindowMessage::OpenSettings(SettingsTab::Peers)),
-        shell::Event::Sidebar(Nav::OpenTools) => Intent::Forward(Message::area(areas::tools::Message::Open)),
-        shell::Event::Sidebar(Nav::OpenUpdates) => Intent::Forward(Message::area(areas::updater::Message::Open)),
-        shell::Event::Sidebar(Nav::OpenSession(id)) if areas::peers::is_remote(&id) => Intent::Forward(Message::area(areas::peers::Message::OpenRecent(id))),
-        shell::Event::Sidebar(Nav::OpenSession(id)) => Intent::OpenSession(id),
-        shell::Event::Sidebar(Nav::DeleteSession(id)) if areas::peers::is_remote(&id) => {
+        ShellIntent::Sidebar(Nav::NewSession) => Intent::Start,
+        ShellIntent::Sidebar(Nav::OpenUsage) => Intent::Usage,
+        ShellIntent::Sidebar(Nav::OpenConfigs) => window(WindowMessage::OpenConfigs(ConfigsTab::Models)),
+        ShellIntent::Sidebar(Nav::OpenSettings) => window(WindowMessage::OpenSettings(SettingsTab::General)),
+        ShellIntent::Sidebar(Nav::OpenPeers) => window(WindowMessage::OpenSettings(SettingsTab::Peers)),
+        ShellIntent::Sidebar(Nav::OpenTools) => Intent::Forward(Message::area(areas::tools::Message::Open)),
+        ShellIntent::Sidebar(Nav::OpenUpdates) => Intent::Forward(Message::area(areas::updater::Message::Open)),
+        ShellIntent::Sidebar(Nav::OpenSession(id)) if areas::peers::is_remote(&id) => Intent::Forward(Message::area(areas::peers::Message::OpenRecent(id))),
+        ShellIntent::Sidebar(Nav::OpenSession(id)) => Intent::OpenSession(id),
+        ShellIntent::Sidebar(Nav::DeleteSession(id)) if areas::peers::is_remote(&id) => {
             Intent::Notice("A peer's session is deleted on its own node; revoke or let the grant end to hide it")
         }
-        shell::Event::Sidebar(Nav::DeleteSession(id)) => Intent::Forward(Message::area(areas::sessions::Message::Delete(id))),
-        shell::Event::Sidebar(Nav::OpenProject(project)) => Intent::Forward(Message::area(areas::projects::Message::Open(project))),
-        shell::Event::Sidebar(Nav::SetPinned { .. }) => Intent::SavePins,
-        shell::Event::Sidebar(Nav::SetProjectPinned { .. }) => Intent::SaveProjectPins,
-        shell::Event::DetachTab(tab) => window(WindowMessage::Detach(tab)),
-        shell::Event::ShowDetached(tab) => window(WindowMessage::Show(tab)),
-        shell::Event::ReattachTab(tab) => window(WindowMessage::ReattachTab(tab)),
-        shell::Event::CloseProjectTab(project) => Intent::CloseProjectTab(project),
-        shell::Event::SetTheme(theme) => Intent::Theme(Some(theme)),
-        shell::Event::ThemeChanged(_) => Intent::Theme(None),
+        ShellIntent::Sidebar(Nav::DeleteSession(id)) => Intent::Forward(Message::area(areas::sessions::Message::Delete(id))),
+        ShellIntent::Sidebar(Nav::OpenProject(project)) => Intent::Forward(Message::area(areas::projects::Message::Open(project))),
+        ShellIntent::Sidebar(Nav::SetPinned { .. }) => Intent::SavePins,
+        ShellIntent::Sidebar(Nav::SetProjectPinned { .. }) => Intent::SaveProjectPins,
+        ShellIntent::DetachTab(tab) => window(WindowMessage::Detach(tab)),
+        ShellIntent::ShowDetached(tab) => window(WindowMessage::Show(tab)),
+        ShellIntent::ReattachTab(tab) => window(WindowMessage::ReattachTab(tab)),
+        ShellIntent::CloseProjectTab(project) => Intent::CloseProjectTab(project),
+        ShellIntent::SetTheme(theme) => Intent::Theme(Some(theme)),
+        ShellIntent::ThemeChanged(_) => Intent::Theme(None),
     })
 }
 
-/// The route table from composer events to intents.
-fn compose(event: composer::Event) -> Option<Intent> {
+/// The route table from composer intents to app intents.
+fn compose(event: ComposerIntent) -> Option<Intent> {
     let area = |message| Some(Intent::Forward(message));
     match event {
-        composer::Event::Submit(prompt) => Some(Intent::Submit(prompt)),
-        composer::Event::Stop => Some(Intent::Interrupt),
-        composer::Event::HarnessChanged(id) => area(Message::area(areas::harness::Message::Pick(id))),
-        composer::Event::ModelChanged(model) => area(Message::area(areas::models::Message::Model(model))),
-        composer::Event::ModelAction(id) => area(Message::area(areas::models::Message::Action(id))),
-        composer::Event::EffortChanged(effort) => area(Message::area(areas::models::Message::Effort(effort))),
-        composer::Event::ModeChanged(mode) => area(Message::area(areas::sessions::Message::Mode(mode))),
-        composer::Event::AccessChanged(id) => Some(Intent::Access(id)),
-        composer::Event::FilesRequested { .. } => Some(Intent::Files),
-        composer::Event::OpenWorkspace => Some(Intent::Tab("files")),
-        composer::Event::FolderPicked(path) => Some(Intent::Folder(PathBuf::from(path))),
-        composer::Event::BrowseFolders => Some(Intent::Browse),
-        composer::Event::QueueChanged(_) => None,
+        ComposerIntent::Submit(prompt) => Some(Intent::Submit(prompt)),
+        ComposerIntent::Stop => Some(Intent::Interrupt),
+        ComposerIntent::HarnessChanged(id) => area(Message::area(areas::harness::Message::Pick(id))),
+        ComposerIntent::ModelChanged(model) => area(Message::area(areas::models::Message::Model(model))),
+        ComposerIntent::ModelAction(id) => area(Message::area(areas::models::Message::Action(id))),
+        ComposerIntent::EffortChanged(effort) => area(Message::area(areas::models::Message::Effort(effort))),
+        ComposerIntent::ModeChanged(mode) => area(Message::area(areas::sessions::Message::Mode(mode))),
+        ComposerIntent::AccessChanged(id) => Some(Intent::Access(id)),
+        ComposerIntent::FilesRequested { .. } => Some(Intent::Files),
+        ComposerIntent::OpenWorkspace => Some(Intent::Tab("files")),
+        ComposerIntent::FolderPicked(path) => Some(Intent::Folder(PathBuf::from(path))),
+        ComposerIntent::BrowseFolders => Some(Intent::Browse),
+        ComposerIntent::QueueChanged(_) => None,
     }
 }
 
@@ -257,7 +260,7 @@ impl App {
         let saved = services.storage.config.load().unwrap_or_default();
         let AppParts { runtime, models, summarizer, home, opener } = parts;
         let mut runtime = Runtime::new(runtime);
-        let (shell, setup) = shell::State::new(saved.appearance.clone());
+        let (shell, setup) = shell::State::new(crate::view::theme::to_view(&saved.appearance));
         let theme = shell.theme();
         let mut composer = composer::State::new();
         runtime.sessions_mut().harness = runtime.harnesses().default_id();
@@ -305,7 +308,7 @@ impl App {
             usage,
             windows: Windows::default(),
         };
-        let shown = app.tabs().into_iter().filter(|tab| tab.shown).map(|tab| shell::PanelTab::new(tab.id, tab.title, tab.icon)).collect();
+        let shown = app.tabs().into_iter().filter(|tab| tab.shown).map(|tab| PanelTab::new(tab.id, tab.title, tab.icon)).collect();
         app.ctx.shell.set_tabs(shown);
         let cwd = app.ctx.runtime.cwd().to_path_buf();
         app.ctx.composer.set_workspace(Some(workspace::chip(app.ctx.services.host.git.as_ref(), &cwd)));
@@ -330,7 +333,7 @@ impl App {
                 self.ctx.notify(format!("There is no {id} tab"));
                 return false;
             };
-            self.ctx.shell.add_tab(shell::PanelTab::new(tab.id, tab.title, tab.icon));
+            self.ctx.shell.add_tab(PanelTab::new(tab.id, tab.title, tab.icon));
         }
         true
     }
@@ -451,7 +454,7 @@ impl App {
         Some(Task::batch([task, self.settle()]))
     }
 
-    fn composer_event(&mut self, event: Option<composer::Event>) -> Task<Message> {
+    fn composer_event(&mut self, event: Option<ComposerIntent>) -> Task<Message> {
         event.and_then(compose).map_or_else(Task::none, |intent| self.intent(intent))
     }
 
@@ -496,7 +499,7 @@ impl App {
                 self.sessions.chat.set_bottom_inset(width(LayoutRole::ComposerInset));
                 self.areas.get_mut::<areas::decisions::State>().set_theme(&active);
                 if let Some(theme) = picked {
-                    self.ctx.edit_config("settings", |config| config.appearance.theme = theme);
+                    self.ctx.edit_config("settings", |config| config.appearance.theme = crate::view::theme::theme_from_view(theme));
                 }
                 Task::none()
             }
@@ -528,7 +531,7 @@ impl App {
         match message {
             Message::Shell(message) => {
                 let (task, event) = self.ctx.shell.update(message);
-                if matches!(event, Some(shell::Event::Sidebar(Nav::NewSession | Nav::OpenSession(_) | Nav::OpenProject(_)))) {
+                if matches!(event, Some(ShellIntent::Sidebar(Nav::NewSession | Nav::OpenSession(_) | Nav::OpenProject(_)))) {
                     (self.windows.configs, self.windows.overlay) = (None, None);
                 }
                 let action = event.and_then(route).map_or_else(Task::none, |intent| self.intent(intent));
@@ -545,7 +548,7 @@ impl App {
             }
             Message::Files(message) => {
                 let (task, event) = self.files.update(message);
-                if let Some(files::Event::Open(path)) = event {
+                if let Some(loa_view::panel::FilesIntent::Open(path)) = event {
                     self.ctx.notify(path.display().to_string());
                 }
                 task.map(Message::Files)
@@ -599,7 +602,7 @@ impl App {
                 let task = task.map(move |message| Message::DetachedChat(session.clone(), message));
                 // Rewinds act on the active session, so only links pass on.
                 let action = match event {
-                    Some(event @ chat::Event::OpenLink(_)) => self.update(Message::area(areas::sessions::Message::Chat(event))),
+                    Some(event @ ChatIntent::OpenLink(_)) => self.update(Message::area(areas::sessions::Message::Chat(event))),
                     _ => Task::none(),
                 };
                 Task::batch([task, action])

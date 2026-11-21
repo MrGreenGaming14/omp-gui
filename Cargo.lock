@@ -4618,6 +4618,7 @@ dependencies = [
  "iced",
  "iced_futures",
  "iced_runtime",
+ "image",
  "loa-bus",
  "loa-contracts",
  "loa-core",
@@ -4642,10 +4643,14 @@ dependencies = [
  "loa-ui-terminal",
  "loa-updater",
  "loa-util",
+ "loa-view",
+ "notify-rust",
+ "rust_xlsxwriter",
  "semver",
  "serde_json",
  "tempfile",
  "tokio",
+ "toml",
 ]
 
 [[package]]
@@ -4989,8 +4994,8 @@ dependencies = [
  "iced",
  "iced_runtime",
  "iced_test",
- "loa-settings",
  "loa-util",
+ "loa-view",
  "thiserror 2.0.21",
  "toml",
 ]
@@ -5002,9 +5007,9 @@ dependencies = [
  "iced",
  "iced_test",
  "ignore",
- "loa-contracts",
  "loa-core",
  "loa-ui-kit",
+ "loa-view",
  "shell-words",
  "similar",
  "thiserror 2.0.21",
@@ -5016,13 +5021,11 @@ version = "0.1.0"
 dependencies = [
  "iced",
  "iced_test",
- "loa-contracts",
  "loa-core",
- "loa-settings",
  "loa-ui-kit",
  "loa-ui-panel",
  "loa-util",
- "notify-rust",
+ "loa-view",
  "serde_json",
  "tempfile",
 ]
@@ -5033,11 +5036,9 @@ version = "0.1.0"
 dependencies = [
  "iced",
  "iced_test",
- "loa-core",
- "loa-settings",
  "loa-ui-kit",
  "loa-util",
- "semver",
+ "loa-view",
 ]
 
 [[package]]
@@ -5046,27 +5047,24 @@ version = "0.1.0"
 dependencies = [
  "iced",
  "iced_test",
- "loa-contracts",
- "loa-core",
  "loa-ui-kit",
+ "loa-view",
 ]
 
 [[package]]
 name = "loa-ui-surface"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "bytes",
  "futures",
  "iced",
  "iced_runtime",
  "iced_test",
  "image",
- "loa-contracts",
- "loa-surfaces",
  "loa-ui-kit",
- "rust_xlsxwriter",
+ "loa-view",
  "tempfile",
- "thiserror 2.0.21",
  "tokio",
 ]
 
@@ -5083,9 +5081,9 @@ dependencies = [
  "iced_test",
  "loa-ui-kit",
  "loa-util",
+ "loa-view",
  "portable-pty",
  "tempfile",
- "thiserror 2.0.21",
  "tokio",
 ]
 
@@ -5127,6 +5125,21 @@ dependencies = [
  "tempfile",
  "time",
  "tokio",
+]
+
+[[package]]
+name = "loa-view"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "loa-contracts",
+ "loa-core",
+ "loa-util",
+ "quote",
+ "syn 2.0.119",
+ "thiserror 2.0.21",
+ "toml",
 ]
 
 [[package]]
@@ -5908,7 +5921,7 @@ dependencies = [
  "mac-notification-sys",
  "serde",
  "tauri-winrt-notification",
- "zbus 6.3.0",
+ "zbus 6.5.0",
 ]
 
 [[package]]
@@ -11373,9 +11386,9 @@ dependencies = [
 
 [[package]]
 name = "zbus"
-version = "6.3.0"
+version = "6.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6b4aae740b23927ceabed962431abab2cdefb9f7f885e5bbab062da09bf580e4"
+checksum = "9a7f9f5dd97fa527c1202ba1cb35d48e07f77d4de8542317c854f7aef22b0668"
 dependencies = [
  "async-trait",
  "bitflags 2.13.2",
@@ -11392,7 +11405,7 @@ dependencies = [
  "uuid",
  "windows-sys 0.61.2",
  "winnow",
- "zbus_macros 6.3.0",
+ "zbus_macros 6.5.0",
  "zbus_utils",
  "zcheapstr",
  "zruntime",
@@ -11426,9 +11439,9 @@ dependencies = [
 
 [[package]]
 name = "zbus_macros"
-version = "6.3.0"
+version = "6.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "37c9dd4beaf145c16fcb2902862f50da86e54aed13dd368ddf64a1d17e6b8529"
+checksum = "2f5aa7f2c4ea81b7ccfb26bafefdb4d1a44dd9d4f82c8426173a3727311743e4"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -11462,9 +11475,9 @@ dependencies = [
 
 [[package]]
 name = "zcheapstr"
-version = "1.2.0"
+version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "939f186d9ecebe044315a5cb6d6f78568bbc21152adc954d5a0c2f58bdbc9920"
+checksum = "2da34e7164b75d803c3197b86e6cf61b874106fbd472c5082575a8bc5fbd0907"
 dependencies = [
  "serde",
 ]
@@ -11629,9 +11642,9 @@ dependencies = [
 
 [[package]]
 name = "zruntime"
-version = "0.2.3"
+version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce6a55d4f521760475a30f7b96779508fe8c40dc834478709454dd1d5f0ebc72"
+checksum = "ac67096b97c00742108c4674db6bb6178adb78c4b66a506b0e4a7a9593aa5d9e"
 dependencies = [
  "futures-core",
  "futures-io",

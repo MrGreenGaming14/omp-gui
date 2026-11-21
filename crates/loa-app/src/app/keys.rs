@@ -49,7 +49,7 @@ pub(crate) const APP_COMMANDS: &[AppCommand] = &[
         if !app.ctx.shell.theme_state().themes().iter().any(|(key, _)| key == theme) {
             return app.unknown("theme.", theme);
         }
-        app.update(Message::Shell(shell::Message::SetTheme(shell::ThemeRef(theme.to_owned()))))
+        app.update(Message::Shell(shell::Message::SetTheme(loa_view::theme::ThemeRef(theme.to_owned()))))
     })
     .listed(Listed::Each(|app, _| {
         app.ctx.shell.theme_state().themes().into_iter().map(|(key, label)| (key.to_string(), format!("Theme: {label}"))).collect()

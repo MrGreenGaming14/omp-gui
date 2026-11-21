@@ -1,0 +1,1004 @@
+version = 1.0.0
+#[derive(Clone)] struct loa_view::surface::port::Decoders
+  extra: Option<NewDecoder>
+  still: NewDecoder
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)] enum loa_view::surface::Capture
+  Screencast
+  VirtualDisplay
+#[derive(Clone, Copy, Debug, PartialEq)] struct loa_view::surface::port::PageSize
+  width: f32
+  height: f32
+#[derive(Clone, Copy, Debug, PartialEq, Eq)] enum loa_view::panel::AuditAction
+  Read
+  List
+  Write
+  Edit
+  Command
+  Terminal
+#[derive(Clone, Copy, Debug, PartialEq, Eq)] enum loa_view::panel::BuiltinGroup
+  Harness
+  App
+#[derive(Clone, Copy, Debug, PartialEq, Eq)] enum loa_view::panel::DetailState
+  Ready
+  NotConfigured
+  Unavailable
+#[derive(Clone, Copy, Debug, PartialEq, Eq)] enum loa_view::panel::PromptAnswer
+  Trust
+  Reject
+  AllowOnce
+  AllowSession
+  Deny
+#[derive(Clone, Copy, Debug, PartialEq, Eq)] enum loa_view::panel::PromptKind
+  HostKey
+  Approval
+#[derive(Clone, Copy, Debug, PartialEq, Eq)] enum loa_view::panel::ServerAction
+  Start
+  Stop
+  Restart
+  Remove
+#[derive(Clone, Copy, Debug, PartialEq, Eq)] enum loa_view::panel::ServerKind
+  External
+  Surface
+  AppHosted
+#[derive(Clone, Copy, Debug, PartialEq, Eq)] enum loa_view::settings::updates::GateCheck
+  ToolSchemas
+  SessionFormat
+  ConfigSchema
+  RpcProtocol
+  ContractTests
+  Changelog
+#[derive(Clone, Copy, Debug, PartialEq, Eq)] enum loa_view::settings::updates::HoldChoice
+  UpdateAnyway
+  PinCurrent
+  Wait
+#[derive(Clone, Copy, Debug, PartialEq, Eq)] enum loa_view::settings::updates::Verdict
+  Pass
+  Harmful
+#[derive(Clone, Copy, Debug, PartialEq, Eq)] struct loa_view::surface::port::DocumentPalette
+  page: [u8; 4]
+  text: [u8; 4]
+  rule: [u8; 4]
+  grid: [u8; 4]
+  header: [u8; 4]
+  header_text: [u8; 4]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)] struct loa_view::terminal::port::GridSize
+  cols: u16
+  rows: u16
+  cell_width: u16
+  cell_height: u16
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)] enum loa_view::theme::Icon
+  ArrowUp
+  Bot
+  Brain
+  Check
+  ChevronDown
+  ChevronLeft
+  ChevronRight
+  ChevronUp
+  CircleDot
+  Cpu
+  ExternalLink
+  FileText
+  Files
+  Folder
+  Gauge
+  GitCompare
+  GitFork
+  Globe
+  Maximize
+  Minimize
+  Monitor
+  PanelRight
+  PanelRightClose
+  Pin
+  Plus
+  Search
+  Settings
+  Shield
+  SlidersHorizontal
+  Sparkles
+  Square
+  Terminal
+  TriangleAlert
+  Wrench
+  X
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)] enum loa_view::panel::ImportSource
+  Claude
+  Cursor
+  Codex
+#[derive(Clone, Debug, Default, PartialEq)] struct loa_view::theme::Appearance
+  theme: ThemeRef
+  overrides: toml::Table
+#[derive(Clone, Debug, Default, PartialEq, Eq)] struct loa_view::panel::BuiltinTools
+  harness: String
+  harness_tools: Vec<ToolInfo>
+  app_tools: Vec<ToolInfo>
+  harness_note: Option<String>
+#[derive(Clone, Debug, Default, PartialEq, Eq)] struct loa_view::panel::HostLimits
+  allowed_paths: Vec<String>
+  read_only: bool
+  commands_allowed: bool
+  auto_approve: bool
+#[derive(Clone, Debug, Default, PartialEq, Eq)] struct loa_view::session::composer::AccessOption
+  id: String
+  label: String
+  detail: String
+#[derive(Clone, Debug, Default, PartialEq, Eq)] struct loa_view::session::composer::HarnessOption
+  id: String
+  label: String
+  available: bool
+  detail: Option<String>
+#[derive(Clone, Debug, Default, PartialEq, Eq)] struct loa_view::session::composer::Label
+  0: String
+#[derive(Clone, Debug, Default, PartialEq, Eq)] struct loa_view::session::composer::ModelOption
+  id: String
+  name: String
+  provider: String
+  role: Option<String>
+#[derive(Clone, Debug, Default, PartialEq, Eq)] struct loa_view::session::composer::Workspace
+  path: String
+  full: String
+  branch: Option<String>
+#[derive(Clone, Debug, Default, PartialEq, Eq)] struct loa_view::session::decisions::UnattendedView
+  approval: Option<DecisionDefaultView>
+  question: Option<DecisionDefaultView>
+  plan: Option<DecisionDefaultView>
+  form: Option<DecisionDefaultView>
+#[derive(Clone, Debug, Default, PartialEq, Eq)] struct loa_view::settings::models::Catalog
+  models: Vec<ModelInfo>
+  roles: Vec<RoleAssignment>
+#[derive(Clone, Debug, Default, PartialEq, Eq)] struct loa_view::settings::models::SessionModel
+  model: Option<String>
+  role: Option<String>
+#[derive(Clone, Debug, Default, PartialEq, Eq)] struct loa_view::settings::projects::Digest
+  summary: String
+  decisions: Vec<String>
+#[derive(Clone, Debug, Default, PartialEq, Eq)] struct loa_view::settings::projects::PinnedFile
+  path: String
+  note: Option<String>
+#[derive(Clone, Debug, Default, PartialEq, Eq)] struct loa_view::settings::projects::ProjectSettings
+  instructions: String
+  pinned: Vec<PinnedFile>
+  digest_model: Option<String>
+#[derive(Clone, Debug, Default, PartialEq, Eq)] struct loa_view::settings::updates::Data
+  products: Vec<Product>
+  github_requests_left: Option<u64>
+  peers: Vec<PeerStanding>
+  turn_running: bool
+  now_unix: u64
+#[derive(Clone, Debug, Default, PartialEq, Eq)] struct loa_view::surface::VideoStatus
+  enabled: bool
+  encoder: Option<StreamInfo>
+  hardware: Vec<String>
+#[derive(Clone, Debug, PartialEq)] enum loa_view::panel::AgentsIntent
+  OpenSession
+    0: String
+  DetachSession
+    0: String
+  Cancel
+    node: NodeId
+    id: Option<String>
+#[derive(Clone, Debug, PartialEq)] enum loa_view::panel::DiffIntent
+  OpenFile
+    0: String
+#[derive(Clone, Debug, PartialEq)] enum loa_view::panel::FilesIntent
+  Open
+    0: PathBuf
+#[derive(Clone, Debug, PartialEq)] enum loa_view::panel::SessionTreeIntent
+  Rewind
+    session: String
+    turn: NodeId
+  Fork
+    session: String
+    turn: NodeId
+  Open
+    0: String
+#[derive(Clone, Debug, PartialEq)] enum loa_view::panel::ToolsIntent
+  ProjectSelected
+    0: String
+  SetToolsEnabled
+    project: String
+    tools: Vec<ToolId>
+    enabled: bool
+  Server
+    name: String
+    action: ServerAction
+  AddServer
+    0: McpServerSpec
+  AddHost
+    0: RemoteHost
+  SaveHostLimits
+    host: String
+    limits: HostLimits
+  ImportServers
+    0: Vec<ImportCandidate>
+  AnswerPrompt
+    id: u64
+    answer: PromptAnswer
+  ScanImports
+  ImportSshHosts
+  RemoveHost
+    0: String
+  OpenTerminal
+    0: String
+  LoadAudit
+    0: String
+#[derive(Clone, Debug, PartialEq)] enum loa_view::session::composer::Intent
+  Submit
+    0: Prompt
+  Stop
+  QueueChanged
+    0: Vec<String>
+  FilesRequested
+    query: String
+  ModelChanged
+    0: ModelOption
+  EffortChanged
+    0: String
+  ModeChanged
+    0: SessionMode
+  AccessChanged
+    0: String
+  HarnessChanged
+    0: String
+  ModelAction
+    0: String
+  OpenWorkspace
+  FolderPicked
+    0: String
+  BrowseFolders
+#[derive(Clone, Debug, PartialEq)] enum loa_view::session::transcript::Intent
+  Rewind
+    0: NodeId
+  OpenLink
+    0: String
+#[derive(Clone, Debug, PartialEq)] enum loa_view::settings::models::FieldValue
+  Text
+    0: String
+  Int
+    0: i64
+  Float
+    0: f64
+  Bool
+    0: bool
+#[derive(Clone, Debug, PartialEq)] enum loa_view::settings::models::settings::Intent
+  Save
+    0: ModelSettings
+  Reverted
+#[derive(Clone, Debug, PartialEq)] enum loa_view::settings::projects::Intent
+  SaveSettings
+    project: String
+    settings: ProjectSettings
+  SetExcluded
+    session: String
+    excluded: bool
+  OpenSession
+    0: String
+  NewChat
+    project: String
+    cwd: Option<String>
+#[derive(Clone, Debug, PartialEq)] enum loa_view::shell::Intent
+  Sidebar
+    0: SidebarIntent
+  CloseProjectTab
+    0: String
+  DetachTab
+    0: String
+  ShowDetached
+    0: String
+  ReattachTab
+    0: String
+  SetTheme
+    0: ThemeRef
+  ThemeChanged
+    0: u64
+#[derive(Clone, Debug, PartialEq)] enum loa_view::surface::Intent
+  OpenBrowser
+    0: String
+  OpenDocument
+    0: PathBuf
+  OpenVm
+    address: String
+    password: Option<String>
+  Open
+    0: SurfaceUri
+  Close
+    0: SurfaceUri
+  EncodingUnsupported
+    uri: SurfaceUri
+    encoding: Encoding
+    supported: Vec<Encoding>
+  SetVideo
+    0: bool
+  SetCapture
+    0: Capture
+#[derive(Clone, Debug, PartialEq)] struct loa_view::settings::models::ModelOverride
+  selector: String
+  fields: Vec<OverrideField>
+#[derive(Clone, Debug, PartialEq)] struct loa_view::settings::models::OverrideField
+  key: String
+  value: FieldValue
+#[derive(Clone, Debug, PartialEq)] struct loa_view::shell::UsageMeter
+  fraction: f32
+  label: String
+#[derive(Clone, Debug, PartialEq, Default)] struct loa_view::settings::models::ModelSettings
+  roles: Vec<RoleChain>
+  models: Vec<ModelToggle>
+  providers: Vec<ProviderToggle>
+  overrides: Vec<ModelOverride>
+  custom_providers: Vec<CustomProvider>
+  harnesses: Vec<HarnessModel>
+#[derive(Clone, Debug, PartialEq, Eq)] enum loa_view::panel::ImportOutcome
+  Imported
+  Skipped
+    0: String
+  Failed
+    0: String
+#[derive(Clone, Debug, PartialEq, Eq)] enum loa_view::panel::ServerStatus
+  Running
+  Starting
+  Stopped
+  Error
+    0: String
+#[derive(Clone, Debug, PartialEq, Eq)] enum loa_view::panel::ToolRule
+  All
+  AllBuiltin
+  Server
+    0: String
+  Tool
+    0: ToolId
+#[derive(Clone, Debug, PartialEq, Eq)] enum loa_view::session::decisions::DeskIntent
+  Answer
+    session: String
+    decision: NodeId
+    answer: Answer
+  OpenLink
+    0: String
+  PolicyChanged
+    0: UnattendedView
+  NotifyFailed
+    0: String
+#[derive(Clone, Debug, PartialEq, Eq)] enum loa_view::session::decisions::Intent
+  Answer
+    decision: NodeId
+    answer: Answer
+  OpenLink
+    0: String
+#[derive(Clone, Debug, PartialEq, Eq)] enum loa_view::settings::models::Auth
+  Login
+    signed_in: bool
+    account: Option<String>
+  ApiKey
+    configured_via: Option<String>
+    instructions: String
+  Unavailable
+    reason: String
+#[derive(Clone, Debug, PartialEq, Eq)] enum loa_view::settings::models::LoginState
+  Idle
+  Starting
+    progress: Option<String>
+  Browser
+    url: String
+    copy_url: String
+    instructions: Option<String>
+    progress: Option<String>
+    prompt: Option<LoginPrompt>
+  Succeeded
+    account: Option<String>
+  Failed
+    message: String
+  Cancelled
+#[derive(Clone, Debug, PartialEq, Eq)] enum loa_view::settings::models::LoginUpdate
+  Url
+    url: String
+    launch_url: Option<String>
+    instructions: Option<String>
+  Progress
+    0: String
+  Prompt
+    message: String
+    placeholder: Option<String>
+  Succeeded
+    account: Option<String>
+  Failed
+    0: String
+  Cancelled
+#[derive(Clone, Debug, PartialEq, Eq)] enum loa_view::settings::models::picker::Intent
+  SetSessionModel
+    0: SessionModelChange
+  SetRoleModel
+    role: String
+    model: ModelRef
+  Close
+#[derive(Clone, Debug, PartialEq, Eq)] enum loa_view::settings::models::picker::Target
+  Session
+  Role
+    0: String
+#[derive(Clone, Debug, PartialEq, Eq)] enum loa_view::settings::models::signin::Intent
+  SignIn
+    0: ProviderKey
+  Cancel
+    0: ProviderKey
+  SubmitInput
+    key: ProviderKey
+    text: String
+  OpenUrl
+    0: String
+  CopyUrl
+    0: String
+#[derive(Clone, Debug, PartialEq, Eq)] enum loa_view::settings::updates::Installed
+  Unknown
+  Running
+  Managed
+    0: String
+  System
+    0: String
+  Missing
+    0: String
+#[derive(Clone, Debug, PartialEq, Eq)] enum loa_view::settings::updates::Intent
+  CheckAll
+  Check
+    0: String
+  Stage
+    0: String
+  Gate
+    0: String
+  Verify
+    0: String
+  Choose
+    0: String
+    1: HoldChoice
+  Swap
+    0: String
+  Rollback
+    0: String
+  Unpin
+    0: String
+#[derive(Clone, Debug, PartialEq, Eq)] enum loa_view::settings::updates::ProductKind
+  App
+  Omp
+  Harness
+    0: String
+#[derive(Clone, Debug, PartialEq, Eq)] enum loa_view::settings::updates::SignatureStatus
+  Verified
+  Unsigned
+  NoTrustedKeys
+  Rejected
+    0: String
+#[derive(Clone, Debug, PartialEq, Eq)] enum loa_view::settings::updates::Standing
+  Current
+  Behind
+    majors: u64
+    minors: u64
+    patches: u64
+  Ahead
+  Unknown
+#[derive(Clone, Debug, PartialEq, Eq)] enum loa_view::shell::NodeFilter
+  All
+  Node
+    0: String
+#[derive(Clone, Debug, PartialEq, Eq)] enum loa_view::shell::SidebarIntent
+  NewSession
+  OpenSession
+    0: String
+  OpenProject
+    0: String
+  OpenPeers
+  OpenTools
+  OpenUpdates
+  OpenUsage
+  OpenConfigs
+  OpenSettings
+  SetPinned
+    id: String
+    pinned: bool
+  SetProjectPinned
+    project: String
+    pinned: bool
+  DeleteSession
+    0: String
+#[derive(Clone, Debug, PartialEq, Eq)] enum loa_view::surface::BrowserStatus
+  Ready
+    executable: PathBuf
+    sandboxed: bool
+  Missing
+#[derive(Clone, Debug, PartialEq, Eq)] enum loa_view::terminal::port::ChannelRead
+  Data
+    0: Bytes
+  Closed
+    exit_code: Option<u32>
+#[derive(Clone, Debug, PartialEq, Eq)] struct loa_view::panel::AuditRow
+  when: String
+  session: String
+  action: AuditAction
+  detail: String
+  outcome: String
+#[derive(Clone, Debug, PartialEq, Eq)] struct loa_view::panel::ImportCandidate
+  source: ImportSource
+  path: String
+  server: McpServerSpec
+#[derive(Clone, Debug, PartialEq, Eq)] struct loa_view::panel::McpServer
+  name: String
+  transport: McpTransport
+  status: ServerStatus
+  kind: ServerKind
+  tools: Vec<ToolInfo>
+#[derive(Clone, Debug, PartialEq, Eq)] struct loa_view::panel::PeerTools
+  key: String
+  name: String
+  rules: Vec<ToolRule>
+#[derive(Clone, Debug, PartialEq, Eq)] struct loa_view::panel::ProjectRef
+  id: String
+  name: String
+#[derive(Clone, Debug, PartialEq, Eq)] struct loa_view::panel::RemoteHost
+  alias: String
+  hostname: String
+  user: Option<String>
+  port: Option<u16>
+  proxy_jump: Option<String>
+  limits: HostLimits
+#[derive(Clone, Debug, PartialEq, Eq)] struct loa_view::panel::RemotePrompt
+  id: u64
+  kind: PromptKind
+  title: String
+  body: String
+#[derive(Clone, Debug, PartialEq, Eq)] struct loa_view::panel::SessionInfo
+  id: String
+  parent: Option<String>
+  forked_at: Option<u64>
+  title: String
+  turns: Vec<TurnInfo>
+#[derive(Clone, Debug, PartialEq, Eq)] struct loa_view::panel::ToolDetail
+  label: String
+  state: DetailState
+  text: String
+#[derive(Clone, Debug, PartialEq, Eq)] struct loa_view::panel::ToolInfo
+  name: String
+  description: String
+  details: Vec<ToolDetail>
+#[derive(Clone, Debug, PartialEq, Eq)] struct loa_view::panel::TurnInfo
+  node: NodeId
+  seq: u64
+  first_line: String
+#[derive(Clone, Debug, PartialEq, Eq)] struct loa_view::panel::port::Entry
+  name: String
+  is_dir: bool
+#[derive(Clone, Debug, PartialEq, Eq)] struct loa_view::session::composer::Command
+  name: String
+  description: String
+#[derive(Clone, Debug, PartialEq, Eq)] struct loa_view::session::composer::PickerAction
+  id: String
+  label: String
+#[derive(Clone, Debug, PartialEq, Eq)] struct loa_view::session::decisions::DecisionDefaultView
+  timeout_secs: u64
+  answer: String
+  reason: Option<String>
+#[derive(Clone, Debug, PartialEq, Eq)] struct loa_view::session::port::Notice
+  session: String
+  session_title: Option<String>
+  decision: NodeId
+  kind: DecisionKind
+  heading: String
+  summary: String
+#[derive(Clone, Debug, PartialEq, Eq)] struct loa_view::session::port::NotifyError
+  0: String
+#[derive(Clone, Debug, PartialEq, Eq)] struct loa_view::settings::models::HarnessModel
+  harness: String
+  name: String
+  config_path: String
+  model: String
+  effort: String
+  efforts: Vec<String>
+#[derive(Clone, Debug, PartialEq, Eq)] struct loa_view::settings::models::LoginPrompt
+  message: String
+  placeholder: Option<String>
+  input: String
+#[derive(Clone, Debug, PartialEq, Eq)] struct loa_view::settings::models::ModelInfo
+  model: ModelRef
+  name: String
+  provider_name: String
+#[derive(Clone, Debug, PartialEq, Eq)] struct loa_view::settings::models::ModelToggle
+  selector: String
+  enabled: bool
+#[derive(Clone, Debug, PartialEq, Eq)] struct loa_view::settings::models::ProviderEntry
+  key: ProviderKey
+  name: String
+  harness_name: String
+  auth: Auth
+#[derive(Clone, Debug, PartialEq, Eq)] struct loa_view::settings::models::ProviderToggle
+  id: String
+  name: String
+  enabled: bool
+#[derive(Clone, Debug, PartialEq, Eq)] struct loa_view::settings::models::RoleAssignment
+  role: String
+  model: ModelRef
+#[derive(Clone, Debug, PartialEq, Eq)] struct loa_view::settings::models::RoleChain
+  role: String
+  chain: Vec<String>
+#[derive(Clone, Debug, PartialEq, Eq)] struct loa_view::settings::models::SessionModelChange
+  model: ModelRef
+  role: Option<String>
+#[derive(Clone, Debug, PartialEq, Eq)] struct loa_view::settings::models::ValidationError
+  location: String
+  message: String
+#[derive(Clone, Debug, PartialEq, Eq)] struct loa_view::settings::projects::ProjectOverview
+  cwd: Option<String>
+  settings: ProjectSettings
+  sessions: Vec<SessionRow>
+#[derive(Clone, Debug, PartialEq, Eq)] struct loa_view::settings::projects::SessionRow
+  id: String
+  title: Option<String>
+  harness: Option<String>
+  last_active: i64
+  turns: usize
+  excluded: bool
+  digest_state: DigestState
+  digest: Option<Digest>
+  digest_model: Option<String>
+#[derive(Clone, Debug, PartialEq, Eq)] struct loa_view::settings::updates::Active
+  current: String
+  previous: Option<String>
+#[derive(Clone, Debug, PartialEq, Eq)] struct loa_view::settings::updates::CheckResult
+  check: GateCheck
+  verdict: Verdict
+  details: Vec<String>
+#[derive(Clone, Debug, PartialEq, Eq)] struct loa_view::settings::updates::GateReport
+  from: String
+  to: String
+  checks: Vec<CheckResult>
+#[derive(Clone, Debug, PartialEq, Eq)] struct loa_view::settings::updates::HeldUpdate
+  version: String
+  report: GateReport
+#[derive(Clone, Debug, PartialEq, Eq)] struct loa_view::settings::updates::PeerStanding
+  node: String
+  name: Option<String>
+  app_version: Option<String>
+  standing: Standing
+  protocols: Vec<ProtocolStatus>
+  can_talk: bool
+#[derive(Clone, Debug, PartialEq, Eq)] struct loa_view::settings::updates::Product
+  id: String
+  label: String
+  kind: ProductKind
+  source: String
+  current: Option<String>
+  installed: Installed
+  offer: Option<String>
+  newest: Option<String>
+  changelog: String
+  last_check_unix: Option<u64>
+  staged: Vec<String>
+  active: Option<Active>
+  report: Option<GateReport>
+  held: Option<HeldUpdate>
+  pending_swap: Option<String>
+  pin: Option<String>
+  waiting_past: Option<String>
+  signature: Option<SignatureStatus>
+  restart_required: bool
+  error: Option<String>
+#[derive(Clone, Debug, PartialEq, Eq)] struct loa_view::settings::updates::ProtocolStatus
+  family: String
+  shared: Option<u32>
+#[derive(Clone, Debug, PartialEq, Eq)] struct loa_view::shell::NodeStatus
+  key: String
+  name: String
+  online: bool
+  local: bool
+#[derive(Clone, Debug, PartialEq, Eq)] struct loa_view::shell::PanelTab
+  id: String
+  title: String
+  icon: Option<Icon>
+#[derive(Clone, Debug, PartialEq, Eq)] struct loa_view::surface::AvailableSurface
+  info: SurfaceInfo
+  server: String
+#[derive(Clone, Debug, PartialEq, Eq)] struct loa_view::surface::CaptureStatus
+  selected: Capture
+  virtual_display_missing: Option<String>
+  pending: bool
+#[derive(Clone, Debug, PartialEq, Eq)] struct loa_view::surface::port::DecodeError
+  0: String
+#[derive(Clone, Debug, PartialEq, Eq)] struct loa_view::surface::port::RgbaPage
+  width: u32
+  height: u32
+  data: Vec<u8>
+#[derive(Clone, Debug, PartialEq, Eq)] struct loa_view::theme::ThemeRef
+  0: String
+#[derive(Clone, Debug, PartialEq, Eq, Default)] struct loa_view::settings::models::CustomProvider
+  id: String
+  base_url: String
+  api: String
+  auth: AuthMode
+  api_key_env: String
+  models: Vec<String>
+#[derive(Clone, Debug, PartialEq, Eq, Hash)] struct loa_view::settings::models::ProviderKey
+  harness: String
+  provider: String
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)] struct loa_view::settings::models::ModelRef
+  provider: String
+  id: String
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)] enum loa_view::panel::ToolId
+  Builtin
+    0: String
+  Mcp
+    server: String
+    tool: String
+#[derive(Copy, Clone, Debug, PartialEq, Eq)] enum loa_view::settings::projects::DigestState
+  Missing
+  Fresh
+  Stale
+#[derive(Debug, Clone, Copy, PartialEq, Eq)] enum loa_view::settings::peers::GrantScope
+  Session
+  Prompt
+  Project
+  FutureSessions
+  SshHost
+  Surface
+  Sandbox
+  Folder
+#[derive(Debug, Clone, Default, PartialEq, Eq)] struct loa_view::settings::peers::Data
+  node: NodeCard
+  peers: Vec<Peer>
+  nearby: Vec<Peer>
+  grants: Vec<Grant>
+  resources: Vec<ResourceChoice>
+  remote_sessions: Vec<RemoteItem>
+  shared_folders: Vec<SharedFolderItem>
+  local_version: String
+  now: u64
+#[derive(Debug, Clone, Default, PartialEq, Eq)] struct loa_view::settings::peers::NodeCard
+  key: String
+  name: String
+  key_source: String
+  endpoint: String
+  endpoint_ok: bool
+  lan: String
+  lan_ok: bool
+  tailscale: String
+  tailscale_ok: bool
+  tailscale_available: bool
+#[derive(Debug, Clone, PartialEq, Eq)] enum loa_view::settings::peers::Intent
+  ValidateKey
+    0: String
+  AddPeer
+    key: String
+    address: Option<String>
+  AddDiscovered
+    0: String
+  CopyKey
+    0: String
+  RemovePeer
+    0: String
+  RenamePeer
+    key: String
+    name: String
+  CreateGrant
+    0: GrantInput
+  RevokeGrant
+    0: String
+  RenewGrant
+    0: String
+  Refresh
+  ScanTailscale
+  OpenRemote
+    peer: String
+    session: String
+  ForkRemote
+    peer: String
+    session: String
+  BrowseFolder
+    peer: String
+    folder: String
+#[derive(Debug, Clone, PartialEq, Eq)] struct loa_view::settings::peers::Grant
+  id: String
+  peer_key: String
+  direction: GrantDirection
+  resource: GrantResource
+  permission: Permission
+  expires_at: Option<u64>
+  renews_at: Option<u64>
+  reshare: bool
+  ended: bool
+#[derive(Debug, Clone, PartialEq, Eq)] struct loa_view::settings::peers::GrantInput
+  peer_key: String
+  resource: GrantResource
+  permission: Permission
+  ttl_seconds: u64
+  reshare: bool
+#[derive(Debug, Clone, PartialEq, Eq)] struct loa_view::settings::peers::GrantResource
+  id: String
+  label: String
+  scope: GrantScope
+  future_sessions: bool
+#[derive(Debug, Clone, PartialEq, Eq)] struct loa_view::settings::peers::Peer
+  key: String
+  name: String
+  discovery: Discovery
+  presence: Presence
+  last_seen: Option<u64>
+  transport: Transport
+  app_version: String
+  shared_protocol: Option<bool>
+#[derive(Debug, Clone, PartialEq, Eq)] struct loa_view::settings::peers::RemoteItem
+  peer_key: String
+  peer_name: String
+  session: String
+  title: String
+  harness: String
+  access: String
+  can_drive: bool
+  can_fork: bool
+  online: bool
+#[derive(Debug, Clone, PartialEq, Eq)] struct loa_view::settings::peers::ResourceChoice
+  id: String
+  label: String
+  scope: GrantScope
+#[derive(Debug, Clone, PartialEq, Eq)] struct loa_view::settings::peers::SharedFolderItem
+  peer_key: String
+  peer_name: String
+  path: String
+  can_write: bool
+  online: bool
+#[derive(Debug, thiserror::Error)] enum loa_view::terminal::port::Error
+  Io
+    0: std::io::Error
+  Spawn
+    0: String
+  NotADirectory
+    0: std::path::PathBuf
+  Remote
+    host: String
+    message: String
+  NoRemote
+  Closed
+const loa_view::VERSION: &str
+const loa_view::settings::models::OVERRIDE_FIELDS: [(&str, OverrideKey); 8]
+const loa_view::surface::DOCUMENT_SERVER: &str
+enum loa_view::surface::port::OpenedDocument
+  Image
+    width: u32
+    height: u32
+  Paged
+    0: Box<dyn PagedDocument>
+fn loa_view::settings::models::is_env_var_name(_: &str) -> bool
+fn loa_view::settings::models::is_provider_id(_: &str) -> bool
+impl Default for loa_view::surface::CaptureStatus
+  fn default() -> Self
+impl Default for loa_view::terminal::port::GridSize
+  fn default() -> Self
+impl Default for loa_view::theme::ThemeRef
+  fn default() -> Self
+impl From<&HostToolSpec> for loa_view::panel::ToolInfo
+  fn from(_: &HostToolSpec) -> Self
+impl fmt::Display for loa_view::settings::models::ModelRef
+  fn fmt(&self, _: &mut fmt::Formatter<'_>) -> fmt::Result
+impl loa_view::panel::AuditAction
+  fn label(self) -> &'static str
+impl loa_view::panel::ImportSource
+  fn label(self) -> &'static str
+impl loa_view::panel::PeerTools
+  fn allows(&self, _: &ToolId) -> bool
+impl loa_view::panel::ToolId
+  fn builtin(_: impl Into<String>) -> Self
+  fn mcp(_: impl Into<String>, _: impl Into<String>) -> Self
+  fn name(&self) -> &str
+impl loa_view::panel::ToolInfo
+  fn new(_: impl Into<String>, _: impl Into<String>) -> Self
+  fn with_details(self, _: Vec<ToolDetail>) -> Self
+impl loa_view::panel::ToolRule
+  fn allows(&self, _: &ToolId) -> bool
+impl loa_view::session::decisions::UnattendedView
+  fn for_kind(&self, _: DecisionKind) -> Option<&DecisionDefaultView>
+  fn for_kind_mut(&mut self, _: DecisionKind) -> &mut Option<DecisionDefaultView>
+impl loa_view::settings::models::LoginState
+  fn is_running(&self) -> bool
+impl loa_view::settings::models::ModelInfo
+  fn display_name(&self) -> &str
+  fn provider_display_name(&self) -> &str
+impl loa_view::settings::models::ModelRef
+  fn new(_: impl Into<String>, _: impl Into<String>) -> Self
+  fn selector(&self) -> String
+impl loa_view::settings::models::ProviderKey
+  fn new(_: impl Into<String>, _: impl Into<String>) -> Self
+impl loa_view::settings::peers::Grant
+  fn expiry_text(&self, _: u64) -> String
+impl loa_view::settings::peers::Peer
+  fn short_key(&self) -> &str
+  fn version(&self) -> Option<(u64, u64, u64)>
+  fn version_relation(&self, _: &str) -> VersionRelation
+  fn last_seen_text(&self, _: u64) -> String
+impl loa_view::settings::updates::GateCheck
+  fn label(self) -> &'static str
+impl loa_view::settings::updates::GateReport
+  fn harmful(&self) -> impl Iterator<Item = &CheckResult>
+impl loa_view::shell::NodeFilter
+  fn matches(&self, _: &str) -> bool
+impl loa_view::shell::PanelTab
+  fn new(_: impl Into<String>, _: impl Into<String>, _: Option<Icon>) -> Self
+impl loa_view::terminal::port::GridSize
+  const fn new(_: u16, _: u16) -> Self
+impl loa_view::theme::ThemeRef
+  const SYSTEM: &str
+  fn as_str(&self) -> &str
+impl std::error::Error for loa_view::surface::port::DecodeError
+impl std::fmt::Debug for loa_view::terminal::port::PtyChannel
+  fn fmt(&self, _: &mut std::fmt::Formatter<'_>) -> std::fmt::Result
+impl std::fmt::Display for loa_view::panel::ProjectRef
+  fn fmt(&self, _: &mut std::fmt::Formatter<'_>) -> std::fmt::Result
+impl std::fmt::Display for loa_view::session::composer::ModelOption
+  fn fmt(&self, _: &mut std::fmt::Formatter<'_>) -> std::fmt::Result
+impl std::fmt::Display for loa_view::session::port::NotifyError
+  fn fmt(&self, _: &mut std::fmt::Formatter<'_>) -> std::fmt::Result
+impl std::fmt::Display for loa_view::surface::port::DecodeError
+  fn fmt(&self, _: &mut std::fmt::Formatter<'_>) -> std::fmt::Result
+mod loa_view::panel
+mod loa_view::panel::port
+mod loa_view::session
+mod loa_view::session::composer
+mod loa_view::session::decisions
+mod loa_view::session::port
+mod loa_view::session::transcript
+mod loa_view::settings
+mod loa_view::settings::models
+mod loa_view::settings::models::picker
+mod loa_view::settings::models::settings
+mod loa_view::settings::models::signin
+mod loa_view::settings::peers
+mod loa_view::settings::projects
+mod loa_view::settings::updates
+mod loa_view::shell
+mod loa_view::surface
+mod loa_view::surface::port
+mod loa_view::terminal
+mod loa_view::terminal::port
+mod loa_view::theme
+struct loa_view::terminal::port::PtyChannel
+  reader: Box<dyn ChannelReader>
+  writer: Box<dyn ChannelWriter>
+trait loa_view::panel::port::FileSystem: Send + Sync
+  fn list(&self, _: &Path) -> Result<Vec<Entry>, String>
+trait loa_view::session::port::Notifier: Send + Sync
+  fn notify(&self, _: &Notice) -> NotifyFuture
+trait loa_view::surface::port::DocumentRenderer: Send + Sync
+  fn extensions(&self) -> Vec<String>
+  fn open(&self, _: &Document) -> Result<OpenedDocument, String>
+trait loa_view::surface::port::FrameDecoder: Send
+  fn accepts(&self) -> &[Encoding]
+  fn apply(&mut self, _: &Frame, _: &mut [u8], _: u32, _: u32) -> Result<bool, DecodeError>
+  fn reset(&mut self)
+trait loa_view::surface::port::PagedDocument: Send + Sync
+  fn page_count(&self) -> usize
+  fn page_size(&self, _: usize) -> Result<PageSize, String>
+  fn render(&self, _: usize, _: f32, _: &DocumentPalette) -> Result<RgbaPage, String>
+trait loa_view::terminal::port::ChannelReader: Send
+  async fn read(&mut self) -> Result<ChannelRead>
+trait loa_view::terminal::port::ChannelWriter: Send
+  async fn write(&mut self, _: Bytes) -> Result<()>
+  async fn resize(&mut self, _: GridSize) -> Result<()>
+  async fn close(&mut self) -> Result<()>
+trait loa_view::terminal::port::RemotePty: Send + Sync
+  async fn open_pty(&self, _: &str, _: GridSize) -> Result<PtyChannel>
+type loa_view::session::port::NotifyFuture = Pin<Box<dyn Future<Output = Result<(), NotifyError>> + Send + 'static>>
+type loa_view::surface::port::NewDecoder = Arc<dyn Fn() -> Box<dyn FrameDecoder> + Send + Sync>
+type loa_view::terminal::port::Result<T, E = Error> = std::result::Result<T, E>
+use loa_view::panel::McpServerSpec = loa_contracts::harness::McpServerSpec
+use loa_view::panel::McpTransport = loa_contracts::harness::McpTransport
+use loa_view::session::Answer = loa_contracts::harness::Answer
+use loa_view::session::Attachment = loa_contracts::harness::Attachment
+use loa_view::session::Prompt = loa_contracts::harness::Prompt
+use loa_view::session::SessionMode = loa_core::SessionMode
+use loa_view::shell::SessionSummary = loa_contracts::session::SessionSummary
+use loa_view::surface::Document = loa_contracts::surface::Document
+use loa_view::surface::Encoding = loa_contracts::surface::Encoding
+use loa_view::surface::Frame = loa_contracts::surface::Frame
+use loa_view::surface::Input = loa_contracts::surface::Input
+use loa_view::surface::InputEvent = loa_contracts::surface::InputEvent
+use loa_view::surface::Modifiers = loa_contracts::surface::Modifiers
+use loa_view::surface::MouseButton = loa_contracts::surface::MouseButton
+use loa_view::surface::Rect = loa_contracts::surface::Rect
+use loa_view::surface::StreamInfo = loa_contracts::surface::StreamInfo
+use loa_view::surface::Surface = loa_contracts::surface::Surface
+use loa_view::surface::SurfaceError = loa_contracts::surface::SurfaceError
+use loa_view::surface::SurfaceInfo = loa_contracts::surface::SurfaceInfo
+use loa_view::surface::SurfaceMode = loa_contracts::surface::SurfaceMode
+use loa_view::surface::SurfaceUri = loa_contracts::surface::SurfaceUri

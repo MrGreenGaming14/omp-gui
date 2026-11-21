@@ -1,10 +1,11 @@
 //! The left sidebar: machine switcher, New session, Search, Projects, Pinned, Recents and a footer.
 
-use crate::data::{NodeFilter, NodeStatus, Nodes, UsageMeter};
-use loa_contracts::session::SessionSummary;
+use crate::data::Nodes;
+use loa_view::shell::{NodeFilter, NodeStatus, SessionSummary, SidebarIntent, UsageMeter};
+use loa_view::theme::Icon;
 use iced::widget::{Column, button, column, container, hover, row, rule, scrollable, space, text, text_input};
 use iced::{Alignment, Element, Fill, Padding, Task};
-use loa_ui_kit::icons::{Icon, tinted};
+use loa_ui_kit::icons::tinted;
 use loa_ui_kit::style::{self, ButtonKind, Surface, Tone};
 use loa_ui_kit::theme::{ColorRole as C, RadiusRole, SpaceRole as Sp, TextRole as T, pad_x, sp, text_size as ts, tokens};
 use loa_ui_kit::widgets::{label, meter};
@@ -32,15 +33,7 @@ pub struct State {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum Message { Emit(Event), Search(String), OpenPeers, ToggleMachines, PickMachine(NodeFilter), OpenSession(String), TogglePin(String), ToggleProjectPin(String) }
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Event {
-    NewSession, OpenSession(String), OpenProject(String), OpenPeers, OpenTools, OpenUpdates, OpenUsage, OpenConfigs, OpenSettings,
-    SetPinned { id: String, pinned: bool },
-    SetProjectPinned { project: String, pinned: bool },
-    DeleteSession(String),
-}
+pub enum Message { Emit(SidebarIntent), Search(String), OpenPeers, ToggleMachines, PickMachine(NodeFilter), OpenSession(String), TogglePin(String), ToggleProjectPin(String) }
 
 impl State {
     pub fn set_sessions(&mut self, sessions: impl IntoIterator<Item = SessionSummary>) { self.sessions = sessions.into_iter().map(|s| self.entry(s)).collect() }
@@ -99,7 +92,7 @@ impl State {
         list
     }
 
-    pub fn update(&mut self, message: Message) -> (Task<Message>, Option<Event>) {
+    pub fn update(&mut self, message: Message) -> (Task<Message>, Option<SidebarIntent>) {
         match &message {
             Message::Search(query) => self.query.clone_from(query),
             Message::ToggleMachines => self.machines_open = !self.machines_open,
@@ -110,13 +103,13 @@ impl State {
         }
         let event = match message {
             Message::Emit(event) => Some(event),
-            Message::OpenPeers => Some(Event::OpenPeers),
-            Message::OpenSession(id) => Some(Event::OpenSession(id)),
-            Message::ToggleProjectPin(project) => Some(Event::SetProjectPinned { pinned: self.pinned_projects.insert(project.clone()) || !self.pinned_projects.remove(&project), project }),
+            Message::OpenPeers => Some(SidebarIntent::OpenPeers),
+            Message::OpenSession(id) => Some(SidebarIntent::OpenSession(id)),
+            Message::ToggleProjectPin(project) => Some(SidebarIntent::SetProjectPinned { pinned: self.pinned_projects.insert(project.clone()) || !self.pinned_projects.remove(&project), project }),
             Message::TogglePin(id) => self.sessions.iter_mut().find(|(s, _)| s.id == id).map(|(s, _)| {
                 s.pinned = !s.pinned;
                 if s.pinned { self.pins.insert(id.clone()); } else { self.pins.remove(&id); }
-                Event::SetPinned { id, pinned: s.pinned }
+                SidebarIntent::SetPinned { id, pinned: s.pinned }
             }),
             Message::Search(_) | Message::ToggleMachines | Message::PickMachine(_) => None,
         };
@@ -129,7 +122,7 @@ impl State {
         let new = row![plus, label("New session", T::Body, Tone::Normal).width(Fill), label("Ctrl N", T::Caption, Tone::Faint)];
         let icon = text_input::Icon { font: iced::Font::default(), code_point: '⌕', size: Some(ts(T::Body).into()), spacing: sp(Sp::S), side: text_input::Side::Left };
         let search = text_input("Search", &self.query).id(SEARCH_ID).on_input(Message::Search).icon(icon).size(ts(T::Body)).style(style::input).padding(row_pad());
-        let top = column![self.machine_switcher(), row_button(line(new), false, Message::Emit(Event::NewSession)), search].spacing(sp(Sp::Xs));
+        let top = column![self.machine_switcher(), row_button(line(new), false, Message::Emit(SidebarIntent::NewSession)), search].spacing(sp(Sp::Xs));
         let mut lists = Column::new().push(self.machines_open.then(|| self.machine_list())).push(header("Projects"));
         let mut segments: Vec<Element<'a, M>> = Vec::new();
         let projects = self.projects();
@@ -139,7 +132,7 @@ impl State {
         for project in projects {
             let on = active_project == Some(project);
             let pin = self.pinned_projects.contains(project).then(|| tinted(Icon::Pin, T::Caption, Tone::Muted));
-            let body = row_button(line(row![tinted(Icon::Folder, T::Body, Tone::Muted), label(project, T::Body, Tone::Normal).width(Fill), pin]), on, Message::Emit(Event::OpenProject(project.to_owned())));
+            let body = row_button(line(row![tinted(Icon::Folder, T::Body, Tone::Muted), label(project, T::Body, Tone::Normal).width(Fill), pin]), on, Message::Emit(SidebarIntent::OpenProject(project.to_owned())));
             lists = lists.push(hover(body, row_actions([row_action(Icon::Pin, Message::ToggleProjectPin(project.to_owned()))], on)));
             if on && let Some(files) = project_files.take() {
                 segments.push(Element::from(std::mem::replace(&mut lists, Column::new()).spacing(sp(Sp::Xs) / 2.0)).map(map.clone()));
@@ -188,19 +181,19 @@ impl State {
         container(Column::with_children(rows).push(peers).spacing(sp(Sp::Xs) / 2.0)).style(style::container(Surface::Popup)).padding(sp(Sp::Xs)).into()
     }
     fn footer(&self) -> Element<'_, Message> {
-        let updates = (self.updates > 0).then(|| footer_item(Icon::ArrowUp, "Updates", Some(label(self.updates.to_string(), T::Caption, Tone::Warn).into()), Event::OpenUpdates));
+        let updates = (self.updates > 0).then(|| footer_item(Icon::ArrowUp, "Updates", Some(label(self.updates.to_string(), T::Caption, Tone::Warn).into()), SidebarIntent::OpenUpdates));
         let meter = self.usage.as_ref().map(|u| {
             let f = u.fraction.clamp(0.0, 1.0);
             line(row![container(meter(f)).width(sp(Sp::Xl) * 2.0), label(format!("{} {:.0}%", u.label, f * 100.0), T::Caption, Tone::Faint)]).into()
         });
-        let items = column![updates, footer_item(Icon::Gauge, "Usage", meter, Event::OpenUsage), footer_item(Icon::SlidersHorizontal, "Configs", None, Event::OpenConfigs), footer_item(Icon::Settings, "Settings", None, Event::OpenSettings)];
+        let items = column![updates, footer_item(Icon::Gauge, "Usage", meter, SidebarIntent::OpenUsage), footer_item(Icon::SlidersHorizontal, "Configs", None, SidebarIntent::OpenConfigs), footer_item(Icon::Settings, "Settings", None, SidebarIntent::OpenSettings)];
         column![rule::horizontal(1).style(style::rule), items.spacing(sp(Sp::Xs) / 2.0)].spacing(sp(Sp::Xs)).into()
     }
     fn session_row<'a>(&'a self, s: &'a SessionSummary) -> Element<'a, Message> {
         let selected = self.shown_project.is_none() && self.active.as_deref() == Some(s.id.as_str());
         let title = container(label(s.title.as_str(), T::Body, Tone::Normal).wrapping(text::Wrapping::None)).width(Fill).clip(true);
         let node = (self.machine() == NodeFilter::All).then(|| label(self.nodes.name_of(&s.node), T::Caption, Tone::Faint));
-        let actions = [row_action(Icon::Pin, Message::TogglePin(s.id.clone())), row_action(Icon::X, Message::Emit(Event::DeleteSession(s.id.clone())))];
+        let actions = [row_action(Icon::Pin, Message::TogglePin(s.id.clone())), row_action(Icon::X, Message::Emit(SidebarIntent::DeleteSession(s.id.clone())))];
         hover(row_button(line(row![title, s.waiting.then(|| label("Needs you", T::Caption, Tone::Warn)), node]), selected, Message::OpenSession(s.id.clone())), row_actions(actions, selected))
     }
 }
@@ -223,7 +216,7 @@ fn row_actions<'a>(actions: impl IntoIterator<Item = Element<'a, Message>>, sele
     let actions = container(row(actions).spacing(half)).padding(Padding::ZERO.left(half).right(half)).style(style::fill(if selected { C::Selected } else { C::Hover }, 0.0));
     container(actions).align_right(Fill).center_y(Fill).padding(pad_x(Sp::Xs)).into()
 }
-fn footer_item<'a>(glyph: Icon, text: &'a str, trailing: Option<Element<'a, Message>>, on: Event) -> Element<'a, Message> {
+fn footer_item<'a>(glyph: Icon, text: &'a str, trailing: Option<Element<'a, Message>>, on: SidebarIntent) -> Element<'a, Message> {
     row_button(line(row![tinted(glyph, T::Body, Tone::Muted), label(text, T::Body, Tone::Normal).width(Fill), trailing]), false, Message::Emit(on))
 }
 
@@ -250,7 +243,7 @@ mod tests {
         assert_eq!((ids(state.recents()), ids(state.pinned())), (vec!["c", "a", "p"], vec!["x"]));
         let _ = state.update(Message::PickMachine(NodeFilter::All));
         assert_eq!(ids(state.recents()), ["b", "c", "a", "p"]);
-        assert_eq!(state.update(Message::TogglePin("c".into())).1, Some(Event::SetPinned { id: "c".into(), pinned: true }));
+        assert_eq!(state.update(Message::TogglePin("c".into())).1, Some(SidebarIntent::SetPinned { id: "c".into(), pinned: true }));
         state.upsert_session(summary("c", "k-desk", 400, false));
         state.upsert_session(summary("later", "k-laptop", 3, false));
         assert_eq!(ids(state.pinned()), ["c", "x", "later"], "pins survive fresh summaries");
@@ -259,8 +252,8 @@ mod tests {
             let _ = state.update(Message::Search(query.into()));
             assert_eq!((ids(state.recents()), state.projects()), (recents, projects), "{query}");
         }
-        assert_eq!(state.update(Message::OpenSession("a".into())).1, Some(Event::OpenSession("a".into())));
-        assert_eq!(state.update(Message::ToggleProjectPin("beta".into())).1, Some(Event::SetProjectPinned { project: "beta".into(), pinned: true }));
+        assert_eq!(state.update(Message::OpenSession("a".into())).1, Some(SidebarIntent::OpenSession("a".into())));
+        assert_eq!(state.update(Message::ToggleProjectPin("beta".into())).1, Some(SidebarIntent::SetProjectPinned { project: "beta".into(), pinned: true }));
         assert_eq!(state.active(), Some("a"));
     }
 }

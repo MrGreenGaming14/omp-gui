@@ -4,3 +4,4 @@
 pub mod models;
 pub mod peer_sessions;
 pub mod summarizer;
+pub mod surface;

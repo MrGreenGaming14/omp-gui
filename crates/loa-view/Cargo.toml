@@ -1,0 +1,19 @@
+[package]
+name = "loa-view"
+description = "Stable, versioned presentation API: view models, intents and ports shared by loa-app and the UI crates"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+loa-util.workspace = true
+loa-core.workspace = true
+loa-contracts.workspace = true
+toml = "1.2"
+async-trait.workspace = true
+bytes.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+syn = { version = "2", features = ["full", "extra-traits"] }
+quote = "1"

@@ -10,7 +10,8 @@ use loa_ui_kit::theme::{SpaceRole, TextRole, sp};
 use loa_ui_kit::widgets::{Msg, Screen, label, mono_block};
 use std::collections::HashMap;
 
-pub use loa_settings::models::login::{Auth, LoginPrompt, LoginState, LoginUpdate, ProviderEntry, ProviderKey};
+use loa_view::settings::models::signin::Intent;
+use loa_view::settings::models::{Auth, LoginPrompt, LoginState, LoginUpdate, ProviderEntry, ProviderKey};
 
 #[derive(Clone, Debug)]
 pub enum Local {
@@ -23,22 +24,7 @@ pub enum Local {
     Dismiss(ProviderKey),
 }
 
-/// What the app acts on.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Event {
-    /// Start this provider's login with its harness.
-    SignIn(ProviderKey),
-    /// Abort the running login.
-    Cancel(ProviderKey),
-    /// Answer the running login's prompt.
-    SubmitInput { key: ProviderKey, text: String },
-    /// Open a login's URL in the system browser.
-    OpenUrl(String),
-    /// Put a login's URL on the clipboard.
-    CopyUrl(String),
-}
-
-pub type Message = Msg<Local, Event>;
+pub type Message = Msg<Local, Intent>;
 
 static IDLE: LoginState = LoginState::Idle;
 
@@ -131,7 +117,7 @@ fn login_view<'a>(key: &ProviderKey, login: &'a LoginState) -> Option<Element<'a
         LoginState::Idle => return None,
         LoginState::Starting { progress } => (column![note("Waiting for the sign in URL…".into(), Tone::Muted)].push(progress.as_ref().map(|p| note(p.clone(), Tone::Muted))), action("Cancel", ButtonKind::Ghost, local(Local::Cancel))),
         LoginState::Browser { url, copy_url, instructions, progress, prompt } => {
-            let open = row![action("Copy", ButtonKind::Ghost, Some(Msg::Emit(Event::CopyUrl(copy_url.clone())))), action("Open browser", ButtonKind::Primary, Some(Msg::Emit(Event::OpenUrl(url.clone()))))];
+            let open = row![action("Copy", ButtonKind::Ghost, Some(Msg::Emit(Intent::CopyUrl(copy_url.clone())))), action("Open browser", ButtonKind::Primary, Some(Msg::Emit(Intent::OpenUrl(url.clone()))))];
             let prompt = prompt.as_ref().map(|p| {
                 let submit = (!p.input.trim().is_empty()).then(|| Msg::Local(Local::Submit(key.clone())));
                 let input_key = key.clone();
@@ -150,20 +136,20 @@ fn login_view<'a>(key: &ProviderKey, login: &'a LoginState) -> Option<Element<'a
 
 impl Screen for State {
     type Local = Local;
-    type Event = Event;
+    type Event = Intent;
 
-    fn reduce(&mut self, m: Local) -> Option<Event> {
+    fn reduce(&mut self, m: Local) -> Option<Intent> {
         match m {
             Local::SignIn(key) => {
                 let login = self.providers.iter().any(|e| e.key == key && matches!(e.auth, Auth::Login { .. }));
                 (login && !self.login_state(&key).is_running()).then(|| {
                     self.logins.insert(key.clone(), LoginState::Starting { progress: None });
-                    Event::SignIn(key)
+                    Intent::SignIn(key)
                 })
             }
             Local::Cancel(key) => self.login_state(&key).is_running().then(|| {
                 self.logins.insert(key.clone(), LoginState::Cancelled);
-                Event::Cancel(key)
+                Intent::Cancel(key)
             }),
             Local::Input(key, value) => {
                 if let Some(LoginState::Browser { prompt: Some(p), .. }) = self.logins.get_mut(&key) {
@@ -174,7 +160,7 @@ impl Screen for State {
             Local::Submit(key) => {
                 let Some(LoginState::Browser { prompt, .. }) = self.logins.get_mut(&key) else { return None };
                 let text = prompt.take_if(|p| !p.input.trim().is_empty())?.input;
-                Some(Event::SubmitInput { key, text })
+                Some(Intent::SubmitInput { key, text })
             }
             Local::Dismiss(key) => {
                 if !self.login_state(&key).is_running() {
@@ -186,11 +172,11 @@ impl Screen for State {
     }
 
     /// Only the URLs of a login at its browser step leave the screen.
-    fn guard(&self, e: &Event) -> bool {
+    fn guard(&self, e: &Intent) -> bool {
         let shown = |pick: fn(&LoginState) -> Option<&String>, u: &String| self.logins.values().any(|l| pick(l) == Some(u));
         match e {
-            Event::OpenUrl(u) => shown(|l| if let LoginState::Browser { url, .. } = l { Some(url) } else { None }, u),
-            Event::CopyUrl(u) => shown(|l| if let LoginState::Browser { copy_url, .. } = l { Some(copy_url) } else { None }, u),
+            Intent::OpenUrl(u) => shown(|l| if let LoginState::Browser { url, .. } = l { Some(url) } else { None }, u),
+            Intent::CopyUrl(u) => shown(|l| if let LoginState::Browser { copy_url, .. } = l { Some(copy_url) } else { None }, u),
             _ => false,
         }
     }
@@ -214,19 +200,19 @@ mod tests {
         let browser = |s: &State| matches!(s.login_state(&omp()), LoginState::Browser { .. });
         let start = || local(Local::SignIn(omp()));
         // (messages and updates, emitted events, state afterwards)
-        type Case = (Vec<Result<Message, LoginUpdate>>, Vec<Event>, Check);
+        type Case = (Vec<Result<Message, LoginUpdate>>, Vec<Intent>, Check);
         let cases: Vec<Case> = vec![
-            (vec![Ok(start()), Ok(start())], vec![Event::SignIn(omp())], |s| matches!(s.login_state(&omp()), LoginState::Starting { progress: None })),
-            (vec![Ok(start()), Err(LoginUpdate::Progress("local server".into())), Err(url(None))], vec![Event::SignIn(omp())], |s| matches!(s.login_state(&omp()), LoginState::Browser { progress: Some(p), copy_url, .. } if p == "local server" && copy_url == "https://auth.example")),
-            (vec![Ok(start()), Err(url(Some("http://localhost/go"))), Ok(Msg::Emit(Event::CopyUrl("http://localhost/go".into()))), Ok(Msg::Emit(Event::OpenUrl("https://evil.example".into())))], vec![Event::SignIn(omp()), Event::CopyUrl("http://localhost/go".into())], browser),
-            (vec![Ok(start()), Err(url(None)), Err(LoginUpdate::Succeeded { account: Some("me".into()) })], vec![Event::SignIn(omp())], |s| s.providers[0].auth == Auth::Login { signed_in: true, account: Some("me".into()) }),
-            (vec![Ok(start()), Err(url(None)), Ok(local(Local::Cancel(omp()))), Err(LoginUpdate::Succeeded { account: None }), Ok(local(Local::Cancel(omp())))], vec![Event::SignIn(omp()), Event::Cancel(omp())], |s| *s.login_state(&omp()) == LoginState::Cancelled && s.providers[0].auth == signed_out()),
+            (vec![Ok(start()), Ok(start())], vec![Intent::SignIn(omp())], |s| matches!(s.login_state(&omp()), LoginState::Starting { progress: None })),
+            (vec![Ok(start()), Err(LoginUpdate::Progress("local server".into())), Err(url(None))], vec![Intent::SignIn(omp())], |s| matches!(s.login_state(&omp()), LoginState::Browser { progress: Some(p), copy_url, .. } if p == "local server" && copy_url == "https://auth.example")),
+            (vec![Ok(start()), Err(url(Some("http://localhost/go"))), Ok(Msg::Emit(Intent::CopyUrl("http://localhost/go".into()))), Ok(Msg::Emit(Intent::OpenUrl("https://evil.example".into())))], vec![Intent::SignIn(omp()), Intent::CopyUrl("http://localhost/go".into())], browser),
+            (vec![Ok(start()), Err(url(None)), Err(LoginUpdate::Succeeded { account: Some("me".into()) })], vec![Intent::SignIn(omp())], |s| s.providers[0].auth == Auth::Login { signed_in: true, account: Some("me".into()) }),
+            (vec![Ok(start()), Err(url(None)), Ok(local(Local::Cancel(omp()))), Err(LoginUpdate::Succeeded { account: None }), Ok(local(Local::Cancel(omp())))], vec![Intent::SignIn(omp()), Intent::Cancel(omp())], |s| *s.login_state(&omp()) == LoginState::Cancelled && s.providers[0].auth == signed_out()),
             (vec![Err(url(None)), Ok(local(Local::SignIn(key("codex"))))], vec![], |s| *s.login_state(&omp()) == LoginState::Idle),
-            (vec![Ok(start()), Err(LoginUpdate::Failed("denied".into())), Ok(start())], vec![Event::SignIn(omp()), Event::SignIn(omp())], |s| matches!(s.login_state(&omp()), LoginState::Starting { .. })),
-            (vec![Ok(start()), Ok(local(Local::Dismiss(omp()))), Err(LoginUpdate::Failed("denied".into())), Ok(local(Local::Dismiss(omp())))], vec![Event::SignIn(omp())], |s| *s.login_state(&omp()) == LoginState::Idle),
-            (vec![Ok(local(Local::SignIn(key("claude-code"))))], vec![Event::SignIn(key("claude-code"))], |s| *s.login_state(&omp()) == LoginState::Idle),
+            (vec![Ok(start()), Err(LoginUpdate::Failed("denied".into())), Ok(start())], vec![Intent::SignIn(omp()), Intent::SignIn(omp())], |s| matches!(s.login_state(&omp()), LoginState::Starting { .. })),
+            (vec![Ok(start()), Ok(local(Local::Dismiss(omp()))), Err(LoginUpdate::Failed("denied".into())), Ok(local(Local::Dismiss(omp())))], vec![Intent::SignIn(omp())], |s| *s.login_state(&omp()) == LoginState::Idle),
+            (vec![Ok(local(Local::SignIn(key("claude-code"))))], vec![Intent::SignIn(key("claude-code"))], |s| *s.login_state(&omp()) == LoginState::Idle),
             (vec![Ok(start()), Err(url(None)), Err(LoginUpdate::Prompt { message: "Paste the code".into(), placeholder: None }), Ok(local(Local::Submit(omp()))), Ok(local(Local::Input(omp(), "abc".into()))), Ok(local(Local::Submit(omp()))), Ok(local(Local::Submit(omp())))],
-                vec![Event::SignIn(omp()), Event::SubmitInput { key: omp(), text: "abc".into() }], |s| matches!(s.login_state(&omp()), LoginState::Browser { prompt: None, .. })),
+                vec![Intent::SignIn(omp()), Intent::SubmitInput { key: omp(), text: "abc".into() }], |s| matches!(s.login_state(&omp()), LoginState::Browser { prompt: None, .. })),
         ];
         for (i, (steps, want, check)) in cases.into_iter().enumerate() {
             let mut s = State::new(vec![row("omp", signed_out()), row("claude-code", signed_out()), row("codex", Auth::ApiKey { configured_via: None, instructions: "Set OPENAI_API_KEY".into() })]);
@@ -256,10 +242,10 @@ mod tests {
     #[test]
     fn the_view_signs_in_and_opens_the_login_url() {
         let mut s = State::new(vec![row("omp", signed_out())]);
-        let events: Vec<Event> = click_label(s.view(), "Sign in").into_iter().filter_map(|m| s.update(m)).collect();
-        assert_eq!(events, [Event::SignIn(omp())]);
+        let events: Vec<Intent> = click_label(s.view(), "Sign in").into_iter().filter_map(|m| s.update(m)).collect();
+        assert_eq!(events, [Intent::SignIn(omp())]);
         s.login_update(&omp(), url(None));
-        let events: Vec<Event> = click_label(s.view(), "Open browser").into_iter().filter_map(|m| s.update(m)).collect();
-        assert_eq!(events, [Event::OpenUrl("https://auth.example".into())]);
+        let events: Vec<Intent> = click_label(s.view(), "Open browser").into_iter().filter_map(|m| s.update(m)).collect();
+        assert_eq!(events, [Intent::OpenUrl("https://auth.example".into())]);
     }
 }

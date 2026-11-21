@@ -1,12 +1,13 @@
 //! Unattended runs: a waiting decision nobody answers within its kind's timeout gets the
-//! default answer set for that kind. The policy is the central config's `unattended` table; a
-//! kind without an entry waits, and a decision carrying its own default keeps it.
+//! default answer set for that kind. The policy is the central config's `unattended` table, as
+//! the app projects it into an [`UnattendedView`]; a kind without an entry waits, and a decision
+//! carrying its own default keeps it.
 
 use super::card::kind_for;
 use super::model::Decision;
-use loa_settings::app::{DecisionDefault, UnattendedSettings};
-use loa_contracts::harness::Answer;
 use loa_core::{DecisionKind, answer};
+use loa_view::session::Answer;
+use loa_view::session::decisions::{DecisionDefaultView, UnattendedView};
 use std::fmt;
 
 /// Timeouts the settings offer, in seconds.
@@ -17,7 +18,7 @@ pub(crate) const KINDS: [DecisionKind; 4] = [DecisionKind::Approval, DecisionKin
 
 /// The unattended policy over the central config's `unattended` table.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Unattended(pub UnattendedSettings);
+pub struct Unattended(pub UnattendedView);
 
 /// Settings edits.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -55,34 +56,25 @@ impl Unattended {
 
     pub fn update(&mut self, message: Message) {
         let timeout = KINDS.into_iter().find_map(|kind| self.0.for_kind(kind).map(|d| d.timeout_secs)).unwrap_or(DEFAULT_TIMEOUT);
-        let fresh = |answer: &str| DecisionDefault { timeout_secs: timeout, answer: answer.to_owned(), reason: None };
+        let fresh = |answer: &str| DecisionDefaultView { timeout_secs: timeout, answer: answer.to_owned(), reason: None };
         match message {
             Message::Enabled(true) => {
                 for (kind, answer) in [(DecisionKind::Approval, answer::DENY), (DecisionKind::Plan, answer::REJECT)] {
-                    slot(&mut self.0, kind).get_or_insert_with(|| fresh(answer));
+                    self.0.for_kind_mut(kind).get_or_insert_with(|| fresh(answer));
                 }
             }
-            Message::Enabled(false) => self.0 = UnattendedSettings::default(),
-            Message::Answer(kind, None) => *slot(&mut self.0, kind) = None,
-            Message::Answer(kind, Some(answer)) => match slot(&mut self.0, kind) {
+            Message::Enabled(false) => self.0 = UnattendedView::default(),
+            Message::Answer(kind, None) => *self.0.for_kind_mut(kind) = None,
+            Message::Answer(kind, Some(answer)) => match self.0.for_kind_mut(kind) {
                 Some(default) if default.answer == answer => {}
                 Some(default) => (default.answer, default.reason) = (answer, None),
                 empty => *empty = Some(fresh(&answer)),
             },
             Message::Timeout(kind, Duration(secs)) => {
-                if let Some(default) = slot(&mut self.0, kind) {
+                if let Some(default) = self.0.for_kind_mut(kind) {
                     default.timeout_secs = secs.max(1);
                 }
             }
         }
-    }
-}
-
-fn slot(settings: &mut UnattendedSettings, kind: DecisionKind) -> &mut Option<DecisionDefault> {
-    match kind {
-        DecisionKind::Approval => &mut settings.approval,
-        DecisionKind::Question => &mut settings.question,
-        DecisionKind::Plan => &mut settings.plan,
-        DecisionKind::Form => &mut settings.form,
     }
 }

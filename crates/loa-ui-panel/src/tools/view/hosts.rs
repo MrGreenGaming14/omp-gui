@@ -2,10 +2,12 @@
 
 use super::{BOLD, card, clipped, form_buttons, form_card, inset, note_row};
 use crate::{action, ghost};
-use crate::tools::{AuditRow, FormId, Limit, Message, PromptAnswer, PromptKind, RemoteHost, RemotePrompt, State};
+use crate::tools::{FormId, Limit, Message, State};
+use loa_view::panel::{AuditRow, PromptAnswer, PromptKind, RemoteHost, RemotePrompt};
+use loa_view::theme::Icon;
 use iced::widget::{Column, checkbox, column, container, row, rule, scrollable, space, text};
 use iced::{Alignment, Element, Fill, Font, Padding, Shrink};
-use loa_ui_kit::icons::{Icon, tinted};
+use loa_ui_kit::icons::tinted;
 use loa_ui_kit::style::{self, ButtonKind, Surface, Tone};
 use loa_ui_kit::theme::{SpaceRole as Sp, TextRole as T, pad_y, sp, text_size as ts};
 use loa_ui_kit::widgets::{form_view, label, list_editor};

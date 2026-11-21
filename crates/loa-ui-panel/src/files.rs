@@ -3,7 +3,10 @@
 use crate::{indent, list_row_height};
 use iced::widget::{Space, button, column, container, row, scrollable, text};
 use iced::{Alignment, Element, Fill, Task};
-use loa_ui_kit::icons::{Icon, icon, muted};
+use loa_ui_kit::icons::{icon, muted};
+use loa_view::panel::FilesIntent;
+use loa_view::panel::port::{Entry, FileSystem};
+use loa_view::theme::Icon;
 use loa_ui_kit::style::{self as kit, ButtonKind, Tone};
 use loa_ui_kit::theme::{SpaceRole as Sp, TextRole as T, pad_x, sp, text_size as ts};
 use loa_ui_kit::widgets::label;
@@ -14,27 +17,19 @@ use std::path::{Path, PathBuf};
 /// Tallest the sidebar's compact list grows before it scrolls.
 const COMPACT_MAX_HEIGHT: f32 = 240.0;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Entry { pub name: String, pub is_dir: bool }
-/// Port the tree reads directories through.
-pub trait FileSystem: Send + Sync {
-    /// The direct children of `dir`, already filtered; the tree sorts them.
-    fn list(&self, dir: &Path) -> Result<Vec<Entry>, ignore::Error>;
-}
-
-/// The local disk, honouring `.gitignore`, `.ignore` and git excludes, showing dotfiles and hiding `.git`.
+/// The local disk, honouring `.gitignore`, `.ignore` and git excludes, showing dotfiles and hiding `.git`; errors read as the walker words them.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct LocalFs;
 
 impl FileSystem for LocalFs {
-    fn list(&self, dir: &Path) -> Result<Vec<Entry>, ignore::Error> {
+    fn list(&self, dir: &Path) -> Result<Vec<Entry>, String> {
         let walk = ignore::WalkBuilder::new(dir).max_depth(Some(1)).hidden(false).require_git(false).parents(true).filter_entry(|e| e.file_name() != ".git").build();
         let mut entries = Vec::new();
         for item in walk {
             let entry = match item {
                 // A bad glob or one unreadable child leaves the rest listable.
                 Err(e) if e.is_partial() || e.depth().is_some_and(|d| d > 0) => continue,
-                Err(e) => return Err(e),
+                Err(e) => return Err(e.to_string()),
                 Ok(e) if e.depth() == 0 => continue,
                 Ok(e) => e,
             };
@@ -48,9 +43,6 @@ impl FileSystem for LocalFs {
 /// `Click` carries the clicked row's node index.
 #[derive(Debug, Clone)]
 pub enum Message { Click(usize) }
-/// `Open` carries the file's absolute path.
-#[derive(Debug, Clone, PartialEq)]
-pub enum Event { Open(PathBuf) }
 /// A file or directory, `rel` to the root; node 0 is the hidden root. Listed children are contiguous.
 #[derive(Default)]
 struct Node { depth: usize, name: String, rel: PathBuf, is_dir: bool, expanded: bool, children: Option<Range<usize>>, error: Option<String> }
@@ -91,12 +83,12 @@ impl State {
         self.rebuild_rows();
     }
     /// A click selects a row, toggles a directory and opens a file.
-    pub fn update(&mut self, message: Message) -> (Task<Message>, Option<Event>) {
+    pub fn update(&mut self, message: Message) -> (Task<Message>, Option<FilesIntent>) {
         let Message::Click(i) = message;
         if i == 0 || !self.rows.contains(&Row::Node(i)) { return (Task::none(), None) }
         self.selected = Some(i);
         let node = &self.nodes[i];
-        if !node.is_dir { return (Task::none(), Some(Event::Open(self.root.join(&node.rel)))) }
+        if !node.is_dir { return (Task::none(), Some(FilesIntent::Open(self.root.join(&node.rel)))) }
         if !node.expanded && node.children.is_none() { self.load(i) }
         self.nodes[i].expanded = !self.nodes[i].expanded;
         self.rebuild_rows();
@@ -138,7 +130,7 @@ impl State {
                 self.nodes.extend(entries.into_iter().map(|Entry { name, is_dir }| Node { depth, rel: rel.join(&name), name, is_dir, ..Node::default() }));
                 (self.nodes[dir].children, self.nodes[dir].error) = (Some(first..self.nodes.len()), None);
             }
-            Err(e) => (self.nodes[dir].children, self.nodes[dir].error) = (None, Some(e.to_string())),
+            Err(e) => (self.nodes[dir].children, self.nodes[dir].error) = (None, Some(e)),
         }
     }
     fn rebuild_rows(&mut self) {
@@ -163,36 +155,39 @@ pub(crate) mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
 
-    /// Directories by path, counting how often each is listed.
-    #[derive(Default)]
-    pub(crate) struct FakeFs(Mutex<HashMap<PathBuf, (Vec<Entry>, usize)>>);
+    /// Listings by directory, with how often each was listed.
+    type Dirs = HashMap<PathBuf, (Vec<Entry>, usize)>;
+
+    /// Directories by path, counting how often each is listed; clones share them.
+    #[derive(Clone, Default)]
+    pub(crate) struct FakeFs(Arc<Mutex<Dirs>>);
 
     impl FakeFs {
         pub(crate) fn put(&self, dir: &str, entries: &[(&str, bool)]) { self.0.lock().unwrap().entry(dir.into()).or_default().0 = entries.iter().map(|&(n, d)| Entry { name: n.into(), is_dir: d }).collect() }
         fn calls(&self, dir: &str) -> usize { self.0.lock().unwrap().get(Path::new(dir)).map_or(0, |d| d.1) }
     }
 
-    impl FileSystem for Arc<FakeFs> {
-        fn list(&self, dir: &Path) -> Result<Vec<Entry>, ignore::Error> {
+    impl FileSystem for FakeFs {
+        fn list(&self, dir: &Path) -> Result<Vec<Entry>, String> {
             let mut dirs = self.0.lock().unwrap();
-            let d = dirs.get_mut(dir).ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))?;
+            let d = dirs.get_mut(dir).ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound).to_string())?;
             d.1 += 1;
             Ok(d.0.clone())
         }
     }
     #[test]
     fn directories_list_lazily_sort_first_and_open_files() {
-        let fs = Arc::new(FakeFs::default());
+        let fs = FakeFs::default();
         for (dir, entries) in [("/r", &[("b.txt", false), ("src", true), ("a", true), ("Z.md", false)][..]), ("/r/src", &[("main.rs", false), ("lib", true)]), ("/r/a", &[])] { fs.put(dir, entries) }
-        let mut s = State::new("/r".into(), Box::new(Arc::clone(&fs)));
+        let mut s = State::new("/r".into(), Box::new(fs.clone()));
         let click = |s: &mut State, rel: &str| s.update(Message::Click(s.nodes.iter().position(|n| n.rel == Path::new(rel)).unwrap())).1;
         fn visible(s: &State) -> Vec<&str> { s.visible().map(|p| p.to_str().unwrap()).collect() }
         assert_eq!((visible(&s), fs.calls("/r"), fs.calls("/r/src")), (vec!["a", "src", "b.txt", "Z.md"], 1, 0));
-        let steps: [(&str, Option<Event>, &[&str], usize); 4] = [
+        let steps: [(&str, Option<FilesIntent>, &[&str], usize); 4] = [
             ("src", None, &["a", "src", "src/lib", "src/main.rs", "b.txt", "Z.md"], 1),
             ("src", None, &["a", "src", "b.txt", "Z.md"], 1),
             ("src", None, &["a", "src", "src/lib", "src/main.rs", "b.txt", "Z.md"], 1),
-            ("src/main.rs", Some(Event::Open("/r/src/main.rs".into())), &["a", "src", "src/lib", "src/main.rs", "b.txt", "Z.md"], 1),
+            ("src/main.rs", Some(FilesIntent::Open("/r/src/main.rs".into())), &["a", "src", "src/lib", "src/main.rs", "b.txt", "Z.md"], 1),
         ];
         for (rel, event, want, calls) in steps { assert_eq!((click(&mut s, rel), visible(&s), fs.calls("/r/src")), (event, want.to_vec(), calls), "{rel}") }
         fs.put("/r/src", &[("main.rs", false), ("new.rs", false)]);

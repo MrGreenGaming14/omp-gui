@@ -4,19 +4,22 @@
 
 use iced::widget::{column, container, scrollable};
 use iced::{Element, Fill, Subscription, Task, Theme};
-use loa_contracts::harness::Answer;
+use loa_view::session::Answer;
+use loa_view::session::decisions::{DeskIntent, UnattendedView};
 use loa_bus::SessionId;
 use loa_core::{ElementKind, NodeId, Op};
 use loa_settings::models::login::UrlOpener;
 use loa_harness::account_support::opener::SystemUrlOpener;
-use loa_ui_session::decisions::{self as decisions, Desk, DesktopNotifier, TIMEOUT_BY, Unattended, desk, unattended};
+use loa_ui_session::decisions::{self as decisions, Desk, TIMEOUT_BY, desk, unattended};
 use loa_ui_kit::style::{ButtonKind, Tone};
 use loa_ui_kit::theme::{LayoutRole, SpaceRole, TextRole, sp, width};
 use loa_ui_kit::widgets::{card, label, section_header, text_button};
 
 use crate::area::{perform, Area, AreaCommand, AreaMessage, Ctx, Listed, Request};
 use loa_runtime::session::SessionEvent;
+use notifier::DesktopNotifier;
 
+mod notifier;
 
 #[derive(Clone, Debug)]
 pub enum Message {
@@ -106,8 +109,8 @@ impl State {
         })
     }
 
-    fn save(policy: &Unattended, ctx: &mut Ctx) {
-        ctx.edit_config("unattended prompt settings", |config| config.unattended = policy.0.clone());
+    fn save(policy: UnattendedView, ctx: &mut Ctx) {
+        ctx.edit_config("unattended prompt settings", |config| config.unattended = crate::view::session::unattended_from_view(policy));
     }
 
     fn set_unattended(&mut self, enabled: bool, ctx: &mut Ctx) -> Task<Message> {
@@ -136,7 +139,7 @@ impl Area for State {
     type Message = Message;
 
     fn new(ctx: &mut Ctx) -> (Self, Task<Message>) {
-        let policy = Unattended(ctx.read_config("unattended prompt settings").unwrap_or_default().unattended);
+        let policy = crate::view::session::unattended_to_view(&ctx.read_config("unattended prompt settings").unwrap_or_default().unattended);
         let theme = ctx.shell.theme();
         let mut desk = Desk::new(ctx.services.node.key.clone(), &theme, policy, DesktopNotifier::new("loa"));
         desk.set_local_name(ctx.services.node.label.clone());
@@ -157,16 +160,16 @@ impl Area for State {
                 let mut tasks = Vec::new();
                 for event in self.desk.update(message) {
                     match event {
-                        desk::Event::Answer { session, decision, answer } => {
+                        DeskIntent::Answer { session, decision, answer } => {
                             tasks.push(self.answer(session, decision, answer, ctx));
                         }
-                        desk::Event::OpenLink(url) => {
+                        DeskIntent::OpenLink(url) => {
                             if let Err(error) = SystemUrlOpener.open_url(&url) {
                                 ctx.notify(error);
                             }
                         }
-                        desk::Event::PolicyChanged(policy) => Self::save(&policy, ctx),
-                        desk::Event::NotifyFailed(error) => {
+                        DeskIntent::PolicyChanged(policy) => Self::save(policy, ctx),
+                        DeskIntent::NotifyFailed(error) => {
                             if !self.notify_failed {
                                 self.notify_failed = true;
                                 ctx.notify(format!("System notifications are unavailable: {error}"));

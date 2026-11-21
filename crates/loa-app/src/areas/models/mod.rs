@@ -11,16 +11,26 @@ use iced::{Element, Fill, Subscription, Task};
 use loa_contracts::harness::{AdapterError, HarnessModel, ModelSelection, SessionConfig};
 use loa_bus::SessionId;
 use loa_core::{Dom, Op, PatchSink, attr};
-use loa_ui_session::composer as composer;
+use loa_view::session::composer;
 use loa_models::service::{Backend, SettingsLoad};
+use loa_settings::models::selector::{Catalog, ModelInfo, ModelRef, RoleAssignment};
 use loa_settings::models::settings::{ModelSettings, ValidationError};
+use loa_settings::models::login::ProviderEntry;
+use loa_contracts::harness::LoginUpdate;
 use loa_ui_kit::widgets::{Msg, Screen};
-use loa_ui_settings::models::{self as screen, Catalog, ModelInfo, ModelRef, Page, RoleAssignment, SessionModel, picker, role_draft, settings, signin};
-use loa_ui_settings::models::signin::{LoginUpdate, ProviderEntry, ProviderKey};
+use loa_ui_settings::models::{self as screen, Page, picker, settings, signin};
+use loa_view::settings::models as view;
+
+use crate::view::settings::models::{
+    catalog_to_view, login_update_to_view, model_ref_from_view, model_ref_to_view, provider_key_from_view, provider_to_view, settings_from_view, settings_to_view,
+    validation_error_to_view,
+};
 
 use crate::area::{perform, Area, AreaCommand, AreaMessage, Ctx, Target};
+use session::{role_draft, session_model};
 use loa_runtime::session::{Session, SessionEvent};
 
+mod session;
 #[cfg(test)]
 mod tests;
 
@@ -54,7 +64,7 @@ pub enum Message {
     EffortSet { session: SessionId, harness: String, effort: String, result: Result<(), Failure> },
     Providers(Vec<ProviderEntry>),
     SignIn(signin::Message),
-    Login(ProviderKey, LoginUpdate),
+    Login(view::ProviderKey, LoginUpdate),
     Picker(picker::Message),
     RoleAssigned(Result<(), String>),
     SettingsLoaded(Result<SettingsLoad, String>),
@@ -215,25 +225,25 @@ impl State {
         let current = self.current(ctx).model.and_then(|id| {
             ids.iter().find(|(_, harness_id)| **harness_id == id).map(|(model, _)| model.clone()).or_else(|| ModelRef::parse(&id))
         });
-        let (state, _focus) = picker::State::open(catalog, picker::Target::Session, current);
+        let (state, _focus) = picker::State::open(catalog_to_view(&catalog), view::picker::Target::Session, current.as_ref().map(model_ref_to_view));
         self.picker.1 = Load::Ready(Picker { state, ids });
     }
 
     /// The active session's model and role, with a pending pick on top.
-    fn current(&self, ctx: &Ctx) -> SessionModel {
+    fn current(&self, ctx: &Ctx) -> view::SessionModel {
         let Some(session) = ctx.runtime.sessions().active() else {
             if let Some((model, role)) = self.pending.locked().get(&None).and_then(|pending| pending.model.clone()) {
-                return SessionModel { model: Some(model), role };
+                return view::SessionModel { model: Some(model), role };
             }
             // A new omp session runs on the default role's model.
             let default = roles(ctx, Self::harness_id(ctx))
                 .then(|| self.roles.as_deref().unwrap_or_default().iter().find(|role| role.role == "default"))
                 .flatten();
-            return default.map_or_else(SessionModel::default, |role| SessionModel { model: Some(role.model.selector()), role: None });
+            return default.map_or_else(view::SessionModel::default, |role| view::SessionModel { model: Some(role.model.selector()), role: None });
         };
-        let mut current = SessionModel::from_dom(session.dom()).map(|(_, model)| model).unwrap_or_default();
+        let mut current = session_model(session.dom()).map(|(_, model)| model).unwrap_or_default();
         if let Some((model, role)) = self.pending.locked().get(&Some(session.id().to_string())).and_then(|pending| pending.model.clone()) {
-            current = SessionModel { model: Some(model), role };
+            current = view::SessionModel { model: Some(model), role };
         }
         current
     }
@@ -363,11 +373,11 @@ impl State {
         ctx.composer.set_model_actions(actions);
     }
 
-    fn signin_event(&mut self, event: signin::Event, ctx: &mut Ctx) -> Task<Message> {
+    fn signin_event(&mut self, event: view::signin::Intent, ctx: &mut Ctx) -> Task<Message> {
         match event {
-            signin::Event::SignIn(key) => {
+            view::signin::Intent::SignIn(key) => {
                 let backend = self.backend.clone();
-                let login_key = key.clone();
+                let login_key = provider_key_from_view(key.clone());
                 let updates = iced::stream::channel(16, async move |mut out| {
                     let mut updates = backend.login(login_key);
                     while let Some(update) = updates.recv().await {
@@ -376,37 +386,38 @@ impl State {
                 });
                 Task::run(updates, move |update| Message::Login(key.clone(), update))
             }
-            signin::Event::OpenUrl(url) => {
+            view::signin::Intent::OpenUrl(url) => {
                 if let Err(error) = self.backend.open_url(&url) {
                     ctx.notify(format!("The browser did not open ({error}); copy the URL instead"));
                 }
                 Task::none()
             }
-            signin::Event::CopyUrl(url) => iced::clipboard::write(url),
-            signin::Event::Cancel(key) => {
-                self.backend.cancel(&key);
+            view::signin::Intent::CopyUrl(url) => iced::clipboard::write(url),
+            view::signin::Intent::Cancel(key) => {
+                self.backend.cancel(&provider_key_from_view(key));
                 Task::none()
             }
-            signin::Event::SubmitInput { key, text } => {
-                self.backend.submit_input(&key, text);
+            view::signin::Intent::SubmitInput { key, text } => {
+                self.backend.submit_input(&provider_key_from_view(key), text);
                 Task::none()
             }
         }
     }
 
-    fn picker_event(&mut self, event: picker::Event, ctx: &mut Ctx) -> Task<Message> {
+    fn picker_event(&mut self, event: view::picker::Intent, ctx: &mut Ctx) -> Task<Message> {
         match event {
-            picker::Event::SetSessionModel(change) => {
+            view::picker::Intent::SetSessionModel(change) => {
                 let Load::Ready(picker) = &self.picker.1 else { return Task::none() };
-                let model = picker.ids.get(&change.model).cloned().unwrap_or_else(|| change.model.selector());
+                let model = picker.ids.get(&model_ref_from_view(change.model.clone())).cloned().unwrap_or_else(|| change.model.selector());
                 ctx.close_screen();
                 self.choose(model, change.role, ctx)
             }
-            picker::Event::SetRoleModel { role, model } => {
+            view::picker::Intent::SetRoleModel { role, model } => {
                 let backend = self.backend.clone();
+                let model = model_ref_from_view(model);
                 Task::perform(async move { backend.assign_role(role, model).await }, Message::RoleAssigned)
             }
-            picker::Event::Close => {
+            view::picker::Intent::Close => {
                 ctx.close_screen();
                 Task::none()
             }
@@ -585,6 +596,7 @@ impl Area for State {
                 Task::none()
             }
             Message::Providers(providers) => {
+                let providers = providers.iter().map(provider_to_view).collect();
                 match &mut self.signin {
                     Load::Ready(state) => state.set_providers(providers),
                     load => *load = Load::Ready(signin::State::new(providers)),
@@ -598,7 +610,7 @@ impl Area for State {
             Message::Login(key, update) => {
                 let succeeded = matches!(update, LoginUpdate::Succeeded { .. });
                 if let Load::Ready(state) = &mut self.signin {
-                    state.login_update(&key, update);
+                    state.login_update(&key, login_update_to_view(update));
                 }
                 if !succeeded {
                     return Task::none();
@@ -622,7 +634,7 @@ impl Area for State {
             },
             Message::SettingsLoaded(result) => {
                 self.settings = match result {
-                    Ok(load) => Load::Ready(settings::State::new(load.settings, load.known_models)),
+                    Ok(load) => Load::Ready(settings::State::new(settings_to_view(&load.settings), load.known_models)),
                     Err(error) => Load::Failed(format!("Can't read omp's model settings: {error}")),
                 };
                 Task::none()
@@ -630,23 +642,24 @@ impl Area for State {
             Message::Settings(message) => {
                 let Load::Ready(state) = &mut self.settings else { return Task::none() };
                 match state.update(message) {
-                    Some(settings::Event::Save(settings)) => {
+                    Some(view::settings::Intent::Save(settings)) => {
                         let backend = self.backend.clone();
+                        let settings = settings_from_view(settings);
                         Task::perform(async move { backend.save_settings(settings).await }, Message::Saved)
                     }
-                    Some(settings::Event::Reverted) | None => Task::none(),
+                    Some(view::settings::Intent::Reverted) | None => Task::none(),
                 }
             }
             Message::Saved(result) => {
                 let Load::Ready(state) = &mut self.settings else { return Task::none() };
                 match result {
                     Ok(settings) => {
-                        state.saved(settings);
+                        state.saved(settings_to_view(&settings));
                         ctx.notify("Model settings saved");
                         self.refresh_models(ctx)
                     }
                     Err(errors) => {
-                        state.set_errors(errors);
+                        state.set_errors(errors.iter().map(validation_error_to_view).collect());
                         Task::none()
                     }
                 }
@@ -697,7 +710,7 @@ impl Area for State {
             (Page::Model, Load::Ready(picker)) => picker
                 .state
                 .subscription()
-                .filter_map(|message| (!matches!(message, Msg::Emit(picker::Event::Close))).then_some(message))
+                .filter_map(|message| (!matches!(message, Msg::Emit(view::picker::Intent::Close))).then_some(message))
                 .map(Message::Picker),
             _ => Subscription::none(),
         }

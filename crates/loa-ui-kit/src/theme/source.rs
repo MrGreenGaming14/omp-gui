@@ -1,7 +1,8 @@
 //! Ports for where themes come from, and the registry that resolves a config [`ThemeRef`].
 
-use super::{Appearance, BuiltinTheme, ThemeError, ThemeRef, TokenSet, Variant};
+use super::{BuiltinTheme, ThemeError, TokenSet, Variant};
 use loa_util::registry::Registry;
+use loa_view::theme::{Appearance, ThemeRef};
 use std::sync::Arc;
 
 /// A theme: named token sets per variant. Builtins today; a script adapter later.

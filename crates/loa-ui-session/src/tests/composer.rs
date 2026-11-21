@@ -1,20 +1,20 @@
 use crate::composer::*;
 use iced::keyboard::{Key, Modifiers, key::Named};
 use iced::widget::text_editor::{Action, Edit, Motion};
-use loa_contracts::harness::{Attachment, Prompt};
-use loa_core::SessionMode;
 use loa_ui_kit::testkit;
+use loa_view::session::composer::*;
+use loa_view::session::{Attachment, Prompt, SessionMode};
 
-fn act(state: &mut State, message: Message) -> Option<Event> { state.update(message).1 }
+fn act(state: &mut State, message: Message) -> Option<Intent> { state.update(message).1 }
 
 /// Types `text` a key at a time; `\n` is Shift+Enter. Returns the events.
-fn type_text(state: &mut State, text: &str) -> Vec<Event> {
+fn type_text(state: &mut State, text: &str) -> Vec<Intent> {
     text.chars().filter_map(|c| act(state, Message::Edit(Action::Edit(if c == '\n' { Edit::Enter } else { Edit::Insert(c) })))).collect()
 }
 
-fn submitted(event: Option<Event>) -> Prompt {
+fn submitted(event: Option<Intent>) -> Prompt {
     match event {
-        Some(Event::Submit(prompt)) => prompt,
+        Some(Intent::Submit(prompt)) => prompt,
         other => panic!("expected a submit, got {other:?}"),
     }
 }
@@ -67,11 +67,11 @@ fn submit_queue_and_stop() {
     assert_eq!((prompt.text.as_str(), prompt.by.as_str(), state.text()), ("fix the bug\nplease", "node-a", String::new()));
     state.turn_started();
     type_text(&mut state, "second");
-    assert_eq!(act(&mut state, Message::Submit), Some(Event::QueueChanged(vec!["second".into()])));
+    assert_eq!(act(&mut state, Message::Submit), Some(Intent::QueueChanged(vec!["second".into()])));
     type_text(&mut state, "third");
     act(&mut state, Message::Submit);
     let first = state.queue().next().unwrap().id;
-    assert_eq!(act(&mut state, Message::Queue(first, Some(" ".into()))), Some(Event::QueueChanged(vec![" ".into(), "third".into()])));
+    assert_eq!(act(&mut state, Message::Queue(first, Some(" ".into()))), Some(Intent::QueueChanged(vec![" ".into(), "third".into()])));
     assert_eq!(submitted(state.turn_ended()).text, "third", "blank queued messages are skipped");
     assert_eq!(state.turn_ended(), None);
     // Stop moves queued messages back into the editor, ahead of what is typed.
@@ -79,7 +79,7 @@ fn submit_queue_and_stop() {
     type_text(&mut state, "queued");
     act(&mut state, Message::Submit);
     type_text(&mut state, "draft");
-    assert_eq!(act(&mut state, Message::Interrupt), Some(Event::Stop));
+    assert_eq!(act(&mut state, Message::Interrupt), Some(Intent::Stop));
     assert_eq!(state.text(), "queued\n\ndraft");
     assert_eq!(state.queue().count(), 0);
 }
@@ -130,7 +130,7 @@ fn popups_complete_commands_and_attach_mentioned_files() {
     assert_eq!(prompt.text, "/rewind see @mai @\"docs/a b.png\" and @src/main.rs, @nope");
     let attached = [Attachment { path: "docs/a b.png".into(), mime: Some("image/png".into()) }, Attachment { path: "src/main.rs".into(), mime: None }];
     assert_eq!(prompt.attachments, attached);
-    assert_eq!(act(&mut State::new(), Message::MentionPressed), Some(Event::FilesRequested { query: String::new() }));
+    assert_eq!(act(&mut State::new(), Message::MentionPressed), Some(Intent::FilesRequested { query: String::new() }));
 }
 
 #[test]
@@ -149,13 +149,13 @@ fn pickers_emit_changes_once_and_skip_unavailable_options() {
     let cases = [
         (PickerId::Harness, "gone", None),
         (PickerId::Harness, "omp", None),
-        (PickerId::Harness, "claude", Some(Event::HarnessChanged("claude".into()))),
-        (PickerId::Model, "sonnet", Some(Event::ModelChanged(model("sonnet")))),
-        (PickerId::Model, "all", Some(Event::ModelAction("all".into()))),
-        (PickerId::Effort, "high", Some(Event::EffortChanged("high".into()))),
-        (PickerId::Access, "full", Some(Event::AccessChanged("full".into()))),
-        (PickerId::Mode, "plan", Some(Event::ModeChanged(SessionMode::Plan))),
-        (PickerId::Folder, "/home/b", Some(Event::FolderPicked("/home/b".into()))),
+        (PickerId::Harness, "claude", Some(Intent::HarnessChanged("claude".into()))),
+        (PickerId::Model, "sonnet", Some(Intent::ModelChanged(model("sonnet")))),
+        (PickerId::Model, "all", Some(Intent::ModelAction("all".into()))),
+        (PickerId::Effort, "high", Some(Intent::EffortChanged("high".into()))),
+        (PickerId::Access, "full", Some(Intent::AccessChanged("full".into()))),
+        (PickerId::Mode, "plan", Some(Intent::ModeChanged(SessionMode::Plan))),
+        (PickerId::Folder, "/home/b", Some(Intent::FolderPicked("/home/b".into()))),
     ];
     for (picker, key, expected) in cases {
         act(&mut state, Message::Toggle(picker));
@@ -163,8 +163,8 @@ fn pickers_emit_changes_once_and_skip_unavailable_options() {
         assert_eq!(act(&mut state, message), expected, "{picker:?} {key}");
     }
     assert_eq!((state.harness().unwrap().id.as_str(), state.efforts().1, state.models().1.unwrap().id.as_str()), ("claude", Some("high"), "sonnet"));
-    assert_eq!(act(&mut state, Message::Pick(PickerId::Folder, 2)), Some(Event::BrowseFolders));
-    assert_eq!(act(&mut state, Message::Pick(PickerId::Folder, 3)), Some(Event::OpenWorkspace));
+    assert_eq!(act(&mut state, Message::Pick(PickerId::Folder, 2)), Some(Intent::BrowseFolders));
+    assert_eq!(act(&mut state, Message::Pick(PickerId::Folder, 3)), Some(Intent::OpenWorkspace));
     act(&mut state, Message::Toggle(PickerId::Model));
     for label in ["sonnet", "Claude opus", "anthropic", "All models…", "Plan", "High", "Full", "a"] {
         assert!(iced_test::simulator(state.view()).find(label).is_ok(), "{label}");

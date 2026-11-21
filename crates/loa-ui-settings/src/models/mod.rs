@@ -1,22 +1,17 @@
 //! The models screen: sign in ([`signin`]), the session's model ([`picker`]) and omp's model
-//! settings ([`settings`]) under one page switch, plus the composer chip ([`chip`]) and the
-//! session's recorded model ([`session`]).
+//! settings ([`settings`]) under one page switch, over the view types of
+//! [`loa_view::settings::models`].
 
-pub mod chip;
 pub mod picker;
-pub mod session;
 pub mod settings;
 pub mod signin;
 
-pub use loa_settings::models::selector::{Catalog, ModelInfo, ModelRef, RoleAssignment};
-pub use session::{SessionModel, SessionModelChange, role_draft};
-
 use iced::widget::{Space, center, column, container, row, rule};
 use iced::{Alignment, Element, Fill};
-use loa_ui_kit::Icon;
 use loa_ui_kit::style::{self, Tone};
 use loa_ui_kit::theme::{SpaceRole, TextRole, sp};
 use loa_ui_kit::widgets::{Tab, icon_button, label, tab_strip};
+use loa_view::theme::Icon;
 
 loa_util::str_enum! {
     /// The pages of the models screen.

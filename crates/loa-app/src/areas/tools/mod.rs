@@ -27,6 +27,7 @@ use loa_remote::http::RemoteHttp;
 use loa_remote::tools::SERVER_NAME as REMOTE_SERVER;
 use loa_ui_terminal as terminal;
 use loa_ui_panel::tools;
+use loa_view::panel::{self, ToolsIntent};
 
 use self::remote::{Remote, SshPaths, SshPty};
 use crate::area::{perform, Area, AreaCommand, AreaMessage, Ctx, HostToolSet, Listed, PanelTab, Target};
@@ -80,7 +81,7 @@ pub enum Message {
     /// The `remote` server's loopback HTTP endpoint is up (or failed).
     RemoteServing(Result<Arc<RemoteHttp>, String>),
     /// A harness's built in tools were read.
-    HarnessTools { harness: String, result: Result<Vec<tools::ToolInfo>, String> },
+    HarnessTools { harness: String, result: Result<Vec<panel::ToolInfo>, String> },
     /// A server's status or tools changed.
     ServersChanged,
     /// A remote host question arrived or went away.
@@ -88,7 +89,7 @@ pub enum Message {
     /// The `.claude`, `.cursor` and `.codex` configs were read.
     Scanned { found: Vec<Found>, errors: Vec<String> },
     Imported(Result<import::ImportReport, String>),
-    Audit { host: String, result: Result<Vec<tools::AuditRow>, String> },
+    Audit { host: String, result: Result<Vec<panel::AuditRow>, String> },
     /// A server action finished: a notice, or the error.
     Done(Result<Option<String>, String>),
     Terminal(terminal::state::Message),
@@ -102,11 +103,11 @@ pub struct State {
     pub(crate) remote: Remote,
     pub(crate) ssh: SshPaths,
     /// Built in tools per harness, as read (or why they couldn't be).
-    harness_tools: HashMap<String, Result<Vec<tools::ToolInfo>, String>>,
+    harness_tools: HashMap<String, Result<Vec<panel::ToolInfo>, String>>,
     /// omp's tools are being read.
     omp_loading: bool,
     /// The harness and app tools the Built in section shows.
-    shown: (Option<String>, Vec<tools::ToolInfo>),
+    shown: (Option<String>, Vec<panel::ToolInfo>),
     /// Entries of the last import scan.
     found: Vec<Found>,
     /// Project the toggles apply to.
@@ -150,7 +151,7 @@ impl State {
             },
             Some(_) => (Vec::new(), Some(format!("{label} doesn't report its built in tools to the app")), None),
         };
-        self.panel.set_builtin(tools::BuiltinTools {
+        self.panel.set_builtin(panel::BuiltinTools {
             harness: label,
             harness_tools,
             app_tools: ctx.app_tools.clone(),
@@ -167,7 +168,7 @@ impl State {
                 bridge::list_omp_tools(&config)
                     .await
                     .map(|specs| {
-                        specs.into_iter().map(|spec| tools::ToolInfo::new(spec.name, listing::short_description(&spec.description))).collect()
+                        specs.into_iter().map(|spec| panel::ToolInfo::new(spec.name, listing::short_description(&spec.description))).collect()
                     })
             },
             |result| Message::HarnessTools { harness: OMP.to_owned(), result },
@@ -186,7 +187,7 @@ impl State {
 
     /// The `omp` bridge server row: omp's tools served to the harnesses
     /// that connect to MCP servers.
-    fn bridge_row(&self, ctx: &Ctx) -> tools::McpServer {
+    fn bridge_row(&self, ctx: &Ctx) -> panel::McpServer {
         let described = self.harness_tools.get(OMP).and_then(|tools| tools.as_ref().ok());
         let tools = bridge::DEFAULT_TOOLS
             .iter()
@@ -194,30 +195,30 @@ impl State {
                 let description = described
                     .and_then(|tools| tools.iter().find(|tool| tool.name == *name))
                     .map_or_else(|| format!("omp's `{name}` tool"), |tool| tool.description.clone());
-                tools::ToolInfo::new(*name, description)
+                panel::ToolInfo::new(*name, description)
             })
             .collect();
         let status = match Self::omp(ctx) {
-            Some(_) => tools::ServerStatus::Running,
-            None => tools::ServerStatus::Error("omp isn't installed".to_owned()),
+            Some(_) => panel::ServerStatus::Running,
+            None => panel::ServerStatus::Error("omp isn't installed".to_owned()),
         };
         let command = std::env::current_exe().map_or_else(|_| "loa-app".to_owned(), |exe| exe.display().to_string());
         let transport = McpTransport::Stdio { command, args: vec!["omp-bridge".to_owned()], env: Default::default() };
         listing::app_server(bridge::SERVER_NAME, transport, status, tools)
     }
 
-    fn remote_row(&self) -> tools::McpServer {
+    fn remote_row(&self) -> panel::McpServer {
         let (status, url) = match (&self.remote.http, &self.remote.http_error) {
-            (Some(http), _) => (tools::ServerStatus::Running, http.url().to_owned()),
-            (None, Some(error)) => (tools::ServerStatus::Error(error.clone()), String::new()),
-            (None, None) => (tools::ServerStatus::Starting, String::new()),
+            (Some(http), _) => (panel::ServerStatus::Running, http.url().to_owned()),
+            (None, Some(error)) => (panel::ServerStatus::Error(error.clone()), String::new()),
+            (None, None) => (panel::ServerStatus::Starting, String::new()),
         };
         let tools = self
             .remote
             .tools
             .specs()
             .iter()
-            .map(|spec| tools::ToolInfo::new(spec.name.clone(), listing::short_description(&spec.description)))
+            .map(|spec| panel::ToolInfo::new(spec.name.clone(), listing::short_description(&spec.description)))
             .collect();
         listing::app_server(REMOTE_SERVER, McpTransport::Http { url, headers: Default::default() }, status, tools)
     }
@@ -232,7 +233,7 @@ impl State {
 
     /// What each peer may use of `servers` and the built in tools, from
     /// the grants this node issued.
-    fn refresh_peers(&mut self, servers: &[tools::McpServer], ctx: &mut Ctx) {
+    fn refresh_peers(&mut self, servers: &[panel::McpServer], ctx: &mut Ctx) {
         let issued = match ctx.services.node.grants.issued() {
             Ok(issued) => issued,
             Err(error) => {
@@ -251,7 +252,7 @@ impl State {
         let mut ids: BTreeSet<String> = config.projects.keys().cloned().collect();
         ids.insert(ctx.runtime.project().to_owned());
         ids.insert(self.project.clone());
-        self.panel.set_projects(ids.into_iter().map(|id| tools::ProjectRef { name: id.clone(), id }).collect());
+        self.panel.set_projects(ids.into_iter().map(|id| panel::ProjectRef { name: id.clone(), id }).collect());
         self.panel.select_project(self.project.clone());
         let settings = config.projects.get(&self.project).cloned().unwrap_or_default();
         self.panel.set_disabled_tools(self.project.clone(), disabled(&settings));
@@ -263,7 +264,7 @@ impl State {
         let Some(entries) = ctx.read_config("Remote hosts").map(|config| config.remote_hosts) else { return };
         let (hosts, failed) = loa_remote::config::load(&entries, &*self.ssh.resolver);
         self.remote.service.hosts().replace_all(hosts);
-        self.panel.set_hosts(remote::panel_hosts(&entries));
+        self.panel.set_hosts(entries.iter().map(|(alias, entry)| crate::view::panel::host_to_view(alias, entry)).collect());
         if !failed.is_empty() {
             let failed: Vec<String> = failed.iter().map(|(name, error)| format!("{name}: {error}")).collect();
             ctx.notify(format!("Some Remote hosts can't be reached as configured: {}", failed.join("; ")));
@@ -291,19 +292,19 @@ impl State {
     }
 
     /// Turns tools on or off in `project` and saves it.
-    fn set_tools(&mut self, project: &str, ids: &[tools::ToolId], enabled: bool, ctx: &mut Ctx) {
+    fn set_tools(&mut self, project: &str, ids: &[panel::ToolId], enabled: bool, ctx: &mut Ctx) {
         ctx.edit_config("tool toggles", |config| {
             let settings = config.projects.entry(project.to_owned()).or_default();
             for id in ids {
                 match id {
-                    tools::ToolId::Builtin(name) => {
+                    panel::ToolId::Builtin(name) => {
                         if enabled {
                             settings.disabled_tools.remove(name);
                         } else {
                             settings.disabled_tools.insert(name.clone());
                         }
                     }
-                    tools::ToolId::Mcp { server, tool } => {
+                    panel::ToolId::Mcp { server, tool } => {
                         let off = settings.disabled_mcp_tools.entry(server.clone()).or_default();
                         if enabled {
                             off.remove(tool);
@@ -351,33 +352,33 @@ impl State {
         task.map(Message::Terminal)
     }
 
-    fn panel_event(&mut self, event: tools::Event, ctx: &mut Ctx) -> Task<Message> {
+    fn panel_event(&mut self, event: ToolsIntent, ctx: &mut Ctx) -> Task<Message> {
         match event {
-            tools::Event::ProjectSelected(project) => {
+            ToolsIntent::ProjectSelected(project) => {
                 self.project = project;
                 self.refresh_projects(ctx);
                 Task::none()
             }
-            tools::Event::SetToolsEnabled { project, tools, enabled } => {
+            ToolsIntent::SetToolsEnabled { project, tools, enabled } => {
                 self.set_tools(&project, &tools, enabled, ctx);
                 Task::none()
             }
-            tools::Event::Server { name, action } => {
+            ToolsIntent::Server { name, action } => {
                 let Some(servers) = self.servers_or_notice(ctx) else { return Task::none() };
                 perform(
                     async move {
                         let result = match action {
-                            tools::ServerAction::Start => servers.set_enabled(&name, true).await,
-                            tools::ServerAction::Stop => servers.set_enabled(&name, false).await,
-                            tools::ServerAction::Restart => servers.manager().restart(&name).await,
-                            tools::ServerAction::Remove => servers.remove(&name).await,
+                            panel::ServerAction::Start => servers.set_enabled(&name, true).await,
+                            panel::ServerAction::Stop => servers.set_enabled(&name, false).await,
+                            panel::ServerAction::Restart => servers.manager().restart(&name).await,
+                            panel::ServerAction::Remove => servers.remove(&name).await,
                         };
                         result.map(|()| None).map_err(|error| format!("{name}: {error}"))
                     },
                     Message::Done,
                 )
             }
-            tools::Event::AddServer(spec) => {
+            ToolsIntent::AddServer(spec) => {
                 let Some(servers) = self.servers_or_notice(ctx) else { return Task::none() };
                 ctx.notify(format!("Connecting to {}…", spec.name));
                 Task::perform(
@@ -391,7 +392,7 @@ impl State {
                     Message::Done,
                 )
             }
-            tools::Event::ScanImports => {
+            ToolsIntent::ScanImports => {
                 let files = import::defaults(&self.ssh.home, Some(ctx.runtime.cwd()));
                 Task::perform(
                     async move {
@@ -410,12 +411,12 @@ impl State {
                     |(found, errors)| Message::Scanned { found, errors },
                 )
             }
-            tools::Event::ImportServers(chosen) => {
+            ToolsIntent::ImportServers(chosen) => {
                 let Some(servers) = self.servers_or_notice(ctx) else { return Task::none() };
                 let picked = listing::picked(&self.found, &chosen);
                 perform(async move { servers.import_found(picked).await }, Message::Imported)
             }
-            tools::Event::ImportSshHosts => {
+            ToolsIntent::ImportSshHosts => {
                 let resolver = Arc::clone(&self.ssh.resolver);
                 self.edit_hosts(ctx, |entries| {
                     let added = loa_remote::config::import_aliases(entries, &*resolver);
@@ -426,14 +427,15 @@ impl State {
                 });
                 Task::none()
             }
-            tools::Event::AddHost(host) => {
+            ToolsIntent::AddHost(host) => {
+                let (alias, entry) = crate::view::panel::host_from_view(host);
                 self.edit_hosts(ctx, |entries| {
-                    entries.insert(host.alias.clone(), remote::config_host(&host));
+                    entries.insert(alias, entry);
                     Ok(None)
                 });
                 Task::none()
             }
-            tools::Event::RemoveHost(alias) => {
+            ToolsIntent::RemoveHost(alias) => {
                 self.edit_hosts(ctx, |entries| {
                     entries.remove(&alias);
                     Ok(None)
@@ -441,7 +443,7 @@ impl State {
                 let service = Arc::clone(&self.remote.service);
                 Task::future(async move { service.disconnect(&alias).await }).discard()
             }
-            tools::Event::SaveHostLimits { host, limits } => {
+            ToolsIntent::SaveHostLimits { host, limits } => {
                 self.edit_hosts(ctx, |entries| {
                     let entry = entries.get_mut(&host).ok_or_else(|| format!("{host} isn't a Remote host"))?;
                     entry.allowed_paths = limits.allowed_paths;
@@ -452,12 +454,12 @@ impl State {
                 });
                 Task::none()
             }
-            tools::Event::OpenTerminal(host) => self.open_shell(host, ctx),
-            tools::Event::LoadAudit(host) => {
+            ToolsIntent::OpenTerminal(host) => self.open_shell(host, ctx),
+            ToolsIntent::LoadAudit(host) => {
                 let audit = self.remote.audit(host.clone());
                 Task::perform(audit, move |result| Message::Audit { host: host.clone(), result })
             }
-            tools::Event::AnswerPrompt { id, answer } => {
+            ToolsIntent::AnswerPrompt { id, answer } => {
                 if !self.remote.answer_panel(id, answer, ctx) {
                     ctx.notify("That remote host question is no longer waiting");
                 }
@@ -481,10 +483,10 @@ impl State {
 }
 
 /// The switched off tools of a project as panel ids.
-fn disabled(settings: &ProjectSettings) -> Vec<tools::ToolId> {
-    let mut ids: Vec<tools::ToolId> = settings.disabled_tools.iter().map(tools::ToolId::builtin).collect();
+fn disabled(settings: &ProjectSettings) -> Vec<panel::ToolId> {
+    let mut ids: Vec<panel::ToolId> = settings.disabled_tools.iter().map(panel::ToolId::builtin).collect();
     for (server, names) in &settings.disabled_mcp_tools {
-        ids.extend(names.iter().map(|tool| tools::ToolId::mcp(server, tool)));
+        ids.extend(names.iter().map(|tool| panel::ToolId::mcp(server, tool)));
     }
     ids
 }
@@ -511,7 +513,7 @@ impl Area for State {
         AreaCommand::<Self>::new("tools.hosts", "Remote hosts", "Tools", |state, _, ctx| state.show(tools::Section::Hosts, ctx)),
         AreaCommand::<Self>::new("tools.import-hosts", "Import Remote hosts from ~/.ssh/config", "Tools", |state, _, ctx| {
             let task = state.show(tools::Section::Hosts, ctx);
-            Task::batch([task, state.panel_event(tools::Event::ImportSshHosts, ctx)])
+            Task::batch([task, state.panel_event(ToolsIntent::ImportSshHosts, ctx)])
         }),
         AreaCommand::<Self>::new("tools.shell.", "", "Tools", |state, host, ctx| state.open_shell(host.to_owned(), ctx)).listed(Listed::Each(|_, ctx| {
             let hosts = ctx.services.storage.config.load().map(|config| config.remote_hosts.into_keys().collect()).unwrap_or_else(|_| Vec::new());
@@ -665,7 +667,7 @@ impl Area for State {
     }
 
     fn panel_tabs(&self) -> Vec<PanelTab> {
-        vec![PanelTab::of(&self.panel, true), PanelTab::new(SHELL_TAB, "Remote shell", false).icon(loa_ui_kit::Icon::Terminal)]
+        vec![PanelTab::of(&self.panel, true), PanelTab::new(SHELL_TAB, "Remote shell", false).icon(loa_view::theme::Icon::Terminal)]
     }
 
     fn view_tab<'a>(&'a self, id: &str, _: &'a Ctx) -> Option<Element<'a, Message>> {

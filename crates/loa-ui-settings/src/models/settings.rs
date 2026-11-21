@@ -1,13 +1,13 @@
 //! Model settings: model roles with their fallback chains, enabled models, provider order, per
 //! model overrides (a kit form over omp's [`OVERRIDE_FIELDS`]), custom providers and the other
-//! harnesses' own default models. The app loads [`ModelSettings`], writes what [`Event::Save`]
+//! harnesses' own default models. The app loads [`ModelSettings`], writes what [`Intent::Save`]
 //! carries and answers with [`State::saved`] or [`State::set_errors`].
 
 use crate::{action, check, errors, field, labeled, pick, section};
 use iced::widget::{Column, column, container, row};
 use iced::{Alignment, Element, Fill};
-use loa_settings::models::models_yml::OverrideKey;
-use loa_settings::models::settings::{AuthMode, CustomProvider, FieldValue, ModelOverride, ModelSettings, OVERRIDE_FIELDS, OverrideField, RoleChain, ValidationError, is_env_var_name, is_provider_id};
+use loa_view::settings::models::settings::Intent;
+use loa_view::settings::models::{AuthMode, CustomProvider, FieldValue, ModelOverride, ModelSettings, OVERRIDE_FIELDS, OverrideField, OverrideKey, RoleChain, ValidationError, is_env_var_name, is_provider_id};
 use loa_ui_kit::style::{self, ButtonKind, Surface, Tone};
 use loa_ui_kit::theme::{SpaceRole, TextRole, sp};
 use loa_ui_kit::widgets::{Field, Form, Msg, Screen, form_view, label, list_editor, reorder};
@@ -215,16 +215,7 @@ pub enum Local {
     Revert,
 }
 
-/// What the app must act on.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Event {
-    /// Write these settings, then call [`State::saved`] or [`State::set_errors`].
-    Save(ModelSettings),
-    /// The unsaved changes were dropped.
-    Reverted,
-}
-
-pub type Message = Msg<Local, Event>;
+pub type Message = Msg<Local, Intent>;
 
 #[derive(Clone, Debug)]
 pub struct State {
@@ -378,9 +369,9 @@ fn at<T>(items: &mut [T], i: usize, f: impl FnOnce(&mut T)) {
 
 impl Screen for State {
     type Local = Local;
-    type Event = Event;
+    type Event = Intent;
 
-    fn reduce(&mut self, m: Local) -> Option<Event> {
+    fn reduce(&mut self, m: Local) -> Option<Intent> {
         let d = &mut self.draft;
         match m {
             Local::NewRole(name) => self.new_role = name,
@@ -436,27 +427,27 @@ impl Screen for State {
                 match d.settings() {
                     Ok(settings) => {
                         self.local_errors.clear();
-                        return Some(Event::Save(settings));
+                        return Some(Intent::Save(settings));
                     }
                     Err(problems) => self.local_errors = problems,
                 }
             }
             Local::Revert => {
                 self.reset();
-                return Some(Event::Reverted);
+                return Some(Intent::Reverted);
             }
         }
         None
     }
 
     /// Every event comes from the reducer.
-    fn guard(&self, _: &Event) -> bool { false }
+    fn guard(&self, _: &Intent) -> bool { false }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use loa_settings::models::settings::{HarnessModel, ModelToggle, ProviderToggle};
+    use loa_view::settings::models::{HarnessModel, ModelToggle, ProviderToggle};
     use loa_ui_kit::testkit::click_label;
 
     fn settings() -> ModelSettings {
@@ -476,11 +467,11 @@ mod tests {
     }
 
     fn state() -> State { State::new(settings(), vec!["openai/gpt-5".into(), "anthropic/claude-haiku-4-5".into()]) }
-    fn run(s: &mut State, messages: Vec<Local>) -> Option<Event> { messages.into_iter().map(|m| s.update(Msg::Local(m))).last().flatten() }
-    fn saved(f: fn(&mut ModelSettings)) -> Option<Event> {
+    fn run(s: &mut State, messages: Vec<Local>) -> Option<Intent> { messages.into_iter().map(|m| s.update(Msg::Local(m))).last().flatten() }
+    fn saved(f: fn(&mut ModelSettings)) -> Option<Intent> {
         let mut s = settings();
         f(&mut s);
-        Some(Event::Save(s))
+        Some(Intent::Save(s))
     }
 
     #[test]
@@ -488,7 +479,7 @@ mod tests {
         use Local::*;
         let edit = |i, key, v: &str| ProviderEdit(i, key, v.into());
         // (messages, the event of the last one)
-        let cases: Vec<(Vec<Local>, Option<Event>)> = vec![
+        let cases: Vec<(Vec<Local>, Option<Intent>)> = vec![
             (vec![MoveChain(0, 2, 0), Save], saved(|s| s.roles[0].chain.rotate_right(1))),
             (vec![AddChain(0, Some("anthropic/claude-haiku-4-5".into())), ChainInput(0, " local/qwen3 ".into()), AddChain(0, None), AddChain(0, Some("openai/gpt-5".into())), RemoveChain(0, 1), Save],
                 saved(|s| s.roles[0].chain = vec!["anthropic/claude-sonnet-4-5:high".into(), "google/gemini-2.5-pro".into(), "anthropic/claude-haiku-4-5".into(), "local/qwen3".into()])),
@@ -504,7 +495,7 @@ mod tests {
             (vec![AddProvider, edit(0, "id", "local-llm"), edit(0, "base_url", "http://localhost:8080/v1"), edit(0, "api", "openai-completions"), edit(0, "api_key_env", "LOCAL_LLM_KEY"), edit(0, "models", " qwen3 ,, llama-4 "), Save], saved(|s| s.custom_providers = vec![local_provider()])),
             (vec![HarnessModel(0, "o3".into()), HarnessEffort(0, "high".into()), Save], saved(|s| (s.harnesses[0].model, s.harnesses[0].effort) = ("o3".into(), "high".into()))),
             (vec![HarnessEffort(0, "high".into()), HarnessEffort(0, HARNESS_DEFAULT.into()), RemoveRole(0), Save], saved(|s| s.roles.clear())),
-            (vec![ModelToggled(0, false), RenameRole(0, "smol".into()), Revert], Some(Event::Reverted)),
+            (vec![ModelToggled(0, false), RenameRole(0, "smol".into()), Revert], Some(Intent::Reverted)),
         ];
         for (i, (messages, want)) in cases.into_iter().enumerate() {
             let mut s = state();
@@ -548,7 +539,7 @@ mod tests {
             run(&mut s, vec![clear]);
             assert!(s.errors().is_empty());
         }
-        let Some(Event::Save(written)) = run(&mut s, vec![Local::ProviderToggled(2, true), Local::Save]) else { panic!("save") };
+        let Some(Intent::Save(written)) = run(&mut s, vec![Local::ProviderToggled(2, true), Local::Save]) else { panic!("save") };
         assert!(s.is_dirty(), "a save waits for the app");
         s.set_errors(vec![error]);
         s.saved(written.clone());
@@ -560,7 +551,7 @@ mod tests {
     fn the_save_button_writes_the_edited_settings() {
         let mut s = state();
         run(&mut s, vec![Local::ModelToggled(0, false)]);
-        let events: Vec<Event> = click_label(s.view(), "Save").into_iter().filter_map(|m| s.update(m)).collect();
+        let events: Vec<Intent> = click_label(s.view(), "Save").into_iter().filter_map(|m| s.update(m)).collect();
         assert_eq!(events, [saved(|s| s.models[0].enabled = false).unwrap()]);
     }
 }

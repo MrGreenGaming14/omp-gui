@@ -1,13 +1,15 @@
 //! The Surfaces tab driven through `Panel::update`, with fake surfaces, plus its launcher view.
 
-use loa_contracts::surface::{Surface, SurfaceInfo, SurfaceMode, SurfaceUri};
-use loa_surfaces::testkit::FakeSurface;
-use loa_ui_surface::panel::{Event, Message};
-use loa_ui_surface::{Available, BrowserStatus, Options, Panel, picker};
+mod support;
+
+use loa_ui_surface::panel::Message;
+use loa_ui_surface::{Panel, picker};
+use loa_view::surface::{AvailableSurface, BrowserStatus, Intent, Surface, SurfaceInfo, SurfaceMode, SurfaceUri};
 use std::sync::Arc;
+use support::{FakeSurface, options};
 
 fn panel(dir: &std::path::Path) -> Panel {
-    Panel::new(Options::default(), BrowserStatus::Ready { executable: "/usr/bin/chromium".into(), sandboxed: true }, dir)
+    Panel::new(options(), BrowserStatus::Ready { executable: "/usr/bin/chromium".into(), sandboxed: true }, dir)
 }
 
 fn fake(server: &str, name: &str, mode: SurfaceMode) -> Arc<FakeSurface> {
@@ -21,18 +23,18 @@ async fn the_launcher_asks_for_browser_document_vm_and_listed_surfaces() {
     let mut panel = panel(dir.path());
     let deck = dir.path().join("deck.pptx");
     let declared = fake("figma", "board", SurfaceMode::Pixel);
-    panel.set_available(vec![Available { info: declared.info(), server: "figma-mcp".into() }]);
-    let vm = Event::OpenVm { address: "10.0.0.5:5901".into(), password: Some("secret".into()) };
+    panel.set_available(vec![AvailableSurface { info: declared.info(), server: "figma-mcp".into() }]);
+    let vm = Intent::OpenVm { address: "10.0.0.5:5901".into(), password: Some("secret".into()) };
     // (message, event): fields update silently, submits ask the app.
     let steps = [
         (Message::OpenUrl, None),
         (Message::Url("example.com".into()), None),
-        (Message::OpenUrl, Some(Event::OpenBrowser("example.com".into()))),
-        (Message::Picker(picker::Message::Choose(deck.clone())), Some(Event::OpenDocument(deck))),
+        (Message::OpenUrl, Some(Intent::OpenBrowser("example.com".into()))),
+        (Message::Picker(picker::Message::Choose(deck.clone())), Some(Intent::OpenDocument(deck))),
         (Message::Address("10.0.0.5:5901".into()), None),
         (Message::Password("secret".into()), None),
         (Message::Connect, Some(vm)),
-        (Message::OpenAvailable(declared.info.uri.clone()), Some(Event::Open(declared.info.uri.clone()))),
+        (Message::OpenAvailable(declared.info.uri.clone()), Some(Intent::Open(declared.info.uri.clone()))),
     ];
     for (message, event) in steps {
         assert_eq!(panel.update(message.clone()).1, event, "{message:?}");
@@ -54,7 +56,7 @@ async fn attached_surfaces_become_tabs_and_close() {
     assert!(panel.surface(&tab.info.uri).unwrap().pixel().is_some() && panel.surface(&doc.info.uri).unwrap().document().is_some());
     let _ = panel.update(Message::Select(tab.info.uri.clone()));
     assert_eq!(panel.active(), Some(&tab.info.uri));
-    assert_eq!(panel.update(Message::Close(tab.info.uri.clone())).1, Some(Event::Close(tab.info.uri.clone())));
+    assert_eq!(panel.update(Message::Close(tab.info.uri.clone())).1, Some(Intent::Close(tab.info.uri.clone())));
     assert_eq!((panel.active(), panel.open_surfaces().count()), (Some(&doc.info.uri), 1), "the neighbour tab becomes active");
     let _ = panel.update(Message::Launcher);
     assert_eq!(panel.active(), None);
@@ -73,6 +75,6 @@ async fn the_launcher_view_opens_a_typed_url() {
         ui.tap_key(iced::keyboard::key::Named::Enter);
         ui.into_messages().collect()
     };
-    let events: Vec<Event> = messages.into_iter().filter_map(|m| panel.update(m).1).collect();
-    assert_eq!(events, [Event::OpenBrowser("example.com".into())]);
+    let intents: Vec<Intent> = messages.into_iter().filter_map(|m| panel.update(m).1).collect();
+    assert_eq!(intents, [Intent::OpenBrowser("example.com".into())]);
 }

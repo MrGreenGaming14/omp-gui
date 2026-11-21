@@ -1,74 +1,6 @@
-//! Grants as the panel shows them, and the form issuing one; minting tokens stays with the app.
+//! The form issuing a grant, and how the panel names one; minting tokens stays with the app.
 
-/// What a grant protects.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GrantScope { Session, Prompt, Project, FutureSessions, SshHost, Surface, Sandbox, Folder }
-
-/// A resource the app offers to grant.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ResourceChoice {
-    pub id: String,
-    pub label: String,
-    pub scope: GrantScope,
-}
-
-/// A granted resource; a prompt can also cover every future session.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GrantResource {
-    pub id: String,
-    pub label: String,
-    pub scope: GrantScope,
-    pub future_sessions: bool,
-}
-
-loa_util::str_enum! {
-    /// What the holder may do with the resource.
-    #[derive(Default)]
-    pub Permission { View => "view", Suggest => "suggest", Drive => "drive", #[default] Fork => "fork" }
-}
-
-impl Permission {
-    /// Surfaces are viewed or driven (input); SSH hosts and folders read (view) or also
-    /// written, and on SSH run (drive); a sandbox only runs tasks (drive).
-    pub fn allowed_for(self, scope: &GrantScope) -> bool {
-        match scope {
-            GrantScope::Sandbox => self == Self::Drive,
-            GrantScope::Surface | GrantScope::SshHost | GrantScope::Folder => matches!(self, Self::View | Self::Drive),
-            _ => true,
-        }
-    }
-
-    /// The permission a newly picked resource starts with.
-    fn default_for(scope: Option<GrantScope>) -> Self {
-        match scope {
-            Some(GrantScope::Surface | GrantScope::SshHost | GrantScope::Folder) => Self::View,
-            Some(GrantScope::Sandbox) => Self::Drive,
-            _ => Self::Fork,
-        }
-    }
-}
-
-loa_util::str_enum! {
-    /// Whether this node issued or received the grant.
-    pub GrantDirection { Given => "Given", Received => "Received" }
-}
-
-/// A grant between this node and one peer.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Grant {
-    pub id: String,
-    pub peer_key: String,
-    pub direction: GrantDirection,
-    pub resource: GrantResource,
-    pub permission: Permission,
-    /// When the grant ends; `None` renews until revoked.
-    pub expires_at: Option<u64>,
-    /// The next automatic renewal, if known.
-    pub renews_at: Option<u64>,
-    pub reshare: bool,
-    /// Revoked by this node, or refused renewal by its issuer.
-    pub ended: bool,
-}
+use loa_view::settings::peers::{Grant, GrantInput, GrantResource, GrantScope, Permission, ResourceChoice};
 
 /// The resource and permission of a grant, either way it went.
 pub fn grant_summary(grant: &Grant) -> String {
@@ -81,44 +13,13 @@ pub fn grant_summary(grant: &Grant) -> String {
     format!("{label}, {}", grant.permission)
 }
 
-impl Grant {
-    /// The expiry and the time to the next renewal against the app's clock `now` (seconds).
-    pub fn expiry_text(&self, now: u64) -> String {
-        if self.ended {
-            return if self.direction == GrantDirection::Given { "revoked" } else { "revoked by its issuer" }.to_owned();
-        }
-        let expiry = match self.expires_at {
-            None => "no end date".to_owned(),
-            Some(at) if at <= now => "expired".to_owned(),
-            Some(at) => format!("expires in {}", duration(at - now, true)),
-        };
-        match self.renews_at {
-            Some(at) if at > now => format!("{expiry}; renews in {}", duration(at - now, true)),
-            Some(_) => format!("{expiry}; renewal due"),
-            None => expiry,
-        }
+/// The permission a newly picked resource starts with.
+fn default_permission(scope: Option<GrantScope>) -> Permission {
+    match scope {
+        Some(GrantScope::Surface | GrantScope::SshHost | GrantScope::Folder) => Permission::View,
+        Some(GrantScope::Sandbox) => Permission::Drive,
+        _ => Permission::Fork,
     }
-}
-
-/// "45s", "5m", "3h", "2d": rounded `up` for countdowns, down for ages.
-pub(crate) fn duration(seconds: u64, up: bool) -> String {
-    let (unit, name) = match seconds {
-        0..60 => return format!("{seconds}s"),
-        60..3600 => (60, "m"),
-        3600..86400 => (3600, "h"),
-        _ => (86400, "d"),
-    };
-    format!("{}{name}", if up { seconds.div_ceil(unit) } else { seconds / unit })
-}
-
-/// A validated request for the app's grant issuer.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GrantInput {
-    pub peer_key: String,
-    pub resource: GrantResource,
-    pub permission: Permission,
-    pub ttl_seconds: u64,
-    pub reshare: bool,
 }
 
 /// The grant being written; SSH access needs an explicit confirmation first.
@@ -147,7 +48,7 @@ impl GrantForm {
     pub fn select_resource(&mut self, resource: Option<ResourceChoice>) {
         if self.resource != resource {
             (self.ssh_confirmed, self.future_sessions) = (false, false);
-            self.permission = Permission::default_for(resource.as_ref().map(|r| r.scope));
+            self.permission = default_permission(resource.as_ref().map(|r| r.scope));
         }
         self.resource = resource;
     }

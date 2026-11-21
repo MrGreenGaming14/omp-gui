@@ -1,15 +1,17 @@
 //! A surface tab over a fake `Surface`, driven through `State::update` and the tasks it returns.
 
+mod support;
+
 use bytes::Bytes;
 use futures::StreamExt;
 use iced::{Point, Size};
 use iced_runtime::Action;
-use loa_contracts::surface::{Document, Encoding, Frame, Input, InputEvent, Modifiers, MouseButton, Rect, SurfaceInfo, SurfaceMode, SurfaceUri};
-use loa_surfaces::pixels::RgbaImage;
-use loa_surfaces::testkit::{FakeSurface, Probe, solid};
-use loa_ui_surface::{Clock, DecodeError, Event, FrameDecoder, Framebuffer, KeyInput, Message, Options, PointerInput, State};
+use loa_ui_surface::{Clock, KeyInput, Message, Options, PointerInput, State};
+use loa_view::surface::port::{DecodeError, Decoders, FrameDecoder};
+use loa_view::surface::{Document, Encoding, Frame, Input, InputEvent, Intent, Modifiers, MouseButton, Rect, SurfaceInfo, SurfaceMode, SurfaceUri};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use support::{FakeSurface, PAGED_MIME, Probe, options, solid};
 use tokio::sync::{broadcast, mpsc};
 
 #[derive(Default)]
@@ -63,11 +65,11 @@ impl Harness {
     }
 
     fn pixel(width: u32, height: u32) -> Self {
-        Self::open(SurfaceMode::Pixel, (width, height), None, Options::default())
+        Self::open(SurfaceMode::Pixel, (width, height), None, options())
     }
 
     /// Updates and runs the returned task to completion; surface calls must go through.
-    fn update(&mut self, message: Message) -> Option<Event> {
+    fn update(&mut self, message: Message) -> Option<Intent> {
         let (task, event) = self.state.update(message);
         let actions = iced_runtime::task::into_stream(task).map(|s| futures::executor::block_on(s.collect::<Vec<_>>()));
         for action in actions.unwrap_or_default() {
@@ -135,16 +137,15 @@ async fn streamed_frames_are_drawn_and_input_reaches_the_surface_in_order() {
 #[tokio::test]
 async fn still_frames_land_on_the_retained_picture_in_order() {
     let mut h = Harness::pixel(8, 8);
-    let mut jpeg = Vec::new();
-    let red = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(4, 4, image::Rgb([200, 0, 0])));
-    red.write_to(&mut std::io::Cursor::new(&mut jpeg), image::ImageFormat::Jpeg).unwrap();
+    // The fake still decoder's PNG and JPEG carry RGBA as is; real codecs are the app's.
+    let jpeg = solid(4, 4, [200, 0, 0, 255]);
     let rect = |x, y, w, h| Rect { x, y, width: w, height: h };
     // (seq, region, encoding, data): later regions overwrite, older frames are dropped.
     let frames = [
         (5, full(8, 8), Encoding::Rgba, solid(8, 8, [1, 1, 1, 255])),
         (6, rect(2, 1, 2, 2), Encoding::Rgba, solid(2, 2, [9, 9, 9, 255])),
         (3, full(8, 8), Encoding::Rgba, solid(8, 8, [3, 3, 3, 255])),
-        (7, rect(0, 4, 4, 4), Encoding::Png, RgbaImage::filled(4, 4, [0, 200, 0, 255]).to_png().unwrap()),
+        (7, rect(0, 4, 4, 4), Encoding::Png, solid(4, 4, [0, 200, 0, 255])),
         (8, rect(4, 4, 4, 4), Encoding::Jpeg, jpeg),
     ];
     for (seq, region, encoding, data) in frames {
@@ -163,7 +164,7 @@ async fn video_without_a_decoder_asks_once_for_a_still_encoding() {
     let h264 = |seq| frame(seq, (2, 2), full(2, 2), Encoding::H264, vec![0, 0, 0, 1]);
     let uri = h.state.info().uri.clone();
     let supported = vec![Encoding::Rgba, Encoding::Png, Encoding::Jpeg];
-    assert_eq!(h.update(Message::Frame(h264(1))), Some(Event::EncodingUnsupported { uri, encoding: Encoding::H264, supported }));
+    assert_eq!(h.update(Message::Frame(h264(1))), Some(Intent::EncodingUnsupported { uri, encoding: Encoding::H264, supported }));
     assert!(h.state.tab().notice.unwrap().contains("H.264"));
     assert_eq!(h.update(Message::Frame(h264(2))), None, "asked once, not on every frame");
     // Once the server switches, the picture shows and the notice goes.
@@ -179,11 +180,11 @@ impl FrameDecoder for FakeDecoder {
         &[Encoding::H264]
     }
 
-    fn apply(&mut self, frame: &Frame, fb: &mut Framebuffer) -> Result<bool, DecodeError> {
+    fn apply(&mut self, frame: &Frame, picture: &mut [u8], _: u32, _: u32) -> Result<bool, DecodeError> {
         match frame.data[0] {
-            0xFF => Err(DecodeError::Video("corrupt".into())),
+            0xFF => Err(DecodeError("corrupt".into())),
             v => {
-                fb.pixels_mut().fill(v);
+                picture.fill(v);
                 Ok(true)
             }
         }
@@ -198,7 +199,8 @@ impl FrameDecoder for FakeDecoder {
 async fn the_decoder_chain_recovers_video_on_a_keyframe_and_lag_asks_for_one() {
     let resets = Arc::new(AtomicUsize::new(0));
     let decoder = resets.clone();
-    let options = Options { decoder: Some(Arc::new(move || Box::new(FakeDecoder(decoder.clone())))), ..Options::default() };
+    let still = options().decoders.still;
+    let options = Options { decoders: Decoders { extra: Some(Arc::new(move || Box::new(FakeDecoder(decoder.clone())))), still }, ..options() };
     let mut h = Harness::open(SurfaceMode::Pixel, (2, 2), None, options);
     let video = |seq, byte, keyframe| Arc::new(Frame { keyframe, ..(*frame(seq, (2, 2), full(2, 2), Encoding::H264, vec![byte])).clone() });
     // A broken unit resets and asks for a keyframe; deltas are skipped until it comes.
@@ -277,14 +279,12 @@ async fn the_latency_meter_pairs_clicks_with_the_frame_that_shows_them() {
 
 #[tokio::test]
 async fn documents_render_here_and_zoom_without_touching_the_surface() {
-    let mut book = rust_xlsxwriter::Workbook::new();
-    book.add_worksheet().write_string(0, 0, "cell").unwrap();
-    let xlsx = Document { name: "a.xlsx".into(), mime: loa_surfaces::docs::Format::Xlsx.mime().into(), data: Bytes::from(book.save_to_buffer().unwrap()) };
-    let png = Document { name: "a.png".into(), mime: "image/png".into(), data: RgbaImage::filled(30, 20, [1, 2, 3, 255]).to_png().unwrap().into() };
+    let paged = Document { name: "a.pages".into(), mime: PAGED_MIME.into(), data: Bytes::new() };
+    let png = Document { name: "a.png".into(), mime: "image/png".into(), data: Bytes::new() };
     let unknown = Document { name: "a.bin".into(), mime: "application/x-unknown".into(), data: Bytes::new() };
     // (document, pages, notice)
-    for (document, pages, notice) in [(xlsx, Some(1), None), (png, Some(1), None), (unknown, None, Some("no viewer for application/x-unknown"))] {
-        let mut h = Harness::open(SurfaceMode::Document, (300, 200), Some(document), Options::default());
+    for (document, pages, notice) in [(paged, Some(1), None), (png, Some(1), None), (unknown, None, Some("no viewer for application/x-unknown"))] {
+        let mut h = Harness::open(SurfaceMode::Document, (300, 200), Some(document), options());
         let loaded = h.messages.recv().await.unwrap();
         h.update(loaded);
         h.update(Message::ZoomIn);

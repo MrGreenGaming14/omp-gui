@@ -5,7 +5,7 @@ use super::Message;
 use iced::keyboard::Key;
 use iced::keyboard::key::Named;
 use iced::widget::text_editor::{Binding, Cursor, KeyPress, Status};
-use loa_contracts::harness::Attachment;
+use loa_view::session::Attachment;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 

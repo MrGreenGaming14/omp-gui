@@ -1,5 +1,6 @@
 //! Decision prompt cards: approval, question, plan review and form. [`Desk`] is the app-facing
-//! component over every open session; [`State`] holds the cards of one session.
+//! component over every open session; [`State`] holds the cards of one session. Both report
+//! what the app must do as [`loa_view::session::decisions`] intents.
 
 mod card;
 pub mod desk;
@@ -9,7 +10,7 @@ mod settings;
 pub mod unattended;
 
 pub use card::{CardKind, FieldInput, form_field_id, kind_for, text_field_id};
-pub use desk::{Desk, DesktopNotifier, Notice, Notifier, NotifyError, NullNotifier, Tracker};
+pub use desk::{Desk, Tracker};
 pub use model::{ApprovalChoice, Choice, Decision, PlanChoice, answer_summary};
 pub use unattended::Unattended;
 
@@ -17,9 +18,10 @@ use card::{Card, CardCtx, Reply};
 use iced::keyboard::{self, key};
 use iced::widget::{column, markdown, text_editor};
 use iced::{Element, Subscription, Task, Theme};
-use loa_contracts::harness::Answer;
 use loa_core::{Dom, NodeId};
 use loa_ui_kit::theme::{SpaceRole as Sp, TextRole, TokenSet, for_theme, generation, sp, tokens};
+use loa_view::session::Answer;
+use loa_view::session::decisions::Intent;
 use std::collections::BTreeMap;
 
 /// `by` of an answer applied because an unattended timeout passed.
@@ -83,15 +85,6 @@ pub enum Message {
     Link(markdown::Uri),
 }
 
-/// What the app must act on.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Event {
-    /// Pass to the harness; the card stays locked until the DOM records the answer or
-    /// [`State::answer_failed`] reopens it.
-    Answer { decision: NodeId, answer: Answer },
-    OpenLink(String),
-}
-
 /// The decision cards of one session.
 pub struct State {
     viewer: Viewer,
@@ -143,9 +136,9 @@ impl State {
         if self.viewer.view_only { None } else { self.cards.values().find(|c| c.open()).map(|c| c.decision.id) }
     }
 
-    pub fn update(&mut self, message: Message) -> (Task<Message>, Option<Event>) {
+    pub fn update(&mut self, message: Message) -> (Task<Message>, Option<Intent>) {
         let id = match &message {
-            Message::Link(uri) => return (Task::none(), Some(Event::OpenLink(uri.clone()))),
+            Message::Link(uri) => return (Task::none(), Some(Intent::OpenLink(uri.clone()))),
             Message::Shortcut(_) => self.focused(),
             Message::Choose(id, _) | Message::Submit(id) | Message::Skip(id) | Message::Text(id, _) | Message::SubmitText(id) | Message::EditPlan(id, _) | Message::CancelEdit(id) | Message::Field(id, ..) => {
                 (!self.viewer.view_only).then_some(*id)
@@ -184,7 +177,7 @@ impl State {
         };
         let Some(Reply { values, reason }) = reply else { return (Task::none(), None) };
         card.pending = true;
-        (Task::none(), Some(Event::Answer { decision: id, answer: Answer { values, reason, by: self.viewer.by.clone() } }))
+        (Task::none(), Some(Intent::Answer { decision: id, answer: Answer { values, reason, by: self.viewer.by.clone() } }))
     }
 
     /// Every card in document order.

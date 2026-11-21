@@ -2,9 +2,10 @@
 
 use iced::widget::{Button, TextInput, button, container, svg::Svg, text, text_input};
 use iced::{Element, Fill, Padding, Theme};
-use loa_contracts::surface::SurfaceMode;
-use loa_surfaces::docs::{DocPalette, RenderOpts, raster::Color as DocColor};
-use loa_ui_kit::icons::{Icon, tinted};
+use loa_ui_kit::icons::tinted;
+use loa_view::surface::port::DocumentPalette;
+use loa_view::surface::{DOCUMENT_SERVER, SurfaceMode};
+use loa_view::theme::Icon;
 use loa_ui_kit::style::{self, ButtonKind, Surface, Tone};
 use loa_ui_kit::theme::{ColorRole as C, SpaceRole as Sp, TextRole, Variant, builtin_tokens, pad_x, sp, text_size, tokens};
 use loa_ui_kit::widgets::label;
@@ -25,7 +26,7 @@ pub struct SurfaceKindStyle {
 
 const KINDS: [(&str, SurfaceKindStyle); 4] = [
     (BROWSER, SurfaceKindStyle { icon: Icon::Globe, title: "Browser" }),
-    (loa_surfaces::docs::SERVER_NAME, SurfaceKindStyle { icon: Icon::FileText, title: "Document" }),
+    (DOCUMENT_SERVER, SurfaceKindStyle { icon: Icon::FileText, title: "Document" }),
     (VM, SurfaceKindStyle { icon: Icon::Monitor, title: "VM or desktop (VNC)" }),
     (MCP, SurfaceKindStyle { icon: Icon::Wrench, title: "From MCP servers" }),
 ];
@@ -96,10 +97,9 @@ pub fn list_row<'a, M: Clone + 'a>(content: impl Into<Element<'a, M>>, on: M) ->
 
 /// How document pages are drawn: in the light token set in either theme, since documents are
 /// paper like the PDF pages beside them.
-pub fn render_opts() -> RenderOpts {
+pub fn document_palette() -> DocumentPalette {
     let active = tokens();
     let t = if active.is_dark() { builtin_tokens(Variant::Light) } else { active };
-    let c = |role| DocColor(t.color(role).into_rgba8());
-    let palette = DocPalette { page: c(C::Card), text: c(C::Text), rule: c(C::Text3), grid: c(C::Line), header: c(C::Hover), header_text: c(C::Text2) };
-    RenderOpts { palette, ..RenderOpts::default() }
+    let c = |role| t.color(role).into_rgba8();
+    DocumentPalette { page: c(C::Card), text: c(C::Text), rule: c(C::Text3), grid: c(C::Line), header: c(C::Hover), header_text: c(C::Text2) }
 }

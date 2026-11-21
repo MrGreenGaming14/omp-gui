@@ -1,19 +1,17 @@
 //! Updates: what each watched product runs and what its feed offers, staged versions, the gate
 //! report of the last check with its choices (update anyway, pin, wait), swaps between sessions,
 //! rollback, app signatures and the peers that are behind, drawn straight from the updater's
-//! status. The app runs the [`Event`]s and calls [`State::finish`] when a step is done.
+//! status. The app runs the [`Intent`]s and calls [`State::finish`] when a step is done.
 
 use crate::{action, dot, labeled, scroll, section};
 use iced::widget::{Column, Space, button, column, container, row};
 use iced::{Alignment, Element, Fill};
-use loa_ui_kit::Icon;
 use loa_ui_kit::icons::tinted;
 use loa_ui_kit::style::{self, ButtonKind, Surface, Tone};
 use loa_ui_kit::theme::{SpaceRole, TextRole, sp};
 use loa_ui_kit::widgets::{Msg, Screen, badge, label};
-use loa_settings::updates::{
-    GateReport, HoldChoice, InstalledStatus, PeerStanding, ProductKind, ProductStatus, SignatureStatus, Standing, Verdict,
-};
+use loa_view::settings::updates::{Data, GateReport, HoldChoice, Installed, Intent, PeerStanding, Product, ProductKind, SignatureStatus, Standing, Verdict};
+use loa_view::theme::Icon;
 use std::collections::BTreeMap;
 
 /// Detail lines shown per gate check before the rest is folded.
@@ -22,7 +20,7 @@ const DETAIL_LINES: usize = 12;
 const NOTE_LINES: usize = 16;
 
 /// A status line in its tone when the rule holds for a product, given whether a turn runs.
-type Rule = (Tone, fn(&ProductStatus, bool) -> Option<String>);
+type Rule = (Tone, fn(&Product, bool) -> Option<String>);
 
 /// A product's status line: the first rule with a line wins.
 const STATUS_RULES: &[Rule] = &[
@@ -30,10 +28,10 @@ const STATUS_RULES: &[Rule] = &[
     (Tone::Danger, |p, _| p.held.as_ref().map(|h| match h.report.harmful().count() { 1 => format!("{} held: 1 harmful check. Update anyway, pin or wait.", h.version), n => format!("{} held: {n} harmful checks. Update anyway, pin or wait.", h.version) })),
     (Tone::Ok, |p, running| p.pending_swap.as_ref().filter(|_| running).map(|v| format!("Checks passed; {v} swaps in when the running turn ends"))),
     (Tone::Ok, |p, _| p.pending_swap.as_ref().map(|v| format!("Checks passed; ready to swap to {v}"))),
-    (Tone::Muted, |p, _| (p.current.is_none() && p.installed == InstalledStatus::Unknown).then(|| "Looking for the installed version…".to_owned())),
+    (Tone::Muted, |p, _| (p.current.is_none() && p.installed == Installed::Unknown).then(|| "Looking for the installed version…".to_owned())),
     (Tone::Muted, |p, _| p.current.is_none().then(|| p.newest.as_ref().map_or_else(|| "Not installed".to_owned(), |n| format!("Not installed; latest is {n}")))),
-    (Tone::Warn, |p, _| p.offer.as_ref().filter(|o| p.staged.contains(&o.version)).map(|o| format!("{} downloaded; run the gate checks", o.version))),
-    (Tone::Warn, |p, _| p.offer.as_ref().map(|o| format!("Update available: {}", o.version))),
+    (Tone::Warn, |p, _| p.offer.as_ref().filter(|o| p.staged.contains(o)).map(|o| format!("{o} downloaded; run the gate checks"))),
+    (Tone::Warn, |p, _| p.offer.as_ref().map(|o| format!("Update available: {o}"))),
     (Tone::Muted, |p, _| p.pin.as_ref().map(|v| format!("Pinned to {v}"))),
     (Tone::Muted, |p, _| p.waiting_past.as_ref().map(|v| format!("Waiting for a version after {v}"))),
     (Tone::Muted, |p, _| p.last_check_unix.is_none().then(|| "Not checked yet".to_owned())),
@@ -41,21 +39,8 @@ const STATUS_RULES: &[Rule] = &[
 ];
 
 /// The status line of `p` and its tone.
-pub fn status(p: &ProductStatus, turn_running: bool) -> (Tone, String) {
+pub fn status(p: &Product, turn_running: bool) -> (Tone, String) {
     STATUS_RULES.iter().find_map(|(tone, rule)| rule(p, turn_running).map(|line| (*tone, line))).expect("the last rule always matches")
-}
-
-/// The app's snapshot the screen shows.
-#[derive(Clone, Debug, Default)]
-pub struct Data {
-    pub products: Vec<ProductStatus>,
-    /// GitHub API requests left in the current window, when known.
-    pub github_requests_left: Option<u64>,
-    pub peers: Vec<PeerStanding>,
-    /// Whether a session is mid turn: swaps wait for it.
-    pub turn_running: bool,
-    /// Current Unix time, for "checked 5m ago".
-    pub now_unix: u64,
 }
 
 loa_util::str_enum! {
@@ -63,38 +48,16 @@ loa_util::str_enum! {
     pub Step { Checking => "Checking feed…", Downloading => "Downloading…", RunningChecks => "Running gate checks…", Verifying => "Checking signature…", Swapping => "Swapping…" }
 }
 
-/// A request for the app's updater.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Event {
-    CheckAll,
-    Check(String),
-    /// Download and unpack the offer beside the version in use.
-    Stage(String),
-    /// Run the staged offer's gate checks.
-    Gate(String),
-    /// Check the staged app release's signature.
-    Verify(String),
-    /// The answer to a held update.
-    Choose(String, HoldChoice),
-    /// Swap in the pending version (between turns only).
-    Swap(String),
-    Rollback(String),
-    /// Drop a product's pin and wait.
-    Unpin(String),
-}
-
-impl Event {
-    /// The product and the step the event runs; choices and unpins are instant.
-    fn step(&self) -> Option<(&str, Step)> {
-        Some(match self {
-            Self::Check(id) => (id, Step::Checking),
-            Self::Stage(id) => (id, Step::Downloading),
-            Self::Gate(id) => (id, Step::RunningChecks),
-            Self::Verify(id) => (id, Step::Verifying),
-            Self::Swap(id) | Self::Rollback(id) => (id, Step::Swapping),
-            Self::CheckAll | Self::Choose(..) | Self::Unpin(_) => return None,
-        })
-    }
+/// The product and the step `intent` runs; choices and unpins are instant.
+fn step(intent: &Intent) -> Option<(&str, Step)> {
+    Some(match intent {
+        Intent::Check(id) => (id, Step::Checking),
+        Intent::Stage(id) => (id, Step::Downloading),
+        Intent::Gate(id) => (id, Step::RunningChecks),
+        Intent::Verify(id) => (id, Step::Verifying),
+        Intent::Swap(id) | Intent::Rollback(id) => (id, Step::Swapping),
+        Intent::CheckAll | Intent::Choose(..) | Intent::Unpin(_) => return None,
+    })
 }
 
 #[derive(Clone, Debug)]
@@ -102,10 +65,10 @@ pub enum Local {
     /// Shows or hides a product's details.
     Toggle(String),
     /// Starts a step (or every check), marking its products busy.
-    Start(Event),
+    Start(Intent),
 }
 
-pub type Message = Msg<Local, Event>;
+pub type Message = Msg<Local, Intent>;
 
 #[derive(Debug, Default)]
 pub struct State {
@@ -130,10 +93,10 @@ impl State {
     /// Marks every step done (after checking every product).
     pub fn finish_all(&mut self) { self.busy.clear() }
 
-    fn idle(&self) -> impl Iterator<Item = &ProductStatus> { self.data.products.iter().filter(|p| !self.busy.contains_key(&p.id)) }
+    fn idle(&self) -> impl Iterator<Item = &Product> { self.data.products.iter().filter(|p| !self.busy.contains_key(&p.id)) }
 
     pub fn view(&self) -> Element<'_, Message> {
-        let check_all = (self.idle().next().is_some()).then_some(Msg::Local(Local::Start(Event::CheckAll)));
+        let check_all = (self.idle().next().is_some()).then_some(Msg::Local(Local::Start(Intent::CheckAll)));
         let head = row![label("Updates", TextRole::Body, Tone::Normal), Space::new().width(Fill), action("Check all", ButtonKind::Ghost, check_all)].align_y(Alignment::Center);
         let intro = label("Updates install side by side, pass the gate checks, and swap in between sessions. The previous version stays for rollback.", TextRole::Label, Tone::Muted);
         let products = Column::with_children(self.data.products.iter().map(|p| self.product(p))).spacing(sp(SpaceRole::S));
@@ -141,14 +104,14 @@ impl State {
         scroll(column![head, intro, section("Products", products), limit, section("Peers", self.peers())].spacing(sp(SpaceRole::L)))
     }
 
-    fn product<'a>(&'a self, p: &'a ProductStatus) -> Element<'a, Message> {
+    fn product<'a>(&'a self, p: &'a Product) -> Element<'a, Message> {
         let open = self.selected.as_deref() == Some(p.id.as_str());
         let (tone, line) = status(p, self.data.turn_running);
         let kind = match p.kind { ProductKind::App => "app", ProductKind::Omp => "omp", ProductKind::Harness(_) => "harness" };
         let name = row![tinted(if open { Icon::ChevronDown } else { Icon::ChevronRight }, TextRole::Caption, Tone::Muted), label(p.label.as_str(), TextRole::Body, Tone::Normal), badge(kind, Tone::Muted)];
         let name = button(name.spacing(sp(SpaceRole::S)).align_y(Alignment::Center)).padding(sp(SpaceRole::Xs)).style(style::button(ButtonKind::Flat)).on_press(Msg::Local(Local::Toggle(p.id.clone())));
         let versions = match (&p.current, &p.offer) {
-            (Some(current), Some(offer)) => format!("{current} → {}", offer.version),
+            (Some(current), Some(offer)) => format!("{current} → {offer}"),
             (Some(current), None) => current.to_string(),
             (None, _) => "not installed".to_owned(),
         };
@@ -159,42 +122,42 @@ impl State {
         container(column![top, line, error, details].spacing(sp(SpaceRole::S))).padding(sp(SpaceRole::S)).width(Fill).style(style::container(Surface::Card)).into()
     }
 
-    fn actions<'a>(&'a self, p: &'a ProductStatus) -> Element<'a, Message> {
+    fn actions<'a>(&'a self, p: &'a Product) -> Element<'a, Message> {
         if let Some(step) = self.busy(&p.id) {
             return label(step.as_str(), TextRole::Caption, Tone::Muted).into();
         }
         let id = || p.id.clone();
-        let start = |e: Event| Some(Msg::Local(Local::Start(e)));
-        let choose = |c| Some(Msg::Emit(Event::Choose(id(), c)));
+        let start = |e: Intent| Some(Msg::Local(Local::Start(e)));
+        let choose = |c| Some(Msg::Emit(Intent::Choose(id(), c)));
         let mut actions = row![].spacing(sp(SpaceRole::Xs)).align_y(Alignment::Center);
-        let staged_offer = p.offer.as_ref().map(|o| &o.version).filter(|v| p.staged.contains(v));
+        let staged_offer = p.offer.as_ref().filter(|v| p.staged.contains(v));
         if let Some(held) = &p.held {
             actions = actions.push(action(format!("Update anyway to {}", held.version), ButtonKind::Danger, choose(HoldChoice::UpdateAnyway)));
             actions = actions.push(p.current.as_ref().map(|c| action(format!("Pin {c}"), ButtonKind::Ghost, choose(HoldChoice::PinCurrent))));
             actions = actions.push(action("Wait", ButtonKind::Ghost, choose(HoldChoice::Wait)));
         } else if let Some(pending) = &p.pending_swap {
-            actions = actions.push(action(format!("Swap to {pending}"), ButtonKind::Primary, start(Event::Swap(id()))));
+            actions = actions.push(action(format!("Swap to {pending}"), ButtonKind::Primary, start(Intent::Swap(id()))));
         } else if let Some(offer) = p.offer.as_ref().filter(|_| p.current.is_some()) {
             if staged_offer.is_none() {
-                actions = actions.push(action(format!("Download {}", offer.version), ButtonKind::Primary, start(Event::Stage(id()))));
-            } else if p.report.as_ref().is_none_or(|r| r.to != offer.version) {
-                actions = actions.push(action("Run gate checks", ButtonKind::Primary, start(Event::Gate(id()))));
+                actions = actions.push(action(format!("Download {offer}"), ButtonKind::Primary, start(Intent::Stage(id()))));
+            } else if p.report.as_ref().is_none_or(|r| &r.to != offer) {
+                actions = actions.push(action("Run gate checks", ButtonKind::Primary, start(Intent::Gate(id()))));
             }
         }
-        actions = actions.push((p.kind == ProductKind::App && staged_offer.is_some()).then(|| action("Verify signature", ButtonKind::Ghost, start(Event::Verify(id())))));
-        actions = actions.push(p.active.as_ref().and_then(|a| a.previous.as_ref()).map(|v| action(format!("Roll back to {v}"), ButtonKind::Ghost, start(Event::Rollback(id())))));
-        actions = actions.push((p.pin.is_some() || p.waiting_past.is_some()).then(|| action("Unpin", ButtonKind::Ghost, Some(Msg::Emit(Event::Unpin(id()))))));
-        actions.push(action("Check", ButtonKind::Ghost, start(Event::Check(id())))).into()
+        actions = actions.push((p.kind == ProductKind::App && staged_offer.is_some()).then(|| action("Verify signature", ButtonKind::Ghost, start(Intent::Verify(id())))));
+        actions = actions.push(p.active.as_ref().and_then(|a| a.previous.as_ref()).map(|v| action(format!("Roll back to {v}"), ButtonKind::Ghost, start(Intent::Rollback(id())))));
+        actions = actions.push((p.pin.is_some() || p.waiting_past.is_some()).then(|| action("Unpin", ButtonKind::Ghost, Some(Msg::Emit(Intent::Unpin(id()))))));
+        actions.push(action("Check", ButtonKind::Ghost, start(Intent::Check(id())))).into()
     }
 
-    fn details<'a>(&'a self, p: &'a ProductStatus) -> Element<'a, Message> {
+    fn details<'a>(&'a self, p: &'a Product) -> Element<'a, Message> {
         let checked = p.last_check_unix.map_or_else(|| "not checked yet".to_owned(), |at| format!("checked {}", loa_util::time::ago(self.data.now_unix as i64 * 1000, at as i64 * 1000)));
         let in_use = match &p.installed {
-            InstalledStatus::Unknown => "not looked for yet".to_owned(),
-            InstalledStatus::Running => "this app".to_owned(),
-            InstalledStatus::Managed(path) => format!("{} (installed by the updater)", path.display()),
-            InstalledStatus::System(path) => path.display().to_string(),
-            InstalledStatus::Missing(reason) => format!("not installed: {reason}"),
+            Installed::Unknown => "not looked for yet".to_owned(),
+            Installed::Running => "this app".to_owned(),
+            Installed::Managed(path) => format!("{path} (installed by the updater)"),
+            Installed::System(path) => path.clone(),
+            Installed::Missing(reason) => format!("not installed: {reason}"),
         };
         let signature = match &p.signature {
             None => "not checked (download the update first)".to_owned(),
@@ -282,19 +245,19 @@ fn standing(p: &PeerStanding) -> (Tone, String) {
 
 impl Screen for State {
     type Local = Local;
-    type Event = Event;
+    type Event = Intent;
 
     /// A product with a step running takes no further requests.
-    fn reduce(&mut self, m: Local) -> Option<Event> {
+    fn reduce(&mut self, m: Local) -> Option<Intent> {
         match m {
             Local::Toggle(id) => self.selected = if self.selected.as_ref() == Some(&id) { None } else { Some(id) },
-            Local::Start(Event::CheckAll) => {
+            Local::Start(Intent::CheckAll) => {
                 let idle: Vec<String> = self.idle().map(|p| p.id.clone()).collect();
                 self.busy.extend(idle.iter().map(|id| (id.clone(), Step::Checking)));
-                return (!idle.is_empty()).then_some(Event::CheckAll);
+                return (!idle.is_empty()).then_some(Intent::CheckAll);
             }
             Local::Start(e) => {
-                let (id, step) = e.step()?;
+                let (id, step) = step(&e)?;
                 if self.busy.contains_key(id) {
                     return None;
                 }
@@ -306,9 +269,9 @@ impl Screen for State {
     }
 
     /// Instant edits of a listed, idle product.
-    fn guard(&self, e: &Event) -> bool {
+    fn guard(&self, e: &Intent) -> bool {
         match e {
-            Event::Choose(id, _) | Event::Unpin(id) => self.idle().any(|p| &p.id == id),
+            Intent::Choose(id, _) | Intent::Unpin(id) => self.idle().any(|p| &p.id == id),
             _ => false,
         }
     }
@@ -318,37 +281,36 @@ impl Screen for State {
 mod tests {
     use super::*;
     use loa_ui_kit::testkit::click_label;
-    use loa_settings::updates::{Active, CheckResult, GateCheck, HeldUpdate, ProtocolStatus, Release};
-    use semver::Version;
+    use loa_view::settings::updates::{Active, CheckResult, GateCheck, HeldUpdate, ProtocolStatus};
 
-    fn v(s: &str) -> Version { Version::parse(s).unwrap() }
-    fn release(id: &str, version: &str) -> Release { Release { product: id.into(), version: v(version), notes: String::new(), published_at: None, artifact: None } }
+    fn v(s: &str) -> String { s.to_owned() }
+    fn check(check: GateCheck, verdict: Verdict, details: Vec<String>) -> CheckResult { CheckResult { check, verdict, details } }
 
-    fn product(id: &str, kind: ProductKind, current: Option<&str>) -> ProductStatus {
-        ProductStatus {
-            id: id.into(), label: id.into(), kind, source: "GitHub can1357/oh-my-pi".into(), current: current.map(v), installed: InstalledStatus::Running, offer: None, newest: None,
+    fn product(id: &str, kind: ProductKind, current: Option<&str>) -> Product {
+        Product {
+            id: id.into(), label: id.into(), kind, source: "GitHub can1357/oh-my-pi".into(), current: current.map(v), installed: Installed::Running, offer: None, newest: None,
             changelog: String::new(), last_check_unix: Some(100), staged: Vec::new(), active: None, report: None, held: None, pending_swap: None, pin: None, waiting_past: None,
             signature: None, restart_required: false, error: None,
         }
     }
 
     fn report() -> GateReport {
-        let checks = vec![CheckResult::harmful(GateCheck::ToolSchemas, vec!["- edit: tool removed".into()]), CheckResult::harmful(GateCheck::ContractTests, vec![]), CheckResult::pass(GateCheck::RpcProtocol, vec![])];
-        GateReport { product: "omp".into(), from: v("19.0.0"), to: v("19.1.0"), checks }
+        let checks = vec![check(GateCheck::ToolSchemas, Verdict::Harmful, vec!["- edit: tool removed".into()]), check(GateCheck::ContractTests, Verdict::Harmful, vec![]), check(GateCheck::RpcProtocol, Verdict::Pass, vec![])];
+        GateReport { from: v("19.0.0"), to: v("19.1.0"), checks }
     }
 
     /// omp held by a harmful report, the app with a pending swap and a staged offer, Codex up
     /// to date with a rollback, Claude Code not installed.
     fn data() -> Data {
         let mut omp = product("omp", ProductKind::Omp, Some("19.0.0"));
-        (omp.report, omp.held, omp.changelog) = (Some(report()), Some(HeldUpdate { version: v("19.1.0"), report: report(), held_at_unix: 5 }), "- faster startup".into());
+        (omp.report, omp.held, omp.changelog) = (Some(report()), Some(HeldUpdate { version: v("19.1.0"), report: report() }), "- faster startup".into());
         let mut app = product("app", ProductKind::App, Some("0.1.0"));
-        (app.pending_swap, app.offer, app.staged, app.signature) = (Some(v("0.2.0")), Some(release("app", "0.2.0")), vec![v("0.2.0")], Some(SignatureStatus::Verified));
+        (app.pending_swap, app.offer, app.staged, app.signature) = (Some(v("0.2.0")), Some(v("0.2.0")), vec![v("0.2.0")], Some(SignatureStatus::Verified));
         let mut codex = product("codex", ProductKind::Harness("codex".into()), Some("1.0.0"));
         codex.active = Some(Active { current: v("1.0.0"), previous: Some(v("0.9.0")) });
         let mut claude = product("claude", ProductKind::Harness("claude".into()), None);
-        (claude.installed, claude.newest, claude.offer) = (InstalledStatus::Missing("not on PATH".into()), Some(v("2.0.14")), Some(release("claude", "2.0.14")));
-        let protocol = |family: &str| ProtocolStatus { family: family.into(), shared: Some(1), local: Some(1), peer: Some(1) };
+        (claude.installed, claude.newest, claude.offer) = (Installed::Missing("not on PATH".into()), Some(v("2.0.14")), Some(v("2.0.14")));
+        let protocol = |family: &str| ProtocolStatus { family: family.into(), shared: Some(1) };
         let peers = vec![PeerStanding {
             node: "laptop".into(), name: Some("laptop".into()), app_version: Some(v("0.1.0")), standing: Standing::Behind { majors: 0, minors: 1, patches: 0 },
             protocols: vec![protocol("control"), protocol("session")], can_talk: true,
@@ -381,24 +343,24 @@ mod tests {
     #[test]
     fn steps_mark_products_busy_until_finished() {
         let start = |e| Msg::Local(Local::Start(e));
-        let choose = |id: &str, c| Msg::Emit(Event::Choose(id.into(), c));
+        let choose = |id: &str, c| Msg::Emit(Intent::Choose(id.into(), c));
         // (messages, events that reach the app)
-        let cases: Vec<(Vec<Message>, Vec<Event>)> = vec![
-            (vec![start(Event::Swap("app".into())), start(Event::Check("app".into())), start(Event::Rollback("codex".into())), choose("app", HoldChoice::Wait)], vec![Event::Swap("app".into()), Event::Rollback("codex".into())]),
-            (vec![start(Event::Gate("omp".into())), start(Event::CheckAll), start(Event::CheckAll)], vec![Event::Gate("omp".into()), Event::CheckAll]),
-            (vec![choose("omp", HoldChoice::PinCurrent), Msg::Emit(Event::Unpin("nope".into())), Msg::Emit(Event::Swap("app".into())), start(Event::Unpin("omp".into()))], vec![Event::Choose("omp".into(), HoldChoice::PinCurrent)]),
+        let cases: Vec<(Vec<Message>, Vec<Intent>)> = vec![
+            (vec![start(Intent::Swap("app".into())), start(Intent::Check("app".into())), start(Intent::Rollback("codex".into())), choose("app", HoldChoice::Wait)], vec![Intent::Swap("app".into()), Intent::Rollback("codex".into())]),
+            (vec![start(Intent::Gate("omp".into())), start(Intent::CheckAll), start(Intent::CheckAll)], vec![Intent::Gate("omp".into()), Intent::CheckAll]),
+            (vec![choose("omp", HoldChoice::PinCurrent), Msg::Emit(Intent::Unpin("nope".into())), Msg::Emit(Intent::Swap("app".into())), start(Intent::Unpin("omp".into()))], vec![Intent::Choose("omp".into(), HoldChoice::PinCurrent)]),
         ];
         for (i, (messages, want)) in cases.into_iter().enumerate() {
             let mut s = State::new(data());
-            let events: Vec<Event> = messages.into_iter().filter_map(|m| s.update(m)).collect();
+            let events: Vec<Intent> = messages.into_iter().filter_map(|m| s.update(m)).collect();
             assert_eq!(events, want, "case {i}");
         }
         let mut s = State::new(data());
-        s.update(Msg::Local(Local::Start(Event::Gate("omp".into()))));
-        s.update(Msg::Local(Local::Start(Event::CheckAll)));
+        s.update(Msg::Local(Local::Start(Intent::Gate("omp".into()))));
+        s.update(Msg::Local(Local::Start(Intent::CheckAll)));
         assert_eq!((s.busy("omp"), s.busy("codex")), (Some(Step::RunningChecks), Some(Step::Checking)), "a running step is kept");
         s.finish("omp");
-        assert_eq!(s.update(Msg::Local(Local::Start(Event::Stage("omp".into())))), Some(Event::Stage("omp".into())));
+        assert_eq!(s.update(Msg::Local(Local::Start(Intent::Stage("omp".into())))), Some(Intent::Stage("omp".into())));
         s.finish_all();
         assert_eq!(s.busy("codex"), None);
     }
@@ -410,8 +372,8 @@ mod tests {
         for click in ["Update anyway to 19.1.0", "Pin 19.0.0", "Swap to 0.2.0", "Roll back to 0.9.0", "omp"] {
             events.extend(click_label(s.view(), click).into_iter().filter_map(|m| s.update(m)));
         }
-        let choose = |c| Event::Choose("omp".into(), c);
-        assert_eq!(events, [choose(HoldChoice::UpdateAnyway), choose(HoldChoice::PinCurrent), Event::Swap("app".into()), Event::Rollback("codex".into())]);
+        let choose = |c| Intent::Choose("omp".into(), c);
+        assert_eq!(events, [choose(HoldChoice::UpdateAnyway), choose(HoldChoice::PinCurrent), Intent::Swap("app".into()), Intent::Rollback("codex".into())]);
         assert_eq!((s.selected.as_deref(), s.busy("app")), (Some("omp"), Some(Step::Swapping)));
         let mut ui = iced_test::simulator(s.view());
         for text in ["Gate report 19.0.0 → 19.1.0", "2 of 3 checks found something harmful.", "- edit: tool removed", "Adapter contract tests", "- faster startup", "GitHub can1357/oh-my-pi · checked 5m ago", "Swapping…", "1 peer is behind."] {

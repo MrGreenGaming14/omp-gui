@@ -6,23 +6,21 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
-loa-contracts.workspace = true
-loa-surfaces = { path = "../loa-surfaces", default-features = false, features = ["docs"] }
+loa-view.workspace = true
 loa-ui-kit.workspace = true
 iced.workspace = true
 bytes.workspace = true
 futures.workspace = true
-thiserror.workspace = true
 tokio.workspace = true
 
 [features]
-# Live video and omp/surface/1 for viewers across the network.
-remote-video = ["loa-surfaces/remote-video"]
+# The launcher's live video toggle for viewers across the network.
+remote-video = []
 
 [dev-dependencies]
 iced_runtime = "0.14"
 iced_test = "0.14"
 tempfile.workspace = true
-rust_xlsxwriter = "0.103"
-loa-surfaces = { path = "../loa-surfaces", features = ["testkit"] }
-image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+async-trait.workspace = true
+# Reads the canvas snapshots back.
+image = { version = "0.25", default-features = false, features = ["png"] }

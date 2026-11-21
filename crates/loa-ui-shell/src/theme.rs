@@ -2,6 +2,8 @@
 
 pub use loa_ui_kit::theme::*;
 
+use loa_view::theme::{Appearance, ThemeRef};
+
 use iced::theme::Mode;
 use iced::Theme;
 

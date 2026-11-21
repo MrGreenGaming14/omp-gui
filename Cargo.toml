@@ -14,6 +14,7 @@ loa-core = { path = "crates/loa-core" }
 loa-contracts = { path = "crates/loa-contracts" }
 loa-harness = { path = "crates/loa-harness", default-features = false }
 loa-ui-kit = { path = "crates/loa-ui-kit" }
+loa-view = { path = "crates/loa-view" }
 async-trait = "0.1"
 bytes = "1"
 futures = "0.3"

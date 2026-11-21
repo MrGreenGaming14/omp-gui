@@ -16,7 +16,8 @@ pub struct ViewportCell { pub col: usize, pub row: usize }
 /// One terminal's screen, scrollback, modes and selection.
 pub struct Emulator { pub term: Term<Listener>, parser: Processor, events: mpsc::Receiver<TermEvent>, size: GridSize }
 fn dimensions(s: GridSize) -> TermSize { TermSize::new(usize::from(s.cols.max(2)), usize::from(s.rows.max(1))) }
-impl From<GridSize> for WindowSize { fn from(s: GridSize) -> Self { Self { num_lines: s.rows, num_cols: s.cols, cell_width: s.cell_width, cell_height: s.cell_height } } }
+/// The grid as `alacritty_terminal` reports it to programs that ask for the text area size.
+pub(crate) fn window_size(s: GridSize) -> WindowSize { WindowSize { num_lines: s.rows, num_cols: s.cols, cell_width: s.cell_width, cell_height: s.cell_height } }
 
 impl Emulator {
     pub fn new(size: GridSize) -> Self {

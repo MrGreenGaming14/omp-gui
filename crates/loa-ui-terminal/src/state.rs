@@ -1,11 +1,13 @@
 //! The terminal tab: sub tabs, each a terminal on a PTY its [`PtyBackend`] opened.
 
-use crate::{ChannelRead, ChannelReader, ChannelWriter, LocalPtyBackend, PtyBackend, PtyChannel, RemotePty, RemotePtyBackend, emulator::Emulator};
-use crate::{canvas::{CanvasEvent, Metrics, TerminalCanvas}, input::{KeyAction, encode_paste, key_action}, local::LocalShell, palette::TermPalette, GridSize, Result};
+use crate::{LocalPtyBackend, PtyBackend, RemotePtyBackend, emulator::Emulator};
+use crate::{canvas::{CanvasEvent, Metrics, TerminalCanvas}, input::{KeyAction, encode_paste, key_action}, local::LocalShell, palette::TermPalette};
+use loa_view::terminal::port::{ChannelRead, ChannelReader, ChannelWriter, GridSize, PtyChannel, RemotePty, Result};
+use loa_view::theme::Icon;
 use alacritty_terminal::{event::Event as TermEvent, grid::Scroll, term::{ClipboardType, TermMode}};
 use bytes::Bytes;
 use iced::{task::Handle, widget::{button, canvas, center, column, container, row, rule, text}, Element, Fill, Task, clipboard};
-use loa_ui_kit::{icons::{Icon, tinted}, style::{self as kit, ButtonKind, Tone}, theme::{LayoutRole, SpaceRole as Sp, TextRole as T, sp, width}, widgets::label};
+use loa_ui_kit::{icons::tinted, style::{self as kit, ButtonKind, Tone}, theme::{LayoutRole, SpaceRole as Sp, TextRole as T, sp, width}, widgets::label};
 use loa_util::LockExt;
 use std::{cell::Cell as StdCell, sync::{Arc, Mutex}};
 use tokio::sync::mpsc;
@@ -90,7 +92,7 @@ impl Tab {
                 TermEvent::ResetTitle => self.title = self.target.title(),
                 TermEvent::ClipboardStore(ClipboardType::Clipboard, t) => return Some(clipboard::write(t)),
                 TermEvent::ClipboardStore(ClipboardType::Selection, t) => return Some(clipboard::write_primary(t)),
-                TermEvent::TextAreaSizeRequest(format) => self.send(Input::Bytes(format(self.emulator.size().into()).into())),
+                TermEvent::TextAreaSizeRequest(format) => self.send(Input::Bytes(format(crate::emulator::window_size(self.emulator.size())).into())),
                 _ => {}
             }
             None

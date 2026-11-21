@@ -1,7 +1,8 @@
 //! Message composer: an iced `text_editor` with Enter to send and Shift+Enter for a newline,
 //! undo and redo, growth up to a maximum height, `/` command and `@` file popups, six kit
 //! [`Picker`]s (harness, model, effort, permissions, mode, folder), and a stop button with a
-//! queue for messages written mid turn. The app feeds it plain data and acts on [`Event`]s.
+//! queue for messages written mid turn. The app feeds it plain [`loa_view::session::composer`]
+//! rows and acts on its [`Intent`]s.
 
 mod input;
 
@@ -14,12 +15,13 @@ use iced::widget::text_editor::{self, Action, Content, Cursor, Edit, Position};
 use iced::widget::{button, column, container, row, space, text, text_input, tooltip};
 use iced::{Background, Border, Color, Element, Length, Padding, Subscription, Task, Theme};
 use input::{EditKind, History, KeyContext, Popup, Queue, Snapshot, Trigger};
-use loa_contracts::harness::Prompt;
-use loa_core::SessionMode;
-use loa_ui_kit::icons::{Icon, icon, muted};
+use loa_ui_kit::icons::{icon, muted};
 use loa_ui_kit::style::{self as kit, ButtonKind, Surface, Tone};
 use loa_ui_kit::theme::{LayoutRole, SpaceRole as Sp, TextRole as T, sp, text_size as ts, width};
-use loa_ui_kit::widgets::{Picker, PickerItem, popover};
+use loa_ui_kit::widgets::{Picker, popover};
+use loa_view::session::composer::{AccessOption, Command, HarnessOption, Intent, Label, ModelOption, PickerAction, Workspace};
+use loa_view::session::{Prompt, SessionMode};
+use loa_view::theme::Icon;
 use std::borrow::Cow;
 use std::sync::Arc;
 
@@ -39,45 +41,11 @@ pub const REMOVE_QUEUED_LABEL: &str = "Remove queued message";
 pub const MENTION_LABEL: &str = "Mention a file (@)";
 const FOLDER_ACTIONS: [&str; 2] = ["Choose another folder…", "Show in Files"];
 
-/// A `/` command offered in the popup; `name` has no slash.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Command { pub name: String, pub description: String }
-
-/// A model the session can switch to; `id` is what `set_model` takes, `role` the role it fills.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct ModelOption { pub id: String, pub name: String, pub provider: String, pub role: Option<String> }
-
-impl std::fmt::Display for ModelOption {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if let Some(role) = &self.role {
-            write!(f, "{role} · ")?;
-        }
-        write!(f, "{} ({})", self.name, self.provider)
-    }
-}
-
-/// A row under the model choices that opens something instead of picking a model.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PickerAction { pub id: String, pub label: String }
-
-/// A harness prompts can be routed to; unavailable ones are listed, not picked.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct HarnessOption { pub id: String, pub label: String, pub available: bool, pub detail: Option<String> }
-
-/// A permission level: what the agent may do without asking.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct AccessOption { pub id: String, pub label: String, pub detail: String }
-
-/// The folder a session works in: `path` shortened for display, `full` on hover.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Workspace { pub path: String, pub full: String, pub branch: Option<String> }
-
-/// A plain-text picker option (effort levels, modes).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Label(pub String);
-
-/// A listed picker option: an id for [`State::pick_key`] and whether it can be picked.
-trait Opt: PickerItem {
+/// A listed picker option: its label and note, an id for [`State::pick_key`] and whether it can
+/// be picked.
+trait Opt {
+    fn label(&self) -> Cow<'_, str>;
+    fn detail(&self) -> Option<Cow<'_, str>>;
     fn key(&self) -> &str;
     fn enabled(&self) -> bool;
 }
@@ -85,12 +53,9 @@ trait Opt: PickerItem {
 macro_rules! opt {
     ($t:ty, |$s:ident| $key:expr, $label:expr, $detail:expr, $enabled:expr) => {
         #[allow(unused_variables)]
-        impl PickerItem for $t {
+        impl Opt for $t {
             fn label(&self) -> Cow<'_, str> { let $s = self; Cow::Borrowed($label) }
             fn detail(&self) -> Option<Cow<'_, str>> { let $s = self; $detail }
-        }
-        #[allow(unused_variables)]
-        impl Opt for $t {
             fn key(&self) -> &str { let $s = self; $key }
             fn enabled(&self) -> bool { let $s = self; $enabled }
         }
@@ -105,30 +70,6 @@ opt!(Label, |s| &s.0, &s.0, None, true);
 /// One of the composer's pickers.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum PickerId { Harness, Model, Effort, Access, Mode, Folder }
-
-/// What the app must act on.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Event {
-    /// Start a turn: typed while idle, or the next queued message at a turn end. `@` mentions of
-    /// known files are attachments.
-    Submit(Prompt),
-    /// Interrupt the running turn; queued messages went back into the editor.
-    Stop,
-    QueueChanged(Vec<String>),
-    /// The `@` popup opened: pass the project's files to [`State::set_files`].
-    FilesRequested { query: String },
-    ModelChanged(ModelOption),
-    EffortChanged(String),
-    ModeChanged(SessionMode),
-    AccessChanged(String),
-    HarnessChanged(String),
-    /// A [`State::set_model_actions`] row, by id.
-    ModelAction(String),
-    /// The folder menu's "Show in Files", a folder by full path, and "Choose another folder…".
-    OpenWorkspace,
-    FolderPicked(String),
-    BrowseFolders,
-}
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Message {
@@ -196,8 +137,11 @@ fn select<T: Clone>(p: &mut Picker<T>, i: usize) -> Option<T> {
 
 fn select_by<T: Opt>(options: Vec<T>, current: Option<&str>) -> Picker<T> {
     let selected = current.and_then(|c| options.iter().position(|o| o.key() == c));
-    Picker::new(options, selected)
+    Picker { options, selected, open: false }
 }
+
+/// The selected option of `p`.
+fn chosen<T>(p: &Picker<T>) -> Option<&T> { p.options.get(p.selected?) }
 
 /// The composer.
 pub struct State {
@@ -223,7 +167,8 @@ impl Default for State {
 
 impl State {
     pub fn new() -> Self {
-        let pickers = Pickers { mode: Picker::new(SessionMode::ALL.iter().map(|m| Label(m.as_str().to_owned())).collect(), Some(0)), ..Pickers::default() };
+        let mode = SessionMode::ALL.iter().map(|m| Label(m.as_str().to_owned())).collect();
+        let pickers = Pickers { mode: Picker { options: mode, selected: Some(0), open: false }, ..Pickers::default() };
         let (content, history, queue) = (Content::new(), History::new(UNDO_DEPTH), Queue::default());
         Self { content, history, composing: false, phase: Phase::Idle, queue, commands: Vec::new(), files: Vec::new(), mentions: Vec::new(), popup: None, dismissed: None, pickers, author: String::new() }
     }
@@ -236,7 +181,7 @@ impl State {
 
     /// The folder the session works in, shown above the editor.
     pub fn set_workspace(&mut self, workspace: Option<Workspace>) {
-        self.pickers.folder = Picker::new(workspace.into_iter().collect(), None);
+        self.pickers.folder = Picker { options: workspace.into_iter().collect(), selected: None, open: false };
         self.pickers.folder.selected = (!self.pickers.folder.options.is_empty()).then_some(0);
         self.rebuild_folders();
     }
@@ -251,7 +196,7 @@ impl State {
         }
     }
 
-    pub fn workspace(&self) -> Option<&Workspace> { self.pickers.folder.selected() }
+    pub fn workspace(&self) -> Option<&Workspace> { chosen(&self.pickers.folder) }
     /// Node key or user written to [`Prompt::by`].
     pub fn set_author(&mut self, author: impl Into<String>) { self.author = author.into() }
 
@@ -273,11 +218,11 @@ impl State {
     pub fn set_model_actions(&mut self, actions: Vec<PickerAction>) { self.pickers.model_actions = actions }
     /// Effort levels of the current model; none hides the picker.
     pub fn set_efforts(&mut self, efforts: Vec<String>, current: Option<String>) { self.pickers.effort = select_by(efforts.into_iter().map(Label).collect(), current.as_deref()) }
-    pub fn models(&self) -> (&[ModelOption], Option<&ModelOption>) { (&self.pickers.model.options, self.pickers.model.selected()) }
+    pub fn models(&self) -> (&[ModelOption], Option<&ModelOption>) { (&self.pickers.model.options, chosen(&self.pickers.model)) }
 
     pub fn efforts(&self) -> (Vec<&str>, Option<&str>) {
         let p = &self.pickers.effort;
-        (p.options.iter().map(|e| e.0.as_str()).collect(), p.selected().map(|e| e.0.as_str()))
+        (p.options.iter().map(|e| e.0.as_str()).collect(), chosen(p).map(|e| e.0.as_str()))
     }
 
     pub fn set_mode(&mut self, mode: SessionMode) { self.pickers.mode.selected = SessionMode::ALL.iter().position(|m| *m == mode) }
@@ -285,7 +230,7 @@ impl State {
     pub fn set_access(&mut self, options: Vec<AccessOption>, current: Option<&str>) { self.pickers.access = select_by(options, current) }
     /// Harnesses prompts can be routed to; the picker shows with at least two.
     pub fn set_harnesses(&mut self, harnesses: Vec<HarnessOption>, current: Option<&str>) { self.pickers.harness = select_by(harnesses, current) }
-    pub fn harness(&self) -> Option<&HarnessOption> { self.pickers.harness.selected() }
+    pub fn harness(&self) -> Option<&HarnessOption> { chosen(&self.pickers.harness) }
 
     /// The message picking the option or action row with id `key`, if listed.
     pub fn pick_key(&self, picker: PickerId, key: &str) -> Option<Message> {
@@ -296,8 +241,8 @@ impl State {
 
     pub fn turn_started(&mut self) { self.phase = Phase::Running }
 
-    /// The turn ended, or the last [`Event::Submit`] could not start one: releases the next queued message.
-    pub fn turn_ended(&mut self) -> Option<Event> {
+    /// The turn ended, or the last [`Intent::Submit`] could not start one: releases the next queued message.
+    pub fn turn_ended(&mut self) -> Option<Intent> {
         self.phase = Phase::Idle;
         let next = self.queue.pop_sendable()?;
         Some(self.send(next.text.trim()))
@@ -331,7 +276,7 @@ impl State {
         self.visible_popup().map_or((Vec::new(), 0), |p| (p.matches.iter().map(|&i| self.candidate(p.trigger.kind, i)).collect(), p.selected))
     }
 
-    pub fn update(&mut self, message: Message) -> (Task<Message>, Option<Event>) {
+    pub fn update(&mut self, message: Message) -> (Task<Message>, Option<Intent>) {
         let focus = matches!(message, Message::Send | Message::PopupAccept(Some(_)) | Message::MentionPressed);
         if matches!(message, Message::Pick(..) | Message::PickerClosed) {
             self.pickers.open = None;
@@ -367,20 +312,20 @@ impl State {
         (if focus { iced::widget::operation::focus(EDITOR_ID) } else { Task::none() }, event)
     }
 
-    fn pick(&mut self, picker: PickerId, i: usize) -> Option<Event> {
+    fn pick(&mut self, picker: PickerId, i: usize) -> Option<Intent> {
         let p = &mut self.pickers;
         match picker {
             PickerId::Harness if !p.harness.options.get(i)?.available => None,
-            PickerId::Harness => select(&mut p.harness, i).map(|h| Event::HarnessChanged(h.id)),
-            PickerId::Model if i >= p.model.options.len() => Some(Event::ModelAction(p.model_actions.get(i - p.model.options.len())?.id.clone())),
-            PickerId::Model => select(&mut p.model, i).map(Event::ModelChanged),
-            PickerId::Effort => select(&mut p.effort, i).map(|e| Event::EffortChanged(e.0)),
-            PickerId::Access => select(&mut p.access, i).map(|a| Event::AccessChanged(a.id)),
-            PickerId::Mode => select(&mut p.mode, i).map(|_| Event::ModeChanged(SessionMode::ALL[i])),
+            PickerId::Harness => select(&mut p.harness, i).map(|h| Intent::HarnessChanged(h.id)),
+            PickerId::Model if i >= p.model.options.len() => Some(Intent::ModelAction(p.model_actions.get(i - p.model.options.len())?.id.clone())),
+            PickerId::Model => select(&mut p.model, i).map(Intent::ModelChanged),
+            PickerId::Effort => select(&mut p.effort, i).map(|e| Intent::EffortChanged(e.0)),
+            PickerId::Access => select(&mut p.access, i).map(|a| Intent::AccessChanged(a.id)),
+            PickerId::Mode => select(&mut p.mode, i).map(|_| Intent::ModeChanged(SessionMode::ALL[i])),
             PickerId::Folder => match i.checked_sub(p.folder.options.len()) {
-                None => Some(Event::FolderPicked(p.folder.options[i].full.clone())),
-                Some(0) => Some(Event::BrowseFolders),
-                Some(1) => Some(Event::OpenWorkspace),
+                None => Some(Intent::FolderPicked(p.folder.options[i].full.clone())),
+                Some(0) => Some(Intent::BrowseFolders),
+                Some(1) => Some(Intent::OpenWorkspace),
                 Some(_) => None,
             },
         }
@@ -417,10 +362,10 @@ impl State {
         let p = &self.pickers;
         let chips = [
             (PickerId::Harness, Icon::Bot, p.harness.len() > 1, self.harness().map_or("Harness".into(), |h| h.label.clone())),
-            (PickerId::Model, Icon::Sparkles, p.model.len() + p.model_actions.len() > 0, p.model.selected().map_or("Model".into(), |m| short_model_name(&m.name))),
-            (PickerId::Effort, Icon::Brain, p.effort.len() > 0, capitalized(p.effort.selected().map_or("Effort", |e| e.0.as_str()))),
-            (PickerId::Access, Icon::Shield, p.access.len() > 0, p.access.selected().map_or("Permissions".into(), |a| a.label.clone())),
-            (PickerId::Mode, Icon::FileText, true, capitalized(p.mode.selected().map_or("", |m| m.0.as_str()))),
+            (PickerId::Model, Icon::Sparkles, p.model.len() + p.model_actions.len() > 0, chosen(&p.model).map_or("Model".into(), |m| short_model_name(&m.name))),
+            (PickerId::Effort, Icon::Brain, p.effort.len() > 0, capitalized(chosen(&p.effort).map_or("Effort", |e| e.0.as_str()))),
+            (PickerId::Access, Icon::Shield, p.access.len() > 0, chosen(&p.access).map_or("Permissions".into(), |a| a.label.clone())),
+            (PickerId::Mode, Icon::FileText, true, capitalized(chosen(&p.mode).map_or("", |m| m.0.as_str()))),
         ];
         let controls = row![tip(mention.on_press(Message::MentionPressed), MENTION_LABEL)].spacing(sp(Sp::Xs)).align_y(Center);
         let controls = controls.extend(chips.into_iter().filter(|c| c.2).map(|(id, glyph, _, label)| self.chip(id, glyph, label)));
@@ -528,7 +473,7 @@ impl State {
     fn candidate(&self, kind: PopupKind, index: usize) -> &str { if kind == PopupKind::Command { &self.commands[index].name } else { &self.files[index] } }
     fn snapshot(&self) -> Snapshot { Snapshot { text: self.content.text(), cursor: self.content.cursor() } }
 
-    fn edit(&mut self, action: Action) -> Option<Event> {
+    fn edit(&mut self, action: Action) -> Option<Intent> {
         if !matches!(action, Action::Scroll { .. }) {
             self.pickers.open = None;
         }
@@ -554,7 +499,7 @@ impl State {
         self.refresh_popup()
     }
 
-    fn step(&mut self, step: fn(&mut History, Snapshot) -> Option<Snapshot>) -> Option<Event> {
+    fn step(&mut self, step: fn(&mut History, Snapshot) -> Option<Snapshot>) -> Option<Intent> {
         let current = self.snapshot();
         let target = step(&mut self.history, current)?;
         self.content = Content::with_text(&target.text);
@@ -563,14 +508,14 @@ impl State {
     }
 
     /// Types an `@` at the cursor, after a space when it follows a word.
-    fn start_mention(&mut self) -> Option<Event> {
+    fn start_mention(&mut self) -> Option<Intent> {
         let cursor = self.content.cursor();
         let line = self.content.line(cursor.position.line);
         let after_word = cursor.selection.is_none() && line.and_then(|l| l.text.get(..cursor.position.column)?.chars().next_back()).is_some_and(|c| !c.is_whitespace());
         self.edit(Action::Edit(Edit::Paste(Arc::new(if after_word { " @" } else { "@" }.to_owned()))))
     }
 
-    fn submit(&mut self) -> Option<Event> {
+    fn submit(&mut self) -> Option<Intent> {
         let message = Some(self.content.text().trim().to_owned()).filter(|m| !m.is_empty())?;
         self.content = Content::new();
         self.history.clear();
@@ -583,17 +528,17 @@ impl State {
     }
 
     /// Builds the prompt for `message` and marks the turn as starting.
-    fn send(&mut self, message: &str) -> Event {
+    fn send(&mut self, message: &str) -> Intent {
         let attachments = input::resolve(message, |path| self.mentions.iter().chain(&self.files).any(|m| m == path));
         if self.queue.items.is_empty() && self.content.is_empty() {
             self.mentions.clear();
         }
         self.phase = Phase::Starting;
-        Event::Submit(Prompt { text: message.to_owned(), attachments, by: self.author.clone() })
+        Intent::Submit(Prompt { text: message.to_owned(), attachments, by: self.author.clone() })
     }
 
     /// Interrupts the turn and moves queued messages back into the editor ahead of what is typed.
-    fn stop(&mut self) -> Option<Event> {
+    fn stop(&mut self) -> Option<Intent> {
         if !self.is_busy() {
             return None;
         }
@@ -606,13 +551,13 @@ impl State {
             self.replace(&text);
             self.popup = None;
         }
-        Some(Event::Stop)
+        Some(Intent::Stop)
     }
 
-    fn queue_changed(&self) -> Event { Event::QueueChanged(self.queue.items.iter().map(|m| m.text.clone()).collect()) }
+    fn queue_changed(&self) -> Intent { Intent::QueueChanged(self.queue.items.iter().map(|m| m.text.clone()).collect()) }
 
     /// Replaces the popup word with the chosen item.
-    fn accept(&mut self, row: Option<usize>) -> Option<Event> {
+    fn accept(&mut self, row: Option<usize>) -> Option<Intent> {
         let popup = self.visible_popup()?;
         let index = *popup.matches.get(row.unwrap_or(popup.selected))?;
         let trigger = popup.trigger.clone();
@@ -638,7 +583,7 @@ impl State {
     }
 
     /// Opens, updates or closes the popup for the word under the cursor.
-    fn refresh_popup(&mut self) -> Option<Event> {
+    fn refresh_popup(&mut self) -> Option<Intent> {
         let cursor = self.content.cursor();
         let line = self.content.line(cursor.position.line).filter(|_| cursor.selection.is_none());
         let Some(trigger) = line.and_then(|l| input::detect(cursor.position.line, &l.text, cursor.position.column)) else {
@@ -651,7 +596,7 @@ impl State {
         }
         self.dismissed = None;
         let previous = self.popup.take().filter(|p| p.trigger.same_anchor(&trigger));
-        let event = (previous.is_none() && trigger.kind == PopupKind::File).then(|| Event::FilesRequested { query: trigger.query.clone() });
+        let event = (previous.is_none() && trigger.kind == PopupKind::File).then(|| Intent::FilesRequested { query: trigger.query.clone() });
         let selected = previous.filter(|p| p.trigger.query == trigger.query).map_or(0, |p| p.selected);
         let matches = self.matches(&trigger);
         self.popup = Some(Popup { selected: selected.min(matches.len().saturating_sub(1)), trigger, matches });

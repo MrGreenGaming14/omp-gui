@@ -8,10 +8,11 @@ use iced::alignment::Vertical;
 use iced::widget::{button, checkbox, column, container, markdown, pick_list, row, text, text_editor, text_input};
 use iced::{Element, Fill, Font};
 use loa_core::{DecisionKind, DecisionStatus, NodeId};
-use loa_ui_kit::icons::{Icon, icon};
+use loa_ui_kit::icons::icon;
 use loa_ui_kit::style::{self as kit, ButtonKind, Surface, Tone};
 use loa_ui_kit::theme::{ColorRole as C, SpaceRole as Sp, TextRole as T, sp, text_size as ts};
 use loa_ui_panel::diff::{Tag, parse_unified};
+use loa_view::theme::Icon;
 
 /// Values and reason of an answer, before the answering user is added.
 #[derive(Clone, Debug, PartialEq)]

@@ -6,15 +6,16 @@ use crate::style::Tone;
 use crate::theme::{TextRole, for_theme};
 use iced::widget::svg::{self, Handle, Svg};
 use iced::{Color, Length, Theme};
+use loa_view::theme::Icon;
 use std::sync::LazyLock;
 
-/// Declares [`Icon`] and its SVG table in one list.
+/// The SVG of every [`Icon`], in declaration order; the match keeps the table exhaustive.
 macro_rules! icons {
     ($($name:ident = $file:literal),+ $(,)?) => {
-        /// An icon the app uses.
-        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-        pub enum Icon { $($name),+ }
-        const SVGS: &[&[u8]] = &[$(include_bytes!(concat!("../icons/", $file, ".svg"))),+];
+        const ALL: &[Icon] = &[$(Icon::$name),+];
+        fn svg(icon: Icon) -> &'static [u8] {
+            match icon { $(Icon::$name => include_bytes!(concat!("../icons/", $file, ".svg"))),+ }
+        }
     };
 }
 
@@ -29,11 +30,10 @@ icons! {
     TriangleAlert = "triangle-alert", Wrench = "wrench", X = "x",
 }
 
-static HANDLES: LazyLock<Vec<Handle>> = LazyLock::new(|| SVGS.iter().map(|b| Handle::from_memory(*b)).collect());
+/// Handles built once, indexed by discriminant, so drawing an icon never re-hashes its SVG.
+static HANDLES: LazyLock<Vec<Handle>> = LazyLock::new(|| ALL.iter().map(|&i| Handle::from_memory(svg(i))).collect());
 
-impl Icon {
-    pub fn handle(self) -> Handle { HANDLES[self as usize].clone() }
-}
+fn handle(icon: Icon) -> Handle { HANDLES[icon as usize].clone() }
 
 /// `icon` sized like `size` text, in `tone`.
 pub fn tinted<'a>(icon: Icon, size: TextRole, tone: Tone) -> Svg<'a, Theme> {
@@ -54,4 +54,14 @@ pub fn muted<'a>(icon: Icon, size: f32) -> Svg<'a, Theme> {
 /// `icon` at `size` in a fixed colour.
 pub fn colored<'a>(icon: Icon, size: f32, color: Color) -> Svg<'a, Theme> { sized(icon, size).style(move |_: &Theme, _| svg::Style { color: Some(color) }) }
 
-fn sized<'a>(icon: Icon, size: f32) -> Svg<'a, Theme> { Svg::new(icon.handle()).width(Length::Fixed(size)).height(Length::Fixed(size)) }
+fn sized<'a>(icon: Icon, size: f32) -> Svg<'a, Theme> { Svg::new(handle(icon)).width(Length::Fixed(size)).height(Length::Fixed(size)) }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_svg_table_lists_every_icon_in_discriminant_order() {
+        assert!(ALL.iter().enumerate().all(|(i, &icon)| icon as usize == i), "ALL must follow loa_view::theme::Icon's order");
+    }
+}

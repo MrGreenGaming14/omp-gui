@@ -8,7 +8,6 @@ use async_trait::async_trait;
 use iced::Task;
 use loa_core::attr;
 use loa_ui_panel::{diff, files};
-use loa_ui_session::composer;
 use loa_ui_terminal as terminal;
 
 use super::{App, Message};
@@ -97,14 +96,14 @@ pub(crate) struct Workspace {
 }
 
 /// The composer's folder chip for `cwd`: home shortened to `~`, and the git branch.
-pub(crate) fn chip(git: &dyn GitProbe, cwd: &Path) -> composer::Workspace {
+pub(crate) fn chip(git: &dyn GitProbe, cwd: &Path) -> loa_view::session::composer::Workspace {
     let full = cwd.display().to_string();
     let path = match loa_util::fs::home().and_then(|home| cwd.strip_prefix(home).ok().map(Path::to_owned)) {
         Some(rest) if rest.as_os_str().is_empty() => "~".to_owned(),
         Some(rest) => format!("~/{}", rest.display()),
         None => full.clone(),
     };
-    composer::Workspace { path, full, branch: git.branch(cwd) }
+    loa_view::session::composer::Workspace { path, full, branch: git.branch(cwd) }
 }
 
 impl App {

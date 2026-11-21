@@ -1,7 +1,8 @@
 //! The peers section: which tools each peer's grant allows.
 
 use super::{card, clipped, note_row, row_pad};
-use crate::tools::{Message, PeerChoice, PeerTools, State, ToolId};
+use crate::tools::{Message, PeerChoice, State};
+use loa_view::panel::{PeerTools, ToolId};
 use iced::widget::{column, container, pick_list, row, text};
 use iced::{Alignment, Element, Fill, Padding};
 use loa_ui_kit::style::{self, Tone};

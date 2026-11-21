@@ -6,7 +6,8 @@ use std::collections::{HashMap, HashSet};
 
 use loa_core::{Dom, ElementKind, NodeId, Role, attr};
 use loa_bus::Listing;
-use loa_ui_panel::session_tree::{self, SessionInfo, TurnInfo};
+use loa_ui_panel::session_tree;
+use loa_view::panel::{SessionInfo, TurnInfo};
 
 use crate::area::Ctx;
 

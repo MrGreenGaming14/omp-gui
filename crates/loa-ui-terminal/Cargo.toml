@@ -13,8 +13,8 @@ bytes.workspace = true
 futures.workspace = true
 iced.workspace = true
 loa-ui-kit.workspace = true
+loa-view.workspace = true
 portable-pty = "0.9"
-thiserror.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]

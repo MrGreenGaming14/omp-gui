@@ -3,7 +3,8 @@
 use crate::layout::{Message, Pane, State, open_project};
 use iced::widget::{button, container, row, space, text};
 use iced::{Alignment, Element, Fill};
-use loa_ui_kit::icons::{Icon, tinted};
+use loa_ui_kit::icons::tinted;
+use loa_view::theme::Icon;
 use loa_ui_kit::style::{self, ButtonKind, Surface, Tone};
 use loa_ui_kit::theme::{SpaceRole as Sp, TextRole as T, pad_x, sp, tokens};
 use loa_ui_kit::widgets::{icon_button, label};

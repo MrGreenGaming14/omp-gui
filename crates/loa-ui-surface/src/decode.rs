@@ -1,56 +1,26 @@
-//! Turning frames into pixels: a chain of [`FrameDecoder`] strategies with [`StillDecoder`]
+//! Turning frames into pixels: a chain of the app's [`FrameDecoder`]s with its still decoder
 //! last. What the chain accepts is what a tab negotiates with its surface.
 
 use crate::framebuffer::Framebuffer;
-use loa_contracts::surface::{Encoding, Frame};
-use loa_surfaces::pixels::{self, PixelError, STILL_ENCODINGS};
+use loa_view::surface::port::{DecodeError, Decoders, FrameDecoder};
+use loa_view::surface::{Encoding, Frame};
 
-#[derive(Debug, thiserror::Error)]
-pub enum DecodeError {
-    #[error(transparent)]
-    Pixels(#[from] PixelError),
-    #[error("video decoder: {0}")]
-    Video(String),
-}
+/// The decoders of one tab: the extra one first, then the still one.
+pub(crate) struct Chain(Vec<Box<dyn FrameDecoder>>);
 
-/// One decoding strategy of a pixel tab.
-pub trait FrameDecoder: Send {
-    /// The encodings this decoder applies, best first.
-    fn accepts(&self) -> &[Encoding];
-
-    /// Applies `frame` onto `fb`; `Ok(false)` when it produced no picture yet.
-    fn apply(&mut self, frame: &Frame, fb: &mut Framebuffer) -> Result<bool, DecodeError>;
-
-    /// Forgets reference pictures after lost frames; the next frame fed is a keyframe.
-    fn reset(&mut self) {}
-}
-
-/// RGBA, PNG and JPEG regions, written onto the retained picture.
-pub struct StillDecoder;
-
-impl FrameDecoder for StillDecoder {
-    fn accepts(&self) -> &[Encoding] {
-        &STILL_ENCODINGS
-    }
-
-    fn apply(&mut self, frame: &Frame, fb: &mut Framebuffer) -> Result<bool, DecodeError> {
-        let (width, height) = (fb.width(), fb.height());
-        pixels::apply_still(fb.pixels_mut(), width, height, frame)?;
-        Ok(true)
-    }
-}
-
-/// The decoders of one tab: `extra` first, then [`StillDecoder`].
-pub(crate) struct Decoders(Vec<Box<dyn FrameDecoder>>);
-
-impl Decoders {
-    pub fn new(extra: Option<Box<dyn FrameDecoder>>) -> Self {
-        Self(extra.into_iter().chain([Box::new(StillDecoder) as Box<dyn FrameDecoder>]).collect())
+impl Chain {
+    pub fn new(decoders: &Decoders) -> Self {
+        Self(decoders.extra.iter().map(|make| make()).chain([(decoders.still)()]).collect())
     }
 
     /// What the chain decodes, best first.
     pub fn accepted(&self) -> Vec<Encoding> {
         self.0.iter().flat_map(|d| d.accepts().iter().copied()).collect()
+    }
+
+    /// What the still decoder (last in the chain) decodes: asked for when a stream can't be.
+    pub fn still(&self) -> Vec<Encoding> {
+        self.0.last().map(|d| d.accepts().to_vec()).unwrap_or_default()
     }
 
     /// The first decoder accepting `encoding`.
@@ -61,6 +31,12 @@ impl Decoders {
     pub fn reset(&mut self) {
         self.0.iter_mut().for_each(|d| d.reset());
     }
+}
+
+/// Applies `frame` onto `fb` with `decoder`.
+pub(crate) fn apply(decoder: &mut dyn FrameDecoder, frame: &Frame, fb: &mut Framebuffer) -> Result<bool, DecodeError> {
+    let (width, height) = (fb.width(), fb.height());
+    decoder.apply(frame, fb.pixels_mut(), width, height)
 }
 
 /// Whether frames of `encoding` reference earlier ones, so a lost frame needs a keyframe.

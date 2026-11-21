@@ -3,11 +3,12 @@
 use super::{BOLD, card, clipped, form_card, grid, note_row, primary, row_button, row_pad, status_dot};
 use crate::{action, ghost};
 use crate::tools::catalog::{Catalog, ServerView};
-use crate::tools::{FormId, ImportOutcome, Message, ServerAction, ServerKind, ServerStatus, State, TransportKind};
+use crate::tools::{FormId, Message, State, TransportKind};
+use loa_view::panel::{ImportOutcome, McpTransport, ServerAction, ServerKind, ServerStatus};
+use loa_view::theme::Icon;
 use iced::widget::{button, checkbox, column, container, row, space, text};
 use iced::{Alignment, Element, Fill, Font, Padding};
-use loa_contracts::harness::McpTransport;
-use loa_ui_kit::icons::{Icon, tinted};
+use loa_ui_kit::icons::tinted;
 use loa_ui_kit::style::{self, ButtonKind, Tone};
 use loa_ui_kit::theme::{SpaceRole as Sp, TextRole as T, pad_y, sp, text_size as ts};
 use loa_ui_kit::widgets::{form_view, label};

@@ -1,5 +1,5 @@
-//! The Peers panel (`loa_ui_settings::peers`) over a [`Node`]: the snapshot it shows
-//! and the effects of its events.
+//! The Peers panel's view ([`loa_view::settings::peers`]) over a [`Node`]: the snapshot it
+//! shows and the effects of its intents.
 
 use loa_p2p::{
     Availability, DiscoverySource, Endpoint, GrantDirection, GrantInfo, KeySource, NearbySource, Node, NodeError,
@@ -7,7 +7,7 @@ use loa_p2p::{
 };
 use loa_core::NodeId as DomNodeId;
 use loa_trust::{Action, GrantId, Resource, Scope};
-use loa_ui_settings::peers as panel;
+use loa_view::settings::peers as panel;
 use std::sync::Arc;
 
 /// A grant resource as the panel's picker id.
@@ -340,12 +340,12 @@ pub enum Outcome {
 }
 
 /// Carries out a panel event on `node`.
-pub async fn apply(node: Node, event: panel::Event) -> Result<Outcome, String> {
+pub async fn apply(node: Node, event: panel::Intent) -> Result<Outcome, String> {
     run(&node, event).await.map_err(|error| error.to_string())
 }
 
-async fn run(node: &Node, event: panel::Event) -> Result<Outcome, NodeError> {
-    use panel::Event as E;
+async fn run(node: &Node, event: panel::Intent) -> Result<Outcome, NodeError> {
+    use panel::Intent as E;
     Ok(match event {
         E::ValidateKey(key) => {
             let valid = Node::parse_key(&key).is_ok_and(|parsed| parsed != node.key());
@@ -411,6 +411,28 @@ async fn run(node: &Node, event: panel::Event) -> Result<Outcome, NodeError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn grant_inputs_come_back_as_the_grants_they_issue() {
+        use panel::{GrantScope as S, Permission as P};
+        let peer = Node::parse_key(&loa_trust::NodeIdentity::from_secret_bytes(&[7; 32]).public_key().to_string()).unwrap();
+        let cases = [("prompt:3:s", S::Prompt, P::View, true), ("session:s", S::Session, P::Drive, false), ("ssh:box", S::SshHost, P::Drive, false), ("sandbox", S::Sandbox, P::Drive, false), ("project:p", S::Project, P::Fork, false)];
+        for (id, scope, permission, future_sessions) in cases {
+            let input = panel::GrantInput {
+                peer_key: peer.to_string(),
+                resource: panel::GrantResource { id: id.into(), label: format!("Label of {id}"), scope, future_sessions },
+                permission,
+                ttl_seconds: 3600,
+                reshare: true,
+            };
+            let (scopes, until_ms) = grant_request(&input, 1000).unwrap();
+            let info = GrantInfo { id: GrantId("g".into()), peer, direction: GrantDirection::Given, scopes, until_ms, expires_ms: None, renews_at_ms: None, reshare: input.reshare, ended: false };
+            let labels = [(parse_resource(id, 1000).unwrap(), input.resource.label.clone())];
+            let shown = grant(&info, &labels).unwrap();
+            assert_eq!((shown.peer_key, shown.resource, shown.permission, shown.reshare), (input.peer_key, input.resource, input.permission, input.reshare), "{id}");
+            assert_eq!(shown.expires_at, Some(1 + input.ttl_seconds), "{id}");
+        }
+    }
 
     #[test]
     fn resource_ids_round_trip() {

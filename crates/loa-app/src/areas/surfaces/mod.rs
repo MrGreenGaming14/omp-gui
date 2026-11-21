@@ -11,8 +11,11 @@ use loa_bus::SessionId;
 use loa_core::{NodeId, PatchSink, TurnStatus, attr};
 use loa_contracts::surface::SurfaceUri;
 use loa_surfaces::{CaptureMode, HubConfig, HubEvent, Listed, McpEndpoint, Opened, SurfaceHub, SurfaceTools, dom};
-use loa_ui_surface::{Available, BrowserStatus, Capture, CaptureStatus, Options, Panel, panel};
+use loa_ui_surface::{Options, Panel, panel};
+use loa_view::surface::{Capture, Intent};
 
+use crate::adapters::surface::{DocsRenderer, decoders};
+use crate::view::surface::{available, browser_status, capture_from_view, capture_status};
 use crate::area::{perform, Area, AreaCommand, AreaMessage, Ctx, HostToolSet, PanelTab, Target};
 use crate::watch::{PtrKey, watch};
 use loa_runtime::session::{SessionEvent, dom_turns};
@@ -76,12 +79,9 @@ impl State {
     pub(crate) fn with_hub(hub: Arc<SurfaceHub>, ctx: &mut Ctx) -> (Self, Task<Message>) {
         let tools = SurfaceTools::new(Arc::clone(&hub));
         for spec in tools.host_tools().0 {
-            ctx.set_app_tool(loa_ui_panel::tools::ToolInfo::from(&spec));
+            ctx.set_app_tool(loa_view::panel::ToolInfo::from(&spec));
         }
-        #[allow(unused_mut)]
-        let mut options = Options { fonts: hub.config().fonts.clone(), ..Options::default() };
-        #[cfg(feature = "remote-video")]
-        video::options(&mut options);
+        let options = Options::new(decoders(), Arc::new(DocsRenderer::new(hub.config().fonts.clone())));
         let mut panel = Panel::new(options, browser_status(&hub), ctx.runtime.cwd().to_path_buf());
         #[cfg(feature = "remote-video")]
         let encoders = video::start(&hub, &mut panel);
@@ -124,15 +124,15 @@ impl State {
     }
 
     fn set_capture(&mut self, capture: Capture, ctx: &mut Ctx) -> Task<Message> {
-        if let Err(error) = self.hub.set_capture(capture) {
+        if let Err(error) = self.hub.set_capture(capture_from_view(capture)) {
             ctx.notify(error.to_string());
             self.panel.set_capture(capture_status(&self.hub, false));
             return Task::none();
         }
         save(ctx, |settings| {
             settings.browser_capture = match capture {
-                CaptureMode::Screencast => loa_settings::app::BrowserCapture::Screencast,
-                CaptureMode::VirtualDisplay => loa_settings::app::BrowserCapture::VirtualDisplay,
+                Capture::Screencast => loa_settings::app::BrowserCapture::Screencast,
+                Capture::VirtualDisplay => loa_settings::app::BrowserCapture::VirtualDisplay,
             };
         });
         self.list()
@@ -144,28 +144,31 @@ impl State {
         Task::perform(async move { hub.refresh_declared(&mcp).await }, Message::Declared)
     }
 
-    fn panel_event(&mut self, event: panel::Event, ctx: &mut Ctx) -> Task<Message> {
+    fn panel_event(&mut self, intent: Intent, ctx: &mut Ctx) -> Task<Message> {
         let hub = Arc::clone(&self.hub);
-        match event {
-            panel::Event::OpenBrowser(url) => {
+        match intent {
+            Intent::OpenBrowser(url) => {
                 perform(async move { hub.open_browser(&url).await }, Message::Opened)
             }
-            panel::Event::OpenDocument(path) => {
+            Intent::OpenDocument(path) => {
                 perform(async move { hub.open_document(&path).await }, Message::Opened)
             }
-            panel::Event::OpenVm { address, password } => {
+            Intent::OpenVm { address, password } => {
                 perform(async move { hub.open_vm(&address, password).await }, Message::Opened)
             }
-            panel::Event::Open(uri) => {
+            Intent::Open(uri) => {
                 perform(async move { hub.open(&uri).await }, Message::Opened)
             }
-            panel::Event::Close(uri) => {
+            Intent::Close(uri) => {
                 perform(async move { hub.close(&uri).await }, Message::Closed)
             }
             #[cfg(feature = "remote-video")]
-            panel::Event::SetVideo(enabled) => video::set(&self.hub, enabled, ctx),
-            panel::Event::SetCapture(capture) => self.set_capture(capture, ctx),
-            panel::Event::Surface(loa_ui_surface::Event::EncodingUnsupported { uri, encoding, supported }) => {
+            Intent::SetVideo(enabled) => video::set(&self.hub, enabled, ctx),
+            // The launcher has no live video toggle without the feature.
+            #[cfg(not(feature = "remote-video"))]
+            Intent::SetVideo(_) => Task::none(),
+            Intent::SetCapture(capture) => self.set_capture(capture, ctx),
+            Intent::EncodingUnsupported { uri, encoding, supported } => {
                 let supported: Vec<String> = supported.iter().map(|encoding| format!("{encoding:?}")).collect();
                 ctx.notify(format!(
                     "{uri} streams {encoding:?}, which the renderer can't show (it shows {})",
@@ -227,23 +230,6 @@ impl State {
     fn launcher(&mut self, ctx: &mut Ctx) -> Task<Message> {
         ctx.open_tab(TAB);
         self.panel.update(panel::Message::Launcher).0.map(Message::Panel)
-    }
-}
-
-/// What the launcher says about the browser.
-fn browser_status(hub: &SurfaceHub) -> BrowserStatus {
-    match hub.browser_executable() {
-        Some(executable) => BrowserStatus::Ready { executable: executable.to_owned(), sandboxed: hub.browser_sandboxed() },
-        None => BrowserStatus::Missing,
-    }
-}
-
-/// What the launcher says about the browser capture.
-fn capture_status(hub: &SurfaceHub, pending: bool) -> CaptureStatus {
-    CaptureStatus {
-        selected: hub.capture(),
-        virtual_display_missing: hub.config().virtual_display.as_ref().err().cloned(),
-        pending,
     }
 }
 
@@ -327,7 +313,7 @@ impl Area for State {
                 let available = listed
                     .into_iter()
                     .filter(|listed| !listed.open)
-                    .map(|listed| Available { server: listed.origin.server().to_owned(), info: listed.info })
+                    .map(available)
                     .collect();
                 self.panel.set_available(available);
                 Task::none()
@@ -361,7 +347,7 @@ impl Area for State {
     }
 
     fn panel_tabs(&self) -> Vec<PanelTab> {
-        vec![PanelTab::new(TAB, "Surfaces", false).icon(loa_ui_kit::Icon::Globe)]
+        vec![PanelTab::new(TAB, "Surfaces", false).icon(loa_view::theme::Icon::Globe)]
     }
 
     fn view_tab<'a>(&'a self, id: &str, _: &'a Ctx) -> Option<Element<'a, Message>> {

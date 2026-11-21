@@ -15,7 +15,7 @@ use crate::panel::Options;
 use crate::theme;
 use iced::widget::{column, container, row, text};
 use iced::{Center, Element, Fill, Point, Size, Task};
-use loa_contracts::surface::{self, Document, Encoding, Frame, Modifiers, MouseButton, StreamInfo, Surface, SurfaceInfo, SurfaceUri};
+use loa_view::surface::{self, Document, Encoding, Frame, Intent, Modifiers, MouseButton, StreamInfo, Surface, SurfaceInfo};
 use loa_ui_kit::theme::{SpaceRole as Sp, sp};
 use std::sync::Arc;
 use std::time::Instant;
@@ -78,14 +78,6 @@ pub enum PointerInput {
     Scroll { at: Point, dx: f32, dy: f32 },
 }
 
-/// What the app must act on.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Event {
-    /// The surface streams `encoding`, which this renderer can't decode; the app asks the
-    /// server to switch to one of `supported`.
-    EncodingUnsupported { uri: SurfaceUri, encoding: Encoding, supported: Vec<Encoding> },
-}
-
 /// What the tab header shows.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Tab {
@@ -121,7 +113,7 @@ pub(crate) struct TabCtx {
 /// The strategy of a tab for its surface's mode.
 pub(crate) trait SurfaceMode: Send {
     /// Handles every message the shell doesn't; others' messages are ignored.
-    fn update(&mut self, message: Message, tab: &mut TabCtx) -> (Task<Message>, Option<Event>);
+    fn update(&mut self, message: Message, tab: &mut TabCtx) -> (Task<Message>, Option<Intent>);
 
     /// Chips after the name and notice in the header.
     fn header<'a>(&'a self, tab: &'a TabCtx) -> Vec<Element<'a, Message>>;
@@ -163,7 +155,7 @@ impl State {
         (Self { tab, mode, _tasks: handle.abort_on_drop() }, task)
     }
 
-    pub fn update(&mut self, message: Message) -> (Task<Message>, Option<Event>) {
+    pub fn update(&mut self, message: Message) -> (Task<Message>, Option<Intent>) {
         match message {
             Message::StreamEnded => self.tab.notice = Some(Notice::Closed),
             Message::Failed(message) => self.tab.notice = Some(Notice::Error(message)),

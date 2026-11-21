@@ -9,7 +9,9 @@ pub use parse::{ParseError, Result, parse_unified};
 use crate::{row_height, tint};
 use iced::widget::{Id, button, column, container, operation, row, rule, scrollable, space, text};
 use iced::{Element, Fill, Font, Padding, Task};
-use loa_ui_kit::icons::{Icon, muted};
+use loa_ui_kit::icons::muted;
+use loa_view::panel::DiffIntent;
+use loa_view::theme::Icon;
 use loa_ui_kit::style::{self as kit, ButtonKind, Tone};
 use loa_ui_kit::theme::{ColorRole as C, SpaceRole as Sp, TextRole as T, pad_x, sp, text_size as ts};
 use loa_ui_kit::widgets::label;
@@ -28,9 +30,6 @@ pub enum Mode { #[default] Unified, Split }
 /// `Expand` opens a fold of the selected file, `Open` the file itself; `ToggleCollapsed` hides its lines.
 #[derive(Debug, Clone)]
 pub enum Message { SelectFile(usize), SetMode(Mode), Expand(usize), Scrolled { offset: f32, height: f32 }, Open, ToggleCollapsed }
-/// Open this path: the new one, or the old one of a deleted file.
-#[derive(Debug, Clone, PartialEq)]
-pub enum Event { OpenFile(String) }
 /// The files, the selected one's rows in the current mode, the scroll position and a note replacing "No changes".
 #[derive(Debug)]
 pub struct State {
@@ -61,7 +60,7 @@ impl State {
         let shown = (self.viewport_height / row_height()).ceil().max(1.0) as usize;
         first.saturating_sub(OVERSCAN).min(self.rows.len())..(first + shown + OVERSCAN).min(self.rows.len())
     }
-    pub fn update(&mut self, message: Message) -> (Task<Message>, Option<Event>) {
+    pub fn update(&mut self, message: Message) -> (Task<Message>, Option<DiffIntent>) {
         match message {
             Message::SelectFile(i) if i < self.files.len() && i != self.selected => return (self.select(i), None),
             Message::SetMode(mode) if mode != self.mode => {
@@ -76,7 +75,7 @@ impl State {
                 if self.files.get_mut(self.selected).is_some_and(|f| f.expand(fold)) { self.rebuild_rows() }
             }
             Message::Scrolled { offset, height } => (self.scroll_offset, self.viewport_height) = (offset, height),
-            Message::Open => return (Task::none(), self.selected().map(|f| Event::OpenFile(f.path().to_owned()))),
+            Message::Open => return (Task::none(), self.selected().map(|f| DiffIntent::OpenFile(f.path().to_owned()))),
             Message::ToggleCollapsed => self.collapsed = !self.collapsed,
         }
         (Task::none(), None)

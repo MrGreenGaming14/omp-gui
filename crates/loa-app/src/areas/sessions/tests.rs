@@ -1,6 +1,6 @@
 use crate::app::Message;
 use crate::testing::TestApp;
-use loa_ui_session::transcript as chat;
+use loa_view::session::transcript;
 
 #[test]
 fn slash_commands_branch_switch_mode_export_and_delete_sessions() {
@@ -14,7 +14,7 @@ fn slash_commands_branch_switch_mode_export_and_delete_sessions() {
 
     test.send(Message::OpenRecent(first.clone()));
     let turn = loa_runtime::session::dom_turns(test.app.ctx.runtime.sessions().active().unwrap().dom()).last().expect("a turn").id;
-    test.send(Message::area(super::Message::Chat(chat::Event::Rewind(turn))));
+    test.send(Message::area(super::Message::Chat(transcript::Intent::Rewind(turn))));
     test.until("the rewind is active", |app| app.ctx.runtime.sessions().active_id().is_some_and(|id| id.as_str() != fork && id.as_str() != first));
     let title = test.app.ctx.runtime.sessions().active().unwrap().summary().map(|summary| summary.title);
     assert!(title.is_some_and(|title| title.ends_with("(rewound)")), "the rewound branch is named after its source");

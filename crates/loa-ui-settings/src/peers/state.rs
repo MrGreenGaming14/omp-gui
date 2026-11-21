@@ -1,7 +1,8 @@
 //! The panel's interaction state and reducer; requests reach the app only while the snapshot
 //! still backs them.
 
-use super::{Data, Event, GrantDirection, GrantForm, GrantScope, Peer, PeerSort, Permission, visible};
+use super::{GrantForm, PeerSort, visible};
+use loa_view::settings::peers::{Data, GrantDirection, GrantScope, Intent, Peer, Permission, ResourceChoice};
 use loa_ui_kit::widgets::{Msg, Screen};
 
 /// A step waiting for the user's confirmation.
@@ -40,7 +41,7 @@ pub enum Local {
     SubmitGrant,
 }
 
-pub type Message = Msg<Local, Event>;
+pub type Message = Msg<Local, Intent>;
 
 #[derive(Debug, Default)]
 pub struct State {
@@ -99,7 +100,7 @@ impl State {
 
     fn given(&self, id: &str) -> bool { self.data.grants.iter().any(|g| g.id == id && g.direction == GrantDirection::Given) }
 
-    fn select_resource(&mut self, resource: Option<super::ResourceChoice>) {
+    fn select_resource(&mut self, resource: Option<ResourceChoice>) {
         if self.confirm == Some(Confirm::Ssh) {
             self.confirm = None;
         }
@@ -109,21 +110,21 @@ impl State {
 
 impl Screen for State {
     type Local = Local;
-    type Event = Event;
+    type Event = Intent;
 
-    fn reduce(&mut self, m: Local) -> Option<Event> {
+    fn reduce(&mut self, m: Local) -> Option<Intent> {
         let ssh = self.grant_form.is_ssh();
         match m {
             Local::Filter(value) => self.filter = value,
             Local::Sort(sort) => self.sort = sort,
             Local::Key(value) => {
                 (self.add_key, self.key_validation) = (value, None);
-                return Some(Event::ValidateKey(self.add_key.trim().to_owned()));
+                return Some(Intent::ValidateKey(self.add_key.trim().to_owned()));
             }
             Local::Address(value) => self.add_address = value,
             Local::AddPeer if self.key_valid() => {
                 let address = self.add_address.trim();
-                let event = Event::AddPeer { key: self.add_key.trim().to_owned(), address: (!address.is_empty()).then(|| address.to_owned()) };
+                let event = Intent::AddPeer { key: self.add_key.trim().to_owned(), address: (!address.is_empty()).then(|| address.to_owned()) };
                 (self.add_key, self.add_address, self.key_validation) = Default::default();
                 return Some(event);
             }
@@ -137,8 +138,8 @@ impl Screen for State {
                 self.confirm = valid.then_some(confirm);
             }
             Local::Confirm => match self.confirm.take()? {
-                Confirm::RemovePeer(key) => return Some(Event::RemovePeer(key)),
-                Confirm::RevokeGrant(id) => return Some(Event::RevokeGrant(id)),
+                Confirm::RemovePeer(key) => return Some(Intent::RemovePeer(key)),
+                Confirm::RevokeGrant(id) => return Some(Intent::RevokeGrant(id)),
                 Confirm::Ssh => self.grant_form.ssh_confirmed = ssh,
             },
             Local::Cancel => (self.confirm, self.rename) = (None, None),
@@ -151,7 +152,7 @@ impl Screen for State {
             Local::SaveRename => {
                 let (key, name) = self.rename.take()?;
                 let name = name.trim();
-                return (!name.is_empty()).then(|| Event::RenamePeer { key, name: name.to_owned() });
+                return (!name.is_empty()).then(|| Intent::RenamePeer { key, name: name.to_owned() });
             }
             Local::SelectPeer(key) => {
                 self.selected_peer = self.is_peer(&key).then_some(key);
@@ -177,24 +178,24 @@ impl Screen for State {
             }
             Local::SubmitGrant => {
                 let key = self.selected_peer.as_ref().filter(|key| self.is_peer(key))?;
-                return self.grant_form.build(key).ok().map(Event::CreateGrant);
+                return self.grant_form.build(key).ok().map(Intent::CreateGrant);
             }
         }
         None
     }
 
     /// Direct requests hold while the snapshot lists what they name.
-    fn guard(&self, e: &Event) -> bool {
+    fn guard(&self, e: &Intent) -> bool {
         let d = &self.data;
         match e {
-            Event::AddDiscovered(key) => d.nearby.iter().any(|p| &p.key == key) && !self.is_peer(key),
-            Event::CopyKey(key) => *key == d.node.key || d.peers.iter().chain(&d.nearby).any(|p| &p.key == key),
-            Event::RenewGrant(id) => self.given(id),
-            Event::Refresh => true,
-            Event::ScanTailscale => d.node.tailscale_available,
-            Event::OpenRemote { peer, session } => d.remote_sessions.iter().any(|r| &r.peer_key == peer && &r.session == session),
-            Event::ForkRemote { peer, session } => d.remote_sessions.iter().any(|r| &r.peer_key == peer && &r.session == session && r.can_fork),
-            Event::BrowseFolder { peer, folder } => d.shared_folders.iter().any(|f| &f.peer_key == peer && &f.path == folder && f.online),
+            Intent::AddDiscovered(key) => d.nearby.iter().any(|p| &p.key == key) && !self.is_peer(key),
+            Intent::CopyKey(key) => *key == d.node.key || d.peers.iter().chain(&d.nearby).any(|p| &p.key == key),
+            Intent::RenewGrant(id) => self.given(id),
+            Intent::Refresh => true,
+            Intent::ScanTailscale => d.node.tailscale_available,
+            Intent::OpenRemote { peer, session } => d.remote_sessions.iter().any(|r| &r.peer_key == peer && &r.session == session),
+            Intent::ForkRemote { peer, session } => d.remote_sessions.iter().any(|r| &r.peer_key == peer && &r.session == session && r.can_fork),
+            Intent::BrowseFolder { peer, folder } => d.shared_folders.iter().any(|f| &f.peer_key == peer && &f.path == folder && f.online),
             _ => false,
         }
     }
@@ -204,6 +205,7 @@ impl Screen for State {
 mod tests {
     use loa_ui_kit::widgets::{Msg, Screen};
     use super::super::*;
+    use loa_view::settings::peers::*;
     use loa_ui_kit::testkit::click_label;
 
     fn peer(key: &str, name: &str, discovery: Discovery, presence: Presence, last_seen: Option<u64>, version: &str) -> Peer {
@@ -225,37 +227,37 @@ mod tests {
         s
     }
 
-    fn input(resource: &str, label: &str, scope: GrantScope, permission: Permission, future_sessions: bool) -> Event {
-        Event::CreateGrant(GrantInput { peer_key: "peer".into(), resource: GrantResource { id: resource.into(), label: label.into(), scope, future_sessions }, permission, ttl_seconds: 24 * 3600, reshare: false })
+    fn input(resource: &str, label: &str, scope: GrantScope, permission: Permission, future_sessions: bool) -> Intent {
+        Intent::CreateGrant(GrantInput { peer_key: "peer".into(), resource: GrantResource { id: resource.into(), label: label.into(), scope, future_sessions }, permission, ttl_seconds: 24 * 3600, reshare: false })
     }
 
     #[test]
     fn messages_reduce_to_guarded_requests() {
         use {Local as L, Permission as P};
         let l = |m: L| Msg::Local(m);
-        let e = |e: Event| Msg::Emit(e);
+        let e = |e: Intent| Msg::Emit(e);
         let select = |id: &str| [l(L::SelectPeer("peer".into())), l(L::SelectResource(id.into()))];
-        let remote = |session: &str| Event::OpenRemote { peer: "peer".into(), session: session.into() };
-        let fork = Event::ForkRemote { peer: "peer".into(), session: "s1".into() };
-        let browse = |folder: &str| Event::BrowseFolder { peer: "peer".into(), folder: folder.into() };
+        let remote = |session: &str| Intent::OpenRemote { peer: "peer".into(), session: session.into() };
+        let fork = Intent::ForkRemote { peer: "peer".into(), session: "s1".into() };
+        let browse = |folder: &str| Intent::BrowseFolder { peer: "peer".into(), folder: folder.into() };
         let ask = |c: Confirm| l(L::Ask(c));
         // (messages, requests that reach the app)
-        let cases: Vec<(Vec<Message>, Vec<Event>)> = vec![
-            (vec![l(L::Key("key-one".into())), l(L::Key("key-two".into())), l(L::AddPeer)], vec![Event::ValidateKey("key-one".into()), Event::ValidateKey("key-two".into())]),
+        let cases: Vec<(Vec<Message>, Vec<Intent>)> = vec![
+            (vec![l(L::Key("key-one".into())), l(L::Key("key-two".into())), l(L::AddPeer)], vec![Intent::ValidateKey("key-one".into()), Intent::ValidateKey("key-two".into())]),
             ([&select("ssh")[..], &[l(L::SubmitGrant), l(L::Confirm), ask(Confirm::Ssh), l(L::Confirm), l(L::SubmitGrant), l(L::Ttl("0".into())), l(L::SubmitGrant)]].concat(), vec![input("ssh", "Host", GrantScope::SshHost, P::View, false)]),
             ([&select("ssh")[..], &[ask(Confirm::Ssh), l(L::SelectResource("resource".into())), l(L::SelectResource("ssh".into())), l(L::Confirm), l(L::SubmitGrant)]].concat(), vec![]),
             ([&select("resource")[..], &[l(L::FutureSessions(true)), l(L::Permission(P::View)), l(L::SubmitGrant)]].concat(), vec![input("resource", "Prompt A", GrantScope::Prompt, P::View, true)]),
             ([&select("resource")[..], &[l(L::SubmitGrant)]].concat(), vec![input("resource", "Prompt A", GrantScope::Prompt, P::Fork, false)]),
             (vec![l(L::SelectPeer("peer".into())), l(L::UseFolder), l(L::FolderPath(" /srv/share ".into())), l(L::UseFolder), l(L::Permission(P::Fork)), l(L::SubmitGrant), l(L::Permission(P::Drive)), l(L::SubmitGrant)], vec![input("folder:/srv/share", "Folder /srv/share", GrantScope::Folder, P::Drive, false)]),
-            (vec![ask(Confirm::RemovePeer("peer".into())), l(L::Cancel), l(L::Confirm), ask(Confirm::RemovePeer("peer".into())), l(L::Confirm)], vec![Event::RemovePeer("peer".into())]),
-            (vec![l(L::BeginRename("peer".into())), l(L::RenameText("  ".into())), l(L::SaveRename), l(L::BeginRename("peer".into())), l(L::RenameText(" New name ".into())), l(L::SaveRename)], vec![Event::RenamePeer { key: "peer".into(), name: "New name".into() }]),
-            (vec![ask(Confirm::RevokeGrant("other".into())), l(L::Confirm), ask(Confirm::RevokeGrant("grant".into())), l(L::Confirm)], vec![Event::RevokeGrant("grant".into())]),
-            (vec![e(Event::RenewGrant("grant".into())), e(Event::RenewGrant("other".into())), e(Event::CopyKey("own".into())), e(Event::CopyKey("stranger".into())), e(Event::ScanTailscale), e(Event::Refresh)], vec![Event::RenewGrant("grant".into()), Event::CopyKey("own".into()), Event::Refresh]),
-            (vec![e(remote("s1")), e(remote("s2")), e(fork), e(browse("/srv/share")), e(browse("/etc")), e(Event::AddDiscovered("peer".into())), e(Event::AddDiscovered("near-a".into()))], vec![remote("s1"), browse("/srv/share"), Event::AddDiscovered("near-a".into())]),
+            (vec![ask(Confirm::RemovePeer("peer".into())), l(L::Cancel), l(L::Confirm), ask(Confirm::RemovePeer("peer".into())), l(L::Confirm)], vec![Intent::RemovePeer("peer".into())]),
+            (vec![l(L::BeginRename("peer".into())), l(L::RenameText("  ".into())), l(L::SaveRename), l(L::BeginRename("peer".into())), l(L::RenameText(" New name ".into())), l(L::SaveRename)], vec![Intent::RenamePeer { key: "peer".into(), name: "New name".into() }]),
+            (vec![ask(Confirm::RevokeGrant("other".into())), l(L::Confirm), ask(Confirm::RevokeGrant("grant".into())), l(L::Confirm)], vec![Intent::RevokeGrant("grant".into())]),
+            (vec![e(Intent::RenewGrant("grant".into())), e(Intent::RenewGrant("other".into())), e(Intent::CopyKey("own".into())), e(Intent::CopyKey("stranger".into())), e(Intent::ScanTailscale), e(Intent::Refresh)], vec![Intent::RenewGrant("grant".into()), Intent::CopyKey("own".into()), Intent::Refresh]),
+            (vec![e(remote("s1")), e(remote("s2")), e(fork), e(browse("/srv/share")), e(browse("/etc")), e(Intent::AddDiscovered("peer".into())), e(Intent::AddDiscovered("near-a".into()))], vec![remote("s1"), browse("/srv/share"), Intent::AddDiscovered("near-a".into())]),
         ];
         for (i, (messages, want)) in cases.into_iter().enumerate() {
             let mut s = state();
-            let events: Vec<Event> = messages.into_iter().filter_map(|m| s.update(m)).collect();
+            let events: Vec<Intent> = messages.into_iter().filter_map(|m| s.update(m)).collect();
             assert_eq!(events, want, "case {i}");
         }
     }
@@ -267,7 +269,7 @@ mod tests {
         s.update(Msg::Local(Local::Key("key".into())));
         s.set_key_validation("key", true);
         s.update(Msg::Local(Local::Address(" 127.0.0.1:31415 ".into())));
-        assert_eq!(s.update(Msg::Local(Local::AddPeer)), Some(Event::AddPeer { key: "key".into(), address: Some("127.0.0.1:31415".into()) }));
+        assert_eq!(s.update(Msg::Local(Local::AddPeer)), Some(Intent::AddPeer { key: "key".into(), address: Some("127.0.0.1:31415".into()) }));
         for m in [Local::SelectPeer("peer".into()), Local::SelectResource("resource".into()), Local::Ask(Confirm::RevokeGrant("grant".into()))] {
             s.update(Msg::Local(m));
         }
@@ -278,8 +280,8 @@ mod tests {
         s.data.remote_sessions[0].can_fork = true;
         s.data.node.tailscale_available = true;
         s.data.shared_folders[0].online = false;
-        let events: Vec<_> = [Event::ForkRemote { peer: "peer".into(), session: "s1".into() }, Event::ScanTailscale, Event::BrowseFolder { peer: "peer".into(), folder: "/srv/share".into() }].into_iter().filter_map(|e| s.update(Msg::Emit(e))).collect();
-        assert_eq!(events, [Event::ForkRemote { peer: "peer".into(), session: "s1".into() }, Event::ScanTailscale]);
+        let events: Vec<_> = [Intent::ForkRemote { peer: "peer".into(), session: "s1".into() }, Intent::ScanTailscale, Intent::BrowseFolder { peer: "peer".into(), folder: "/srv/share".into() }].into_iter().filter_map(|e| s.update(Msg::Emit(e))).collect();
+        assert_eq!(events, [Intent::ForkRemote { peer: "peer".into(), session: "s1".into() }, Intent::ScanTailscale]);
     }
 
     #[test]
@@ -310,9 +312,9 @@ mod tests {
     #[test]
     fn the_panel_selects_peers_and_copies_keys() {
         let mut s = state();
-        let mut events: Vec<Event> = click_label(s.view(), "Grants").into_iter().filter_map(|m| s.update(m)).collect();
+        let mut events: Vec<Intent> = click_label(s.view(), "Grants").into_iter().filter_map(|m| s.update(m)).collect();
         assert_eq!(s.selected_peer.as_deref(), Some("peer"));
         events.extend(click_label(s.view(), "Copy key").into_iter().filter_map(|m| s.update(m)));
-        assert_eq!(events, [Event::CopyKey("own".into())]);
+        assert_eq!(events, [Intent::CopyKey("own".into())]);
     }
 }

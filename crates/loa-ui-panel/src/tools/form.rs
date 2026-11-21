@@ -1,7 +1,6 @@
 //! The add-server, add-host and host limits forms: kit [`Form`]s for editing, [`FormSpec`]s for validation.
 
-use super::model::{HostLimits, RemoteHost};
-use loa_contracts::harness::{McpServerSpec, McpTransport};
+use loa_view::panel::{HostLimits, McpServerSpec, McpTransport, RemoteHost};
 use loa_ui_kit::widgets::{Field, Form, FormSpec};
 use std::collections::BTreeMap;
 

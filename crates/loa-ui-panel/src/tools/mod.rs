@@ -1,43 +1,29 @@
 //! The tools page: built in tools, MCP servers, remote hosts and peer grants with per project toggles.
+//! It reads and emits the plain types of [`loa_view::panel`].
 
 pub mod catalog;
 pub mod form;
-pub mod model;
 mod view;
 
 pub use catalog::{Catalog, Filter, PeerMatrix, Toggle};
 pub use form::{AddHostForm, AddServerForm, FieldId, LimitsDraft, TransportKind};
-pub use model::*;
 
 use iced::Task;
-use loa_contracts::harness::McpServerSpec;
 use loa_ui_kit::widgets::{Form, FormSpec, FormState};
+use loa_view::panel::{
+    AuditRow, BuiltinTools, ImportCandidate, ImportOutcome, ImportSource, McpServer, PeerTools, ProjectRef, PromptAnswer, RemoteHost, RemotePrompt, ServerAction,
+    ServerKind, ToolId, ToolsIntent,
+};
 use std::collections::{BTreeSet, HashMap};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Section { #[default] Builtin, Servers, Hosts, Peers }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ServerAction { Start, Stop, Restart, Remove }
 /// The page's forms; `Limits` edits the limits of the host being edited.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FormId { Server, Host, Limits }
 /// A host limit switch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Limit { ReadOnly, Commands, AutoApprove }
-/// What the app acts on; it answers through the matching `State::set_*` (disabled tools, imports, hosts, audit).
-#[derive(Clone, Debug, PartialEq)]
-pub enum Event {
-    ProjectSelected(String),
-    SetToolsEnabled { project: String, tools: Vec<ToolId>, enabled: bool },
-    Server { name: String, action: ServerAction },
-    AddServer(McpServerSpec),
-    AddHost(RemoteHost),
-    SaveHostLimits { host: String, limits: HostLimits },
-    ImportServers(Vec<ImportCandidate>),
-    AnswerPrompt { id: u64, answer: PromptAnswer },
-    ScanImports, ImportSshHosts, RemoveHost(String), OpenTerminal(String), LoadAudit(String),
-}
-
 /// An import candidate; `exists` when a server with its name is registered already.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ImportEntry { pub candidate: ImportCandidate, pub selected: bool, pub exists: bool, pub outcome: Option<ImportOutcome> }
@@ -76,7 +62,7 @@ impl State {
     pub fn set_hosts(&mut self, hosts: Vec<RemoteHost>) { self.hosts = hosts }
     pub fn set_audit(&mut self, host: impl Into<String>, rows: Vec<AuditRow>) { self.audit = Some((host.into(), rows)) }
     pub fn set_prompts(&mut self, prompts: Vec<RemotePrompt>) { self.prompts = prompts }
-    /// Selects a project without emitting [`Event::ProjectSelected`].
+    /// Selects a project without emitting [`ToolsIntent::ProjectSelected`].
     pub fn select_project(&mut self, id: impl Into<String>) { self.project = Some(id.into()) }
     /// The tools switched off in a project, as stored in the config.
     pub fn set_disabled_tools(&mut self, project: impl Into<String>, tools: impl IntoIterator<Item = ToolId>) { self.disabled.insert(project.into(), tools.into_iter().collect()); }
@@ -115,14 +101,14 @@ impl State {
     pub fn disabled_tools(&self) -> Option<&BTreeSet<ToolId>> { self.project.as_ref().and_then(|id| self.disabled.get(id)) }
     pub fn catalog(&self) -> Catalog<'_> { catalog::catalog(&self.builtin, &self.servers, self.disabled_tools().unwrap_or(&BTreeSet::new()), &self.filter) }
     pub fn peer_matrix(&self) -> PeerMatrix<'_> { catalog::peer_matrix(&self.builtin, &self.servers, &self.peers, self.peer_filter.as_deref(), &self.filter) }
-    pub fn update(&mut self, message: Message) -> (Task<Message>, Option<Event>) { (Task::none(), self.handle(message)) }
-    fn handle(&mut self, message: Message) -> Option<Event> {
+    pub fn update(&mut self, message: Message) -> (Task<Message>, Option<ToolsIntent>) { (Task::none(), self.handle(message)) }
+    fn handle(&mut self, message: Message) -> Option<ToolsIntent> {
         match message {
             Message::SectionSelected(s) => self.section = s,
             Message::FilterChanged(text) => (self.filter, self.filter_text) = (Filter::new(&text), text),
             Message::ProjectSelected(p) if self.project.as_ref() != Some(&p.id) => {
                 self.project = Some(p.id.clone());
-                return Some(Event::ProjectSelected(p.id));
+                return Some(ToolsIntent::ProjectSelected(p.id));
             }
             Message::ProjectSelected(_) | Message::FormOpen(FormId::Limits) => {}
             Message::ToolToggled(tool, on) => return self.set_enabled(vec![tool], on),
@@ -133,7 +119,7 @@ impl State {
             }
             Message::Server(name, action) => {
                 let s = self.servers.iter().find(|s| s.name == name)?;
-                return (action != ServerAction::Remove || s.kind != ServerKind::AppHosted).then_some(Event::Server { name, action });
+                return (action != ServerAction::Remove || s.kind != ServerKind::AppHosted).then_some(ToolsIntent::Server { name, action });
             }
             Message::FormOpen(FormId::Server) => { self.add_server.get_or_insert_default(); }
             Message::FormOpen(FormId::Host) => { self.add_host.get_or_insert_default(); }
@@ -148,32 +134,32 @@ impl State {
                 let names: Vec<_> = self.servers.iter().map(|s| s.name.clone()).collect();
                 let spec = self.add_server.as_mut()?.submit(&names)?;
                 self.add_server = None;
-                return Some(Event::AddServer(spec));
+                return Some(ToolsIntent::AddServer(spec));
             }
             Message::FormSubmit(FormId::Host) => {
                 let aliases: Vec<_> = self.hosts.iter().map(|h| h.alias.clone()).collect();
                 let host = self.add_host.as_mut()?.submit(&aliases)?;
                 self.add_host = None;
-                return Some(Event::AddHost(host));
+                return Some(ToolsIntent::AddHost(host));
             }
-            Message::FormSubmit(FormId::Limits) => return self.limits.take().map(|d| Event::SaveHostLimits { host: d.host, limits: d.limits }),
+            Message::FormSubmit(FormId::Limits) => return self.limits.take().map(|d| ToolsIntent::SaveHostLimits { host: d.host, limits: d.limits }),
             Message::FormCancel(FormId::Server) => self.add_server = None,
             Message::FormCancel(FormId::Host) => self.add_host = None,
             Message::FormCancel(FormId::Limits) => self.limits = None,
             Message::ImportScan => {
                 (self.imports, self.import_scanning) = (Some(Vec::new()), true);
-                return Some(Event::ScanImports);
+                return Some(ToolsIntent::ScanImports);
             }
             Message::ImportSelect(i, on) => self.imports.as_mut()?.get_mut(i)?.selected = on,
             Message::ImportSubmit => {
                 let chosen: Vec<_> = self.imports.as_ref()?.iter().filter(|e| e.selected).map(|e| e.candidate.clone()).collect();
-                return (!chosen.is_empty()).then_some(Event::ImportServers(chosen));
+                return (!chosen.is_empty()).then_some(ToolsIntent::ImportServers(chosen));
             }
             Message::ImportClose => (self.imports, self.import_scanning) = (None, false),
-            Message::ImportSshHosts => return Some(Event::ImportSshHosts),
+            Message::ImportSshHosts => return Some(ToolsIntent::ImportSshHosts),
             Message::RemoveHost(alias) => {
                 self.limits = self.limits.take().filter(|d| d.host != alias);
-                return Some(Event::RemoveHost(alias));
+                return Some(ToolsIntent::RemoveHost(alias));
             }
             Message::EditLimits(alias) => self.limits = Some(LimitsDraft::new(self.hosts.iter().find(|h| h.alias == alias)?)),
             Message::LimitSet(limit, on) => {
@@ -185,16 +171,16 @@ impl State {
                 let paths = &mut self.limits.as_mut()?.limits.allowed_paths;
                 if i < paths.len() { paths.remove(i); }
             }
-            Message::OpenTerminal(alias) => return Some(Event::OpenTerminal(alias)),
+            Message::OpenTerminal(alias) => return Some(ToolsIntent::OpenTerminal(alias)),
             Message::ShowAudit(alias) => {
                 self.audit = Some((alias.clone(), Vec::new()));
-                return Some(Event::LoadAudit(alias));
+                return Some(ToolsIntent::LoadAudit(alias));
             }
             Message::CloseAudit => self.audit = None,
             Message::AnswerPrompt(id, answer) => {
                 let i = self.prompts.iter().position(|p| p.id == id)?;
                 self.prompts.remove(i);
-                return Some(Event::AnswerPrompt { id, answer });
+                return Some(ToolsIntent::AnswerPrompt { id, answer });
             }
             Message::PeerFilter(choice) => self.peer_filter = if let PeerChoice::Peer { key, .. } = choice { Some(key) } else { None },
             Message::BlockOpen(key, open) => { self.open_blocks.insert(key, open); }
@@ -203,13 +189,13 @@ impl State {
         None
     }
     /// Applies a toggle at once and asks the app to persist it; needs a project.
-    fn set_enabled(&mut self, tools: Vec<ToolId>, enabled: bool) -> Option<Event> {
+    fn set_enabled(&mut self, tools: Vec<ToolId>, enabled: bool) -> Option<ToolsIntent> {
         let project = self.project.clone().filter(|_| !tools.is_empty())?;
         let disabled = self.disabled.entry(project.clone()).or_default();
         for t in &tools {
             if enabled { disabled.remove(t); } else { disabled.insert(t.clone()); }
         }
-        Some(Event::SetToolsEnabled { project, tools, enabled })
+        Some(ToolsIntent::SetToolsEnabled { project, tools, enabled })
     }
 }
 

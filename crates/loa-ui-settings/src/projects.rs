@@ -6,8 +6,9 @@
 use crate::{action, check, field, scroll, section};
 use iced::widget::{Column, Space, button, column, container, row, text_editor};
 use iced::{Alignment, Element, Fill};
-use loa_settings::projects::{DigestState, PinnedFile, ProjectOverview, ProjectSettings, SessionRow};
-use loa_ui_kit::icons::{Icon, tinted};
+use loa_ui_kit::icons::tinted;
+use loa_view::settings::projects::{DigestState, Intent, PinnedFile, ProjectOverview, ProjectSettings, SessionRow};
+use loa_view::theme::Icon;
 use loa_ui_kit::style::{self, ButtonKind, Surface, Tone};
 use loa_ui_kit::theme::{LayoutRole, SpaceRole, TextRole, sp, text_size, width};
 use loa_ui_kit::widgets::{Msg, Screen, label, list_editor};
@@ -30,19 +31,7 @@ pub enum Local {
     SetIncluded { session: String, included: bool },
 }
 
-/// What the app does for the screen.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Event {
-    /// Store these settings; answer with [`State::saved`].
-    SaveSettings { project: String, settings: ProjectSettings },
-    /// Record a session's context toggle; answer with a fresh overview.
-    SetExcluded { session: String, excluded: bool },
-    OpenSession(String),
-    /// Start a chat in this project, in its working directory when known.
-    NewChat { project: String, cwd: Option<String> },
-}
-
-pub type Message = Msg<Local, Event>;
+pub type Message = Msg<Local, Intent>;
 
 #[derive(Debug)]
 pub struct State {
@@ -81,7 +70,7 @@ impl State {
     /// Shows an error from loading or saving.
     pub fn set_error(&mut self, error: impl Into<String>) { (self.saving, self.error) = (false, Some(error.into())) }
 
-    /// The answer to [`Event::SaveSettings`]: on success the settings become the stored ones.
+    /// The answer to [`Intent::SaveSettings`]: on success the settings become the stored ones.
     pub fn saved(&mut self, result: Result<ProjectSettings, String>) {
         self.saving = false;
         match result {
@@ -123,7 +112,7 @@ impl State {
         let count = o.map(|o| if o.sessions.len() == 1 { "1 session".to_owned() } else { format!("{} sessions", o.sessions.len()) });
         let details: Vec<String> = o.and_then(|o| o.cwd.clone()).into_iter().chain(count).collect();
         let title = row![tinted(Icon::Folder, TextRole::Title, Tone::Normal), label(&self.project, TextRole::Title, Tone::Normal)].spacing(sp(SpaceRole::S)).align_y(Alignment::Center);
-        let open = Msg::Emit(Event::NewChat { project: self.project.clone(), cwd: o.and_then(|o| o.cwd.clone()) });
+        let open = Msg::Emit(Intent::NewChat { project: self.project.clone(), cwd: o.and_then(|o| o.cwd.clone()) });
         let new_chat = button(row![tinted(Icon::Plus, TextRole::Body, Tone::Normal), label("New chat", TextRole::Body, Tone::Normal)].spacing(sp(SpaceRole::Xs)).align_y(Alignment::Center));
         let new_chat = new_chat.padding([sp(SpaceRole::Xs), sp(SpaceRole::M)]).style(style::button(ButtonKind::Secondary)).on_press(open);
         row![column![title, label(details.join("  ·  "), TextRole::Caption, Tone::Muted)].spacing(sp(SpaceRole::Xs)), Space::new().width(Fill), new_chat].align_y(Alignment::Center).into()
@@ -180,14 +169,14 @@ fn session_row(s: &SessionRow, now: i64) -> Element<'_, Message> {
     let body = column![label(title, TextRole::Body, Tone::Normal), meta].extend(digest.map(Into::into)).spacing(sp(SpaceRole::Xs)).width(Fill);
     let session = s.id.clone();
     let include = check(!s.excluded, "In context", move |included| Msg::Local(Local::SetIncluded { session: session.clone(), included }));
-    button(row![body, include].spacing(sp(SpaceRole::M)).align_y(Alignment::Center)).padding([sp(SpaceRole::S), sp(SpaceRole::M)]).width(Fill).style(style::button(ButtonKind::Row { selected: false })).on_press(Msg::Emit(Event::OpenSession(s.id.clone()))).into()
+    button(row![body, include].spacing(sp(SpaceRole::M)).align_y(Alignment::Center)).padding([sp(SpaceRole::S), sp(SpaceRole::M)]).width(Fill).style(style::button(ButtonKind::Row { selected: false })).on_press(Msg::Emit(Intent::OpenSession(s.id.clone()))).into()
 }
 
 impl Screen for State {
     type Local = Local;
-    type Event = Event;
+    type Event = Intent;
 
-    fn reduce(&mut self, m: Local) -> Option<Event> {
+    fn reduce(&mut self, m: Local) -> Option<Intent> {
         match m {
             Local::Instructions(action) => self.instructions.perform(action),
             Local::DigestModel(model) => self.digest_model = model,
@@ -207,7 +196,7 @@ impl Screen for State {
             }
             Local::Save if self.is_dirty() && !self.saving => {
                 (self.saving, self.error) = (true, None);
-                return Some(Event::SaveSettings { project: self.project.clone(), settings: self.draft() });
+                return Some(Intent::SaveSettings { project: self.project.clone(), settings: self.draft() });
             }
             Local::Save => {}
             Local::Revert => {
@@ -217,19 +206,19 @@ impl Screen for State {
             Local::SetIncluded { session, included } => {
                 let row = self.overview.as_mut()?.sessions.iter_mut().find(|s| s.id == session && s.excluded == included)?;
                 row.excluded = !included;
-                return Some(Event::SetExcluded { session, excluded: !included });
+                return Some(Intent::SetExcluded { session, excluded: !included });
             }
         }
         None
     }
 
     /// Sessions open while listed; a new chat starts in this project and its folder.
-    fn guard(&self, e: &Event) -> bool {
+    fn guard(&self, e: &Intent) -> bool {
         let o = self.overview.as_ref();
         match e {
-            Event::OpenSession(id) => o.is_some_and(|o| o.sessions.iter().any(|s| &s.id == id)),
-            Event::NewChat { project, cwd } => *project == self.project && *cwd == o.and_then(|o| o.cwd.clone()),
-            Event::SaveSettings { .. } | Event::SetExcluded { .. } => false,
+            Intent::OpenSession(id) => o.is_some_and(|o| o.sessions.iter().any(|s| &s.id == id)),
+            Intent::NewChat { project, cwd } => *project == self.project && *cwd == o.and_then(|o| o.cwd.clone()),
+            Intent::SaveSettings { .. } | Intent::SetExcluded { .. } => false,
         }
     }
 }
@@ -237,16 +226,16 @@ impl Screen for State {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use loa_settings::projects::DigestContent;
+    use loa_view::settings::projects::Digest;
     use loa_ui_kit::testkit::click_label;
 
     fn overview() -> ProjectOverview {
         let row = |id: &str, title: Option<&str>, turns, excluded, digest_state, digest: Option<&str>, model: Option<&str>| SessionRow {
-            id: id.into(), title: title.map(Into::into), harness: Some("omp".into()), created: 0, last_active: 0, turns, excluded, digest_state,
-            digest: digest.map(|d| DigestContent { summary: d.into(), ..Default::default() }), digest_model: model.map(Into::into),
+            id: id.into(), title: title.map(Into::into), harness: Some("omp".into()), last_active: 0, turns, excluded, digest_state,
+            digest: digest.map(|d| Digest { summary: d.into(), ..Default::default() }), digest_model: model.map(Into::into),
         };
         let sessions = vec![row("a", Some("Set up iroh"), 3, false, DigestState::Fresh, Some("Picked port 31415."), Some("smol")), row("b", None, 1, true, DigestState::Missing, None, None)];
-        ProjectOverview { name: "loa".into(), cwd: Some("/home/u/loa".into()), settings: ProjectSettings { instructions: "Use rustls.".into(), ..Default::default() }, sessions }
+        ProjectOverview { cwd: Some("/home/u/loa".into()), settings: ProjectSettings { instructions: "Use rustls.".into(), ..Default::default() }, sessions }
     }
 
     fn loaded() -> State {
@@ -259,21 +248,21 @@ mod tests {
     fn edits_and_toggles_reduce_to_events() {
         use Local::*;
         let pin = PinnedFile { path: "docs/ARCH.md".into(), note: Some("the contract".into()) };
-        let save = Event::SaveSettings { project: "loa".into(), settings: ProjectSettings { instructions: "Use rustls.".into(), pinned: vec![pin], digest_model: Some("anthropic/claude-haiku".into()) } };
-        let excluded = |session: &str, excluded| Event::SetExcluded { session: session.into(), excluded };
+        let save = Intent::SaveSettings { project: "loa".into(), settings: ProjectSettings { instructions: "Use rustls.".into(), pinned: vec![pin], digest_model: Some("anthropic/claude-haiku".into()) } };
+        let excluded = |session: &str, excluded| Intent::SetExcluded { session: session.into(), excluded };
         let toggle = |session: &str, included| Msg::Local(SetIncluded { session: session.into(), included });
         // (messages, events, state afterwards)
-        type Case = (Vec<Message>, Vec<Event>, fn(&State) -> bool);
+        type Case = (Vec<Message>, Vec<Intent>, fn(&State) -> bool);
         let cases: Vec<Case> = vec![
             (vec![Msg::Local(Save)], vec![], |s| !s.is_dirty()),
             ([PinPath(" docs/ARCH.md ".into()), PinNote("the contract".into()), AddPin, PinPath("docs/ARCH.md".into()), AddPin, DigestModel("anthropic/claude-haiku".into()), Save, Save].map(Msg::Local).into(), vec![save], |s| s.saving && s.is_dirty()),
             ([PinPath("src/main.rs".into()), AddPin, RemovePin(5), Revert].map(Msg::Local).into(), vec![], |s| s.draft().pinned.is_empty() && !s.is_dirty()),
             (vec![toggle("a", false), toggle("a", false), toggle("b", true), toggle("zz", true)], vec![excluded("a", true), excluded("b", false)], |s| s.overview.as_ref().unwrap().sessions.iter().all(|r| r.excluded == (r.id == "a"))),
-            (vec![Msg::Emit(Event::OpenSession("a".into())), Msg::Emit(Event::OpenSession("zz".into())), Msg::Emit(Event::NewChat { project: "other".into(), cwd: None })], vec![Event::OpenSession("a".into())], |_| true),
+            (vec![Msg::Emit(Intent::OpenSession("a".into())), Msg::Emit(Intent::OpenSession("zz".into())), Msg::Emit(Intent::NewChat { project: "other".into(), cwd: None })], vec![Intent::OpenSession("a".into())], |_| true),
         ];
         for (i, (messages, want, check)) in cases.into_iter().enumerate() {
             let mut s = loaded();
-            let events: Vec<Event> = messages.into_iter().filter_map(|m| s.update(m)).collect();
+            let events: Vec<Intent> = messages.into_iter().filter_map(|m| s.update(m)).collect();
             assert_eq!(events, want, "case {i}");
             assert!(check(&s), "case {i}");
         }
@@ -286,7 +275,7 @@ mod tests {
         s.update(Msg::Local(Local::AddPin));
         s.set_overview(overview(), 0);
         assert_eq!(s.draft().pinned.len(), 1);
-        let Some(Event::SaveSettings { settings, .. }) = s.update(Msg::Local(Local::Save)) else { panic!("save") };
+        let Some(Intent::SaveSettings { settings, .. }) = s.update(Msg::Local(Local::Save)) else { panic!("save") };
         s.saved(Ok(settings));
         assert!(!s.is_dirty() && !s.saving);
     }
@@ -294,8 +283,8 @@ mod tests {
     #[test]
     fn rows_open_sessions_and_new_chat_starts_in_the_project() {
         let mut s = loaded();
-        let mut events: Vec<Event> = click_label(s.view(), "omp  ·  3 turns  ·  3h ago").into_iter().filter_map(|m| s.update(m)).collect();
+        let mut events: Vec<Intent> = click_label(s.view(), "omp  ·  3 turns  ·  3h ago").into_iter().filter_map(|m| s.update(m)).collect();
         events.extend(click_label(s.view(), "New chat").into_iter().filter_map(|m| s.update(m)));
-        assert_eq!(events, [Event::OpenSession("a".into()), Event::NewChat { project: "loa".into(), cwd: Some("/home/u/loa".into()) }]);
+        assert_eq!(events, [Intent::OpenSession("a".into()), Intent::NewChat { project: "loa".into(), cwd: Some("/home/u/loa".into()) }]);
     }
 }

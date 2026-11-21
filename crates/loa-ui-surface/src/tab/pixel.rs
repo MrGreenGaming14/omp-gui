@@ -1,8 +1,8 @@
 //! Pixel mode: frames stream through the decoder chain onto a retained framebuffer, and
 //! pointer, wheel and keys go back in surface coordinates, stamped for the latency meter.
 
-use super::{Clock, Event, Message, Notice, PointerInput, SurfaceMode, TabCtx};
-use crate::decode::{Decoders, encoding_name, is_video};
+use super::{Clock, Message, Notice, PointerInput, SurfaceMode, TabCtx};
+use crate::decode::{self, Chain, encoding_name, is_video};
 use crate::framebuffer::Framebuffer;
 use crate::geometry::{Placement, fit};
 use crate::latency::{LatencyMeter, Reading};
@@ -12,9 +12,8 @@ use crate::viewer::Viewer;
 use futures::Stream;
 use iced::widget::{canvas, image::Handle};
 use iced::{Element, Fill, Point, Size, Task};
-use loa_contracts::surface::{Encoding, Frame, Input, InputEvent, Modifiers, Rect, StreamInfo, Surface};
-use loa_surfaces::pixels::STILL_ENCODINGS;
 use loa_ui_kit::Tone;
+use loa_view::surface::{Encoding, Frame, Input, InputEvent, Intent, Modifiers, Rect, StreamInfo, Surface, SurfaceError};
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
 
@@ -40,7 +39,7 @@ pub struct PixelMode {
     cursor: Option<LocalCursor>,
     panel: Size,
     meter: LatencyMeter,
-    decoders: Decoders,
+    decoders: Chain,
     /// The surface size the info gives, until the first frame sets the framebuffer's.
     size: (u32, u32),
     fb: Option<Framebuffer>,
@@ -55,7 +54,7 @@ pub struct PixelMode {
 impl PixelMode {
     pub(super) fn open(tab: &mut TabCtx, options: &Options) -> (Self, Task<Message>) {
         let (input, inputs) = mpsc::unbounded_channel();
-        let decoders = Decoders::new(options.decoder.as_ref().map(|make| make()));
+        let decoders = Chain::new(&options.decoders);
         let mut work = vec![Task::stream(deliver_input(tab.surface.clone(), inputs))];
         match tab.surface.frames() {
             // A late viewer gets the current picture now instead of waiting for the next change.
@@ -199,7 +198,7 @@ impl PixelMode {
         }
     }
 
-    fn on_frame(&mut self, frame: &Frame, tab: &mut TabCtx) -> (Task<Message>, Option<Event>) {
+    fn on_frame(&mut self, frame: &Frame, tab: &mut TabCtx) -> (Task<Message>, Option<Intent>) {
         let none = || (Task::none(), None);
         if self.last_seq.is_some_and(|last| frame.seq <= last) {
             return none();
@@ -211,8 +210,9 @@ impl PixelMode {
                 return none();
             }
             // Ask the surface for stills itself; the app hears about it too.
-            let event = Event::EncodingUnsupported { uri: tab.info.uri.clone(), encoding: frame.encoding, supported: STILL_ENCODINGS.to_vec() };
-            return (negotiate(&tab.surface, STILL_ENCODINGS.to_vec()), Some(event));
+            let still = self.decoders.still();
+            let intent = Intent::EncodingUnsupported { uri: tab.info.uri.clone(), encoding: frame.encoding, supported: still.clone() };
+            return (negotiate(&tab.surface, still), Some(intent));
         }
         if video && self.awaiting_keyframe && !frame.keyframe {
             return none();
@@ -232,7 +232,7 @@ impl PixelMode {
         let (Some(fb), Some(decoder)) = (self.fb.as_mut(), self.decoders.find(frame.encoding)) else { return (task, None) };
         // Hand the pixels back from the renderer before writing.
         self.picture = None;
-        match decoder.apply(frame, fb) {
+        match decode::apply(decoder.as_mut(), frame, fb) {
             Ok(shown) => {
                 self.last_seq = Some(frame.seq);
                 self.last_encoding = Some(frame.encoding);
@@ -270,7 +270,7 @@ impl PixelMode {
 }
 
 impl SurfaceMode for PixelMode {
-    fn update(&mut self, message: Message, tab: &mut TabCtx) -> (Task<Message>, Option<Event>) {
+    fn update(&mut self, message: Message, tab: &mut TabCtx) -> (Task<Message>, Option<Intent>) {
         match message {
             Message::Frame(frame) => return self.on_frame(&frame, tab),
             Message::Lagged(_) => return (self.on_lag(tab), None),
@@ -330,7 +330,7 @@ pub fn stream_label(stream: &StreamInfo) -> String {
 }
 
 /// A surface call as a task reporting whether it went through.
-fn call<F: Future<Output = loa_contracts::surface::Result<T>> + Send + 'static, T>(f: F) -> Task<Message> {
+fn call<F: Future<Output = Result<T, SurfaceError>> + Send + 'static, T>(f: F) -> Task<Message> {
     Task::future(async move { f.await.map_or_else(|e| Message::Failed(e.to_string()), |_| Message::Done) })
 }
 

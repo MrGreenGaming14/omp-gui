@@ -3,7 +3,7 @@
 
 use super::card::kind_for;
 use loa_core::{DecisionKind, DecisionStatus, Dom, ElementKind, Node, NodeId, answer, attr};
-use loa_contracts::harness::Answer;
+use loa_view::session::Answer;
 
 /// One `<decision>` node as plain data: what a card shows and what the tracker needs.
 #[derive(Clone, Debug, PartialEq)]

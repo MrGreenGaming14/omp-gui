@@ -2,7 +2,11 @@
 
 use bytes::{Bytes, BytesMut};
 use iced::widget::image::Handle;
-use loa_surfaces::pixels::rgba_len;
+
+/// Bytes of a `width` by `height` RGBA picture, `None` on overflow.
+fn rgba_len(width: u32, height: u32) -> Option<usize> {
+    (width as usize).checked_mul(height as usize)?.checked_mul(4)
+}
 
 /// A full surface RGBA picture. Showing it hands the pixels to iced without copying; the next
 /// update takes them back, copying only when the renderer still holds the shown picture.

@@ -133,9 +133,9 @@ fn nav(event: Nav) -> Message {
 fn shell_events_route_to_intents_and_windows() {
     let mut test = TestApp::new();
     let remote = "peer:node/session".to_owned();
-    assert!(matches!(route(shell::Event::Sidebar(Nav::DeleteSession(remote.clone()))), Some(Intent::Notice(_))));
-    assert!(matches!(route(shell::Event::Sidebar(Nav::OpenSession(remote))), Some(Intent::Forward(Message::Area("peers", _)))));
-    assert!(matches!(route(shell::Event::Sidebar(Nav::DeleteSession("s1".into()))), Some(Intent::Forward(Message::Area("sessions", _)))));
+    assert!(matches!(route(ShellIntent::Sidebar(Nav::DeleteSession(remote.clone()))), Some(Intent::Notice(_))));
+    assert!(matches!(route(ShellIntent::Sidebar(Nav::OpenSession(remote))), Some(Intent::Forward(Message::Area("peers", _)))));
+    assert!(matches!(route(ShellIntent::Sidebar(Nav::DeleteSession("s1".into()))), Some(Intent::Forward(Message::Area("sessions", _)))));
     test.send(nav(Nav::OpenSettings));
     assert_eq!(test.app.windows.overlay, Some(Overlay::Settings(SettingsTab::General)));
     test.send(nav(Nav::OpenConfigs));

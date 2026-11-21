@@ -5,11 +5,13 @@ mod peers;
 mod servers;
 
 use super::catalog::{GroupView, ToolRow};
-use super::{BuiltinGroup, FormId, Message, Section, State, ToolInfo};
+use super::{FormId, Message, Section, State};
+use loa_view::panel::{BuiltinGroup, ToolInfo};
+use loa_view::theme::Icon;
 use crate::action;
 use iced::widget::{Column, button, checkbox, column, container, pick_list, responsive, row, rule, scrollable, space, text, text_input};
 use iced::{Alignment, Element, Fill, Font, Padding, font};
-use loa_ui_kit::icons::{Icon, tinted};
+use loa_ui_kit::icons::tinted;
 use loa_ui_kit::style::{self, ButtonKind, Surface, Tone};
 use loa_ui_kit::theme::{LayoutRole, RadiusRole, SpaceRole as Sp, TextRole as T, pad_x, sp, text_size as ts, tokens, width};
 use loa_ui_kit::widgets::label;
@@ -123,7 +125,7 @@ fn tool_details(info: &ToolInfo) -> Element<'_, Message> {
     let content = Column::new().push(label(info.description.as_str(), T::Caption, Tone::Muted)).extend(details).spacing(sp(Sp::Xs));
     container(content).padding(Padding::ZERO.right(sp(Sp::M)).bottom(sp(Sp::M)).left(sp(Sp::Xl) + sp(Sp::S))).width(Fill).into()
 }
-fn detail_tone(state: super::DetailState) -> Tone { [Tone::Ok, Tone::Muted, Tone::Danger][state as usize] }
+fn detail_tone(state: loa_view::panel::DetailState) -> Tone { [Tone::Ok, Tone::Muted, Tone::Danger][state as usize] }
 fn row_pad() -> Padding { Padding::from([sp(Sp::S), sp(Sp::M)]) }
 /// A full-width row button, disabled without `on`.
 fn row_button(content: Element<'_, Message>, on: Option<Message>) -> Element<'_, Message> { button(content).padding(row_pad()).width(Fill).style(style::button(ButtonKind::Row { selected: false })).on_press_maybe(on).into() }

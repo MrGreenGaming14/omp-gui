@@ -1,26 +1,6 @@
-//! Plain data the app hands to the shell: node status and usage.
+//! The sidebar's lookup over the [`NodeStatus`] list the app hands to the shell.
 
-/// The sidebar footer's usage meter: the used share (0 to 1) of the tightest limit and its window, e.g. "7d".
-#[derive(Debug, Clone, PartialEq)]
-pub struct UsageMeter { pub fraction: f32, pub label: String }
-
-/// Which machine's sessions the sidebar lists.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum NodeFilter { All, Node(String) }
-
-impl NodeFilter {
-    pub fn matches(&self, node: &str) -> bool { if let Self::Node(key) = self { key == node } else { true } }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NodeStatus {
-    /// Public key, as written in `<session node>`.
-    pub key: String,
-    pub name: String,
-    pub online: bool,
-    /// This is the node the app runs on.
-    pub local: bool,
-}
+use loa_view::shell::NodeStatus;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Nodes(Vec<NodeStatus>);

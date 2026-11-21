@@ -12,9 +12,10 @@ use loa_bus::SessionId;
 use loa_settings::models::login::UrlOpener;
 use loa_models::service::Backend;
 use loa_projects::Summarizers;
-use loa_ui_session::composer as composer;
+use loa_ui_session::composer;
 use loa_ui_shell::palette;
 use loa_ui_shell as shell;
+use loa_view::theme::Icon;
 
 use crate::app::Message;
 use crate::services::Services;
@@ -86,7 +87,7 @@ pub struct PanelTab {
     /// `terminal`.
     pub id: String,
     pub title: String,
-    pub icon: Option<loa_ui_kit::Icon>,
+    pub icon: Option<Icon>,
     /// Listed in the panel from the start.
     pub shown: bool,
 }
@@ -101,7 +102,7 @@ impl PanelTab {
         Self { icon: Some(pane.icon()), ..Self::new(pane.id(), pane.title(), shown) }
     }
 
-    pub fn icon(self, icon: loa_ui_kit::Icon) -> Self {
+    pub fn icon(self, icon: Icon) -> Self {
         Self { icon: Some(icon), ..self }
     }
 }
@@ -175,14 +176,14 @@ pub struct Ctx {
     pub composer: composer::State,
     pub keymap: palette::Keymap,
     /// App tools areas serve to sessions, as the Tools panel lists them.
-    pub app_tools: Vec<loa_ui_panel::tools::ToolInfo>,
+    pub app_tools: Vec<loa_view::panel::ToolInfo>,
     /// Peers the peers area knows; refreshed by it.
     pub peers: Vec<loa_p2p::PeerInfo>,
     /// The running peer node, set by the peers area each time it opens one;
     /// clones of the slot see the current node.
     pub node: loa_p2p::NodeSlot,
     /// The app's `/` commands, from every [`Area::COMMANDS`].
-    pub slash: Vec<composer::Command>,
+    pub slash: Vec<loa_view::session::composer::Command>,
     pub(crate) screen: Option<&'static str>,
     pub(crate) notice: Option<String>,
     pub(crate) requests: Vec<Request>,
@@ -222,7 +223,7 @@ impl Ctx {
 
     /// Lists `info` among the app tools, replacing the entry of the same
     /// name.
-    pub fn set_app_tool(&mut self, info: loa_ui_panel::tools::ToolInfo) {
+    pub fn set_app_tool(&mut self, info: loa_view::panel::ToolInfo) {
         match self.app_tools.iter_mut().find(|tool| tool.name == info.name) {
             Some(tool) => *tool = info,
             None => self.app_tools.push(info),
@@ -470,8 +471,8 @@ pub fn split_slash(text: &str) -> Option<(&str, &str)> {
 }
 
 /// The composer rows of the `/` commands among `specs`.
-pub fn slash_rows<S, Run>(specs: &[CommandSpec<S, Run>]) -> impl Iterator<Item = composer::Command> + '_ {
-    specs.iter().filter_map(|spec| spec.slash).map(|(name, description)| composer::Command { name: name.to_owned(), description: description.to_owned() })
+pub fn slash_rows<S, Run>(specs: &[CommandSpec<S, Run>]) -> impl Iterator<Item = loa_view::session::composer::Command> + '_ {
+    specs.iter().filter_map(|spec| spec.slash).map(|(name, description)| loa_view::session::composer::Command { name: name.to_owned(), description: description.to_owned() })
 }
 
 /// Runs `future` off the UI thread and hands its result, the error as text,
@@ -498,7 +499,7 @@ pub trait AreaDyn: Any {
     fn run(&mut self, id: &str, ctx: &mut Ctx) -> Option<Task<Message>>;
     /// Runs the `/` command `text` types; `None` when it isn't this area's.
     fn slash(&mut self, text: &str, ctx: &mut Ctx) -> Option<Task<Message>>;
-    fn slash_rows(&self) -> Vec<composer::Command>;
+    fn slash_rows(&self) -> Vec<loa_view::session::composer::Command>;
     fn panel_tabs(&self) -> Vec<PanelTab>;
     fn view_tab<'a>(&'a self, id: &str, ctx: &'a Ctx) -> Option<Element<'a, Message>>;
     fn view_screen<'a>(&'a self, ctx: &'a Ctx) -> Option<Element<'a, Message>>;
@@ -542,7 +543,7 @@ impl<A: Area> AreaDyn for Typed<A> {
         Some((spec.run)(&mut self.0, args, ctx).map(Message::area))
     }
 
-    fn slash_rows(&self) -> Vec<composer::Command> {
+    fn slash_rows(&self) -> Vec<loa_view::session::composer::Command> {
         slash_rows(A::COMMANDS).collect()
     }
 

@@ -7,12 +7,10 @@ publish.workspace = true
 
 [dependencies]
 iced.workspace = true
-loa-core.workspace = true
-loa-settings = { path = "../loa-settings" }
 loa-ui-kit.workspace = true
 loa-util.workspace = true
+loa-view.workspace = true
 
 [dev-dependencies]
 iced_test = "0.14"
 loa-ui-kit = { workspace = true, features = ["testkit"] }
-semver = "1"

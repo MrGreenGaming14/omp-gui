@@ -1,14 +1,15 @@
 //! The launcher: what is being opened, then one section per way to open a surface.
 
-use super::{Available, BrowserStatus, Capture, Message, Panel};
+use super::{BrowserStatus, Capture, Message, Panel};
 use crate::theme::{self, SurfaceKindStyle};
 use iced::widget::{column, container, row, scrollable, space};
 use iced::{Center, Element, Fill};
-use loa_contracts::surface::SurfaceMode;
-use loa_ui_kit::icons::{Icon, tinted};
+use loa_ui_kit::icons::tinted;
 use loa_ui_kit::style::{self, Surface, Tone};
 use loa_ui_kit::theme::{SpaceRole as Sp, TextRole, sp};
 use loa_ui_kit::widgets::label;
+use loa_view::surface::{AvailableSurface, DOCUMENT_SERVER, SurfaceMode};
+use loa_view::theme::Icon;
 
 impl Panel {
     pub(super) fn launcher(&self) -> Element<'_, Message> {
@@ -68,21 +69,21 @@ impl Panel {
     fn document_section(&self) -> Element<'_, Message> {
         let formats = theme::hint("PDF, XLSX, DOCX, PPTX, PNG, JPEG, GIF, WebP and BMP. Pages render here, so scrolling and zoom stay local.");
         let body = column![self.picker.view().map(Message::Picker), formats].spacing(sp(Sp::Xs));
-        section(SurfaceKindStyle::of(loa_surfaces::docs::SERVER_NAME, SurfaceMode::Document), body)
+        section(SurfaceKindStyle::of(DOCUMENT_SERVER, SurfaceMode::Document), body)
     }
 
     fn vm_section(&self) -> Element<'_, Message> {
         let address = theme::field("host:port, e.g. localhost:5900", &self.address, Message::Address).on_submit(Message::Connect);
         let password = theme::field("Password (if the server asks)", &self.password, Message::Password).on_submit(Message::Connect).secure(true);
         let connect = theme::action("Connect", (!self.address.trim().is_empty()).then_some(Message::Connect));
-        let vms: Vec<&Available> = self.available.iter().filter(|a| a.server == theme::VM).collect();
+        let vms: Vec<&AvailableSurface> = self.available.iter().filter(|a| a.server == theme::VM).collect();
         let form = column![address, row![password, connect].spacing(sp(Sp::Xs)).align_y(Center)];
         let form = form.push((!vms.is_empty()).then(|| available_rows(vms))).spacing(sp(Sp::Xs));
         section(SurfaceKindStyle::of(theme::VM, SurfaceMode::Pixel), form)
     }
 
     fn declared_section(&self) -> Element<'_, Message> {
-        let declared: Vec<&Available> = self.available.iter().filter(|a| a.server != theme::VM).collect();
+        let declared: Vec<&AvailableSurface> = self.available.iter().filter(|a| a.server != theme::VM).collect();
         let body = if declared.is_empty() {
             theme::hint("No MCP server declares a surface. Surface servers added in Tools show up here.").into()
         } else {
@@ -92,7 +93,7 @@ impl Panel {
     }
 }
 
-fn available_rows(available: Vec<&Available>) -> Element<'_, Message> {
+fn available_rows(available: Vec<&AvailableSurface>) -> Element<'_, Message> {
     column(available.into_iter().map(|available| {
         let info = &available.info;
         let size = if info.width > 0 { format!("{}×{}", info.width, info.height) } else { info.mode.as_str().to_owned() };

@@ -3,7 +3,7 @@
 use std::any::Any;
 
 use iced::Task;
-use loa_ui_session::composer;
+use loa_view::session::composer;
 
 use crate::app::Message;
 use crate::area::{Area, AreaDyn, AreaMsg, Ctx, Typed};

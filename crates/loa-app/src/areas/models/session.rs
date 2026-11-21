@@ -1,42 +1,24 @@
 //! The session's model as its `<session>` element records it (`model`, `model_role`), and the
 //! draft recording which role it follows.
 
-use super::ModelRef;
 use loa_core::{Attrs, Dom, Draft, ElementKind, NodeId, Value, attr};
+use loa_view::settings::models::SessionModel;
 
-/// The `model` and `model_role` attributes of a `<session>`.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct SessionModel {
-    /// Model selector, `provider/id` or a bare id some harnesses write.
-    pub model: Option<String>,
-    /// The role the model was picked through, when it follows one.
-    pub role: Option<String>,
+/// The root `<session>` of `dom` and its model; `None` without a session.
+pub fn session_model(dom: &Dom) -> Option<(NodeId, SessionModel)> {
+    let root = dom.root().filter(|n| n.kind == ElementKind::Session)?;
+    Some((root.id, from_attrs(&root.attrs)))
 }
 
-impl SessionModel {
-    /// The root `<session>` of `dom` and its model; `None` without a session.
-    pub fn from_dom(dom: &Dom) -> Option<(NodeId, Self)> {
-        let root = dom.root().filter(|n| n.kind == ElementKind::Session)?;
-        Some((root.id, Self::from_attrs(&root.attrs)))
-    }
-
-    pub(crate) fn from_attrs(attrs: &Attrs) -> Self {
-        let read = |name| attrs.get(name).and_then(Value::as_str).map(str::to_owned);
-        Self { model: read(attr::MODEL), role: read(attr::MODEL_ROLE) }
-    }
-}
-
-/// A model picked for the session: through `role` it follows that role, without one it follows none.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SessionModelChange {
-    pub model: ModelRef,
-    pub role: Option<String>,
+fn from_attrs(attrs: &Attrs) -> SessionModel {
+    let read = |name| attrs.get(name).and_then(Value::as_str).map(str::to_owned);
+    SessionModel { model: read(attr::MODEL), role: read(attr::MODEL_ROLE) }
 }
 
 /// The draft recording that the session in `dom` follows `role` (or no role); `None` when that is
 /// recorded already or there is no session. The harness records the model itself.
 pub fn role_draft(dom: &Dom, role: Option<&str>) -> Option<Draft> {
-    let (session, current) = SessionModel::from_dom(dom)?;
+    let (session, current) = session_model(dom)?;
     match (role, current.role.as_deref()) {
         (new, old) if new == old => None,
         (Some(new), _) => Some(Draft::set(session, attr::MODEL_ROLE, new)),
@@ -45,12 +27,12 @@ pub fn role_draft(dom: &Dom, role: Option<&str>) -> Option<Draft> {
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     use super::*;
     use loa_core::{MemorySink, PatchSink};
 
     /// A sink holding a `<session>` root with the given model attributes.
-    pub(crate) fn session_sink(model: Option<&str>, role: Option<&str>) -> MemorySink {
+    fn session_sink(model: Option<&str>, role: Option<&str>) -> MemorySink {
         let sink = MemorySink::new();
         let mut attrs: Vec<(&str, Value)> = vec![(attr::ID, "s-1".into()), (attr::HARNESS, "omp".into()), (attr::NODE, "node".into()), (attr::CREATED, Value::Int(1))];
         attrs.extend(model.map(|m| (attr::MODEL, m.into())).into_iter().chain(role.map(|r| (attr::MODEL_ROLE, r.into()))));
@@ -69,7 +51,7 @@ pub(crate) mod tests {
             if let Some(d) = draft {
                 sink.commit(d).unwrap();
             }
-            assert_eq!(SessionModel::from_dom(&sink.dom()).unwrap().1, SessionModel { model: Some("anthropic/claude".into()), role: after.map(Into::into) });
+            assert_eq!(session_model(&sink.dom()).unwrap().1, SessionModel { model: Some("anthropic/claude".into()), role: after.map(Into::into) });
         }
         assert_eq!(role_draft(&Dom::new(), Some("default")), None, "no session, nothing to record");
     }

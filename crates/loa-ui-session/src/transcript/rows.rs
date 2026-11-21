@@ -8,10 +8,11 @@ use iced::alignment::Vertical;
 use iced::widget::{Space, button, column, container, row, rule, text};
 use iced::{Element, Fill, Font, Padding};
 use loa_core::{CallStatus, Dom, ElementKind, JobKind, JobStatus, MessageStatus, Node, NodeId, TodoState, attr};
-use loa_ui_kit::icons::{self, Icon};
+use loa_ui_kit::icons;
 use loa_ui_kit::style::{self as kit, ButtonKind, Surface, Tone};
 use loa_ui_kit::text::{format_bytes, format_duration};
 use loa_ui_kit::theme::{SpaceRole as Sp, TextRole as T, pad_x, sp, text_size as ts};
+use loa_view::theme::Icon;
 
 /// Lines and bytes of a call input, result or job output shown when expanded.
 const MAX_LINES: usize = 40;

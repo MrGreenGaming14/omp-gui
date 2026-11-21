@@ -19,6 +19,8 @@ use loa_ui_kit::theme::{LayoutRole, SpaceRole, TextRole, sp, width};
 use loa_ui_kit::widgets::{self as kit, Msg, Screen};
 use loa_ui_settings::updates;
 use loa_settings::updates::{InstalledStatus, Overview, PeerInfo, PeerStanding, ProductKind};
+use loa_view::settings::updates::{Data, Intent};
+use crate::view::settings::updates::{hold_choice_from_view, peer_to_view, product_to_view};
 use loa_updater::peers;
 use loa_updater::swap::SwapOutcome;
 use loa_updater::{Error as UpdaterError, TurnGate, Updater, UpdaterConfig, default_products};
@@ -83,10 +85,10 @@ impl State {
             })
             .collect();
         ctx.shell.sidebar_mut().set_updates(waiting(&overview));
-        let data = updates::Data {
+        let data = Data {
             github_requests_left: overview.github_rate_limit.map(|limit| limit.remaining),
-            products: overview.products,
-            peers: self.peers(ctx),
+            products: overview.products.iter().map(product_to_view).collect(),
+            peers: self.peers(ctx).iter().map(peer_to_view).collect(),
             turn_running: self.running > 0,
             now_unix: now_secs(),
         };
@@ -112,12 +114,12 @@ impl State {
 
     /// Checks every feed, as the screen's "Check all" does.
     fn check_all(&mut self, ctx: &mut Ctx) -> Task<Message> {
-        let event = self.screen.update(Msg::Local(updates::Local::Start(updates::Event::CheckAll)));
+        let event = self.screen.update(Msg::Local(updates::Local::Start(Intent::CheckAll)));
         event.map_or_else(Task::none, |event| self.run(event, ctx))
     }
 
     /// Runs one request of the screen on the updater.
-    fn run(&mut self, event: updates::Event, ctx: &mut Ctx) -> Task<Message> {
+    fn run(&mut self, event: Intent, ctx: &mut Ctx) -> Task<Message> {
         let updater = match &self.updater {
             Ok(updater) => updater.clone(),
             Err(error) => {
@@ -128,7 +130,7 @@ impl State {
         };
         let turns = Arc::clone(&self.turns);
         match event {
-            updates::Event::CheckAll => Task::perform(
+            Intent::CheckAll => Task::perform(
                 async move {
                     updater.detect().await;
                     let failed = updater.check_all().await.into_iter().filter(|(_, result)| result.is_err()).count();
@@ -139,7 +141,7 @@ impl State {
                 },
                 |note| Message::Done(None, note),
             ),
-            updates::Event::Check(id) => {
+            Intent::Check(id) => {
                 let done = id.clone();
                 Task::perform(
                     async move {
@@ -148,7 +150,7 @@ impl State {
                     move |()| Message::Done(Some(done.clone()), None),
                 )
             }
-            updates::Event::Stage(id) => {
+            Intent::Stage(id) => {
                 let done = id.clone();
                 Task::perform(
                     async move {
@@ -157,7 +159,7 @@ impl State {
                     move |()| Message::Done(Some(done.clone()), None),
                 )
             }
-            updates::Event::Verify(id) => {
+            Intent::Verify(id) => {
                 let done = id.clone();
                 Task::perform(
                     async move {
@@ -166,7 +168,7 @@ impl State {
                     move |()| Message::Done(Some(done.clone()), None),
                 )
             }
-            updates::Event::Gate(id) => {
+            Intent::Gate(id) => {
                 let done = id.clone();
                 Task::perform(
                     async move {
@@ -186,24 +188,24 @@ impl State {
                     move |note| Message::Done(Some(done.clone()), note),
                 )
             }
-            updates::Event::Choose(id, choice) => {
-                let note = match updater.choose(&id, choice) {
+            Intent::Choose(id, choice) => {
+                let note = match updater.choose(&id, hold_choice_from_view(choice)) {
                     Ok(Some(_)) => swap_note(&updater, &id, &updater.swap(&id, &*turns)),
                     Ok(None) | Err(_) => None,
                 };
                 self.save_pins(&updater, ctx);
                 Task::done(Message::Done(Some(id), note))
             }
-            updates::Event::Unpin(id) => {
+            Intent::Unpin(id) => {
                 let _ = updater.unpin(&id);
                 self.save_pins(&updater, ctx);
                 Task::done(Message::Done(Some(id), None))
             }
-            updates::Event::Swap(id) => {
+            Intent::Swap(id) => {
                 let note = swap_note(&updater, &id, &updater.swap(&id, &*turns));
                 Task::done(Message::Done(Some(id), note))
             }
-            updates::Event::Rollback(id) => {
+            Intent::Rollback(id) => {
                 let note = swap_note(&updater, &id, &updater.rollback(&id, &*turns));
                 Task::done(Message::Done(Some(id), note))
             }

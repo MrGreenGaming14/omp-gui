@@ -4,8 +4,7 @@
 use crate::theme;
 use iced::widget::{Column, button, column, container, row, scrollable};
 use iced::{Center, Element};
-use loa_surfaces::docs::Format;
-use loa_ui_kit::Icon;
+use loa_view::theme::Icon;
 use loa_ui_kit::style::{self, ButtonKind, Surface};
 use loa_ui_kit::theme::{SpaceRole as Sp, TextRole, sp, text_size};
 use std::path::{Path, PathBuf};
@@ -34,18 +33,21 @@ pub struct FilePicker {
     path: String,
     entries: Vec<Entry>,
     error: Option<String>,
-}
-
-/// Whether the document viewer opens `path`, by its extension.
-pub fn supported(path: &Path) -> bool {
-    path.extension().and_then(|e| e.to_str()).and_then(Format::from_extension).is_some()
+    /// Extensions of the files the document viewer opens.
+    extensions: Vec<String>,
 }
 
 impl FilePicker {
-    pub fn new(dir: impl Into<PathBuf>) -> Self {
-        let mut picker = Self { dir: PathBuf::new(), path: String::new(), entries: Vec::new(), error: None };
+    /// Starts in `dir`, listing files with one of `extensions` (case insensitive).
+    pub fn new(dir: impl Into<PathBuf>, extensions: Vec<String>) -> Self {
+        let mut picker = Self { dir: PathBuf::new(), path: String::new(), entries: Vec::new(), error: None, extensions };
         picker.enter(dir.into());
         picker
+    }
+
+    /// Whether the document viewer opens `path`, by its extension.
+    pub fn supported(&self, path: &Path) -> bool {
+        path.extension().and_then(|e| e.to_str()).is_some_and(|ext| self.extensions.iter().any(|e| e.eq_ignore_ascii_case(ext)))
     }
 
     pub fn dir(&self) -> &Path {
@@ -61,7 +63,8 @@ impl FilePicker {
     }
 
     fn enter(&mut self, dir: PathBuf) {
-        match read(&dir) {
+        let listed = read(&dir, |path| self.supported(path));
+        match listed {
             Ok(entries) => {
                 self.path = dir.display().to_string();
                 self.dir = dir;
@@ -87,7 +90,7 @@ impl FilePicker {
                 let path = expand_home(self.path.trim());
                 if path.is_dir() {
                     self.enter(path);
-                } else if path.is_file() && supported(&path) {
+                } else if path.is_file() && self.supported(&path) {
                     return Some(path);
                 } else if path.is_file() {
                     self.error = Some(format!("{} isn't a PDF, Office or image file", path.display()));
@@ -126,8 +129,8 @@ fn expand_home(path: &str) -> PathBuf {
     }
 }
 
-/// Visible subfolders, then supported files, each sorted by name.
-fn read(dir: &Path) -> std::io::Result<Vec<Entry>> {
+/// Visible subfolders, then files `supported` takes, each sorted by name.
+fn read(dir: &Path, supported: impl Fn(&Path) -> bool) -> std::io::Result<Vec<Entry>> {
     let mut entries: Vec<Entry> = std::fs::read_dir(dir)?
         .flatten()
         .filter_map(|e| {
@@ -157,8 +160,8 @@ mod tests {
         std::fs::write(dir.path().join("a.xlsx"), b"").unwrap();
         std::fs::write(dir.path().join("notes.txt"), b"").unwrap();
         std::fs::write(dir.path().join("reports/q1.docx"), b"").unwrap();
-
-        let mut picker = FilePicker::new(dir.path());
+        let extensions = ["pdf", "xlsx", "xlsm", "docx", "pptx"].map(String::from).to_vec();
+        let mut picker = FilePicker::new(dir.path(), extensions);
         let names: Vec<&str> = picker.entries().iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, ["reports", "a.xlsx", "b.PDF"]);
 

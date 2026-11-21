@@ -8,9 +8,9 @@ use iced::{Alignment, Element, Fill, Length, Size, Task, window};
 use loa_ui_kit::style::{self, ButtonKind, Surface, Tone};
 use loa_ui_kit::theme::{LayoutRole, SpaceRole, TextRole, sp, width};
 use loa_ui_kit::widgets::{NavItem, card, icon_button, label, mono_block, section_header, side_nav, text_button, two_line_row};
-use loa_ui_kit::{Icon, icons::tinted};
+use loa_ui_kit::icons::tinted;
 use loa_ui_settings::models::Page;
-use loa_ui_shell::ThemeRef;
+use loa_view::theme::{Icon, ThemeRef};
 
 use super::{App, Message};
 use crate::area::Area;

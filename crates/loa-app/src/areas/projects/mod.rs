@@ -16,11 +16,13 @@ use loa_projects::{FileSettingsStore, LiveSessions, LocalOnly, ProjectService, P
 use loa_settings::projects::{ProjectOverview, ProjectSettings};
 use loa_ui_kit::widgets::Screen;
 use loa_ui_settings::projects as screen;
+use loa_view::settings::projects::Intent;
 use tokio::sync::mpsc::UnboundedReceiver;
 
 use crate::area::{perform, Area, AreaCommand, AreaMessage, Ctx, HostToolSet, Listed, Request, Target};
 use loa_runtime::session::SessionEvent;
 use crate::watch::{PtrKey, watch};
+use crate::view::settings::projects::{overview_to_view, settings_from_view, settings_to_view};
 
 #[cfg(test)]
 mod tests;
@@ -91,7 +93,7 @@ impl State {
         let (service, outcomes) = ProjectService::start(sessions, settings, Arc::new(LocalOnly), summarizer, config);
         let tools = service.host_tools();
         for spec in &tools.0 {
-            ctx.set_app_tool(loa_ui_panel::tools::ToolInfo::from(spec));
+            ctx.set_app_tool(loa_view::panel::ToolInfo::from(spec));
         }
         ctx.shell.sidebar_mut().set_projects([ctx.services.workspace_project()]);
         let state = Self {
@@ -188,10 +190,11 @@ impl State {
         Task::batch([self.load_overview(project.clone()), self.refresh_context(project)])
     }
 
-    fn screen_event(&mut self, event: screen::Event, ctx: &mut Ctx) -> Task<Message> {
+    fn screen_event(&mut self, event: Intent, ctx: &mut Ctx) -> Task<Message> {
         match event {
-            screen::Event::SaveSettings { project, settings } => {
+            Intent::SaveSettings { project, settings } => {
                 let service = self.service.clone();
+                let settings = settings_from_view(settings);
                 Task::perform(
                     async move {
                         let result = service.save_settings(&project, &settings).await.map(|()| settings);
@@ -200,7 +203,7 @@ impl State {
                     |(project, result)| Message::Saved(project, result),
                 )
             }
-            screen::Event::SetExcluded { session, excluded } => {
+            Intent::SetExcluded { session, excluded } => {
                 let service = self.service.clone();
                 let project = self.screen.as_ref().map(|screen| screen.project().to_owned()).unwrap_or_default();
                 Task::perform(
@@ -211,13 +214,13 @@ impl State {
                     |(project, result)| Message::Excluded(project, result),
                 )
             }
-            screen::Event::OpenSession(id) => {
+            Intent::OpenSession(id) => {
                 // The active session's chat comes back too.
                 ctx.close_screen();
                 ctx.request(Request::OpenSession(id));
                 Task::none()
             }
-            screen::Event::NewChat { project, cwd } => {
+            Intent::NewChat { project, cwd } => {
                 *self.new_chat.locked() = Some(NewChat { project, cwd: cwd.map(PathBuf::from) });
                 ctx.request(Request::NewSession);
                 Task::none()
@@ -297,7 +300,7 @@ impl Area for State {
                     return Task::none();
                 };
                 match result {
-                    Ok(overview) => screen.set_overview(overview, loa_core::now_ms()),
+                    Ok(overview) => screen.set_overview(overview_to_view(&overview), loa_core::now_ms()),
                     Err(error) => screen.set_error(format!("Can't load project {project}: {error}")),
                 }
                 Task::none()
@@ -311,7 +314,7 @@ impl Area for State {
             Message::Saved(project, result) => {
                 let saved = result.is_ok();
                 if let Some(screen) = self.screen.as_mut().filter(|screen| screen.project() == project) {
-                    screen.saved(result);
+                    screen.saved(result.map(|settings| settings_to_view(&settings)));
                 }
                 if saved { self.refresh_context(project) } else { Task::none() }
             }

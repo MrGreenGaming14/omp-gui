@@ -1,14 +1,14 @@
 //! Document mode: the file arrives once and is rendered here with the docs page renderers, so
 //! scrolling and zooming never touch the surface.
 
-use super::{Event, Message, Notice, SurfaceMode, TabCtx};
+use super::{Message, Notice, SurfaceMode, TabCtx};
 use crate::panel::Options;
 use crate::theme;
 use iced::widget::{button, column, container, image, row, scrollable, space, text};
 use iced::widget::image::Handle;
 use iced::{Center, Element, Fill, Size, Task};
-use loa_contracts::surface::Document;
-use loa_surfaces::docs::{Fonts, Format, Paged, open_pages};
+use loa_view::surface::port::{DocumentRenderer, OpenedDocument, PagedDocument};
+use loa_view::surface::{Document, Intent};
 use loa_ui_kit::style::{self, ButtonKind, Surface};
 use loa_ui_kit::theme::{SpaceRole as Sp, TextRole, pad_x, sp, text_size};
 use std::ops::Range;
@@ -33,7 +33,7 @@ enum View {
 
 pub struct DocumentMode {
     view: View,
-    fonts: Fonts,
+    documents: Arc<dyn DocumentRenderer>,
     zoom: f32,
     top: f32,
     viewport: Size,
@@ -44,7 +44,7 @@ impl DocumentMode {
         let source = tab.surface.clone();
         let fetch = Task::future(async move { Message::Document(source.document().await.map(Arc::new).map_err(|e| e.to_string())) });
         let viewport = Size::new(tab.info.width as f32, tab.info.height as f32);
-        (Self { view: View::Loading, fonts: options.fonts.clone(), zoom: 1.0, top: 0.0, viewport }, fetch)
+        (Self { view: View::Loading, documents: options.documents.clone(), zoom: 1.0, top: 0.0, viewport }, fetch)
     }
 
     /// Pages in the loaded document, 1 for an image, `None` while loading or when it couldn't
@@ -70,14 +70,12 @@ impl DocumentMode {
     }
 
     fn open_document(&self, document: &Document) -> Result<View, String> {
-        if document.mime.starts_with("image/") {
-            let (w, h) = loa_surfaces::pixels::image_size(&document.data).map_err(|e| e.to_string())?;
-            return Ok(View::Image { handle: Handle::from_bytes(document.data.clone()), size: Size::new(w as f32, h as f32) });
+        match self.documents.open(document)? {
+            OpenedDocument::Image { width, height } => {
+                Ok(View::Image { handle: Handle::from_bytes(document.data.clone()), size: Size::new(width as f32, height as f32) })
+            }
+            OpenedDocument::Paged(paged) => Pages::new(paged).map(View::Pages),
         }
-        let format = Format::from_mime(&document.mime).or_else(|| Format::sniff(&document.data));
-        let format = format.ok_or_else(|| format!("no viewer for {}", document.mime))?;
-        let paged = open_pages(format, &document.data).map_err(|e| e.to_string())?;
-        Pages::new(paged, self.fonts.clone()).map(View::Pages)
     }
 
     fn page_body(&self) -> Element<'_, Message> {
@@ -112,7 +110,7 @@ impl DocumentMode {
 }
 
 impl SurfaceMode for DocumentMode {
-    fn update(&mut self, message: Message, tab: &mut TabCtx) -> (Task<Message>, Option<Event>) {
+    fn update(&mut self, message: Message, tab: &mut TabCtx) -> (Task<Message>, Option<Intent>) {
         match message {
             Message::Document(document) => {
                 self.view = match document.and_then(|document| self.open_document(&document)) {
@@ -162,18 +160,17 @@ fn page_gap() -> f32 {
 
 /// A paged document and its rendered pages, each with the zoom it was rendered at.
 pub struct Pages {
-    paged: Box<dyn Paged>,
-    fonts: Fonts,
+    paged: Box<dyn PagedDocument>,
     sizes: Vec<Size>,
     rendered: Vec<Option<(f32, Handle)>>,
 }
 
 impl Pages {
-    fn new(paged: Box<dyn Paged>, fonts: Fonts) -> Result<Self, String> {
+    fn new(paged: Box<dyn PagedDocument>) -> Result<Self, String> {
         let sizes = (0..paged.page_count())
-            .map(|i| paged.page_size(i).map(|s| Size::new(s.width, s.height)).map_err(|e| e.to_string()))
+            .map(|i| paged.page_size(i).map(|s| Size::new(s.width, s.height)))
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(Self { paged, fonts, rendered: vec![None; sizes.len()], sizes })
+        Ok(Self { paged, rendered: vec![None; sizes.len()], sizes })
     }
 
     /// The rendered page `index` and its zoom, if any. It may be from an earlier zoom; the view
@@ -191,12 +188,12 @@ impl Pages {
         for (_, slot) in self.rendered.iter_mut().enumerate().filter(|(i, _)| !kept.contains(i)) {
             *slot = None;
         }
-        let opts = theme::render_opts();
+        let palette = theme::document_palette();
         for i in wanted {
             if self.rendered[i].as_ref().is_some_and(|(z, _)| *z == zoom) {
                 continue;
             }
-            let page = self.paged.render(i, zoom, &self.fonts, &opts).map_err(|e| e.to_string())?;
+            let page = self.paged.render(i, zoom, &palette)?;
             self.rendered[i] = Some((zoom, Handle::from_rgba(page.width, page.height, page.data)));
         }
         Ok(())
@@ -222,24 +219,25 @@ fn visible_pages(heights: impl IntoIterator<Item = f32>, gap: f32, top: f32, bot
 #[cfg(test)]
 mod tests {
     use super::*;
-    use loa_surfaces::docs::{DocsError, PageSize, RenderOpts, Rgba};
+    use loa_view::surface::port::{DocumentPalette, PageSize, RgbaPage};
     use std::sync::Mutex;
 
     /// Pages of 50x100 that record what is rendered.
     struct FakePages(usize, Arc<Mutex<Vec<(usize, f32)>>>);
 
-    impl Paged for FakePages {
+    impl PagedDocument for FakePages {
         fn page_count(&self) -> usize {
             self.0
         }
 
-        fn page_size(&self, _: usize) -> Result<PageSize, DocsError> {
+        fn page_size(&self, _: usize) -> Result<PageSize, String> {
             Ok(PageSize { width: 50.0, height: 100.0 })
         }
 
-        fn render(&self, index: usize, scale: f32, _: &Fonts, _: &RenderOpts) -> Result<Rgba, DocsError> {
+        fn render(&self, index: usize, scale: f32, _: &DocumentPalette) -> Result<RgbaPage, String> {
             self.1.lock().unwrap().push((index, scale));
-            Ok(Rgba::new((50.0 * scale) as u32, (100.0 * scale) as u32))
+            let (width, height) = ((50.0 * scale) as u32, (100.0 * scale) as u32);
+            Ok(RgbaPage { width, height, data: vec![0; (width * height * 4) as usize] })
         }
     }
 
@@ -254,7 +252,7 @@ mod tests {
     #[test]
     fn only_pages_near_view_render_and_zoom_rerenders_them() {
         let renders = Arc::new(Mutex::new(Vec::new()));
-        let mut pages = Pages::new(Box::new(FakePages(20, renders.clone())), Fonts::none()).unwrap();
+        let mut pages = Pages::new(Box::new(FakePages(20, renders.clone()))).unwrap();
         let mut step = |zoom, top, bottom| {
             pages.refresh(zoom, top, bottom).unwrap();
             std::mem::take(&mut *renders.lock().unwrap())

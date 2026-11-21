@@ -4,13 +4,21 @@ use crate::decisions::*;
 use iced::Theme;
 use iced::keyboard::{self, Modifiers, key::Named};
 use iced::widget::text_editor::{Action, Edit, Motion};
-use loa_settings::app::{DecisionDefault, UnattendedSettings};
-use loa_contracts::harness::Answer;
 use loa_core::testkit::DomFixture;
 use loa_core::{Attrs, DecisionKind, Draft, ElementKind, NodeId, Value, answer, attrs};
+use loa_view::session::Answer;
+use loa_view::session::decisions::{DecisionDefaultView, DeskIntent, Intent, UnattendedView};
+use loa_view::session::port::{Notice, Notifier, NotifyError, NotifyFuture};
 use std::sync::Arc;
 
 fn list(items: &[&str]) -> Value { Value::List(items.iter().map(|s| Value::from(*s)).collect()) }
+
+/// Drops every notice.
+struct NullNotifier;
+
+impl Notifier for NullNotifier {
+    fn notify(&self, _: &Notice) -> NotifyFuture { Box::pin(async { Ok(()) }) }
+}
 
 /// A session with one decision of `attrs` under a `bash` call.
 fn fixture(attrs: Attrs, body: &str) -> (DomFixture, NodeId) {
@@ -82,8 +90,8 @@ fn every_kind_maps_clicks_keys_and_text_to_answers() {
     for (n, (attrs, body, steps, expected)) in cases.into_iter().enumerate() {
         let (f, id) = fixture(attrs, body);
         let mut s = state(&f, false);
-        let events: Vec<Event> = steps.into_iter().filter_map(|step| s.update(step(id)).1).collect();
-        let expected: Vec<Event> = expected.into_iter().map(|(values, reason)| Event::Answer { decision: id, answer: Answer { values: values.iter().map(|v| v.to_string()).collect(), reason: reason.map(str::to_owned), by: "me".into() } }).collect();
+        let events: Vec<Intent> = steps.into_iter().filter_map(|step| s.update(step(id)).1).collect();
+        let expected: Vec<Intent> = expected.into_iter().map(|(values, reason)| Intent::Answer { decision: id, answer: Answer { values: values.iter().map(|v| v.to_string()).collect(), reason: reason.map(str::to_owned), by: "me".into() } }).collect();
         assert_eq!(events, expected, "case {n}");
     }
 }
@@ -130,7 +138,7 @@ fn the_tracker_counts_notifies_and_fires_each_timeout_once() {
     let fired = tracker.tick(6_000);
     assert_eq!(fired, [Expired { session: "s1".into(), decision: own, answer: Answer { values: vec![answer::DENY.into()], reason: None, by: TIMEOUT_BY.into() } }]);
     assert!(tracker.tick(100_000).is_empty(), "each default fires once; a misfit default never");
-    tracker.policy = Unattended(UnattendedSettings { question: Some(DecisionDefault { timeout_secs: 60, answer: "GREEN".into(), reason: None }), ..Default::default() });
+    tracker.policy = Unattended(UnattendedView { question: Some(DecisionDefaultView { timeout_secs: 60, answer: "GREEN".into(), reason: None }), ..Default::default() });
     assert_eq!(tracker.next_deadline(), Some(64_000), "a policy set later counts from when the wait began");
     let fired = tracker.tick(64_000);
     assert_eq!((fired.len(), fired[0].decision, fired[0].answer.values.as_slice()), (1, question, ["green".to_owned()].as_slice()));
@@ -139,7 +147,7 @@ fn the_tracker_counts_notifies_and_fires_each_timeout_once() {
     let call = f.add(turn, ElementKind::Call, attrs! { TOOL: "bash" }, "");
     f.add(call, ElementKind::Decision, attrs! { KIND: "approval" }, "cargo publish\n");
     let notices = tracker.observe(&f.dom, 70_000);
-    assert_eq!(notices.iter().map(|n| (n.heading(), n.summary.as_str())).collect::<Vec<_>>(), [("A session needs approval".to_owned(), "bash: cargo publish")]);
+    assert_eq!(notices.iter().map(|n| (n.heading.clone(), n.summary.as_str())).collect::<Vec<_>>(), [("A session needs approval".to_owned(), "bash: cargo publish")]);
     assert!(tracker.observe(&f.dom, 70_001).is_empty());
     f.commit(Draft::set(own, "status", "answered"));
     tracker.observe(&f.dom, 70_002);
@@ -168,13 +176,13 @@ fn unattended_policy_answers_per_kind_and_the_desk_applies_it() {
         let i = [DecisionKind::Approval, DecisionKind::Question, DecisionKind::Plan, DecisionKind::Form].iter().position(|k| *k == kind).unwrap();
         assert_eq!(policy.answer(&decision(i), "t").unwrap().values, [expected], "{kind:?}");
     }
-    policy.0.plan = Some(DecisionDefault { timeout_secs: 5, answer: answer::EDIT.into(), reason: None });
+    policy.0.plan = Some(DecisionDefaultView { timeout_secs: 5, answer: answer::EDIT.into(), reason: None });
     assert!(policy.answer(&decision(2), "t").is_none(), "hand-edited misfits are not applied");
     assert_eq!((Duration(30).to_string(), Duration(120).to_string(), Duration(90).to_string()), ("30 s".into(), "2 min".into(), "90 s".into()));
 
-    let mut desk = Desk::new("me", &Theme::Dark, Unattended::default(), NullNotifier);
+    let mut desk = Desk::new("me", &Theme::Dark, UnattendedView::default(), NullNotifier);
     let events = desk.update(desk::Message::Settings(unattended::Message::Answer(DecisionKind::Approval, Some(answer::ALLOW_ONCE.into()))));
-    assert!(matches!(events.as_slice(), [desk::Event::PolicyChanged(p)] if p.timeout_ms(DecisionKind::Approval) == Some(300_000)));
+    assert!(matches!(events.as_slice(), [DeskIntent::PolicyChanged(p)] if Unattended(p.clone()).timeout_ms(DecisionKind::Approval) == Some(300_000)));
     desk.update(desk::Message::Settings(unattended::Message::Timeout(DecisionKind::Approval, Duration(30))));
     assert!(desk.update(desk::Message::Settings(unattended::Message::Timeout(DecisionKind::Approval, Duration(30)))).is_empty(), "no change");
     desk.sync(&f.dom, 1_000);
@@ -182,11 +190,11 @@ fn unattended_policy_answers_per_kind_and_the_desk_applies_it() {
     assert_eq!((desk.badge("s1"), desk.focused()), (4, Some(ids[0])));
     assert!(desk.update(desk::Message::Tick(30_999)).is_empty());
     let events = desk.update(desk::Message::Tick(31_000));
-    assert_eq!(events, [desk::Event::Answer { session: "s1".into(), decision: ids[0], answer: Answer { values: vec![answer::ALLOW_ONCE.into()], reason: None, by: TIMEOUT_BY.into() } }]);
+    assert_eq!(events, [DeskIntent::Answer { session: "s1".into(), decision: ids[0], answer: Answer { values: vec![answer::ALLOW_ONCE.into()], reason: None, by: TIMEOUT_BY.into() } }]);
     assert_eq!(desk.focused(), Some(ids[1]), "the sent card is locked");
     let events = desk.update(desk::Message::Card("s1".into(), Message::Choose(ids[1], 0)));
-    assert!(matches!(events.as_slice(), [desk::Event::Answer { session, answer, .. }] if session == "s1" && answer.values == ["red"] && answer.by == "me"));
-    assert_eq!(desk.update(desk::Message::Notified(Err(NotifyError("no daemon".into())))), [desk::Event::NotifyFailed("system notification failed: no daemon".into())]);
+    assert!(matches!(events.as_slice(), [DeskIntent::Answer { session, answer, .. }] if session == "s1" && answer.values == ["red"] && answer.by == "me"));
+    assert_eq!(desk.update(desk::Message::Notified(Err(NotifyError("no daemon".into())))), [DeskIntent::NotifyFailed("system notification failed: no daemon".into())]);
     let mut ui = iced_test::simulator(desk.settings_view());
     for label in ["Answer waiting prompts after a timeout", "Approvals", "Plan reviews", "Forms"] {
         assert!(ui.find(label).is_ok(), "{label}");

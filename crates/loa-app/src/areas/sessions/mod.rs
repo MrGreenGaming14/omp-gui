@@ -23,8 +23,10 @@ use loa_session::hooks::TurnHooks;
 use loa_session::plan::{self as plan_mode, PlanGate};
 use loa_settings::models::login::UrlOpener;
 use loa_ui_panel::{agents, session_tree};
-use loa_ui_session::composer;
 use loa_ui_session::transcript as chat;
+use loa_view::session::composer::{Command, ModelOption};
+use loa_view::session::transcript;
+use loa_view::panel::{AgentsIntent, SessionTreeIntent};
 use loa_contracts::session::SessionSummary;
 
 use crate::area::{Area, AreaCommand, AreaMessage, Ctx, Listed, PanelTab, Request, Target, perform};
@@ -41,7 +43,7 @@ pub enum Message {
     Agents(agents::Message),
     Tree(session_tree::Message),
     /// Something the user did in the transcript.
-    Chat(chat::Event),
+    Chat(transcript::Intent),
     /// The user picked a mode in the composer.
     Mode(SessionMode),
     /// Delete a session and its journal.
@@ -184,7 +186,7 @@ impl State {
 }
 
 /// The composer's `/` commands: the app's, then the harness's own from the latest list its adapter recorded in `dom`.
-fn composer_commands(app: &[composer::Command], dom: Option<&Dom>) -> Vec<composer::Command> {
+fn composer_commands(app: &[Command], dom: Option<&Dom>) -> Vec<Command> {
     let mut commands = app.to_vec();
     let listed = dom.and_then(|dom| dom.iter().filter(|node| node.kind == ElementKind::Ext && node.str_attr(attr::TYPE) == Some(chat::COMMANDS_EXT)).max_by_key(|node| node.id));
     let Some(listed) = listed else { return commands };
@@ -196,7 +198,7 @@ fn composer_commands(app: &[composer::Command], dom: Option<&Dom>) -> Vec<compos
         let Some(name) = command.get("name").and_then(serde_json::Value::as_str) else { continue };
         if !commands.iter().any(|known| known.name == name) {
             let description = command.get("description").and_then(serde_json::Value::as_str).unwrap_or_default();
-            commands.push(composer::Command { name: name.to_owned(), description: format!("{harness}: {description}") });
+            commands.push(Command { name: name.to_owned(), description: format!("{harness}: {description}") });
         }
     }
     commands
@@ -240,7 +242,7 @@ impl Area for State {
             if model.is_empty() {
                 ctx.notify("Name the model: /model <provider/model>, or pick one in the model picker");
             } else {
-                let option = composer::ModelOption { id: model.to_owned(), name: model.to_owned(), provider: String::new(), role: None };
+                let option = ModelOption { id: model.to_owned(), name: model.to_owned(), provider: String::new(), role: None };
                 ctx.request(Request::Forward(Box::new(crate::app::Message::area(crate::areas::models::Message::Model(option)))));
             }
             Task::none()
@@ -341,10 +343,10 @@ impl Area for State {
             Message::Agents(message) => {
                 let (task, event) = self.agents.update(message);
                 let child = match event {
-                    Some(agents::Event::OpenSession(child)) => self.child_session(ctx, child).map(Request::OpenSession),
-                    Some(agents::Event::DetachSession(child)) => self.child_session(ctx, child).map(Request::DetachSession),
+                    Some(AgentsIntent::OpenSession(child)) => self.child_session(ctx, child).map(Request::OpenSession),
+                    Some(AgentsIntent::DetachSession(child)) => self.child_session(ctx, child).map(Request::DetachSession),
                     // Harnesses stop jobs only with the turn that runs them.
-                    Some(agents::Event::Cancel { .. }) => match ctx.runtime.sessions().active().and_then(|session| session.harness().cloned()) {
+                    Some(AgentsIntent::Cancel { .. }) => match ctx.runtime.sessions().active().and_then(|session| session.harness().cloned()) {
                         Some(harness) => {
                             ctx.notify("Interrupting the turn that runs this job");
                             return Task::batch([task.map(Message::Agents), perform(async move { harness.interrupt().await }, Message::Done)]);
@@ -359,20 +361,20 @@ impl Area for State {
             Message::Tree(message) => {
                 let (task, event) = self.tree.view.update(message);
                 match event {
-                    Some(session_tree::Event::Open(id)) => ctx.request(Request::OpenSession(id)),
-                    Some(session_tree::Event::Fork { session, turn }) => self.fork_at(ctx, &session, turn),
-                    Some(session_tree::Event::Rewind { session, turn }) => self.rewind(ctx, &session, turn),
+                    Some(SessionTreeIntent::Open(id)) => ctx.request(Request::OpenSession(id)),
+                    Some(SessionTreeIntent::Fork { session, turn }) => self.fork_at(ctx, &session, turn),
+                    Some(SessionTreeIntent::Rewind { session, turn }) => self.rewind(ctx, &session, turn),
                     None => {}
                 }
                 task.map(Message::Tree)
             }
-            Message::Chat(chat::Event::Rewind(node)) => {
+            Message::Chat(transcript::Intent::Rewind(node)) => {
                 if let Some(id) = ctx.runtime.sessions().active_id().map(ToString::to_string) {
                     self.rewind(ctx, &id, node);
                 }
                 Task::none()
             }
-            Message::Chat(chat::Event::OpenLink(link)) => {
+            Message::Chat(transcript::Intent::OpenLink(link)) => {
                 self.open_link(ctx, &link);
                 Task::none()
             }

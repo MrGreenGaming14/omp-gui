@@ -13,12 +13,13 @@ use loa_session::library::Library;
 use loa_sandbox::isolation::{apply_patch, backend_name};
 use loa_sandbox::worker::WorkerJournal;
 use loa_sandbox::{Availability, ProviderStatus, RunEntry, RunLog, RunState, SandboxConfig, SandboxError, SandboxEvent, SandboxKind, SandboxService};
-use loa_ui_kit::icons::{Icon, tinted};
+use loa_ui_kit::icons::tinted;
 use loa_ui_kit::style::{self, ButtonKind, Surface, Tone};
 use loa_ui_kit::theme::{LayoutRole, SpaceRole, TextRole, pad_x, sp, text_size, width};
 use loa_ui_kit::widgets::{Field, Form, Tab, badge, card, form_view, label, tab_strip, text_button};
 use loa_ui_panel::diff;
-use loa_ui_panel::tools::{DetailState, ToolDetail, ToolInfo};
+use loa_view::panel::{DetailState, ToolDetail, ToolInfo};
+use loa_view::theme::Icon;
 use tokio::sync::broadcast;
 
 use crate::area::{Area, AreaCommand, AreaMessage, Ctx, HostToolSet, PanelTab, Request, Target};

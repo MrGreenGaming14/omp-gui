@@ -5,19 +5,14 @@ use std::sync::Arc;
 
 use iced::Task;
 use loa_surfaces::{HubConfig, LiveVideo, SurfaceHub};
-use loa_ui_surface::{H264Decoder, NewDecoder, Options, Panel, VideoStatus};
+use loa_ui_surface::Panel;
+use loa_view::surface::{Encoding, VideoStatus};
 
 use super::{Message, save};
 use crate::area::Ctx;
 
 pub(super) fn configure(config: &mut HubConfig, settings: &loa_settings::app::SurfaceSettings) {
     config.video.enabled = settings.video;
-}
-
-/// Tabs here decode H.264 too.
-pub(super) fn options(options: &mut Options) {
-    let h264: NewDecoder = Arc::new(|| Box::new(H264Decoder::default()));
-    options.decoder = Some(h264);
 }
 
 /// Shows the toggle and tries this machine's encoders.
@@ -36,7 +31,7 @@ pub(super) fn set(hub: &Arc<SurfaceHub>, enabled: bool, ctx: &mut Ctx) -> Task<M
 /// The encoder the renderer here gets (it decodes H.264) and the hardware
 /// encoders that work.
 pub(super) fn status(enabled: bool, encoders: &LiveVideo) -> VideoStatus {
-    let encoder = encoders.choose(&[loa_contracts::surface::Encoding::H264]).map(|info| loa_surfaces::proto::video::stream_info(&info));
+    let encoder = encoders.choose(&[Encoding::H264]).map(|info| loa_surfaces::proto::video::stream_info(&info));
     let hardware = encoders
         .encoders()
         .iter()

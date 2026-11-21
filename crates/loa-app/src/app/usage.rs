@@ -10,8 +10,8 @@ use iced::{Alignment, Element, Fill, Task};
 use loa_ui_kit::style::{self, ButtonKind, Surface, Tone};
 use loa_ui_kit::theme::{LayoutRole, SpaceRole, TextRole, sp, width};
 use loa_ui_kit::widgets::{card, collapsible, icon_button, label, meter, section_header, text_button};
-use loa_ui_kit::Icon;
-use loa_ui_shell::UsageMeter;
+use loa_view::shell::UsageMeter;
+use loa_view::theme::Icon;
 use serde_json::Value;
 
 /// Where usage comes from and where saved resets are spent.

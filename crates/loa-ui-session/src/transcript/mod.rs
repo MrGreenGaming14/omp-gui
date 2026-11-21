@@ -18,6 +18,7 @@ use loa_core::{Dom, ElementKind, NodeId, Op, Patch, attr, schema::TEXT};
 use loa_ui_kit::style::{self as kit, ButtonKind};
 use loa_ui_kit::theme::{LayoutRole, SpaceRole as Sp, TextRole as T, for_theme, generation, sp, text_size as ts, tokens, width};
 use loa_ui_kit::widgets::Heights;
+use loa_view::session::transcript::Intent;
 use prose::Streamed;
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
@@ -67,13 +68,6 @@ pub enum Message {
     Rewind(NodeId),
     Link(markdown::Uri),
     JumpToLatest,
-}
-
-/// What the app must act on.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Event {
-    Rewind(NodeId),
-    OpenLink(String),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -194,7 +188,7 @@ impl State {
         }
     }
 
-    pub fn update(&mut self, message: Message) -> (Task<Message>, Option<Event>) {
+    pub fn update(&mut self, message: Message) -> (Task<Message>, Option<Intent>) {
         match message {
             Message::Scrolled(metrics) => (self.scrolled(metrics), None),
             Message::Measured { key, height } => (self.measure(key, height), None),
@@ -204,8 +198,8 @@ impl State {
                 }
                 (Task::none(), None)
             }
-            Message::Rewind(node) => (Task::none(), Some(Event::Rewind(node))),
-            Message::Link(uri) => (Task::none(), Some(Event::OpenLink(uri))),
+            Message::Rewind(node) => (Task::none(), Some(Intent::Rewind(node))),
+            Message::Link(uri) => (Task::none(), Some(Intent::OpenLink(uri))),
             Message::JumpToLatest => {
                 self.scroll.follow = true;
                 (widget::operation::snap_to_end(self.scroll_id.clone()), None)

@@ -1,6 +1,7 @@
-//! Surface renderer: the right panel view of any [`loa_contracts::surface::Surface`]. Pixel
+//! Surface renderer: the right panel view of any [`loa_view::surface::Surface`]. Pixel
 //! surfaces stream frames onto a retained framebuffer and take input back in surface
-//! coordinates; document surfaces are fetched once and rendered here.
+//! coordinates; document surfaces are fetched once and rendered here through the app's
+//! [`loa_view::surface::port::DocumentRenderer`].
 
 pub mod decode;
 pub mod framebuffer;
@@ -15,16 +16,12 @@ mod theme;
 mod video;
 mod viewer;
 
-pub use decode::{DecodeError, FrameDecoder, StillDecoder};
 pub use framebuffer::Framebuffer;
 pub use geometry::{Placement, fit};
 pub use keys::KeyInput;
 pub use latency::{LatencyMeter, Reading};
-pub use panel::{Available, BrowserStatus, Capture, CaptureStatus, NewDecoder, Options, Panel};
+pub use panel::{Options, Panel};
 pub use tab::{
-    Clock, DocumentMode, Event, LocalCursor, Message, MonotonicClock, Pages, PixelMode, PointerInput, State, Tab, latency_label,
-    stream_label,
+    Clock, DocumentMode, LocalCursor, Message, MonotonicClock, Pages, PixelMode, PointerInput, State, Tab, latency_label, stream_label,
 };
 pub use theme::SurfaceKindStyle;
-#[cfg(feature = "remote-video")]
-pub use video::{H264Decoder, VideoStatus};

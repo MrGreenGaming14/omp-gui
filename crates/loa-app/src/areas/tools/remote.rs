@@ -3,7 +3,7 @@
 //! questions as decision cards, the Remote hosts list kept in the central
 //! config, the audit log and the SSH shell behind the Remote shell tab.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -22,8 +22,8 @@ use loa_remote::ports::{Approval, HostKeyChange, Prompt, PromptQueue, PromptView
 use loa_remote::pty::{ShellRead, ShellReader, ShellWriter};
 use loa_remote::resolve::{OpenSshCli, SshResolver};
 use loa_remote::{RemoteService, RemoteServiceConfig};
-use loa_ui_terminal as terminal;
-use loa_ui_panel::tools;
+use loa_view::panel;
+use loa_view::terminal::port;
 
 use crate::area::Ctx;
 use loa_runtime::session::{Session, dom_turns};
@@ -98,7 +98,7 @@ impl Remote {
 
     /// Brings the cards in line with the waiting questions: raises a card
     /// for each new one, cancels the cards of questions that went away.
-    pub(crate) fn sync(&mut self, ctx: &Ctx) -> (Vec<tools::RemotePrompt>, bool) {
+    pub(crate) fn sync(&mut self, ctx: &Ctx) -> (Vec<panel::RemotePrompt>, bool) {
         let pending = self.queue.pending();
         let ids: BTreeSet<u64> = pending.iter().map(|prompt| prompt.id).collect();
         let gone: Vec<u64> = self.cards.keys().copied().filter(|id| !ids.contains(id)).collect();
@@ -121,13 +121,13 @@ impl Remote {
     }
 
     /// Answers question `id` from the panel; its card records the answer.
-    pub(crate) fn answer_panel(&mut self, id: u64, answer: tools::PromptAnswer, ctx: &Ctx) -> bool {
+    pub(crate) fn answer_panel(&mut self, id: u64, answer: panel::PromptAnswer, ctx: &Ctx) -> bool {
         let (taken, value) = match answer {
-            tools::PromptAnswer::Trust => (self.queue.answer(id, true), TRUST),
-            tools::PromptAnswer::Reject => (self.queue.answer(id, false), REJECT),
-            tools::PromptAnswer::AllowOnce => (self.queue.answer(id, Approval::AllowOnce), answer::ALLOW_ONCE),
-            tools::PromptAnswer::AllowSession => (self.queue.answer(id, Approval::AllowSession), answer::ALLOW_SESSION),
-            tools::PromptAnswer::Deny => (self.queue.answer(id, Approval::Deny { reason: None }), answer::DENY),
+            panel::PromptAnswer::Trust => (self.queue.answer(id, true), TRUST),
+            panel::PromptAnswer::Reject => (self.queue.answer(id, false), REJECT),
+            panel::PromptAnswer::AllowOnce => (self.queue.answer(id, Approval::AllowOnce), answer::ALLOW_ONCE),
+            panel::PromptAnswer::AllowSession => (self.queue.answer(id, Approval::AllowSession), answer::ALLOW_SESSION),
+            panel::PromptAnswer::Deny => (self.queue.answer(id, Approval::Deny { reason: None }), answer::DENY),
         };
         if let Some(card) = self.cards.remove(&id) {
             let by = ctx.services.node.key.clone();
@@ -187,7 +187,7 @@ impl Remote {
     }
 
     /// The audit log of `host`, newest first, as the panel lists it.
-    pub(crate) fn audit(&self, host: String) -> impl Future<Output = Result<Vec<tools::AuditRow>, String>> + Send + use<> {
+    pub(crate) fn audit(&self, host: String) -> impl Future<Output = Result<Vec<panel::AuditRow>, String>> + Send + use<> {
         let audit = Arc::clone(self.service.audit());
         async move {
             tokio::task::spawn_blocking(move || {
@@ -297,29 +297,29 @@ fn body(prompt: &Prompt) -> String {
     }
 }
 
-fn panel_prompt(prompt: &PromptView) -> tools::RemotePrompt {
+fn panel_prompt(prompt: &PromptView) -> panel::RemotePrompt {
     let kind = match prompt.prompt {
-        Prompt::HostKey(_) => tools::PromptKind::HostKey,
-        Prompt::Approval(_) => tools::PromptKind::Approval,
+        Prompt::HostKey(_) => panel::PromptKind::HostKey,
+        Prompt::Approval(_) => panel::PromptKind::Approval,
     };
-    tools::RemotePrompt { id: prompt.id, kind, title: title(&prompt.prompt), body: body(&prompt.prompt) }
+    panel::RemotePrompt { id: prompt.id, kind, title: title(&prompt.prompt), body: body(&prompt.prompt) }
 }
 
-fn audit_row(record: &AuditRecord) -> tools::AuditRow {
+fn audit_row(record: &AuditRecord) -> panel::AuditRow {
     let action = match record.action {
-        Action::Read => tools::AuditAction::Read,
-        Action::List => tools::AuditAction::List,
-        Action::Write => tools::AuditAction::Write,
-        Action::Edit => tools::AuditAction::Edit,
-        Action::Command => tools::AuditAction::Command,
-        Action::Terminal => tools::AuditAction::Terminal,
+        Action::Read => panel::AuditAction::Read,
+        Action::List => panel::AuditAction::List,
+        Action::Write => panel::AuditAction::Write,
+        Action::Edit => panel::AuditAction::Edit,
+        Action::Command => panel::AuditAction::Command,
+        Action::Terminal => panel::AuditAction::Terminal,
     };
     let outcome = if record.detail.is_empty() {
         record.outcome.as_str().to_owned()
     } else {
         format!("{}: {}", record.outcome.as_str(), record.detail)
     };
-    tools::AuditRow { when: utc(record.at), session: record.session_id.clone(), action, detail: record.target.clone(), outcome }
+    panel::AuditRow { when: utc(record.at), session: record.session_id.clone(), action, detail: record.target.clone(), outcome }
 }
 
 /// `YYYY-MM-DD HH:MM:SS` in UTC.
@@ -353,63 +353,29 @@ impl SshPaths {
     }
 }
 
-/// The Remote hosts of the central config as the panel lists them.
-pub(crate) fn panel_hosts(entries: &BTreeMap<String, loa_settings::app::RemoteHost>) -> Vec<tools::RemoteHost> {
-    entries
-        .iter()
-        .map(|(name, entry)| tools::RemoteHost {
-            alias: name.clone(),
-            hostname: entry.host.clone(),
-            user: entry.user.clone(),
-            port: entry.port,
-            proxy_jump: entry.proxy_jump.clone(),
-            limits: tools::HostLimits {
-                allowed_paths: entry.allowed_paths.clone(),
-                read_only: entry.read_only,
-                commands_allowed: entry.commands,
-                auto_approve: entry.auto_approve,
-            },
-        })
-        .collect()
-}
-
-/// A host typed into the panel's add form as a config entry.
-pub(crate) fn config_host(host: &tools::RemoteHost) -> loa_settings::app::RemoteHost {
-    loa_settings::app::RemoteHost {
-        host: host.hostname.clone(),
-        user: host.user.clone(),
-        port: host.port,
-        proxy_jump: host.proxy_jump.clone(),
-        allowed_paths: host.limits.allowed_paths.clone(),
-        read_only: host.limits.read_only,
-        commands: host.limits.commands_allowed,
-        auto_approve: host.limits.auto_approve,
-    }
-}
-
-/// [`terminal::RemotePty`] over the service's SSH shells.
+/// [`port::RemotePty`] over the service's SSH shells.
 pub(crate) struct SshPty(pub(crate) Arc<RemoteService>);
 
 #[async_trait]
-impl terminal::RemotePty for SshPty {
-    async fn open_pty(&self, host: &str, size: terminal::GridSize) -> terminal::Result<terminal::PtyChannel> {
+impl port::RemotePty for SshPty {
+    async fn open_pty(&self, host: &str, size: port::GridSize) -> port::Result<port::PtyChannel> {
         let shell = self.0.open_shell(host, size.cols, size.rows).await.map_err(|error| remote_error(host, error))?;
-        Ok(terminal::PtyChannel { reader: Box::new(SshReader(shell.reader)), writer: Box::new(SshWriter(shell.writer)) })
+        Ok(port::PtyChannel { reader: Box::new(SshReader(shell.reader)), writer: Box::new(SshWriter(shell.writer)) })
     }
 }
 
-fn remote_error(host: &str, error: loa_remote::Error) -> terminal::Error {
-    terminal::Error::Remote { host: host.to_owned(), message: error.to_string() }
+fn remote_error(host: &str, error: loa_remote::Error) -> port::Error {
+    port::Error::Remote { host: host.to_owned(), message: error.to_string() }
 }
 
 struct SshReader(ShellReader);
 
 #[async_trait]
-impl terminal::ChannelReader for SshReader {
-    async fn read(&mut self) -> terminal::Result<terminal::ChannelRead> {
+impl port::ChannelReader for SshReader {
+    async fn read(&mut self) -> port::Result<port::ChannelRead> {
         Ok(match self.0.read().await {
-            ShellRead::Data(data) => terminal::ChannelRead::Data(data),
-            ShellRead::Closed { exit_status } => terminal::ChannelRead::Closed { exit_code: exit_status },
+            ShellRead::Data(data) => port::ChannelRead::Data(data),
+            ShellRead::Closed { exit_status } => port::ChannelRead::Closed { exit_code: exit_status },
         })
     }
 }
@@ -417,18 +383,18 @@ impl terminal::ChannelReader for SshReader {
 struct SshWriter(ShellWriter);
 
 #[async_trait]
-impl terminal::ChannelWriter for SshWriter {
-    async fn write(&mut self, bytes: Bytes) -> terminal::Result<()> {
+impl port::ChannelWriter for SshWriter {
+    async fn write(&mut self, bytes: Bytes) -> port::Result<()> {
         let host = self.0.host().to_owned();
         self.0.write(bytes).await.map_err(|error| remote_error(&host, error))
     }
 
-    async fn resize(&mut self, size: terminal::GridSize) -> terminal::Result<()> {
+    async fn resize(&mut self, size: port::GridSize) -> port::Result<()> {
         let host = self.0.host().to_owned();
         self.0.resize(size.cols, size.rows).await.map_err(|error| remote_error(&host, error))
     }
 
-    async fn close(&mut self) -> terminal::Result<()> {
+    async fn close(&mut self) -> port::Result<()> {
         let host = self.0.host().to_owned();
         self.0.close().await.map_err(|error| remote_error(&host, error))
     }

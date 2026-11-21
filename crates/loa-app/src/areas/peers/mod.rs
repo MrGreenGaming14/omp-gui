@@ -23,7 +23,8 @@ use loa_p2p::{Endpoint, Node, NodeConfig, NodeEvent, RelayConfig};
 use loa_ui_kit::widgets::Screen;
 use loa_ui_settings::peers;
 use loa_contracts::session::SessionSummary;
-use loa_ui_shell::NodeStatus;
+use loa_view::settings::peers::Intent;
+use loa_view::shell::NodeStatus;
 
 use crate::adapters::peer_sessions::LibrarySessions;
 use crate::area::{perform, Area, AreaCommand, AreaMessage, Ctx, PanelTab, Request};
@@ -224,7 +225,7 @@ impl State {
     }
 
     /// Runs a panel event on the node.
-    fn apply(&self, event: peers::Event, ctx: &mut Ctx) -> Task<Message> {
+    fn apply(&self, event: Intent, ctx: &mut Ctx) -> Task<Message> {
         let Some(node) = self.node.clone() else {
             ctx.notify("The peer node isn't running; see the notice from startup");
             return Task::none();
@@ -317,8 +318,8 @@ impl Area for State {
             ctx.notify("Key copied");
             iced::clipboard::write(ctx.services.node.key.clone())
         }),
-        AreaCommand::<Self>::new("peers.refresh", "Check peers now", "Peers", |state, _, ctx| state.apply(peers::Event::Refresh, ctx)),
-        AreaCommand::<Self>::new("peers.scan_tailnet", "Scan the tailnet for nodes", "Peers", |state, _, ctx| state.apply(peers::Event::ScanTailscale, ctx)),
+        AreaCommand::<Self>::new("peers.refresh", "Check peers now", "Peers", |state, _, ctx| state.apply(Intent::Refresh, ctx)),
+        AreaCommand::<Self>::new("peers.scan_tailnet", "Scan the tailnet for nodes", "Peers", |state, _, ctx| state.apply(Intent::ScanTailscale, ctx)),
         AreaCommand::<Self>::new("peers.restart", "Restart the peer endpoint with the network settings", "Peers", |state, _, ctx| state.restart(ctx)),
     ];
 
@@ -376,7 +377,7 @@ impl Area for State {
                     ctx.show_screen(State::ID);
                     return Task::none();
                 }
-                self.apply(peers::Event::OpenRemote { peer: peer.to_owned(), session: session.to_owned() }, ctx)
+                self.apply(Intent::OpenRemote { peer: peer.to_owned(), session: session.to_owned() }, ctx)
             }
             Message::Remote(message) => self.remote_update(message, ctx),
             Message::Folder(message) => self.folder_update(message, ctx),

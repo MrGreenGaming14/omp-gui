@@ -10,10 +10,11 @@ use iced::widget::{column, row, scrollable, space, text_input};
 use iced::{Alignment, Element, Fill, Task};
 use loa_settings::app::HarnessSettings;
 use loa_contracts::harness::{Availability, AvailabilityStatus};
-use loa_ui_kit::icons::{Icon, tinted};
+use loa_ui_kit::icons::tinted;
 use loa_ui_kit::style::{self, ButtonKind, Tone};
 use loa_ui_kit::theme::{SpaceRole, TextRole, sp};
 use loa_ui_kit::widgets::{card, label, section_header, text_button};
+use loa_view::theme::Icon;
 
 use crate::area::{Area, AreaCommand, AreaMessage, Ctx, Listed, PanelTab, Request};
 use crate::services::harness::{set_executable, set_executables};

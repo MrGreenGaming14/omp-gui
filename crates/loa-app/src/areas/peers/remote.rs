@@ -13,11 +13,13 @@ use loa_harness::account_support::opener::SystemUrlOpener;
 use loa_p2p::RemoteView;
 use loa_ui_session::transcript as chat;
 use loa_ui_session::decisions as cards;
-use loa_ui_kit::icons::{Icon, tinted};
+use loa_ui_kit::icons::tinted;
 use loa_ui_kit::style::{self, ButtonKind, Tone};
 use loa_ui_kit::widgets::{icon_button, label, text_button};
 use loa_ui_kit::theme::{LayoutRole, SpaceRole, TextRole, sp, text_size as ts, width};
-use loa_ui_settings::peers;
+use loa_view::session::{decisions, transcript};
+use loa_view::settings::peers::Intent;
+use loa_view::theme::Icon;
 use loa_contracts::session::SessionSummary;
 
 use super::{Message, State};
@@ -177,8 +179,8 @@ impl State {
             RemoteMessage::Chat(message) => {
                 let (task, event) = remote.chat.update(message);
                 match event {
-                    Some(chat::Event::Rewind(_)) => ctx.notify("Only the owner rewinds this session; fork it to rewind a copy on this node"),
-                    Some(chat::Event::OpenLink(url)) => {
+                    Some(transcript::Intent::Rewind(_)) => ctx.notify("Only the owner rewinds this session; fork it to rewind a copy on this node"),
+                    Some(transcript::Intent::OpenLink(url)) => {
                         if let Err(error) = SystemUrlOpener.open_url(&url) {
                             ctx.notify(error);
                         }
@@ -194,14 +196,14 @@ impl State {
                 }
                 let (task, event) = remote.cards.update(message);
                 let answer = match event {
-                    Some(cards::Event::Answer { decision, answer }) => {
+                    Some(decisions::Intent::Answer { decision, answer }) => {
                         let view = Arc::clone(&remote.view);
                         perform(
             async move { view.answer(decision, answer.values, answer.reason).await },
                             move |result| Message::Remote(RemoteMessage::Answered(decision, result)),
                         )
                     }
-                    Some(cards::Event::OpenLink(url)) => {
+                    Some(decisions::Intent::OpenLink(url)) => {
                         if let Err(error) = SystemUrlOpener.open_url(&url) {
                             ctx.notify(error);
                         }
@@ -242,7 +244,7 @@ impl State {
                 Task::none()
             }
             RemoteMessage::Fork => {
-                let event = peers::Event::ForkRemote { peer: remote.view.peer().to_string(), session: remote.view.session().to_owned() };
+                let event = Intent::ForkRemote { peer: remote.view.peer().to_string(), session: remote.view.session().to_owned() };
                 self.apply(event, ctx)
             }
             RemoteMessage::Close => {

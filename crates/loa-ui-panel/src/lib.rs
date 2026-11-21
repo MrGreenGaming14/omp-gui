@@ -1,4 +1,5 @@
 //! Right panel panes with `update`/`view` and a kit `PanelPane`: diff, files, session tree, agents and tools.
+//! They read and emit the plain types of [`loa_view::panel`].
 
 /// Implements the kit `PanelPane` for the module's `State` through its inherent `view`.
 macro_rules! panel_pane {
@@ -7,7 +8,7 @@ macro_rules! panel_pane {
             type Message = Message;
             fn id(&self) -> &str { $id }
             fn title(&self) -> &str { $title }
-            fn icon(&self) -> loa_ui_kit::Icon { loa_ui_kit::Icon::$icon }
+            fn icon(&self) -> loa_view::theme::Icon { loa_view::theme::Icon::$icon }
             fn view(&self) -> iced::Element<'_, Message> { State::view(self) }
         }
     };
@@ -21,7 +22,8 @@ pub mod tools;
 
 use iced::Theme;
 use iced::widget::{button, container, row, text};
-use loa_ui_kit::icons::{Icon, tinted};
+use loa_ui_kit::icons::tinted;
+use loa_view::theme::Icon;
 use loa_ui_kit::style::{self, ButtonKind, Tone};
 use loa_ui_kit::theme::{AlphaRole, ColorRole, SpaceRole as Sp, TextRole as T, for_theme, sp, text_size as ts};
 
@@ -64,8 +66,8 @@ mod tests {
         let _ = diff.set_files(diff::parse_unified("--- a\n+++ a\n@@ -1 +1,2 @@\n-x\n+y\n+z\n--- b\n+++ /dev/null\n@@ -1 +0,0 @@\n-gone\n").unwrap());
         let _ = diff.update(diff::Message::SetMode(diff::Mode::Split));
         let mut tree = session_tree::State::new();
-        tree.set_family(vec![session_tree::SessionInfo { id: "s".into(), parent: None, forked_at: None, title: "Main".into(), turns: vec![] }], "s");
-        let fs = std::sync::Arc::new(files::tests::FakeFs::default());
+        tree.set_family(vec![loa_view::panel::SessionInfo { id: "s".into(), parent: None, forked_at: None, title: "Main".into(), turns: vec![] }], "s");
+        let fs = files::tests::FakeFs::default();
         fs.put("/r", &[("src", true), ("a.rs", false)]);
         let rendered = [render(&diff), render(&files::State::new("/r".into(), Box::new(fs))), render(&tree), render(&agents::State::default()), render(&tools::State::new())];
         assert_eq!(rendered, ["diff", "files", "session", "agents", "tools"]);

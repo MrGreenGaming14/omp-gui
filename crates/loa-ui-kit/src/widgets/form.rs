@@ -2,11 +2,12 @@
 //! editor, and a [`Picker`] over any [`PickerItem`].
 
 use super::{label, menu_row, popover};
-use crate::icons::{Icon, tinted};
+use crate::icons::tinted;
 use crate::style::{self, ButtonKind, Surface, Tone};
 use crate::theme::{LayoutRole, SpaceRole, TextRole, tokens};
 use iced::widget::{button, column, container, row, text_input};
 use iced::{Alignment, Element, Fill};
+use loa_view::theme::Icon;
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 

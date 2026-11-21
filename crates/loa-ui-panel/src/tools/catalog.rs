@@ -1,6 +1,6 @@
 //! What the page shows after grouping, filtering and toggles.
 
-use super::model::{BuiltinGroup, BuiltinTools, McpServer, PeerTools, ToolId, ToolInfo};
+use loa_view::panel::{BuiltinGroup, BuiltinTools, McpServer, PeerTools, ToolId, ToolInfo};
 use std::collections::BTreeSet;
 
 /// Toggle state of a set of tools.

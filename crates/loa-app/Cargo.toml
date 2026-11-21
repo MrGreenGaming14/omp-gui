@@ -10,6 +10,7 @@ iced.workspace = true
 async-trait.workspace = true
 loa-core.workspace = true
 loa-contracts.workspace = true
+loa-view.workspace = true
 loa-bus = { path = "../loa-bus" }
 loa-settings = { path = "../loa-settings" }
 loa-harness = { workspace = true, features = ["omp", "acp", "claude", "codex", "opencode", "omp2"] }
@@ -37,6 +38,7 @@ tempfile.workspace = true
 semver = "1"
 loa-sandbox = { path = "../loa-sandbox" }
 serde_json.workspace = true
+notify-rust = "4.19"
 
 [features]
 # Live video for peers: the "Live video" launcher toggle and in-process H.264.
@@ -51,3 +53,6 @@ loa-ui-kit = { path = "../loa-ui-kit", features = ["testkit"] }
 iced_runtime = "0.14"
 # The iced runtime's subscription tracker, to run the app's subscriptions in tests.
 iced_futures = "0.14"
+toml = "1.2"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+rust_xlsxwriter = "0.103"

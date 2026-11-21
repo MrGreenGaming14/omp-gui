@@ -43,6 +43,12 @@ Everything else builds on these three. Their existing public items change only w
 | `loa-sandbox`, `loa-sandbox-stub` | sandbox | `sandbox_task`, providers, exec stub |
 | `loa-updater` | updater | Release feeds, staging, gate checks against the installed omp, swap and rollback; `Updater` service for the Updates screen. Its status types live in `loa_settings::updates` |
 
+### Presentation API
+
+| Crate | Holds |
+| --- | --- |
+| `loa-view` | The stable, versioned presentation API (`loa_view::VERSION`, snapshot in `crates/loa-view/api.txt`). One module per screen family: `theme` (`Appearance`, `ThemeRef`, `Icon`), `settings::{models, projects, peers, updates}`, `session`, `shell`, `panel`, `terminal`, `surface`. Each holds plain view models (`Clone + Debug + PartialEq`, public fields), the screen's `Intent` (what the UI emits to the app) and, under `port`, the traits the UI needs and the app implements (decoders, document renderer, PTY, file system, notifier, surface transport). Foundation values the UI needs as they are (`Prompt`, `Answer`, `SessionSummary`, surface protocol values, …) are re-exported from the matching module. Depends only on `loa-util`, `loa-core` and `loa-contracts` |
+
 ### UI
 
 | Crate | Holds |
@@ -55,8 +61,8 @@ Everything else builds on these three. Their existing public items change only w
 | `loa-ui-terminal` | Terminal tab, local and SSH |
 | `loa-ui-palette` | Command palette |
 | `loa-ui-tools` | Tools panel |
-| `loa-ui-surface` | Surfaces tab: tab shell over `PixelMode`/`DocumentMode` strategies, `FrameDecoder` chain (stills, H.264 behind `remote-video`), launcher for browser, documents, VNC and MCP surfaces, document pages through `loa-surfaces` docs with `RenderOpts` from kit tokens |
-| `loa-ui-settings` | Settings-style screens on kit `Screen` (`Msg<Local, Event>` + guard): `models` (sign in reducer over `LoginUpdate`, picker, chip, session model, model settings via kit `form_view`/`list_editor` over `OVERRIDE_FIELDS`), `projects` (project screen), `peers` (peers, grants with a typed folder, shared sessions and folders), `updates` (renders `loa_settings::updates` status with a `STATUS_RULES` table, `HoldChoice` choices). Depends only on `loa-settings`, `loa-ui-kit` and the foundation crates |
+| `loa-ui-surface` | Surfaces tab: tab shell over `PixelMode`/`DocumentMode` strategies, a `FrameDecoder` chain and a `DocumentRenderer` it receives through `loa_view::surface::port` (the app supplies the still/H.264 decoders and document rendering from `loa-surfaces`), launcher for browser, documents, VNC and MCP surfaces |
+| `loa-ui-settings` | Settings-style screens on kit `Screen` (`Msg<Local, Intent>` + guard): `models` (sign in reducer over `LoginUpdate`, picker, model settings via kit `form_view`/`list_editor` over `OVERRIDE_FIELDS`), `projects` (project screen), `peers` (peers, grants with a typed folder, shared sessions and folders), `updates` (renders `loa_view::settings::updates` status with a `STATUS_RULES` table, `HoldChoice` choices). Depends only on `loa-view`, `loa-ui-kit` and `loa-util`; the session model chip is derived from the DOM in `loa-app` (`areas/models/session.rs`) |
 | `loa-ui-icons` | Lucide line icons as theme-tinted SVG widgets, shared by every UI crate |
 | `loa-app` | The binary: wires every crate together |
 
@@ -64,13 +70,33 @@ Everything else builds on these three. Their existing public items change only w
 
 - Contracts depend on nothing in the workspace except `loa-core`
 - A library depends on contracts. When it needs something another library owns, it declares a trait for it (a port) and `loa-app` passes the implementation in. Example: `loa-projects` declares the access check it needs and `loa-app` backs it with `loa-trust`
-- A UI crate depends on contracts, `iced` and `loa-ui-icons`. It takes plain data in and gives events out. It never spawns a harness, opens a socket or reads the journal
+- A UI crate takes `loa_view` view models in and gives `loa_view` intents out. It never spawns a harness, opens a socket or reads the journal. Its direct `loa-*` dependencies are limited to:
+
+  | Crate | Allowed direct `loa-*` dependencies |
+  | --- | --- |
+  | `loa-view` | `loa-util`, `loa-core`, `loa-contracts` |
+  | `loa-ui-kit` | `loa-view` (theme types), `loa-util` |
+  | `loa-ui-settings`, `loa-ui-shell`, `loa-ui-terminal`, `loa-ui-surface` | `loa-view`, `loa-ui-kit`, `loa-util` |
+  | `loa-ui-panel` | the above and `loa-core` (the agents pane and session tree read the DOM) |
+  | `loa-ui-session` | the above and `loa-core` (DOM transcript and decision rendering) and `loa-ui-panel` |
+
+  No UI crate depends directly on `loa-settings`, `loa-contracts`, `loa-surfaces` or any domain, adapter or runtime crate; it imports foundation values only through `loa_view::…`. Check with `cargo tree -e normal --depth 1 -p <crate>`
 - Only `loa-app`, `loa-session`, `loa-share` and `loa-node` depend on several libraries
-- `loa-settings` depends only on `loa-util`, `loa-core` and `loa-contracts`; it never depends on `loa-models`, `loa-projects`, `loa-updater`, `loa-harness` or a UI crate. `loa-ui-settings` reaches settings and status only through `loa-settings` (plus `loa-ui-kit`), never through `loa-models`, `loa-projects`, `loa-updater` or `loa-harness`
+- `loa-settings` depends only on `loa-util`, `loa-core` and `loa-contracts`; it never depends on `loa-models`, `loa-projects`, `loa-updater`, `loa-harness` or a UI crate
+
+### Presentation API and its version
+
+`loa-app` projects domain state into `loa_view` types in `src/view/<screen>.rs` (`to_view(&Domain) -> View`, and `from_view(View) -> Domain` for anything the UI edits) and maps each screen's `Intent` back to domain calls. Every editable type round-trips losslessly, with one app-side test per type asserting `from_view(to_view(x)) == x`.
+
+`crates/loa-view/api.txt` lists every public item of `loa-view` (fields, variants, signatures and re-exported paths); its first line is `version = <loa_view::VERSION>`. `cargo test -p loa-view --test api` renders the listing from `src/` with `syn` and compares:
+
+- The listing changed but `VERSION` was not bumped: the test fails with "bump loa_view::VERSION" and the diff
+- Removing or renaming an item or field, or changing a type or signature, is a major bump; additions alone are a minor bump. The test rejects a minor bump when a line was removed or changed
+- After bumping, `UPDATE_VIEW_API=1 cargo test -p loa-view --test api` rewrites `api.txt`; it refuses to while `VERSION` still equals the header
 
 ### Settings hub
 
-`loa-settings` is the central place for app and harness settings: the central config, the model and provider settings with the omp file editors, the project settings and the updater status. The settings UI (`loa-ui-settings`) only displays these types and emits events; the services that change them (`loa-models`, `loa-projects`, `loa-updater`) import their types from the hub. Harness-specific work goes through the hub's ports (`OmpRpc`, `OmpProviderAccount`, `OmpFilesResolver`, `SettingsValidator`), which the adapters in `loa-harness` implement and `loa-app` wires in
+`loa-settings` is the central place for app and harness settings: the central config, the model and provider settings with the omp file editors, the project settings and the updater status. The services that change them (`loa-models`, `loa-projects`, `loa-updater`) import their types from the hub; the settings UI (`loa-ui-settings`) sees only their `loa_view::settings` projections. Harness-specific work goes through the hub's ports (`OmpRpc`, `OmpProviderAccount`, `OmpFilesResolver`, `SettingsValidator`), which the adapters in `loa-harness` implement and `loa-app` wires in
 
 ## Sessions
 
@@ -124,7 +150,7 @@ impl State {
 }
 ```
 
-- Session data arrives as `&loa_core::Dom` or as patches. Other data arrives as plain structs the UI crate defines
+- Session data arrives as `&loa_core::Dom` or as patches. Other data arrives as `loa_view` view models, and the screen's output is its `loa_view::<screen>::Intent`; internal `Message`/`Local` types stay private to the UI crate
 - Colors, text sizes, spacing and layout widths come from the `loa-ui-kit` theme tokens (`ColorRole`, `TextRole`, `SpaceRole`, `LayoutRole`), never from literals, so runtime themes apply everywhere. `scripts/lint-ui-literals.sh` checks the UI crates and `loa-app`
 - Standard iced widgets first. A hand built widget carries a label (accessibility readiness, see `docs/accessibility.md`)
 - Logic is tested through `update` and through `iced_test` headless runs. Tests never open a window
@@ -137,6 +163,7 @@ impl State {
 - `Services` splits into `NodeServices` (identity, grants, MCP servers), `Storage` (directories, config) and `Host`. `Host` holds the ports to outside programs: `GitProbe`, `FolderPicker` and `UsageSource`, with command line adapters (git, zenity or kdialog, `omp usage`). Tests pass fakes
 - `app/lifecycle.rs`: the `SessionController` hands lifecycle `Command`s to `Runtime::dispatch`, runs the transition's effects as `Task::perform` (completions go back as `Command::Completed`) and maps its events: `PrepareSession` runs every area's `contribute` and `host_tools` (first one kept on duplicates) and dispatches `Prepared`; `Session` events update the chat, detached transcripts, sidebar and status, then every area; `SendRequested` and the app's own sends run the areas' `before_send` first. What the app must do with its own parts (present a folder, reread the diff, run a queued prompt, continue in a new session) is queued as `After` items. `Ctx::close_session` and `discard_session` dispatch `Command::Close` and queue the transition; `App::settle` applies queued transitions before area requests, until both are empty
 - `app/workspace.rs`: the folder and project the app works in, recent folders and project tabs
+- `view/`: the projections between domain types and `loa_view` view models, one file per screen family, with the round-trip tests
 - Shell and composer events go through route tables (`route`, `compose`) to one `Intent` handler
 - `app/windows.rs`: Configs, Settings (kit `side_nav`) and detached OS windows. `app/usage.rs`: the Usage window
 - `areas/sessions`: `branch` (one `spawn_branch` strategy for fork, rewind and compaction), `plan`, `hooks` (rules and advisor), `transfer` (import and export) and `tree`
@@ -148,6 +175,7 @@ impl State {
 | --- | --- | --- |
 | Element schema | `loa_core::SCHEMA_VERSION` (1) | `loa-core` |
 | Adapter interface | `loa_adapter::INTERFACE_VERSION` | `loa-adapter` |
+| Presentation API | `loa_view::VERSION` (1.0.0), listed in `crates/loa-view/api.txt` | `loa-view` |
 | Control ALPN | `omp/control/1` | `loa-net` |
 | Session ALPN | `omp/session/1` | `loa-net`, `loa-share` |
 | Surface ALPN | `omp/surface/1` | `loa-surface` |

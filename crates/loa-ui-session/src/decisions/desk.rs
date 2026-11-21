@@ -1,16 +1,17 @@
 //! The decisions of every open session behind one component: cards per session, waiting
 //! badges, notifications through a [`Notifier`] while the window is in the background, and
 //! unattended timeouts. The app syncs it with each session's DOM, forwards messages, passes
-//! [`Event::Answer`]s to the harness and persists [`Event::PolicyChanged`].
+//! [`DeskIntent::Answer`]s to the harness and persists [`DeskIntent::PolicyChanged`].
 
 use super::card::kind_for;
 use super::model::Decision;
 use super::unattended::{self, Unattended};
 use super::{Shortcut, State, TIMEOUT_BY, Viewer, shortcut};
-use iced::futures::future::BoxFuture;
 use iced::{Element, Subscription, Task, Theme, event, keyboard, time, window};
-use loa_contracts::harness::Answer;
 use loa_core::{DecisionKind, Dom, NodeId, attr};
+use loa_view::session::Answer;
+use loa_view::session::decisions::{DeskIntent, Intent, UnattendedView};
+use loa_view::session::port::{Notice, Notifier, NotifyError};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
@@ -19,57 +20,6 @@ pub use loa_util::time::now_ms;
 
 /// How often pending unattended timeouts are checked.
 const TICK: Duration = Duration::from_millis(500);
-
-/// A system notification about a session that needs input.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Notice {
-    pub session: String,
-    pub session_title: Option<String>,
-    pub decision: NodeId,
-    pub kind: DecisionKind,
-    /// One line about what is asked: tool and command, question, title.
-    pub summary: String,
-}
-
-impl Notice {
-    pub fn heading(&self) -> String { format!("{} {}", self.session_title.as_deref().unwrap_or("A session"), kind_for(self.kind).notice()) }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct NotifyError(pub String);
-
-impl std::fmt::Display for NotifyError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(f, "system notification failed: {}", self.0) }
-}
-
-/// Port for raising notifications off the UI thread.
-pub trait Notifier: Send + Sync {
-    fn notify(&self, n: &Notice) -> BoxFuture<'static, Result<(), NotifyError>>;
-}
-
-/// Desktop notifications through `notify-rust` (D-Bus on Linux).
-#[derive(Clone, Debug)]
-pub struct DesktopNotifier(pub String);
-
-impl DesktopNotifier {
-    pub fn new(app_name: impl Into<String>) -> Self { Self(app_name.into()) }
-}
-
-impl Notifier for DesktopNotifier {
-    fn notify(&self, n: &Notice) -> BoxFuture<'static, Result<(), NotifyError>> {
-        let mut notification = notify_rust::Notification::new();
-        notification.appname(&self.0).summary(&n.heading()).body(&n.summary);
-        Box::pin(async move { notification.show_async().await.map(drop).map_err(|e| NotifyError(e.to_string())) })
-    }
-}
-
-/// Drops every notice: tests and headless runs.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct NullNotifier;
-
-impl Notifier for NullNotifier {
-    fn notify(&self, _: &Notice) -> BoxFuture<'static, Result<(), NotifyError>> { Box::pin(async { Ok(()) }) }
-}
 
 /// An unattended timeout that passed: hand `answer` to the session's harness.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -110,7 +60,9 @@ impl Tracker {
             let waiting = known.remove(&decision.id).unwrap_or_else(|| {
                 if self.background {
                     let summary = summary(&decision);
-                    notices.push(Notice { session: id.to_owned(), session_title: root.str_attr(attr::TITLE).map(str::to_owned), decision: decision.id, kind: decision.kind, summary });
+                    let title = root.str_attr(attr::TITLE).map(str::to_owned);
+                    let heading = heading(title.as_deref(), decision.kind);
+                    notices.push(Notice { session: id.to_owned(), session_title: title, decision: decision.id, kind: decision.kind, heading, summary });
                 }
                 let since = decision.created.unwrap_or(now_ms);
                 let own = decision.timeout_ms.zip(decision.default_answer(TIMEOUT_BY)).map(|(t, a)| (since.saturating_add(t), a));
@@ -167,6 +119,9 @@ fn summary(d: &Decision) -> String {
     }
 }
 
+/// The title of a notice about a `kind` decision in the session titled `title`.
+fn heading(title: Option<&str>, kind: DecisionKind) -> String { format!("{} {}", title.unwrap_or("A session"), kind_for(kind).notice()) }
+
 #[derive(Clone, Debug)]
 pub enum Message {
     /// A card message of one session.
@@ -179,16 +134,6 @@ pub enum Message {
     Tick(i64),
     Notified(Result<(), NotifyError>),
     Settings(unattended::Message),
-}
-
-/// What the app must act on.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Event {
-    Answer { session: String, decision: NodeId, answer: Answer },
-    OpenLink(String),
-    /// The unattended settings changed: persist them.
-    PolicyChanged(Unattended),
-    NotifyFailed(String),
 }
 
 pub struct Desk {
@@ -204,8 +149,8 @@ pub struct Desk {
 
 impl Desk {
     /// `by` is recorded on every answer given here.
-    pub fn new(by: impl Into<String>, theme: &Theme, policy: Unattended, notifier: impl Notifier + 'static) -> Self {
-        let tracker = Tracker { policy, ..Tracker::default() };
+    pub fn new(by: impl Into<String>, theme: &Theme, policy: UnattendedView, notifier: impl Notifier + 'static) -> Self {
+        let tracker = Tracker { policy: Unattended(policy), ..Tracker::default() };
         Self { local: by.into(), local_name: None, theme: theme.clone(), sessions: HashMap::new(), active: None, tracker, notifier: Arc::new(notifier) }
     }
 
@@ -268,7 +213,7 @@ impl Desk {
 
     pub fn policy(&self) -> &Unattended { &self.tracker.policy }
 
-    pub fn update(&mut self, message: Message) -> Vec<Event> {
+    pub fn update(&mut self, message: Message) -> Vec<DeskIntent> {
         match message {
             Message::Card(session, message) => self.card(session, message),
             Message::Shortcut(key) => self.active.clone().map_or_else(Vec::new, |s| self.card(s, super::Message::Shortcut(key))),
@@ -283,9 +228,9 @@ impl Desk {
                         state.answering(e.decision);
                     }
                 }
-                expired.into_iter().map(|Expired { session, decision, answer }| Event::Answer { session, decision, answer }).collect()
+                expired.into_iter().map(|Expired { session, decision, answer }| DeskIntent::Answer { session, decision, answer }).collect()
             }
-            Message::Notified(result) => result.err().map(|e| Event::NotifyFailed(e.to_string())).into_iter().collect(),
+            Message::Notified(result) => result.err().map(|e| DeskIntent::NotifyFailed(e.to_string())).into_iter().collect(),
             Message::Settings(edit) => {
                 let mut policy = self.tracker.policy.clone();
                 policy.update(edit);
@@ -293,16 +238,16 @@ impl Desk {
                     return Vec::new();
                 }
                 self.tracker.policy = policy.clone();
-                vec![Event::PolicyChanged(policy)]
+                vec![DeskIntent::PolicyChanged(policy.0)]
             }
         }
     }
 
-    fn card(&mut self, session: String, message: super::Message) -> Vec<Event> {
+    fn card(&mut self, session: String, message: super::Message) -> Vec<DeskIntent> {
         let Some(state) = self.sessions.get_mut(&session) else { return Vec::new() };
         match state.update(message).1 {
-            Some(super::Event::Answer { decision, answer }) => vec![Event::Answer { session, decision, answer }],
-            Some(super::Event::OpenLink(url)) => vec![Event::OpenLink(url)],
+            Some(Intent::Answer { decision, answer }) => vec![DeskIntent::Answer { session, decision, answer }],
+            Some(Intent::OpenLink(url)) => vec![DeskIntent::OpenLink(url)],
             None => Vec::new(),
         }
     }

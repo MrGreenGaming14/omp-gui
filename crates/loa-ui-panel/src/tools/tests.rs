@@ -1,6 +1,6 @@
 use super::form::*;
 use super::*;
-use loa_contracts::harness::McpTransport;
+use loa_view::panel::*;
 use loa_ui_kit::testkit::click_label;
 use std::collections::BTreeMap;
 
@@ -11,7 +11,7 @@ fn filled<F: Form + Default>(mut form: F, values: &[(&str, &str)]) -> F {
     values.iter().for_each(|(k, v)| form.set(k, v).unwrap());
     form
 }
-fn send(s: &mut State, messages: impl IntoIterator<Item = Message>) -> Vec<Event> { messages.into_iter().filter_map(|m| s.update(m).1).collect() }
+fn send(s: &mut State, messages: impl IntoIterator<Item = Message>) -> Vec<ToolsIntent> { messages.into_iter().filter_map(|m| s.update(m).1).collect() }
 fn errors(list: &[(FieldId, &str)]) -> BTreeMap<FieldId, String> { list.iter().map(|(k, e)| (*k, e.to_string())).collect() }
 type Groups<'a> = Vec<Vec<&'a str>>;
 fn names<'a>(c: &Catalog<'a>) -> (Groups<'a>, Groups<'a>) {
@@ -63,17 +63,17 @@ fn messages_emit_events_and_scope_toggles() {
     let mut s = panel();
     let (bash, edit) = (ToolId::builtin("bash"), |f, k: &'static str, v: &str| Message::FormEdit(f, k, v.into()));
     let remote = vec![ToolId::mcp("remote", "remote_bash"), ToolId::mcp("remote", "remote_file")];
-    let cases: Vec<(Vec<Message>, Vec<Event>)> = vec![
+    let cases: Vec<(Vec<Message>, Vec<ToolsIntent>)> = vec![
         (vec![Message::ToolToggled(bash.clone(), false)], vec![]),
-        (vec![Message::ProjectSelected(project("a")), Message::ToolToggled(bash.clone(), false)], vec![Event::ProjectSelected("a".into()), Event::SetToolsEnabled { project: "a".into(), tools: vec![bash], enabled: false }]),
-        (vec![Message::ServerToggled("remote".into())], vec![Event::SetToolsEnabled { project: "a".into(), tools: remote, enabled: false }]),
-        (vec![Message::Server("remote".into(), ServerAction::Remove), Message::Server("git".into(), ServerAction::Remove)], vec![Event::Server { name: "git".into(), action: ServerAction::Remove }]),
+        (vec![Message::ProjectSelected(project("a")), Message::ToolToggled(bash.clone(), false)], vec![ToolsIntent::ProjectSelected("a".into()), ToolsIntent::SetToolsEnabled { project: "a".into(), tools: vec![bash], enabled: false }]),
+        (vec![Message::ServerToggled("remote".into())], vec![ToolsIntent::SetToolsEnabled { project: "a".into(), tools: remote, enabled: false }]),
+        (vec![Message::Server("remote".into(), ServerAction::Remove), Message::Server("git".into(), ServerAction::Remove)], vec![ToolsIntent::Server { name: "git".into(), action: ServerAction::Remove }]),
         (vec![Message::FormOpen(FormId::Server), edit(FormId::Server, "name", "git"), Message::TransportPicked(TransportKind::Http), edit(FormId::Server, "url", "x"), Message::FormSubmit(FormId::Server)], vec![]),
-        (vec![edit(FormId::Server, "name", "docs"), edit(FormId::Server, "url", "http://h/mcp"), Message::FormSubmit(FormId::Server)], vec![Event::AddServer(McpServerSpec { name: "docs".into(), transport: McpTransport::Http { url: "http://h/mcp".into(), headers: BTreeMap::new() } })]),
+        (vec![edit(FormId::Server, "name", "docs"), edit(FormId::Server, "url", "http://h/mcp"), Message::FormSubmit(FormId::Server)], vec![ToolsIntent::AddServer(McpServerSpec { name: "docs".into(), transport: McpTransport::Http { url: "http://h/mcp".into(), headers: BTreeMap::new() } })]),
         (vec![Message::FormOpen(FormId::Host), edit(FormId::Host, "alias", "build"), edit(FormId::Host, "hostname", "h"), Message::FormSubmit(FormId::Host), Message::FormCancel(FormId::Host)], vec![]),
         (vec![Message::EditLimits("build".into()), Message::LimitSet(Limit::Commands, true), edit(FormId::Limits, "path", "/var"), Message::LimitsAddPath, Message::LimitsRemovePath(0), Message::FormSubmit(FormId::Limits)],
-            vec![Event::SaveHostLimits { host: "build".into(), limits: HostLimits { allowed_paths: vec!["/var".into()], read_only: true, commands_allowed: true, auto_approve: false } }]),
-        (vec![Message::ImportScan, Message::ImportSubmit, Message::OpenTerminal("db".into()), Message::ShowAudit("db".into()), Message::RemoveHost("db".into())], vec![Event::ScanImports, Event::OpenTerminal("db".into()), Event::LoadAudit("db".into()), Event::RemoveHost("db".into())]),
+            vec![ToolsIntent::SaveHostLimits { host: "build".into(), limits: HostLimits { allowed_paths: vec!["/var".into()], read_only: true, commands_allowed: true, auto_approve: false } }]),
+        (vec![Message::ImportScan, Message::ImportSubmit, Message::OpenTerminal("db".into()), Message::ShowAudit("db".into()), Message::RemoveHost("db".into())], vec![ToolsIntent::ScanImports, ToolsIntent::OpenTerminal("db".into()), ToolsIntent::LoadAudit("db".into()), ToolsIntent::RemoveHost("db".into())]),
     ];
     for (messages, want) in cases { assert_eq!(send(&mut s, messages), want) }
     assert!(s.add_host.as_ref().is_none() && s.add_server.is_none());
@@ -81,7 +81,7 @@ fn messages_emit_events_and_scope_toggles() {
     assert_eq!(s.disabled_tools(), None, "project b keeps its own toggles");
     let candidate = |source, name: &str| ImportCandidate { source, path: "mcp.json".into(), server: McpServerSpec { name: name.into(), transport: McpTransport::Stdio { command: name.into(), args: vec![], env: BTreeMap::new() } } };
     s.set_import_candidates(vec![candidate(ImportSource::Claude, "git"), candidate(ImportSource::Cursor, "fetch")]);
-    assert_eq!(send(&mut s, [Message::ImportSubmit]), [Event::ImportServers(vec![candidate(ImportSource::Cursor, "fetch")])], "existing servers start deselected");
+    assert_eq!(send(&mut s, [Message::ImportSubmit]), [ToolsIntent::ImportServers(vec![candidate(ImportSource::Cursor, "fetch")])], "existing servers start deselected");
     s.set_import_outcome(ImportSource::Cursor, "fetch", ImportOutcome::Imported);
     assert_eq!(send(&mut s, [Message::ImportSubmit]), [], "imported entries aren't imported twice");
 }
@@ -119,11 +119,11 @@ fn every_section_renders_and_its_controls_click() {
     s.select_project("a");
     s.set_prompts(vec![RemotePrompt { id: 9, kind: PromptKind::Approval, title: "Run?".into(), body: "uptime".into() }]);
     s.set_builtin(BuiltinTools { harness: "omp".into(), harness_tools: (0..20).map(|i| tool(&format!("tool_{i:02}"))).collect(), app_tools: vec![], harness_note: None });
-    let steps: [(Section, &str, Option<Event>); 5] = [
+    let steps: [(Section, &str, Option<ToolsIntent>); 5] = [
         (Section::Builtin, "Show all 20", None),
-        (Section::Servers, "Start", Some(Event::Server { name: "browser".into(), action: ServerAction::Start })),
-        (Section::Servers, "Tools: on", Some(Event::SetToolsEnabled { project: "a".into(), tools: vec![ToolId::mcp("remote", "remote_bash"), ToolId::mcp("remote", "remote_file")], enabled: false })),
-        (Section::Hosts, "Allow for session", Some(Event::AnswerPrompt { id: 9, answer: PromptAnswer::AllowSession })),
+        (Section::Servers, "Start", Some(ToolsIntent::Server { name: "browser".into(), action: ServerAction::Start })),
+        (Section::Servers, "Tools: on", Some(ToolsIntent::SetToolsEnabled { project: "a".into(), tools: vec![ToolId::mcp("remote", "remote_bash"), ToolId::mcp("remote", "remote_file")], enabled: false })),
+        (Section::Hosts, "Allow for session", Some(ToolsIntent::AnswerPrompt { id: 9, answer: PromptAnswer::AllowSession })),
         (Section::Peers, "No peers", None),
     ];
     for (section, label, event) in steps {

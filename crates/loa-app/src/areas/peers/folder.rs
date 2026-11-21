@@ -5,10 +5,11 @@
 use iced::widget::{button, column, container, row, scrollable, text_editor};
 use iced::{Alignment, Element, Fill, Task};
 use loa_p2p::{FolderEntry, Node};
-use loa_ui_kit::icons::{Icon, tinted};
+use loa_ui_kit::icons::tinted;
 use loa_ui_kit::style::{self, ButtonKind, Tone};
 use loa_ui_kit::theme::{LayoutRole, SpaceRole, TextRole, sp, text_size as ts, width};
 use loa_ui_kit::widgets::{card, icon_button, label, text_button};
+use loa_view::theme::Icon;
 
 use super::{Message, State};
 use crate::area::Ctx;

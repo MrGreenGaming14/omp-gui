@@ -1,14 +1,14 @@
 //! The app frame: sidebar, top bar over a center slot, and a resizable right panel with tabs.
 
-use crate::data::NodeStatus;
-use loa_contracts::session::SessionSummary;
-use crate::theme::{self, Appearance, ThemeRef};
+use crate::theme;
+use loa_view::shell::{Intent, NodeStatus, PanelTab, SessionSummary, SidebarIntent};
+use loa_view::theme::{Appearance, Icon, ThemeRef};
 use crate::{sidebar, topbar};
 use iced::theme::Mode;
 use iced::widget::operation::{self, AbsoluteOffset, RelativeOffset};
 use iced::widget::{button, column, container, mouse_area, row, rule, scrollable, sensor};
 use iced::{Alignment, Element, Fill, Length, Size, Subscription, Task, Theme, mouse};
-use loa_ui_kit::icons::{Icon, tinted};
+use loa_ui_kit::icons::tinted;
 use loa_ui_kit::style::{self, ButtonKind, Surface, Tone};
 use loa_ui_kit::theme::{SpaceRole as Sp, TextRole as T, pad_x, sp};
 use loa_ui_kit::widgets::{Tab, icon_button, label, splitter_edge, splitter_width, tab_strip};
@@ -28,14 +28,6 @@ const WHEEL_LINE: f32 = 40.0;
 /// A pane that can fill the window, or whose edge is dragged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pane { Sidebar, Center, Panel }
-
-/// One tab of the right panel; the app draws the body of the active one by `id`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PanelTab { pub id: String, pub title: String, pub icon: Option<Icon> }
-
-impl PanelTab {
-    pub fn new(id: impl Into<String>, title: impl Into<String>, icon: Option<Icon>) -> Self { Self { id: id.into(), title: title.into(), icon } }
-}
 
 #[derive(Debug, Clone)]
 pub struct State {
@@ -59,8 +51,8 @@ pub struct State {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Message {
-    /// Pass this event on as is.
-    Emit(Event),
+    /// Pass this intent on as is.
+    Emit(Intent),
     Sidebar(sidebar::Message),
     SelectTab(String),
     TabsWheel(&'static str, mouse::ScrollDelta),
@@ -73,21 +65,6 @@ pub enum Message {
     FrameSized(Size),
     SetTheme(ThemeRef),
     SystemTheme(Mode),
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum Event {
-    /// Navigation from the sidebar, the top bar crumb or the project tabs.
-    Sidebar(sidebar::Event),
-    /// Drop this project's tab; its sessions stay open.
-    CloseProjectTab(String),
-    DetachTab(String),
-    ShowDetached(String),
-    ReattachTab(String),
-    /// The user picked a theme; persist it.
-    SetTheme(ThemeRef),
-    /// The active tokens changed to this generation; rebuild cached looks.
-    ThemeChanged(u64),
 }
 
 impl State {
@@ -103,8 +80,8 @@ impl State {
     pub fn theme(&self) -> Theme { self.theme.theme() }
     pub fn theme_state(&self) -> &theme::State { &self.theme }
     /// Replaces the appearance (theme and overrides), e.g. after the config changed.
-    pub fn set_appearance(&mut self, appearance: Appearance) -> Option<Event> {
-        (self.theme.appearance() != &appearance).then(|| Event::ThemeChanged(self.theme.set_appearance(appearance)))
+    pub fn set_appearance(&mut self, appearance: Appearance) -> Option<Intent> {
+        (self.theme.appearance() != &appearance).then(|| Intent::ThemeChanged(self.theme.set_appearance(appearance)))
     }
     pub fn sidebar(&self) -> &sidebar::State { &self.sidebar }
     pub fn sidebar_mut(&mut self) -> &mut sidebar::State { &mut self.sidebar }
@@ -163,22 +140,22 @@ impl State {
         self.frame.map_or(f32::INFINITY, |f| (f.width - self.sidebar_width - MIN_CENTER_WIDTH - 2.0 * splitter_width()).max(MIN_PANEL_WIDTH))
     }
 
-    pub fn update(&mut self, message: Message) -> (Task<Message>, Option<Event>) {
+    pub fn update(&mut self, message: Message) -> (Task<Message>, Option<Intent>) {
         match message {
             Message::Sidebar(m) => {
                 let (task, event) = self.sidebar.update(m);
-                return (task.map(Message::Sidebar), event.map(Event::Sidebar));
+                return (task.map(Message::Sidebar), event.map(Intent::Sidebar));
             }
             Message::TabsWheel(id, delta) => return (wheel_tabs(id, delta), None),
             Message::Emit(event) => return (Task::none(), Some(event)),
             Message::SetTheme(theme) => {
                 self.theme.set_preference(theme.clone());
-                return (Task::none(), Some(Event::SetTheme(theme)));
+                return (Task::none(), Some(Intent::SetTheme(theme)));
             }
             Message::SystemTheme(mode) => {
                 let before = self.theme.variant();
                 let generation = self.theme.set_system_mode(mode);
-                return (Task::none(), (self.theme.variant() != before).then_some(Event::ThemeChanged(generation)));
+                return (Task::none(), (self.theme.variant() != before).then_some(Intent::ThemeChanged(generation)));
             }
             Message::SelectTab(id) => if self.tabs.iter().any(|t| t.id == id) { self.active = Some(id) },
             Message::DragStart(pane) => self.dragging = (pane != Pane::Panel || self.panel_open).then_some(pane),
@@ -225,7 +202,7 @@ impl State {
     fn project_tabs_view(&self) -> Element<'_, Message> {
         let active = self.sidebar.active_project.as_deref();
         let tabs = tab_strip(self.open_projects.iter().map(|p| {
-            let close = button(tinted(Icon::X, T::Caption, Tone::Muted)).on_press(Message::Emit(Event::CloseProjectTab(p.clone()))).style(style::button(ButtonKind::Ghost)).padding(sp(Sp::Xs) / 2.0);
+            let close = button(tinted(Icon::X, T::Caption, Tone::Muted)).on_press(Message::Emit(Intent::CloseProjectTab(p.clone()))).style(style::button(ButtonKind::Ghost)).padding(sp(Sp::Xs) / 2.0);
             Tab { label: p.as_str(), icon: None, active: active == Some(p.as_str()), on: open_project(p), id: None, trailing: Some(close.into()) }
         }));
         container(scrolling_strip(PROJECT_TABS_ID, tabs)).style(style::container(Surface::Side)).padding(pad_x(Sp::S)).center_y(PROJECT_TABS_HEIGHT).width(Fill).into()
@@ -239,14 +216,14 @@ impl State {
         }));
         let is_full = self.full == Some(Pane::Panel);
         let full = icon_button(if is_full { Icon::Minimize } else { Icon::Maximize }, if is_full { "Restore panel" } else { "Fill window" }, Some(Message::ToggleFull(Pane::Panel)));
-        let detach = active.filter(|id| !self.is_detached(id)).map(|id| container(icon_button(Icon::ExternalLink, "Open in a window", Some(Message::Emit(Event::DetachTab(id.to_owned()))))).id(PANEL_DETACH_ID));
+        let detach = active.filter(|id| !self.is_detached(id)).map(|id| container(icon_button(Icon::ExternalLink, "Open in a window", Some(Message::Emit(Intent::DetachTab(id.to_owned()))))).id(PANEL_DETACH_ID));
         let controls = row![scrolling_strip(PANEL_TABS_ID, tabs), detach, full].spacing(sp(Sp::Xs)).align_y(Alignment::Center);
         let tab_bar = Element::from(container(controls).style(style::container(Surface::Side)).padding(pad_x(Sp::S)).center_y(topbar::HEIGHT).width(Fill)).map(map);
         let body = match active {
             Some(id) if self.is_detached(id) => {
                 let title = self.tabs.iter().find(|t| t.id == id).map_or(id, |t| t.title.as_str());
                 let action = |s, kind, on| button(label(s, T::Label, Tone::Normal)).on_press(Message::Emit(on)).style(style::button(kind)).padding([sp(Sp::Xs) * 1.5, sp(Sp::M)]);
-                let actions = row![action("Show window", ButtonKind::Secondary, Event::ShowDetached(id.to_owned())), action("Reattach here", ButtonKind::Primary, Event::ReattachTab(id.to_owned()))];
+                let actions = row![action("Show window", ButtonKind::Secondary, Intent::ShowDetached(id.to_owned())), action("Reattach here", ButtonKind::Primary, Intent::ReattachTab(id.to_owned()))];
                 let note = column![tinted(Icon::ExternalLink, T::Title, Tone::Muted), label(format!("{title} is in its own window"), T::Body, Tone::Normal), actions.spacing(sp(Sp::S))];
                 Element::from(container(note.spacing(sp(Sp::M)).align_x(Alignment::Center)).center(Fill)).map(map)
             }
@@ -258,7 +235,7 @@ impl State {
     }
 }
 
-pub(crate) fn open_project(project: &str) -> Message { Message::Emit(Event::Sidebar(sidebar::Event::OpenProject(project.to_owned()))) }
+pub(crate) fn open_project(project: &str) -> Message { Message::Emit(Intent::Sidebar(SidebarIntent::OpenProject(project.to_owned()))) }
 
 /// A tab strip that scrolls sideways under the wheel, with a thin scrollbar below the tabs so it never covers one.
 fn scrolling_strip<'a>(id: &'static str, tabs: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
@@ -279,7 +256,7 @@ fn wheel_tabs(id: &'static str, delta: mouse::ScrollDelta) -> Task<Message> {
 mod tests {
     use super::*;
 
-    fn send(state: &mut State, messages: impl IntoIterator<Item = Message>) -> Vec<Event> { messages.into_iter().filter_map(|m| state.update(m).1).collect() }
+    fn send(state: &mut State, messages: impl IntoIterator<Item = Message>) -> Vec<Intent> { messages.into_iter().filter_map(|m| state.update(m).1).collect() }
 
     #[test]
     fn panes_resize_within_bounds_go_full_and_follow_the_theme() {
@@ -297,10 +274,10 @@ mod tests {
         send(&mut state, [Message::ToggleFull(Pane::Panel), Message::TogglePanel]);
         assert_eq!(state.full(), None, "closing the panel leaves its full screen");
         let events = send(&mut state, [Message::SystemTheme(Mode::Light), Message::SetTheme(ThemeRef("dark".into())), Message::SetTheme(ThemeRef("nope".into()))]);
-        assert!(matches!(events[..], [Event::ThemeChanged(_), Event::SetTheme(_), Event::SetTheme(_)]));
+        assert!(matches!(events[..], [Intent::ThemeChanged(_), Intent::SetTheme(_), Intent::SetTheme(_)]));
         assert_eq!((state.theme_state().variant(), state.theme_state().errors().len()), (theme::Variant::Light, 1), "unknown themes fall back to the system");
         let dark = Appearance { theme: ThemeRef("dark".into()), ..Appearance::default() };
-        assert!(matches!(state.set_appearance(dark.clone()), Some(Event::ThemeChanged(_))) && state.set_appearance(dark).is_none(), "a config change re-applies the appearance once");
+        assert!(matches!(state.set_appearance(dark.clone()), Some(Intent::ThemeChanged(_))) && state.set_appearance(dark).is_none(), "a config change re-applies the appearance once");
     }
 
     #[test]
@@ -308,7 +285,7 @@ mod tests {
         let (mut state, _) = State::new(Appearance::default());
         state.sidebar.set_nodes(vec![NodeStatus { key: "k-box".into(), name: "buildbox".into(), online: true, local: false }]);
         state.sidebar.set_sessions([SessionSummary { id: "s1".into(), title: "Ship it".into(), project: Some("loa".into()), node: "k-box".into(), pinned: false, waiting: true, updated: 1 }]);
-        assert_eq!(send(&mut state, [Message::Sidebar(sidebar::Message::OpenSession("s1".into()))]), [Event::Sidebar(sidebar::Event::OpenSession("s1".into()))]);
+        assert_eq!(send(&mut state, [Message::Sidebar(sidebar::Message::OpenSession("s1".into()))]), [Intent::Sidebar(SidebarIntent::OpenSession("s1".into()))]);
         let (crumb, node) = state.breadcrumb().unwrap();
         assert_eq!((crumb.title.as_str(), node.name.as_str(), crumb.waiting), ("Ship it", "buildbox", true));
         let view = state.view(iced::widget::space(), |_| iced::widget::space().into(), None, |m| m);

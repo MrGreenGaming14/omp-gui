@@ -1,44 +1,13 @@
-//! Live video (feature `remote-video`): the in-process H.264 [`FrameDecoder`] and the
-//! launcher's "Live video" section.
+//! Live video (feature `remote-video`): the launcher's "Live video" section.
 
-use crate::decode::{DecodeError, FrameDecoder, encoding_name};
-use crate::framebuffer::Framebuffer;
+use crate::decode::encoding_name;
 use crate::panel::{Message, launcher::section};
 use crate::theme::{self, SurfaceKindStyle};
 use iced::widget::{column, row, space};
 use iced::{Center, Element};
-use loa_contracts::surface::{Encoding, Frame, StreamInfo};
-use loa_ui_kit::Icon;
 use loa_ui_kit::theme::{SpaceRole as Sp, sp};
-
-/// Decodes H.264 streams (Constrained Baseline, what the live video encoders send).
-#[derive(Default)]
-pub struct H264Decoder(loa_surfaces::proto::video::decode::VideoDecoder);
-
-impl FrameDecoder for H264Decoder {
-    fn accepts(&self) -> &[Encoding] {
-        &[Encoding::H264]
-    }
-
-    fn apply(&mut self, frame: &Frame, fb: &mut Framebuffer) -> Result<bool, DecodeError> {
-        self.0.decode(frame, fb.pixels_mut()).map_err(|e| DecodeError::Video(e.to_string()))
-    }
-
-    fn reset(&mut self) {
-        self.0.reset();
-    }
-}
-
-/// Live video encoding for viewers across the network, as the launcher shows it. Tabs in this
-/// app always get the source frames.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct VideoStatus {
-    pub enabled: bool,
-    /// What network viewers get; `None` while the machine's encoders are tried.
-    pub encoder: Option<StreamInfo>,
-    /// Hardware encoders that work here, e.g. `h264_vaapi`.
-    pub hardware: Vec<String>,
-}
+use loa_view::surface::VideoStatus;
+use loa_view::theme::Icon;
 
 /// The launcher section: the on/off toggle and the encoder in use.
 pub(crate) fn live_video_section(video: &VideoStatus) -> Element<'_, Message> {

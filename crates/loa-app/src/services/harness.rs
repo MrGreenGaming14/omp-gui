@@ -8,8 +8,8 @@ use std::sync::Arc;
 use loa_contracts::harness::{Adapter, HarnessFactory};
 use loa_harness::{HarnessEnv, factories};
 use loa_runtime::harnesses::{Harness, Harnesses};
-use loa_ui_session::composer::HarnessOption;
 use loa_util::exec::which as find_executable;
+use loa_view::session::composer::HarnessOption;
 
 /// Picker note while a harness's probe hasn't answered.
 pub const CHECKING: &str = "checking…";

@@ -7,6 +7,7 @@ pub mod app;
 pub mod area;
 pub mod areas;
 pub mod services;
+pub mod view;
 pub mod watch;
 
 #[cfg(test)]

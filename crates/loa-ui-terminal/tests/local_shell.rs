@@ -1,7 +1,8 @@
 //! A real `/bin/sh` on a local PTY: cwd, input, resize, exit status, and the cwd check.
 
 use bytes::Bytes;
-use loa_ui_terminal::{ChannelRead, Error, GridSize, LocalPtyBackend, LocalShell, PtyBackend, Target};
+use loa_ui_terminal::{LocalPtyBackend, LocalShell, PtyBackend, Target};
+use loa_view::terminal::port::{ChannelRead, Error, GridSize};
 use std::time::Duration;
 
 #[tokio::test]

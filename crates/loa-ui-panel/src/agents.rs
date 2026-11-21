@@ -6,7 +6,9 @@ use iced::widget::{Column, container, row, scrollable, space, text};
 use iced::{Center, Element, Fill, Font, Task};
 use loa_core::schema::TEXT;
 use loa_core::{CallStatus, Dom, ElementKind, JobKind, JobStatus, Node, NodeId, Op, Patch, attr};
-use loa_ui_kit::icons::{Icon, icon};
+use loa_ui_kit::icons::icon;
+use loa_view::panel::AgentsIntent;
+use loa_view::theme::Icon;
 use loa_ui_kit::style::{self as kit, Tone};
 use loa_ui_kit::text::format_duration;
 use loa_ui_kit::theme::{ColorRole as C, SpaceRole as Sp, TextRole as T, sp, text_size as ts};
@@ -57,9 +59,6 @@ pub struct State { jobs: BTreeMap<NodeId, Job>, waits: HashSet<NodeId>, now: Opt
 /// `Tick` carries unix ms; `Toggle` shows or hides a job's output; `Detach` opens a subagent's session in a window.
 #[derive(Debug, Clone)]
 pub enum Message { Tick(i64), Toggle(NodeId), Open(NodeId), Detach(NodeId), Cancel(NodeId) }
-/// `Cancel` stops a running job; `id` is the harness's job id when known.
-#[derive(Debug, Clone, PartialEq)]
-pub enum Event { OpenSession(String), DetachSession(String), Cancel { node: NodeId, id: Option<String> } }
 
 impl State {
     pub fn from_dom(dom: &Dom) -> Self {
@@ -96,12 +95,12 @@ impl State {
     fn refresh_wait(&mut self, node: &Node) {
         if is_active_wait(node) { self.waits.insert(node.id); } else { self.waits.remove(&node.id); }
     }
-    pub fn update(&mut self, message: Message) -> (Task<Message>, Option<Event>) {
+    pub fn update(&mut self, message: Message) -> (Task<Message>, Option<AgentsIntent>) {
         let session = |n: NodeId| self.jobs.get(&n).and_then(Job::session).map(str::to_owned);
         let event = match message {
-            Message::Open(n) => session(n).map(Event::OpenSession),
-            Message::Detach(n) => session(n).map(Event::DetachSession),
-            Message::Cancel(n) => self.jobs.get(&n).filter(|j| j.running()).map(|j| Event::Cancel { node: n, id: j.attrs[0].clone() }),
+            Message::Open(n) => session(n).map(AgentsIntent::OpenSession),
+            Message::Detach(n) => session(n).map(AgentsIntent::DetachSession),
+            Message::Cancel(n) => self.jobs.get(&n).filter(|j| j.running()).map(|j| AgentsIntent::Cancel { node: n, id: j.attrs[0].clone() }),
             Message::Tick(now) => { self.now = Some(now); None }
             Message::Toggle(n) => { self.jobs.entry(n).and_modify(|j| j.expanded = !j.expanded); None }
         };
@@ -184,7 +183,7 @@ mod tests {
         let _ = state.update(Message::Tick(66_000));
         let wait = commit(&mut dom, &mut state, Draft::insert(turn, ElementKind::Call, [(attr::TOOL, Value::from(WAIT_TOOL)), (attr::STATUS, "pending".into())], ""));
         assert_eq!((state.job(a).unwrap().label(), state.elapsed_ms(a), state.is_awaited(a)), ("cargo build", Some(65_000), true));
-        assert_eq!(state.update(Message::Cancel(a)).1, Some(Event::Cancel { node: a, id: None }));
+        assert_eq!(state.update(Message::Cancel(a)).1, Some(AgentsIntent::Cancel { node: a, id: None }));
         commit(&mut dom, &mut state, Draft::set(wait, attr::STATUS, CallStatus::Done));
         commit(&mut dom, &mut state, Draft::set(a, attr::STATUS, JobStatus::Done));
         assert_eq!((state.waiting(), state.update(Message::Cancel(a)).1, state.update(Message::Open(a)).1), (false, None, None));

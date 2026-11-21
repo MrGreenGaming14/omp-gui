@@ -1,5 +1,5 @@
 use super::*;
-use crate::{Error, emulator::ViewportCell};
+use crate::{Error, QueueReader, emulator::ViewportCell};
 use alacritty_terminal::{index::Side, selection::SelectionType};
 use futures::StreamExt;
 use iced::keyboard::{Key, Modifiers};
@@ -65,17 +65,19 @@ impl RemotePty for Host {
     async fn open_pty(&self, host: &str, _: GridSize) -> Result<PtyChannel> { self.0.locked().take().ok_or_else(|| Error::Remote { host: host.into(), message: "refused".into() }) }
 }
 
+/// The writer side the test reads back: `Some` bytes, `None` on close.
+struct Sent(mpsc::UnboundedSender<Option<Bytes>>);
 #[async_trait::async_trait]
-impl ChannelWriter for mpsc::UnboundedSender<Option<Bytes>> {
-    async fn write(&mut self, b: Bytes) -> Result<()> { self.send(Some(b)).map_err(|_| Error::Closed) }
+impl ChannelWriter for Sent {
+    async fn write(&mut self, b: Bytes) -> Result<()> { self.0.send(Some(b)).map_err(|_| Error::Closed) }
     async fn resize(&mut self, _: GridSize) -> Result<()> { Ok(()) }
-    async fn close(&mut self) -> Result<()> { self.send(None).map_err(|_| Error::Closed) }
+    async fn close(&mut self) -> Result<()> { self.0.send(None).map_err(|_| Error::Closed) }
 }
 
 #[tokio::test]
 async fn remote_channel_streams_both_ways_until_the_program_ends() {
     let ((out, reader), (writer, mut sent)) = (tokio::sync::mpsc::channel(4), mpsc::unbounded_channel());
-    let mut s = state().with_remote(Arc::new(Host(Mutex::new(Some(PtyChannel { reader: Box::new(reader), writer: Box::new(writer) })))));
+    let mut s = state().with_remote(Arc::new(Host(Mutex::new(Some(PtyChannel { reader: Box::new(QueueReader(reader)), writer: Box::new(Sent(writer)) })))));
     let ((first, open), (down, refused)) = (s.open(remote("box")), s.open(remote("down")));
     let _ = s.update(key("l", Modifiers::empty()));
     out.send(Ok(ChannelRead::Data(Bytes::from_static(b"\x1b[6n")))).await.unwrap();

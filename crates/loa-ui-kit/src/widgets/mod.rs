@@ -9,11 +9,12 @@ pub use form::{Field, Form, FormSpec, FormState, Picker, PickerItem, PickerMsg, 
 pub use popover::{Popover, popover};
 pub use virtual_list::{Heights, scroll_target};
 
-use crate::icons::{Icon, tinted};
+use crate::icons::tinted;
 use crate::style::{self, ButtonKind, Surface, Tone};
 use crate::theme::{ColorRole, LayoutRole, RadiusRole, SpaceRole, TextRole, sp, text_size as size, tokens};
 use iced::widget::{Space, button, column, container, mouse_area, row, rule, text, tooltip};
 use iced::{Alignment, Element, Fill, FillPortion, Padding, Subscription, Task, mouse};
+use loa_view::theme::Icon;
 
 /// A screen or pane: local state with messages in and events out.
 pub trait Component {

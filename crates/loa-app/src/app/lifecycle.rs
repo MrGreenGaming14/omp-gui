@@ -12,8 +12,8 @@ use loa_contracts::harness::{HostToolRouter, Prompt, SessionConfig};
 use loa_core::{Dom, ElementKind, Op, TurnStatus, attr};
 use loa_runtime::lifecycle::{ACCESS, ACCESS_DEFAULT, Command, Completion, Effect, RuntimeEvent, Transition, session_cwd};
 use loa_runtime::session::{Feed, SessionEvent, dom_turns};
-use loa_ui_session::composer;
 use loa_ui_session::transcript as chat;
+use loa_view::session::composer::AccessOption;
 
 use super::Message as AppMessage;
 use crate::area::{Ctx, Target};
@@ -204,7 +204,7 @@ impl SessionController {
         let options: Vec<_> = ACCESS
             .iter()
             .filter(|(id, _, _)| modes.contains(id))
-            .map(|(id, label, detail)| composer::AccessOption { id: (*id).to_owned(), label: (*label).to_owned(), detail: (*detail).to_owned() })
+            .map(|(id, label, detail)| AccessOption { id: (*id).to_owned(), label: (*label).to_owned(), detail: (*detail).to_owned() })
             .collect();
         let current = (!options.is_empty()).then(|| ctx.runtime.access().unwrap_or(ACCESS_DEFAULT).to_owned());
         ctx.composer.set_access(options, current.as_deref());

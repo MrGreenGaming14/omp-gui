@@ -1,6 +1,7 @@
 //! Local programs on a PTY as a [`PtyChannel`]: a thread reads output chunks, then reaps the child and reports its exit status.
 
-use crate::{ChannelRead, ChannelWriter, Error, GridSize, PtyChannel, Result};
+use crate::QueueReader;
+use loa_view::terminal::port::{ChannelRead, ChannelWriter, Error, GridSize, PtyChannel, Result};
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use loa_util::LockExt;
@@ -47,7 +48,7 @@ pub fn spawn(shell: &LocalShell, size: GridSize) -> Result<PtyChannel> {
         let _ = tx.blocking_send(Ok(ChannelRead::Closed { exit_code }));
     };
     std::thread::Builder::new().name("loa-pty".into()).spawn(read).inspect_err(|_| drop(killer.kill()))?;
-    Ok(PtyChannel { reader: Box::new(rx), writer: Box::new(LocalWriter { writer: Arc::new(Mutex::new(writer)), master: pair.master, killer: Some(killer) }) })
+    Ok(PtyChannel { reader: Box::new(QueueReader(rx)), writer: Box::new(LocalWriter { writer: Arc::new(Mutex::new(writer)), master: pair.master, killer: Some(killer) }) })
 }
 
 fn read_loop(mut reader: Box<dyn Read + Send>, tx: &mpsc::Sender<Result<ChannelRead>>) {

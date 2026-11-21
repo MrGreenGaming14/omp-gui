@@ -1,82 +1,45 @@
 //! The Surfaces tab: the open surfaces as tabs, each drawn by its [`State`], and a launcher that
 //! opens a browser, a document, a VM over RFB, or a surface an MCP server declares. The tab
-//! opens nothing itself: it emits [`Event`]s, and the app hands opened surfaces back with
+//! opens nothing itself: it emits [`Intent`]s, and the app hands opened surfaces back with
 //! [`Panel::attach`].
 
 pub(crate) mod launcher;
 
-use crate::decode::FrameDecoder;
 use crate::picker::{self, FilePicker};
 use crate::tab::{self, Clock, MonotonicClock, State};
 use crate::theme::SurfaceKindStyle;
-#[cfg(feature = "remote-video")]
-pub use crate::video::VideoStatus;
 use iced::widget::{button, column, container, row, rule, scrollable};
 use iced::{Center, Element, Fill, Task};
-use loa_contracts::surface::{Surface, SurfaceInfo, SurfaceUri};
-use loa_surfaces::docs::Fonts;
-use loa_ui_kit::icons::{Icon, tinted};
+use loa_ui_kit::icons::tinted;
 use loa_ui_kit::style::{self, ButtonKind, Tone};
 use loa_ui_kit::text::truncate_trailing;
 use loa_ui_kit::theme::{SpaceRole as Sp, TextRole, sp};
 use loa_ui_kit::widgets::{Tab, tab_strip};
+use loa_view::surface::port::{Decoders, DocumentRenderer};
+#[cfg(feature = "remote-video")]
+use loa_view::surface::VideoStatus;
+use loa_view::surface::{AvailableSurface, BrowserStatus, Capture, CaptureStatus, Intent, Surface, SurfaceInfo, SurfaceUri};
+use loa_view::theme::Icon;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 /// Characters of a surface name shown on its tab.
 const TAB_LABEL_CHARS: usize = 18;
 
-/// Whether browser surfaces can be opened, as the launcher says it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum BrowserStatus {
-    /// The browser executable, and whether Chrome's sandbox is on.
-    Ready { executable: PathBuf, sandboxed: bool },
-    Missing,
-}
-
-/// Makes the extra decoder (e.g. H.264) of each new pixel tab, tried before the stills.
-pub type NewDecoder = Arc<dyn Fn() -> Box<dyn FrameDecoder> + Send + Sync>;
-
-/// How browser frames are captured.
-pub use loa_surfaces::CaptureMode as Capture;
-
-/// The browser capture choice, as the launcher shows it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CaptureStatus {
-    pub selected: Capture,
-    /// Why the virtual display can't run here; `None` when it can.
-    pub virtual_display_missing: Option<String>,
-    /// The running browser keeps the other capture until its tabs close.
-    pub pending: bool,
-}
-
-impl Default for CaptureStatus {
-    fn default() -> Self {
-        Self { selected: Capture::Screencast, virtual_display_missing: Some("not checked".into()), pending: false }
-    }
-}
-
-/// A surface that can be opened: a configured VM endpoint, or one an MCP server declares.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Available {
-    pub info: SurfaceInfo,
-    /// The server declaring it, e.g. `vm` or the MCP server's name.
-    pub server: String,
-}
-
 /// What the tabs of new surfaces get.
 #[derive(Clone)]
 pub struct Options {
     pub clock: Arc<dyn Clock>,
-    /// Fonts of rendered PDF and Office pages.
-    pub fonts: Fonts,
-    /// An extra decoder for pixel tabs; without one they ask video surfaces for stills.
-    pub decoder: Option<NewDecoder>,
+    /// The decoders of each pixel tab.
+    pub decoders: Decoders,
+    /// Opens and renders the files of document tabs; its extensions are what the picker lists.
+    pub documents: Arc<dyn DocumentRenderer>,
 }
 
-impl Default for Options {
-    fn default() -> Self {
-        Self { clock: Arc::new(MonotonicClock::default()), fonts: Fonts::none(), decoder: None }
+impl Options {
+    /// Options on the monotonic system clock.
+    pub fn new(decoders: Decoders, documents: Arc<dyn DocumentRenderer>) -> Self {
+        Self { clock: Arc::new(MonotonicClock::default()), decoders, documents }
     }
 }
 
@@ -109,31 +72,12 @@ pub enum Message {
     Capture(Capture),
 }
 
-/// What the app must do.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Event {
-    OpenBrowser(String),
-    OpenDocument(PathBuf),
-    OpenVm { address: String, password: Option<String> },
-    /// Open a listed surface.
-    Open(SurfaceUri),
-    /// The user closed the tab of an open surface.
-    Close(SurfaceUri),
-    /// What an open surface's tab asks of the app.
-    Surface(tab::Event),
-    /// The user turned live video encoding on or off.
-    #[cfg(feature = "remote-video")]
-    SetVideo(bool),
-    /// The user picked how browser frames are captured.
-    SetCapture(Capture),
-}
-
 pub struct Panel {
     options: Options,
     tabs: Vec<OpenTab>,
     /// `None` shows the launcher.
     active: Option<SurfaceUri>,
-    available: Vec<Available>,
+    available: Vec<AvailableSurface>,
     browser: BrowserStatus,
     url: String,
     address: String,
@@ -150,6 +94,7 @@ pub struct Panel {
 impl Panel {
     /// `documents_dir` is where the file picker starts.
     pub fn new(options: Options, browser: BrowserStatus, documents_dir: impl Into<PathBuf>) -> Self {
+        let picker = FilePicker::new(documents_dir, options.documents.extensions());
         Self {
             options,
             tabs: Vec::new(),
@@ -159,7 +104,7 @@ impl Panel {
             url: String::new(),
             address: String::new(),
             password: String::new(),
-            picker: FilePicker::new(documents_dir),
+            picker,
             pending: None,
             error: None,
             #[cfg(feature = "remote-video")]
@@ -168,59 +113,59 @@ impl Panel {
         }
     }
 
-    pub fn update(&mut self, message: Message) -> (Task<Message>, Option<Event>) {
+    pub fn update(&mut self, message: Message) -> (Task<Message>, Option<Intent>) {
         let event = match message {
             Message::Surface(uri, message) => {
                 let Some(index) = self.index(&uri) else { return (Task::none(), None) };
                 let (task, event) = self.tabs[index].state.update(message);
-                return (task.map(move |m| Message::Surface(uri.clone(), m)), event.map(Event::Surface));
+                return (task.map(move |m| Message::Surface(uri.clone(), m)), event);
             }
             Message::Select(uri) if self.index(&uri).is_some() => set(&mut self.active, Some(uri)),
             Message::Select(_) => None,
             Message::Launcher => set(&mut self.active, None),
             Message::Close(uri) => {
                 self.detach(&uri);
-                Some(Event::Close(uri))
+                Some(Intent::Close(uri))
             }
             Message::Url(url) => set(&mut self.url, url),
             Message::OpenUrl => {
                 let url = self.url.trim().to_owned();
                 let ready = !url.is_empty() && self.browser != BrowserStatus::Missing;
-                ready.then(|| self.start(format!("Opening {url}"), Event::OpenBrowser(url)))
+                ready.then(|| self.start(format!("Opening {url}"), Intent::OpenBrowser(url)))
             }
-            Message::Picker(message) => self.picker.update(message).map(|path| self.start(format!("Opening {}", path.display()), Event::OpenDocument(path))),
+            Message::Picker(message) => self.picker.update(message).map(|path| self.start(format!("Opening {}", path.display()), Intent::OpenDocument(path))),
             Message::Address(address) => set(&mut self.address, address),
             Message::Password(password) => set(&mut self.password, password),
             Message::Connect => {
                 let address = self.address.trim().to_owned();
                 (!address.is_empty()).then(|| {
                     let password = Some(std::mem::take(&mut self.password)).filter(|p| !p.is_empty());
-                    self.start(format!("Connecting to {address}"), Event::OpenVm { address, password })
+                    self.start(format!("Connecting to {address}"), Intent::OpenVm { address, password })
                 })
             }
             Message::OpenAvailable(uri) if self.index(&uri).is_some() => set(&mut self.active, Some(uri)),
-            Message::OpenAvailable(uri) => Some(self.start(format!("Opening {uri}"), Event::Open(uri))),
+            Message::OpenAvailable(uri) => Some(self.start(format!("Opening {uri}"), Intent::Open(uri))),
             #[cfg(feature = "remote-video")]
             Message::Video(enabled) => (enabled != self.video.enabled).then(|| {
                 self.video.enabled = enabled;
-                Event::SetVideo(enabled)
+                Intent::SetVideo(enabled)
             }),
             Message::Capture(capture) => {
                 let blocked = capture == Capture::VirtualDisplay && self.capture.virtual_display_missing.is_some();
                 (capture != self.capture.selected && !blocked).then(|| {
                     self.capture.selected = capture;
-                    Event::SetCapture(capture)
+                    Intent::SetCapture(capture)
                 })
             }
         };
         (Task::none(), event)
     }
 
-    /// Shows `what` as pending and passes `event` on.
-    fn start(&mut self, what: String, event: Event) -> Event {
+    /// Shows `what` as pending and passes `intent` on.
+    fn start(&mut self, what: String, intent: Intent) -> Intent {
         self.pending = Some(what);
         self.error = None;
-        event
+        intent
     }
 
     fn index(&self, uri: &SurfaceUri) -> Option<usize> {
@@ -257,7 +202,7 @@ impl Panel {
         self.active = None;
     }
 
-    pub fn set_available(&mut self, available: Vec<Available>) {
+    pub fn set_available(&mut self, available: Vec<AvailableSurface>) {
         self.available = available;
     }
 
@@ -307,7 +252,7 @@ impl Panel {
     }
 
     /// Surfaces the launcher lists for opening.
-    pub fn available(&self) -> &[Available] {
+    pub fn available(&self) -> &[AvailableSurface] {
         &self.available
     }
 
@@ -345,7 +290,7 @@ impl Panel {
 }
 
 /// Sets a launcher field; nothing for the app to do.
-fn set<T>(field: &mut T, value: T) -> Option<Event> {
+fn set<T>(field: &mut T, value: T) -> Option<Intent> {
     *field = value;
     None
 }
