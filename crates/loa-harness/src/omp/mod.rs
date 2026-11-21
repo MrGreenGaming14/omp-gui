@@ -9,7 +9,7 @@ mod session;
 
 pub use launch::{MemoryMode, OmpAdapterConfig};
 pub use native::OmpNative;
-pub use session::{OmpAdapter, OmpSession};
+pub use session::OmpAdapter;
 
 /// Harness id written to `<session harness>` and `<ext harness>`.
 pub const HARNESS: &str = "omp";

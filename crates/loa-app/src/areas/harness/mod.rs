@@ -16,7 +16,7 @@ use loa_ui_shell::palette;
 use loa_ui_shell::theme::style;
 
 use crate::area::{Area, AreaId, Ctx, PanelTab, Request, SessionEvent};
-use crate::services::{Harness, OPENCODE_URL};
+use crate::services::Harness;
 
 #[cfg(test)]
 pub(crate) mod tests;
@@ -252,14 +252,14 @@ impl State {
         if let Some(version) = version {
             body = body.push(text(format!("Version {version}")).size(panel_style::TEXT_SIZE).style(panel_style::muted));
         }
-        if id == loa_adapter_opencode::mapper::HARNESS {
-            body = body.push(text(format!("Server {OPENCODE_URL}")).size(panel_style::TEXT_SIZE).style(panel_style::muted));
+        if harness.traits.server_url {
+            body = body.push(text(format!("Server {}", harness.program)).size(panel_style::TEXT_SIZE).style(panel_style::muted));
         } else {
             if let Some(executable) = &harness.executable {
                 body = body.push(text(executable.display().to_string()).size(panel_style::TEXT_SIZE).font(Font::MONOSPACE).style(panel_style::muted));
             }
             let draft = self.drafts.get(id).map_or("", String::as_str);
-            let field = text_input(default_program(id), draft)
+            let field = text_input(harness.program, draft)
                 .size(panel_style::TEXT_SIZE)
                 .padding([4, 8])
                 .style(style::input)
@@ -297,16 +297,6 @@ fn status_icon<'a>(status: Option<AvailabilityStatus>) -> Element<'a, Message> {
         Some(_) => (Icon::TriangleAlert, |theme| theme.extended_palette().danger.base.color),
     };
     loa_ui_kit::icons::icon(icon, 14.0).style(move |theme: &Theme, _| svg::Style { color: Some(color(theme)) }).into()
-}
-
-/// The executable field's placeholder: what runs when it is empty.
-fn default_program(id: &str) -> &'static str {
-    match id {
-        loa_harness::claude::HARNESS => "claude (from PATH)",
-        loa_harness::codex::HARNESS => "codex (from PATH)",
-        loa_harness::acp::HARNESS => "ACP agent (opencode or gemini from PATH)",
-        _ => "omp (from PATH)",
-    }
 }
 
 impl Area for State {

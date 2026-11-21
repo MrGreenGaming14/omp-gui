@@ -11,7 +11,7 @@ loa-core.workspace = true
 loa-config = { path = "../loa-config" }
 loa-bus = { path = "../loa-bus" }
 loa-trust = { path = "../loa-trust" }
-loa-features = { path = "../loa-features" }
+loa-harness.workspace = true
 iroh = { version = "1.5", default-features = false, features = ["tls-ring"] }
 tokio.workspace = true
 async-trait.workspace = true

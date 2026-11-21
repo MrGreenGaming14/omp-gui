@@ -395,7 +395,7 @@ impl Mapper {
                     self.close(w, id, status)?;
                 }
             }
-            AssistantEvent::Start | AssistantEvent::ImageEnd { .. } | AssistantEvent::Other => {}
+            AssistantEvent::Other => {}
         }
         Ok(())
     }

@@ -1,0 +1,16 @@
+# Tool calls with inputs and streamed results, an approval, a select, and a turn that fails.
+{"$":"send","text":"List files"}
+{"kind":"patch@1","data":{"ops":[["ins",3,null,{"tag":"turn"}],["ins",5,null,{"tag":"user","props":[["text","List files"]]}],["ins",5,6,{"tag":"tool:bash","props":[["id","call-1"],["status","arguments"],["i","List the directory"]]}],["ins",7,null,{"tag":"input","props":[["text","{\"command\":\"ls\"}"]]}]]}}
+{"type":"tool_approval_request","promptId":"p1","toolCallId":"call-1","title":"Run bash?","body":"ls","scopes":["once","session"],"timeoutMs":60000}
+{"$":"answer","values":["allow_once"]}
+{"kind":"patch@1","data":{"ops":[["set",7,"status","running"],["ins",7,8,{"tag":"result","props":[["truncated",false]]}]]}}
+{"kind":"stream@1","sid":3,"op":"open","node":9,"prop":"text"}
+{"kind":"stream@1","sid":3,"op":"append","text":"a.txt\n"}
+{"kind":"stream@1","sid":3,"op":"close"}
+{"kind":"patch@1","data":{"ops":[["set",7,"status","ok"],["ins",5,7,{"tag":"tool:edit","props":[["id","call-2"],["status","running"]]}],["ins",10,null,{"tag":"result","props":[["text","denied"]]}]]}}
+{"kind":"patch@1","data":{"ops":[["set",10,"status","error"]]}}
+{"type":"extension_ui_request","id":"ui-1","method":"select","title":"Pick a file","options":["a.txt","b.txt"],"multi":true}
+{"$":"answer","values":["a.txt","something else"]}
+{"kind":"patch@1","data":{"ops":[["ins",5,10,{"tag":"tool:grep","props":[["id","call-3"]]}],["ins",5,12,{"tag":"notice","props":[["custom:level","warn"],["data",{"a":1}]],"content":"slow"}]]}}
+{"type":"tool_approval_request","promptId":"p2","toolCallId":"call-3","title":"Run grep?"}
+{"type":"agent_end","cancelled":false,"error":"rate limited"}

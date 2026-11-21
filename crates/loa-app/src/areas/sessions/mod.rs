@@ -36,10 +36,9 @@ use iced::{Element, Subscription, Task};
 use loa_contracts::harness::{Answer, Capabilities, Feature, Prompt, SessionConfig};
 use loa_bus::SessionId;
 use loa_core::{Dom, Draft, ElementKind, JobStatus, NodeId, Op, PatchSink, SessionMode, TurnStatus, answer, attr};
-use loa_features::hooks::{self, Advisor, TurnHooks};
-use loa_features::plan::{self as plan_mode, Outcome, PlanGate, Verdict};
-use loa_features::smol::OneShot;
-use loa_features::{Compaction, PlanPermit, native};
+use loa_harness::features::hooks::{self, Advisor, TurnHooks};
+use loa_harness::features::plan::{self as plan_mode, Outcome, PlanGate, Verdict};
+use loa_harness::features::{Compaction, PlanPermit, native};
 use loa_bus::Listing;
 use loa_models::login::UrlOpener;
 use loa_models::opener::SystemUrlOpener;
@@ -151,7 +150,7 @@ pub struct State {
     /// Rules and advisor state per session whose harness lacks them.
     hooks: Mutex<HashMap<String, TurnHooks>>,
     /// The small model; `None` when omp, which runs it, isn't installed.
-    small: Option<OneShot>,
+    small: Option<Arc<dyn loa_projects::Summarizers>>,
     /// Home directory: native sessions, omp's rules and config.
     home: PathBuf,
     /// Compacted successor id -> the session it replaces.
@@ -170,7 +169,7 @@ impl State {
         let small = if cfg!(test) {
             None
         } else {
-            loa_util::exec::which("omp").map(|omp| OneShot::new(Arc::new(loa_projects::OmpSummarizer::new(omp, ctx.services.cwd.clone()))))
+            loa_util::exec::which("omp").map(|omp| Arc::new(loa_projects::OmpSummarizer::new(omp, ctx.services.cwd.clone())) as Arc<dyn loa_projects::Summarizers>)
         };
         ctx.composer.set_commands(composer_commands(None));
         let state = Self {
@@ -192,7 +191,7 @@ impl State {
     /// Runs compaction summaries and advisor notes on `model`.
     #[cfg(test)]
     pub(crate) fn set_small_model(&mut self, model: Arc<dyn loa_projects::Summarizers>) {
-        self.small = Some(OneShot::new(model));
+        self.small = Some(model);
     }
 
     /// Reads rules, omp's config and native sessions under `home`.
@@ -224,7 +223,7 @@ impl State {
         let Some(session) = ctx.sessions.active() else { return };
         let id = session.id().to_string();
         let harness = session.harness_id().unwrap_or_default().to_owned();
-        if harness == native::OMP {
+        if asks_first(ctx, &harness) {
             self.gate.enforce_through_approvals(&id);
         }
         if mode(session.dom()) != SessionMode::Plan
@@ -267,7 +266,7 @@ impl State {
                     ctx.composer.set_mode(SessionMode::Normal);
                     return Task::none();
                 }
-                if harness_id == native::OMP {
+                if asks_first(ctx, &harness_id) {
                     self.gate.enforce_through_approvals(&id);
                 }
                 let entered = self.gate.permit(&id).and_then(|permit| {
@@ -303,7 +302,7 @@ impl State {
 
     /// Branches the session `source` at `target`: a fork when `current` is
     /// `None`, else a rewind from `current`. The branch becomes active.
-    fn branch(&mut self, ctx: &mut Ctx, source: &str, target: loa_features::Result<Dom>, current: Option<Dom>) {
+    fn branch(&mut self, ctx: &mut Ctx, source: &str, target: loa_harness::features::Result<Dom>, current: Option<Dom>) {
         let verb = if current.is_some() { "rewind" } else { "fork" };
         let target = match target {
             Ok(target) => target,
@@ -338,14 +337,12 @@ impl State {
                 (Arc::clone(&adapter), Arc::clone(&library), Arc::clone(&target), current.clone(), title.clone(), new_id.clone());
             Box::pin(async move {
                 let running = match current {
-                    None => loa_features::fork(adapter.as_ref(), library.as_ref(), &target, config).await,
-                    Some(current) => loa_features::rewind(adapter.as_ref(), library.as_ref(), &current, &target, config)
-                        .await
-                        .map(|(_, running)| running),
+                    None => loa_harness::features::fork(adapter.as_ref(), library.as_ref(), &target, config).await,
+                    Some(current) => loa_harness::features::rewind(adapter.as_ref(), library.as_ref(), &current, &target, config).await,
                 };
                 let running = running.map_err(|error| error.to_string())?;
                 name(&library, &id, &title)?;
-                Ok(Arc::from(running.harness))
+                Ok(Arc::from(running))
             })
         });
         self.branching = Some(id.clone());
@@ -426,12 +423,12 @@ impl State {
                     smol_model: SMALL_MODEL,
                     instructions: instructions.as_deref(),
                 };
-                let compacted = loa_features::compact(adapter.as_ref(), library.as_ref(), &small, request)
+                let compacted = loa_harness::features::compact(adapter.as_ref(), library.as_ref(), small.on(Some(SMALL_MODEL)).0.as_ref(), request)
                     .await
                     .map_err(|error| error.to_string())?
                     .ok_or_else(|| "the harness compacted the session itself".to_owned())?;
                 name(&library, &id, &title)?;
-                Ok(Arc::from(compacted.harness))
+                Ok(Arc::from(compacted))
             })
         });
         ctx.notify("Summarizing the session with the small model…");
@@ -495,7 +492,7 @@ impl State {
         let writer = Arc::clone(session.writer());
         Task::perform(
             async move {
-                loa_features::select_role(harness.as_ref(), &capabilities, writer.as_ref(), root, &role, &candidates)
+                loa_harness::features::select_role(harness.as_ref(), &capabilities, writer.as_ref(), root, &role, &candidates)
                     .await
                     .map(|model| (role, model))
                     .map_err(|error| error.to_string())
@@ -641,7 +638,7 @@ impl State {
         let Some(open) = ctx.sessions.get(session.as_str()) else { return };
         let dom = open.dom();
         let (Some(root), Some(text)) = (dom.root().map(|root| root.id), plan_mode::plan_text(dom, turn)) else { return };
-        match loa_features::submit_plan(open.writer().as_ref(), root, step, text) {
+        match loa_harness::features::submit_plan(open.writer().as_ref(), root, step, text) {
             Ok(_) => plan.step = None,
             Err(error) => ctx.notify(format!("Can't raise the plan review: {error}")),
         }
@@ -694,7 +691,7 @@ impl State {
         let id = session.clone();
         Task::perform(
             async move {
-                Advisor::new(small, SMALL_MODEL).review(&dom, turn, rules.as_deref()).await.map_err(|error| error.to_string())
+                Advisor::new(small.on(Some(SMALL_MODEL)).0).review(&dom, turn, rules.as_deref()).await.map_err(|error| error.to_string())
             },
             move |result| Message::Advised { session: id.clone(), turn, result },
         )
@@ -787,7 +784,12 @@ fn capabilities(ctx: &Ctx, harness: &str) -> Capabilities {
 }
 
 /// Titles the new session `id`.
-fn name(library: &loa_features::library::Library, id: &str, title: &str) -> Result<(), String> {
+/// Whether `harness` runs on an app approval mode, asking before each tool that writes or executes.
+fn asks_first(ctx: &Ctx, harness: &str) -> bool {
+    !ctx.services.harnesses.traits(harness).approval_modes.is_empty()
+}
+
+fn name(library: &loa_harness::features::library::Library, id: &str, title: &str) -> Result<(), String> {
     let live = library.live(id).ok_or_else(|| format!("session {id} isn't open"))?;
     let root = live.writer.with_dom(|dom| dom.root().map(|root| root.id)).ok_or_else(|| format!("session {id} has no root"))?;
     live.writer.commit(Draft::set(root, attr::TITLE, title)).map_err(|error| error.to_string())?;
@@ -1007,10 +1009,10 @@ impl Area for State {
         Some(self.transfer.view(active, loa_core::now_ms()).map(Message::Transfer))
     }
 
-    fn contribute(&self, config: &mut SessionConfig, target: &Target<'_>, _: &Ctx) {
-        if target.harness == native::OMP {
-            // The app runs omp with `--approval-mode always-ask`: it asks
-            // before every tool that writes or executes.
+    fn contribute(&self, config: &mut SessionConfig, target: &Target<'_>, ctx: &Ctx) {
+        if asks_first(ctx, target.harness) {
+            // The app runs it on an approval mode that asks before every
+            // tool that writes or executes.
             self.gate.enforce_through_approvals(&config.session_id);
         }
         if !target.capabilities.has(Feature::AdvisorRules) {

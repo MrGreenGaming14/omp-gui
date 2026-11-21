@@ -3,8 +3,7 @@
 use super::launch::{OmpAdapterConfig, Target, drop_unavailable_tools, spawn_options, split_selector};
 use super::mapper::{Input, Mapper, Reply};
 use super::native::{self, X_SESSION_FILE};
-use super::rpc::{Frame, HostHandler, HostToolCall, HostToolDefinition, HostToolOutput, ImageContent, Incoming, MessageUpdates, ModelInfo, PromptStatus, RpcClient, RpcError, StreamingBehavior, SubagentLevel, ToolContent, UiResponder};
-use super::rpc::Event;
+use super::rpc::{self, CancellationResult, Command, CompactionResult, Event, Frame, HostHandler, HostToolCall, HostToolDefinition, HostToolOutput, ImageContent, Incoming, MessageUpdates, ModelInfo, ModelList, PromptAck, PromptStatus, RpcClient, RpcError, StreamingBehavior, SubagentLevel, ToolContent, UiResponder};
 use super::HARNESS;
 use crate::kit::{EventMapper, insert_root};
 use async_trait::async_trait;
@@ -12,6 +11,8 @@ use base64::Engine;
 use loa_contracts::harness::{Adapter, AdapterError, Answer, Availability, Capabilities, ContextDelivery, Feature, HarnessModel, HarnessSession, HostTools, ModelSelection, ModelSwitch, OutputBlock, Prompt, Result, SessionConfig, SessionState};
 use loa_core::{DecisionKind, Dom, DomWriter, NodeId, PatchSink, SCHEMA_VERSION, attr};
 use loa_util::LockExt;
+use serde::de::DeserializeOwned;
+use serde_json::Value as Json;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -77,17 +78,22 @@ impl OmpAdapter {
             }
         };
         let setup = async {
-            client.set_event_filter(None, Some(MessageUpdates::Delta)).await?;
-            client.set_subagent_subscription(SubagentLevel::Events).await?;
-            client.set_ask_dialog(true).await?;
+            let mut commands = vec![
+                Command::SetEventFilter { events: None, message_updates: Some(MessageUpdates::Delta) },
+                Command::SetSubagentSubscription { level: SubagentLevel::Events },
+                Command::SetAskDialog { enabled: true },
+            ];
             if !config.host_tools.is_empty() {
                 let tools = config.host_tools.iter().map(|tool| {
                     let parameters = serde_json::from_str(&tool.input_schema)?;
                     Ok(HostToolDefinition { name: tool.name.clone(), label: None, description: tool.description.clone(), parameters, hidden: None, load_mode: Some("essential".into()) })
                 });
-                client.set_host_tools(tools.collect::<std::result::Result<_, RpcError>>()?).await?;
+                commands.push(Command::SetHostTools { tools: tools.collect::<std::result::Result<_, RpcError>>()? });
             }
-            client.get_state().await
+            for command in commands {
+                client.request::<Json>(command).await?;
+            }
+            client.request::<rpc::SessionState>(Command::GetState).await
         };
         let state = match setup.await {
             Ok(state) => state,
@@ -114,7 +120,6 @@ impl OmpAdapter {
                 let frame = match incoming {
                     Incoming::Event(event) => Frame::Event(event),
                     Incoming::Ui(request) => Frame::Ui(request),
-                    Incoming::Response(_) => continue,
                     Incoming::Exited { status, stderr } => return reader.fail(format!("omp exited ({status:?}): {stderr}")),
                 };
                 if let Err(error) = reader.feed(Input::Frame(frame), Some(&responder)).await {
@@ -156,10 +161,10 @@ impl Adapter for OmpAdapter {
     async fn fork(&self, config: SessionConfig, dom: &Dom, sink: Arc<dyn PatchSink>) -> Result<Box<dyn HarnessSession>> {
         let (root, file) = session_file(dom)?;
         let session = self.launch(config, Target::Resume(file), sink, root).await?;
-        if session.client.fork(None).await.map_err(rpc_error)?.cancelled {
+        if session.request::<CancellationResult>(Command::Fork { entry_id: None }).await?.cancelled {
             return Err(AdapterError::Protocol("omp cancelled fork".into()));
         }
-        if let Some(path) = session.client.get_state().await.map_err(rpc_error)?.session_file {
+        if let Some(path) = session.request::<rpc::SessionState>(Command::GetState).await?.session_file {
             DomWriter::new(&*session.shared.sink).set(root, X_SESSION_FILE, path)?;
         }
         Ok(Box::new(session))
@@ -234,7 +239,7 @@ impl Shared {
     }
 }
 
-/// A running omp session. Its client can be shared with model and provider UI.
+/// A running omp session.
 pub struct OmpSession {
     client: RpcClient,
     shared: Arc<Shared>,
@@ -242,8 +247,8 @@ pub struct OmpSession {
 }
 
 impl OmpSession {
-    pub fn client(&self) -> &RpcClient {
-        &self.client
+    async fn request<T: DeserializeOwned>(&self, command: Command) -> Result<T> {
+        self.client.request(command).await.map_err(rpc_error)
     }
 
     fn open(&self) -> Result<()> {
@@ -268,7 +273,8 @@ impl HarnessSession for OmpSession {
         let id = self.client.reserve_id();
         self.shared.feed(Input::Sent { id: id.clone(), prompt: prompt.clone() }, None).await?;
         // As a follow-up, omp runs it at once when idle and after the running work otherwise.
-        let ack = match self.client.prompt_as(id.clone(), prompt.text, images, Some(StreamingBehavior::FollowUp)).await {
+        let command = Command::Prompt { message: prompt.text, images, streaming_behavior: Some(StreamingBehavior::FollowUp) };
+        let ack = match self.client.request_as::<PromptAck>(id.clone(), command).await {
             Ok(ack) => ack,
             Err(error) => {
                 let mut mapper = self.shared.mapper.locked();
@@ -291,7 +297,7 @@ impl HarnessSession for OmpSession {
     async fn interrupt(&self) -> Result<()> {
         self.open()?;
         if self.state() != SessionState::Idle {
-            self.client.abort_and_restore_queue().await.map_err(rpc_error)?;
+            self.request::<Json>(Command::AbortAndRestoreQueue).await?;
         }
         Ok(())
     }
@@ -307,7 +313,7 @@ impl HarnessSession for OmpSession {
         let Some(Reply { response, steer }) = reply else { return Ok(()) };
         self.client.respond_ui(&response).await.map_err(rpc_error)?;
         if let Some(steer) = steer {
-            self.client.steer(steer).await.map_err(rpc_error)?;
+            self.request::<Json>(Command::Steer { message: steer }).await?;
         }
         Ok(())
     }
@@ -318,24 +324,24 @@ impl HarnessSession for OmpSession {
             return Err(AdapterError::Unsupported { harness: HARNESS, what: "model role updates over RPC" });
         }
         let (provider, model) = split_selector(&selection.model)?;
-        let model = self.client.set_model(provider, model).await.map_err(rpc_error)?;
+        let model: ModelInfo = self.request(Command::SetModel { provider: provider.into(), model_id: model.into() }).await?;
         self.shared.write(|w, session| w.set(session, attr::MODEL, model.selector()))
     }
 
     async fn models(&self) -> Result<Vec<HarnessModel>> {
         self.open()?;
-        Ok(self.client.get_available_models().await.map_err(rpc_error)?.iter().map(harness_model).collect())
+        Ok(self.request::<ModelList>(Command::GetAvailableModels).await?.models.iter().map(harness_model).collect())
     }
 
     async fn set_effort(&self, effort: String) -> Result<()> {
         self.open()?;
-        self.client.set_thinking_level(effort.as_str()).await.map_err(rpc_error)?;
+        self.request::<Json>(Command::SetThinkingLevel { level: effort.clone() }).await?;
         self.shared.write(|w, session| w.set(session, attr::EFFORT, effort))
     }
 
     async fn compact(&self, instructions: Option<String>) -> Result<()> {
         self.open()?;
-        self.client.compact(instructions).await.map_err(rpc_error).map(drop)
+        self.request::<CompactionResult>(Command::Compact { custom_instructions: instructions }).await.map(drop)
     }
 
     fn harness(&self) -> &'static str {

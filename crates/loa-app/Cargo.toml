@@ -11,11 +11,8 @@ async-trait.workspace = true
 loa-core.workspace = true
 loa-contracts.workspace = true
 loa-bus = { path = "../loa-bus" }
-loa-features = { path = "../loa-features" }
 loa-config = { path = "../loa-config" }
-loa-harness = { workspace = true, features = ["omp", "acp", "claude", "codex"] }
-loa-adapter-omp2 = { path = "../loa-adapter-omp2" }
-loa-adapter-opencode = { path = "../loa-adapter-opencode" }
+loa-harness = { workspace = true, features = ["omp", "acp", "claude", "codex", "opencode", "omp2"] }
 tokio.workspace = true
 loa-ui-shell = { path = "../loa-ui-shell" }
 loa-ui-session = { path = "../loa-ui-session" }

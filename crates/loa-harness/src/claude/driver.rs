@@ -1,9 +1,8 @@
 //! Runs `claude` headlessly in stream JSON mode with `--permission-prompt-tool
 //! stdio` (the Agent SDK's mode) on [`StdioRpc`] with [`ClaudeControl`] framing.
 
-use crate::claude::mapper::{Mapper, Output, UUID_ATTR};
+use crate::claude::mapper::{Mapper, Output, UUID_ATTR, control_response};
 use crate::claude::mcp::{self, HOST_SERVER};
-use crate::claude::protocol::{control_error, control_success};
 use crate::claude::{HARNESS, native};
 use crate::kit::rpc::Writer;
 use crate::kit::{Framing, Inbound, Incoming, RpcError, StdioRpc};
@@ -190,12 +189,11 @@ impl Framing for ClaudeControl {
     }
 
     fn response(&self, id: Value, _method: &str, result: std::result::Result<Value, RpcError>) -> Value {
-        let id = id.as_str().unwrap_or_default();
-        match result {
-            Ok(response) => control_success(id, response),
-            Err(RpcError::Command { message, .. }) => control_error(id, &message),
-            Err(err) => control_error(id, &err.to_string()),
-        }
+        let result = result.map_err(|err| match err {
+            RpcError::Command { message, .. } => message,
+            err => err.to_string(),
+        });
+        control_response(id.as_str().unwrap_or_default(), result)
     }
 
     fn classify(&self, mut msg: Value) -> Option<Incoming> {
@@ -262,7 +260,7 @@ impl Inbound for Shared {
                     } else {
                         mcp::error(&message, format!("server `{server}` not found"))
                     };
-                    if let Err(err) = shared.write(&control_success(&request_id, json!({ "mcp_response": reply }))) {
+                    if let Err(err) = shared.write(&control_response(&request_id, Ok(json!({ "mcp_response": reply })))) {
                         tracing::warn!(%err, "answering an MCP message failed");
                     }
                 });

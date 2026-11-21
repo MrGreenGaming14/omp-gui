@@ -15,7 +15,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use loa_contracts::harness::{HostToolSpec, McpServerSpec, McpTransport};
 use loa_contracts::tools::{CallCtx, DynTool, OutputBlock, ToolAnnotations, ToolOutput, ToolSet};
-use loa_harness::omp::rpc::{Command, Event, Events, Incoming, PromptAck, RpcClient, SpawnOptions};
+use loa_harness::omp::rpc::{Command, Event, Events, Incoming, PromptAck, RpcClient, SessionState, SpawnOptions};
 use serde_json::{Map, Value, json};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
@@ -222,7 +222,7 @@ async fn launch(config: &OmpBridgeConfig, tools: Option<&[String]>) -> Result<(S
     options.env_remove = INHERITED_SESSION_ENV.iter().map(OsString::from).collect();
     let rpc_error = |e: loa_harness::omp::rpc::RpcError| Error::Bridge(e.to_string());
     let (rpc, events) = RpcClient::spawn(options).await.map_err(rpc_error)?;
-    let mut state = rpc.get_state().await.map_err(rpc_error)?;
+    let mut state: SessionState = rpc.request(Command::GetState).await.map_err(rpc_error)?;
     let Some(Value::Array(dumped)) = state.extra.remove("dumpTools") else { return Err(Error::Bridge("get_state has no dumpTools".into())) };
     Ok((Session { rpc, events, calls: 0, history_bytes: 0 }, provider, dumped))
 }
@@ -231,14 +231,14 @@ impl Session {
     /// Runs one tool through a prompt the loopback provider answers with that call.
     async fn run(&mut self, name: &str, arguments: Map<String, Value>, cancel: CancellationToken) -> Result<ToolOutput, String> {
         if self.history_bytes > HISTORY_BUDGET_BYTES {
-            self.rpc.request_unit(Command::NewSession).await.map_err(|e| e.to_string())?;
+            self.rpc.request::<Value>(Command::NewSession).await.map_err(|e| e.to_string())?;
             self.history_bytes = 0;
         }
         self.calls += 1;
         let (call_id, id) = (format!("loa-omp-bridge-call-{}", self.calls), self.rpc.reserve_id());
         let (rpc, message, prompt_id) = (self.rpc.clone(), call_prompt(&call_id, name, arguments), id.clone());
         // Spawned so the prompt is sent even if this future is dropped.
-        let mut ack = tokio::spawn(async move { rpc.prompt_as(prompt_id, message, Vec::new(), None).await });
+        let mut ack = tokio::spawn(async move { rpc.request_as::<PromptAck>(prompt_id, Command::Prompt { message, images: Vec::new(), streaming_behavior: None }).await });
         let (mut acked, mut aborted, mut output, mut rejection) = (false, false, None, None);
         let not_run = |reason: String| format!("omp ended the turn without running `{name}`: {reason}");
         loop {
@@ -246,7 +246,7 @@ impl Session {
                 biased;
                 () = cancel.cancelled(), if !aborted => {
                     aborted = true;
-                    self.rpc.request_unit(Command::Abort).await.map_err(|e| e.to_string())?;
+                    self.rpc.request::<Value>(Command::Abort).await.map_err(|e| e.to_string())?;
                 }
                 joined = &mut ack, if !acked => {
                     acked = true;

@@ -7,12 +7,11 @@ use loa_contracts::harness::{
     SessionConfig, SessionState,
 };
 use loa_harness::claude::{ClaudeAdapter, HOST_SERVER};
-use loa_core::{CommitError, Dom, Draft, ElementKind, MemorySink, Node, Patch, PatchSink, SessionMode, answer, attr};
+use loa_harness::testing::WatchSink;
+use loa_core::{Dom, ElementKind, MemorySink, Node, SessionMode, answer, attr};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex};
-use std::time::Duration;
-use tokio::sync::watch;
 
 const FAKE: &str = include_str!("../fixtures/claude/fake-cli.sh");
 
@@ -29,37 +28,9 @@ fn fake_claude() -> &'static Path {
     &FAKE_CLAUDE.1
 }
 
-/// A sink that wakes waiters on every commit.
-struct WatchSink {
-    inner: MemorySink,
-    seq: watch::Sender<u64>,
-}
-
-impl WatchSink {
-    fn new() -> Arc<Self> {
-        Arc::new(Self { inner: MemorySink::new(), seq: watch::channel(0).0 })
-    }
-
-    fn from_dom(dom: Dom) -> Arc<Self> {
-        Arc::new(Self { inner: MemorySink::from_dom(dom), seq: watch::channel(0).0 })
-    }
-
-    /// Waits until `check` holds on the DOM.
-    async fn until(&self, what: &str, check: impl Fn(&Dom) -> bool) {
-        let mut rx = self.seq.subscribe();
-        let wait = rx.wait_for(|_| self.inner.with_dom(&check));
-        if tokio::time::timeout(Duration::from_secs(20), wait).await.is_err() {
-            panic!("timed out waiting for {what}; dom: {:#?}", self.inner.dom().iter().collect::<Vec<_>>());
-        }
-    }
-}
-
-impl PatchSink for WatchSink {
-    fn commit_at(&self, draft: Draft, ts: i64) -> Result<Patch, CommitError> {
-        let patch = self.inner.commit_at(draft, ts)?;
-        self.seq.send_replace(patch.seq);
-        Ok(patch)
-    }
+/// A sink holding `dom` that wakes waiters on every commit.
+fn sink_from(dom: &Dom) -> Arc<WatchSink> {
+    Arc::new(WatchSink { inner: MemorySink::from_dom(dom.clone()), ..WatchSink::default() })
 }
 
 struct Recorder(Mutex<Vec<(String, String, String)>>);
@@ -135,7 +106,7 @@ fn status_of(dom: &Dom, kind: ElementKind) -> Option<String> {
 async fn a_turn_with_approval_and_a_host_tool_runs_end_to_end() {
     let files = Files::new();
     let recorder = Arc::new(Recorder(Mutex::new(Vec::new())));
-    let sink = WatchSink::new();
+    let sink = Arc::<WatchSink>::default();
     let session = ClaudeAdapter::new().start(files.config(Some(recorder.clone())), sink.clone()).await.unwrap();
 
     let args = files.args();
@@ -197,7 +168,7 @@ async fn a_turn_with_approval_and_a_host_tool_runs_end_to_end() {
 #[tokio::test]
 async fn interrupt_model_and_mode_go_through_control_requests() {
     let files = Files::new();
-    let sink = WatchSink::new();
+    let sink = Arc::<WatchSink>::default();
     let session = ClaudeAdapter::new().start(files.config(None), sink.clone()).await.unwrap();
     let models = session.models().await.unwrap();
     let listed: Vec<(&str, &str, Vec<&str>)> =
@@ -232,7 +203,7 @@ async fn interrupt_model_and_mode_go_through_control_requests() {
 #[tokio::test]
 async fn a_crashing_cli_fails_the_turn_and_closes_the_session() {
     let files = Files::new();
-    let sink = WatchSink::new();
+    let sink = Arc::<WatchSink>::default();
     let session = ClaudeAdapter::new().start(files.config(None), sink.clone()).await.unwrap();
     session.send(prompt("die now")).await.unwrap();
     session.wait_idle().await.unwrap();
@@ -244,7 +215,7 @@ async fn a_crashing_cli_fails_the_turn_and_closes_the_session() {
 #[tokio::test]
 async fn resume_and_fork_pass_the_native_session_to_the_cli() {
     let files = Files::new();
-    let sink = WatchSink::new();
+    let sink = Arc::<WatchSink>::default();
     let session = ClaudeAdapter::new().start(files.config(Some(Arc::new(Recorder(Mutex::new(Vec::new()))))), sink.clone()).await.unwrap();
     session.send(prompt("use the tool")).await.unwrap();
     sink.until("the approval", |dom| status_of(dom, ElementKind::Decision).as_deref() == Some("waiting")).await;
@@ -252,7 +223,7 @@ async fn resume_and_fork_pass_the_native_session_to_the_cli() {
     session.shutdown().await.unwrap();
     let dom = sink.inner.dom();
 
-    let resumed_sink = WatchSink::from_dom(dom.clone());
+    let resumed_sink = sink_from(&dom);
     let resumed = ClaudeAdapter::new().resume(files.config(None), &dom, resumed_sink.clone()).await.unwrap();
     assert!(files.args().contains(&"--resume=cc-fake".to_owned()));
     assert!(!files.args().contains(&"--fork-session".to_owned()));
@@ -262,7 +233,7 @@ async fn resume_and_fork_pass_the_native_session_to_the_cli() {
     assert_eq!(resumed.state(), SessionState::Idle);
     resumed.shutdown().await.unwrap();
 
-    let forked_sink = WatchSink::from_dom(dom.clone());
+    let forked_sink = sink_from(&dom);
     let forked = ClaudeAdapter::new().fork(files.config(None), &dom, forked_sink).await.unwrap();
     let args = files.args();
     assert!(args.contains(&"--resume=cc-fake".to_owned()));
@@ -276,6 +247,6 @@ async fn a_missing_executable_is_reported_as_not_installed() {
     let files = Files::new();
     let mut config = files.config(None);
     config.executable = Some(files.dir.path().join("no-such-claude"));
-    let started = ClaudeAdapter::new().start(config, WatchSink::new()).await;
+    let started = ClaudeAdapter::new().start(config, Arc::<WatchSink>::default()).await;
     assert!(matches!(started, Err(AdapterError::NotInstalled(_))));
 }

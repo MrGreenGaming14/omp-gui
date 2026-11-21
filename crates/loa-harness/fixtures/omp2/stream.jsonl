@@ -1,0 +1,16 @@
+# A prompt binds omp2's turn and user; content blocks stream into assistant messages.
+{"kind":"snapshot@1","data":{"high_water":4,"nodes":[{"handle":1,"parent":null,"node":{"tag":"session","props":[["name","Demo"]],"kids":[2,3,4]}},{"handle":2,"parent":1,"node":{"tag":"meta"}},{"handle":3,"parent":1,"node":{"tag":"body"}},{"handle":4,"parent":1,"node":{"tag":"queues"}}]}}
+{"type":"ready","protocolVersion":1}
+{"$":"send","text":"Say hello"}
+{"kind":"patch@1","data":{"cause":"a","prior":null,"label":"turn","ops":[["ins",3,null,{"tag":"turn","props":[["id","t1"]]}],["ins",5,null,{"tag":"user","props":[["id","u1"],["author","owner"],["text","Say hello"]]}],["ins",5,6,{"tag":"assistant","props":[["model","m1"],["provider","p1"]]}],["ins",7,null,{"tag":"tool:assistant-content","props":[["kind","thinking"],["index",0]],"content":""}]]}}
+{"kind":"stream@1","sid":1,"op":"open","node":8,"prop":"text"}
+{"kind":"stream@1","sid":1,"op":"append","text":"Thinking"}
+{"kind":"stream@1","sid":1,"op":"close"}
+{"kind":"patch@1","data":{"ops":[["ins",7,8,{"tag":"tool:assistant-content","props":[["kind","text"],["index",1]]}],["set",7,"order",42]]}}
+{"kind":"stream@1","sid":2,"op":"open","node":9,"prop":"text"}
+{"kind":"stream@1","sid":2,"op":"append","text":"Hello "}
+{"type":"message_update","delta":"ignored"}
+{"kind":"stream@1","sid":2,"op":"append","text":"world"}
+{"kind":"patch@1","data":{"ops":[["set",7,"custom:latency",12],["set",7,"stop-reason","end_turn"],["ins",5,7,{"tag":"usage","props":[["tokens-in",10],["tokens-out",5],["cost-nano-usd",1500000],["model","m1"]]}]]}}
+{"kind":"stream@1","sid":2,"op":"close"}
+{"type":"agent_end","cancelled":false}

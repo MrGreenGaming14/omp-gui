@@ -3,7 +3,7 @@
 
 use loa_bus::{Bus, JournalOptions, Persist, PersistError, SessionId, SessionWriter, Store, WriterConfig};
 use loa_core::{Dom, Draft, ElementKind, NodeId as DomNodeId, Patch, PatchSink, Value, attr, now_ms};
-use loa_features::library::Library;
+use loa_harness::features::library::Library;
 use loa_p2p::{BusSessions, DriveOutcome, GrantDirection, LibrarySessions, LocalSessions, Node, NodeConfig, NodeError, NodeEvent, TransportKind};
 use loa_trust::{Action, GrantId, GrantStore, KeySource, NodeIdentity, Resource, Scope};
 use std::net::SocketAddr;

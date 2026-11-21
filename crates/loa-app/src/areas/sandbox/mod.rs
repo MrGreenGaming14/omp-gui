@@ -15,7 +15,7 @@ use iced::widget::{button, column, container, row, scrollable, space, svg, text,
 use iced::{Element, Font, Length, Subscription, Task, Theme};
 use loa_contracts::harness::SessionConfig;
 use loa_core::PatchSink;
-use loa_features::library::Library;
+use loa_harness::features::library::Library;
 use loa_sandbox::isolation::{apply_patch, backend_name};
 use loa_sandbox::worker::WorkerJournal;
 use loa_sandbox::{

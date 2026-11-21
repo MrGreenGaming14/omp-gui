@@ -6,12 +6,13 @@ edition.workspace = true
 publish.workspace = true
 
 [features]
-default = ["omp", "claude", "codex", "opencode", "acp"]
+default = ["omp", "claude", "codex", "opencode", "acp", "omp2"]
 omp = ["dep:base64"]
 claude = ["dep:base64", "dep:uuid"]
 codex = []
-opencode = []
+opencode = ["dep:reqwest"]
 acp = []
+omp2 = ["dep:base64"]
 # Test doubles: FakeProcess, WatchSink, check_dom, replay and round_trip.
 testing = []
 
@@ -19,8 +20,10 @@ testing = []
 loa-util.workspace = true
 loa-core.workspace = true
 loa-contracts.workspace = true
+loa-bus = { path = "../loa-bus" }
 async-trait.workspace = true
 base64 = { version = "0.23", optional = true }
+reqwest = { version = "0.13", default-features = false, features = ["json"], optional = true }
 uuid = { version = "1.29", features = ["v4"], optional = true }
 serde.workspace = true
 serde_json.workspace = true
@@ -32,3 +35,6 @@ tracing.workspace = true
 [dev-dependencies]
 loa-harness = { path = ".", default-features = false, features = ["testing"] }
 base64 = "0.23"
+axum = "0.8"
+serde_json = { workspace = true, features = ["preserve_order"] }
+futures.workspace = true

@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use loa_contracts::Summarizer;
 use loa_harness::kit::rpc::RpcError;
 use loa_harness::omp::OneShot;
-use loa_harness::omp::rpc::{Command, RpcClient, SpawnOptions};
+use loa_harness::omp::rpc::{CancellationResult, Command, RpcClient, SessionState, SpawnOptions};
 use loa_updater::gates::{
     ChangelogReview, ChangelogSummarizer, ConfigSchema, ContractFailure, ContractRunner, FormatProbe, GatePorts, OmpGates, Probe,
     REVIEW_PROMPT, RpcProbe, ToolCatalog, ToolSchema, parse_review,
@@ -94,8 +94,8 @@ impl OmpProbe {
 
     /// Forks the resumed session and returns the lines of the file the fork wrote.
     async fn fork(resumed: &Resumed) -> Result<Vec<Value>, String> {
-        resumed.rpc.fork(None).await.map_err(|e| format!("fork: {e}"))?;
-        let state = resumed.rpc.get_state().await.map_err(|e| format!("get_state: {e}"))?;
+        resumed.rpc.request::<CancellationResult>(Command::Fork { entry_id: None }).await.map_err(|e| format!("fork: {e}"))?;
+        let state = resumed.rpc.request::<SessionState>(Command::GetState).await.map_err(|e| format!("get_state: {e}"))?;
         let file = state.session_file.ok_or("get_state after fork has no sessionFile")?;
         if Path::new(&file) == resumed.file {
             return Err("fork did not switch to a new session file".to_owned());
@@ -106,7 +106,7 @@ impl OmpProbe {
     async fn round_trip(&self, executable: &Path, name: &str, jsonl: &str) -> Result<Vec<ContractFailure>, String> {
         let expected = entries(jsonl)?;
         let resumed = self.resume(executable, name, jsonl).await?;
-        let data = resumed.rpc.request_raw(Command::GetEntries).await.map_err(|e| format!("get_entries: {e}"))?;
+        let data = resumed.rpc.request::<Value>(Command::GetEntries).await.map_err(|e| format!("get_entries: {e}"))?;
         let forked = Self::fork(&resumed).await;
         resumed.rpc.kill();
         let read = data.get("entries").and_then(Value::as_array).ok_or("get_entries has no entries")?;
@@ -144,7 +144,7 @@ impl ToolCatalog for OmpProbe {
             let args = ["--no-session".to_owned(), "--tools".to_owned(), wanted.join(",")];
             match self.spawn(executable, &args, dir.path()).await {
                 Ok(rpc) => {
-                    let state = self.timed(async { rpc.request_raw(Command::GetState).await.map_err(|e| e.to_string()) }).await;
+                    let state = self.timed(async { rpc.request::<Value>(Command::GetState).await.map_err(|e| e.to_string()) }).await;
                     rpc.kill();
                     return parse_dump_tools(&state?);
                 }

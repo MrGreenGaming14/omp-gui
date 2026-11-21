@@ -1,0 +1,26 @@
+# Tools through their states, decisions on calls, todos and a subagent task.
+{"type":"message.updated","properties":{"sessionID":"ses_1","info":{"id":"msg_u1","sessionID":"ses_1","role":"user","time":{"created":10}}}}
+{"type":"message.part.updated","properties":{"sessionID":"ses_1","part":{"id":"prt_u1","sessionID":"ses_1","messageID":"msg_u1","type":"text","text":"Fix it"}}}
+{"type":"message.part.updated","properties":{"sessionID":"ses_1","part":{"id":"prt_u2","sessionID":"ses_1","messageID":"msg_u1","type":"text","text":"context","synthetic":true}}}
+{"type":"message.updated","properties":{"sessionID":"ses_1","info":{"id":"msg_a1","sessionID":"ses_1","role":"assistant","parentID":"msg_u1","providerID":"p","modelID":"m","time":{"created":11}}}}
+{"type":"message.part.updated","properties":{"sessionID":"ses_1","part":{"id":"prt_b1","sessionID":"ses_1","messageID":"msg_a1","type":"tool","callID":"call_1","tool":"bash","state":{"status":"pending","input":{},"raw":"{\"comm"}}}}
+{"type":"message.part.updated","properties":{"sessionID":"ses_1","part":{"id":"prt_b1","sessionID":"ses_1","messageID":"msg_a1","type":"tool","callID":"call_1","tool":"bash","state":{"status":"pending","input":{},"raw":"{\"command\":\"ls\"}"}}}}
+{"type":"message.part.updated","properties":{"sessionID":"ses_1","part":{"id":"prt_b1","sessionID":"ses_1","messageID":"msg_a1","type":"tool","callID":"call_1","tool":"bash","state":{"status":"running","input":{"command":"ls"},"title":"List","time":{"start":12}}}}}
+{"type":"permission.asked","properties":{"id":"per_1","sessionID":"ses_1","permission":"bash","patterns":["ls"],"always":["ls *"],"metadata":{"command":"ls"},"tool":{"messageID":"msg_a1","callID":"call_1"}}}
+{"type":"permission.asked","properties":{"id":"per_1","sessionID":"ses_1","permission":"bash","patterns":["ls"]}}
+{"type":"permission.replied","properties":{"sessionID":"ses_1","requestID":"per_1","reply":"always"}}
+{"type":"message.part.updated","properties":{"sessionID":"ses_1","part":{"id":"prt_b1","sessionID":"ses_1","messageID":"msg_a1","type":"tool","callID":"call_1","tool":"bash","state":{"status":"completed","input":{"command":"ls"},"output":"a\nb","title":"List files","metadata":{"exit":0},"time":{"start":12,"end":13}}}}}
+{"type":"message.part.updated","properties":{"sessionID":"ses_1","part":{"id":"prt_e1","sessionID":"ses_1","messageID":"msg_a1","type":"tool","callID":"call_2","tool":"read","state":{"status":"error","input":{"path":"x"},"error":"no such file","time":{"start":14,"end":15}}}}}
+{"type":"question.asked","properties":{"id":"que_1","sessionID":"ses_1","questions":[{"question":"Which?","header":"Pick","options":[{"label":"A","description":"first"},{"label":"B"}],"multiple":true,"custom":false},{"question":"Why?","options":[]}]}}
+{"type":"question.replied","properties":{"sessionID":"ses_1","requestID":"que_1","answers":[["A","B"],["because"]]}}
+{"type":"question.asked","properties":{"id":"que_2","sessionID":"ses_1","questions":[{"question":"Continue?","options":[{"label":"yes"}]}]}}
+{"type":"question.rejected","properties":{"sessionID":"ses_1","requestID":"que_2"}}
+{"type":"message.part.updated","properties":{"sessionID":"ses_1","part":{"id":"prt_w1","sessionID":"ses_1","messageID":"msg_a1","type":"tool","callID":"call_3","tool":"todowrite","state":{"status":"completed","input":{"todos":[{"content":"one","status":"completed","priority":"high"},{"content":"two","status":"weird"}]},"output":"ok","time":{"start":16,"end":17}}}}}
+{"type":"todo.updated","properties":{"sessionID":"ses_1","todos":[{"content":"one!","status":"in_progress","priority":"low"}]}}
+{"type":"message.part.updated","properties":{"sessionID":"ses_1","part":{"id":"prt_k1","sessionID":"ses_1","messageID":"msg_a1","type":"tool","callID":"call_4","tool":"task","state":{"status":"running","input":{"description":"delegate","subagent_type":"general"},"metadata":{"sessionId":"ses_child"},"time":{"start":18}}}}}
+{"type":"session.created","properties":{"info":{"id":"ses_child","parentID":"ses_1","time":{"created":18}}}}
+{"type":"permission.asked","properties":{"id":"per_2","sessionID":"ses_child","permission":"edit","patterns":[],"metadata":{"filepath":"/w/a.rs"}}}
+{"type":"message.updated","properties":{"sessionID":"ses_child","info":{"id":"msg_c1","sessionID":"ses_child","role":"user","time":{"created":19}}}}
+{"type":"message.part.updated","properties":{"sessionID":"ses_1","part":{"id":"prt_k1","sessionID":"ses_1","messageID":"msg_a1","type":"tool","callID":"call_4","tool":"task","state":{"status":"completed","input":{"description":"delegate","subagent_type":"general"},"output":"done","metadata":{"sessionId":"ses_child"},"time":{"start":18,"end":20}}}}}
+{"type":"message.part.updated","properties":{"sessionID":"ses_1","part":{"id":"prt_k2","sessionID":"ses_1","messageID":"msg_a1","type":"tool","callID":"call_5","tool":"task","state":{"status":"running","input":{"description":"second"},"metadata":{"sessionId":"ses_child2"},"time":{"start":21}}}}}
+{"type":"session.idle","properties":{"sessionID":"ses_1"}}

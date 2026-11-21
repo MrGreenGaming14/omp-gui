@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<session nid="1" created.int="1" harness="opencode" id="s" native_id="ses_1" node="owner" schema.int="1" title="Sorting" x-oc="{&quot;version&quot;:&quot;1&quot;,&quot;time&quot;:{&quot;updated&quot;:16}}">
+  <turn nid="2" ended.int="0" id="msg_u1" started.int="10" status="done" x-oc="{&quot;model&quot;:{&quot;providerID&quot;:&quot;p&quot;,&quot;modelID&quot;:&quot;m&quot;},&quot;agent&quot;:&quot;build&quot;,&quot;time&quot;:{}}">
+    <message nid="3" id="prt_u1" role="user" status="done" x-message="msg_u1">Explain the code</message>
+    <ext nid="4" harness="opencode" type="message" x-message="msg_a1">{"time":{"created":11,"completed":16},"modelID":"m","role":"assistant","parentID":"msg_u1","providerID":"p"}</ext>
+    <ext nid="5" harness="opencode" type="part" x-message="msg_a1" x-part="prt_s1">{"snapshot":"abc","type":"step-start"}</ext>
+    <message nid="6" id="prt_r1" kind="thinking" model="p/m" role="assistant" status="done" x-message="msg_a1" x-oc="{&quot;time&quot;:{&quot;start&quot;:12,&quot;end&quot;:13}}">Let me think.</message>
+    <message nid="7" id="prt_t1" model="p/m" role="assistant" status="done" x-message="msg_a1" x-oc="{&quot;metadata&quot;:{&quot;x&quot;:1},&quot;time&quot;:{&quot;start&quot;:14,&quot;end&quot;:15}}">It sorts lists.</message>
+    <ext nid="8" harness="opencode" type="part" x-message="msg_a1" x-part="prt_f1">{"tokens":{"input":10,"output":20,"reasoning":3,"cache":{"read":4,"write":5}},"cost":0.5,"reason":"stop","type":"step-finish"}</ext>
+    <usage nid="9" cache_read_tokens.int="4" cache_write_tokens.int="5" cost.float="0.5" input_tokens.int="10" model="p/m" output_tokens.int="20" x-reasoning-tokens.int="3"/>
+  </turn>
+</session>
