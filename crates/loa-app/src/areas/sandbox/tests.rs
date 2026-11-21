@@ -409,9 +409,9 @@ mod peer {
         update(&rt, &mut guest, AppMessage::NewSession);
         for c in "Write the notes".chars() {
             use iced::widget::text_editor::{Action, Edit};
-            update(&rt, &mut guest, AppMessage::Composer(loa_ui_composer::Message::Edit(Action::Edit(Edit::Insert(c)))));
+            update(&rt, &mut guest, AppMessage::Composer(loa_ui_session::composer::Message::Edit(Action::Edit(Edit::Insert(c)))));
         }
-        update(&rt, &mut guest, AppMessage::Composer(loa_ui_composer::Message::Submit));
+        update(&rt, &mut guest, AppMessage::Composer(loa_ui_session::composer::Message::Submit));
         let deadline = Instant::now() + Duration::from_secs(30);
         while guest.areas.sandbox.runs().entries().first().is_none_or(|entry| matches!(entry.state, loa_sandbox::RunState::Running)) {
             while let Ok(event) = events.try_recv() {

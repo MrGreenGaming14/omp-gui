@@ -58,6 +58,15 @@ pub struct ModelOption {
     pub role: Option<String>,
 }
 
+impl std::fmt::Display for ModelOption {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(role) = &self.role {
+            write!(f, "{role} · ")?;
+        }
+        write!(f, "{} ({})", self.name, self.provider)
+    }
+}
+
 /// A row under the model choices that opens something instead of picking a model.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PickerAction {

@@ -14,7 +14,7 @@ use loa_core::{
     attr, now_ms,
 };
 use loa_trust::NodeIdentity;
-use loa_ui_composer as composer;
+use loa_ui_session::composer as composer;
 use loa_ui_palette as palette;
 use loa_ui_panel::{agents, session_tree};
 use loa_ui_shell as shell;
@@ -389,7 +389,7 @@ fn clicking_a_user_message_rewinds_into_a_branch_before_it() {
     let dom = env.active_dom();
     let (second, _) = user_messages(&dom).into_iter().find(|(_, text)| text.contains("OTTER")).unwrap();
 
-    env.send(Message::Chat(loa_ui_chat::Message::Rewind(second)));
+    env.send(Message::Chat(loa_ui_session::transcript::Message::Rewind(second)));
     let branch = active(&env.app).unwrap().to_owned();
     assert_ne!(branch, parent.as_str());
     let context = env.last_config().context.unwrap_or_default();
@@ -502,7 +502,7 @@ fn the_agents_tab_lists_jobs_live_and_opens_a_subagent_as_a_linked_child() {
 fn plan_mode_blocks_changing_tools_and_raises_a_plan_review() {
     let mut env = Env::new("omp");
     let id = env.start();
-    env.send(Message::Composer(composer::Message::ModePicked(SessionMode::Plan)));
+    env.send(Message::Composer(composer::Message::Pick(composer::PickerId::Mode, SessionMode::ALL.iter().position(|m| *m == SessionMode::Plan).unwrap())));
     assert_eq!(root_attr(&env.active_dom(), attr::MODE).as_deref(), Some("plan"));
 
     // A tool that changes files is denied without asking the user; the
@@ -758,7 +758,7 @@ fn slash_commands_run_through_their_areas_and_the_harness_lists_its_own() {
     let writer = Arc::clone(env.app.ctx.sessions.active().unwrap().writer());
     let root = env.active_dom().root().unwrap().id;
     let listed = r#"{"type":"available_commands_update","commands":[{"name":"dirs","description":"List this session's workspace directories"},{"name":"compact","description":"Compact the conversation"}]}"#;
-    let attrs: [(&str, Value); 2] = [("harness", "omp".into()), ("type", loa_ui_chat::COMMANDS_EXT.into())];
+    let attrs: [(&str, Value); 2] = [("harness", "omp".into()), ("type", loa_ui_session::transcript::COMMANDS_EXT.into())];
     writer.commit(Draft::insert(root, ElementKind::Ext, attrs, listed)).unwrap();
     env.pump();
     let commands = env.app.ctx.composer.commands().to_vec();
@@ -872,8 +872,8 @@ fn web_links_in_the_transcript_open_in_the_browser() {
     let browser = Arc::new(Browser::default());
     env.app.areas.sessions.set_opener(Arc::clone(&browser) as _);
     env.start();
-    env.send(Message::Chat(loa_ui_chat::Message::Link("https://example.com/docs".into())));
-    env.send(Message::Chat(loa_ui_chat::Message::Link("file:///etc/passwd".into())));
+    env.send(Message::Chat(loa_ui_session::transcript::Message::Link("https://example.com/docs".into())));
+    env.send(Message::Chat(loa_ui_session::transcript::Message::Link("file:///etc/passwd".into())));
     assert_eq!(*browser.0.lock().unwrap(), ["https://example.com/docs"]);
     assert_eq!(env.app.ctx.notice(), Some("Only web links open in the browser: file:///etc/passwd"));
 }
