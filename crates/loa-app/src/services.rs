@@ -2,7 +2,7 @@
 //! node identity, data directories, the session library (journal store and
 //! bus) and the harness registry.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, PoisonError, RwLock};
 
 use loa_bus::{Authorize, Bus, Denied, NodeKey, SessionId};
@@ -93,6 +93,39 @@ pub struct Services {
     /// peers area issues and revokes into it; the Tools area reads what each
     /// peer may use.
     pub grants: Arc<loa_grants::GrantStore>,
+    /// Where omp keeps its config, rules and agents. Every area that reads
+    /// them asks here, so they all see the directory omp reports.
+    pub omp_agent_dir: OmpAgentDir,
+}
+
+/// omp's agent directory: `~/.omp/agent` until the workflows area learns the
+/// one omp reports (`omp config path`).
+#[derive(Clone, Debug)]
+pub struct OmpAgentDir {
+    resolved: Option<PathBuf>,
+    fallback: PathBuf,
+}
+
+impl OmpAgentDir {
+    /// The directory to use before omp is asked.
+    pub fn new(fallback: PathBuf) -> Self {
+        Self { resolved: None, fallback }
+    }
+
+    /// The agent directory omp reported, else the default one.
+    pub fn get(&self) -> &Path {
+        self.resolved.as_deref().unwrap_or(&self.fallback)
+    }
+
+    /// omp's `config.yml`.
+    pub fn config(&self) -> PathBuf {
+        self.get().join("config.yml")
+    }
+
+    /// Uses `dir`, the agent directory omp reported.
+    pub fn set(&mut self, dir: PathBuf) {
+        self.resolved = Some(dir);
+    }
 }
 
 impl Services {
@@ -141,6 +174,7 @@ impl Services {
             config,
             mcp,
             grants: Arc::new(grants),
+            omp_agent_dir: OmpAgentDir::new(loa_core::home_dir().unwrap_or_else(|| PathBuf::from(".")).join(".omp/agent")),
         })
     }
 

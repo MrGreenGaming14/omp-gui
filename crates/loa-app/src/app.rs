@@ -169,6 +169,9 @@ pub enum Message {
     /// The start screen.
     Start(start::StartMessage),
     Agents(areas::agents::Message),
+    Workflows(areas::workflows::Message),
+    /// A composer event whose handling waited for something else to finish.
+    ComposerEvent(composer::Event),
     /// The clipboard image a paste asked for, saved to disk, or none.
     ImagePasted(Result<Option<media::Pasted>, String>),
     /// A file was dropped on a window.
@@ -292,6 +295,7 @@ impl App {
         app.recent_folders.push(app.ctx.services.cwd.clone());
         app.refresh_folders();
         app.refresh_commands();
+        app.sync_workflows();
         let settle = app.settle();
         let usage = app.usage.refresh().map(Message::Usage);
         // The sidebar fills in once the sessions on disk have been read.
@@ -509,6 +513,8 @@ impl App {
             }
             Some(composer::Event::AccessChanged(id)) => self.set_access(id),
             Some(composer::Event::ModeChanged(mode)) => self.update(Message::Sessions(areas::sessions::Message::Mode(mode))),
+            Some(composer::Event::WorkflowChanged(role)) => self.workflow_picked(role),
+            Some(composer::Event::ManageWorkflows) => self.update(Message::Workflows(areas::workflows::Message::Open)),
             Some(composer::Event::FilesRequested { .. }) => {
                 self.files.refresh();
                 self.ctx.composer.set_files(self.files.visible().map(|path| path.to_string_lossy().into_owned()).collect());
@@ -529,6 +535,7 @@ impl App {
         let shown = (self.ctx.screen() == Some(AreaId::Projects)).then(|| self.areas.projects.shown().map(str::to_owned)).flatten();
         self.ctx.shell.set_shown_project(shown);
         self.sync_access();
+        self.sync_workflows();
         self.sync_project_tabs();
         task
     }
@@ -759,6 +766,8 @@ impl App {
             Message::Updater(message) => area!(updater, Updater, message),
             Message::Sandbox(message) => area!(sandbox, Sandbox, message),
             Message::Agents(message) => area!(agents, Agents, message),
+            Message::Workflows(message) => area!(workflows, Workflows, message),
+            Message::ComposerEvent(event) => self.composer_event(Some(event)),
         }
     }
 
@@ -890,6 +899,7 @@ mod keys;
 mod usage;
 mod windows;
 mod access;
+mod workflows;
 mod feed;
 mod flow;
 mod media;

@@ -295,6 +295,7 @@ fn build(dir: &Path, id: &'static str, seen: &Shared, reply: &Arc<Mutex<String>>
     crate::app::tests::list_recents(&mut app);
     let home = dir.join("home");
     std::fs::create_dir_all(&home).unwrap();
+    app.ctx.services.omp_agent_dir.set(home.join(".omp/agent"));
     app.areas.sessions.set_home(home);
     app
 }
@@ -635,6 +636,7 @@ fn build_native(dir: &Path) -> App {
     let dirs = Dirs::new(dir.join("loa"));
     let harnesses = Harnesses::detect(&node.key, &dirs.omp);
     let mut app = App::build(Services::new(node, dirs, harnesses, dir.to_owned()).unwrap()).0;
+    app.ctx.services.omp_agent_dir.set(dir.join("home/.omp/agent"));
     app.areas.sessions.set_home(dir.join("home"));
     app
 }

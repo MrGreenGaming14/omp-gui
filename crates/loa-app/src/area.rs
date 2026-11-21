@@ -45,10 +45,11 @@ pub enum AreaId {
     Updater,
     Sandbox,
     Agents,
+    Workflows,
 }
 
 impl AreaId {
-    pub const ALL: [AreaId; 11] = [
+    pub const ALL: [AreaId; 12] = [
         AreaId::Harness,
         AreaId::Sessions,
         AreaId::Decisions,
@@ -60,6 +61,7 @@ impl AreaId {
         AreaId::Updater,
         AreaId::Sandbox,
         AreaId::Agents,
+        AreaId::Workflows,
     ];
 
     /// The area's directory name and the prefix of its command ids.
@@ -76,6 +78,7 @@ impl AreaId {
             AreaId::Updater => "updater",
             AreaId::Sandbox => "sandbox",
             AreaId::Agents => "agents",
+            AreaId::Workflows => "workflows",
         }
     }
 
