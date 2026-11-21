@@ -59,8 +59,38 @@ impl App {
     }
 }
 
+/// Asks for a folder with the system folder picker. `Ok(None)` when the
+/// dialog was cancelled.
+#[cfg(windows)]
+pub(crate) async fn choose_folder(start: PathBuf) -> Result<Option<PathBuf>, String> {
+    // WinForms' picker through Windows PowerShell, which every Windows has.
+    // The start folder goes in through the environment, so no quoting.
+    const SCRIPT: &str = "[Console]::OutputEncoding = [Text.Encoding]::UTF8
+Add-Type -AssemblyName System.Windows.Forms
+$dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+$dialog.Description = 'Choose a folder'
+$dialog.SelectedPath = $env:LOA_FOLDER_START
+$owner = New-Object System.Windows.Forms.Form -Property @{ TopMost = $true }
+if ($dialog.ShowDialog($owner) -eq 'OK') { [Console]::Out.Write($dialog.SelectedPath) }";
+    /// CREATE_NO_WINDOW: no console flashes up behind the dialog.
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let output = tokio::process::Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-STA", "-Command", SCRIPT])
+        .env("LOA_FOLDER_START", &start)
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .await
+        .map_err(|error| format!("The folder dialog failed: {error}"))?;
+    if !output.status.success() {
+        return Err(format!("The folder dialog failed: {}", String::from_utf8_lossy(&output.stderr).trim()));
+    }
+    let chosen = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    Ok((!chosen.is_empty()).then(|| PathBuf::from(chosen)))
+}
+
 /// Asks for a folder with the desktop's folder dialog: zenity (GNOME), else
 /// kdialog (KDE). `Ok(None)` when the dialog was cancelled.
+#[cfg(not(windows))]
 pub(crate) async fn choose_folder(start: PathBuf) -> Result<Option<PathBuf>, String> {
     let start = format!("{}/", start.display());
     let dialogs: [(&str, Vec<&str>); 2] = [
