@@ -19,7 +19,7 @@ use loa_harness::omp::config::OmpConfig;
 use crate::keys::{self, EnvironmentPresence, KeySource, ProcessEnvironment};
 use loa_contracts::harness::{HarnessAccount, LoginKind, SignInState};
 use crate::login::{Auth, LoginControl, LoginStrategy, ProviderEntry, ProviderKey, UrlOpener};
-use loa_harness::omp::models::ModelsYml;
+use crate::models_yml::ModelsYml;
 use loa_harness::omp::account::{OmpAccount, OmpFiles, OmpLaunch, OmpService};
 use loa_harness::account_support::opener::SystemUrlOpener;
 use loa_harness::account_support::process::TokioProcessRunner;
@@ -112,8 +112,10 @@ struct Inner {
     /// omp's login providers from the last listing, for display names and
     /// to start logins.
     login_providers: Mutex<Vec<LoginProvider>>,
-    /// Controls of the running logins.
-    logins: Mutex<HashMap<ProviderKey, UnboundedSender<LoginControl>>>,
+    /// Controls of the running logins, tagged with the login that registered
+    /// them so a finished login never removes its replacement's controls.
+    logins: Mutex<HashMap<ProviderKey, (u64, UnboundedSender<LoginControl>)>>,
+    next_login: std::sync::atomic::AtomicU64,
     loaded: tokio::sync::Mutex<Option<Loaded>>,
 }
 
@@ -196,6 +198,7 @@ impl Backend {
                 environment,
                 login_providers: Mutex::default(),
                 logins: Mutex::default(),
+                next_login: std::sync::atomic::AtomicU64::new(0),
                 loaded: tokio::sync::Mutex::new(None),
             }),
         }
@@ -330,11 +333,15 @@ impl Backend {
     pub fn login(&self, key: ProviderKey) -> UnboundedReceiver<LoginUpdate> {
         let backend = self.clone();
         let (control_tx, control_rx) = unbounded_channel();
-        backend.inner.logins.locked().insert(key.clone(), control_tx);
+        let generation = backend.inner.next_login.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        backend.inner.logins.locked().insert(key.clone(), (generation, control_tx));
         let (update_tx, update_rx) = unbounded_channel();
         tokio::spawn(async move {
             backend.run_login(key.clone(), control_rx, update_tx).await;
-            backend.inner.logins.locked().remove(&key);
+            let mut logins = backend.inner.logins.locked();
+            if logins.get(&key).is_some_and(|(current, _)| *current == generation) {
+                logins.remove(&key);
+            }
         });
         update_rx
     }
@@ -397,14 +404,14 @@ impl Backend {
 
     /// Answers the running login's prompt of `key`.
     pub fn submit_input(&self, key: &ProviderKey, text: String) {
-        if let Some(control) = self.inner.logins.locked().get(key) {
+        if let Some((_, control)) = self.inner.logins.locked().get(key) {
             let _ = control.send(LoginControl::SubmitInput(text));
         }
     }
 
     /// Stops the running login of `key`.
     pub fn cancel(&self, key: &ProviderKey) {
-        if let Some(control) = self.inner.logins.locked().get(key) {
+        if let Some((_, control)) = self.inner.logins.locked().get(key) {
             let _ = control.send(LoginControl::Cancel);
         }
     }
@@ -550,6 +557,80 @@ fn catalog(available: &[rpc::ModelInfo], config: &OmpConfig, names: &HashMap<Str
         resolve_role(&a.role, &roles, available, 0).map(|model| RoleAssignment { role: a.role.clone(), model })
     }).collect();
     Ok(Catalog { models, roles })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use loa_contracts::harness::{AdapterError, CommandSpec, ModelSettings as AccountModel, SignInMethod};
+    use std::path::PathBuf;
+    use tokio::sync::mpsc;
+
+    /// A login that ends on Cancel, or when its controls close.
+    struct WaitLogin;
+
+    #[async_trait::async_trait]
+    impl LoginStrategy for WaitLogin {
+        async fn run(self: Box<Self>, mut controls: mpsc::Receiver<LoginControl>, updates: mpsc::Sender<LoginUpdate>) {
+            while let Some(control) = controls.recv().await {
+                if control == LoginControl::Cancel {
+                    let _ = updates.send(LoginUpdate::Cancelled).await;
+                    return;
+                }
+            }
+        }
+    }
+
+    struct FakeAccount;
+
+    #[async_trait::async_trait]
+    impl HarnessAccount for FakeAccount {
+        fn id(&self) -> &'static str { "fake" }
+        fn name(&self) -> &'static str { "Fake" }
+        async fn sign_in_state(&self) -> SignInState { SignInState::SignedIn { method: SignInMethod::Subscription } }
+        fn login(&self, _: LoginKind) -> Result<Box<dyn LoginStrategy>, AdapterError> { Ok(Box::new(WaitLogin)) }
+        fn logout_command(&self) -> Option<CommandSpec> { None }
+        fn efforts(&self) -> &'static [&'static str] { &[] }
+        fn config_path(&self) -> Option<PathBuf> { None }
+        fn read_model(&self) -> Result<AccountModel, AdapterError> { Ok(AccountModel::default()) }
+        fn write_model(&self, _: &AccountModel) -> Result<(), AdapterError> { Ok(()) }
+    }
+
+    struct NoValidation;
+
+    #[async_trait::async_trait]
+    impl SettingsValidator for NoValidation {
+        async fn check_config(&self, _: &str, _: &[(String, serde_json::Value)]) -> crate::settings::Result<()> { Ok(()) }
+        async fn check_models(&self, _: &str) -> crate::settings::Result<()> { Ok(()) }
+    }
+
+    struct NoBrowser;
+
+    impl UrlOpener for NoBrowser {
+        fn open_url(&self, _: &str) -> Result<(), String> { Ok(()) }
+    }
+
+    /// Single-threaded, so a finished login's cleanup runs before the test
+    /// sees its update channel close.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_replaced_login_finishing_keeps_the_new_logins_controls() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = Backend::new(Parts {
+            rpc: Arc::new(crate::testing::FakeOmp::default()),
+            files: OmpFiles::new(dir.path()),
+            validator: Arc::new(NoValidation),
+            opener: Arc::new(NoBrowser),
+            harnesses: vec![Arc::new(FakeAccount)],
+            environment: Arc::new(ProcessEnvironment),
+        });
+        let key = ProviderKey::new("fake", "fake");
+        let mut first = backend.login(key.clone());
+        let mut second = backend.login(key.clone());
+        // Registering the second login closed the first one's controls.
+        assert_eq!(first.recv().await, None);
+        backend.cancel(&key);
+        assert_eq!(second.recv().await, Some(LoginUpdate::Cancelled));
+    }
 }
 
 
