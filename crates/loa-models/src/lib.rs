@@ -32,7 +32,6 @@
 pub mod catalog;
 pub mod config;
 mod error;
-mod fsutil;
 pub mod harness;
 pub mod keys;
 pub mod login;

@@ -110,18 +110,11 @@ impl SettingsStore for FileSettingsStore {
 
     async fn save(&self, project: &str, settings: &ProjectSettings) -> Result<()> {
         let path = self.path(project);
-        let dir = self.dir.clone();
         let json = serde_json::to_vec_pretty(settings).map_err(|e| Error::Port(e.to_string()))?;
-        tokio::task::spawn_blocking(move || -> Result<()> {
-            std::fs::create_dir_all(&dir)?;
-            let mut file = tempfile::NamedTempFile::new_in(&dir)?;
-            std::io::Write::write_all(&mut file, &json)?;
-            file.as_file().sync_all()?;
-            file.persist(&path).map_err(|e| e.error)?;
-            Ok(())
-        })
-        .await
-        .map_err(|e| Error::Port(e.to_string()))?
+        tokio::task::spawn_blocking(move || loa_util::fs::write_atomic(&path, &json, None))
+            .await
+            .map_err(|e| Error::Port(e.to_string()))?
+            .map_err(Into::into)
     }
 }
 

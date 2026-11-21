@@ -26,7 +26,8 @@
 
 use std::path::Path;
 
-use crate::fsutil::Snapshot;
+use crate::error::{load_snapshot, save_snapshot};
+use loa_util::fs::Snapshot;
 use crate::rpc::ModelCost;
 use crate::validate::SettingsValidator;
 use crate::yaml::{Yaml, YamlDocument, get_path, ymap, ystr, ystrs};
@@ -589,7 +590,7 @@ pub struct ModelsYml {
 impl ModelsYml {
     /// Loads `path`; a missing file is an empty document.
     pub fn load(path: &Path) -> Result<Self> {
-        let (snapshot, text) = Snapshot::load(path)?;
+        let (snapshot, text) = load_snapshot(path)?;
         let doc = YamlDocument::parse(text.as_deref().unwrap_or(""), &path.display().to_string())?;
         Ok(Self { doc, snapshot })
     }
@@ -601,7 +602,7 @@ impl ModelsYml {
 
     /// Writes the edits atomically.
     pub fn save(&mut self) -> Result<()> {
-        self.snapshot.save(self.doc.text())
+        save_snapshot(&mut self.snapshot, self.doc.text())
     }
 
     /// Asks `validator` (omp itself) to load the edited file, then saves.

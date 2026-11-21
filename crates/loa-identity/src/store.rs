@@ -192,20 +192,9 @@ impl KeyStore for FileKeyStore {
     }
 
     fn store(&self, secret: &[u8]) -> Result<()> {
-        let dir = self.path.parent().unwrap_or(Path::new("."));
-        fs::create_dir_all(dir).map_err(|e| file_error(dir, &e))?;
         // Written to a private temporary file and renamed into place, so a
         // crash never leaves a truncated key behind.
-        let tmp = self.path.with_extension("key.tmp");
-        let mut options = fs::OpenOptions::new();
-        options.write(true).create(true).truncate(true);
-        #[cfg(unix)]
-        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-        let mut file = options.open(&tmp).map_err(|e| file_error(&tmp, &e))?;
-        io::Write::write_all(&mut file, secret).map_err(|e| file_error(&tmp, &e))?;
-        file.sync_all().map_err(|e| file_error(&tmp, &e))?;
-        drop(file);
-        fs::rename(&tmp, &self.path).map_err(|e| file_error(&self.path, &e))
+        loa_util::fs::write_atomic(&self.path, secret, Some(0o600)).map_err(|e| file_error(&self.path, &e))
     }
 }
 

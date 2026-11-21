@@ -12,8 +12,9 @@
 
 use crate::error::{Error, IoContext, Result};
 use crate::record::{self, CHECKPOINT_EVERY, Reader};
-use crate::snapshot::{self, sync_dir};
+use crate::snapshot;
 use loa_core::{Dom, Draft, Patch, Value, attr, now_ms};
+use loa_util::fs::sync_dir;
 use prost::Message as _;
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
@@ -146,9 +147,9 @@ impl Journal {
         let mut file = OpenOptions::new().read(true).append(true).create_new(true).open(&path).at(&path)?;
         file.write_all(&bytes).at(&path)?;
         file.sync_all().at(&path)?;
-        sync_dir(dir)?;
+        sync_dir(dir).at(dir)?;
         if let Some(root) = dir.parent().filter(|p| !p.as_os_str().is_empty()) {
-            sync_dir(root)?;
+            sync_dir(root).at(root)?;
         }
         let data_start = bytes.len() as u64;
         Ok(Self {
@@ -538,7 +539,7 @@ pub(crate) fn lock(dir: &Path) -> Result<File> {
 fn remove_temp_files(dir: &Path) -> Result<()> {
     for entry in fs::read_dir(dir).at(dir)? {
         let entry = entry.at(dir)?;
-        if entry.file_name().to_str().is_some_and(|n| n.ends_with(".tmp")) {
+        if entry.file_name().to_str().is_some_and(|n| n.ends_with(".tmp") || n.starts_with(".tmp")) {
             fs::remove_file(entry.path()).at(entry.path())?;
         }
     }

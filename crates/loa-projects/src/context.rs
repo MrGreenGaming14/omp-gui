@@ -176,11 +176,8 @@ pub fn deliver(
     Ok(Some(match way {
         ContextDelivery::SystemPrompt => Delivered::SystemPrompt(markdown),
         ContextDelivery::ContextFile => {
-            std::fs::create_dir_all(context_dir)?;
             let path = context_dir.join(CONTEXT_FILE_NAME);
-            let mut file = tempfile::NamedTempFile::new_in(context_dir)?;
-            std::io::Write::write_all(&mut file, markdown.as_bytes())?;
-            file.persist(&path).map_err(|e| e.error)?;
+            loa_util::fs::write_atomic(&path, markdown.as_bytes(), None)?;
             Delivered::ContextFile(path)
         }
         ContextDelivery::McpResource => Delivered::McpResource(McpResource {

@@ -14,7 +14,7 @@ use loa_util::time::now_secs;
 use loa_util::LockExt;
 use crate::decision::{self, HoldChoice};
 use crate::feeds::{self, FeedError, FeedResponse, GitHubFeed, NpmFeed, RateLimit};
-use crate::fsio;
+use loa_util::fs::write_atomic;
 use crate::gates::{
     self, ChangelogGate, CheckResult, FormatGate, GateCheck, GateInputs, GateReport, OmpProbe,
     OmpReadyProbe, OmpSmolSummarizer, RpcGate, ToolGate, UsedTools,
@@ -935,7 +935,7 @@ impl Updater {
         let path = layout::cache_path(&self.inner.config.root);
         let bytes = serde_json::to_vec(&*self.inner.cache.locked())
             .map_err(|e| UpdaterError::Cache { path: path.clone(), source: io::Error::other(e) })?;
-        fsio::write_atomic(&path, &bytes).map_err(|source| UpdaterError::Cache { path, source })
+        write_atomic(&path, &bytes, None).map_err(|source| UpdaterError::Cache { path, source })
     }
 }
 

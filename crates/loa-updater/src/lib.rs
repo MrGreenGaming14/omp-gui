@@ -8,7 +8,6 @@
 //! updates must pass [`signature`] verification before the swap. [`peers`]
 //! classifies peers by version for the Peers list.
 
-mod fsio;
 
 pub mod decision;
 pub mod feeds;

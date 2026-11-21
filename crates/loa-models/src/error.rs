@@ -1,4 +1,7 @@
-use std::path::PathBuf;
+use std::io;
+use std::path::{Path, PathBuf};
+
+use loa_util::fs::{self, Snapshot};
 
 use crate::rpc::RpcError;
 
@@ -57,3 +60,31 @@ impl Error {
 
 /// Result with this crate's [`Error`] as the default error type.
 pub type Result<T, E = Error> = std::result::Result<T, E>;
+
+/// `bytes` read from `path` as UTF-8 text.
+fn text(path: &Path, bytes: Option<&[u8]>) -> Result<Option<String>> {
+    let utf8 = |b: &[u8]| String::from_utf8(b.to_vec()).map_err(|e| Error::io(path, io::Error::new(io::ErrorKind::InvalidData, e)));
+    bytes.map(utf8).transpose()
+}
+
+/// Reads `path` as text, `None` when it does not exist.
+pub(crate) fn read_optional(path: &Path) -> Result<Option<String>> {
+    text(path, fs::read_optional(path).map_err(|e| Error::io(path, e))?.as_deref())
+}
+
+/// Loads `path` and its text, remembering what was seen for [`save_snapshot`].
+pub(crate) fn load_snapshot(path: &Path) -> Result<(Snapshot, Option<String>)> {
+    let snapshot = Snapshot::load(path).map_err(|e| Error::io(path, e))?;
+    let text = text(path, snapshot.contents())?;
+    Ok((snapshot, text))
+}
+
+/// Writes `text` atomically unless the file changed since it was loaded.
+pub(crate) fn save_snapshot(snapshot: &mut Snapshot, text: &str) -> Result<()> {
+    let path = snapshot.path().to_path_buf();
+    match snapshot.save(text.as_bytes()) {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(Error::ChangedOnDisk { path }),
+        Err(e) => Err(Error::io(path, e)),
+    }
+}

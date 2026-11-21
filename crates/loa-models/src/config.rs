@@ -17,7 +17,8 @@
 
 use std::path::Path;
 
-use crate::fsutil::Snapshot;
+use crate::error::{load_snapshot, save_snapshot};
+use loa_util::fs::Snapshot;
 use crate::validate::SettingsValidator;
 use crate::yaml::{Yaml, YamlDocument, ymap, ystr, ystrs};
 use crate::{Error, Result};
@@ -284,7 +285,7 @@ pub struct OmpConfig {
 impl OmpConfig {
     /// Loads `path`; a missing file is an empty config.
     pub fn load(path: &Path) -> Result<Self> {
-        let (snapshot, text) = Snapshot::load(path)?;
+        let (snapshot, text) = load_snapshot(path)?;
         let doc = YamlDocument::parse(text.as_deref().unwrap_or(""), &path.display().to_string())?;
         Ok(Self {
             doc,
@@ -305,7 +306,7 @@ impl OmpConfig {
 
     /// Writes the edits atomically.
     pub fn save(&mut self) -> Result<()> {
-        self.snapshot.save(self.doc.text())?;
+        save_snapshot(&mut self.snapshot, self.doc.text())?;
         self.touched.clear();
         Ok(())
     }

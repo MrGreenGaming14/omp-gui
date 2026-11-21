@@ -4,7 +4,7 @@
 //! signature as lowercase hex text, optionally followed by a newline. The
 //! signed message is the 32-byte SHA-256 digest of the artifact.
 
-use crate::fsio;
+use loa_util::fs::write_atomic;
 use crate::layout::Staged;
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use sha2::{Digest, Sha256};
@@ -71,7 +71,7 @@ pub fn sign_artifact(key: &SigningKey, artifact: &Path) -> Result<PathBuf> {
     let signature = sign_digest(key, &digest);
     let path = signature_path(artifact);
     let text = format!("{}\n", hex::encode(signature.to_bytes()));
-    fsio::write_atomic(&path, text.as_bytes())
+    write_atomic(&path, text.as_bytes(), None)
         .map_err(|source| SignatureError::Io { path: path.clone(), source })?;
     Ok(path)
 }

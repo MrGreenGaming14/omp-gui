@@ -10,7 +10,7 @@ use serde_json::{Map, Value};
 
 use super::jsonedit;
 use super::{HarnessAuth, HarnessId, LoginKind, SignInMethod, SignInState, validate_model_name};
-use crate::fsutil::{Snapshot, read_optional};
+use crate::error::{load_snapshot, read_optional, save_snapshot};
 use crate::process::{CommandSpec, ProcessRunner, RunningProcess};
 use crate::{Error, Result};
 
@@ -194,13 +194,13 @@ impl ClaudeCode {
     /// Loads the settings, applies `edit` to the text and saves it atomically
     /// unless nothing changed. A missing file is an empty object.
     fn edit(&self, edit: impl FnOnce(&str, &str) -> Result<String>) -> Result<()> {
-        let (mut snapshot, text) = Snapshot::load(&self.settings_path)?;
+        let (mut snapshot, text) = load_snapshot(&self.settings_path)?;
         let original = text.unwrap_or_default();
         let edited = edit(&original, &self.what())?;
         if edited == original {
             return Ok(());
         }
-        snapshot.save(&edited)
+        save_snapshot(&mut snapshot, &edited)
     }
 }
 

@@ -4779,6 +4779,7 @@ version = "0.1.0"
 dependencies = [
  "loa-adapter",
  "loa-core",
+ "loa-util",
  "serde",
  "serde_ignored",
  "serde_json",
