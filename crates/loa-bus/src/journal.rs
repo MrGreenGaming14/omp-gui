@@ -147,24 +147,39 @@ impl Journal {
             sync_dir(root).at(root)?;
         }
         let data_start = bytes.len() as u64;
-        Ok(Self {
-            dir: dir.to_owned(),
-            path,
-            file,
-            _lock: lock,
+        let found = Recovered {
             session_id: session_id.to_owned(),
             parent,
-            options,
             data_start,
+            file_len: data_start,
             end: data_start,
             last_seq: 0,
             last_record: None,
             checkpoints: BTreeMap::from([(1, data_start)]),
             snapshots: Vec::new(),
+        };
+        Ok(Self::assemble(dir, file, lock, found, options))
+    }
+
+    fn assemble(dir: &Path, file: File, lock: File, found: Recovered, options: JournalOptions) -> Self {
+        Self {
+            dir: dir.to_owned(),
+            path: dir.join(JOURNAL_FILE),
+            file,
+            _lock: lock,
+            session_id: found.session_id,
+            parent: found.parent,
+            options,
+            data_start: found.data_start,
+            end: found.end,
+            last_seq: found.last_seq,
+            last_record: found.last_record,
+            checkpoints: found.checkpoints,
+            snapshots: found.snapshots,
             dirty: false,
             damaged: false,
             buf: Vec::new(),
-        })
+        }
     }
 
     /// Opens the session in `dir` for writing.
@@ -185,25 +200,7 @@ impl Journal {
             None
         };
         remove_temp_files(dir)?;
-        let journal = Self {
-            dir: dir.to_owned(),
-            path,
-            file,
-            _lock: lock,
-            session_id: found.session_id,
-            parent: found.parent,
-            options,
-            data_start: found.data_start,
-            end: found.end,
-            last_seq: found.last_seq,
-            last_record: found.last_record,
-            checkpoints: found.checkpoints,
-            snapshots: found.snapshots,
-            dirty: false,
-            damaged: false,
-            buf: Vec::new(),
-        };
-        Ok((journal, truncation))
+        Ok((Self::assemble(dir, file, lock, found, options), truncation))
     }
 
     /// Reads the id, fork link and last sequence of the session in `dir`
