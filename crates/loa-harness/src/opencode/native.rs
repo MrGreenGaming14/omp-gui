@@ -8,9 +8,9 @@
 //! attribute for travels in `x-oc` or `<ext>` text, so exporting an imported
 //! session gives back an equal JSON document.
 
-use crate::ids;
-use crate::json;
-use crate::mapper::{EventMapper, HARNESS, RootInfo, ext, xattr};
+use super::ids;
+use super::json;
+use super::mapper::{EventMapper, HARNESS, RootInfo, ext, xattr};
 use loa_contracts::harness::{AdapterError, Result};
 use loa_core::{CallStatus, Dom, ElementKind as K, MessageKind, Node, NodeId, PatchSink, attr};
 use serde::Deserialize;

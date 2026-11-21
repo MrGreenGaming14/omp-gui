@@ -30,7 +30,7 @@ pub const KNOWN: [(&str, &str); 6] = [
     ("omp", "omp"),
     (loa_harness::claude::HARNESS, "Claude Code"),
     (loa_harness::codex::HARNESS, "Codex"),
-    (loa_adapter_opencode::mapper::HARNESS, "OpenCode"),
+    (loa_harness::opencode::mapper::HARNESS, "OpenCode"),
     (loa_harness::acp::HARNESS, "ACP"),
     (loa_adapter_omp2::HARNESS, "omp2"),
 ];
@@ -110,8 +110,8 @@ impl Harnesses {
                 let program = executable.clone().unwrap_or_else(|| "codex".into());
                 (Arc::new(loa_harness::codex::CodexAdapter::new(node).with_executable(program.clone())), Some(program))
             }
-            loa_adapter_opencode::mapper::HARNESS => {
-                (Arc::new(loa_adapter_opencode::OpenCodeAdapter::new(OPENCODE_URL.to_owned(), None)), None)
+            loa_harness::opencode::mapper::HARNESS => {
+                (Arc::new(loa_harness::opencode::OpenCodeAdapter::new(OPENCODE_URL.to_owned(), None)), None)
             }
             loa_harness::acp::HARNESS => {
                 let (program, args) = acp_agent(executable.as_deref());

@@ -13,9 +13,8 @@ loa-contracts.workspace = true
 loa-bus = { path = "../loa-bus" }
 loa-features = { path = "../loa-features" }
 loa-config = { path = "../loa-config" }
-loa-harness = { workspace = true, features = ["omp", "acp", "claude", "codex"] }
+loa-harness = { workspace = true, features = ["omp", "acp", "claude", "codex", "opencode"] }
 loa-adapter-omp2 = { path = "../loa-adapter-omp2" }
-loa-adapter-opencode = { path = "../loa-adapter-opencode" }
 tokio.workspace = true
 loa-ui-shell = { path = "../loa-ui-shell" }
 loa-ui-chat = { path = "../loa-ui-chat" }

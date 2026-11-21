@@ -4587,24 +4587,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "loa-adapter-opencode"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "axum",
- "futures",
- "loa-contracts",
- "loa-core",
- "loa-util",
- "reqwest",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "loa-app"
 version = "0.1.0"
 dependencies = [
@@ -4617,7 +4599,6 @@ dependencies = [
  "iced_test",
  "image",
  "loa-adapter-omp2",
- "loa-adapter-opencode",
  "loa-bus",
  "loa-config",
  "loa-contracts",
@@ -4736,11 +4717,14 @@ name = "loa-harness"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "axum",
  "base64 0.23.1",
+ "futures",
  "loa-contracts",
  "loa-core",
  "loa-harness",
  "loa-util",
+ "reqwest",
  "serde",
  "serde_json",
  "tempfile",

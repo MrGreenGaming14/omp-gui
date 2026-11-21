@@ -252,7 +252,7 @@ impl State {
         if let Some(version) = version {
             body = body.push(text(format!("Version {version}")).size(panel_style::TEXT_SIZE).style(panel_style::muted));
         }
-        if id == loa_adapter_opencode::mapper::HARNESS {
+        if id == loa_harness::opencode::mapper::HARNESS {
             body = body.push(text(format!("Server {OPENCODE_URL}")).size(panel_style::TEXT_SIZE).style(panel_style::muted));
         } else {
             if let Some(executable) = &harness.executable {

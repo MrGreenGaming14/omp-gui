@@ -1,10 +1,10 @@
 //! An attached OpenCode server session and its event-stream worker.
 
 use loa_util::LockExt;
-use crate::client::{Client, EventStream, ServerAuth};
-use crate::ids;
-use crate::mapper::{ChildSessions, EventMapper, Reply, RootInfo};
-use crate::native;
+use super::client::{Client, EventStream, ServerAuth};
+use super::ids;
+use super::mapper::{ChildSessions, EventMapper, Reply, RootInfo};
+use super::native;
 use async_trait::async_trait;
 use loa_contracts::harness::{Adapter, AdapterError, Answer, Availability, AvailabilityStatus, Capabilities, ContextDelivery, Feature, HarnessModel, HarnessSession, ModelSelection, ModelSwitch, Prompt, Result, SessionConfig, SessionState};
 use loa_core::{DecisionKind, Dom, NodeId, PatchSink, SCHEMA_VERSION, SessionMode, attr, now_ms};

@@ -17,10 +17,10 @@
 //! - a finished summary message (compaction) adds `<compaction>` to the session
 //!
 //! Native fields that no schema attribute holds are kept as compact JSON in
-//! `x-oc`, so [`crate::native::export`] rebuilds the native objects exactly.
+//! `x-oc`, so [`super::native::export`] rebuilds the native objects exactly.
 
-use crate::event::{Event, PartDelta, PermissionRequest, QuestionRequest, Todo, ToolRef};
-use crate::json;
+use super::event::{Event, PartDelta, PermissionRequest, QuestionRequest, Todo, ToolRef};
+use super::json;
 use loa_contracts::harness::{AdapterError, Answer, Result, SessionState};
 use loa_core::{
     CallStatus, DecisionKind, DecisionStatus, Dom, Draft, ElementKind as K, JobKind, JobStatus, MessageKind,

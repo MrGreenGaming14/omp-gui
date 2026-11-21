@@ -4,8 +4,8 @@
 //! instance on the server, and HTTP basic auth when the server has a password
 //! (`OPENCODE_SERVER_PASSWORD`).
 
-use crate::event::{Event, SseDecoder};
-use crate::native::WithParts;
+use super::event::{Event, SseDecoder};
+use super::native::WithParts;
 use loa_contracts::harness::{AdapterError, Result};
 use reqwest::{Method, RequestBuilder, Response, StatusCode};
 use serde_json::{Value as Json, json};
