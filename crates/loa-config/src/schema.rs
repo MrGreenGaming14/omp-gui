@@ -588,7 +588,7 @@ impl Config {
     /// enabled MCP servers, the project's disabled built in tools and the
     /// harness executable override. Servers, tools and an executable the
     /// caller already set are kept. Disabled MCP tools are filtered by the MCP
-    /// client and written to native configs through [`crate::NativeConfigWriter`].
+    /// client.
     pub fn apply_to_session(&self, harness: &str, session: &mut loa_adapter::SessionConfig) {
         session.mcp_servers.extend(self.mcp_specs());
         if let Some(project) = session.project.as_deref().and_then(|p| self.projects.get(p)) {

@@ -25,12 +25,8 @@ pub(crate) fn version_of(doc: &Table) -> Result<u32> {
         .ok_or_else(|| invalid("version", format!("must be a non-negative integer, found {value}")))
 }
 
-/// Turns a migrated document of version `expected` into a validated [`Config`].
-pub(crate) fn decode(doc: Table, expected: u32) -> Result<Config> {
-    let found = version_of(&doc)?;
-    if found != expected {
-        return Err(invalid("version", format!("is {found}, expected {expected}")));
-    }
+/// Turns a document of the current version into a validated [`Config`].
+pub(crate) fn decode(doc: Table) -> Result<Config> {
     // The ignored keys are found during deserialization, which consumes the
     // document, so their values are looked up in this copy afterwards.
     let source = doc.clone();

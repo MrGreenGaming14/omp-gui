@@ -4690,22 +4690,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "loa-adapter-testkit"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "loa-adapter",
- "loa-core",
- "loa-util",
- "serde",
- "serde_json",
- "similar",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
-]
-
-[[package]]
 name = "loa-app"
 version = "0.1.0"
 dependencies = [
