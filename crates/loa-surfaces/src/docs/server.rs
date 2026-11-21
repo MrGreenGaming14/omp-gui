@@ -1,7 +1,7 @@
 //! The `docs` surface server: opens files as document mode surfaces.
 
 use loa_util::{LockExt, RwLockExt};
-use crate::docs::{DocsError, Fonts, Format, PageSize, Paged, Result, Rgba, open_pages};
+use crate::docs::{DocsError, Fonts, Format, PageSize, Paged, Result, Rgba, json, open_pages};
 use async_trait::async_trait;
 use bytes::Bytes;
 use loa_contracts::surface::{
