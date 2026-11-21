@@ -9,11 +9,23 @@ use tokio::sync::mpsc;
 /// Whether a harness has usable credentials.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SignInState {
-    /// `method` names the credential kind (subscription, api key, …).
-    SignedIn { method: String },
+    /// The kind of credentials in use.
+    SignedIn { method: SignInMethod },
     SignedOut,
     /// Never holds CLI output that could contain a credential.
     Unknown { reason: String },
+}
+
+/// The kind of credentials a harness is signed in with.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SignInMethod {
+    Subscription,
+    ApiKey,
+    ApiKeyHelper,
+    OAuthToken,
+    ThirdParty,
+    /// A safe harness-supplied method identifier, or `unknown`.
+    Other(String),
 }
 
 /// A way to sign in.
@@ -32,6 +44,27 @@ pub struct CommandSpec {
     pub args: Vec<String>,
     pub env: Vec<(String, String)>,
     pub current_dir: Option<PathBuf>,
+}
+
+impl CommandSpec {
+    /// Constructs a command with no extra environment or working directory.
+    pub fn new<I, S>(program: impl Into<PathBuf>, args: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        Self {
+            program: program.into(),
+            args: args.into_iter().map(Into::into).collect(),
+            env: Vec::new(),
+            current_dir: None,
+        }
+    }
+
+    /// The program as text, for error messages.
+    pub fn program_name(&self) -> String {
+        self.program.display().to_string()
+    }
 }
 
 /// The model and effort a harness is configured with outside any session.

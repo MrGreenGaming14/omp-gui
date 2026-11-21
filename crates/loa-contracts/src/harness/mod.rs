@@ -8,7 +8,7 @@ pub use crate::availability::{Availability, AvailabilityStatus};
 pub use crate::tools::OutputBlock;
 pub use account::{
     CommandSpec, HarnessAccount, HarnessFactory, HarnessTraits, LoginControl, LoginKind, LoginStrategy, LoginUpdate,
-    ModelSettings, SignInState,
+    ModelSettings, SignInMethod, SignInState,
 };
 pub use capabilities::{Capabilities, CapsBuilder, ContextDelivery, Feature, ModelSwitch};
 pub use host_tools::{DuplicateHostTool, HostToolRouter};

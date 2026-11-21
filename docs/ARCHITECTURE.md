@@ -34,7 +34,7 @@ Everything else builds on these three. Their existing public items change only w
 | `loa-surface-proto` | surfaces | `omp/surface/1` framing and datagrams, live H.264/HEVC video (app feature `remote-video`, off by default) |
 | `loa-surface-browser`, `-docs`, `-rfb` | surfaces | Built in surface servers |
 | `loa-surface-hub` | surfaces | The app's surface service: built-in servers, MCP declared surfaces, `surface_*` agent tools as host tools and a loopback MCP endpoint, `<surface>` drafts |
-| `loa-models` | models | Sign in, model listing and settings through omp and other harnesses |
+| `loa-models` | models | Sign in, model listing and settings through omp and other harnesses; shared harness sign-in and command data lives in `loa-contracts` |
 | `loa-projects` | projects | Digests, context ranking, `project_search`, `project_read`, project settings, `ProjectService` over the bus and journal |
 | `loa-trust` | p2p | One ed25519 node key (`PublicKey` converts to iroh, Biscuit and bus keys) behind the `KeyStore` port (OS keychain, falling back to a `0600` key file); Biscuit grants whose scope kinds (sessions, prompts, projects, future sessions, SSH hosts, surfaces, sandbox, folders) come from one `KINDS` table; renewal, narrowing |
 | `loa-net` | p2p | iroh endpoint on 31415, ALPNs, TCP fallback, relay, discovery |

@@ -1,6 +1,5 @@
 //! Process runner for harness CLIs.
 
-use std::path::PathBuf;
 use std::process::Stdio;
 
 use async_trait::async_trait;
@@ -8,39 +7,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::{Error, Result};
 
-/// A program invocation with arguments, extra environment and working directory.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CommandSpec {
-    /// Program to run; an absolute path or a name looked up on `PATH`.
-    pub program: PathBuf,
-    /// Arguments, without the program itself.
-    pub args: Vec<String>,
-    /// Environment variables set in addition to the inherited environment.
-    pub env: Vec<(String, String)>,
-    /// Working directory; `None` keeps the app's working directory.
-    pub current_dir: Option<PathBuf>,
-}
-
-impl CommandSpec {
-    /// Constructs a command with no extra environment or working directory.
-    pub fn new<I, S>(program: impl Into<PathBuf>, args: I) -> Self
-    where
-        I: IntoIterator<Item = S>,
-        S: Into<String>,
-    {
-        Self {
-            program: program.into(),
-            args: args.into_iter().map(Into::into).collect(),
-            env: Vec::new(),
-            current_dir: None,
-        }
-    }
-
-    /// The program as text, for error messages.
-    pub fn program_name(&self) -> String {
-        self.program.display().to_string()
-    }
-}
+pub use loa_contracts::harness::CommandSpec;
 
 /// What a finished process printed and how it exited.
 #[derive(Debug, Clone, PartialEq, Eq)]

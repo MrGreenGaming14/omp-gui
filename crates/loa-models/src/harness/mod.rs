@@ -26,55 +26,7 @@ pub enum HarnessId {
     Codex,
 }
 
-/// Whether a harness has usable credentials.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SignInState {
-    /// Credentials are present.
-    SignedIn {
-        /// The kind of credentials in use.
-        method: SignInMethod,
-    },
-    /// No credentials are present.
-    SignedOut,
-    /// The state could not be determined: the CLI could not be run, exited
-    /// abnormally or printed something this crate does not understand.
-    Unknown {
-        /// Why the state is unknown, for display. Never contains CLI output that
-        /// could hold a credential.
-        reason: String,
-    },
-}
-
-/// The kind of credentials a harness is signed in with.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SignInMethod {
-    /// A consumer subscription account (Claude.ai, ChatGPT).
-    Subscription,
-    /// An API key, from the environment or stored by the harness.
-    ApiKey,
-    /// A helper command that prints an API key (Claude Code `apiKeyHelper`).
-    ApiKeyHelper,
-    /// A long lived OAuth token (Claude Code `CLAUDE_CODE_OAUTH_TOKEN`).
-    OAuthToken,
-    /// A third party provider such as Bedrock or Vertex.
-    ThirdParty,
-    /// A method this crate does not map: the harness's own name for it, or
-    /// `unknown` when the harness did not name it in a form safe to keep.
-    Other(String),
-}
-
-/// A way to sign in to a harness.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum LoginKind {
-    /// Browser OAuth flow with the default account type.
-    Browser,
-    /// Device code flow for machines without a browser (Codex).
-    DeviceCode,
-    /// Anthropic Console account billed by API usage (Claude Code `--console`).
-    Console,
-    /// Single sign on (Claude Code `--sso`).
-    Sso,
-}
+pub use loa_contracts::harness::{LoginKind, SignInMethod, SignInState};
 
 /// Sign in state and login commands of one harness.
 #[async_trait]
