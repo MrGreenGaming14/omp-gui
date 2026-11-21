@@ -700,6 +700,8 @@ fn expand_tilde(value: &str, home: &Path) -> PathBuf {
         home.to_path_buf()
     } else if let Some(rest) = value.strip_prefix("~/") {
         home.join(rest)
+    } else if let Some(rest) = value.strip_prefix(r"~\").filter(|_| cfg!(windows)) {
+        home.join(rest)
     } else {
         PathBuf::from(value)
     }
@@ -847,6 +849,16 @@ mod tests {
         );
         assert_eq!(c.resolve("b", "me").unwrap().target.agent, AgentSocket::Disabled);
         assert_eq!(c.resolve("c", "me").unwrap().target.agent, AgentSocket::Default);
+    }
+
+    #[test]
+    fn identity_agent_keeps_the_named_pipe_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = parse("Host a\n  IdentityAgent \"\\\\.\\pipe\\openssh-ssh-agent\"\n", dir.path());
+        assert_eq!(
+            config.resolve("a", "me").unwrap().target.agent,
+            AgentSocket::Path(PathBuf::from(r"\\.\pipe\openssh-ssh-agent"))
+        );
     }
 
     #[test]

@@ -12,6 +12,12 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 
+/// The `sandbox_bash` call that overwrites `tracked.txt` with `changed`.
+#[cfg(unix)]
+const OVERWRITE_TRACKED: &str = r#"{"command":"printf 'changed\\n' > tracked.txt"}"#;
+#[cfg(windows)]
+const OVERWRITE_TRACKED: &str = r#"{"command":"echo changed> tracked.txt"}"#;
+
 /// A harness whose "model" writes one file through `sandbox_write`.
 struct ScriptedAdapter;
 
@@ -39,7 +45,7 @@ impl HarnessSession for ScriptedSession {
     async fn send(&self, _: Prompt) -> loa_adapter::Result<()> {
         self.tools.call(&self.id, "sandbox_write", r#"{"path":"notes/hello.txt","content":"from the sandbox\n"}"#)
             .await.map_err(AdapterError::Protocol)?;
-        self.tools.call(&self.id, "sandbox_bash", r#"{"command":"printf 'changed\\n' > tracked.txt"}"#)
+        self.tools.call(&self.id, "sandbox_bash", OVERWRITE_TRACKED)
             .await.map_err(AdapterError::Protocol)?;
         Ok(())
     }
@@ -104,8 +110,9 @@ async fn the_service_tool_runs_isolated_and_returns_the_patch() {
     }
 
     apply_patch(repo.path(), patch.as_bytes()).unwrap();
-    assert_eq!(std::fs::read_to_string(repo.path().join("notes/hello.txt")).unwrap(), "from the sandbox\n");
-    assert_eq!(std::fs::read_to_string(repo.path().join("tracked.txt")).unwrap(), "changed\n");
+    assert_eq!(std::fs::read_to_string(repo.path().join("notes/hello.txt")).unwrap().replace("\r\n", "\n"), "from the sandbox\n");
+    // cmd's `echo` ends lines with CRLF.
+    assert_eq!(std::fs::read_to_string(repo.path().join("tracked.txt")).unwrap().replace("\r\n", "\n"), "changed\n");
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -4,15 +4,15 @@
 //! RGBA in place, and diffed against the previous frame so a mostly static
 //! page sends only the band of rows that changed.
 
-use crate::frames::{FrameHub, InputLog, Picture, now_us};
+use crate::frames::{CaptureTarget, Picture, now_us};
 use crate::{BrowserError, Result};
 use bytes::Bytes;
 use loa_surface::{Encoding, Rect};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use std::time::Instant;
 use x11rb::connection::Connection;
 use x11rb::protocol::xproto::{ConnectionExt, ImageFormat, ImageOrder};
 use x11rb::rust_connection::{DefaultStream, RustConnection};
@@ -148,17 +148,6 @@ fn to_rgba(data: &mut [u8], layout: PixelLayout) {
     for pixel in data.as_chunks_mut::<4>().0 {
         *pixel = [pixel[layout.red], pixel[layout.green], pixel[layout.blue], 255];
     }
-}
-
-/// What the capture thread needs from its tab.
-pub(crate) struct CaptureTarget {
-    pub hub: Arc<FrameHub>,
-    pub log: Arc<Mutex<InputLog>>,
-    /// Surface size; the capture is clipped to it.
-    pub size: Arc<Mutex<(u32, u32)>>,
-    pub stop: AtomicBool,
-    pub keyframe: AtomicBool,
-    pub interval: Duration,
 }
 
 /// Captures on a thread of its own (x11rb is blocking) until `stop` is set
@@ -329,6 +318,10 @@ pub(crate) mod fake {
 mod tests {
     use super::fake::{Framebuffer, serve};
     use super::*;
+    use crate::frames::{FrameHub, InputLog};
+    use std::sync::atomic::AtomicBool;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
 
     #[test]
     fn captures_rgba_then_only_the_changed_rows_then_nothing() {

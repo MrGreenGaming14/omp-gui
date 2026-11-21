@@ -284,7 +284,7 @@ struct Outgoing<'a> {
 /// Runs `<executable> --version` and returns what it printed, trimmed.
 pub async fn omp_version(executable: impl Into<PathBuf>) -> Result<String> {
     let executable = executable.into();
-    let output = tokio::process::Command::new(&executable)
+    let output = tokio::process::Command::new(loa_exec::resolve(&executable))
         .arg("--version")
         .stdin(Stdio::null())
         .output()
@@ -308,7 +308,7 @@ fn spawn_error(err: std::io::Error, executable: &std::path::Path) -> RpcError {
 }
 
 fn spawn_child(opts: &SpawnOptions) -> Result<Child> {
-    let mut command = tokio::process::Command::new(&opts.executable);
+    let mut command = tokio::process::Command::new(loa_exec::resolve(&opts.executable));
     command.arg("--mode").arg(opts.mode.as_str());
     if opts.no_ui {
         command.arg("--no-ui");

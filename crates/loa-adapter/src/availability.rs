@@ -57,32 +57,10 @@ impl Availability {
 }
 
 /// `program` as a path when it names one (contains a separator), else the
-/// first executable with that name on `PATH`.
+/// first executable with that name on `PATH`; on Windows also tried with each
+/// `PATHEXT` extension. Thin wrapper over [`loa_exec::find_executable`].
 pub fn find_executable(program: &Path) -> Option<PathBuf> {
-    if program.components().count() > 1 {
-        return is_executable(program).then(|| program.to_owned());
-    }
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path).flat_map(|dir| candidates(&dir, program)).find(|file| is_executable(file))
-}
-
-fn candidates(dir: &Path, name: &Path) -> Vec<PathBuf> {
-    if cfg!(windows) {
-        ["exe", "cmd", "bat"].into_iter().map(|ext| dir.join(name).with_extension(ext)).collect()
-    } else {
-        vec![dir.join(name)]
-    }
-}
-
-#[cfg(unix)]
-fn is_executable(file: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    file.metadata().is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
-}
-
-#[cfg(not(unix))]
-fn is_executable(file: &Path) -> bool {
-    file.is_file()
+    loa_exec::find_executable(program)
 }
 
 /// Finds `program` and runs it with `version_args`: ready with the reported
@@ -161,12 +139,30 @@ mod tests {
         let ready = probe_cli(&script, &["--version"]).await;
         assert!(ready.is_ready(), "{ready:?}");
         assert_eq!(ready.version.as_deref(), Some("4.5.6"));
-        assert_eq!(ready.executable.as_deref(), Some(script.as_path()));
+        assert_eq!(ready.executable.as_deref(), Some(loa_exec::resolve(&script).as_path()));
 
         let broken = dir.path().join("broken-harness");
         loa_exec::write_executable(&broken, "#!/bin/sh\necho 'bad flag' >&2\nexit 3\n").unwrap();
         let failed = probe_cli(&broken, &["--version"]).await;
         assert_eq!(failed.status, AvailabilityStatus::Failed);
         assert!(failed.detail.unwrap().contains("bad flag"));
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn probe_finds_and_runs_a_cmd_shim_on_path() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("fake-npm-cli.cmd"), "@echo off\r\necho fake-npm-cli 7.8.9\r\n").unwrap();
+        let path = std::env::join_paths([dir.path()]).unwrap();
+        let found = loa_exec::find_executable_in(Path::new("fake-npm-cli"), Some(&path), None).unwrap();
+        assert_eq!(found, dir.path().join("fake-npm-cli.cmd"));
+        let ready = probe_cli(&found, &["--version"]).await;
+        assert!(ready.is_ready(), "{ready:?}");
+        assert_eq!(ready.version.as_deref(), Some("7.8.9"));
+    }
+
+    #[test]
+    fn missing_program_stays_unresolved() {
+        assert_eq!(find_executable(Path::new("loa-no-such-harness")), None);
     }
 }

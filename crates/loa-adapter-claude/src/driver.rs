@@ -410,7 +410,7 @@ impl ClaudeSession {
     /// Spawns the CLI and completes the `initialize` handshake.
     pub async fn launch(config: SessionConfig, mapper: Mapper, launch: &Launch) -> Result<Self> {
         let executable = config.executable.clone().unwrap_or_else(|| EXECUTABLE.into());
-        let mut command = Command::new(&executable);
+        let mut command = Command::new(loa_exec::resolve(&executable));
         command
             .args(command_args(&config, launch))
             .current_dir(&config.cwd)

@@ -63,6 +63,9 @@ impl VirtualDisplaySetup {
     /// Xvfb on `path_var` and a headed Chrome (search path, install
     /// locations, the Playwright cache under `home`), or what is missing.
     pub fn find(path_var: Option<&std::ffi::OsStr>, home: Option<&Path>) -> Result<Self, String> {
+        if !cfg!(target_os = "linux") {
+            return Err(loa_surface_browser::VIRTUAL_DISPLAY_UNAVAILABLE.to_owned());
+        }
         let xvfb = loa_surface_browser::find_xvfb(path_var)
             .ok_or_else(|| "Xvfb isn't installed (install the xvfb package)".to_owned())?;
         let chrome = loa_surface_browser::find_chrome(path_var, home, true)
@@ -84,7 +87,7 @@ impl HubConfig {
             config
         });
         let path = std::env::var_os("PATH");
-        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let home = loa_core::home_dir();
         Self {
             browser,
             fonts: Fonts::system(),

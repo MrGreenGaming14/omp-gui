@@ -782,6 +782,7 @@ impl FakeAgent {
         Self::start_with_key(dir, random_key()).await
     }
 
+    #[cfg(unix)]
     pub async fn start_with_key(dir: &Path, key: PrivateKey) -> Self {
         let socket = dir.join(format!("agent-{}.sock", rand::random::<u32>()));
         let listener = tokio::net::UnixListener::bind(&socket).unwrap();
@@ -792,6 +793,32 @@ impl FakeAgent {
         let mut client = AgentClient::connect_uds(&socket).await.unwrap();
         client.add_identity(&key, &[]).await.unwrap();
         Self { socket, key, task }
+    }
+
+    /// Windows agents listen on a named pipe; `socket` holds its name.
+    #[cfg(windows)]
+    pub async fn start_with_key(_dir: &Path, key: PrivateKey) -> Self {
+        use tokio::net::windows::named_pipe::ServerOptions;
+        let name = format!(r"\\.\pipe\loa-test-agent-{}", rand::random::<u32>());
+        let mut server = ServerOptions::new().first_pipe_instance(true).create(&name).unwrap();
+        let (sender, receiver) = tokio::sync::mpsc::channel(4);
+        let pipe = name.clone();
+        let accept = tokio::spawn(async move {
+            while server.connect().await.is_ok() {
+                let Ok(next) = ServerOptions::new().create(&pipe) else { return };
+                if sender.send(Ok::<_, std::io::Error>(std::mem::replace(&mut server, next))).await.is_err() {
+                    return;
+                }
+            }
+        });
+        let connections = tokio_stream::wrappers::ReceiverStream::new(receiver);
+        let task = tokio::spawn(async move {
+            let _ = russh::keys::agent::server::serve(connections, ()).await;
+            accept.abort();
+        });
+        let mut client = AgentClient::connect_named_pipe(&name).await.unwrap();
+        client.add_identity(&key, &[]).await.unwrap();
+        Self { socket: PathBuf::from(name), key, task }
     }
 
     pub fn public(&self) -> PublicKey {

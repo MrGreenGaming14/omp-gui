@@ -51,12 +51,12 @@ loa-ui-updates = { path = "../loa-ui-updates" }
 semver = "1"
 loa-sandbox = { path = "../loa-sandbox" }
 serde_json.workspace = true
+loa-exec = { path = "../loa-exec" }
 # Images pasted into the composer: read from the clipboard and saved as PNG.
 arboard = "3"
 image = { version = "0.25", default-features = false, features = ["png"] }
 
 [dev-dependencies]
-loa-exec = { path = "../loa-exec" }
 iced_runtime = "0.14"
 # The iced runtime's subscription tracker, to run the app's subscriptions in tests.
 iced_futures = "0.14"

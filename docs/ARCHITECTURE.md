@@ -38,7 +38,7 @@ Everything else builds on these three. Their existing public items change only w
 | `loa-surface-hub` | surfaces | The app's surface service: built-in servers, MCP declared surfaces, `surface_*` agent tools as host tools and a loopback MCP endpoint, `<surface>` drafts |
 | `loa-models` | models | Sign in, model listing and settings through omp and other harnesses |
 | `loa-projects` | projects | Digests, context ranking, `project_search`, `project_read`, project settings, `ProjectService` over the bus and journal |
-| `loa-identity` | p2p | Node ed25519 key in the OS keychain, a `0600` key file in the data directory when no keychain is usable |
+| `loa-identity` | p2p | Node ed25519 key in the OS keychain, with a private key file fallback (`0600` on Unix, a protected current-user DACL on Windows) |
 | `loa-grants` | p2p | Biscuit grants, scopes (sessions, prompts, projects, future sessions, SSH hosts, surfaces, sandbox, folders), renewal, narrowing |
 | `loa-net` | p2p | iroh endpoint on 31415, ALPNs, TCP fallback, relay, discovery |
 | `loa-share` | p2p | Session replication, view and drive, fork to own node |
@@ -150,6 +150,6 @@ SQLite through `rusqlite` with the bundled library. Each crate owns its tables a
 
 ## Secrets
 
-- The node's private key lives in the OS keychain
-- SSH private keys are never read. Authentication goes through `ssh-agent`
+- The node's private key lives in the OS keychain when usable; the private file fallback is under the app data directory
+- SSH private keys are never read. Authentication goes through `ssh-agent` (the OpenSSH agent pipe by default on Windows)
 - Provider credentials stay in each harness's own store. The app never sees them

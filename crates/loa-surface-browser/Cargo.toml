@@ -6,7 +6,9 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+loa-core.workspace = true
 loa-surface.workspace = true
+loa-exec = { path = "../loa-exec" }
 async-trait.workspace = true
 bytes.workspace = true
 futures.workspace = true
@@ -18,8 +20,7 @@ tokio.workspace = true
 tracing.workspace = true
 base64 = "0.22"
 chromiumoxide = { version = "0.9", default-features = false, features = ["bytes", "rustls", "zip8"] }
-x11rb = "0.13"
 jpeg-decoder = { version = "0.3", default-features = false }
 
-[dev-dependencies]
-loa-exec = { path = "../loa-exec" }
+[target.'cfg(target_os = "linux")'.dependencies]
+x11rb = "0.13"

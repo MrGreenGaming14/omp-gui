@@ -6,6 +6,7 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+loa-exec = { path = "../loa-exec" }
 async-trait.workspace = true
 base64 = "0.22"
 bytes.workspace = true
@@ -34,6 +35,9 @@ tracing.workspace = true
 url = "2"
 webpki-roots = "1"
 
+[target.'cfg(windows)'.dependencies]
+process-wrap = { version = "10", default-features = false, features = ["tokio1", "job-object", "kill-on-drop"] }
+
 [dev-dependencies]
 axum = "0.8"
 libtest-mimic = "0.8"
@@ -42,6 +46,9 @@ loa-core.workspace = true
 rmcp = { version = "3.11", features = ["server", "macros", "transport-io", "transport-streamable-http-server"] }
 schemars = "1"
 tempfile.workspace = true
+
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }
 
 [[test]]
 name = "client"

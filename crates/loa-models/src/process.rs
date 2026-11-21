@@ -109,7 +109,7 @@ pub struct TokioProcessRunner;
 
 impl TokioProcessRunner {
     fn command(spec: &CommandSpec) -> tokio::process::Command {
-        let mut cmd = tokio::process::Command::new(&spec.program);
+        let mut cmd = tokio::process::Command::new(loa_exec::resolve(&spec.program));
         cmd.args(&spec.args);
         cmd.envs(spec.env.iter().map(|(k, v)| (k, v)));
         if let Some(dir) = &spec.current_dir {
@@ -219,7 +219,7 @@ pub(crate) mod testutil {
     pub(crate) fn fake_program(dir: &Path, name: &str, body: &str) -> PathBuf {
         let path = dir.join(name);
         loa_exec::write_executable(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-        path
+        loa_exec::resolve(&path)
     }
 }
 
@@ -251,7 +251,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let work = dir.path().join("work");
         std::fs::create_dir(&work).unwrap();
-        let prog = fake_program(dir.path(), "tool", "pwd");
+        // `pwd -W` is Git Bash's spelling of the Windows path; other shells reject it.
+        let prog = fake_program(dir.path(), "tool", "pwd -W 2>/dev/null || pwd");
         let mut spec = CommandSpec::new(&prog, Vec::<String>::new());
         spec.current_dir = Some(work.clone());
         let out = TokioProcessRunner.output(&spec).await.unwrap();
@@ -298,6 +299,10 @@ mod tests {
         let mut proc = TokioProcessRunner.spawn(&spec).await.unwrap();
         let _stdin = proc.take_stdin().unwrap();
         proc.kill().await.unwrap();
-        assert_eq!(proc.wait().await.unwrap(), None);
+        let exit = proc.wait().await.unwrap();
+        #[cfg(unix)]
+        assert_eq!(exit, None);
+        #[cfg(windows)]
+        assert!(exit.is_some_and(|code| code != 0), "{exit:?}");
     }
 }

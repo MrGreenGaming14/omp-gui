@@ -18,6 +18,7 @@ host = [
     "dep:thiserror",
     "dep:tokio",
     "dep:tempfile",
+    "dep:loa-exec",
 ]
 
 [dependencies]
@@ -29,6 +30,7 @@ serde_json = { workspace = true, optional = true }
 thiserror = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
 tempfile = { workspace = true, optional = true }
+loa-exec = { path = "../loa-exec", optional = true }
 
 [dev-dependencies]
 loa-exec = { path = "../loa-exec" }

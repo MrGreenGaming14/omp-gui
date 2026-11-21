@@ -18,7 +18,7 @@ pub const PATIENCE: Duration = Duration::from_secs(15);
 
 pub fn chrome() -> Option<PathBuf> {
     let path = std::env::var_os("PATH");
-    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let home = loa_core::home_dir();
     let found = find_chrome(path.as_deref(), home.as_deref(), false);
     if found.is_none() {
         eprintln!("SKIPPED: no Chrome or Chromium found on PATH or in ~/.cache/ms-playwright");

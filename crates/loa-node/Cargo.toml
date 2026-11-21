@@ -6,6 +6,7 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+loa-exec = { path = "../loa-exec" }
 loa-core.workspace = true
 loa-bus = { path = "../loa-bus" }
 loa-journal = { path = "../loa-journal" }

@@ -540,14 +540,20 @@ mod tests {
         calls: Mutex<HashMap<PathBuf, usize>>,
     }
 
+    /// An absolute path for the platform: `/r` is `C:/r` on Windows, where a
+    /// path with no drive is relative.
+    fn abs(path: &str) -> PathBuf {
+        if cfg!(windows) { PathBuf::from(format!("C:{path}")) } else { PathBuf::from(path) }
+    }
+
     impl FakeFs {
         fn put(&self, dir: &str, entries: &[(&str, bool)]) {
             let entries = entries.iter().map(|&(name, is_dir)| Entry { name: name.to_owned(), is_dir }).collect();
-            self.tree.lock().unwrap().insert(PathBuf::from(dir), entries);
+            self.tree.lock().unwrap().insert(abs(dir), entries);
         }
 
         fn calls(&self, dir: &str) -> usize {
-            self.calls.lock().unwrap().get(Path::new(dir)).copied().unwrap_or(0)
+            self.calls.lock().unwrap().get(&abs(dir)).copied().unwrap_or(0)
         }
     }
 
@@ -569,16 +575,23 @@ mod tests {
         fs.put("/r/src", &[("main.rs", false), ("lib", true)]);
         fs.put("/r/src/lib", &[("x.rs", false)]);
         fs.put("/r/a", &[]);
-        let state = State::new(PathBuf::from("/r"), Box::new(Arc::clone(&fs)));
+        let state = State::new(abs("/r"), Box::new(Arc::clone(&fs)));
         (state, fs)
     }
 
-    fn visible(state: &State) -> Vec<&str> {
-        state.visible().map(|path| path.to_str().unwrap()).collect()
+    /// Relative paths shown with `/` so expectations read the same on every
+    /// platform; the product itself shows native separators.
+    fn portable(path: &Path) -> String {
+        path.to_str().unwrap().replace(std::path::MAIN_SEPARATOR, "/")
     }
 
-    fn selected(state: &State) -> Option<&str> {
-        state.selected_path().map(|path| path.to_str().unwrap())
+    fn visible(state: &State) -> Vec<String> {
+        state.visible().map(portable).collect()
+    }
+
+    fn selected(state: &State) -> Option<&'static str> {
+        // Leaked: test-only, lets expectations stay `Some("src/lib")`.
+        state.selected_path().map(|path| &*portable(path).leak())
     }
 
     fn nav(state: &mut State, nav: Nav) -> Option<Event> {
@@ -599,8 +612,8 @@ mod tests {
         let (mut state, fs) = fixture();
         click(&mut state, "src");
         fs.put("/q", &[("only.txt", false)]);
-        state.set_root(PathBuf::from("/q"));
-        assert_eq!(state.root(), Path::new("/q"));
+        state.set_root(abs("/q"));
+        assert_eq!(state.root(), abs("/q"));
         assert_eq!(visible(&state), ["only.txt"]);
         assert_eq!(selected(&state), None);
         assert_eq!(fs.calls("/q"), 1);
@@ -680,8 +693,8 @@ mod tests {
 
         nav(&mut state, Nav::Down);
         nav(&mut state, Nav::Down);
-        assert_eq!(nav(&mut state, Nav::Activate), Some(Event::Open(PathBuf::from("/r/src/main.rs"))));
-        assert_eq!(click(&mut state, "Z.md"), Some(Event::Open(PathBuf::from("/r/Z.md"))));
+        assert_eq!(nav(&mut state, Nav::Activate), Some(Event::Open(abs("/r/src/main.rs"))));
+        assert_eq!(click(&mut state, "Z.md"), Some(Event::Open(abs("/r/Z.md"))));
         assert_eq!(selected(&state), Some("Z.md"));
     }
 

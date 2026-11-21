@@ -394,7 +394,7 @@ fn a_granted_folder_is_browsed_read_and_written_only_inside_and_only_with_drive(
     add_peer(&rt, &mut guest, &owner, owner_port);
     add_peer(&rt, &mut owner, &guest, guest_port);
 
-    let base = std::fs::canonicalize(files.path()).unwrap();
+    let base = loa_exec::canonicalize(files.path()).unwrap();
     let share = base.join("share");
     std::fs::create_dir_all(share.join("docs")).unwrap();
     std::fs::write(share.join("docs/plan.md"), "# Plan\nship it\n").unwrap();

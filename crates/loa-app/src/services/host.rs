@@ -19,7 +19,7 @@ pub fn hostname() -> String {
 /// else `%APPDATA%\loa`, else under the temp directory. Not created here.
 pub fn data_dir() -> PathBuf {
     let base = env_dir("XDG_DATA_HOME")
-        .or_else(|| env_dir("HOME").map(|home| home.join(".local").join("share")))
+        .or_else(|| loa_core::home_dir().map(|home| home.join(".local").join("share")))
         .or_else(|| env_dir("APPDATA"))
         .unwrap_or_else(std::env::temp_dir);
     base.join("loa")

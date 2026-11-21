@@ -62,7 +62,7 @@ impl Omp2Adapter {
         if config.model_role.is_some() || config.mode.is_some_and(|mode| mode != SessionMode::Normal) {
             return Err(AdapterError::Unsupported { harness: HARNESS, what: "model roles or mode over omp2 RPC" });
         }
-        let mut command = Command::new(self.executable(config));
+        let mut command = Command::new(loa_exec::resolve(self.executable(config)));
         command.args(wire::RPC_ARGS).current_dir(&config.cwd)
             .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
         if let Some(native) = resume {

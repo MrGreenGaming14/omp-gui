@@ -237,7 +237,7 @@ fn resolve(node: &Node, grants: &[VerifiedGrant], op: Op, folder: &str, path: &s
     if !covered(node, grants, action, folder) {
         return Err(format!("no grant lets this node {} {folder}", if action == Action::Write { "write to" } else { "read" }));
     }
-    let root = std::fs::canonicalize(folder).map_err(|error| format!("{folder} can't be opened: {error}"))?;
+    let root = loa_exec::canonicalize(folder).map_err(|error| format!("{folder} can't be opened: {error}"))?;
     let real = root.to_str().ok_or_else(|| format!("{folder} isn't a UTF-8 path"))?;
     if !covered(node, grants, action, real) {
         return Err(format!("{folder} leads outside the shared folder"));
@@ -263,12 +263,12 @@ pub(crate) fn confine(root: &Path, relative: &str, write: bool) -> std::result::
         }
     }
     if !write {
-        let real = std::fs::canonicalize(&joined).map_err(|error| format!("{relative}: {error}"))?;
+        let real = loa_exec::canonicalize(&joined).map_err(|error| format!("{relative}: {error}"))?;
         return if real.starts_with(root) { Ok(real) } else { Err(outside()) };
     }
     let name = name.ok_or_else(|| "name a file to write".to_owned())?;
     let parent = joined.parent().unwrap_or(root);
-    let parent = std::fs::canonicalize(parent).map_err(|error| format!("{relative}: {error}"))?;
+    let parent = loa_exec::canonicalize(parent).map_err(|error| format!("{relative}: {error}"))?;
     if !parent.starts_with(root) {
         return Err(outside());
     }
@@ -403,7 +403,7 @@ mod tests {
     #[test]
     fn paths_stay_inside_the_folder() {
         let dir = tempfile::tempdir().unwrap();
-        let root = std::fs::canonicalize(dir.path()).unwrap().join("share");
+        let root = loa_exec::canonicalize(dir.path()).unwrap().join("share");
         let outside = root.parent().unwrap().join("secret");
         std::fs::create_dir_all(root.join("docs")).unwrap();
         std::fs::create_dir_all(&outside).unwrap();

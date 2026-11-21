@@ -80,11 +80,19 @@ impl Sandbox for PeerSandbox {
 /// in a new temporary directory and pipes the stream to it until either side
 /// ends. The directory is removed afterwards.
 pub async fn serve_stub(channel: Channel, stub: &Path) -> Result<()> {
+    serve_stub_with(channel, stub, &[]).await
+}
+
+/// [`serve_stub`] with `env` added to what the stub starts with: the
+/// system variables Windows needs, and nothing else.
+async fn serve_stub_with(channel: Channel, stub: &Path, env: &[(String, String)]) -> Result<()> {
     let root = tempfile::tempdir()?;
     let mut child = Command::new(stub)
         .arg(root.path())
         .current_dir(root.path())
         .env_clear()
+        .envs(super::local::system_env())
+        .envs(env.iter().cloned())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -167,14 +175,21 @@ mod tests {
     #[tokio::test]
     async fn serve_stub_pipes_a_process_in_an_empty_directory() {
         // A script stands in for the stub: it reports its directory and
-        // environment, then echoes what the host sends.
+        // environment, then echoes what the host sends. Git Bash invents a
+        // HOME, so on Windows the check is on the host's USERNAME instead.
+        let (probe, extra_env) = if cfg!(windows) {
+            ("USERNAME", vec![("PATH".to_owned(), std::env::var("PATH").unwrap())])
+        } else {
+            ("HOME", Vec::new())
+        };
         let dir = tempfile::tempdir().unwrap();
         let fake = dir.path().join("stub");
-        loa_exec::write_executable(&fake, "#!/bin/sh\nls -A \"$1\"\nprintf '[%s]' \"${HOME-}\"\nexec cat\n").unwrap();
+        loa_exec::write_executable(&fake, format!("#!/bin/sh\nls -A \"$1\"\nprintf '[%s]' \"${{{probe}-}}\"\nexec cat\n")).unwrap();
+        let fake = loa_exec::resolve(&fake);
         let (near, far) = tokio::io::duplex(1024);
         let (reader, writer) = tokio::io::split(far);
         let server = tokio::spawn(async move {
-            serve_stub(Channel { reader: Box::new(reader), writer: Box::new(writer) }, &fake).await
+            serve_stub_with(Channel { reader: Box::new(reader), writer: Box::new(writer) }, &fake, &extra_env).await
         });
         let (mut reader, mut writer) = tokio::io::split(near);
         writer.write_all(b"hello").await.unwrap();

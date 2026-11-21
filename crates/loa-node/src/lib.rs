@@ -139,7 +139,7 @@ impl NodeConfig {
             bind: SocketAddr::from((Ipv4Addr::UNSPECIFIED, DEFAULT_PORT)),
             relay: RelayConfig::Off,
             mdns: true,
-            tailscale: find_executable("tailscale"),
+            tailscale: loa_exec::find_executable(Path::new("tailscale")),
             name: name.into(),
             app_version: app_version.into(),
             presence_interval: Duration::from_secs(30),
@@ -151,14 +151,6 @@ impl NodeConfig {
 
 fn create_dir(dir: &Path) -> Result<()> {
     std::fs::create_dir_all(dir).map_err(|e| NodeError::Unavailable(format!("{}: {e}", dir.display())))
-}
-
-fn find_executable(name: &str) -> Option<PathBuf> {
-    std::env::var_os("PATH")
-        .into_iter()
-        .flat_map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
-        .map(|dir| dir.join(name))
-        .find(|candidate| candidate.is_file())
 }
 
 /// State of the endpoint.
@@ -363,7 +355,7 @@ impl Node {
         let mdns = if config.mdns { Availability::Off("starts with the endpoint".into()) } else { Availability::Off("turned off".into()) };
         let tailscale = match &config.tailscale {
             Some(path) => Availability::Active(format!("{} found; scan to look for nodes", path.display())),
-            None if find_executable("tailscale").is_some() => Availability::Off("turned off".into()),
+            None if loa_exec::find_executable(Path::new("tailscale")).is_some() => Availability::Off("turned off".into()),
             None => Availability::Off("tailscale is not installed".into()),
         };
         let (events, _) = broadcast::channel(256);

@@ -6,6 +6,10 @@
 //! all its commands see.
 //!
 //! Usage: `loa-sandbox-stub [ROOT]`. `ROOT` defaults to the current directory.
+//!
+//! Shell commands run through `/bin/sh -c` on Unix and `cmd /C` on Windows
+//! (cmd rather than PowerShell: it is always present and matches the simple
+//! one-line commands agents send). Cancelling kills the whole process tree.
 
 use loa_sandbox::proto::{
     self, Command, DirEntry, ExecRequest, ExitStatus, FileKind, Metadata, Request, Response, STDERR_TAG, STDOUT_TAG,
@@ -13,8 +17,12 @@ use loa_sandbox::proto::{
 use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Read, Write};
+#[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
+#[cfg(unix)]
 use std::os::unix::process::{CommandExt, ExitStatusExt};
+#[cfg(windows)]
+use process_wrap::std::{ChildWrapper, CommandWrap, JobObject};
 use std::path::{Path, PathBuf};
 use std::process::{self as sys, Stdio};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
@@ -53,15 +61,114 @@ impl Out {
     }
 }
 
-/// Process groups of running commands, by request id.
-type Running = Arc<Mutex<HashMap<u32, i32>>>;
+/// Handles that kill a running command with everything it started, by
+/// request id.
+type Running = Arc<Mutex<HashMap<u32, Killer>>>;
 
-fn kill_group(pgid: i32) {
-    // SAFETY: kill(2) takes plain integers and has no memory effects. A
-    // negative pid names the process group the command leads.
-    unsafe {
-        libc::kill(-pgid, libc::SIGKILL);
+/// A started command: the handle to wait on, the way to kill its whole
+/// tree, and its pipes.
+struct Spawned {
+    proc: Proc,
+    killer: Killer,
+    stdin: Option<sys::ChildStdin>,
+    stdout: Option<sys::ChildStdout>,
+    stderr: Option<sys::ChildStderr>,
+}
+
+/// The process group the command leads.
+#[cfg(unix)]
+#[derive(Clone)]
+struct Killer(i32);
+
+#[cfg(unix)]
+type Proc = sys::Child;
+
+#[cfg(unix)]
+impl Killer {
+    fn kill(&self) {
+        // SAFETY: kill(2) takes plain integers and has no memory effects. A
+        // negative pid names the process group the command leads.
+        unsafe {
+            libc::kill(-self.0, libc::SIGKILL);
+        }
     }
+}
+
+#[cfg(unix)]
+fn spawn(mut cmd: sys::Command) -> io::Result<Spawned> {
+    cmd.process_group(0);
+    let mut child = cmd.spawn()?;
+    // The child leads its own group, so its pid is the group id. Pids fit
+    // i32 on every unix.
+    let killer = Killer(i32::try_from(child.id()).unwrap_or(i32::MAX));
+    let (stdin, stdout, stderr) = (child.stdin.take(), child.stdout.take(), child.stderr.take());
+    Ok(Spawned { proc: child, killer, stdin, stdout, stderr })
+}
+
+#[cfg(unix)]
+fn wait(proc: &mut Proc, _: &Killer) -> io::Result<sys::ExitStatus> {
+    proc.wait()
+}
+
+/// The command's Job Object: killing it ends the command and every process
+/// it started, however deep.
+#[cfg(windows)]
+#[derive(Clone)]
+struct Killer(Arc<Mutex<Box<dyn ChildWrapper>>>);
+
+#[cfg(windows)]
+type Proc = Killer;
+
+#[cfg(windows)]
+impl Killer {
+    fn kill(&self) {
+        let _ = lock(&self.0).start_kill();
+    }
+}
+
+/// Spawns `cmd` inside a Job Object (process-wrap creates it suspended,
+/// assigns the process and resumes it, so nothing escapes the job).
+#[cfg(windows)]
+fn spawn(cmd: sys::Command) -> io::Result<Spawned> {
+    let mut child = CommandWrap::from(cmd).wrap(JobObject).spawn()?;
+    let (stdin, stdout, stderr) = (child.stdin().take(), child.stdout().take(), child.stderr().take());
+    let killer = Killer(Arc::new(Mutex::new(child)));
+    Ok(Spawned { proc: killer.clone(), killer, stdin, stdout, stderr })
+}
+
+/// Waits for the command to exit, then ends whatever it left running, so no
+/// background process outlives its command or keeps its output pipes open.
+/// Polls rather than blocks: killing needs the same child lock.
+#[cfg(windows)]
+fn wait(proc: &mut Proc, killer: &Killer) -> io::Result<sys::ExitStatus> {
+    let status = loop {
+        if let Some(status) = lock(&proc.0).try_wait()? {
+            break status;
+        }
+        thread::sleep(Duration::from_millis(5));
+    };
+    killer.kill();
+    Ok(status)
+}
+
+/// The platform shell running one script: `/bin/sh -c` on Unix, `cmd /C` on
+/// Windows.
+#[cfg(unix)]
+fn shell(script: &str) -> sys::Command {
+    let mut cmd = sys::Command::new("/bin/sh");
+    cmd.arg("-c").arg(script);
+    cmd
+}
+
+/// `cmd /S /C "script"`. The script goes through `raw_arg`: std's argument
+/// quoting is for CommandLineToArgvW, which cmd does not use, and would mangle
+/// quotes inside the script. `/S` strips just the outer pair added here.
+#[cfg(windows)]
+fn shell(script: &str) -> sys::Command {
+    use std::os::windows::process::CommandExt;
+    let mut cmd = sys::Command::new("cmd");
+    cmd.args(["/S", "/C"]).raw_arg(format!("\"{script}\""));
+    cmd
 }
 
 struct Stub {
@@ -79,8 +186,8 @@ impl Stub {
         match request {
             Request::Exec { id, exec } => self.exec(id, exec),
             Request::Kill { id } => {
-                if let Some(pgid) = lock(&self.running).get(&id) {
-                    kill_group(*pgid);
+                if let Some(killer) = lock(&self.running).get(&id) {
+                    killer.kill();
                 }
             }
             Request::ReadFile { id, path, limit } => match read_file(&self.path(&path), limit) {
@@ -116,37 +223,29 @@ impl Stub {
                 cmd.args(args);
                 cmd
             }
-            Command::Shell(script) => {
-                let mut cmd = sys::Command::new("/bin/sh");
-                cmd.arg("-c").arg(script);
-                cmd
-            }
+            Command::Shell(script) => shell(&script),
         };
         cmd.current_dir(cwd.map_or_else(|| self.root.clone(), |c| self.path(&c)))
             .envs(env)
             .stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() })
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .process_group(0);
-        let mut child = match cmd.spawn() {
-            Ok(child) => child,
+            .stderr(Stdio::piped());
+        let Spawned { mut proc, killer, stdin: child_stdin, stdout, stderr } = match spawn(cmd) {
+            Ok(spawned) => spawned,
             Err(e) => return self.out.error(id, format_args!("spawn: {e}")),
         };
-        // The child leads its own group, so its pid is the group id. Pids fit
-        // i32 on every unix.
-        let pgid = i32::try_from(child.id()).unwrap_or(i32::MAX);
-        lock(&self.running).insert(id, pgid);
+        lock(&self.running).insert(id, killer.clone());
 
-        if let (Some(data), Some(mut pipe)) = (stdin, child.stdin.take()) {
+        if let (Some(data), Some(mut pipe)) = (stdin, child_stdin) {
             // A command that exits without reading its stdin closes the pipe;
             // that is its business, not an error.
             thread::spawn(move || {
                 let _ = pipe.write_all(&data);
             });
         }
-        let pumps: Vec<_> = [(child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>), STDOUT_TAG)]
+        let pumps: Vec<_> = [(stdout.map(|p| Box::new(p) as Box<dyn Read + Send>), STDOUT_TAG)]
             .into_iter()
-            .chain([(child.stderr.take().map(|p| Box::new(p) as Box<dyn Read + Send>), STDERR_TAG)])
+            .chain([(stderr.map(|p| Box::new(p) as Box<dyn Read + Send>), STDERR_TAG)])
             .filter_map(|(pipe, tag)| pipe.map(|p| (p, tag)))
             .map(|(pipe, tag)| {
                 let out = self.out.clone();
@@ -160,6 +259,7 @@ impl Stub {
             let finished = Arc::new((Mutex::new(false), Condvar::new()));
             let timer = timeout_ms.map(|ms| {
                 let finished = Arc::clone(&finished);
+                let killer = killer.clone();
                 thread::spawn(move || {
                     let deadline = Instant::now() + Duration::from_millis(ms);
                     let (done, wake) = &*finished;
@@ -167,7 +267,7 @@ impl Stub {
                     while !*done {
                         let left = deadline.saturating_duration_since(Instant::now());
                         if left.is_zero() {
-                            kill_group(pgid);
+                            killer.kill();
                             return true;
                         }
                         done = wake.wait_timeout(done, left).unwrap_or_else(PoisonError::into_inner).0;
@@ -175,7 +275,7 @@ impl Stub {
                     false
                 })
             });
-            let status = child.wait();
+            let status = wait(&mut proc, &killer);
             {
                 let (done, wake) = &*finished;
                 *lock(done) = true;
@@ -190,12 +290,22 @@ impl Stub {
             match status {
                 Ok(status) => out.send(&Response::Exit {
                     id,
-                    status: ExitStatus { code: status.code(), signal: status.signal(), timed_out },
+                    status: ExitStatus { code: status.code(), signal: exit_signal(&status), timed_out },
                 }),
                 Err(e) => out.error(id, format_args!("wait: {e}")),
             }
         });
     }
+}
+
+#[cfg(unix)]
+fn exit_signal(status: &sys::ExitStatus) -> Option<i32> {
+    status.signal()
+}
+
+#[cfg(not(unix))]
+fn exit_signal(_: &sys::ExitStatus) -> Option<i32> {
+    None
 }
 
 /// Forwards one output pipe as frames until it closes.
@@ -227,9 +337,22 @@ fn write_file(path: &Path, data: &[u8], mode: Option<u32>) -> io::Result<()> {
     }
     fs::write(path, data)?;
     if let Some(mode) = mode {
-        fs::set_permissions(path, fs::Permissions::from_mode(mode))?;
+        set_mode(path, mode)?;
     }
     Ok(())
+}
+
+#[cfg(unix)]
+fn set_mode(path: &Path, mode: u32) -> io::Result<()> {
+    fs::set_permissions(path, fs::Permissions::from_mode(mode))
+}
+
+/// Windows only has a read-only flag, which stands for a missing owner write bit.
+#[cfg(not(unix))]
+fn set_mode(path: &Path, mode: u32) -> io::Result<()> {
+    let mut permissions = fs::metadata(path)?.permissions();
+    permissions.set_readonly(mode & 0o200 == 0);
+    fs::set_permissions(path, permissions)
 }
 
 fn list_dir(path: &Path) -> io::Result<Vec<DirEntry>> {
@@ -259,7 +382,23 @@ fn metadata(meta: &fs::Metadata) -> Metadata {
         .ok()
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
         .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
-    Metadata { kind, size: meta.len(), mode: meta.mode() & 0o7777, mtime_ms }
+    Metadata { kind, size: meta.len(), mode: file_mode(meta), mtime_ms }
+}
+
+#[cfg(unix)]
+fn file_mode(meta: &fs::Metadata) -> u32 {
+    meta.mode() & 0o7777
+}
+
+/// Windows has no mode bits: report what the read-only flag and the file
+/// kind imply.
+#[cfg(not(unix))]
+fn file_mode(meta: &fs::Metadata) -> u32 {
+    match (meta.is_dir(), meta.permissions().readonly()) {
+        (true, _) => 0o755,
+        (false, true) => 0o444,
+        (false, false) => 0o644,
+    }
 }
 
 fn main() {
@@ -286,8 +425,8 @@ fn main() {
             Err(_) => break,
         }
     }
-    for pgid in lock(&stub.running).values() {
-        kill_group(*pgid);
+    for killer in lock(&stub.running).values() {
+        killer.kill();
     }
     sys::exit(0);
 }

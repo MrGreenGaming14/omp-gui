@@ -104,6 +104,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "a: 2\n");
     }
 
+    #[cfg(unix)]
     #[test]
     fn save_through_symlink_keeps_the_link() {
         let dir = tempfile::tempdir().unwrap();
