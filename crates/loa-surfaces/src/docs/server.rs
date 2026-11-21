@@ -365,13 +365,9 @@ impl SurfaceServer for DocsServer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ::image::{ImageFormat, Rgba as Px, RgbaImage};
-    use std::io::Cursor;
 
     fn png(width: u32, height: u32, color: [u8; 4]) -> Vec<u8> {
-        let mut out = Cursor::new(Vec::new());
-        RgbaImage::from_pixel(width, height, Px(color)).write_to(&mut out, ImageFormat::Png).unwrap();
-        out.into_inner()
+        Rgba::filled(width, height, color).to_png().unwrap()
     }
 
     #[tokio::test]
