@@ -9,11 +9,10 @@
 
 
 use std::collections::{BTreeMap, HashMap};
-use crate::config::{ChainKey, OmpConfig, ScopedEntry, ScopedList};
-use crate::selector::{Selector, ModelRef};
-use crate::models_yml::{self, ApiKeySetting, ApiKeyWrite, AuthMode, KeyReference, ModelsYml, OverrideKey};
-use crate::rpc;
-use std::fmt;
+use loa_harness::omp::config::{ChainKey, OmpConfig, ScopedEntry, ScopedList};
+use loa_contracts::harness::selector::{Selector, ModelRef};
+use loa_harness::omp::models::{self as models_yml, ApiKeySetting, ApiKeyWrite, AuthMode, KeyReference, ModelsYml, OverrideKey};
+use loa_contracts::harness::model_rpc as rpc;
 
 /// Everything the screen edits, as the app reads it from omp's config files.
 #[derive(Clone, Debug, PartialEq, Default)]
@@ -89,30 +88,6 @@ pub enum FieldValue {
     Bool(bool),
 }
 
-/// How omp authenticates against a custom provider (`auth` in models.yml).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub enum ProviderAuth {
-    #[default]
-    ApiKey,
-    None,
-    OAuth,
-}
-
-impl ProviderAuth {
-    /// All variants, in the order the auth pick list shows them.
-    pub const ALL: &'static [ProviderAuth] = &[Self::ApiKey, Self::None, Self::OAuth];
-}
-
-impl fmt::Display for ProviderAuth {
-    /// Spelled the way omp writes the value.
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Self::ApiKey => "apiKey",
-            Self::None => "none",
-            Self::OAuth => "oauth",
-        })
-    }
-}
 
 /// A provider defined in models.yml. The API key is only ever the name of an
 /// environment variable that holds it; the app never handles the key itself.
@@ -121,7 +96,7 @@ pub struct CustomProvider {
     pub id: String,
     pub base_url: String,
     pub api: String,
-    pub auth: ProviderAuth,
+    pub auth: AuthMode,
     pub api_key_env: String,
     pub models: Vec<String>,
 }
@@ -291,21 +266,6 @@ fn is_custom(entry: &models_yml::ProviderEntry) -> bool {
     entry.base_url.is_some() || entry.api.is_some() || entry.discovery.is_some() || !entry.models.is_empty()
 }
 
-fn ui_auth(auth: Option<AuthMode>) -> ProviderAuth {
-    match auth {
-        None | Some(AuthMode::ApiKey) => ProviderAuth::ApiKey,
-        Some(AuthMode::None) => ProviderAuth::None,
-        Some(AuthMode::OAuth) => ProviderAuth::OAuth,
-    }
-}
-
-fn file_auth(auth: ProviderAuth) -> AuthMode {
-    match auth {
-        ProviderAuth::ApiKey => AuthMode::ApiKey,
-        ProviderAuth::None => AuthMode::None,
-        ProviderAuth::OAuth => AuthMode::OAuth,
-    }
-}
 
 fn custom_providers(models: &ModelsYml) -> Vec<CustomProvider> {
     models
@@ -319,7 +279,7 @@ fn custom_providers(models: &ModelsYml) -> Vec<CustomProvider> {
             },
             base_url: entry.base_url.unwrap_or_default(),
             api: entry.api.unwrap_or_default(),
-            auth: ui_auth(entry.auth),
+            auth: entry.auth.unwrap_or_default(),
             models: entry.models.into_iter().map(|m| m.id).collect(),
             id: entry.id,
         })
@@ -615,7 +575,7 @@ fn write_custom_provider(models: &mut ModelsYml, old: Option<&CustomProvider>, n
     let auth_changed = old.is_none_or(|old| old.auth != new.auth);
     if auth_changed {
         // A new provider on the default (API key) auth leaves `auth` out, as omp does.
-        provider.auth = (old.is_some() || new.auth != ProviderAuth::ApiKey).then(|| file_auth(new.auth));
+        provider.auth = (old.is_some() || new.auth != AuthMode::ApiKey).then_some(new.auth);
     }
     if old.is_none_or(|old| old.models != new.models) {
         let kept = existing.map(|e| e.models).unwrap_or_default();
@@ -767,7 +727,7 @@ providers:
                 id: "gw".into(),
                 base_url: "https://gw.example.com/v1".into(),
                 api: "openai-completions".into(),
-                auth: ProviderAuth::ApiKey,
+                auth: AuthMode::ApiKey,
                 api_key_env: String::new(),
                 models: vec!["m1".into()],
             }]
@@ -921,7 +881,7 @@ providers:
             id: "local".into(),
             base_url: "http://127.0.0.1:8080/v1".into(),
             api: "openai-completions".into(),
-            auth: ProviderAuth::ApiKey,
+            auth: AuthMode::ApiKey,
             api_key_env: "LOCAL_KEY".into(),
             models: vec!["qwen".into()],
         });
@@ -946,7 +906,7 @@ providers:
         let mut after = before.clone();
         after.custom_providers.retain(|p| p.id != "gw");
         after.custom_providers[0].api_key_env = String::new();
-        after.custom_providers[0].auth = ProviderAuth::None;
+        after.custom_providers[0].auth = AuthMode::None;
         save(&mut f, &before, &after).unwrap();
         let text = f.models.text();
         assert!(!text.contains("gw"), "{text}");

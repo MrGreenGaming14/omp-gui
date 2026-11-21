@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use std::sync::Mutex;
 use std::time::Duration;
 use tokio::sync::{Notify, mpsc};
-use crate::rpc::{LoginProvider, LoginUiRequest, ModelInfo, OmpRpc, RpcError, UiResponse};
+use loa_contracts::harness::model_rpc::{LoginProvider, LoginUiRequest, ModelInfo, OmpRpc, RpcError, UiResponse};
 
 /// The behavior of a fake login after its UI frames have been sent.
 #[derive(Clone, Default)]

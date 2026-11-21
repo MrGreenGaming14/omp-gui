@@ -98,13 +98,27 @@ pub trait LoginStrategy: Send {
     async fn run(self: Box<Self>, ctl: mpsc::Receiver<LoginControl>, out: mpsc::Sender<LoginUpdate>);
 }
 
+/// Opens a web URL without waiting for the browser.
+pub trait UrlOpener: Send + Sync {
+    fn open_url(&self, url: &str) -> Result<(), String>;
+}
+
 /// Sign-in state and model config of one harness.
 #[async_trait]
 pub trait HarnessAccount: Send + Sync {
+    /// Stable sign-in and settings row identifier.
+    fn id(&self) -> &'static str;
+    fn name(&self) -> &'static str;
     async fn sign_in_state(&self) -> SignInState;
     fn login(&self, kind: LoginKind) -> Result<Box<dyn LoginStrategy>, AdapterError>;
+    /// Provider-specific login, for harnesses exposing several OAuth providers.
+    fn login_provider(&self, _provider: super::model_rpc::LoginProvider) -> Result<Box<dyn LoginStrategy>, AdapterError> {
+        Err(AdapterError::Unsupported { harness: "harness", what: "provider login" })
+    }
     fn logout_command(&self) -> Option<CommandSpec>;
     fn efforts(&self) -> &'static [&'static str];
+    /// Config file displayed by the settings screen, if this account has one.
+    fn config_path(&self) -> Option<PathBuf>;
     fn read_model(&self) -> Result<ModelSettings, AdapterError>;
     fn write_model(&self, m: &ModelSettings) -> Result<(), AdapterError>;
 }

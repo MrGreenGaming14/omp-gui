@@ -6,7 +6,6 @@
 //! writes what [`Event::Save`] carries and reports the outcome back through
 //! [`State::saved`] or [`State::set_errors`].
 
-use std::fmt;
 
 use iced::widget::{checkbox, column, container, pick_list, row, scrollable, space, text};
 use iced::{Element, Fill, Task};
@@ -16,8 +15,9 @@ use crate::style::{self, BODY, NOTE, SMALL};
 
 use loa_models::settings::{
     CustomProvider, FieldValue, HarnessModel, ModelOverride, ModelSettings, ModelToggle,
-    OverrideField, ProviderAuth, ProviderToggle, RoleChain, ValidationError,
+    OverrideField, ProviderToggle, RoleChain, ValidationError,
 };
+use loa_harness::omp::models::AuthMode;
 
 
 /// The effort pick list's entry for "no effort set".
@@ -41,21 +41,15 @@ fn field_raw(value: &FieldValue) -> String {
     }
 }
 
-/// The type an override value is edited as.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FieldKind {
-    Text,
-    Int,
-    Float,
-    Bool,
+loa_util::str_enum! {
+    /// The type an override value is edited as.
+    pub FieldKind { Text => "Text", Int => "Integer", Float => "Number", Bool => "Yes/No" }
 }
 
 impl FieldKind {
-    /// All kinds, in the order the kind pick list shows them.
-    pub const ALL: &'static [FieldKind] = &[Self::Text, Self::Int, Self::Float, Self::Bool];
 
     /// Parses a raw value typed by the user as this kind.
-    fn parse(self, raw: &str) -> Result<FieldValue, String> {
+    fn parse_value(self, raw: &str) -> Result<FieldValue, String> {
         let trimmed = raw.trim();
         match self {
             Self::Text => Ok(FieldValue::Text(raw.to_owned())),
@@ -76,16 +70,6 @@ impl FieldKind {
     }
 }
 
-impl fmt::Display for FieldKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Self::Text => "Text",
-            Self::Int => "Integer",
-            Self::Float => "Number",
-            Self::Bool => "Yes/No",
-        })
-    }
-}
 
 
 
@@ -124,7 +108,7 @@ pub fn validate_custom_provider(provider: &CustomProvider, others: &[CustomProvi
     }
 
     let api_key_env = provider.api_key_env.trim();
-    if !api_key_env.is_empty() && !loa_models::models_yml::is_env_var_name(api_key_env) {
+    if !api_key_env.is_empty() && !loa_harness::omp::models::is_env_var_name(api_key_env) {
         messages.push(
             "API key must be the name of an environment variable (A-Z, 0-9, _), not the key itself".to_owned(),
         );
@@ -163,7 +147,7 @@ struct CustomProviderDraft {
     id: String,
     base_url: String,
     api: String,
-    auth: ProviderAuth,
+    auth: AuthMode,
     api_key_env: String,
     /// Comma separated model ids.
     models: String,
@@ -250,7 +234,7 @@ impl Draft {
                 } else if o.fields[..index].iter().any(|f| f.key.trim() == key) {
                     errors.push(format!("{}: field \"{key}\" is set twice", o.selector));
                 }
-                match field.kind.parse(&field.raw) {
+                match field.kind.parse_value(&field.raw) {
                     Ok(value) => fields.push(OverrideField { key: key.to_owned(), value }),
                     Err(message) => errors.push(format!("{}: {key}: {message}", o.selector)),
                 }
@@ -296,7 +280,7 @@ pub enum ProviderEdit {
     Id(String),
     BaseUrl(String),
     Api(String),
-    Auth(ProviderAuth),
+    Auth(AuthMode),
     ApiKeyEnv(String),
     /// Comma separated model ids.
     Models(String),
@@ -543,7 +527,7 @@ impl State {
                 id: String::new(),
                 base_url: String::new(),
                 api: String::new(),
-                auth: ProviderAuth::ApiKey,
+                auth: AuthMode::ApiKey,
                 api_key_env: String::new(),
                 models: String::new(),
             }),
@@ -780,7 +764,7 @@ impl State {
                     .spacing(8)
                     .align_y(iced::Center),
                 );
-                if let Err(message) = field.kind.parse(&field.raw) {
+                if let Err(message) = field.kind.parse_value(&field.raw) {
                     fields = fields.push(text(message).size(SMALL).style(text::danger));
                 }
             }
@@ -814,7 +798,7 @@ impl State {
                 labeled("API", style::field("openai-completions", &provider.api).on_input(edit(ProviderEdit::Api))),
                 labeled(
                     "Auth",
-                    pick(pick_list(ProviderAuth::ALL, Some(provider.auth), move |auth| {
+                    pick(pick_list(AuthMode::ALL, Some(provider.auth), move |auth| {
                         Message::CustomProviderEdited(i, ProviderEdit::Auth(auth))
                     })),
                 ),
@@ -969,7 +953,7 @@ mod tests {
             id: "local-llm".into(),
             base_url: "http://localhost:8080/v1".into(),
             api: "openai-completions".into(),
-            auth: ProviderAuth::ApiKey,
+            auth: AuthMode::ApiKey,
             api_key_env: "LOCAL_LLM_KEY".into(),
             models: vec!["qwen3".into()],
         }

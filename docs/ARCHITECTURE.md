@@ -25,8 +25,7 @@ Everything else builds on these three. Their existing public items change only w
 | `loa-bus` | core | Session writer (`PatchSink` impl), publish subscribe with backpressure |
 | `loa-config` | core | Central config schema with version and migrations |
 | `loa-util` | core | Domain-free helpers: poison-tolerant locks, atomic files, executables (`write_executable`, `retry_busy`, `which`, `probe_cli`), time, text, `Registry`, `str_enum!` |
-| `loa-omp-rpc`, `loa-adapter-omp` | adapters | `omp --mode rpc` client, omp adapter |
-| `loa-adapter-claude`, `-codex`, `-opencode`, `-acp`, `-omp2` | adapters | One crate per harness |
+| `loa-harness` | adapters | Harness adapters and account implementations, factory registry, CLI and omp OAuth login strategies, and shared configuration editors |
 | `loa-features` | adapters | omp features provided on top of harnesses that lack them |
 | `loa-mcp` | tools | rmcp client, server registry, config import |
 | `loa-remote` | tools | `remote` MCP server: `remote_bash`, `remote_file` over russh |
@@ -34,7 +33,7 @@ Everything else builds on these three. Their existing public items change only w
 | `loa-surface-proto` | surfaces | `omp/surface/1` framing and datagrams, live H.264/HEVC video (app feature `remote-video`, off by default) |
 | `loa-surface-browser`, `-docs`, `-rfb` | surfaces | Built in surface servers |
 | `loa-surface-hub` | surfaces | The app's surface service: built-in servers, MCP declared surfaces, `surface_*` agent tools as host tools and a loopback MCP endpoint, `<surface>` drafts |
-| `loa-models` | models | Sign in, model listing and settings through omp and other harnesses; shared harness sign-in and command data lives in `loa-contracts` |
+| `loa-models` | models | Model catalog and settings service; account, selector and omp RPC ports live in `loa-contracts`, with implementations in `loa-harness`. Claude JSON edits normalize whitespace while preserving key order; omp YAML edits retain untouched comments. |
 | `loa-projects` | projects | Digests, context ranking, `project_search`, `project_read`, project settings, `ProjectService` over the bus and journal |
 | `loa-trust` | p2p | One ed25519 node key (`PublicKey` converts to iroh, Biscuit and bus keys) behind the `KeyStore` port (OS keychain, falling back to a `0600` key file); Biscuit grants whose scope kinds (sessions, prompts, projects, future sessions, SSH hosts, surfaces, sandbox, folders) come from one `KINDS` table; renewal, narrowing |
 | `loa-net` | p2p | iroh endpoint on 31415, ALPNs, TCP fallback, relay, discovery |

@@ -17,7 +17,7 @@ use iced::{Element, Fill, Subscription, Task};
 use loa_contracts::harness::{AdapterError, HarnessModel, ModelSelection, SessionConfig};
 use loa_bus::SessionId;
 use loa_core::{Dom, Draft, Op, PatchSink, attr};
-use loa_models::omp::OmpLaunch;
+use loa_harness::omp::account::OmpLaunch;
 use loa_ui_session::composer as composer;
 use loa_models::service::{Backend, SettingsLoad};
 use loa_ui_models::picker::{self, Catalog};

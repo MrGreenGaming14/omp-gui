@@ -12,14 +12,12 @@ testing = ["tokio/time"]
 loa-util.workspace = true
 loa-contracts.workspace = true
 async-trait.workspace = true
-loa-harness = { workspace = true, features = ["omp"] }
+loa-harness = { workspace = true, features = ["omp", "claude", "codex"] }
 serde.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["process", "sync", "macros", "io-util", "rt"] }
-toml_edit = "0.25"
-yaml-rust2 = "0.13"
 
 [dev-dependencies]
 loa-harness = { workspace = true, features = ["omp", "testing"] }

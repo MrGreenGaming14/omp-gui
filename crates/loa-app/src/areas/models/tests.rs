@@ -11,14 +11,14 @@ use loa_contracts::harness::{Adapter, AdapterError, Answer, Capabilities, Harnes
 use loa_bus::Policy;
 use loa_core::{ElementKind, NodeId, Value, now_ms};
 use loa_trust::NodeIdentity;
-use loa_models::harness::codex::Codex;
+use loa_harness::codex::account::Codex;
 use loa_models::keys::EnvironmentPresence;
 use loa_models::login::UrlOpener;
-use loa_models::omp::OmpFiles;
-use loa_models::process::TokioProcessRunner;
-use loa_models::rpc::{self, LoginProvider, LoginUiRequest};
+use loa_harness::omp::account::OmpFiles;
+use loa_harness::account_support::process::TokioProcessRunner;
+use loa_contracts::harness::model_rpc::{self as rpc, LoginProvider, LoginUiRequest};
 use loa_models::testing::{FakeOmp, LoginScript};
-use loa_models::validate::SettingsValidator;
+use loa_contracts::harness::model_error::SettingsValidator;
 use loa_models::service::Parts;
 use loa_ui_models::signin::{Auth, LoginState};
 
@@ -173,14 +173,14 @@ struct Validator;
 
 #[async_trait::async_trait]
 impl SettingsValidator for Validator {
-    async fn check_config(&self, text: &str, _: &[(String, serde_json::Value)]) -> loa_models::Result<()> {
+    async fn check_config(&self, text: &str, _: &[(String, serde_json::Value)]) -> loa_contracts::harness::model_error::Result<()> {
         if text.contains("reject-me") {
-            return Err(loa_models::Error::Rejected { what: "config.yml".into(), message: "unknown role reject-me".into() });
+            return Err(loa_contracts::harness::model_error::Error::Rejected { what: "config.yml".into(), message: "unknown role reject-me".into() });
         }
         Ok(())
     }
 
-    async fn check_models(&self, _: &str) -> loa_models::Result<()> {
+    async fn check_models(&self, _: &str) -> loa_contracts::harness::model_error::Result<()> {
         Ok(())
     }
 }
@@ -241,8 +241,7 @@ fn fixture(adapter: FakeAdapter) -> Fixture {
         files: OmpFiles::new(&agent),
         validator: Arc::new(Validator),
         opener: opener.clone(),
-        claude: None,
-        codex: Some(Codex::new(dir.path().join("no-codex-here"), dir.path().join("codex.toml"), Arc::new(TokioProcessRunner))),
+        harnesses: vec![Arc::new(Codex::new(dir.path().join("no-codex-here"), dir.path().join("codex.toml"), Arc::new(TokioProcessRunner)))],
         environment: Arc::new(NoKeys),
     });
     Fixture { dir, app, configs, opener }

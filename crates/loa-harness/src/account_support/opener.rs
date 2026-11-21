@@ -2,7 +2,7 @@
 
 use std::process::{Command, Stdio};
 
-use crate::login::UrlOpener;
+use loa_contracts::harness::UrlOpener;
 
 /// [`UrlOpener`] over the platform's own opener: `xdg-open` on Linux and the
 /// BSDs, `open` on macOS, `start` on Windows. Returns as soon as the opener

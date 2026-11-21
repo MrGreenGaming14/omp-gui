@@ -6,10 +6,10 @@ use loa_util::fs::Snapshot;
 use serde_json::{Map, Value};
 use toml_edit::{DocumentMut, Item, Table, value};
 
-use crate::error::save_snapshot;
-use crate::{Error, Result};
+use super::error::save_snapshot;
+use super::{Error, Result};
 
-pub(crate) trait ConfigDoc: Sized {
+pub trait ConfigDoc: Sized {
     fn parse(text: &str, what: &str) -> Result<Self>;
     fn get(&self, path: &[&str]) -> Option<String>;
     fn set(&mut self, path: &[&str], value: Option<&str>) -> Result<()>;

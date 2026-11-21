@@ -11,135 +11,70 @@
 //! session's own harness connection (`HarnessSession::set_model`), which
 //! records the new `model` on the `<session>`.
 
-use loa_util::fs::home;
 use loa_util::LockExt;
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use crate::config::OmpConfig;
-use crate::harness::claude::{ClaudeCode, ClaudeEffort};
-use crate::harness::codex::{Codex, ReasoningEffort};
-use crate::harness::{HarnessAuth, LoginKind, SignInState};
+use loa_harness::omp::config::OmpConfig;
 use crate::keys::{self, EnvironmentPresence, KeySource, ProcessEnvironment};
-use crate::login::{Auth, CliLogin, LoginControl, LoginStrategy, OmpOAuthLogin, ProviderEntry, ProviderKey, UrlOpener};
-use crate::models_yml::ModelsYml;
-use crate::omp::{OmpFiles, OmpLaunch, OmpService};
-use crate::opener::SystemUrlOpener;
-use crate::process::TokioProcessRunner;
-use crate::rpc::{self, LoginProvider, OmpRpc};
-use crate::selector::{Catalog, ModelInfo, ModelRef, RoleAssignment, Selector};
+use loa_contracts::harness::{HarnessAccount, LoginKind, SignInState};
+use crate::login::{Auth, LoginControl, LoginStrategy, ProviderEntry, ProviderKey, UrlOpener};
+use loa_harness::omp::models::ModelsYml;
+use loa_harness::omp::account::{OmpAccount, OmpFiles, OmpLaunch, OmpService};
+use loa_harness::account_support::opener::SystemUrlOpener;
+use loa_harness::account_support::process::TokioProcessRunner;
+use loa_contracts::harness::model_rpc::{self as rpc, LoginProvider, OmpRpc};
+use loa_contracts::harness::selector::{Catalog, ModelInfo, ModelRef, RoleAssignment, Selector};
 use crate::settings::{self, HarnessModel, ModelSettings, ValidationError};
-use crate::validate::{OmpSettingsValidator, SettingsValidator};
+use crate::validate::OmpSettingsValidator;
+use loa_contracts::harness::model_error::SettingsValidator;
 use loa_contracts::harness::LoginUpdate;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 /// The harness id of omp's rows on the sign in screen.
 pub const OMP: &str = "omp";
 
-/// A harness other than omp, with its own sign in and model settings.
+/// A harness account exposed on the sign-in and settings screens.
 #[derive(Clone)]
-enum Harness {
-    Claude(Arc<ClaudeCode>),
-    Codex(Arc<Codex>),
-}
+struct Harness(Arc<dyn HarnessAccount>);
 
 impl Harness {
-    /// Row key on the sign in screen.
-    fn key(&self) -> &'static str {
-        match self {
-            Self::Claude(_) => "claude",
-            Self::Codex(_) => "codex",
-        }
-    }
+    fn key(&self) -> &'static str { self.0.id() }
+    fn name(&self) -> &'static str { self.0.name() }
 
-    fn name(&self) -> &'static str {
-        match self {
-            Self::Claude(_) => "Claude Code",
-            Self::Codex(_) => "Codex",
-        }
-    }
-
-    fn auth(&self) -> &dyn HarnessAuth {
-        match self {
-            Self::Claude(claude) => claude.as_ref(),
-            Self::Codex(codex) => codex.as_ref(),
-        }
-    }
-
-    /// The default model and effort in the harness's own config.
     fn model_settings(&self) -> Result<HarnessModel, String> {
-        let (config_path, model, effort, efforts) = match self {
-            Self::Claude(claude) => {
-                let s = claude.read_model_settings().map_err(|e| e.to_string())?;
-                let efforts = ClaudeEffort::ALL.iter().map(|e| e.as_str().to_owned()).collect();
-                (&claude.settings_path, s.model, s.effort.map(ClaudeEffort::as_str), efforts)
-            }
-            Self::Codex(codex) => {
-                let s = codex.read_model_settings().map_err(|e| e.to_string())?;
-                let efforts = CODEX_EFFORTS.iter().map(|e| e.as_str().to_owned()).collect();
-                (&codex.config_path, s.model, s.reasoning_effort.map(ReasoningEffort::as_str), efforts)
-            }
-        };
+        let settings = self.0.read_model().map_err(|e| e.to_string())?;
         Ok(HarnessModel {
             harness: self.key().to_owned(),
             name: self.name().to_owned(),
-            config_path: config_path.display().to_string(),
-            model: model.unwrap_or_default(),
-            effort: effort.unwrap_or_default().to_owned(),
-            efforts,
+            config_path: self.0.config_path().map(|path| path.display().to_string()).unwrap_or_default(),
+            model: settings.model.unwrap_or_default(),
+            effort: settings.effort.unwrap_or_default(),
+            efforts: self.0.efforts().iter().map(|value| (*value).to_owned()).collect(),
         })
     }
 
-    /// Checks an edit before anything is written.
     fn check(&self, after: &HarnessModel) -> Result<(), String> {
         if after.model.chars().any(|c| c.is_whitespace() || c.is_control()) {
             return Err(format!("model `{}` must have no spaces", after.model));
         }
-        if !after.effort.is_empty() && !after.efforts.contains(&after.effort) {
-            return Err(format!("effort `{}` is not one of {}", after.effort, after.efforts.join(", ")));
+        if !after.effort.is_empty() && !self.0.efforts().contains(&after.effort.as_str()) {
+            return Err(format!("effort `{}` is not one of {}", after.effort, self.0.efforts().join(", ")));
         }
         Ok(())
     }
 
-    /// Writes the changed values to the harness's config file.
     fn write(&self, before: &HarnessModel, after: &HarnessModel) -> Result<(), String> {
-        let model = (!after.model.is_empty()).then_some(after.model.as_str());
-        let effort = (!after.effort.is_empty()).then_some(after.effort.as_str());
-        let model_changed = before.model != after.model;
-        let effort_changed = before.effort != after.effort;
-        let result = match self {
-            Self::Claude(claude) => (|| -> crate::Result<()> {
-                if model_changed {
-                    claude.set_model(model)?;
-                }
-                if effort_changed {
-                    claude.set_effort(effort.map(ClaudeEffort::parse).transpose()?)?;
-                }
-                Ok(())
-            })(),
-            Self::Codex(codex) => (|| -> crate::Result<()> {
-                if model_changed {
-                    codex.set_model(model)?;
-                }
-                if effort_changed {
-                    codex.set_reasoning_effort(effort.and_then(ReasoningEffort::parse))?;
-                }
-                Ok(())
-            })(),
-        };
-        result.map_err(|e| e.to_string())
+        let mut settings = self.0.read_model().map_err(|error| error.to_string())?;
+        if before.model != after.model {
+            settings.model = (!after.model.is_empty()).then(|| after.model.clone());
+        }
+        if before.effort != after.effort {
+            settings.effort = (!after.effort.is_empty()).then(|| after.effort.clone());
+        }
+        self.0.write_model(&settings).map_err(|error| error.to_string())
     }
 }
-
-const CODEX_EFFORTS: [ReasoningEffort; 6] = [
-    ReasoningEffort::None,
-    ReasoningEffort::Minimal,
-    ReasoningEffort::Low,
-    ReasoningEffort::Medium,
-    ReasoningEffort::High,
-    ReasoningEffort::XHigh,
-];
 
 /// Where omp's settings files are: a fixed directory or the one omp reports.
 enum FilesSource {
@@ -153,8 +88,7 @@ pub struct Parts {
     pub files: OmpFiles,
     pub validator: Arc<dyn SettingsValidator>,
     pub opener: Arc<dyn UrlOpener>,
-    pub claude: Option<ClaudeCode>,
-    pub codex: Option<Codex>,
+    pub harnesses: Vec<Arc<dyn HarnessAccount>>,
     pub environment: Arc<dyn EnvironmentPresence + Send + Sync>,
 }
 
@@ -172,6 +106,7 @@ struct Inner {
     files: FilesSource,
     validator: Arc<dyn SettingsValidator>,
     opener: Arc<dyn UrlOpener>,
+    omp_account: Arc<dyn HarnessAccount>,
     harnesses: Vec<Harness>,
     environment: Arc<dyn EnvironmentPresence + Send + Sync>,
     /// omp's login providers from the last listing, for display names and
@@ -204,13 +139,6 @@ impl std::fmt::Debug for Backend {
     }
 }
 
-fn dir_from_env(var: &str, home_dir: &str) -> PathBuf {
-    std::env::var_os(var)
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| home().map(|h| h.join(home_dir)))
-        .unwrap_or_else(|| PathBuf::from(home_dir))
-}
 
 impl Backend {
     /// The real backend: omp started from `launch`, its active agent
@@ -218,26 +146,22 @@ impl Backend {
     /// `codex` CLIs on `PATH`.
     pub fn system(launch: OmpLaunch) -> Self {
         let runner = Arc::new(TokioProcessRunner);
-        let claude = ClaudeCode::new("claude", dir_from_env("CLAUDE_CONFIG_DIR", ".claude").join("settings.json"), runner.clone());
-        let codex = Codex::new("codex", dir_from_env("CODEX_HOME", ".codex").join("config.toml"), runner.clone());
+        let harnesses = loa_harness::factories(&loa_harness::HarnessEnv::default())
+            .into_iter().filter(|factory| factory.id() != OMP)
+            .filter_map(|factory| factory.account(None)).map(Harness).collect();
         Self::build(
             Arc::new(OmpService::new(launch.clone())),
             FilesSource::Resolve { launch: launch.clone(), cached: tokio::sync::OnceCell::new() },
             Arc::new(OmpSettingsValidator::new(launch.executable.clone(), runner)),
             Arc::new(SystemUrlOpener),
-            vec![Harness::Claude(Arc::new(claude)), Harness::Codex(Arc::new(codex))],
+            harnesses,
             Arc::new(ProcessEnvironment),
         )
     }
 
     /// A backend over the given parts.
     pub fn new(parts: Parts) -> Self {
-        let harnesses = parts
-            .claude
-            .map(|c| Harness::Claude(Arc::new(c)))
-            .into_iter()
-            .chain(parts.codex.map(|c| Harness::Codex(Arc::new(c))))
-            .collect();
+        let harnesses = parts.harnesses.into_iter().map(Harness).collect();
         Self::build(
             parts.rpc,
             FilesSource::Fixed(parts.files),
@@ -256,12 +180,18 @@ impl Backend {
         harnesses: Vec<Harness>,
         environment: Arc<dyn EnvironmentPresence + Send + Sync>,
     ) -> Self {
+        let launch = match &files {
+            FilesSource::Resolve { launch, .. } => launch.clone(),
+            FilesSource::Fixed(_) => OmpLaunch::default(),
+        };
+        let omp_account = Arc::new(OmpAccount { rpc: rpc.clone(), opener: opener.clone(), launch });
         Self {
             inner: Arc::new(Inner {
                 rpc,
                 files,
                 validator,
                 opener,
+                omp_account,
                 harnesses,
                 environment,
                 login_providers: Mutex::default(),
@@ -331,11 +261,10 @@ impl Backend {
         }
         entries.extend(self.api_key_rows().await);
         for harness in &self.inner.harnesses {
-            let auth = match harness.auth().sign_in_state().await {
-                Ok(SignInState::SignedIn { .. }) => Auth::Login { signed_in: true, account: None },
-                Ok(SignInState::SignedOut) => Auth::Login { signed_in: false, account: None },
-                Ok(SignInState::Unknown { reason }) => Auth::Unavailable { reason },
-                Err(e) => Auth::Unavailable { reason: e.to_string() },
+            let auth = match harness.0.sign_in_state().await {
+                SignInState::SignedIn { .. } => Auth::Login { signed_in: true, account: None },
+                SignInState::SignedOut => Auth::Login { signed_in: false, account: None },
+                SignInState::Unknown { reason } => Auth::Unavailable { reason },
             };
             entries.push(ProviderEntry {
                 key: ProviderKey::new(harness.key(), harness.key()),
@@ -421,20 +350,26 @@ impl Backend {
                 .unwrap_or_else(|| LoginProvider {
                     id: key.provider.clone(), name: key.provider.clone(), available: true, authenticated: false,
                 });
-            (Box::new(OmpOAuthLogin { rpc: self.inner.rpc.clone(), opener: self.inner.opener.clone(), provider }), None)
+            match self.inner.omp_account.login_provider(provider) {
+                Ok(strategy) => (strategy, None),
+                Err(error) => {
+                    let _ = updates.send(LoginUpdate::Failed(error.to_string()));
+                    return;
+                }
+            }
         } else {
             let Some(harness) = self.inner.harnesses.iter().find(|h| h.key() == key.harness).cloned() else {
                 let _ = updates.send(LoginUpdate::Failed(format!("unknown harness {}", key.harness)));
                 return;
             };
-            let process = match harness.auth().start_login(LoginKind::Browser).await {
-                Ok(process) => process,
+            let strategy = match harness.0.login(LoginKind::Browser) {
+                Ok(strategy) => strategy,
                 Err(e) => {
                     let _ = updates.send(LoginUpdate::Failed(e.to_string()));
                     return;
                 }
             };
-            (Box::new(CliLogin { process }), Some(harness))
+            (strategy, Some(harness))
         };
         let (control_tx, control_rx) = tokio::sync::mpsc::channel(16);
         let (update_tx, mut update_rx) = tokio::sync::mpsc::channel(16);
@@ -450,7 +385,7 @@ impl Backend {
             while let Some(mut update) = update_rx.recv().await {
                 if matches!(update, LoginUpdate::Succeeded { .. })
                     && let Some(harness) = &harness
-                    && !matches!(harness.auth().sign_in_state().await, Ok(SignInState::SignedIn { .. }))
+                    && !matches!(harness.0.sign_in_state().await, SignInState::SignedIn { .. })
                 {
                     update = LoginUpdate::Failed(format!("{} still reports no sign in", harness.name()));
                 }

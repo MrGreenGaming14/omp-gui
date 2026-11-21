@@ -16,13 +16,13 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use loa_harness::omp::rpc as wire;
+use crate::omp::rpc as wire;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::rpc::{LoginProvider, LoginUiRequest, ModelInfo, OmpRpc, RpcError, UiResponse};
-use crate::{Error, Result};
+use loa_contracts::harness::model_rpc::{LoginProvider, LoginUiRequest, ModelInfo, OmpRpc, RpcError, UiResponse};
+use crate::account_support::{Error, Result};
 
 /// How to start omp: the executable, its working directory and extra
 /// environment (for example `PI_CODING_AGENT_DIR` to point it at another agent
@@ -322,11 +322,92 @@ delegate_lazy_client! {
     fn set_model(provider: &str, model_id: &str) -> ModelInfo;
 }
 
+/// Account access over the same RPC client used for provider discovery.
+pub struct OmpAccount {
+    pub rpc: Arc<dyn OmpRpc>,
+    pub opener: Arc<dyn loa_contracts::harness::UrlOpener>,
+    pub launch: OmpLaunch,
+}
+
+impl OmpAccount {
+    fn config_path_result(&self) -> std::result::Result<PathBuf, loa_contracts::harness::AdapterError> {
+        let mut command = std::process::Command::new(&self.launch.executable);
+        command.args(["config", "path"]).envs(self.launch.env.iter().cloned());
+        if let Some(cwd) = &self.launch.cwd { command.current_dir(cwd); }
+        let output = command.output().map_err(loa_contracts::harness::AdapterError::Io)?;
+        let path = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        if !output.status.success() || path.is_empty() {
+            return Err(loa_contracts::harness::AdapterError::Protocol("omp config path failed".into()));
+        }
+        Ok(PathBuf::from(path).join("config.yml"))
+    }
+}
+
+#[async_trait]
+impl loa_contracts::harness::HarnessAccount for OmpAccount {
+    fn id(&self) -> &'static str { "omp" }
+    fn name(&self) -> &'static str { "omp" }
+    async fn sign_in_state(&self) -> loa_contracts::harness::SignInState {
+        use loa_contracts::harness::{SignInMethod, SignInState};
+        match self.rpc.get_login_providers().await {
+            Ok(providers) if providers.iter().any(|provider| provider.authenticated) =>
+                SignInState::SignedIn { method: SignInMethod::OAuthToken },
+            Ok(_) => SignInState::SignedOut,
+            Err(error) => SignInState::Unknown { reason: error.to_string() },
+        }
+    }
+    fn login(&self, _: loa_contracts::harness::LoginKind) -> std::result::Result<Box<dyn loa_contracts::harness::LoginStrategy>, loa_contracts::harness::AdapterError> {
+        Err(loa_contracts::harness::AdapterError::Unsupported { harness: "omp", what: "login without a provider" })
+    }
+    fn login_provider(&self, provider: LoginProvider) -> std::result::Result<Box<dyn loa_contracts::harness::LoginStrategy>, loa_contracts::harness::AdapterError> {
+        Ok(Box::new(super::oauth::OmpOAuthLogin { rpc: self.rpc.clone(), opener: self.opener.clone(), provider }))
+    }
+    fn logout_command(&self) -> Option<loa_contracts::harness::CommandSpec> { None }
+    fn efforts(&self) -> &'static [&'static str] {
+        &loa_contracts::harness::selector::THINKING_LEVELS
+    }
+    fn config_path(&self) -> Option<PathBuf> { self.config_path_result().ok() }
+    fn read_model(&self) -> std::result::Result<loa_contracts::harness::ModelSettings, loa_contracts::harness::AdapterError> {
+        use loa_contracts::harness::{AdapterError, ModelSettings, selector::Selector};
+        let config = super::config::OmpConfig::load(&self.config_path_result()?)
+            .map_err(|error| AdapterError::Protocol(error.to_string()))?;
+        let Some(selector) = config.model_role("default").map_err(|error| AdapterError::Protocol(error.to_string()))?
+            .and_then(|role| role.candidates.into_iter().next()) else {
+            return Ok(ModelSettings::default());
+        };
+        let effort = selector.thinking().map(str::to_owned);
+        let model = match selector {
+            Selector::Model { model, .. } => model,
+            Selector::Role { role, .. } => format!("@{role}"),
+        };
+        Ok(ModelSettings { model: Some(model), effort })
+    }
+    fn write_model(&self, settings: &loa_contracts::harness::ModelSettings) -> std::result::Result<(), loa_contracts::harness::AdapterError> {
+        use loa_contracts::harness::{AdapterError, selector::Selector};
+        let mut config = super::config::OmpConfig::load(&self.config_path_result()?)
+            .map_err(|error| AdapterError::Protocol(error.to_string()))?;
+        if let Some(model) = &settings.model {
+            let mut selector = Selector::parse(model).map_err(|error| AdapterError::Protocol(error.to_string()))?;
+            match &mut selector {
+                Selector::Model { thinking, .. } | Selector::Role { thinking, .. } => *thinking = settings.effort.clone(),
+            }
+            let mut candidates = config.model_role("default").map_err(|error| AdapterError::Protocol(error.to_string()))?
+                .map(|role| role.candidates).unwrap_or_default();
+            if candidates.is_empty() { candidates.push(selector); } else { candidates[0] = selector; }
+            config.set_model_role("default", &candidates).map_err(|error| AdapterError::Protocol(error.to_string()))?;
+        } else {
+            config.clear_model_role("default").map_err(|error| AdapterError::Protocol(error.to_string()))?;
+        }
+        config.save().map_err(|error| AdapterError::Protocol(error.to_string()))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::login::{LoginControl, LoginStrategy, LoginUpdate, OmpOAuthLogin, UrlOpener};
-    use loa_harness::testing::{FakeProcess as FakeOmp, handshake_v2};
+    use loa_contracts::harness::{LoginControl, LoginStrategy, LoginUpdate, UrlOpener};
+    use crate::omp::oauth::OmpOAuthLogin;
+    use crate::testing::{FakeProcess as FakeOmp, handshake_v2};
     use tokio::sync::mpsc::channel;
 
     #[derive(Default)]
@@ -408,6 +489,36 @@ mod tests {
         assert_eq!(received[2]["type"], "extension_ui_response");
         assert_eq!(received[2]["id"], "d1");
         assert_eq!(received[2]["cancelled"], true);
+    }
+
+    #[test]
+    fn secret_input_is_never_forwarded_to_login() {
+        let input = |secret| wire::UiRequest::Input {
+            id: "1".into(), title: "Code".into(), placeholder: None, timeout: None, secret,
+        };
+        assert!(login_frame(input(true)).is_none());
+        assert!(matches!(login_frame(input(false)), Some(LoginUiRequest::Input { .. })));
+    }
+
+    #[test]
+    fn account_edits_default_role_without_losing_other_candidates() {
+        use loa_contracts::harness::{HarnessAccount, ModelSettings};
+        let dir = tempfile::tempdir().unwrap();
+        let program = crate::account_support::process::testutil::fake_program(
+            dir.path(), "omp", "if [ \"$1 $2\" = 'config path' ]; then printf '%s\\n' \"$TEST_AGENT_DIR\"; exit 0; fi\nexit 64"
+        );
+        let config = dir.path().join("config.yml");
+        std::fs::write(&config, "# keep\nmodelRoles:\n  default: old/model:low,other/model\n").unwrap();
+        let launch = OmpLaunch { executable: program, cwd: None, env: vec![("TEST_AGENT_DIR".into(), dir.path().as_os_str().into())] };
+        let account = OmpAccount { rpc: Arc::new(OmpService::new(launch.clone())), opener: Arc::new(Opener::default()), launch };
+        let before = account.read_model().unwrap();
+        assert_eq!(before, ModelSettings { model: Some("old/model".into()), effort: Some("low".into()) });
+        let after = ModelSettings { model: Some("new/model".into()), effort: Some("high".into()) };
+        account.write_model(&after).unwrap();
+        assert_eq!(account.read_model().unwrap(), after);
+        let text = std::fs::read_to_string(config).unwrap();
+        assert!(text.contains("# keep"));
+        assert!(text.contains("new/model:high,other/model"));
     }
 
     #[tokio::test]

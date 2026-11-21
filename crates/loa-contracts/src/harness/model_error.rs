@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use loa_util::fs::{self, Snapshot};
 
-use crate::rpc::RpcError;
+use super::model_rpc::RpcError;
 
 /// Errors from reading, editing and validating model settings.
 #[derive(Debug, thiserror::Error)]
@@ -43,14 +43,14 @@ pub enum Error {
 }
 
 impl Error {
-    pub(crate) fn io(path: impl Into<PathBuf>, source: std::io::Error) -> Self {
+    pub fn io(path: impl Into<PathBuf>, source: std::io::Error) -> Self {
         Self::Io {
             path: path.into(),
             source,
         }
     }
 
-    pub(crate) fn invalid(field: impl Into<String>, reason: impl Into<String>) -> Self {
+    pub fn invalid(field: impl Into<String>, reason: impl Into<String>) -> Self {
         Self::Invalid {
             field: field.into(),
             reason: reason.into(),
@@ -61,6 +61,13 @@ impl Error {
 /// Result with this crate's [`Error`] as the default error type.
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
+/// Validates candidate omp files before atomic saves.
+#[async_trait::async_trait]
+pub trait SettingsValidator: Send + Sync {
+    async fn check_config(&self, text: &str, expected: &[(String, serde_json::Value)]) -> Result<()>;
+    async fn check_models(&self, text: &str) -> Result<()>;
+}
+
 /// `bytes` read from `path` as UTF-8 text.
 fn text(path: &Path, bytes: Option<&[u8]>) -> Result<Option<String>> {
     let utf8 = |b: &[u8]| String::from_utf8(b.to_vec()).map_err(|e| Error::io(path, io::Error::new(io::ErrorKind::InvalidData, e)));
@@ -68,19 +75,19 @@ fn text(path: &Path, bytes: Option<&[u8]>) -> Result<Option<String>> {
 }
 
 /// Reads `path` as text, `None` when it does not exist.
-pub(crate) fn read_optional(path: &Path) -> Result<Option<String>> {
+pub fn read_optional(path: &Path) -> Result<Option<String>> {
     text(path, fs::read_optional(path).map_err(|e| Error::io(path, e))?.as_deref())
 }
 
 /// Loads `path` and its text, remembering what was seen for [`save_snapshot`].
-pub(crate) fn load_snapshot(path: &Path) -> Result<(Snapshot, Option<String>)> {
+pub fn load_snapshot(path: &Path) -> Result<(Snapshot, Option<String>)> {
     let snapshot = Snapshot::load(path).map_err(|e| Error::io(path, e))?;
     let text = text(path, snapshot.contents())?;
     Ok((snapshot, text))
 }
 
 /// Writes `text` atomically unless the file changed since it was loaded.
-pub(crate) fn save_snapshot(snapshot: &mut Snapshot, text: &str) -> Result<()> {
+pub fn save_snapshot(snapshot: &mut Snapshot, text: &str) -> Result<()> {
     let path = snapshot.path().to_path_buf();
     match snapshot.save(text.as_bytes()) {
         Ok(true) => Ok(()),

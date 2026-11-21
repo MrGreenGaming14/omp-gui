@@ -3,12 +3,15 @@
 mod account;
 mod capabilities;
 mod host_tools;
+pub mod model_error;
+pub mod model_rpc;
+pub mod selector;
 
 pub use crate::availability::{Availability, AvailabilityStatus};
 pub use crate::tools::OutputBlock;
 pub use account::{
     CommandSpec, HarnessAccount, HarnessFactory, HarnessTraits, LoginControl, LoginKind, LoginStrategy, LoginUpdate,
-    ModelSettings, SignInMethod, SignInState,
+    ModelSettings, SignInMethod, SignInState, UrlOpener,
 };
 pub use capabilities::{Capabilities, CapsBuilder, ContextDelivery, Feature, ModelSwitch};
 pub use host_tools::{DuplicateHostTool, HostToolRouter};

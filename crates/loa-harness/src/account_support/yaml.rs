@@ -12,7 +12,7 @@ use yaml_rust2::yaml::Hash;
 
 pub use yaml_rust2::Yaml;
 
-use crate::{Error, Result};
+use super::{Error, Result};
 
 /// A YAML document whose root is a block mapping (or empty), edited in place.
 #[derive(Debug, Clone)]
@@ -92,7 +92,7 @@ impl YamlDocument {
     }
 }
 
-impl crate::harness::configdoc::ConfigDoc for YamlDocument {
+impl super::configdoc::ConfigDoc for YamlDocument {
     fn parse(text: &str, what: &str) -> Result<Self> {
         YamlDocument::parse(text, what)
     }

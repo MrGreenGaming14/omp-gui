@@ -8,6 +8,8 @@ publish.workspace = true
 [dependencies]
 loa-util.workspace = true
 iced.workspace = true
+loa-contracts.workspace = true
+loa-harness = { workspace = true, features = ["omp"] }
 loa-core.workspace = true
 loa-models = { path = "../loa-models" }
 loa-ui-kit.workspace = true

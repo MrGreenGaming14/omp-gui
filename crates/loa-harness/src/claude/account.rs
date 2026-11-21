@@ -8,11 +8,11 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::{Map, Value};
 
-use super::configdoc::{ConfigDoc, JsonDoc, edit_file};
-use super::{HarnessAuth, HarnessId, LoginKind, SignInMethod, SignInState, validate_model_name};
-use crate::error::{load_snapshot, read_optional};
-use crate::process::{CommandSpec, ProcessRunner, RunningProcess};
-use crate::{Error, Result};
+use crate::account_support::configdoc::{ConfigDoc, JsonDoc, edit_file};
+use crate::account_support::{LoginKind, SignInMethod, SignInState, validate_model_name};
+use crate::account_support::error::{load_snapshot, read_optional};
+use crate::account_support::process::{CommandSpec, ProcessRunner};
+use crate::account_support::{Error, Result};
 
 /// Key of the default model in `settings.json`.
 const MODEL_KEY: &str = "model";
@@ -35,35 +35,13 @@ pub struct ClaudeCode {
     pub runner: Arc<dyn ProcessRunner>,
 }
 
-/// An effort level Claude Code accepts in `settings.json`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum ClaudeEffort { Low, Medium, High, XHigh }
-
-impl ClaudeEffort {
-    /// Every level, lowest first.
-    pub const ALL: [Self; 4] = [Self::Low, Self::Medium, Self::High, Self::XHigh];
-
-    /// The value written to `settings.json`.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Low => "low",
-            Self::Medium => "medium",
-            Self::High => "high",
-            Self::XHigh => "xhigh",
-        }
-    }
-
-    /// Parses a `settings.json` value; anything else is [`Error::Invalid`].
-    pub fn parse(text: &str) -> Result<Self> {
-        Self::ALL
-            .into_iter()
-            .find(|level| level.as_str() == text)
-            .ok_or_else(|| {
-                Error::invalid(
-                    EFFORT_KEY,
-                    format!("{text:?} is not one of low, medium, high, xhigh"),
-                )
-            })
+loa_util::str_enum! {
+    /// An effort level Claude Code accepts in `settings.json`.
+    pub ClaudeEffort {
+        Low => "low",
+        Medium => "medium",
+        High => "high",
+        XHigh => "xhigh",
     }
 }
 
@@ -184,7 +162,7 @@ fn effort_of(value: &Value) -> Option<ClaudeEffort> {
     value
         .get(EFFORT_KEY)
         .and_then(Value::as_str)
-        .and_then(|text| ClaudeEffort::parse(text).ok())
+        .and_then(ClaudeEffort::parse)
 }
 
 /// Whether `map` holds exactly the one key `key`.
@@ -251,11 +229,7 @@ fn is_method_name(name: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'_' | b'-'))
 }
 
-#[async_trait]
-impl HarnessAuth for ClaudeCode {
-    fn id(&self) -> HarnessId {
-        HarnessId::ClaudeCode
-    }
+impl ClaudeCode {
 
     /// Runs `claude auth status`. A CLI that cannot be run is reported as
     /// [`SignInState::Unknown`], not as an error.
@@ -282,14 +256,46 @@ impl HarnessAuth for ClaudeCode {
         }
     }
 
-    async fn start_login(&self, kind: LoginKind) -> Result<Box<dyn RunningProcess>> {
-        let spec = self.login_command(kind)?;
-        self.runner.spawn(&spec).await
-    }
 
     fn logout_command(&self) -> CommandSpec {
         self.command(&["auth", "logout"])
     }
+}
+
+#[async_trait]
+impl loa_contracts::harness::HarnessAccount for ClaudeCode {
+    fn id(&self) -> &'static str { "claude" }
+    fn name(&self) -> &'static str { "Claude Code" }
+    async fn sign_in_state(&self) -> SignInState {
+        ClaudeCode::sign_in_state(self).await.unwrap_or_else(|error| SignInState::Unknown { reason: error.to_string() })
+    }
+    fn login(&self, kind: LoginKind) -> std::result::Result<Box<dyn loa_contracts::harness::LoginStrategy>, loa_contracts::harness::AdapterError> {
+        let command = self.login_command(kind).map_err(account_error)?;
+        Ok(Box::new(crate::account_support::cli::CliLoginCommand { runner: self.runner.clone(), command }))
+    }
+    fn logout_command(&self) -> Option<CommandSpec> { Some(ClaudeCode::logout_command(self)) }
+    fn efforts(&self) -> &'static [&'static str] { ClaudeEffort::VALUES }
+    fn config_path(&self) -> Option<PathBuf> { Some(self.settings_path.clone()) }
+    fn read_model(&self) -> std::result::Result<loa_contracts::harness::ModelSettings, loa_contracts::harness::AdapterError> {
+        let settings = self.read_model_settings().map_err(account_error)?;
+        Ok(loa_contracts::harness::ModelSettings {
+            model: settings.model,
+            effort: settings.effort.map(|effort| effort.as_str().to_owned()),
+        })
+    }
+    fn write_model(&self, settings: &loa_contracts::harness::ModelSettings) -> std::result::Result<(), loa_contracts::harness::AdapterError> {
+        let effort = settings.effort.as_deref().map(|value| ClaudeEffort::parse(value)
+            .ok_or_else(|| Error::invalid(EFFORT_KEY, format!("{value:?} is not one of low, medium, high, xhigh"))))
+            .transpose().map_err(account_error)?;
+        let before = self.read_model_settings().map_err(account_error)?;
+        if before.model != settings.model { self.set_model(settings.model.as_deref()).map_err(account_error)?; }
+        if before.effort != effort { self.set_effort(effort).map_err(account_error)?; }
+        Ok(())
+    }
+}
+
+fn account_error(error: Error) -> loa_contracts::harness::AdapterError {
+    loa_contracts::harness::AdapterError::Protocol(error.to_string())
 }
 
 #[cfg(test)]
@@ -297,8 +303,8 @@ mod tests {
     use std::path::Path;
 
     use super::*;
-    use crate::process::TokioProcessRunner;
-    use crate::process::testutil::fake_program;
+    use crate::account_support::process::TokioProcessRunner;
+    use crate::account_support::process::testutil::fake_program;
 
     fn claude(program: &Path, settings: &Path) -> ClaudeCode {
         ClaudeCode::new(program, settings, Arc::new(TokioProcessRunner))
@@ -386,11 +392,11 @@ mod tests {
             (LoginKind::Console, "auth\nlogin\n--console\n"),
             (LoginKind::Sso, "auth\nlogin\n--sso\n"),
         ] {
-            let mut proc = harness.start_login(kind).await.unwrap();
+            let mut proc = harness.runner.spawn(&harness.login_command(kind).unwrap()).await.unwrap();
             assert_eq!(proc.wait().await.unwrap(), Some(7));
             assert_eq!(std::fs::read_to_string(&argv).unwrap(), expected);
         }
-        let err = harness.start_login(LoginKind::DeviceCode).await.err().unwrap();
+        let err = harness.login_command(LoginKind::DeviceCode).err().unwrap();
         assert!(matches!(err, Error::Invalid { .. }), "{err:?}");
         assert_eq!(harness.logout_command().args, ["auth", "logout"]);
     }
@@ -510,7 +516,7 @@ mod tests {
         assert_eq!(ClaudeEffort::parse("xhigh").unwrap(), ClaudeEffort::XHigh);
         for bad in ["max", "ultracode", "HIGH", "", "minimal"] {
             assert!(
-                matches!(ClaudeEffort::parse(bad), Err(Error::Invalid { .. })),
+                ClaudeEffort::parse(bad).is_none(),
                 "{bad}"
             );
         }

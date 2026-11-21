@@ -25,12 +25,12 @@
 
 use std::path::Path;
 
-use crate::error::{load_snapshot, save_snapshot};
+use crate::account_support::error::{load_snapshot, save_snapshot};
 use loa_util::fs::Snapshot;
-use crate::rpc::ModelCost;
-use crate::validate::SettingsValidator;
-use crate::yaml::{Yaml, YamlDocument, ymap, ystr, ystrs};
-use crate::{Error, Result};
+use loa_contracts::harness::model_rpc::ModelCost;
+use loa_contracts::harness::model_error::SettingsValidator;
+use crate::account_support::yaml::{Yaml, YamlDocument, ymap, ystr, ystrs};
+use crate::account_support::{Error, Result};
 
 /// The `api` values omp accepts for providers and models.
 pub const APIS: [&str; 14] = [
@@ -64,6 +64,10 @@ pub const DISCOVERY_TYPES: [&str; 7] = [
 loa_util::str_enum! {
     /// How a provider authenticates (`auth`).
     pub AuthMode { ApiKey => "apiKey", None => "none", OAuth => "oauth" }
+}
+
+impl Default for AuthMode {
+    fn default() -> Self { Self::ApiKey }
 }
 
 /// Where omp reads a provider's key from. There is deliberately no variant that

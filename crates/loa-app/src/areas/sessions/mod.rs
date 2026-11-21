@@ -41,7 +41,7 @@ use loa_harness::features::plan::{self as plan_mode, Outcome, PlanGate, Verdict}
 use loa_harness::features::{Compaction, PlanPermit, native};
 use loa_bus::Listing;
 use loa_models::login::UrlOpener;
-use loa_models::opener::SystemUrlOpener;
+use loa_harness::account_support::opener::SystemUrlOpener;
 use loa_ui_session::transcript as chat;
 use loa_ui_session::composer as composer;
 use loa_ui_shell::palette;
@@ -800,7 +800,7 @@ fn name(library: &loa_harness::features::library::Library, id: &str, title: &str
 /// candidate models in order.
 fn model_roles(home: &Path) -> Result<Vec<(String, Vec<String>)>, String> {
     let path = home.join(".omp/agent/config.yml");
-    let config = loa_models::config::OmpConfig::load(&path).map_err(|error| format!("Can't read {}: {error}", path.display()))?;
+    let config = loa_harness::omp::config::OmpConfig::load(&path).map_err(|error| format!("Can't read {}: {error}", path.display()))?;
     let roles = config.model_roles().map_err(|error| format!("Can't read the model roles in {}: {error}", path.display()))?;
     Ok(roles.into_iter().map(|role| (role.role, role.candidates.iter().map(ToString::to_string).collect())).collect())
 }

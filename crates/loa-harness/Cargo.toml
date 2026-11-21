@@ -29,6 +29,8 @@ serde.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
+toml_edit = "0.25"
+yaml-rust2 = "0.13"
 tokio.workspace = true
 tracing.workspace = true
 

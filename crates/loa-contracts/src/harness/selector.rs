@@ -2,14 +2,14 @@
 
 use std::fmt;
 
-use crate::{Error, Result};
+use super::model_error::{Error, Result};
 
 /// Thinking levels a chat selector may carry as a `:level` suffix.
 pub const THINKING_LEVELS: [&str; 9] = [
     "off", "minimal", "low", "medium", "high", "xhigh", "max", "auto", "inherit",
 ];
 
-pub(crate) fn validate_role_name(role: &str) -> Result<()> {
+pub fn validate_role_name(role: &str) -> Result<()> {
     if role.is_empty()
         || !role
             .chars()
@@ -96,7 +96,7 @@ impl Selector {
         }
     }
 
-    pub(crate) fn validate(&self) -> Result<()> {
+    pub fn validate(&self) -> Result<()> {
         let (name, thinking) = match self {
             Self::Model { model, thinking } => (model.as_str(), thinking),
             Self::Role { role, thinking } => {

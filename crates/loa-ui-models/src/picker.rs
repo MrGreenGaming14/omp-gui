@@ -3,9 +3,9 @@
 //! session (directly or through a role) or assigns a model to a role.
 
 use crate::ModelRef;
-pub use loa_models::selector::Catalog;
+pub use loa_contracts::harness::selector::Catalog;
 #[cfg(test)]
-use loa_models::selector::{ModelInfo, RoleAssignment};
+use loa_contracts::harness::selector::{ModelInfo, RoleAssignment};
 use crate::session::SessionModelChange;
 use crate::style;
 use iced::event::{self, Event as RuntimeEvent};

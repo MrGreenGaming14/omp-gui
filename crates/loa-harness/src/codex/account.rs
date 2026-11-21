@@ -5,11 +5,11 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use super::{HarnessAuth, HarnessId, LoginKind, SignInMethod, SignInState, validate_model_name};
-use super::configdoc::{ConfigDoc, TomlDoc, edit_file};
-use crate::error::load_snapshot;
-use crate::process::{CommandSpec, ProcessRunner, RunningProcess};
-use crate::{Error, Result};
+use crate::account_support::{LoginKind, SignInMethod, SignInState, validate_model_name};
+use crate::account_support::configdoc::{ConfigDoc, TomlDoc, edit_file};
+use crate::account_support::error::load_snapshot;
+use crate::account_support::process::{CommandSpec, ProcessRunner};
+use crate::account_support::{Error, Result};
 
 /// Codex CLI, its user config path and a process runner. Paths are supplied by
 /// the app (normally `codex` and `~/.codex/config.toml`).
@@ -88,9 +88,7 @@ fn status(code: Option<i32>, text: &str) -> SignInState {
     }
 }
 
-#[async_trait]
-impl HarnessAuth for Codex {
-    fn id(&self) -> HarnessId { HarnessId::Codex }
+impl Codex {
     async fn sign_in_state(&self) -> Result<SignInState> {
         match self.runner.output(&self.command(&["login", "status"])).await {
             Ok(out) => Ok(status(out.code, &out.stdout)),
@@ -105,25 +103,76 @@ impl HarnessAuth for Codex {
             _ => Err(Error::invalid("login kind", "Codex supports browser and device-code login")),
         }
     }
-    async fn start_login(&self, kind: LoginKind) -> Result<Box<dyn RunningProcess>> {
-        self.runner.spawn(&self.login_command(kind)?).await
-    }
     fn logout_command(&self) -> CommandSpec { self.command(&["logout"]) }
+}
+
+#[async_trait]
+impl loa_contracts::harness::HarnessAccount for Codex {
+    fn id(&self) -> &'static str { "codex" }
+    fn name(&self) -> &'static str { "Codex" }
+    async fn sign_in_state(&self) -> SignInState {
+        Codex::sign_in_state(self).await.unwrap_or_else(|error| SignInState::Unknown { reason: error.to_string() })
+    }
+    fn login(&self, kind: LoginKind) -> std::result::Result<Box<dyn loa_contracts::harness::LoginStrategy>, loa_contracts::harness::AdapterError> {
+        let command = self.login_command(kind).map_err(account_error)?;
+        Ok(Box::new(crate::account_support::cli::CliLoginCommand { runner: self.runner.clone(), command }))
+    }
+    fn logout_command(&self) -> Option<CommandSpec> { Some(Codex::logout_command(self)) }
+    fn efforts(&self) -> &'static [&'static str] { ReasoningEffort::VALUES }
+    fn config_path(&self) -> Option<PathBuf> { Some(self.config_path.clone()) }
+    fn read_model(&self) -> std::result::Result<loa_contracts::harness::ModelSettings, loa_contracts::harness::AdapterError> {
+        let settings = self.read_model_settings().map_err(account_error)?;
+        Ok(loa_contracts::harness::ModelSettings {
+            model: settings.model,
+            effort: settings.reasoning_effort.map(|effort| effort.as_str().to_owned()),
+        })
+    }
+    fn write_model(&self, settings: &loa_contracts::harness::ModelSettings) -> std::result::Result<(), loa_contracts::harness::AdapterError> {
+        let effort = settings.effort.as_deref().map(|value| ReasoningEffort::parse(value)
+            .ok_or_else(|| Error::invalid("model_reasoning_effort", "unknown effort"))).transpose().map_err(account_error)?;
+        let before = self.read_model_settings().map_err(account_error)?;
+        if before.model != settings.model { self.set_model(settings.model.as_deref()).map_err(account_error)?; }
+        if before.reasoning_effort != effort { self.set_reasoning_effort(effort).map_err(account_error)?; }
+        Ok(())
+    }
+}
+
+fn account_error(error: Error) -> loa_contracts::harness::AdapterError {
+    loa_contracts::harness::AdapterError::Protocol(error.to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::process::TokioProcessRunner;
-    use crate::process::testutil::fake_program;
+    use crate::account_support::process::TokioProcessRunner;
+    use crate::account_support::process::testutil::fake_program;
     #[tokio::test]
     async fn login_status_and_device_flow_use_codex_cli() {
         let dir = tempfile::tempdir().unwrap();
         let program = fake_program(dir.path(), "codex", "if [ \"$1 $2\" = 'login status' ]; then echo 'Logged in using ChatGPT'; exit 0; fi\nif [ \"$1 $2\" = 'login --device-auth' ]; then exit 7; fi\nexit 64");
         let codex = Codex::new(program, dir.path().join("config.toml"), Arc::new(TokioProcessRunner));
         assert_eq!(codex.sign_in_state().await.unwrap(), SignInState::SignedIn { method: SignInMethod::Subscription });
-        let mut login = codex.start_login(LoginKind::DeviceCode).await.unwrap();
+        let mut login = codex.runner.spawn(&codex.login_command(LoginKind::DeviceCode).unwrap()).await.unwrap();
         assert_eq!(login.wait().await.unwrap(), Some(7));
+    }
+
+    #[tokio::test]
+    async fn account_port_runs_fake_login_and_edits_model() {
+        use loa_contracts::harness::{HarnessAccount, LoginUpdate, ModelSettings};
+        let dir = tempfile::tempdir().unwrap();
+        let program = fake_program(dir.path(), "codex", "if [ \"$1 $2\" = 'login status' ]; then echo 'Logged in using ChatGPT'; exit 0; fi\necho 'Visit https://example.invalid/login'\nexit 0");
+        let account: Arc<dyn HarnessAccount> = Arc::new(Codex::new(program, dir.path().join("config.toml"), Arc::new(TokioProcessRunner)));
+        assert!(matches!(account.sign_in_state().await, SignInState::SignedIn { .. }));
+        let settings = ModelSettings { model: Some("gpt-test".into()), effort: Some("high".into()) };
+        account.write_model(&settings).unwrap();
+        assert_eq!(account.read_model().unwrap(), settings);
+        let (controls, control_rx) = tokio::sync::mpsc::channel(2);
+        let (updates, mut update_rx) = tokio::sync::mpsc::channel(2);
+        let run = tokio::spawn(account.login(LoginKind::Browser).unwrap().run(control_rx, updates));
+        assert!(matches!(update_rx.recv().await, Some(LoginUpdate::Url { .. })));
+        assert_eq!(update_rx.recv().await, Some(LoginUpdate::Succeeded { account: None }));
+        drop(controls);
+        run.await.unwrap();
     }
     #[test]
     fn model_edits_preserve_other_fields_and_comments() {

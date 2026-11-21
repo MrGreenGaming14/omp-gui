@@ -6,17 +6,17 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use async_trait::async_trait;
     use loa_util::LockExt;
-    use loa_models::harness::claude::ClaudeCode;
-    use loa_models::harness::codex::Codex;
+    use loa_harness::claude::account::ClaudeCode;
+    use loa_harness::codex::account::Codex;
     use loa_models::keys::EnvironmentPresence;
     use loa_models::login::{Auth, LoginUpdate, ProviderKey, UrlOpener};
-    use loa_models::omp::OmpFiles;
-    use loa_models::process::TokioProcessRunner;
-    use loa_models::rpc::{self, LoginProvider, LoginUiRequest, UiResponse};
+    use loa_harness::omp::account::OmpFiles;
+    use loa_harness::account_support::process::TokioProcessRunner;
+    use loa_contracts::harness::model_rpc::{self as rpc, LoginProvider, LoginUiRequest, UiResponse};
     use loa_models::service::{Backend, Parts, OMP};
     use loa_models::settings::RoleChain;
     use loa_models::testing::{FakeOmp as FakeRpc, LoginScript};
-    use loa_models::validate::SettingsValidator;
+    use loa_contracts::harness::model_error::SettingsValidator;
     use crate::ModelRef;
     use crate::signin;
 
@@ -34,13 +34,13 @@ mod tests {
     struct Validator;
     #[async_trait]
     impl SettingsValidator for Validator {
-        async fn check_config(&self, text: &str, _: &[(String, serde_json::Value)]) -> loa_models::Result<()> {
+        async fn check_config(&self, text: &str, _: &[(String, serde_json::Value)]) -> loa_contracts::harness::model_error::Result<()> {
             if text.contains("reject-me") {
-                return Err(loa_models::Error::Rejected { what: "config.yml".into(), message: "bad role".into() });
+                return Err(loa_contracts::harness::model_error::Error::Rejected { what: "config.yml".into(), message: "bad role".into() });
             }
             Ok(())
         }
-        async fn check_models(&self, _: &str) -> loa_models::Result<()> {
+        async fn check_models(&self, _: &str) -> loa_contracts::harness::model_error::Result<()> {
             Ok(())
         }
     }
@@ -113,8 +113,7 @@ exit 64"#,
             files: OmpFiles::new(dir.path()),
             validator: Arc::new(Validator),
             opener: opener.clone(),
-            claude: Some(fake_claude(dir.path())),
-            codex: Some(codex),
+            harnesses: vec![Arc::new(fake_claude(dir.path())), Arc::new(codex)],
             environment: Arc::new(Env(["GW_KEY", "OPENAI_API_KEY"].into())),
         });
         Fixture { dir, backend, rpc, opener }
