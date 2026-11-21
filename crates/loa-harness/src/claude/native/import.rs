@@ -4,7 +4,7 @@ use super::content::{self, Encoded};
 use super::{
     EXT_BLOCK, EXT_FILE, X_BLOCK, X_CONTENT, X_ENVELOPE, X_FILE, X_LINE, X_PART, X_PATH, X_SPLIT, take_field, time,
 };
-use crate::HARNESS;
+use crate::claude::HARNESS;
 use loa_contracts::harness::Result;
 use loa_core::{
     CallStatus, Draft, ElementKind, JobKind, JobStatus, MessageKind, MessageStatus, NodeId, PatchSink, Role,

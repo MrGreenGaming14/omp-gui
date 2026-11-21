@@ -1,7 +1,7 @@
 //! Scripted Claude Code stream transcripts through the event mapper.
 
 use loa_contracts::harness::{AdapterError, Answer, SessionConfig, SessionState};
-use loa_adapter_claude::events::{Mapper, Output};
+use loa_harness::claude::events::{Mapper, Output};
 use loa_core::{Dom, Draft, ElementKind, MemorySink, Node, NodeId, PatchSink, Value as V, answer, attr};
 use serde_json::{Value, json};
 use std::sync::Arc;

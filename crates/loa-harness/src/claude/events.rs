@@ -5,7 +5,7 @@
 //! I/O. Whatever has to go back to the CLI (control responses, SDK MCP
 //! requests) comes out as an [`Output`] for the driver to act on.
 
-use crate::HARNESS;
+use crate::claude::HARNESS;
 use loa_contracts::harness::{AdapterError, Answer, Result, SessionConfig, SessionState};
 use loa_core::{
     CallStatus, DecisionKind, DecisionStatus, Dom, Draft, ElementKind, JobKind, JobStatus, MessageKind,

@@ -6,9 +6,9 @@
 //! requests (permission prompts, SDK MCP messages) come out on stdout.
 
 use loa_util::LockExt;
-use crate::events::{Mapper, Output, UUID_ATTR, mcp_response};
-use crate::mcp::{self, HOST_SERVER};
-use crate::{HARNESS, native};
+use crate::claude::events::{Mapper, Output, UUID_ATTR, mcp_response};
+use crate::claude::mcp::{self, HOST_SERVER};
+use crate::claude::{HARNESS, native};
 use async_trait::async_trait;
 use loa_contracts::harness::{
     Adapter, AdapterError, Answer, Availability, Capabilities, ContextDelivery, Feature, HarnessModel, HarnessSession,

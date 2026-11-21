@@ -186,7 +186,7 @@ fn an_executable_set_in_the_tab_is_saved_registered_and_probed() {
     let omp = dirs.omp.clone();
     let services = Services::new(this, dirs, Harnesses::detect(&key, &omp), dir.path().to_owned()).unwrap();
     let mut app = App::build(services).0;
-    let id = loa_adapter_codex::HARNESS;
+    let id = loa_harness::codex::HARNESS;
 
     update(&mut app, Message::Harness(HarnessMessage::EditExecutable(id.into(), codex.display().to_string())));
     update(&mut app, Message::Harness(HarnessMessage::SaveExecutable(id.into())));

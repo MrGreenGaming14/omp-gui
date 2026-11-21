@@ -15,8 +15,7 @@ loa-features = { path = "../loa-features" }
 loa-config = { path = "../loa-config" }
 loa-omp-bridge = { path = "../loa-omp-bridge" }
 loa-adapter-acp = { path = "../loa-adapter-acp" }
-loa-adapter-claude = { path = "../loa-adapter-claude" }
-loa-adapter-codex = { path = "../loa-adapter-codex" }
+loa-harness = { workspace = true, features = ["claude", "codex"] }
 loa-adapter-omp = { path = "../loa-adapter-omp" }
 loa-adapter-omp2 = { path = "../loa-adapter-omp2" }
 loa-adapter-opencode = { path = "../loa-adapter-opencode" }

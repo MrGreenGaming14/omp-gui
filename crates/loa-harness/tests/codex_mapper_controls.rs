@@ -1,5 +1,5 @@
 use loa_contracts::harness::{Answer, Prompt, SessionConfig, SessionState};
-use loa_adapter_codex::mapper::{Mapper, Reply};
+use loa_harness::codex::mapper::{Mapper, Reply};
 use loa_core::{ElementKind, MemorySink, PatchSink, attr};
 use serde_json::json;
 use std::sync::Arc;

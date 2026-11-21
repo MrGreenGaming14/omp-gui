@@ -6,7 +6,7 @@ use loa_contracts::harness::{
     Adapter, AdapterError, Answer, HostToolSpec, HostTools, McpServerSpec, McpTransport, ModelSelection, Prompt,
     SessionConfig, SessionState,
 };
-use loa_adapter_claude::{ClaudeAdapter, HOST_SERVER};
+use loa_harness::claude::{ClaudeAdapter, HOST_SERVER};
 use loa_core::{CommitError, Dom, Draft, ElementKind, MemorySink, Node, Patch, PatchSink, SessionMode, answer, attr};
 use serde_json::Value;
 use std::path::{Path, PathBuf};

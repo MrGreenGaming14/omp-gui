@@ -1,5 +1,5 @@
 use loa_contracts::harness::{Adapter, Answer, Prompt, SessionConfig, SessionState};
-use loa_adapter_codex::{CodexAdapter, mapper::{Mapper, Reply}, rollout};
+use loa_harness::codex::{CodexAdapter, mapper::{Mapper, Reply}, rollout};
 use loa_core::{ElementKind, MemorySink, PatchSink, attr, answer};
 use serde_json::{Value as Json, json};
 use std::{io::Cursor, sync::Arc};
@@ -64,7 +64,7 @@ fn scripted_events_stream_tools_usage_and_approval_decisions() {
 
 #[test]
 fn rollout_roundtrips_every_native_line_and_preserves_unknown_fields() {
-    let fixture = include_str!("fixtures/rollout-basic.jsonl");
+    let fixture = include_str!("../fixtures/codex/rollout-basic.jsonl");
     let sink = MemorySink::new();
     rollout::import(Cursor::new(fixture), &sink, "local-node").expect("import rollout");
     let dom = sink.dom();

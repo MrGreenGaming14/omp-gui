@@ -5,8 +5,8 @@
 //! responses to the requests this side sent.
 
 use loa_util::LockExt;
-use crate::mapper::{Mapper, Reply, host_tool_result};
-use crate::{CodexAdapter, HARNESS};
+use crate::codex::mapper::{Mapper, Reply, host_tool_result};
+use crate::codex::{CodexAdapter, HARNESS};
 use async_trait::async_trait;
 use loa_contracts::harness::{
     AdapterError, Answer, Attachment, HarnessModel, HarnessSession, HostTools, McpTransport, ModelSelection, Prompt,

@@ -5,8 +5,8 @@
 //! back to Codex. It never touches the process, so tests drive it with
 //! scripted transcripts.
 
-use crate::HARNESS;
-use crate::json::{int_at, str_at};
+use crate::codex::HARNESS;
+use crate::codex::json::{int_at, str_at};
 use loa_contracts::harness::{AdapterError, Answer, Prompt, Result, SessionConfig, SessionState};
 use loa_core::{
     CallStatus, DecisionKind, DecisionStatus, Dom, Draft, ElementKind, JobKind, JobStatus, MessageKind, MessageStatus,
