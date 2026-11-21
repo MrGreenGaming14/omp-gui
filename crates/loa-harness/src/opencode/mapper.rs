@@ -12,11 +12,10 @@ use crate::kit::{EndEvent, EventMapper, TurnLedger};
 use loa_contracts::harness::{AdapterError, Answer, Result, SessionState};
 use loa_core::{
     CallStatus, DecisionKind, DecisionStatus, Dom, DomWriter, ElementKind as K, JobKind, JobStatus, MessageKind, MessageStatus, Node, NodeId,
-    PatchSink, Role, SCHEMA_VERSION, SessionMode, TodoState, TurnStatus, Value, answer, attr,
+    Role, SCHEMA_VERSION, SessionMode, TodoState, TurnStatus, Value, answer, attr,
 };
 use serde_json::{Value as Json, json};
 use std::collections::{BTreeMap, HashMap};
-use std::sync::Arc;
 
 /// Harness id written to `<session harness>` and `<ext harness>`.
 pub const HARNESS: &str = "opencode";
@@ -41,8 +40,6 @@ pub mod xattr {
     /// JSON of the session's pending revert.
     pub const REVERT: &str = "x-revert";
     pub const REASONING_TOKENS: &str = "x-reasoning-tokens";
-    /// App session id of the parent of a mirrored child session.
-    pub const PARENT_SESSION: &str = "x-parent-session";
 }
 
 /// `<ext type>` values this adapter writes.
@@ -50,12 +47,6 @@ pub mod ext {
     pub const MESSAGE: &str = "message";
     pub const PART: &str = "part";
     pub const ERROR: &str = "error";
-}
-
-/// The app's session store for subagent children: an app session id and an empty sink for
-/// native child `native_id` of `parent_session_id`, or `None` to not mirror it.
-pub trait ChildSessions: Send + Sync {
-    fn open_child(&self, parent_session_id: &str, native_id: &str) -> Option<(String, Arc<dyn PatchSink>)>;
 }
 
 /// What goes on the `<session>` root.
@@ -71,8 +62,6 @@ pub struct RootInfo {
     pub mode: Option<SessionMode>,
     /// The native session object.
     pub native: Json,
-    /// More `x-` attributes.
-    pub extra: Vec<(String, Value)>,
 }
 
 /// The request answering a decision: `POST path` with `body`.
@@ -182,27 +171,17 @@ struct Pending {
     answer: Option<Vec<String>>,
 }
 
-struct Mirror {
-    mapper: Box<Mapper>,
-    sink: Arc<dyn PatchSink>,
-    session_id: String,
-}
-
 #[derive(Default)]
 struct Child {
     job: Option<NodeId>,
     call: Option<NodeId>,
     /// Set while the job runs; routes the child's decisions.
     turn: Option<NodeId>,
-    mirror: Option<Mirror>,
 }
 
 /// Maps one native session (and, through [`ChildSessions`], its subagent children) onto one DOM.
 pub struct Mapper {
     root: NodeId,
-    session_id: String,
-    node: String,
-    cwd: Option<String>,
     native_id: String,
     session_oc: String,
     title: Option<String>,
@@ -223,7 +202,6 @@ pub struct Mapper {
     decisions: BTreeMap<NodeId, Pending>,
     todos: Vec<(NodeId, Todo)>,
     children: HashMap<String, Child>,
-    child_port: Option<Arc<dyn ChildSessions>>,
     model: Option<String>,
 }
 
@@ -303,12 +281,9 @@ impl<'a> ToolState<'a> {
 }
 
 impl Mapper {
-    fn empty(root: NodeId, session_id: String, node: String, model: Option<String>) -> Self {
+    fn empty(root: NodeId, model: Option<String>) -> Self {
         Mapper {
             root,
-            session_id,
-            node,
-            cwd: None,
             native_id: String::new(),
             session_oc: String::new(),
             title: None,
@@ -325,7 +300,6 @@ impl Mapper {
             decisions: BTreeMap::new(),
             todos: Vec::new(),
             children: HashMap::new(),
-            child_port: None,
             model,
         }
     }
@@ -359,19 +333,11 @@ impl Mapper {
         ];
         attrs.extend(optional.into_iter().filter_map(|(k, v)| Some((k, Value::Str(v?)))));
         attrs.extend(info.mode.map(|mode| (attr::MODE, mode.into())));
-        attrs.extend(info.extra.iter().map(|(k, v)| (k.as_str(), v.clone())));
         let root = w.at(created).insert(NodeId::DOCUMENT, K::Session, attrs, "")?;
-        let mut mapper = Self::empty(root, info.session_id, info.node, info.model);
-        (mapper.cwd, mapper.native_id, mapper.session_oc, mapper.title, mapper.revert) = (cwd, native_id, session_oc, title, revert);
+        let mut mapper = Self::empty(root, info.model);
+        (mapper.native_id, mapper.session_oc, mapper.title, mapper.revert) = (native_id, session_oc, title, revert);
         Ok(mapper)
     }
-
-    /// Mirrors subagent child sessions through `port`.
-    pub fn with_child_sessions(mut self, port: Option<Arc<dyn ChildSessions>>) -> Self {
-        self.child_port = port;
-        self
-    }
-
     pub fn root(&self) -> NodeId {
         self.root
     }
@@ -455,7 +421,7 @@ impl Mapper {
             if let Event::Known(Known::SessionCreated { info }) = &event
                 && str_at(info, "/parentID") == Some(self.native_id.as_str())
             {
-                return self.register_child(w, info);
+                return self.register_child(info);
             }
             if self.children.contains_key(sid) {
                 let sid = sid.to_owned();
@@ -776,7 +742,6 @@ impl Mapper {
                 attrs.extend(str_at(state, "/title").or_else(|| str_at(state, "/input/description")).map(|title| (attr::TITLE, title.into())));
                 attrs.extend(str_at(state, "/input/subagent_type").map(|agent| (attr::AGENT, agent.into())));
                 let entry = self.children.entry(child.to_owned()).or_default();
-                attrs.extend(entry.mirror.as_ref().map(|m| (attr::SESSION, m.session_id.as_str().into())));
                 let job = w.at(started).insert(call.node, K::Job, attrs, "")?;
                 (entry.job, entry.call, entry.turn, call.job) = (Some(job), Some(call.node), Some(turn), Some(job));
                 job
@@ -1104,27 +1069,10 @@ impl Mapper {
         turns.into_iter().try_for_each(|turn| self.resume_turn(w, turn))
     }
 
-    fn register_child(&mut self, w: &DomWriter, info: &Json) -> Result<()> {
-        let Some(id) = str_at(info, "/id") else { return Ok(()) };
-        if self.children.get(id).is_some_and(|c| c.mirror.is_some()) {
-            return Ok(());
+    fn register_child(&mut self, info: &Json) -> Result<()> {
+        if let Some(id) = str_at(info, "/id") {
+            self.children.entry(id.to_owned()).or_default();
         }
-        let opened = self.child_port.as_ref().and_then(|port| Some((Arc::clone(port), port.open_child(&self.session_id, id)?)));
-        let mirror = match opened {
-            Some((port, (session_id, sink))) => {
-                let extra = vec![(xattr::PARENT_SESSION.to_owned(), Value::Str(self.session_id.clone()))];
-                let root = RootInfo { session_id: session_id.clone(), node: self.node.clone(), cwd: self.cwd.clone(), native: info.clone(), extra, ..Default::default() };
-                let mapper = Mapper::start(&DomWriter::new(&*sink).at(w.now()), root)?.with_child_sessions(Some(port));
-                Some(Mirror { mapper: Box::new(mapper), sink, session_id })
-            }
-            None => None,
-        };
-        let child = self.children.entry(id.to_owned()).or_default();
-        if let (Some(m), Some(job)) = (&mirror, child.job) {
-            // The task tool reported the child before its creation event.
-            w.set(job, attr::SESSION, m.session_id.as_str())?;
-        }
-        child.mirror = mirror;
         Ok(())
     }
 
@@ -1135,10 +1083,7 @@ impl Mapper {
             Event::Known(Known::PermissionReplied { at, reply }) => self.permission_replied(w, &at.request, &reply),
             Event::Known(Known::QuestionReplied { at, answers }) => self.question_replied(w, &at.request, &answers),
             Event::Known(Known::QuestionRejected(at)) => self.request_closed(w, &at.request),
-            event => match self.children.get_mut(child).and_then(|c| c.mirror.as_mut()) {
-                Some(mirror) => mirror.mapper.apply_event(&DomWriter::new(&*mirror.sink).at(w.now()), event),
-                None => Ok(()),
-            },
+            _ => Ok(()),
         }
     }
 
@@ -1146,8 +1091,8 @@ impl Mapper {
     pub fn from_dom(dom: &Dom) -> Result<Self> {
         let root = dom.root().ok_or_else(|| AdapterError::Format("the session DOM is empty".into()))?;
         let s = |a: &str| root.str_attr(a).map(str::to_owned);
-        let mut m = Mapper::empty(root.id, s(attr::ID).unwrap_or_default(), s(attr::NODE).unwrap_or_default(), s(attr::MODEL));
-        (m.cwd, m.native_id, m.session_oc, m.title, m.revert) = (s(attr::CWD), s(attr::NATIVE_ID).unwrap_or_default(), s(xattr::OC).unwrap_or_default(), s(attr::TITLE), s(xattr::REVERT));
+        let mut m = Mapper::empty(root.id, s(attr::MODEL));
+        (m.native_id, m.session_oc, m.title, m.revert) = (s(attr::NATIVE_ID).unwrap_or_default(), s(xattr::OC).unwrap_or_default(), s(attr::TITLE), s(xattr::REVERT));
         m.ledger = TurnLedger::from_dom(dom);
         for child in dom.children(root.id) {
             match child.kind {

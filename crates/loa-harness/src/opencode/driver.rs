@@ -1,7 +1,7 @@
 //! A session on a caller-owned `opencode serve` and its event-stream worker.
 
 use super::client::{Client, EventStream, ServerAuth};
-use super::mapper::{ChildSessions, Mapper, RootInfo};
+use super::mapper::{Mapper, RootInfo};
 use super::{HARNESS, OpenCodeNative, ids};
 use crate::kit::NativeCodec;
 use async_trait::async_trait;
@@ -27,19 +27,12 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 pub struct OpenCodeAdapter {
     base: String,
     auth: Option<ServerAuth>,
-    children: Option<Arc<dyn ChildSessions>>,
 }
 
 impl OpenCodeAdapter {
     /// `base` is the server URL; `auth` is explicit HTTP basic auth.
     pub fn new(base: impl Into<String>, auth: Option<ServerAuth>) -> Self {
-        Self { base: base.into(), auth, children: None }
-    }
-
-    /// Installs the app's child-session store for task subagents.
-    pub fn with_child_sessions(mut self, children: Arc<dyn ChildSessions>) -> Self {
-        self.children = Some(children);
-        self
+        Self { base: base.into(), auth }
     }
 
     pub fn base(&self) -> &str {
@@ -54,7 +47,7 @@ impl OpenCodeAdapter {
     async fn attach(&self, config: SessionConfig, sink: Arc<dyn PatchSink>, mapper: impl AsyncFnOnce(&Client, &DomWriter) -> Result<Mapper>) -> Result<Box<dyn HarnessSession>> {
         let client = self.client(&config);
         let events = client.events().await?;
-        let mapper = mapper(&client, &DomWriter::new(&*sink)).await?.with_child_sessions(self.children.clone());
+        let mapper = mapper(&client, &DomWriter::new(&*sink)).await?;
         let inner = Arc::new(Inner {
             client,
             sink,
