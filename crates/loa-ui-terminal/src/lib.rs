@@ -11,7 +11,8 @@ pub mod channel;
 pub mod emulator;
 pub mod input;
 pub mod local;
-pub mod loopback;
+#[cfg(test)]
+mod loopback;
 pub mod palette;
 pub mod state;
 mod style;
@@ -20,7 +21,6 @@ pub use canvas::{CanvasEvent, Metrics};
 pub use channel::{ChannelRead, ChannelReader, ChannelWriter, PtyChannel, RemotePty};
 pub use emulator::Emulator;
 pub use local::LocalShell;
-pub use loopback::{LoopbackHost, LoopbackSession, RemoteInput};
 pub use palette::TermPalette;
 pub use state::{Event, Message, State, Status, TabId, Target};
 use std::path::PathBuf;
