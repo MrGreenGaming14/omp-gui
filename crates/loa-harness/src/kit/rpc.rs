@@ -87,6 +87,13 @@ pub trait Inbound: Send + Sync + 'static {
     /// Called in order; the read loop waits, so a slow consumer backpressures the harness.
     async fn on_notification(&self, method: &str, params: Json);
     async fn on_closed(&self, status: Option<ExitStatus>, stderr: &str);
+    /// True when requests go to [`Inbound::on_deferred`] in read order, to be
+    /// answered later with [`StdioRpc::respond`], instead of being served on
+    /// their own task.
+    fn defers_requests(&self) -> bool {
+        false
+    }
+    async fn on_deferred(&self, _id: Json, _method: &str, _params: Json) {}
 }
 
 /// The id as a pending-map key: a string id as is, anything else as JSON text.
@@ -162,6 +169,9 @@ impl<F: Framing> Core<F> {
                 None => tracing::debug!(id, "a response nobody waits for"),
             },
             Some(Incoming::Notification { method, params }) => inbound.on_notification(&method, params).await,
+            Some(Incoming::Request { id, method, params }) if inbound.defers_requests() => {
+                inbound.on_deferred(id, &method, params).await
+            }
             Some(Incoming::Request { id, method, params }) => self.serve(id, method, params, inbound.clone()),
             Some(Incoming::Cancel { id }) => {
                 if let Some(task) = self.state.locked().tasks.remove(&id_key(&id)) {

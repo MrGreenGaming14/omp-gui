@@ -24,8 +24,6 @@ pub enum Output {
     /// The CLI forwards a JSON-RPC message to an SDK MCP server the host
     /// serves. Answer with [`mcp_response`].
     Mcp { request_id: String, server: String, message: Value },
-    /// The CLI answered a control request the host sent.
-    ControlResponse { request_id: String, result: std::result::Result<Value, String> },
 }
 
 /// A successful `control_response` line.
@@ -331,7 +329,6 @@ impl Mapper {
             "user" => self.on_user(&mut msg).map(|()| None),
             "result" => self.on_result(&msg).map(|()| None),
             "control_request" => self.on_control_request(msg),
-            "control_response" => Ok(Some(on_control_response(&mut msg))),
             "control_cancel_request" => self.on_cancel(&msg).map(|()| None),
             // Liveness and progress pings carry nothing worth keeping.
             "keep_alive" | "tool_progress" => Ok(None),
@@ -1128,17 +1125,6 @@ fn permission_response(pending: &Pending) -> Value {
             json!({"behavior": "allow", "updatedInput": input})
         }
     }
-}
-
-fn on_control_response(msg: &mut Value) -> Output {
-    let mut response = msg.get_mut("response").map(Value::take).unwrap_or(Value::Null);
-    let request_id = str_of(&response, "request_id").unwrap_or_default().to_owned();
-    let result = if str_of(&response, "subtype") == Some("error") {
-        Err(str_of(&response, "error").unwrap_or("control request failed").to_owned())
-    } else {
-        Ok(response.get_mut("response").map(Value::take).unwrap_or(Value::Null))
-    };
-    Output::ControlResponse { request_id, result }
 }
 
 /// Claude Code permission mode to session mode.

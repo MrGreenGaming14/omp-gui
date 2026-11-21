@@ -92,8 +92,8 @@ rid() { printf '%s' "$1" | sed 's/^{"id":\([0-9]*\),.*/\1/'; }
 while IFS= read -r line; do
     printf '%s\n' "$line" >> "$TRACE_FILE.stdin"
     case "$line" in
-        *'"method":"initialize"'*) printf '%s\n' '{"id":0,"result":{"serverInfo":{"name":"fake","version":"1"}}}' ;;
-        *'"method":"thread/start"'*) printf '%s\n' '{"id":1,"result":{"thread":{"id":"thread-fake"},"model":"gpt-invented"}}' ;;
+        *'"method":"initialize"'*) printf '{"id":%s,"result":{}}\n' "$(rid "$line")" ;;
+        *'"method":"thread/start"'*) printf '{"id":%s,"result":{"thread":{"id":"thread-fake"},"model":"gpt-invented"}}\n' "$(rid "$line")" ;;
         *'"method":"model/list"'*'"cursor":"page-2"'*)
             printf '{"id":%s,"result":{"data":[{"id":"mini","model":"gpt-mini","displayName":"GPT Mini","supportedReasoningEfforts":[]},{"id":"secret","model":"gpt-secret","hidden":true}],"nextCursor":null}}\n' "$(rid "$line")" ;;
         *'"method":"model/list"'*)

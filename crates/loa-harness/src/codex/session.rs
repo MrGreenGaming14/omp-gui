@@ -1,28 +1,27 @@
-//! The Codex process driver: `codex app-server` over stdio JSON-RPC.
-//!
-//! One process per session. The reader task feeds every notification and
-//! server request to the [`Mapper`], writes the replies, and resolves the
-//! responses to the requests this side sent.
+//! The Codex process driver: `codex app-server` on [`StdioRpc`] with
+//! [`JsonRpc2`] framing. Notifications and server requests reach the
+//! [`Mapper`] in read order; its replies go back through the same pipe.
 
-use loa_util::LockExt;
 use crate::codex::mapper::{Mapper, Reply, host_tool_result};
 use crate::codex::{CodexAdapter, HARNESS};
+use crate::kit::rpc::Writer;
+use crate::kit::{Framing, Inbound, JsonRpc2, RpcError, StdioRpc};
 use async_trait::async_trait;
 use loa_contracts::harness::{
-    AdapterError, Answer, Attachment, HarnessModel, HarnessSession, HostTools, McpTransport, ModelSelection, Prompt,
-    Result, SessionConfig, SessionState,
+    AdapterError, Answer, HarnessModel, HarnessSession, HostTools, McpTransport, ModelSelection, Prompt, Result,
+    SessionConfig, SessionState,
 };
 use loa_core::{NodeId, SessionMode};
+use loa_util::LockExt;
 use serde_json::{Value as Json, json};
-use std::collections::HashMap;
-use std::process::Stdio;
-use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Arc, Mutex};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin, Command};
-use tokio::sync::{oneshot, watch};
+use std::process::ExitStatus;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
+use tokio::process::Command;
+use tokio::sync::watch;
 
-type Responder = oneshot::Sender<std::result::Result<Json, String>>;
+/// Codex's app server speaks JSON-RPC without the `jsonrpc` header.
+const FRAMES: JsonRpc2 = JsonRpc2 { header: false };
 
 /// Settings applied to every `turn/start`.
 #[derive(Default)]
@@ -32,66 +31,47 @@ struct TurnSettings {
     mode: Option<SessionMode>,
 }
 
+/// The [`Inbound`] side: the mapper, once the thread exists.
 struct Shared {
-    stdin: tokio::sync::Mutex<Option<ChildStdin>>,
-    pending: Mutex<HashMap<i64, Responder>>,
-    next_id: AtomicI64,
-    mapper: Mutex<Mapper>,
+    mapper: Mutex<Option<Mapper>>,
+    writer: OnceLock<Writer<JsonRpc2>>,
     state: watch::Sender<SessionState>,
-    thread_id: Mutex<String>,
-    settings: Mutex<TurnSettings>,
     session_id: String,
     host_tools: Option<Arc<dyn HostTools>>,
 }
 
-
 impl Shared {
-    fn publish_state(&self) {
-        let state = self.mapper.locked().state();
-        self.state.send_replace(state);
-    }
-
-    async fn write(&self, message: &Json) -> Result<()> {
-        let mut line = message.to_string();
-        line.push('\n');
-        let mut stdin = self.stdin.lock().await;
-        let pipe = stdin.as_mut().ok_or(AdapterError::Closed)?;
-        pipe.write_all(line.as_bytes()).await?;
-        pipe.flush().await?;
-        Ok(())
-    }
-
-    async fn request(&self, method: &str, params: Json) -> Result<Json> {
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let (tx, rx) = oneshot::channel();
-        self.pending.locked().insert(id, tx);
-        if let Err(error) = self.write(&json!({ "id": id, "method": method, "params": params })).await {
-            self.pending.locked().remove(&id);
-            return Err(error);
+    /// Runs `f` on the mapper and publishes the resulting state.
+    fn mapped<T>(&self, f: impl FnOnce(&mut Mapper) -> Result<T>) -> Result<T> {
+        let mut mapper = self.mapper.locked();
+        let mapper = mapper.as_mut().ok_or(AdapterError::Closed)?;
+        let out = f(mapper);
+        if *self.state.borrow() != SessionState::Closed {
+            self.state.send_replace(mapper.state());
         }
-        match rx.await {
-            Ok(Ok(result)) => Ok(result),
-            Ok(Err(message)) => Err(AdapterError::Protocol(format!("{method}: {message}"))),
-            Err(_) => Err(AdapterError::Closed),
-        }
+        out
     }
 
-    async fn send_reply(self: &Arc<Self>, reply: Reply) -> Result<()> {
+    fn write(&self, frame: &Json) -> Result<()> {
+        Ok(self.writer.get().ok_or(AdapterError::Closed)?.send(frame)?)
+    }
+
+    fn reply(&self, reply: Reply) -> Result<()> {
         match reply {
-            Reply::Result { id, result } => self.write(&json!({ "id": id, "result": result })).await,
+            Reply::Result { id, result } => self.write(&FRAMES.response(id, Ok(result))),
             Reply::Error { id, code, message } => {
-                self.write(&json!({ "id": id, "error": { "code": code, "message": message } })).await
+                let error = RpcError::Command { command: String::new(), message, code: Some(code.to_string()) };
+                self.write(&FRAMES.response(id, Err(error)))
             }
             Reply::HostTool { id, tool, arguments } => {
-                let Some(handler) = self.host_tools.clone() else {
+                let (Some(handler), Some(writer)) = (self.host_tools.clone(), self.writer.get().cloned()) else {
                     let result = host_tool_result(Err(format!("no handler for app tool `{tool}`")));
-                    return self.write(&json!({ "id": id, "result": result })).await;
+                    return self.write(&FRAMES.response(id, Ok(result)));
                 };
-                let shared = Arc::clone(self);
+                let session = self.session_id.clone();
                 tokio::spawn(async move {
-                    let outcome = handler.call(&shared.session_id, &tool, &arguments).await;
-                    let message = json!({ "id": id, "result": host_tool_result(outcome) });
-                    if let Err(error) = shared.write(&message).await {
+                    let outcome = handler.call(&session, &tool, &arguments).await;
+                    if let Err(error) = writer.send(&FRAMES.response(id, Ok(host_tool_result(outcome)))) {
                         tracing::warn!(%error, "codex: couldn't return an app tool result");
                     }
                 });
@@ -99,77 +79,56 @@ impl Shared {
             }
         }
     }
+}
 
-    /// Handles one line from Codex's stdout.
-    async fn incoming(self: &Arc<Self>, line: &str) {
-        let message: Json = match serde_json::from_str(line) {
-            Ok(message) => message,
-            Err(error) => {
-                tracing::debug!(%error, "codex: skipping a non-JSON line");
-                return;
-            }
-        };
-        let method = message.get("method").and_then(Json::as_str);
-        let id = message.get("id").filter(|id| !id.is_null());
-        let params = message.get("params").unwrap_or(&Json::Null);
-        let outcome = match (method, id) {
-            (Some(method), Some(id)) => {
-                let reply = self.mapper.locked().request(id.clone(), method, params);
-                match reply {
-                    Ok(Some(reply)) => self.send_reply(reply).await,
-                    Ok(None) => Ok(()),
-                    Err(error) => {
-                        let response = json!({
-                            "id": id,
-                            "error": { "code": -32602, "message": error.to_string() }
-                        });
-                        self.write(&response).await
-                    }
-                }
-            }
-            (Some(method), None) => self.mapper.locked().notification(method, params),
-            (None, Some(id)) => {
-                let responder = id.as_i64().and_then(|id| self.pending.locked().remove(&id));
-                if let Some(responder) = responder {
-                    let outcome = match message.get("error") {
-                        Some(error) => Err(error.get("message").and_then(Json::as_str).unwrap_or("error").to_owned()),
-                        None => Ok(message.get("result").cloned().unwrap_or(Json::Null)),
-                    };
-                    // The requester may have gone away; nothing waits for the result then.
-                    let _ = responder.send(outcome);
-                }
-                Ok(())
-            }
-            (None, None) => Ok(()),
-        };
-        if let Err(error) = outcome {
-            tracing::warn!(%error, "codex: couldn't record an event");
-        }
-        self.publish_state();
+#[async_trait]
+impl Inbound for Shared {
+    async fn on_request(&self, method: &str, _params: Json) -> std::result::Result<Json, RpcError> {
+        Err(RpcError::Protocol(format!("{method} isn't served on its own task")))
     }
 
-    /// Codex's stdout closed.
-    fn exited(&self, detail: &str) {
-        for (_, responder) in self.pending.locked().drain() {
-            // Nothing waits when the requester was dropped.
-            let _ = responder.send(Err(detail.to_owned()));
+    fn defers_requests(&self) -> bool {
+        true
+    }
+
+    async fn on_deferred(&self, id: Json, method: &str, params: Json) {
+        let reply = match self.mapped(|m| m.request(id.clone(), method, &params)) {
+            Ok(reply) => reply,
+            // Requests before the thread exists (config warnings) can't be served yet.
+            Err(AdapterError::Closed) => Some(Reply::Error { id, code: -32601, message: "not ready".to_owned() }),
+            Err(error) => Some(Reply::Error { id, code: -32602, message: error.to_string() }),
+        };
+        if let Some(Err(error)) = reply.map(|r| self.reply(r)) {
+            tracing::warn!(%error, "codex: couldn't answer a request");
         }
-        if let Err(error) = self.mapper.locked().process_exited(detail) {
+    }
+
+    async fn on_notification(&self, method: &str, params: Json) {
+        // Notifications before the thread exists carry nothing for the session.
+        if let Err(error) = self.mapped(|m| m.notification(method, &params))
+            && !matches!(error, AdapterError::Closed)
+        {
+            tracing::warn!(%error, "codex: couldn't record an event");
+        }
+    }
+
+    async fn on_closed(&self, _status: Option<ExitStatus>, stderr: &str) {
+        if !stderr.is_empty() {
+            tracing::debug!(target: "codex", "{stderr}");
+        }
+        if let Err(error) = self.mapped(|m| m.process_exited("codex exited")) {
             tracing::warn!(%error, "codex: couldn't record the exit");
         }
         self.state.send_replace(SessionState::Closed);
-    }
-
-    fn thread_id(&self) -> String {
-        self.thread_id.locked().clone()
     }
 }
 
 /// A running Codex thread.
 pub struct CodexSession {
     shared: Arc<Shared>,
-    child: tokio::sync::Mutex<Child>,
-    state: watch::Receiver<SessionState>,
+    rpc: StdioRpc<JsonRpc2>,
+    thread_id: String,
+    settings: Mutex<TurnSettings>,
 }
 
 /// How a session attaches to its Codex thread.
@@ -214,24 +173,17 @@ pub fn mcp_overrides(config: &SessionConfig) -> Vec<String> {
     args.into_iter().flat_map(|a| ["-c".to_owned(), a]).collect()
 }
 
-fn is_image(attachment: &Attachment) -> bool {
-    if let Some(mime) = &attachment.mime {
-        return mime.starts_with("image/");
-    }
-    let extension = attachment.path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
-    matches!(extension.as_deref(), Some("png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp"))
-}
-
 /// The `input` list of `turn/start`.
 fn turn_input(prompt: &Prompt) -> Json {
-    let mut input = vec![json!({ "type": "text", "text": prompt.text, "text_elements": [] })];
+    let text = |text: String| json!({ "type": "text", "text": text, "text_elements": [] });
+    let mut input = vec![text(prompt.text.clone())];
     for attachment in &prompt.attachments {
         let path = attachment.path.to_string_lossy();
-        if is_image(attachment) {
-            input.push(json!({ "type": "localImage", "path": path }));
-        } else {
-            input.push(json!({ "type": "text", "text": format!("Attached file: {path}"), "text_elements": [] }));
-        }
+        let mime = attachment.mime.as_deref().or_else(|| loa_util::text::mime_of(&attachment.path));
+        input.push(match mime.is_some_and(|m| m.starts_with("image/")) {
+            true => json!({ "type": "localImage", "path": path }),
+            false => text(format!("Attached file: {path}")),
+        });
     }
     Json::Array(input)
 }
@@ -251,6 +203,43 @@ fn listed_model(entry: &Json) -> Option<HarnessModel> {
     Some(HarnessModel { id, name, provider: "openai".to_owned(), efforts })
 }
 
+/// The `thread/start`, `thread/resume` or `thread/fork` request opening `open`.
+fn open_request(config: &SessionConfig, open: &Open<'_>) -> (&'static str, Json) {
+    let mut params = json!({ "cwd": config.cwd.to_string_lossy() });
+    if let Some(model) = &config.model {
+        params["model"] = model.as_str().into();
+    }
+    if let Some(context) = &config.context {
+        params["developerInstructions"] = context.as_str().into();
+    }
+    let (method, thread_id, last_turn_id) = match open {
+        Open::Start => ("thread/start", None, None),
+        Open::Resume { thread_id } => ("thread/resume", Some(*thread_id), None),
+        Open::Fork { thread_id, last_turn_id } => ("thread/fork", Some(*thread_id), *last_turn_id),
+    };
+    match thread_id {
+        None => {
+            params["approvalPolicy"] = "on-request".into();
+            params["sandbox"] = "workspace-write".into();
+            if !config.host_tools.is_empty() {
+                let tools = config.host_tools.iter().map(|t| {
+                    let schema = serde_json::from_str(&t.input_schema).unwrap_or_else(|_| json!({ "type": "object" }));
+                    json!({ "type": "function", "name": t.name, "description": t.description, "inputSchema": schema })
+                });
+                params["dynamicTools"] = Json::Array(tools.collect());
+            }
+        }
+        Some(thread_id) => {
+            params["threadId"] = thread_id.into();
+            params["excludeTurns"] = true.into();
+            if let Some(turn) = last_turn_id {
+                params["lastTurnId"] = turn.into();
+            }
+        }
+    }
+    (method, params)
+}
+
 impl CodexSession {
     pub(crate) async fn open(
         adapter: &CodexAdapter,
@@ -261,270 +250,118 @@ impl CodexSession {
         if !config.host_tools.is_empty() && config.host_tool_handler.is_none() {
             return Err(AdapterError::Protocol("host tools need a host tool handler".to_owned()));
         }
-        let executable = config.executable.clone().unwrap_or_else(|| adapter.executable.clone());
-        let mut command = Command::new(&executable);
+        let mut command = Command::new(config.executable.as_ref().unwrap_or(&adapter.executable));
         command
             .args(&adapter.args)
             .args(mcp_overrides(&config))
             .args(["app-server", "--listen", "stdio://"])
             .current_dir(&config.cwd)
-            .envs(&config.env)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-        let mut child = command.spawn().map_err(|error| match error.kind() {
-            std::io::ErrorKind::NotFound => AdapterError::NotInstalled(executable.to_string_lossy().into_owned()),
-            _ => AdapterError::Io(error),
-        })?;
-        let stdin = child.stdin.take().ok_or(AdapterError::Closed)?;
-        let stdout = child.stdout.take().ok_or(AdapterError::Closed)?;
-        if let Some(stderr) = child.stderr.take() {
-            tokio::spawn(async move {
-                let mut lines = BufReader::new(stderr).lines();
-                while let Ok(Some(line)) = lines.next_line().await {
-                    tracing::debug!(target: "codex", "{line}");
-                }
-            });
-        }
-
-        let (pending_tx, mut pending_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-        tokio::spawn(async move {
-            let mut lines = BufReader::new(stdout).lines();
-            loop {
-                match lines.next_line().await {
-                    Ok(Some(line)) => {
-                        if pending_tx.send(line).is_err() {
-                            return;
-                        }
-                    }
-                    Ok(None) | Err(_) => return,
-                }
-            }
-        });
-
-        // Handshake before the mapper exists: lines are answered directly.
-        let mut handshake = Handshake { stdin, pending_rx: &mut pending_rx, next_id: 0 };
-        handshake
-            .request(
-                "initialize",
-                json!({
-                    "clientInfo": { "name": "loa", "title": "loa", "version": env!("CARGO_PKG_VERSION") },
-                    "capabilities": { "experimentalApi": true },
-                }),
-            )
-            .await?;
-        handshake.notify("initialized").await?;
-        let cwd = config.cwd.to_string_lossy().into_owned();
-        let mut params = json!({ "cwd": cwd });
-        if let Some(object) = params.as_object_mut() {
-            if let Some(model) = &config.model {
-                object.insert("model".to_owned(), Json::from(model.as_str()));
-            }
-            if let Some(context) = &config.context {
-                object.insert("developerInstructions".to_owned(), Json::from(context.as_str()));
-            }
-            if !config.host_tools.is_empty() {
-                let tools: Vec<Json> = config
-                    .host_tools
-                    .iter()
-                    .map(|t| {
-                        let schema = serde_json::from_str(&t.input_schema).unwrap_or_else(|_| json!({ "type": "object" }));
-                        json!({ "type": "function", "name": t.name, "description": t.description, "inputSchema": schema })
-                    })
-                    .collect();
-                object.insert("dynamicTools".to_owned(), Json::Array(tools));
-            }
-        }
-        let (method, params) = match open {
-            Open::Start => {
-                if let Some(object) = params.as_object_mut() {
-                    object.insert("approvalPolicy".to_owned(), json!("on-request"));
-                    object.insert("sandbox".to_owned(), json!("workspace-write"));
-                }
-                ("thread/start", params)
-            }
-            Open::Resume { thread_id } => {
-                if let Some(object) = params.as_object_mut() {
-                    object.insert("threadId".to_owned(), Json::from(thread_id));
-                    object.insert("excludeTurns".to_owned(), Json::Bool(true));
-                    object.remove("dynamicTools");
-                }
-                ("thread/resume", params)
-            }
-            Open::Fork { thread_id, last_turn_id } => {
-                if let Some(object) = params.as_object_mut() {
-                    object.insert("threadId".to_owned(), Json::from(thread_id));
-                    object.insert("excludeTurns".to_owned(), Json::Bool(true));
-                    object.remove("dynamicTools");
-                    if let Some(turn) = last_turn_id {
-                        object.insert("lastTurnId".to_owned(), Json::from(turn));
-                    }
-                }
-                ("thread/fork", params)
-            }
-        };
-        let opened = handshake.request(method, params).await?;
-        let thread_id = opened
-            .get("thread")
-            .and_then(|t| t.get("id"))
-            .and_then(Json::as_str)
-            .ok_or_else(|| AdapterError::Protocol(format!("{method} returned no thread id")))?
-            .to_owned();
-        let model = opened.get("model").and_then(Json::as_str);
-        let mapper = attach(&thread_id, model)?;
-        let initial_state = mapper.state();
-        let (state_tx, state_rx) = watch::channel(initial_state);
+            .envs(&config.env);
         let shared = Arc::new(Shared {
-            stdin: tokio::sync::Mutex::new(Some(handshake.stdin)),
-            pending: Mutex::new(HashMap::new()),
-            next_id: AtomicI64::new(handshake.next_id),
-            settings: Mutex::new(TurnSettings {
-                model: mapper.model().map(str::to_owned),
-                effort: config.effort.clone(),
-                mode: config.mode,
-            }),
-            mapper: Mutex::new(mapper),
-            state: state_tx,
-            thread_id: Mutex::new(thread_id),
+            mapper: Mutex::new(None),
+            writer: OnceLock::new(),
+            state: watch::Sender::new(SessionState::Idle),
             session_id: config.session_id.clone(),
             host_tools: config.host_tool_handler.clone(),
         });
-        let pump = Arc::clone(&shared);
-        tokio::spawn(async move {
-            while let Some(line) = pending_rx.recv().await {
-                pump.incoming(&line).await;
-            }
-            // The reader ended: stdout closed.
-            pump.exited("codex exited");
+        let rpc = StdioRpc::spawn(command, FRAMES, shared.clone())?;
+        let _ = shared.writer.set(rpc.writer());
+        let mut session = Self { shared, rpc, thread_id: String::new(), settings: Mutex::default() };
+        let client = json!({
+            "clientInfo": { "name": "loa", "title": "loa", "version": env!("CARGO_PKG_VERSION") },
+            "capabilities": { "experimentalApi": true },
         });
-        Ok(Self { shared, child: tokio::sync::Mutex::new(child), state: state_rx })
+        session.request("initialize", client).await?;
+        session.rpc.notify("initialized", Json::Null)?;
+        let (method, params) = open_request(&config, &open);
+        let opened = session.request(method, params).await?;
+        session.thread_id = opened
+            .pointer("/thread/id")
+            .and_then(Json::as_str)
+            .ok_or_else(|| AdapterError::Protocol(format!("{method} returned no thread id")))?
+            .to_owned();
+        let mapper = attach(&session.thread_id, opened.get("model").and_then(Json::as_str))?;
+        session.settings = Mutex::new(TurnSettings {
+            model: mapper.model().map(str::to_owned),
+            effort: config.effort.clone(),
+            mode: config.mode,
+        });
+        session.shared.state.send_replace(mapper.state());
+        *session.shared.mapper.locked() = Some(mapper);
+        Ok(session)
     }
 
     /// Codex's id for the thread this session drives.
     pub fn thread_id(&self) -> String {
-        self.shared.thread_id()
+        self.thread_id.clone()
     }
 
-}
-
-/// The request/response exchange that runs before the reader task owns stdout.
-struct Handshake<'a> {
-    stdin: ChildStdin,
-    pending_rx: &'a mut tokio::sync::mpsc::UnboundedReceiver<String>,
-    next_id: i64,
-}
-
-impl Handshake<'_> {
-    async fn write(&mut self, message: &Json) -> Result<()> {
-        let mut line = message.to_string();
-        line.push('\n');
-        self.stdin.write_all(line.as_bytes()).await?;
-        self.stdin.flush().await?;
-        Ok(())
+    async fn request(&self, method: &str, params: Json) -> Result<Json> {
+        self.rpc.request_as(self.rpc.next_id().into(), method, params).await.map_err(|error| match error {
+            RpcError::Command { message, .. } => AdapterError::Protocol(format!("{method}: {message}")),
+            other => other.into(),
+        })
     }
 
-    async fn notify(&mut self, method: &str) -> Result<()> {
-        self.write(&json!({ "method": method })).await
-    }
-
-    async fn request(&mut self, method: &str, params: Json) -> Result<Json> {
-        let id = self.next_id;
-        self.next_id += 1;
-        self.write(&json!({ "id": id, "method": method, "params": params })).await?;
-        while let Some(line) = self.pending_rx.recv().await {
-            let Ok(message) = serde_json::from_str::<Json>(&line) else { continue };
-            if message.get("method").is_some() {
-                // Notifications before the thread exists (config warnings,
-                // account updates) carry nothing for the session.
-                if let Some(request_id) = message.get("id") {
-                    let reply = json!({ "id": request_id, "error": { "code": -32601, "message": "not ready" } });
-                    self.write(&reply).await?;
-                }
-                continue;
-            }
-            if message.get("id").and_then(Json::as_i64) != Some(id) {
-                continue;
-            }
-            if let Some(error) = message.get("error") {
-                let text = error.get("message").and_then(Json::as_str).unwrap_or("error");
-                return Err(AdapterError::Protocol(format!("{method}: {text}")));
-            }
-            return Ok(message.get("result").cloned().unwrap_or(Json::Null));
+    /// The `turn/start` parameters for `prompt` under the current settings.
+    fn turn_params(&self, prompt: &Prompt) -> Json {
+        let mut params = json!({ "threadId": self.thread_id, "input": turn_input(prompt) });
+        let settings = self.settings.locked();
+        if let Some(model) = &settings.model {
+            params["model"] = model.as_str().into();
         }
-        Err(AdapterError::Protocol(format!("codex exited during {method}")))
+        if let Some(effort) = &settings.effort {
+            params["effort"] = effort.as_str().into();
+        }
+        if let (Some(mode), Some(model)) = (settings.mode, &settings.model) {
+            let kind = if mode == SessionMode::Plan { "plan" } else { "default" };
+            params["collaborationMode"] = json!({
+                "mode": kind,
+                "settings": { "model": model, "reasoning_effort": settings.effort, "developer_instructions": null },
+            });
+        }
+        params
     }
 }
 
 #[async_trait]
 impl HarnessSession for CodexSession {
     async fn send(&self, prompt: Prompt) -> Result<()> {
-        if *self.state.borrow() == SessionState::Closed {
+        if self.state() == SessionState::Closed {
             return Err(AdapterError::Closed);
         }
-        self.shared.mapper.locked().begin_turn(&prompt)?;
-        self.shared.publish_state();
-        let mut params = json!({ "threadId": self.shared.thread_id(), "input": turn_input(&prompt) });
-        {
-            let settings = self.shared.settings.locked();
-            if let Some(object) = params.as_object_mut() {
-                if let Some(model) = &settings.model {
-                    object.insert("model".to_owned(), Json::from(model.as_str()));
-                }
-                if let Some(effort) = &settings.effort {
-                    object.insert("effort".to_owned(), Json::from(effort.as_str()));
-                }
-                if let (Some(mode), Some(model)) = (settings.mode, &settings.model) {
-                    let kind = if mode == SessionMode::Plan { "plan" } else { "default" };
-                    object.insert(
-                        "collaborationMode".to_owned(),
-                        json!({
-                            "mode": kind,
-                            "settings": { "model": model, "reasoning_effort": settings.effort, "developer_instructions": null },
-                        }),
-                    );
-                }
-            }
-        }
-        let outcome = self.shared.request("turn/start", params).await;
-        let recorded = match &outcome {
-            Ok(result) => match result.get("turn").and_then(|t| t.get("id")).and_then(Json::as_str) {
-                Some(turn_id) => self.shared.mapper.locked().turn_accepted(turn_id),
-                None => Ok(()),
-            },
-            Err(error) => self.shared.mapper.locked().turn_rejected(&error.to_string()),
-        };
-        self.shared.publish_state();
-        recorded?;
-        outcome.map(|_| ())
+        self.shared.mapped(|m| m.begin_turn(&prompt))?;
+        let outcome = self.request("turn/start", self.turn_params(&prompt)).await;
+        self.shared.mapped(|m| match &outcome {
+            Ok(result) => result.pointer("/turn/id").and_then(Json::as_str).map_or(Ok(()), |id| m.turn_accepted(id)),
+            Err(error) => m.turn_rejected(&error.to_string()),
+        })?;
+        outcome.map(drop)
     }
 
     async fn interrupt(&self) -> Result<()> {
-        let Some(turn_id) = self.shared.mapper.locked().turn_id().map(str::to_owned) else { return Ok(()) };
-        self.shared.request("turn/interrupt", json!({ "threadId": self.shared.thread_id(), "turnId": turn_id })).await?;
-        Ok(())
+        let Some(turn_id) = self.shared.mapped(|m| Ok(m.turn_id().map(str::to_owned)))? else { return Ok(()) };
+        self.request("turn/interrupt", json!({ "threadId": self.thread_id, "turnId": turn_id })).await.map(drop)
     }
 
     async fn answer(&self, decision: NodeId, answer: Answer) -> Result<()> {
-        let reply = self.shared.mapper.locked().answer(decision, &answer)?;
-        self.shared.publish_state();
-        if let Some(reply) = reply {
-            self.shared.send_reply(reply).await?;
+        match self.shared.mapped(|m| m.answer(decision, &answer))? {
+            Some(reply) => self.shared.reply(reply),
+            None => Ok(()),
         }
-        Ok(())
     }
 
     async fn set_model(&self, selection: ModelSelection) -> Result<()> {
         if selection.role.is_some() {
             return Err(AdapterError::Unsupported { harness: HARNESS, what: "model roles" });
         }
-        self.shared.settings.locked().model = Some(selection.model.clone());
-        self.shared.mapper.locked().set_model(&selection.model)
+        self.settings.locked().model = Some(selection.model.clone());
+        self.shared.mapped(|m| m.set_model(&selection.model))
     }
 
     async fn set_mode(&self, mode: SessionMode) -> Result<()> {
-        self.shared.settings.locked().mode = Some(mode);
-        self.shared.mapper.locked().set_mode(mode)
+        self.settings.locked().mode = Some(mode);
+        self.shared.mapped(|m| m.set_mode(mode))
     }
 
     /// Every page of `model/list`.
@@ -532,11 +369,8 @@ impl HarnessSession for CodexSession {
         let mut models = Vec::new();
         let mut cursor: Option<String> = None;
         loop {
-            let params = match &cursor {
-                Some(cursor) => json!({ "cursor": cursor }),
-                None => json!({}),
-            };
-            let page = self.shared.request("model/list", params).await?;
+            let params = cursor.as_ref().map_or_else(|| json!({}), |cursor| json!({ "cursor": cursor }));
+            let page = self.request("model/list", params).await?;
             let data = page
                 .get("data")
                 .and_then(Json::as_array)
@@ -551,16 +385,15 @@ impl HarnessSession for CodexSession {
 
     /// Codex takes the effort with each `turn/start`; it applies from the next turn.
     async fn set_effort(&self, effort: String) -> Result<()> {
-        self.shared.settings.locked().effort = Some(effort.clone());
-        self.shared.mapper.locked().set_effort(&effort)
+        self.settings.locked().effort = Some(effort.clone());
+        self.shared.mapped(|m| m.set_effort(&effort))
     }
 
     async fn compact(&self, instructions: Option<String>) -> Result<()> {
         if instructions.is_some() {
             return Err(AdapterError::Unsupported { harness: HARNESS, what: "compaction instructions" });
         }
-        self.shared.request("thread/compact/start", json!({ "threadId": self.shared.thread_id() })).await?;
-        Ok(())
+        self.request("thread/compact/start", json!({ "threadId": self.thread_id })).await.map(drop)
     }
 
     fn harness(&self) -> &'static str {
@@ -568,26 +401,18 @@ impl HarnessSession for CodexSession {
     }
 
     fn state(&self) -> SessionState {
-        *self.state.borrow()
+        *self.shared.state.borrow()
     }
 
     async fn wait_idle(&self) -> Result<()> {
-        let mut state = self.state.clone();
-        state
-            .wait_for(|s| matches!(s, SessionState::Idle | SessionState::Closed))
-            .await
-            .map_err(|_| AdapterError::Closed)?;
+        let mut state = self.shared.state.subscribe();
+        state.wait_for(|s| matches!(s, SessionState::Idle | SessionState::Closed)).await.map_err(|_| AdapterError::Closed)?;
         Ok(())
     }
 
     async fn shutdown(&self) -> Result<()> {
         // Closing stdin ends the app server; the kill covers one that hangs.
-        self.shared.stdin.lock().await.take();
-        let mut child = self.child.lock().await;
-        if child.try_wait()?.is_none() {
-            child.kill().await?;
-        }
-        child.wait().await?;
+        self.rpc.shutdown(Duration::from_secs(5)).await;
         self.shared.state.send_replace(SessionState::Closed);
         Ok(())
     }
