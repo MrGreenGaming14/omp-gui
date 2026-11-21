@@ -1,0 +1,14 @@
+# A permission request is an approval card under its call; the answer sends back the picked option id.
+{"$":"send","text":"delete build/"}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-1","update":{"sessionUpdate":"tool_call","toolCallId":"c1","title":"rm -rf build","kind":"execute","status":"pending","rawInput":{"command":"rm -rf build"}}}}
+{"jsonrpc":"2.0","id":7,"method":"session/request_permission","params":{"sessionId":"s-1","toolCall":{"toolCallId":"c1"},"options":[{"optionId":"once","name":"Allow","kind":"allow_once"},{"optionId":"always","name":"Always allow","kind":"allow_always"},{"optionId":"no","name":"Reject","kind":"reject_once"}]}}
+{"$":"answer","request":7,"values":["allow_session"],"by":"alice"}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-1","update":{"sessionUpdate":"tool_call_update","toolCallId":"c1","status":"completed"}}}
+{"$":"result","result":{"stopReason":"end_turn"}}
+# Plans rewrite the todo list; a mode update sets the session mode.
+{"$":"send","text":"plan it"}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-1","update":{"sessionUpdate":"plan","entries":[{"content":"Read code","priority":"high","status":"in_progress"},{"content":"Write fix","priority":"medium","status":"pending"},{"content":"Run tests","priority":"low","status":"pending"}]}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-1","update":{"sessionUpdate":"plan","entries":[{"content":"Read code","priority":"high","status":"completed"},{"content":"Write the fix","priority":"medium","status":"in_progress"}]}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-1","update":{"sessionUpdate":"current_mode_update","currentModeId":"plan"}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-1","update":{"sessionUpdate":"session_info_update","title":"Cleanup"}}}
+{"$":"result","result":{"stopReason":"end_turn"}}

@@ -1,0 +1,13 @@
+# Thinking and text chunks stream into messages; an unknown update is kept raw in the turn.
+{"$":"send","text":"Explain main.rs"}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-1","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"Let me "}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-1","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"look."}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"It prints "}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"hello."}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-1","update":{"sessionUpdate":"available_commands_update","availableCommands":[]}}}
+# Another session's update is ignored.
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"not ours"}}}}
+{"$":"result","result":{"stopReason":"end_turn"}}
+# A second turn stopped early is an error with the reason kept.
+{"$":"send","text":"one"}
+{"$":"result","result":{"stopReason":"max_tokens"}}

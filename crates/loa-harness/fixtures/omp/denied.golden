@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<session nid="1" created.int="1" harness="omp" id="s" node="owner" schema.int="1">
+  <turn nid="2" status="done">
+    <message nid="3" by="owner" role="user" status="done">prompt p</message>
+    <call nid="4" call_id="toolu_1" status="error" tool="bash">
+      <input nid="6" format="json">{"command":"echo loa-approved-7731"}</input>
+      <result nid="8" is_error.bool="true">Tool call denied by user: bash</result>
+    </call>
+    <job nid="5" command="echo loa-approved-7731" id="toolu_1" kind="shell" status="error"/>
+    <decision nid="7" answer.list="['deny']" by="owner" kind="approval" multi.bool="false" options.list="['allow_once', 'allow_session', 'deny']" reason="not on this machine" request_id="15d4058f5bbc68c9" status="answered" title="Allow tool: bash">Allow tool: bash
+Command: echo loa-approved-7731</decision>
+    <message nid="9" id="msg-4" kind="text" role="assistant" status="done">The bash call was denied, so nothing ran.</message>
+  </turn>
+</session>
+
+--- replies
+ui Value { id: "15d4058f5bbc68c9", value: "Deny" }
+steer "I denied that tool call: not on this machine"

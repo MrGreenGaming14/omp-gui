@@ -1,0 +1,8 @@
+# History the agent replays during session/load is already in the DOM and adds nothing.
+{"$":"load"}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-1","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"hello"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"hi"}}}}
+{"$":"loaded"}
+{"$":"send","text":"next"}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-1","update":{"sessionUpdate":"plan","entries":[{"content":"step","priority":"low","status":"completed"}]}}}
+{"$":"result","error":"internal error (code -32603)"}

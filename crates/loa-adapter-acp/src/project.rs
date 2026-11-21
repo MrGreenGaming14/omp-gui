@@ -667,3 +667,53 @@ fn request_id_text(id: &Json) -> String {
         other => other.to_string(),
     }
 }
+
+#[cfg(test)]
+mod golden {
+    use super::*;
+    use loa_core::{MemorySink, PatchSink};
+
+    #[test]
+    fn render_goldens() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../loa-harness/fixtures/acp");
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|e| e.to_str()) != Some("jsonl") { continue; }
+            let sink = Arc::new(MemorySink::new());
+            let root = sink.commit(Draft::insert(NodeId::DOCUMENT, ElementKind::Session, vec![(attr::ID, Value::from("s")), (attr::HARNESS, "acp".into()), (attr::NODE, "owner".into()), (attr::CREATED, 1_i64.into()), (attr::SCHEMA, 1_i64.into())], "")).unwrap().node;
+            let mut p = Projector::new(sink.clone(), root, Some("fake-model".into()));
+            let mut replies: Vec<String> = Vec::new();
+            let cancel = |ids: Vec<Json>, replies: &mut Vec<String>| for id in ids { replies.push(serde_json::json!({"id": id, "result": {"outcome": {"outcome": "cancelled"}}}).to_string()); };
+            for line in std::fs::read_to_string(&path).unwrap().lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
+                let json: Json = serde_json::from_str(line).unwrap();
+                match json["$"].as_str() {
+                    Some("send") => { p.begin_turn(&Prompt { text: json["text"].as_str().unwrap().into(), by: "owner".into(), ..Prompt::default() }).unwrap(); p.set_prompt_request(1); }
+                    Some("result") => {
+                        let ids = match json.get("error") { Some(e) => p.end_turn(TurnEnd::Failed(e.as_str().unwrap().into())), None => p.on_response(1, &Ok(json["result"].clone())) };
+                        cancel(ids, &mut replies);
+                    }
+                    Some("interrupt") => { p.mark_interrupted(); let ids = p.cancel_decisions(); cancel(ids, &mut replies); replies.push("notify session/cancel".into()); }
+                    Some("closed") => { let ids = p.close(false); cancel(ids, &mut replies); }
+                    Some("load") => p.set_replay(Some(99)),
+                    Some("loaded") => { p.on_response(99, &Ok(Json::Null)); }
+                    Some("answer") => {
+                        let (node, options) = p.decisions.iter().find(|(_, d)| d.rpc_id == json["request"]).map(|(n, d)| (*n, d.options.clone())).unwrap();
+                        let value = json["values"][0].as_str().unwrap();
+                        let kind = match value { "allow_once" => Some(PermissionOptionKind::AllowOnce), "allow_session" => Some(PermissionOptionKind::AllowAlways), _ => None };
+                        let option = options.iter().find(|o| o.option_id == value || o.name == value || Some(o.kind) == kind).unwrap().clone();
+                        let id = p.answer(node, &option, json["by"].as_str().unwrap_or("owner"), None).unwrap();
+                        replies.push(serde_json::json!({"id": id, "result": {"outcome": {"outcome": "selected", "optionId": option.option_id}}}).to_string());
+                    }
+                    _ => match json["method"].as_str().unwrap() {
+                        "session/update" => if json["params"]["sessionId"] == "s-1" { p.update(json["params"]["update"].clone()) },
+                        _ => p.permission(json["id"].clone(), serde_json::from_value(json["params"].clone()).unwrap()),
+                    },
+                }
+            }
+            let mut out = loa_core::xml::to_string(&sink.dom());
+            out.push_str("\n--- replies\n");
+            for reply in replies { out.push_str(&reply); out.push('\n'); }
+            std::fs::write(path.with_extension("golden"), out).unwrap();
+        }
+    }
+}

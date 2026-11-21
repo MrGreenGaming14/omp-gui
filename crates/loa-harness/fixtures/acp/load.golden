@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<session nid="1" created.int="1" harness="acp" id="s" node="owner" schema.int="1">
+  <turn nid="2" ended.int="0" started.int="0" status="error">
+    <message nid="3" by="owner" role="user" status="done">next</message>
+    <ext nid="5" harness="acp" type="error">internal error (code -32603)</ext>
+  </turn>
+  <todo nid="4" state="done" x-acp-priority="low">step</todo>
+</session>
+
+--- replies
