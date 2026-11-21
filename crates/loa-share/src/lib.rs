@@ -46,14 +46,6 @@ pub trait Access: Send + Sync {
     fn allows(&self, peer: NodeKey, dom: &Dom, action: Action, node: Option<NodeId>) -> bool;
 }
 
-/// Read committed patches, including historical patches, without taking the
-/// owner's writer lock. Must return exactly the requested contiguous range.
-/// `Journal::patches(from)` is the disk implementation; the app serializes
-/// reads with writes through its journal port when needed.
-pub trait History: Send + Sync {
-    fn read(&self, session: &SessionId, from: u64, through: u64) -> Result<Vec<Patch>, Error>;
-}
-
 /// A patch on the source owner's journal, optionally changing this peer's
 /// projection. Even skipped patches advance `source_seq`, so reconnects resume
 /// at an unambiguous position. Projected patches have their own gap-free seq.
@@ -98,7 +90,7 @@ impl Owner<'_> {
         let allowed = self.writer.with_dom(|dom| self.access.allows(peer, dom, Action::View, None)
             || dom.iter().any(|n| n.kind == ElementKind::Turn && self.access.allows(peer, dom, Action::View, Some(n.id))));
         if !allowed { return Err(Error::Denied(Action::View, self.writer.session().clone())); }
-        Ok(Projection::new(peer, self.writer.session().clone()))
+        Ok(Projection::new(peer))
     }
 }
 
@@ -109,21 +101,19 @@ fn target(draft: &Draft) -> Option<NodeId> {
     }
 }
 
-/// Filters the *source* journal in order. A projection starts at source seq 0;
-/// use `catch_up` with the owner's history before forwarding live events.
-/// On lag, discard the bus subscription, resubscribe and replay the missing
-/// history. Never coalesce bus events for this protocol.
+/// Filters the *source* journal in order. A projection starts from a seed
+/// ([`Projection::seeded`]); on lag, discard the bus subscription, resubscribe
+/// and reseed. Never coalesce bus events for this protocol.
 pub struct Projection {
     peer: NodeKey,
-    session: SessionId,
     source: Dom,
     visible: Dom,
     ids: HashMap<NodeId, NodeId>,
 }
 
 impl Projection {
-    pub fn new(peer: NodeKey, session: SessionId) -> Self {
-        Self { peer, session, source: Dom::new(), visible: Dom::new(), ids: HashMap::new() }
+    pub fn new(peer: NodeKey) -> Self {
+        Self { peer, source: Dom::new(), visible: Dom::new(), ids: HashMap::new() }
     }
 
     pub fn source_seq(&self) -> u64 { self.source.seq() }
@@ -166,8 +156,8 @@ impl Projection {
     /// so the owner needs no journal history to serve a new subscriber. Returns
     /// the projection and the patches that build the peer's visible DOM; feed
     /// live patches after `source.seq()` to [`Projection::accept`].
-    pub fn seeded(peer: NodeKey, session: SessionId, source: &Dom, access: &dyn Access) -> Result<(Self, Vec<Patch>), Error> {
-        let mut projection = Self { peer, session, source: source.clone(), visible: Dom::new(), ids: HashMap::new() };
+    pub fn seeded(peer: NodeKey, source: &Dom, access: &dyn Access) -> Result<(Self, Vec<Patch>), Error> {
+        let mut projection = Self { peer, source: source.clone(), visible: Dom::new(), ids: HashMap::new() };
         let whole = access.allows(peer, source, Action::View, None);
         let mut patches = Vec::new();
         let ts = source.root().and_then(|root| root.int_attr(attr::CREATED)).unwrap_or_default();
@@ -249,18 +239,6 @@ impl Projection {
             _ => None,
         };
         Ok(Update { source_seq: source_patch.seq, patch: update })
-    }
-
-    pub fn catch_up(&mut self, through: u64, history: &dyn History, access: &dyn Access) -> Result<Vec<Update>, Error> {
-        let from = self.source.seq() + 1;
-        if through < from { return Ok(Vec::new()); }
-        let patches = history.read(&self.session, from, through)?;
-        let mut updates = Vec::with_capacity(patches.len());
-        for patch in patches {
-            updates.push(self.accept(&patch, access)?);
-        }
-        if self.source.seq() != through { return Err(Error::Sequence { last: self.source.seq(), got: through }); }
-        Ok(updates)
     }
 }
 
@@ -614,7 +592,7 @@ mod tests {
         let first = source.commit(Draft::insert(visible.node, ElementKind::Message, [(attr::ROLE, Value::from("user"))], "first"), 4).unwrap();
         let second = source.commit(Draft::insert(visible.node, ElementKind::Message, [(attr::ROLE, Value::from("user"))], "second"), 5).unwrap();
         let secret = source.commit(Draft::append(hidden.node, "secret"), 6).unwrap();
-        let mut projection = Projection::new(peer, SessionId::from("session"));
+        let mut projection = Projection::new(peer);
         let access = TurnAccess(visible.node);
         let updates: Vec<_> = [&root, &hidden, &visible, &first, &second, &secret]
             .into_iter().map(|patch| projection.accept(patch, &access).unwrap()).collect();
@@ -633,7 +611,7 @@ mod tests {
 
     #[test]
     fn projection_rejects_missing_source_patch() {
-        let mut projection = Projection::new(NodeKey([1; 32]), SessionId::from("session"));
+        let mut projection = Projection::new(NodeKey([1; 32]));
         let patch = Patch { seq: 2, node: NodeId(1), ts: 0, op: Op::Remove };
         assert!(matches!(projection.accept(&patch, &TurnAccess(NodeId(1))), Err(Error::Apply(loa_core::ApplyError::Sequence { .. }))));
         assert_eq!(projection.source_seq(), 0);
@@ -676,20 +654,20 @@ mod tests {
         let (source, patches, visible) = source_session();
         let peer = NodeKey([1; 32]);
         for access in [&TurnAccess(visible) as &dyn Access, &WholeAccess] {
-            let mut replayed = Projection::new(peer, SessionId::from("session"));
+            let mut replayed = Projection::new(peer);
             for patch in &patches { replayed.accept(patch, access).unwrap(); }
-            let (seeded, seed) = Projection::seeded(peer, SessionId::from("session"), &source, access).unwrap();
+            let (seeded, seed) = Projection::seeded(peer, &source, access).unwrap();
             assert_eq!(seeded.source_seq(), source.seq());
             assert_eq!(shape(seeded.visible_dom()), shape(replayed.visible_dom()));
             let mut mirror = Dom::new();
             for patch in &seed { mirror.apply(patch).unwrap(); }
             assert_eq!(shape(&mirror), shape(seeded.visible_dom()));
         }
-        let (seeded, _) = Projection::seeded(peer, SessionId::from("session"), &source, &TurnAccess(visible)).unwrap();
+        let (seeded, _) = Projection::seeded(peer, &source, &TurnAccess(visible)).unwrap();
         let root = seeded.visible_dom().root().unwrap();
         assert!(!root.attrs.contains_key(attr::PROJECT));
         assert!(!root.attrs.contains_key(attr::TITLE), "a prompt grant does not reveal the session title");
-        let (whole, _) = Projection::seeded(peer, SessionId::from("session"), &source, &WholeAccess).unwrap();
+        let (whole, _) = Projection::seeded(peer, &source, &WholeAccess).unwrap();
         assert_eq!(whole.visible_dom().root().unwrap().str_attr(attr::TITLE), Some("Plan"));
         assert!(!whole.visible_dom().root().unwrap().attrs.contains_key(attr::PROJECT));
     }
@@ -697,7 +675,7 @@ mod tests {
     #[test]
     fn mirror_fork_becomes_a_local_session_owned_by_this_node() {
         let (source, _, _) = source_session();
-        let (_, seed) = Projection::seeded(NodeKey([1; 32]), SessionId::from("session"), &source, &WholeAccess).unwrap();
+        let (_, seed) = Projection::seeded(NodeKey([1; 32]), &source, &WholeAccess).unwrap();
         let dir = tempfile::tempdir().unwrap();
         let store = Store::new(dir.path(), loa_journal::JournalOptions::default()).unwrap();
         let journal = fork_mirror_to_own_node(&store, &seed, seed.len() as u64, "forked", "me").unwrap();
