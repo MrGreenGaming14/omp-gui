@@ -80,7 +80,7 @@ impl State {
         let Some(model) = self.current.model.as_deref() else {
             return "Model".to_owned();
         };
-        let short = short_model(model);
+        let short = loa_models::selector::ModelRef::split(model).map_or(model, |(_, id)| id);
         match self.current.role.as_deref() {
             Some(role) => format!("{role}{SEPARATOR}{short}"),
             None => short.to_owned(),
@@ -112,10 +112,6 @@ impl State {
     }
 }
 
-/// The model id without the `provider/` prefix.
-fn short_model(selector: &str) -> &str {
-    selector.split_once('/').filter(|(provider, id)| !provider.is_empty() && !id.is_empty()).map_or(selector, |(_, id)| id)
-}
 
 #[cfg(test)]
 mod tests {

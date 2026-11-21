@@ -1,6 +1,7 @@
 //! Harness adapters. Each harness is a module behind its own cargo feature,
 //! built on the shared protocol machinery in [`kit`].
 
+pub mod account_support;
 pub mod features;
 pub mod kit;
 pub mod registry;

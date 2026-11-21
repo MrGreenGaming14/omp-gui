@@ -46,6 +46,7 @@ remote-video = ["loa-surfaces/remote-video", "loa-ui-surface/remote-video"]
 sandbox-vm = ["loa-sandbox/vm"]
 
 [dev-dependencies]
+loa-models = { path = "../loa-models", features = ["testing"] }
 loa-surfaces = { path = "../loa-surfaces", features = ["testkit"] }
 iced_runtime = "0.14"
 # The iced runtime's subscription tracker, to run the app's subscriptions in tests.

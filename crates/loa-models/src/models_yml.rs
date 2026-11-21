@@ -17,8 +17,7 @@
 //! ```
 //!
 //! Provider keys this editor does not model (`headers`, `compat`, ...) are left
-//! untouched. Every edit is checked against omp's validation rules for the
-//! provider it touched, and changes only that provider's lines.
+//! untouched.
 //!
 //! API keys: `apiKey` can only be written as a [`KeyReference`] (an environment
 //! variable name or a `!command`). An inline key found in the file is reported as
@@ -26,12 +25,12 @@
 
 use std::path::Path;
 
-use crate::error::{load_snapshot, save_snapshot};
+use loa_contracts::harness::model_error::{load_snapshot, save_snapshot};
 use loa_util::fs::Snapshot;
-use crate::rpc::ModelCost;
-use crate::validate::SettingsValidator;
-use crate::yaml::{Yaml, YamlDocument, get_path, ymap, ystr, ystrs};
-use crate::{Error, Result};
+use loa_contracts::harness::model_rpc::ModelCost;
+use loa_contracts::harness::model_error::SettingsValidator;
+use loa_harness::account_support::yaml::{Yaml, YamlDocument, ymap, ystr, ystrs};
+use loa_contracts::harness::model_error::{Error, Result};
 
 /// The `api` values omp accepts for providers and models.
 pub const APIS: [&str; 14] = [
@@ -62,32 +61,12 @@ pub const DISCOVERY_TYPES: [&str; 7] = [
     "apple-foundation-models",
 ];
 
-/// How a provider authenticates (`auth`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AuthMode {
-    ApiKey,
-    None,
-    OAuth,
+loa_util::str_enum! {
+    /// How a provider authenticates (`auth`).
+    #[derive(Default)]
+    pub AuthMode { #[default] ApiKey => "apiKey", None => "none", OAuth => "oauth" }
 }
 
-impl AuthMode {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::ApiKey => "apiKey",
-            Self::None => "none",
-            Self::OAuth => "oauth",
-        }
-    }
-
-    fn parse(s: &str) -> Option<Self> {
-        match s {
-            "apiKey" => Some(Self::ApiKey),
-            "none" => Some(Self::None),
-            "oauth" => Some(Self::OAuth),
-            _ => None,
-        }
-    }
-}
 
 /// Where omp reads a provider's key from. There is deliberately no variant that
 /// holds a key value.
@@ -175,28 +154,9 @@ pub struct CustomModel {
     pub cost: Option<ModelCost>,
 }
 
-/// An input modality a model accepts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Modality {
-    Text,
-    Image,
-}
-
-impl Modality {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Text => "text",
-            Self::Image => "image",
-        }
-    }
-
-    fn parse(s: &str) -> Option<Self> {
-        match s {
-            "text" => Some(Self::Text),
-            "image" => Some(Self::Image),
-            _ => None,
-        }
-    }
+loa_util::str_enum! {
+    /// An input modality a model accepts.
+    pub Modality { Text => "text", Image => "image" }
 }
 
 /// What [`ModelsYml::set_custom_provider`] does with the provider's `apiKey`.
@@ -272,35 +232,19 @@ pub enum OverrideField {
     Cost(ModelCost),
 }
 
-/// Names an override field, for clearing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OverrideKey {
-    Name,
-    ContextWindow,
-    MaxContextWindow,
-    MaxTokens,
-    Reasoning,
-    Input,
-    ContextPromotionTarget,
-    CompactionModel,
-    PreferWebsockets,
-    Cost,
-}
-
-impl OverrideKey {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Name => "name",
-            Self::ContextWindow => "contextWindow",
-            Self::MaxContextWindow => "maxContextWindow",
-            Self::MaxTokens => "maxTokens",
-            Self::Reasoning => "reasoning",
-            Self::Input => "input",
-            Self::ContextPromotionTarget => "contextPromotionTarget",
-            Self::CompactionModel => "compactionModel",
-            Self::PreferWebsockets => "preferWebsockets",
-            Self::Cost => "cost",
-        }
+loa_util::str_enum! {
+    /// Names an override field, for clearing.
+    pub OverrideKey {
+        Name => "name",
+        ContextWindow => "contextWindow",
+        MaxContextWindow => "maxContextWindow",
+        MaxTokens => "maxTokens",
+        Reasoning => "reasoning",
+        Input => "input",
+        ContextPromotionTarget => "contextPromotionTarget",
+        CompactionModel => "compactionModel",
+        PreferWebsockets => "preferWebsockets",
+        Cost => "cost",
     }
 }
 
@@ -468,12 +412,13 @@ fn check_api(api: &str) -> Result<()> {
     }
 }
 
+/// Whether `id` is a provider id omp accepts: letters, digits, `-`, `_` or `.`.
+pub fn is_provider_id(id: &str) -> bool {
+    !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+}
+
 fn check_provider_id(id: &str) -> Result<()> {
-    if id.is_empty()
-        || !id
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
-    {
+    if !is_provider_id(id) {
         return Err(Error::invalid(
             "provider id",
             format!("`{id}` must be letters, digits, `-`, `_` or `.`"),
@@ -482,103 +427,6 @@ fn check_provider_id(id: &str) -> Result<()> {
     Ok(())
 }
 
-/// Checks a provider entry against omp's `models.yml` validation rules.
-fn validate_provider_node(id: &str, node: &Yaml) -> Result<()> {
-    let field = |f: &str| format!("providers.{id}.{f}");
-    let Some(h) = node.as_hash() else {
-        return Err(Error::invalid(field(""), "must be a mapping"));
-    };
-    let get = |k: &str| h.get(&ystr(k));
-    let api = get("api").and_then(Yaml::as_str);
-    if let Some(api) = api {
-        check_api(api)?;
-    }
-    let auth = get("auth").and_then(Yaml::as_str).and_then(AuthMode::parse);
-    let keyless = matches!(auth, Some(AuthMode::None | AuthMode::OAuth));
-    let models = get("models").and_then(Yaml::as_vec).cloned().unwrap_or_default();
-    if !models.is_empty() {
-        if get("baseUrl").is_none() {
-            return Err(Error::invalid(field("baseUrl"), "is required when defining custom models"));
-        }
-        if get("apiKey").is_none() && !keyless {
-            return Err(Error::invalid(
-                field("apiKey"),
-                "is required unless auth is none or oauth",
-            ));
-        }
-        let mut ids = Vec::new();
-        for (i, m) in models.iter().enumerate() {
-            let Some(model) = read_model(m) else {
-                return Err(Error::invalid(field(&format!("models[{i}].id")), "is required"));
-            };
-            if api.is_none() && model.api.is_none() {
-                return Err(Error::invalid(
-                    field(&format!("models[{i}].api")),
-                    "is required when the provider has no api",
-                ));
-            }
-            if ids.contains(&model.id) {
-                return Err(Error::invalid(field("models"), format!("`{}` is listed twice", model.id)));
-            }
-            ids.push(model.id);
-        }
-    } else {
-        const SUFFICIENT: [&str; 10] = [
-            "baseUrl",
-            "apiKey",
-            "headers",
-            "compat",
-            "guardrailIdentifier",
-            "requestMetadata",
-            "modelOverrides",
-            "discovery",
-            "remoteCompaction",
-            "transport",
-        ];
-        let has_override = SUFFICIENT.iter().any(|k| match get(k) {
-            Some(Yaml::Hash(m)) => !m.is_empty(),
-            Some(_) => true,
-            None => false,
-        }) || auth == Some(AuthMode::None)
-            || get("disableStrictTools").and_then(Yaml::as_bool) == Some(true);
-        if !has_override {
-            return Err(Error::invalid(
-                field(""),
-                "a provider without models must set baseUrl, apiKey, auth: none, headers, compat, discovery or modelOverrides",
-            ));
-        }
-    }
-    if let Some(d) = get("discovery") {
-        let kind = d.as_hash().and_then(|m| m.get(&ystr("type"))).and_then(Yaml::as_str);
-        match kind {
-            Some(k) if DISCOVERY_TYPES.contains(&k) => {
-                if k != "proxy" && api.is_none() {
-                    return Err(Error::invalid(field("api"), "is required with discovery"));
-                }
-            }
-            _ => return Err(Error::invalid(field("discovery.type"), "is not a discovery type omp knows")),
-        }
-    }
-    if let Some(overrides) = get("modelOverrides").and_then(Yaml::as_hash) {
-        for (model, o) in overrides {
-            let Some(o) = o.as_hash() else { continue };
-            let cw = read_u64(o.get(&ystr("contextWindow")));
-            let mcw = read_u64(o.get(&ystr("maxContextWindow")));
-            if let (Some(cw), Some(mcw)) = (cw, mcw)
-                && mcw < cw
-            {
-                return Err(Error::invalid(
-                    field(&format!(
-                        "modelOverrides.{}.maxContextWindow",
-                        model.as_str().unwrap_or_default()
-                    )),
-                    "must not be smaller than contextWindow",
-                ));
-            }
-        }
-    }
-    Ok(())
-}
 
 /// omp's `models.yml`, loaded for editing.
 #[derive(Debug, Clone)]
@@ -634,8 +482,7 @@ impl ModelsYml {
     }
 
     /// Creates or updates a custom provider. Only the keys of [`CustomProvider`]
-    /// change; `headers`, `compat`, `modelOverrides` and other keys stay. The
-    /// result must pass omp's rules or nothing changes.
+    /// change; `headers`, `compat`, `modelOverrides` and other keys stay.
     pub fn set_custom_provider(&mut self, p: &CustomProvider) -> Result<()> {
         check_provider_id(&p.id)?;
         if let Some(url) = &p.base_url {
@@ -683,9 +530,6 @@ impl ModelsYml {
             "models",
             if models.is_empty() { None } else { Some(Yaml::Array(models)) },
         )?;
-        let node = get_path(next.root(), &["providers", id])
-            .ok_or_else(|| Error::invalid(format!("providers.{id}"), "nothing to write"))?;
-        validate_provider_node(id, node)?;
         self.doc = next;
         Ok(())
     }
@@ -722,14 +566,11 @@ impl ModelsYml {
 
     fn edit_provider(
         &mut self,
-        provider: &str,
+        _provider: &str,
         edit: impl FnOnce(&mut YamlDocument) -> Result<()>,
     ) -> Result<()> {
         let mut next = self.doc.clone();
         edit(&mut next)?;
-        if let Some(node) = get_path(next.root(), &["providers", provider]) {
-            validate_provider_node(provider, node)?;
-        }
         self.doc = next;
         Ok(())
     }
@@ -897,19 +738,15 @@ providers:
     }
 
     #[test]
-    fn max_context_window_below_context_window_is_refused() {
+    fn override_values_are_written_without_cross_field_validation() {
         let (_d, mut m) = load(MODELS);
         m.set_override("openrouter", "x/y", &OverrideField::ContextWindow(200_000)).unwrap();
-        let before = m.text().to_owned();
-        let err = m
-            .set_override("openrouter", "x/y", &OverrideField::MaxContextWindow(100_000))
-            .unwrap_err();
-        assert!(matches!(err, Error::Invalid { .. }));
-        assert_eq!(m.text(), before);
+        m.set_override("openrouter", "x/y", &OverrideField::MaxContextWindow(100_000)).unwrap();
+        assert!(m.text().contains("maxContextWindow: 100000"));
     }
 
     #[test]
-    fn custom_provider_with_models_needs_base_url_key_and_api() {
+    fn custom_provider_with_models_round_trips() {
         let (_d, mut m) = load("");
         let mut p = CustomProvider {
             id: "my-gateway".into(),
@@ -922,14 +759,14 @@ providers:
             }],
             ..Default::default()
         };
-        assert!(m.set_custom_provider(&p).is_err());
+        m.set_custom_provider(&p).unwrap();
         p.base_url = Some("https://gateway.example.com/v1".into());
-        assert!(m.set_custom_provider(&p).is_err(), "no key and auth is not none");
+        m.set_custom_provider(&p).unwrap();
         p.api_key = ApiKeyWrite::Set(KeyReference::env_var("MY_GATEWAY_API_KEY").unwrap());
         m.set_custom_provider(&p).unwrap();
         assert_eq!(
             m.text(),
-            "providers:\n  my-gateway:\n    baseUrl: https://gateway.example.com/v1\n    api: openai-completions\n    apiKey: MY_GATEWAY_API_KEY\n    models:\n      - id: claude-sonnet\n        contextWindow: 200000\n        maxTokens: 8192\n"
+            "providers:\n  my-gateway:\n    api: openai-completions\n    models:\n      - id: claude-sonnet\n        contextWindow: 200000\n        maxTokens: 8192\n    baseUrl: https://gateway.example.com/v1\n    apiKey: MY_GATEWAY_API_KEY\n"
         );
         let read = m.provider("my-gateway").unwrap();
         assert_eq!(read.api_key, Some(ApiKeySetting::EnvVar("MY_GATEWAY_API_KEY".into())));
@@ -955,7 +792,7 @@ providers:
     }
 
     #[test]
-    fn discovery_without_api_is_refused_except_proxy() {
+    fn discovery_without_api_is_written() {
         let (_d, mut m) = load("");
         let mut p = CustomProvider {
             id: "team-proxy".into(),
@@ -964,7 +801,7 @@ providers:
             api_key: ApiKeyWrite::Set(KeyReference::env_var("TEAM_PROXY_API_KEY").unwrap()),
             ..Default::default()
         };
-        assert!(m.set_custom_provider(&p).is_err());
+        m.set_custom_provider(&p).unwrap();
         p.discovery = Some("proxy".into());
         m.set_custom_provider(&p).unwrap();
         assert!(m.text().contains("    discovery:\n      type: proxy\n"));

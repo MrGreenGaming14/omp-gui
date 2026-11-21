@@ -14,7 +14,7 @@
 //! writes `config.yml` or `models.yml` (session-scoped toggles such as
 //! `set_steering_mode` or `set_cache_warming` never persist). Long-lived RPC
 //! processes watch the files and reload them, so this crate edits the files
-//! (see [`crate::config`] and [`crate::models_yml`]).
+//! as described by the model service.
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::UnboundedSender;

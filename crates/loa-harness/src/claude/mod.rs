@@ -1,4 +1,5 @@
 //! Claude Code stream JSON adapter and native transcript codec.
+pub mod account;
 mod driver;
 pub mod mapper;
 mod mcp;

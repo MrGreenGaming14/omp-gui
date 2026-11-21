@@ -11,17 +11,19 @@ use loa_util::LockExt;
 use std::collections::HashMap;
 use std::sync::Mutex;
 
+use iced::futures::SinkExt;
 use iced::widget::container;
 use iced::{Element, Fill, Subscription, Task};
 use loa_contracts::harness::{AdapterError, HarnessModel, ModelSelection, SessionConfig};
 use loa_bus::SessionId;
 use loa_core::{Dom, Draft, Op, PatchSink, attr};
-use loa_models::omp::OmpLaunch;
+use loa_harness::omp::account::OmpLaunch;
 use loa_ui_session::composer as composer;
-use loa_ui_models::backend::{Backend, SettingsLoad};
+use loa_models::service::{Backend, SettingsLoad};
 use loa_ui_models::picker::{self, Catalog};
 use loa_ui_models::screen::{self, Page};
-use loa_ui_models::settings::{self, ModelSettings, ValidationError};
+use loa_models::settings::{ModelSettings, ValidationError};
+use loa_ui_models::settings;
 use loa_ui_models::signin::{self, LoginUpdate, ProviderEntry, ProviderKey};
 use loa_ui_models::{ModelInfo, ModelRef, RoleAssignment, SessionModel};
 use loa_ui_shell::palette;
@@ -389,7 +391,14 @@ impl State {
     fn signin_event(&mut self, event: signin::Event, ctx: &mut Ctx) -> Task<Message> {
         match event {
             signin::Event::SignIn(key) => {
-                let updates = self.backend.login(key.clone());
+                let backend = self.backend.clone();
+                let login_key = key.clone();
+                let updates = iced::stream::channel(16, async move |mut out| {
+                    let mut updates = backend.login(login_key);
+                    while let Some(update) = updates.recv().await {
+                        if out.send(update).await.is_err() { break; }
+                    }
+                });
                 Task::run(updates, move |update| Message::Login(key.clone(), update))
             }
             signin::Event::OpenUrl(url) => {

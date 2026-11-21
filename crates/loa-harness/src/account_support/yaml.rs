@@ -12,7 +12,7 @@ use yaml_rust2::yaml::Hash;
 
 pub use yaml_rust2::Yaml;
 
-use crate::{Error, Result};
+use super::{Error, Result};
 
 /// A YAML document whose root is a block mapping (or empty), edited in place.
 #[derive(Debug, Clone)]
@@ -411,48 +411,44 @@ impl<'a> Editor<'a> {
         Some(region)
     }
 
-    fn set(&self, path: &[&str], expected_root: &Yaml) -> Result<String> {
+    /// Finds the first missing key, non-mapping ancestor, or the requested entry.
+    fn walk(&self, path: &[&str]) -> Result<(usize, Region, Option<Entry>)> {
         let mut region = self.root_region();
-        let mut is_root = true;
-        for depth in 0..path.len() {
-            let sub = get_path(expected_root, &path[..=depth])
-                .ok_or_else(|| self.unsupported("edited key missing from the result"))?;
-            match self.find(region, path[depth])? {
-                Some(entry) => {
-                    if depth + 1 < path.len()
-                        && let Some(child) = self.child_mapping(&entry)
-                    {
-                        region = child;
-                        is_root = false;
-                        continue;
-                    }
-                    return Ok(self.replace_value(&entry, sub));
-                }
-                None => return self.insert_entry(region, is_root, path[depth], sub),
+        for (depth, key) in path.iter().enumerate() {
+            let entry = self.find(region, key)?;
+            if depth + 1 < path.len()
+                && let Some(child) = entry.as_ref().and_then(|entry| self.child_mapping(entry))
+            {
+                region = child;
+                continue;
             }
+            return Ok((depth, region, entry));
         }
         Err(self.unsupported("empty key path"))
     }
 
-    fn remove(&self, path: &[&str]) -> Result<String> {
-        let mut region = self.root_region();
-        for depth in 0..path.len() {
-            let entry = self
-                .find(region, path[depth])?
-                .ok_or_else(|| self.unsupported(format!("`{}` not found in the text", path[..=depth].join("."))))?;
-            if depth + 1 == path.len() {
-                let end = self.span_end(entry.body_end);
-                let start = self.lines[entry.line].start;
-                let mut out = String::with_capacity(self.text.len());
-                out.push_str(&self.text[..start]);
-                out.push_str(&self.text[end..]);
-                return Ok(out);
-            }
-            region = self
-                .child_mapping(&entry)
-                .ok_or_else(|| self.unsupported(format!("`{}` is not a block mapping", path[..=depth].join("."))))?;
+    fn set(&self, path: &[&str], expected_root: &Yaml) -> Result<String> {
+        let (depth, region, entry) = self.walk(path)?;
+        let value = get_path(expected_root, &path[..=depth])
+            .ok_or_else(|| self.unsupported("edited key missing from the result"))?;
+        match entry {
+            Some(entry) => Ok(self.replace_value(&entry, value)),
+            None => self.insert_entry(region, depth == 0, path[depth], value),
         }
-        Err(self.unsupported("empty key path"))
+    }
+
+    fn remove(&self, path: &[&str]) -> Result<String> {
+        let (depth, _, entry) = self.walk(path)?;
+        let entry = entry.ok_or_else(|| self.unsupported(format!("`{}` not found in the text", path[..=depth].join("."))))?;
+        if depth + 1 != path.len() {
+            return Err(self.unsupported(format!("`{}` is not a block mapping", path[..=depth].join("."))));
+        }
+        let start = self.lines[entry.line].start;
+        let end = self.span_end(entry.body_end);
+        let mut out = String::with_capacity(self.text.len());
+        out.push_str(&self.text[..start]);
+        out.push_str(&self.text[end..]);
+        Ok(out)
     }
 
     /// Byte offset where line `i` starts, or the text end.
@@ -469,13 +465,7 @@ impl<'a> Editor<'a> {
         let head = &line[..entry.head_len];
         let mut new_lines = Vec::new();
         let comment = entry.comment.as_deref().map(|c| format!(" {c}")).unwrap_or_default();
-        match render_inline(value) {
-            Some(inline) => new_lines.push(format!("{head} {inline}{comment}")),
-            None => {
-                new_lines.push(format!("{head}{comment}"));
-                render_block(value, entry.indent + self.unit, self.unit, &mut new_lines);
-            }
-        }
+        render_value(format_args!("{head}"), &comment, value, entry.indent, self.unit, &mut new_lines);
         let start = self.lines[entry.line].start;
         let end = self.span_end(entry.body_end);
         let had_newline = self.lines[entry.body_end - 1].next > self.lines[entry.body_end - 1].end;
@@ -485,7 +475,7 @@ impl<'a> Editor<'a> {
     fn insert_entry(&self, region: Region, is_root: bool, key: &str, value: &Yaml) -> Result<String> {
         let indent = self.key_indent(region).unwrap_or(0);
         let mut new_lines = Vec::new();
-        render_entry(key, value, indent, self.unit, &mut new_lines);
+        render_entry(&render_string(key), value, indent, self.unit, &mut new_lines);
         let entries = self.entries(region)?;
         let at = match entries.last() {
             // After the body of the last entry of this mapping, before any
@@ -646,11 +636,14 @@ fn render_key(key: &Yaml) -> String {
 
 fn render_entry(key: &str, value: &Yaml, indent: usize, unit: usize, out: &mut Vec<String>) {
     let pad = " ".repeat(indent);
-    let key = render_string(key);
+    render_value(format_args!("{pad}{key}:"), "", value, indent, unit, out);
+}
+
+fn render_value(head: std::fmt::Arguments<'_>, comment: &str, value: &Yaml, indent: usize, unit: usize, out: &mut Vec<String>) {
     match render_inline(value) {
-        Some(v) => out.push(format!("{pad}{key}: {v}")),
+        Some(value) => out.push(format!("{head} {value}{comment}")),
         None => {
-            out.push(format!("{pad}{key}:"));
+            out.push(format!("{head}{comment}"));
             render_block(value, indent + unit, unit, out);
         }
     }
@@ -662,14 +655,7 @@ fn render_block(value: &Yaml, indent: usize, unit: usize, out: &mut Vec<String>)
     match value {
         Yaml::Hash(map) => {
             for (k, v) in map {
-                let key = render_key(k);
-                match render_inline(v) {
-                    Some(s) => out.push(format!("{pad}{key}: {s}")),
-                    None => {
-                        out.push(format!("{pad}{key}:"));
-                        render_block(v, indent + unit, unit, out);
-                    }
-                }
+                render_entry(&render_key(k), v, indent, unit, out);
             }
         }
         Yaml::Array(items) => {
@@ -898,33 +884,25 @@ enabledModels:
     }
 
     #[test]
-    fn three_space_indent_is_kept_for_new_keys() {
-        let text = "providers:\n   my-gw:\n      baseUrl: http://x\n";
-        let mut d = doc(text);
-        d.set(&["providers", "my-gw", "modelOverrides", "m1", "name"], ystr("M One"))
-            .unwrap();
-        assert_eq!(
-            d.text(),
-            "providers:\n   my-gw:\n      baseUrl: http://x\n      modelOverrides:\n         m1:\n            name: M One\n"
-        );
-    }
-
-    #[test]
-    fn null_parent_becomes_a_block_mapping() {
-        let mut d = doc("modelRoles:\nother: 1\n");
-        d.set(&["modelRoles", "default"], ystr("a/b")).unwrap();
-        assert_eq!(d.text(), "modelRoles:\n  default: a/b\nother: 1\n");
-    }
-
-    #[test]
-    fn empty_and_comment_only_files_accept_keys() {
-        let mut d = doc("");
-        d.set(&["modelProviderOrder"], ystrs(["anthropic"])).unwrap();
-        assert_eq!(d.text(), "modelProviderOrder:\n  - anthropic\n");
-
-        let mut d = doc("# nothing yet");
-        d.set(&["a"], ystr("b")).unwrap();
-        assert_eq!(d.text(), "# nothing yet\na: b\n");
+    fn set_preserves_layout() {
+        let cases: &[(&str, &[&str], Yaml, &str)] = &[
+            ("providers:\n   my-gw:\n      baseUrl: http://x\n",
+             &["providers", "my-gw", "modelOverrides", "m1", "name"], ystr("M One"),
+             "providers:\n   my-gw:\n      baseUrl: http://x\n      modelOverrides:\n         m1:\n            name: M One\n"),
+            ("modelRoles:\nother: 1\n", &["modelRoles", "default"], ystr("a/b"),
+             "modelRoles:\n  default: a/b\nother: 1\n"),
+            ("", &["modelProviderOrder"], ystrs(["anthropic"]), "modelProviderOrder:\n  - anthropic\n"),
+            ("# nothing yet", &["a"], ystr("b"), "# nothing yet\na: b\n"),
+            ("a: 1\r\nb:\r\n  c: 2\r\n", &["b", "d"], ystr("x"), "a: 1\r\nb:\r\n  c: 2\r\n  d: x\r\n"),
+            ("note: |\n  # not a comment\n  text\nkeep: 1\n", &["note"], ystr("short"), "note: short\nkeep: 1\n"),
+            ("a: 1", &["b"], ystr("2x"), "a: 1\nb: 2x\n"),
+            ("a:\n  b: 1", &["a", "b"], Yaml::Integer(2), "a:\n  b: 2"),
+        ];
+        for (input, path, value, expected) in cases {
+            let mut d = doc(input);
+            d.set(path, value.clone()).unwrap();
+            assert_eq!(d.text(), *expected);
+        }
     }
 
     #[test]
@@ -939,20 +917,6 @@ enabledModels:
         assert!(d.text().contains("e: \"!op read\""));
     }
 
-    #[test]
-    fn crlf_files_stay_crlf() {
-        let mut d = doc("a: 1\r\nb:\r\n  c: 2\r\n");
-        d.set(&["b", "d"], ystr("x")).unwrap();
-        assert_eq!(d.text(), "a: 1\r\nb:\r\n  c: 2\r\n  d: x\r\n");
-    }
-
-    #[test]
-    fn block_scalar_bodies_with_hash_lines_are_replaced_whole() {
-        let text = "note: |\n  # not a comment\n  text\nkeep: 1\n";
-        let mut d = doc(text);
-        d.set(&["note"], ystr("short")).unwrap();
-        assert_eq!(d.text(), "note: short\nkeep: 1\n");
-    }
 
     #[test]
     fn flow_root_and_multi_document_files_are_refused() {
@@ -967,15 +931,6 @@ enabledModels:
         assert!(matches!(YamlDocument::parse("a: [1", "x"), Err(Error::Parse { .. })));
     }
 
-    #[test]
-    fn last_line_without_newline_gets_one_before_an_appended_key() {
-        let mut d = doc("a: 1");
-        d.set(&["b"], ystr("2x")).unwrap();
-        assert_eq!(d.text(), "a: 1\nb: 2x\n");
-        let mut d = doc("a:\n  b: 1");
-        d.set(&["a", "b"], Yaml::Integer(2)).unwrap();
-        assert_eq!(d.text(), "a:\n  b: 2");
-    }
 
     #[test]
     fn mappings_inside_sequences_render_and_read_back() {

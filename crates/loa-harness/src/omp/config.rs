@@ -12,21 +12,18 @@
 //! | Disabled providers | `disabledProviders`: ids or path scoped `{ path, providers }` entries |
 //! | Provider order | `modelProviderOrder`: provider ids |
 //!
-//! Every edit changes only the touched key's lines (see [`crate::yaml`]); saving
+//! Every edit changes only the touched key's lines; saving
 //! writes atomically and refuses when the file changed since it was loaded.
 
 use std::path::Path;
 
-use crate::error::{load_snapshot, save_snapshot};
+use crate::account_support::error::{load_snapshot, save_snapshot};
 use loa_util::fs::Snapshot;
-use crate::validate::SettingsValidator;
-use crate::yaml::{Yaml, YamlDocument, ymap, ystr, ystrs};
-use crate::{Error, Result};
+use loa_contracts::harness::model_error::SettingsValidator;
+use crate::account_support::yaml::{Yaml, YamlDocument, ymap, ystr, ystrs};
+use crate::account_support::{Error, Result};
+use loa_contracts::harness::selector::{Selector, validate_role_name};
 
-/// Thinking levels a chat selector may carry as a `:level` suffix.
-pub const THINKING_LEVELS: [&str; 9] = [
-    "off", "minimal", "low", "medium", "high", "xhigh", "max", "auto", "inherit",
-];
 
 /// Built in chat roles, in the order omp's model picker lists them.
 pub const CHAT_ROLES: [&str; 11] = [
@@ -37,135 +34,7 @@ pub const CHAT_ROLES: [&str; 11] = [
 /// Built in model-kind roles: they select runners and take no thinking suffix.
 pub const KIND_ROLES: [&str; 5] = ["image", "web", "speech", "dictation", "judge"];
 
-/// One candidate of a role assignment or fallback chain.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Selector {
-    /// A model selector: `provider/model`, a bare or fuzzy id, or a glob.
-    Model {
-        model: String,
-        thinking: Option<String>,
-    },
-    /// Another role, written `@role`.
-    Role {
-        role: String,
-        thinking: Option<String>,
-    },
-}
 
-impl Selector {
-    /// A model selector without a thinking suffix.
-    pub fn model(model: impl Into<String>) -> Self {
-        Self::Model {
-            model: model.into(),
-            thinking: None,
-        }
-    }
-
-    /// A role alias without a thinking suffix.
-    pub fn role(role: impl Into<String>) -> Self {
-        Self::Role {
-            role: role.into(),
-            thinking: None,
-        }
-    }
-
-    /// Parses one candidate such as `anthropic/claude-opus-4-5:high` or `@smol`.
-    pub fn parse(text: &str) -> Result<Self> {
-        let text = text.trim();
-        if text.is_empty() {
-            return Err(Error::invalid("selector", "empty selector"));
-        }
-        let (body, thinking) = match text.rsplit_once(':') {
-            Some((body, level)) if THINKING_LEVELS.contains(&level) => {
-                (body, Some(level.to_owned()))
-            }
-            _ => (text, None),
-        };
-        let selector = match body.strip_prefix('@') {
-            Some(role) => Self::Role {
-                role: role.to_owned(),
-                thinking,
-            },
-            None => Self::Model {
-                model: body.to_owned(),
-                thinking,
-            },
-        };
-        selector.validate()?;
-        Ok(selector)
-    }
-
-    /// The model part of a model selector.
-    pub fn model_name(&self) -> Option<&str> {
-        match self {
-            Self::Model { model, .. } => Some(model),
-            Self::Role { .. } => None,
-        }
-    }
-
-    /// The thinking suffix, if any.
-    pub fn thinking(&self) -> Option<&str> {
-        match self {
-            Self::Model { thinking, .. } | Self::Role { thinking, .. } => thinking.as_deref(),
-        }
-    }
-
-    fn validate(&self) -> Result<()> {
-        let (name, thinking) = match self {
-            Self::Model { model, thinking } => (model.as_str(), thinking),
-            Self::Role { role, thinking } => {
-                validate_role_name(role)?;
-                (role.as_str(), thinking)
-            }
-        };
-        if name.is_empty() || name.chars().any(|c| c.is_whitespace() || c.is_control() || c == ',') {
-            return Err(Error::invalid(
-                "selector",
-                format!("`{name}` must be non-empty without spaces or commas"),
-            ));
-        }
-        if let Some(level) = thinking
-            && !THINKING_LEVELS.contains(&level.as_str())
-        {
-            return Err(Error::invalid("selector", format!("unknown thinking level `{level}`")));
-        }
-        Ok(())
-    }
-}
-
-impl std::fmt::Display for Selector {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Model { model, thinking } => {
-                f.write_str(model)?;
-                if let Some(t) = thinking {
-                    write!(f, ":{t}")?;
-                }
-            }
-            Self::Role { role, thinking } => {
-                write!(f, "@{role}")?;
-                if let Some(t) = thinking {
-                    write!(f, ":{t}")?;
-                }
-            }
-        }
-        Ok(())
-    }
-}
-
-fn validate_role_name(role: &str) -> Result<()> {
-    if role.is_empty()
-        || !role
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-    {
-        return Err(Error::invalid(
-            "role",
-            format!("`{role}` must be letters, digits, `_` or `-`"),
-        ));
-    }
-    Ok(())
-}
 
 /// Whether `role` is one of omp's model-kind roles, which select runners and
 /// accept no chat thinking suffix.
@@ -254,21 +123,34 @@ pub enum ScopedList {
     DisabledProviders,
 }
 
+struct ScopedKey {
+    key: &'static str,
+    value_key: &'static str,
+}
+
+const SCOPED_KEYS: [ScopedKey; 3] = [
+    ScopedKey { key: "enabledModels", value_key: "models" },
+    ScopedKey { key: "enabledProviders", value_key: "providers" },
+    ScopedKey { key: "disabledProviders", value_key: "providers" },
+];
+
+struct ListKey {
+    key: &'static str,
+}
+
+const PROVIDER_ORDER: ListKey = ListKey { key: "modelProviderOrder" };
+
 impl ScopedList {
-    fn key(self) -> &'static str {
-        match self {
-            Self::EnabledModels => "enabledModels",
-            Self::EnabledProviders => "enabledProviders",
-            Self::DisabledProviders => "disabledProviders",
-        }
+    fn metadata(self) -> &'static ScopedKey {
+        &SCOPED_KEYS[match self {
+            Self::EnabledModels => 0,
+            Self::EnabledProviders => 1,
+            Self::DisabledProviders => 2,
+        }]
     }
 
-    fn value_key(self) -> &'static str {
-        match self {
-            Self::EnabledModels => "models",
-            Self::EnabledProviders | Self::DisabledProviders => "providers",
-        }
-    }
+    fn key(self) -> &'static str { self.metadata().key }
+    fn value_key(self) -> &'static str { self.metadata().value_key }
 }
 
 const PATH_KEYS: [&str; 4] = ["path", "paths", "pathPrefix", "pathPrefixes"];
@@ -329,7 +211,7 @@ impl OmpConfig {
                 let value = self
                     .doc
                     .get(&refs)
-                    .map_or(serde_json::Value::Null, crate::yaml::to_json);
+                    .map_or(serde_json::Value::Null, crate::account_support::yaml::to_json);
                 (path.join("."), value)
             })
             .collect();
@@ -504,27 +386,33 @@ impl OmpConfig {
     /// The provider order used when a bare model id exists under several
     /// providers.
     pub fn provider_order(&self) -> Vec<String> {
-        self.doc
-            .get(&["modelProviderOrder"])
-            .and_then(Yaml::as_vec)
-            .map(|items| items.iter().filter_map(Yaml::as_str).map(str::to_owned).collect())
-            .unwrap_or_default()
+        self.string_list(&PROVIDER_ORDER)
     }
 
     /// Replaces the provider order; an empty order removes the key.
     pub fn set_provider_order(&mut self, providers: &[String]) -> Result<()> {
-        if providers.is_empty() {
-            self.remove(&["modelProviderOrder"])?;
+        self.set_string_list(&PROVIDER_ORDER, providers)
+    }
+
+    fn string_list(&self, key: &ListKey) -> Vec<String> {
+        self.doc.get(&[key.key]).and_then(Yaml::as_vec)
+            .map(|items| items.iter().filter_map(Yaml::as_str).map(str::to_owned).collect())
+            .unwrap_or_default()
+    }
+
+    fn set_string_list(&mut self, key: &ListKey, values: &[String]) -> Result<()> {
+        if values.is_empty() {
+            self.remove(&[key.key])?;
             return Ok(());
         }
         let mut seen = std::collections::HashSet::new();
-        for p in providers {
-            validate_value("modelProviderOrder", p)?;
-            if !seen.insert(p.as_str()) {
-                return Err(Error::invalid("modelProviderOrder", format!("`{p}` is listed twice")));
+        for value in values {
+            validate_value(key.key, value)?;
+            if !seen.insert(value.as_str()) {
+                return Err(Error::invalid(key.key, format!("`{value}` is listed twice")));
             }
         }
-        self.set(&["modelProviderOrder"], ystrs(providers.iter().cloned()))
+        self.set(&[key.key], ystrs(values.iter().cloned()))
     }
 }
 

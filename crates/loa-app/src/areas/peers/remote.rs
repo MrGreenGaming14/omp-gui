@@ -13,7 +13,7 @@ use loa_bus::{Event, Policy, SessionWriter};
 use loa_core::{Dom, NodeId, Op, Patch, attr};
 use loa_trust::Action;
 use loa_models::login::UrlOpener;
-use loa_models::opener::SystemUrlOpener;
+use loa_harness::account_support::opener::SystemUrlOpener;
 use loa_p2p::RemoteView;
 use loa_ui_session::transcript as chat;
 use loa_ui_session::decisions as cards;

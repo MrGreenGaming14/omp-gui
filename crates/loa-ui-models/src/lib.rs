@@ -11,14 +11,10 @@
 //! - [`signin`]: provider list with the sign in flow per provider and harness
 //! - [`settings`]: model roles, fallbacks, enabled models, provider order,
 //!   overrides and custom providers
-//! - [`backend`]: the service the app calls for these screens: omp's login
-//!   flows, the model catalog, role assignment and reading and saving omp's
-//!   settings files
 //! - [`screen`]: the frame switching between those screens' pages
 
-pub mod backend;
-mod bridge;
-pub mod catalog;
+#[cfg(test)]
+mod backend_tests;
 pub mod chip;
 pub mod picker;
 pub mod session;
@@ -27,7 +23,7 @@ pub mod settings;
 pub mod signin;
 mod style;
 
-pub use catalog::{ModelInfo, ModelRef, RoleAssignment};
+pub use loa_models::selector::{ModelInfo, ModelRef, RoleAssignment};
 pub use session::{SessionModel, SessionModelChange, model_change_drafts};
 
 /// Errors of this crate's non-UI functions.

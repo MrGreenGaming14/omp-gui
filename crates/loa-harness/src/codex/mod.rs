@@ -1,5 +1,6 @@
 //! Codex adapter: drives `codex app-server` (JSON-RPC over stdio) and reads and writes Codex rollout files.
 
+pub mod account;
 pub mod mapper;
 pub mod rollout;
 mod session;

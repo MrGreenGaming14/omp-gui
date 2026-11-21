@@ -1,7 +1,6 @@
 //! The harness registry: one [`HarnessFactory`] per compiled-in harness, so the
 //! app builds adapters and asks about harness behavior by id instead of matching on names.
 
-#[allow(unused_imports)]
 use loa_contracts::harness::{Adapter, HarnessAccount, HarnessFactory, HarnessTraits};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -47,13 +46,48 @@ impl HarnessFactory for Entry {
         (self.build)(&self.env, exe)
     }
 
-    fn account(&self, _exe: Option<PathBuf>) -> Option<Arc<dyn HarnessAccount>> {
-        None
+    fn account(&self, exe: Option<PathBuf>) -> Option<Arc<dyn HarnessAccount>> {
+        match self.id {
+            #[cfg(feature = "omp")]
+            crate::omp::HARNESS => {
+                let launch = crate::omp::account::OmpLaunch {
+                    executable: exe.unwrap_or_else(|| "omp".into()),
+                    ..Default::default()
+                };
+                Some(Arc::new(crate::omp::account::OmpAccount {
+                    rpc: Arc::new(crate::omp::account::OmpService::new(launch.clone())),
+                    opener: Arc::new(crate::account_support::opener::SystemUrlOpener),
+                    launch,
+                }))
+            }
+            #[cfg(feature = "claude")]
+            crate::claude::HARNESS => Some(Arc::new(crate::claude::account::ClaudeCode::new(
+                exe.unwrap_or_else(|| "claude".into()),
+                config_dir("CLAUDE_CONFIG_DIR", ".claude").join("settings.json"),
+                Arc::new(crate::account_support::process::TokioProcessRunner),
+            ))),
+            #[cfg(feature = "codex")]
+            crate::codex::HARNESS => Some(Arc::new(crate::codex::account::Codex::new(
+                exe.unwrap_or_else(|| "codex".into()),
+                config_dir("CODEX_HOME", ".codex").join("config.toml"),
+                Arc::new(crate::account_support::process::TokioProcessRunner),
+            ))),
+            _ => None,
+        }
     }
 
     fn traits(&self) -> HarnessTraits {
         self.traits
     }
+}
+
+#[cfg(any(feature = "claude", feature = "codex"))]
+fn config_dir(variable: &str, default: &str) -> PathBuf {
+    std::env::var_os(variable)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| loa_util::fs::home().map(|home| home.join(default)))
+        .unwrap_or_else(|| PathBuf::from(default))
 }
 
 /// omp's `--approval-mode` values; the first is what app sessions start on.

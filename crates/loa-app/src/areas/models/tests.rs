@@ -11,16 +11,16 @@ use loa_contracts::harness::{Adapter, AdapterError, Answer, Capabilities, Harnes
 use loa_bus::Policy;
 use loa_core::{ElementKind, NodeId, Value, now_ms};
 use loa_trust::NodeIdentity;
-use loa_models::harness::codex::Codex;
+use loa_harness::codex::account::Codex;
 use loa_models::keys::EnvironmentPresence;
 use loa_models::login::UrlOpener;
-use loa_models::omp::OmpFiles;
-use loa_models::process::TokioProcessRunner;
-use loa_models::rpc::{self, LoginProvider, LoginUiRequest, OmpRpc, RpcError, UiResponse};
-use loa_models::validate::SettingsValidator;
-use loa_ui_models::backend::Parts;
+use loa_harness::omp::account::OmpFiles;
+use loa_harness::account_support::process::TokioProcessRunner;
+use loa_contracts::harness::model_rpc::{self as rpc, LoginProvider, LoginUiRequest};
+use loa_models::testing::{FakeOmp, LoginScript};
+use loa_contracts::harness::model_error::SettingsValidator;
+use loa_models::service::Parts;
 use loa_ui_models::signin::{Auth, LoginState};
-use tokio::sync::mpsc::UnboundedSender;
 
 use super::*;
 use crate::app::{App, Message as AppMessage};
@@ -140,56 +140,31 @@ impl HarnessSession for FakeSession {
     }
 }
 
-/// omp's RPC: two models, an Anthropic login that is signed in and an
-/// OpenAI one that signs in after sending the browser URL.
-#[derive(Default)]
-struct FakeRpc {
-    signed_in: Mutex<bool>,
-}
-
-#[async_trait::async_trait]
-impl OmpRpc for FakeRpc {
-    async fn get_login_providers(&self) -> Result<Vec<LoginProvider>, RpcError> {
-        let openai = *self.signed_in.locked();
-        Ok(vec![
-            LoginProvider { id: "anthropic".into(), name: "Anthropic".into(), available: true, authenticated: true },
-            LoginProvider { id: "openai-codex".into(), name: "ChatGPT".into(), available: true, authenticated: openai },
-        ])
-    }
-
-    async fn login(&self, provider_id: &str, ui: UnboundedSender<LoginUiRequest>) -> Result<String, RpcError> {
-        let url = LoginUiRequest::OpenUrl { id: "u1".into(), url: "https://auth.example/authorize".into(), launch_url: None, instructions: None };
-        ui.send(url).map_err(|error| RpcError::Transport(error.to_string()))?;
-        // The user finishes in the browser.
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        *self.signed_in.locked() = true;
-        Ok(provider_id.to_owned())
-    }
-
-    async fn respond_ui(&self, _: UiResponse) -> Result<(), RpcError> {
-        Ok(())
-    }
-
-    async fn get_available_models(&self) -> Result<Vec<rpc::ModelInfo>, RpcError> {
-        let model = |provider: &str, id: &str, name: &str| rpc::ModelInfo {
-            id: id.into(),
-            name: name.into(),
-            provider: provider.into(),
-            api: String::new(),
-            reasoning: true,
-            input: Vec::new(),
-            cost: rpc::ModelCost::default(),
-            context_window: None,
-            max_tokens: None,
-            thinking: None,
-            extra: Default::default(),
-        };
-        Ok(vec![model("anthropic", "claude-x", "Claude X"), model("openai-codex", "gpt-y", "GPT Y")])
-    }
-
-    async fn set_model(&self, _: &str, _: &str) -> Result<rpc::ModelInfo, RpcError> {
-        Err(RpcError::Transport("the backend never switches a session model".into()))
-    }
+fn fake_omp() -> FakeOmp {
+    let mut rpc = FakeOmp::default();
+    rpc.providers = vec![
+        LoginProvider { id: "anthropic".into(), name: "Anthropic".into(), available: true, authenticated: true },
+        LoginProvider { id: "openai-codex".into(), name: "ChatGPT".into(), available: true, authenticated: false },
+    ];
+    let model = |provider: &str, id: &str, name: &str| rpc::ModelInfo {
+        id: id.into(),
+        name: name.into(),
+        provider: provider.into(),
+        api: String::new(),
+        reasoning: true,
+        input: Vec::new(),
+        cost: rpc::ModelCost::default(),
+        context_window: None,
+        max_tokens: None,
+        thinking: None,
+        extra: Default::default(),
+    };
+    rpc.models = vec![model("anthropic", "claude-x", "Claude X"), model("openai-codex", "gpt-y", "GPT Y")];
+    rpc.login_frames = vec![LoginUiRequest::OpenUrl {
+        id: "u1".into(), url: "https://auth.example/authorize".into(), launch_url: None, instructions: None,
+    }];
+    rpc.script = LoginScript::CompleteAfter(Duration::from_millis(50));
+    rpc
 }
 
 /// Accepts every file unless it contains `reject-me`, as omp rejects a bad
@@ -198,14 +173,14 @@ struct Validator;
 
 #[async_trait::async_trait]
 impl SettingsValidator for Validator {
-    async fn check_config(&self, text: &str, _: &[(String, serde_json::Value)]) -> loa_models::Result<()> {
+    async fn check_config(&self, text: &str, _: &[(String, serde_json::Value)]) -> loa_contracts::harness::model_error::Result<()> {
         if text.contains("reject-me") {
-            return Err(loa_models::Error::Rejected { what: "config.yml".into(), message: "unknown role reject-me".into() });
+            return Err(loa_contracts::harness::model_error::Error::Rejected { what: "config.yml".into(), message: "unknown role reject-me".into() });
         }
         Ok(())
     }
 
-    async fn check_models(&self, _: &str) -> loa_models::Result<()> {
+    async fn check_models(&self, _: &str) -> loa_contracts::harness::model_error::Result<()> {
         Ok(())
     }
 }
@@ -262,12 +237,11 @@ fn fixture(adapter: FakeAdapter) -> Fixture {
     let (mut app, _) = App::build(services);
     let opener = Arc::new(Opener::default());
     app.areas.models.backend = Backend::new(Parts {
-        rpc: Arc::new(FakeRpc::default()),
+        rpc: Arc::new(fake_omp()),
         files: OmpFiles::new(&agent),
         validator: Arc::new(Validator),
         opener: opener.clone(),
-        claude: None,
-        codex: Some(Codex::new(dir.path().join("no-codex-here"), dir.path().join("codex.toml"), Arc::new(TokioProcessRunner))),
+        harnesses: vec![Arc::new(Codex::new(dir.path().join("no-codex-here"), dir.path().join("codex.toml"), Arc::new(TokioProcessRunner)))],
         environment: Arc::new(NoKeys),
     });
     Fixture { dir, app, configs, opener }

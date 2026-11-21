@@ -118,7 +118,8 @@ pub async fn run_checked(mut cmd: Command) -> Result<String, String> {
     out.status.success().then_some(stdout).ok_or_else(|| format!("{}: {}", out.status, first_stderr(&out.stderr)))
 }
 
-async fn output(cmd: &mut Command) -> io::Result<std::process::Output> {
+/// Runs a command with stdin closed, capturing both output streams.
+pub async fn output(cmd: &mut Command) -> io::Result<std::process::Output> {
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
     retry_busy(|| cmd.spawn())?.wait_with_output().await
 }

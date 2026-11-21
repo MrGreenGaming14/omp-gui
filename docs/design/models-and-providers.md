@@ -24,6 +24,10 @@ flowchart LR
 - Sign in, model listing and model switching make no model calls and cost no tokens
 - RPC sign in covers subscription logins (OAuth) only. omp's RPC does not accept secret prompts, so API keys go where omp already reads them (its config, an environment variable or a secret command), never through the app
 
+The settings editor uses `loa_models::settings` for its shared model and
+diff-and-apply logic; omp remains the authority for provider validation. Claude
+settings edits preserve JSON key order but may normalize whitespace.
+
 ## Other harnesses
 
 - Each adapter calls its harness's own login and model commands, like `claude` and `codex` sign in

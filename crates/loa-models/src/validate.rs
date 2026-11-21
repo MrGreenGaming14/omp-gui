@@ -5,17 +5,10 @@ use async_trait::async_trait;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::process::{CommandSpec, ProcessRunner};
-use crate::{Error, Result};
+use loa_harness::account_support::process::{CommandSpec, ProcessRunner};
+use loa_contracts::harness::model_error::{Error, Result};
 
-/// A validator for candidate config and models files, used before atomic saves.
-#[async_trait]
-pub trait SettingsValidator: Send + Sync {
-    /// Confirms omp reads each touched setting as the proposed value.
-    async fn check_config(&self, text: &str, expected: &[(String, serde_json::Value)]) -> Result<()>;
-    /// Confirms omp accepts the candidate model document.
-    async fn check_models(&self, text: &str) -> Result<()>;
-}
+use loa_contracts::harness::model_error::SettingsValidator;
 
 /// Calls omp CLI with its agent directory redirected to a temp directory.
 /// It never sends a prompt; catalog listing may still discover local models.
@@ -75,7 +68,7 @@ impl SettingsValidator for OmpSettingsValidator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::process::{ProcessOutput, RunningProcess};
+    use loa_harness::account_support::process::{ProcessOutput, RunningProcess};
     use std::sync::Mutex;
     struct Runner(Mutex<Vec<CommandSpec>>);
     #[async_trait]

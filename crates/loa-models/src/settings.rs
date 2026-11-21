@@ -7,23 +7,111 @@
 //! so settings the screen does not show (path scoped entries, globs, secret
 //! key commands, model metadata, headers) stay as they are.
 
+
 use std::collections::{BTreeMap, HashMap};
+use loa_harness::omp::config::{ChainKey, OmpConfig, ScopedEntry, ScopedList};
+use loa_contracts::harness::selector::{Selector, ModelRef};
+use crate::models_yml::{self, ApiKeySetting, ApiKeyWrite, KeyReference, ModelsYml, OverrideKey};
+pub use crate::models_yml::{AuthMode, is_env_var_name, is_provider_id};
+pub use loa_contracts::harness::model_error::{Error, Result, SettingsValidator};
+use loa_contracts::harness::model_rpc as rpc;
 
-use loa_models::config::{ChainKey, OmpConfig, ScopedEntry, ScopedList, Selector};
-use loa_models::models_yml::{
-    self, ApiKeySetting, ApiKeyWrite, AuthMode, KeyReference, ModelsYml, OverrideKey,
-};
-use loa_models::rpc;
+/// Everything the screen edits, as the app reads it from omp's config files.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct ModelSettings {
+    pub roles: Vec<RoleChain>,
+    pub models: Vec<ModelToggle>,
+    pub providers: Vec<ProviderToggle>,
+    pub overrides: Vec<ModelOverride>,
+    pub custom_providers: Vec<CustomProvider>,
+    /// The other harnesses' own default model settings.
+    pub harnesses: Vec<HarnessModel>,
+}
 
-use crate::catalog::{ModelInfo, ModelRef, RoleAssignment};
-use crate::picker::Catalog;
-use crate::settings::{
-    CustomProvider, FieldValue, ModelOverride, ModelSettings, ModelToggle, OverrideField, ProviderAuth,
-    ProviderToggle, RoleChain, ValidationError,
-};
+/// The default model and effort another harness (Claude Code, Codex) keeps in
+/// its own config file. Empty values leave the choice to the harness.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HarnessModel {
+    /// Harness key, e.g. `claude`.
+    pub harness: String,
+    /// Display name, e.g. "Claude Code".
+    pub name: String,
+    /// The config file the values live in, for display.
+    pub config_path: String,
+    pub model: String,
+    pub effort: String,
+    /// Effort values the harness accepts in its config.
+    pub efforts: Vec<String>,
+}
+/// A model role and its ordered chain: `chain[0]` is the primary model
+/// (`modelRoles.<role>`), the rest are its fallbacks
+/// (`retry.fallbackChains.<role>`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RoleChain {
+    pub role: String,
+    pub chain: Vec<String>,
+}
+
+/// Whether a model selector is listed in `enabledModels`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ModelToggle {
+    pub selector: String,
+    pub enabled: bool,
+}
+
+/// A provider and whether it is enabled. In provider order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProviderToggle {
+    pub id: String,
+    pub name: String,
+    pub enabled: bool,
+}
+
+/// The `modelOverrides` fields set for one model selector.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModelOverride {
+    pub selector: String,
+    pub fields: Vec<OverrideField>,
+}
+
+/// One overridden model field, e.g. `contextWindow: 200000`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OverrideField {
+    pub key: String,
+    pub value: FieldValue,
+}
+
+/// A typed override value.
+#[derive(Clone, Debug, PartialEq)]
+pub enum FieldValue {
+    Text(String),
+    Int(i64),
+    Float(f64),
+    Bool(bool),
+}
+
+
+/// A provider defined in models.yml. The API key is only ever the name of an
+/// environment variable that holds it; the app never handles the key itself.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct CustomProvider {
+    pub id: String,
+    pub base_url: String,
+    pub api: String,
+    pub auth: AuthMode,
+    pub api_key_env: String,
+    pub models: Vec<String>,
+}
+
+/// An error the app's validation (or omp) reported for a saved settings value.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ValidationError {
+    pub location: String,
+    pub message: String,
+}
 
 /// The override fields the screen edits, with the type each is edited as.
-const OVERRIDE_FIELDS: [(&str, OverrideKey); 8] = [
+pub const OVERRIDE_FIELDS: [(&str, OverrideKey); 8] = [
     ("name", OverrideKey::Name),
     ("contextWindow", OverrideKey::ContextWindow),
     ("maxContextWindow", OverrideKey::MaxContextWindow),
@@ -56,61 +144,8 @@ fn glob_match(pattern: &[u8], text: &[u8]) -> bool {
     }
 }
 
-/// The model a role resolves to among `available`: its first candidate that
-/// names an available model, following `@role` aliases.
-fn resolve_role(
-    role: &str,
-    roles: &HashMap<&str, &[Selector]>,
-    available: &[rpc::ModelInfo],
-    depth: usize,
-) -> Option<ModelRef> {
-    let candidates = roles.get(role)?;
-    for candidate in candidates.iter() {
-        let found = match candidate {
-            Selector::Model { model, .. } => available
-                .iter()
-                .find(|m| m.selector() == *model)
-                .or_else(|| available.iter().find(|m| m.id == *model))
-                .map(|m| ModelRef::new(&m.provider, &m.id)),
-            Selector::Role { role, .. } if depth < 4 => resolve_role(role, roles, available, depth + 1),
-            Selector::Role { .. } => None,
-        };
-        if found.is_some() {
-            return found;
-        }
-    }
-    None
-}
-
-/// The picker's catalog: omp's available models, named with the login
-/// providers' display names, and the roles of `config` they serve.
-pub(crate) fn catalog(
-    available: &[rpc::ModelInfo],
-    config: &OmpConfig,
-    provider_names: &HashMap<String, String>,
-) -> Result<Catalog, String> {
-    let assignments = config.model_roles().map_err(|e| e.to_string())?;
-    let roles: HashMap<&str, &[Selector]> =
-        assignments.iter().map(|a| (a.role.as_str(), a.candidates.as_slice())).collect();
-    let models = available
-        .iter()
-        .map(|m| ModelInfo {
-            model: ModelRef::new(&m.provider, &m.id),
-            name: m.name.clone(),
-            provider_name: provider_names.get(&m.provider).cloned().unwrap_or_default(),
-        })
-        .collect();
-    let roles = assignments
-        .iter()
-        .filter_map(|a| {
-            resolve_role(&a.role, &roles, available, 0).map(|model| RoleAssignment { role: a.role.clone(), model })
-        })
-        .collect();
-    Ok(Catalog { models, roles })
-}
-
 /// Reads the settings the screen shows.
-pub(crate) fn settings(
+pub fn settings(
     config: &OmpConfig,
     models: &ModelsYml,
     available: &[rpc::ModelInfo],
@@ -233,21 +268,6 @@ fn is_custom(entry: &models_yml::ProviderEntry) -> bool {
     entry.base_url.is_some() || entry.api.is_some() || entry.discovery.is_some() || !entry.models.is_empty()
 }
 
-fn ui_auth(auth: Option<AuthMode>) -> ProviderAuth {
-    match auth {
-        None | Some(AuthMode::ApiKey) => ProviderAuth::ApiKey,
-        Some(AuthMode::None) => ProviderAuth::None,
-        Some(AuthMode::OAuth) => ProviderAuth::OAuth,
-    }
-}
-
-fn file_auth(auth: ProviderAuth) -> AuthMode {
-    match auth {
-        ProviderAuth::ApiKey => AuthMode::ApiKey,
-        ProviderAuth::None => AuthMode::None,
-        ProviderAuth::OAuth => AuthMode::OAuth,
-    }
-}
 
 fn custom_providers(models: &ModelsYml) -> Vec<CustomProvider> {
     models
@@ -261,7 +281,7 @@ fn custom_providers(models: &ModelsYml) -> Vec<CustomProvider> {
             },
             base_url: entry.base_url.unwrap_or_default(),
             api: entry.api.unwrap_or_default(),
-            auth: ui_auth(entry.auth),
+            auth: entry.auth.unwrap_or_default(),
             models: entry.models.into_iter().map(|m| m.id).collect(),
             id: entry.id,
         })
@@ -270,14 +290,14 @@ fn custom_providers(models: &ModelsYml) -> Vec<CustomProvider> {
 
 /// Which files [`apply_settings`] edited.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Edited {
+pub struct Edited {
     pub config: bool,
     pub models: bool,
 }
 
 /// Applies the difference between `before` (what the screen loaded) and
 /// `after` (what it saves) to the loaded files. Nothing is written to disk.
-pub(crate) fn apply_settings(
+pub fn apply_settings(
     config: &mut OmpConfig,
     models: &mut ModelsYml,
     before: &ModelSettings,
@@ -363,10 +383,6 @@ fn apply_roles(config: &mut OmpConfig, before: &[RoleChain], after: &[RoleChain]
     results
 }
 
-fn split_selector(selector: &str) -> Option<(&str, &str)> {
-    selector.split_once('/').filter(|(provider, id)| !provider.is_empty() && !id.is_empty())
-}
-
 fn apply_enabled_models(config: &mut OmpConfig, toggles: &[ModelToggle]) -> Result<bool, ValidationError> {
     const LOCATION: &str = "Enabled models";
     if !toggles.iter().any(|t| t.enabled) {
@@ -377,7 +393,7 @@ fn apply_enabled_models(config: &mut OmpConfig, toggles: &[ModelToggle]) -> Resu
         entries.iter().filter(|e| matches!(e, ScopedEntry::Paths { .. })).cloned().collect();
     if toggles.iter().any(|t| !t.enabled) {
         let matched = |pattern: &str, toggle: &ModelToggle| {
-            split_selector(&toggle.selector).is_some_and(|(provider, id)| pattern_matches(pattern, provider, id))
+            ModelRef::split(&toggle.selector).is_some_and(|(provider, id)| pattern_matches(pattern, provider, id))
         };
         // Patterns that are not one of the listed selectors stay while every
         // listed model they select stays enabled.
@@ -481,7 +497,7 @@ fn apply_overrides(
             continue;
         }
         let location = format!("Model overrides › {selector}");
-        let Some((provider, model)) = split_selector(selector) else {
+        let Some((provider, model)) = ModelRef::split(selector) else {
             results.push(Err(error(&location, "write the model as provider/model")));
             continue;
         };
@@ -561,7 +577,7 @@ fn write_custom_provider(models: &mut ModelsYml, old: Option<&CustomProvider>, n
     let auth_changed = old.is_none_or(|old| old.auth != new.auth);
     if auth_changed {
         // A new provider on the default (API key) auth leaves `auth` out, as omp does.
-        provider.auth = (old.is_some() || new.auth != ProviderAuth::ApiKey).then(|| file_auth(new.auth));
+        provider.auth = (old.is_some() || new.auth != AuthMode::ApiKey).then_some(new.auth);
     }
     if old.is_none_or(|old| old.models != new.models) {
         let kept = existing.map(|e| e.models).unwrap_or_default();
@@ -713,25 +729,10 @@ providers:
                 id: "gw".into(),
                 base_url: "https://gw.example.com/v1".into(),
                 api: "openai-completions".into(),
-                auth: ProviderAuth::ApiKey,
+                auth: AuthMode::ApiKey,
                 api_key_env: String::new(),
                 models: vec!["m1".into()],
             }]
-        );
-    }
-
-    #[test]
-    fn the_catalog_resolves_roles_through_aliases_to_available_models() {
-        let f = files(CONFIG, "");
-        let catalog = catalog(&available(), &f.config, &names()).unwrap();
-        assert_eq!(catalog.models.len(), 3);
-        assert_eq!(catalog.models[0].provider_name, "Anthropic");
-        assert_eq!(
-            catalog.roles,
-            [
-                RoleAssignment { role: "default".into(), model: ModelRef::new("anthropic", "claude-x") },
-                RoleAssignment { role: "smol".into(), model: ModelRef::new("anthropic", "claude-x") },
-            ]
         );
     }
 
@@ -831,7 +832,7 @@ providers:
         let mut f = files(CONFIG, MODELS);
         let before = read(&f);
         let mut after = before.clone();
-        crate::settings::move_item(&mut after.providers, 1, 0);
+        after.providers.swap(1, 0);
         after.providers[2].enabled = true;
         after.providers[1].enabled = false;
         save(&mut f, &before, &after).unwrap();
@@ -882,7 +883,7 @@ providers:
             id: "local".into(),
             base_url: "http://127.0.0.1:8080/v1".into(),
             api: "openai-completions".into(),
-            auth: ProviderAuth::ApiKey,
+            auth: AuthMode::ApiKey,
             api_key_env: "LOCAL_KEY".into(),
             models: vec!["qwen".into()],
         });
@@ -907,7 +908,7 @@ providers:
         let mut after = before.clone();
         after.custom_providers.retain(|p| p.id != "gw");
         after.custom_providers[0].api_key_env = String::new();
-        after.custom_providers[0].auth = ProviderAuth::None;
+        after.custom_providers[0].auth = AuthMode::None;
         save(&mut f, &before, &after).unwrap();
         let text = f.models.text();
         assert!(!text.contains("gw"), "{text}");

@@ -1,54 +1,13 @@
-//! The process port: how this crate runs the harness CLIs (`claude`, `codex`).
-//!
-//! [`ProcessRunner`] runs a [`CommandSpec`] either to completion
-//! ([`ProcessRunner::output`]) or as a live process the app shows in its own
-//! terminal view ([`ProcessRunner::spawn`]). [`TokioProcessRunner`] is the real
-//! implementation over `tokio::process`.
+//! Process runner for harness CLIs.
 
-use std::path::PathBuf;
 use std::process::Stdio;
 
 use async_trait::async_trait;
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use crate::{Error, Result};
+use super::{Error, Result};
 
-/// A program invocation: program location, arguments, extra environment
-/// variables and working directory. The child inherits the app's environment
-/// plus `env`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CommandSpec {
-    /// Program to run; an absolute path or a name looked up on `PATH`.
-    pub program: PathBuf,
-    /// Arguments, without the program itself.
-    pub args: Vec<String>,
-    /// Environment variables set in addition to the inherited environment.
-    pub env: Vec<(String, String)>,
-    /// Working directory; `None` keeps the app's working directory.
-    pub current_dir: Option<PathBuf>,
-}
-
-impl CommandSpec {
-    /// A command running `program` with `args`, no extra environment and the
-    /// app's working directory.
-    pub fn new<I, S>(program: impl Into<PathBuf>, args: I) -> Self
-    where
-        I: IntoIterator<Item = S>,
-        S: Into<String>,
-    {
-        Self {
-            program: program.into(),
-            args: args.into_iter().map(Into::into).collect(),
-            env: Vec::new(),
-            current_dir: None,
-        }
-    }
-
-    /// The program as text, for error messages.
-    pub fn program_name(&self) -> String {
-        self.program.display().to_string()
-    }
-}
+pub use loa_contracts::harness::CommandSpec;
 
 /// What a finished process printed and how it exited.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -79,10 +38,7 @@ pub trait ProcessRunner: Send + Sync {
     async fn spawn(&self, spec: &CommandSpec) -> Result<Box<dyn RunningProcess>>;
 }
 
-/// A process started by [`ProcessRunner::spawn`].
-///
-/// The caller should read stdout and stderr while the process runs: a child that
-/// fills a pipe nobody reads blocks.
+/// A child process; stdout and stderr should be read while it runs to avoid blocking.
 #[async_trait]
 pub trait RunningProcess: Send {
     /// Waits for the process to exit and returns its exit code (`None` when it
@@ -119,22 +75,16 @@ impl TokioProcessRunner {
     }
 }
 
-fn process_error(spec: &CommandSpec, err: &std::io::Error) -> Error {
-    Error::Process {
-        program: spec.program_name(),
-        message: err.to_string(),
-    }
+fn process_error(program: &str, err: std::io::Error) -> Error {
+    Error::Process { program: program.to_owned(), message: err.to_string() }
 }
 
 #[async_trait]
 impl ProcessRunner for TokioProcessRunner {
     async fn output(&self, spec: &CommandSpec) -> Result<ProcessOutput> {
         let mut cmd = Self::command(spec);
-        cmd.stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-        let out = cmd.output().await.map_err(|e| process_error(spec, &e))?;
+        let out = loa_util::exec::output(&mut cmd).await
+            .map_err(|e| process_error(&spec.program_name(), e))?;
         Ok(ProcessOutput {
             code: out.status.code(),
             stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
@@ -148,7 +98,8 @@ impl ProcessRunner for TokioProcessRunner {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        let child = cmd.spawn().map_err(|e| process_error(spec, &e))?;
+        let child = loa_util::exec::retry_busy(|| cmd.spawn())
+            .map_err(|e| process_error(&spec.program_name(), e))?;
         Ok(Box::new(TokioRunningProcess {
             program: spec.program_name(),
             child,
@@ -162,50 +113,28 @@ struct TokioRunningProcess {
     child: tokio::process::Child,
 }
 
-impl TokioRunningProcess {
-    fn error(&self, err: &std::io::Error) -> Error {
-        Error::Process {
-            program: self.program.clone(),
-            message: err.to_string(),
-        }
-    }
-}
 
 #[async_trait]
 impl RunningProcess for TokioRunningProcess {
     async fn wait(&mut self) -> Result<Option<i32>> {
-        match self.child.wait().await {
-            Ok(status) => Ok(status.code()),
-            Err(err) => Err(self.error(&err)),
-        }
+        self.child.wait().await.map(|status| status.code())
+            .map_err(|err| process_error(&self.program, err))
     }
 
     async fn kill(&mut self) -> Result<()> {
-        match self.child.kill().await {
-            Ok(()) => Ok(()),
-            Err(err) => Err(self.error(&err)),
-        }
+        self.child.kill().await.map_err(|err| process_error(&self.program, err))
     }
 
     fn take_stdin(&mut self) -> Option<ProcessWriter> {
-        self.child
-            .stdin
-            .take()
-            .map(|s| Box::new(s) as ProcessWriter)
+        self.child.stdin.take().map(|s| Box::new(s) as ProcessWriter)
     }
 
     fn take_stdout(&mut self) -> Option<ProcessReader> {
-        self.child
-            .stdout
-            .take()
-            .map(|s| Box::new(s) as ProcessReader)
+        self.child.stdout.take().map(|s| Box::new(s) as ProcessReader)
     }
 
     fn take_stderr(&mut self) -> Option<ProcessReader> {
-        self.child
-            .stderr
-            .take()
-            .map(|s| Box::new(s) as ProcessReader)
+        self.child.stderr.take().map(|s| Box::new(s) as ProcessReader)
     }
 }
 
