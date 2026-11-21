@@ -238,9 +238,9 @@ pub async fn rewind(
     current: &Dom,
     target: &Dom,
     config: SessionConfig,
-) -> Result<(loa_rewind::RewindPlan, RunningSession)> {
+) -> Result<(loa_core::rewind::RewindPlan, RunningSession)> {
     if target.seq() > current.seq() { return Err(Error::InvalidSequence); }
-    let plan = loa_rewind::rewind_plan(current, target);
+    let plan = loa_core::rewind::plan(current, target);
     let old_id = session_id(current)?;
     let config = config;
     if !adapter.capabilities().has(Feature::Fork) {
@@ -254,8 +254,8 @@ pub async fn rewind(
 
 async fn fallback_rewind(
     adapter: &dyn Adapter, store: &dyn SessionStore, target: &Dom,
-    mut config: SessionConfig, plan: loa_rewind::RewindPlan, old_id: &str,
-) -> Result<(loa_rewind::RewindPlan, RunningSession)> {
+    mut config: SessionConfig, plan: loa_core::rewind::RewindPlan, old_id: &str,
+) -> Result<(loa_core::rewind::RewindPlan, RunningSession)> {
     seed_context(&mut config, &translated_history(target)?);
     let sink = store.fresh(&config.session_id).await?;
     let harness = adapter.start(config.clone(), sink.clone()).await?;

@@ -4780,6 +4780,7 @@ dependencies = [
 name = "loa-core"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "loa-util",
  "serde",
  "thiserror 2.0.21",
@@ -4795,9 +4796,7 @@ dependencies = [
  "loa-core",
  "loa-journal",
  "loa-projects",
- "loa-rewind",
  "loa-util",
- "loa-xml",
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
@@ -5035,14 +5034,6 @@ dependencies = [
  "tokio-stream",
  "tokio-util",
  "tracing",
-]
-
-[[package]]
-name = "loa-rewind"
-version = "0.1.0"
-dependencies = [
- "loa-core",
- "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -5449,14 +5440,6 @@ dependencies = [
  "tempfile",
  "time",
  "tokio",
-]
-
-[[package]]
-name = "loa-xml"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "loa-core",
 ]
 
 [[package]]

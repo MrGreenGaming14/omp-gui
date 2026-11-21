@@ -10,3 +10,6 @@ loa-util.workspace = true
 loa-core.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+
+[features]
+testkit = ["loa-core/testkit"]

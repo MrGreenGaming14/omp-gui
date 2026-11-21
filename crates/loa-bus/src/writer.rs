@@ -3,8 +3,7 @@
 use loa_util::LockExt;
 use crate::queue::{Policy, Queue, Subscription};
 use crate::{NodeKey, SessionId};
-use loa_core::schema;
-use loa_core::{ApplyError, CommitError, Dom, Draft, NodeId, Op, Patch, PatchSink};
+use loa_core::{CommitError, Dom, Draft, Patch, PatchSink};
 use std::sync::{Arc, Mutex, PoisonError};
 
 pub type PersistError = Box<dyn std::error::Error + Send + Sync>;
@@ -220,15 +219,10 @@ impl SessionWriter {
 
     /// Checks, persists, applies and publishes the next patch.
     fn write(&self, inner: &mut Inner, patch: Patch) -> Result<Patch, CommitError> {
-        check(&inner.dom, &patch)?;
+        inner.dom.check(&patch)?;
         inner.persist.append(&patch).map_err(|e| CommitError::Journal(e.to_string()))?;
-        if let Err(error) = inner.dom.apply(&patch) {
-            // `check` mirrors every rule of `Dom::apply`, so this only happens
-            // if the two drift apart. The journal now holds a patch the DOM
-            // lacks: stop taking writes rather than diverge further.
-            Self::shut(inner);
-            return Err(error.into());
-        }
+        // Already checked against this DOM, so this cannot fail.
+        inner.dom.apply(&patch)?;
         let Inner { dom, persist, .. } = inner;
         persist.applied(dom);
         Ok(self.publish(inner, patch))
@@ -259,41 +253,30 @@ impl Drop for SessionWriter {
     }
 }
 
-/// Every check `Dom::apply` makes, without applying, so a patch that would be
-/// rejected is never persisted.
-fn check(dom: &Dom, patch: &Patch) -> Result<(), ApplyError> {
-    if patch.seq != dom.seq() + 1 {
-        return Err(ApplyError::Sequence { expected: dom.seq() + 1, got: patch.seq });
+#[cfg(feature = "testkit")]
+mod testkit {
+    use super::*;
+    use loa_core::testkit::{AllowAll, DenyAll, MemoryPersist};
+
+    impl Authorize for AllowAll {
+        fn authorize(&self, _: &SessionId, _: &NodeKey, _: &Draft, _: &Dom) -> Result<(), Denied> {
+            Ok(())
+        }
     }
-    let missing = || ApplyError::MissingNode(patch.node);
-    match &patch.op {
-        Op::Insert { parent, index, kind, attrs, .. } => {
-            if patch.node < dom.next_id() {
-                return Err(ApplyError::IdReused { got: patch.node, next: dom.next_id() });
+
+    impl Authorize for DenyAll {
+        fn authorize(&self, _: &SessionId, _: &NodeKey, _: &Draft, _: &Dom) -> Result<(), Denied> {
+            Err(Denied("denied by test".into()))
+        }
+    }
+
+    impl Persist for MemoryPersist {
+        fn append(&mut self, patch: &Patch) -> Result<(), PersistError> {
+            if let Some(why) = &self.fail {
+                return Err(why.clone().into());
             }
-            let parent_kind = if *parent == NodeId::DOCUMENT {
-                if dom.root().is_some() {
-                    return Err(ApplyError::RootExists);
-                }
-                None
-            } else {
-                let node = dom.get(*parent).ok_or(ApplyError::MissingNode(*parent))?;
-                if let Some(index) = *index
-                    && index as usize > node.children.len()
-                {
-                    return Err(ApplyError::Index { parent: *parent, index, len: node.children.len() });
-                }
-                Some(node.kind)
-            };
-            schema::validate_insert(parent_kind, *kind, attrs.iter().map(|(k, v)| (k.as_str(), v)))?;
-        }
-        Op::Set { name, value } => {
-            let node = dom.get(patch.node).ok_or_else(missing)?;
-            schema::validate_set(node.kind, name, value.as_ref())?;
-        }
-        Op::Append { .. } | Op::Remove => {
-            dom.get(patch.node).ok_or_else(missing)?;
+            self.patches.locked().push(patch.clone());
+            Ok(())
         }
     }
-    Ok(())
 }

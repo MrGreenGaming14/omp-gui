@@ -261,8 +261,7 @@ impl Library {
     /// Writes session `id` as debugging XML.
     pub fn export_xml(&self, id: &str, out: &Path) -> Result<()> {
         let dom = self.load(id)?;
-        let file = std::fs::File::create(out).map_err(|e| Error::Port(format!("{}: {e}", out.display())))?;
-        loa_xml::write_xml(&dom, std::io::BufWriter::new(file)).map_err(|e| Error::Port(format!("{}: {e}", out.display())))
+        std::fs::write(out, loa_core::xml::to_string(&dom)).map_err(|e| Error::Port(format!("{}: {e}", out.display())))
     }
 }
 
