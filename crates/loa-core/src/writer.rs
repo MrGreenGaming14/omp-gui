@@ -23,7 +23,7 @@ impl<'a> DomWriter<'a> {
         Self { ts: Some(ts), ..self }
     }
 
-    fn now(&self) -> i64 {
+    pub fn now(&self) -> i64 {
         self.ts.unwrap_or_else(now_ms)
     }
 
@@ -44,6 +44,14 @@ impl<'a> DomWriter<'a> {
 
     pub fn set(&self, node: NodeId, name: &str, value: impl Into<Value>) -> Result<(), CommitError> {
         self.commit(Draft::set(node, name, value)).map(drop)
+    }
+
+    pub fn clear(&self, node: NodeId, name: &str) -> Result<(), CommitError> {
+        self.commit(Draft::clear(node, name)).map(drop)
+    }
+
+    pub fn remove(&self, node: NodeId) -> Result<(), CommitError> {
+        self.commit(Draft::remove(node)).map(drop)
     }
 
     pub fn append(&self, node: NodeId, text: impl Into<String>) -> Result<(), CommitError> {

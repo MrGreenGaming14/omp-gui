@@ -18,100 +18,34 @@
 //! - `fs/*` and `terminal/*` requests from the agent are served inside the
 //!   session cwd; paths outside it are refused
 
-mod fs;
-mod project;
-mod rpc;
+pub mod host;
+pub mod mapper;
 mod session;
-mod terminal;
 mod wire;
 
-pub use project::{HARNESS, X_AGENT, X_MODE, X_OPTION, X_OPTION_IDS, X_OPTION_KINDS, X_PRIORITY, X_STOP_REASON};
+pub const HARNESS: &str = "acp";
+pub use mapper::{X_AGENT, X_MODE, X_OPTION, X_OPTION_IDS, X_OPTION_KINDS, X_PRIORITY, X_STOP_REASON};
 pub use session::AcpSession;
 
 use loa_util::LockExt;
 use async_trait::async_trait;
 use loa_contracts::harness::{
     Adapter, AdapterError, Availability, AvailabilityStatus, Capabilities, ContextDelivery, Feature, HarnessModel,
-    HarnessSession, McpTransport, ModelSwitch, Result, SessionConfig,
+    HarnessSession, McpTransport, ModelSwitch, Result, SessionConfig, SessionState,
 };
-use loa_core::{
-    DecisionKind, Dom, Draft, ElementKind, MemorySink, NodeId, PatchSink, SCHEMA_VERSION, SessionMode, TodoState, Value,
-    attr, now_ms,
-};
-use project::Projector;
-use rpc::Rpc;
+use loa_core::{DecisionKind, Dom, DomWriter, Draft, ElementKind, MemorySink, NodeId, PatchSink, SCHEMA_VERSION, SessionMode, Value, attr, now_ms};
+use crate::kit::{JsonRpc2, StdioRpc};
+use host::Host;
+use mapper::{AcpMapper, Input};
 use serde_json::{Value as Json, json};
 use session::{Modes, Shared};
 use std::path::PathBuf;
-use std::process::Stdio;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, OnceLock};
-use terminal::Terminals;
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, BufReader};
-use tokio::process::{Child, Command};
+use tokio::process::Command;
 use tokio::sync::watch;
 use wire::{AgentCapabilities, InitializeResponse, LoadSessionResponse, NewSessionResponse, SessionModeState, SessionModelState};
 
-/// A byte stream to one agent: what it writes, what it reads, and its
-/// process when there is one.
-pub struct Transport {
-    pub from_agent: Box<dyn AsyncRead + Send + Unpin>,
-    pub to_agent: Box<dyn AsyncWrite + Send + Unpin>,
-    /// Killed on shutdown and when the session is dropped.
-    pub child: Option<Child>,
-}
-
-/// Opens a connection to a fresh agent for one session.
-#[async_trait]
-pub trait Connector: Send + Sync {
-    async fn connect(&self, config: &SessionConfig) -> Result<Transport>;
-}
-
-/// Runs the agent as a child process and talks to it over stdin and stdout.
-/// Its stderr goes to `tracing` at debug level.
-#[derive(Clone, Debug)]
-pub struct CommandConnector {
-    program: PathBuf,
-    args: Vec<String>,
-}
-
-impl CommandConnector {
-    pub fn new(program: impl Into<PathBuf>, args: impl IntoIterator<Item = impl Into<String>>) -> Self {
-        Self { program: program.into(), args: args.into_iter().map(Into::into).collect() }
-    }
-}
-
-#[async_trait]
-impl Connector for CommandConnector {
-    async fn connect(&self, config: &SessionConfig) -> Result<Transport> {
-        let program = config.executable.as_ref().unwrap_or(&self.program);
-        let mut child = Command::new(program)
-            .args(&self.args)
-            .current_dir(&config.cwd)
-            .envs(&config.env)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|e| match e.kind() {
-                std::io::ErrorKind::NotFound => AdapterError::NotInstalled(program.display().to_string()),
-                _ => AdapterError::Io(e),
-            })?;
-        let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
-            return Err(AdapterError::Protocol("the agent's stdio wasn't captured".to_owned()));
-        };
-        if let Some(stderr) = child.stderr.take() {
-            tokio::spawn(async move {
-                let mut lines = BufReader::new(stderr).lines();
-                while let Ok(Some(line)) = lines.next_line().await {
-                    tracing::debug!(target: "loa_adapter_acp::agent", "{line}");
-                }
-            });
-        }
-        Ok(Transport { from_agent: Box::new(stdout), to_agent: Box::new(stdin), child: Some(child) })
-    }
-}
 
 /// What the last `initialize` and `session/new` taught about the agent.
 #[derive(Clone, Copy, Debug, Default)]
@@ -122,20 +56,15 @@ struct Learned {
 
 /// The ACP adapter. One instance serves one agent command line.
 pub struct AcpAdapter {
-    connector: Arc<dyn Connector>,
+    program: PathBuf,
+    args: Vec<String>,
     learned: Mutex<Option<Learned>>,
 }
 
 impl AcpAdapter {
     /// An adapter that runs `program args…` for every session.
     pub fn new(program: impl Into<PathBuf>, args: impl IntoIterator<Item = impl Into<String>>) -> Self {
-        Self::with_connector(Arc::new(CommandConnector::new(program, args)))
-    }
-
-    /// An adapter that reaches agents through `connector` (another process
-    /// launcher, a remote host, an in-process agent).
-    pub fn with_connector(connector: Arc<dyn Connector>) -> Self {
-        Self { connector, learned: Mutex::new(None) }
+        Self { program: program.into(), args: args.into_iter().map(Into::into).collect(), learned: Mutex::new(None) }
     }
 
     /// The capabilities every ACP agent is guaranteed to have.
@@ -173,29 +102,33 @@ impl AcpAdapter {
         if !config.host_tools.is_empty() {
             return Err(AdapterError::Unsupported { harness: HARNESS, what: "host tools" });
         }
-        let cwd = config.cwd.canonicalize()?;
-        let transport = self.connector.connect(config).await?;
-        let rpc = Rpc::new(transport.to_agent);
-        let projector = Projector::new(sink, root, model);
-        let (state, _) = watch::channel(projector.state());
+        let host = Arc::new(Host::new(&config.cwd)?);
+        let mapper = AcpMapper::new(root, model);
+        let (state, _) = watch::channel(SessionState::Idle);
         let shared = Arc::new(Shared {
-            rpc: rpc.clone(),
-            projector: Mutex::new(projector),
+            mapper: Mutex::new(mapper),
+            sink,
+            host,
             session_id: OnceLock::new(),
-            terminals: Terminals::new(cwd.clone()),
-            root: cwd,
+            writer: OnceLock::new(),
+            writer_ready: tokio::sync::Notify::new(),
             state,
             shutting_down: AtomicBool::new(false),
             modes: Mutex::new(Modes::default()),
             models: Mutex::new(None),
         });
-        let reader = tokio::spawn(rpc::read_loop(transport.from_agent, rpc, shared.clone()));
-        let session = AcpSession::new(shared.clone(), transport.child, reader);
+        let program = config.executable.as_ref().unwrap_or(&self.program);
+        let mut command = Command::new(program);
+        command.args(&self.args).current_dir(&config.cwd).envs(&config.env);
+        let rpc = Arc::new(StdioRpc::spawn(command, JsonRpc2 { header: true }, shared.clone())?);
+        let _ = shared.writer.set(rpc.writer());
+        shared.writer_ready.notify_one();
+        let session = AcpSession { shared: shared.clone(), rpc };
         Ok((shared, session))
     }
 
     /// Runs `initialize` and checks the protocol version.
-    async fn initialize(&self, shared: &Shared) -> Result<AgentCapabilities> {
+    async fn initialize(&self, shared: &Shared, rpc: &StdioRpc<JsonRpc2>) -> Result<AgentCapabilities> {
         let params = json!({
             "protocolVersion": wire::PROTOCOL_VERSION,
             "clientCapabilities": {
@@ -204,7 +137,7 @@ impl AcpAdapter {
             },
             "clientInfo": { "name": "loa", "version": env!("CARGO_PKG_VERSION") },
         });
-        let init: InitializeResponse = decode(shared.rpc.request("initialize", params).await?)?;
+        let init: InitializeResponse = rpc.request("initialize", params).await?;
         if init.protocol_version != wire::PROTOCOL_VERSION {
             return Err(AdapterError::Version {
                 harness: HARNESS,
@@ -220,56 +153,50 @@ impl AcpAdapter {
                 Some(version) => format!("{} {version}", agent.name),
                 None => agent.name.clone(),
             };
-            let projector = shared.projector();
-            projector.set(projector.root(), X_AGENT, name.into());
+            DomWriter::new(&*shared.sink).set(shared.mapper.locked().root(), X_AGENT, name)?;
         }
         Ok(init.agent_capabilities)
     }
 
     /// `initialize` then `session/new`.
-    async fn create(&self, config: &SessionConfig, shared: &Shared) -> Result<()> {
-        let agent = self.initialize(shared).await?;
+    async fn create(&self, config: &SessionConfig, shared: &Shared, rpc: &StdioRpc<JsonRpc2>) -> Result<()> {
+        let agent = self.initialize(shared, rpc).await?;
         let params = json!({
-            "cwd": shared.root.to_string_lossy(),
+            "cwd": shared.host.root().to_string_lossy(),
             "mcpServers": mcp_servers(config, &agent)?,
         });
-        let created: NewSessionResponse = decode(shared.rpc.request("session/new", params).await?)?;
-        {
-            let projector = shared.projector();
-            projector.set(projector.root(), attr::NATIVE_ID, created.session_id.as_str().into());
-        }
+        let created: NewSessionResponse = rpc.request("session/new", params).await?;
+        shared.mapper.locked().set_native(&DomWriter::new(&*shared.sink), &created.session_id)?;
         let _ = shared.session_id.set(created.session_id);
-        self.adopt_models(config, shared, created.models).await?;
-        self.adopt_modes(shared, created.modes, config.mode).await
+        self.adopt_models(config, shared, rpc, created.models).await?;
+        self.adopt_modes(shared, rpc, created.modes, config.mode).await
     }
 
     /// `initialize` then `session/load` of `native_id`, skipping the history it replays.
-    async fn load(&self, config: &SessionConfig, shared: &Shared, native_id: String) -> Result<()> {
-        let agent = self.initialize(shared).await?;
+    async fn load(&self, config: &SessionConfig, shared: &Shared, rpc: &StdioRpc<JsonRpc2>, native_id: String) -> Result<()> {
+        let agent = self.initialize(shared, rpc).await?;
         if !agent.load_session {
             return Err(AdapterError::Unsupported { harness: HARNESS, what: "resume" });
         }
         let params = json!({
             "sessionId": native_id,
-            "cwd": shared.root.to_string_lossy(),
+            "cwd": shared.host.root().to_string_lossy(),
             "mcpServers": mcp_servers(config, &agent)?,
         });
+        shared.mapper.locked().adopt_native(&native_id);
         let _ = shared.session_id.set(native_id);
-        let id = shared.rpc.next_id();
-        // The response clears replay mode in the reader, in order with the
-        // notifications before it.
-        shared.projector().set_replay(Some(id));
-        let rx = shared.rpc.start_request(id, "session/load", params)?;
-        let loaded = rx.await.unwrap_or(Err(rpc::RpcError::Closed))?;
-        // Agents answer an empty `LoadSessionResponse` as `null` or `{}`.
+        let id = rpc.next_id();
+        // The ordered response hook clears replay before later notifications.
+        shared.feed(Input::Load { id: id.to_string() })?;
+        let loaded = rpc.request_as(json!(id), "session/load", params).await?;
         let loaded: LoadSessionResponse = if loaded.is_null() { LoadSessionResponse::default() } else { decode(loaded)? };
-        self.adopt_models(config, shared, loaded.models).await?;
-        self.adopt_modes(shared, loaded.modes, config.mode).await
+        self.adopt_models(config, shared, rpc, loaded.models).await?;
+        self.adopt_modes(shared, rpc, loaded.modes, config.mode).await
     }
 
     /// Records the models the agent offers and switches to the configured one
     /// when it is among them.
-    async fn adopt_models(&self, config: &SessionConfig, shared: &Shared, models: Option<SessionModelState>) -> Result<()> {
+    async fn adopt_models(&self, config: &SessionConfig, shared: &Shared, rpc: &StdioRpc<JsonRpc2>, models: Option<SessionModelState>) -> Result<()> {
         self.learn(|learned| learned.models = models.is_some());
         let Some(models) = models else { return Ok(()) };
         let offered: Vec<HarnessModel> = models
@@ -286,9 +213,9 @@ impl AcpAdapter {
         let switch = wanted.filter(|wanted| offered.iter().any(|m| m.id == *wanted)).map(str::to_owned);
         *shared.models.locked() = Some(offered);
         match switch {
-            Some(model) => AcpSession::switch_model(shared, &model).await,
+            Some(model) => AcpSession::switch_model(shared, rpc, &model).await,
             None if wanted.is_none() => {
-                shared.projector().model_changed(&models.current_model_id);
+                shared.mapper.locked().model_changed(&DomWriter::new(&*shared.sink), &models.current_model_id)?;
                 Ok(())
             }
             None => Err(AdapterError::Protocol(format!("the agent doesn't offer model {}", config.model.as_deref().unwrap_or_default()))),
@@ -296,7 +223,7 @@ impl AcpAdapter {
     }
 
     /// Records the modes the agent offers and switches to the configured one.
-    async fn adopt_modes(&self, shared: &Shared, modes: Option<SessionModeState>, wanted: Option<SessionMode>) -> Result<()> {
+    async fn adopt_modes(&self, shared: &Shared, rpc: &StdioRpc<JsonRpc2>, modes: Option<SessionModeState>, wanted: Option<SessionMode>) -> Result<()> {
         let Some(modes) = modes else {
             self.learn(|learned| learned.plan_mode = false);
             return Ok(());
@@ -308,12 +235,12 @@ impl AcpAdapter {
             known.available = available;
             known.initial = Some(modes.current_mode_id.clone());
         }
-        shared.projector().mode_changed(&modes.current_mode_id);
+        shared.mapper.locked().mode_changed(&DomWriter::new(&*shared.sink), &modes.current_mode_id)?;
         if let Some(mode) = wanted {
             let target = AcpSession::mode_id(shared, mode)
                 .ok_or(AdapterError::Unsupported { harness: HARNESS, what: "the configured mode" })?;
             if target != modes.current_mode_id {
-                AcpSession::switch_mode(shared, &target).await?;
+                AcpSession::switch_mode(shared, rpc, &target).await?;
             }
         }
         Ok(())
@@ -347,7 +274,7 @@ impl Adapter for AcpAdapter {
             let attrs = [(attr::ID, Value::from("availability-probe")), (attr::HARNESS, HARNESS.into()), (attr::NODE, "".into()), (attr::CREATED, Value::Int(now_ms()))];
             let root = sink.commit(Draft::insert(NodeId::DOCUMENT, ElementKind::Session, attrs, ""))?.node;
             let (shared, session) = self.connect(&config, sink.clone(), root, None).await?;
-            let initialized = self.initialize(&shared).await;
+            let initialized = self.initialize(&shared, &session.rpc).await;
             let _ = session.shutdown().await;
             initialized.map(drop)
         };
@@ -401,7 +328,7 @@ impl Adapter for AcpAdapter {
         // right after `session/new` already have a home.
         let root = sink.commit(Draft::insert(NodeId::DOCUMENT, ElementKind::Session, attrs, ""))?.node;
         let (shared, session) = self.connect(&config, sink, root, config.model.clone()).await?;
-        let setup = self.create(&config, &shared).await;
+        let setup = self.create(&config, &shared, &session.rpc).await;
         finish(session, setup).await
     }
 
@@ -413,18 +340,8 @@ impl Adapter for AcpAdapter {
             .to_owned();
         let model = config.model.clone().or_else(|| root.str_attr(attr::MODEL).map(str::to_owned));
         let (shared, session) = self.connect(&config, sink, root.id, model).await?;
-        {
-            let mut projector = shared.projector();
-            for todo in dom.children_of_kind(root.id, ElementKind::Todo) {
-                let state = todo.str_attr(attr::STATE).and_then(TodoState::parse).unwrap_or(TodoState::Pending);
-                let priority = todo.str_attr(X_PRIORITY).map(str::to_owned);
-                projector.adopt_todo(todo.id, todo.text.clone(), state, priority);
-            }
-            if let Some(mode) = root.str_attr(X_MODE) {
-                projector.adopt_mode(mode.to_owned());
-            }
-        }
-        let setup = self.load(&config, &shared, native_id).await;
+        shared.mapper.locked().adopt(dom);
+        let setup = self.load(&config, &shared, &session.rpc, native_id).await;
         finish(session, setup).await
     }
 }

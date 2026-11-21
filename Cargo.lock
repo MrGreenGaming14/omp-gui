@@ -4571,22 +4571,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4744e383959f0db86ede514b809b1c53251889093803c05267acc7d4e7030d70"
 
 [[package]]
-name = "loa-adapter-acp"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "loa-contracts",
- "loa-core",
- "loa-util",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "loa-adapter-claude"
 version = "0.1.0"
 dependencies = [
@@ -4611,24 +4595,6 @@ dependencies = [
  "loa-util",
  "serde_json",
  "tempfile",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "loa-adapter-omp"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "base64 0.23.1",
- "loa-contracts",
- "loa-core",
- "loa-harness",
- "loa-util",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
  "tokio",
  "tracing",
 ]
@@ -4678,10 +4644,8 @@ dependencies = [
  "iced_runtime",
  "iced_test",
  "image",
- "loa-adapter-acp",
  "loa-adapter-claude",
  "loa-adapter-codex",
- "loa-adapter-omp",
  "loa-adapter-omp2",
  "loa-adapter-opencode",
  "loa-bus",
@@ -4689,6 +4653,7 @@ dependencies = [
  "loa-contracts",
  "loa-core",
  "loa-features",
+ "loa-harness",
  "loa-mcp",
  "loa-models",
  "loa-node",

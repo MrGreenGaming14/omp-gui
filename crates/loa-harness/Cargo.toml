@@ -29,5 +29,5 @@ tokio.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-loa-harness = { path = ".", features = ["testing"] }
+loa-harness = { path = ".", default-features = false, features = ["testing"] }
 base64 = "0.23"

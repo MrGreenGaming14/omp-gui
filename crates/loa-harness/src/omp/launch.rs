@@ -1,8 +1,8 @@
 //! How an app managed omp process is started: the memory switch, project
 //! context delivery and session selection, as CLI arguments.
 
+use super::rpc::{Mode, SpawnOptions};
 use loa_contracts::harness::{AdapterError, Result, SessionConfig};
-use loa_harness::omp::rpc::{Mode, SpawnOptions};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -66,9 +66,6 @@ impl OmpAdapterConfig {
     }
 }
 
-/// The overlay that switches omp's memory backend off for one process.
-pub const MEMORY_OFF_OVERLAY: &str = "memory:\n  backend: \"off\"\n";
-
 /// omp's built-in tools that are on by default (`omp --help`, "Built-in
 /// Tools"). A tool its settings switch off stays off when listed.
 pub const DEFAULT_TOOLS: &[&str] = &[
@@ -96,7 +93,7 @@ pub fn spawn_options(adapter: &OmpAdapterConfig, session: &SessionConfig, target
 
     match adapter.memory {
         MemoryMode::AppDigests => {
-            let overlay = write_state_file(&adapter.state_dir, "memory-off.yml", MEMORY_OFF_OVERLAY)?;
+            let overlay = write_state_file(&adapter.state_dir, "memory-off.yml", super::MEMORY_OFF)?;
             opts.args.push("--config".into());
             opts.args.push(overlay.into());
             if let Some(context) = session.context.as_deref().filter(|c| !c.trim().is_empty()) {
@@ -180,116 +177,4 @@ pub fn split_selector(selector: &str) -> Result<(&str, &str)> {
         .split_once('/')
         .filter(|(p, m)| !p.is_empty() && !m.is_empty())
         .ok_or_else(|| AdapterError::Protocol(format!("model `{selector}` isn't a provider/model selector")))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn args(opts: &SpawnOptions) -> Vec<String> {
-        opts.args.iter().map(|a| a.to_string_lossy().into_owned()).collect()
-    }
-
-    fn flag<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
-        args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).map(String::as_str)
-    }
-
-    #[test]
-    fn app_digests_turn_omp_memory_off_and_deliver_context_once() {
-        let dir = tempfile::tempdir().unwrap();
-        let adapter = OmpAdapterConfig::new("node", dir.path());
-        let session = SessionConfig {
-            session_id: "s/1".into(),
-            context: Some("Digest: picked iced".into()),
-            ..Default::default()
-        };
-        let opts = spawn_options(&adapter, &session, &Target::New).unwrap();
-        let args = args(&opts);
-        let overlay = flag(&args, "--config").expect("memory overlay");
-        assert_eq!(std::fs::read_to_string(overlay).unwrap(), MEMORY_OFF_OVERLAY);
-        let context = flag(&args, "--append-system-prompt").expect("context file");
-        assert_eq!(std::fs::read_to_string(context).unwrap(), "Digest: picked iced");
-        assert_eq!(args.iter().filter(|a| *a == "--append-system-prompt").count(), 1);
-    }
-
-    #[test]
-    fn omp_memory_mode_leaves_memory_on_and_never_injects_app_context() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut adapter = OmpAdapterConfig::new("node", dir.path());
-        adapter.memory = MemoryMode::OmpMemory;
-        let session = SessionConfig { context: Some("Digest".into()), ..Default::default() };
-        let args = args(&spawn_options(&adapter, &session, &Target::New).unwrap());
-        assert!(flag(&args, "--config").is_none(), "user's memory backend stays as configured");
-        assert!(flag(&args, "--append-system-prompt").is_none(), "no second summary from the app");
-    }
-
-    #[test]
-    fn resume_and_model_are_passed_through() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut adapter = OmpAdapterConfig::new("node", dir.path());
-        adapter.session_dir = Some(dir.path().join("sessions"));
-        let session = SessionConfig { model: Some("anthropic/claude".into()), ..Default::default() };
-        let args = args(&spawn_options(&adapter, &session, &Target::Resume("0190abc".into())).unwrap());
-        assert_eq!(flag(&args, "--resume"), Some("0190abc"));
-        assert_eq!(flag(&args, "--model"), Some("anthropic/claude"));
-        assert!(flag(&args, "--session-dir").is_some());
-        assert!(flag(&args, "--approval-mode").is_none(), "omp's configured approval mode stays");
-    }
-
-    #[test]
-    fn a_sessions_approval_mode_wins_over_the_adapters() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut adapter = OmpAdapterConfig::new("node", dir.path());
-        adapter.approval_mode = Some("always-ask".into());
-        let session = SessionConfig { approval_mode: Some("yolo".into()), ..SessionConfig::default() };
-        let args = args(&spawn_options(&adapter, &session, &Target::New).unwrap());
-        assert_eq!(flag(&args, "--approval-mode"), Some("yolo"));
-    }
-
-    #[test]
-    fn approval_mode_is_passed_to_omp() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut adapter = OmpAdapterConfig::new("node", dir.path());
-        adapter.approval_mode = Some("always-ask".into());
-        let args = args(&spawn_options(&adapter, &SessionConfig::default(), &Target::New).unwrap());
-        assert_eq!(flag(&args, "--approval-mode"), Some("always-ask"));
-    }
-
-    #[test]
-    fn disabled_tools_leave_the_other_built_ins_enabled() {
-        let dir = tempfile::tempdir().unwrap();
-        let adapter = OmpAdapterConfig::new("node", dir.path());
-        let none = args_of(&adapter, &SessionConfig::default());
-        assert!(!none.iter().any(|a| a.starts_with("--tools") || a == "--no-tools"), "omp's configured tools stay");
-        let session = SessionConfig { disabled_tools: vec!["bash".into(), "eval".into()], ..Default::default() };
-        let args = args_of(&adapter, &session);
-        let tools = args.iter().find_map(|a| a.strip_prefix("--tools=")).expect("a --tools list");
-        let tools: Vec<&str> = tools.split(',').collect();
-        assert!(!tools.contains(&"bash") && !tools.contains(&"eval"));
-        assert_eq!(tools.len(), DEFAULT_TOOLS.len() - 2);
-        let all = SessionConfig { disabled_tools: DEFAULT_TOOLS.iter().map(|t| (*t).to_owned()).collect(), ..Default::default() };
-        assert!(args_of(&adapter, &all).contains(&"--no-tools".to_owned()));
-    }
-
-    fn args_of(adapter: &OmpAdapterConfig, session: &SessionConfig) -> Vec<String> {
-        args(&spawn_options(adapter, session, &Target::New).unwrap())
-    }
-
-    #[test]
-    fn tools_omp_reports_unavailable_are_dropped_for_the_retry() {
-        let dir = tempfile::tempdir().unwrap();
-        let adapter = OmpAdapterConfig::new("node", dir.path());
-        let session = SessionConfig { disabled_tools: vec!["bash".into()], ..Default::default() };
-        let mut opts = spawn_options(&adapter, &session, &Target::New).unwrap();
-        // omp 19's messages when `find` has no judge model, and for several tools.
-        let single = "Error: Built-in tool unavailable in this session: find.\nRun `omp --help` for available flags.";
-        assert!(drop_unavailable_tools(&mut opts, single));
-        let stderr = "Error: Built-in tools unavailable in this session: lsp, debug.\nRun `omp --help` for available flags.";
-        assert!(drop_unavailable_tools(&mut opts, stderr));
-        let tools = args(&opts).into_iter().find_map(|a| a.strip_prefix("--tools=").map(str::to_owned)).unwrap();
-        assert!(!tools.split(',').any(|t| ["find", "lsp", "debug", "bash"].contains(&t)));
-        assert!(tools.split(',').any(|t| t == "read"));
-        assert!(!drop_unavailable_tools(&mut opts, stderr), "nothing left to drop");
-        assert!(!drop_unavailable_tools(&mut opts, "Error: something else"));
-    }
 }

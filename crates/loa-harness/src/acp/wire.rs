@@ -8,14 +8,6 @@ use serde_json::Value;
 /// The only ACP major version this adapter speaks.
 pub const PROTOCOL_VERSION: u16 = 1;
 
-/// JSON-RPC error codes used in responses to the agent.
-pub mod code {
-    pub const METHOD_NOT_FOUND: i64 = -32601;
-    pub const INVALID_PARAMS: i64 = -32602;
-    pub const INTERNAL: i64 = -32603;
-    pub const RESOURCE_NOT_FOUND: i64 = -32002;
-}
-
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct AgentCapabilities {

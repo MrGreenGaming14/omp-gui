@@ -1,21 +1,16 @@
-//! Turns ACP traffic into DOM patches following the adapter conventions in
-//! `docs/ARCHITECTURE.md`. Pure bookkeeping over a [`PatchSink`]: no I/O.
+//! ACP traffic as session DOM writes: chunks become messages, tool calls
+//! `<call>`s, plans `<todo>`s, permission requests approval `<decision>`s;
+//! anything else is kept as `<ext harness="acp">`.
 
-use crate::wire::{
-    CurrentModeUpdate, PermissionOption, PermissionOptionKind, Plan, PlanEntryStatus, RequestPermissionRequest,
-    SessionInfoUpdate, StopReason, ToolCallFields, ToolCallStatus,
-};
-use loa_contracts::harness::{Prompt, SessionState};
-use loa_core::{
-    CallStatus, CommitError, DecisionKind, DecisionStatus, Draft, ElementKind, MessageKind, MessageStatus, NodeId,
-    PatchSink, Role, SessionMode, TodoState, TurnStatus, Value, answer, attr, now_ms,
-};
-use serde_json::Value as Json;
+use super::HARNESS;
+use super::wire::{CurrentModeUpdate, PermissionOption, PermissionOptionKind, Plan, PlanEntryStatus, PromptResponse, RequestPermissionRequest, SessionInfoUpdate, StopReason, ToolCallFields, ToolCallStatus};
+use crate::kit::{EventMapper, TurnLedger};
+use loa_contracts::harness::{AdapterError, Answer, Prompt, Result};
+use loa_core::schema::TEXT;
+use loa_core::{CallStatus, CommitError, DecisionKind, DecisionStatus, Dom, DomWriter, ElementKind as E, MessageKind, MessageStatus, NodeId, Role, SessionMode, TodoState, TurnStatus, Value, answer, attr};
+use serde::{Deserialize, Deserializer};
+use serde_json::{Value as Json, json};
 use std::collections::HashMap;
-use std::sync::Arc;
-
-/// Harness id written to `<session harness>` and `<ext harness>`.
-pub const HARNESS: &str = "acp";
 
 /// Session attribute holding the agent's own mode id.
 pub const X_MODE: &str = "x-acp-mode";
@@ -31,35 +26,89 @@ pub const X_STOP_REASON: &str = "x-acp-stop-reason";
 /// Todo attribute holding the plan entry priority.
 pub const X_PRIORITY: &str = "x-acp-priority";
 
+type Out<T = ()> = std::result::Result<T, CommitError>;
+
+/// What the session feeds the [`AcpMapper`].
+#[derive(Debug)]
+pub enum Input {
+    /// The user's prompt, sent as `session/prompt` request `id`; opens the turn.
+    Prompt { id: String, prompt: Prompt },
+    /// The agent's response to request `id`; `Err` holds the failure.
+    Response { id: String, result: std::result::Result<Json, String> },
+    /// `session/load` request `id` replays history the DOM already has.
+    Load { id: String },
+    Interrupt,
+    /// The agent is gone; `shutdown` when the app closed it.
+    Closed { shutdown: bool },
+    /// The params of a `session/update`.
+    Update(Json),
+    /// A `session/request_permission` request.
+    Permission { id: Json, params: Json },
+    /// The answer to the permission request `request`.
+    Answer { request: Json, answer: Answer },
+}
+
+/// Fixture lines: `{"$":"send"|"result"|"interrupt"|"closed"|"load"|"loaded"|"answer",…}`
+/// or a JSON-RPC message from the agent. The prompt is request `1`, the load `99`.
+impl<'de> Deserialize<'de> for Input {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        let mut raw = Json::deserialize(d)?;
+        let text = |raw: &Json, key: &str| raw[key].as_str().map(str::to_owned);
+        Ok(match raw["$"].as_str() {
+            Some("send") => Input::Prompt { id: "1".into(), prompt: Prompt { text: text(&raw, "text").unwrap_or_default(), by: "owner".into(), ..Prompt::default() } },
+            Some("result") => Input::Response { id: "1".into(), result: text(&raw, "error").map_or_else(|| Ok(raw["result"].take()), Err) },
+            Some("interrupt") => Input::Interrupt,
+            Some("closed") => Input::Closed { shutdown: false },
+            Some("load") => Input::Load { id: "99".into() },
+            Some("loaded") => Input::Response { id: "99".into(), result: Ok(Json::Null) },
+            Some("answer") => {
+                let values = raw["values"].as_array().into_iter().flatten().filter_map(|v| v.as_str().map(str::to_owned)).collect();
+                let answer = Answer { values, reason: text(&raw, "reason"), by: text(&raw, "by").unwrap_or_else(|| "owner".into()) };
+                Input::Answer { request: raw["request"].take(), answer }
+            }
+            _ if raw["method"] == "session/update" => Input::Update(raw["params"].take()),
+            _ => Input::Permission { id: raw["id"].take(), params: raw["params"].take() },
+        })
+    }
+}
+
+/// What the mapper has the session send to the agent.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Reply {
+    /// The result of the agent's request `id`.
+    Respond { id: Json, result: Json },
+    /// A JSON-RPC "invalid params" error for the agent's request `id`.
+    Reject { id: Json, message: String },
+    /// `session/cancel`.
+    Cancel,
+}
+
+impl Reply {
+    fn cancelled(id: Json) -> Self {
+        Reply::Respond { id, result: json!({ "outcome": { "outcome": "cancelled" } }) }
+    }
+}
+
 /// How a turn ended.
-pub enum TurnEnd {
+enum TurnEnd {
     Stop(StopReason),
     /// `session/prompt` failed with this message.
     Failed(String),
-    /// The agent went away. `shutdown` is true when the app closed it.
     Closed { shutdown: bool },
 }
 
-/// A permission request waiting for [`Projector::answer`].
-pub struct PendingDecision {
-    /// JSON-RPC id of the agent's `session/request_permission`.
-    pub rpc_id: Json,
-    pub options: Vec<PermissionOption>,
+struct Pending {
+    rpc_id: Json,
+    options: Vec<PermissionOption>,
 }
 
+#[derive(Default)]
 struct Turn {
-    node: NodeId,
-    message: Option<OpenMessage>,
+    message: Option<(NodeId, MessageKind, Option<String>)>,
     calls: HashMap<String, Call>,
-    /// `session/prompt` request id; its response ends the turn.
-    prompt_request: Option<u64>,
+    /// The `session/prompt` request whose response ends the turn.
+    prompt: Option<String>,
     interrupted: bool,
-}
-
-struct OpenMessage {
-    node: NodeId,
-    kind: MessageKind,
-    id: Option<String>,
 }
 
 struct Call {
@@ -77,143 +126,179 @@ struct Todo {
     priority: Option<String>,
 }
 
-/// DOM side of one ACP session.
-pub struct Projector {
-    sink: Arc<dyn PatchSink>,
-    root: NodeId,
+/// The DOM side of one ACP session.
+pub struct AcpMapper {
+    ledger: TurnLedger<String>,
+    turn: Turn,
+    /// Assistant messages are attributed to it.
     model: Option<String>,
-    turn: Option<Turn>,
-    decisions: HashMap<NodeId, PendingDecision>,
-    todos: Vec<Todo>,
-    /// Id of a running `session/load`: the history it replays is already in the DOM.
-    replay_request: Option<u64>,
-    closed: bool,
-    /// The agent's current mode id.
+    /// The agent's session id; updates for other sessions are ignored.
+    native: Option<String>,
     mode_id: Option<String>,
+    todos: Vec<Todo>,
+    decisions: HashMap<NodeId, Pending>,
+    /// A running `session/load`, whose replayed history is skipped.
+    replay: Option<String>,
 }
 
-impl Projector {
-    /// Continues the session whose `<session>` element is `root`. Assistant
-    /// messages are attributed to `model`.
-    pub fn new(sink: Arc<dyn PatchSink>, root: NodeId, model: Option<String>) -> Self {
-        Self {
-            sink,
-            root,
-            model,
-            turn: None,
-            decisions: HashMap::new(),
-            todos: Vec::new(),
-            replay_request: None,
-            closed: false,
-            mode_id: None,
+impl EventMapper for AcpMapper {
+    type Event = Input;
+    type Reply = Reply;
+
+    fn apply(&mut self, input: Input, w: &DomWriter) -> Result<Vec<Reply>> {
+        match input {
+            Input::Prompt { id, prompt } => {
+                let turn = self.ledger.begin(w, &prompt)?;
+                w.set(turn, attr::STARTED, w.now())?;
+                self.turn = Turn { prompt: Some(id), ..Turn::default() };
+            }
+            Input::Response { id, result } => {
+                if self.replay.as_ref() == Some(&id) {
+                    self.replay = None;
+                }
+                if self.turn.prompt.as_ref() == Some(&id) && self.ledger.turn().is_some() {
+                    let end = match result.map(serde_json::from_value::<PromptResponse>) {
+                        Ok(Ok(response)) => TurnEnd::Stop(response.stop_reason),
+                        Ok(Err(e)) => TurnEnd::Failed(format!("malformed session/prompt response: {e}")),
+                        Err(message) => TurnEnd::Failed(message),
+                    };
+                    return Ok(self.end_turn(w, end)?);
+                }
+            }
+            Input::Load { id } => self.replay = Some(id),
+            Input::Interrupt if self.ledger.turn().is_some() => {
+                self.turn.interrupted = true;
+                let mut replies = self.cancel_decisions(w)?;
+                replies.push(Reply::Cancel);
+                return Ok(replies);
+            }
+            Input::Interrupt => {}
+            Input::Closed { shutdown } => {
+                let replies = self.end_turn(w, TurnEnd::Closed { shutdown })?;
+                self.ledger.close();
+                return Ok(replies);
+            }
+            Input::Update(params) => {
+                let ours = match (&self.native, params["sessionId"].as_str()) {
+                    (Some(ours), Some(theirs)) => ours == theirs,
+                    _ => true,
+                };
+                if ours && self.replay.is_none() && params.get("update").is_some() {
+                    self.update(w, params["update"].clone())?;
+                }
+            }
+            Input::Permission { id, params } => match serde_json::from_value(params) {
+                Ok(request) => self.permission(w, id, request)?,
+                Err(e) => return Ok(vec![Reply::Reject { id, message: e.to_string() }]),
+            },
+            Input::Answer { request, answer } => {
+                let node = self.decisions.iter().find(|(_, d)| d.rpc_id == request).map(|(node, _)| *node);
+                let node = node.ok_or_else(|| AdapterError::Protocol(format!("no permission request {request}")))?;
+                return Ok(self.answer(node, &answer, w)?.into_iter().collect());
+            }
         }
+        Ok(Vec::new())
     }
 
-    /// The agent switched to `model`: later assistant messages carry it, and
-    /// the session records it.
-    pub fn model_changed(&mut self, model: &str) {
-        if self.model.as_deref() != Some(model) {
-            self.model = Some(model.to_owned());
-            self.set(self.root, attr::MODEL, model.into());
+    fn answer(&mut self, decision: NodeId, answer: &Answer, w: &DomWriter) -> Result<Option<Reply>> {
+        let pending = self.decisions.get(&decision).ok_or(AdapterError::UnknownDecision(decision))?;
+        let value = answer.values.first().ok_or_else(|| AdapterError::Protocol("the answer is empty".to_owned()))?;
+        let option = pick_option(&pending.options, value).ok_or_else(|| AdapterError::Protocol(format!("`{value}` matches none of the offered options")))?.clone();
+        let Pending { rpc_id, .. } = self.decisions.remove(&decision).ok_or(AdapterError::UnknownDecision(decision))?;
+        let canonical = match option.kind {
+            PermissionOptionKind::AllowOnce => answer::ALLOW_ONCE,
+            PermissionOptionKind::AllowAlways => answer::ALLOW_SESSION,
+            PermissionOptionKind::RejectOnce | PermissionOptionKind::RejectAlways => answer::DENY,
+        };
+        w.set(decision, attr::ANSWER, Value::List(vec![canonical.into()]))?;
+        w.set(decision, X_OPTION, option.option_id.as_str())?;
+        if !answer.by.is_empty() {
+            w.set(decision, attr::BY, answer.by.as_str())?;
         }
+        answer.reason.iter().try_for_each(|reason| w.set(decision, attr::REASON, reason.as_str()))?;
+        w.close(decision, DecisionStatus::Answered)?;
+        self.ledger.answered(decision);
+        if let Some(turn) = self.ledger.turn().filter(|_| self.decisions.is_empty()) {
+            w.set(turn.node, attr::STATUS, TurnStatus::Running)?;
+        }
+        Ok(Some(Reply::Respond { id: rpc_id, result: json!({ "outcome": { "optionId": option.option_id, "outcome": "selected" } }) }))
     }
 
-    /// Takes over `<todo>` elements already in the DOM so plan updates edit them.
-    pub fn adopt_todo(&mut self, node: NodeId, text: String, state: TodoState, priority: Option<String>) {
-        self.todos.push(Todo { node, text, state, priority });
+    fn ledger(&self) -> &TurnLedger<String> {
+        &self.ledger
+    }
+
+    fn ledger_mut(&mut self) -> &mut TurnLedger<String> {
+        &mut self.ledger
+    }
+}
+
+impl AcpMapper {
+    /// Writes under the `<session>` `root`; assistant messages carry `model`.
+    pub fn new(root: NodeId, model: Option<String>) -> Self {
+        let (ledger, turn, decisions) = (TurnLedger::new(root), Turn::default(), HashMap::new());
+        Self { ledger, turn, model, native: None, mode_id: None, todos: Vec::new(), decisions, replay: None }
+    }
+
+    /// Takes over the todos and mode a resumed session already has.
+    pub fn adopt(&mut self, dom: &Dom) {
+        let root = self.root();
+        self.todos = dom.children_of_kind(root, E::Todo).map(|todo| Todo {
+            node: todo.id,
+            text: todo.text.clone(),
+            state: todo.str_attr(attr::STATE).and_then(TodoState::parse).unwrap_or(TodoState::Pending),
+            priority: todo.str_attr(X_PRIORITY).map(str::to_owned),
+        }).collect();
+        self.mode_id = dom.get(root).and_then(|r| r.str_attr(X_MODE)).map(str::to_owned);
     }
 
     pub fn root(&self) -> NodeId {
-        self.root
+        self.ledger.session
     }
 
-    pub fn state(&self) -> SessionState {
-        match &self.turn {
-            _ if self.closed => SessionState::Closed,
-            None => SessionState::Idle,
-            Some(_) if !self.decisions.is_empty() => SessionState::Waiting,
-            Some(_) => SessionState::Running,
+    /// The agent's session id is `id`.
+    pub fn set_native(&mut self, w: &DomWriter, id: &str) -> Out {
+        self.native = Some(id.to_owned());
+        w.set(self.root(), attr::NATIVE_ID, id)
+    }
+
+    /// Tests replay one agent session; this names it.
+    pub fn adopt_native(&mut self, id: &str) {
+        self.native = Some(id.to_owned());
+    }
+
+    /// The agent switched to `model`: later assistant messages carry it.
+    pub fn model_changed(&mut self, w: &DomWriter, model: &str) -> Out {
+        if self.model.as_deref() == Some(model) {
+            return Ok(());
         }
+        self.model = Some(model.to_owned());
+        w.set(self.root(), attr::MODEL, model)
     }
 
-    pub fn is_closed(&self) -> bool {
-        self.closed
+    pub fn mode_id(&self) -> Option<&str> {
+        self.mode_id.as_deref()
     }
 
-    pub fn has_turn(&self) -> bool {
-        self.turn.is_some()
-    }
-
-    pub fn set_replay(&mut self, request: Option<u64>) {
-        self.replay_request = request;
-    }
-
-    /// Inserts the `<turn>` and the user `<message>` for `prompt`.
-    pub fn begin_turn(&mut self, prompt: &Prompt) -> Result<(), CommitError> {
-        let now = now_ms();
-        let turn = self
-            .sink
-            .commit(Draft::insert(
-                self.root,
-                ElementKind::Turn,
-                [(attr::STATUS, TurnStatus::Running.into()), (attr::STARTED, Value::Int(now))],
-                "",
-            ))?
-            .node;
-        let mut attrs = vec![(attr::ROLE, Role::User.into()), (attr::STATUS, MessageStatus::Done.into())];
-        if !prompt.by.is_empty() {
-            attrs.push((attr::BY, prompt.by.as_str().into()));
+    /// Records the agent's current mode on the session.
+    pub fn mode_changed(&mut self, w: &DomWriter, mode_id: &str) -> Out {
+        if self.mode_id.as_deref() == Some(mode_id) {
+            return Ok(());
         }
-        self.sink.commit(Draft::insert(turn, ElementKind::Message, attrs, prompt.text.as_str()))?;
-        self.turn = Some(Turn {
-            node: turn,
-            message: None,
-            calls: HashMap::new(),
-            prompt_request: None,
-            interrupted: false,
-        });
-        Ok(())
+        self.mode_id = Some(mode_id.to_owned());
+        w.set(self.root(), X_MODE, mode_id)?;
+        w.set(self.root(), attr::MODE, if mode_id == "plan" { SessionMode::Plan } else { SessionMode::Normal })
     }
 
-    pub fn set_prompt_request(&mut self, id: u64) {
-        if let Some(turn) = &mut self.turn {
-            turn.prompt_request = Some(id);
-        }
+    fn turn_node(&self) -> Option<NodeId> {
+        self.ledger.turn().map(|t| t.node)
     }
 
-    pub fn mark_interrupted(&mut self) {
-        if let Some(turn) = &mut self.turn {
-            turn.interrupted = true;
-        }
-    }
-
-    /// Routes a JSON-RPC response. Ends the turn when it answers the running
-    /// `session/prompt` and returns the permission requests left waiting.
-    pub fn on_response(&mut self, id: u64, result: &Result<Json, crate::rpc::RpcError>) -> Vec<Json> {
-        if self.replay_request == Some(id) {
-            self.replay_request = None;
-        }
-        let is_prompt = self.turn.as_ref().is_some_and(|t| t.prompt_request == Some(id));
-        if !is_prompt {
-            return Vec::new();
-        }
-        let end = match result {
-            Ok(value) => match serde_json::from_value::<crate::wire::PromptResponse>(value.clone()) {
-                Ok(response) => TurnEnd::Stop(response.stop_reason),
-                Err(e) => TurnEnd::Failed(format!("malformed session/prompt response: {e}")),
-            },
-            Err(e) => TurnEnd::Failed(e.to_string()),
-        };
-        self.end_turn(end)
-    }
-
-    /// Closes the running turn and returns the permission requests left
-    /// waiting, which the caller answers as cancelled.
-    pub fn end_turn(&mut self, end: TurnEnd) -> Vec<Json> {
-        let Some(mut turn) = self.turn.take() else { return Vec::new() };
-        let now = now_ms();
-        let cancelled = turn.interrupted
-            || matches!(end, TurnEnd::Stop(StopReason::Cancelled) | TurnEnd::Closed { shutdown: true });
+    /// Closes the running turn; the waiting permission requests are answered cancelled.
+    fn end_turn(&mut self, w: &DomWriter, end: TurnEnd) -> Out<Vec<Reply>> {
+        let Some(node) = self.turn_node() else { return Ok(Vec::new()) };
+        let turn = std::mem::take(&mut self.turn);
+        let cancelled = turn.interrupted || matches!(end, TurnEnd::Stop(StopReason::Cancelled) | TurnEnd::Closed { shutdown: true });
         let (turn_status, message_status) = match &end {
             _ if cancelled => (TurnStatus::Cancelled, MessageStatus::Cancelled),
             TurnEnd::Stop(StopReason::EndTurn) => (TurnStatus::Done, MessageStatus::Done),
@@ -221,206 +306,121 @@ impl Projector {
             TurnEnd::Stop(_) => (TurnStatus::Error, MessageStatus::Done),
             TurnEnd::Failed(_) | TurnEnd::Closed { .. } => (TurnStatus::Error, MessageStatus::Error),
         };
-        if let Some(message) = turn.message.take() {
-            self.set(message.node, attr::STATUS, message_status.into());
+        if let Some((message, ..)) = turn.message {
+            w.set(message, attr::STATUS, message_status)?;
         }
-        for call in turn.calls.values() {
-            if matches!(call.status, CallStatus::Pending | CallStatus::Running) {
-                self.set(call.node, attr::STATUS, CallStatus::Cancelled.into());
-                self.set(call.node, attr::ENDED, Value::Int(now));
-            }
+        for call in turn.calls.values().filter(|c| matches!(c.status, CallStatus::Pending | CallStatus::Running)) {
+            w.close(call.node, CallStatus::Cancelled)?;
         }
-        let waiting = self.cancel_decisions();
+        let replies = self.cancel_decisions(w)?;
         match end {
-            TurnEnd::Stop(StopReason::EndTurn) => {}
-            TurnEnd::Stop(reason) => self.set(turn.node, X_STOP_REASON, reason.as_str().into()),
-            TurnEnd::Failed(message) => self.ext(turn.node, "error", message),
-            TurnEnd::Closed { shutdown: false } => self.ext(turn.node, "error", "the agent exited".to_owned()),
-            TurnEnd::Closed { shutdown: true } => {}
+            TurnEnd::Stop(StopReason::EndTurn) | TurnEnd::Closed { shutdown: true } => {}
+            TurnEnd::Stop(reason) => w.set(node, X_STOP_REASON, reason.as_str())?,
+            TurnEnd::Failed(message) => { w.ext(node, HARNESS, "error", message)?; }
+            TurnEnd::Closed { shutdown: false } => { w.ext(node, HARNESS, "error", "the agent exited")?; }
         }
-        self.set(turn.node, attr::STATUS, turn_status.into());
-        self.set(turn.node, attr::ENDED, Value::Int(now));
-        waiting
+        self.ledger.end_turn(w, turn_status, |_| {})?;
+        Ok(replies)
     }
 
-    /// The agent's output closed. Ends the turn and marks the session closed.
-    pub fn close(&mut self, shutdown: bool) -> Vec<Json> {
-        let waiting = self.end_turn(TurnEnd::Closed { shutdown });
-        self.closed = true;
-        waiting
+    /// Cancels every waiting decision and answers their requests cancelled.
+    fn cancel_decisions(&mut self, w: &DomWriter) -> Out<Vec<Reply>> {
+        let mut replies = Vec::with_capacity(self.decisions.len());
+        for (node, pending) in self.decisions.drain() {
+            w.close(node, DecisionStatus::Cancelled)?;
+            self.ledger.answered(node);
+            replies.push(Reply::cancelled(pending.rpc_id));
+        }
+        if let Some(turn) = self.ledger.turn().filter(|_| !replies.is_empty()) {
+            w.set(turn.node, attr::STATUS, TurnStatus::Running)?;
+        }
+        Ok(replies)
     }
 
-    /// Marks every waiting decision cancelled and returns their JSON-RPC ids.
-    pub fn cancel_decisions(&mut self) -> Vec<Json> {
-        let now = now_ms();
-        let pending: Vec<(NodeId, PendingDecision)> = self.decisions.drain().collect();
-        let mut ids = Vec::with_capacity(pending.len());
-        for (node, decision) in pending {
-            self.set(node, attr::STATUS, DecisionStatus::Cancelled.into());
-            self.set(node, attr::ENDED, Value::Int(now));
-            ids.push(decision.rpc_id);
-        }
-        if !ids.is_empty()
-            && let Some(turn) = &self.turn
-        {
-            self.set(turn.node, attr::STATUS, TurnStatus::Running.into());
-        }
-        ids
-    }
-
-    /// Applies one `session/update` payload.
-    pub fn update(&mut self, mut update: Json) {
-        if self.replay_request.is_some() {
-            return;
-        }
-        let kind = match update.get("sessionUpdate").and_then(Json::as_str) {
-            Some(kind) => kind.to_owned(),
-            None => return self.ext_here("malformed", update.to_string()),
+    fn update(&mut self, w: &DomWriter, mut update: Json) -> Out {
+        let Some(kind) = update.get("sessionUpdate").and_then(Json::as_str).map(str::to_owned) else {
+            return self.ext_here(w, "malformed", &update);
         };
+        let kept = |e: serde_json::Error, update: &Json| format!("{e}: {update}");
         match kind.as_str() {
-            "agent_message_chunk" => self.chunk(MessageKind::Text, &kind, update),
-            "agent_thought_chunk" => self.chunk(MessageKind::Thinking, &kind, update),
-            "tool_call" | "tool_call_update" => match parse::<ToolCallFields>(&update) {
-                Ok(fields) if self.turn.is_some() => {
-                    self.tool_call(fields);
-                }
+            "agent_message_chunk" => self.chunk(w, MessageKind::Text, &kind, update),
+            "agent_thought_chunk" => self.chunk(w, MessageKind::Thinking, &kind, update),
+            "tool_call" | "tool_call_update" => match ToolCallFields::deserialize(&update) {
+                Ok(fields) if self.turn_node().is_some() => self.tool_call(w, fields).map(drop),
                 // Malformed, or outside any turn: keep it raw.
-                _ => self.ext_here(&kind, update.to_string()),
+                _ => self.ext_here(w, &kind, &update),
             },
-            "plan" => match parse::<Plan>(&update) {
-                Ok(plan) => self.plan(plan),
-                Err(e) => self.ext_here(&kind, format!("{e}: {update}")),
+            "plan" => match Plan::deserialize(&update) {
+                Ok(plan) => self.plan(w, plan),
+                Err(e) => self.ext_here(w, &kind, &kept(e, &update)),
             },
-            "current_mode_update" => match parse::<CurrentModeUpdate>(&update) {
-                Ok(mode) => self.mode_changed(&mode.current_mode_id),
-                Err(e) => self.ext_here(&kind, format!("{e}: {update}")),
+            "current_mode_update" => match CurrentModeUpdate::deserialize(&update) {
+                Ok(mode) => self.mode_changed(w, &mode.current_mode_id),
+                Err(e) => self.ext_here(w, &kind, &kept(e, &update)),
             },
-            "session_info_update" => match parse::<SessionInfoUpdate>(&update) {
-                Ok(SessionInfoUpdate { title: Some(title) }) => self.set(self.root, attr::TITLE, title.into()),
-                _ => self.ext_here(&kind, update.to_string()),
+            "session_info_update" => match SessionInfoUpdate::deserialize(&update) {
+                Ok(SessionInfoUpdate { title: Some(title) }) => w.set(self.root(), attr::TITLE, title),
+                _ => self.ext_here(w, &kind, &update),
             },
             _ => {
-                if let Some(object) = update.as_object_mut() {
-                    object.remove("sessionUpdate");
-                }
-                self.ext_here(&kind, update.to_string());
+                update.as_object_mut().map(|o| o.remove("sessionUpdate"));
+                self.ext_here(w, &kind, &update)
             }
         }
     }
 
-    /// Records the agent's current mode on the session.
-    pub fn mode_changed(&mut self, mode_id: &str) {
-        if self.mode_id.as_deref() == Some(mode_id) {
-            return;
-        }
-        self.mode_id = Some(mode_id.to_owned());
-        let mode = if mode_id == "plan" { SessionMode::Plan } else { SessionMode::Normal };
-        self.set(self.root, X_MODE, mode_id.into());
-        self.set(self.root, attr::MODE, mode.into());
-    }
-
-    pub fn mode_id(&self) -> Option<&str> {
-        self.mode_id.as_deref()
-    }
-
-    /// Adopts the mode id already recorded on a resumed session.
-    pub fn adopt_mode(&mut self, mode_id: String) {
-        self.mode_id = Some(mode_id);
-    }
-
-    fn chunk(&mut self, kind: MessageKind, update_kind: &str, mut update: Json) {
+    fn chunk(&mut self, w: &DomWriter, kind: MessageKind, update_kind: &str, update: Json) -> Out {
         let message_id = update.get("messageId").and_then(Json::as_str).map(str::to_owned);
-        let text = match update.get_mut("content") {
-            Some(content) if content.get("type").and_then(Json::as_str) == Some("text") => {
-                match content.get_mut("text").map(Json::take) {
-                    Some(Json::String(text)) => text,
-                    _ => return self.ext_here(update_kind, update.to_string()),
-                }
+        let content = update.get("content").filter(|c| c["type"] == "text");
+        let Some(text) = content.and_then(|c| c["text"].as_str()) else { return self.ext_here(w, update_kind, &update) };
+        let Some(turn) = self.turn_node() else { return w.ext(self.root(), HARNESS, update_kind, text).map(drop) };
+        let open = self.turn.message.as_ref().filter(|(_, k, id)| *k == kind && (message_id.is_none() || id.is_none() || *id == message_id));
+        if let Some((node, ..)) = open {
+            return w.append(*node, text);
+        }
+        if let Some((previous, ..)) = self.turn.message.take() {
+            w.set(previous, attr::STATUS, MessageStatus::Done)?;
+        }
+        let mut attrs = vec![(attr::ROLE, Value::from(Role::Assistant)), (attr::STATUS, MessageStatus::Streaming.into())];
+        attrs.extend((kind == MessageKind::Thinking).then(|| (attr::KIND, kind.into())));
+        attrs.extend(self.model.as_deref().map(|m| (attr::MODEL, m.into())));
+        attrs.extend(message_id.as_deref().map(|id| (attr::ID, id.into())));
+        let node = w.insert(turn, E::Message, attrs, text)?;
+        self.turn.message = Some((node, kind, message_id));
+        Ok(())
+    }
+
+    /// Inserts or updates the `<call>` of a `tool_call` or `tool_call_update`
+    /// inside the running turn.
+    fn tool_call(&mut self, w: &DomWriter, fields: ToolCallFields) -> Out<Option<NodeId>> {
+        let Some(turn) = self.turn_node() else { return Ok(None) };
+        let id = fields.tool_call_id.clone();
+        let tool = fields.name.as_deref().or(fields.kind.as_deref());
+        let node = match self.turn.calls.get(&id) {
+            Some(call) => {
+                let node = call.node;
+                fields.title.iter().try_for_each(|title| w.set(node, attr::TITLE, title.as_str()))?;
+                tool.iter().try_for_each(|tool| w.set(node, attr::TOOL, *tool))?;
+                node
             }
-            _ => return self.ext_here(update_kind, update.to_string()),
-        };
-        let Some(turn) = &mut self.turn else {
-            return self.ext(self.root, update_kind, text);
-        };
-        let continued = turn.message.as_ref().filter(|open| {
-            open.kind == kind && (message_id.is_none() || open.id.is_none() || open.id == message_id)
-        });
-        if let Some(open) = continued {
-            let node = open.node;
-            self.commit(Draft::append(node, text));
-            return;
-        }
-        let turn_node = turn.node;
-        let previous = turn.message.take();
-        if let Some(previous) = previous {
-            self.set(previous.node, attr::STATUS, MessageStatus::Done.into());
-        }
-        let mut attrs = vec![(attr::ROLE, Role::Assistant.into()), (attr::STATUS, MessageStatus::Streaming.into())];
-        if kind == MessageKind::Thinking {
-            attrs.push((attr::KIND, kind.into()));
-        }
-        if let Some(model) = &self.model {
-            attrs.push((attr::MODEL, model.as_str().into()));
-        }
-        if let Some(id) = &message_id {
-            attrs.push((attr::ID, id.as_str().into()));
-        }
-        let node = self.insert(turn_node, ElementKind::Message, attrs, text);
-        if let (Some(node), Some(turn)) = (node, &mut self.turn) {
-            turn.message = Some(OpenMessage { node, kind, id: message_id });
-        }
-    }
-
-    fn close_message(&mut self) {
-        if let Some(message) = self.turn.as_mut().and_then(|t| t.message.take()) {
-            self.set(message.node, attr::STATUS, MessageStatus::Done.into());
-        }
-    }
-
-    /// Inserts or updates the `<call>` for a `tool_call` or `tool_call_update`.
-    /// Returns its node, or `None` outside a turn.
-    fn tool_call(&mut self, fields: ToolCallFields) -> Option<NodeId> {
-        let turn_node = self.turn.as_ref()?.node;
-        let known = self.turn.as_ref().and_then(|t| t.calls.get(&fields.tool_call_id)).map(|c| c.node);
-        let node = match known {
-            Some(node) => node,
             None => {
-                self.close_message();
-                let tool = fields.name.as_deref().or(fields.kind.as_deref()).unwrap_or("other");
-                let title = fields.title.as_deref().unwrap_or(&fields.tool_call_id);
-                let attrs = vec![
-                    (attr::TOOL, tool.into()),
-                    (attr::CALL_ID, fields.tool_call_id.as_str().into()),
-                    (attr::TITLE, title.into()),
-                    (attr::STATUS, CallStatus::Pending.into()),
-                    (attr::STARTED, Value::Int(now_ms())),
-                ];
-                let node = self.insert(turn_node, ElementKind::Call, attrs, String::new())?;
-                let call = Call { node, input: None, status: CallStatus::Pending, content: Vec::new(), raw_output: None };
-                self.turn.as_mut()?.calls.insert(fields.tool_call_id.clone(), call);
+                if let Some((message, ..)) = self.turn.message.take() {
+                    w.set(message, attr::STATUS, MessageStatus::Done)?;
+                }
+                let title = fields.title.as_deref().unwrap_or(&id);
+                let attrs = [(attr::TOOL, Value::from(tool.unwrap_or("other"))), (attr::CALL_ID, id.as_str().into()), (attr::TITLE, title.into()), (attr::STATUS, CallStatus::Pending.into()), (attr::STARTED, w.now().into())];
+                let node = w.insert(turn, E::Call, attrs, "")?;
+                self.turn.calls.insert(id.clone(), Call { node, input: None, status: CallStatus::Pending, content: Vec::new(), raw_output: None });
                 node
             }
         };
-        if known.is_some() {
-            if let Some(title) = &fields.title {
-                self.set(node, attr::TITLE, title.as_str().into());
-            }
-            if let Some(tool) = fields.name.as_deref().or(fields.kind.as_deref()) {
-                self.set(node, attr::TOOL, tool.into());
-            }
-        }
+        let call = self.turn.calls.get_mut(&id).expect("inserted above");
         if let Some(input) = fields.raw_input.filter(|v| !v.is_null()) {
-            let text = input.to_string();
-            let existing = self.call(&fields.tool_call_id)?.input;
-            match existing {
-                Some(input) => self.commit(Draft::set_text(input, text)),
-                None => {
-                    let input = self.insert(node, ElementKind::Input, [(attr::FORMAT, "json".into())], text);
-                    self.call_mut(&fields.tool_call_id)?.input = input;
-                }
+            match call.input {
+                Some(existing) => w.set(existing, TEXT, input.to_string())?,
+                None => call.input = Some(w.insert(node, E::Input, [(attr::FORMAT, "json")], input.to_string())?),
             }
         }
-        let call = self.call_mut(&fields.tool_call_id)?;
         if let Some(content) = fields.content {
             call.content = content;
         }
@@ -428,227 +428,129 @@ impl Projector {
             call.raw_output = Some(output);
         }
         let status = match fields.status {
-            None | Some(ToolCallStatus::Pending) => return Some(node),
+            None | Some(ToolCallStatus::Pending) => return Ok(Some(node)),
             Some(ToolCallStatus::InProgress) => CallStatus::Running,
             Some(ToolCallStatus::Completed) => CallStatus::Done,
             Some(ToolCallStatus::Failed) => CallStatus::Error,
         };
         if call.status == status || matches!(call.status, CallStatus::Done | CallStatus::Error) {
-            return Some(node);
+            return Ok(Some(node));
         }
         call.status = status;
-        let finished = (status != CallStatus::Running)
-            .then(|| (std::mem::take(&mut call.content), call.raw_output.take()));
-        match finished {
-            Some((content, raw_output)) => self.finish_call(node, status, content, raw_output),
-            None => self.set(node, attr::STATUS, status.into()),
+        if status == CallStatus::Running {
+            w.set(node, attr::STATUS, status)?;
+        } else {
+            let (content, raw_output) = (std::mem::take(&mut call.content), call.raw_output.take());
+            finish_call(w, node, status, content, raw_output)?;
         }
-        Some(node)
-    }
-
-    /// Writes the `<result>` of a finished call and the content that has no
-    /// text form (diffs, terminals, resources) as `<ext>` children.
-    fn finish_call(&mut self, node: NodeId, status: CallStatus, content: Vec<Json>, raw_output: Option<Json>) {
-        let mut text = String::new();
-        let mut other = Vec::new();
-        for item in content {
-            let block_text = (item.get("type").and_then(Json::as_str) == Some("content"))
-                .then(|| item.pointer("/content/text").and_then(Json::as_str))
-                .flatten();
-            match block_text {
-                Some(block) => {
-                    if !text.is_empty() {
-                        text.push('\n');
-                    }
-                    text.push_str(block);
-                }
-                None => other.push(item),
-            }
-        }
-        let mut attrs = vec![(attr::IS_ERROR, Value::Bool(status == CallStatus::Error))];
-        if text.is_empty()
-            && let Some(output) = raw_output
-        {
-            text = match output {
-                Json::String(s) => s,
-                output => {
-                    attrs.push((attr::FORMAT, "json".into()));
-                    output.to_string()
-                }
-            };
-        }
-        self.insert(node, ElementKind::Result, attrs, text);
-        for item in other {
-            self.ext(node, "tool_call_content", item.to_string());
-        }
-        self.set(node, attr::STATUS, status.into());
-        self.set(node, attr::ENDED, Value::Int(now_ms()));
-    }
-
-    fn call(&self, id: &str) -> Option<&Call> {
-        self.turn.as_ref()?.calls.get(id)
-    }
-
-    fn call_mut(&mut self, id: &str) -> Option<&mut Call> {
-        self.turn.as_mut()?.calls.get_mut(id)
+        Ok(Some(node))
     }
 
     /// Rewrites the `<todo>` list to match the agent's full plan.
-    fn plan(&mut self, plan: Plan) {
-        let mut entries = plan.entries.into_iter();
-        let mut kept = 0;
-        for (index, entry) in entries.by_ref().enumerate() {
+    fn plan(&mut self, w: &DomWriter, plan: Plan) -> Out {
+        let kept = plan.entries.len();
+        for (index, entry) in plan.entries.into_iter().enumerate() {
             let state = match entry.status {
                 PlanEntryStatus::Pending => TodoState::Pending,
                 PlanEntryStatus::InProgress => TodoState::InProgress,
                 PlanEntryStatus::Completed => TodoState::Done,
             };
-            kept = index + 1;
-            if let Some(todo) = self.todos.get(index) {
-                let node = todo.node;
-                let (same_state, same_text, same_priority) =
-                    (todo.state == state, todo.text == entry.content, todo.priority == entry.priority);
-                if !same_text {
-                    self.commit(Draft::set_text(node, entry.content.as_str()));
-                }
-                if !same_state {
-                    self.set(node, attr::STATE, state.into());
-                }
-                if !same_priority {
-                    match &entry.priority {
-                        Some(priority) => self.set(node, X_PRIORITY, priority.as_str().into()),
-                        None => self.commit(Draft::clear(node, X_PRIORITY)),
-                    }
-                }
-                self.todos[index] = Todo { node, text: entry.content, state, priority: entry.priority };
-                continue;
-            }
-            let mut attrs = vec![(attr::STATE, state.into())];
-            if let Some(priority) = &entry.priority {
-                attrs.push((X_PRIORITY, priority.as_str().into()));
-            }
-            if let Some(node) = self.insert(self.root, ElementKind::Todo, attrs, entry.content.clone()) {
+            let Some(todo) = self.todos.get_mut(index) else {
+                let mut attrs = vec![(attr::STATE, Value::from(state))];
+                attrs.extend(entry.priority.as_deref().map(|p| (X_PRIORITY, p.into())));
+                let node = w.insert(self.root(), E::Todo, attrs, entry.content.as_str())?;
                 self.todos.push(Todo { node, text: entry.content, state, priority: entry.priority });
+                continue;
+            };
+            if todo.text != entry.content {
+                w.set(todo.node, TEXT, entry.content.as_str())?;
             }
+            if todo.state != state {
+                w.set(todo.node, attr::STATE, state)?;
+            }
+            if todo.priority != entry.priority {
+                match &entry.priority {
+                    Some(priority) => w.set(todo.node, X_PRIORITY, priority.as_str())?,
+                    None => w.clear(todo.node, X_PRIORITY)?,
+                }
+            }
+            *todo = Todo { node: todo.node, text: entry.content, state, priority: entry.priority };
         }
         for gone in self.todos.split_off(kept.min(self.todos.len())) {
-            self.commit(Draft::remove(gone.node));
+            w.remove(gone.node)?;
         }
+        Ok(())
     }
 
-    /// Inserts the approval `<decision>` for a `session/request_permission`.
-    pub fn permission(&mut self, rpc_id: Json, request: RequestPermissionRequest) {
-        let call_id = request.tool_call.tool_call_id.clone();
+    /// Inserts the approval `<decision>` of a `session/request_permission`.
+    fn permission(&mut self, w: &DomWriter, rpc_id: Json, request: RequestPermissionRequest) -> Out {
         let title = request.tool_call.title.clone();
         let input = request.tool_call.raw_input.as_ref().filter(|v| !v.is_null()).map(Json::to_string);
-        let content: Vec<Json> = request.tool_call.content.clone().unwrap_or_default();
-        // The request's tool call doubles as an update: it may be the first
-        // the client hears of the call.
-        let call = match self.call(&call_id) {
+        let content = request.tool_call.content.clone().unwrap_or_default();
+        // The request's tool call doubles as an update: it may be the first the client hears of it.
+        let call = match self.turn.calls.get(&request.tool_call.tool_call_id) {
             Some(call) => Some(call.node),
-            None => self.tool_call(request.tool_call),
+            None => self.tool_call(w, request.tool_call)?,
         };
-        let parent = call.or(self.turn.as_ref().map(|t| t.node)).unwrap_or(self.root);
-        let names: Vec<String> = request.options.iter().map(|o| o.name.clone()).collect();
-        let ids: Vec<String> = request.options.iter().map(|o| o.option_id.clone()).collect();
-        let kinds: Vec<String> = request.options.iter().map(|o| kind_str(o.kind).to_owned()).collect();
-        let mut attrs = vec![
-            (attr::KIND, DecisionKind::Approval.into()),
-            (attr::STATUS, DecisionStatus::Waiting.into()),
-            (attr::OPTIONS, names.into()),
-            (X_OPTION_IDS, ids.into()),
-            (X_OPTION_KINDS, kinds.into()),
-            (attr::REQUEST_ID, request_id_text(&rpc_id).into()),
-            (attr::CREATED, Value::Int(now_ms())),
-        ];
-        if let Some(call) = call {
-            attrs.push((attr::CALL, Value::Int(i64::try_from(call.0).unwrap_or(i64::MAX))));
+        let parent = call.or(self.turn_node()).unwrap_or(self.root());
+        let list = |f: fn(&PermissionOption) -> String| Value::from(request.options.iter().map(f).collect::<Vec<_>>());
+        let request_id = rpc_id.as_str().map_or_else(|| rpc_id.to_string(), str::to_owned);
+        let mut attrs = vec![(attr::KIND, Value::from(DecisionKind::Approval)), (attr::STATUS, DecisionStatus::Waiting.into())];
+        attrs.extend([(attr::OPTIONS, list(|o| o.name.clone())), (X_OPTION_IDS, list(|o| o.option_id.clone())), (X_OPTION_KINDS, list(|o| kind_str(o.kind).to_owned()))]);
+        attrs.extend([(attr::REQUEST_ID, request_id.into()), (attr::CREATED, w.now().into())]);
+        attrs.extend(call.map(|call| (attr::CALL, Value::Int(i64::try_from(call.0).unwrap_or(i64::MAX)))));
+        attrs.extend(title.map(|title| (attr::TITLE, title.into())));
+        let node = w.insert(parent, E::Decision, attrs, input.unwrap_or_default())?;
+        for mut item in content {
+            item.sort_all_objects();
+            w.ext(node, HARNESS, "tool_call_content", item)?;
         }
-        if let Some(title) = title {
-            attrs.push((attr::TITLE, title.into()));
+        if let Some(turn) = self.turn_node() {
+            w.set(turn, attr::STATUS, TurnStatus::Waiting)?;
         }
-        let Some(node) = self.insert(parent, ElementKind::Decision, attrs, input.unwrap_or_default()) else {
-            return;
-        };
-        for item in content {
-            self.ext(node, "tool_call_content", item.to_string());
-        }
-        if let Some(turn) = &self.turn {
-            self.set(turn.node, attr::STATUS, TurnStatus::Waiting.into());
-        }
-        self.decisions.insert(node, PendingDecision { rpc_id, options: request.options });
+        self.ledger.wait(node);
+        self.decisions.insert(node, Pending { rpc_id, options: request.options });
+        Ok(())
     }
 
-    pub fn decision(&self, node: NodeId) -> Option<&PendingDecision> {
-        self.decisions.get(&node)
-    }
-
-    /// Records the answer to decision `node` and returns its JSON-RPC id.
-    pub fn answer(&mut self, node: NodeId, option: &PermissionOption, by: &str, reason: Option<&str>) -> Option<Json> {
-        let pending = self.decisions.remove(&node)?;
-        let canonical = match option.kind {
-            PermissionOptionKind::AllowOnce => answer::ALLOW_ONCE,
-            PermissionOptionKind::AllowAlways => answer::ALLOW_SESSION,
-            PermissionOptionKind::RejectOnce | PermissionOptionKind::RejectAlways => answer::DENY,
-        };
-        self.set(node, attr::ANSWER, Value::List(vec![canonical.into()]));
-        self.set(node, X_OPTION, option.option_id.as_str().into());
-        if !by.is_empty() {
-            self.set(node, attr::BY, by.into());
-        }
-        if let Some(reason) = reason {
-            self.set(node, attr::REASON, reason.into());
-        }
-        self.set(node, attr::STATUS, DecisionStatus::Answered.into());
-        self.set(node, attr::ENDED, Value::Int(now_ms()));
-        if self.decisions.is_empty()
-            && let Some(turn) = &self.turn
-        {
-            self.set(turn.node, attr::STATUS, TurnStatus::Running.into());
-        }
-        Some(pending.rpc_id)
-    }
-
-    fn ext_here(&mut self, kind: &str, raw: String) {
-        let parent = self.turn.as_ref().map_or(self.root, |t| t.node);
-        self.ext(parent, kind, raw);
-    }
-
-    fn ext(&self, parent: NodeId, kind: &str, raw: String) {
-        self.insert(parent, ElementKind::Ext, [(attr::HARNESS, HARNESS.into()), (attr::TYPE, kind.into())], raw);
-    }
-
-    pub fn set(&self, node: NodeId, name: &str, value: Value) {
-        self.commit(Draft::set(node, name, value));
-    }
-
-    fn insert<N: Into<String>>(
-        &self,
-        parent: NodeId,
-        kind: ElementKind,
-        attrs: impl IntoIterator<Item = (N, Value)>,
-        text: impl Into<String>,
-    ) -> Option<NodeId> {
-        self.commit_patch(Draft::insert(parent, kind, attrs, text)).map(|p| p.node)
-    }
-
-    fn commit(&self, draft: Draft) {
-        self.commit_patch(draft);
-    }
-
-    fn commit_patch(&self, draft: Draft) -> Option<loa_core::Patch> {
-        match self.sink.commit(draft) {
-            Ok(patch) => Some(patch),
-            Err(e) => {
-                tracing::warn!("acp: dropping a patch the session refused: {e}");
-                None
-            }
-        }
+    fn ext_here(&self, w: &DomWriter, kind: &str, raw: &(impl std::fmt::Display + ?Sized)) -> Out {
+        w.ext(self.turn_node().unwrap_or(self.root()), HARNESS, kind, raw).map(drop)
     }
 }
 
-fn parse<T: serde::de::DeserializeOwned>(update: &Json) -> Result<T, serde_json::Error> {
-    T::deserialize(update)
+/// Writes the `<result>` of a finished call; content without a text form
+/// (diffs, terminals, resources) goes to `<ext>` children.
+fn finish_call(w: &DomWriter, node: NodeId, status: CallStatus, content: Vec<Json>, raw_output: Option<Json>) -> Out {
+    let (texts, other): (Vec<Json>, Vec<Json>) = content.into_iter().partition(|item| item["type"] == "content" && item.pointer("/content/text").is_some_and(Json::is_string));
+    let mut text = texts.iter().filter_map(|item| item.pointer("/content/text").and_then(Json::as_str)).collect::<Vec<_>>().join("\n");
+    let mut attrs = vec![(attr::IS_ERROR, Value::Bool(status == CallStatus::Error))];
+    match raw_output.filter(|_| text.is_empty()) {
+        Some(Json::String(output)) => text = output,
+        Some(output) => {
+            attrs.push((attr::FORMAT, "json".into()));
+            text = output.to_string();
+        }
+        None => {}
+    }
+    w.insert(node, E::Result, attrs, text)?;
+    for mut item in other {
+        item.sort_all_objects();
+        w.ext(node, HARNESS, "tool_call_content", item)?;
+    }
+    w.close(node, status)
+}
+
+/// The offered option `value` names: its id, its label, or a
+/// [`loa_core::answer`] constant matched by option kind.
+pub(crate) fn pick_option<'a>(options: &'a [PermissionOption], value: &str) -> Option<&'a PermissionOption> {
+    let kinds: &[PermissionOptionKind] = match value {
+        answer::ALLOW_ONCE => &[PermissionOptionKind::AllowOnce],
+        answer::ALLOW_SESSION => &[PermissionOptionKind::AllowAlways],
+        answer::DENY => &[PermissionOptionKind::RejectOnce, PermissionOptionKind::RejectAlways],
+        _ => &[],
+    };
+    let named = options.iter().find(|o| o.option_id == value).or_else(|| options.iter().find(|o| o.name == value));
+    named.or_else(|| kinds.iter().find_map(|kind| options.iter().find(|o| o.kind == *kind)))
 }
 
 fn kind_str(kind: PermissionOptionKind) -> &'static str {
@@ -657,63 +559,5 @@ fn kind_str(kind: PermissionOptionKind) -> &'static str {
         PermissionOptionKind::AllowAlways => "allow_always",
         PermissionOptionKind::RejectOnce => "reject_once",
         PermissionOptionKind::RejectAlways => "reject_always",
-    }
-}
-
-/// `request_id` text of a JSON-RPC id: the number or string itself.
-fn request_id_text(id: &Json) -> String {
-    match id {
-        Json::String(s) => s.clone(),
-        other => other.to_string(),
-    }
-}
-
-#[cfg(test)]
-mod golden {
-    use super::*;
-    use loa_core::{MemorySink, PatchSink};
-
-    #[test]
-    fn render_goldens() {
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../loa-harness/fixtures/acp");
-        for entry in std::fs::read_dir(&dir).unwrap() {
-            let path = entry.unwrap().path();
-            if path.extension().and_then(|e| e.to_str()) != Some("jsonl") { continue; }
-            let sink = Arc::new(MemorySink::new());
-            let root = sink.commit(Draft::insert(NodeId::DOCUMENT, ElementKind::Session, vec![(attr::ID, Value::from("s")), (attr::HARNESS, "acp".into()), (attr::NODE, "owner".into()), (attr::CREATED, 1_i64.into()), (attr::SCHEMA, 1_i64.into())], "")).unwrap().node;
-            let mut p = Projector::new(sink.clone(), root, Some("fake-model".into()));
-            let mut replies: Vec<String> = Vec::new();
-            let cancel = |ids: Vec<Json>, replies: &mut Vec<String>| for id in ids { replies.push(serde_json::json!({"id": id, "result": {"outcome": {"outcome": "cancelled"}}}).to_string()); };
-            for line in std::fs::read_to_string(&path).unwrap().lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
-                let json: Json = serde_json::from_str(line).unwrap();
-                match json["$"].as_str() {
-                    Some("send") => { p.begin_turn(&Prompt { text: json["text"].as_str().unwrap().into(), by: "owner".into(), ..Prompt::default() }).unwrap(); p.set_prompt_request(1); }
-                    Some("result") => {
-                        let ids = match json.get("error") { Some(e) => p.end_turn(TurnEnd::Failed(e.as_str().unwrap().into())), None => p.on_response(1, &Ok(json["result"].clone())) };
-                        cancel(ids, &mut replies);
-                    }
-                    Some("interrupt") => { p.mark_interrupted(); let ids = p.cancel_decisions(); cancel(ids, &mut replies); replies.push("notify session/cancel".into()); }
-                    Some("closed") => { let ids = p.close(false); cancel(ids, &mut replies); }
-                    Some("load") => p.set_replay(Some(99)),
-                    Some("loaded") => { p.on_response(99, &Ok(Json::Null)); }
-                    Some("answer") => {
-                        let (node, options) = p.decisions.iter().find(|(_, d)| d.rpc_id == json["request"]).map(|(n, d)| (*n, d.options.clone())).unwrap();
-                        let value = json["values"][0].as_str().unwrap();
-                        let kind = match value { "allow_once" => Some(PermissionOptionKind::AllowOnce), "allow_session" => Some(PermissionOptionKind::AllowAlways), _ => None };
-                        let option = options.iter().find(|o| o.option_id == value || o.name == value || Some(o.kind) == kind).unwrap().clone();
-                        let id = p.answer(node, &option, json["by"].as_str().unwrap_or("owner"), None).unwrap();
-                        replies.push(serde_json::json!({"id": id, "result": {"outcome": {"outcome": "selected", "optionId": option.option_id}}}).to_string());
-                    }
-                    _ => match json["method"].as_str().unwrap() {
-                        "session/update" => if json["params"]["sessionId"] == "s-1" { p.update(json["params"]["update"].clone()) },
-                        _ => p.permission(json["id"].clone(), serde_json::from_value(json["params"].clone()).unwrap()),
-                    },
-                }
-            }
-            let mut out = loa_core::xml::to_string(&sink.dom());
-            out.push_str("\n--- replies\n");
-            for reply in replies { out.push_str(&reply); out.push('\n'); }
-            std::fs::write(path.with_extension("golden"), out).unwrap();
-        }
     }
 }

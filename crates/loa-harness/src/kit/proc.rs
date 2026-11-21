@@ -52,6 +52,38 @@ pub async fn reap(mut child: Child, kill: Option<oneshot::Receiver<()>>) -> Opti
     child.wait().await.ok()
 }
 
+/// Bytes a process wrote, cut from the front to stay under `limit`, never
+/// inside a UTF-8 sequence.
+#[derive(Debug, Default)]
+pub struct TailBuffer {
+    bytes: Vec<u8>,
+    limit: Option<usize>,
+    truncated: bool,
+}
+
+impl TailBuffer {
+    pub fn new(limit: Option<usize>) -> Self {
+        Self { limit, ..Self::default() }
+    }
+
+    pub fn push(&mut self, chunk: &[u8]) {
+        self.bytes.extend_from_slice(chunk);
+        let Some(over) = self.limit.and_then(|limit| self.bytes.len().checked_sub(limit)).filter(|over| *over > 0) else { return };
+        let cut = (over..self.bytes.len()).find(|i| self.bytes[*i] & 0b1100_0000 != 0b1000_0000).unwrap_or(self.bytes.len());
+        self.bytes.drain(..cut);
+        self.truncated = true;
+    }
+
+    pub fn text(&self) -> std::borrow::Cow<'_, str> {
+        String::from_utf8_lossy(&self.bytes)
+    }
+
+    /// Whether bytes were cut.
+    pub fn truncated(&self) -> bool {
+        self.truncated
+    }
+}
+
 impl From<RpcError> for AdapterError {
     fn from(err: RpcError) -> Self {
         match err {

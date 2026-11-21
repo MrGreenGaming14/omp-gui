@@ -1,95 +1,147 @@
-//! `terminal/*` client methods: commands the agent runs through the client,
-//! with their working directory inside the session cwd.
+//! The client methods agents call: `fs/*` and `terminal/*`, confined to the session cwd.
 
+use super::wire::{CreateTerminalRequest, ReadTextFileRequest, TerminalRef, WriteTextFileRequest};
+use crate::kit::RpcError;
+use crate::kit::proc::TailBuffer;
 use loa_util::LockExt;
-use crate::fs::resolve_inside;
-use crate::rpc::RpcError;
-use crate::wire::{CreateTerminalRequest, code};
-use serde_json::{Value, json};
+use serde::de::DeserializeOwned;
+use serde_json::{Value as Json, json};
 use std::collections::HashMap;
-use std::path::PathBuf;
-use std::process::{ExitStatus, Stdio};
+use std::io;
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncRead, AsyncReadExt};
-use tokio::process::Command;
 use tokio::sync::{oneshot, watch};
 
-/// The terminals of one session.
-pub struct Terminals {
-    /// Canonical session cwd.
+const METHOD_NOT_FOUND: i64 = -32601;
+const INVALID_PARAMS: i64 = -32602;
+const INTERNAL: i64 = -32603;
+const RESOURCE_NOT_FOUND: i64 = -32002;
+
+fn fail(code: i64, message: impl Into<String>) -> RpcError {
+    RpcError::Command { command: "request".into(), message: message.into(), code: Some(code.to_string()) }
+}
+
+fn io_error(path: &str, err: &io::Error) -> RpcError {
+    let code = match err.kind() {
+        io::ErrorKind::PermissionDenied => INVALID_PARAMS,
+        io::ErrorKind::NotFound => RESOURCE_NOT_FOUND,
+        _ => INTERNAL,
+    };
+    fail(code, format!("{path}: {err}"))
+}
+
+fn params<T: DeserializeOwned>(params: Json) -> Result<T, RpcError> {
+    serde_json::from_value(params).map_err(|e| fail(INVALID_PARAMS, e.to_string()))
+}
+
+/// One session's files and terminals.
+pub struct Host {
+    /// The session cwd, canonical.
     root: PathBuf,
-    map: Mutex<HashMap<String, Arc<Terminal>>>,
+    terminals: Mutex<HashMap<String, Arc<Terminal>>>,
     next: AtomicU64,
 }
 
 struct Terminal {
-    output: Arc<Mutex<Output>>,
-    exit: watch::Receiver<Option<Value>>,
+    output: Arc<Mutex<TailBuffer>>,
+    exit: watch::Receiver<Option<Json>>,
     kill: Mutex<Option<oneshot::Sender<()>>>,
 }
 
-/// Combined stdout and stderr, cut from the front to stay under the limit.
-struct Output {
-    bytes: Vec<u8>,
-    limit: Option<usize>,
-    truncated: bool,
-}
-
-impl Output {
-    fn push(&mut self, chunk: &[u8]) {
-        self.bytes.extend_from_slice(chunk);
-        let Some(limit) = self.limit else { return };
-        if self.bytes.len() <= limit {
-            return;
+impl Terminal {
+    fn kill(&self) {
+        if let Some(kill) = self.kill.locked().take() {
+            let _ = kill.send(());
         }
-        let mut cut = self.bytes.len() - limit;
-        // Never start the kept output inside a UTF-8 sequence.
-        while cut < self.bytes.len() && (self.bytes[cut] & 0b1100_0000) == 0b1000_0000 {
-            cut += 1;
-        }
-        self.bytes.drain(..cut);
-        self.truncated = true;
     }
 }
 
-impl Terminals {
-    /// `root` is the canonical session cwd.
-    pub fn new(root: PathBuf) -> Self {
-        Self { root, map: Mutex::new(HashMap::new()), next: AtomicU64::new(1) }
+impl Host {
+    pub fn new(cwd: &Path) -> io::Result<Self> {
+        Ok(Self { root: cwd.canonicalize()?, terminals: Mutex::default(), next: AtomicU64::new(1) })
     }
 
-    pub fn create(&self, request: CreateTerminalRequest) -> Result<Value, RpcError> {
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// `path` (absolute, or relative to the root) inside the root; `..`, and
+    /// symlinks that lead out, are refused.
+    pub fn resolve(&self, path: &str) -> io::Result<PathBuf> {
+        let path = Path::new(path);
+        let rel = match path.strip_prefix(&self.root) {
+            Ok(rel) => rel,
+            Err(_) if path.is_absolute() => return Err(io::Error::new(io::ErrorKind::PermissionDenied, format!("{} is outside the session directory", path.display()))),
+            Err(_) => path,
+        };
+        loa_util::fs::confine(&self.root, rel)
+    }
+
+    /// Serves one request of `method`.
+    pub async fn serve(&self, method: &str, request: Json) -> Result<Json, RpcError> {
+        match method {
+            "fs/read_text_file" => {
+                let request: ReadTextFileRequest = params(request)?;
+                let text = tokio::fs::read_to_string(self.resolve(&request.path).map_err(|e| io_error(&request.path, &e))?).await;
+                let text = text.map_err(|e| io_error(&request.path, &e))?;
+                let skip = request.line.map_or(0, |line| line.saturating_sub(1) as usize);
+                let take = request.limit.map_or(usize::MAX, |limit| limit as usize);
+                Ok(json!({ "content": text.split_inclusive('\n').skip(skip).take(take).collect::<String>() }))
+            }
+            "fs/write_text_file" => {
+                let request: WriteTextFileRequest = params(request)?;
+                let path = self.resolve(&request.path).map_err(|e| io_error(&request.path, &e))?;
+                if let Some(parent) = path.parent() {
+                    tokio::fs::create_dir_all(parent).await.map_err(|e| io_error(&request.path, &e))?;
+                }
+                tokio::fs::write(&path, request.content).await.map_err(|e| io_error(&request.path, &e))?;
+                Ok(Json::Null)
+            }
+            "terminal/create" => self.create(params(request)?),
+            "terminal/output" => {
+                let terminal = self.terminal(params(request)?)?;
+                let exit = terminal.exit.borrow().clone();
+                let output = terminal.output.locked();
+                Ok(json!({ "output": output.text(), "truncated": output.truncated(), "exitStatus": exit }))
+            }
+            "terminal/wait_for_exit" => {
+                let mut exit = self.terminal(params(request)?)?.exit.clone();
+                let status = exit.wait_for(Option::is_some).await.map_err(|_| RpcError::Closed)?.clone();
+                Ok(status.unwrap_or(Json::Null))
+            }
+            // `kill` keeps the terminal so its output stays readable; `release` forgets it.
+            "terminal/kill" => self.terminal(params(request)?).map(|t| t.kill()).map(|()| json!({})),
+            "terminal/release" => {
+                let TerminalRef { terminal_id } = params(request)?;
+                let terminal = self.terminals.locked().remove(&terminal_id).ok_or_else(|| unknown(&terminal_id))?;
+                terminal.kill();
+                Ok(json!({}))
+            }
+            other => Err(fail(METHOD_NOT_FOUND, format!("method not found: {other}"))),
+        }
+    }
+
+    fn create(&self, request: CreateTerminalRequest) -> Result<Json, RpcError> {
         let cwd = match &request.cwd {
-            Some(cwd) => resolve_inside(&self.root, cwd)?,
+            Some(cwd) => self.resolve(cwd).map_err(|e| io_error(cwd, &e))?,
             None => self.root.clone(),
         };
-        let mut command = Command::new(&request.command);
-        command
-            .args(request.args.unwrap_or_default())
-            .current_dir(&cwd)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-        for var in request.env.unwrap_or_default() {
-            command.env(var.name, var.value);
-        }
-        let mut child = command
-            .spawn()
-            .map_err(|e| RpcError::remote(code::INTERNAL, format!("can't run `{}`: {e}", request.command)))?;
+        let mut command = tokio::process::Command::new(&request.command);
+        command.args(request.args.unwrap_or_default()).current_dir(&cwd).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
+        command.envs(request.env.unwrap_or_default().into_iter().map(|var| (var.name, var.value)));
+        let mut child = command.spawn().map_err(|e| fail(INTERNAL, format!("can't run `{}`: {e}", request.command)))?;
         let limit = request.output_byte_limit.map(|l| usize::try_from(l).unwrap_or(usize::MAX));
-        let output = Arc::new(Mutex::new(Output { bytes: Vec::new(), limit, truncated: false }));
-        let readers = [
-            child.stdout.take().map(|out| tokio::spawn(pump(out, output.clone()))),
-            child.stderr.take().map(|err| tokio::spawn(pump(err, output.clone()))),
-        ];
-        let (exit_tx, exit_rx) = watch::channel(None);
-        let (kill_tx, kill_rx) = oneshot::channel::<()>();
+        let output = Arc::new(Mutex::new(TailBuffer::new(limit)));
+        let readers = [child.stdout.take().map(|out| pump(out, &output)), child.stderr.take().map(|err| pump(err, &output))];
+        let (exit_tx, exit) = watch::channel(None);
+        let (kill, killed) = oneshot::channel::<()>();
         tokio::spawn(async move {
             let status = tokio::select! {
                 status = child.wait() => status,
-                _ = kill_rx => {
+                _ = killed => {
                     let _ = child.start_kill();
                     child.wait().await
                 }
@@ -101,82 +153,33 @@ impl Terminals {
             exit_tx.send_replace(Some(status.map_or_else(|_| json!({ "exitCode": null, "signal": null }), exit_json)));
         });
         let id = format!("term-{}", self.next.fetch_add(1, Ordering::Relaxed));
-        let terminal = Terminal { output, exit: exit_rx, kill: Mutex::new(Some(kill_tx)) };
-        self.map.locked().insert(id.clone(), Arc::new(terminal));
+        self.terminals.locked().insert(id.clone(), Arc::new(Terminal { output, exit, kill: Mutex::new(Some(kill)) }));
         Ok(json!({ "terminalId": id }))
     }
 
-    pub fn output(&self, id: &str) -> Result<Value, RpcError> {
-        let terminal = self.get(id)?;
-        let exit = terminal.exit.borrow().clone();
-        let output = terminal.output.locked();
-        Ok(json!({
-            "output": String::from_utf8_lossy(&output.bytes),
-            "truncated": output.truncated,
-            "exitStatus": exit,
-        }))
+    fn terminal(&self, TerminalRef { terminal_id }: TerminalRef) -> Result<Arc<Terminal>, RpcError> {
+        self.terminals.locked().get(&terminal_id).cloned().ok_or_else(|| unknown(&terminal_id))
     }
 
-    pub async fn wait_for_exit(&self, id: &str) -> Result<Value, RpcError> {
-        let mut exit = self.get(id)?.exit.clone();
-        let status = exit.wait_for(Option::is_some).await.map_err(|_| RpcError::Closed)?.clone();
-        Ok(status.unwrap_or(Value::Null))
-    }
-
-    /// Kills the command and keeps the terminal so its output stays readable.
-    pub fn kill(&self, id: &str) -> Result<Value, RpcError> {
-        self.get(id)?.kill();
-        Ok(json!({}))
-    }
-
-    /// Kills the command and forgets the terminal.
-    pub fn release(&self, id: &str) -> Result<Value, RpcError> {
-        let terminal = self.map.locked().remove(id).ok_or_else(|| unknown(id))?;
-        terminal.kill();
-        Ok(json!({}))
-    }
-
-    /// Kills every command. Used when the session shuts down.
+    /// Kills every command; the session is gone.
     pub fn release_all(&self) {
-        for (_, terminal) in self.map.locked().drain() {
-            terminal.kill();
-        }
-    }
-
-    fn get(&self, id: &str) -> Result<Arc<Terminal>, RpcError> {
-        self.map.locked().get(id).cloned().ok_or_else(|| unknown(id))
+        self.terminals.locked().drain().for_each(|(_, terminal)| terminal.kill());
     }
 }
 
-impl Terminal {
-    fn kill(&self) {
-        if let Some(kill) = self.kill.locked().take() {
-            let _ = kill.send(());
+fn pump(mut from: impl AsyncRead + Unpin + Send + 'static, into: &Arc<Mutex<TailBuffer>>) -> tokio::task::JoinHandle<()> {
+    let into = into.clone();
+    tokio::spawn(async move {
+        let mut buf = [0u8; 8192];
+        while let Ok(n @ 1..) = from.read(&mut buf).await {
+            into.locked().push(&buf[..n]);
         }
-    }
+    })
 }
 
-async fn pump(mut from: impl AsyncRead + Unpin, into: Arc<Mutex<Output>>) {
-    let mut buf = [0u8; 8192];
-    loop {
-        match from.read(&mut buf).await {
-            Ok(0) | Err(_) => break,
-            Ok(n) => into.locked().push(&buf[..n]),
-        }
-    }
-}
-
-fn exit_json(status: ExitStatus) -> Value {
+fn exit_json(status: std::process::ExitStatus) -> Json {
     #[cfg(unix)]
-    let signal = std::os::unix::process::ExitStatusExt::signal(&status).map(signal_name);
-    #[cfg(not(unix))]
-    let signal: Option<String> = None;
-    json!({ "exitCode": status.code(), "signal": signal })
-}
-
-#[cfg(unix)]
-fn signal_name(signal: i32) -> String {
-    match signal {
+    let signal = std::os::unix::process::ExitStatusExt::signal(&status).map(|signal| match signal {
         1 => "SIGHUP".to_owned(),
         2 => "SIGINT".to_owned(),
         6 => "SIGABRT".to_owned(),
@@ -185,25 +188,12 @@ fn signal_name(signal: i32) -> String {
         13 => "SIGPIPE".to_owned(),
         15 => "SIGTERM".to_owned(),
         other => format!("SIG{other}"),
-    }
+    });
+    #[cfg(not(unix))]
+    let signal: Option<String> = None;
+    json!({ "exitCode": status.code(), "signal": signal })
 }
 
 fn unknown(id: &str) -> RpcError {
-    RpcError::remote(code::INVALID_PARAMS, format!("unknown terminal {id}"))
-}
-
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn truncation_keeps_the_tail_on_a_char_boundary() {
-        let mut out = Output { bytes: Vec::new(), limit: Some(2), truncated: false };
-        out.push("a".as_bytes());
-        out.push("éb".as_bytes());
-        // "aéb" is 4 bytes; keeping the last 2 would start inside "é", so only "b" stays.
-        assert_eq!(String::from_utf8(out.bytes).unwrap(), "b");
-        assert!(out.truncated);
-    }
+    fail(INVALID_PARAMS, format!("unknown terminal {id}"))
 }
