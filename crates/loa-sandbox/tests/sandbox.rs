@@ -179,6 +179,25 @@ async fn the_stub_streams_output_and_reports_the_exit_status() {
 }
 
 #[tokio::test]
+async fn copied_workspaces_go_in_and_come_back_without_git_data() {
+    let (workspace, root) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    std::fs::create_dir_all(workspace.path().join(".git")).unwrap();
+    std::fs::write(workspace.path().join("kept.txt"), "kept").unwrap();
+    std::fs::write(workspace.path().join("gone.txt"), "gone").unwrap();
+    let (client, sandbox) = connect(root.path()).await;
+    loa_sandbox::sync::copy_in(&client, workspace.path()).await.unwrap();
+    assert!(!root.path().join(".git").exists() && root.path().join("kept.txt").exists());
+    client.sh("rm gone.txt && mkdir new && echo new > new/file", None).await.unwrap();
+    loa_sandbox::sync::copy_out(&client, workspace.path()).await.unwrap();
+    let mut names: Vec<_> = std::fs::read_dir(workspace.path()).unwrap().map(|entry| entry.unwrap().file_name()).collect();
+    names.sort();
+    assert_eq!(names, [".git", "kept.txt", "new"]);
+    assert_eq!(std::fs::read_to_string(workspace.path().join("new/file")).unwrap(), "new\n");
+    client.shutdown().await.unwrap();
+    sandbox.stop().await.unwrap();
+}
+
+#[tokio::test]
 async fn worker_secrets_stay_on_host_and_only_workspace_files_reach_the_stub() {
     let workspace = tempfile::tempdir().unwrap();
     std::fs::write(workspace.path().join("public.txt"), "safe-workspace-content").unwrap();
