@@ -18,13 +18,11 @@ loa-ui-shell = { path = "../loa-ui-shell" }
 loa-ui-session = { path = "../loa-ui-session" }
 loa-ui-panel = { path = "../loa-ui-panel" }
 loa-ui-terminal = { path = "../loa-ui-terminal" }
-loa-ui-models = { path = "../loa-ui-models" }
 loa-models = { path = "../loa-models" }
-loa-ui-peers = { path = "../loa-ui-peers" }
+loa-ui-settings = { path = "../loa-ui-settings" }
 loa-ui-surface = { path = "../loa-ui-surface" }
 loa-surfaces = { path = "../loa-surfaces" }
 loa-projects = { path = "../loa-projects" }
-loa-ui-projects = { path = "../loa-ui-projects" }
 loa-mcp = { path = "../loa-mcp" }
 loa-remote = { path = "../loa-remote" }
 loa-trust = { path = "../loa-trust" }
@@ -34,7 +32,6 @@ loa-p2p = { path = "../loa-p2p" }
 loa-updater = { path = "../loa-updater" }
 futures.workspace = true
 tempfile.workspace = true
-loa-ui-updates = { path = "../loa-ui-updates" }
 semver = "1"
 loa-sandbox = { path = "../loa-sandbox" }
 serde_json.workspace = true

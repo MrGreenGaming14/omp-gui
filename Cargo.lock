@@ -4633,15 +4633,12 @@ dependencies = [
  "loa-surfaces",
  "loa-trust",
  "loa-ui-kit",
- "loa-ui-models",
  "loa-ui-panel",
- "loa-ui-peers",
- "loa-ui-projects",
  "loa-ui-session",
+ "loa-ui-settings",
  "loa-ui-shell",
  "loa-ui-surface",
  "loa-ui-terminal",
- "loa-ui-updates",
  "loa-updater",
  "loa-util",
  "rand 0.10.4",
@@ -4971,24 +4968,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "loa-ui-models"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "iced",
- "loa-contracts",
- "loa-core",
- "loa-harness",
- "loa-models",
- "loa-ui-kit",
- "loa-util",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
-]
-
-[[package]]
 name = "loa-ui-panel"
 version = "0.1.0"
 dependencies = [
@@ -5001,26 +4980,6 @@ dependencies = [
  "shell-words",
  "similar",
  "thiserror 2.0.21",
-]
-
-[[package]]
-name = "loa-ui-peers"
-version = "0.1.0"
-dependencies = [
- "iced",
- "loa-ui-kit",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "loa-ui-projects"
-version = "0.1.0"
-dependencies = [
- "iced",
- "iced_test",
- "loa-projects",
- "loa-ui-kit",
- "loa-util",
 ]
 
 [[package]]
@@ -5038,6 +4997,21 @@ dependencies = [
  "notify-rust",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "loa-ui-settings"
+version = "0.1.0"
+dependencies = [
+ "iced",
+ "iced_test",
+ "loa-core",
+ "loa-models",
+ "loa-projects",
+ "loa-ui-kit",
+ "loa-updater",
+ "loa-util",
+ "semver",
 ]
 
 [[package]]
@@ -5086,18 +5060,6 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
-]
-
-[[package]]
-name = "loa-ui-updates"
-version = "0.1.0"
-dependencies = [
- "iced",
- "iced_test",
- "loa-ui-kit",
- "loa-updater",
- "loa-util",
- "semver",
 ]
 
 [[package]]

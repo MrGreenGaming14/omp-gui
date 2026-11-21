@@ -1,7 +1,7 @@
 //! Models (M1): the sign in, model and model settings screens, and the
 //! composer's model and effort pickers.
 //!
-//! The screens come from loa-ui-models and talk to omp through its
+//! The screens come from loa-ui-settings and talk to omp through its
 //! [`Backend`] (a dedicated `omp --mode rpc` process, omp's config files).
 //! Model and effort changes go to the active session's harness; a session
 //! whose harness isn't running gets them in its config when it starts or
@@ -16,16 +16,14 @@ use iced::widget::container;
 use iced::{Element, Fill, Subscription, Task};
 use loa_contracts::harness::{AdapterError, HarnessModel, ModelSelection, SessionConfig};
 use loa_bus::SessionId;
-use loa_core::{Dom, Draft, Op, PatchSink, attr};
+use loa_core::{Dom, Op, PatchSink, attr};
 use loa_harness::omp::account::OmpLaunch;
 use loa_ui_session::composer as composer;
 use loa_models::service::{Backend, SettingsLoad};
-use loa_ui_models::picker::{self, Catalog};
-use loa_ui_models::screen::{self, Page};
 use loa_models::settings::{ModelSettings, ValidationError};
-use loa_ui_models::settings;
-use loa_ui_models::signin::{self, LoginUpdate, ProviderEntry, ProviderKey};
-use loa_ui_models::{ModelInfo, ModelRef, RoleAssignment, SessionModel};
+use loa_ui_kit::widgets::{Msg, Screen};
+use loa_ui_settings::models::{self as screen, Catalog, ModelInfo, ModelRef, Page, RoleAssignment, SessionModel, picker, role_draft, settings, signin};
+use loa_ui_settings::models::signin::{LoginUpdate, ProviderEntry, ProviderKey};
 use loa_ui_shell::palette;
 
 use crate::area::{Area, AreaId, Ctx, Session, SessionEvent, Target};
@@ -407,6 +405,7 @@ impl State {
                 }
                 Task::none()
             }
+            signin::Event::CopyUrl(url) => iced::clipboard::write(url),
             signin::Event::Cancel(key) => {
                 self.backend.cancel(&key);
                 Task::none()
@@ -447,13 +446,13 @@ impl State {
     }
 }
 
-/// The picker's name for a harness model: its `provider/id` selector when
-/// the id is one, else the provider and the bare id.
 /// Whether `harness` has model roles, read through the omp models backend.
 fn roles(ctx: &Ctx, harness: &str) -> bool {
     ctx.services.harnesses.traits(harness).has_roles
 }
 
+/// The picker's name for a harness model: its `provider/id` selector when
+/// the id is one, else the provider and the bare id.
 fn model_ref(model: &HarnessModel) -> ModelRef {
     ModelRef::parse(&model.id).filter(|parsed| parsed.provider == model.provider).unwrap_or_else(|| ModelRef::new(&model.provider, &model.id))
 }
@@ -466,16 +465,7 @@ fn model_info(model: &HarnessModel, reference: &ModelRef) -> ModelInfo {
 /// no longer follows one. The harness records the model itself.
 fn record_role(session: &Session, role: Option<String>) -> Result<(), String> {
     let writer = session.writer();
-    let draft = writer.with_dom(|dom: &Dom| {
-        let (root, current) = SessionModel::from_dom(dom)?;
-        match (role, current.role) {
-            (Some(new), Some(old)) if new == old => None,
-            (Some(new), _) => Some(Draft::set(root, attr::MODEL_ROLE, new)),
-            (None, Some(_)) => Some(Draft::clear(root, attr::MODEL_ROLE)),
-            (None, None) => None,
-        }
-    });
-    match draft {
+    match writer.with_dom(|dom: &Dom| role_draft(dom, role.as_deref())) {
         Some(draft) => writer.commit(draft).map(drop).map_err(|error| error.to_string()),
         None => Ok(()),
     }
@@ -493,7 +483,7 @@ impl State {
             },
             Page::Model => match &self.picker.1 {
                 Load::Ready(picker) => {
-                    container(picker.state.view().map(Message::Picker)).center_x(Fill).padding([24.0, 0.0]).into()
+                    container(picker.state.view().map(Message::Picker)).center_x(Fill).padding(loa_ui_kit::theme::pad_y(loa_ui_kit::theme::SpaceRole::Xl)).into()
                 }
                 Load::Loading => screen::status("Reading models…"),
                 Load::Failed(error) => screen::status(error.as_str()),
@@ -611,9 +601,7 @@ impl Area for State {
             }
             Message::SignIn(message) => {
                 let Load::Ready(state) = &mut self.signin else { return Task::none() };
-                let (task, event) = state.update(message);
-                let action = event.map_or_else(Task::none, |event| self.signin_event(event, ctx));
-                Task::batch([task.map(Message::SignIn), action])
+                state.update(message).map_or_else(Task::none, |event| self.signin_event(event, ctx))
             }
             Message::Login(key, update) => {
                 let succeeded = matches!(update, LoginUpdate::Succeeded { .. });
@@ -629,9 +617,9 @@ impl Area for State {
             }
             Message::Picker(message) => {
                 let Load::Ready(picker) = &mut self.picker.1 else { return Task::none() };
-                let (task, event) = picker.state.update(message);
-                let action = event.map_or_else(Task::none, |event| self.picker_event(event, ctx));
-                Task::batch([task.map(Message::Picker), action])
+                let event = picker.state.update(message);
+                let scroll = picker.state.scroll().map(Message::Picker);
+                Task::batch([scroll, event.map_or_else(Task::none, |event| self.picker_event(event, ctx))])
             }
             Message::RoleAssigned(result) => match result {
                 Ok(()) => self.refresh_models(ctx),
@@ -649,15 +637,13 @@ impl Area for State {
             }
             Message::Settings(message) => {
                 let Load::Ready(state) = &mut self.settings else { return Task::none() };
-                let (task, event) = state.update(message);
-                let save = match event {
+                match state.update(message) {
                     Some(settings::Event::Save(settings)) => {
                         let backend = self.backend.clone();
                         Task::perform(async move { backend.save_settings(settings).await }, Message::Saved)
                     }
                     Some(settings::Event::Reverted) | None => Task::none(),
-                };
-                Task::batch([task.map(Message::Settings), save])
+                }
             }
             Message::Saved(result) => {
                 let Load::Ready(state) = &mut self.settings else { return Task::none() };
@@ -729,7 +715,7 @@ impl Area for State {
             (Page::Model, Load::Ready(picker)) => picker
                 .state
                 .subscription()
-                .filter_map(|message| (!matches!(message, picker::Message::Close)).then_some(message))
+                .filter_map(|message| (!matches!(message, Msg::Emit(picker::Event::Close))).then_some(message))
                 .map(Message::Picker),
             _ => Subscription::none(),
         }

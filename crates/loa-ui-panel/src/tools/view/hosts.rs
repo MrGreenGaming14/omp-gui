@@ -42,7 +42,7 @@ impl State {
         let head: Element<'a, Message> = if wide { column![row![name, actions].spacing(sp(Sp::S)).align_y(Alignment::Center), summary].into() } else { column![name, summary, actions].into() };
         let editor = self.limits.as_ref().filter(|d| d.host == host.alias).map(|d| {
             let check = |on, s, limit| checkbox(on).label(s).size(ts(T::Body)).text_size(ts(T::Caption)).spacing(sp(Sp::S)).style(style::check).on_toggle(move |v| Message::LimitSet(limit, v));
-            let paths = list_editor(&d.limits.allowed_paths, Clone::clone, Message::LimitsRemovePath, &d.new_path, |v| Message::FormEdit(FormId::Limits, "path", v), Message::LimitsAddPath);
+            let paths = list_editor(&d.limits.allowed_paths, Clone::clone, Message::LimitsRemovePath, None, &d.new_path, |v| Message::FormEdit(FormId::Limits, "path", v), Message::LimitsAddPath);
             let flags = row![check(d.limits.read_only, "Read only", Limit::ReadOnly), check(d.limits.commands_allowed, "Commands allowed", Limit::Commands)].spacing(sp(Sp::L));
             let error = d.path_error.map(|e| label(e, T::Caption, Tone::Danger));
             inset(column![flags, check(d.limits.auto_approve, "Run writes and commands without asking", Limit::AutoApprove), label("Allowed paths", T::Caption, Tone::Muted), paths, error, form_buttons("Save", FormId::Limits)].spacing(sp(Sp::S)))

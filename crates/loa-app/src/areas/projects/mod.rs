@@ -25,7 +25,8 @@ use loa_projects::{
     ProjectSummary, RebuildOutcome, ServiceConfig, Summarizers,
 };
 use loa_ui_shell::palette;
-use loa_ui_projects as screen;
+use loa_ui_kit::widgets::Screen;
+use loa_ui_settings::projects as screen;
 use tokio::sync::mpsc::UnboundedReceiver;
 
 use crate::area::{Area, AreaId, Ctx, HostToolSet, Request, SessionEvent, Target};

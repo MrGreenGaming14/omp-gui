@@ -1,0 +1,20 @@
+[package]
+name = "loa-ui-settings"
+description = "Settings-style screens: sign in, models and model settings, projects, peers and updates"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+iced.workspace = true
+loa-core.workspace = true
+loa-models = { path = "../loa-models" }
+loa-projects = { path = "../loa-projects" }
+loa-ui-kit.workspace = true
+loa-updater = { path = "../loa-updater", default-features = false }
+loa-util.workspace = true
+
+[dev-dependencies]
+iced_test = "0.14"
+loa-ui-kit = { workspace = true, features = ["testkit"] }
+semver = "1"

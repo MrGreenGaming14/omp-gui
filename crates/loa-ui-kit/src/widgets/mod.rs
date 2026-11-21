@@ -5,7 +5,7 @@ mod form;
 pub mod popover;
 pub mod virtual_list;
 
-pub use form::{Field, Form, FormSpec, FormState, Picker, PickerItem, PickerMsg, form_view, list_editor};
+pub use form::{Field, Form, FormSpec, FormState, Picker, PickerItem, PickerMsg, form_view, list_editor, reorder};
 pub use popover::{Popover, popover};
 pub use virtual_list::{Heights, scroll_target};
 
@@ -40,6 +40,20 @@ pub enum Msg<L, E> {
     Emit(E),
 }
 
+/// A screen over [`Msg`]: `reduce` applies local messages, `guard` admits events the view emits
+/// directly while they still hold for the current state.
+pub trait Screen {
+    type Local;
+    type Event;
+    fn reduce(&mut self, m: Self::Local) -> Option<Self::Event>;
+    fn guard(&self, e: &Self::Event) -> bool;
+    fn update(&mut self, m: Msg<Self::Local, Self::Event>) -> Option<Self::Event> {
+        match m {
+            Msg::Local(l) => self.reduce(l),
+            Msg::Emit(e) => self.guard(&e).then_some(e),
+        }
+    }
+}
 
 /// `s` at text role `r` in `tone`.
 pub fn label<'a>(s: impl text::IntoFragment<'a>, r: TextRole, tone: Tone) -> text::Text<'a> {

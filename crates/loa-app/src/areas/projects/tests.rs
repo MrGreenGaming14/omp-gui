@@ -7,6 +7,7 @@ use loa_contracts::harness::{Adapter, AdapterError, Answer, Capabilities, Harnes
 use loa_bus::Policy;
 use loa_core::{Dom, Draft, ElementKind, NodeId, PatchSink, Role, TurnStatus, Value, attr, now_ms};
 use loa_projects::{PROJECT_READ, PROJECT_SEARCH, Summarizer};
+use loa_ui_kit::widgets::Msg;
 use loa_ui_shell as shell;
 
 use super::*;
@@ -129,8 +130,20 @@ fn projects(app: &mut App, message: Message) {
     update(app, AppMessage::Projects(message));
 }
 
-fn on_screen(app: &mut App, message: screen::Message) {
-    projects(app, Message::Screen(message));
+fn on_screen(app: &mut App, message: screen::Local) {
+    projects(app, Message::Screen(Msg::Local(message)));
+}
+
+/// What the screen's buttons emit for the app.
+fn emit(app: &mut App, event: screen::Event) {
+    projects(app, Message::Screen(Msg::Emit(event)));
+}
+
+/// The screen's "New chat" in the open project.
+fn new_chat(app: &mut App) {
+    let screen = app.areas.projects.screen().expect("a project is open");
+    let event = screen::Event::NewChat { project: screen.project().to_owned(), cwd: screen.overview().and_then(|o| o.cwd.clone()) };
+    emit(app, event);
 }
 
 /// Opens `project` from the sidebar, starts a chat there with the screen's
@@ -138,7 +151,7 @@ fn on_screen(app: &mut App, message: screen::Message) {
 fn chat_in(app: &mut App, project: &str, text: &str) -> String {
     let open = shell::Message::Emit(shell::Event::Sidebar(shell::sidebar::Event::OpenProject(project.to_owned())));
     update(app, AppMessage::Shell(open));
-    on_screen(app, screen::Message::NewChat);
+    new_chat(app);
     let session = app.ctx.sessions.active().expect("the new chat runs");
     let id = session.id().clone();
     let (_, mut feed) = session.writer().subscribe(Policy::every_patch(1024));
@@ -324,10 +337,10 @@ fn project_screen_lists_sessions_saves_settings_and_excludes() {
 
     // Shared instructions and a pinned file, saved and delivered as context.
     let instructions = Edit::Paste(Arc::new("Always use port 31415.".to_owned()));
-    on_screen(&mut app, screen::Message::InstructionsEdited(Action::Edit(instructions)));
-    on_screen(&mut app, screen::Message::PinPathChanged("src/net.rs".into()));
-    on_screen(&mut app, screen::Message::AddPin);
-    on_screen(&mut app, screen::Message::Save);
+    on_screen(&mut app, screen::Local::Instructions(Action::Edit(instructions)));
+    on_screen(&mut app, screen::Local::PinPath("src/net.rs".into()));
+    on_screen(&mut app, screen::Local::AddPin);
+    on_screen(&mut app, screen::Local::Save);
     let screen = app.areas.projects.screen().unwrap();
     assert!(!screen.is_dirty(), "saved");
     assert_eq!(screen.overview().unwrap().settings.instructions, "Always use port 31415.");
@@ -337,17 +350,17 @@ fn project_screen_lists_sessions_saves_settings_and_excludes() {
     assert!(context.contains("Always use port 31415.") && context.contains("src/net.rs"), "{context}");
 
     // The exclude toggle reaches the session and the screen.
-    on_screen(&mut app, screen::Message::SetIncluded { session: session.clone(), included: false });
+    on_screen(&mut app, screen::Local::SetIncluded { session: session.clone(), included: false });
     let row = &app.areas.projects.screen().unwrap().overview().unwrap().sessions[0];
     assert!(row.excluded);
     let dom = app.ctx.sessions.get(&session).unwrap().writer().with_dom(Dom::clone);
     assert!(loa_projects::is_excluded(&dom), "recorded in the session");
-    on_screen(&mut app, screen::Message::SetIncluded { session: session.clone(), included: true });
+    on_screen(&mut app, screen::Local::SetIncluded { session: session.clone(), included: true });
     let dom = app.ctx.sessions.get(&session).unwrap().writer().with_dom(Dom::clone);
     assert!(!loa_projects::is_excluded(&dom));
 
     // Opening a session from the screen shows its chat.
-    on_screen(&mut app, screen::Message::OpenSession(session.clone()));
+    emit(&mut app, screen::Event::OpenSession(session.clone()));
     assert_eq!(active(&app), Some(session.as_str()));
     assert_eq!(app.ctx.screen(), None);
 }

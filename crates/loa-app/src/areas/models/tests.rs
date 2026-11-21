@@ -9,7 +9,7 @@ use iced::futures::StreamExt;
 use iced_runtime::Action as RuntimeAction;
 use loa_contracts::harness::{Adapter, AdapterError, Answer, Capabilities, HarnessSession, Prompt, Registry, SessionState};
 use loa_bus::Policy;
-use loa_core::{ElementKind, NodeId, Value, now_ms};
+use loa_core::{Draft, ElementKind, NodeId, Value, now_ms};
 use loa_trust::NodeIdentity;
 use loa_harness::codex::account::Codex;
 use loa_models::keys::EnvironmentPresence;
@@ -20,7 +20,7 @@ use loa_contracts::harness::model_rpc::{self as rpc, LoginProvider, LoginUiReque
 use loa_models::testing::{FakeOmp, LoginScript};
 use loa_contracts::harness::model_error::SettingsValidator;
 use loa_models::service::Parts;
-use loa_ui_models::signin::{Auth, LoginState};
+use loa_ui_settings::models::signin::{Auth, LoginState};
 
 use super::*;
 use crate::app::{App, Message as AppMessage};
@@ -371,8 +371,8 @@ fn the_model_screen_opens_from_the_palette_and_the_composer_and_switches_the_ses
     assert_eq!(state.rows(), [picker::Row::Role(0), picker::Row::Model(0), picker::Row::Model(1)]);
 
     // Search and pick GPT Y.
-    models(&mut f.app, Message::Picker(picker::Message::Query("gpt".into())));
-    models(&mut f.app, Message::Picker(picker::Message::Submit));
+    models(&mut f.app, Message::Picker(Msg::Local(picker::Local::Query("gpt".into()))));
+    models(&mut f.app, Message::Picker(Msg::Local(picker::Local::Submit)));
     assert_eq!(f.app.ctx.screen(), None);
     sync(&mut f.app);
     assert_eq!(session_attr(&f.app, attr::MODEL).as_deref(), Some("openai-codex/gpt-y"));
@@ -383,7 +383,7 @@ fn the_model_screen_opens_from_the_palette_and_the_composer_and_switches_the_ses
     pick(&mut f.app, composer::PickerId::Model, "all");
     assert_eq!(f.app.ctx.screen(), Some(AreaId::Models));
     assert_eq!(picker(&f.app).selected(), Some(2), "the current model is selected first");
-    models(&mut f.app, Message::Picker(picker::Message::Pick(0)));
+    models(&mut f.app, Message::Picker(Msg::Local(picker::Local::Pick(0))));
     sync(&mut f.app);
     assert_eq!(session_attr(&f.app, attr::MODEL).as_deref(), Some("anthropic/claude-x"));
     assert_eq!(session_attr(&f.app, attr::MODEL_ROLE).as_deref(), Some("default"));
@@ -393,8 +393,8 @@ fn the_model_screen_opens_from_the_palette_and_the_composer_and_switches_the_ses
 fn a_model_picked_without_a_session_starts_the_next_one() {
     let mut f = fixture(FakeAdapter::new("omp", omp_models(), true));
     palette(&mut f.app, "Switch model");
-    models(&mut f.app, Message::Picker(picker::Message::Query("gpt".into())));
-    models(&mut f.app, Message::Picker(picker::Message::Submit));
+    models(&mut f.app, Message::Picker(Msg::Local(picker::Local::Query("gpt".into()))));
+    models(&mut f.app, Message::Picker(Msg::Local(picker::Local::Submit)));
     update(&mut f.app, AppMessage::NewSession);
     assert_eq!(f.configs.locked()[0].model.as_deref(), Some("openai-codex/gpt-y"));
     sync(&mut f.app);
@@ -416,7 +416,7 @@ fn the_sign_in_screen_lists_providers_and_runs_an_omp_login() {
     assert!(matches!(state.providers()[2].auth, Auth::Unavailable { .. }), "{:?}", state.providers()[2]);
 
     let key = ProviderKey::new("omp", "openai-codex");
-    models(&mut f.app, Message::SignIn(signin::Message::SignIn(key.clone())));
+    models(&mut f.app, Message::SignIn(Msg::Local(signin::Local::SignIn(key.clone()))));
     assert_eq!(*f.opener.0.locked(), ["https://auth.example/authorize"], "the browser opened on omp's URL");
     let Load::Ready(state) = &f.app.areas.models.signin else { unreachable!() };
     assert!(matches!(state.login_state(&key), LoginState::Succeeded { .. }), "{:?}", state.login_state(&key));
@@ -431,9 +431,10 @@ fn the_settings_screen_saves_omp_config_through_validation() {
     assert_eq!(f.app.areas.models.page, Page::Settings);
     assert!(matches!(f.app.areas.models.settings, Load::Ready(_)));
 
-    models(&mut f.app, Message::Settings(settings::Message::ChainInput(0, "openai-codex/gpt-y".into())));
-    models(&mut f.app, Message::Settings(settings::Message::AddTypedChainEntry(0)));
-    models(&mut f.app, Message::Settings(settings::Message::Save));
+    let edit = |app: &mut App, local| models(app, Message::Settings(Msg::Local(local)));
+    edit(&mut f.app, settings::Local::ChainInput(0, "openai-codex/gpt-y".into()));
+    edit(&mut f.app, settings::Local::AddChain(0, None));
+    edit(&mut f.app, settings::Local::Save);
     let config = f.dir.path().join("agent/config.yml");
     let text = std::fs::read_to_string(&config).unwrap();
     assert!(text.starts_with("# mine\n"), "{text}");
@@ -443,10 +444,10 @@ fn the_settings_screen_saves_omp_config_through_validation() {
     assert!(!state.is_dirty());
 
     // omp rejects the new role: the errors show and nothing is written.
-    models(&mut f.app, Message::Settings(settings::Message::NewRoleInput("reject-me".into())));
-    models(&mut f.app, Message::Settings(settings::Message::AddRole));
-    models(&mut f.app, Message::Settings(settings::Message::AddChainEntry(1, "anthropic/claude-x".into())));
-    models(&mut f.app, Message::Settings(settings::Message::Save));
+    edit(&mut f.app, settings::Local::NewRole("reject-me".into()));
+    edit(&mut f.app, settings::Local::AddRole);
+    edit(&mut f.app, settings::Local::AddChain(1, Some("anthropic/claude-x".into())));
+    edit(&mut f.app, settings::Local::Save);
     let Load::Ready(state) = &f.app.areas.models.settings else { unreachable!() };
     assert_eq!(state.errors()[0].location, "config.yml");
     assert!(state.is_dirty());
