@@ -1,10 +1,12 @@
 //! Test doubles for harness tests: a scripted stand-in process, a sink that
-//! can be awaited, the DOM convention checks, and the transcript-replay and
-//! native round-trip runners.
+//! can be awaited, the DOM convention checks, the transcript-replay and
+//! native round-trip runners, and a scripted harness for app tests.
 
 mod dom;
+mod scripted;
 
 pub use dom::{Phase, Rule, Violation, check_dom, check_dom_in, check_history};
+pub use scripted::{FORM, ScriptedAdapter, Seen};
 
 use crate::kit::{EventMapper, NativeCodec};
 use loa_core::{CommitError, Dom, DomWriter, Draft, MemorySink, Patch, PatchSink};
