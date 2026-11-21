@@ -1,10 +1,9 @@
-//! Turning frames into pixels: still encodings here, video through a port.
+//! Turning frames into pixels: a chain of [`FrameDecoder`] strategies with [`StillDecoder`]
+//! last. What the chain accepts is what a tab negotiates with its surface.
 
 use crate::framebuffer::Framebuffer;
-use loa_surfaces::pixels::{self, PixelError};
 use loa_contracts::surface::{Encoding, Frame};
-
-pub use loa_surfaces::pixels::STILL_ENCODINGS;
+use loa_surfaces::pixels::{self, PixelError, STILL_ENCODINGS};
 
 #[derive(Debug, thiserror::Error)]
 pub enum DecodeError {
@@ -12,39 +11,61 @@ pub enum DecodeError {
     Pixels(#[from] PixelError),
     #[error("video decoder: {0}")]
     Video(String),
-    #[error("{0:?} needs a video decoder")]
-    NeedsVideo(Encoding),
 }
 
-/// Port: decodes H.264 and HEVC access units. Backed by a hardware or
-/// software decoder the app links in.
-pub trait VideoDecoder: Send {
-    /// Whether this decoder handles `encoding`.
-    fn supports(&self, encoding: Encoding) -> bool;
+/// One decoding strategy of a pixel tab.
+pub trait FrameDecoder: Send {
+    /// The encodings this decoder applies, best first.
+    fn accepts(&self) -> &[Encoding];
 
-    /// Feeds one access unit and writes the resulting picture, full surface
-    /// RGBA of `frame.width` by `frame.height`, into `out`. `Ok(false)` when
-    /// the unit produced no picture yet.
-    fn decode(&mut self, frame: &Frame, out: &mut [u8]) -> Result<bool, DecodeError>;
+    /// Applies `frame` onto `fb`; `Ok(false)` when it produced no picture yet.
+    fn apply(&mut self, frame: &Frame, fb: &mut Framebuffer) -> Result<bool, DecodeError>;
 
-    /// Forgets reference pictures, e.g. after frames were lost. The next
-    /// frame fed is a keyframe.
-    fn reset(&mut self);
+    /// Forgets reference pictures after lost frames; the next frame fed is a keyframe.
+    fn reset(&mut self) {}
 }
 
-/// Whether frames of `encoding` need a [`VideoDecoder`].
+/// RGBA, PNG and JPEG regions, written onto the retained picture.
+pub struct StillDecoder;
+
+impl FrameDecoder for StillDecoder {
+    fn accepts(&self) -> &[Encoding] {
+        &STILL_ENCODINGS
+    }
+
+    fn apply(&mut self, frame: &Frame, fb: &mut Framebuffer) -> Result<bool, DecodeError> {
+        let (width, height) = (fb.width(), fb.height());
+        pixels::apply_still(fb.pixels_mut(), width, height, frame)?;
+        Ok(true)
+    }
+}
+
+/// The decoders of one tab: `extra` first, then [`StillDecoder`].
+pub(crate) struct Decoders(Vec<Box<dyn FrameDecoder>>);
+
+impl Decoders {
+    pub fn new(extra: Option<Box<dyn FrameDecoder>>) -> Self {
+        Self(extra.into_iter().chain([Box::new(StillDecoder) as Box<dyn FrameDecoder>]).collect())
+    }
+
+    /// What the chain decodes, best first.
+    pub fn accepted(&self) -> Vec<Encoding> {
+        self.0.iter().flat_map(|d| d.accepts().iter().copied()).collect()
+    }
+
+    /// The first decoder accepting `encoding`.
+    pub fn find(&mut self, encoding: Encoding) -> Option<&mut Box<dyn FrameDecoder>> {
+        self.0.iter_mut().find(|d| d.accepts().contains(&encoding))
+    }
+
+    pub fn reset(&mut self) {
+        self.0.iter_mut().for_each(|d| d.reset());
+    }
+}
+
+/// Whether frames of `encoding` reference earlier ones, so a lost frame needs a keyframe.
 pub fn is_video(encoding: Encoding) -> bool {
     matches!(encoding, Encoding::H264 | Encoding::Hevc)
-}
-
-/// Applies an RGBA, PNG or JPEG frame onto `fb` at its region. `fb` is left
-/// unchanged on error.
-pub fn apply_still(fb: &mut Framebuffer, frame: &Frame) -> Result<(), DecodeError> {
-    let (width, height) = (fb.width(), fb.height());
-    pixels::apply_still(fb.pixels_mut(), width, height, frame).map_err(|e| match e {
-        PixelError::NotStill(video) => DecodeError::NeedsVideo(video),
-        other => other.into(),
-    })
 }
 
 /// A short name for messages on the tab.

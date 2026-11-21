@@ -1,40 +1,30 @@
-//! Surface renderer: the generic right panel view of any [`loa_contracts::surface::Surface`].
-//!
-//! Pixel surfaces stream frames onto a retained framebuffer, scaled to the
-//! panel with letterboxing, and get mouse, scroll and keys back in surface
-//! coordinates. The cursor and hover ring are drawn locally on every pointer
-//! move, and a latency meter pairs inputs with the frames that show them.
-//! Document surfaces are fetched once and rendered here, so scroll and zoom
-//! stay local.
+//! Surface renderer: the right panel view of any [`loa_contracts::surface::Surface`]. Pixel
+//! surfaces stream frames onto a retained framebuffer and take input back in surface
+//! coordinates; document surfaces are fetched once and rendered here.
 
 pub mod decode;
-mod docs;
-pub mod document;
 pub mod framebuffer;
 pub mod geometry;
-pub mod input;
+pub mod keys;
 pub mod latency;
 pub mod panel;
 pub mod picker;
-mod state;
-mod style;
+mod tab;
+mod theme;
 #[cfg(feature = "remote-video")]
 mod video;
 mod viewer;
 
-pub use decode::{DecodeError, VideoDecoder};
-pub use docs::DocsRenderers;
-#[cfg(feature = "remote-video")]
-pub use video::{H264Decoder, VideoStatus};
-pub use panel::{
-    Available, BrowserStatus, Capture, CaptureStatus, NewDecoder, Panel, PanelOptions,
-};
-pub use document::{PageError, PageRenderer, PageRenderers, Pages, RgbaPage};
+pub use decode::{DecodeError, FrameDecoder, StillDecoder};
 pub use framebuffer::Framebuffer;
 pub use geometry::{Placement, fit};
-pub use input::KeyInput;
+pub use keys::KeyInput;
 pub use latency::{LatencyMeter, Reading};
-pub use state::{
-    Clock, Event, LocalCursor, Message, MonotonicClock, Options, PointerInput, State, Tab,
-    latency_label, stream_label,
+pub use panel::{Available, BrowserStatus, Capture, CaptureStatus, NewDecoder, Options, Panel};
+pub use tab::{
+    Clock, DocumentMode, Event, LocalCursor, Message, MonotonicClock, Pages, PixelMode, PointerInput, State, Tab, latency_label,
+    stream_label,
 };
+pub use theme::SurfaceKindStyle;
+#[cfg(feature = "remote-video")]
+pub use video::{H264Decoder, VideoStatus};

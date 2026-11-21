@@ -1,12 +1,13 @@
 //! An in-panel file picker for document surfaces: browse folders and pick a
 //! PDF, Office or image file, or type a path.
 
-use crate::style;
-use iced::widget::{Column, button, column, container, row, scrollable, text, text_input};
-use iced::{Center, Element, Fill, Length};
+use crate::theme;
+use iced::widget::{Column, button, column, container, row, scrollable};
+use iced::{Center, Element};
 use loa_surfaces::docs::Format;
-use loa_ui_kit::icons::{Icon, muted};
-use loa_ui_shell::theme::style as shell;
+use loa_ui_kit::Icon;
+use loa_ui_kit::style::{self, ButtonKind, Surface};
+use loa_ui_kit::theme::{SpaceRole as Sp, TextRole, sp, text_size};
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -99,45 +100,22 @@ impl FilePicker {
     }
 
     pub fn view(&self) -> Element<'_, Message> {
-        let up = button(muted(Icon::ChevronUp, 14.0))
-            .on_press_maybe(self.dir.parent().map(|_| Message::Up))
-            .padding(6)
-            .style(shell::row);
-        let path = text_input("Folder or file path", &self.path)
-            .on_input(Message::PathChanged)
-            .on_submit(Message::PathSubmitted)
-            .size(style::TEXT)
-            .padding([5, 8])
-            .style(shell::input);
-        let mut list = Column::new().spacing(1);
+        let up = button(theme::icon(Icon::ChevronUp)).on_press_maybe(self.dir.parent().map(|_| Message::Up));
+        let up = up.padding(sp(Sp::Xs)).style(style::button(ButtonKind::Row { selected: false }));
+        let path = theme::field("Folder or file path", &self.path, Message::PathChanged).on_submit(Message::PathSubmitted);
+        let mut list = Column::new();
         if self.entries.is_empty() {
-            list = list.push(container(text("No folders or documents here").size(style::TEXT).style(shell::muted)).padding([6, 8]));
+            list = list.push(container(theme::hint("No folders or documents here")).padding(theme::field_padding()));
         }
         for entry in &self.entries {
-            let (icon, message) = if entry.is_dir {
-                (Icon::Folder, Message::Enter(entry.path.clone()))
-            } else {
-                (Icon::FileText, Message::Choose(entry.path.clone()))
-            };
-            list = list.push(
-                button(row![muted(icon, 14.0), text(&entry.name).size(style::TEXT)].spacing(8).align_y(Center))
-                    .on_press(message)
-                    .width(Fill)
-                    .padding([4, 8])
-                    .style(shell::row),
-            );
+            let (icon, message) = if entry.is_dir { (Icon::Folder, Message::Enter(entry.path.clone())) } else { (Icon::FileText, Message::Choose(entry.path.clone())) };
+            list = list.push(theme::list_row(row![theme::icon(icon), theme::body(&entry.name)].spacing(sp(Sp::S)).align_y(Center), message));
         }
-        let mut body = column![
-            row![up, path].spacing(6).align_y(Center),
-            container(scrollable(list).height(Length::Fixed(176.0)))
-                .padding(2)
-                .style(shell::card),
-        ]
-        .spacing(6);
-        if let Some(error) = &self.error {
-            body = body.push(text(error).size(style::SMALL).style(style::warning));
-        }
-        body.into()
+        // About seven rows of entries show before the list scrolls.
+        let height = 7.0 * (text_size(TextRole::Label) + 3.0 * sp(Sp::Xs));
+        let list = container(scrollable(list).height(height)).padding(sp(Sp::Xs) / 2.0).style(style::container(Surface::Card));
+        let body = column![row![up, path].spacing(sp(Sp::Xs)).align_y(Center), list].spacing(sp(Sp::Xs));
+        body.push(self.error.as_deref().map(|e| Element::from(theme::warning(e)))).into()
     }
 }
 
