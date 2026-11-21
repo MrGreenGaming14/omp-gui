@@ -42,7 +42,7 @@ fn key_bindings_follow_the_editor_state() {
         (&idle, testkit::named(Named::Escape, none), None),
     ];
     for (state, event, expected) in cases {
-        assert_eq!(keys(state, &[event.clone()]).first(), expected.as_ref(), "{event:?}");
+        assert_eq!(keys(state, std::slice::from_ref(&event)).first(), expected.as_ref(), "{event:?}");
     }
     let mut popup = State::new();
     popup.set_commands(vec![Command { name: "review".into(), description: String::new() }]);

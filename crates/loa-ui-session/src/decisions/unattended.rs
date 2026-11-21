@@ -35,13 +35,12 @@ pub enum Message {
 pub struct Duration(pub u64);
 
 impl fmt::Display for Duration {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { if self.0 >= 60 && self.0 % 60 == 0 { write!(f, "{} min", self.0 / 60) } else { write!(f, "{} s", self.0) } }
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { if self.0 >= 60 && self.0.is_multiple_of(60) { write!(f, "{} min", self.0 / 60) } else { write!(f, "{} s", self.0) } }
 }
 
 impl Unattended {
     /// Whether any kind is answered after a timeout.
     pub fn enabled(&self) -> bool { KINDS.into_iter().any(|kind| self.0.for_kind(kind).is_some()) }
-
     /// Timeout in ms of decisions of `kind`, when the policy answers them.
     pub fn timeout_ms(&self, kind: DecisionKind) -> Option<i64> { self.0.for_kind(kind).map(|d| i64::try_from(d.timeout_secs.saturating_mul(1000)).unwrap_or(i64::MAX)) }
 

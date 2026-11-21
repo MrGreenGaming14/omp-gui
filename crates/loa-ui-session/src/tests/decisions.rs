@@ -56,7 +56,8 @@ fn every_kind_maps_clicks_keys_and_text_to_answers() {
     use Message as M;
     let form = r#"{"properties":{"tag":{"type":"string"},"env":{"enum":["dev","prod"]}},"required":["tag"]}"#;
     type Step = fn(NodeId) -> Message;
-    let cases: Vec<(Attrs, &str, Vec<Step>, Option<(Vec<&str>, Option<&str>)>)> = vec![
+    type Expected<'a> = Option<(Vec<&'a str>, Option<&'a str>)>;
+    let cases: Vec<(Attrs, &str, Vec<Step>, Expected)> = vec![
         (attrs! { KIND: "approval" }, "ls", vec![|d| M::Choose(d, 1)], Some((vec![answer::ALLOW_SESSION], None))),
         (attrs! { KIND: "approval" }, "ls", vec![|d| M::Text(d, " prod ".into()), |d| M::Choose(d, 2)], Some((vec![answer::DENY], Some("prod")))),
         (attrs! { KIND: "approval" }, "ls", vec![|_| M::Shortcut(Shortcut::Pick(0)), |_| M::Shortcut(Shortcut::Confirm)], Some((vec![answer::ALLOW_ONCE], None))),

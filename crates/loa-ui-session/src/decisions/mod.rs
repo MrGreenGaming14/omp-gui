@@ -106,12 +106,9 @@ fn markdown_settings(t: &TokenSet) -> markdown::Settings { markdown::Settings::w
 
 impl State {
     pub fn new(viewer: Viewer, theme: &Theme) -> Self { Self { viewer, markdown: (generation(), markdown_settings(&for_theme(theme))).into(), cards: BTreeMap::new(), local_name: None } }
-
     pub fn set_viewer(&mut self, viewer: Viewer) { self.viewer = viewer }
-
     /// The local node's host name, shown on its answers instead of its key.
     pub fn set_local_name(&mut self, name: Option<String>) { self.local_name = name }
-
     pub fn set_theme(&mut self, theme: &Theme) { self.markdown.set((generation(), markdown_settings(&for_theme(theme)))) }
 
     fn cx(&self, decision: NodeId) -> CardCtx<'_> {
@@ -138,7 +135,6 @@ impl State {
 
     /// Reopens a card whose answer the harness refused.
     pub fn answer_failed(&mut self, decision: NodeId) { self.cards.get_mut(&decision).into_iter().for_each(|c| c.pending = false) }
-
     /// Locks a card answered from elsewhere (an unattended timeout) until the DOM records it.
     pub fn answering(&mut self, decision: NodeId) { self.cards.get_mut(&decision).filter(|c| c.open()).into_iter().for_each(|c| c.pending = true) }
 
@@ -152,7 +148,7 @@ impl State {
             Message::Link(uri) => return (Task::none(), Some(Event::OpenLink(uri.clone()))),
             Message::Shortcut(_) => self.focused(),
             Message::Choose(id, _) | Message::Submit(id) | Message::Skip(id) | Message::Text(id, _) | Message::SubmitText(id) | Message::EditPlan(id, _) | Message::CancelEdit(id) | Message::Field(id, ..) => {
-                Some(*id).filter(|_| !self.viewer.view_only)
+                (!self.viewer.view_only).then_some(*id)
             }
         };
         let Some((id, card)) = id.and_then(|id| Some((id, self.cards.get_mut(&id).filter(|c| c.open())?))) else { return (Task::none(), None) };
@@ -193,7 +189,6 @@ impl State {
 
     /// Every card in document order.
     pub fn view(&self) -> Element<'_, Message> { column(self.cards.values().map(|c| c.view(&self.cx(c.decision.id)))).spacing(sp(Sp::M)).into() }
-
     /// The card of one decision, for the transcript to place inline.
     pub fn view_card(&self, decision: NodeId) -> Option<Element<'_, Message>> { Some(self.cards.get(&decision)?.view(&self.cx(decision))) }
 

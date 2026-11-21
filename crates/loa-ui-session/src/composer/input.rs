@@ -61,7 +61,6 @@ impl History {
     }
 
     pub fn extend(&mut self, kind: EditKind) { self.open = Some(kind) }
-
     pub fn break_group(&mut self) { self.open = None }
 
     pub fn undo(&mut self, current: Snapshot) -> Option<Snapshot> {

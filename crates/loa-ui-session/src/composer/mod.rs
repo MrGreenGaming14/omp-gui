@@ -12,7 +12,7 @@ use iced::advanced::input_method;
 use iced::keyboard::{self, Key, key::Named};
 use iced::widget::text_editor::{self, Action, Content, Cursor, Edit, Position};
 use iced::widget::{button, column, container, row, space, text, text_input, tooltip};
-use iced::{Background, Border, Color, Element, Length, Subscription, Task, Theme};
+use iced::{Background, Border, Color, Element, Length, Padding, Subscription, Task, Theme};
 use input::{EditKind, History, KeyContext, Popup, Queue, Snapshot, Trigger};
 use loa_contracts::harness::Prompt;
 use loa_core::SessionMode;
@@ -23,15 +23,13 @@ use loa_ui_kit::widgets::{Picker, PickerItem, popover};
 use std::borrow::Cow;
 use std::sync::Arc;
 
-/// Widget id of the editor, for focus operations.
+/// Widget ids of the editor and the folder chip.
 pub const EDITOR_ID: &str = "loa-composer-editor";
-/// Container id of the folder chip.
 pub const WORKSPACE_CHIP_ID: &str = "loa-composer-workspace";
 /// Height at which the editor stops growing and scrolls.
 pub const MAX_EDITOR_HEIGHT: f32 = 240.0;
-/// Undo steps kept.
 pub const UNDO_DEPTH: usize = 200;
-/// Most items a popup matches, and the rows shown at once.
+/// Most items a popup matches, and the rows it shows at once.
 const MAX_ITEMS: usize = 50;
 const VISIBLE_POPUP_ROWS: usize = 8;
 /// Tooltips of the icon-only buttons.
@@ -43,20 +41,11 @@ const FOLDER_ACTIONS: [&str; 2] = ["Choose another folder…", "Show in Files"];
 
 /// A `/` command offered in the popup; `name` has no slash.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Command {
-    pub name: String,
-    pub description: String,
-}
+pub struct Command { pub name: String, pub description: String }
 
-/// A model the session can switch to; `id` is what the harness's `set_model` takes.
+/// A model the session can switch to; `id` is what `set_model` takes, `role` the role it fills.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct ModelOption {
-    pub id: String,
-    pub name: String,
-    pub provider: String,
-    /// Model role this model fills (`default`, `smol`, …).
-    pub role: Option<String>,
-}
+pub struct ModelOption { pub id: String, pub name: String, pub provider: String, pub role: Option<String> }
 
 impl std::fmt::Display for ModelOption {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -69,42 +58,25 @@ impl std::fmt::Display for ModelOption {
 
 /// A row under the model choices that opens something instead of picking a model.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PickerAction {
-    pub id: String,
-    pub label: String,
-}
+pub struct PickerAction { pub id: String, pub label: String }
 
 /// A harness prompts can be routed to; unavailable ones are listed, not picked.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct HarnessOption {
-    pub id: String,
-    pub label: String,
-    pub available: bool,
-    /// Muted note beside the label, e.g. `not installed`.
-    pub detail: Option<String>,
-}
+pub struct HarnessOption { pub id: String, pub label: String, pub available: bool, pub detail: Option<String> }
 
 /// A permission level: what the agent may do without asking.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct AccessOption {
-    pub id: String,
-    pub label: String,
-    pub detail: String,
-}
+pub struct AccessOption { pub id: String, pub label: String, pub detail: String }
 
 /// The folder a session works in: `path` shortened for display, `full` on hover.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Workspace {
-    pub path: String,
-    pub full: String,
-    pub branch: Option<String>,
-}
+pub struct Workspace { pub path: String, pub full: String, pub branch: Option<String> }
 
 /// A plain-text picker option (effort levels, modes).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Label(pub String);
 
-/// A picker option the composer lists: an id for [`State::pick_key`] and whether it can be picked.
+/// A listed picker option: an id for [`State::pick_key`] and whether it can be picked.
 trait Opt: PickerItem {
     fn key(&self) -> &str;
     fn enabled(&self) -> bool;
@@ -137,37 +109,32 @@ pub enum PickerId { Harness, Model, Effort, Access, Mode, Folder }
 /// What the app must act on.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
-    /// Start this prompt as a turn: typed while idle, or the next queued message released at a
-    /// turn end. `@` mentions of known files are attachments.
+    /// Start a turn: typed while idle, or the next queued message at a turn end. `@` mentions of
+    /// known files are attachments.
     Submit(Prompt),
     /// Interrupt the running turn; queued messages went back into the editor.
     Stop,
-    /// The queue changed; holds the queued texts.
     QueueChanged(Vec<String>),
     /// The `@` popup opened: pass the project's files to [`State::set_files`].
     FilesRequested { query: String },
     ModelChanged(ModelOption),
     EffortChanged(String),
     ModeChanged(SessionMode),
-    /// A permission level was picked, by id.
     AccessChanged(String),
     HarnessChanged(String),
-    /// A [`State::set_model_actions`] row was pressed, by id.
+    /// A [`State::set_model_actions`] row, by id.
     ModelAction(String),
-    /// "Show in Files" in the folder menu.
+    /// The folder menu's "Show in Files", a folder by full path, and "Choose another folder…".
     OpenWorkspace,
-    /// A folder was picked from the folder menu, by full path.
     FolderPicked(String),
-    /// "Choose another folder…": open a folder dialog.
     BrowseFolders,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Message {
     Edit(Action),
-    /// Enter in the editor.
+    /// Enter in the editor, and the send button.
     Submit,
-    /// The send button.
     Send,
     Interrupt,
     Undo,
@@ -178,7 +145,6 @@ pub enum Message {
     PopupClose,
     /// Edit a queued message's text, or remove it with `None`.
     Queue(u64, Option<String>),
-    /// Open or close a picker's menu.
     Toggle(PickerId),
     /// Row `n` of a picker's menu: its options, then its action rows.
     Pick(PickerId, usize),
@@ -257,8 +223,7 @@ impl Default for State {
 
 impl State {
     pub fn new() -> Self {
-        let mut pickers = Pickers::default();
-        pickers.mode = Picker::new(SessionMode::ALL.iter().map(|m| Label(m.as_str().to_owned())).collect(), Some(0));
+        let pickers = Pickers { mode: Picker::new(SessionMode::ALL.iter().map(|m| Label(m.as_str().to_owned())).collect(), Some(0)), ..Pickers::default() };
         let (content, history, queue) = (Content::new(), History::new(UNDO_DEPTH), Queue::default());
         Self { content, history, composing: false, phase: Phase::Idle, queue, commands: Vec::new(), files: Vec::new(), mentions: Vec::new(), popup: None, dismissed: None, pickers, author: String::new() }
     }
@@ -271,9 +236,8 @@ impl State {
 
     /// The folder the session works in, shown above the editor.
     pub fn set_workspace(&mut self, workspace: Option<Workspace>) {
-        let p = &mut self.pickers;
-        p.folder.selected = workspace.is_some().then_some(0);
-        p.folder.options = workspace.into_iter().collect();
+        self.pickers.folder = Picker::new(workspace.into_iter().collect(), None);
+        self.pickers.folder.selected = (!self.pickers.folder.options.is_empty()).then_some(0);
         self.rebuild_folders();
     }
 
@@ -288,7 +252,6 @@ impl State {
     }
 
     pub fn workspace(&self) -> Option<&Workspace> { self.pickers.folder.selected() }
-
     /// Node key or user written to [`Prompt::by`].
     pub fn set_author(&mut self, author: impl Into<String>) { self.author = author.into() }
 
@@ -306,13 +269,10 @@ impl State {
     }
 
     pub fn set_models(&mut self, models: Vec<ModelOption>, current: Option<&str>) { self.pickers.model = select_by(models, current) }
-
     /// Rows listed under the models, e.g. "All models…".
     pub fn set_model_actions(&mut self, actions: Vec<PickerAction>) { self.pickers.model_actions = actions }
-
     /// Effort levels of the current model; none hides the picker.
     pub fn set_efforts(&mut self, efforts: Vec<String>, current: Option<String>) { self.pickers.effort = select_by(efforts.into_iter().map(Label).collect(), current.as_deref()) }
-
     pub fn models(&self) -> (&[ModelOption], Option<&ModelOption>) { (&self.pickers.model.options, self.pickers.model.selected()) }
 
     pub fn efforts(&self) -> (Vec<&str>, Option<&str>) {
@@ -321,21 +281,17 @@ impl State {
     }
 
     pub fn set_mode(&mut self, mode: SessionMode) { self.pickers.mode.selected = SessionMode::ALL.iter().position(|m| *m == mode) }
-
     /// Permission levels and the current one; none hides the picker.
     pub fn set_access(&mut self, options: Vec<AccessOption>, current: Option<&str>) { self.pickers.access = select_by(options, current) }
-
     /// Harnesses prompts can be routed to; the picker shows with at least two.
     pub fn set_harnesses(&mut self, harnesses: Vec<HarnessOption>, current: Option<&str>) { self.pickers.harness = select_by(harnesses, current) }
-
     pub fn harness(&self) -> Option<&HarnessOption> { self.pickers.harness.selected() }
 
     /// The message picking the option or action row with id `key`, if listed.
     pub fn pick_key(&self, picker: PickerId, key: &str) -> Option<Message> {
         let menu = self.menu(picker);
-        let actions = if picker == PickerId::Model { self.pickers.model_actions.iter().map(|a| a.id.as_str()).collect() } else { Vec::new() };
-        let index = (0..menu.len()).map(|i| menu.key(i)).chain(actions).position(|k| k == key)?;
-        Some(Message::Pick(picker, index))
+        let actions = self.pickers.model_actions.iter().map(|a| a.id.as_str()).filter(|_| picker == PickerId::Model);
+        Some(Message::Pick(picker, (0..menu.len()).map(|i| menu.key(i)).chain(actions).position(|k| k == key)?))
     }
 
     pub fn turn_started(&mut self) { self.phase = Phase::Running }
@@ -366,11 +322,8 @@ impl State {
     }
 
     pub fn text(&self) -> String { self.content.text() }
-
     pub fn cursor(&self) -> Cursor { self.content.cursor() }
-
     pub fn queue(&self) -> impl Iterator<Item = &QueuedMessage> { self.queue.items.iter() }
-
     pub fn popup_kind(&self) -> Option<PopupKind> { self.visible_popup().map(|p| p.trigger.kind) }
 
     /// Labels of the popup rows in order, with the highlighted row.
@@ -380,6 +333,9 @@ impl State {
 
     pub fn update(&mut self, message: Message) -> (Task<Message>, Option<Event>) {
         let focus = matches!(message, Message::Send | Message::PopupAccept(Some(_)) | Message::MentionPressed);
+        if matches!(message, Message::Pick(..) | Message::PickerClosed) {
+            self.pickers.open = None;
+        }
         let event = match message {
             Message::Edit(action) => self.edit(action),
             Message::Submit | Message::Send => self.submit(),
@@ -400,14 +356,8 @@ impl State {
                 self.pickers.open = (self.pickers.open != Some(picker)).then_some(picker);
                 None
             }
-            Message::Pick(picker, index) => {
-                self.pickers.open = None;
-                self.pick(picker, index)
-            }
-            Message::PickerClosed => {
-                self.pickers.open = None;
-                None
-            }
+            Message::Pick(picker, index) => self.pick(picker, index),
+            Message::PickerClosed => None,
             Message::Composing(composing) => {
                 self.composing = composing;
                 None
@@ -455,22 +405,11 @@ impl State {
             Some(harness) => format!("Ask {} anything. Type / for commands", harness.label),
             None => "Ask anything. Type / for commands".to_owned(),
         };
-        let editor = iced::widget::text_editor(&self.content)
-            .id(EDITOR_ID)
-            .placeholder(placeholder)
-            .on_action(Message::Edit)
-            .height(Length::Shrink)
-            .min_height(2.6 * ts(T::Body))
-            .max_height(MAX_EDITOR_HEIGHT)
-            .padding([sp(Sp::S), sp(Sp::S)])
-            .size(ts(T::Body))
-            .style(editor_style)
-            .key_binding(move |press| input::bind(press, ctx));
-
-        let (glyph, size, on_press, label) = if self.is_busy() {
-            (Icon::Square, ts(T::Caption), Some(Message::Interrupt), STOP_LABEL)
-        } else {
-            (Icon::ArrowUp, ts(T::Heading), (!self.content.text().trim().is_empty()).then_some(Message::Send), SEND_LABEL)
+        let editor = iced::widget::text_editor(&self.content).id(EDITOR_ID).placeholder(placeholder).on_action(Message::Edit).height(Length::Shrink);
+        let editor = editor.min_height(2.6 * ts(T::Body)).max_height(MAX_EDITOR_HEIGHT).padding(sp(Sp::S)).size(ts(T::Body)).style(editor_style).key_binding(move |press| input::bind(press, ctx));
+        let (glyph, size, on_press, label) = match self.is_busy() {
+            true => (Icon::Square, ts(T::Caption), Some(Message::Interrupt), STOP_LABEL),
+            false => (Icon::ArrowUp, ts(T::Heading), (!self.content.text().trim().is_empty()).then_some(Message::Send), SEND_LABEL),
         };
         let tint = kit::tint(if on_press.is_some() { Tone::OnAccent } else { Tone::Faint });
         let action = button(icon(glyph, size).style(tint)).width(2.0 * ts(T::Body)).height(2.0 * ts(T::Body)).padding(ts(T::Body) - size / 2.0);
@@ -483,28 +422,31 @@ impl State {
             (PickerId::Access, Icon::Shield, p.access.len() > 0, p.access.selected().map_or("Permissions".into(), |a| a.label.clone())),
             (PickerId::Mode, Icon::FileText, true, capitalized(p.mode.selected().map_or("", |m| m.0.as_str()))),
         ];
-        let controls = row![labelled(mention.on_press(Message::MentionPressed), MENTION_LABEL)].spacing(sp(Sp::Xs)).align_y(Center);
+        let controls = row![tip(mention.on_press(Message::MentionPressed), MENTION_LABEL)].spacing(sp(Sp::Xs)).align_y(Center);
         let controls = controls.extend(chips.into_iter().filter(|c| c.2).map(|(id, glyph, _, label)| self.chip(id, glyph, label)));
-        let controls = controls.push(space::horizontal()).push(labelled(action.style(kit::button(ButtonKind::Accent)).on_press_maybe(on_press), label));
-        let controls = container(controls).padding(iced::Padding { top: sp(Sp::Xs), ..iced::Padding::new(sp(Sp::M)) });
-        let editor = container(editor).padding(iced::Padding { bottom: 0.0, ..iced::Padding::new(sp(Sp::M)) });
+        let controls = controls.push(space::horizontal()).push(tip(action.style(kit::button(ButtonKind::Accent)).on_press_maybe(on_press), label));
+        let controls = container(controls).padding(Padding { top: sp(Sp::Xs), ..Padding::new(sp(Sp::M)) });
+        let editor = container(editor).padding(Padding { bottom: 0.0, ..Padding::new(sp(Sp::M)) });
         let frame = container(column![editor, controls]).width(Length::Fill).style(kit::container(Surface::Raised));
         // Fixed slots (empty spaces when unused) keep the editor's place and state in the tree;
-        // menus float over the page above everything instead of taking room.
-        let queue: Element<'_, Message> = if self.queue.items.is_empty() { space().into() } else { self.queue_view() };
-        let menu = match p.open {
-            Some(picker) => Some(self.menu_view(picker)),
-            None => self.visible_popup().map(|popup| self.popup_view(popup)),
-        };
-        let bar: Element<'_, Message> = self.workspace().map_or_else(|| space().into(), |w| self.folder_bar(w));
-        popover(column![queue, bar, frame].spacing(sp(Sp::S)), menu).into()
+        // menus float over the page instead of taking room.
+        let queue = (!self.queue.items.is_empty()).then(|| self.queue_view());
+        let menu = p.open.map(|picker| self.menu_view(picker)).or_else(|| self.visible_popup().map(|popup| self.popup_view(popup)));
+        let bar = self.workspace().map(|w| self.folder_bar(w));
+        popover(column![slot(queue), slot(bar), frame].spacing(sp(Sp::S)), menu).into()
     }
 
     /// A ghost picker chip: a muted icon, the current choice and a chevron.
     fn chip<'a>(&self, picker: PickerId, glyph: Icon, label: String) -> Element<'a, Message> {
+        let content = row![icon(glyph, ts(T::Body)).style(kit::tint(Tone::Muted)), text(label).size(ts(T::Label))].spacing(sp(Sp::S)).align_y(Center);
+        self.toggle(picker, content.into())
+    }
+
+    /// A toggle for `picker`'s menu around `content`, with an open/closed chevron.
+    fn toggle<'a>(&self, picker: PickerId, content: Element<'a, Message>) -> Element<'a, Message> {
         let open = self.pickers.open == Some(picker);
         let chevron = icon(if open { Icon::ChevronUp } else { Icon::ChevronDown }, ts(T::Caption)).style(kit::tint(Tone::Faint));
-        let content = row![icon(glyph, ts(T::Body)).style(kit::tint(Tone::Muted)), text(label).size(ts(T::Label)), chevron].spacing(sp(Sp::S)).align_y(Center);
+        let content = row![content, chevron].spacing(sp(Sp::S)).align_y(Center);
         button(content).padding([sp(Sp::Xs), sp(Sp::S)]).style(kit::button(ButtonKind::Tab { active: open })).on_press(Message::Toggle(picker)).into()
     }
 
@@ -512,7 +454,6 @@ impl State {
     /// its action rows.
     fn menu_view(&self, picker: PickerId) -> Element<'_, Message> {
         let menu = self.menu(picker);
-        let two_line = picker == PickerId::Access;
         let actions: Vec<&str> = match picker {
             PickerId::Model => self.pickers.model_actions.iter().map(|a| a.label.as_str()).collect(),
             PickerId::Folder => FOLDER_ACTIONS.to_vec(),
@@ -520,25 +461,23 @@ impl State {
         };
         let options = (0..menu.len()).map(|i| {
             let (label, detail, enabled) = menu.row(i);
-            option_row(label, detail, menu.current() == Some(i), two_line, enabled.then_some(Message::Pick(picker, i)))
+            option_row(label, detail, menu.current() == Some(i), picker == PickerId::Access, enabled.then_some(Message::Pick(picker, i)))
         });
         let actions = actions.into_iter().enumerate().map(|(n, a)| option_row(a.into(), None, false, false, Some(Message::Pick(picker, menu.len() + n))));
         let wide = matches!(picker, PickerId::Access | PickerId::Folder);
-        let rows = column(options.chain(actions)).spacing(sp(Sp::Xs));
-        container(rows).padding(sp(Sp::Xs)).width(width(if wide { LayoutRole::ListWidth } else { LayoutRole::NavWidth })).style(kit::container(Surface::Popup)).into()
+        let rows = container(column(options.chain(actions)).spacing(sp(Sp::Xs))).padding(sp(Sp::Xs));
+        rows.width(width(if wide { LayoutRole::ListWidth } else { LayoutRole::NavWidth })).style(kit::container(Surface::Popup)).into()
     }
 
     /// The bar above the editor: the folder and git branch; opens the folder menu.
     fn folder_bar<'a>(&'a self, workspace: &'a Workspace) -> Element<'a, Message> {
-        let open = self.pickers.open == Some(PickerId::Folder);
         let mut chip = row![icon(Icon::Folder, ts(T::Body)).style(kit::tint(Tone::Muted)), text(workspace.path.as_str()).size(ts(T::Label))].spacing(sp(Sp::S)).align_y(Center);
         if let Some(branch) = &workspace.branch {
             chip = chip.push(icon(Icon::GitFork, ts(T::Label)).style(kit::tint(Tone::Faint))).push(text(branch.as_str()).size(ts(T::Label)).style(kit::text(Tone::Faint)));
         }
-        let chip = chip.push(icon(if open { Icon::ChevronUp } else { Icon::ChevronDown }, ts(T::Caption)).style(kit::tint(Tone::Faint)));
-        let chip = button(chip).padding([sp(Sp::Xs), sp(Sp::S)]).style(kit::button(ButtonKind::Tab { active: open })).on_press(Message::Toggle(PickerId::Folder));
+        let chip = self.toggle(PickerId::Folder, chip.into());
         // The full path on hover, except while the menu is open: the tip would cover its last row.
-        let chip = if open { chip.into() } else { tip(chip, workspace.full.as_str()) };
+        let chip = if self.pickers.open == Some(PickerId::Folder) { chip } else { tip(chip, workspace.full.as_str()) };
         container(chip).id(WORKSPACE_CHIP_ID).into()
     }
 
@@ -549,14 +488,11 @@ impl State {
             iced::Event::InputMethod(input_method::Event::Commit(_) | input_method::Event::Closed | input_method::Event::Opened) => Some(Message::Composing(false)),
             _ => None,
         });
-        if self.pickers.open.is_none() {
-            return ime;
-        }
         let escape = iced::event::listen_with(|event, _, _| match event {
             iced::Event::Keyboard(keyboard::Event::KeyPressed { key: Key::Named(Named::Escape), .. }) => Some(Message::PickerClosed),
             _ => None,
         });
-        Subscription::batch([ime, escape])
+        if self.pickers.open.is_none() { ime } else { Subscription::batch([ime, escape]) }
     }
 
     fn queue_view(&self) -> Element<'_, Message> {
@@ -564,7 +500,7 @@ impl State {
             let id = item.id;
             let input = text_input("Empty message is skipped", &item.text).on_input(move |text| Message::Queue(id, Some(text))).size(ts(T::Label)).width(Length::Fill);
             let remove = button(muted(Icon::X, ts(T::Body))).padding(sp(Sp::Xs)).style(kit::button(ButtonKind::Row { selected: false })).on_press(Message::Queue(id, None));
-            row![text("Queued").size(ts(T::Caption)).style(kit::text(Tone::Muted)), input, labelled(remove, REMOVE_QUEUED_LABEL)].spacing(sp(Sp::S)).align_y(Center).into()
+            row![text("Queued").size(ts(T::Caption)).style(kit::text(Tone::Muted)), input, tip(remove, REMOVE_QUEUED_LABEL)].spacing(sp(Sp::S)).align_y(Center).into()
         });
         container(column(rows).spacing(sp(Sp::Xs))).padding(sp(Sp::S)).style(kit::container(Surface::Popup)).width(Length::Fill).into()
     }
@@ -589,40 +525,31 @@ impl State {
     }
 
     fn visible_popup(&self) -> Option<&Popup> { self.popup.as_ref().filter(|p| !p.matches.is_empty()) }
-
-    fn candidate(&self, kind: PopupKind, index: usize) -> &str {
-        match kind {
-            PopupKind::Command => &self.commands[index].name,
-            PopupKind::File => &self.files[index],
-        }
-    }
-
+    fn candidate(&self, kind: PopupKind, index: usize) -> &str { if kind == PopupKind::Command { &self.commands[index].name } else { &self.files[index] } }
     fn snapshot(&self) -> Snapshot { Snapshot { text: self.content.text(), cursor: self.content.cursor() } }
 
     fn edit(&mut self, action: Action) -> Option<Event> {
-        match &action {
-            Action::Scroll { .. } => self.content.perform(action),
-            Action::Edit(edit) => {
-                self.pickers.open = None;
-                let kind = match edit {
-                    Edit::Insert(c) => EditKind::Insert { whitespace: c.is_whitespace() },
-                    Edit::Backspace | Edit::Delete => EditKind::Delete,
-                    _ => EditKind::Other,
-                };
-                if self.history.continues(kind) {
-                    self.content.perform(action);
-                    self.history.extend(kind);
-                } else {
-                    let before = self.snapshot();
-                    self.content.perform(action);
-                    if self.content.text() == before.text { self.history.break_group() } else { self.history.begin(kind, before) }
-                }
-            }
+        if !matches!(action, Action::Scroll { .. }) {
+            self.pickers.open = None;
+        }
+        let kind = match &action {
+            Action::Scroll { .. } => return (self.content.perform(action), self.refresh_popup()).1,
+            Action::Edit(Edit::Insert(c)) => EditKind::Insert { whitespace: c.is_whitespace() },
+            Action::Edit(Edit::Backspace | Edit::Delete) => EditKind::Delete,
+            Action::Edit(_) => EditKind::Other,
             _ => {
-                self.pickers.open = None;
                 self.history.break_group();
                 self.content.perform(action);
+                return self.refresh_popup();
             }
+        };
+        if self.history.continues(kind) {
+            self.content.perform(action);
+            self.history.extend(kind);
+        } else {
+            let before = self.snapshot();
+            self.content.perform(action);
+            if self.content.text() == before.text { self.history.break_group() } else { self.history.begin(kind, before) }
         }
         self.refresh_popup()
     }
@@ -644,10 +571,7 @@ impl State {
     }
 
     fn submit(&mut self) -> Option<Event> {
-        let message = self.content.text().trim().to_owned();
-        if message.is_empty() {
-            return None;
-        }
+        let message = Some(self.content.text().trim().to_owned()).filter(|m| !m.is_empty())?;
         self.content = Content::new();
         self.history.clear();
         (self.popup, self.dismissed) = (None, None);
@@ -736,12 +660,10 @@ impl State {
 
     /// Recomputes the open popup's matches after its candidates changed.
     fn refilter(&mut self) {
-        if let Some(trigger) = self.popup.as_ref().map(|p| p.trigger.clone()) {
-            let matches = self.matches(&trigger);
-            if let Some(p) = &mut self.popup {
-                p.selected = p.selected.min(matches.len().saturating_sub(1));
-                p.matches = matches;
-            }
+        let Some(trigger) = self.popup.as_ref().map(|p| p.trigger.clone()) else { return };
+        let matches = self.matches(&trigger);
+        if let Some(p) = &mut self.popup {
+            (p.selected, p.matches) = (p.selected.min(matches.len().saturating_sub(1)), matches);
         }
     }
 
@@ -752,6 +674,9 @@ impl State {
         }
     }
 }
+
+/// `content`, or an empty space holding its place in the widget tree.
+fn slot(content: Option<Element<'_, Message>>) -> Element<'_, Message> { content.unwrap_or_else(|| space().into()) }
 
 /// A menu row: the choice, a muted note (beside it, or under it when `two_line`), and a check
 /// on the current one. Without `pick` the row is listed but inert.
@@ -772,13 +697,11 @@ fn capitalized(label: &str) -> String {
     chars.next().map_or_else(String::new, |first| first.to_uppercase().chain(chars).collect())
 }
 
+/// `content` with `label` as a tooltip above it.
 fn tip<'a>(content: impl Into<Element<'a, Message>>, label: &'a str) -> Element<'a, Message> {
     let tip = container(text(label).size(ts(T::Caption))).padding([sp(Sp::Xs), sp(Sp::S)]).style(kit::container(Surface::Popup));
     tooltip(content, tip, tooltip::Position::Top).into()
 }
-
-/// An icon-only button with its label as a tooltip.
-fn labelled<'a>(button: iced::widget::Button<'a, Message>, label: &'static str) -> Element<'a, Message> { tip(button, label) }
 
 /// The editor inside the composer box: no fill and no edge of its own.
 fn editor_style(theme: &Theme, status: text_editor::Status) -> text_editor::Style {

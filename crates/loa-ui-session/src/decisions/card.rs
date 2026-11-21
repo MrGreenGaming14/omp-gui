@@ -26,7 +26,6 @@ impl Reply {
 
 /// Id of a card's deny reason, reject feedback or typed answer field.
 pub fn text_field_id(decision: NodeId) -> iced::widget::Id { iced::widget::Id::from(format!("decision-{decision}-text")) }
-
 /// Id of the text input of form field `index`.
 pub fn form_field_id(decision: NodeId, index: usize) -> iced::widget::Id { iced::widget::Id::from(format!("decision-{decision}-field-{index}")) }
 
@@ -98,7 +97,6 @@ impl Card {
 
     /// Can take input from the local user.
     pub fn open(&self) -> bool { self.decision.is_waiting() && !self.pending }
-
     pub fn kind(&self) -> &'static dyn CardKind { kind_for(self.decision.kind) }
 
     /// Number key: highlight option `index` (tick it on a multi choice question).

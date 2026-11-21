@@ -123,9 +123,7 @@ impl Tracker {
     }
 
     pub fn forget(&mut self, session: &str) { self.sessions.remove(session); }
-
     pub fn badge(&self, session: &str) -> usize { self.sessions.get(session).map_or(0, BTreeMap::len) }
-
     pub fn total(&self) -> usize { self.sessions.values().map(BTreeMap::len).sum() }
 
     fn deadline(&self, w: &Waiting) -> Option<i64> {
@@ -317,13 +315,10 @@ impl Desk {
 
     /// The card taking shortcuts in the active session.
     pub fn focused(&self) -> Option<NodeId> { self.sessions.get(self.active.as_deref()?)?.focused() }
-
     /// Waiting decisions of `session`, for its sidebar row.
     pub fn badge(&self, session: &str) -> usize { self.tracker.badge(session) }
-
     /// Waiting decisions across every session.
     pub fn total(&self) -> usize { self.tracker.total() }
-
     pub fn settings_view(&self) -> Element<'_, Message> { super::settings::view(&self.tracker.policy).map(Message::Settings) }
 
     /// Window focus always; number keys and Enter while the active session has a card to answer

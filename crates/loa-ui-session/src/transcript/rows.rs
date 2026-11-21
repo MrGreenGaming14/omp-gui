@@ -131,9 +131,7 @@ pub(crate) fn trailing(text: &str) -> (&str, usize) {
 }
 
 fn muted<'a>(content: impl text::IntoFragment<'a>) -> text::Text<'a> { text(content).size(ts(T::Body)).style(kit::text(Tone::Muted)) }
-
 fn danger<'a>(content: impl text::IntoFragment<'a>) -> Element<'a, Message> { text(content).size(ts(T::Body)).style(text::danger).into() }
-
 fn glyph<'a>(icon: Icon, failed: bool) -> Element<'a, Message> { icons::tinted(icon, T::Body, if failed { Tone::Danger } else { Tone::Muted }).into() }
 
 /// A header that toggles the row: `parts` in a line, then a chevron. Expanded, `body` follows

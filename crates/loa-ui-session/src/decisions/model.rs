@@ -66,7 +66,6 @@ impl Decision {
 
     /// Every decision in the DOM, in document order.
     pub fn all(dom: &Dom) -> impl Iterator<Item = Decision> + '_ { dom.iter().filter_map(move |node| Self::from_node(dom, node)) }
-
     pub fn is_waiting(&self) -> bool { self.status == DecisionStatus::Waiting }
 
     /// The decision's own default as an answer by `by`, when it is valid for the kind.

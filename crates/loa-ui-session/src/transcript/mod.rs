@@ -138,7 +138,6 @@ impl State {
     }
 
     pub fn set_bottom_inset(&mut self, inset: f32) { self.bottom_inset = inset }
-
     pub fn set_theme(&mut self, theme: &Theme) { self.look.set(prose::Look::new(&for_theme(theme))) }
 
     /// The look of the active token generation, rebuilt after a theme change.
@@ -151,7 +150,6 @@ impl State {
     }
 
     pub fn scroll_id(&self) -> &widget::Id { &self.scroll_id }
-
     /// True while the view follows new content.
     pub fn is_following(&self) -> bool { self.scroll.follow }
 
@@ -438,6 +436,5 @@ impl State {
     }
 
     fn height_of(&self, dom: &Dom, row: &Item) -> f32 { self.measured.get(&row.key).copied().unwrap_or_else(|| self.estimate(dom, row)) }
-
     fn estimate(&self, dom: &Dom, row: &Item) -> f32 { self.cx(dom, row).map_or(ROW, |cx| renderer(row.kind).estimate(row, &cx)) + PADDING }
 }
