@@ -4,13 +4,14 @@
 //! RGBA in place, and diffed against the previous frame so a mostly static
 //! page sends only the band of rows that changed.
 
-use loa_util::LockExt;
-use crate::feed::{FrameFeed, InputLog, Picture};
-use crate::pixels::changed_rows;
-use loa_util::time::now_us;
+use crate::browser::tab::{Capture, set_viewport};
 use crate::browser::{BrowserError, Result};
+use crate::feed::{FrameFeed, InputLog};
+use crate::pixels::changed_rows;
 use bytes::Bytes;
-use loa_contracts::surface::{Encoding, Rect};
+use loa_contracts::surface::{Encoding, Frame, Rect};
+use loa_util::LockExt;
+use loa_util::time::now_us;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -26,16 +27,6 @@ struct PixelLayout {
     red: usize,
     green: usize,
     blue: usize,
-}
-
-/// One capture: the full surface size, the part that changed, and its RGBA rows.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Grab {
-    pub width: u32,
-    pub height: u32,
-    pub region: Rect,
-    pub keyframe: bool,
-    pub data: Bytes,
 }
 
 /// A connection to an X server that captures its first screen.
@@ -87,11 +78,11 @@ impl X11Capture {
         (self.screen_width, self.screen_height)
     }
 
-    /// Captures the top left `width` x `height` (clipped to the screen).
-    /// Returns `None` when nothing changed since the last capture, a band of
-    /// changed rows otherwise, and the whole picture when `keyframe` is set
-    /// or the size changed.
-    pub fn grab(&mut self, width: u32, height: u32, keyframe: bool) -> Result<Option<Grab>> {
+    /// Captures the top left `width` x `height` (clipped to the screen) as an
+    /// RGBA frame without numbering or timing. Returns `None` when nothing
+    /// changed since the last capture, a band of changed rows otherwise, and
+    /// the whole picture when `keyframe` is set or the size changed.
+    pub fn grab(&mut self, width: u32, height: u32, keyframe: bool) -> Result<Option<Frame>> {
         let (width, height) = (width.min(self.screen_width), height.min(self.screen_height));
         if width == 0 || height == 0 {
             return Ok(None);
@@ -117,17 +108,15 @@ impl X11Capture {
             _ => None,
         };
         self.previous = Some((width, height, full.clone()));
-        let grab = match band {
-            Some((first, last)) if first > 0 || last + 1 < height => Grab {
-                width,
-                height,
-                region: Rect { x: 0, y: first, width, height: last + 1 - first },
-                keyframe: false,
-                data: full.slice(first as usize * row..(last as usize + 1) * row),
-            },
-            _ => Grab { width, height, region: Rect { x: 0, y: 0, width, height }, keyframe: true, data: full },
+        let (region, keyframe, data) = match band {
+            Some((first, last)) if first > 0 || last + 1 < height => {
+                let rows = first as usize * row..(last as usize + 1) * row;
+                (Rect { x: 0, y: first, width, height: last + 1 - first }, false, full.slice(rows))
+            }
+            _ => (Rect { x: 0, y: 0, width, height }, true, full),
         };
-        Ok(Some(grab))
+        let (seq, captured_us, input_seq, encoding) = (0, 0, 0, Encoding::Rgba);
+        Ok(Some(Frame { seq, captured_us, input_seq, width, height, region, encoding, keyframe, data }))
     }
 }
 
@@ -159,6 +148,38 @@ pub(crate) struct CaptureTarget {
     pub interval: Duration,
 }
 
+/// The headed [`Capture`] strategy: a tab's virtual display grabbed by [`spawn_capture`].
+pub(crate) struct X11Display {
+    pub target: Arc<CaptureTarget>,
+    /// The display's screen; the viewport can't outgrow it.
+    pub screen: (u32, u32),
+}
+
+#[async_trait::async_trait]
+impl Capture for X11Display {
+    fn fit(&self, width: u32, height: u32) -> (u32, u32) {
+        (width.min(self.screen.0), height.min(self.screen.1))
+    }
+
+    async fn resize(&self, page: &chromiumoxide::Page, width: u32, height: u32) -> Result<()> {
+        set_viewport(page, width, height).await?;
+        *self.target.size.locked() = (width, height);
+        self.target.keyframe.store(true, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Grabs are diffed, so only an explicit request needs a whole picture.
+    fn keyframe(&self, _: &FrameFeed, subscribe: bool) {
+        if !subscribe {
+            self.target.keyframe.store(true, Ordering::Relaxed);
+        }
+    }
+
+    fn stop(&self) {
+        self.target.stop.store(true, Ordering::Relaxed);
+    }
+}
+
 /// Captures on a thread of its own (x11rb is blocking) until `stop` is set
 /// or the server goes away. The first capture is always a keyframe.
 pub(crate) fn spawn_capture(mut capture: X11Capture, target: Arc<CaptureTarget>) -> std::thread::JoinHandle<()> {
@@ -170,16 +191,7 @@ pub(crate) fn spawn_capture(mut capture: X11Capture, target: Arc<CaptureTarget>)
             let captured_us = now_us();
             let input_seq = target.log.locked().seq_before(captured_us);
             match capture.grab(width, height, target.keyframe.swap(false, Ordering::Relaxed)) {
-                Ok(Some(grab)) => target.hub.publish(Picture {
-                    captured_us,
-                    input_seq,
-                    width: grab.width,
-                    height: grab.height,
-                    region: grab.region,
-                    encoding: Encoding::Rgba,
-                    keyframe: grab.keyframe,
-                    data: grab.data,
-                }),
+                Ok(Some(frame)) => target.hub.publish(Frame { captured_us, input_seq, ..frame }),
                 Ok(None) => {}
                 Err(error) => {
                     tracing::warn!(%error, "virtual display capture stopped");

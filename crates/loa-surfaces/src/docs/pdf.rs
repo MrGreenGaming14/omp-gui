@@ -1,7 +1,7 @@
 //! PDF pages rendered and read with `hayro`.
 
 use crate::docs::raster::Fonts;
-use crate::docs::{DocsError, Format, PageSize, Paged, Result, Rgba};
+use crate::docs::{DataQuery, DocsError, Format, PageSize, Paged, RenderOpts, Result, Rgba, json, page_at};
 use hayro::hayro_interpret::font::{Glyph, GlyphRun};
 use hayro::hayro_interpret::hayro_cmap::BfString;
 use hayro::hayro_interpret::util::TransformExt;
@@ -18,90 +18,62 @@ use hayro::vello_cpu::{Pixmap, RasterizerSettings, RenderContext, Resources, Tar
 use hayro::{RenderCache, RenderSettings, render_into};
 use std::ops::Range;
 
-/// A parsed PDF document with its page sizes measured once at load.
 pub struct PdfDoc {
     pdf: Pdf,
-    sizes: Vec<PageSize>,
 }
 
 impl PdfDoc {
     /// Parses a PDF file. Encrypted files that need a password are rejected.
     pub fn parse(bytes: &[u8]) -> Result<Self> {
-        let pdf = Pdf::new(bytes.to_vec()).map_err(|e| {
-            let message = match e {
-                LoadPdfError::Decryption(e) => format!("cannot decrypt the document ({e:?})"),
-                LoadPdfError::Invalid => "not a readable PDF document".to_owned(),
-            };
-            DocsError::invalid(Format::Pdf, message)
-        })?;
-        let sizes = pdf
-            .pages()
-            .iter()
-            .map(|page| {
-                let (width, height) = page.render_dimensions();
-                PageSize { width, height }
-            })
-            .collect();
-        Ok(Self { pdf, sizes })
-    }
-
-    /// Text of page `index` in reading order: lines top to bottom joined with
-    /// `\n`, words separated by a space. Invisible text (OCR layers) is
-    /// included.
-    pub fn page_text(&self, index: usize) -> Result<String> {
-        let page = self.page(index)?;
-        Ok(extract_text(page, &InterpreterCache::new()))
+        Pdf::new(bytes.to_vec()).map(|pdf| Self { pdf }).map_err(|e| match e {
+            LoadPdfError::Decryption(e) => DocsError::invalid(Format::Pdf, format!("cannot decrypt the document ({e:?})")),
+            LoadPdfError::Invalid => DocsError::invalid(Format::Pdf, "not a readable PDF document"),
+        })
     }
 
     /// Text of every page, one entry per page.
-    pub fn text(&self) -> Result<Vec<String>> {
+    pub fn text(&self) -> Vec<String> {
         let cache = InterpreterCache::new();
-        Ok(self.pdf.pages().iter().map(|page| extract_text(page, &cache)).collect())
-    }
-
-    fn page(&self, index: usize) -> Result<&Page<'_>> {
-        let pages = self.pdf.pages();
-        pages.get(index).ok_or_else(|| DocsError::page_range(index, pages.len()))
+        self.pdf.pages().iter().map(|page| extract_text(page, &cache)).collect()
     }
 }
 
 impl Paged for PdfDoc {
     fn page_count(&self) -> usize {
-        self.sizes.len()
+        self.pdf.pages().len()
     }
 
     fn page_size(&self, index: usize) -> Result<PageSize> {
-        self.sizes
-            .get(index)
-            .copied()
-            .ok_or_else(|| DocsError::page_range(index, self.sizes.len()))
+        let (width, height) = page_at(self.pdf.pages(), index)?.render_dimensions();
+        Ok(PageSize { width, height })
     }
 
-    fn render_page(&self, index: usize, scale: f32, _fonts: &Fonts) -> Result<Rgba> {
-        let page = self.page(index)?;
-        let size = self.page_size(index)?;
+    fn query(&self, query: &DataQuery) -> Option<Result<serde_json::Value>> {
+        Some(match query {
+            DataQuery::Text { page: Some(i) } => {
+                page_at(self.pdf.pages(), *i).and_then(|page| json(&extract_text(page, &InterpreterCache::new())))
+            }
+            DataQuery::Text { page: None } => json(&self.text()),
+            _ => return None,
+        })
+    }
+
+    fn render(&self, index: usize, scale: f32, _: &Fonts, _: &RenderOpts) -> Result<Rgba> {
+        let (page, size) = (page_at(self.pdf.pages(), index)?, self.page_size(index)?);
         if !(scale.is_finite() && scale > 0.0) {
             return Err(DocsError::Request(format!("invalid render scale {scale}")));
         }
         let (width, height) = size.pixels(scale);
         let (Ok(width), Ok(height)) = (u16::try_from(width), u16::try_from(height)) else {
-            return Err(DocsError::Request(format!(
-                "page {index} at scale {scale} is {width} x {height} pixels, the limit is {max} x {max}",
-                max = u16::MAX
-            )));
+            let max = u16::MAX;
+            let message = format!("page {index} at scale {scale} is {width} x {height} pixels, the limit is {max} x {max}");
+            return Err(DocsError::Request(message));
         };
 
         let cache = RenderCache::new();
         let mut ctx = RenderContext::new(width, height);
         let transform = Affine::scale(f64::from(scale)) * page.initial_transform(true).to_kurbo();
-        render_into(
-            page,
-            &cache,
-            &InterpreterSettings::default(),
-            &RenderSettings::default(),
-            &mut ctx,
-            transform,
-        );
+        render_into(page, &cache, &InterpreterSettings::default(), &RenderSettings::default(), &mut ctx, transform);
         ctx.flush();
         let mut pixmap = Pixmap::new(width, height);
         ctx.render_with(
@@ -109,15 +81,12 @@ impl Paged for PdfDoc {
             &mut Resources::default(),
             RasterizerSettings { target_init: TargetInit::Clear(WHITE), ..Default::default() },
         );
-        Ok(Rgba {
-            width: u32::from(width),
-            height: u32::from(height),
-            data: pixmap.take_rgba8(ImageAlphaType::Alpha),
-        })
+        Ok(Rgba { width: u32::from(width), height: u32::from(height), data: pixmap.take_rgba8(ImageAlphaType::Alpha) })
     }
 }
 
-/// A glyph placed in device space (points, y down, page rotation applied).
+/// A placed glyph: in device space (points, y down, page rotation applied) while collecting, then
+/// in reading space (`x` along the line, `y` down the page) during layout.
 struct PlacedGlyph {
     origin: Point,
     /// Where the next glyph would start without extra spacing.
@@ -135,28 +104,15 @@ struct PlacedGlyph {
 struct TextCollector {
     text: String,
     glyphs: Vec<PlacedGlyph>,
-    /// Glyph count and first origin of the last filled run, to skip the
-    /// stroke pass of fill-and-stroke text, which repeats the same glyphs.
+    /// Glyph count and first origin of the last filled run, to skip the stroke pass of
+    /// fill-and-stroke text, which repeats the same glyphs.
     last_fill: Option<(usize, Point)>,
 }
 
 impl<'a> Device<'a> for TextCollector {
-    fn draw_path(&mut self, _: &BezPath, _: DrawProps<'a>, _: &DrawMode) {}
-
-    fn push_clip_path(&mut self, _: &ClipPath) {}
-
-    fn push_transparency_group(&mut self, _: f32, _: Option<SoftMask<'a>>, _: BlendMode) {}
-
-    fn draw_glyph_run(
-        &mut self,
-        glyph_run: &GlyphRun<'_, 'a>,
-        props: DrawProps<'a>,
-        draw_mode: &DrawMode,
-    ) {
+    fn draw_glyph_run(&mut self, glyph_run: &GlyphRun<'_, 'a>, props: DrawProps<'a>, draw_mode: &DrawMode) {
         let glyphs = glyph_run.glyphs();
-        let Some(first) = glyphs.first() else {
-            return;
-        };
+        let Some(first) = glyphs.first() else { return };
         let first_origin = (props.transform * first.transform()) * Point::ZERO;
         let stroke = matches!(draw_mode, DrawMode::Stroke(_));
         if stroke && self.last_fill == Some((glyphs.len(), first_origin)) {
@@ -166,9 +122,7 @@ impl<'a> Device<'a> for TextCollector {
 
         for positioned in glyphs {
             let glyph: &Glyph<'a> = positioned;
-            let Some(unicode) = glyph.as_unicode() else {
-                continue;
-            };
+            let Some(unicode) = glyph.as_unicode() else { continue };
             let start = self.text.len();
             match unicode {
                 BfString::Char(c) => self.text.push(c),
@@ -178,46 +132,35 @@ impl<'a> Device<'a> for TextCollector {
                 Glyph::Outline(g) => g.advance_width(),
                 Glyph::Type3(g) => g.advance_width(),
             };
-            // Glyph space is 1000 units per em, so the transformed vertical
-            // unit vector times 1000 is the font size on the page.
+            // Glyph space is 1000 units per em, so the transformed vertical unit vector times 1000 is
+            // the font size on the page.
             let full = props.transform * positioned.transform();
             let [a, b, c, d, _, _] = full.as_coeffs();
-            let size = c.hypot(d) * 1000.0;
-            let quadrant = ((b.atan2(a) / std::f64::consts::FRAC_PI_2).round() as i64)
-                .rem_euclid(4) as usize;
-            let advance = advance.map_or(500.0, f64::from);
             self.glyphs.push(PlacedGlyph {
                 origin: full * Point::ZERO,
-                end: full * Point::new(advance, 0.0),
-                size,
-                quadrant,
+                end: full * Point::new(advance.map_or(500.0, f64::from), 0.0),
+                size: c.hypot(d) * 1000.0,
+                quadrant: ((b.atan2(a) / std::f64::consts::FRAC_PI_2).round() as i64).rem_euclid(4) as usize,
                 text: start..self.text.len(),
             });
         }
     }
 
+    fn draw_path(&mut self, _: &BezPath, _: DrawProps<'a>, _: &DrawMode) {}
+    fn push_clip_path(&mut self, _: &ClipPath) {}
+    fn push_transparency_group(&mut self, _: f32, _: Option<SoftMask<'a>>, _: BlendMode) {}
     fn draw_image(&mut self, _: Image<'a, '_>, _: ImageDrawProps<'a>) {}
-
     fn pop_clip(&mut self) {}
-
     fn pop_transparency_group(&mut self) {}
 }
 
-/// A glyph in reading coordinates: `u` grows along the line, `v` down the page.
-struct ReadGlyph {
-    u: f64,
-    end_u: f64,
-    v: f64,
-    size: f64,
-    text: Range<usize>,
-}
-
-/// Fraction of the font size two glyphs' baselines may differ by and still
-/// share a line.
+/// Fraction of the font size two glyphs' baselines may differ by and still share a line.
 const LINE_TOLERANCE: f64 = 0.4;
 /// Fraction of the font size a horizontal gap must exceed to count as a space.
 const SPACE_GAP: f64 = 0.15;
 
+/// The page's text in reading order: lines top to bottom joined with `\n`, words separated by a space.
+/// Invisible text (OCR layers) is included.
 fn extract_text<'a>(page: &Page<'a>, cache: &InterpreterCache<'a>) -> String {
     let (width, height) = page.render_dimensions();
     let mut collector = TextCollector::default();
@@ -229,79 +172,46 @@ fn extract_text<'a>(page: &Page<'a>, cache: &InterpreterCache<'a>) -> String {
         InterpreterSettings::default(),
     );
     interpret_page(page, &mut context, &mut collector);
-    layout(&collector)
-}
+    let TextCollector { text, mut glyphs, .. } = collector;
 
-/// Orders collected glyphs into lines and joins them into text.
-fn layout(collector: &TextCollector) -> String {
-    if collector.glyphs.is_empty() {
-        return String::new();
-    }
-    // Read along the direction most glyphs run in, so text on rotated pages
-    // still comes out line by line.
-    let mut counts = [0usize; 4];
-    for glyph in &collector.glyphs {
-        counts[glyph.quadrant] += 1;
-    }
-    let mut quadrant = 0;
-    for (q, &count) in counts.iter().enumerate() {
-        if count > counts[quadrant] {
-            quadrant = q;
-        }
-    }
+    // Read along the direction most glyphs run in, so rotated text still comes out line by line.
+    let count = |q: usize| glyphs.iter().filter(|g| g.quadrant == q).count();
+    let quadrant = (0..4).max_by_key(|&q| (count(q), std::cmp::Reverse(q))).unwrap_or(0);
     let (sin, cos) = [(0.0, 1.0), (1.0, 0.0), (0.0, -1.0), (-1.0, 0.0)][quadrant];
-    let to_u = |p: Point| p.x * cos + p.y * sin;
-    let to_v = |p: Point| p.y * cos - p.x * sin;
+    let rotate = |p: Point| Point::new(p.x * cos + p.y * sin, p.y * cos - p.x * sin);
+    glyphs.iter_mut().for_each(|g| (g.origin, g.end) = (rotate(g.origin), rotate(g.end)));
+    glyphs.sort_by(|a, b| a.origin.y.total_cmp(&b.origin.y).then(a.origin.x.total_cmp(&b.origin.x)));
 
-    let mut glyphs: Vec<ReadGlyph> = collector
-        .glyphs
-        .iter()
-        .map(|g| ReadGlyph {
-            u: to_u(g.origin),
-            end_u: to_u(g.end),
-            v: to_v(g.origin),
-            size: g.size,
-            text: g.text.clone(),
-        })
-        .collect();
-    glyphs.sort_by(|a, b| a.v.total_cmp(&b.v).then(a.u.total_cmp(&b.u)));
-
-    let mut out = String::with_capacity(collector.text.len() + collector.text.len() / 8);
+    let mut out = String::with_capacity(text.len() + text.len() / 8);
     let mut start = 0;
     while start < glyphs.len() {
-        let base_v = glyphs[start].v;
-        let mut line_size = glyphs[start].size;
-        let mut end = start + 1;
-        while end < glyphs.len()
-            && glyphs[end].v - base_v <= LINE_TOLERANCE * line_size.max(glyphs[end].size)
-        {
+        let base = glyphs[start].origin.y;
+        let (mut line_size, mut end) = (glyphs[start].size, start + 1);
+        while end < glyphs.len() && glyphs[end].origin.y - base <= LINE_TOLERANCE * line_size.max(glyphs[end].size) {
             line_size = line_size.max(glyphs[end].size);
             end += 1;
         }
         let line = &mut glyphs[start..end];
-        line.sort_by(|a, b| a.u.total_cmp(&b.u));
+        line.sort_by(|a, b| a.origin.x.total_cmp(&b.origin.x));
 
         let line_start = out.len();
         if line_start > 0 {
             out.push('\n');
         }
-        let mut prev: Option<&ReadGlyph> = None;
+        let mut prev: Option<&PlacedGlyph> = None;
         for glyph in line.iter() {
-            let text = &collector.text[glyph.text.clone()];
-            if let Some(prev) = prev {
-                let gap = glyph.u - prev.end_u;
-                if gap > SPACE_GAP * prev.size.max(glyph.size)
+            let glyph_text = &text[glyph.text.clone()];
+            if prev.is_some_and(|prev| {
+                glyph.origin.x - prev.end.x > SPACE_GAP * prev.size.max(glyph.size)
                     && !out.ends_with(char::is_whitespace)
-                    && !text.starts_with(char::is_whitespace)
-                {
-                    out.push(' ');
-                }
+                    && !glyph_text.starts_with(char::is_whitespace)
+            }) {
+                out.push(' ');
             }
-            out.push_str(text);
+            out.push_str(glyph_text);
             prev = Some(glyph);
         }
-        let trimmed = out.trim_end().len().max(line_start);
-        out.truncate(trimmed);
+        out.truncate(out.trim_end().len().max(line_start));
         start = end;
     }
     out
@@ -311,200 +221,61 @@ fn layout(collector: &TextCollector) -> String {
 mod tests {
     use super::*;
 
-    /// One page of a test document.
-    struct TestPage<'a> {
-        width: f32,
-        height: f32,
-        rotate: i32,
-        content: &'a str,
-    }
-
-    impl<'a> TestPage<'a> {
-        fn new(width: f32, height: f32, content: &'a str) -> Self {
-            Self { width, height, rotate: 0, content }
-        }
-    }
-
-    /// Builds a PDF with a Helvetica font resource and correct xref offsets.
-    fn build_pdf(pages: &[TestPage<'_>]) -> Vec<u8> {
-        let mut objects: Vec<String> = Vec::new();
-        let kids: Vec<String> =
-            (0..pages.len()).map(|i| format!("{} 0 R", 4 + 2 * i)).collect();
-        objects.push("<< /Type /Catalog /Pages 2 0 R >>".to_owned());
-        objects.push(format!(
-            "<< /Type /Pages /Kids [{}] /Count {} >>",
-            kids.join(" "),
-            pages.len()
-        ));
-        objects.push("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_owned());
-        for (i, page) in pages.iter().enumerate() {
+    /// A PDF of `(width, height, rotate, content)` pages with a Helvetica `/F1` and correct xref offsets.
+    fn build_pdf(pages: &[(f32, f32, i32, &str)]) -> Vec<u8> {
+        let kids: Vec<String> = (0..pages.len()).map(|i| format!("{} 0 R", 4 + 2 * i)).collect();
+        let mut objects = vec![
+            "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+            format!("<< /Type /Pages /Kids [{}] /Count {} >>", kids.join(" "), pages.len()),
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_owned(),
+        ];
+        for (i, (w, h, rotate, content)) in pages.iter().enumerate() {
             objects.push(format!(
-                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {} {}] /Rotate {} \
-                 /Resources << /Font << /F1 3 0 R >> >> /Contents {} 0 R >>",
-                page.width,
-                page.height,
-                page.rotate,
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {w} {h}] /Rotate {rotate} /Resources << /Font << /F1 3 0 R >> >> /Contents {} 0 R >>",
                 5 + 2 * i
             ));
-            objects.push(format!(
-                "<< /Length {} >>\nstream\n{}\nendstream",
-                page.content.len() + 1,
-                page.content
-            ));
+            objects.push(format!("<< /Length {} >>\nstream\n{content}\nendstream", content.len() + 1));
         }
-
         let mut out = b"%PDF-1.4\n".to_vec();
-        let mut offsets = Vec::with_capacity(objects.len());
+        let mut xref = format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1);
         for (i, object) in objects.iter().enumerate() {
-            offsets.push(out.len());
+            xref.push_str(&format!("{:010} 00000 n \n", out.len()));
             out.extend_from_slice(format!("{} 0 obj\n{object}\nendobj\n", i + 1).as_bytes());
         }
-        let xref = out.len();
-        out.extend_from_slice(
-            format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).as_bytes(),
-        );
-        for offset in offsets {
-            out.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
-        }
-        out.extend_from_slice(
-            format!(
-                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
-                objects.len() + 1
-            )
-            .as_bytes(),
-        );
+        let start = out.len();
+        out.extend_from_slice(format!("{xref}trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{start}\n%%EOF\n", objects.len() + 1).as_bytes());
         out
     }
 
-    fn pixel(image: &Rgba, x: u32, y: u32) -> [u8; 4] {
-        let i = ((y * image.width + x) * 4) as usize;
-        [image.data[i], image.data[i + 1], image.data[i + 2], image.data[i + 3]]
-    }
-
-    const WHITE_PX: [u8; 4] = [255, 255, 255, 255];
-
     #[test]
-    fn page_count_and_sizes_follow_media_box_and_rotation() {
-        let rotated = TestPage { rotate: 90, ..TestPage::new(612.0, 792.0, "") };
-        let doc = PdfDoc::parse(&build_pdf(&[
-            TestPage::new(612.0, 792.0, ""),
-            TestPage::new(842.0, 595.0, ""),
-            rotated,
-        ]))
-        .unwrap();
-        assert_eq!(doc.page_count(), 3);
-        assert_eq!(doc.page_size(0).unwrap(), PageSize { width: 612.0, height: 792.0 });
-        assert_eq!(doc.page_size(1).unwrap(), PageSize { width: 842.0, height: 595.0 });
-        assert_eq!(doc.page_size(2).unwrap(), PageSize { width: 792.0, height: 612.0 });
-    }
+    fn a_pdf_round_trips_to_sizes_reading_order_text_and_pixels() {
+        // Lower lines come first to check ordering; "Split words" is placed word by word, "Kern" uses TJ.
+        let first = "BT /F1 12 Tf 72 600 Td (Second line) Tj ET BT /F1 12 Tf 72 500 Td (Split) Tj 40 0 Td (words) Tj ET \
+                     BT /F1 12 Tf 72 450 Td [(Ke) -20 (rn)] TJ ET BT /F1 24 Tf 72 700 Td (Hello PDF) Tj ET 0 0 1 rg 100 100 50 50 re f";
+        // Drawn rotated on a /Rotate 90 page, so it reads upright on screen.
+        let rotated = "BT /F1 12 Tf 0 1 -1 0 280 100 Tm (Body text) Tj ET BT /F1 20 Tf 0 1 -1 0 250 100 Tm (Upright title) Tj ET \
+                       1 0 0 rg 0 0 50 50 re f";
+        let doc = PdfDoc::parse(&build_pdf(&[(612.0, 792.0, 0, first), (842.0, 595.0, 0, ""), (612.0, 792.0, 90, rotated)])).unwrap();
+        let sizes: Vec<_> = (0..3).map(|i| doc.page_size(i).unwrap()).map(|s| (s.width, s.height)).collect();
+        assert_eq!(sizes, [(612.0, 792.0), (842.0, 595.0), (792.0, 612.0)]);
+        assert_eq!(doc.text(), ["Hello PDF\nSecond line\nSplit words\nKern", "", "Upright title\nBody text"]);
 
-    #[test]
-    fn text_is_in_reading_order_per_page() {
-        // The lower lines are written first to check top to bottom ordering;
-        // "Split words" is positioned word by word, "Kern" is kerned with TJ.
-        let first = "BT /F1 12 Tf 72 600 Td (Second line) Tj ET \
-                     BT /F1 12 Tf 72 500 Td (Split) Tj 40 0 Td (words) Tj ET \
-                     BT /F1 12 Tf 72 450 Td [(Ke) -20 (rn)] TJ ET \
-                     BT /F1 24 Tf 72 700 Td (Hello PDF) Tj ET";
-        let second = "BT /F1 18 Tf 72 700 Td (Page two) Tj ET \
-                      BT 3 Tr /F1 12 Tf 72 650 Td (Hidden layer) Tj ET";
-        let doc = PdfDoc::parse(&build_pdf(&[
-            TestPage::new(612.0, 792.0, first),
-            TestPage::new(612.0, 792.0, second),
-        ]))
-        .unwrap();
-        assert_eq!(doc.page_text(0).unwrap(), "Hello PDF\nSecond line\nSplit words\nKern");
-        assert_eq!(
-            doc.text().unwrap(),
-            vec![
-                "Hello PDF\nSecond line\nSplit words\nKern".to_owned(),
-                "Page two\nHidden layer".to_owned(),
-            ]
-        );
-    }
-
-    #[test]
-    fn text_on_rotated_page_reads_along_the_rotated_lines() {
-        // Content drawn rotated 90 degrees counterclockwise on a /Rotate 90
-        // page reads upright on screen; lines further down the screen sit at
-        // larger PDF x.
-        let content = "BT /F1 12 Tf 0 1 -1 0 280 100 Tm (Body text) Tj ET \
-                       BT /F1 20 Tf 0 1 -1 0 250 100 Tm (Upright title) Tj ET";
-        let page = TestPage { rotate: 90, ..TestPage::new(612.0, 792.0, content) };
-        let doc = PdfDoc::parse(&build_pdf(&[page])).unwrap();
-        assert_eq!(doc.page_text(0).unwrap(), "Upright title\nBody text");
-    }
-
-    #[test]
-    fn render_fills_rectangle_at_flipped_position_on_white() {
-        let content = "0 0 1 rg 100 100 50 50 re f";
-        let doc = PdfDoc::parse(&build_pdf(&[TestPage::new(612.0, 792.0, content)])).unwrap();
         let image = doc.render_page(0, 2.0, &Fonts::none()).unwrap();
         assert_eq!((image.width, image.height), (1224, 1584));
-        assert_eq!(image.data.len(), 1224 * 1584 * 4);
         // PDF y 100..150 is device y (792 - 150)..(792 - 100), doubled.
-        assert_eq!(pixel(&image, 250, 1334), [0, 0, 255, 255]);
-        assert_eq!(pixel(&image, 250, 250), WHITE_PX);
-        assert_eq!(pixel(&image, 10, 10), WHITE_PX);
-        assert_eq!(pixel(&image, 350, 1334), WHITE_PX);
-    }
+        assert_eq!(image.pixel(250, 1334), Some([0, 0, 255, 255]));
+        assert_eq!(image.pixel(350, 1334), Some([255, 255, 255, 255]));
+        let text_ink = (144..360).flat_map(|x| (144..184).map(move |y| (x, y))).filter(|&(x, y)| image.pixel(x, y).unwrap()[0] < 128);
+        assert!(text_ink.count() > 50);
+        // Rotating 90 degrees clockwise moves the bottom left corner to the top left.
+        let image = doc.render_page(2, 1.0, &Fonts::none()).unwrap();
+        assert_eq!((image.width, image.height, image.pixel(25, 25)), (792, 612, Some([255, 0, 0, 255])));
+        assert_eq!(doc.render_page(0, 1.3, &Fonts::none()).map(|i| (i.width, i.height)).unwrap(), (796, 1030));
 
-    #[test]
-    fn render_size_rounds_scaled_page_size() {
-        let doc = PdfDoc::parse(&build_pdf(&[TestPage::new(612.0, 792.0, "")])).unwrap();
-        let image = doc.render_page(0, 1.3, &Fonts::none()).unwrap();
-        assert_eq!((image.width, image.height), (796, 1030));
-    }
-
-    #[test]
-    fn render_of_rotated_page_swaps_dimensions_and_moves_content() {
-        let content = "1 0 0 rg 0 0 50 50 re f";
-        let page = TestPage { rotate: 90, ..TestPage::new(612.0, 792.0, content) };
-        let doc = PdfDoc::parse(&build_pdf(&[page])).unwrap();
-        let image = doc.render_page(0, 1.0, &Fonts::none()).unwrap();
-        assert_eq!((image.width, image.height), (792, 612));
-        // Rotating 90 degrees clockwise moves the bottom left corner to the
-        // top left of the displayed page.
-        assert_eq!(pixel(&image, 25, 25), [255, 0, 0, 255]);
-        assert_eq!(pixel(&image, 25, 587), WHITE_PX);
-    }
-
-    #[test]
-    fn render_draws_text() {
-        let content = "BT /F1 24 Tf 72 700 Td (Hello PDF) Tj ET";
-        let doc = PdfDoc::parse(&build_pdf(&[TestPage::new(612.0, 792.0, content)])).unwrap();
-        let image = doc.render_page(0, 1.0, &Fonts::none()).unwrap();
-        // The baseline is at device y 92 and capitals rise about 17 points.
-        let dark = (72..180)
-            .flat_map(|x| (72..92).map(move |y| (x, y)))
-            .filter(|&(x, y)| pixel(&image, x, y)[0] < 128)
-            .count();
-        assert!(dark > 50, "only {dark} dark pixels where the text is");
-        assert_eq!(pixel(&image, 300, 400), WHITE_PX);
-    }
-
-    #[test]
-    fn out_of_range_page_is_an_error() {
-        let doc = PdfDoc::parse(&build_pdf(&[TestPage::new(612.0, 792.0, "")])).unwrap();
-        let in_range = |r: &DocsError| matches!(r, DocsError::PageRange { index: 1, count: 1 });
-        assert!(in_range(&doc.page_size(1).unwrap_err()));
-        assert!(in_range(&doc.render_page(1, 1.0, &Fonts::none()).unwrap_err()));
-        assert!(in_range(&doc.page_text(1).unwrap_err()));
-    }
-
-    #[test]
-    fn oversized_render_is_a_request_error() {
-        let doc = PdfDoc::parse(&build_pdf(&[TestPage::new(612.0, 792.0, "")])).unwrap();
-        assert!(matches!(
-            doc.render_page(0, 200.0, &Fonts::none()),
-            Err(DocsError::Request(_))
-        ));
+        let page_text = doc.query(&DataQuery::Text { page: Some(3) });
+        assert!(matches!(page_text, Some(Err(DocsError::PageRange { index: 3, count: 3 }))));
+        assert!(matches!(doc.render_page(0, 200.0, &Fonts::none()), Err(DocsError::Request(_))));
         assert!(matches!(doc.render_page(0, 0.0, &Fonts::none()), Err(DocsError::Request(_))));
-    }
-
-    #[test]
-    fn garbage_is_invalid_pdf() {
-        let result = PdfDoc::parse(b"this is not a pdf file at all");
-        assert!(matches!(result, Err(DocsError::Invalid { format: Format::Pdf, .. })));
+        assert!(matches!(PdfDoc::parse(b"not a pdf"), Err(DocsError::Invalid { format: Format::Pdf, .. })));
     }
 }

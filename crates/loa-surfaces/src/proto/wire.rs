@@ -1,64 +1,160 @@
-//! Protobuf messages of `omp/surface/1` and their conversions to the
-//! contract types.
-//!
-//! The reliable stream carries length delimited [`StreamMessage`]s. Each
-//! datagram carries one [`Datagram`]. A message whose body has a tag this
-//! version does not know decodes with `body: None` and is skipped, so newer
-//! peers can add message types without breaking older ones.
+//! Protobuf messages of `omp/surface/1` and their contract conversions. The
+//! stream carries length delimited [`StreamMessage`]s, each datagram one
+//! [`Datagram`]. Unknown body tags decode as `body: None` and are skipped.
 
 use bytes::Bytes;
 use loa_contracts::surface::{
     Encoding, Frame, Input, InputEvent, Modifiers, MouseButton, Rect, StreamInfo, SurfaceInfo, SurfaceMode,
-    SurfaceUri,
 };
 
 use crate::proto::{ProtoError, Result};
 
-/// Protocol revision spoken by this crate. The ALPN carries the major
-/// version; this field lets `/1` peers add messages compatibly.
+/// Minor revision within the ALPN's major version.
 pub const VERSION: u32 = 1;
 
-/// One message on the reliable, ordered stream.
-#[derive(Clone, PartialEq, prost::Message)]
-pub struct StreamMessage {
-    #[prost(oneof = "Body", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10")]
-    pub body: Option<Body>,
+macro_rules! messages {
+    ($($(#[$meta:meta])* $name:ident { $($(#[$f:meta])* $field:ident: $ty:ty),* $(,)? })*) => {$(
+        $(#[$meta])* #[derive(Clone, PartialEq, prost::Message)]
+        pub struct $name { $($(#[$f])* pub $field: $ty),* }
+    )*};
 }
 
-#[derive(Clone, PartialEq, prost::Oneof)]
-pub enum Body {
-    /// Viewer to server, first message.
-    #[prost(message, tag = "1")]
-    Open(Open),
-    /// Server to viewer, answer to `Open`.
-    #[prost(message, tag = "2")]
-    Accept(Accept),
-    /// Server to viewer, answer to `Open`. The server then ends the stream.
-    #[prost(message, tag = "3")]
-    Reject(Reject),
-    /// Viewer to server, pixel mode.
-    #[prost(message, tag = "4")]
-    Input(InputMsg),
-    /// Viewer to server, pixel mode: the picture can't be decoded until the
-    /// next keyframe.
-    #[prost(message, tag = "5")]
-    KeyframeRequest(KeyframeRequest),
-    /// Server to viewer, pixel mode: the surface changed size.
-    #[prost(message, tag = "6")]
-    Resize(Resize),
-    /// Server to viewer, pixel mode, only when the connection has no
-    /// datagrams (TCP fallback).
-    #[prost(message, tag = "7")]
-    Frame(FrameMsg),
-    /// Server to viewer, document mode: what follows.
-    #[prost(message, tag = "8")]
-    DocumentHeader(DocumentHeader),
-    /// Server to viewer, document mode: consecutive slices of the file.
-    #[prost(message, tag = "9")]
-    DocumentChunk(DocumentChunk),
-    /// Either side: the session ends.
-    #[prost(message, tag = "10")]
-    Close(Close),
+macro_rules! enums {
+    ($($name:ident { $($(#[$meta:meta])* $variant:ident = $value:literal),* $(,)? })*) => {$(
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, prost::Enumeration)]
+        #[repr(i32)]
+        pub enum $name { Unspecified = 0, $($(#[$meta])* $variant = $value),* }
+    )*};
+}
+
+macro_rules! oneofs {
+    ($($name:ident { $($(#[$meta:meta])* $variant:ident($ty:ty) = $tag:literal),* $(,)? })*) => {$(
+        #[derive(Clone, PartialEq, prost::Oneof)]
+        pub enum $name { $($(#[$meta])* #[prost(message, tag = $tag)] $variant($ty)),* }
+    )*};
+}
+
+messages! {
+    StreamMessage { #[prost(oneof = "Body", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10")] body: Option<Body> }
+    Open {
+        #[prost(uint32, tag = "1")] version: u32,
+        #[prost(string, tag = "2")] uri: String,
+        #[prost(enumeration = "WireEncoding", repeated, tag = "3")] encodings: Vec<i32>,
+    }
+    Accept {
+        /// Lower of the two peers' versions.
+        #[prost(uint32, tag = "1")] version: u32,
+        #[prost(message, optional, tag = "2")] info: Option<SurfaceInfoMsg>,
+        /// Pixel mode: frames come as datagrams, else on the stream.
+        #[prost(bool, tag = "3")] datagrams: bool,
+        #[prost(message, optional, tag = "4")] stream: Option<StreamInfoMsg>,
+    }
+    StreamInfoMsg {
+        #[prost(enumeration = "WireEncoding", tag = "1")] encoding: i32,
+        #[prost(string, tag = "2")] encoder: String,
+        #[prost(bool, tag = "3")] hardware: bool,
+    }
+    Reject { #[prost(enumeration = "RejectCode", tag = "1")] code: i32, #[prost(string, tag = "2")] reason: String }
+    SurfaceInfoMsg {
+        #[prost(string, tag = "1")] uri: String,
+        #[prost(string, tag = "2")] name: String,
+        #[prost(uint32, tag = "3")] width: u32,
+        #[prost(uint32, tag = "4")] height: u32,
+        #[prost(enumeration = "WireMode", tag = "5")] mode: i32,
+        #[prost(string, optional, tag = "6")] mime: Option<String>,
+    }
+    KeyframeRequest {}
+    Resize { #[prost(uint32, tag = "1")] width: u32, #[prost(uint32, tag = "2")] height: u32 }
+    Close { #[prost(string, tag = "1")] reason: String }
+    InputMsg {
+        #[prost(uint64, tag = "1")] seq: u64,
+        #[prost(uint64, tag = "2")] sent_us: u64,
+        #[prost(oneof = "InputKind", tags = "3, 4, 5, 6, 7, 8")] kind: Option<InputKind>,
+    }
+    MouseMoveMsg { #[prost(float, tag = "1")] x: f32, #[prost(float, tag = "2")] y: f32 }
+    MouseButtonMsg {
+        #[prost(float, tag = "1")] x: f32,
+        #[prost(float, tag = "2")] y: f32,
+        #[prost(enumeration = "WireButton", tag = "3")] button: i32,
+        #[prost(bool, tag = "4")] pressed: bool,
+        /// Bits 0-3: shift, ctrl, alt, meta.
+        #[prost(uint32, tag = "5")] modifiers: u32,
+    }
+    ScrollMsg {
+        #[prost(float, tag = "1")] x: f32,
+        #[prost(float, tag = "2")] y: f32,
+        #[prost(float, tag = "3")] dx: f32,
+        #[prost(float, tag = "4")] dy: f32,
+        #[prost(uint32, tag = "5")] modifiers: u32,
+    }
+    KeyMsg {
+        #[prost(string, tag = "1")] key: String,
+        #[prost(string, tag = "2")] code: String,
+        #[prost(bool, tag = "3")] pressed: bool,
+        #[prost(uint32, tag = "4")] modifiers: u32,
+    }
+    TextMsg { #[prost(string, tag = "1")] text: String }
+    FrameHeader {
+        #[prost(uint64, tag = "1")] seq: u64,
+        #[prost(uint64, tag = "2")] captured_us: u64,
+        #[prost(uint64, tag = "3")] input_seq: u64,
+        #[prost(uint32, tag = "4")] width: u32,
+        #[prost(uint32, tag = "5")] height: u32,
+        #[prost(uint32, tag = "6")] region_x: u32,
+        #[prost(uint32, tag = "7")] region_y: u32,
+        #[prost(uint32, tag = "8")] region_width: u32,
+        #[prost(uint32, tag = "9")] region_height: u32,
+        #[prost(enumeration = "WireEncoding", tag = "10")] encoding: i32,
+        #[prost(bool, tag = "11")] keyframe: bool,
+    }
+    FrameMsg {
+        #[prost(message, optional, tag = "1")] header: Option<FrameHeader>,
+        #[prost(bytes = "bytes", tag = "2")] data: Bytes,
+    }
+    Datagram { #[prost(oneof = "DatagramKind", tags = "1")] kind: Option<DatagramKind> }
+    /// Slice `index` of `count` of frame `seq`. Fragment 0 carries the header.
+    Fragment {
+        #[prost(uint64, tag = "1")] seq: u64,
+        #[prost(uint32, tag = "2")] index: u32,
+        #[prost(uint32, tag = "3")] count: u32,
+        #[prost(message, optional, tag = "4")] header: Option<FrameHeader>,
+        #[prost(bytes = "bytes", tag = "5")] data: Bytes,
+    }
+    DocumentHeader {
+        #[prost(string, tag = "1")] name: String,
+        #[prost(string, tag = "2")] mime: String,
+        #[prost(uint64, tag = "3")] length: u64,
+        /// CRC-32 (IEEE) of the whole file.
+        #[prost(uint32, tag = "4")] crc32: u32,
+    }
+    DocumentChunk { #[prost(uint64, tag = "1")] offset: u64, #[prost(bytes = "bytes", tag = "2")] data: Bytes }
+}
+
+oneofs! {
+    // Viewer: `Open`, then `Input`/`KeyframeRequest` (pixel). Server: `Accept` or
+    // `Reject`, then `Resize`/`Frame` (pixel, `Frame` only without datagrams) or
+    // `DocumentHeader` and in-order `DocumentChunk`s. Either side may `Close`.
+    Body {
+        Open(Open) = "1",
+        Accept(Accept) = "2",
+        Reject(Reject) = "3",
+        Input(InputMsg) = "4",
+        KeyframeRequest(KeyframeRequest) = "5",
+        Resize(Resize) = "6",
+        Frame(FrameMsg) = "7",
+        DocumentHeader(DocumentHeader) = "8",
+        DocumentChunk(DocumentChunk) = "9",
+        Close(Close) = "10",
+    }
+    InputKind {
+        MouseMove(MouseMoveMsg) = "3",
+        MouseButton(MouseButtonMsg) = "4",
+        Scroll(ScrollMsg) = "5",
+        Key(KeyMsg) = "6",
+        Text(TextMsg) = "7",
+        Resize(Resize) = "8",
+    }
+    DatagramKind { Fragment(Fragment) = "1" }
 }
 
 impl From<Body> for StreamMessage {
@@ -67,319 +163,18 @@ impl From<Body> for StreamMessage {
     }
 }
 
-#[derive(Clone, PartialEq, prost::Message)]
-pub struct Open {
-    #[prost(uint32, tag = "1")]
-    pub version: u32,
-    #[prost(string, tag = "2")]
-    pub uri: String,
-    /// Frame encodings the viewer can decode.
-    #[prost(enumeration = "WireEncoding", repeated, tag = "3")]
-    pub encodings: Vec<i32>,
+enums! {
+    RejectCode { Version = 1, NotFound = 2, Unavailable = 3 }
+    WireMode { Pixel = 1, Document = 2 }
+    WireEncoding { Rgba = 1, Jpeg = 2, Png = 3, H264 = 4, Hevc = 5 }
+    WireButton { Left = 1, Middle = 2, Right = 3, Back = 4, Forward = 5 }
 }
 
-#[derive(Clone, PartialEq, prost::Message)]
-pub struct Accept {
-    /// Lower of the two peers' versions.
-    #[prost(uint32, tag = "1")]
-    pub version: u32,
-    #[prost(message, optional, tag = "2")]
-    pub info: Option<SurfaceInfoMsg>,
-    /// Pixel mode: frames come as datagrams. Otherwise on the stream.
-    #[prost(bool, tag = "3")]
-    pub datagrams: bool,
-    /// Pixel mode: what the server streams for this viewer, chosen from the
-    /// viewer's `Open.encodings`. Absent when the surface doesn't say.
-    #[prost(message, optional, tag = "4")]
-    pub stream: Option<StreamInfoMsg>,
-}
-
-#[derive(Clone, PartialEq, prost::Message)]
-pub struct StreamInfoMsg {
-    #[prost(enumeration = "WireEncoding", tag = "1")]
-    pub encoding: i32,
-    /// e.g. `h264_vaapi` or `rusty_h264`.
-    #[prost(string, tag = "2")]
-    pub encoder: String,
-    #[prost(bool, tag = "3")]
-    pub hardware: bool,
-}
-
-impl From<&StreamInfo> for StreamInfoMsg {
-    fn from(stream: &StreamInfo) -> Self {
-        Self { encoding: encoding_to_wire(stream.encoding) as i32, encoder: stream.encoder.clone(), hardware: stream.hardware }
-    }
-}
-
-impl StreamInfoMsg {
-    /// `None` when the encoding is unknown to this version.
-    pub fn into_info(self) -> Option<StreamInfo> {
-        Some(StreamInfo { encoding: encoding_from_wire(self.encoding)?, encoder: self.encoder, hardware: self.hardware })
-    }
-}
-
-#[derive(Clone, PartialEq, prost::Message)]
-pub struct Reject {
-    #[prost(enumeration = "RejectCode", tag = "1")]
-    pub code: i32,
-    #[prost(string, tag = "2")]
-    pub reason: String,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, prost::Enumeration)]
-#[repr(i32)]
-pub enum RejectCode {
-    Unspecified = 0,
-    /// The viewer's protocol version is not supported.
-    Version = 1,
-    /// No such surface.
-    NotFound = 2,
-    /// The server failed to open the surface.
-    Unavailable = 3,
-}
-
-#[derive(Clone, PartialEq, prost::Message)]
-pub struct SurfaceInfoMsg {
-    #[prost(string, tag = "1")]
-    pub uri: String,
-    #[prost(string, tag = "2")]
-    pub name: String,
-    #[prost(uint32, tag = "3")]
-    pub width: u32,
-    #[prost(uint32, tag = "4")]
-    pub height: u32,
-    #[prost(enumeration = "WireMode", tag = "5")]
-    pub mode: i32,
-    #[prost(string, optional, tag = "6")]
-    pub mime: Option<String>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, prost::Enumeration)]
-#[repr(i32)]
-pub enum WireMode {
-    Unspecified = 0,
-    Pixel = 1,
-    Document = 2,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, prost::Enumeration)]
-#[repr(i32)]
-pub enum WireEncoding {
-    Unspecified = 0,
-    Rgba = 1,
-    Jpeg = 2,
-    Png = 3,
-    H264 = 4,
-    Hevc = 5,
-}
-
-#[derive(Clone, PartialEq, prost::Message)]
-pub struct KeyframeRequest {}
-
-#[derive(Clone, PartialEq, prost::Message)]
-pub struct Resize {
-    #[prost(uint32, tag = "1")]
-    pub width: u32,
-    #[prost(uint32, tag = "2")]
-    pub height: u32,
-}
-
-#[derive(Clone, PartialEq, prost::Message)]
-pub struct Close {
-    #[prost(string, tag = "1")]
-    pub reason: String,
-}
-
-#[derive(Clone, PartialEq, prost::Message)]
-pub struct InputMsg {
-    #[prost(uint64, tag = "1")]
-    pub seq: u64,
-    #[prost(uint64, tag = "2")]
-    pub sent_us: u64,
-    #[prost(oneof = "InputKind", tags = "3, 4, 5, 6, 7, 8")]
-    pub kind: Option<InputKind>,
-}
-
-#[derive(Clone, PartialEq, prost::Oneof)]
-pub enum InputKind {
-    #[prost(message, tag = "3")]
-    MouseMove(MouseMoveMsg),
-    #[prost(message, tag = "4")]
-    MouseButton(MouseButtonMsg),
-    #[prost(message, tag = "5")]
-    Scroll(ScrollMsg),
-    #[prost(message, tag = "6")]
-    Key(KeyMsg),
-    #[prost(message, tag = "7")]
-    Text(TextMsg),
-    #[prost(message, tag = "8")]
-    Resize(Resize),
-}
-
-#[derive(Clone, PartialEq, prost::Message)]
-pub struct MouseMoveMsg {
-    #[prost(float, tag = "1")]
-    pub x: f32,
-    #[prost(float, tag = "2")]
-    pub y: f32,
-}
-
-#[derive(Clone, PartialEq, prost::Message)]
-pub struct MouseButtonMsg {
-    #[prost(float, tag = "1")]
-    pub x: f32,
-    #[prost(float, tag = "2")]
-    pub y: f32,
-    #[prost(enumeration = "WireButton", tag = "3")]
-    pub button: i32,
-    #[prost(bool, tag = "4")]
-    pub pressed: bool,
-    /// [`MOD_SHIFT`] | [`MOD_CTRL`] | [`MOD_ALT`] | [`MOD_META`].
-    #[prost(uint32, tag = "5")]
-    pub modifiers: u32,
-}
-
-#[derive(Clone, PartialEq, prost::Message)]
-pub struct ScrollMsg {
-    #[prost(float, tag = "1")]
-    pub x: f32,
-    #[prost(float, tag = "2")]
-    pub y: f32,
-    #[prost(float, tag = "3")]
-    pub dx: f32,
-    #[prost(float, tag = "4")]
-    pub dy: f32,
-    #[prost(uint32, tag = "5")]
-    pub modifiers: u32,
-}
-
-#[derive(Clone, PartialEq, prost::Message)]
-pub struct KeyMsg {
-    #[prost(string, tag = "1")]
-    pub key: String,
-    #[prost(string, tag = "2")]
-    pub code: String,
-    #[prost(bool, tag = "3")]
-    pub pressed: bool,
-    #[prost(uint32, tag = "4")]
-    pub modifiers: u32,
-}
-
-#[derive(Clone, PartialEq, prost::Message)]
-pub struct TextMsg {
-    #[prost(string, tag = "1")]
-    pub text: String,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, prost::Enumeration)]
-#[repr(i32)]
-pub enum WireButton {
-    Unspecified = 0,
-    Left = 1,
-    Middle = 2,
-    Right = 3,
-    Back = 4,
-    Forward = 5,
-}
-
-pub const MOD_SHIFT: u32 = 1;
-pub const MOD_CTRL: u32 = 1 << 1;
-pub const MOD_ALT: u32 = 1 << 2;
-pub const MOD_META: u32 = 1 << 3;
-
-/// Everything about a frame except its pixels.
-#[derive(Clone, PartialEq, prost::Message)]
-pub struct FrameHeader {
-    #[prost(uint64, tag = "1")]
-    pub seq: u64,
-    #[prost(uint64, tag = "2")]
-    pub captured_us: u64,
-    #[prost(uint64, tag = "3")]
-    pub input_seq: u64,
-    #[prost(uint32, tag = "4")]
-    pub width: u32,
-    #[prost(uint32, tag = "5")]
-    pub height: u32,
-    #[prost(uint32, tag = "6")]
-    pub region_x: u32,
-    #[prost(uint32, tag = "7")]
-    pub region_y: u32,
-    #[prost(uint32, tag = "8")]
-    pub region_width: u32,
-    #[prost(uint32, tag = "9")]
-    pub region_height: u32,
-    #[prost(enumeration = "WireEncoding", tag = "10")]
-    pub encoding: i32,
-    #[prost(bool, tag = "11")]
-    pub keyframe: bool,
-}
-
-/// A whole frame on the stream.
-#[derive(Clone, PartialEq, prost::Message)]
-pub struct FrameMsg {
-    #[prost(message, optional, tag = "1")]
-    pub header: Option<FrameHeader>,
-    #[prost(bytes = "bytes", tag = "2")]
-    pub data: Bytes,
-}
-
-/// One unreliable datagram.
-#[derive(Clone, PartialEq, prost::Message)]
-pub struct Datagram {
-    #[prost(oneof = "DatagramKind", tags = "1")]
-    pub kind: Option<DatagramKind>,
-}
-
-#[derive(Clone, PartialEq, prost::Oneof)]
-pub enum DatagramKind {
-    #[prost(message, tag = "1")]
-    Fragment(Fragment),
-}
-
-/// Slice `index` of `count` of frame `seq`. Fragment 0 carries the header.
-#[derive(Clone, PartialEq, prost::Message)]
-pub struct Fragment {
-    #[prost(uint64, tag = "1")]
-    pub seq: u64,
-    #[prost(uint32, tag = "2")]
-    pub index: u32,
-    #[prost(uint32, tag = "3")]
-    pub count: u32,
-    #[prost(message, optional, tag = "4")]
-    pub header: Option<FrameHeader>,
-    #[prost(bytes = "bytes", tag = "5")]
-    pub data: Bytes,
-}
-
-#[derive(Clone, PartialEq, prost::Message)]
-pub struct DocumentHeader {
-    #[prost(string, tag = "1")]
-    pub name: String,
-    #[prost(string, tag = "2")]
-    pub mime: String,
-    /// Total bytes that follow in chunks.
-    #[prost(uint64, tag = "3")]
-    pub length: u64,
-    /// CRC-32 (IEEE) of the whole file.
-    #[prost(uint32, tag = "4")]
-    pub crc32: u32,
-}
-
-#[derive(Clone, PartialEq, prost::Message)]
-pub struct DocumentChunk {
-    /// Position of `data` in the file. Chunks arrive in order.
-    #[prost(uint64, tag = "1")]
-    pub offset: u64,
-    #[prost(bytes = "bytes", tag = "2")]
-    pub data: Bytes,
-}
-
-/// Maps a contract enum to its wire enum and back (`None` for wire values
-/// this version doesn't know, or `Unspecified`).
+/// Contract enum to wire enum and back (`None` for unknown or `Unspecified`).
 macro_rules! wire_enum {
     ($to:ident, $from:ident, $ty:ty, $wire:ident: $($v:ident),*) => {
-        pub fn $to(value: $ty) -> $wire {
-            match value { $(<$ty>::$v => $wire::$v,)* }
+        pub fn $to(value: $ty) -> i32 {
+            (match value { $(<$ty>::$v => $wire::$v,)* }) as i32
         }
 
         pub fn $from(value: i32) -> Option<$ty> {
@@ -395,9 +190,20 @@ wire_enum!(encoding_to_wire, encoding_from_wire, Encoding, WireEncoding: Rgba, J
 wire_enum!(button_to_wire, button_from_wire, MouseButton, WireButton: Left, Middle, Right, Back, Forward);
 wire_enum!(mode_to_wire, mode_from_wire, SurfaceMode, WireMode: Pixel, Document);
 
-/// Video codecs need every frame since the last keyframe to decode.
 pub fn is_video(encoding: Encoding) -> bool {
     matches!(encoding, Encoding::H264 | Encoding::Hevc)
+}
+
+impl From<&StreamInfo> for StreamInfoMsg {
+    fn from(stream: &StreamInfo) -> Self {
+        Self { encoding: encoding_to_wire(stream.encoding), encoder: stream.encoder.clone(), hardware: stream.hardware }
+    }
+}
+
+impl StreamInfoMsg {
+    pub fn into_info(self) -> Option<StreamInfo> {
+        Some(StreamInfo { encoding: encoding_from_wire(self.encoding)?, encoder: self.encoder, hardware: self.hardware })
+    }
 }
 
 impl From<&SurfaceInfo> for SurfaceInfoMsg {
@@ -407,7 +213,7 @@ impl From<&SurfaceInfo> for SurfaceInfoMsg {
             name: info.name.clone(),
             width: info.width,
             height: info.height,
-            mode: mode_to_wire(info.mode) as i32,
+            mode: mode_to_wire(info.mode),
             mime: info.mime.clone(),
         }
     }
@@ -418,14 +224,7 @@ impl TryFrom<SurfaceInfoMsg> for SurfaceInfo {
 
     fn try_from(msg: SurfaceInfoMsg) -> Result<Self> {
         let mode = mode_from_wire(msg.mode).ok_or_else(|| ProtoError::Protocol(format!("unknown surface mode {}", msg.mode)))?;
-        Ok(Self {
-            uri: msg.uri.parse::<SurfaceUri>()?,
-            name: msg.name,
-            width: msg.width,
-            height: msg.height,
-            mode,
-            mime: msg.mime,
-        })
+        Ok(Self { uri: msg.uri.parse()?, name: msg.name, width: msg.width, height: msg.height, mode, mime: msg.mime })
     }
 }
 
@@ -441,14 +240,13 @@ impl From<&Frame> for FrameHeader {
             region_y: frame.region.y,
             region_width: frame.region.width,
             region_height: frame.region.height,
-            encoding: encoding_to_wire(frame.encoding) as i32,
+            encoding: encoding_to_wire(frame.encoding),
             keyframe: frame.keyframe,
         }
     }
 }
 
 impl FrameHeader {
-    /// `None` when the encoding is unknown to this version.
     pub fn into_frame(self, data: Bytes) -> Option<Frame> {
         Some(Frame {
             seq: self.seq,
@@ -465,35 +263,22 @@ impl FrameHeader {
 }
 
 fn modifiers_to_wire(m: Modifiers) -> u32 {
-    let mut bits = 0;
-    for (on, bit) in [(m.shift, MOD_SHIFT), (m.ctrl, MOD_CTRL), (m.alt, MOD_ALT), (m.meta, MOD_META)] {
-        if on {
-            bits |= bit;
-        }
-    }
-    bits
+    u32::from(m.shift) | u32::from(m.ctrl) << 1 | u32::from(m.alt) << 2 | u32::from(m.meta) << 3
 }
 
 fn modifiers_from_wire(bits: u32) -> Modifiers {
-    Modifiers {
-        shift: bits & MOD_SHIFT != 0,
-        ctrl: bits & MOD_CTRL != 0,
-        alt: bits & MOD_ALT != 0,
-        meta: bits & MOD_META != 0,
-    }
+    let on = |bit: u32| bits & 1 << bit != 0;
+    Modifiers { shift: on(0), ctrl: on(1), alt: on(2), meta: on(3) }
 }
 
 impl From<InputEvent> for InputMsg {
     fn from(event: InputEvent) -> Self {
         let kind = match event.input {
             Input::MouseMove { x, y } => InputKind::MouseMove(MouseMoveMsg { x, y }),
-            Input::MouseButton { x, y, button, pressed, modifiers } => InputKind::MouseButton(MouseButtonMsg {
-                x,
-                y,
-                button: button_to_wire(button) as i32,
-                pressed,
-                modifiers: modifiers_to_wire(modifiers),
-            }),
+            Input::MouseButton { x, y, button, pressed, modifiers } => {
+                let (button, modifiers) = (button_to_wire(button), modifiers_to_wire(modifiers));
+                InputKind::MouseButton(MouseButtonMsg { x, y, button, pressed, modifiers })
+            }
             Input::Scroll { x, y, dx, dy, modifiers } => {
                 InputKind::Scroll(ScrollMsg { x, y, dx, dy, modifiers: modifiers_to_wire(modifiers) })
             }
@@ -508,17 +293,13 @@ impl From<InputEvent> for InputMsg {
 }
 
 impl InputMsg {
-    /// `None` for input kinds or buttons this version does not know.
     pub fn into_event(self) -> Option<InputEvent> {
         let input = match self.kind? {
             InputKind::MouseMove(m) => Input::MouseMove { x: m.x, y: m.y },
-            InputKind::MouseButton(m) => Input::MouseButton {
-                x: m.x,
-                y: m.y,
-                button: button_from_wire(m.button)?,
-                pressed: m.pressed,
-                modifiers: modifiers_from_wire(m.modifiers),
-            },
+            InputKind::MouseButton(m) => {
+                let (button, modifiers) = (button_from_wire(m.button)?, modifiers_from_wire(m.modifiers));
+                Input::MouseButton { x: m.x, y: m.y, button, pressed: m.pressed, modifiers }
+            }
             InputKind::Scroll(m) => {
                 Input::Scroll { x: m.x, y: m.y, dx: m.dx, dy: m.dy, modifiers: modifiers_from_wire(m.modifiers) }
             }
@@ -538,7 +319,7 @@ mod tests {
     use prost::Message;
 
     #[test]
-    fn every_input_kind_survives_the_wire() {
+    fn inputs_round_trip_and_unknown_bodies_decode_as_none() {
         let mods = Modifiers { shift: true, ctrl: false, alt: true, meta: true };
         let inputs = [
             Input::MouseMove { x: 1.5, y: 2.25 },
@@ -551,16 +332,9 @@ mod tests {
         for (i, input) in inputs.into_iter().enumerate() {
             let event = InputEvent { seq: i as u64 + 1, sent_us: 42, input };
             let bytes = InputMsg::from(event.clone()).encode_to_vec();
-            let back = InputMsg::decode(bytes.as_slice()).unwrap().into_event().unwrap();
-            assert_eq!(back, event);
+            assert_eq!(InputMsg::decode(bytes.as_slice()).unwrap().into_event().unwrap(), event);
         }
-    }
-
-    #[test]
-    fn a_message_type_from_a_newer_version_decodes_as_unknown() {
         // Field 15, length delimited, 2 bytes: a body this version has no tag for.
-        let bytes = [15 << 3 | 2, 2, 0xAA, 0xBB];
-        let msg = StreamMessage::decode(&bytes[..]).unwrap();
-        assert!(msg.body.is_none());
+        assert!(StreamMessage::decode(&[15 << 3 | 2, 2, 0xAA, 0xBB][..]).unwrap().body.is_none());
     }
 }

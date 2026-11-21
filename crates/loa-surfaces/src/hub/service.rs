@@ -1,30 +1,29 @@
-//! [`SurfaceHub`]: the surfaces of this app, whoever opened them.
+//! [`SurfaceHub`]: a registry of [`SurfaceProvider`]s, the open surfaces and their events.
 
-use loa_util::LockExt;
-use crate::hub::mcp_surface::McpSurface;
+use crate::browser::{BrowserConfig, Tab};
+use crate::docs::{DocSurface, Fonts};
+use crate::hub::providers::{BrowserProvider, DocsProvider, McpDeclared, VncProvider};
 use crate::hub::{HubError, Result};
+use crate::vnc::RfbOptions;
 use async_trait::async_trait;
-use loa_mcp::{AllowAll, Manager, Status};
-use loa_contracts::surface::{Surface, SurfaceInfo, SurfaceMode, SurfaceServer, SurfaceUri};
-use crate::browser::{BrowserConfig, BrowserServer, Capture, Tab, VirtualDisplayConfig};
-use crate::docs::{DocSurface, DocsServer, Fonts};
-use crate::vnc::{PasswordSource, RfbEndpoint, RfbOptions, RfbServer};
-use std::collections::{BTreeMap, HashMap};
+use loa_contracts::surface::{Surface, SurfaceInfo, SurfaceUri};
+use loa_mcp::Manager;
+use loa_util::LockExt;
+use loa_util::registry::Registry;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::AtomicU64;
 use tokio::sync::broadcast;
 
 /// What the hub starts with.
 #[derive(Clone, Debug)]
 pub struct HubConfig {
-    /// The browser to launch on the first browser surface. `None` when no
-    /// Chrome or Chromium is installed; browser surfaces then fail with
-    /// [`HubError::NoBrowser`].
+    /// The browser for browser surfaces; `None` when no Chrome or Chromium is installed.
     pub browser: Option<BrowserConfig>,
-    /// Fonts for rendering document pages and agent screenshots.
+    /// Fonts for document pages and agent screenshots.
     pub fonts: Fonts,
-    /// Where `surface_screenshot` host tool results are saved for harnesses
-    /// that only take text results.
+    /// Where text-only `surface_screenshot` results are saved.
     pub screenshot_dir: PathBuf,
     pub rfb: RfbOptions,
     /// Live video for viewers across the network.
@@ -54,23 +53,17 @@ pub struct VirtualDisplaySetup {
 }
 
 impl VirtualDisplaySetup {
-    /// Xvfb on `path_var` and a headed Chrome (search path, install
-    /// locations, the Playwright cache under `home`), or what is missing.
+    /// Xvfb on `path_var` and a headed Chrome, or what is missing.
     pub fn find(path_var: Option<&std::ffi::OsStr>, home: Option<&Path>) -> Result<Self, String> {
-        let xvfb = crate::browser::find_xvfb(path_var)
-            .ok_or_else(|| "Xvfb isn't installed (install the xvfb package)".to_owned())?;
+        let xvfb = crate::browser::find_xvfb(path_var).ok_or("Xvfb isn't installed (install the xvfb package)")?;
         let chrome = crate::browser::find_chrome(path_var, home, true)
-            .ok_or_else(|| "no Chrome or Chromium that runs headed (the headless shell can't)".to_owned())?;
+            .ok_or("no Chrome or Chromium that runs headed (the headless shell can't)")?;
         Ok(Self { xvfb, chrome })
     }
 }
 
 impl HubConfig {
-    /// Finds Chrome or Chromium (search path, install locations, then the
-    /// Playwright cache), Xvfb, ffmpeg and the system fonts. Browser
-    /// profiles and agent screenshots go under `state_dir`. Chrome's sandbox
-    /// is on unless the kernel refuses unprivileged user namespaces (see
-    /// [`user_namespaces`]), where Chrome would refuse to start with it.
+    /// Finds Chrome, Xvfb, ffmpeg and the system fonts; profiles and screenshots go under `state_dir`.
     pub fn discover(state_dir: &Path) -> Self {
         let browser = BrowserConfig::discover().ok().map(|mut config| {
             config.profile_root = Some(state_dir.join("browser"));
@@ -92,10 +85,7 @@ impl HubConfig {
     }
 }
 
-/// Whether unprivileged processes may create user namespaces, which
-/// Chrome's Linux sandbox needs (unless Chrome ships a setuid helper, which
-/// the Playwright builds don't). Ubuntu 23.10+ restricts them with AppArmor;
-/// older kernels may turn them off with `unprivileged_userns_clone`.
+/// Whether unprivileged user namespaces (Chrome's Linux sandbox) are allowed.
 pub fn user_namespaces() -> bool {
     let flag = |path: &str| std::fs::read_to_string(path).ok().map(|s| s.trim() == "1");
     let restricted = flag("/proc/sys/kernel/apparmor_restrict_unprivileged_userns") == Some(true);
@@ -103,7 +93,7 @@ pub fn user_namespaces() -> bool {
     !(restricted || disabled)
 }
 
-/// Which server a surface comes from.
+/// Which provider a surface comes from.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Origin {
     Browser,
@@ -117,24 +107,35 @@ impl Origin {
     /// The server name shown and recorded with the surface.
     pub fn server(&self) -> &str {
         match self {
+            Origin::Mcp(server) => server,
+            other => other.provider(),
+        }
+    }
+
+    /// The registry key of the provider.
+    pub fn provider(&self) -> &'static str {
+        match self {
             Origin::Browser => crate::browser::SERVER_NAME,
             Origin::Document => crate::docs::SERVER_NAME,
             Origin::Vm => crate::vnc::SERVER_NAME,
-            Origin::Mcp(server) => server,
+            Origin::Mcp(_) => "mcp",
         }
     }
 }
 
-/// An open surface.
+/// An open surface; `surface` serves viewers and tools in this process.
 #[derive(Clone)]
 pub struct Opened {
     /// The surface as it was when opened.
     pub info: SurfaceInfo,
     pub origin: Origin,
-    /// The surface itself, for viewers and tools in this process: its
-    /// frames come as the source makes them (raw RGBA, JPEG screencast,
-    /// VNC rectangles), with no encoder in the way.
     pub surface: Arc<dyn Surface>,
+}
+
+impl Opened {
+    pub fn new(surface: Arc<dyn Surface>, origin: Origin) -> Self {
+        Self { info: surface.info(), origin, surface }
+    }
 }
 
 impl std::fmt::Debug for Opened {
@@ -154,56 +155,75 @@ pub struct Listed {
 /// What changed in the hub, for the UI and the session record.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HubEvent {
-    /// A surface opened, by the user or by an agent tool call.
     Opened { info: SurfaceInfo, origin: Origin },
     Closed { uri: SurfaceUri },
     /// The surfaces MCP servers declare changed.
     Declared,
 }
 
-/// VNC passwords the user typed, kept in memory for reconnects.
-#[derive(Default)]
-struct Passwords(Mutex<HashMap<String, String>>);
-
-#[async_trait]
-impl PasswordSource for Passwords {
-    async fn password(&self, endpoint: &str) -> Option<String> {
-        self.0.locked().get(endpoint).cloned()
-    }
+/// What to open; each variant goes to one provider.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OpenRequest {
+    /// A browser tab at a URL.
+    Url(String),
+    /// A document file.
+    File(PathBuf),
+    /// An RFB server at `host:port`; `password` answers VNC Authentication.
+    Vm { address: String, password: Option<String> },
+    /// A listed surface (a VM endpoint or a declared surface).
+    Uri(SurfaceUri),
 }
 
-/// The surface service: built-in servers, open surfaces and the surfaces
-/// MCP servers declare.
+/// A source of surfaces the hub opens and closes.
+#[async_trait]
+pub trait SurfaceProvider: Send + Sync {
+    fn name(&self) -> &'static str;
+    /// Surfaces that can be opened by uri while closed.
+    async fn list(&self) -> Vec<Listed> {
+        Vec::new()
+    }
+    async fn open(&self, req: &OpenRequest) -> Result<Opened>;
+    async fn close(&self, _uri: &SurfaceUri) -> Result<()> {
+        Ok(())
+    }
+    async fn shutdown(&self) {}
+}
+
+/// The surface service: the providers, the open surfaces and their events.
 pub struct SurfaceHub {
     config: HubConfig,
-    browser: tokio::sync::Mutex<Option<Arc<BrowserServer>>>,
-    docs: DocsServer,
-    vm: RfbServer,
-    passwords: Arc<Passwords>,
+    /// Shared input numbering for all tool registrations on this hub.
+    pub(super) tool_input_seq: AtomicU64,
+    providers: Registry<dyn SurfaceProvider>,
+    browser: Arc<BrowserProvider>,
+    docs: Arc<DocsProvider>,
+    mcp: Arc<McpDeclared>,
     open: Mutex<Vec<Opened>>,
-    declared: Mutex<BTreeMap<String, Vec<SurfaceInfo>>>,
-    mcp: Mutex<Option<Manager>>,
     events: broadcast::Sender<HubEvent>,
     #[cfg(feature = "remote-video")]
     video: crate::hub::video::RemoteVideo,
-    capture: Mutex<CaptureMode>,
 }
 
 impl SurfaceHub {
     pub fn new(config: HubConfig) -> Arc<Self> {
-        let passwords = Arc::new(Passwords::default());
+        let browser = Arc::new(BrowserProvider::new(config.browser.clone(), config.virtual_display.clone(), config.capture));
+        let docs = Arc::new(DocsProvider::new(config.fonts.clone()));
+        let mcp = Arc::new(McpDeclared::default());
+        let mut providers: Registry<dyn SurfaceProvider> = Registry::new();
+        let all: [Arc<dyn SurfaceProvider>; 4] = [browser.clone(), docs.clone(), mcp.clone(), Arc::new(VncProvider::new(config.rfb.clone()))];
+        for provider in all {
+            providers.register(provider.name(), provider);
+        }
         Arc::new(Self {
-            docs: DocsServer::new(config.fonts.clone()),
-            vm: RfbServer::new(Vec::new(), passwords.clone(), config.rfb.clone()),
-            passwords,
             #[cfg(feature = "remote-video")]
             video: crate::hub::video::RemoteVideo::new(&config.video),
-            capture: Mutex::new(config.capture),
             config,
-            browser: tokio::sync::Mutex::new(None),
+            tool_input_seq: AtomicU64::new(0),
+            providers,
+            browser,
+            docs,
+            mcp,
             open: Mutex::new(Vec::new()),
-            declared: Mutex::new(BTreeMap::new()),
-            mcp: Mutex::new(None),
             events: broadcast::channel(64).0,
         })
     }
@@ -212,13 +232,10 @@ impl SurfaceHub {
         &self.config
     }
 
-    /// The browser executable browser surfaces run on, `None` when none is
-    /// installed.
     pub fn browser_executable(&self) -> Option<&Path> {
         self.config.browser.as_ref().map(|b| b.executable.as_path())
     }
 
-    /// Whether the browser runs with Chrome's sandbox.
     pub fn browser_sandboxed(&self) -> bool {
         self.config.browser.as_ref().is_some_and(|b| b.sandbox)
     }
@@ -232,162 +249,88 @@ impl SurfaceHub {
         let _ = self.events.send(event);
     }
 
-    /// Opens a browser tab at `url` (see [`normalize_url`]), launching the
-    /// browser on first use.
-    pub async fn open_browser(&self, url: &str) -> Result<Opened> {
-        let server = self.browser_server().await?;
-        let tab = server.open_tab(&normalize_url(url)).await?;
-        Ok(self.register(tab, Origin::Browser))
+    /// Opens `req` with its provider; an already open surface is returned as is.
+    pub async fn open_request(&self, req: OpenRequest) -> Result<Opened> {
+        let provider = match &req {
+            OpenRequest::Url(_) => crate::browser::SERVER_NAME,
+            OpenRequest::File(_) => crate::docs::SERVER_NAME,
+            OpenRequest::Vm { .. } => crate::vnc::SERVER_NAME,
+            OpenRequest::Uri(uri) => {
+                if let Some(opened) = self.opened(uri) {
+                    return Ok(opened);
+                }
+                self.listed().await.into_iter().find(|l| &l.info.uri == uri).ok_or_else(|| HubError::NotFound(uri.clone()))?.origin.provider()
+            }
+        };
+        let provider = self.providers.get(provider).ok_or_else(|| HubError::Unsupported(provider.to_owned()))?;
+        let opened = provider.open(&req).await?;
+        Ok(self.register(opened))
     }
 
-    /// Live video for viewers across the network.
+    /// Opens a browser tab at `url` (see [`normalize_url`]), launching the browser on first use.
+    pub async fn open_browser(&self, url: &str) -> Result<Opened> {
+        self.open_request(OpenRequest::Url(url.to_owned())).await
+    }
+
+    /// Opens a PDF, XLSX, DOCX, PPTX or image file as a document surface.
+    pub async fn open_document(&self, path: &Path) -> Result<Opened> {
+        self.open_request(OpenRequest::File(path.to_owned())).await
+    }
+
+    /// Connects to the RFB server at `host:port` as `surface://vm/<host:port>`.
+    pub async fn open_vm(&self, address: &str, password: Option<String>) -> Result<Opened> {
+        self.open_request(OpenRequest::Vm { address: address.to_owned(), password }).await
+    }
+
+    /// Opens any listed surface.
+    pub async fn open(&self, uri: &SurfaceUri) -> Result<Opened> {
+        self.open_request(OpenRequest::Uri(uri.clone())).await
+    }
+
     #[cfg(feature = "remote-video")]
     pub fn video(&self) -> &crate::hub::video::RemoteVideo {
         &self.video
     }
 
-    /// The open surface `uri` for a viewer across the network (a peer over
-    /// `omp/surface/1`); viewers here use [`Opened::surface`].
+    /// The open surface `uri` for a viewer across the network.
     #[cfg(feature = "remote-video")]
     pub async fn network_surface(&self, uri: &SurfaceUri) -> Result<Arc<dyn Surface>> {
         let opened = self.opened(uri).ok_or_else(|| HubError::NotFound(uri.clone()))?;
         self.video.surface(opened).await
     }
 
-    /// How new browser tabs are captured.
     pub fn capture(&self) -> CaptureMode {
-        *self.capture.locked()
+        self.browser.capture()
     }
 
-    /// Picks how new browser tabs are captured. The virtual display needs
-    /// what [`HubConfig::virtual_display`] found.
     pub fn set_capture(&self, mode: CaptureMode) -> Result<()> {
-        if mode == CaptureMode::VirtualDisplay
-            && let Err(missing) = &self.config.virtual_display
-        {
-            return Err(HubError::NoVirtualDisplay(missing.clone()));
-        }
-        *self.capture.locked() = mode;
-        Ok(())
+        self.browser.set_capture(mode)
     }
 
-    /// Whether the running browser still captures the other way: it keeps
-    /// doing so until its tabs are closed.
     pub async fn capture_pending(&self) -> bool {
-        let browser = self.browser.lock().await.clone();
-        browser.is_some_and(|server| capture_mode(&server) != self.capture() && !server.tabs().is_empty())
+        self.browser.capture_pending().await
     }
 
-    /// The browser config for `mode`.
-    fn browser_config(&self, mode: CaptureMode) -> Result<BrowserConfig> {
-        let mut config = self.config.browser.clone().ok_or(HubError::NoBrowser)?;
-        if mode == CaptureMode::VirtualDisplay {
-            let setup = self.config.virtual_display.clone().map_err(HubError::NoVirtualDisplay)?;
-            config.executable = setup.chrome;
-            config.capture = Capture::VirtualDisplay(VirtualDisplayConfig::new(setup.xvfb));
-        }
-        Ok(config)
-    }
-
-    /// The running browser, launched (or relaunched for another capture
-    /// once its tabs are closed) as needed.
-    async fn browser_server(&self) -> Result<Arc<BrowserServer>> {
-        let mut browser = self.browser.lock().await;
-        let mode = self.capture();
-        if let Some(server) = &*browser {
-            if capture_mode(server) == mode || !server.tabs().is_empty() {
-                return Ok(server.clone());
-            }
-            if let Err(error) = server.shutdown().await {
-                tracing::warn!(%error, "stopping the browser to switch its capture");
-            }
-            *browser = None;
-        }
-        let config = self.browser_config(mode)?;
-        if let Some(root) = &config.profile_root {
-            std::fs::create_dir_all(root).map_err(crate::browser::BrowserError::from)?;
-        }
-        let server = Arc::new(BrowserServer::launch(config).await?);
-        *browser = Some(server.clone());
-        Ok(server)
-    }
-
-    /// The browser tab behind `uri`, for the browser's structured tools.
     pub async fn tab(&self, uri: &SurfaceUri) -> Result<Arc<Tab>> {
-        let browser = self.browser.lock().await.clone();
-        let server = browser.ok_or_else(|| HubError::NotFound(uri.clone()))?;
-        server.tab(uri).map_err(|_| HubError::NotFound(uri.clone()))
+        self.browser.tab(uri).await
     }
 
-    /// Opens a PDF, XLSX, DOCX, PPTX or image file as a document surface.
-    pub async fn open_document(&self, path: &Path) -> Result<Opened> {
-        let surface = self.docs.open_file(path).await?;
-        Ok(self.register(Arc::new(surface), Origin::Document))
-    }
-
-    /// The document surface behind `uri`, for the document data tool.
     pub fn document(&self, uri: &SurfaceUri) -> Result<DocSurface> {
-        self.docs.surface(uri).map_err(|_| HubError::NotFound(uri.clone()))
+        self.docs.document(uri)
     }
 
-    /// Connects to the RFB (VNC) server at `address` (`host:port`) as
-    /// `surface://vm/<host:port>`. `password` answers VNC Authentication.
-    pub async fn open_vm(&self, address: &str, password: Option<String>) -> Result<Opened> {
-        let address = address.trim();
-        let valid = address
-            .rsplit_once(':')
-            .is_some_and(|(host, port)| !host.is_empty() && !host.contains('/') && port.parse::<u16>().is_ok());
-        if !valid {
-            return Err(HubError::Address(address.to_owned()));
-        }
-        {
-            let mut passwords = self.passwords.0.locked();
-            match password.filter(|p| !p.is_empty()) {
-                Some(password) => passwords.insert(address.to_owned(), password),
-                None => passwords.remove(address),
-            };
-        }
-        let uri = self.vm.add_endpoint(RfbEndpoint { name: address.to_owned(), address: address.to_owned() })?;
-        if let Some(opened) = self.opened(&uri) {
-            return Ok(opened);
-        }
-        let surface = self.vm.open_rfb(&uri).await?;
-        Ok(self.register(surface, Origin::Vm))
-    }
-
-    /// Opens any listed surface: an already open one, a configured VM
-    /// endpoint, or one an MCP server declares.
-    pub async fn open(&self, uri: &SurfaceUri) -> Result<Opened> {
-        if let Some(opened) = self.opened(uri) {
-            return Ok(opened);
-        }
-        let own_vm = uri.server() == crate::vnc::SERVER_NAME
-            && self.vm.list().await.unwrap_or_default().iter().any(|info| &info.uri == uri);
-        if own_vm {
-            let surface = self.vm.open_rfb(uri).await?;
-            return Ok(self.register(surface, Origin::Vm));
-        }
-        let declared = self.declared.locked()
-            .iter()
-            .find_map(|(server, infos)| infos.iter().find(|i| &i.uri == uri).map(|i| (server.clone(), i.clone())));
-        let (server, info) = declared.ok_or_else(|| HubError::NotFound(uri.clone()))?;
-        let manager = self.mcp.locked().clone().ok_or(HubError::NoMcp)?;
-        let surface = McpSurface::new(manager, server.clone(), info);
-        Ok(self.register(Arc::new(surface), Origin::Mcp(server)))
-    }
-
-    fn register(&self, surface: Arc<dyn Surface>, origin: Origin) -> Opened {
-        let opened = Opened { info: surface.info(), origin, surface };
+    fn register(&self, opened: Opened) -> Opened {
         {
             let mut open = self.open.locked();
-            open.retain(|o| o.info.uri != opened.info.uri);
+            if let Some(existing) = open.iter().find(|o| o.info.uri == opened.info.uri) {
+                return existing.clone();
+            }
             open.push(opened.clone());
         }
         self.emit(HubEvent::Opened { info: opened.info.clone(), origin: opened.origin.clone() });
         opened
     }
 
-    /// The open surface behind `uri`.
     pub fn opened(&self, uri: &SurfaceUri) -> Option<Opened> {
         self.open.locked().iter().find(|o| &o.info.uri == uri).cloned()
     }
@@ -397,9 +340,7 @@ impl SurfaceHub {
         self.open.locked().clone()
     }
 
-    /// Closes `uri`: the browser tab closes, the document is dropped, the
-    /// VM connection ends once no viewer holds it. VM endpoints and declared
-    /// surfaces stay listed for reopening.
+    /// Closes `uri`; VM endpoints and declared surfaces stay listed.
     pub async fn close(&self, uri: &SurfaceUri) -> Result<()> {
         let opened = {
             let mut open = self.open.locked();
@@ -408,133 +349,55 @@ impl SurfaceHub {
         };
         #[cfg(feature = "remote-video")]
         self.video.forget(Some(uri));
-        match opened.origin {
-            Origin::Browser => {
-                let browser = self.browser.lock().await.clone();
-                if let Some(server) = browser {
-                    server.close_tab(uri).await?;
-                }
-            }
-            Origin::Document => {
-                self.docs.close(uri);
-            }
-            Origin::Vm | Origin::Mcp(_) => {}
+        if let Some(provider) = self.providers.get(opened.origin.provider()) {
+            provider.close(uri).await?;
         }
         self.emit(HubEvent::Closed { uri: uri.clone() });
         Ok(())
     }
 
-    /// Everything the Surfaces tab lists: open surfaces first, then VM
-    /// endpoints and declared surfaces that aren't open.
+    async fn listed(&self) -> Vec<Listed> {
+        let mut listed = Vec::new();
+        for (_, provider) in self.providers.iter() {
+            listed.extend(provider.list().await);
+        }
+        listed
+    }
+
+    /// Open surfaces first, then the closed ones providers list.
     pub async fn list(&self) -> Vec<Listed> {
         let open = self.open_surfaces();
-        let is_open = |uri: &SurfaceUri| open.iter().any(|o| &o.info.uri == uri);
-        let mut listed: Vec<Listed> = open
-            .iter()
-            .map(|o| Listed { info: o.surface.info(), origin: o.origin.clone(), open: true })
-            .collect();
-        let endpoints = self.vm.list().await.unwrap_or_default();
-        listed.extend(
-            endpoints
-                .into_iter()
-                .filter(|info| !is_open(&info.uri))
-                .map(|info| Listed { info, origin: Origin::Vm, open: false }),
-        );
-        for (server, infos) in self.declared.locked().iter() {
-            listed.extend(infos.iter().filter(|info| !is_open(&info.uri)).map(|info| Listed {
-                info: info.clone(),
-                origin: Origin::Mcp(server.clone()),
-                open: false,
-            }));
-        }
+        let mut listed: Vec<Listed> =
+            open.iter().map(|o| Listed { info: o.surface.info(), origin: o.origin.clone(), open: true }).collect();
+        let closed = self.listed().await.into_iter().filter(|l| !open.iter().any(|o| o.info.uri == l.info.uri));
+        listed.extend(closed);
         listed
     }
 
     /// Surfaces MCP servers declare, by server.
     pub fn declared(&self) -> BTreeMap<String, Vec<SurfaceInfo>> {
-        self.declared.locked().clone()
+        self.mcp.declared()
     }
 
-    /// Sets the surfaces `server` declares; an empty list forgets the server.
-    pub fn set_declared(&self, server: &str, surfaces: Vec<SurfaceInfo>) {
-        {
-            let mut declared = self.declared.locked();
-            if surfaces.is_empty() {
-                declared.remove(server);
-            } else {
-                declared.insert(server.to_owned(), surfaces);
-            }
-        }
-        self.emit(HubEvent::Declared);
-    }
-
-    /// Reads the `surface://` resources of every running MCP server in
-    /// `manager` and keeps `manager` to open them with. Servers that aren't
-    /// running are forgotten. Returns the servers whose listing failed.
+    /// Reads the `surface://` resources of every running server of `manager`; returns the failed listings.
     pub async fn refresh_declared(&self, manager: &Manager) -> Vec<(String, String)> {
-        *self.mcp.locked() = Some(manager.clone());
-        let mut declared = BTreeMap::new();
-        let mut failed = Vec::new();
-        for view in manager.view(&AllowAll) {
-            if view.status != Status::Running {
-                continue;
-            }
-            let name = view.spec.name;
-            match manager.surfaces(&name).await {
-                Ok(surfaces) => {
-                    let infos: Vec<SurfaceInfo> = surfaces.into_iter().map(|(uri, resource)| declared_info(uri, &resource)).collect();
-                    if !infos.is_empty() {
-                        declared.insert(name, infos);
-                    }
-                }
-                Err(error) => failed.push((name, error.to_string())),
-            }
-        }
-        *self.declared.locked() = declared;
+        let failed = self.mcp.refresh(manager).await;
         self.emit(HubEvent::Declared);
         failed
     }
 
-    /// Closes every surface and stops the browser.
+    /// Closes every surface and stops the providers.
     pub async fn shutdown(&self) {
         self.open.locked().clear();
         #[cfg(feature = "remote-video")]
         self.video.forget(None);
-        let browser = self.browser.lock().await.take();
-        if let Some(server) = browser
-            && let Err(error) = server.shutdown().await
-        {
-            tracing::warn!(%error, "stopping the browser");
+        for (_, provider) in self.providers.iter() {
+            provider.shutdown().await;
         }
     }
 }
 
-fn capture_mode(server: &BrowserServer) -> CaptureMode {
-    match server.config().capture {
-        Capture::Screencast => CaptureMode::Screencast,
-        Capture::VirtualDisplay(_) => CaptureMode::VirtualDisplay,
-    }
-}
-
-/// What a declared surface resource says about itself. Resources without the
-/// `omp/surface` metadata are taken as pixel surfaces (documents when they
-/// carry a MIME type) of unknown size.
-fn declared_info(uri: SurfaceUri, resource: &loa_mcp::model::Resource) -> SurfaceInfo {
-    let parsed = serde_json::to_value(resource)
-        .ok()
-        .and_then(|value| crate::hub::mcp::parse_resource(&value).ok().flatten());
-    parsed.unwrap_or_else(|| SurfaceInfo {
-        uri,
-        name: resource.title.clone().unwrap_or_else(|| resource.name.clone()),
-        width: 0,
-        height: 0,
-        mode: if resource.mime_type.is_some() { SurfaceMode::Document } else { SurfaceMode::Pixel },
-        mime: resource.mime_type.clone(),
-    })
-}
-
-/// Adds `https://` to an address typed without a scheme, e.g. `example.com`.
-/// `about:`, `data:`, `file:` and URLs with a scheme are kept.
+/// Adds `https://` (or `http://` for localhost) to an address typed without a scheme.
 pub fn normalize_url(url: &str) -> String {
     let url = url.trim();
     let has_scheme = url.contains("://") || ["about:", "data:", "file:", "chrome:"].iter().any(|s| url.starts_with(s));
@@ -544,20 +407,5 @@ pub fn normalize_url(url: &str) -> String {
         format!("http://{url}")
     } else {
         format!("https://{url}")
-    }
-}
-
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn typed_addresses_get_a_scheme() {
-        assert_eq!(normalize_url(" example.com "), "https://example.com");
-        assert_eq!(normalize_url("localhost:8080/a"), "http://localhost:8080/a");
-        assert_eq!(normalize_url("http://x.test"), "http://x.test");
-        assert_eq!(normalize_url("about:blank"), "about:blank");
-        assert_eq!(normalize_url("data:text/html,hi"), "data:text/html,hi");
     }
 }

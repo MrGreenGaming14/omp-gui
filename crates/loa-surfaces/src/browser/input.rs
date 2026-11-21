@@ -15,6 +15,15 @@ const MULTI_CLICK_DISTANCE: f32 = 4.0;
 /// Largest surface edge a viewer may ask for.
 pub(crate) const MAX_EDGE: u32 = 8192;
 
+/// Each button with its CDP name and its bit of the CDP `buttons` field, in bit order.
+const BUTTONS: [(MouseButton, CdpButton, i64); 5] = [
+    (MouseButton::Left, CdpButton::Left, 1),
+    (MouseButton::Right, CdpButton::Right, 2),
+    (MouseButton::Middle, CdpButton::Middle, 4),
+    (MouseButton::Back, CdpButton::Back, 8),
+    (MouseButton::Forward, CdpButton::Forward, 16),
+];
+
 /// One CDP call for one surface input.
 #[derive(Debug, PartialEq)]
 pub(crate) enum Command {
@@ -38,43 +47,34 @@ impl InputMapper {
     pub fn map(&mut self, input: &Input, now: Instant) -> Option<Command> {
         let command = match *input {
             Input::MouseMove { x, y } => {
-                let mut params = mouse(DispatchMouseEventType::MouseMoved, x, y);
-                params.button = Some(self.held_button());
-                params.buttons = Some(self.held);
+                // CDP wants one `button` on moves: the first held one, else none.
+                let held = BUTTONS.iter().find(|(_, _, bit)| self.held & bit != 0);
+                let mut params = mouse(DispatchMouseEventType::MouseMoved, x, y, self.held, None);
+                params.button = Some(held.map_or(CdpButton::None, |(_, cdp, _)| cdp.clone()));
                 Command::Mouse(params)
             }
             Input::MouseButton { x, y, button, pressed, modifiers } => {
+                let (_, cdp, bit) = BUTTONS.iter().find(|(b, _, _)| *b == button).expect("every button is listed");
                 if pressed {
-                    self.click_count = match self.last_press {
-                        Some((last, at, lx, ly))
-                            if last == button
-                                && now.duration_since(at) <= MULTI_CLICK_TIME
-                                && (x - lx).abs() <= MULTI_CLICK_DISTANCE
-                                && (y - ly).abs() <= MULTI_CLICK_DISTANCE =>
-                        {
-                            self.click_count + 1
-                        }
-                        _ => 1,
+                    let near = |(last, at, lx, ly): (MouseButton, Instant, f32, f32)| {
+                        let close = (x - lx).abs() <= MULTI_CLICK_DISTANCE && (y - ly).abs() <= MULTI_CLICK_DISTANCE;
+                        last == button && now.duration_since(at) <= MULTI_CLICK_TIME && close
                     };
+                    self.click_count = if self.last_press.is_some_and(near) { self.click_count + 1 } else { 1 };
                     self.last_press = Some((button, now, x, y));
-                    self.held |= button_bit(button);
+                    self.held |= bit;
                 } else {
-                    self.held &= !button_bit(button);
+                    self.held &= !bit;
                 }
                 let kind = if pressed { DispatchMouseEventType::MousePressed } else { DispatchMouseEventType::MouseReleased };
-                let mut params = mouse(kind, x, y);
-                params.button = Some(cdp_button(button));
-                params.buttons = Some(self.held);
+                let mut params = mouse(kind, x, y, self.held, Some(modifiers));
+                params.button = Some(cdp.clone());
                 params.click_count = Some(self.click_count.max(1));
-                params.modifiers = Some(modifier_bits(modifiers));
                 Command::Mouse(params)
             }
             Input::Scroll { x, y, dx, dy, modifiers } => {
-                let mut params = mouse(DispatchMouseEventType::MouseWheel, x, y);
-                params.delta_x = Some(f64::from(dx));
-                params.delta_y = Some(f64::from(dy));
-                params.buttons = Some(self.held);
-                params.modifiers = Some(modifier_bits(modifiers));
+                let mut params = mouse(DispatchMouseEventType::MouseWheel, x, y, self.held, Some(modifiers));
+                (params.delta_x, params.delta_y) = (Some(f64::from(dx)), Some(f64::from(dy)));
                 Command::Mouse(params)
             }
             Input::Key { ref key, ref code, pressed, modifiers } => Command::Key(key_event(key, code, pressed, modifiers)),
@@ -86,41 +86,14 @@ impl InputMapper {
         };
         Some(command)
     }
-
-    /// CDP wants one `button` on moves: the first held one, else none.
-    fn held_button(&self) -> CdpButton {
-        [MouseButton::Left, MouseButton::Right, MouseButton::Middle, MouseButton::Back, MouseButton::Forward]
-            .into_iter()
-            .find(|&b| self.held & button_bit(b) != 0)
-            .map_or(CdpButton::None, cdp_button)
-    }
 }
 
-fn mouse(kind: DispatchMouseEventType, x: f32, y: f32) -> DispatchMouseEventParams {
+fn mouse(kind: DispatchMouseEventType, x: f32, y: f32, held: i64, modifiers: Option<Modifiers>) -> DispatchMouseEventParams {
     let mut params = DispatchMouseEventParams::new(kind, f64::from(x), f64::from(y));
     params.pointer_type = Some(DispatchMouseEventPointerType::Mouse);
+    params.buttons = Some(held);
+    params.modifiers = modifiers.map(modifier_bits);
     params
-}
-
-fn cdp_button(button: MouseButton) -> CdpButton {
-    match button {
-        MouseButton::Left => CdpButton::Left,
-        MouseButton::Middle => CdpButton::Middle,
-        MouseButton::Right => CdpButton::Right,
-        MouseButton::Back => CdpButton::Back,
-        MouseButton::Forward => CdpButton::Forward,
-    }
-}
-
-/// Bits of the CDP `buttons` field.
-fn button_bit(button: MouseButton) -> i64 {
-    match button {
-        MouseButton::Left => 1,
-        MouseButton::Right => 2,
-        MouseButton::Middle => 4,
-        MouseButton::Back => 8,
-        MouseButton::Forward => 16,
-    }
 }
 
 /// Bits of the CDP `modifiers` field.
@@ -152,13 +125,13 @@ fn key_event(key: &str, code: &str, pressed: bool, modifiers: Modifiers) -> Disp
         params.text = Some(text.to_owned());
         params.unmodified_text = Some(text.to_owned());
     }
-    if code.starts_with("Numpad") {
-        params.location = Some(3);
-    } else if code.ends_with("Right") && definition.is_some_and(|d| ["Shift", "Control", "Alt", "Meta"].contains(&d.key)) {
-        params.location = Some(2);
-    } else if code.ends_with("Left") && definition.is_some_and(|d| ["Shift", "Control", "Alt", "Meta"].contains(&d.key)) {
-        params.location = Some(1);
-    }
+    let sided = definition.is_some_and(|d| ["Shift", "Control", "Alt", "Meta"].contains(&d.key));
+    params.location = match code {
+        _ if code.starts_with("Numpad") => Some(3),
+        _ if sided && code.ends_with("Right") => Some(2),
+        _ if sided && code.ends_with("Left") => Some(1),
+        _ => None,
+    };
     params
 }
 
@@ -166,92 +139,62 @@ fn key_event(key: &str, code: &str, pressed: bool, modifiers: Modifiers) -> Disp
 mod tests {
     use super::*;
 
-    fn press(mapper: &mut InputMapper, x: f32, at: Instant) -> DispatchMouseEventParams {
-        let input = Input::MouseButton { x, y: 10.0, button: MouseButton::Left, pressed: true, modifiers: Modifiers::default() };
-        match mapper.map(&input, at) {
-            Some(Command::Mouse(p)) => p,
-            other => panic!("{other:?}"),
-        }
-    }
-
-    fn release(mapper: &mut InputMapper, x: f32, at: Instant) -> DispatchMouseEventParams {
-        let input = Input::MouseButton { x, y: 10.0, button: MouseButton::Left, pressed: false, modifiers: Modifiers::default() };
-        match mapper.map(&input, at) {
-            Some(Command::Mouse(p)) => p,
-            other => panic!("{other:?}"),
-        }
-    }
-
     #[test]
-    fn quick_second_press_in_place_is_a_double_click_but_a_far_or_late_one_is_not() {
+    fn mouse_events_count_clicks_carry_held_buttons_and_modifiers() {
         let mut mapper = InputMapper::default();
         let t0 = Instant::now();
-        assert_eq!(press(&mut mapper, 10.0, t0).click_count, Some(1));
-        assert_eq!(release(&mut mapper, 10.0, t0).click_count, Some(1));
-        let t1 = t0 + Duration::from_millis(120);
-        assert_eq!(press(&mut mapper, 11.0, t1).click_count, Some(2));
-        assert_eq!(release(&mut mapper, 11.0, t1).click_count, Some(2));
-        let t2 = t1 + Duration::from_millis(900);
-        assert_eq!(press(&mut mapper, 11.0, t2).click_count, Some(1));
-        release(&mut mapper, 11.0, t2);
-        assert_eq!(press(&mut mapper, 80.0, t2 + Duration::from_millis(10)).click_count, Some(1));
-    }
-
-    #[test]
-    fn drag_moves_carry_the_held_button() {
-        let mut mapper = InputMapper::default();
-        let now = Instant::now();
-        press(&mut mapper, 1.0, now);
-        let Some(Command::Mouse(moved)) = mapper.map(&Input::MouseMove { x: 50.0, y: 60.0 }, now) else { panic!() };
-        assert_eq!((moved.button, moved.buttons), (Some(CdpButton::Left), Some(1)));
-        release(&mut mapper, 50.0, now);
-        let Some(Command::Mouse(moved)) = mapper.map(&Input::MouseMove { x: 51.0, y: 60.0 }, now) else { panic!() };
-        assert_eq!((moved.button, moved.buttons), (Some(CdpButton::None), Some(0)));
-    }
-
-    #[test]
-    fn wheel_keeps_direction_and_modifiers() {
-        let mut mapper = InputMapper::default();
-        let modifiers = Modifiers { ctrl: true, shift: true, ..Modifiers::default() };
+        let mut mouse = |input: Input, at: Duration| match mapper.map(&input, t0 + at) {
+            Some(Command::Mouse(p)) => (p.r#type, p.button, p.buttons, p.click_count, p.modifiers),
+            other => panic!("{other:?}"),
+        };
+        let none = Modifiers::default();
+        let left = |x, pressed| Input::MouseButton { x, y: 10.0, button: MouseButton::Left, pressed, modifiers: none };
+        let ms = Duration::from_millis;
+        let (press, release, moved) =
+            (DispatchMouseEventType::MousePressed, DispatchMouseEventType::MouseReleased, DispatchMouseEventType::MouseMoved);
+        let l = Some(CdpButton::Left);
+        // A quick second press in place is a double click; a late or far one is not.
+        let steps = [
+            (left(10.0, true), ms(0), (press.clone(), l.clone(), Some(1), Some(1), Some(0))),
+            (Input::MouseMove { x: 50.0, y: 60.0 }, ms(0), (moved.clone(), l.clone(), Some(1), None, None)),
+            (left(10.0, false), ms(0), (release.clone(), l.clone(), Some(0), Some(1), Some(0))),
+            (Input::MouseMove { x: 51.0, y: 60.0 }, ms(0), (moved, Some(CdpButton::None), Some(0), None, None)),
+            (left(11.0, true), ms(120), (press.clone(), l.clone(), Some(1), Some(2), Some(0))),
+            (left(11.0, false), ms(120), (release.clone(), l.clone(), Some(0), Some(2), Some(0))),
+            (left(11.0, true), ms(1020), (press.clone(), l.clone(), Some(1), Some(1), Some(0))),
+            (left(11.0, false), ms(1020), (release, l.clone(), Some(0), Some(1), Some(0))),
+            (left(80.0, true), ms(1030), (press, l, Some(1), Some(1), Some(0))),
+        ];
+        for (n, (input, at, want)) in steps.into_iter().enumerate() {
+            assert_eq!(mouse(input, at), want, "step {n}");
+        }
+        let modifiers = Modifiers { ctrl: true, shift: true, ..none };
         let input = Input::Scroll { x: 5.0, y: 6.0, dx: -3.0, dy: 120.0, modifiers };
-        let Some(Command::Mouse(wheel)) = mapper.map(&input, Instant::now()) else { panic!() };
-        assert_eq!(wheel.r#type, DispatchMouseEventType::MouseWheel);
-        assert_eq!((wheel.delta_x, wheel.delta_y), (Some(-3.0), Some(120.0)));
-        assert_eq!(wheel.modifiers, Some(2 | 8));
-    }
-
-    #[test]
-    fn editing_keys_get_virtual_key_codes_and_enter_carries_its_text() {
-        let backspace = key_event("Backspace", "Backspace", true, Modifiers::default());
-        assert_eq!(backspace.r#type, DispatchKeyEventType::RawKeyDown);
-        assert_eq!(backspace.windows_virtual_key_code, Some(8));
-        assert_eq!(backspace.text, None);
-
-        let enter = key_event("Enter", "Enter", true, Modifiers::default());
-        assert_eq!(enter.r#type, DispatchKeyEventType::KeyDown);
-        assert_eq!(enter.text.as_deref(), Some("\r"));
-        assert_eq!(enter.windows_virtual_key_code, Some(13));
-        let enter_up = key_event("Enter", "Enter", false, Modifiers::default());
-        assert_eq!((enter_up.r#type, enter_up.text), (DispatchKeyEventType::KeyUp, None));
-    }
-
-    #[test]
-    fn letter_keys_do_not_insert_text_twice_and_select_all_keeps_ctrl() {
-        let a = key_event("a", "KeyA", true, Modifiers { ctrl: true, ..Modifiers::default() });
-        assert_eq!(a.r#type, DispatchKeyEventType::RawKeyDown);
-        assert_eq!(a.text, None);
-        assert_eq!(a.windows_virtual_key_code, Some(65));
-        assert_eq!(a.modifiers, Some(2));
-        // A shifted layout key is still found by its physical code.
-        let bang = key_event("!", "Digit1", true, Modifiers { shift: true, ..Modifiers::default() });
-        assert_eq!(bang.windows_virtual_key_code, Some(49));
-    }
-
-    #[test]
-    fn empty_text_is_dropped_and_resize_is_bounded() {
-        let mut mapper = InputMapper::default();
-        assert_eq!(mapper.map(&Input::Text { text: String::new() }, Instant::now()), None);
-        let resize = mapper.map(&Input::Resize { width: 0, height: 100_000 }, Instant::now());
+        let Some(Command::Mouse(wheel)) = mapper.map(&input, t0) else { panic!() };
+        assert_eq!((wheel.r#type, wheel.delta_x, wheel.delta_y, wheel.modifiers), (DispatchMouseEventType::MouseWheel, Some(-3.0), Some(120.0), Some(2 | 8)));
+        assert_eq!(mapper.map(&Input::Text { text: String::new() }, t0), None);
+        let resize = mapper.map(&Input::Resize { width: 0, height: 100_000 }, t0);
         assert_eq!(resize, Some(Command::Resize { width: 1, height: MAX_EDGE }));
+    }
+
+    #[test]
+    fn keys_get_virtual_key_codes_and_only_control_keys_carry_text() {
+        let none = Modifiers::default();
+        let ctrl = Modifiers { ctrl: true, ..none };
+        let shift = Modifiers { shift: true, ..none };
+        let (raw, down, up) = (DispatchKeyEventType::RawKeyDown, DispatchKeyEventType::KeyDown, DispatchKeyEventType::KeyUp);
+        let cases = [
+            (("Backspace", "Backspace", true, none), (raw.clone(), Some(8), None, Some(0))),
+            (("Enter", "Enter", true, none), (down, Some(13), Some("\r"), Some(0))),
+            (("Enter", "Enter", false, none), (up, Some(13), None, Some(0))),
+            // Letters insert no text twice; select all keeps its Ctrl.
+            (("a", "KeyA", true, ctrl), (raw.clone(), Some(65), None, Some(2))),
+            // A shifted layout key is still found by its physical code.
+            (("!", "Digit1", true, shift), (raw, Some(49), None, Some(8))),
+        ];
+        for ((key, code, pressed, modifiers), want) in cases {
+            let e = key_event(key, code, pressed, modifiers);
+            assert_eq!((e.r#type, e.windows_virtual_key_code, e.text.as_deref(), e.modifiers), want, "{key}");
+        }
     }
 }

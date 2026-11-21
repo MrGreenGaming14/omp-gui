@@ -1,12 +1,13 @@
 //! The `browser` surface server: launches Chrome and keeps its tabs.
 
 use loa_util::LockExt;
-use crate::browser::chrome::{BrowserConfig, Capture, VirtualDisplayConfig};
+use crate::browser::chrome::{BrowserConfig, CaptureConfig, VirtualDisplayConfig};
 use crate::feed::{FrameFeed, InputLog};
-use crate::browser::tab::{Feed, Tab, TabParts, set_viewport};
-use crate::browser::x11::{CaptureTarget, X11Capture, spawn_capture};
+use crate::browser::screencast::{self, Screencast};
+use crate::browser::tab::{Tab, TabParts, set_viewport};
+use crate::browser::x11::{CaptureTarget, X11Capture, X11Display, spawn_capture};
 use crate::browser::xvfb::VirtualDisplay;
-use crate::browser::{BrowserError, Result, SERVER_NAME, screencast};
+use crate::browser::{BrowserError, Result, SERVER_NAME};
 use async_trait::async_trait;
 use chromiumoxide::browser::{Browser, BrowserConfig as CdpConfig};
 use chromiumoxide::cdp::browser_protocol::page::EventScreencastFrame;
@@ -32,8 +33,9 @@ pub(crate) struct Instance {
     _profile: TempDir,
 }
 
-/// chromiumoxide's default flags without `enable-automation`, plus the
-/// switches that keep infobars off a headed window.
+/// chromiumoxide's default flags without `enable-automation`, plus the switches that keep
+/// infobars off a headed window: they would sit on top of the captured page, shifting it
+/// away from where input lands.
 const HEADED_ARGS: [&str; 26] = [
     "disable-background-networking",
     "enable-features=NetworkService,NetworkServiceInProcess",
@@ -82,10 +84,6 @@ impl Instance {
         builder = match &display {
             // The builder defaults to headless.
             None => builder,
-            // Headed: chromiumoxide's default flags minus `enable-automation`,
-            // whose infobar (and Chrome for Testing's) would sit on top of the
-            // page in the captured picture, shifting it away from where
-            // input lands.
             Some(display) => builder
                 .with_head()
                 .disable_default_args()
@@ -161,8 +159,8 @@ impl BrowserServer {
     /// it opens.
     pub async fn launch(config: BrowserConfig) -> Result<Self> {
         let shared = match config.capture {
-            Capture::Screencast => Some(Instance::launch(&config, None).await?),
-            Capture::VirtualDisplay(_) => None,
+            CaptureConfig::Screencast => Some(Instance::launch(&config, None).await?),
+            CaptureConfig::VirtualDisplay(_) => None,
         };
         Ok(Self { config, shared, tabs: Mutex::default(), next: AtomicU64::new(0), closed: AtomicBool::new(false) })
     }
@@ -179,8 +177,8 @@ impl BrowserServer {
         let id = self.next.fetch_add(1, Ordering::Relaxed) + 1;
         let uri = SurfaceUri::new(SERVER_NAME, &format!("tab{id}")).map_err(|e| BrowserError::Config(e.to_string()))?;
         let tab = Arc::new(match &self.config.capture {
-            Capture::Screencast => self.open_screencast_tab(uri).await?,
-            Capture::VirtualDisplay(display) => self.open_display_tab(uri, display).await?,
+            CaptureConfig::Screencast => self.open_screencast_tab(uri).await?,
+            CaptureConfig::VirtualDisplay(display) => self.open_display_tab(uri, display).await?,
         });
         if let Err(error) = tab.navigate(url).await {
             self.close(&tab).await;
@@ -217,7 +215,7 @@ impl BrowserServer {
             hub,
             log,
             size: Arc::new(Mutex::new((width, height))),
-            feed: Feed::Screencast { pump, quality: self.config.jpeg_quality },
+            capture: Box::new(Screencast { pump, quality: self.config.jpeg_quality }),
         }))
     }
 
@@ -255,7 +253,8 @@ impl BrowserServer {
         });
         // The thread ends when the tab sets `stop` or the display goes away.
         drop(spawn_capture(capture, target.clone()));
-        Ok(Tab::new(TabParts { uri, page, instance, hub, log, size, feed: Feed::Display { target, screen } }))
+        let capture = Box::new(X11Display { target, screen });
+        Ok(Tab::new(TabParts { uri, page, instance, hub, log, size, capture }))
     }
 
     /// The open tab behind `uri`.
@@ -280,9 +279,14 @@ impl BrowserServer {
         Ok(())
     }
 
+    /// Whether `tab` runs on the headless browser all tabs share, not one of its own.
+    fn shares(&self, tab: &Tab) -> bool {
+        self.shared.as_ref().is_some_and(|shared| Arc::ptr_eq(shared, tab.instance()))
+    }
+
     async fn close(&self, tab: &Tab) {
         tab.stop_feed();
-        let result = if self.shared.as_ref().is_some_and(|shared| Arc::ptr_eq(shared, tab.instance())) {
+        let result = if self.shares(tab) {
             tab.page().clone().close().await.map_err(BrowserError::from)
         } else {
             tab.instance().shutdown().await
@@ -298,10 +302,8 @@ impl BrowserServer {
         if let Some(shared) = &self.shared {
             ids.extend(shared.pid().await);
         }
-        for tab in self.tabs() {
-            if !self.shared.as_ref().is_some_and(|shared| Arc::ptr_eq(shared, tab.instance())) {
-                ids.extend(tab.instance().pid().await);
-            }
+        for tab in self.tabs().iter().filter(|tab| !self.shares(tab)) {
+            ids.extend(tab.instance().pid().await);
         }
         ids
     }
@@ -313,7 +315,7 @@ impl BrowserServer {
         let tabs = std::mem::take(&mut *self.tabs.locked());
         for tab in tabs.values() {
             tab.stop_feed();
-            if !self.shared.as_ref().is_some_and(|shared| Arc::ptr_eq(shared, tab.instance())) {
+            if !self.shares(tab) {
                 tab.instance().shutdown().await?;
             }
         }

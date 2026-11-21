@@ -1,13 +1,5 @@
-//! Remote viewing (the app's `remote-video` feature): `omp/surface/1` and
+//! Remote viewing (`remote-video`): `omp/surface/1` ([`serve`], [`open`]) and
 //! live video for viewers across the network.
-//!
-//! - [`wire`]: the protobuf messages of `omp/surface/1`
-//! - [`transport`]: the connection port (ordered stream plus datagrams) and
-//!   an in-memory pair for tests and same process surfaces
-//! - [`fragment`]: frames split into datagrams, reassembled, late ones dropped
-//! - [`serve`] / [`serve_from`] on the server, [`open`] on the viewer, which
-//!   yields a [`PixelViewer`] or a [`DocumentViewer`] by surface mode
-//! - [`video`]: live surfaces coded as H.264/HEVC for viewers that decode it
 
 pub mod fragment;
 mod server;
@@ -16,11 +8,9 @@ pub mod video;
 mod viewer;
 pub mod wire;
 
-pub use server::{DOCUMENT_CHUNK, serve, serve_from};
+pub use server::serve;
 pub use transport::{DatagramError, Datagrams, Transport, memory_pair};
-pub use viewer::{
-    DEFAULT_MAX_DOCUMENT, DocumentViewer, InputSender, Opened, PixelViewer, ViewerEvent, ViewerOptions, open,
-};
+pub use viewer::{DocumentViewer, InputSender, Opened, PixelViewer, ViewerEvent, ViewerOptions, open};
 pub use wire::{RejectCode, VERSION};
 
 use loa_contracts::surface::SurfaceError;
@@ -54,7 +44,4 @@ pub enum ProtoError {
 }
 
 pub type Result<T, E = ProtoError> = std::result::Result<T, E>;
-
-/// Wall clock in microseconds, for `InputEvent::sent_us`.
-pub(crate) use loa_util::time::now_us;
 

@@ -1,28 +1,25 @@
-//! The built-in surface servers as MCP servers on loopback, for harnesses
-//! that connect to MCP servers themselves (Claude Code, Codex, opencode,
-//! ACP agents).
-//!
-//! Each built-in server (`browser`, `docs`, `vm`) is its own streamable HTTP
-//! MCP server at `http://127.0.0.1:<port>/<server>`. It declares its surfaces
-//! as `surface://` resources and serves the surface tools for them. Requests
-//! must carry the endpoint's bearer token, so other local processes can't
-//! drive the user's browser.
+//! The built-in surface servers as streamable HTTP MCP servers on loopback
+//! (`http://127.0.0.1:<port>/<server>`), for harnesses that connect to MCP
+//! servers themselves. Each declares its surfaces as `surface://` resources
+//! and serves the surface tools; requests must carry the bearer token.
 
-use crate::hub::tools::{SurfaceTools, ToolContent, ToolResult, tool_definitions};
+use crate::hub::service::SurfaceHub;
+use crate::hub::tools::{SurfaceTools, tool_set};
+use base64::Engine;
 use loa_contracts::harness::{McpServerSpec, McpTransport};
+use loa_contracts::surface::{SurfaceMode, SurfaceUri};
+use loa_mcp::ToolSetMcp;
+use rmcp::RoleServer;
 use rmcp::handler::server::ServerHandler;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ErrorData, JsonObject, ListResourcesResult,
-    ListToolsResult, PaginatedRequestParams, ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult,
-    Resource, ResourceContents, ServerCapabilities, ServerConfig, Tool,
+    CallToolRequestParams, CallToolResponse, ErrorData, ListResourcesResult, ListToolsResult, PaginatedRequestParams,
+    ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult, Resource, ResourceContents, ServerCapabilities,
+    ServerConfig,
 };
-use loa_contracts::surface::SurfaceMode;
 use rmcp::service::RequestContext;
-use rmcp::RoleServer;
 use rmcp::transport::StreamableHttpService;
 use rmcp::transport::streamable_http_server::StreamableHttpServerConfig;
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
-use serde_json::Value;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use tokio::task::JoinHandle;
@@ -32,33 +29,12 @@ pub const SERVER_PREFIX: &str = "surface-";
 
 const SERVERS: [&str; 3] = [crate::browser::SERVER_NAME, crate::docs::SERVER_NAME, crate::vnc::SERVER_NAME];
 
-/// One built-in surface server as an MCP server.
+/// One built-in surface server: its scoped [`ToolSetMcp`] plus its surfaces as resources.
 #[derive(Clone)]
 struct Scoped {
-    tools: Arc<SurfaceTools>,
+    tools: ToolSetMcp,
+    hub: Arc<SurfaceHub>,
     scope: &'static str,
-}
-
-fn tool(definition: &Value) -> Option<Tool> {
-    let name = definition["name"].as_str()?.to_owned();
-    let description = definition["description"].as_str().unwrap_or_default().to_owned();
-    let schema: JsonObject = serde_json::from_value(definition["inputSchema"].clone()).ok()?;
-    Some(Tool::new(name, description, schema))
-}
-
-fn content(result: ToolResult) -> CallToolResult {
-    use base64::Engine;
-    let blocks = result
-        .content
-        .into_iter()
-        .map(|block| match block {
-            ToolContent::Text(text) => ContentBlock::text(text),
-            ToolContent::Image { mime, data } => {
-                ContentBlock::image(base64::engine::general_purpose::STANDARD.encode(&data), mime)
-            }
-        })
-        .collect();
-    if result.is_error { CallToolResult::error(blocks) } else { CallToolResult::success(blocks) }
 }
 
 impl ServerHandler for Scoped {
@@ -66,51 +42,29 @@ impl ServerHandler for Scoped {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().enable_resources().build())
     }
 
-    async fn list_tools(
-        &self,
-        _request: Option<PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
-    ) -> Result<ListToolsResult, ErrorData> {
-        let tools = tool_definitions(Some(self.scope)).iter().filter_map(tool).collect();
-        Ok(ListToolsResult::with_all_items(tools))
+    async fn list_tools(&self, r: Option<PaginatedRequestParams>, c: RequestContext<RoleServer>) -> Result<ListToolsResult, ErrorData> {
+        self.tools.list_tools(r, c).await
     }
 
-    async fn call_tool(
-        &self,
-        request: CallToolRequestParams,
-        _context: RequestContext<RoleServer>,
-    ) -> Result<CallToolResponse, ErrorData> {
-        let args = Value::Object(request.arguments.unwrap_or_default());
-        Ok(content(self.tools.run(&request.name, &args, Some(self.scope)).await).into())
+    async fn call_tool(&self, r: CallToolRequestParams, c: RequestContext<RoleServer>) -> Result<CallToolResponse, ErrorData> {
+        self.tools.call_tool(r, c).await
     }
 
-    async fn list_resources(
-        &self,
-        _request: Option<PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
-    ) -> Result<ListResourcesResult, ErrorData> {
-        let listed = self.tools.hub().list().await;
-        let resources = listed
-            .iter()
-            .filter(|l| l.info.uri.server() == self.scope)
-            .filter_map(|l| serde_json::from_value::<Resource>(crate::hub::mcp::resource(&l.info)).ok())
-            .collect();
-        Ok(ListResourcesResult::with_all_items(resources))
+    async fn list_resources(&self, _: Option<PaginatedRequestParams>, _: RequestContext<RoleServer>) -> Result<ListResourcesResult, ErrorData> {
+        let listed = self.hub.list().await;
+        let ours = listed.iter().filter(|l| l.info.uri.server() == self.scope);
+        let resources = ours.filter_map(|l| serde_json::from_value::<Resource>(crate::hub::mcp::resource(&l.info)).ok());
+        Ok(ListResourcesResult::with_all_items(resources.collect()))
     }
 
     /// A document surface's file, or a pixel surface's current picture as PNG.
-    async fn read_resource(
-        &self,
-        request: ReadResourceRequestParams,
-        _context: RequestContext<RoleServer>,
-    ) -> Result<ReadResourceResponse, ErrorData> {
-        use base64::Engine;
+    async fn read_resource(&self, request: ReadResourceRequestParams, _: RequestContext<RoleServer>) -> Result<ReadResourceResponse, ErrorData> {
         let not_found = || ErrorData::resource_not_found(request.uri.clone(), None);
-        let uri: loa_contracts::surface::SurfaceUri = request.uri.parse().map_err(|_| not_found())?;
+        let uri: SurfaceUri = request.uri.parse().map_err(|_| not_found())?;
         if uri.server() != self.scope {
             return Err(not_found());
         }
-        let opened = self.tools.hub().open(&uri).await.map_err(|_| not_found())?;
+        let opened = self.hub.open(&uri).await.map_err(|_| not_found())?;
         let failed = |e: loa_contracts::surface::SurfaceError| ErrorData::internal_error(e.to_string(), None);
         let (mime, data) = match opened.info.mode {
             SurfaceMode::Document => {
@@ -144,7 +98,8 @@ impl McpEndpoint {
         let token = loa_util::text::random_hex(24);
         let mut router = axum::Router::new();
         for scope in SERVERS {
-            let handler = Scoped { tools: tools.clone(), scope };
+            let hub = tools.hub().clone();
+            let handler = Scoped { tools: ToolSetMcp::new(tool_set(&hub, Some(scope)), &format!("{SERVER_PREFIX}{scope}")), hub, scope };
             let service: StreamableHttpService<Scoped, LocalSessionManager> = StreamableHttpService::new(
                 move || Ok(handler.clone()),
                 Arc::new(LocalSessionManager::default()),

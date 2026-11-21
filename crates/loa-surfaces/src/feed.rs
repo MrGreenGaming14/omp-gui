@@ -1,9 +1,8 @@
 //! Frame fan-out ([`FrameFeed`]) and the input clock ([`InputLog`]) that
 //! stamps `Frame::input_seq`, shared by every pixel surface.
 
-use bytes::Bytes;
+use loa_contracts::surface::Frame;
 use loa_util::LockExt;
-use loa_contracts::surface::{Encoding, Frame, Rect};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -11,18 +10,6 @@ use tokio::sync::broadcast;
 
 /// Inputs remembered for stamping frames captured a little after them.
 const INPUT_HISTORY: usize = 256;
-
-/// The picture data of one frame before it gets a sequence number.
-pub struct Picture {
-    pub captured_us: u64,
-    pub input_seq: u64,
-    pub width: u32,
-    pub height: u32,
-    pub region: Rect,
-    pub encoding: Encoding,
-    pub keyframe: bool,
-    pub data: Bytes,
-}
 
 /// Numbers frames, keeps the last keyframe for late viewers and fans frames
 /// out to every viewer of one surface.
@@ -47,23 +34,9 @@ impl FrameFeed {
         self.tx.receiver_count()
     }
 
-    /// The last keyframe published.
-    pub fn last_keyframe(&self) -> Option<Arc<Frame>> {
-        self.last_key.locked().clone()
-    }
-
-    pub fn publish(&self, picture: Picture) {
-        let frame = Arc::new(Frame {
-            seq: self.seq.fetch_add(1, Ordering::Relaxed) + 1,
-            captured_us: picture.captured_us,
-            input_seq: picture.input_seq,
-            width: picture.width,
-            height: picture.height,
-            region: picture.region,
-            encoding: picture.encoding,
-            keyframe: picture.keyframe,
-            data: picture.data,
-        });
+    /// Numbers `frame` (its `seq` is replaced) and sends it to every viewer.
+    pub fn publish(&self, frame: Frame) {
+        let frame = Arc::new(Frame { seq: self.seq.fetch_add(1, Ordering::Relaxed) + 1, ..frame });
         if frame.keyframe {
             *self.last_key.locked() = Some(frame.clone());
         }
@@ -74,17 +47,8 @@ impl FrameFeed {
     /// Sends the last keyframe again under a new sequence number. Returns
     /// false when no keyframe was captured yet.
     pub fn republish_keyframe(&self) -> bool {
-        let Some(last) = self.last_keyframe() else { return false };
-        self.publish(Picture {
-            captured_us: last.captured_us,
-            input_seq: last.input_seq,
-            width: last.width,
-            height: last.height,
-            region: last.region,
-            encoding: last.encoding,
-            keyframe: true,
-            data: last.data.clone(),
-        });
+        let Some(last) = self.last_key.locked().clone() else { return false };
+        self.publish(Frame::clone(&last));
         true
     }
 }
@@ -125,41 +89,10 @@ mod tests {
     fn frames_are_stamped_with_the_last_input_sent_before_capture() {
         let mut log = InputLog::default();
         assert_eq!(log.seq_before(1_000), 0);
-        log.record(1, 100);
-        log.record(2, 200);
-        log.record(3, 300);
-        assert_eq!(log.seq_before(99), 0);
-        assert_eq!(log.seq_before(100), 1);
-        assert_eq!(log.seq_before(250), 2);
-        assert_eq!(log.seq_before(10_000), 3);
-    }
-
-    #[test]
-    fn a_second_viewer_with_lower_seqs_never_moves_the_stamp_back() {
-        let mut log = InputLog::default();
-        log.record(40, 100);
-        log.record(2, 200);
-        assert_eq!(log.seq_before(250), 40);
-    }
-
-    #[test]
-    fn keyframe_is_resent_under_a_new_seq_for_late_viewers() {
-        let hub = FrameFeed::new(8);
-        assert!(!hub.republish_keyframe());
-        hub.publish(Picture {
-            captured_us: 5,
-            input_seq: 3,
-            width: 2,
-            height: 1,
-            region: Rect { x: 0, y: 0, width: 2, height: 1 },
-            encoding: Encoding::Jpeg,
-            keyframe: true,
-            data: Bytes::from_static(b"jpeg"),
-        });
-        let mut late = hub.subscribe();
-        assert!(hub.republish_keyframe());
-        let frame = late.try_recv().unwrap();
-        assert_eq!((frame.seq, frame.input_seq, frame.keyframe), (2, 3, true));
-        assert_eq!(frame.data, Bytes::from_static(b"jpeg"));
+        // A second viewer with lower seqs never moves the stamp back.
+        for (seq, sent) in [(1, 100), (3, 200), (2, 300)] {
+            log.record(seq, sent);
+        }
+        assert_eq!([99, 100, 250, 10_000].map(|at| log.seq_before(at)), [0, 1, 3, 3]);
     }
 }

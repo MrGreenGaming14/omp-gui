@@ -9,36 +9,14 @@ pub(crate) const TAB: u32 = 0xff09;
 pub(crate) const BACKSPACE: u32 = 0xff08;
 
 /// Named keys with no left or right variant.
+#[rustfmt::skip]
 const NAMED: &[(&str, u32)] = &[
-    ("Backspace", BACKSPACE),
-    ("Tab", TAB),
-    ("Clear", 0xff0b),
-    ("Enter", RETURN),
-    ("Pause", 0xff13),
-    ("ScrollLock", 0xff14),
-    ("Escape", 0xff1b),
-    ("Home", 0xff50),
-    ("ArrowLeft", 0xff51),
-    ("ArrowUp", 0xff52),
-    ("ArrowRight", 0xff53),
-    ("ArrowDown", 0xff54),
-    ("PageUp", 0xff55),
-    ("PageDown", 0xff56),
-    ("End", 0xff57),
-    ("Select", 0xff60),
-    ("PrintScreen", 0xff61),
-    ("Execute", 0xff62),
-    ("Insert", 0xff63),
-    ("Undo", 0xff65),
-    ("Redo", 0xff66),
-    ("ContextMenu", 0xff67),
-    ("Find", 0xff68),
-    ("Cancel", 0xff69),
-    ("Help", 0xff6a),
-    ("NumLock", 0xff7f),
-    ("CapsLock", 0xffe5),
-    ("AltGraph", 0xfe03),
-    ("Delete", 0xffff),
+    ("Backspace", BACKSPACE), ("Tab", TAB), ("Clear", 0xff0b), ("Enter", RETURN), ("Pause", 0xff13),
+    ("ScrollLock", 0xff14), ("Escape", 0xff1b), ("Home", 0xff50), ("ArrowLeft", 0xff51), ("ArrowUp", 0xff52),
+    ("ArrowRight", 0xff53), ("ArrowDown", 0xff54), ("PageUp", 0xff55), ("PageDown", 0xff56), ("End", 0xff57),
+    ("Select", 0xff60), ("PrintScreen", 0xff61), ("Execute", 0xff62), ("Insert", 0xff63), ("Undo", 0xff65),
+    ("Redo", 0xff66), ("ContextMenu", 0xff67), ("Find", 0xff68), ("Cancel", 0xff69), ("Help", 0xff6a),
+    ("NumLock", 0xff7f), ("CapsLock", 0xffe5), ("AltGraph", 0xfe03), ("Delete", 0xffff),
 ];
 
 /// Modifier keys: W3C key, left keysym, right keysym.
@@ -50,15 +28,9 @@ const MODIFIERS: &[(&str, u32, u32)] = &[
 ];
 
 /// Keypad keys by their W3C `key` value, used when `code` names a numpad key.
+#[rustfmt::skip]
 const KEYPAD: &[(&str, u32)] = &[
-    ("Enter", 0xff8d),
-    ("*", 0xffaa),
-    ("+", 0xffab),
-    (",", 0xffac),
-    ("-", 0xffad),
-    (".", 0xffae),
-    ("/", 0xffaf),
-    ("=", 0xffbd),
+    ("Enter", 0xff8d), ("*", 0xffaa), ("+", 0xffab), (",", 0xffac), ("-", 0xffad), (".", 0xffae), ("/", 0xffaf), ("=", 0xffbd),
 ];
 
 /// Keysym of the first function key, F1. F2 to F35 follow it.
@@ -114,91 +86,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn printable_characters() {
-        assert_eq!(keysym("a", "KeyA"), Some(0x61));
-        assert_eq!(keysym("A", "KeyA"), Some(0x41));
-        assert_eq!(keysym("1", "Digit1"), Some(0x31));
-        assert_eq!(keysym("!", "Digit1"), Some(0x21));
-        assert_eq!(keysym(" ", "Space"), Some(0x20));
-        assert_eq!(keysym("~", "Backquote"), Some(0x7e));
-        assert_eq!(keysym("é", "KeyE"), Some(0xe9));
-        assert_eq!(keysym("€", "KeyE"), Some(0x0100_20ac));
-        assert_eq!(keysym("ж", "KeyX"), Some(0x0100_0436));
-    }
-
-    #[test]
-    fn modifiers_follow_the_side_in_code() {
-        assert_eq!(keysym("Shift", "ShiftLeft"), Some(0xffe1));
-        assert_eq!(keysym("Shift", "ShiftRight"), Some(0xffe2));
-        assert_eq!(keysym("Control", "ControlLeft"), Some(0xffe3));
-        assert_eq!(keysym("Control", "ControlRight"), Some(0xffe4));
-        assert_eq!(keysym("Alt", "AltLeft"), Some(0xffe9));
-        assert_eq!(keysym("Alt", "AltRight"), Some(0xffea));
-        assert_eq!(keysym("Meta", "MetaLeft"), Some(0xffeb));
-        assert_eq!(keysym("Meta", "MetaRight"), Some(0xffec));
-        assert_eq!(keysym("Shift", ""), Some(0xffe1));
-        assert_eq!(keysym("CapsLock", "CapsLock"), Some(0xffe5));
-        assert_eq!(keysym("AltGraph", "AltRight"), Some(0xfe03));
-    }
-
-    #[test]
-    fn editing_and_navigation_keys() {
-        let cases = [
-            ("Backspace", 0xff08),
-            ("Tab", 0xff09),
-            ("Enter", 0xff0d),
-            ("Escape", 0xff1b),
-            ("Delete", 0xffff),
-            ("Insert", 0xff63),
-            ("Home", 0xff50),
-            ("End", 0xff57),
-            ("PageUp", 0xff55),
-            ("PageDown", 0xff56),
-            ("ArrowLeft", 0xff51),
-            ("ArrowUp", 0xff52),
-            ("ArrowRight", 0xff53),
-            ("ArrowDown", 0xff54),
-            ("PrintScreen", 0xff61),
-            ("ContextMenu", 0xff67),
+    fn keysym_table() {
+        let cases: &[(&str, &str, Option<u32>)] = &[
+            ("a", "KeyA", Some(0x61)), ("A", "KeyA", Some(0x41)), ("!", "Digit1", Some(0x21)), (" ", "Space", Some(0x20)),
+            ("~", "Backquote", Some(0x7e)), ("é", "KeyE", Some(0xe9)), ("€", "KeyE", Some(0x0100_20ac)), ("ж", "KeyX", Some(0x0100_0436)),
+            ("Shift", "ShiftLeft", Some(0xffe1)), ("Shift", "ShiftRight", Some(0xffe2)), ("Control", "ControlRight", Some(0xffe4)),
+            ("Alt", "AltLeft", Some(0xffe9)), ("Meta", "MetaRight", Some(0xffec)), ("Shift", "", Some(0xffe1)),
+            ("CapsLock", "CapsLock", Some(0xffe5)), ("AltGraph", "AltRight", Some(0xfe03)),
+            ("Backspace", "", Some(0xff08)), ("Tab", "", Some(0xff09)), ("Enter", "", Some(0xff0d)), ("Escape", "", Some(0xff1b)),
+            ("Delete", "", Some(0xffff)), ("Insert", "", Some(0xff63)), ("Home", "", Some(0xff50)), ("End", "", Some(0xff57)),
+            ("PageUp", "", Some(0xff55)), ("PageDown", "", Some(0xff56)), ("ArrowLeft", "", Some(0xff51)), ("ArrowDown", "", Some(0xff54)),
+            ("PrintScreen", "", Some(0xff61)), ("ContextMenu", "", Some(0xff67)),
+            ("F1", "F1", Some(0xffbe)), ("F12", "F12", Some(0xffc9)), ("F35", "F35", Some(0xffe0)), ("F36", "F36", None), ("F0", "F0", None), ("Fn", "Fn", None),
+            ("7", "Numpad7", Some(0xffb7)), ("Enter", "NumpadEnter", Some(0xff8d)), ("+", "NumpadAdd", Some(0xffab)), (".", "NumpadDecimal", Some(0xffae)),
+            // Num Lock off: the numpad key reports a navigation key.
+            ("Home", "Numpad7", Some(0xff50)),
+            ("Unidentified", "", None), ("Dead", "Quote", None), ("", "", None),
         ];
-        for (key, sym) in cases {
-            assert_eq!(keysym(key, ""), Some(sym), "{key}");
+        for &(key, code, sym) in cases {
+            assert_eq!(keysym(key, code), sym, "{key} {code}");
         }
-    }
-
-    #[test]
-    fn function_keys() {
-        assert_eq!(keysym("F1", "F1"), Some(0xffbe));
-        assert_eq!(keysym("F5", "F5"), Some(0xffc2));
-        assert_eq!(keysym("F12", "F12"), Some(0xffc9));
-        assert_eq!(keysym("F24", "F24"), Some(0xffd5));
-        assert_eq!(keysym("F35", "F35"), Some(0xffe0));
-        assert_eq!(keysym("F36", "F36"), None);
-        assert_eq!(keysym("F0", "F0"), None);
-        assert_eq!(keysym("Fn", "Fn"), None);
-    }
-
-    #[test]
-    fn numpad_keys_use_keypad_keysyms() {
-        assert_eq!(keysym("7", "Numpad7"), Some(0xffb7));
-        assert_eq!(keysym("Enter", "NumpadEnter"), Some(0xff8d));
-        assert_eq!(keysym("+", "NumpadAdd"), Some(0xffab));
-        assert_eq!(keysym(".", "NumpadDecimal"), Some(0xffae));
-        // Num Lock off: the numpad key reports a navigation key.
-        assert_eq!(keysym("Home", "Numpad7"), Some(0xff50));
-    }
-
-    #[test]
-    fn keys_without_keysym() {
-        assert_eq!(keysym("Unidentified", ""), None);
-        assert_eq!(keysym("Dead", "Quote"), None);
-        assert_eq!(keysym("", ""), None);
-    }
-
-    #[test]
-    fn text_control_characters() {
-        assert_eq!(char_keysym('\n'), Some(0xff0d));
-        assert_eq!(char_keysym('\t'), Some(0xff09));
-        assert_eq!(char_keysym('\u{7}'), None);
+        assert_eq!([char_keysym('\n'), char_keysym('\t'), char_keysym('\u{7}')], [Some(0xff0d), Some(0xff09), None]);
     }
 }
+

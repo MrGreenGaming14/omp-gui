@@ -8,19 +8,20 @@
 //! Mouse moves, drags and keys other than Enter have no tool and are not
 //! sent. Document surfaces are read once with `resources/read`.
 
-use loa_util::time::now_us;
-use loa_util::LockExt;
-use crate::feed::{FrameFeed, Picture};
-use crate::hub::tools::ToolResult;
+use crate::feed::FrameFeed;
+use crate::hub::tools::{CLICK, SCREENSHOT, SCROLL, TYPE};
 use crate::pixels::png_size;
 use async_trait::async_trait;
 use bytes::Bytes;
+use loa_contracts::surface::{
+    Document, Encoding, Frame, Input, InputEvent, Modifiers, MouseButton, Rect, Surface, SurfaceError, SurfaceInfo,
+    SurfaceMode,
+};
+use loa_contracts::tools::{OutputBlock, ToolOutput};
 use loa_mcp::model::ResourceContents;
 use loa_mcp::{AllowAll, Manager};
-use loa_contracts::surface::{
-    Document, Encoding, Frame, Input, InputEvent, MouseButton, Rect, Surface, SurfaceError, SurfaceInfo, SurfaceMode,
-};
-use crate::hub::mcp as proto;
+use loa_util::LockExt;
+use loa_util::time::now_us;
 use serde_json::{Value, json};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -44,22 +45,14 @@ struct Shared {
 }
 
 impl Shared {
-    async fn call(&self, tool: &str, arguments: Value) -> loa_contracts::surface::Result<ToolResult> {
-        let arguments = match arguments {
-            Value::Object(map) => Some(map),
-            _ => None,
-        };
-        let result = self
-            .manager
-            .call_tool(&self.server, tool, arguments, &AllowAll)
-            .await
-            .map_err(|e| SurfaceError::Backend(e.to_string()))?;
-        let value = serde_json::to_value(&result).map_err(|e| SurfaceError::Backend(e.to_string()))?;
-        let result = ToolResult::from_mcp(&value);
-        if result.is_error {
-            return Err(SurfaceError::Backend(format!("{tool} on {}: {}", self.server, result.joined_text())));
+    async fn call(&self, tool: &str, arguments: Value) -> loa_contracts::surface::Result<ToolOutput> {
+        let arguments = if let Value::Object(map) = arguments { Some(map) } else { None };
+        let result = self.manager.call_tool(&self.server, tool, arguments, &AllowAll).await;
+        let output = loa_mcp::toolkit::to_output(result.map_err(|e| SurfaceError::Backend(e.to_string()))?);
+        if output.is_error {
+            return Err(SurfaceError::Backend(format!("{tool} on {}: {}", self.server, output.joined_text())));
         }
-        Ok(result)
+        Ok(output)
     }
 
     fn uri(&self) -> String {
@@ -67,25 +60,22 @@ impl Shared {
     }
 
     async fn screenshot(&self) -> loa_contracts::surface::Result<Bytes> {
-        let result = self.call(proto::SCREENSHOT, json!({ "uri": self.uri() })).await?;
-        result
-            .image()
-            .cloned()
-            .ok_or_else(|| SurfaceError::Backend(format!("{} returned no image", proto::SCREENSHOT)))
+        let output = self.call(SCREENSHOT, json!({ "uri": self.uri() })).await?;
+        let image = output.blocks.into_iter().find_map(|b| if let OutputBlock::Image { data, .. } = b { Some(data) } else { None });
+        image.ok_or_else(|| SurfaceError::Backend(format!("{SCREENSHOT} returned no image")))
     }
 
     /// Takes a screenshot and publishes it as a PNG keyframe.
     async fn publish(&self) -> loa_contracts::surface::Result<()> {
         let input_seq = self.input_done.load(Ordering::Acquire);
         let png = self.screenshot().await?;
-        let (width, height) =
-            png_size(&png).ok_or_else(|| SurfaceError::Backend(format!("{} isn't a PNG", proto::SCREENSHOT)))?;
+        let (width, height) = png_size(&png).ok_or_else(|| SurfaceError::Backend(format!("{SCREENSHOT} isn't a PNG")))?;
         {
             let mut info = self.info.locked();
-            info.width = width;
-            info.height = height;
+            (info.width, info.height) = (width, height);
         }
-        self.feed.publish(Picture {
+        self.feed.publish(Frame {
+            seq: 0,
             captured_us: now_us(),
             input_seq,
             width,
@@ -104,15 +94,11 @@ impl Shared {
             MouseButton::Left => Ok("left"),
             MouseButton::Middle => Ok("middle"),
             MouseButton::Right => Ok("right"),
-            MouseButton::Back | MouseButton::Forward => {
-                Err(SurfaceError::Backend(format!("{} takes left, middle and right clicks", proto::CLICK)))
-            }
+            MouseButton::Back | MouseButton::Forward => Err(SurfaceError::Backend(format!("{CLICK} takes left, middle and right clicks"))),
         };
-        let modifier_names = |m: &loa_contracts::surface::Modifiers| {
-            [(m.shift, "shift"), (m.ctrl, "ctrl"), (m.alt, "alt"), (m.meta, "meta")]
-                .into_iter()
-                .filter_map(|(on, name)| on.then_some(name))
-                .collect::<Vec<_>>()
+        let modifier_names = |m: &Modifiers| {
+            let all = [(m.shift, "shift"), (m.ctrl, "ctrl"), (m.alt, "alt"), (m.meta, "meta")];
+            all.into_iter().filter_map(|(on, name)| on.then_some(name)).collect::<Vec<_>>()
         };
         match &event.input {
             Input::MouseButton { button, pressed: true, .. } => {
@@ -125,16 +111,16 @@ impl Shared {
                     return Ok(());
                 }
                 let args = json!({ "uri": uri, "x": x, "y": y, "button": button_name(*button)?, "modifiers": modifier_names(modifiers) });
-                self.call(proto::CLICK, args).await?;
+                self.call(CLICK, args).await?;
             }
             Input::Scroll { x, y, dx, dy, .. } => {
-                self.call(proto::SCROLL, json!({ "uri": uri, "x": x, "y": y, "dx": dx, "dy": dy })).await?;
+                self.call(SCROLL, json!({ "uri": uri, "x": x, "y": y, "dx": dx, "dy": dy })).await?;
             }
             Input::Text { text } => {
-                self.call(proto::TYPE, json!({ "uri": uri, "text": text })).await?;
+                self.call(TYPE, json!({ "uri": uri, "text": text })).await?;
             }
             Input::Key { key, pressed: true, .. } if key == "Enter" => {
-                self.call(proto::TYPE, json!({ "uri": uri, "text": "", "submit": true })).await?;
+                self.call(TYPE, json!({ "uri": uri, "text": "", "submit": true })).await?;
             }
             Input::Key { .. } | Input::MouseMove { .. } | Input::Resize { .. } => return Ok(()),
         }
@@ -175,8 +161,13 @@ impl McpSurface {
         Self { shared, poll }
     }
 
-    pub fn server(&self) -> &str {
-        &self.shared.server
+    /// The surface's info, or a mode error unless it is in `mode`.
+    fn in_mode(&self, mode: SurfaceMode) -> loa_contracts::surface::Result<SurfaceInfo> {
+        let info = self.info();
+        if info.mode != mode {
+            return Err(SurfaceError::Mode { uri: info.uri, mode: info.mode });
+        }
+        Ok(info)
     }
 }
 
@@ -202,10 +193,7 @@ impl Surface for McpSurface {
     }
 
     fn frames(&self) -> loa_contracts::surface::Result<broadcast::Receiver<Arc<Frame>>> {
-        let info = self.info();
-        if info.mode != SurfaceMode::Pixel {
-            return Err(SurfaceError::Mode { uri: info.uri, mode: info.mode });
-        }
+        self.in_mode(SurfaceMode::Pixel)?;
         let receiver = self.shared.feed.subscribe();
         self.shared.wake.notify_one();
         Ok(receiver)
@@ -217,25 +205,15 @@ impl Surface for McpSurface {
     }
 
     async fn input(&self, event: InputEvent) -> loa_contracts::surface::Result<()> {
-        let info = self.info();
-        if info.mode != SurfaceMode::Pixel {
-            return Err(SurfaceError::Mode { uri: info.uri, mode: info.mode });
-        }
+        self.in_mode(SurfaceMode::Pixel)?;
         self.shared.input(&event).await
     }
 
     async fn document(&self) -> loa_contracts::surface::Result<Document> {
         use base64::Engine;
-        let info = self.info();
-        if info.mode != SurfaceMode::Document {
-            return Err(SurfaceError::Mode { uri: info.uri, mode: info.mode });
-        }
-        let contents = self
-            .shared
-            .manager
-            .read_resource(&self.shared.server, info.uri.as_str())
-            .await
-            .map_err(|e| SurfaceError::Backend(e.to_string()))?;
+        let info = self.in_mode(SurfaceMode::Document)?;
+        let read = self.shared.manager.read_resource(&self.shared.server, info.uri.as_str()).await;
+        let contents = read.map_err(|e| SurfaceError::Backend(e.to_string()))?;
         let (mime, data) = contents
             .into_iter()
             .find_map(|c| match c {

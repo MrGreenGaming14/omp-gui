@@ -1,9 +1,9 @@
-//! Frames from Chrome's `Page.startScreencast`.
+//! Frames from Chrome's `Page.startScreencast`: the headless [`Capture`] strategy.
 
-use loa_util::LockExt;
 use crate::browser::Result;
-use crate::feed::{FrameFeed, InputLog, Picture};
-use loa_util::time::now_us;
+use crate::browser::tab::{Capture, set_viewport};
+use crate::feed::{FrameFeed, InputLog};
+use async_trait::async_trait;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use bytes::Bytes;
@@ -13,8 +13,36 @@ use chromiumoxide::cdp::browser_protocol::page::{
 };
 use chromiumoxide::listeners::EventStream;
 use futures::StreamExt;
-use loa_contracts::surface::{Encoding, Rect};
+use loa_contracts::surface::{Encoding, Frame, Rect};
+use loa_util::LockExt;
+use loa_util::time::now_us;
 use std::sync::{Arc, Mutex};
+use tokio::task::JoinHandle;
+
+/// The screencast of one tab, pumped into its feed by `pump`.
+pub(crate) struct Screencast {
+    pub pump: JoinHandle<()>,
+    pub quality: u8,
+}
+
+#[async_trait]
+impl Capture for Screencast {
+    async fn resize(&self, page: &Page, width: u32, height: u32) -> Result<()> {
+        stop(page).await?;
+        set_viewport(page, width, height).await?;
+        start(page, width, height, self.quality).await
+    }
+
+    /// Every frame is a whole JPEG and a static page sends no new ones, so the last is sent
+    /// again. A new viewer gets it too: navigation can finish after the only repaint.
+    fn keyframe(&self, hub: &FrameFeed, _subscribe: bool) {
+        hub.republish_keyframe();
+    }
+
+    fn stop(&self) {
+        self.pump.abort();
+    }
+}
 
 /// Starts the screencast at `width` x `height`. Chrome sends a frame on each
 /// repaint and waits for the acknowledgement before sending the next.
@@ -57,7 +85,8 @@ pub(crate) async fn pump(
                         .ok_or_else(|| jpeg_decoder::Error::Format("missing frame header".into()))
                 });
                 match dimensions {
-                    Ok((width, height)) => hub.publish(Picture {
+                    Ok((width, height)) => hub.publish(Frame {
+                        seq: 0,
                         captured_us,
                         input_seq,
                         width,
