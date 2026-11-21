@@ -4,7 +4,7 @@
 //! orders lines by `x-line`, and writes nodes of live sessions in the shapes Codex writes.
 
 use super::{HARNESS, canonical, str_at};
-use crate::kit::residual::{self as kit_residual, join_parts, split_parts};
+use crate::kit::residual::{join_parts, split_parts};
 use crate::kit::{NativeCodec, NativeSession, native};
 use std::path::Path;
 use loa_contracts::harness::{AdapterError, Result};
@@ -198,12 +198,8 @@ impl<'a> Importer<'a> {
                 return Err(format_error(index, "session_meta without payload"));
             };
             let created = payload.get("timestamp").and_then(Json::as_str).and_then(parse_iso_ms).unwrap_or(self.ts);
-            let keys: Vec<&str> = ["id", "cwd"].into_iter().filter(|k| payload.get(*k).is_some_and(Json::is_string)).collect();
-            let mut remaining = kit_residual::take(&mut payload, &keys);
             let native = take_str(&mut payload, "id").ok_or_else(|| format_error(index, "session_meta without id"))?;
             let cwd = take_str(&mut payload, "cwd");
-            remaining.extend(payload);
-            let payload = remaining;
             let mut attrs: Attrs = vec![
                 (attr::ID, native.as_str().into()),
                 (attr::HARNESS, HARNESS.into()),
@@ -328,7 +324,7 @@ impl<'a> Importer<'a> {
     }
 
     fn output(&mut self, mut l: Line) -> Result<bool> {
-        let Some(call) = str_at_obj(&l.payload, "call_id").and_then(|id| self.calls.get(id)).copied() else { return Ok(false) };
+        let Some(call) = l.payload.get("call_id").and_then(Json::as_str).and_then(|id| self.calls.get(id)).copied() else { return Ok(false) };
         l.payload.remove("call_id");
         let mut attrs = Attrs::new();
         let text = match l.payload.get("output") {
@@ -393,7 +389,7 @@ impl<'a> Importer<'a> {
     fn task_end(&mut self, mut l: Line, status: TurnStatus) -> Result<bool> {
         let Some(turn) = &self.turn else { return Ok(false) };
         let (node, id) = (turn.node, turn.id.clone());
-        match (id.as_deref(), str_at_obj(&l.payload, "turn_id")) {
+        match (id.as_deref(), l.payload.get("turn_id").and_then(Json::as_str)) {
             (Some(expected), Some(actual)) if expected != actual => return Ok(false),
             (Some(_), Some(_)) => drop(l.payload.remove("turn_id")),
             _ => {}
@@ -418,10 +414,6 @@ impl<'a> Importer<'a> {
         let attrs = names.iter().filter_map(|(key, name)| Some((*name, usage.get(*key)?.as_i64()?.into()))).collect();
         self.put(turn.node, E::Usage, attrs, String::new(), l).map(|_| true)
     }
-}
-
-fn str_at_obj<'a>(obj: &'a Obj, key: &str) -> Option<&'a str> {
-    obj.get(key)?.as_str()
 }
 
 /// Writes `dom` as a rollout.
@@ -452,7 +444,6 @@ struct Exporter<'d> {
 fn residual(node: &Node, name: &str) -> Result<Option<Obj>> {
     match node.str_attr(name).map(serde_json::from_str::<Json>) {
         None => Ok(None),
-        Some(Ok(Json::Object(_))) if name == kit_residual::attr_name(HARNESS) => Ok(Some(kit_residual::restore(node, HARNESS))),
         Some(Ok(Json::Object(obj))) => Ok(Some(obj)),
         Some(_) => Err(AdapterError::Format(format!("node {} has a malformed {name}", node.id))),
     }
@@ -483,6 +474,11 @@ impl Exporter<'_> {
         line
     }
 
+    /// The line `node` was imported from, else a new `kind` line with `payload`.
+    fn line_or(&self, node: &Node, kind: &str, payload: impl FnOnce() -> Json) -> Result<Obj> {
+        Ok(residual(node, X_CODEX)?.unwrap_or_else(|| self.line_of(kind, payload())))
+    }
+
     fn push(&mut self, at: Option<i64>, line: String) {
         self.key = self.key.max(at.unwrap_or(self.key));
         self.lines.push((at.unwrap_or(self.key), line));
@@ -510,13 +506,8 @@ impl Exporter<'_> {
             E::Call => self.call(node, at),
             E::Compaction => {
                 self.stamp(node, attr::CREATED);
-                let line = match residual(node, X_CODEX)? {
-                    Some(mut line) => {
-                        insert(payload_mut(&mut line), "message", node.text.as_str());
-                        line
-                    }
-                    None => self.line_of("compacted", json!({ "message": node.text })),
-                };
+                let mut line = self.line_or(node, "compacted", || json!({}))?;
+                insert(payload_mut(&mut line), "message", node.text.as_str());
                 self.push_line(at, line);
                 Ok(())
             }
@@ -531,29 +522,22 @@ impl Exporter<'_> {
 
     fn session(&mut self, node: &Node, at: Option<i64>) -> Result<()> {
         let id = node.str_attr(attr::NATIVE_ID).or(node.str_attr(attr::ID)).unwrap_or_default();
-        let line = match residual(node, X_CODEX)? {
-            Some(mut line) => {
-                let payload = payload_mut(&mut line);
-                insert(payload, "id", id);
-                if let Some(cwd) = node.str_attr(attr::CWD) {
-                    insert(payload, "cwd", cwd);
-                }
-                line
-            }
-            None => self.line_of(
-                "session_meta",
-                json!({
-                    "id": id,
-                    "session_id": id,
-                    "timestamp": format_iso_ms(self.ts),
-                    "cwd": node.str_attr(attr::CWD).unwrap_or_default(),
-                    "originator": "loa",
-                    "cli_version": env!("CARGO_PKG_VERSION"),
-                    "source": "cli",
-                    "model_provider": null,
-                }),
-            ),
-        };
+        let mut line = self.line_or(node, "session_meta", || {
+            json!({
+                "session_id": id,
+                "timestamp": format_iso_ms(self.ts),
+                "cwd": "",
+                "originator": "loa",
+                "cli_version": env!("CARGO_PKG_VERSION"),
+                "source": "cli",
+                "model_provider": null,
+            })
+        })?;
+        let payload = payload_mut(&mut line);
+        insert(payload, "id", id);
+        if let Some(cwd) = node.str_attr(attr::CWD) {
+            insert(payload, "cwd", cwd);
+        }
         self.push_line(at, line);
         Ok(())
     }
@@ -564,15 +548,11 @@ impl Exporter<'_> {
         let turn_id = id.map_or_else(|| format!("loa-turn-{}", node.id), str::to_owned);
         let implicit = node.bool_attr(X_IMPLICIT) == Some(true);
         if !implicit {
-            let line = match residual(node, X_CODEX)? {
-                Some(mut line) => {
-                    if let Some(id) = id {
-                        insert(payload_mut(&mut line), "turn_id", id);
-                    }
-                    line
-                }
-                None => self.line_of("event_msg", json!({ "type": "task_started", "turn_id": turn_id, "model_context_window": null })),
-            };
+            let fresh = || json!({ "type": "task_started", "turn_id": turn_id, "model_context_window": null });
+            let mut line = self.line_or(node, "event_msg", fresh)?;
+            if let Some(id) = id {
+                insert(payload_mut(&mut line), "turn_id", id);
+            }
             self.push_line(at, line);
         }
         self.dom.children(node.id).try_for_each(|child| self.node(child))?;
@@ -587,16 +567,16 @@ impl Exporter<'_> {
                 Some(line)
             }
             None if implicit => None,
-            None => match status {
-                Some(TurnStatus::Done | TurnStatus::Error) => Some(self.line_of(
-                    "event_msg",
-                    json!({ "type": "task_complete", "turn_id": turn_id, "last_agent_message": null }),
-                )),
-                Some(TurnStatus::Cancelled) => {
-                    Some(self.line_of("event_msg", json!({ "type": "turn_aborted", "turn_id": turn_id, "reason": "interrupted" })))
-                }
-                _ => None,
-            },
+            None => {
+                let payload = match status {
+                    Some(TurnStatus::Done | TurnStatus::Error) => {
+                        json!({ "type": "task_complete", "turn_id": turn_id, "last_agent_message": null })
+                    }
+                    Some(TurnStatus::Cancelled) => json!({ "type": "turn_aborted", "turn_id": turn_id, "reason": "interrupted" }),
+                    _ => return Ok(()),
+                };
+                Some(self.line_of("event_msg", payload))
+            }
         };
         if let Some(mut line) = end {
             if status == Some(TurnStatus::Error) {
@@ -655,31 +635,26 @@ impl Exporter<'_> {
             None => CallLine::Function,
         };
         let is_live = imported.is_none();
-        let ty = match kind {
-            CallLine::Function => "function_call",
-            CallLine::Custom => "custom_tool_call",
-            CallLine::LocalShell => "local_shell_call",
+        let (ty, field) = match kind {
+            CallLine::Function => ("function_call", "arguments"),
+            CallLine::Custom => ("custom_tool_call", "input"),
+            CallLine::LocalShell => ("local_shell_call", "action"),
         };
         let mut line = imported.unwrap_or_else(|| self.line_of("response_item", json!({ "type": ty })));
         let payload = payload_mut(&mut line);
         if is_live || node.attr(attr::CALL_ID).is_some() {
             insert(payload, "call_id", call_id(node));
         }
-        let input = input.map(|i| i.text.as_str());
-        match (kind, input) {
-            (CallLine::LocalShell, Some(input)) => {
-                insert(payload, "action", serde_json::from_str(input).unwrap_or_else(|_| Json::from(input)))
+        if kind != CallLine::LocalShell {
+            insert(payload, "name", tool);
+        }
+        match input.map(|i| i.text.as_str()) {
+            Some(input) if kind == CallLine::LocalShell => {
+                insert(payload, field, serde_json::from_str(input).unwrap_or_else(|_| Json::from(input)))
             }
-            (CallLine::LocalShell, None) => {}
-            (_, input) => {
-                insert(payload, "name", tool);
-                let field = if kind == CallLine::Function { "arguments" } else { "input" };
-                match input {
-                    Some(input) => insert(payload, field, input),
-                    None if is_live && kind == CallLine::Function => insert(payload, field, "{}"),
-                    None => {}
-                }
-            }
+            Some(input) => insert(payload, field, input),
+            None if is_live && kind == CallLine::Function => insert(payload, field, "{}"),
+            None => {}
         }
         if is_live && kind != CallLine::Function {
             insert(payload, "status", "completed");
@@ -693,22 +668,15 @@ impl Exporter<'_> {
     }
 
     fn result(&mut self, node: &Node, call: &Node, kind: CallLine) -> Result<()> {
-        let mut line = match residual(node, X_CODEX)? {
-            Some(mut line) => {
-                let payload = payload_mut(&mut line);
-                insert(payload, "call_id", call_id(call));
-                match (node.attr(X_PARTS).and_then(Value::as_list), payload.get("output")) {
-                    (Some(lengths), Some(Json::Array(_))) => restore_parts(payload, &["output"], "", &node.text, lengths),
-                    (_, None) => insert(payload, "output", node.text.as_str()),
-                    _ => {}
-                }
-                line
-            }
-            None => {
-                let ty = if kind == CallLine::Custom { "custom_tool_call_output" } else { "function_call_output" };
-                self.line_of("response_item", json!({ "type": ty, "call_id": call_id(call), "output": node.text }))
-            }
-        };
+        let ty = if kind == CallLine::Custom { "custom_tool_call_output" } else { "function_call_output" };
+        let mut line = self.line_or(node, "response_item", || json!({ "type": ty }))?;
+        let payload = payload_mut(&mut line);
+        insert(payload, "call_id", call_id(call));
+        match (node.attr(X_PARTS).and_then(Value::as_list), payload.get("output")) {
+            (Some(lengths), Some(Json::Array(_))) => restore_parts(payload, &["output"], "", &node.text, lengths),
+            (_, None) => insert(payload, "output", node.text.as_str()),
+            _ => {}
+        }
         if node.bool_attr(attr::IS_ERROR) == Some(true) {
             let extension = line.entry(LOA_KEY).or_insert_with(|| json!({}));
             if let Some(fields) = extension.as_object_mut() {

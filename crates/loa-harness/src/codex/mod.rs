@@ -4,6 +4,7 @@ pub mod mapper;
 pub mod rollout;
 mod session;
 
+use crate::kit::NativeCodec;
 use async_trait::async_trait;
 use loa_contracts::harness::{
     Adapter, AdapterError, Availability, Capabilities, ContextDelivery, Feature, HarnessSession, ModelSwitch, Result,
@@ -14,7 +15,7 @@ use mapper::Mapper;
 use serde_json::Value as Json;
 use session::{CodexSession, Open};
 use std::fs::File;
-use std::io::{BufReader, BufWriter, Write};
+use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -56,38 +57,6 @@ impl CodexAdapter {
         self.args = args.into_iter().collect();
         self
     }
-}
-
-/// Codex's home directory: `$CODEX_HOME`, else `$HOME/.codex`.
-pub fn codex_home_from_env() -> Option<PathBuf> {
-    match std::env::var_os("CODEX_HOME") {
-        Some(home) if !home.is_empty() => Some(PathBuf::from(home)),
-        _ => std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".codex")),
-    }
-}
-
-/// Every `rollout-*.jsonl` under `codex_home/sessions`, sorted by path.
-pub fn rollout_files(codex_home: &Path) -> Result<Vec<PathBuf>> {
-    let mut found = Vec::new();
-    let mut stack = vec![codex_home.join("sessions")];
-    while let Some(dir) = stack.pop() {
-        let entries = match std::fs::read_dir(dir) {
-            Ok(entries) => entries,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(error.into()),
-        };
-        for entry in entries {
-            let entry = entry?;
-            let path = entry.path();
-            if entry.file_type()?.is_dir() {
-                stack.push(path);
-            } else if path.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("rollout-") && n.ends_with(".jsonl")) {
-                found.push(path);
-            }
-        }
-    }
-    found.sort();
-    Ok(found)
 }
 
 fn native_thread(dom: &Dom) -> Result<&str> {
@@ -153,8 +122,6 @@ impl Adapter for CodexAdapter {
     }
 
     fn export(&self, dom: &Dom, out: &Path) -> Result<()> {
-        let mut writer = BufWriter::new(File::create(out)?);
-        rollout::export(dom, &mut writer)?;
-        Ok(writer.flush()?)
+        rollout::CodexNative::export(dom, out)
     }
 }
