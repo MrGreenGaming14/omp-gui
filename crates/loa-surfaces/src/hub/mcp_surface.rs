@@ -11,7 +11,8 @@
 use loa_util::time::now_us;
 use loa_util::LockExt;
 use crate::feed::{FrameFeed, Picture};
-use crate::hub::tools::ToolResult;
+use crate::hub::tools::{CLICK, SCREENSHOT, SCROLL, TYPE};
+use loa_contracts::tools::{OutputBlock, ToolOutput};
 use crate::pixels::png_size;
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -20,7 +21,6 @@ use loa_mcp::{AllowAll, Manager};
 use loa_contracts::surface::{
     Document, Encoding, Frame, Input, InputEvent, MouseButton, Rect, Surface, SurfaceError, SurfaceInfo, SurfaceMode,
 };
-use crate::hub::mcp as proto;
 use serde_json::{Value, json};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -44,22 +44,14 @@ struct Shared {
 }
 
 impl Shared {
-    async fn call(&self, tool: &str, arguments: Value) -> loa_contracts::surface::Result<ToolResult> {
-        let arguments = match arguments {
-            Value::Object(map) => Some(map),
-            _ => None,
-        };
-        let result = self
-            .manager
-            .call_tool(&self.server, tool, arguments, &AllowAll)
-            .await
-            .map_err(|e| SurfaceError::Backend(e.to_string()))?;
-        let value = serde_json::to_value(&result).map_err(|e| SurfaceError::Backend(e.to_string()))?;
-        let result = ToolResult::from_mcp(&value);
-        if result.is_error {
-            return Err(SurfaceError::Backend(format!("{tool} on {}: {}", self.server, result.joined_text())));
+    async fn call(&self, tool: &str, arguments: Value) -> loa_contracts::surface::Result<ToolOutput> {
+        let arguments = if let Value::Object(map) = arguments { Some(map) } else { None };
+        let result = self.manager.call_tool(&self.server, tool, arguments, &AllowAll).await;
+        let output = loa_mcp::toolkit::to_output(result.map_err(|e| SurfaceError::Backend(e.to_string()))?);
+        if output.is_error {
+            return Err(SurfaceError::Backend(format!("{tool} on {}: {}", self.server, output.joined_text())));
         }
-        Ok(result)
+        Ok(output)
     }
 
     fn uri(&self) -> String {
@@ -67,11 +59,9 @@ impl Shared {
     }
 
     async fn screenshot(&self) -> loa_contracts::surface::Result<Bytes> {
-        let result = self.call(proto::SCREENSHOT, json!({ "uri": self.uri() })).await?;
-        result
-            .image()
-            .cloned()
-            .ok_or_else(|| SurfaceError::Backend(format!("{} returned no image", proto::SCREENSHOT)))
+        let output = self.call(SCREENSHOT, json!({ "uri": self.uri() })).await?;
+        let image = output.blocks.into_iter().find_map(|b| if let OutputBlock::Image { data, .. } = b { Some(data) } else { None });
+        image.ok_or_else(|| SurfaceError::Backend(format!("{SCREENSHOT} returned no image")))
     }
 
     /// Takes a screenshot and publishes it as a PNG keyframe.
@@ -79,7 +69,7 @@ impl Shared {
         let input_seq = self.input_done.load(Ordering::Acquire);
         let png = self.screenshot().await?;
         let (width, height) =
-            png_size(&png).ok_or_else(|| SurfaceError::Backend(format!("{} isn't a PNG", proto::SCREENSHOT)))?;
+            png_size(&png).ok_or_else(|| SurfaceError::Backend(format!("{} isn't a PNG", SCREENSHOT)))?;
         {
             let mut info = self.info.locked();
             info.width = width;
@@ -105,7 +95,7 @@ impl Shared {
             MouseButton::Middle => Ok("middle"),
             MouseButton::Right => Ok("right"),
             MouseButton::Back | MouseButton::Forward => {
-                Err(SurfaceError::Backend(format!("{} takes left, middle and right clicks", proto::CLICK)))
+                Err(SurfaceError::Backend(format!("{} takes left, middle and right clicks", CLICK)))
             }
         };
         let modifier_names = |m: &loa_contracts::surface::Modifiers| {
@@ -125,16 +115,16 @@ impl Shared {
                     return Ok(());
                 }
                 let args = json!({ "uri": uri, "x": x, "y": y, "button": button_name(*button)?, "modifiers": modifier_names(modifiers) });
-                self.call(proto::CLICK, args).await?;
+                self.call(CLICK, args).await?;
             }
             Input::Scroll { x, y, dx, dy, .. } => {
-                self.call(proto::SCROLL, json!({ "uri": uri, "x": x, "y": y, "dx": dx, "dy": dy })).await?;
+                self.call(SCROLL, json!({ "uri": uri, "x": x, "y": y, "dx": dx, "dy": dy })).await?;
             }
             Input::Text { text } => {
-                self.call(proto::TYPE, json!({ "uri": uri, "text": text })).await?;
+                self.call(TYPE, json!({ "uri": uri, "text": text })).await?;
             }
             Input::Key { key, pressed: true, .. } if key == "Enter" => {
-                self.call(proto::TYPE, json!({ "uri": uri, "text": "", "submit": true })).await?;
+                self.call(TYPE, json!({ "uri": uri, "text": "", "submit": true })).await?;
             }
             Input::Key { .. } | Input::MouseMove { .. } | Input::Resize { .. } => return Ok(()),
         }

@@ -37,7 +37,7 @@ impl From<DocsError> for SurfaceError {
 }
 
 /// Structured data the agent tools ask a document surface for.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DataQuery {
     /// Format, MIME type, page count and page sizes. Every format.

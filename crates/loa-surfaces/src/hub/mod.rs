@@ -1,33 +1,27 @@
-//! The app's surface service.
-//!
-//! - [`SurfaceHub`] owns the built-in surface servers (the `browser` on the
-//!   installed Chrome or Chromium, `docs` for PDF, Office and image files,
-//!   `vm` for RFB endpoints), keeps the surfaces the user or the agent opened,
-//!   and lists the surfaces third party MCP servers declare, which it opens as
-//!   [`McpSurface`]s.
-//! - [`SurfaceTools`] runs the `surface_*` agent tools on the hub's surfaces,
-//!   as host tools ([`SurfaceTools::host_tools`]) or behind the loopback MCP
-//!   endpoint ([`McpEndpoint`]) for harnesses that connect to MCP servers.
-//! - [`dom`] builds the `<surface>` elements recorded in a session.
+//! The app's surface service: [`SurfaceHub`] over the [`SurfaceProvider`]s (browser, docs,
+//! vm, MCP declared), the `surface_*` agent tools ([`SurfaceTools`]) as host tools or behind
+//! the loopback [`McpEndpoint`], and the `<surface>` session elements ([`dom`]).
 
 pub mod dom;
 mod endpoint;
-mod service;
 mod mcp;
 mod mcp_surface;
+mod providers;
+mod service;
 mod tools;
 #[cfg(feature = "remote-video")]
 mod video;
 
 pub use endpoint::{McpEndpoint, SERVER_PREFIX};
+pub use mcp_surface::McpSurface;
+pub use providers::{BrowserProvider, DocsProvider, McpDeclared, VncProvider};
 pub use service::{
-    CaptureMode, HubConfig, HubEvent, Listed, Opened, Origin, SurfaceHub, VirtualDisplaySetup, normalize_url,
-    user_namespaces,
+    CaptureMode, HubConfig, HubEvent, Listed, OpenRequest, Opened, Origin, SurfaceHub, SurfaceProvider,
+    VirtualDisplaySetup, normalize_url, user_namespaces,
 };
+pub use tools::{SurfaceTools, tool_set};
 #[cfg(feature = "remote-video")]
 pub use {crate::proto::video::LiveVideo, video::{RemoteVideo, VideoConfig}};
-pub use mcp_surface::McpSurface;
-pub use tools::{SurfaceTools, ToolContent, ToolResult, tool_definitions};
 
 use loa_contracts::surface::{SurfaceError, SurfaceUri};
 
@@ -49,6 +43,8 @@ pub enum HubError {
     Browser(#[from] crate::browser::BrowserError),
     #[error(transparent)]
     Docs(#[from] crate::docs::DocsError),
+    #[error("{0}")]
+    Unsupported(String),
     #[error("MCP: {0}")]
     Mcp(String),
 }

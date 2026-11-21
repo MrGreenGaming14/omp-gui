@@ -11,7 +11,7 @@ use loa_surfaces::docs::Fonts;
 use loa_surfaces::pixels::RgbaImage;
 use loa_surfaces::testkit::{PATIENCE, fake_rfb, html_data_url as html, next_frame};
 use loa_surfaces::{
-    CaptureMode, HubConfig, HubEvent, McpEndpoint, Origin, SurfaceHub, SurfaceTools, ToolContent,
+    CaptureMode, HubConfig, HubEvent, McpEndpoint, Origin, SurfaceHub, SurfaceTools,
     VirtualDisplaySetup,
 };
 use serde_json::json;
@@ -38,6 +38,10 @@ fn config(dir: &Path, browser: bool) -> HubConfig {
         config.browser = None;
     }
     config
+}
+
+fn shot_png(output: &loa_contracts::tools::ToolOutput) -> Option<&Bytes> {
+    output.blocks.iter().find_map(|b| if let OutputBlock::Image { data, .. } = b { Some(data) } else { None })
 }
 
 fn png(width: u32, height: u32, color: [u8; 4]) -> Vec<u8> {
@@ -71,16 +75,16 @@ async fn documents_open_list_answer_tools_and_close() {
 
     let tools = SurfaceTools::new(hub.clone());
     let uri = opened.info.uri.as_str();
-    let list = tools.run("surface_list", &json!({}), None).await;
+    let list = tools.run("surface_list", json!({}), None).await;
     assert!(!list.is_error);
     assert!(list.joined_text().contains(uri), "{list:?}");
 
-    let shot = tools.run("surface_screenshot", &json!({ "uri": uri }), None).await;
-    let png_bytes = shot.image().expect("a screenshot image").clone();
+    let shot = tools.run("surface_screenshot", json!({ "uri": uri }), None).await;
+    let png_bytes = shot_png(&shot).expect("a screenshot image").clone();
     assert!(png_bytes.starts_with(b"\x89PNG"));
-    let info = tools.run("surface_document_data", &json!({ "uri": uri, "query": { "kind": "info" } }), None).await;
+    let info = tools.run("surface_document_data", json!({ "uri": uri, "query": { "kind": "info" } }), None).await;
     assert!(info.joined_text().contains("\"format\": \"png\""), "{info:?}");
-    let click = tools.run("surface_click", &json!({ "uri": uri, "x": 1, "y": 1 }), None).await;
+    let click = tools.run("surface_click", json!({ "uri": uri, "x": 1, "y": 1 }), None).await;
     assert!(click.is_error, "documents take no clicks");
 
     // Host tools: text with a saved file, or the image itself.
@@ -118,7 +122,7 @@ async fn a_vm_opens_from_host_and_port_streams_and_takes_agent_clicks() {
     assert_eq!(&frame.data[..4], &[0, 200, 0, 255]);
 
     let tools = SurfaceTools::new(hub.clone());
-    let click = tools.run("surface_click", &json!({ "uri": opened.info.uri.as_str(), "x": 3, "y": 2 }), Some("vm")).await;
+    let click = tools.run("surface_click", json!({ "uri": opened.info.uri.as_str(), "x": 3, "y": 2 }), Some("vm")).await;
     assert!(!click.is_error, "{click:?}");
     let pressed_at = [5u8, 1, 0, 3, 0, 2];
     tokio::time::timeout(PATIENCE, async {
@@ -128,7 +132,7 @@ async fn a_vm_opens_from_host_and_port_streams_and_takes_agent_clicks() {
     })
     .await
     .expect("the click reached the RFB server as a pointer event");
-    let wrong_scope = tools.run("surface_screenshot", &json!({ "uri": opened.info.uri.as_str() }), Some("browser")).await;
+    let wrong_scope = tools.run("surface_screenshot", json!({ "uri": opened.info.uri.as_str() }), Some("browser")).await;
     assert!(wrong_scope.is_error);
 
     hub.close(&opened.info.uri).await.unwrap();
@@ -163,24 +167,24 @@ async fn a_browser_tab_streams_and_the_agent_drives_and_reads_it() {
         })
         .await
         .unwrap();
-    let text = tools.run("surface_page_text", &json!({ "uri": uri }), None).await;
+    let text = tools.run("surface_page_text", json!({ "uri": uri }), None).await;
     assert!(text.joined_text().contains("Title: Hub"), "{text:?}");
-    let click = tools.run("surface_click", &json!({ "uri": uri, "x": 20, "y": 10 }), None).await;
+    let click = tools.run("surface_click", json!({ "uri": uri, "x": 20, "y": 10 }), None).await;
     assert!(!click.is_error, "{click:?}");
-    let typed = tools.run("surface_type", &json!({ "uri": uri, "text": "hello" }), None).await;
+    let typed = tools.run("surface_type", json!({ "uri": uri, "text": "hello" }), None).await;
     assert!(!typed.is_error, "{typed:?}");
-    let shot = tools.run("surface_screenshot", &json!({ "uri": uri }), None).await;
-    let png_bytes = shot.image().expect("a screenshot");
+    let shot = tools.run("surface_screenshot", json!({ "uri": uri }), None).await;
+    let png_bytes = shot_png(&shot).expect("a screenshot");
     let decoded = loa_surfaces::pixels::decode_png(png_bytes).unwrap();
     assert_eq!(decoded.pixel(400, 300).unwrap()[..3], [0, 0, 255], "the page saw the user's press");
-    let elements = tools.run("surface_elements", &json!({ "uri": uri }), None).await;
+    let elements = tools.run("surface_elements", json!({ "uri": uri }), None).await;
     assert!(elements.joined_text().contains("textbox"), "{elements:?}");
-    let navigated = tools.run("surface_navigate", &json!({ "uri": uri, "url": html("<title>Two</title>two") }), None).await;
+    let navigated = tools.run("surface_navigate", json!({ "uri": uri, "url": html("<title>Two</title>two") }), None).await;
     assert!(navigated.joined_text().contains("Two"), "{navigated:?}");
 
     // The agent can open its own tab; the hub announces it.
     let mut events = hub.events();
-    let own = tools.run("surface_open_browser", &json!({ "url": "about:blank" }), None).await;
+    let own = tools.run("surface_open_browser", json!({ "url": "about:blank" }), None).await;
     assert!(own.joined_text().contains("surface://browser/tab2"), "{own:?}");
     assert!(matches!(events.recv().await.unwrap(), HubEvent::Opened { origin: Origin::Browser, .. }));
     assert_eq!(hub.open_surfaces().len(), 2);
@@ -238,8 +242,8 @@ async fn the_mcp_endpoint_declares_surfaces_and_a_second_hub_opens_them() {
     let mut args = serde_json::Map::new();
     args.insert("uri".into(), json!(vm.info.uri.as_str()));
     let shot = manager.call_tool("surface-vm", "surface_screenshot", Some(args), &AllowAll).await.unwrap();
-    let shot = loa_surfaces::ToolResult::from_mcp(&serde_json::to_value(&shot).unwrap());
-    assert!(shot.image().is_some_and(|png| png.starts_with(b"\x89PNG")), "{shot:?}");
+    let shot = loa_mcp::toolkit::to_output(shot);
+    assert!(shot_png(&shot).is_some_and(|png| png.starts_with(b"\x89PNG")), "{shot:?}");
 
     // Wrong token: refused.
     let intruder = Manager::new(loa_mcp::Options::default()).unwrap();
@@ -277,10 +281,8 @@ async fn the_mcp_endpoint_declares_surfaces_and_a_second_hub_opens_them() {
     assert_eq!((document.mime.as_str(), document.data.clone()), ("image/png", Bytes::from(std::fs::read(&image).unwrap())));
     let picture = remote_doc.surface.screenshot().await.unwrap();
     assert!(picture.starts_with(b"\x89PNG"));
-    match &SurfaceTools::new(other.clone()).run("surface_screenshot", &json!({ "uri": doc.info.uri.as_str() }), None).await.content[0] {
-        ToolContent::Image { data, .. } => assert!(data.starts_with(b"\x89PNG")),
-        other => panic!("{other:?}"),
-    }
+    let shot = SurfaceTools::new(other.clone()).run("surface_screenshot", json!({ "uri": doc.info.uri.as_str() }), None).await;
+    assert!(shot_png(&shot).is_some_and(|png| png.starts_with(b"\x89PNG")), "{shot:?}");
     manager.shutdown().await;
 }
 

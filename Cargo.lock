@@ -4941,6 +4941,7 @@ dependencies = [
  "rmcp",
  "rust_xlsxwriter",
  "rusty_h264",
+ "schemars",
  "serde",
  "serde_json",
  "tempfile",
