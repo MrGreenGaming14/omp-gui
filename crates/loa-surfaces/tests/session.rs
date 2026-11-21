@@ -4,10 +4,11 @@
 use async_trait::async_trait;
 use bytes::Bytes;
 use loa_contracts::surface::{
-    Document, Encoding, Frame, Input, InputEvent, MouseButton, Rect, Surface, SurfaceError, SurfaceInfo, SurfaceMode,
+    Document, Encoding, Frame, Input, MouseButton, Rect, Surface, SurfaceInfo, SurfaceMode,
     SurfaceUri,
 };
 use loa_surfaces::proto::fragment::fragment;
+use loa_surfaces::testkit::{FakeSurface, Probe};
 use loa_surfaces::proto::transport::{DatagramError, Datagrams};
 use loa_surfaces::proto::video::{LiveVideo, SOURCE, VideoSurface, decode::VideoDecoder, encode::probe};
 use loa_surfaces::proto::wire::{Accept, Body, Close, DocumentChunk, DocumentHeader, Open, StreamMessage};
@@ -19,25 +20,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::{broadcast, mpsc};
 
 const ALL: [Encoding; 5] = [Encoding::Rgba, Encoding::Jpeg, Encoding::Png, Encoding::H264, Encoding::Hevc];
-
-/// A pixel or document surface the test drives by hand.
-struct FakeSurface {
-    info: SurfaceInfo,
-    /// `None` once the surface closed.
-    frames: Mutex<Option<broadcast::Sender<Arc<Frame>>>>,
-    inputs: mpsc::UnboundedSender<InputEvent>,
-    keyframes: mpsc::UnboundedSender<()>,
-    document: Option<Document>,
-}
-
-struct Probe {
-    frames: broadcast::Sender<Arc<Frame>>,
-    inputs: mpsc::UnboundedReceiver<InputEvent>,
-    keyframes: mpsc::UnboundedReceiver<()>,
-}
 
 fn uri(name: &str) -> SurfaceUri {
     SurfaceUri::new("test", name).unwrap()
@@ -47,41 +31,7 @@ fn fake(name: &str, document: Option<Bytes>) -> (Arc<FakeSurface>, Probe) {
     let mode = if document.is_some() { SurfaceMode::Document } else { SurfaceMode::Pixel };
     let info = SurfaceInfo { uri: uri(name), name: name.into(), width: 64, height: 32, mode, mime: None };
     let document = document.map(|data| Document { name: name.into(), mime: "application/pdf".into(), data });
-    let (frames, _) = broadcast::channel(64);
-    let (inputs_tx, inputs) = mpsc::unbounded_channel();
-    let (keyframes_tx, keyframes) = mpsc::unbounded_channel();
-    let surface =
-        FakeSurface { info, frames: Mutex::new(Some(frames.clone())), inputs: inputs_tx, keyframes: keyframes_tx, document };
-    (Arc::new(surface), Probe { frames, inputs, keyframes })
-}
-
-#[async_trait]
-impl Surface for FakeSurface {
-    fn info(&self) -> SurfaceInfo {
-        self.info.clone()
-    }
-
-    fn frames(&self) -> loa_contracts::surface::Result<broadcast::Receiver<Arc<Frame>>> {
-        self.frames.lock().unwrap().as_ref().map(broadcast::Sender::subscribe).ok_or(SurfaceError::Closed)
-    }
-
-    async fn request_keyframe(&self) -> loa_contracts::surface::Result<()> {
-        let _ = self.keyframes.send(());
-        Ok(())
-    }
-
-    async fn input(&self, event: InputEvent) -> loa_contracts::surface::Result<()> {
-        let _ = self.inputs.send(event);
-        Ok(())
-    }
-
-    async fn document(&self) -> loa_contracts::surface::Result<Document> {
-        self.document.clone().ok_or(SurfaceError::Mode { uri: self.info.uri.clone(), mode: self.info.mode })
-    }
-
-    async fn screenshot(&self) -> loa_contracts::surface::Result<Bytes> {
-        Ok(Bytes::new())
-    }
+    FakeSurface::new(info, document)
 }
 
 fn frame(seq: u64, encoding: Encoding, keyframe: bool, len: usize) -> Frame {
@@ -251,7 +201,7 @@ async fn sessions_close_with_a_reason_on_undecodable_frames_and_closed_surfaces(
     let (surface, mut probe) = fake("tab1", None);
     let mut viewer = view(surface.clone(), memory_pair(Some(1200)), &ALL).await;
     probe.keyframes.recv().await.unwrap();
-    surface.frames.lock().unwrap().take();
+    surface.close();
     drop(probe.frames);
     assert!(matches!(viewer.next_event().await, Err(ProtoError::Closed(reason)) if reason == "the surface closed"));
 }

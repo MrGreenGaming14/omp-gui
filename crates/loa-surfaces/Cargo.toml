@@ -68,3 +68,15 @@ tokio = { workspace = true, features = ["full"] }
 [[test]]
 name = "session"
 required-features = ["remote-video"]
+
+[[test]]
+name = "browser"
+required-features = ["browser", "testkit"]
+
+[[test]]
+name = "x11"
+required-features = ["browser"]
+
+[[test]]
+name = "hub"
+required-features = ["hub", "testkit"]

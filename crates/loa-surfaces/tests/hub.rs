@@ -8,6 +8,8 @@ use loa_contracts::harness::OutputBlock;
 use loa_mcp::{AllowAll, HttpSpec, Manager, ServerSpec, Status, Transport};
 use loa_contracts::surface::{Encoding, Frame, Input, InputEvent, Modifiers, MouseButton, SurfaceMode, SurfaceUri};
 use loa_surfaces::docs::Fonts;
+use loa_surfaces::pixels::RgbaImage;
+use loa_surfaces::testkit::{PATIENCE, html_data_url as html, next_frame};
 use loa_surfaces::{
     CaptureMode, HubConfig, HubEvent, McpEndpoint, Origin, SurfaceHub, SurfaceTools, ToolContent,
     VirtualDisplaySetup,
@@ -19,8 +21,6 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::{broadcast, oneshot};
-
-const PATIENCE: Duration = Duration::from_secs(20);
 
 fn config(dir: &Path, browser: bool) -> HubConfig {
     let mut config = HubConfig::discover(dir);
@@ -43,24 +43,9 @@ fn config(dir: &Path, browser: bool) -> HubConfig {
 }
 
 fn png(width: u32, height: u32, color: [u8; 4]) -> Vec<u8> {
-    let mut out = std::io::Cursor::new(Vec::new());
-    image::RgbaImage::from_pixel(width, height, image::Rgba(color)).write_to(&mut out, image::ImageFormat::Png).unwrap();
-    out.into_inner()
+    RgbaImage::filled(width, height, color).to_png().unwrap()
 }
 
-async fn next_frame(frames: &mut broadcast::Receiver<Arc<Frame>>) -> Arc<Frame> {
-    loop {
-        match tokio::time::timeout(PATIENCE, frames.recv()).await.expect("a frame in time") {
-            Ok(frame) => return frame,
-            Err(broadcast::error::RecvError::Lagged(_)) => continue,
-            Err(e) => panic!("frame stream: {e}"),
-        }
-    }
-}
-
-/// The first frame showing the fake RFB server's update. A new subscriber is
-/// first sent the current picture, which is still the blank framebuffer when
-/// its keyframe is taken before the update arrived.
 async fn updated_frame(frames: &mut broadcast::Receiver<Arc<Frame>>, encoding: Encoding) -> Arc<Frame> {
     loop {
         let frame = frame_of(frames, encoding).await;
@@ -206,19 +191,11 @@ async fn a_vm_opens_from_host_and_port_streams_and_takes_agent_clicks() {
     assert_eq!((listed.len(), listed[0].open, &listed[0].origin), (1, false, &Origin::Vm));
 }
 
-fn html(body: &str) -> String {
-    format!("data:text/html,{}", loa_util::text::percent_encode(body))
-}
-
 #[tokio::test(flavor = "multi_thread")]
 async fn a_browser_tab_streams_and_the_agent_drives_and_reads_it() {
     let dir = tempfile::tempdir().unwrap();
+    loa_surfaces::chrome_or_skip!();
     let hub = SurfaceHub::new(config(dir.path(), true));
-    let Some(chrome) = hub.browser_executable() else {
-        eprintln!("SKIPPED: no Chrome or Chromium installed");
-        return;
-    };
-    eprintln!("browser: {}", chrome.display());
     let page = "<title>Hub</title><body style='margin:0;height:100vh;background:rgb(255,0,0)'>\
         <input id=q style='width:200px'><script>addEventListener('mousedown',()=>document.body.style.background='rgb(0,0,255)')</script></body>";
     let opened = hub.open_browser(&html(page)).await.unwrap();
@@ -429,10 +406,7 @@ async fn the_virtual_display_capture_is_refused_where_it_cant_run_and_tried_wher
     // A display that reports a number but accepts no X clients: the hub
     // picks the capture and says plainly why the tab can't open.
     let mut fake = config(dir.path(), true);
-    let Some(chrome) = fake.browser.as_ref().map(|b| b.executable.clone()) else {
-        eprintln!("SKIPPED: no Chrome or Chromium installed");
-        return;
-    };
+    let chrome = loa_surfaces::chrome_or_skip!();
     fake.virtual_display = Ok(VirtualDisplaySetup { xvfb: fake_xvfb(dir.path()), chrome });
     let hub = SurfaceHub::new(fake);
     hub.set_capture(CaptureMode::VirtualDisplay).unwrap();

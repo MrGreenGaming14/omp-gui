@@ -21,7 +21,6 @@ tokio.workspace = true
 remote-video = ["loa-surfaces/remote-video"]
 
 [dev-dependencies]
-async-trait.workspace = true
 iced_runtime = "0.14"
 iced_test = "0.14"
 tempfile.workspace = true

@@ -1,5 +1,5 @@
 //! End to end tests against a real local Chrome. Each test is skipped with a
-//! message when no browser is installed.
+//! loud message unless `LOA_CHROME` is set.
 
 mod common;
 
@@ -24,7 +24,7 @@ async fn until_text(tab: &Tab, needle: &str) -> String {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn tabs_open_navigate_list_and_close() {
-    let Some(server) = server(800, 600).await else { return };
+    let server = server(loa_surfaces::chrome_or_skip!(), 800, 600).await;
     let base = serve(vec![
         ("/one", "<title>One</title><p>first page</p>"),
         ("/two", "<title>Two</title><p>second page</p>"),
@@ -72,7 +72,7 @@ addEventListener('contextmenu', e => { e.preventDefault(); show('contextmenu'); 
 
 #[tokio::test(flavor = "multi_thread")]
 async fn mouse_clicks_land_at_surface_coordinates() {
-    let Some(server) = server(640, 480).await else { return };
+    let server = server(loa_surfaces::chrome_or_skip!(), 640, 480).await;
     let tab = server.open_tab(&html(POINTER_PAGE)).await.unwrap();
     let driver = Driver::new(tab.as_ref());
 
@@ -99,7 +99,7 @@ field.addEventListener('keydown', e => { if (e.key === 'Enter') document.getElem
 
 #[tokio::test(flavor = "multi_thread")]
 async fn typing_text_and_editing_keys_reach_the_focused_field() {
-    let Some(server) = server(640, 480).await else { return };
+    let server = server(loa_surfaces::chrome_or_skip!(), 640, 480).await;
     let tab = server.open_tab(&html(FORM_PAGE)).await.unwrap();
     let driver = Driver::new(tab.as_ref());
     let none = Modifiers::default();
@@ -121,7 +121,7 @@ async fn typing_text_and_editing_keys_reach_the_focused_field() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn wheel_scrolls_the_page_in_the_direction_asked() {
-    let Some(server) = server(640, 480).await else { return };
+    let server = server(loa_surfaces::chrome_or_skip!(), 640, 480).await;
     let page = "<title>s</title><div style='height:5000px'></div><p id=out style='position:fixed;top:0'>at 0</p><script>
 addEventListener('scroll', () => document.getElementById('out').textContent = 'at ' + Math.round(scrollY));
 </script>";
@@ -136,7 +136,7 @@ addEventListener('scroll', () => document.getElementById('out').textContent = 'a
 
 #[tokio::test(flavor = "multi_thread")]
 async fn resize_changes_the_viewport_and_the_frame_size() {
-    let Some(server) = server(800, 600).await else { return };
+    let server = server(loa_surfaces::chrome_or_skip!(), 800, 600).await;
     let page = "<title>r</title><p id=out>-</p><script>
 const show = () => document.getElementById('out').textContent = innerWidth + 'x' + innerHeight;
 show(); addEventListener('resize', show);
@@ -155,14 +155,14 @@ show(); addEventListener('resize', show);
     };
     assert_eq!((frame.width, frame.height), (640, 400));
     let decoded = decode(&frame);
-    assert_eq!((decoded.0, decoded.1), (640, 400));
+    assert_eq!((decoded.width, decoded.height), (640, 400));
     until_text(&tab, "640x400").await;
     server.shutdown().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn screencast_frames_show_the_page_and_carry_the_last_handled_input() {
-    let Some(server) = server(320, 240).await else { return };
+    let server = server(loa_surfaces::chrome_or_skip!(), 320, 240).await;
     // Each press also bumps a counter, so every press repaints.
     let page = "<title>c</title><style>html,body{margin:0;height:100%;background:rgb(255,0,0)}</style><b id=n></b><script>
 let n = 0;
@@ -215,7 +215,7 @@ addEventListener('mousedown', () => { document.body.style.background = 'rgb(0,25
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_late_viewer_gets_the_last_frame_on_request() {
-    let Some(server) = server(320, 240).await else { return };
+    let server = server(loa_surfaces::chrome_or_skip!(), 320, 240).await;
     let tab = server.open_tab(&html("<title>k</title><p>static</p>")).await.unwrap();
     let mut early = tab.frames().unwrap();
     let first = next_frame(&mut early).await;
@@ -224,13 +224,13 @@ async fn a_late_viewer_gets_the_last_frame_on_request() {
     let again = next_frame(&mut late).await;
     assert!(again.keyframe && again.seq > first.seq);
     let decoded = decode(&again);
-    assert_eq!((decoded.0, decoded.1), (320, 240));
+    assert_eq!((decoded.width, decoded.height), (320, 240));
     server.shutdown().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn screenshot_is_a_png_of_the_surface() {
-    let Some(server) = server(500, 300).await else { return };
+    let server = server(loa_surfaces::chrome_or_skip!(), 500, 300).await;
     let tab = server.open_tab(&html("<title>s</title><p>shot</p>")).await.unwrap();
     let png = tab.screenshot().await.unwrap();
     assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
@@ -254,7 +254,7 @@ const OUTLINE_PAGE: &str = "<title>Outline test</title>
 
 #[tokio::test(flavor = "multi_thread")]
 async fn structured_reads_give_url_title_text_and_clickable_outline() {
-    let Some(server) = server(640, 480).await else { return };
+    let server = server(loa_surfaces::chrome_or_skip!(), 640, 480).await;
     let url = html(OUTLINE_PAGE);
     let tab = server.open_tab(&url).await.unwrap();
 
@@ -311,7 +311,7 @@ async fn structured_reads_give_url_title_text_and_clickable_outline() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn shutdown_kills_chrome_and_refuses_new_tabs() {
-    let Some(server) = server(320, 240).await else { return };
+    let server = server(loa_surfaces::chrome_or_skip!(), 320, 240).await;
     let tab = server.open_tab(&html("<p>x</p>")).await.unwrap();
     let pids = server.process_ids().await;
     assert_eq!(pids.len(), 1);
@@ -325,7 +325,7 @@ async fn shutdown_kills_chrome_and_refuses_new_tabs() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn server_is_usable_as_a_shared_surface_server() {
-    let Some(server) = server(320, 240).await else { return };
+    let server = server(loa_surfaces::chrome_or_skip!(), 320, 240).await;
     let server: Arc<dyn SurfaceServer> = Arc::new(server);
     assert_eq!(server.name(), "browser");
     assert!(server.list().await.unwrap().is_empty());
