@@ -4,57 +4,83 @@ Loa is a desktop workspace for OMP and other coding-agent harnesses. It brings p
 
 The app is in development and does not have a packaged release. The [design artifact](https://claude.ai/artifact/4nPNTWD7iG2bp6yuHuKYkL#f6baca39-b36f) and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) describe the design and crate layout.
 
-## Run from source on Windows
+## Run from source on Linux
 
-These instructions use native Windows x64 and PowerShell; WSL is not required.
+The commands below use Bash on Ubuntu 24.04, matching the Linux CI environment. On other distributions, install the equivalent compiler, build tools, and graphics libraries with your package manager. Run the desktop app from a graphical X11 or Wayland session, not a headless SSH session.
 
 ### 1. Install prerequisites
 
-- [Git for Windows](https://git-scm.com/downloads/win). Keep Git available on `PATH`; its Bash is also used by the test fixtures.
-- [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/). Select **Desktop development with C++**, including the MSVC x64/x86 build tools and a Windows SDK.
-- [Rust via rustup](https://rustup.rs/). Use the stable MSVC toolchain, not the GNU toolchain.
+```bash
+sudo apt-get update
+sudo apt-get install -y build-essential cmake pkg-config curl git python3 \
+  libxkbcommon-dev libwayland-dev libvulkan1 mesa-vulkan-drivers
+```
 
-Open a new PowerShell window after installation so it picks up the updated `PATH`, then select the toolchain and check the commands:
+Install [stable Rust with rustup](https://rustup.rs/), then load Cargo into your current shell:
 
-```powershell
-rustup default stable-x86_64-pc-windows-msvc
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+. "$HOME/.cargo/env"
 rustc --version
 cargo --version
-git --version
 ```
 
-Install [OMP](https://github.com/can1357/oh-my-pi#install) using its official Windows installer:
+Install [OMP](https://github.com/can1357/oh-my-pi#install) using its official Linux installer:
 
-```powershell
-irm https://omp.sh/install.ps1 | iex
+```bash
+curl -fsSL https://omp.sh/install | sh
 ```
 
-Open a new PowerShell window if the installer updated `PATH`, then run `omp --version`. Run `omp` once to configure your model provider or sign in before starting an OMP chat in Loa.
+Follow the installer's `PATH` instructions or open a new terminal, then check `omp --version`. Run `omp` once to configure your model provider or sign in before starting an OMP chat in Loa.
 
 ### 2. Clone, build, and launch
 
-```powershell
+```bash
 git clone https://github.com/MrGreenGaming14/omp-gui.git
 cd omp-gui
 cargo build --workspace --all-targets
 cargo run -p loa-app
 ```
 
-Run the Cargo commands from the repository root. The workspace build also creates `loa-sandbox-stub.exe`, which the app needs for local sandbox tasks; `cargo run -p loa-app` alone does not build that companion executable. With Cargo's default target directory, the app and stub are in `target\debug`. Keep them together if you move the binaries.
+Run the Cargo commands from the repository root. The workspace build also creates `loa-sandbox-stub`, which the app needs for local sandbox tasks; `cargo run -p loa-app` alone does not build that companion executable. With Cargo's default target directory, the app and stub are in `target/debug`. Keep them together if you move the binaries.
 
 To launch an already-built app without Cargo:
 
-```powershell
-.\target\debug\loa-app.exe
+```bash
+./target/debug/loa-app
 ```
 
 ### 3. Check the desktop
 
-Open a project, start an OMP chat, run `cd` in the Terminal tab, and use the Files tab to open a project file. Browser virtual-display mode requires Linux; Windows can use headed Chrome or Chromium.
+Open a project, start an OMP chat, run `pwd` in the Terminal tab, and use the Files tab to open a project file.
 
 ### Optional: run the tests
 
-Install [Python 3](https://www.python.org/downloads/windows/) with `python.exe` on `PATH`, then run these commands from the repository root. Put Git for Windows' Bash ahead of the WSL launcher for the test fixtures, and use the software test backend as Windows CI does:
+From the repository root, use Xvfb to provide the display required by GUI tests, as Linux CI does:
+
+```bash
+sudo apt-get install -y xvfb
+xvfb-run -a cargo test --workspace
+```
+
+### Troubleshooting
+
+- **`cargo` is not found:** run `. "$HOME/.cargo/env"` or open a new terminal after installing Rust.
+- **`omp` is not found:** follow the OMP installer's instructions to add its installation directory to `PATH`, then reopen the terminal.
+- **Build errors mention a compiler, CMake, `pkg-config`, Wayland, or xkbcommon:** install the prerequisite packages above (or your distribution's equivalents).
+- **No window or no graphics adapter:** launch from your local X11/Wayland desktop and check that your GPU driver or Mesa Vulkan driver is installed. Xvfb is for automated tests, not an interactive desktop.
+- **Local sandbox reports that `loa-sandbox-stub` was not found:** rerun `cargo build --workspace --all-targets` and keep the stub alongside the app.
+
+## Run from source on Windows
+
+Install stable Rust with the MSVC toolchain, Visual Studio Build Tools with the C++ workload and Windows SDK, and Git for Windows. Install [OMP](https://github.com/can1357/oh-my-pi/releases) and make sure `omp --version` works in PowerShell.
+
+```powershell
+cargo build --workspace --all-targets
+cargo run -p loa-app
+```
+
+The workspace build also places `loa-sandbox-stub.exe` alongside the app. To test on Windows, install Python 3 (`python.exe` on `PATH`) and put Git for Windows' Bash ahead of the WSL launcher:
 
 ```powershell
 $git = (Get-Command git.exe).Source
@@ -63,14 +89,7 @@ $env:ICED_TEST_BACKEND = 'tiny-skia'
 cargo test --workspace --no-fail-fast
 ```
 
-`ICED_TEST_BACKEND` selects the test backend; it is not required to launch the desktop app.
-
-### Troubleshooting
-
-- **`cargo`, `git`, or `omp` is not recognized:** reopen PowerShell after installation and check that the corresponding executable is on `PATH`.
-- **`link.exe` or a Windows SDK library is missing:** install the C++ workload and Windows SDK in Visual Studio Build Tools, confirm `rustup show active-toolchain` reports `x86_64-pc-windows-msvc`, and retry from a new PowerShell window.
-- **Local sandbox reports that `loa-sandbox-stub` was not found:** rerun `cargo build --workspace --all-targets` and keep the stub alongside the app.
-- **Tests cannot find Bash or Python:** check `Get-Command bash.exe` resolves to Git for Windows rather than WSL, and that `python.exe --version` works.
+For a desktop smoke check, open a project, start an OMP chat, run `cd` in the Terminal tab, and use the Files tab to open a project file. Browser virtual-display mode requires Linux; Windows can use headed Chrome or Chromium.
 
 ## Experience and roadmap
 
