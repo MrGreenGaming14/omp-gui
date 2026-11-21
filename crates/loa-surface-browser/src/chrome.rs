@@ -1,5 +1,6 @@
 //! Browser configuration and discovery of Chrome and Xvfb executables.
 
+use loa_util::exec::is_executable;
 use crate::{BrowserError, Result};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -149,11 +150,6 @@ fn playwright_browsers(cache: &Path, headed: bool) -> Vec<PathBuf> {
     }
     found.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)));
     found.into_iter().map(|(_, _, exe)| exe).collect()
-}
-
-fn is_executable(path: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
 }
 
 #[cfg(test)]

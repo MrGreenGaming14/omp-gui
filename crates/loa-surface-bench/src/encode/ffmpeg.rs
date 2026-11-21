@@ -44,10 +44,9 @@ impl FfmpegConfig {
 
     /// `ffmpeg` on the search path in `path_var` (a `$PATH` value).
     pub fn find(path_var: Option<&std::ffi::OsStr>) -> Option<Self> {
-        use std::os::unix::fs::PermissionsExt;
         std::env::split_paths(path_var?)
             .map(|dir| dir.join("ffmpeg"))
-            .find(|path| std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0))
+            .find(|path| loa_util::exec::is_executable(path))
             .map(Self::new)
     }
 

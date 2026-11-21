@@ -98,9 +98,7 @@ fn overlay(source: &Path, checkout: &Path) -> Result<()> {
 }
 
 fn has_ovnfs() -> bool {
-    std::env::var_os("PATH").is_some_and(|paths| {
-        std::env::split_paths(&paths).any(|dir| dir.join("ovnfs").is_file())
-    })
+    loa_util::exec::which("ovnfs").is_some()
 }
 
 /// The isolation `IsolatedCheckout::create` uses on this machine: `ovnfs`

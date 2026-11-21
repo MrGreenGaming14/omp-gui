@@ -4,6 +4,7 @@
 //! Run with `cargo test -p loa-ui-models --test live -- --ignored`.
 //! `LOA_LIVE_MODEL` (`provider/id`) picks the model to switch to.
 
+use loa_util::exec::which;
 use std::sync::Arc;
 
 use loa_adapter::{Adapter, ModelSelection, SessionConfig};
@@ -53,10 +54,6 @@ async fn real_omp_feeds_the_sign_in_rows_the_picker_and_the_settings_screen() {
     let load = backend.load_settings().await.unwrap();
     assert!(load.known_models.contains(&wanted.selector()));
     assert!(!load.settings.providers.is_empty());
-}
-
-fn which(program: &str) -> Option<std::path::PathBuf> {
-    std::env::split_paths(&std::env::var_os("PATH")?).map(|dir| dir.join(program)).find(|path| path.is_file())
 }
 
 #[tokio::test(flavor = "multi_thread")]

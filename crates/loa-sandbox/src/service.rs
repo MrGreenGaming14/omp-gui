@@ -110,11 +110,10 @@ impl Machine {
     }
 
     fn which(&self, name: &str) -> Option<PathBuf> {
-        use std::os::unix::fs::PermissionsExt;
         let paths = self.path.as_ref()?;
         std::env::split_paths(paths)
             .map(|dir| dir.join(name))
-            .find(|file| file.metadata().is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0))
+            .find(|file| loa_util::exec::is_executable(file))
     }
 
     fn kvm(&self) -> bool {

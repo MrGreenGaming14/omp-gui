@@ -173,7 +173,7 @@ impl State {
         let small = if cfg!(test) {
             None
         } else {
-            on_path("omp").map(|omp| OneShot::new(Arc::new(loa_projects::OmpSummarizer::new(omp, ctx.services.cwd.clone()))))
+            loa_util::exec::which("omp").map(|omp| OneShot::new(Arc::new(loa_projects::OmpSummarizer::new(omp, ctx.services.cwd.clone()))))
         };
         ctx.composer.set_commands(composer_commands(None));
         let state = Self {
@@ -813,11 +813,6 @@ fn model_roles(home: &Path) -> Result<Vec<(String, Vec<String>)>, String> {
     let config = loa_models::config::OmpConfig::load(&path).map_err(|error| format!("Can't read {}: {error}", path.display()))?;
     let roles = config.model_roles().map_err(|error| format!("Can't read the model roles in {}: {error}", path.display()))?;
     Ok(roles.into_iter().map(|role| (role.role, role.candidates.iter().map(ToString::to_string).collect())).collect())
-}
-
-/// `name` on `PATH`.
-fn on_path(name: &str) -> Option<PathBuf> {
-    std::env::split_paths(&std::env::var_os("PATH")?).map(|dir| dir.join(name)).find(|path| path.is_file())
 }
 
 impl Area for State {

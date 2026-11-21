@@ -267,9 +267,7 @@ async fn version_flag_reads_the_installed_version() {
 /// and settings are never read.
 #[tokio::test]
 async fn live_omp_negotiates_and_reports_state() {
-    let Some(path) = std::env::var_os("PATH")
-        .and_then(|paths| std::env::split_paths(&paths).map(|p| p.join("omp")).find(|p| p.is_file()))
-    else {
+    let Some(path) = loa_util::exec::which("omp") else {
         return;
     };
     let cwd = tempfile::tempdir().unwrap();
