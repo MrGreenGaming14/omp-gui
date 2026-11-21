@@ -158,6 +158,30 @@ fn archives_cannot_escape_the_payload() {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn symlink_parents_cannot_escape_to_a_staged_artifact() {
+    use std::os::unix::fs::symlink;
+
+    let dir = tempfile::tempdir().unwrap();
+    let archive = dir.path().join("attack.tgz");
+    std::fs::write(&archive, tgz(&[("alias", Ok(".")), ("alias/launch", Ok("../artifact/tool-1.0.0"))])).unwrap();
+    let error = TarGz { strip: 0 }.unpack(&archive, &dir.path().join("unpacked")).unwrap_err();
+    assert!(matches!(error, Error::UnsafeEntry { .. }), "{error}");
+
+    // Reject payloads staged by an older version too, when resolving their executable.
+    let root = dir.path().join("updates");
+    stage_fixture(&root, "tool", "1.0.0", b"artifact", None);
+    let payload = root.join("versions/tool/1.0.0/payload");
+    symlink(".", payload.join("alias")).unwrap();
+    symlink("../artifact/tool-1.0.0", payload.join("launch")).unwrap();
+    let mut product = spec("tool", ProductKind::Harness("tool".into()), github("tool"), None, Installed::Executable("tool".into()), Gates::None);
+    product.executable = Some("alias/launch".into());
+    let updater = Updater::open(UpdaterConfig::new(root.clone(), vec![product])).unwrap();
+    Swapper::new(root).try_swap("tool", &v("1.0.0"), None, &TurnGate::default()).unwrap();
+    assert!(updater.executable("tool").is_none());
+}
+
 #[tokio::test]
 async fn app_updates_need_a_trusted_signature() {
     let dir = tempfile::tempdir().unwrap();

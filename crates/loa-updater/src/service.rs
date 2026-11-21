@@ -602,7 +602,7 @@ fn staged_executable(spec: &ProductSpec, staged: &Staged) -> Result<PathBuf> {
         None if payload.join("package.json").is_file() => payload.join(npm_bin(&payload.join("package.json"), &spec.product.id).map_err(none)?),
         None => return Err(none("the payload is neither a single file nor an npm package".into())),
     };
-    if !path.starts_with(&payload) || !path.is_file() {
+    if path.strip_prefix(&payload).ok().and_then(|rel| loa_util::fs::confine(&payload, rel).ok()).is_none_or(|resolved| !resolved.is_file()) {
         return Err(none(format!("{} is not a file in the payload", path.display())));
     }
     Ok(path)

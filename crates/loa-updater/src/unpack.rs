@@ -136,6 +136,16 @@ impl EntrySink {
     }
 
     fn dirs(&self, rel: &Path, shown: &str) -> Result<PathBuf> {
+        let mut parent = self.root.clone();
+        for part in rel.components() {
+            parent.push(part);
+            match fs::symlink_metadata(&parent) {
+                Ok(meta) if meta.file_type().is_symlink() => return Err(unsafe_entry(shown, "entry parent is a symlink")),
+                Ok(_) => {}
+                Err(err) if err.kind() == io::ErrorKind::NotFound => break,
+                Err(err) => return Err(Error::Io { path: parent, source: err }),
+            }
+        }
         let path = self.confine(rel, shown)?;
         fs::create_dir_all(&path).map_err(io_at(&path))?;
         Ok(path)
