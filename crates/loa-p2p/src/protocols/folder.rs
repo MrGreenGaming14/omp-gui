@@ -113,7 +113,10 @@ fn resolve(covered: &dyn Fn(&str) -> bool, write: bool, folder: &str, path: &str
     if !root.to_str().is_some_and(covered) {
         return Err(format!("{folder} leads outside the shared folder"));
     }
-    let target = loa_util::fs::confine(&root, Path::new(path)).map_err(|e| format!("{path}: {e}"))?;
+    let target = loa_util::fs::confine(&root, Path::new(path)).map_err(|e| match e.kind() {
+        std::io::ErrorKind::PermissionDenied => format!("{path} is outside the shared folder"),
+        _ => format!("{path}: {e}"),
+    })?;
     match (write, std::fs::metadata(&target)) {
         (true, _) if target == root => Err("name a file to write".into()),
         (true, Ok(meta)) if meta.is_dir() => Err(format!("{path} is a folder")),
