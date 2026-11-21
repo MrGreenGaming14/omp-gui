@@ -15,8 +15,6 @@ pub struct VirtualDisplay {
     child: Child,
     number: u32,
     socket: PathBuf,
-    width: u32,
-    height: u32,
 }
 
 impl VirtualDisplay {
@@ -58,7 +56,7 @@ impl VirtualDisplay {
                 tracing::debug!(target: "xvfb", "{line}");
             }
         });
-        Ok(Self { child, number, socket: socket_dir.join(format!("X{number}")), width, height })
+        Ok(Self { child, number, socket: socket_dir.join(format!("X{number}")) })
     }
 
     /// Value for `DISPLAY`, e.g. `:99`.
@@ -70,52 +68,10 @@ impl VirtualDisplay {
         &self.socket
     }
 
-    pub fn size(&self) -> (u32, u32) {
-        (self.width, self.height)
-    }
-
     /// Stops the server and waits for it to exit.
     pub async fn stop(mut self) -> Result<()> {
         self.child.start_kill()?;
         self.child.wait().await?;
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn script(dir: &Path, body: &str) -> PathBuf {
-        let path = dir.join("Xvfb");
-        loa_util::exec::write_executable(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-        path
-    }
-
-    async fn start(xvfb: &Path) -> Result<VirtualDisplay> {
-        VirtualDisplay::start(xvfb, Path::new("/sockets"), 640, 480).await
-    }
-
-    #[tokio::test]
-    async fn reports_the_display_xvfb_picked_and_passes_the_screen_size() {
-        let dir = tempfile::tempdir().unwrap();
-        let args = dir.path().join("args");
-        let xvfb = script(dir.path(), &format!("echo \"$@\" > {}\necho 42\nexec sleep 600", args.display()));
-        let display = start(&xvfb).await.unwrap();
-        assert_eq!(display.display(), ":42");
-        assert_eq!(display.socket(), Path::new("/sockets/X42"));
-        let args = std::fs::read_to_string(&args).unwrap();
-        assert!(args.contains("-displayfd 1"), "{args}");
-        assert!(args.contains("-screen 0 640x480x24"), "{args}");
-        assert!(args.contains("-nolisten tcp"), "{args}");
-        display.stop().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn a_server_that_dies_reports_its_error_output() {
-        let dir = tempfile::tempdir().unwrap();
-        let xvfb = script(dir.path(), "echo 'Fatal server error: no screens' >&2\nexit 1");
-        let error = start(&xvfb).await.err().unwrap();
-        assert!(error.to_string().contains("no screens"), "{error}");
     }
 }

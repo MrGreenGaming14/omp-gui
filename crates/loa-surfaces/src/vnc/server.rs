@@ -50,9 +50,8 @@ impl Default for RfbOptions {
     }
 }
 
-/// Serves each [`RfbEndpoint`] as the pixel surface `surface://vm/<name>`.
-/// Opening a surface that is already open returns the same connection.
-/// Endpoints can be added and removed while the server runs.
+/// Serves each [`RfbEndpoint`] as the pixel surface `surface://vm/<name>`;
+/// opening a surface that is already open returns the same connection.
 pub struct RfbServer {
     endpoints: Mutex<Vec<RfbEndpoint>>,
     passwords: Arc<dyn PasswordSource>,
@@ -84,15 +83,6 @@ impl RfbServer {
             None => endpoints.push(endpoint),
         }
         Ok(uri)
-    }
-
-    /// Removes the endpoint `name`; open surfaces keep their connection until dropped. `false` when there was none.
-    pub fn remove_endpoint(&self, name: &str) -> bool {
-        let mut endpoints = self.endpoints.locked();
-        let before = endpoints.len();
-        endpoints.retain(|e| e.name != name);
-        self.open.locked().remove(name);
-        endpoints.len() != before
     }
 
     /// Opens `uri`, reusing its live connection.

@@ -7,7 +7,7 @@ use crate::vnc::decode::{Decoders, Update};
 use crate::vnc::proto::Msg;
 use crate::vnc::{RfbEndpoint, RfbOptions, RfbServer, RfbSurface};
 use flate2::{Compress, Compression};
-use loa_contracts::surface::{Encoding, Input, InputEvent, Modifiers, MouseButton, Rect, Surface, SurfaceError, SurfaceServer, SurfaceUri};
+use loa_contracts::surface::{Encoding, Input, InputEvent, Modifiers, MouseButton, Rect, Surface, SurfaceError, SurfaceUri};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
@@ -211,24 +211,4 @@ async fn vnc_auth_reconnects_after_a_drop_and_wrong_passwords_fail() {
     fake.expect(&[1]).await;
     fake.server_init(1, 1, b"").await;
     assert_eq!(open.await.unwrap().unwrap().info().name, "desk");
-}
-
-#[tokio::test]
-async fn endpoints_are_listed_opened_once_and_removed() {
-    let h = Harness::new(None).await;
-    let listed = h.server.list().await.unwrap();
-    assert_eq!((listed.len(), listed[0].uri.as_str(), listed[0].width), (1, "surface://vm/desk", 0));
-    for missing in [SurfaceUri::new("vm", "nope").unwrap(), SurfaceUri::new("browser", "desk").unwrap()] {
-        assert!(matches!(h.server.open(&missing).await, Err(SurfaceError::NotFound(_))));
-    }
-    let (surface, _fake) = h.connect(None, 4, 2).await;
-    // A second open reuses the live connection instead of dialing again.
-    assert!(Arc::ptr_eq(&surface, &h.server.open_rfb(&uri()).await.unwrap()));
-    let listed = h.server.list().await.unwrap();
-    assert_eq!((listed[0].width, listed[0].height, listed[0].name.as_str()), (4, 2, "fake desk"));
-    let other = RfbEndpoint { name: "other".into(), address: "127.0.0.1:1".into() };
-    assert_eq!(h.server.add_endpoint(other).unwrap().as_str(), "surface://vm/other");
-    assert_eq!(h.server.list().await.unwrap().len(), 2);
-    assert!(h.server.remove_endpoint("desk") && !h.server.remove_endpoint("desk"));
-    assert!(matches!(h.server.open(&uri()).await, Err(SurfaceError::NotFound(_))));
 }

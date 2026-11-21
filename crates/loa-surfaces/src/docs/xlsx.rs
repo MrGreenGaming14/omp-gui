@@ -1,7 +1,7 @@
 //! XLSX workbooks: cell queries for the agent, and a grid renderer with one page per worksheet.
 
-use crate::docs::raster::{Canvas, Fonts};
-use crate::docs::{DataQuery, DocsError, Format, PageSize, Paged, RenderOpts, Result, Rgba, json};
+use crate::docs::raster::{Canvas, Fonts, TextStyle};
+use crate::docs::{DataQuery, DocsError, Format, PageSize, Paged, RenderOpts, Result, Rgba, json, page_at};
 use calamine::{CellType, Data, Dimensions as Area, Range, Reader, SheetType, Xlsx};
 use std::borrow::Cow;
 use std::io::Cursor;
@@ -62,9 +62,8 @@ fn area_name(area: Area) -> String {
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
 pub struct SheetInfo {
     pub name: String,
-    /// Height of the used range (the box around every non-empty cell).
+    /// Size of the used range (the box around every non-empty cell).
     pub rows: u32,
-    /// Width of the used range.
     pub columns: u32,
     /// Top left cell of the used range, like `A1`; `None` for an empty sheet.
     pub start: Option<String>,
@@ -114,7 +113,6 @@ impl Cell {
     }
 }
 
-/// One cell of a [`CellBlock`].
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
 pub struct CellOut {
     /// Absolute A1 address, like `B3`.
@@ -133,20 +131,12 @@ pub struct CellBlock {
     pub rows: Vec<Vec<CellOut>>,
 }
 
-pub(crate) fn open(_: Format, bytes: &[u8]) -> Result<Box<dyn Paged>> {
-    Ok(Box::new(XlsxDoc::parse(bytes)?))
-}
-
 impl XlsxDoc {
     pub fn parse(bytes: &[u8]) -> Result<Self> {
         let invalid = |e: calamine::XlsxError| DocsError::invalid(Format::Xlsx, e);
         let mut book: Xlsx<Cursor<&[u8]>> = calamine::open_workbook_from_rs(Cursor::new(bytes)).map_err(invalid)?;
-        let names: Vec<String> = book
-            .sheets_metadata()
-            .iter()
-            .filter(|s| s.typ == SheetType::WorkSheet)
-            .map(|s| s.name.clone())
-            .collect();
+        let worksheets = book.sheets_metadata().iter().filter(|s| s.typ == SheetType::WorkSheet);
+        let names: Vec<String> = worksheets.map(|s| s.name.clone()).collect();
         let mut sheets = Vec::with_capacity(names.len());
         for name in names {
             let values = book.worksheet_range(&name).map_err(invalid)?;
@@ -158,7 +148,6 @@ impl XlsxDoc {
         Ok(Self { sheets })
     }
 
-    /// The worksheets in workbook order.
     pub fn sheets(&self) -> Vec<SheetInfo> {
         let info = |s: &Sheet| {
             let (rows, columns) = s.used.map_or((0, 0), |u| (u.end.0 - u.start.0 + 1, u.end.1 - u.start.1 + 1));
@@ -176,11 +165,8 @@ impl XlsxDoc {
         let (last_row, last_col) = sheet.used.map_or(area.start, |u| u.end);
         area.end = (area.end.0.min(last_row).max(area.start.0), area.end.1.min(last_col).max(area.start.1));
         if area.len() > MAX_BLOCK_CELLS {
-            return Err(DocsError::Request(format!(
-                "range {} has {} cells, request at most {MAX_BLOCK_CELLS} at a time",
-                area_name(area),
-                area.len()
-            )));
+            let (name, len) = (area_name(area), area.len());
+            return Err(DocsError::Request(format!("range {name} has {len} cells, request at most {MAX_BLOCK_CELLS} at a time")));
         }
         let rows = (area.start.0..=area.end.0)
             .map(|row| {
@@ -208,10 +194,6 @@ impl XlsxDoc {
             DocsError::Request(format!("no sheet named `{name}`, the sheets are: {}", names.join(", ")))
         })
     }
-
-    fn page(&self, index: usize) -> Result<&Sheet> {
-        self.sheets.get(index).ok_or_else(|| DocsError::page_range(index, self.sheets.len()))
-    }
 }
 
 impl Paged for XlsxDoc {
@@ -220,7 +202,7 @@ impl Paged for XlsxDoc {
     }
 
     fn page_size(&self, index: usize) -> Result<PageSize> {
-        let (rows, cols) = self.page(index)?.render_extent();
+        let (rows, cols) = page_at(&self.sheets, index)?.render_extent();
         Ok(PageSize { width: ROW_HEADER_WIDTH + cols as f32 * COLUMN_WIDTH, height: (rows + 1) as f32 * ROW_HEIGHT })
     }
 
@@ -233,14 +215,14 @@ impl Paged for XlsxDoc {
     }
 
     fn render(&self, index: usize, scale: f32, fonts: &Fonts, opts: &RenderOpts) -> Result<Rgba> {
-        let (size, sheet) = (self.page_size(index)?, self.page(index)?);
+        let (size, sheet) = (self.page_size(index)?, &self.sheets[index]);
         let (rows, cols) = sheet.render_extent();
         let (width, height) = size.pixels(scale);
         let (w, h) = (width as f32, height as f32);
         let (col_w, row_h, head_w, pad) =
             (COLUMN_WIDTH * scale, ROW_HEIGHT * scale, ROW_HEADER_WIDTH * scale, CELL_PADDING * scale);
         let (palette, style) = (&opts.palette, opts.text(opts.typography.cell * scale));
-        let header_style = style.color(palette.header_text);
+        let header_style = TextStyle { color: palette.header_text, ..style };
         let text_top = (row_h - fonts.line_height(style.size)) / 2.0;
         let width_of = |text: &str| fonts.text_width(text, style.size, false);
         let mut canvas = Canvas::new(width, height, palette.page);
@@ -446,13 +428,9 @@ mod tests {
         let size = PageSize { width: ROW_HEADER_WIDTH + 5.0 * COLUMN_WIDTH, height: 5.0 * ROW_HEIGHT };
         assert_eq!(doc.page_size(1).unwrap(), size);
         let image = doc.render_page(1, 1.0, &Fonts::none()).unwrap();
-        let inked = |row: f32, col: f32| {
-            let (x, y) = (ROW_HEADER_WIDTH + col * COLUMN_WIDTH, (row + 1.0) * ROW_HEIGHT);
-            (y as u32 + 1..(y + ROW_HEIGHT) as u32 - 1)
-                .flat_map(|py| (x as u32 + 1..(x + COLUMN_WIDTH) as u32 - 1).map(move |px| (px, py)))
-                .any(|(px, py)| image.pixel(px, py).is_some_and(|p| p[0] < 128))
-        };
-        assert!(!inked(0.0, 0.0) && inked(2.0, 3.0));
+        let dark = |x: u32, y: u32| (y..y + 18).any(|py| (x..x + 62).any(|px| image.pixel(px, py).is_some_and(|p| p[0] < 128)));
+        // Inside cell A1, empty, and D3, which holds `origin`.
+        assert!(!dark(41, 21) && dark(233, 61));
         assert_ne!(image.pixel(ROW_HEADER_WIDTH as u32 + 3, 3), Some([255; 4]));
         assert!(matches!(doc.render_page(2, 1.0, &Fonts::none()), Err(DocsError::PageRange { index: 2, count: 2 })));
         assert!(matches!(XlsxDoc::parse(b"PK\x03\x04 not a workbook"), Err(DocsError::Invalid { .. })));

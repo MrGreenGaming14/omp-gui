@@ -1,5 +1,4 @@
-//! Server side of `omp/surface/1`: answers one viewer's `Open` and streams
-//! the surface until either side closes.
+//! Server side of `omp/surface/1`.
 
 use loa_contracts::surface::{Encoding, Frame, Surface, SurfaceMode};
 use std::sync::Arc;
@@ -13,15 +12,12 @@ use crate::proto::wire::{
 };
 use crate::proto::{ProtoError, Result};
 
-/// Bytes of the file per document chunk.
 const DOCUMENT_CHUNK: usize = 64 * 1024;
 
-/// Serves `surface` to the viewer on `transport`. The viewer must open
-/// exactly this surface's uri. Returns when the viewer closes or the
-/// surface ends.
+/// Serves `surface` to the viewer on `transport` until either side closes.
 pub async fn serve(surface: Arc<dyn Surface>, transport: Transport) -> Result<()> {
-    let (reader, writer) = (MessageReader::new(transport.reader), MessageWriter::new(transport.writer));
-    let mut session = Session { reader, writer, datagrams: transport.datagrams };
+    let (reader, writer, datagrams) = transport.into_messages();
+    let mut session = Session { reader, writer, datagrams };
     let Some(open) = session.read_open().await? else { return Ok(()) };
     let uri = surface.info().uri;
     if open.uri != uri.as_str() {
@@ -37,8 +33,7 @@ struct Session {
 }
 
 impl Session {
-    /// The viewer's `Open`, skipping unknown messages. `None` if the viewer
-    /// left before sending one or its version was rejected.
+    /// `None` if the viewer left or its version was rejected.
     async fn read_open(&mut self) -> Result<Option<Open>> {
         loop {
             let Some(msg) = self.reader.next().await? else { return Ok(None) };
@@ -64,9 +59,8 @@ impl Session {
         self.writer.send(Body::Close(Close { reason: reason.into() })).await
     }
 
-    /// Tells the viewer why the session ends and returns the error.
     async fn violation(&mut self, what: &str) -> ProtoError {
-        // The session is over either way; the viewer may already be gone.
+        // The viewer may already be gone.
         let _ = self.close(format!("protocol violation: {what}")).await;
         ProtoError::Protocol(what.to_owned())
     }
@@ -75,8 +69,7 @@ impl Session {
         let info = surface.info();
         let datagrams = info.mode == SurfaceMode::Pixel && self.datagrams.max_size().is_some();
         let encodings: Vec<Encoding> = open.encodings.iter().filter_map(|&e| encoding_from_wire(e)).collect();
-        // Subscribe before accepting so no frame after the keyframe is
-        // missed, and pick the encoding from what this viewer decodes.
+        // Subscribe before accepting so no frame after the keyframe is missed.
         let (frames, stream) = match info.mode {
             SurfaceMode::Pixel => (Some(surface.frames()?), surface.negotiate(&encodings).await?),
             SurfaceMode::Document => (None, None),
@@ -98,7 +91,6 @@ impl Session {
         use_datagrams: bool,
         mut size: (u32, u32),
     ) -> Result<()> {
-        // The viewer starts with nothing: give it a decodable picture.
         surface.request_keyframe().await?;
         loop {
             tokio::select! {
@@ -107,7 +99,6 @@ impl Session {
                     let Some(msg) = msg? else { return Ok(()) };
                     match msg.body {
                         Some(Body::Input(input)) => {
-                            // Kinds from a newer version are skipped.
                             if let Some(event) = input.into_event() {
                                 surface.input(event).await?;
                             }
@@ -136,8 +127,7 @@ impl Session {
                             return Ok(());
                         }
                     }
-                    // This session fell behind the surface: frames were
-                    // skipped, so deltas can't be decoded until a keyframe.
+                    // Skipped frames: deltas can't be decoded until a keyframe.
                     Err(RecvError::Lagged(_)) => surface.request_keyframe().await?,
                     Err(RecvError::Closed) => {
                         self.close("the surface closed").await?;
@@ -148,20 +138,19 @@ impl Session {
         }
     }
 
-    /// Sends one frame as datagrams. `false` when the connection is gone.
+    /// `false` when the connection is gone.
     fn send_datagrams(&self, frame: &Frame) -> Result<bool> {
         let max = self.datagrams.max_size().ok_or(DatagramError::Unsupported)?;
         match fragment(frame, max, |datagram| Ok(self.datagrams.send(datagram)?)) {
             Ok(()) => Ok(true),
             Err(ProtoError::Datagram(DatagramError::Closed)) => Ok(false),
-            // The path shrank under this frame. It is late anyway: drop it,
-            // the next frame is cut for the new limit.
+            // The path shrank: drop this late frame, the next is cut to fit.
             Err(ProtoError::Datagram(DatagramError::TooLarge { .. })) => Ok(true),
             Err(e) => Err(e),
         }
     }
 
-    /// Sends the file once on the stream, then waits for the viewer to close.
+    /// Sends the file once, then waits for the viewer to close.
     async fn document(mut self, surface: Arc<dyn Surface>) -> Result<()> {
         let doc = surface.document().await?;
         let length = doc.data.len() as u64;

@@ -1,8 +1,5 @@
-//! The transport port: what one `omp/surface/1` connection must offer, and
-//! an in-memory implementation for tests and same process surfaces.
-//!
-//! A QUIC connection gives both channels: one bidirectional stream (ordered,
-//! reliable) and unreliable datagrams with a size limit.
+//! The transport port of one `omp/surface/1` connection (a reliable stream
+//! plus size-limited unreliable datagrams, as QUIC gives) and an in-memory pair.
 
 use async_trait::async_trait;
 use bytes::{Buf, Bytes, BytesMut};
@@ -14,7 +11,6 @@ use tokio::sync::{Mutex, mpsc};
 use crate::proto::wire::StreamMessage;
 use crate::proto::{ProtoError, Result};
 
-/// Why a datagram could not be sent or received.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum DatagramError {
     #[error("datagram of {len} bytes exceeds the {max} byte limit")]
@@ -25,14 +21,12 @@ pub enum DatagramError {
     Closed,
 }
 
-/// Unreliable, unordered datagrams of one connection.
 #[async_trait]
 pub trait Datagrams: Send + Sync {
     /// Largest datagram `send` accepts right now; `None` without datagrams (TCP fallback).
     fn max_size(&self) -> Option<usize>;
 
-    /// Queues one datagram. A full send buffer drops datagrams rather than
-    /// blocking; that is not an error.
+    /// Queues one datagram; a full send buffer drops it silently.
     fn send(&self, datagram: Bytes) -> Result<(), DatagramError>;
 
     /// The next datagram. Must be cancel safe: dropping the future loses no datagram.
@@ -42,16 +36,20 @@ pub trait Datagrams: Send + Sync {
 pub type BoxReader = Box<dyn AsyncRead + Send + Unpin>;
 pub type BoxWriter = Box<dyn AsyncWrite + Send + Unpin>;
 
-/// One `omp/surface/1` connection: the two halves of its bidirectional
-/// stream and its datagrams.
 pub struct Transport {
     pub reader: BoxReader,
     pub writer: BoxWriter,
     pub datagrams: Arc<dyn Datagrams>,
 }
 
-/// Two connected in-memory transports. `max_datagram` of `None` behaves like
-/// the TCP fallback: no datagrams.
+impl Transport {
+    pub(crate) fn into_messages(self) -> (MessageReader, MessageWriter, Arc<dyn Datagrams>) {
+        let reader = MessageReader { inner: self.reader, buf: BytesMut::new() };
+        (reader, MessageWriter { inner: self.writer, buf: Vec::new() }, self.datagrams)
+    }
+}
+
+/// Two connected in-memory transports; `max_datagram: None` is the TCP fallback.
 pub fn memory_pair(max_datagram: Option<usize>) -> (Transport, Transport) {
     let end = |stream: tokio::io::DuplexStream, tx, rx| {
         let (read, write) = tokio::io::split(stream);
@@ -59,12 +57,10 @@ pub fn memory_pair(max_datagram: Option<usize>) -> (Transport, Transport) {
         Transport { reader: Box::new(read), writer: Box::new(write), datagrams }
     };
     let (a, b) = tokio::io::duplex(256 * 1024);
-    // Datagrams queued per direction before new ones drop.
     let ((a_tx, b_rx), (b_tx, a_rx)) = (mpsc::channel(1024), mpsc::channel(1024));
     (end(a, a_tx, a_rx), end(b, b_tx, b_rx))
 }
 
-/// One end of the datagram channel of [`memory_pair`].
 struct MemoryDatagrams {
     max: Option<usize>,
     tx: mpsc::Sender<Bytes>,
@@ -104,11 +100,7 @@ pub(crate) struct MessageReader {
 }
 
 impl MessageReader {
-    pub fn new(inner: BoxReader) -> Self {
-        Self { inner, buf: BytesMut::new() }
-    }
-
-    /// The next message, `None` at a clean end of stream.
+    /// `None` at a clean end of stream.
     pub async fn next(&mut self) -> Result<Option<StreamMessage>> {
         loop {
             let mut wanted = 8 * 1024;
@@ -144,10 +136,6 @@ pub(crate) struct MessageWriter {
 }
 
 impl MessageWriter {
-    pub fn new(inner: BoxWriter) -> Self {
-        Self { inner, buf: Vec::new() }
-    }
-
     pub async fn send(&mut self, msg: impl Into<StreamMessage>) -> Result<()> {
         self.buf.clear();
         msg.into().encode_length_delimited(&mut self.buf).map_err(|e| ProtoError::Protocol(format!("encode: {e}")))?;
@@ -155,7 +143,6 @@ impl MessageWriter {
         Ok(self.inner.flush().await?)
     }
 
-    /// Ends the stream so the peer reads a clean end.
     pub async fn finish(&mut self) -> Result<()> {
         Ok(self.inner.shutdown().await?)
     }

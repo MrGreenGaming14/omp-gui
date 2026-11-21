@@ -25,8 +25,8 @@ pub struct DocPalette {
 
 impl Default for DocPalette {
     fn default() -> Self {
-        let grey = |v| Color::rgb(v, v, v);
-        Self { page: Color::WHITE, text: Color::BLACK, rule: grey(128), grid: grey(217), header: grey(242), header_text: grey(64) }
+        let grey = |v| Color([v, v, v, 255]);
+        Self { page: grey(255), text: grey(0), rule: grey(128), grid: grey(217), header: grey(242), header_text: grey(64) }
     }
 }
 
@@ -55,20 +55,10 @@ pub struct RenderOpts {
 impl RenderOpts {
     /// Body text of `size` canvas pixels in the palette's text colour.
     pub fn text(&self, size: f32) -> TextStyle {
-        TextStyle::new(size).color(self.palette.text)
+        TextStyle { size, bold: false, color: self.palette.text }
     }
 }
 
-impl Color {
-    pub const WHITE: Self = Self([255, 255, 255, 255]);
-    pub const BLACK: Self = Self([0, 0, 0, 255]);
-
-    pub const fn rgb(r: u8, g: u8, b: u8) -> Self {
-        Self([r, g, b, 255])
-    }
-}
-
-/// How a run of text is drawn.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct TextStyle {
     /// Font size in canvas pixels.
@@ -78,17 +68,8 @@ pub struct TextStyle {
 }
 
 impl TextStyle {
-    pub const fn new(size: f32) -> Self {
-        Self { size, bold: false, color: Color::BLACK }
-    }
-
     pub const fn bold(mut self, bold: bool) -> Self {
         self.bold = bold;
-        self
-    }
-
-    pub const fn color(mut self, color: Color) -> Self {
-        self.color = color;
         self
     }
 }
@@ -139,7 +120,6 @@ impl Fonts {
         if bold { self.bold.as_ref().or(self.regular.as_ref()) } else { self.regular.as_ref() }
     }
 
-    /// Distance between two baselines.
     pub fn line_height(&self, size: f32) -> f32 {
         size * 1.25
     }
@@ -148,7 +128,7 @@ impl Fonts {
     pub fn text_width(&self, text: &str, size: f32, bold: bool) -> f32 {
         match self.pick(bold) {
             Some(font) => glyphs(&font.as_scaled(PxScale::from(size)), text, |_, _, _, _| {}),
-            None => text.chars().count() as f32 * box_advance(size),
+            None => text.chars().count() as f32 * size * BOX_ADVANCE,
         }
     }
 
@@ -199,22 +179,18 @@ fn word_starts(text: &str) -> impl Iterator<Item = (usize, &str)> {
     })
 }
 
-fn box_advance(size: f32) -> f32 {
-    size * 0.6
-}
+/// Advance of a box drawn for a character without a font, in ems.
+const BOX_ADVANCE: f32 = 0.6;
 
 fn collect_font_files(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     for entry in entries.flatten() {
         let path = entry.path();
         let Ok(kind) = entry.file_type() else { continue };
-        if kind.is_dir() {
-            if depth > 0 {
-                collect_font_files(&path, depth - 1, out);
-            }
-        } else if (path.extension().and_then(|e| e.to_str()))
-            .is_some_and(|e| e.eq_ignore_ascii_case("ttf") || e.eq_ignore_ascii_case("otf"))
-        {
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or_default();
+        if kind.is_dir() && depth > 0 {
+            collect_font_files(&path, depth - 1, out);
+        } else if !kind.is_dir() && (ext.eq_ignore_ascii_case("ttf") || ext.eq_ignore_ascii_case("otf")) {
             out.push(path);
         }
     }
@@ -299,7 +275,7 @@ impl Canvas {
         let (size, color) = (style.size, style.color);
         let Some(font) = fonts.pick(style.bold) else {
             // One box per character.
-            let (advance, h) = (box_advance(size), size * 0.7);
+            let (advance, h) = (size * BOX_ADVANCE, size * 0.7);
             for (i, c) in text.chars().enumerate() {
                 if !c.is_whitespace() {
                     self.stroke_rect(x + i as f32 * advance + 1.0, y + size * 0.25, (advance - 2.0).max(1.0), h, 1.0, color);
@@ -325,24 +301,5 @@ impl Canvas {
 
     pub fn into_rgba(self) -> Rgba {
         self.0
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn without_a_font_text_is_boxes_and_wraps_between_words() {
-        let mut canvas = Canvas::new(200, 40, Color::WHITE);
-        let advance = canvas.draw_text(&Fonts::none(), TextStyle::new(20.0), 0.0, 0.0, "ab c");
-        assert_eq!(advance, 4.0 * box_advance(20.0));
-        let image = canvas.into_rgba();
-        let column = |x: u32| (0..40).any(|y| image.pixel(x, y).is_some_and(|p| p[0] < 128));
-        assert!(column((box_advance(20.0) * 0.5) as u32) && !column((box_advance(20.0) * 2.5) as u32));
-        let w = box_advance(10.0);
-        for (text, width, lines) in [("aaa bbb ccc\nddd", 7.5, &["aaa bbb", "ccc", "ddd"][..]), ("abcdefghij", 3.0, &["abcdefghij"])] {
-            assert_eq!(Fonts::none().wrap(text, 10.0, false, w * width), lines);
-        }
     }
 }

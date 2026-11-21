@@ -8,7 +8,7 @@
 //! Mouse moves, drags and keys other than Enter have no tool and are not
 //! sent. Document surfaces are read once with `resources/read`.
 
-use crate::feed::{FrameFeed, Picture};
+use crate::feed::FrameFeed;
 use crate::hub::tools::{CLICK, SCREENSHOT, SCROLL, TYPE};
 use crate::pixels::png_size;
 use async_trait::async_trait;
@@ -74,7 +74,8 @@ impl Shared {
             let mut info = self.info.locked();
             (info.width, info.height) = (width, height);
         }
-        self.feed.publish(Picture {
+        self.feed.publish(Frame {
+            seq: 0,
             captured_us: now_us(),
             input_seq,
             width,

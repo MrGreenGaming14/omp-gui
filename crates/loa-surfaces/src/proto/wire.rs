@@ -1,10 +1,6 @@
-//! Protobuf messages of `omp/surface/1` and their conversions to the
-//! contract types.
-//!
-//! The reliable stream carries length delimited [`StreamMessage`]s. Each
-//! datagram carries one [`Datagram`]. A message whose body has a tag this
-//! version does not know decodes with `body: None` and is skipped, so newer
-//! peers can add message types without breaking older ones.
+//! Protobuf messages of `omp/surface/1` and their contract conversions. The
+//! stream carries length delimited [`StreamMessage`]s, each datagram one
+//! [`Datagram`]. Unknown body tags decode as `body: None` and are skipped.
 
 use bytes::Bytes;
 use loa_contracts::surface::{
@@ -13,11 +9,9 @@ use loa_contracts::surface::{
 
 use crate::proto::{ProtoError, Result};
 
-/// Protocol revision spoken by this crate. The ALPN carries the major
-/// version; this field lets `/1` peers add messages compatibly.
+/// Minor revision within the ALPN's major version.
 pub const VERSION: u32 = 1;
 
-/// Defines prost messages with public fields.
 macro_rules! messages {
     ($($(#[$meta:meta])* $name:ident { $($(#[$f:meta])* $field:ident: $ty:ty),* $(,)? })*) => {$(
         $(#[$meta])* #[derive(Clone, PartialEq, prost::Message)]
@@ -25,7 +19,6 @@ macro_rules! messages {
     )*};
 }
 
-/// Defines prost enumerations; value 0 is `Unspecified`.
 macro_rules! enums {
     ($($name:ident { $($(#[$meta:meta])* $variant:ident = $value:literal),* $(,)? })*) => {$(
         #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, prost::Enumeration)]
@@ -34,7 +27,6 @@ macro_rules! enums {
     )*};
 }
 
-/// Defines prost oneofs whose variants are all messages.
 macro_rules! oneofs {
     ($($name:ident { $($(#[$meta:meta])* $variant:ident($ty:ty) = $tag:literal),* $(,)? })*) => {$(
         #[derive(Clone, PartialEq, prost::Oneof)]
@@ -43,26 +35,22 @@ macro_rules! oneofs {
 }
 
 messages! {
-    /// One message on the reliable, ordered stream.
     StreamMessage { #[prost(oneof = "Body", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10")] body: Option<Body> }
     Open {
         #[prost(uint32, tag = "1")] version: u32,
         #[prost(string, tag = "2")] uri: String,
-        /// Frame encodings the viewer can decode.
         #[prost(enumeration = "WireEncoding", repeated, tag = "3")] encodings: Vec<i32>,
     }
     Accept {
         /// Lower of the two peers' versions.
         #[prost(uint32, tag = "1")] version: u32,
         #[prost(message, optional, tag = "2")] info: Option<SurfaceInfoMsg>,
-        /// Pixel mode: frames come as datagrams. Otherwise on the stream.
+        /// Pixel mode: frames come as datagrams, else on the stream.
         #[prost(bool, tag = "3")] datagrams: bool,
-        /// Pixel mode: what the server streams for this viewer, chosen from `Open.encodings`.
         #[prost(message, optional, tag = "4")] stream: Option<StreamInfoMsg>,
     }
     StreamInfoMsg {
         #[prost(enumeration = "WireEncoding", tag = "1")] encoding: i32,
-        /// e.g. `h264_vaapi` or `rusty_h264`.
         #[prost(string, tag = "2")] encoder: String,
         #[prost(bool, tag = "3")] hardware: bool,
     }
@@ -89,7 +77,7 @@ messages! {
         #[prost(float, tag = "2")] y: f32,
         #[prost(enumeration = "WireButton", tag = "3")] button: i32,
         #[prost(bool, tag = "4")] pressed: bool,
-        /// [`MOD_SHIFT`] | [`MOD_CTRL`] | [`MOD_ALT`] | [`MOD_META`].
+        /// Bits 0-3: shift, ctrl, alt, meta.
         #[prost(uint32, tag = "5")] modifiers: u32,
     }
     ScrollMsg {
@@ -106,7 +94,6 @@ messages! {
         #[prost(uint32, tag = "4")] modifiers: u32,
     }
     TextMsg { #[prost(string, tag = "1")] text: String }
-    /// Everything about a frame except its pixels.
     FrameHeader {
         #[prost(uint64, tag = "1")] seq: u64,
         #[prost(uint64, tag = "2")] captured_us: u64,
@@ -120,12 +107,10 @@ messages! {
         #[prost(enumeration = "WireEncoding", tag = "10")] encoding: i32,
         #[prost(bool, tag = "11")] keyframe: bool,
     }
-    /// A whole frame on the stream.
     FrameMsg {
         #[prost(message, optional, tag = "1")] header: Option<FrameHeader>,
         #[prost(bytes = "bytes", tag = "2")] data: Bytes,
     }
-    /// One unreliable datagram.
     Datagram { #[prost(oneof = "DatagramKind", tags = "1")] kind: Option<DatagramKind> }
     /// Slice `index` of `count` of frame `seq`. Fragment 0 carries the header.
     Fragment {
@@ -138,39 +123,27 @@ messages! {
     DocumentHeader {
         #[prost(string, tag = "1")] name: String,
         #[prost(string, tag = "2")] mime: String,
-        /// Total bytes that follow in chunks.
         #[prost(uint64, tag = "3")] length: u64,
         /// CRC-32 (IEEE) of the whole file.
         #[prost(uint32, tag = "4")] crc32: u32,
     }
-    DocumentChunk {
-        /// Position of `data` in the file. Chunks arrive in order.
-        #[prost(uint64, tag = "1")] offset: u64,
-        #[prost(bytes = "bytes", tag = "2")] data: Bytes,
-    }
+    DocumentChunk { #[prost(uint64, tag = "1")] offset: u64, #[prost(bytes = "bytes", tag = "2")] data: Bytes }
 }
 
 oneofs! {
+    // Viewer: `Open`, then `Input`/`KeyframeRequest` (pixel). Server: `Accept` or
+    // `Reject`, then `Resize`/`Frame` (pixel, `Frame` only without datagrams) or
+    // `DocumentHeader` and in-order `DocumentChunk`s. Either side may `Close`.
     Body {
-        /// Viewer to server, first message.
         Open(Open) = "1",
-        /// Server to viewer, answer to `Open`.
         Accept(Accept) = "2",
-        /// Server to viewer, answer to `Open`. The server then ends the stream.
         Reject(Reject) = "3",
-        /// Viewer to server, pixel mode.
         Input(InputMsg) = "4",
-        /// Viewer to server, pixel mode: the picture can't be decoded until the next keyframe.
         KeyframeRequest(KeyframeRequest) = "5",
-        /// Server to viewer, pixel mode: the surface changed size.
         Resize(Resize) = "6",
-        /// Server to viewer, pixel mode, only when the connection has no datagrams (TCP fallback).
         Frame(FrameMsg) = "7",
-        /// Server to viewer, document mode: what follows.
         DocumentHeader(DocumentHeader) = "8",
-        /// Server to viewer, document mode: consecutive slices of the file.
         DocumentChunk(DocumentChunk) = "9",
-        /// Either side: the session ends.
         Close(Close) = "10",
     }
     InputKind {
@@ -191,26 +164,13 @@ impl From<Body> for StreamMessage {
 }
 
 enums! {
-    RejectCode {
-        /// The viewer's protocol version is not supported.
-        Version = 1,
-        /// No such surface.
-        NotFound = 2,
-        /// The server failed to open the surface.
-        Unavailable = 3,
-    }
+    RejectCode { Version = 1, NotFound = 2, Unavailable = 3 }
     WireMode { Pixel = 1, Document = 2 }
     WireEncoding { Rgba = 1, Jpeg = 2, Png = 3, H264 = 4, Hevc = 5 }
     WireButton { Left = 1, Middle = 2, Right = 3, Back = 4, Forward = 5 }
 }
 
-pub const MOD_SHIFT: u32 = 1;
-pub const MOD_CTRL: u32 = 1 << 1;
-pub const MOD_ALT: u32 = 1 << 2;
-pub const MOD_META: u32 = 1 << 3;
-
-/// Maps a contract enum to its wire enum and back (`None` for wire values
-/// this version doesn't know, or `Unspecified`).
+/// Contract enum to wire enum and back (`None` for unknown or `Unspecified`).
 macro_rules! wire_enum {
     ($to:ident, $from:ident, $ty:ty, $wire:ident: $($v:ident),*) => {
         pub fn $to(value: $ty) -> i32 {
@@ -230,7 +190,6 @@ wire_enum!(encoding_to_wire, encoding_from_wire, Encoding, WireEncoding: Rgba, J
 wire_enum!(button_to_wire, button_from_wire, MouseButton, WireButton: Left, Middle, Right, Back, Forward);
 wire_enum!(mode_to_wire, mode_from_wire, SurfaceMode, WireMode: Pixel, Document);
 
-/// Video codecs need every frame since the last keyframe to decode.
 pub fn is_video(encoding: Encoding) -> bool {
     matches!(encoding, Encoding::H264 | Encoding::Hevc)
 }
@@ -242,7 +201,6 @@ impl From<&StreamInfo> for StreamInfoMsg {
 }
 
 impl StreamInfoMsg {
-    /// `None` when the encoding is unknown to this version.
     pub fn into_info(self) -> Option<StreamInfo> {
         Some(StreamInfo { encoding: encoding_from_wire(self.encoding)?, encoder: self.encoder, hardware: self.hardware })
     }
@@ -289,7 +247,6 @@ impl From<&Frame> for FrameHeader {
 }
 
 impl FrameHeader {
-    /// `None` when the encoding is unknown to this version.
     pub fn into_frame(self, data: Bytes) -> Option<Frame> {
         Some(Frame {
             seq: self.seq,
@@ -306,28 +263,22 @@ impl FrameHeader {
 }
 
 fn modifiers_to_wire(m: Modifiers) -> u32 {
-    [(m.shift, MOD_SHIFT), (m.ctrl, MOD_CTRL), (m.alt, MOD_ALT), (m.meta, MOD_META)]
-        .into_iter()
-        .filter(|(on, _)| *on)
-        .fold(0, |bits, (_, bit)| bits | bit)
+    u32::from(m.shift) | u32::from(m.ctrl) << 1 | u32::from(m.alt) << 2 | u32::from(m.meta) << 3
 }
 
 fn modifiers_from_wire(bits: u32) -> Modifiers {
-    let on = |bit: u32| bits & bit != 0;
-    Modifiers { shift: on(MOD_SHIFT), ctrl: on(MOD_CTRL), alt: on(MOD_ALT), meta: on(MOD_META) }
+    let on = |bit: u32| bits & 1 << bit != 0;
+    Modifiers { shift: on(0), ctrl: on(1), alt: on(2), meta: on(3) }
 }
 
 impl From<InputEvent> for InputMsg {
     fn from(event: InputEvent) -> Self {
         let kind = match event.input {
             Input::MouseMove { x, y } => InputKind::MouseMove(MouseMoveMsg { x, y }),
-            Input::MouseButton { x, y, button, pressed, modifiers } => InputKind::MouseButton(MouseButtonMsg {
-                x,
-                y,
-                button: button_to_wire(button),
-                pressed,
-                modifiers: modifiers_to_wire(modifiers),
-            }),
+            Input::MouseButton { x, y, button, pressed, modifiers } => {
+                let (button, modifiers) = (button_to_wire(button), modifiers_to_wire(modifiers));
+                InputKind::MouseButton(MouseButtonMsg { x, y, button, pressed, modifiers })
+            }
             Input::Scroll { x, y, dx, dy, modifiers } => {
                 InputKind::Scroll(ScrollMsg { x, y, dx, dy, modifiers: modifiers_to_wire(modifiers) })
             }
@@ -342,17 +293,13 @@ impl From<InputEvent> for InputMsg {
 }
 
 impl InputMsg {
-    /// `None` for input kinds or buttons this version does not know.
     pub fn into_event(self) -> Option<InputEvent> {
         let input = match self.kind? {
             InputKind::MouseMove(m) => Input::MouseMove { x: m.x, y: m.y },
-            InputKind::MouseButton(m) => Input::MouseButton {
-                x: m.x,
-                y: m.y,
-                button: button_from_wire(m.button)?,
-                pressed: m.pressed,
-                modifiers: modifiers_from_wire(m.modifiers),
-            },
+            InputKind::MouseButton(m) => {
+                let (button, modifiers) = (button_from_wire(m.button)?, modifiers_from_wire(m.modifiers));
+                Input::MouseButton { x: m.x, y: m.y, button, pressed: m.pressed, modifiers }
+            }
             InputKind::Scroll(m) => {
                 Input::Scroll { x: m.x, y: m.y, dx: m.dx, dy: m.dy, modifiers: modifiers_from_wire(m.modifiers) }
             }

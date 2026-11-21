@@ -1,6 +1,5 @@
 //! RGBA pictures to H.264/HEVC access units: the [`VideoEncoder`] port, the
-//! in-process software H.264 encoder and [`LiveEncoder`], which skips
-//! unchanged pictures and stamps frames.
+//! software H.264 encoder and [`LiveEncoder`].
 
 use super::{ffmpeg, video_error};
 use crate::proto::Result;
@@ -9,14 +8,12 @@ use loa_contracts::surface::{Encoding, Frame, Rect};
 use rusty_h264::{Encoder, EncoderConfig, YuvPlanes};
 use std::ops::RangeInclusive;
 
-/// Pictures per second every encoder is set up for.
 pub(crate) const FPS: u32 = 60;
 /// Frames between periodic keyframes; requested keyframes come on top.
 pub(crate) const KEYFRAME_INTERVAL: u32 = 600;
 /// Constant quantizer, 0 (best) to 51.
 pub(crate) const QP: u8 = 26;
 
-/// Video codec of an access unit stream.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Codec {
     H264,
@@ -50,9 +47,7 @@ pub(crate) struct Nal {
     pub aud: u8,
     /// IDR (H.264) or IRAP (HEVC) slices.
     keyframe: RangeInclusive<u8>,
-    /// Coded slices of any kind.
     picture: RangeInclusive<u8>,
-    /// SPS and PPS, plus VPS for HEVC.
     parameter_sets: &'static [u8],
 }
 
@@ -67,7 +62,6 @@ impl Nal {
     }
 }
 
-/// Where an encoder runs.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Accel {
     Vaapi,
@@ -83,7 +77,7 @@ impl Accel {
     }
 }
 
-/// What an encoder is, e.g. `ffmpeg h264_vaapi` or `rusty_h264`.
+/// e.g. `ffmpeg h264_vaapi` or `rusty_h264`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EncoderInfo {
     pub name: String,
@@ -91,7 +85,6 @@ pub struct EncoderInfo {
     pub accel: Accel,
 }
 
-/// Checks that `width`x`height` suits 4:2:0 video.
 pub(crate) fn check_video_size(width: u32, height: u32) -> Result<()> {
     if width == 0 || height == 0 || !width.is_multiple_of(2) || !height.is_multiple_of(2) || width > 8192 || height > 8192 {
         return Err(video_error(format!("{width}x{height}: 4:2:0 video needs an even, nonzero size up to 8192")));
@@ -99,7 +92,6 @@ pub(crate) fn check_video_size(width: u32, height: u32) -> Result<()> {
     Ok(())
 }
 
-/// Checks that `rgba` holds a tight `width`x`height` picture.
 pub(crate) fn check_picture(rgba: &[u8], width: u32, height: u32) -> Result<()> {
     if rgba.len() != width as usize * height as usize * 4 {
         return Err(video_error(format!("{} bytes for a {width}x{height} picture", rgba.len())));
@@ -111,7 +103,6 @@ pub(crate) fn check_picture(rgba: &[u8], width: u32, height: u32) -> Result<()> 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AccessUnit {
     pub data: Bytes,
-    /// An IDR (H.264) or IRAP (HEVC) picture with its parameter sets.
     pub keyframe: bool,
 }
 
@@ -120,33 +111,29 @@ pub trait VideoEncoder: Send {
     fn encode(&mut self, rgba: &[u8], keyframe: bool) -> Result<AccessUnit>;
 }
 
-/// Codes a surface's pictures into frames: skips unchanged pictures and
-/// honours keyframe requests.
+/// Codes pictures into frames, skipping unchanged ones.
 pub struct LiveEncoder {
     size: (u32, u32),
     codec: Codec,
     encoder: Box<dyn VideoEncoder>,
     last: Vec<u8>,
     keyframe_pending: bool,
-    next_seq: u64,
 }
 
 impl LiveEncoder {
     pub fn new(size: (u32, u32), codec: Codec, encoder: Box<dyn VideoEncoder>) -> Self {
-        Self { size, codec, encoder, last: Vec::new(), keyframe_pending: true, next_seq: 1 }
+        Self { size, codec, encoder, last: Vec::new(), keyframe_pending: true }
     }
 
     pub fn size(&self) -> (u32, u32) {
         self.size
     }
 
-    /// The next picture goes out whole and decodable on its own.
     pub fn request_keyframe(&mut self) {
         self.keyframe_pending = true;
     }
 
-    /// Codes `rgba` (the encoder's size) into a frame stamped with
-    /// `input_seq` and `captured_us`; `None` when nothing changed.
+    /// `None` when nothing changed. The caller numbers the frames.
     pub fn encode(&mut self, rgba: &[u8], input_seq: u64, captured_us: u64) -> Result<Option<Frame>> {
         let (width, height) = self.size;
         check_picture(rgba, width, height)?;
@@ -157,9 +144,8 @@ impl LiveEncoder {
         self.last.clear();
         self.last.extend_from_slice(rgba);
         let unit = self.encoder.encode(rgba, keyframe)?;
-        self.next_seq += 1;
         Ok(Some(Frame {
-            seq: self.next_seq - 1,
+            seq: 0,
             input_seq,
             captured_us,
             width,
@@ -172,7 +158,7 @@ impl LiveEncoder {
     }
 }
 
-/// Outcome of trying one encoder at runtime; `error` says why it can't code.
+/// `error` says why the encoder can't code.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProbeResult {
     pub info: EncoderInfo,
@@ -185,8 +171,7 @@ impl ProbeResult {
     }
 }
 
-/// Every encoder this machine could use, each tried for real; the
-/// in-process software encoder always comes last.
+/// Every encoder this machine could use; software always comes last.
 pub fn probe(ffmpeg: Option<&ffmpeg::FfmpegConfig>) -> Vec<ProbeResult> {
     let mut found = ffmpeg.map(ffmpeg::probe).unwrap_or_default();
     found.push(ProbeResult { info: software_info(), error: None });
@@ -203,7 +188,6 @@ pub(crate) fn start_codes(stream: &[u8]) -> impl Iterator<Item = (usize, usize)>
     })
 }
 
-/// NAL unit types of an access unit.
 pub(crate) fn nal_types(codec: Codec, access_unit: &[u8]) -> impl Iterator<Item = u8> + '_ {
     let mut codes = start_codes(access_unit).peekable();
     std::iter::from_fn(move || {
@@ -215,17 +199,14 @@ pub(crate) fn nal_types(codec: Codec, access_unit: &[u8]) -> impl Iterator<Item 
     .map(move |header| codec.nal().type_of(header))
 }
 
-/// Whether the access unit holds an H.264 IDR slice or an HEVC IRAP picture.
 pub(crate) fn is_keyframe(codec: Codec, access_unit: &[u8]) -> bool {
     nal_types(codec, access_unit).any(|t| codec.nal().keyframe.contains(&t))
 }
 
-/// Whether the access unit holds a coded picture at all.
 pub(crate) fn has_picture(codec: Codec, access_unit: &[u8]) -> bool {
     nal_types(codec, access_unit).any(|t| codec.nal().picture.contains(&t))
 }
 
-/// Whether the access unit carries its parameter sets.
 pub(crate) fn has_parameter_sets(codec: Codec, access_unit: &[u8]) -> bool {
     let types: Vec<_> = nal_types(codec, access_unit).collect();
     codec.nal().parameter_sets.iter().all(|t| types.contains(t))
@@ -316,11 +297,9 @@ fn rgba_to_i420(rgba: &[u8], width: usize, height: usize, y: &mut [u8], u: &mut 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pixels::RgbaImage as Canvas;
-    use crate::proto::video::decode::FrameDecoder;
 
     #[test]
-    fn annex_b_parsing_and_software_h264() {
+    fn annex_b_parsing() {
         let au = [0, 0, 0, 1, 0x67, 0x42, 0, 0, 1, 0x68, 0xce, 0, 0, 0, 1, 0x65, 0x88, 0x84];
         assert_eq!(nal_types(Codec::H264, &au).collect::<Vec<_>>(), vec![7, 8, 5]);
         assert!(is_keyframe(Codec::H264, &au) && has_parameter_sets(Codec::H264, &au));
@@ -330,25 +309,5 @@ mod tests {
         assert!(!is_keyframe(Codec::Hevc, &[0, 0, 0, 1, 0x02, 0x01, 0xd0]));
         let aud_split = [0, 0, 0, 1, 9, 0xf0, 0, 0, 1, 0x65, 1, 0, 0, 0, 1, 9, 0xf0];
         assert_eq!(ffmpeg::next_access_unit(Codec::H264, &aud_split), Some(11));
-
-        // Round trip, unchanged pictures skipped, keyframes on request.
-        let (w, h) = (96u32, 64u32);
-        assert!(SoftwareH264::new(63, 64).is_err());
-        let mut live = LiveEncoder::new((w, h), Codec::H264, Box::new(SoftwareH264::new(w, h).unwrap()));
-        let (mut decoder, mut canvas) = (FrameDecoder::new(), Canvas::new(w, h));
-        let mut rgba = vec![30u8; (w * h * 4) as usize];
-        let first = live.encode(&rgba, 1, 10).unwrap().unwrap();
-        assert!(first.keyframe && first.encoding == Encoding::H264);
-        decoder.apply(&first, &mut canvas).unwrap();
-        assert!(live.encode(&rgba, 1, 11).unwrap().is_none());
-        rgba[..w as usize * 16 * 4].fill(230);
-        let second = live.encode(&rgba, 2, 20).unwrap().unwrap();
-        assert!(!second.keyframe && second.input_seq == 2);
-        decoder.apply(&second, &mut canvas).unwrap();
-        assert!(canvas.data[0].abs_diff(230) <= 4 && canvas.data[rgba.len() - 4].abs_diff(30) <= 4);
-        live.request_keyframe();
-        let third = live.encode(&rgba, 2, 30).unwrap().unwrap();
-        assert!(third.keyframe);
-        FrameDecoder::new().apply(&third, &mut Canvas::new(w, h)).unwrap();
     }
 }

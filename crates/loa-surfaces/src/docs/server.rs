@@ -4,8 +4,7 @@ use crate::docs::{DocsError, Fonts, Format, PageSize, Paged, Result, json, open_
 use async_trait::async_trait;
 use bytes::Bytes;
 use loa_contracts::surface::{
-    Document, Frame, InputEvent, Result as SurfaceResult, Surface, SurfaceError, SurfaceInfo, SurfaceMode,
-    SurfaceServer, SurfaceUri,
+    Document, Frame, InputEvent, Result as SurfaceResult, Surface, SurfaceError, SurfaceInfo, SurfaceMode, SurfaceUri,
 };
 use loa_util::LockExt;
 use serde::{Deserialize, Serialize};
@@ -19,8 +18,7 @@ use tokio::sync::broadcast;
 /// Server part of the `surface://docs/<id>` uris.
 pub const SERVER_NAME: &str = "docs";
 
-/// Scale of `surface_screenshot` pages: 1.5 px per point keeps 10 pt text legible for the agent while a Letter
-/// page stays under 1200 px tall.
+/// Scale of `surface_screenshot` pages: keeps 10 pt text legible while a Letter page stays under 1200 px.
 const SCREENSHOT_SCALE: f32 = 1.5;
 
 impl From<DocsError> for SurfaceError {
@@ -158,8 +156,7 @@ impl Surface for DocSurface {
     }
 }
 
-/// The `docs` surface server. Files are opened explicitly with [`DocsServer::open_file`]; `list` returns the
-/// open ones.
+/// The `docs` surface server. Files are opened explicitly with [`DocsServer::open_file`].
 pub struct DocsServer {
     fonts: Fonts,
     next_id: AtomicU64,
@@ -179,7 +176,7 @@ impl DocsServer {
         let (format, bytes, parsed) = run_blocking({
             let path = path.clone();
             move || {
-                let bytes = crate::docs::read_file(&path)?;
+                let bytes = std::fs::read(&path).map_err(|source| DocsError::Io { path: path.clone(), source })?;
                 let format =
                     Format::detect(&path, &bytes).ok_or_else(|| DocsError::Unsupported(path.display().to_string()))?;
                 let parsed = open_pages(format, &bytes)?;
@@ -196,63 +193,13 @@ impl DocsServer {
         Ok(surface)
     }
 
-    /// Forgets an open surface. Returns whether it was open.
-    pub fn close(&self, uri: &SurfaceUri) -> bool {
-        self.surfaces.locked().remove(uri).is_some()
+    pub fn close(&self, uri: &SurfaceUri) {
+        self.surfaces.locked().remove(uri);
     }
 
     /// The open surface at `uri`, typed, for data queries.
     pub fn surface(&self, uri: &SurfaceUri) -> Result<DocSurface> {
         let found = self.surfaces.locked().get(uri).cloned();
         found.ok_or_else(|| DocsError::Surface(SurfaceError::NotFound(uri.clone())))
-    }
-}
-
-#[async_trait]
-impl SurfaceServer for DocsServer {
-    fn name(&self) -> &str {
-        SERVER_NAME
-    }
-
-    async fn list(&self) -> SurfaceResult<Vec<SurfaceInfo>> {
-        let mut infos: Vec<SurfaceInfo> = self.surfaces.locked().values().map(Surface::info).collect();
-        infos.sort_by(|a, b| a.uri.name().len().cmp(&b.uri.name().len()).then_with(|| a.uri.name().cmp(b.uri.name())));
-        Ok(infos)
-    }
-
-    async fn open(&self, uri: &SurfaceUri) -> SurfaceResult<Arc<dyn Surface>> {
-        Ok(Arc::new(self.surface(uri)?))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn broken_files_fail_at_open_and_open_ones_answer_queries_until_closed() {
-        let dir = tempfile::tempdir().unwrap();
-        let write = |name: &str, bytes: &[u8]| {
-            let path = dir.path().join(name);
-            std::fs::write(&path, bytes).unwrap();
-            path
-        };
-        let server = DocsServer::new(Fonts::none());
-        assert!(matches!(server.open_file(dir.path().join("missing.pdf")).await, Err(DocsError::Io { .. })));
-        assert!(matches!(server.open_file(write("notes.txt", b"plain")).await, Err(DocsError::Unsupported(_))));
-        assert!(server.open_file(write("broken.pdf", b"%PDF-1.7 nothing else")).await.is_err());
-        assert!(server.list().await.unwrap().is_empty());
-
-        let png = crate::docs::Rgba::filled(2, 2, [0, 0, 0, 255]).to_png().unwrap();
-        let surface = server.open_file(write("a.png", &png)).await.unwrap();
-        let uri = surface.info().uri;
-        assert_eq!(uri.as_str(), "surface://docs/1");
-        assert!(matches!(surface.data(DataQuery::Sheets).await, Err(DocsError::Request(_))));
-        let info = surface.data(DataQuery::Info).await.unwrap();
-        assert_eq!((info["format"].as_str(), info["pages"][0]["width"].as_f64()), (Some("png"), Some(2.0)));
-        assert!(matches!(surface.frames(), Err(SurfaceError::Mode { .. })));
-        assert_eq!(surface.screenshot().await.unwrap(), png);
-        assert!(server.close(&uri));
-        assert!(matches!(server.open(&uri).await, Err(SurfaceError::NotFound(_))));
     }
 }

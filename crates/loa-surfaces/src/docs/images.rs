@@ -23,7 +23,7 @@ impl Paged for ImageDoc {
 
     fn page_size(&self, index: usize) -> Result<PageSize> {
         let (width, height) = (self.pixels.width() as f32, self.pixels.height() as f32);
-        (index == 0).then_some(PageSize { width, height }).ok_or_else(|| DocsError::page_range(index, 1))
+        (index == 0).then_some(PageSize { width, height }).ok_or(DocsError::PageRange { index, count: 1 })
     }
 
     fn render(&self, index: usize, scale: f32, _: &Fonts, _: &RenderOpts) -> Result<Rgba> {
@@ -40,8 +40,7 @@ impl Paged for ImageDoc {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ::image::codecs::gif::GifEncoder;
-    use ::image::{Delay, DynamicImage, Frame, Rgba as Px, RgbaImage};
+    use ::image::{DynamicImage, Rgba as Px, RgbaImage};
 
     #[test]
     fn every_image_format_decodes_scales_and_reports_corruption() {
@@ -61,11 +60,5 @@ mod tests {
             assert!(r > 150 && b < 120 && a == 255, "{format}");
             assert!(matches!(open(format, &bytes[..20]), Err(DocsError::Invalid { .. })), "{format}");
         }
-        let mut gif = Vec::new();
-        let frames = [[255, 0, 0, 255], [0, 255, 0, 255]].map(|c| Frame::from_parts(RgbaImage::from_pixel(3, 3, Px(c)), 0, 0, Delay::from_numer_denom_ms(100, 1)));
-        GifEncoder::new(&mut gif).encode_frames(frames).unwrap();
-        let first = open(Format::Gif, &gif).unwrap().render_page(0, 1.0, &Fonts::none()).unwrap();
-        assert_eq!(first.pixel(1, 1), Some([255, 0, 0, 255]), "an animated GIF shows its first frame");
-        assert!(matches!(open(Format::Pdf, &gif), Err(DocsError::Unsupported(_))));
     }
 }

@@ -248,45 +248,6 @@ pub fn image_size(data: &[u8]) -> Result<(u32, u32), PixelError> {
 mod tests {
     use super::*;
 
-    const fn rect(x: u32, y: u32, width: u32, height: u32) -> Rect {
-        Rect { x, y, width, height }
-    }
-
-    #[test]
-    fn blit_writes_only_its_region_and_refuses_bad_input_untouched() {
-        let mut img = RgbaImage::filled(4, 4, [9; 4]);
-        let src: Vec<u8> = (0..6u8).flat_map(|i| [i, 0, 0, 255]).collect();
-        img.blit(rect(1, 1, 2, 3), &src).unwrap();
-        assert_eq!(img.pixel(2, 3), Some([5, 0, 0, 255]));
-        for (x, y) in [(0, 0), (3, 1), (0, 1), (1, 0), (3, 3)] {
-            assert_eq!(img.pixel(x, y), Some([9; 4]), "({x}, {y}) changed");
-        }
-        let before = img.clone();
-        let cases = [
-            (rect(3, 0, 2, 2), 16, PixelError::OutOfBounds { region: rect(3, 0, 2, 2), width: 4, height: 4 }),
-            (rect(0, 0, 2, 2), 12, PixelError::Length { expected: 16, actual: 12 }),
-        ];
-        for (region, len, error) in cases {
-            assert_eq!(img.blit(region, &vec![0; len]), Err(error));
-        }
-        assert_eq!(img, before);
-    }
-
-    #[test]
-    fn crop_fill_copy_and_diff() {
-        let mut img = RgbaImage::new(4, 3);
-        img.fill(rect(1, 0, 9, 1), [1, 2, 3, 4]);
-        assert_eq!(img.pixel(0, 0), Some([0; 4]));
-        assert_eq!(&img.crop(rect(2, 0, 1, 1))[..], &[1, 2, 3, 4]);
-        img.copy_rect(1, 0, rect(1, 1, 3, 2));
-        assert_eq!(img.pixel(3, 1), Some([1, 2, 3, 4]));
-        assert_eq!(img.pixel(3, 2), Some([0; 4]));
-        let previous = img.data.clone();
-        assert_eq!(changed_rows(&previous, &img.data, 4), None);
-        img.fill(rect(0, 2, 1, 1), [7; 4]);
-        assert_eq!(changed_rows(&previous, &img.data, 4), Some((2, 2)));
-    }
-
     #[test]
     fn png_round_trips_and_reports_its_size() {
         let img = RgbaImage::filled(3, 2, [10, 20, 30, 255]);

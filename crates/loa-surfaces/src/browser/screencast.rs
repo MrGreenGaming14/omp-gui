@@ -1,11 +1,9 @@
 //! Frames from Chrome's `Page.startScreencast`: the headless [`Capture`] strategy.
 
-use loa_util::LockExt;
 use crate::browser::Result;
 use crate::browser::tab::{Capture, set_viewport};
+use crate::feed::{FrameFeed, InputLog};
 use async_trait::async_trait;
-use crate::feed::{FrameFeed, InputLog, Picture};
-use loa_util::time::now_us;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use bytes::Bytes;
@@ -15,7 +13,9 @@ use chromiumoxide::cdp::browser_protocol::page::{
 };
 use chromiumoxide::listeners::EventStream;
 use futures::StreamExt;
-use loa_contracts::surface::{Encoding, Rect};
+use loa_contracts::surface::{Encoding, Frame, Rect};
+use loa_util::LockExt;
+use loa_util::time::now_us;
 use std::sync::{Arc, Mutex};
 use tokio::task::JoinHandle;
 
@@ -85,7 +85,8 @@ pub(crate) async fn pump(
                         .ok_or_else(|| jpeg_decoder::Error::Format("missing frame header".into()))
                 });
                 match dimensions {
-                    Ok((width, height)) => hub.publish(Picture {
+                    Ok((width, height)) => hub.publish(Frame {
+                        seq: 0,
                         captured_us,
                         input_seq,
                         width,

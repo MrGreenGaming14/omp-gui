@@ -162,55 +162,26 @@ mod tests {
     }
 
     #[test]
-    fn path_browsers_win_over_playwright_and_newest_revision_wins() {
+    fn discovery_ranks_path_over_playwright_and_newest_first() {
         let tmp = tempfile::tempdir().unwrap();
         let bin = tmp.path().join("bin");
         let home = tmp.path().join("home");
         let cache = home.join(".cache/ms-playwright");
-        touch_exe(&cache.join("chromium-900/chrome-linux64/chrome"));
-        touch_exe(&cache.join("chromium-1200/chrome-linux64/chrome"));
-        touch_exe(&cache.join("chromium_headless_shell-1300/chrome-headless-shell-linux64/chrome-headless-shell"));
-
-        let found = chrome_candidates(Some(bin.as_os_str()), Some(&home), false);
-        let ours: Vec<_> = found.iter().filter(|p| p.starts_with(tmp.path())).cloned().collect();
-        assert_eq!(
-            ours,
-            vec![
-                cache.join("chromium-1200/chrome-linux64/chrome"),
-                cache.join("chromium-900/chrome-linux64/chrome"),
-                cache.join("chromium_headless_shell-1300/chrome-headless-shell-linux64/chrome-headless-shell"),
-            ]
-        );
-
+        let shell = cache.join("chromium_headless_shell-1300/chrome-headless-shell-linux64/chrome-headless-shell");
+        let revisions = ["chromium-1200", "chromium-900"].map(|dir| cache.join(dir).join("chrome-linux64/chrome"));
+        revisions.iter().chain([&shell]).for_each(|exe| touch_exe(exe));
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("chrome"), "not executable").unwrap();
+        let ours = |headed| {
+            let found = chrome_candidates(Some(bin.as_os_str()), Some(&home), headed);
+            found.into_iter().filter(|p| p.starts_with(tmp.path())).collect::<Vec<_>>()
+        };
+        assert_eq!(ours(false), [&revisions[..], std::slice::from_ref(&shell)].concat());
+        assert!(!ours(true).contains(&shell), "headed discovery skips the headless shell");
         touch_exe(&bin.join("chromium"));
-        let first = find_chrome(Some(bin.as_os_str()), Some(&home), false).unwrap();
-        assert_eq!(first, bin.join("chromium"));
-    }
-
-    #[test]
-    fn headed_discovery_skips_the_headless_shell_and_non_executables() {
-        let tmp = tempfile::tempdir().unwrap();
-        let bin = tmp.path().join("bin");
-        touch_exe(&bin.join("chrome-headless-shell"));
-        std::fs::write(bin.join("chromium"), "not executable").unwrap();
-        let home = tmp.path().join("home");
-        touch_exe(&home.join(".cache/ms-playwright/chromium_headless_shell-1/chrome-headless-shell-linux64/chrome-headless-shell"));
-
-        let headed = chrome_candidates(Some(bin.as_os_str()), Some(&home), true);
-        assert!(headed.iter().all(|p| !p.starts_with(tmp.path())), "{headed:?}");
-        let headless = chrome_candidates(Some(bin.as_os_str()), Some(&home), false);
-        assert_eq!(headless.first(), Some(&bin.join("chrome-headless-shell")));
-    }
-
-    #[test]
-    fn xvfb_is_found_on_the_search_path_only() {
-        let tmp = tempfile::tempdir().unwrap();
-        let a = tmp.path().join("a");
-        let b = tmp.path().join("b");
-        std::fs::create_dir_all(&a).unwrap();
-        touch_exe(&b.join("Xvfb"));
-        let path = std::env::join_paths([&a, &b]).unwrap();
-        assert_eq!(find_xvfb(Some(&path)), Some(b.join("Xvfb")));
-        assert_eq!(find_xvfb(Some(a.as_os_str())), None);
+        assert_eq!(find_chrome(Some(bin.as_os_str()), Some(&home), false), Some(bin.join("chromium")));
+        assert_eq!(find_xvfb(Some(bin.as_os_str())), None);
+        touch_exe(&bin.join("Xvfb"));
+        assert_eq!(find_xvfb(Some(bin.as_os_str())), Some(bin.join("Xvfb")));
     }
 }

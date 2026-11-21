@@ -37,8 +37,6 @@ pub enum DocsError {
     /// A query that doesn't fit the document (unknown sheet, bad range).
     #[error("{0}")]
     Request(String),
-    #[error("font: {0}")]
-    Font(String),
     #[error(transparent)]
     Pixels(#[from] crate::pixels::PixelError),
     #[error(transparent)]
@@ -50,10 +48,6 @@ pub type Result<T, E = DocsError> = std::result::Result<T, E>;
 impl DocsError {
     pub(crate) fn invalid(format: Format, message: impl std::fmt::Display) -> Self {
         Self::Invalid { format, message: message.to_string() }
-    }
-
-    pub(crate) fn page_range(index: usize, count: usize) -> Self {
-        Self::PageRange { index, count }
     }
 }
 
@@ -75,7 +69,6 @@ pub enum Format {
 /// How a file of a format is recognised by its content.
 #[derive(Clone, Copy, Debug)]
 pub enum Sniff {
-    /// The file starts with these bytes.
     Magic(&'static [u8]),
     /// A zip archive holding this part.
     ZipPart(&'static [u8]),
@@ -83,10 +76,8 @@ pub enum Sniff {
     Image(ImageFormat),
 }
 
-/// Parses a file's bytes into a paged document.
 pub type Opener = fn(Format, &[u8]) -> Result<Box<dyn Paged>>;
 
-/// One registered format.
 pub struct DocFormat {
     pub format: Format,
     pub name: &'static str,
@@ -97,7 +88,7 @@ pub struct DocFormat {
 }
 
 macro_rules! formats {
-    ($($format:ident $name:literal $mime:expr, [$($ext:literal),*], $sniff:expr, $open:path;)*) => {
+    ($($format:ident $name:literal $mime:expr, [$($ext:literal),*], $sniff:expr, $open:expr;)*) => {
         /// Every format, in sniffing order.
         pub static FORMATS: &[DocFormat] = &[$(DocFormat {
             format: Format::$format, name: $name, mime: $mime, exts: &[$($ext),*], sniff: $sniff, open: $open,
@@ -105,11 +96,18 @@ macro_rules! formats {
     };
 }
 
+/// The opener of a document type with `parse(&[u8])`.
+macro_rules! parse {
+    ($doc:ty) => {
+        |_, bytes| Ok(Box::new(<$doc>::parse(bytes)?))
+    };
+}
+
 formats! {
-    Pdf "PDF" "application/pdf", ["pdf"], Sniff::Magic(b"%PDF-"), pdf::open;
-    Xlsx "XLSX" "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", ["xlsx", "xlsm"], Sniff::ZipPart(b"xl/workbook.xml"), xlsx::open;
-    Docx "DOCX" "application/vnd.openxmlformats-officedocument.wordprocessingml.document", ["docx"], Sniff::ZipPart(b"word/document.xml"), docx::open;
-    Pptx "PPTX" "application/vnd.openxmlformats-officedocument.presentationml.presentation", ["pptx"], Sniff::ZipPart(b"ppt/presentation.xml"), pptx::open;
+    Pdf "PDF" "application/pdf", ["pdf"], Sniff::Magic(b"%PDF-"), parse!(pdf::PdfDoc);
+    Xlsx "XLSX" "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", ["xlsx", "xlsm"], Sniff::ZipPart(b"xl/workbook.xml"), parse!(xlsx::XlsxDoc);
+    Docx "DOCX" "application/vnd.openxmlformats-officedocument.wordprocessingml.document", ["docx"], Sniff::ZipPart(b"word/document.xml"), parse!(docx::DocxDoc);
+    Pptx "PPTX" "application/vnd.openxmlformats-officedocument.presentationml.presentation", ["pptx"], Sniff::ZipPart(b"ppt/presentation.xml"), parse!(pptx::PptxDoc);
     Png "PNG" "image/png", ["png"], Sniff::Image(ImageFormat::Png), images::open;
     Jpeg "JPEG" "image/jpeg", ["jpg", "jpeg"], Sniff::Image(ImageFormat::Jpeg), images::open;
     Gif "GIF" "image/gif", ["gif"], Sniff::Image(ImageFormat::Gif), images::open;
@@ -118,7 +116,6 @@ formats! {
 }
 
 impl Format {
-    /// The registry entry of this format.
     pub fn spec(self) -> &'static DocFormat {
         FORMATS.iter().find(|f| f.format == self).expect("every format is registered")
     }
@@ -191,7 +188,6 @@ pub trait Paged: Send + Sync {
     /// Renders page `index` at `scale` (1.0 = one pixel per point) with `opts`.
     fn render(&self, index: usize, scale: f32, fonts: &Fonts, opts: &RenderOpts) -> Result<Rgba>;
 
-    /// Renders with the default [`RenderOpts`].
     fn render_page(&self, index: usize, scale: f32, fonts: &Fonts) -> Result<Rgba> {
         self.render(index, scale, fonts, &RenderOpts::default())
     }
@@ -202,19 +198,18 @@ pub trait Paged: Send + Sync {
     }
 }
 
-/// Serializes a query answer.
 pub(crate) fn json<T: serde::Serialize + ?Sized>(value: &T) -> Result<Value> {
     serde_json::to_value(value).map_err(|e| DocsError::Request(e.to_string()))
+}
+
+/// Page `index` of `pages`, or [`DocsError::PageRange`].
+pub(crate) fn page_at<T>(pages: &[T], index: usize) -> Result<&T> {
+    pages.get(index).ok_or(DocsError::PageRange { index, count: pages.len() })
 }
 
 /// Parses a document for local rendering on the viewing side.
 pub fn open_pages(format: Format, bytes: &[u8]) -> Result<Box<dyn Paged>> {
     (format.spec().open)(format, bytes)
-}
-
-/// Reads a file, mapping the error to [`DocsError::Io`].
-pub(crate) fn read_file(path: &Path) -> Result<Vec<u8>> {
-    std::fs::read(path).map_err(|source| DocsError::Io { path: path.to_owned(), source })
 }
 
 #[cfg(test)]

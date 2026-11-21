@@ -1,6 +1,6 @@
 //! One RFB connection as a pixel [`Surface`], with reconnect.
 
-use crate::feed::{FrameFeed, Picture as FeedPicture};
+use crate::feed::FrameFeed;
 use crate::pixels::{RgbaImage, encode_png, region_fits};
 use crate::vnc::decode::{Decoders, Update, is_pseudo, read_rect, skip};
 use crate::vnc::input::InputState;
@@ -279,7 +279,8 @@ impl Shared {
         if full.width == 0 || full.height == 0 {
             return;
         }
-        self.feed.publish(FeedPicture {
+        self.feed.publish(Frame {
+            seq: 0,
             captured_us: now_us(),
             input_seq: pic.input_seq,
             width: full.width,

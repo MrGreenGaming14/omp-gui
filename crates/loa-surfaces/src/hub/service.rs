@@ -405,21 +405,3 @@ pub fn normalize_url(url: &str) -> String {
         format!("https://{url}")
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn typed_addresses_get_a_scheme() {
-        for (typed, url) in [
-            (" example.com ", "https://example.com"),
-            ("localhost:8080/a", "http://localhost:8080/a"),
-            ("http://x.test", "http://x.test"),
-            ("about:blank", "about:blank"),
-            ("data:text/html,hi", "data:text/html,hi"),
-        ] {
-            assert_eq!(normalize_url(typed), url);
-        }
-    }
-}

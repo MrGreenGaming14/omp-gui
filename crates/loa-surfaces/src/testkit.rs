@@ -18,7 +18,7 @@ pub const PATIENCE: Duration = Duration::from_secs(20);
 pub struct FakeSurface {
     pub info: SurfaceInfo,
     pub document: Option<Document>,
-    frames: Mutex<Option<broadcast::Sender<Arc<Frame>>>>,
+    frames: broadcast::Sender<Arc<Frame>>,
     inputs: mpsc::UnboundedSender<InputEvent>,
     keyframes: mpsc::UnboundedSender<()>,
     keyframe_count: AtomicUsize,
@@ -39,17 +39,12 @@ impl FakeSurface {
         let surface = Self {
             info,
             document,
-            frames: Mutex::new(Some(frames.clone())),
+            frames: frames.clone(),
             inputs: inputs_tx,
             keyframes: keyframes_tx,
             keyframe_count: AtomicUsize::new(0),
         };
         (Arc::new(surface), Probe { frames, inputs, keyframes })
-    }
-
-    /// Ends the frame stream for viewers subscribing from now on.
-    pub fn close(&self) {
-        self.frames.locked().take();
     }
 
     pub fn keyframes_requested(&self) -> usize {
@@ -71,7 +66,7 @@ impl Surface for FakeSurface {
         if self.info.mode != SurfaceMode::Pixel {
             return Err(self.mode_error());
         }
-        self.frames.locked().as_ref().map(broadcast::Sender::subscribe).ok_or(SurfaceError::Closed)
+        Ok(self.frames.subscribe())
     }
 
     async fn request_keyframe(&self) -> Result<()> {

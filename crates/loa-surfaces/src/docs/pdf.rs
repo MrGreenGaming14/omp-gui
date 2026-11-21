@@ -1,7 +1,7 @@
 //! PDF pages rendered and read with `hayro`.
 
 use crate::docs::raster::Fonts;
-use crate::docs::{DataQuery, DocsError, Format, PageSize, Paged, RenderOpts, Result, Rgba, json};
+use crate::docs::{DataQuery, DocsError, Format, PageSize, Paged, RenderOpts, Result, Rgba, json, page_at};
 use hayro::hayro_interpret::font::{Glyph, GlyphRun};
 use hayro::hayro_interpret::hayro_cmap::BfString;
 use hayro::hayro_interpret::util::TransformExt;
@@ -18,11 +18,6 @@ use hayro::vello_cpu::{Pixmap, RasterizerSettings, RenderContext, Resources, Tar
 use hayro::{RenderCache, RenderSettings, render_into};
 use std::ops::Range;
 
-pub(crate) fn open(_: Format, bytes: &[u8]) -> Result<Box<dyn Paged>> {
-    Ok(Box::new(PdfDoc::parse(bytes)?))
-}
-
-/// A parsed PDF document.
 pub struct PdfDoc {
     pdf: Pdf,
 }
@@ -30,31 +25,16 @@ pub struct PdfDoc {
 impl PdfDoc {
     /// Parses a PDF file. Encrypted files that need a password are rejected.
     pub fn parse(bytes: &[u8]) -> Result<Self> {
-        let pdf = Pdf::new(bytes.to_vec()).map_err(|e| {
-            let message = match e {
-                LoadPdfError::Decryption(e) => format!("cannot decrypt the document ({e:?})"),
-                LoadPdfError::Invalid => "not a readable PDF document".to_owned(),
-            };
-            DocsError::invalid(Format::Pdf, message)
-        })?;
-        Ok(Self { pdf })
-    }
-
-    /// Text of page `index` in reading order: lines top to bottom joined with `\n`, words separated
-    /// by a space. Invisible text (OCR layers) is included.
-    pub fn page_text(&self, index: usize) -> Result<String> {
-        Ok(extract_text(self.page(index)?, &InterpreterCache::new()))
+        Pdf::new(bytes.to_vec()).map(|pdf| Self { pdf }).map_err(|e| match e {
+            LoadPdfError::Decryption(e) => DocsError::invalid(Format::Pdf, format!("cannot decrypt the document ({e:?})")),
+            LoadPdfError::Invalid => DocsError::invalid(Format::Pdf, "not a readable PDF document"),
+        })
     }
 
     /// Text of every page, one entry per page.
-    pub fn text(&self) -> Result<Vec<String>> {
+    pub fn text(&self) -> Vec<String> {
         let cache = InterpreterCache::new();
-        Ok(self.pdf.pages().iter().map(|page| extract_text(page, &cache)).collect())
-    }
-
-    fn page(&self, index: usize) -> Result<&Page<'_>> {
-        let pages = self.pdf.pages();
-        pages.get(index).ok_or_else(|| DocsError::page_range(index, pages.len()))
+        self.pdf.pages().iter().map(|page| extract_text(page, &cache)).collect()
     }
 }
 
@@ -64,29 +44,30 @@ impl Paged for PdfDoc {
     }
 
     fn page_size(&self, index: usize) -> Result<PageSize> {
-        let (width, height) = self.page(index)?.render_dimensions();
+        let (width, height) = page_at(self.pdf.pages(), index)?.render_dimensions();
         Ok(PageSize { width, height })
     }
 
     fn query(&self, query: &DataQuery) -> Option<Result<serde_json::Value>> {
-        match query {
-            DataQuery::Text { page: Some(index) } => Some(self.page_text(*index).and_then(|t| json(&t))),
-            DataQuery::Text { page: None } => Some(self.text().and_then(|t| json(&t))),
-            _ => None,
-        }
+        Some(match query {
+            DataQuery::Text { page: Some(i) } => {
+                page_at(self.pdf.pages(), *i).and_then(|page| json(&extract_text(page, &InterpreterCache::new())))
+            }
+            DataQuery::Text { page: None } => json(&self.text()),
+            _ => return None,
+        })
     }
 
     fn render(&self, index: usize, scale: f32, _: &Fonts, _: &RenderOpts) -> Result<Rgba> {
-        let (page, size) = (self.page(index)?, self.page_size(index)?);
+        let (page, size) = (page_at(self.pdf.pages(), index)?, self.page_size(index)?);
         if !(scale.is_finite() && scale > 0.0) {
             return Err(DocsError::Request(format!("invalid render scale {scale}")));
         }
         let (width, height) = size.pixels(scale);
         let (Ok(width), Ok(height)) = (u16::try_from(width), u16::try_from(height)) else {
-            return Err(DocsError::Request(format!(
-                "page {index} at scale {scale} is {width} x {height} pixels, the limit is {max} x {max}",
-                max = u16::MAX
-            )));
+            let max = u16::MAX;
+            let message = format!("page {index} at scale {scale} is {width} x {height} pixels, the limit is {max} x {max}");
+            return Err(DocsError::Request(message));
         };
 
         let cache = RenderCache::new();
@@ -178,7 +159,8 @@ const LINE_TOLERANCE: f64 = 0.4;
 /// Fraction of the font size a horizontal gap must exceed to count as a space.
 const SPACE_GAP: f64 = 0.15;
 
-/// The page's glyphs ordered into lines and joined into text.
+/// The page's text in reading order: lines top to bottom joined with `\n`, words separated by a space.
+/// Invisible text (OCR layers) is included.
 fn extract_text<'a>(page: &Page<'a>, cache: &InterpreterCache<'a>) -> String {
     let (width, height) = page.render_dimensions();
     let mut collector = TextCollector::default();
@@ -276,7 +258,7 @@ mod tests {
         let doc = PdfDoc::parse(&build_pdf(&[(612.0, 792.0, 0, first), (842.0, 595.0, 0, ""), (612.0, 792.0, 90, rotated)])).unwrap();
         let sizes: Vec<_> = (0..3).map(|i| doc.page_size(i).unwrap()).map(|s| (s.width, s.height)).collect();
         assert_eq!(sizes, [(612.0, 792.0), (842.0, 595.0), (792.0, 612.0)]);
-        assert_eq!(doc.text().unwrap(), ["Hello PDF\nSecond line\nSplit words\nKern", "", "Upright title\nBody text"]);
+        assert_eq!(doc.text(), ["Hello PDF\nSecond line\nSplit words\nKern", "", "Upright title\nBody text"]);
 
         let image = doc.render_page(0, 2.0, &Fonts::none()).unwrap();
         assert_eq!((image.width, image.height), (1224, 1584));
@@ -290,7 +272,8 @@ mod tests {
         assert_eq!((image.width, image.height, image.pixel(25, 25)), (792, 612, Some([255, 0, 0, 255])));
         assert_eq!(doc.render_page(0, 1.3, &Fonts::none()).map(|i| (i.width, i.height)).unwrap(), (796, 1030));
 
-        assert!(matches!(doc.page_text(3), Err(DocsError::PageRange { index: 3, count: 3 })));
+        let page_text = doc.query(&DataQuery::Text { page: Some(3) });
+        assert!(matches!(page_text, Some(Err(DocsError::PageRange { index: 3, count: 3 }))));
         assert!(matches!(doc.render_page(0, 200.0, &Fonts::none()), Err(DocsError::Request(_))));
         assert!(matches!(doc.render_page(0, 0.0, &Fonts::none()), Err(DocsError::Request(_))));
         assert!(matches!(PdfDoc::parse(b"not a pdf"), Err(DocsError::Invalid { format: Format::Pdf, .. })));

@@ -1,10 +1,6 @@
-//! Frames as datagrams: splitting a frame into numbered fragments that each
-//! fit one datagram, and putting them back together on the viewer.
-//!
-//! Lost datagrams are never resent. A frame still missing a fragment when a
-//! newer frame completes is dropped, and so is any frame older than the last
-//! one delivered. A loss on a video encoding makes the viewer skip frames
-//! until the next keyframe and ask for one.
+//! Frames split into datagram-sized fragments and reassembled on the viewer.
+//! Nothing is resent: incomplete or older frames are dropped once a newer one
+//! completes, and a video loss skips to the next keyframe, asking for one.
 
 use bytes::{Bytes, BytesMut};
 use loa_contracts::surface::Frame;
@@ -25,13 +21,11 @@ fn datagram(seq: u64, index: u32, count: u32, header: Option<FrameHeader>, data:
     Datagram { kind: Some(DatagramKind::Fragment(Fragment { seq, index, count, header, data })) }
 }
 
-/// Splits `frame` into datagrams of at most `max_datagram` bytes and hands
-/// each to `emit` in order.
+/// Hands `frame` to `emit` as datagrams of at most `max_datagram` bytes.
 pub fn fragment(frame: &Frame, max_datagram: usize, mut emit: impl FnMut(Bytes) -> Result<()>) -> Result<()> {
     let header = FrameHeader::from(frame);
-    // Worst case index and count, empty data: prost leaves the empty data
-    // field out, so add its tag, its length varint, and the growth of the
-    // outer length varint, each bounded by the varint of `max_datagram`.
+    // Worst case index and count with empty data (omitted by prost): add the data
+    // tag, its length varint and the outer varint growth.
     let room = |header: Option<&FrameHeader>| {
         let empty = datagram(frame.seq, u32::MAX, u32::MAX, header.cloned(), Bytes::new());
         max_datagram.saturating_sub(empty.encoded_len() + 1 + 2 * encoded_len_varint(max_datagram as u64))
@@ -60,20 +54,16 @@ pub fn fragment(frame: &Frame, max_datagram: usize, mut emit: impl FnMut(Bytes) 
 /// What the viewer does after one datagram or stream frame.
 #[derive(Debug, Default, PartialEq)]
 pub(crate) struct Pushed {
-    /// A frame ready to show.
     pub frame: Option<Frame>,
-    /// Ask the server for a keyframe on the reliable stream.
     pub request_keyframe: bool,
 }
 
-/// Viewer side frame ordering and reassembly.
 #[derive(Debug)]
 pub(crate) struct Reassembler {
     /// Seq of the newest frame delivered or skipped.
     last: Option<u64>,
     /// Partial frames, sorted by seq.
     pending: VecDeque<Partial>,
-    /// Video only: deltas are useless until the next keyframe.
     awaiting_keyframe: bool,
 }
 
@@ -86,14 +76,12 @@ struct Partial {
 }
 
 impl Reassembler {
-    /// The server asks the surface for a keyframe when a viewer opens, so a
-    /// fresh viewer waits for it without asking again.
+    /// The server sends a keyframe on open, so a fresh viewer waits without asking.
     pub fn new() -> Self {
         Self { last: None, pending: VecDeque::new(), awaiting_keyframe: true }
     }
 
-    /// Takes one raw datagram. Malformed and unknown datagrams are dropped:
-    /// the channel is unreliable, a bad datagram is a lost datagram.
+    /// Malformed and unknown datagrams count as lost.
     pub fn push_datagram(&mut self, datagram: Bytes) -> Pushed {
         match Datagram::decode(datagram) {
             Ok(Datagram { kind: Some(DatagramKind::Fragment(fragment)) }) => self.push_fragment(fragment),
@@ -137,7 +125,6 @@ impl Reassembler {
         }
     }
 
-    /// Takes a complete frame, from reassembly or from the stream.
     pub fn push_frame(&mut self, frame: Frame) -> Pushed {
         if self.is_stale(frame.seq) {
             return Pushed::default();
@@ -161,7 +148,6 @@ impl Reassembler {
     }
 }
 
-/// Concatenates the fragments; a single fragment is passed through without copying.
 fn join(parts: Vec<Option<Bytes>>) -> Bytes {
     if let [Some(only)] = parts.as_slice() {
         return only.clone();

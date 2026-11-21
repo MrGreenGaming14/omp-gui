@@ -3,7 +3,7 @@
 //! inside the margins, headings bigger and bold, list items indented under a marker, tables as equal width cells.
 
 use crate::docs::raster::{Canvas, Fonts, TextStyle};
-use crate::docs::{DataQuery, DocTypography, DocsError, Format, PageSize, Paged, RenderOpts, Result, Rgba, json};
+use crate::docs::{DataQuery, DocTypography, DocsError, Format, PageSize, Paged, RenderOpts, Result, Rgba, json, page_at};
 use docx_rs::StructuredDataTagChild as SdtChild;
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -23,6 +23,8 @@ const TAB_EM: f32 = 0.6;
 const HEADING_SIZES: [f32; 4] = [26.0, 20.0, 16.0, 14.0];
 /// List levels OOXML defines (`ilvl` 0 to 8).
 const LIST_LEVELS: usize = 9;
+/// Level placeholders of a list marker template (`w:lvlText`).
+const LEVEL_PLACEHOLDERS: [&str; LIST_LEVELS] = ["%1", "%2", "%3", "%4", "%5", "%6", "%7", "%8", "%9"];
 /// Bound on `basedOn` chains, which a malformed file can make cyclic.
 const MAX_STYLE_DEPTH: usize = 16;
 
@@ -32,7 +34,6 @@ pub struct Outline {
     pub blocks: Vec<Block>,
 }
 
-/// A top level block of the body.
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Block {
@@ -40,7 +41,6 @@ pub enum Block {
     Table(Table),
 }
 
-/// A paragraph of the body.
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
 pub struct Paragraph {
     /// Paragraph style id (`w:pStyle`), as used in the document.
@@ -68,7 +68,6 @@ pub struct ListItem {
     pub marker: String,
 }
 
-/// A run of text sharing one formatting.
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
 pub struct Run {
     pub text: String,
@@ -83,7 +82,6 @@ pub struct Table {
     pub rows: Vec<Vec<String>>,
 }
 
-/// Page margins in points.
 #[derive(Copy, Clone, Debug, PartialEq)]
 struct Margins {
     top: f32,
@@ -110,10 +108,6 @@ enum Op {
     /// The list marker of the paragraph at `block`.
     Marker { x: f32, y: f32, size: f32, block: usize },
     Border { x: f32, y: f32, w: f32, h: f32 },
-}
-
-pub(crate) fn open(_: Format, bytes: &[u8]) -> Result<Box<dyn Paged>> {
-    Ok(Box::new(DocxDoc::parse(bytes)?))
 }
 
 impl DocxDoc {
@@ -184,7 +178,7 @@ impl Paged for DocxDoc {
     }
 
     fn page_size(&self, index: usize) -> Result<PageSize> {
-        if index < self.pages.len() { Ok(self.page) } else { Err(DocsError::page_range(index, self.pages.len())) }
+        page_at(&self.pages, index).map(|_| self.page)
     }
 
     fn query(&self, query: &DataQuery) -> Option<Result<serde_json::Value>> {
@@ -196,7 +190,7 @@ impl Paged for DocxDoc {
     }
 
     fn render(&self, index: usize, scale: f32, fonts: &Fonts, opts: &RenderOpts) -> Result<Rgba> {
-        let ops = self.pages.get(index).ok_or_else(|| DocsError::page_range(index, self.pages.len()))?;
+        let ops = page_at(&self.pages, index)?;
         let (width, height) = self.page.pixels(scale);
         let mut canvas = Canvas::new(width, height, opts.palette.page);
         for op in ops {
@@ -362,7 +356,11 @@ impl<'a> Reader<'a> {
             .or_else(|| self.style_chain(style).find_map(|s| s.paragraph_property.numbering_property.as_ref()));
         Paragraph {
             style: style.map(str::to_owned),
-            heading_level: style.and_then(|id| self.heading_level(id)),
+            // From the style's name, falling back to its id.
+            heading_level: style.and_then(|id| {
+                let name = self.styles.find_style_by_id(id).and_then(|style| serialized_str(&style.name));
+                name.and_then(|name| heading_level_of(&name)).or_else(|| heading_level_of(id))
+            }),
             list: numbering.and_then(|np| self.list_item(np)),
             text: runs.iter().map(|r| r.text.as_str()).collect(),
             runs,
@@ -426,14 +424,6 @@ impl<'a> Reader<'a> {
         .take(MAX_STYLE_DEPTH)
     }
 
-    /// Heading level from the style's name, falling back to its id.
-    fn heading_level(&self, id: &str) -> Option<u8> {
-        (self.styles.find_style_by_id(id))
-            .and_then(|style| serialized_str(&style.name))
-            .and_then(|name| heading_level_of(&name))
-            .or_else(|| heading_level_of(id))
-    }
-
     /// Counts the item in its numbering instance and renders its marker.
     fn list_item(&mut self, np: &docx_rs::NumberingProperty) -> Option<ListItem> {
         let num_id = np.id.as_ref()?.id;
@@ -467,20 +457,13 @@ impl<'a> Reader<'a> {
             Some(def) if def.format.val == "bullet" => "•".to_owned(),
             Some(def) if def.format.val == "none" => String::new(),
             Some(def) => {
-                let template = serialized_str(&def.text).unwrap_or_default();
-                let mut marker = String::with_capacity(template.len());
-                let mut chars = template.chars().peekable();
-                while let Some(c) = chars.next() {
-                    let placeholder = (chars.peek().and_then(|d| d.to_digit(10)))
-                        .filter(|d| c == '%' && (1..=LIST_LEVELS as u32).contains(d));
-                    let Some(d) = placeholder else {
-                        marker.push(c);
-                        continue;
-                    };
-                    chars.next();
-                    let l = d as usize - 1;
-                    let format = definition(l).map_or("decimal", |lvl| lvl.format.val.as_str());
-                    marker.push_str(&format_number(counters[l].unwrap_or_else(|| start(l)), format));
+                let mut marker = serialized_str(&def.text).unwrap_or_default();
+                for (l, placeholder) in LEVEL_PLACEHOLDERS.iter().enumerate() {
+                    if marker.contains(placeholder) {
+                        let format = definition(l).map_or("decimal", |lvl| lvl.format.val.as_str());
+                        let number = format_number(counters[l].unwrap_or_else(|| start(l)), format);
+                        marker = marker.replace(placeholder, &number);
+                    }
                 }
                 marker
             }
@@ -526,7 +509,6 @@ fn span(source: &str, line: &str) -> (usize, usize) {
     (start, start + line.len())
 }
 
-/// Flows the outline onto pages.
 struct Layout<'f> {
     fonts: &'f Fonts,
     pages: Vec<Vec<Op>>,
@@ -700,9 +682,7 @@ mod tests {
         assert_eq!((doc.page_count(), doc.page_size(0).unwrap()), (3, PageSize { width: 400.0, height: 500.0 }));
         let image = doc.render_page(0, 2.0, &Fonts::none()).unwrap();
         assert_eq!((image.width, image.height), (800, 1000));
-        let dark = |x0: u32, y0: u32, x1: u32, y1: u32| {
-            (y0..y1).flat_map(|y| (x0..x1).map(move |x| (x, y))).any(|(x, y)| image.pixel(x, y).is_some_and(|p| p[0] < 128))
-        };
+        let dark = |x0: u32, y0: u32, x1, y1| (y0..y1).any(|y| (x0..x1).any(|x| image.pixel(x, y).is_some_and(|p| p[0] < 128)));
         // Text starts at the 72pt margins, scaled by 2.
         assert!(dark(144, 144, 344, 210) && !dark(0, 0, 800, 140) && !dark(0, 0, 140, 1000));
         assert!(matches!(doc.render_page(3, 1.0, &Fonts::none()), Err(DocsError::PageRange { index: 3, count: 3 })));

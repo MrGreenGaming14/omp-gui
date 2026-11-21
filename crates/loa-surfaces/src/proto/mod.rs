@@ -1,11 +1,5 @@
-//! Remote viewing (the app's `remote-video` feature): `omp/surface/1` and
+//! Remote viewing (`remote-video`): `omp/surface/1` ([`serve`], [`open`]) and
 //! live video for viewers across the network.
-//!
-//! - [`wire`]: the protobuf messages of `omp/surface/1`
-//! - [`transport`]: the connection port (ordered stream plus datagrams) and an in-memory pair
-//! - [`fragment`]: frames split into datagrams, reassembled, late ones dropped
-//! - [`serve`] on the server, [`open`] on the viewer ([`PixelViewer`] or [`DocumentViewer`])
-//! - [`video`]: live surfaces coded as H.264/HEVC for viewers that decode it
 
 pub mod fragment;
 mod server;

@@ -1,6 +1,4 @@
-//! Viewer side of `omp/surface/1`: opens a surface and gets either a
-//! [`PixelViewer`] (frames in, input out) or a [`DocumentViewer`] (the file,
-//! once).
+//! Viewer side of `omp/surface/1`.
 
 use bytes::{Bytes, BytesMut};
 use loa_contracts::surface::{Document, Encoding, Frame, Input, InputEvent, StreamInfo, SurfaceInfo, SurfaceMode, SurfaceUri};
@@ -16,10 +14,6 @@ use crate::proto::wire::{
 use crate::proto::{ProtoError, Result};
 use loa_util::time::now_us;
 
-/// Largest document accepted when none is given.
-const DEFAULT_MAX_DOCUMENT: u64 = 512 * 1024 * 1024;
-
-/// What the viewer can handle.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ViewerOptions {
     /// Frame encodings the viewer can decode; the server closes the session rather than send any other.
@@ -30,24 +24,19 @@ pub struct ViewerOptions {
 
 impl ViewerOptions {
     pub fn new(encodings: Vec<Encoding>) -> Self {
-        Self { encodings, max_document: DEFAULT_MAX_DOCUMENT }
+        Self { encodings, max_document: 512 * 1024 * 1024 }
     }
 }
 
-/// An opened surface; its mode decides what the viewer can do with it.
 pub enum Opened {
     Pixel(PixelViewer),
     Document(DocumentViewer),
 }
 
-fn closed(reason: &str) -> ProtoError {
-    ProtoError::Closed(reason.into())
-}
-
 /// The next known message body; `Close` and the end of the stream end with an error.
 async fn next_body(reader: &mut MessageReader) -> Result<Body> {
     loop {
-        match reader.next().await?.ok_or_else(|| closed("the server ended the stream"))?.body {
+        match reader.next().await?.ok_or_else(|| ProtoError::Closed("the server ended the stream".into()))?.body {
             None => continue,
             Some(Body::Close(close)) => return Err(ProtoError::Closed(close.reason)),
             Some(body) => return Ok(body),
@@ -55,10 +44,8 @@ async fn next_body(reader: &mut MessageReader) -> Result<Body> {
     }
 }
 
-/// Opens `uri` on the server at the other end of `transport`.
 pub async fn open(transport: Transport, uri: &SurfaceUri, options: ViewerOptions) -> Result<Opened> {
-    let mut reader = MessageReader::new(transport.reader);
-    let mut writer = MessageWriter::new(transport.writer);
+    let (mut reader, mut writer, datagrams) = transport.into_messages();
     let encodings = options.encodings.iter().map(|&e| encoding_to_wire(e)).collect();
     writer.send(Body::Open(Open { version: VERSION, uri: uri.as_str().to_owned(), encodings })).await?;
     let accept = match next_body(&mut reader).await? {
@@ -85,7 +72,7 @@ pub async fn open(transport: Transport, uri: &SurfaceUri, options: ViewerOptions
                 info,
                 stream: accept.stream.and_then(StreamInfoMsg::into_info),
                 reader,
-                datagrams: accept.datagrams.then_some(transport.datagrams),
+                datagrams: accept.datagrams.then_some(datagrams),
                 reassembler: Reassembler::new(),
                 input: InputSender(Arc::new(Mutex::new((1, out)))),
             })
@@ -94,18 +81,15 @@ pub async fn open(transport: Transport, uri: &SurfaceUri, options: ViewerOptions
     })
 }
 
-/// Writes queued messages to the stream until every sender is gone.
 async fn write_loop(mut writer: MessageWriter, mut rx: mpsc::UnboundedReceiver<StreamMessage>) {
     while let Some(msg) = rx.recv().await {
         if writer.send(msg).await.is_err() {
             return;
         }
     }
-    // The session is over; a failed shutdown has nobody left to tell.
     let _ = writer.finish().await;
 }
 
-/// What a pixel session produced.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ViewerEvent {
     /// The next frame to show. Older frames never follow it.
@@ -114,10 +98,8 @@ pub enum ViewerEvent {
     Resized { width: u32, height: u32 },
 }
 
-/// A live pixel surface.
 pub struct PixelViewer {
     info: SurfaceInfo,
-    /// What the server said it streams for this viewer.
     stream: Option<StreamInfo>,
     reader: MessageReader,
     /// `None` when frames come on the stream (TCP fallback).
@@ -131,18 +113,15 @@ impl PixelViewer {
         &self.info
     }
 
-    /// What the server streams for this viewer (encoding and encoder), when it says.
     pub fn stream(&self) -> Option<&StreamInfo> {
         self.stream.as_ref()
     }
 
-    /// Sends input to the surface; it works while [`next_event`](Self::next_event) is waiting.
     pub fn input(&self) -> InputSender {
         self.input.clone()
     }
 
-    /// Waits for the next frame or size change. Cancel safe. Ends with
-    /// [`ProtoError::Closed`] when the server closes the session.
+    /// Cancel safe; ends with [`ProtoError::Closed`] when the server closes.
     pub async fn next_event(&mut self) -> Result<ViewerEvent> {
         loop {
             let pushed = tokio::select! {
@@ -150,7 +129,7 @@ impl PixelViewer {
                 body = next_body(&mut self.reader) => match body? {
                     Body::Frame(frame) => {
                         let header = frame.header.ok_or_else(|| ProtoError::Protocol("Frame without header".into()))?;
-                        // An encoding from a newer version: skip it like a lost frame.
+                        // Unknown encoding: skip it like a lost frame.
                         let Some(frame) = header.into_frame(frame.data) else { continue };
                         self.reassembler.push_frame(frame)
                     }
@@ -183,23 +162,21 @@ async fn recv(datagrams: Option<&dyn Datagrams>) -> Result<Bytes> {
 pub struct InputSender(Arc<Mutex<(u64, mpsc::UnboundedSender<StreamMessage>)>>);
 
 impl InputSender {
-    /// Queues `input` and returns its seq, which frames echo back in
-    /// [`Frame::input_seq`]. Never blocks.
+    /// Returns the seq frames echo in [`Frame::input_seq`]. Never blocks.
     pub fn send(&self, input: Input) -> Result<u64> {
         let mut state = self.0.locked();
         let (seq, out) = &mut *state;
         let event = InputEvent { seq: *seq, sent_us: now_us(), input };
-        out.send(Body::Input(event.into()).into()).map_err(|_| closed("the session ended"))?;
+        out.send(Body::Input(event.into()).into()).map_err(|_| ProtoError::Closed("the session ended".into()))?;
         *seq += 1;
         Ok(*seq - 1)
     }
 
     fn send_message(&self, body: Body) -> Result<()> {
-        self.0.locked().1.send(body.into()).map_err(|_| closed("the session ended"))
+        self.0.locked().1.send(body.into()).map_err(|_| ProtoError::Closed("the session ended".into()))
     }
 }
 
-/// An opened document surface. It never opens the datagram path.
 pub struct DocumentViewer {
     reader: MessageReader,
     writer: MessageWriter,
@@ -217,7 +194,6 @@ impl DocumentViewer {
             self.writer.send(Body::Close(Close { reason })).await?;
             return Err(ProtoError::TooLarge { len: header.length, max: self.max });
         }
-        // Bounded by `max` above.
         let mut data = BytesMut::with_capacity(header.length as usize);
         while (data.len() as u64) < header.length {
             let Body::DocumentChunk(chunk) = next_body(&mut self.reader).await? else {

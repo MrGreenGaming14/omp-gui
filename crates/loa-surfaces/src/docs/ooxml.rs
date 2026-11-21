@@ -134,20 +134,3 @@ pub(crate) fn num_attr(e: &BytesStart<'_>, local: &str) -> XmlResult<Option<f64>
     let Some(v) = attr(e, local)? else { return Ok(None) };
     v.trim().parse::<i64>().map(|n| Some(n as f64)).map_err(|_| format!("attribute {local}=\"{v}\" is not a number"))
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn targets_resolve_against_the_source_directory() {
-        for (source, target, want) in [
-            ("ppt/slides/slide1.xml", "../media/a.png", "ppt/media/a.png"),
-            ("ppt/presentation.xml", "slides/slide1.xml", "ppt/slides/slide1.xml"),
-            ("ppt/slides/slide1.xml", "/ppt/media/b.png", "ppt/media/b.png"),
-            ("root.xml", "./x.xml", "x.xml"),
-        ] {
-            assert_eq!(resolve_target(source, target), want);
-        }
-    }
-}

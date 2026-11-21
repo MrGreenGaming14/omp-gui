@@ -59,23 +59,3 @@ pub fn parse_resource(resource: &Value) -> Result<Option<SurfaceInfo>, McpError>
     let mode = SurfaceMode::parse(&meta.mode).ok_or(McpError::Mode(meta.mode))?;
     Ok(Some(SurfaceInfo { uri, name: r.name, width: meta.width, height: meta.height, mode, mime: r.mime }))
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn surface_resources_round_trip() {
-        let info = SurfaceInfo {
-            uri: "surface://docs/a.pdf".parse().unwrap(),
-            name: "a.pdf".into(),
-            width: 64,
-            height: 48,
-            mode: SurfaceMode::Document,
-            mime: Some("application/pdf".into()),
-        };
-        assert_eq!(parse_resource(&resource(&info)).unwrap(), Some(info));
-        assert_eq!(parse_resource(&json!({ "uri": "file:///notes.txt", "name": "n" })).unwrap(), None);
-        assert!(matches!(parse_resource(&json!({ "uri": "surface://t/x", "name": "x" })), Err(McpError::Meta { .. })));
-    }
-}

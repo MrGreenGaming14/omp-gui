@@ -1,6 +1,5 @@
-//! Rebuilding a surface picture from its frames: stills (RGBA, JPEG, PNG)
-//! and in-process H.264 (`rusty_h264`, one picture per access unit). HEVC
-//! has no in-process decoder; it goes to viewers that decode it themselves.
+//! Rebuilding a surface picture from its frames: stills and in-process H.264
+//! (one picture per access unit). HEVC is left to viewers that decode it.
 
 use super::video_error;
 use crate::pixels::{self, RgbaImage};
@@ -8,19 +7,10 @@ use crate::proto::Result;
 use loa_contracts::surface::{Encoding, Frame, Rect};
 
 /// Stateful H.264 decoder: references persist until [`reset`](Self::reset).
+#[derive(Default)]
 pub struct VideoDecoder(rusty_h264::Decoder);
 
-impl Default for VideoDecoder {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl VideoDecoder {
-    pub fn new() -> Self {
-        Self(rusty_h264::Decoder::new())
-    }
-
     pub fn supports(&self, encoding: Encoding) -> bool {
         encoding == Encoding::H264
     }
@@ -59,7 +49,7 @@ impl VideoDecoder {
 
     /// Forgets reference pictures; the next unit must be a keyframe.
     pub fn reset(&mut self) {
-        self.0 = rusty_h264::Decoder::new();
+        *self = Self::default();
     }
 }
 
@@ -72,14 +62,10 @@ impl FrameDecoder {
         Self::default()
     }
 
-    /// Applies a frame to `canvas`, following the frame's picture size.
+    /// Applies a frame to `canvas`, resizing it to the frame's picture.
     pub fn apply(&mut self, frame: &Frame, canvas: &mut RgbaImage) -> Result<()> {
-        if frame.region.width == 0
-            || frame.region.height == 0
-            || !pixels::region_fits(frame.region, frame.width, frame.height)
-            || frame.width > 8192
-            || frame.height > 8192
-        {
+        let empty = frame.region.width.min(frame.region.height) == 0;
+        if empty || frame.width.max(frame.height) > 8192 || !pixels::region_fits(frame.region, frame.width, frame.height) {
             return Err(video_error("frame region is outside its picture"));
         }
         if (frame.width, frame.height) != (canvas.width, canvas.height) {

@@ -33,8 +33,9 @@ pub(crate) struct Instance {
     _profile: TempDir,
 }
 
-/// chromiumoxide's default flags without `enable-automation`, plus the
-/// switches that keep infobars off a headed window.
+/// chromiumoxide's default flags without `enable-automation`, plus the switches that keep
+/// infobars off a headed window: they would sit on top of the captured page, shifting it
+/// away from where input lands.
 const HEADED_ARGS: [&str; 26] = [
     "disable-background-networking",
     "enable-features=NetworkService,NetworkServiceInProcess",
@@ -83,10 +84,6 @@ impl Instance {
         builder = match &display {
             // The builder defaults to headless.
             None => builder,
-            // Headed: chromiumoxide's default flags minus `enable-automation`,
-            // whose infobar (and Chrome for Testing's) would sit on top of the
-            // page in the captured picture, shifting it away from where
-            // input lands.
             Some(display) => builder
                 .with_head()
                 .disable_default_args()
@@ -282,9 +279,14 @@ impl BrowserServer {
         Ok(())
     }
 
+    /// Whether `tab` runs on the headless browser all tabs share, not one of its own.
+    fn shares(&self, tab: &Tab) -> bool {
+        self.shared.as_ref().is_some_and(|shared| Arc::ptr_eq(shared, tab.instance()))
+    }
+
     async fn close(&self, tab: &Tab) {
         tab.stop_feed();
-        let result = if self.shared.as_ref().is_some_and(|shared| Arc::ptr_eq(shared, tab.instance())) {
+        let result = if self.shares(tab) {
             tab.page().clone().close().await.map_err(BrowserError::from)
         } else {
             tab.instance().shutdown().await
@@ -300,10 +302,8 @@ impl BrowserServer {
         if let Some(shared) = &self.shared {
             ids.extend(shared.pid().await);
         }
-        for tab in self.tabs() {
-            if !self.shared.as_ref().is_some_and(|shared| Arc::ptr_eq(shared, tab.instance())) {
-                ids.extend(tab.instance().pid().await);
-            }
+        for tab in self.tabs().iter().filter(|tab| !self.shares(tab)) {
+            ids.extend(tab.instance().pid().await);
         }
         ids
     }
@@ -315,7 +315,7 @@ impl BrowserServer {
         let tabs = std::mem::take(&mut *self.tabs.locked());
         for tab in tabs.values() {
             tab.stop_feed();
-            if !self.shared.as_ref().is_some_and(|shared| Arc::ptr_eq(shared, tab.instance())) {
+            if !self.shares(tab) {
                 tab.instance().shutdown().await?;
             }
         }

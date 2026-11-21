@@ -56,13 +56,10 @@ impl From<RfbError> for SurfaceError {
     }
 }
 
-/// Supplies the VNC password of an endpoint each time a server asks for VNC
-/// Authentication. The crate uses the password for one handshake and drops
-/// it; it never stores it.
+/// Supplies an endpoint's VNC password for each VNC Authentication; the crate uses it for
+/// one handshake and never stores it. `None` fails the handshake.
 #[async_trait]
 pub trait PasswordSource: Send + Sync {
-    /// The password for the endpoint named `endpoint`, or `None` when there
-    /// is none, which fails the handshake.
     async fn password(&self, endpoint: &str) -> Option<String>;
 }
 

@@ -43,8 +43,6 @@ pub enum HubError {
     Docs(#[from] crate::docs::DocsError),
     #[error("{0}")]
     Unsupported(String),
-    #[error("MCP: {0}")]
-    Mcp(String),
 }
 
 pub type Result<T, E = HubError> = std::result::Result<T, E>;

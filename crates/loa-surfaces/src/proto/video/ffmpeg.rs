@@ -1,8 +1,6 @@
 //! Low-latency ffmpeg hardware encoders, selected by actually coding pictures.
-//!
-//! Raw Annex B output is not packet framed. An AUD is inserted for every
-//! picture; a short quiet period after receiving a complete picture allows
-//! returning it without waiting for the *next* input frame.
+//! Raw Annex B output is split at inserted AUDs, or after a short quiet period
+//! so a picture needn't wait for the next one.
 
 use super::encode::{
     AccessUnit, Accel, Codec, EncoderInfo, FPS, KEYFRAME_INTERVAL, ProbeResult, QP, VideoEncoder, check_picture,
@@ -20,7 +18,6 @@ use std::time::{Duration, Instant};
 
 pub const NAME_PREFIX: &str = "ffmpeg ";
 
-/// The hardware encoders tried, by ffmpeg name.
 const KNOWN: [(&str, Codec, Accel); 8] = [
     ("h264_vaapi", Codec::H264, Accel::Vaapi),
     ("hevc_vaapi", Codec::Hevc, Accel::Vaapi),
@@ -54,9 +51,8 @@ fn info((name, codec, accel): (&str, Codec, Accel)) -> EncoderInfo {
     EncoderInfo { name: format!("{NAME_PREFIX}{name}"), codec, accel }
 }
 
-/// Tries two pictures, not just `ffmpeg -encoders`: drivers and devices may be
-/// absent even though the binary advertises the encoder. Every encoder is
-/// tried at once; one that never answers costs its timeout only once.
+/// Codes two pictures with every encoder in parallel: drivers and devices may
+/// be absent even though ffmpeg advertises the encoder.
 pub fn probe(config: &FfmpegConfig) -> Vec<ProbeResult> {
     // HEVC hardware encoders refuse pictures under 128 pixels on a side.
     const SIZE: u32 = 256;
@@ -160,9 +156,7 @@ impl FfmpegEncoder {
 impl VideoEncoder for FfmpegEncoder {
     fn encode(&mut self, rgba: &[u8], keyframe: bool) -> Result<AccessUnit> {
         check_picture(rgba, self.size.0, self.size.1)?;
-        // ffmpeg's rawvideo pipe offers no per-picture force-IDR control.
-        // A fresh process gives an independently decodable IDR/IRAP with new
-        // parameter sets, without forcing *all* subsequent frames to be intra.
+        // The rawvideo pipe can't force an IDR: a fresh process starts with one.
         if keyframe && self.frames != 0 {
             // Stopped first: a device may take one session at a time.
             self.process.stop();
@@ -203,8 +197,7 @@ fn start(binary: &Path, name: &str, codec: Codec, accel: Accel, (width, height):
     });
     // Every picture goes out as it comes, never held to pace a frame rate.
     command.args(["-fps_mode", "passthrough"]);
-    // The renderer decodes H.264 in process, which takes Constrained
-    // Baseline (CAVLC, no B-frames) only.
+    // The in-process H.264 decoder takes Constrained Baseline only.
     if codec == Codec::H264 {
         command.args(match accel {
             Accel::Vaapi => &["-profile:v", "constrained_baseline"][..],

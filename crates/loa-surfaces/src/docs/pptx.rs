@@ -2,7 +2,7 @@
 
 use crate::docs::ooxml::{Package, XmlResult, attr, find_attr, num_attr, xml_reader};
 use crate::docs::raster::{Canvas, Fonts};
-use crate::docs::{DataQuery, DocsError, Format, PageSize, Paged, RenderOpts, Result, Rgba, json};
+use crate::docs::{DataQuery, Format, PageSize, Paged, RenderOpts, Result, Rgba, json, page_at};
 use quick_xml::events::{BytesStart, Event};
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -31,7 +31,6 @@ pub struct PptxDoc {
     media: HashMap<String, Vec<u8>>,
 }
 
-/// One slide's content.
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
 pub struct Slide {
     /// Position in presentation order, from 0 (the page index).
@@ -45,7 +44,6 @@ pub struct Slide {
     pub shapes: Vec<Shape>,
 }
 
-/// What a shape on a slide is.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ShapeKind {
@@ -86,12 +84,7 @@ struct ParaStyle {
     bold: bool,
 }
 
-pub(crate) fn open(_: Format, bytes: &[u8]) -> Result<Box<dyn Paged>> {
-    Ok(Box::new(PptxDoc::parse(bytes)?))
-}
-
 impl PptxDoc {
-    /// Parses a PPTX file.
     pub fn parse(bytes: &[u8]) -> Result<Self> {
         let mut pkg = Package::open(bytes, Format::Pptx)?;
         let (size, order) = pkg
@@ -111,16 +104,6 @@ impl PptxDoc {
         Ok(Self { size: size.unwrap_or(DEFAULT_SLIDE_SIZE), slides, media })
     }
 
-    /// Slides in presentation order.
-    pub fn slides(&self) -> &[Slide] {
-        &self.slides
-    }
-
-    /// Size of every slide, in points.
-    pub fn slide_size(&self) -> PageSize {
-        self.size
-    }
-
     /// Plain text: per slide a `Slide N` header, the title, the body paragraphs and the notes.
     pub fn text(&self) -> String {
         let mut out = String::new();
@@ -128,21 +111,15 @@ impl PptxDoc {
             if !out.is_empty() {
                 out.push('\n');
             }
-            // Writing to a String cannot fail.
             let _ = writeln!(out, "Slide {}", slide.index + 1);
             for line in slide.title.iter().chain(&slide.body) {
-                out.push_str(line);
-                out.push('\n');
+                let _ = writeln!(out, "{line}");
             }
             if let Some(notes) = &slide.notes {
                 let _ = writeln!(out, "Notes: {notes}");
             }
         }
         out
-    }
-
-    fn slide(&self, index: usize) -> Result<&Slide> {
-        self.slides.get(index).ok_or_else(|| DocsError::page_range(index, self.slides.len()))
     }
 
     /// Draws a picture into its box, or a rule coloured box when it can't be decoded.
@@ -167,13 +144,12 @@ impl Paged for PptxDoc {
     }
 
     fn page_size(&self, index: usize) -> Result<PageSize> {
-        self.slide(index)?;
-        Ok(self.size)
+        page_at(&self.slides, index).map(|_| self.size)
     }
 
     fn query(&self, query: &DataQuery) -> Option<Result<serde_json::Value>> {
         Some(match query {
-            DataQuery::Text { page: Some(index) } => self.slide(*index).and_then(json),
+            DataQuery::Text { page: Some(index) } => page_at(&self.slides, *index).and_then(json),
             DataQuery::Text { page: None } => json(&self.text()),
             DataQuery::Slides => json(&self.slides),
             _ => return None,
@@ -181,7 +157,7 @@ impl Paged for PptxDoc {
     }
 
     fn render(&self, index: usize, scale: f32, fonts: &Fonts, opts: &RenderOpts) -> Result<Rgba> {
-        let slide = self.slide(index)?;
+        let slide = page_at(&self.slides, index)?;
         let (width, height) = self.size.pixels(scale);
         let mut canvas = Canvas::new(width, height, opts.palette.page);
         for shape in &slide.shapes {
@@ -245,11 +221,6 @@ fn draw_paragraphs(
     }
 }
 
-/// Parses `part` as a shape tree, a missing part being an error.
-fn shapes_of(pkg: &mut Package<'_>, part: &str) -> Result<Option<Vec<ParsedShape>>> {
-    pkg.parsed(part, parse_shapes)
-}
-
 /// Reads one slide part with its pictures and notes.
 fn read_slide(
     pkg: &mut Package<'_>,
@@ -258,7 +229,8 @@ fn read_slide(
     index: usize,
     part: &str,
 ) -> Result<Slide> {
-    let parsed = shapes_of(pkg, part)?.ok_or_else(|| pkg.invalid(format!("slide part {part} is missing")))?;
+    let parsed =
+        pkg.parsed(part, parse_shapes)?.ok_or_else(|| pkg.invalid(format!("slide part {part} is missing")))?;
     let rels = pkg.rels(part)?;
     let layout = rels.iter().find(|r| r.kind.ends_with(REL_LAYOUT)).map(|r| r.target.as_str());
     if let Some(layout) = layout {
@@ -305,7 +277,7 @@ fn read_slide(
         .collect();
 
     let notes = match rels.iter().find(|r| r.kind.ends_with(REL_NOTES)) {
-        Some(rel) => shapes_of(pkg, &rel.target)?.and_then(|parsed| {
+        Some(rel) => pkg.parsed(&rel.target, parse_shapes)?.and_then(|parsed| {
             let body = parsed.iter().filter(|s| s.placeholder.as_deref() == Some("body"));
             joined_text(body.flat_map(|s| s.paragraphs.iter()))
         }),
@@ -324,7 +296,6 @@ fn joined_text<'a>(paragraphs: impl Iterator<Item = &'a String>) -> Option<Strin
 struct Template {
     /// Placeholder type, index and geometry.
     placeholders: Vec<(String, Option<String>, Option<Rect>)>,
-    /// The master of a layout.
     parent: Option<String>,
 }
 
@@ -333,7 +304,8 @@ fn load_template(pkg: &mut Package<'_>, templates: &mut HashMap<String, Template
     if templates.contains_key(part) {
         return Ok(());
     }
-    let placeholders = shapes_of(pkg, part)?
+    let placeholders = pkg
+        .parsed(part, parse_shapes)?
         .unwrap_or_default()
         .into_iter()
         .filter_map(|s| Some((s.placeholder?, s.ph_idx, s.rect)))
@@ -461,7 +433,6 @@ enum Tag {
     Other,
 }
 
-/// A shape being read.
 #[derive(Default)]
 struct Builder {
     shape: ParsedShape,
@@ -477,41 +448,16 @@ struct Builder {
     row_style: Option<ParaStyle>,
 }
 
-impl Builder {
-    fn finish(self, frames: &[Frame]) -> ParsedShape {
-        let mut shape = self.shape;
-        shape.rect = shape.rect.map(|r| frames.iter().rev().fold(r, |r, f| f.apply(r)));
-        shape.kind = match self.element {
-            "sp" if shape.placeholder.is_some() || shape.paragraphs.iter().any(|p| !p.trim().is_empty()) => {
-                ShapeKind::Text
-            }
-            "pic" => ShapeKind::Picture,
-            "graphicFrame" if self.is_table => ShapeKind::Table,
-            _ => ShapeKind::Other,
-        };
-        shape
-    }
-}
-
 /// Reads the shapes of a part's shape tree in document order, groups flattened.
 fn parse_shapes(xml: &str) -> XmlResult<Vec<ParsedShape>> {
     let mut reader = xml_reader(xml);
     let mut parser = ShapeParser::default();
-    let mut skip = 0usize;
     loop {
-        let event = reader.read_event().map_err(|e| e.to_string())?;
-        if skip > 0 {
-            match event {
-                Event::Start(_) => skip += 1,
-                Event::End(_) => skip -= 1,
-                Event::Eof => break,
-                _ => {}
-            }
-            continue;
-        }
-        match event {
+        match reader.read_event().map_err(|e| e.to_string())? {
             Event::Start(e) => match parser.open(&e)? {
-                Tag::Skip => skip = 1,
+                Tag::Skip => {
+                    reader.read_to_end(e.name()).map_err(|e| e.to_string())?;
+                }
                 tag => parser.stack.push(tag),
             },
             Event::Empty(e) => {
@@ -527,13 +473,9 @@ fn parse_shapes(xml: &str) -> XmlResult<Vec<ParsedShape>> {
             Event::CData(t) => parser.push_text(&t),
             Event::GeneralRef(r) => match r.resolve_char_ref().map_err(|e| e.to_string())? {
                 Some(c) => parser.push_text(c.encode_utf8(&mut [0; 4])),
-                None => {
-                    let name: &str = &r;
-                    parser.push_text(
-                        quick_xml::escape::resolve_predefined_entity(name)
-                            .ok_or_else(|| format!("unknown entity &{name};"))?,
-                    )
-                }
+                None => parser.push_text(
+                    quick_xml::escape::resolve_predefined_entity(&r).ok_or_else(|| format!("unknown entity &{};", &*r))?,
+                ),
             },
             Event::Eof => break,
             _ => {}
@@ -562,12 +504,12 @@ const HANDLERS: &[(&str, Handler)] = &[
     ("cNvPr", ShapeParser::name),
     ("ph", ShapeParser::placeholder),
     ("blip", ShapeParser::blip),
-    ("tbl", ShapeParser::table),
+    ("tbl", |p, _, _| p.edit(Tag::Other, |b| b.is_table = true)),
     ("tr", |_, _, _| Ok(Tag::TableRow)),
-    ("tc", ShapeParser::cell),
+    ("tc", |p, _, _| p.edit(Tag::TableCell, |b| b.cell.clear())),
     ("p", ShapeParser::paragraph),
     ("t", |_, _, _| Ok(Tag::Text)),
-    ("br", ShapeParser::line_break),
+    ("br", |p, _, _| p.edit(Tag::Other, |b| if b.in_paragraph { b.paragraph.push('\n') })),
     ("rPr", ShapeParser::run_props),
     ("endParaRPr", ShapeParser::run_props),
 ];
@@ -591,13 +533,19 @@ impl ShapeParser {
         }
     }
 
+    /// Applies `f` to the open shape, if any, and tracks the element as `tag`.
+    fn edit(&mut self, tag: Tag, f: impl FnOnce(&mut Builder)) -> XmlResult<Tag> {
+        if let Some(builder) = self.current.as_mut() {
+            f(builder);
+        }
+        Ok(tag)
+    }
+
     fn open(&mut self, e: &BytesStart<'_>) -> XmlResult<Tag> {
         let local = e.local_name();
         let name: &str = local.as_ref();
-        match HANDLERS.iter().find(|(n, _)| *n == name) {
-            Some(&(n, handler)) => handler(self, e, n),
-            None => Ok(Tag::Other),
-        }
+        let found = HANDLERS.iter().find(|(n, _)| *n == name);
+        found.map_or(Ok(Tag::Other), |&(n, handler)| handler(self, e, n))
     }
 
     fn group(&mut self, _: &BytesStart<'_>, _: &'static str) -> XmlResult<Tag> {
@@ -662,20 +610,6 @@ impl ShapeParser {
         Ok(Tag::Other)
     }
 
-    fn table(&mut self, _: &BytesStart<'_>, _: &'static str) -> XmlResult<Tag> {
-        if let Some(builder) = self.current.as_mut() {
-            builder.is_table = true;
-        }
-        Ok(Tag::Other)
-    }
-
-    fn cell(&mut self, _: &BytesStart<'_>, _: &'static str) -> XmlResult<Tag> {
-        if let Some(builder) = self.current.as_mut() {
-            builder.cell.clear();
-        }
-        Ok(Tag::TableCell)
-    }
-
     fn paragraph(&mut self, _: &BytesStart<'_>, _: &'static str) -> XmlResult<Tag> {
         let Some(builder) = self.current.as_mut() else { return Ok(Tag::Other) };
         builder.in_paragraph = true;
@@ -683,13 +617,6 @@ impl ShapeParser {
         builder.style = ParaStyle::default();
         builder.style_from_run = false;
         Ok(Tag::Paragraph)
-    }
-
-    fn line_break(&mut self, _: &BytesStart<'_>, _: &'static str) -> XmlResult<Tag> {
-        if let Some(builder) = self.current.as_mut().filter(|b| b.in_paragraph) {
-            builder.paragraph.push('\n');
-        }
-        Ok(Tag::Other)
     }
 
     fn run_props(&mut self, e: &BytesStart<'_>, name: &'static str) -> XmlResult<Tag> {
@@ -710,8 +637,16 @@ impl ShapeParser {
             return;
         }
         if tag == Tag::Shape {
-            if let Some(builder) = self.current.take() {
-                self.shapes.push(builder.finish(&self.frames));
+            if let Some(Builder { mut shape, element, is_table, .. }) = self.current.take() {
+                shape.rect = shape.rect.map(|r| self.frames.iter().rev().fold(r, |r, f| f.apply(r)));
+                let text = shape.placeholder.is_some() || shape.paragraphs.iter().any(|p| !p.trim().is_empty());
+                shape.kind = match element {
+                    "sp" if text => ShapeKind::Text,
+                    "pic" => ShapeKind::Picture,
+                    "graphicFrame" if is_table => ShapeKind::Table,
+                    _ => ShapeKind::Other,
+                };
+                self.shapes.push(shape);
             }
             return;
         }
@@ -749,6 +684,7 @@ impl ShapeParser {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::docs::DocsError;
     use std::io::{Cursor, Write};
 
     const NS: &str = r#"xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main""#;
@@ -816,12 +752,12 @@ mod tests {
     #[test]
     fn a_presentation_round_trips_to_slides_shapes_text_and_pixels() {
         let doc = PptxDoc::parse(&sample()).unwrap();
-        assert_eq!((doc.slide_size(), doc.page_count()), (PageSize { width: 960.0, height: 540.0 }, 2));
+        assert_eq!((doc.size, doc.page_count()), (PageSize { width: 960.0, height: 540.0 }, 2));
         assert_eq!(
             doc.text(),
             "Slide 1\nQuarterly results & plans\nRevenue up\nCosts\ndown\nNotes: Speaker notes here\n\nSlide 2\nSecond\n"
         );
-        let shapes = &doc.slides()[0].shapes;
+        let shapes = &doc.slides[0].shapes;
         let geometry: Vec<_> = shapes
             .iter()
             .map(|s| (s.name.as_str(), s.kind, s.x.round(), s.y.round(), s.width.round(), s.height.round()))
@@ -841,9 +777,7 @@ mod tests {
         assert_eq!((page.width, page.height), (480, 270));
         assert_eq!(page.pixel(85, 200), Some([255, 0, 0, 255]));
         assert_eq!(page.pixel(50, 200), Some([255, 255, 255, 255]));
-        let dark = |y0: u32, y1: u32| {
-            (y0..y1).flat_map(|y| (0..480).map(move |x| (x, y))).any(|(x, y)| page.pixel(x, y).is_some_and(|p| p[0] < 128))
-        };
+        let dark = |y0: u32, y1| (y0..y1).any(|y| (0..480).any(|x| page.pixel(x, y).is_some_and(|p| p[0] < 128)));
         assert!(dark(10, 56) && dark(72, 160) && !dark(57, 70));
         assert!(matches!(doc.render_page(2, 1.0, &Fonts::none()), Err(DocsError::PageRange { index: 2, count: 2 })));
         assert!(matches!(PptxDoc::parse(&zip_parts(&[])), Err(DocsError::Invalid { format: Format::Pptx, .. })));
