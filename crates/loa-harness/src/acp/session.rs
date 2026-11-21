@@ -46,8 +46,8 @@ impl Shared {
     fn reply(&self, reply: Reply) -> Result<()> {
         let framing = JsonRpc2 { header: true };
         let frame = match reply {
-            Reply::Respond { id, result } => framing.response(id, Ok(result)),
-            Reply::Reject { id, message } => framing.response(id, Err(RpcError::Command { command: "request".into(), message, code: Some("-32602".into()) })),
+            Reply::Respond { id, result } => framing.response(id, "", Ok(result)),
+            Reply::Reject { id, message } => framing.response(id, "", Err(RpcError::Command { command: "request".into(), message, code: Some("-32602".into()) })),
             Reply::Cancel => framing.notification("session/cancel", json!({"sessionId": self.session_id()})),
         };
         self.writer.get().ok_or(AdapterError::Closed)?.send(&frame)?;
@@ -76,7 +76,7 @@ impl Inbound for Shared {
             tokio::spawn(async move {
                 let result = host.serve(&method, params).await;
                 if let Some(writer) = writer {
-                    let frame = JsonRpc2 { header: true }.response(id, result);
+                    let frame = JsonRpc2 { header: true }.response(id, &method, result);
                     if let Err(error) = writer.send(&frame) { tracing::warn!(%error, "couldn't answer ACP request"); }
                 }
             });

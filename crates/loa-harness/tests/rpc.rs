@@ -148,3 +148,12 @@ async fn events_ui_requests_and_host_tools_flow_in_order_until_exit() {
     let result = json!({"type":"host_tool_result","id":"h1","result":{"content":[{"type":"text","text":"project_search:iced"}]}});
     assert_eq!(sent[3], result);
 }
+
+#[test]
+fn failed_host_callbacks_answer_in_their_own_kind() {
+    use loa_harness::kit::Framing;
+    let frames = loa_harness::omp::rpc::OmpFrames::default();
+    let uri = frames.response(json!("u1"), "host_uri_request", Err(RpcError::Closed));
+    assert_eq!((uri["type"].as_str(), uri["isError"].as_bool()), (Some("host_uri_result"), Some(true)));
+    assert_eq!(frames.response(json!("t1"), "host_tool_call", Err(RpcError::Closed))["type"], "host_tool_result");
+}

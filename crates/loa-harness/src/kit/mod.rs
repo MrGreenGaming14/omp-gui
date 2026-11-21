@@ -11,7 +11,7 @@ pub mod residual;
 pub mod rpc;
 
 pub use jsonrpc::JsonRpc2;
-pub use ledger::{EndEvent, OpenTurn, TurnLedger};
+pub use ledger::{EndEvent, OpenTurn, TurnLedger, insert_root};
 pub use mapper::{DrivenSession, EventMapper, HarnessOps};
 pub use native::{NativeCodec, NativeSession};
 pub use rpc::{Framing, Inbound, Incoming, RpcError, StdioRpc};

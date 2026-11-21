@@ -6,11 +6,11 @@ use super::native::{self, X_SESSION_FILE};
 use super::rpc::{Frame, HostHandler, HostToolCall, HostToolDefinition, HostToolOutput, ImageContent, Incoming, MessageUpdates, ModelInfo, PromptStatus, RpcClient, RpcError, StreamingBehavior, SubagentLevel, ToolContent, UiResponder};
 use super::rpc::Event;
 use super::HARNESS;
-use crate::kit::EventMapper;
+use crate::kit::{EventMapper, insert_root};
 use async_trait::async_trait;
 use base64::Engine;
 use loa_contracts::harness::{Adapter, AdapterError, Answer, Availability, Capabilities, ContextDelivery, Feature, HarnessModel, HarnessSession, HostTools, ModelSelection, ModelSwitch, OutputBlock, Prompt, Result, SessionConfig, SessionState};
-use loa_core::{DecisionKind, Dom, DomWriter, ElementKind, NodeId, PatchSink, SCHEMA_VERSION, Value, attr};
+use loa_core::{DecisionKind, Dom, DomWriter, NodeId, PatchSink, SCHEMA_VERSION, attr};
 use loa_util::LockExt;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -178,15 +178,6 @@ impl Adapter for OmpAdapter {
 }
 
 /// Inserts the `<session>` root of a new session started with `config`.
-pub(crate) fn insert_root(w: &DomWriter, harness: &str, config: &SessionConfig) -> Result<NodeId> {
-    let mut attrs = vec![(attr::ID, Value::from(config.session_id.as_str())), (attr::HARNESS, harness.into()), (attr::NODE, config.node.as_str().into())];
-    attrs.extend([(attr::CREATED, Value::Int(loa_util::time::now_ms())), (attr::SCHEMA, Value::Int(i64::from(SCHEMA_VERSION))), (attr::CWD, config.cwd.to_string_lossy().as_ref().into())]);
-    let optional = [(attr::PROJECT, &config.project), (attr::MODEL, &config.model), (attr::MODEL_ROLE, &config.model_role), (attr::EFFORT, &config.effort)];
-    attrs.extend(optional.into_iter().filter_map(|(name, value)| Some((name, value.as_deref()?.into()))));
-    attrs.extend(config.mode.map(|mode| (attr::MODE, mode.into())));
-    Ok(w.insert(NodeId::DOCUMENT, ElementKind::Session, attrs, "")?)
-}
-
 fn session_file(dom: &Dom) -> Result<(NodeId, String)> {
     let root = dom.root().ok_or_else(|| AdapterError::Format("missing session root".into()))?;
     let file = root.str_attr(X_SESSION_FILE).ok_or_else(|| AdapterError::Format(format!("resuming omp needs the native session file in {X_SESSION_FILE}")))?;

@@ -34,7 +34,7 @@ use loa_contracts::harness::{
     HarnessSession, McpTransport, ModelSwitch, Result, SessionConfig, SessionState,
 };
 use loa_core::{DecisionKind, Dom, DomWriter, Draft, ElementKind, MemorySink, NodeId, PatchSink, SCHEMA_VERSION, SessionMode, Value, attr, now_ms};
-use crate::kit::{JsonRpc2, StdioRpc};
+use crate::kit::{JsonRpc2, StdioRpc, insert_root};
 use host::Host;
 use mapper::{AcpMapper, Input};
 use serde_json::{Value as Json, json};
@@ -68,22 +68,11 @@ impl AcpAdapter {
     }
 
     /// The capabilities every ACP agent is guaranteed to have.
+    /// Every ACP agent takes stdio MCP servers, so the app can serve project
+    /// context as an MCP resource.
     pub fn base_capabilities() -> Capabilities {
-        Capabilities {
-            schema_version: SCHEMA_VERSION,
-            features: Vec::new(),
-            model_switch: ModelSwitch::Never,
-            decisions: vec![DecisionKind::Approval],
-            // Every ACP agent takes stdio MCP servers, so the app can serve
-            // project context as an MCP resource.
-            context_delivery: vec![ContextDelivery::McpResource],
-            host_tools: false,
-            mcp_servers: true,
-            queue_mid_turn: false,
-            effort: false,
-            import: false,
-            export: false,
-        }
+        let builder = Capabilities::builder().schema(SCHEMA_VERSION).decisions(&[DecisionKind::Approval]);
+        builder.context(&[ContextDelivery::McpResource]).mcp_servers().build()
     }
 
     fn learn(&self, update: impl FnOnce(&mut Learned)) {
@@ -305,28 +294,9 @@ impl Adapter for AcpAdapter {
     }
 
     async fn start(&self, config: SessionConfig, sink: Arc<dyn PatchSink>) -> Result<Box<dyn HarnessSession>> {
-        let mut attrs = vec![
-            (attr::ID, Value::from(config.session_id.as_str())),
-            (attr::HARNESS, HARNESS.into()),
-            (attr::NODE, config.node.as_str().into()),
-            (attr::CREATED, Value::Int(now_ms())),
-            (attr::SCHEMA, Value::Int(i64::from(SCHEMA_VERSION))),
-            (attr::CWD, config.cwd.to_string_lossy().into_owned().into()),
-        ];
-        let optional = [
-            (attr::PROJECT, &config.project),
-            (attr::MODEL, &config.model),
-            (attr::MODEL_ROLE, &config.model_role),
-            (attr::EFFORT, &config.effort),
-        ];
-        for (name, value) in optional {
-            if let Some(value) = value {
-                attrs.push((name, value.as_str().into()));
-            }
-        }
         // The root goes in before the agent starts so updates that arrive
         // right after `session/new` already have a home.
-        let root = sink.commit(Draft::insert(NodeId::DOCUMENT, ElementKind::Session, attrs, ""))?.node;
+        let root = insert_root(&DomWriter::new(&*sink), HARNESS, &config)?;
         let (shared, session) = self.connect(&config, sink, root, config.model.clone()).await?;
         let setup = self.create(&config, &shared, &session.rpc).await;
         finish(session, setup).await

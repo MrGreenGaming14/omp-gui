@@ -67,10 +67,11 @@ impl Framing for OmpFrames {
     }
 
     /// Host callbacks answer with their whole result frame; an error becomes
-    /// an error tool result.
-    fn response(&self, id: Json, result: Result<Json, RpcError>) -> Json {
-        result.unwrap_or_else(|err| {
-            json!({"type": "host_tool_result", "id": id, "isError": true, "result": {"content": [{"type": "text", "text": err.to_string()}]}})
+    /// an error result of the callback's kind.
+    fn response(&self, id: Json, method: &str, result: Result<Json, RpcError>) -> Json {
+        result.unwrap_or_else(|err| match method {
+            "host_uri_request" => json!({"type": "host_uri_result", "id": id, "isError": true, "error": err.to_string()}),
+            _ => json!({"type": "host_tool_result", "id": id, "isError": true, "result": {"content": [{"type": "text", "text": err.to_string()}]}}),
         })
     }
 
