@@ -3,7 +3,7 @@
 //! that fork, rewind, compaction and subagents create sessions through.
 
 use loa_util::LockExt;
-use crate::{Error, Result, SessionStore};
+use super::{Error, Result, SessionStore};
 use async_trait::async_trait;
 use loa_contracts::harness::Adapter;
 use loa_bus::{Authorize, Bus, NodeKey, SessionWriter, WriterConfig};

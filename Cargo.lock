@@ -4603,7 +4603,6 @@ dependencies = [
  "loa-config",
  "loa-contracts",
  "loa-core",
- "loa-features",
  "loa-harness",
  "loa-mcp",
  "loa-models",
@@ -4697,22 +4696,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "loa-features"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "loa-bus",
- "loa-contracts",
- "loa-core",
- "loa-projects",
- "loa-util",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
-]
-
-[[package]]
 name = "loa-harness"
 version = "0.1.0"
 dependencies = [
@@ -4720,6 +4703,7 @@ dependencies = [
  "axum",
  "base64 0.23.1",
  "futures",
+ "loa-bus",
  "loa-contracts",
  "loa-core",
  "loa-harness",
@@ -4797,7 +4781,7 @@ dependencies = [
  "loa-bus",
  "loa-config",
  "loa-core",
- "loa-features",
+ "loa-harness",
  "loa-trust",
  "loa-util",
  "mdns-sd",

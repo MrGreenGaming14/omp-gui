@@ -12,7 +12,7 @@ mod import;
 
 pub(crate) use import::content_text;
 
-use crate::kit::{NativeCodec, NativeSession};
+use crate::kit::{NativeCodec, NativeSession, native};
 use loa_contracts::harness::{AdapterError, Result};
 use loa_core::{Dom, PatchSink};
 use loa_util::time;
@@ -53,19 +53,13 @@ impl NativeCodec for OmpNative {
 
     /// `~/.omp/agent/sessions/<project>/<name>.jsonl`, titled by their `title` line.
     fn discover(home: &Path) -> Vec<NativeSession> {
-        let read = |dir: &Path| std::fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.path()).collect::<Vec<_>>();
-        let files = read(&home.join(".omp/agent/sessions")).into_iter().filter(|p| p.is_dir()).flat_map(|dir| read(&dir));
-        let mut sessions: Vec<_> = files.filter(|p| p.is_file() && p.extension().is_some_and(|e| e == "jsonl")).filter_map(|path| {
-            let meta = std::fs::metadata(&path).ok()?;
-            let modified = meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
-            let project = path.parent().and_then(Path::file_name).map(|n| n.to_string_lossy().into_owned());
+        let files = native::walk(&home.join(".omp/agent/sessions"), 1, &|name| name.ends_with(".jsonl"));
+        files.into_iter().filter_map(|path| {
             let first = std::fs::File::open(&path).ok().and_then(|f| std::io::BufRead::lines(std::io::BufReader::new(f)).next()?.ok());
             let first = first.and_then(|line| serde_json::from_str::<serde_json::Value>(&line).ok()).filter(|line| line["type"] == "title");
             let title = first.and_then(|line| line["title"].as_str().map(str::to_owned));
-            Some(NativeSession { harness: HARNESS, path, project, title, modified, size: meta.len() })
-        }).collect();
-        sessions.sort_by(|a, b| b.modified.cmp(&a.modified).then_with(|| a.path.cmp(&b.path)));
-        sessions
+            NativeSession::at(HARNESS, path.clone(), native::parent_name(&path), title)
+        }).collect()
     }
 }
 

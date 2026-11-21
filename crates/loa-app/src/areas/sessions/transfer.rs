@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use iced::widget::{button, column, container, row, scrollable, space, text, text_input};
 use iced::{Alignment, Element, Fill};
-use loa_features::native::{self, NativeSession};
+use loa_harness::features::native::{self, NativeSession};
 use loa_ui_shell::theme::style;
 
 /// Discovered sessions listed at once; older ones are picked by path.

@@ -11,13 +11,12 @@
 //! fails closed.
 //!
 //! The plan review is a `<decision kind="plan">` the app inserts directly
-//! under `<session>` ([`crate::submit_plan`]). Harness-raised plan decisions
+//! under `<session>` ([`super::submit_plan`]). Harness-raised plan decisions
 //! sit inside a `<turn>`; [`is_app_plan`] tells them apart, since only the
 //! app can answer its own (with [`answer_plan`]).
 
 use loa_util::LockExt;
-use crate::{Error, PlanPermit, ReadOnlyTools, Result};
-use async_trait::async_trait;
+use super::{Error, PlanPermit, Result};
 use loa_contracts::harness::{AdapterError, Answer, HarnessSession};
 use loa_core::{
     DecisionKind, DecisionStatus, Dom, Draft, ElementKind, MessageKind, Node, NodeId, PatchSink, Role,
@@ -127,13 +126,6 @@ impl Drop for Permit {
     }
 }
 
-#[async_trait]
-impl ReadOnlyTools for Arc<PlanGate> {
-    async fn activate(&self, session_id: &str) -> Result<Box<dyn PlanPermit>> {
-        self.permit(session_id)
-    }
-}
-
 /// Whether `decision` is a plan review the app raised (see the module docs).
 pub fn is_app_plan(dom: &Dom, decision: NodeId) -> bool {
     let Some(node) = dom.get(decision) else { return false };
@@ -152,7 +144,7 @@ pub fn plan_text(dom: &Dom, turn: NodeId) -> Option<&str> {
         .last()
 }
 
-/// The plan step of plan mode: the `<todo>` [`crate::enter_plan`] inserted,
+/// The plan step of plan mode: the `<todo>` [`begin`] inserted,
 /// still in progress.
 pub fn open_step(dom: &Dom) -> Option<NodeId> {
     let root = dom.root()?;

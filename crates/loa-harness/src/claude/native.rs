@@ -12,7 +12,7 @@
 //! these attributes (written by the app) export as fresh lines.
 
 use crate::claude::HARNESS;
-use crate::kit::residual;
+use crate::kit::{NativeCodec, NativeSession, native, residual};
 use loa_contracts::harness::{AdapterError, Result};
 use loa_core::{
     CallStatus, Dom, DomWriter, ElementKind as E, JobKind, JobStatus, MessageKind, MessageStatus, Node, NodeId,
@@ -78,6 +78,24 @@ fn encode(content: Option<&J>) -> (String, &'static str, Vec<V>, Vec<J>) {
 /// Imports one transcript into `sink` (empty DOM), side files included. The
 /// root gets `id` = the session id and `node` = "", which the app re-sets; a
 /// subagent `<job>` carries `x-claude-file` for the app to import as a child session.
+/// Claude Code's [`NativeCodec`]: `~/.claude/projects/<project>/<uuid>.jsonl`.
+pub struct ClaudeNative;
+
+impl NativeCodec for ClaudeNative {
+    fn import(path: &Path, sink: &dyn PatchSink) -> Result<()> {
+        import(path, sink)
+    }
+
+    fn export(dom: &Dom, out: &Path) -> Result<()> {
+        export(dom, out)
+    }
+
+    fn discover(home: &Path) -> Vec<NativeSession> {
+        let files = native::walk(&home.join(".claude/projects"), 1, &|name| name.ends_with(".jsonl"));
+        files.into_iter().filter_map(|path| NativeSession::at(HARNESS, path.clone(), native::parent_name(&path), None)).collect()
+    }
+}
+
 pub fn import(path: &Path, sink: &dyn PatchSink) -> Result<()> {
     let source = std::fs::read_to_string(path)?;
     let lines: Vec<(&str, Option<J>)> =

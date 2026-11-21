@@ -3,7 +3,7 @@
 use loa_util::LockExt;
 use loa_bus::{Bus, SessionWriter};
 use loa_core::{Dom, ElementKind, NodeId, attr};
-use loa_features::library::Library;
+use loa_harness::features::library::Library;
 use loa_trust::SessionFacts;
 use loa_bus::Listing;
 use std::collections::HashMap;

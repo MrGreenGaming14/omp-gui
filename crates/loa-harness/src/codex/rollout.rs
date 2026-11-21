@@ -5,6 +5,8 @@
 
 use super::{HARNESS, canonical, str_at};
 use crate::kit::residual::{self as kit_residual, join_parts, split_parts};
+use crate::kit::{NativeCodec, NativeSession, native};
+use std::path::Path;
 use loa_contracts::harness::{AdapterError, Result};
 use loa_core::{
     CallStatus, Dom, DomWriter, ElementKind as E, MessageKind, MessageStatus, Node, NodeId, PatchSink, Role,
@@ -75,6 +77,26 @@ fn restore_parts(payload: &mut Obj, keys: &[&str], separator: &str, text: &str, 
 }
 
 /// Reads a rollout into the empty `sink`; `node` is written to `<session node>`.
+/// Codex's [`NativeCodec`]: `~/.codex/sessions/<yyyy>/<mm>/<dd>/rollout-*.jsonl`; imports are owned by `""`.
+pub struct CodexNative;
+
+impl NativeCodec for CodexNative {
+    fn import(path: &Path, sink: &dyn PatchSink) -> Result<()> {
+        import(std::io::BufReader::new(std::fs::File::open(path)?), sink, "")
+    }
+
+    fn export(dom: &Dom, out: &Path) -> Result<()> {
+        let mut writer = std::io::BufWriter::new(std::fs::File::create(out)?);
+        export(dom, &mut writer)?;
+        Ok(writer.flush()?)
+    }
+
+    fn discover(home: &Path) -> Vec<NativeSession> {
+        let files = native::walk(&home.join(".codex/sessions"), 3, &|name| name.starts_with("rollout-") && name.ends_with(".jsonl"));
+        files.into_iter().filter_map(|path| NativeSession::at(HARNESS, path, None, None)).collect()
+    }
+}
+
 pub fn import(reader: impl BufRead, sink: &dyn PatchSink, node: &str) -> Result<()> {
     let mut importer = Importer {
         sink,

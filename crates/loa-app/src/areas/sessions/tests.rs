@@ -516,10 +516,10 @@ fn plan_mode_blocks_changing_tools_and_raises_a_plan_review() {
         .expect("an approval");
     assert_eq!(approval.attr("answer"), Some(&Value::List(vec![Value::from(answer::DENY)])));
     let first = env.seen.lock().unwrap().prompts[0].clone();
-    assert!(first.starts_with("ask to write a.txt") && first.ends_with(loa_features::plan::PLAN_STEP), "{first}");
+    assert!(first.starts_with("ask to write a.txt") && first.ends_with(loa_harness::features::plan::PLAN_STEP), "{first}");
     let review = dom
         .iter()
-        .find(|node| loa_features::plan::is_app_plan(&dom, node.id))
+        .find(|node| loa_harness::features::plan::is_app_plan(&dom, node.id))
         .expect("a plan review under the session");
     assert_eq!(review.text, "1. Write a.txt\n2. Run the tests");
     let review = review.id;
@@ -532,7 +532,7 @@ fn plan_mode_blocks_changing_tools_and_raises_a_plan_review() {
     assert_eq!(root_attr(&dom, attr::MODE).as_deref(), Some("normal"));
     let prompts = env.seen.lock().unwrap().prompts.clone();
     assert!(prompts.last().unwrap().starts_with("The user approved this plan"), "{prompts:?}");
-    assert!(!prompts.last().unwrap().contains(loa_features::plan::PLAN_STEP), "plan mode is over");
+    assert!(!prompts.last().unwrap().contains(loa_harness::features::plan::PLAN_STEP), "plan mode is over");
 }
 
 #[test]

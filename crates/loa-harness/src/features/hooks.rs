@@ -15,8 +15,9 @@
 //!   as `<message role="system" by="advisor">` and sent to the agent with the
 //!   next prompt. A turn that needs no remark gets no note.
 
-use crate::smol::OneShot;
-use crate::{Result, turn_transcript};
+use super::{Error, Result, turn_transcript};
+use loa_contracts::Summarizer;
+use std::sync::Arc;
 use loa_contracts::harness::SessionConfig;
 use loa_core::{Dom, Draft, ElementKind, MessageStatus, NodeId, PatchSink, Role, Value, attr};
 use std::collections::BTreeMap;
@@ -161,17 +162,15 @@ impl TurnHooks {
 /// Reviews finished turns with one small-model call each.
 #[derive(Clone)]
 pub struct Advisor {
-    model: OneShot,
-    /// Model or role, e.g. `@smol` or `@slow`.
-    role: String,
+    model: Arc<dyn Summarizer>,
 }
 
 /// The advisor's answer for a turn that needs no note.
 const NO_NOTE: &str = "OK";
 
 impl Advisor {
-    pub fn new(model: OneShot, role: impl Into<String>) -> Self {
-        Self { model, role: role.into() }
+    pub fn new(model: Arc<dyn Summarizer>) -> Self {
+        Self { model }
     }
 
     /// What the advisor model is asked about `turn`. Plain headings, no XML:
@@ -196,7 +195,7 @@ impl Advisor {
 
     /// The note on `turn`, or `None` when it needs none.
     pub async fn review(&self, dom: &Dom, turn: NodeId, rules: Option<&str>) -> Result<Option<String>> {
-        let answer = self.model.ask(&self.role, &Self::prompt(dom, turn, rules)).await?;
+        let answer = self.model.summarize("", &Self::prompt(dom, turn, rules)).await.map_err(Error::Port)?;
         let note = answer.trim().trim_end_matches('.').trim();
         Ok((!note.is_empty() && !note.eq_ignore_ascii_case(NO_NOTE)).then(|| answer.trim().to_owned()))
     }
