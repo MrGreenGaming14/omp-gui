@@ -7,7 +7,7 @@ use loa_util::RwLockExt;
 use crate::share::{challenge_grants, expect, present_grants, send};
 use crate::{Inner, Node, NodeError, Result, now_ms};
 use async_trait::async_trait;
-use loa_grants::{Action, Request, Resource, Revocations, VerifiedGrant};
+use loa_trust::{Action, Request, Resource, Revocations, VerifiedGrant};
 use loa_net::NodeId;
 use loa_net::conn::{Connection, Stream};
 use loa_net::router::ProtocolHandler;

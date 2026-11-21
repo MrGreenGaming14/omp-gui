@@ -7,7 +7,7 @@
 
 use loa_bus::{NodeKey, SessionId, SessionWriter};
 use loa_core::{attr, Dom, Draft, ElementKind, NodeId, Op, Patch, Value};
-use loa_grants::Action;
+use loa_trust::Action;
 use loa_journal::{Journal, Store};
 use prost::Message;
 use std::collections::HashMap;

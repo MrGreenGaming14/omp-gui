@@ -12,7 +12,6 @@ loa-core.workspace = true
 loa-contracts.workspace = true
 loa-bus = { path = "../loa-bus" }
 loa-journal = { path = "../loa-journal" }
-loa-identity = { path = "../loa-identity" }
 loa-features = { path = "../loa-features" }
 loa-config = { path = "../loa-config" }
 loa-omp-bridge = { path = "../loa-omp-bridge" }
@@ -41,7 +40,7 @@ loa-projects = { path = "../loa-projects" }
 loa-ui-projects = { path = "../loa-ui-projects" }
 loa-mcp = { path = "../loa-mcp" }
 loa-remote = { path = "../loa-remote" }
-loa-grants = { path = "../loa-grants" }
+loa-trust = { path = "../loa-trust" }
 bytes.workspace = true
 loa-ui-icons = { path = "../loa-ui-icons" }
 loa-node = { path = "../loa-node" }

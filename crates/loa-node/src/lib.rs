@@ -32,7 +32,7 @@ pub use loa_net::conn::Stream;
 pub use sessions::{BusSessions, LibrarySessions, LocalSession, LocalSessions, LocalTurn};
 pub use share::{DriveOutcome, RemoteView};
 
-pub use loa_identity::KeySource;
+pub use loa_trust::KeySource;
 pub use loa_net::NodeId;
 pub use loa_net::conn::Transport;
 pub use loa_net::endpoint::RelayConfig;
@@ -40,8 +40,7 @@ pub use loa_net::peers::DiscoverySource;
 
 use loa_util::exec::which;
 use loa_util::LockExt;
-use loa_grants::{Action, GrantId, GrantSpec, GrantStore, NodePublicKey, RenewOutcome, Renewer, Resource, Scope};
-use loa_identity::NodeIdentity;
+use loa_trust::{Action, GrantId, GrantSpec, GrantStore, NodeIdentity, PublicKey, RenewOutcome, Renewer, Resource, Scope};
 use loa_journal::{Journal, Store};
 use loa_net::alpn;
 use loa_net::conn::Connection;
@@ -84,7 +83,7 @@ pub enum NodeError {
     #[error(transparent)]
     Net(#[from] loa_net::NetError),
     #[error(transparent)]
-    Grant(#[from] loa_grants::GrantError),
+    Grant(#[from] loa_trust::TrustError),
     #[error(transparent)]
     Share(#[from] loa_share::Error),
     #[error("not a node key: {0:?}")]
@@ -284,9 +283,8 @@ pub struct Node {
 
 pub(crate) struct Inner {
     config: NodeConfig,
-    seed: [u8; 32],
+    identity: NodeIdentity,
     key: NodeId,
-    grant_key: loa_grants::NodeKey,
     peers: Mutex<PeerStore>,
     grants: Arc<GrantStore>,
     access: Arc<GrantAccess>,
@@ -315,18 +313,6 @@ struct State {
 }
 
 
-pub(crate) fn grant_key(id: &NodeId) -> NodePublicKey {
-    NodePublicKey(*id.as_bytes())
-}
-
-pub(crate) fn bus_key(id: &NodeId) -> loa_bus::NodeKey {
-    loa_bus::NodeKey(*id.as_bytes())
-}
-
-fn node_id(key: &NodePublicKey) -> Option<NodeId> {
-    NodeId::from_bytes(&key.0).ok()
-}
-
 pub(crate) use loa_util::time::now_ms;
 
 impl Node {
@@ -349,9 +335,7 @@ impl Node {
     ) -> Result<Self> {
         create_dir(&config.data_dir)?;
         let peers = PeerStore::open(config.data_dir.join("peers.sqlite"))?;
-        let seed = *identity.secret_bytes();
-        let key = NodeId::from_bytes(identity.public_key().as_bytes()).map_err(|e| NodeError::InvalidKey(e.to_string()))?;
-        let grant_key = loa_grants::NodeKey::from_secret(&seed)?;
+        let key = NodeId::try_from(identity.public_key())?;
         let mdns = if config.mdns { Availability::Off("starts with the endpoint".into()) } else { Availability::Off("turned off".into()) };
         let tailscale = match &config.tailscale {
             Some(path) => Availability::Active(format!("{} found; scan to look for nodes", path.display())),
@@ -363,9 +347,8 @@ impl Node {
             inner: Arc::new(Inner {
                 access: Arc::new(GrantAccess::new(Arc::clone(&grants))),
                 config,
-                seed,
+                identity: identity.clone(),
                 key,
-                grant_key,
                 peers: Mutex::new(peers),
                 grants,
                 sessions,
@@ -432,8 +415,8 @@ impl Node {
         &self.inner.sessions
     }
 
-    pub(crate) fn grant_signer(&self) -> &loa_grants::NodeKey {
-        &self.inner.grant_key
+    pub(crate) fn identity(&self) -> &NodeIdentity {
+        &self.inner.identity
     }
 
     pub(crate) fn network(&self) -> Result<Arc<Network>> {
@@ -460,7 +443,7 @@ impl Node {
             router = router.handler(name, version, Arc::new(extra::Handler { inner: weak.clone(), protocol }));
         }
         let config = &self.inner.config;
-        let net = match Network::bind(self.inner.seed, config.bind, config.relay.clone(), router).await {
+        let net = match Network::bind(*self.inner.identity.secret_bytes(), config.bind, config.relay.clone(), router).await {
             Ok(net) => Arc::new(net),
             Err(error) => {
                 self.inner.state.locked().endpoint = Endpoint::Failed(error.to_string());
@@ -538,8 +521,8 @@ impl Node {
     /// 52 base32) or the Biscuit form (`ed25519/<hex>`).
     pub fn parse_key(text: &str) -> Result<NodeId> {
         let text = text.trim();
-        let key = loa_identity::PublicKey::from_str(text).map_err(|_| NodeError::InvalidKey(text.to_owned()))?;
-        NodeId::from_bytes(key.as_bytes()).map_err(|_| NodeError::InvalidKey(text.to_owned()))
+        let key = PublicKey::from_str(text.strip_prefix("ed25519/").unwrap_or(text));
+        key.and_then(NodeId::try_from).map_err(|_| NodeError::InvalidKey(text.to_owned()))
     }
 
     /// Saves a peer by key, with an optional `host[:port]` to reach it, then
@@ -685,7 +668,7 @@ impl Node {
     }
 
     fn holds_grants_from(&self, peer: &NodeId) -> bool {
-        let root = grant_key(peer);
+        let root = PublicKey::from(*peer);
         self.inner.grants.received_all().unwrap_or_default().iter().any(|g| g.root == root && g.refused_ms.is_none())
     }
 
@@ -864,9 +847,9 @@ impl Node {
     pub async fn issue_grant(&self, holder: &str, scopes: Vec<Scope>, until_ms: Option<i64>, reshare: bool) -> Result<GrantId> {
         let holder = Self::parse_key(holder)?;
         let now = now_ms();
-        let ttl_ms = until_ms.map_or(loa_grants::DEFAULT_TTL_MS, |until| (until - now).min(loa_grants::DEFAULT_TTL_MS));
+        let ttl_ms = until_ms.map_or(loa_trust::DEFAULT_TTL_MS, |until| (until - now).min(loa_trust::DEFAULT_TTL_MS));
         let spec = GrantSpec { scopes, ttl_ms, reshare, until_ms };
-        let issued = self.inner.grants.issue(&self.inner.grant_key, grant_key(&holder), spec, now)?;
+        let issued = self.inner.grants.issue(&self.inner.identity, PublicKey::from(holder), spec, now)?;
         self.changed();
         self.deliver(holder, &issued.id, issued.token).await;
         Ok(issued.id)
@@ -874,9 +857,9 @@ impl Node {
 
     /// Moves the end of a grant this node issued and sends the holder a token.
     pub async fn renew_grant(&self, id: &GrantId, until_ms: Option<i64>) -> Result<()> {
-        let issued = self.inner.grants.extend(&self.inner.grant_key, id, until_ms, now_ms())?;
+        let issued = self.inner.grants.extend(&self.inner.identity, id, until_ms, now_ms())?;
         self.changed();
-        if let Some(holder) = node_id(&issued.holder) {
+        if let Ok(holder) = NodeId::try_from(issued.holder) {
             self.deliver(holder, id, issued.token).await;
         }
         Ok(())
@@ -885,10 +868,10 @@ impl Node {
     /// Revokes a grant this node issued and tells its holder. Its streams stop
     /// at the next patch: every check looks the revocation up.
     pub async fn revoke_grant(&self, id: &GrantId) -> Result<()> {
-        self.inner.grants.revoke(&self.inner.grant_key.public(), id, now_ms())?;
+        self.inner.grants.revoke(&self.inner.identity.public_key(), id, now_ms())?;
         self.inner.state.locked().undelivered.remove(id);
         self.changed();
-        let holder = self.inner.grants.issued()?.into_iter().find(|g| &g.id == id).and_then(|g| node_id(&g.holder));
+        let holder = self.inner.grants.issued()?.into_iter().find(|g| &g.id == id).and_then(|g| NodeId::try_from(g.holder).ok());
         if let Some(holder) = holder {
             let notice = Kind::GrantRevocation(wire::GrantRevocation { grant_id: id.as_str().as_bytes().to_vec() });
             if let Err(error) = self.control_call(holder, notice).await {
@@ -920,10 +903,10 @@ impl Node {
         if waiting.is_empty() {
             return;
         }
-        let holder = grant_key(&peer);
+        let holder = PublicKey::from(peer);
         let issued = self.inner.grants.issued().unwrap_or_default();
         for record in issued.into_iter().filter(|g| g.holder == holder && waiting.contains(&g.id) && g.revoked_ms.is_none()) {
-            match self.inner.grants.extend(&self.inner.grant_key, &record.id, record.until_ms, now_ms()) {
+            match self.inner.grants.extend(&self.inner.identity, &record.id, record.until_ms, now_ms()) {
                 Ok(fresh) => self.deliver(peer, &record.id, fresh.token).await,
                 Err(error) => {
                     tracing::debug!(id = %record.id, %error, "waiting grant can no longer be delivered");
@@ -935,7 +918,7 @@ impl Node {
 
     /// Renews held grants that expire within the renewal margin.
     pub async fn renew_due(&self) -> Vec<RenewOutcome> {
-        let renewer = Renewer::new(self.inner.grant_key.public(), self.inner.config.renew_margin_ms);
+        let renewer = Renewer::new(self.inner.identity.public_key(), self.inner.config.renew_margin_ms);
         let outcomes = renewer
             .renew_due(&self.inner.grants, &control::RenewVia(self.clone()), now_ms())
             .await
@@ -950,7 +933,7 @@ impl Node {
     pub fn grants(&self) -> Vec<GrantInfo> {
         let mut out = Vec::new();
         for record in self.inner.grants.issued().unwrap_or_default() {
-            let Some(peer) = node_id(&record.holder) else { continue };
+            let Some(peer) = NodeId::try_from(record.holder).ok() else { continue };
             out.push(GrantInfo {
                 id: record.id,
                 peer,
@@ -964,7 +947,7 @@ impl Node {
             });
         }
         for received in self.inner.grants.received_all().unwrap_or_default() {
-            let Some(peer) = node_id(&received.issuer) else { continue };
+            let Some(peer) = NodeId::try_from(received.issuer).ok() else { continue };
             out.push(GrantInfo {
                 scopes: received.scopes().unwrap_or_default(),
                 id: received.id,

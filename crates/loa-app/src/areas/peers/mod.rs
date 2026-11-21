@@ -22,7 +22,7 @@ use iced::futures::{SinkExt, Stream};
 use iced::{Element, Subscription, Task};
 use loa_contracts::harness::{Answer, Prompt};
 use loa_config::{NetworkSettings, Relay};
-use loa_grants::Resource;
+use loa_trust::Resource;
 use loa_node::ui::{self, Outcome};
 use loa_node::{Endpoint, LibrarySessions, Node, NodeConfig, NodeEvent, RelayConfig};
 use loa_ui_palette as palette;

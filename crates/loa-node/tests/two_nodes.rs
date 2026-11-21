@@ -4,8 +4,8 @@
 
 use loa_bus::{Bus, Persist, PersistError, SessionId, SessionWriter, WriterConfig};
 use loa_core::{Dom, Draft, ElementKind, NodeId as DomNodeId, Patch, PatchSink, Value, attr, now_ms};
-use loa_grants::{Action, GrantId, GrantStore, Resource, Scope};
-use loa_identity::{KeySource, NodeIdentity};
+use loa_trust::{Action, GrantId, GrantStore, Resource, Scope};
+use loa_trust::{KeySource, NodeIdentity};
 use loa_journal::{JournalOptions, Store};
 use loa_features::library::Library;
 use loa_node::{BusSessions, DriveOutcome, GrantDirection, LibrarySessions, Node, NodeConfig, NodeEvent, Transport, ui};
@@ -317,7 +317,7 @@ async fn held_grants_renew_from_their_issuer_and_stop_after_revocation() {
     let first = guest.node.grants()[0].expires_ms.unwrap();
     tokio::time::sleep(Duration::from_millis(5)).await;
     let outcomes = guest.node.renew_due().await;
-    assert!(matches!(outcomes.as_slice(), [loa_grants::RenewOutcome::Renewed { .. }]), "{outcomes:?}");
+    assert!(matches!(outcomes.as_slice(), [loa_trust::RenewOutcome::Renewed { .. }]), "{outcomes:?}");
     assert!(guest.node.grants()[0].expires_ms.unwrap() > first);
 
     let id = owner.node.grants()[0].id.clone();

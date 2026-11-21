@@ -9,7 +9,7 @@ publish.workspace = true
 loa-core.workspace = true
 loa-bus = { path = "../loa-bus" }
 loa-journal = { path = "../loa-journal" }
-loa-grants = { path = "../loa-grants" }
+loa-trust = { path = "../loa-trust" }
 prost.workspace = true
 thiserror.workspace = true
 serde_json.workspace = true

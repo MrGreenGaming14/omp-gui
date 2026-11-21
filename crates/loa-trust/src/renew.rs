@@ -1,9 +1,9 @@
 //! Holder side renewal: refresh short lived tokens before they run out.
 
-use crate::keys::NodePublicKey;
+use crate::key::PublicKey;
 use crate::store::GrantStore;
 use crate::token::GrantId;
-use crate::{GrantError, Result};
+use crate::{TrustError, Result};
 
 /// Why an issuer didn't hand out a fresh token.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -18,13 +18,13 @@ pub enum RenewFailure {
 
 impl RenewFailure {
     /// How the issuer side reports a failed [`GrantStore::renew`].
-    pub fn from_issuer(error: &GrantError) -> Self {
+    pub fn from_issuer(error: &TrustError) -> Self {
         match error {
-            GrantError::Revoked(_)
-            | GrantError::Expired(_)
-            | GrantError::UnknownGrant(_)
-            | GrantError::NotHolder(_)
-            | GrantError::ReshareForbidden(_) => RenewFailure::Refused(error.to_string()),
+            TrustError::Revoked(_)
+            | TrustError::Expired(_)
+            | TrustError::UnknownGrant(_)
+            | TrustError::NotHolder(_)
+            | TrustError::ReshareForbidden(_) => RenewFailure::Refused(error.to_string()),
             other => RenewFailure::Unreachable(other.to_string()),
         }
     }
@@ -35,7 +35,7 @@ impl RenewFailure {
 pub trait RenewTransport {
     fn renew(
         &self,
-        issuer: NodePublicKey,
+        issuer: PublicKey,
         grant: GrantId,
     ) -> impl Future<Output = Result<Vec<u8>, RenewFailure>> + Send;
 }
@@ -54,13 +54,13 @@ pub enum RenewOutcome {
 /// [`Renewer::renew_due`] when [`Renewer::next_due`] comes around.
 #[derive(Clone, Debug)]
 pub struct Renewer {
-    own: NodePublicKey,
+    own: PublicKey,
     /// Renew this long before a token expires.
     margin_ms: i64,
 }
 
 impl Renewer {
-    pub fn new(own: NodePublicKey, margin_ms: i64) -> Self {
+    pub fn new(own: PublicKey, margin_ms: i64) -> Self {
         Self { own, margin_ms }
     }
 

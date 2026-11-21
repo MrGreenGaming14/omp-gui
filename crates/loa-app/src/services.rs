@@ -10,7 +10,7 @@ use loa_bus::{Authorize, Bus, Denied, NodeKey, SessionId};
 use loa_config::ConfigStore;
 use loa_core::{Dom, Draft};
 use loa_features::library::Library;
-use loa_identity::{KeySource, NodeIdentity, load_app_identity};
+use loa_trust::{KeySource, NodeIdentity, load_app_identity};
 use loa_journal::{JournalOptions, Store};
 
 mod harness;
@@ -39,13 +39,13 @@ impl Node {
 
     /// A node over a key loaded from `key_source`.
     pub fn stored(identity: NodeIdentity, label: String, key_source: KeySource) -> Self {
-        let key = identity.public_key().to_endpoint_id_string();
+        let key = identity.public_key().to_string();
         Self { identity, key, label, key_source }
     }
 
     /// The node key in the form the session bus checks writers against.
     pub fn bus_key(&self) -> NodeKey {
-        NodeKey(*self.identity.public_key().as_bytes())
+        self.identity.public_key().into()
     }
 }
 
@@ -92,7 +92,7 @@ pub struct Services {
     /// The grants this node issued and received, `<data>/grants.db`. The
     /// peers area issues and revokes into it; the Tools area reads what each
     /// peer may use.
-    pub grants: Arc<loa_grants::GrantStore>,
+    pub grants: Arc<loa_trust::GrantStore>,
 }
 
 impl Services {
@@ -128,7 +128,7 @@ impl Services {
         let mcp = loa_mcp::Manager::new(loa_mcp::Options::default())
             .map_err(|error| format!("Can't set up the MCP client: {error}"))?;
         let grants_path = dirs.data.join("grants.db");
-        let grants = loa_grants::GrantStore::open(&grants_path)
+        let grants = loa_trust::GrantStore::open(&grants_path)
             .map_err(|error| format!("Can't open the grant store {}: {error}", grants_path.display()))?;
         Ok(Self {
             node,

@@ -5,7 +5,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use loa_grants::{Action, Resource};
+use loa_trust::{Action, Resource};
 use loa_node::{AddedProtocol, Endpoint, Node, NodeId, NodeSlot, PeerProtocol, Stream};
 use loa_sandbox::provider::Channel;
 use loa_sandbox::provider::peer::{PROTOCOL, PeerLink, serve_stub};

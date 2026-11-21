@@ -11,10 +11,9 @@ loa-core.workspace = true
 loa-bus = { path = "../loa-bus" }
 loa-journal = { path = "../loa-journal" }
 loa-features = { path = "../loa-features" }
-loa-grants = { path = "../loa-grants" }
+loa-trust = { path = "../loa-trust" }
 loa-share = { path = "../loa-share" }
 loa-net = { path = "../loa-net" }
-loa-identity = { path = "../loa-identity" }
 loa-ui-peers = { path = "../loa-ui-peers" }
 async-trait.workspace = true
 prost.workspace = true

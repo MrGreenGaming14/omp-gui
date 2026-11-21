@@ -13,7 +13,7 @@ use loa_core::{
     DecisionKind, DecisionStatus, Dom, Draft, ElementKind, NodeId, PatchSink, Role, SessionMode, TurnStatus, Value, answer,
     attr, now_ms,
 };
-use loa_identity::NodeIdentity;
+use loa_trust::NodeIdentity;
 use loa_ui_composer as composer;
 use loa_ui_palette as palette;
 use loa_ui_panel::{agents, session_tree};

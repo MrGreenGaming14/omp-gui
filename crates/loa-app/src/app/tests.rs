@@ -9,7 +9,7 @@ use iced_runtime::Action as RuntimeAction;
 use loa_contracts::harness::{Adapter, Answer, Capabilities, Registry, SessionState};
 use loa_bus::Policy;
 use loa_core::{DecisionKind, DecisionStatus, Draft, NodeId, PatchSink, Role, Value, now_ms};
-use loa_identity::NodeIdentity;
+use loa_trust::NodeIdentity;
 use loa_ui_decisions as decisions;
 
 use super::*;

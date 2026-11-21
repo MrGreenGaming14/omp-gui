@@ -280,7 +280,7 @@ fn peers_behind_come_from_the_peers_the_node_knows() {
     let fixture = Fixture::new(dir.path());
     let mut app = app_with(dir.path(), &fixture);
     let key = |seed: u8| {
-        let identity = loa_identity::NodeIdentity::from_secret_bytes(&[seed; 32]);
+        let identity = loa_trust::NodeIdentity::from_secret_bytes(&[seed; 32]);
         loa_node::NodeId::from_bytes(identity.public_key().as_bytes()).unwrap()
     };
     let peer = |seed: u8, name: &str, version: Option<&str>, protocols: &[&str]| loa_node::PeerInfo {
