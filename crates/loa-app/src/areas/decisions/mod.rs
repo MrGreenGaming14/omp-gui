@@ -8,8 +8,6 @@ use loa_view::session::Answer;
 use loa_view::session::decisions::{DeskIntent, UnattendedView};
 use loa_bus::SessionId;
 use loa_core::{ElementKind, NodeId, Op};
-use loa_settings::models::login::UrlOpener;
-use loa_harness::account_support::opener::SystemUrlOpener;
 use loa_ui_session::decisions::{self as decisions, Desk, TIMEOUT_BY, desk, unattended};
 use loa_ui_kit::style::{ButtonKind, Tone};
 use loa_ui_kit::theme::{LayoutRole, SpaceRole, TextRole, sp, width};
@@ -17,9 +15,7 @@ use loa_ui_kit::widgets::{card, label, section_header, text_button};
 
 use crate::area::{perform, Area, AreaCommand, AreaMessage, Ctx, Listed, Request};
 use loa_runtime::session::SessionEvent;
-use notifier::DesktopNotifier;
-
-mod notifier;
+use crate::adapters::notifier::DesktopNotifier;
 
 #[derive(Clone, Debug)]
 pub enum Message {
@@ -164,7 +160,7 @@ impl Area for State {
                             tasks.push(self.answer(session, decision, answer, ctx));
                         }
                         DeskIntent::OpenLink(url) => {
-                            if let Err(error) = SystemUrlOpener.open_url(&url) {
+                            if let Err(error) = ctx.backends.opener.open_url(&url) {
                                 ctx.notify(error);
                             }
                         }

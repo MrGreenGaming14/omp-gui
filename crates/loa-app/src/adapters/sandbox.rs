@@ -1,16 +1,29 @@
-//! The peer provider over the app's node: this device runs `sandbox_task` on
-//! peers that granted it [`Resource::Sandbox`], and serves its own stub to
-//! peers it granted the same.
+//! The sandbox ports over the app's node and session library: this device
+//! runs `sandbox_task` on peers that granted it [`Resource::Sandbox`], serves
+//! its own stub to peers it granted the same, and journals worker sessions.
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use loa_core::PatchSink;
+use loa_session::library::Library;
 use loa_trust::{Action, Resource};
 use loa_p2p::{AddedProtocol, Endpoint, Node, NodeId, NodeSlot, PeerProtocol, Stream};
 use loa_sandbox::provider::Channel;
 use loa_sandbox::provider::peer::{PROTOCOL, PeerLink, serve_stub};
+use loa_sandbox::worker::WorkerJournal;
 use loa_sandbox::{Result, SandboxError};
 use tokio::sync::broadcast;
+
+/// Keeps worker sessions in the app's session library, so they are journaled, listed and opened like any other.
+pub struct LibraryJournal(pub Arc<Library>);
+
+impl WorkerJournal for LibraryJournal {
+    fn open(&self, session_id: &str) -> Result<Arc<dyn PatchSink>> {
+        let live = self.0.create(session_id).map_err(|error| SandboxError::Io(std::io::Error::other(format!("can't create the worker session {session_id}: {error}"))))?;
+        Ok(live.writer)
+    }
+}
 
 /// Version of [`PROTOCOL`] on the node.
 pub const VERSION: u32 = 1;

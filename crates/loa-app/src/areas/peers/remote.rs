@@ -8,8 +8,6 @@ use iced::{Alignment, Element, Fill, Subscription, Task, Theme};
 use loa_bus::{Event, Policy};
 use loa_core::{Dom, NodeId, Op, attr};
 use loa_trust::Action;
-use loa_settings::models::login::UrlOpener;
-use loa_harness::account_support::opener::SystemUrlOpener;
 use loa_p2p::RemoteView;
 use loa_ui_session::transcript as chat;
 use loa_ui_session::decisions as cards;
@@ -181,7 +179,7 @@ impl State {
                 match event {
                     Some(transcript::Intent::Rewind(_)) => ctx.notify("Only the owner rewinds this session; fork it to rewind a copy on this node"),
                     Some(transcript::Intent::OpenLink(url)) => {
-                        if let Err(error) = SystemUrlOpener.open_url(&url) {
+                        if let Err(error) = ctx.backends.opener.open_url(&url) {
                             ctx.notify(error);
                         }
                     }
@@ -204,7 +202,7 @@ impl State {
                         )
                     }
                     Some(decisions::Intent::OpenLink(url)) => {
-                        if let Err(error) = SystemUrlOpener.open_url(&url) {
+                        if let Err(error) = ctx.backends.opener.open_url(&url) {
                             ctx.notify(error);
                         }
                         Task::none()

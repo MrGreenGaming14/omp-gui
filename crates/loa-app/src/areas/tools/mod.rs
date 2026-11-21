@@ -29,7 +29,8 @@ use loa_ui_terminal as terminal;
 use loa_ui_panel::tools;
 use loa_view::panel::{self, ToolsIntent};
 
-use self::remote::{Remote, SshPaths, SshPty};
+use self::remote::{Remote, SshPaths};
+use crate::adapters::ssh_terminal::SshPty;
 use crate::area::{perform, Area, AreaCommand, AreaMessage, Ctx, HostToolSet, Listed, PanelTab, Target};
 use loa_runtime::session::SessionEvent;
 use crate::watch::{PtrKey, watch};

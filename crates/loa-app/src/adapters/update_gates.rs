@@ -16,7 +16,7 @@ use std::time::Duration;
 use tempfile::TempDir;
 
 /// Golden omp sessions (JSONL) the app must keep reading the same way.
-const GOLDENS: &[(&str, &str)] = &[("basic", include_str!("golden/basic.jsonl")), ("branched", include_str!("golden/branched.jsonl"))];
+const GOLDENS: &[(&str, &str)] = &[("basic", include_str!("update_gates/golden/basic.jsonl")), ("branched", include_str!("update_gates/golden/branched.jsonl"))];
 
 /// Flags that keep probes from loading project context, skills, rules, language servers or extensions.
 const QUIET: [&str; 6] = ["--no-context-files", "--no-rules", "--no-skills", "--no-title", "--no-lsp", "--no-extensions"];

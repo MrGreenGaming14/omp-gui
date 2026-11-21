@@ -8,11 +8,8 @@ use std::sync::Arc;
 use iced::widget::{button, column, container, row, scrollable, space, toggler};
 use iced::{Alignment, Element, Fill, Length, Subscription, Task};
 use loa_contracts::harness::SessionConfig;
-use loa_core::PatchSink;
-use loa_session::library::Library;
 use loa_sandbox::isolation::{apply_patch, backend_name};
-use loa_sandbox::worker::WorkerJournal;
-use loa_sandbox::{Availability, ProviderStatus, RunEntry, RunLog, RunState, SandboxConfig, SandboxError, SandboxEvent, SandboxKind, SandboxService};
+use loa_sandbox::{Availability, ProviderStatus, RunEntry, RunLog, RunState, SandboxConfig, SandboxEvent, SandboxKind, SandboxService};
 use loa_ui_kit::icons::tinted;
 use loa_ui_kit::style::{self, ButtonKind, Surface, Tone};
 use loa_ui_kit::theme::{LayoutRole, SpaceRole, TextRole, pad_x, sp, text_size, width};
@@ -26,7 +23,7 @@ use crate::area::{Area, AreaCommand, AreaMessage, Ctx, HostToolSet, PanelTab, Re
 use loa_runtime::session::SessionEvent;
 use crate::watch::{PtrKey, watch};
 
-mod peer;
+use crate::adapters::sandbox::{self as peer, LibraryJournal};
 #[cfg(test)]
 mod tests;
 
@@ -157,16 +154,6 @@ impl Draft {
         for section in &mut self.sections {
             let _ = section.set(key, value);
         }
-    }
-}
-
-/// Keeps worker sessions in the app's session library, so they are journaled, listed and opened like any other.
-struct LibraryJournal(Arc<Library>);
-
-impl WorkerJournal for LibraryJournal {
-    fn open(&self, session_id: &str) -> loa_sandbox::Result<Arc<dyn PatchSink>> {
-        let live = self.0.create(session_id).map_err(|error| SandboxError::Io(std::io::Error::other(format!("can't create the worker session {session_id}: {error}"))))?;
-        Ok(live.writer)
     }
 }
 

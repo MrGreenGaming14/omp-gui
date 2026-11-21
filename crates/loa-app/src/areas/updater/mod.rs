@@ -29,8 +29,7 @@ use semver::Version;
 use crate::area::{Area, AreaCommand, AreaMessage, Ctx, Target};
 use loa_runtime::session::SessionEvent;
 
-mod omp_gates;
-pub use omp_gates::OmpPorts;
+use crate::adapters::update_gates::OmpPorts;
 
 #[derive(Clone, Debug)]
 pub enum Message {
