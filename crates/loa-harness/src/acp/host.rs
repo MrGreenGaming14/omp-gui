@@ -136,9 +136,11 @@ impl Host {
         // Windows: a job object, so a kill also ends what the command spawned.
         #[cfg(windows)]
         let (mut child, stdout, stderr) = {
-            use process_wrap::tokio::{CommandWrap, JobObject, KillOnDrop};
+            use process_wrap::tokio::{CommandWrap, CreationFlags, JobObject, KillOnDrop};
+            use windows::Win32::System::Threading::PROCESS_CREATION_FLAGS;
             let mut command = CommandWrap::from(command);
-            command.wrap(KillOnDrop).wrap(JobObject);
+            // `JobObject` sets the creation flags itself; `CreationFlags` is how ours survive it.
+            command.wrap(KillOnDrop).wrap(JobObject).wrap(CreationFlags(PROCESS_CREATION_FLAGS(loa_util::exec::CREATE_NO_WINDOW)));
             let mut child = command.spawn().map_err(start_failed)?;
             let (stdout, stderr) = (child.stdout().take(), child.stderr().take());
             (child, stdout, stderr)

@@ -1,6 +1,7 @@
 //! The folder and project the app works in, recent folders and project tabs, and the git and
 //! folder dialog ports with their command line adapters.
 
+use loa_util::exec::NoWindow;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -51,7 +52,7 @@ impl GitProbe for GitCli {
     }
 
     async fn diff(&self, dir: &Path) -> Option<String> {
-        let output = tokio::process::Command::new("git").args(["diff", "--no-color", "--no-ext-diff", "HEAD"]).current_dir(dir).output().await.ok()?;
+        let output = tokio::process::Command::new("git").no_window().args(["diff", "--no-color", "--no-ext-diff", "HEAD"]).current_dir(dir).output().await.ok()?;
         output.status.success().then(|| String::from_utf8_lossy(&output.stdout).into_owned())
     }
 }

@@ -4,6 +4,7 @@
 //! in a fresh, empty directory. The workspace is copied in and out over the
 //! same stream (see [`crate::sync`]).
 
+use loa_util::exec::NoWindow;
 use super::{Availability, Channel, Machine, ProviderFactory, ProviderStatus, Sandbox, SandboxKind, SandboxProvider, SandboxSpec, WorkspaceMode, status};
 use crate::service::SandboxConfig;
 use crate::{Result, SandboxError};
@@ -69,6 +70,7 @@ impl Sandbox for PeerSandbox {
 pub async fn serve_stub(channel: Channel, stub: &Path) -> Result<()> {
     let root = tempfile::tempdir()?;
     let mut command = Command::new(stub);
+    command.no_window();
     command.arg(root.path()).current_dir(root.path()).env_clear().envs(super::local::system_env());
     let mut sandbox = Box::new(super::process("peer", command, WorkspaceMode::Copied, None)?);
     let (Channel { mut reader, mut writer }, Channel { reader: mut stdout, writer: mut stdin }) = (channel, sandbox.take_channel().expect("a new sandbox"));

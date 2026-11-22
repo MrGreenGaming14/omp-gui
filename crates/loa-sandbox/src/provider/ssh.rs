@@ -3,6 +3,7 @@
 //! `ProxyJump`, ports). The stub is uploaded over the same command channel;
 //! the workspace is copied in and out by [`crate::sync`].
 
+use loa_util::exec::NoWindow;
 use super::{Availability, Machine, ProviderFactory, ProviderStatus, Sandbox, SandboxKind, SandboxProvider, SandboxSpec, Teardown, WorkspaceMode, process, status};
 use crate::service::SandboxConfig;
 use crate::{Result, SandboxError};
@@ -32,6 +33,7 @@ struct Remote { ssh: PathBuf, host: String, script: String }
 impl Teardown for Remote {
     fn command(&self) -> std::process::Command {
         let mut cmd = std::process::Command::new(&self.ssh);
+        cmd.no_window();
         cmd.args(["-T", "-o", "BatchMode=yes", "--", &self.host, &self.script]);
         cmd
     }

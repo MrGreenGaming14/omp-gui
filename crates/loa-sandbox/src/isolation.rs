@@ -5,6 +5,7 @@
 //! No Git command here changes the source index, HEAD or working tree; the
 //! checkout owns its own index.
 
+use loa_util::exec::NoWindow;
 use crate::{Result, SandboxError};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -29,6 +30,7 @@ fn output(cmd: &mut Command) -> Result<Vec<u8>> {
 
 fn git(dir: &Path) -> Command {
     let mut cmd = Command::new("git");
+    cmd.no_window();
     cmd.current_dir(dir);
     cmd
 }

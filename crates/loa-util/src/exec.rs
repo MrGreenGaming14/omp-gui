@@ -151,6 +151,33 @@ pub fn is_executable(file: &Path) -> bool {
     file.is_file()
 }
 
+/// Windows `CREATE_NO_WINDOW`: the child gets a console that is never shown.
+pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// Starts a command without a console window of its own. The app runs without a console on Windows, so every
+/// console program it starts would otherwise open a new window; the child's own children share its hidden one.
+/// Does nothing elsewhere. Wrapped commands (`process_wrap`'s `JobObject` replaces the creation flags) set
+/// [`CREATE_NO_WINDOW`] through its `CreationFlags` instead.
+pub trait NoWindow {
+    fn no_window(&mut self) -> &mut Self;
+}
+
+impl NoWindow for Command {
+    fn no_window(&mut self) -> &mut Self {
+        #[cfg(windows)]
+        self.creation_flags(CREATE_NO_WINDOW);
+        self
+    }
+}
+
+impl NoWindow for std::process::Command {
+    fn no_window(&mut self) -> &mut Self {
+        #[cfg(windows)]
+        std::os::windows::process::CommandExt::creation_flags(self, CREATE_NO_WINDOW);
+        self
+    }
+}
+
 /// The first dotted version in `text`, optionally after `v`, with any `-pre`/`+build` suffix.
 pub fn parse_version(text: &str) -> Option<String> {
     let bytes = text.as_bytes();
@@ -195,7 +222,7 @@ pub async fn run_checked(mut cmd: Command) -> Result<String, String> {
 
 /// Runs a command with stdin closed, capturing both output streams.
 pub async fn output(cmd: &mut Command) -> io::Result<std::process::Output> {
-    cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
+    cmd.no_window().stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
     retry_busy(|| cmd.spawn())?.wait_with_output().await
 }
 

@@ -1,5 +1,6 @@
 //! Docker CLI provider; mounts the host workspace and keeps the stub on stdio.
 
+use loa_util::exec::NoWindow;
 use super::{Availability, Machine, ProviderFactory, ProviderStatus, Sandbox, SandboxKind, SandboxProvider, SandboxSpec, Teardown, WorkspaceMode, process, status};
 use crate::Result;
 use crate::service::SandboxConfig;
@@ -31,6 +32,7 @@ pub struct DockerProvider {
 /// The `docker` client with only [`CLIENT_ENV`] from the host.
 fn docker(program: &Path) -> std::process::Command {
     let mut cmd = std::process::Command::new(program);
+    cmd.no_window();
     cmd.env_clear().envs(CLIENT_ENV.iter().filter_map(|key| std::env::var_os(key).map(|value| (key, value))));
     cmd
 }

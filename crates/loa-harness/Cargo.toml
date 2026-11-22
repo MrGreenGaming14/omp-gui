@@ -35,7 +35,8 @@ tracing.workspace = true
 
 # ACP terminals run in a job object so killing one ends what it spawned.
 [target.'cfg(windows)'.dependencies]
-process-wrap = { version = "10", default-features = false, features = ["tokio1", "job-object", "kill-on-drop"] }
+process-wrap = { version = "10", default-features = false, features = ["tokio1", "job-object", "kill-on-drop", "creation-flags"] }
+windows = { version = "0.62", features = ["Win32_System_Threading"] }
 
 [dev-dependencies]
 loa-harness = { path = ".", default-features = false, features = ["testing"] }

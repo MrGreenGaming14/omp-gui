@@ -1,5 +1,6 @@
 //! `codex app-server` on [`StdioRpc`]: notifications and server requests reach the [`Mapper`] in read order.
 
+use loa_util::exec::NoWindow;
 use super::{CodexAdapter, HARNESS};
 use super::mapper::{Mapper, Reply};
 use crate::kit::rpc::Writer;
@@ -244,6 +245,7 @@ impl CodexSession {
             return Err(AdapterError::Protocol("host tools need a host tool handler".to_owned()));
         }
         let mut command = Command::new(loa_util::exec::resolve(config.executable.as_deref().unwrap_or(&adapter.executable)));
+        command.no_window();
         command.args(&adapter.args).args(mcp_overrides(&config)).args(["app-server", "--listen", "stdio://"]).current_dir(&config.cwd).envs(&config.env);
         let shared = Arc::new(Shared {
             mapper: Mutex::new(None),

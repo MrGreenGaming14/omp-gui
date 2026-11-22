@@ -10,6 +10,7 @@
 //! [`OmpService`] starts the process on first use and starts a new one when it
 //! has exited, so the app can hold one for its whole lifetime.
 
+use loa_util::exec::NoWindow;
 use loa_util::LockExt;
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -50,6 +51,7 @@ impl OmpLaunch {
 
     fn command(&self, args: &[&str]) -> tokio::process::Command {
         let mut command = tokio::process::Command::new(loa_util::exec::resolve(&self.executable));
+        command.no_window();
         command
             .args(args)
             .envs(self.env.iter().map(|(k, v)| (k, v)))
@@ -314,6 +316,7 @@ pub struct OmpAccount {
 impl OmpAccount {
     fn config_path_result(&self) -> std::result::Result<PathBuf, loa_contracts::harness::AdapterError> {
         let mut command = std::process::Command::new(loa_util::exec::resolve(&self.launch.executable));
+        command.no_window();
         command.args(["config", "path"]).envs(self.launch.env.iter().cloned());
         if let Some(cwd) = &self.launch.cwd { command.current_dir(cwd); }
         let output = command.output().map_err(loa_contracts::harness::AdapterError::Io)?;

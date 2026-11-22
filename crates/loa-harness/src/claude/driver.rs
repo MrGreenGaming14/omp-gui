@@ -1,6 +1,7 @@
 //! Runs `claude` headlessly in stream JSON mode with `--permission-prompt-tool
 //! stdio` (the Agent SDK's mode) on [`StdioRpc`] with [`ClaudeControl`] framing.
 
+use loa_util::exec::NoWindow;
 use crate::claude::mapper::{Mapper, Output, UUID_ATTR, control_response};
 use crate::claude::mcp::{self, HOST_SERVER};
 use crate::claude::{HARNESS, native};
@@ -292,6 +293,7 @@ impl ClaudeSession {
     /// Spawns the CLI and completes the `initialize` handshake.
     async fn launch(config: SessionConfig, mapper: Mapper, resume: &[String]) -> Result<Self> {
         let mut command = Command::new(loa_util::exec::resolve(config.executable.as_deref().unwrap_or(Path::new(EXECUTABLE))));
+        command.no_window();
         command.args(command_args(&config, resume)).current_dir(&config.cwd).envs(&config.env);
         // Set inside a Claude Code shell; the child must not think it is nested.
         command.env_remove("CLAUDECODE");
