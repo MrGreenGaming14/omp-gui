@@ -16,6 +16,28 @@ const END_PREFIX: &str = "<!-- /omp-gui:workflow";
 const WHEN: &str = "When the active model role is `";
 const ALLOWED: &str = "- Allowed agents: ";
 const DISALLOWED: &str = "- Disallowed agents: ";
+const FIELD: &str = "<!-- loa:workflow-field -->";
+const NOTES_FIELD: &str = "<!-- loa:workflow-notes -->";
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ManagedFields {
+    pub description: String,
+    pub routing: Vec<RoutingNote>,
+    pub steps: Vec<String>,
+    pub blocks: Vec<RuleBlock>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RoutingNote {
+    pub agent: String,
+    pub note: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RuleBlock {
+    pub heading: String,
+    pub text: String,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Workflow {
@@ -27,7 +49,9 @@ pub struct Workflow {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Rules {
     /// A marker-delimited section; `name` is its display name.
-    Managed { name: String, allowed: Vec<String>, disallowed: Vec<String>, notes: String },
+    Managed { name: String, allowed: Vec<String>, disallowed: Vec<String>, notes: String, fields: ManagedFields },
+    /// A marker-delimited body that cannot be represented by the structured editor.
+    External { text: String },
     HandWritten { text: String },
     None,
 }
@@ -77,6 +101,49 @@ fn backticked(line: &str) -> Vec<String> {
     line.split_once(". ").map_or(line, |(a, _)| a).split('`').skip(1).step_by(2).map(str::to_owned).collect()
 }
 
+fn structured_tail(lines: &[(usize, &str)]) -> Option<(String, ManagedFields)> {
+    let boundary = |line| matches!(line, FIELD | NOTES_FIELD);
+    let first = lines.iter().position(|(_, line)| boundary(*line)).unwrap_or(lines.len());
+    let mut notes = lines[..first].iter().map(|(_, line)| *line).collect::<Vec<_>>().join("\n").trim_matches('\n').to_owned();
+    let mut fields = ManagedFields::default();
+    let mut i = first;
+    while i < lines.len() {
+        if lines[i].1 == NOTES_FIELD {
+            if !notes.is_empty() || lines.get(i + 1)?.1 != "### Notes" || lines.get(i + 2)?.1 != "" { return None; }
+            notes = lines[i + 3..].iter().map(|(_, line)| *line).collect::<Vec<_>>().join("\n");
+            break;
+        }
+        let end = (i + 1..lines.len()).find(|&j| boundary(lines[j].1)).unwrap_or(lines.len());
+        let section = &lines[i + 1..end];
+        let heading = section.first()?.1.strip_prefix("### ")?;
+        if section.get(1)?.1 != "" { return None; }
+        let content_lines = &section[2..];
+        let content_lines = if end < lines.len() && content_lines.last().is_some_and(|(_, line)| line.is_empty()) {
+            &content_lines[..content_lines.len() - 1]
+        } else { content_lines };
+        let content = content_lines.iter().map(|(_, line)| *line).collect::<Vec<_>>().join("\n");
+        let content = content.as_str();
+        match heading {
+            "When to use" if fields.description.is_empty() => fields.description = content.to_owned(),
+            "Routing" if fields.routing.is_empty() => {
+                for line in content.lines() {
+                    let (agent, note) = line.strip_prefix("- `")?.split_once("`: ")?;
+                    fields.routing.push(RoutingNote { agent: agent.to_owned(), note: note.to_owned() });
+                }
+            }
+            "Steps" if fields.steps.is_empty() => {
+                for (index, line) in content.lines().enumerate() {
+                    fields.steps.push(line.strip_prefix(&format!("{}. ", index + 1))?.to_owned());
+                }
+            }
+            "When to use" | "Routing" | "Steps" => return None,
+            _ => fields.blocks.push(RuleBlock { heading: heading.to_owned(), text: content.to_owned() }),
+        }
+        i = end;
+    }
+    Some((notes, fields))
+}
+
 fn parse(text: &str) -> Result<Parsed> {
     let crlf = text.find('\n').is_some_and(|i| text[..i].ends_with('\r'));
     let mut lines = Vec::new();
@@ -106,24 +173,37 @@ fn parse(text: &str) -> Result<Parsed> {
             }
             let close = close.ok_or_else(|| malformed("workflow start marker has no end marker"))?;
             let body = &lines[i + 1..close];
-            let when = body.iter().position(|(_, l)| l.starts_with(WHEN)).ok_or_else(|| malformed("workflow has no role line"))?;
-            let named = body[when].1[WHEN.len()..].split_once('`').map_or("", |(name, _)| name);
-            if named != role { return Err(malformed(format!("workflow marker `{role}` does not match its role line"))); }
-            let name = body.iter().find_map(|(_, l)| l.strip_prefix("## "))
-                .and_then(|s| s.trim().strip_suffix(" Mode")).unwrap_or(role).trim().to_owned();
-            let (mut allowed, mut disallowed) = (Vec::new(), Vec::new());
-            let mut n = when + 1;
-            loop {
-                while n < body.len() && body[n].1.trim().is_empty() { n += 1; }
-                match body.get(n).map(|(_, l)| *l) {
-                    Some(l) if l.starts_with(ALLOWED) => allowed = backticked(l),
-                    Some(l) if l.starts_with(DISALLOWED) => disallowed = backticked(l),
-                    _ => break,
-                }
-                n += 1;
+            // The first role declaration binds the marked section. Notes may quote other modes.
+            let when = body.iter().position(|(_, line)| line.starts_with(WHEN));
+            if let Some((named, _)) = when.and_then(|i| body[i].1[WHEN.len()..].split_once('`'))
+                && named != role
+            {
+                return Err(malformed(format!("workflow marker `{role}` does not match its role line")));
             }
-            let notes = body[n..].iter().map(|(_, l)| *l).collect::<Vec<_>>().join("\n").trim_matches('\n').to_owned();
-            blocks.push(Block { role: role.to_owned(), span: start..lines[close].0 + lines[close].1.len(), rules: Rules::Managed { name, allowed, disallowed, notes } });
+            let span = start..lines[close].0 + lines[close].1.len();
+            let body_start = lines.get(i + 1).map_or(lines[close].0, |(offset, _)| *offset);
+            let external = || Rules::External { text: text[body_start..lines[close].0].to_owned() };
+            let candidate = when.and_then(|when| {
+                let name = body.iter().find_map(|(_, l)| l.strip_prefix("## "))
+                    .and_then(|s| s.trim().strip_suffix(" Mode")).unwrap_or(role).trim().to_owned();
+                let (mut allowed, mut disallowed) = (Vec::new(), Vec::new());
+                let mut n = when + 1;
+                if body.get(n).is_some_and(|(_, line)| line.is_empty()) { n += 1; }
+                loop {
+                    match body.get(n).map(|(_, l)| *l) {
+                        Some(l) if l.starts_with(ALLOWED) => allowed = backticked(l),
+                        Some(l) if l.starts_with(DISALLOWED) => disallowed = backticked(l),
+                        _ => break,
+                    }
+                    n += 1;
+                }
+                let (notes, fields) = structured_tail(&body[n..])?;
+                Some(Rules::Managed { name, allowed, disallowed, notes, fields })
+            });
+            let rules = candidate.filter(|rules| {
+                render(role, rules, false).is_ok_and(|rendered| rendered == text[span.clone()].replace("\r\n", "\n"))
+            }).unwrap_or_else(external);
+            blocks.push(Block { role: role.to_owned(), span, rules });
             i = close + 1;
             continue;
         }
@@ -166,10 +246,23 @@ fn render(role: &str, rules: &Rules, crlf: bool) -> Result<String> {
             let lf = text.replace("\r\n", "\n");
             Ok(if crlf { lf.replace('\n', "\r\n") } else { lf })
         }
-        Rules::Managed { name, allowed, disallowed, notes } => {
+        Rules::External { .. } => Err(Error::invalid("rules", "external rules must retain their existing markers")),
+        Rules::Managed { name, allowed, disallowed, notes, fields } => {
             if name.trim().is_empty() || name.trim() != name || name.contains(['\n', '\r', '`']) { return Err(Error::invalid("workflow name", "must be one line without backticks")); }
             if allowed.iter().chain(disallowed).any(|a| a.trim().is_empty() || a.contains(['\n', '\r', '`'])) { return Err(Error::invalid("agents", "invalid agent name")); }
-            if notes.contains("omp-gui:workflow") || [ALLOWED, DISALLOWED].iter().any(|prefix| notes.trim_matches(['\n', '\r']).starts_with(*prefix)) { return Err(Error::invalid("notes", "invalid workflow notes")); }
+            let has_workflow_marker = |s: &str| s.lines().map(str::trim_start).any(|line| line.starts_with(START_PREFIX) || line.starts_with(END_PREFIX));
+            let valid_text = |s: &str| !has_workflow_marker(s) && !s.lines().any(|line| matches!(line, FIELD | NOTES_FIELD));
+            if has_workflow_marker(notes) || !valid_text(&fields.description)
+                || fields.blocks.iter().any(|b| !valid_text(&b.text))
+                || fields.steps.iter().any(|s| s.is_empty() || s.contains(['\n', '\r']) || !valid_text(s))
+                || fields.routing.iter().enumerate().any(|(index, r)| {
+                    !allowed.contains(&r.agent) || r.note.is_empty() || r.note.contains(['\n', '\r']) || !valid_text(&r.note)
+                        || fields.routing[..index].iter().any(|other| other.agent == r.agent)
+                })
+                || fields.blocks.iter().any(|b| b.heading.is_empty() || b.heading.trim() != b.heading || b.heading.contains(['\n', '\r']) || matches!(b.heading.as_str(), "When to use" | "Routing" | "Steps"))
+            {
+                return Err(Error::invalid("workflow fields", "invalid field text, routing agent, or block heading"));
+            }
             let mut out = format!("{START}{role} -->\n## {name} Mode\n\n{WHEN}{role}`, operate in {name} Mode.\n");
             for (label, rule, agents) in [(ALLOWED, "Route work only to these agents.", allowed), (DISALLOWED, "Never route work to these agents.", disallowed)] {
                 if !agents.is_empty() {
@@ -180,7 +273,33 @@ fn render(role: &str, rules: &Rules, crlf: bool) -> Result<String> {
             }
             let notes = notes.replace("\r\n", "\n");
             let notes = notes.trim_matches('\n');
-            if !notes.is_empty() { out.push('\n'); out.push_str(notes); out.push('\n'); }
+            let marked_notes = notes.lines().any(|line| matches!(line, FIELD | NOTES_FIELD))
+                || [ALLOWED, DISALLOWED].iter().any(|prefix| notes.starts_with(*prefix));
+            if !notes.is_empty() && !marked_notes { out.push('\n'); out.push_str(notes); out.push('\n'); }
+            let mut section = |heading: &str, content: &str| {
+                out.push_str(&format!("\n{FIELD}\n### {heading}\n\n"));
+                out.push_str(content);
+                out.push('\n');
+            };
+            if !fields.description.is_empty() { section("When to use", &fields.description.replace("\r\n", "\n")); }
+            if !fields.routing.is_empty() {
+                let routing = fields.routing.iter().map(|r| format!("- `{}`: {}", r.agent, r.note)).collect::<Vec<_>>().join("\n");
+                section("Routing", &routing);
+            }
+            if !fields.steps.is_empty() {
+                let steps = fields.steps.iter().enumerate().map(|(i, step)| format!("{}. {step}", i + 1)).collect::<Vec<_>>().join("\n");
+                section("Steps", &steps);
+            }
+            for block in &fields.blocks { section(&block.heading, &block.text.replace("\r\n", "\n")); }
+            // When copied Markdown contains reserved lines, a terminal Notes field
+            // takes the remainder verbatim instead of interpreting those lines.
+            if marked_notes {
+                out.push_str("\n");
+                out.push_str(NOTES_FIELD);
+                out.push_str("\n### Notes\n\n");
+                out.push_str(notes);
+                out.push('\n');
+            }
             out.push_str(END);
             Ok(if crlf { out.replace('\n', "\r\n") } else { out })
         }
@@ -190,11 +309,15 @@ fn render(role: &str, rules: &Rules, crlf: bool) -> Result<String> {
 /// Refuses `new_rules` unless every section other than the edited one reads as before (blank
 /// lines that now separate it from a new section aside) and the edited one spans `edited`
 /// (empty when it has no section).
-fn check_blocks(text: &str, parsed: &Parsed, previous_role: Option<&str>, new_rules: &str, role: &str, edited: Range<usize>) -> Result<()> {
+fn check_blocks(text: &str, parsed: &Parsed, previous_role: Option<&str>, new_rules: &str, workflow: &Workflow, edited: Range<usize>) -> Result<()> {
     let after = parse(new_rules)?;
     let before = parsed.blocks.iter().filter(|b| Some(b.role.as_str()) != previous_role).map(|b| (b.role.as_str(), text[b.span.clone()].trim_end()));
-    let kept = after.blocks.iter().filter(|b| b.role != role).map(|b| (b.role.as_str(), new_rules[b.span.clone()].trim_end()));
-    let span = after.blocks.iter().find(|b| b.role == role).map(|b| b.span.clone());
+    let kept = after.blocks.iter().filter(|b| b.role != workflow.role).map(|b| (b.role.as_str(), new_rules[b.span.clone()].trim_end()));
+    let block = after.blocks.iter().find(|b| b.role == workflow.role);
+    if matches!(workflow.rules, Rules::Managed { .. }) && !block.is_some_and(|b| matches!(b.rules, Rules::Managed { .. })) {
+        return Err(Error::invalid("workflow fields", "these fields cannot be read back as structured rules"));
+    }
+    let span = block.map(|b| b.span.clone());
     if !before.eq(kept) || span.unwrap_or(edited.start..edited.start) != edited {
         return Err(Error::invalid("rules", "the edit would change other sections of RULES.md: keep the section's heading level"));
     }
@@ -254,7 +377,36 @@ impl WorkflowFiles {
             if std::mem::discriminant(&block.rules) != std::mem::discriminant(&workflow.rules) { return Err(Error::invalid("rules", "cannot convert between managed and hand-written sections")); }
         }
         let eol = if parsed.crlf { "\r\n" } else { "\n" };
-        let mut replacement = render(&workflow.role, &workflow.rules, parsed.crlf)?;
+        let mut replacement = if let Rules::External { text: body } = &workflow.rules {
+            let block = existing.ok_or_else(|| Error::invalid("rules", "external rules must retain their existing marker"))?;
+            if previous_role != Some(workflow.role.as_str()) {
+                return Err(Error::invalid("role", "an externally edited workflow cannot be renamed"));
+            }
+            let original = &text[block.span.clone()];
+            if block.rules == workflow.rules {
+                original.to_owned()
+            } else {
+                if body.lines().any(|line| {
+                    let line = line.trim_start();
+                    line.starts_with(START_PREFIX) || line.starts_with(END_PREFIX)
+                }) {
+                    return Err(Error::invalid("rules", "the raw text must not contain workflow markers"));
+                }
+                let start = original.find('\n').ok_or_else(|| malformed("workflow marker has no body"))? + 1;
+                let end = original.rfind('\n').ok_or_else(|| malformed("workflow marker has no end"))? + 1;
+                let boundary = if body.is_empty() || body.ends_with('\n') { "" }
+                    else if original[..start].ends_with("\r\n") { "\r\n" } else { "\n" };
+                format!("{}{body}{boundary}{}", &original[..start], &original[end..])
+            }
+        } else if let Some(block) = existing
+            && matches!(workflow.rules, Rules::Managed { .. })
+            && previous_role == Some(workflow.role.as_str())
+            && block.rules == workflow.rules
+        {
+            text[block.span.clone()].to_owned()
+        } else {
+            render(&workflow.role, &workflow.rules, parsed.crlf)?
+        };
         if matches!(workflow.rules, Rules::HandWritten { .. }) {
             if let Some(previous) = previous_role && previous != workflow.role {
                 replacement = replacement.replace(&format!("`{previous}`"), &format!("`{}`", workflow.role));
@@ -274,7 +426,7 @@ impl WorkflowFiles {
             if !out.ends_with('\n') { out.push_str(eol); }
             (start, out)
         };
-        check_blocks(text, &parsed, previous_role, &new_rules, &workflow.role, start..start + replacement.len())?;
+        check_blocks(text, &parsed, previous_role, &new_rules, workflow, start..start + replacement.len())?;
         let candidates = match previous_role {
             None if workflow.models.is_empty() => config.model_role("default")?.ok_or_else(|| Error::invalid("modelRoles", "there is no default role to copy"))?.candidates,
             _ => workflow.models.clone(),
@@ -364,7 +516,7 @@ mod tests {
     fn managed(role: &str) -> Workflow {
         Workflow { role: role.into(), models: vec![], rules: Rules::Managed {
             name: "Research".into(), allowed: vec!["scout".into()], disallowed: vec![],
-            notes: "Cite sources.".into(),
+            notes: "Cite sources.".into(), fields: ManagedFields::default(),
         } }
     }
 
@@ -644,5 +796,111 @@ mod tests {
         files.save(&item, None, &snapshot, &Accept).await.unwrap();
         let (list, _) = files.load().unwrap();
         assert_eq!(list.into_iter().find(|w| w.role == "NEW").unwrap().models, vec![Selector::model("vendor/other")]);
+    }
+    #[tokio::test]
+    async fn structured_fields_round_trip_without_touching_neighbors() {
+        for eol in ["\n", "\r\n"] {
+            let prefix = format!("# Rules{eol}{eol}Keep this.{eol}{eol}");
+            let suffix = format!("{eol}{eol}## Other Mode{eol}When the active model role is `OTHER`, act.{eol}");
+            let legacy = render("DEEP", &managed("DEEP").rules, eol == "\r\n").unwrap();
+            let (_dir, files) = setup(&format!("{prefix}{legacy}{suffix}"));
+            let (mut item, snapshot) = deep(&files);
+            assert_eq!(item.rules, managed("DEEP").rules);
+            if let Rules::Managed { fields, .. } = &mut item.rules {
+                *fields = ManagedFields {
+                    description: "Use for research.\n\nMore detail.".into(),
+                    routing: vec![RoutingNote { agent: "scout".into(), note: "Gather references.".into() }],
+                    steps: vec!["Read sources.".into(), "Summarize findings.".into()],
+                    blocks: vec![RuleBlock { heading: "Guidance".into(), text: "First paragraph.\n\n#### Detail\nKeep context.\n".into() }],
+                };
+            } else { panic!("legacy section was not managed"); }
+            files.save(&item, Some("DEEP"), &snapshot, &Accept).await.unwrap();
+            let expected = format!("{}\n{FIELD}\n### When to use\n\nUse for research.\n\nMore detail.\n\n{FIELD}\n### Routing\n\n- `scout`: Gather references.\n\n{FIELD}\n### Steps\n\n1. Read sources.\n2. Summarize findings.\n\n{FIELD}\n### Guidance\n\nFirst paragraph.\n\n#### Detail\nKeep context.\n\n{END}", legacy.replace("\r\n", "\n").strip_suffix(END).unwrap()).replace('\n', eol);
+            let actual = std::fs::read_to_string(&files.rules).unwrap();
+            assert_eq!(actual, format!("{prefix}{expected}{suffix}"));
+            let (loaded, snapshot) = deep(&files);
+            assert_eq!(loaded.rules, item.rules);
+            files.save(&loaded, Some("DEEP"), &snapshot, &Accept).await.unwrap();
+            assert_eq!(std::fs::read_to_string(&files.rules).unwrap(), actual);
+        }
+    }
+
+    #[tokio::test]
+    async fn external_body_is_lossless_editable_and_cannot_be_renamed() {
+        for eol in ["\n", "\r\n"] {
+            let body = format!("Custom preamble{eol}{eol}When the active model role is `DEEP`, use custom instructions.{eol}Text changed outside.  {eol}{eol}");
+            let original = format!("before{eol}  {START}DEEP -->{eol}{body}  {END}{eol}after{eol}");
+            let (_dir, files) = setup(&original);
+            let (mut item, snapshot) = deep(&files);
+            assert_eq!(item.rules, Rules::External { text: body.clone() });
+            files.save(&item, Some("DEEP"), &snapshot, &Accept).await.unwrap();
+            assert_eq!(std::fs::read_to_string(&files.rules).unwrap(), original);
+            let (_, snapshot) = deep(&files);
+            item.role = "STUDY".into();
+            assert!(files.save(&item, Some("DEEP"), &snapshot, &Accept).await.is_err());
+            item.role = "DEEP".into();
+            let changed = body.replace("outside", "inside");
+            item.rules = Rules::External { text: changed.clone() };
+            files.save(&item, Some("DEEP"), &snapshot, &Accept).await.unwrap();
+            assert_eq!(std::fs::read_to_string(&files.rules).unwrap(), original.replace(&body, &changed));
+            assert_eq!(deep(&files).0.rules, Rules::External { text: changed });
+        }
+    }
+
+    #[test]
+    fn unsupported_managed_format_is_external_and_marker_conflicts_fail() {
+        let canonical = render("DEEP", &managed("DEEP").rules, false).unwrap();
+        for altered in [
+            canonical.replace("Route work only to these agents.", "Use discretion."),
+            canonical.replace("## Research Mode", "## Changed header"),
+            canonical.replace("When the active model role is `DEEP`,", "This role"),
+        ] {
+            let block = parse(&altered).unwrap().blocks.remove(0);
+            assert!(matches!(block.rules, Rules::External { .. }));
+        }
+        assert!(parse(&canonical.replace("role is `DEEP`", "role is `OTHER`")).is_err());
+        assert!(parse(&canonical.replace(END, "<!-- /omp-gui:workflow broken -->")).is_err());
+    }
+
+    #[test]
+    fn duplicate_agent_routing_opens_as_raw_markdown() {
+        let mut item = managed("DEEP");
+        let Rules::Managed { fields, .. } = &mut item.rules else { unreachable!() };
+        let note = RoutingNote { agent: "scout".into(), note: "Look up references.".into() };
+        fields.routing = vec![note.clone()];
+        let canonical = render("DEEP", &item.rules, false).unwrap();
+        let edited = canonical.replace(END, &format!("- `scout`: Read the glossary.\n{END}"));
+        let expected = edited.split_once('\n').unwrap().1.strip_suffix(END).unwrap();
+        assert_eq!(parse(&edited).unwrap().blocks.remove(0).rules, Rules::External { text: expected.into() });
+        let Rules::Managed { fields, .. } = &mut item.rules else { unreachable!() };
+        fields.routing.push(note);
+        assert!(render("DEEP", &item.rules, false).is_err());
+    }
+
+    #[tokio::test]
+    async fn notes_keep_whitespace_and_literal_field_markers() {
+        for notes in ["  \nKeep this indentation.".to_owned(), format!("{ALLOWED}this is notes\n{FIELD}\n{NOTES_FIELD}\nKeep this.")] {
+            let (_dir, files) = setup("");
+            let (_, snapshot) = files.load().unwrap();
+            let mut item = managed("NEW");
+            let Rules::Managed { notes: draft, fields, .. } = &mut item.rules else { unreachable!() };
+            *draft = notes;
+            fields.description = "Read the glossary.".into();
+            files.save(&item, None, &snapshot, &Accept).await.unwrap();
+            let (list, _) = files.load().unwrap();
+            assert_eq!(list.iter().find(|w| w.role == "NEW").unwrap().rules, item.rules);
+        }
+    }
+
+    #[test]
+    fn reserved_field_markers_and_headings_are_rejected() {
+        let mut item = managed("DEEP");
+        let Rules::Managed { fields, .. } = &mut item.rules else { unreachable!() };
+        fields.blocks.push(RuleBlock { heading: "Routing".into(), text: "Text".into() });
+        assert!(render("DEEP", &item.rules, false).is_err());
+        let Rules::Managed { fields, .. } = &mut item.rules else { unreachable!() };
+        fields.blocks[0].heading = "Notes".into();
+        fields.blocks[0].text = format!("Before\n{FIELD}\nAfter");
+        assert!(render("DEEP", &item.rules, false).is_err());
     }
 }

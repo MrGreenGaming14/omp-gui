@@ -1,4 +1,4 @@
-version = 2.1.0
+version = 3.0.0
 #[derive(Clone)] struct loa_view::surface::port::Decoders
   extra: Option<NewDecoder>
   still: NewDecoder
@@ -120,6 +120,9 @@ version = 2.1.0
     allowed: Vec<String>
     disallowed: Vec<String>
     notes: String
+    fields: ManagedFields
+  External
+    text: String
   HandWritten
     text: String
   None
@@ -207,6 +210,17 @@ version = 2.1.0
   peers: Vec<PeerStanding>
   turn_running: bool
   now_unix: u64
+#[derive(Clone, Debug, Default, PartialEq, Eq)] struct loa_view::settings::workflows::ManagedFields
+  description: String
+  routing: Vec<RoutingNote>
+  steps: Vec<String>
+  blocks: Vec<RuleBlock>
+#[derive(Clone, Debug, Default, PartialEq, Eq)] struct loa_view::settings::workflows::RoutingNote
+  agent: String
+  note: String
+#[derive(Clone, Debug, Default, PartialEq, Eq)] struct loa_view::settings::workflows::RuleBlock
+  heading: String
+  text: String
 #[derive(Clone, Debug, Default, PartialEq, Eq)] struct loa_view::surface::VideoStatus
   enabled: bool
   encoder: Option<StreamInfo>

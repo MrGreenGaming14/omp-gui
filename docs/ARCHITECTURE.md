@@ -96,6 +96,8 @@ Transcript `*.golden` files and `loa-view/api.txt` use LF on every platform. Rec
 
 `loa-settings` is the central place for app and harness settings: the central config, the model and provider settings with the omp file editors, the project settings and the updater status. The services that change them (`loa-models`, `loa-projects`, `loa-updater`) import their types from the hub; the settings UI (`loa-ui-settings`) sees only their `loa_view::settings` projections. Harness-specific work goes through the hub's ports (`OmpRpc`, `OmpProviderAccount`, `OmpFilesResolver`, `SettingsValidator`), which the adapters in `loa-harness` implement and `loa-app` wires in
 
+`models::workflows` writes app-managed rules between workflow markers. Description, agent routing notes, ordered steps and named Markdown blocks have explicit field boundaries so they can be read back without mistaking headings in user text for fields. A marked section that cannot be read back losslessly opens as raw Markdown with an outside-edit notice. Copying creates a new draft: managed fields stay structured, raw or hand-written Markdown goes into Notes, and the source stays untouched.
+
 ## Sessions
 
 - A session changes only through patches. Whoever wants a change hands a `Draft` to the session's `PatchSink`, which assigns the sequence number, timestamp and (for inserts) the node id, applies it, journals it and publishes it
@@ -175,7 +177,7 @@ impl State {
 | --- | --- | --- |
 | Element schema | `loa_core::SCHEMA_VERSION` (1) | `loa-core` |
 | Adapter interface | `loa_adapter::INTERFACE_VERSION` | `loa-adapter` |
-| Presentation API | `loa_view::VERSION` (2.1.0), listed in `crates/loa-view/api.txt` | `loa-view` |
+| Presentation API | `loa_view::VERSION` (3.0.0), listed in `crates/loa-view/api.txt` | `loa-view` |
 | Control ALPN | `omp/control/1` | `loa-net` |
 | Session ALPN | `omp/session/1` | `loa-net`, `loa-share` |
 | Surface ALPN | `omp/surface/1` | `loa-surface` |
