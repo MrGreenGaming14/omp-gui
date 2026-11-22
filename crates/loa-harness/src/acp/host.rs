@@ -129,9 +129,12 @@ impl Host {
             Some(cwd) => self.resolve(cwd).map_err(|e| io_error(cwd, &e))?,
             None => self.root.clone(),
         };
-        let mut command = tokio::process::Command::new(loa_util::exec::resolve(Path::new(&request.command)));
+        let env = request.env.unwrap_or_default();
+        // The command is looked up on the PATH it runs with; the last entry wins, as in `envs`.
+        let path_var = env.iter().rev().find(|var| loa_util::exec::is_path_var(&var.name)).map(|var| std::ffi::OsStr::new(&var.value));
+        let mut command = tokio::process::Command::new(loa_util::exec::resolve_in(Path::new(&request.command), path_var));
         command.args(request.args.unwrap_or_default()).current_dir(&cwd).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
-        command.envs(request.env.unwrap_or_default().into_iter().map(|var| (var.name, var.value)));
+        command.envs(env.into_iter().map(|var| (var.name, var.value)));
         let start_failed = |e| fail(INTERNAL, format!("can't run `{}`: {e}", request.command));
         // Windows: a job object, so a kill also ends what the command spawned.
         #[cfg(windows)]

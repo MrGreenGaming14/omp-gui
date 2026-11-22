@@ -56,11 +56,39 @@ impl GitProbe for GitCli {
     }
 }
 
-/// [`FolderPicker`] over zenity (GNOME), else kdialog (KDE).
+/// [`FolderPicker`] over zenity (GNOME), else kdialog (KDE); on Windows the system folder dialog.
 pub struct DialogPicker;
 
 #[async_trait]
 impl FolderPicker for DialogPicker {
+    #[cfg(windows)]
+    async fn pick(&self, start: &Path) -> Result<Option<PathBuf>, String> {
+        // WinForms' dialog through Windows PowerShell, which every Windows has. The start folder goes in through the
+        // environment, so it needs no quoting.
+        const SCRIPT: &str = "[Console]::OutputEncoding = [Text.Encoding]::UTF8
+Add-Type -AssemblyName System.Windows.Forms
+$dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+$dialog.Description = 'Choose a folder'
+$dialog.SelectedPath = $env:LOA_FOLDER_START
+$owner = New-Object System.Windows.Forms.Form -Property @{ TopMost = $true }
+if ($dialog.ShowDialog($owner) -eq 'OK') { [Console]::Out.Write($dialog.SelectedPath) }";
+        // CREATE_NO_WINDOW: no console flashes up behind the dialog.
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let output = tokio::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-STA", "-Command", SCRIPT])
+            .env("LOA_FOLDER_START", start)
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .await
+            .map_err(|error| format!("The folder dialog failed: {error}"))?;
+        if !output.status.success() {
+            return Err(format!("The folder dialog failed: {}", String::from_utf8_lossy(&output.stderr).trim()));
+        }
+        let chosen = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        Ok((!chosen.is_empty()).then(|| PathBuf::from(chosen)))
+    }
+
+    #[cfg(not(windows))]
     async fn pick(&self, start: &Path) -> Result<Option<PathBuf>, String> {
         let start = format!("{}/", start.display());
         let dialogs: [(&str, Vec<&str>); 2] = [
