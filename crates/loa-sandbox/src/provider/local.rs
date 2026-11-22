@@ -1,5 +1,6 @@
 //! Reference provider: the stub is a child in the host workspace.
 
+use loa_util::exec::NoWindow;
 use super::{Availability, Machine, ProviderFactory, ProviderStatus, Sandbox, SandboxKind, SandboxProvider, SandboxSpec, WorkspaceMode, process, status};
 use crate::Result;
 use crate::service::SandboxConfig;
@@ -35,6 +36,7 @@ impl SandboxProvider for LocalProvider {
     fn describe(&self) -> String { "this machine, in the workspace or its isolated checkout; no OS level isolation".into() }
     async fn start(&self, spec: &SandboxSpec) -> Result<Box<dyn Sandbox>> {
         let mut cmd = Command::new(&self.stub);
+        cmd.no_window();
         cmd.arg(&spec.workspace).current_dir(&spec.workspace).env_clear().envs(system_env()).envs(spec.env.iter().cloned());
         Ok(Box::new(process("local", cmd, WorkspaceMode::Shared, None)?))
     }

@@ -1,5 +1,6 @@
 //! OpenSSH config: the `Host` alias scan (following `Include`) and `ssh -G` resolution.
 
+use crate::exec::NoWindow;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -95,7 +96,7 @@ pub fn resolve(alias: &str) -> io::Result<ResolvedHost> {
 
 /// Runs `program -G args.. -- host` and parses its output; a missing program is a clear `NotFound`.
 pub fn resolve_with(program: &Path, args: &[String], host: &str) -> io::Result<ResolvedHost> {
-    let output = Command::new(program).arg("-G").args(args).arg("--").arg(host).output().map_err(|e| match e.kind() {
+    let output = Command::new(program).no_window().arg("-G").args(args).arg("--").arg(host).output().map_err(|e| match e.kind() {
         io::ErrorKind::NotFound => io::Error::new(
             e.kind(),
             format!("no OpenSSH client found (`{}` is not installed or not on PATH); install OpenSSH to use Remote hosts", program.display()),

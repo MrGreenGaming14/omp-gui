@@ -1,6 +1,7 @@
 //! The tailnet adapter: `tailscale status --json` names candidate machines;
 //! only those answering the authenticated app probe become nearby nodes.
 
+use loa_util::exec::NoWindow;
 use super::{Availability, Discoverer, NearbyPeer, NearbySource};
 use crate::{NodeError, NodeId, Result};
 use async_trait::async_trait;
@@ -27,7 +28,7 @@ impl<P: NodeProbe> Tailnet<P> {
     pub fn new(executable: PathBuf, port: u16, probe: P) -> Self { Self { executable, port, probe, found: None } }
 
     async fn scan(&self) -> Result<Vec<NearbyPeer>> {
-        let output = Command::new(loa_util::exec::resolve(&self.executable)).args(["status", "--json"]).output().await?;
+        let output = Command::new(loa_util::exec::resolve(&self.executable)).no_window().args(["status", "--json"]).output().await?;
         if !output.status.success() {
             return Err(NodeError::Net(format!("tailscale status exited with {}: {}", output.status, String::from_utf8_lossy(&output.stderr).trim())));
         }

@@ -7,6 +7,7 @@ pub mod wire;
 
 pub use mapper::Omp2Mapper;
 
+use loa_util::exec::NoWindow;
 use crate::kit::rpc::id_key;
 use crate::kit::{EventMapper, Framing, Inbound, Incoming, RpcError, StdioRpc, insert_root};
 use async_trait::async_trait;
@@ -248,6 +249,7 @@ impl Omp2Adapter {
             return refuse("model roles or mode over omp2 RPC");
         }
         let mut command = Command::new(loa_util::exec::resolve(config.executable.as_ref().unwrap_or(&self.executable)));
+        command.no_window();
         command.args(["--mode", "rpc"]).current_dir(&config.cwd).envs(&config.env);
         for (flag, value) in [("--resume", resume), ("--model", config.model.as_deref()), ("--thinking", config.effort.as_deref())] {
             command.args(value.map(|value| [flag, value]).into_iter().flatten());

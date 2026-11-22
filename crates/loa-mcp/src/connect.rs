@@ -68,7 +68,10 @@ pub(crate) async fn connect<H: ClientHandler>(spec: &ServerSpec, handler: H, htt
             #[cfg(unix)]
             command.wrap(process_wrap::tokio::ProcessGroup::leader());
             #[cfg(windows)]
-            command.wrap(process_wrap::tokio::KillOnDrop).wrap(process_wrap::tokio::JobObject);
+            command.wrap(process_wrap::tokio::KillOnDrop).wrap(process_wrap::tokio::JobObject).wrap(process_wrap::tokio::CreationFlags(
+                // `JobObject` sets the creation flags itself; `CreationFlags` is how ours survive it.
+                windows::Win32::System::Threading::PROCESS_CREATION_FLAGS(loa_util::exec::CREATE_NO_WINDOW),
+            ));
             let (transport, stderr) = TokioChildProcess::builder(command)
                 .stderr(Stdio::piped())
                 .spawn()

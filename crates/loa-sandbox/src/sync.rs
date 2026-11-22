@@ -6,6 +6,7 @@
 //! before anything is unpacked, so an archive the host can't take changes
 //! nothing.
 
+use loa_util::exec::NoWindow;
 use crate::client::StubClient;
 use crate::isolation::remove_entry;
 use crate::proto::ExecRequest;
@@ -162,7 +163,7 @@ fn check_sendable(dir: &Path, top: bool) -> Result<Vec<String>> {
 
 /// Runs the host's tar in `dir` with `input` on its stdin.
 async fn tar(dir: &Path, args: &[&str], input: &[u8]) -> Result<Vec<u8>> {
-    let mut child = tokio::process::Command::new("tar").args(args).current_dir(dir).kill_on_drop(true)
+    let mut child = tokio::process::Command::new("tar").no_window().args(args).current_dir(dir).kill_on_drop(true)
         .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
     let mut stdin = child.stdin.take().expect("piped stdin");
     let feed = async move { stdin.write_all(input).await };

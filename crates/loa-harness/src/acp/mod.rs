@@ -27,6 +27,7 @@ pub const HARNESS: &str = "acp";
 pub use mapper::{X_AGENT, X_MODE, X_OPTION, X_OPTION_IDS, X_OPTION_KINDS, X_PRIORITY, X_STOP_REASON};
 pub use session::AcpSession;
 
+use loa_util::exec::NoWindow;
 use loa_util::LockExt;
 use async_trait::async_trait;
 use loa_contracts::harness::{
@@ -116,6 +117,7 @@ impl AcpAdapter {
         });
         let program = config.executable.as_ref().unwrap_or(&self.program);
         let mut command = Command::new(loa_util::exec::resolve(program));
+        command.no_window();
         command.args(&self.args).current_dir(&config.cwd).envs(&config.env);
         let rpc = Arc::new(StdioRpc::spawn(command, JsonRpc2 { header: true }, shared.clone())?);
         let _ = shared.writer.set(rpc.writer());

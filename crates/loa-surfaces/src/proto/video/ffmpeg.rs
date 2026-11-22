@@ -2,6 +2,7 @@
 //! Raw Annex B output is split at inserted AUDs, or after a short quiet period
 //! so a picture needn't wait for the next one.
 
+use loa_util::exec::NoWindow;
 use super::encode::{
     AccessUnit, Accel, Codec, EncoderInfo, FPS, KEYFRAME_INTERVAL, ProbeResult, QP, VideoEncoder, check_picture,
     check_video_size, has_parameter_sets, has_picture, is_keyframe, start_codes,
@@ -172,6 +173,7 @@ impl VideoEncoder for FfmpegEncoder {
 
 fn start(binary: &Path, name: &str, codec: Codec, accel: Accel, (width, height): (u32, u32)) -> Result<Process> {
     let mut command = Command::new(binary);
+    command.no_window();
     command
         .args(["-hide_banner", "-loglevel", "error", "-nostdin"])
         .args(["-f", "rawvideo", "-pixel_format", "rgba", "-video_size", &format!("{width}x{height}")])

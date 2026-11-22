@@ -17,6 +17,7 @@ pub use session::OmpAdapter;
 /// Harness id written to `<session harness>` and `<ext harness>`.
 pub const HARNESS: &str = "omp";
 
+use loa_util::exec::NoWindow;
 use async_trait::async_trait;
 use loa_contracts::Summarizer;
 use std::ffi::OsString;
@@ -77,6 +78,7 @@ impl OneShot {
         let mut overlay = tempfile::Builder::new().prefix("loa-oneshot-").suffix(".yml").tempfile().map_err(|e| e.to_string())?;
         std::io::Write::write_all(&mut overlay, MEMORY_OFF.as_bytes()).map_err(|e| e.to_string())?;
         let mut cmd = tokio::process::Command::new(loa_util::exec::resolve(&self.executable));
+        cmd.no_window();
         cmd.args(self.args(model, overlay.path())).current_dir(&self.cwd).kill_on_drop(true);
         cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
         let shown = self.executable.display();

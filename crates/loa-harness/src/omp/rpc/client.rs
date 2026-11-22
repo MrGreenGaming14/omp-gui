@@ -2,6 +2,7 @@
 //! the `ready` handshake and protocol negotiation, host callbacks, and
 //! everything else delivered in order as [`Incoming`].
 
+use loa_util::exec::NoWindow;
 use super::command::{Command, Ready};
 use super::event::{Frame, HostToolCall, UiRequest};
 use super::frames::OmpFrames;
@@ -91,6 +92,7 @@ impl SpawnOptions {
 
     fn command(&self) -> tokio::process::Command {
         let mut command = tokio::process::Command::new(loa_util::exec::resolve(&self.executable));
+        command.no_window();
         command.arg("--mode").arg(if self.mode == Mode::RpcUi { "rpc-ui" } else { "rpc" });
         if self.no_ui {
             command.arg("--no-ui");

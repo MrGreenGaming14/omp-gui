@@ -1,5 +1,6 @@
 //! The Usage window: provider limits and saved resets from `omp usage --json`.
 
+use loa_util::exec::NoWindow;
 use loa_util::time::{ago, now_ms, until};
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -39,7 +40,7 @@ impl UsageSource for OmpUsage {
 /// Runs `omp <args>`; its stdout, or its stderr as the error.
 async fn omp(args: &[&str]) -> Result<String, String> {
     let what = args[..2].join(" ");
-    let output = tokio::process::Command::new("omp").args(args).output().await.map_err(|error| format!("Couldn't run omp {what}: {error}"))?;
+    let output = tokio::process::Command::new("omp").no_window().args(args).output().await.map_err(|error| format!("Couldn't run omp {what}: {error}"))?;
     if !output.status.success() {
         return Err(format!("omp {what} failed: {}", String::from_utf8_lossy(&output.stderr).trim()));
     }
