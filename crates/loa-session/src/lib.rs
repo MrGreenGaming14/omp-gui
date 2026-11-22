@@ -218,20 +218,49 @@ pub fn submit_plan(sink: &dyn PatchSink, session: NodeId, step: NodeId, plan: &s
     Ok(sink.commit(Draft::insert(session, ElementKind::Decision, attrs, plan))?.node)
 }
 
+/// What [`select_role`] switched to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RoleSelected {
+    pub model: String,
+    /// Why the candidate's thinking level was not applied; the model and role were.
+    pub effort_error: Option<String>,
+}
+
 /// Switches to `role`, trying its `candidates` in order; returns the model picked.
-pub async fn select_role(session: &dyn HarnessSession, capabilities: &Capabilities, sink: &dyn PatchSink, root: NodeId, role: &str, candidates: &[String]) -> Result<String> {
+pub async fn select_role(session: &dyn HarnessSession, capabilities: &Capabilities, sink: &dyn PatchSink, root: NodeId, role: &str, candidates: &[String]) -> Result<RoleSelected> {
     match capabilities.model_switch {
         ModelSwitch::Never => return Err(Error::ModelFixed),
         ModelSwitch::PerTurn if session.state() != SessionState::Idle => return Err(Error::Busy),
         _ => {}
     }
     let mut last = None;
-    for model in candidates {
-        match session.set_model(ModelSelection { model: model.clone(), role: None }).await {
+    for candidate in candidates {
+        let selector = match loa_settings::models::selector::Selector::parse(candidate) {
+            Ok(selector) => selector,
+            Err(error) => {
+                last = Some(Error::Port(error.to_string()));
+                continue;
+            }
+        };
+        let Some(model) = selector.model_name() else {
+            last = Some(Error::Port(format!("role alias {candidate} cannot be selected as a model")));
+            continue;
+        };
+        match session.set_model(ModelSelection { model: model.to_owned(), role: None }).await {
             Ok(()) => {
-                sink.commit(Draft::set(root, attr::MODEL, model.as_str()))?;
+                sink.commit(Draft::set(root, attr::MODEL, model))?;
                 sink.commit(Draft::set(root, attr::MODEL_ROLE, role))?;
-                return Ok(model.clone());
+                // The model runs now: a thinking level the harness refuses doesn't undo the switch.
+                let mut effort_error = None;
+                if let Some(effort) = selector.thinking() {
+                    match session.set_effort(effort.to_owned()).await {
+                        Ok(()) => {
+                            sink.commit(Draft::set(root, attr::EFFORT, effort))?;
+                        }
+                        Err(error) => effort_error = Some(format!("{effort} thinking wasn't applied: {error}")),
+                    }
+                }
+                return Ok(RoleSelected { model: model.to_owned(), effort_error });
             }
             Err(error) => last = Some(error.into()),
         }

@@ -1,7 +1,11 @@
-version = 2.0.0
+version = 2.1.0
 #[derive(Clone)] struct loa_view::surface::port::Decoders
   extra: Option<NewDecoder>
   still: NewDecoder
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)] enum loa_view::session::composer::WorkflowKind
+  Managed
+  HandWritten
+  None
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)] enum loa_view::surface::Capture
   Screencast
   VirtualDisplay
@@ -110,6 +114,15 @@ version = 2.0.0
 #[derive(Clone, Debug, Default, PartialEq)] struct loa_view::theme::Appearance
   theme: ThemeRef
   overrides: toml::Table
+#[derive(Clone, Debug, Default, PartialEq, Eq)] enum loa_view::settings::workflows::Rules
+  Managed
+    name: String
+    allowed: Vec<String>
+    disallowed: Vec<String>
+    notes: String
+  HandWritten
+    text: String
+  None
 #[derive(Clone, Debug, Default, PartialEq, Eq)] enum loa_view::shell::NodeFilter
   All
   Node
@@ -140,6 +153,11 @@ version = 2.0.0
   name: String
   provider: String
   role: Option<String>
+#[derive(Clone, Debug, Default, PartialEq, Eq)] struct loa_view::session::composer::WorkflowOption
+  role: String
+  label: String
+  kind: WorkflowKind
+  current: bool
 #[derive(Clone, Debug, Default, PartialEq, Eq)] struct loa_view::session::composer::Workspace
   path: String
   full: String
@@ -273,6 +291,9 @@ version = 2.0.0
   PasteImage
   ProjectPicked
     0: Option<String>
+  WorkflowPicked
+    0: String
+  OpenRules
 #[derive(Clone, Debug, PartialEq)] enum loa_view::session::transcript::Intent
   Rewind
     0: NodeId
@@ -529,6 +550,21 @@ version = 2.0.0
     patches: u64
   Ahead
   Unknown
+#[derive(Clone, Debug, PartialEq, Eq)] enum loa_view::settings::workflows::Error
+  ChangedOnDisk
+  Message
+    0: String
+#[derive(Clone, Debug, PartialEq, Eq)] enum loa_view::settings::workflows::Intent
+  Open
+    0: String
+  New
+  Save
+    draft: Draft
+    previous_role: Option<String>
+  Delete
+    0: String
+  Reload
+  Close
 #[derive(Clone, Debug, PartialEq, Eq)] enum loa_view::shell::SidebarIntent
   NewSession
   OpenSession
@@ -751,6 +787,18 @@ version = 2.0.0
 #[derive(Clone, Debug, PartialEq, Eq)] struct loa_view::settings::updates::ProtocolStatus
   family: String
   shared: Option<u32>
+#[derive(Clone, Debug, PartialEq, Eq)] struct loa_view::settings::workflows::AgentInfo
+  name: String
+  enabled: bool
+#[derive(Clone, Debug, PartialEq, Eq)] struct loa_view::settings::workflows::Draft
+  workflow: Workflow
+#[derive(Clone, Debug, PartialEq, Eq)] struct loa_view::settings::workflows::FieldError
+  field: &'static str
+  message: String
+#[derive(Clone, Debug, PartialEq, Eq)] struct loa_view::settings::workflows::Workflow
+  role: String
+  models: Vec<String>
+  rules: Rules
 #[derive(Clone, Debug, PartialEq, Eq)] struct loa_view::shell::NodeStatus
   key: String
   name: String
@@ -1023,6 +1071,7 @@ mod loa_view::settings::models::signin
 mod loa_view::settings::peers
 mod loa_view::settings::projects
 mod loa_view::settings::updates
+mod loa_view::settings::workflows
 mod loa_view::shell
 mod loa_view::surface
 mod loa_view::surface::port

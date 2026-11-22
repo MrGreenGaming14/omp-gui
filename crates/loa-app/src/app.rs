@@ -124,6 +124,7 @@ pub enum Message {
     Diff(diff::Message),
     Terminal(terminal::state::Message),
     Palette(palette::Message),
+    RunCommand(String),
     Keyboard(keyboard::Event),
     /// Redraw while a turn runs.
     Tick,
@@ -217,6 +218,8 @@ fn compose(event: ComposerIntent) -> Option<Intent> {
         ComposerIntent::ModelChanged(model) => area(Message::area(areas::models::Message::Model(model))),
         ComposerIntent::ModelAction(id) => area(Message::area(areas::models::Message::Action(id))),
         ComposerIntent::EffortChanged(effort) => area(Message::area(areas::models::Message::Effort(effort))),
+        ComposerIntent::WorkflowPicked(role) => area(Message::area(areas::workflows::Message::Pick(role))),
+        ComposerIntent::OpenRules => area(Message::area(areas::workflows::Message::Open)),
         ComposerIntent::ModeChanged(mode) => area(Message::area(areas::sessions::Message::Mode(mode))),
         ComposerIntent::AccessChanged(id) => Some(Intent::Access(id)),
         ComposerIntent::FilesRequested { .. } => Some(Intent::Files),
@@ -402,6 +405,12 @@ impl App {
                     Task::none()
                 }
                 After::TurnEnded => {
+                    // A role switch due for the session goes before its queued prompts.
+                    if let Some(id) = self.ctx.runtime.sessions().active_id().map(ToString::to_string)
+                        && self.areas.get_mut::<crate::areas::sessions::State>().hold(&id)
+                    {
+                        continue;
+                    }
                     // A queued `/` command runs like a typed one.
                     let next = self.ctx.composer.turn_ended();
                     self.composer_event(next)
@@ -435,6 +444,15 @@ impl App {
                     Request::OpenSession(id) => self.lifecycle(|s, ctx, areas| s.run(ctx, areas, Command::Open(SessionId::from(id)))),
                     Request::DetachSession(id) => self.detach_session(&id),
                     Request::Prompt(prompt) => self.lifecycle(|s, ctx, areas| s.send(ctx, areas, prompt)),
+                    Request::ReleaseRoleQueue(id) => {
+                        // A turn that started meanwhile releases the queue when it ends.
+                        if self.ctx.runtime.sessions().active().is_some_and(|session| session.id().as_str() == id && !session.is_busy()) {
+                            let next = self.ctx.composer.turn_ended();
+                            self.composer_event(next)
+                        } else {
+                            Task::none()
+                        }
+                    }
                     Request::OpenTab(id) => self.open_tab(&id),
                     Request::RevealTab(id) => self.reveal_tab(&id),
                     Request::Spawn(spawn) => self.lifecycle(|s, ctx, areas| s.run(ctx, areas, Command::Spawn(spawn))),
@@ -575,6 +593,7 @@ impl App {
             }
             Message::Diff(message) => self.diff.update(message).0.map(Message::Diff),
             Message::Terminal(message) => self.terminal.update(message).map(Message::Terminal),
+            Message::RunCommand(id) => self.command(&palette::CommandId::new(id)),
             Message::Palette(message) => {
                 if matches!(message, palette::Message::Open | palette::Message::OpenShortcuts) || matches!(message, palette::Message::Toggle) && !self.palette.is_open() {
                     self.refresh_commands();
@@ -646,7 +665,9 @@ impl App {
                 Task::none()
             }
             Message::Area(id, message) => {
+                let sync_workflows = matches!(id, "models" | "harness");
                 let task = self.areas.update(id, message, &mut self.ctx);
+                if sync_workflows { self.areas.get::<areas::workflows::State>().sync(&mut self.ctx); }
                 Task::batch([task, self.settle()])
             }
         }

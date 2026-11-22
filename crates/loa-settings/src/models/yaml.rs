@@ -432,6 +432,10 @@ impl<'a> Editor<'a> {
         let value = get_path(expected_root, &path[..=depth])
             .ok_or_else(|| self.unsupported("edited key missing from the result"))?;
         match entry {
+            Some(entry) if depth + 1 < path.len() && !entry.inline.is_empty() => Err(self.unsupported(format!(
+                "`{}` is written inline (flow style); editing it would reformat its line, so edit it by hand",
+                path[..=depth].join(".")
+            ))),
             Some(entry) => Ok(self.replace_value(&entry, value)),
             None => self.insert_entry(region, depth == 0, path[depth], value),
         }

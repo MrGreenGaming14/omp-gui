@@ -9,12 +9,12 @@ use super::keys::APP_COMMANDS;
 use super::*;
 use super::lifecycle::turn_status;
 use crate::area::{Area, AreaMsg, find_command, find_slash};
-use crate::areas::{decisions, harness, models, peers, projects, sandbox, sessions, surfaces, tools, updater};
+use crate::areas::{decisions, harness, models, peers, projects, sandbox, sessions, surfaces, tools, updater, workflows};
 use crate::testing::TestApp;
 
 /// Whether some table owns command `id`: the app's, else its area's.
 fn owned(id: &str) -> bool {
-    let areas: [fn(&str) -> bool; 10] = [
+    let areas: [fn(&str) -> bool; 11] = [
         |id| find_command(harness::State::COMMANDS, id).is_some(),
         |id| find_command(sessions::State::COMMANDS, id).is_some(),
         |id| find_command(decisions::State::COMMANDS, id).is_some(),
@@ -25,6 +25,7 @@ fn owned(id: &str) -> bool {
         |id| find_command(peers::State::COMMANDS, id).is_some(),
         |id| find_command(updater::State::COMMANDS, id).is_some(),
         |id| find_command(sandbox::State::COMMANDS, id).is_some(),
+        |id| find_command(workflows::State::COMMANDS, id).is_some(),
     ];
     find_command(APP_COMMANDS, id).is_some() || areas.iter().any(|owns| owns(id))
 }

@@ -11,7 +11,7 @@ mod tests;
 
 use loa_util::LockExt;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
@@ -54,8 +54,10 @@ pub enum Message {
     PlanAnswered { session: SessionId, decision: NodeId, result: Result<PlanNext, String> },
     /// The advisor reviewed `turn`.
     Advised { session: SessionId, turn: NodeId, result: Result<Option<String>, String> },
-    /// A role switch finished: the role and the model picked.
-    RoleSet(Result<(String, String), String>),
+    /// A role switch finished: the role and what it switched to.
+    RoleSet { session: String, result: Result<(String, loa_session::RoleSelected), String> },
+    /// Where omp's `config.yml` is, for the model roles `/role` and the palette offer.
+    ConfigLocated(Result<PathBuf, String>),
     Transfer(transfer::Message),
     /// Current time, unix ms, for the Agents tab.
     Tick(i64),
@@ -84,7 +86,16 @@ pub struct State {
     pub(crate) opener: Arc<dyn UrlOpener>,
     /// The fork or rewind being started, to show the Session tab once it is active.
     branching: Option<String>,
-    /// omp's model roles, cached by the mtime of the config file they came from.
+    /// Roles picked while the session ran a turn or switched roles: applied once it is idle.
+    pending_roles: HashMap<String, String>,
+    switching_roles: HashSet<String>,
+    /// Sessions whose composer holds its queued prompts until their role switch ends.
+    held: HashSet<String>,
+    /// The role each session's next prompt announces.
+    role_notes: HashMap<String, String>,
+    /// omp's `config.yml`, or why it couldn't be located; `None` until asked.
+    config: Option<Result<PathBuf, String>>,
+    /// Its model roles, cached by its modified time.
     roles: RefCell<Option<(SystemTime, Roles)>>,
 }
 
@@ -112,19 +123,48 @@ impl State {
         }
     }
 
-    /// omp's model roles, read again only when its config file changed.
-    fn roles(&self) -> Result<Roles, String> {
-        let mtime = std::fs::metadata(model_roles_path(&self.home)).and_then(|meta| meta.modified()).ok();
+    pub(crate) fn role_switch_pending(&self, id: &str) -> bool {
+        self.pending_roles.contains_key(id) || self.switching_roles.contains(id)
+    }
+
+    /// At the end of `id`'s turn: holds its queued prompts while a role switch is due for it.
+    pub(crate) fn hold(&mut self, id: &str) -> bool {
+        let due = self.role_switch_pending(id);
+        if due {
+            self.held.insert(id.to_owned());
+        }
+        due
+    }
+
+    /// The role switches of `id` are over, whatever their outcome: the prompts held for them go out.
+    fn release(&mut self, ctx: &mut Ctx, id: &str) {
+        if self.held.remove(id) {
+            ctx.request(Request::ReleaseRoleQueue(id.to_owned()));
+        }
+    }
+
+    /// omp's model roles, read again when `config.yml` changed; `None` until it is located.
+    fn roles(&self) -> Option<Result<Roles, String>> {
+        let path = match self.config.as_ref()? {
+            Ok(path) => path,
+            Err(error) => return Some(Err(format!("Can't find omp's config: {error}"))),
+        };
+        let mtime = std::fs::metadata(path).and_then(|meta| meta.modified()).ok();
         if let (Some(mtime), Some((cached, roles))) = (mtime, self.roles.borrow().as_ref())
             && *cached == mtime
         {
-            return Ok(roles.clone());
+            return Some(Ok(roles.clone()));
         }
-        let roles = model_roles(&self.home)?;
-        if let Some(mtime) = mtime {
+        let roles = model_roles(path);
+        if let (Some(mtime), Ok(roles)) = (mtime, &roles) {
             *self.roles.borrow_mut() = Some((mtime, roles.clone()));
         }
-        Ok(roles)
+        Some(roles)
+    }
+
+    fn locate_config(ctx: &Ctx) -> Task<Message> {
+        let backend = ctx.backends.models.clone();
+        Task::perform(async move { backend.files().await.map(|files| files.config()) }, Message::ConfigLocated)
     }
 
     fn delete(&mut self, ctx: &mut Ctx, id: &str) -> Task<Message> {
@@ -152,37 +192,66 @@ impl State {
 
     /// Switches the active session to one of omp's model roles.
     fn role(&mut self, ctx: &mut Ctx, role: String) -> Task<Message> {
-        let Some(session) = ctx.runtime.sessions().active() else {
+        let Some((id, running, busy)) = ctx.runtime.sessions().active().map(|session| (session.id().to_string(), session.harness().is_some(), session.is_busy())) else {
             ctx.notify("Open a session to switch its model role");
             return Task::none();
         };
-        let Some(harness) = session.harness().cloned() else {
+        if !running {
             ctx.notify("Model roles switch a running session: send a message to resume it first");
             return Task::none();
-        };
-        let Some(root) = session.dom().root().map(|root| root.id) else { return Task::none() };
-        let writer = Arc::clone(session.writer());
-        let roles = match self.roles() {
-            Ok(roles) => roles,
-            Err(error) => {
+        }
+        match self.roles() {
+            Some(Err(error)) => {
                 ctx.notify(error);
                 return Task::none();
             }
-        };
-        let Some((_, candidates)) = roles.iter().find(|(name, _)| *name == role) else {
-            let names: Vec<&str> = roles.iter().map(|(name, _)| name.as_str()).collect();
-            ctx.notify(if role.is_empty() {
-                format!("Name a model role: /role <{}>", names.join("|"))
-            } else {
-                format!("omp has no model role {role}; its roles: {}", names.join(", "))
-            });
+            Some(Ok(roles)) if !roles.iter().any(|(name, _)| *name == role) => {
+                let names: Vec<&str> = roles.iter().map(|(name, _)| name.as_str()).collect();
+                ctx.notify(if role.is_empty() {
+                    format!("Name a model role: /role <{}>", names.join("|"))
+                } else {
+                    format!("omp has no model role {role}; its roles: {}", names.join(", "))
+                });
+                return Task::none();
+            }
+            None if role.is_empty() => {
+                ctx.notify("Name a model role: /role <name>");
+                return Task::none();
+            }
+            _ => {}
+        }
+        if self.switching_roles.contains(&id) || busy {
+            self.pending_roles.insert(id, role);
+            return Task::none();
+        }
+        self.switch_role(ctx, id, role)
+    }
+
+    fn switch_role(&mut self, ctx: &mut Ctx, id: String, role: String) -> Task<Message> {
+        let running = ctx.runtime.sessions().get(&id).and_then(|session| Some((session.harness()?.clone(), session.dom().root()?.id, Arc::clone(session.writer()))));
+        let Some((harness, root, writer)) = running else {
+            ctx.notify(format!("Can't switch to model role {role}: the session no longer runs"));
+            self.release(ctx, &id);
             return Task::none();
         };
-        let (capabilities, candidates) = (capabilities(ctx, harness.harness()), candidates.clone());
-        perform(
-            async move { loa_session::select_role(harness.as_ref(), &capabilities, writer.as_ref(), root, &role, &candidates).await.map(|model| (role, model)) },
-            Message::RoleSet,
-        )
+        // Prompts sent while the switch runs wait for it, so the first of them carries the role note.
+        if ctx.runtime.sessions().is_active(&id) && !ctx.composer.is_busy() {
+            ctx.composer.turn_started();
+            self.held.insert(id.clone());
+        }
+        let capabilities = capabilities(ctx, harness.harness());
+        let backend = ctx.backends.models.clone();
+        self.switching_roles.insert(id.clone());
+        Task::perform(async move {
+            let files = backend.files().await?;
+            let roles = model_roles(&files.config())?;
+            let Some((_, candidates)) = roles.iter().find(|(name, _)| *name == role) else {
+                let names: Vec<&str> = roles.iter().map(|(name, _)| name.as_str()).collect();
+                return Err(format!("omp has no model role {role}; its roles: {}", names.join(", ")));
+            };
+            loa_session::select_role(harness.as_ref(), &capabilities, writer.as_ref(), root, &role, candidates)
+                .await.map(|selected| (role, selected)).map_err(|error| error.to_string())
+        }, move |result| Message::RoleSet { session: id.clone(), result })
     }
 
     /// The library id of a subagent's session: stored already, or imported from its harness's file here.
@@ -254,14 +323,8 @@ fn asks_first(ctx: &Ctx, harness: &str) -> bool {
     !ctx.runtime.harnesses().traits(harness).approval_modes.is_empty()
 }
 
-/// Where omp keeps its config, `modelRoles` included.
-fn model_roles_path(home: &Path) -> PathBuf {
-    home.join(".omp/agent/config.yml")
-}
-
-/// omp's model roles (`modelRoles` in `~/.omp/agent/config.yml`) with their candidate models in order.
-fn model_roles(home: &Path) -> Result<Roles, String> {
-    let path = model_roles_path(home);
+/// Reads omp's model roles, candidates in order, from `config.yml` alone.
+pub(crate) fn model_roles(path: &Path) -> Result<Roles, String> {
     let config = loa_settings::models::config::OmpConfig::load(&path).map_err(|error| format!("Can't read {}: {error}", path.display()))?;
     let roles = config.model_roles().map_err(|error| format!("Can't read the model roles in {}: {error}", path.display()))?;
     Ok(roles.into_iter().map(|role| (role.role, role.candidates.iter().map(ToString::to_string).collect())).collect())
@@ -342,9 +405,11 @@ impl Area for State {
         .listed(Listed::Never)
         .slash("import", "Import a native session"),
         AreaCommand::<Self>::new("sessions.role.", "", "Model roles", |state, role, ctx| state.role(ctx, role.to_owned())).listed(Listed::Each(|state, ctx| {
-            let roles = ctx.runtime.sessions().active().and_then(|_| state.roles().ok()).unwrap_or_default();
-            let title = |role: &str, models: &[String]| format!("Model role: {role} ({})", models.first().map_or("no model", String::as_str));
-            roles.into_iter().map(|(role, models)| (role.clone(), title(&role, &models))).collect()
+            if ctx.runtime.sessions().active().is_none() { return Vec::new(); }
+            state.roles().and_then(Result::ok).unwrap_or_default().into_iter().map(|(role, models)| {
+                let title = format!("Model role: {role} ({})", models.first().map_or("no model", String::as_str));
+                (role, title)
+            }).collect()
         })),
     ];
 
@@ -370,9 +435,15 @@ impl Area for State {
             compacted: HashMap::new(),
             opener: Arc::clone(&ctx.backends.opener),
             branching: None,
+            pending_roles: HashMap::new(),
+            switching_roles: HashSet::new(),
+            held: HashSet::new(),
+            role_notes: HashMap::new(),
+            config: None,
             roles: RefCell::new(None),
         };
-        (state, Task::none())
+        let task = Self::locate_config(ctx);
+        (state, task)
     }
 
     fn update(&mut self, message: Message, ctx: &mut Ctx) -> Task<Message> {
@@ -426,10 +497,23 @@ impl Area for State {
                 self.advised(ctx, &session, turn, result);
                 Task::none()
             }
-            Message::RoleSet(result) => {
-                if let Some((role, model)) = ctx.report("Can't switch the model role", result) {
-                    ctx.notify(format!("Model role {role}: {model}"));
+            Message::ConfigLocated(result) => {
+                self.config = Some(result);
+                Task::none()
+            }
+            Message::RoleSet { session, result } => {
+                self.switching_roles.remove(&session);
+                if let Some((role, selected)) = ctx.report("Can't switch the model role", result) {
+                    self.role_notes.insert(session.clone(), role.clone());
+                    ctx.notify(match selected.effort_error {
+                        Some(error) => format!("Model role {role}: {}; {error}", selected.model),
+                        None => format!("Model role {role}: {}", selected.model),
+                    });
                 }
+                if let Some(role) = self.pending_roles.remove(&session) {
+                    return self.switch_role(ctx, session, role);
+                }
+                self.release(ctx, &session);
                 Task::none()
             }
             Message::Transfer(message) => {
@@ -475,6 +559,9 @@ impl Area for State {
     }
 
     fn before_send(&mut self, session: &SessionId, prompt: &mut Prompt, ctx: &mut Ctx) {
+        if let Some(role) = self.role_notes.remove(session.as_str()) {
+            prompt.text = format!("The active model role is now `{role}`.\n\n{}", prompt.text);
+        }
         self.hook_prompt(ctx, session, prompt);
         if self.gate.active(session.as_str()) && !prompt.text.contains(plan_mode::PLAN_STEP) {
             prompt.text = plan_mode::wrap_prompt(&prompt.text);
@@ -493,7 +580,8 @@ impl Area for State {
                     self.branching = None;
                     ctx.reveal_tab("session");
                 }
-                return self.reload(ctx);
+                let locate = if matches!(self.config, Some(Ok(_))) { Task::none() } else { Self::locate_config(ctx) };
+                return Task::batch([locate, self.reload(ctx)]);
             }
             SessionEvent::Loaded(id) if ctx.runtime.sessions().is_active(id.as_str()) => return self.reload(ctx),
             SessionEvent::Patch(id, patch) => {
@@ -522,15 +610,25 @@ impl Area for State {
                     return perform(async move { harness.answer(decision, answer).await }, Message::Done);
                 }
             }
-            SessionEvent::TurnEnded { session, turn, status: TurnStatus::Done } => {
-                if self.gate.active(session.as_str()) {
-                    self.submit_plan(ctx, session, *turn);
-                }
-                return self.advise(ctx, session, *turn);
+            SessionEvent::TurnEnded { session, turn, status } => {
+                let switch = self.pending_roles.remove(session.as_str()).map_or_else(Task::none, |role| self.switch_role(ctx, session.to_string(), role));
+                let advice = if *status == TurnStatus::Done {
+                    if self.gate.active(session.as_str()) {
+                        self.submit_plan(ctx, session, *turn);
+                    }
+                    self.advise(ctx, session, *turn)
+                } else {
+                    Task::none()
+                };
+                return Task::batch([switch, advice]);
             }
             SessionEvent::Closed(id) => {
                 self.plans.remove(id.as_str());
                 self.hooks.locked().remove(id.as_str());
+                self.pending_roles.remove(id.as_str());
+                self.switching_roles.remove(id.as_str());
+                self.held.remove(id.as_str());
+                self.role_notes.remove(id.as_str());
             }
             _ => {}
         }

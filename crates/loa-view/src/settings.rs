@@ -7,3 +7,4 @@ pub mod models;
 pub mod peers;
 pub mod projects;
 pub mod updates;
+pub mod workflows;

@@ -15,7 +15,7 @@ use loa_view::theme::Icon;
 
 loa_util::str_enum! {
     /// The pages of the models screen.
-    pub Page { SignIn => "Sign in", Model => "Model", Settings => "Settings" }
+    pub Page { SignIn => "Sign in", Model => "Model", Settings => "Settings", Workflows => "Workflows" }
 }
 
 /// The screen showing `page`: the page switch and close button, then `body`.

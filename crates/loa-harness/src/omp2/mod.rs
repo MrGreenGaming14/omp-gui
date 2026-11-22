@@ -245,6 +245,9 @@ impl Omp2Adapter {
         if config.context.is_some() {
             return refuse("injecting project context over omp2 RPC");
         }
+        if config.instructions.is_some() {
+            return refuse("system instructions over omp2 RPC");
+        }
         if config.model_role.is_some() || config.mode.is_some_and(|mode| mode != SessionMode::Normal) {
             return refuse("model roles or mode over omp2 RPC");
         }

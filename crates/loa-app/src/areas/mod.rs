@@ -19,6 +19,7 @@ pub mod sessions;
 pub mod surfaces;
 pub mod tools;
 pub mod updater;
+pub mod workflows;
 
 /// Makes an area and its first task.
 type Boot = fn(&mut Ctx) -> (Box<dyn AreaDyn>, Task<Message>);
@@ -41,6 +42,7 @@ pub const AREAS: &[Boot] = &[
     boot::<updater::State>,
     boot::<sandbox::State>,
     boot::<agents::State>,
+    boot::<workflows::State>,
 ];
 
 /// Every area's state, in [`AREAS`] order.

@@ -4926,6 +4926,7 @@ dependencies = [
  "loa-bus",
  "loa-contracts",
  "loa-core",
+ "loa-settings",
  "loa-util",
  "tempfile",
  "thiserror 2.0.21",
