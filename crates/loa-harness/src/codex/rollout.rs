@@ -91,8 +91,10 @@ impl NativeCodec for CodexNative {
         Ok(writer.flush()?)
     }
 
+    /// `$CODEX_HOME/sessions` when `CODEX_HOME` is set, as Codex itself reads it, else `~/.codex/sessions`.
     fn discover(home: &Path) -> Vec<NativeSession> {
-        let files = native::walk(&home.join(".codex/sessions"), 3, &|name| name.starts_with("rollout-") && name.ends_with(".jsonl"));
+        let codex_home = std::env::var_os("CODEX_HOME").filter(|dir| !dir.is_empty()).map_or_else(|| home.join(".codex"), std::path::PathBuf::from);
+        let files = native::walk(&codex_home.join("sessions"), 3, &|name| name.starts_with("rollout-") && name.ends_with(".jsonl"));
         files.into_iter().filter_map(|path| NativeSession::at(HARNESS, path, None, None)).collect()
     }
 }

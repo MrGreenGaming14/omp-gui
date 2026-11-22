@@ -52,7 +52,8 @@ pub(crate) async fn connect<H: ClientHandler>(spec: &ServerSpec, handler: H, htt
     let failed = |message: String| Error::Connect { server: spec.name.clone(), message };
     let (serving, stderr) = match &spec.transport {
         Transport::Stdio(stdio) => {
-            let mut command = tokio::process::Command::new(loa_util::exec::resolve(std::path::Path::new(&stdio.command)));
+            let path_var = stdio.env.iter().find(|(key, _)| loa_util::exec::is_path_var(key)).map(|(_, value)| std::ffi::OsStr::new(value));
+            let mut command = tokio::process::Command::new(loa_util::exec::resolve_in(std::path::Path::new(&stdio.command), path_var));
             command.args(&stdio.args).envs(&stdio.env);
             if let Some(cwd) = &stdio.cwd {
                 #[cfg(windows)]

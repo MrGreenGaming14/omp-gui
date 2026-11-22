@@ -206,6 +206,13 @@ fn persisted_key_does_not_inherit_access() {
     let entries = text.lines().take_while(|line| !line.trim().is_empty()).count();
     assert_eq!(entries, 1, "{text}");
     assert!(!text.contains("(I)"), "{text}");
+    // The one entry grants the current user full control, not just anyone.
+    let who = std::process::Command::new("whoami").output().unwrap();
+    assert!(who.status.success(), "{who:?}");
+    let account = String::from_utf8_lossy(&who.stdout).trim().to_lowercase();
+    assert!(!account.is_empty());
+    let ace = text.lines().next().unwrap().to_lowercase();
+    assert!(ace.contains(&format!("{account}:(f)")), "expected {account} with (F) in: {text}");
 }
 
 #[test]
