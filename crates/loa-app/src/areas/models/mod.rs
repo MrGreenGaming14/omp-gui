@@ -266,6 +266,28 @@ impl State {
         current
     }
 
+    /// The role the shown session's next start or resume was picked through
+    /// but not applied yet: a workflow picked while no omp session ran.
+    pub(crate) fn pending_role(&self, ctx: &Ctx) -> Option<String> {
+        let key = ctx.sessions.active().map(|session| session.id().to_string());
+        self.pending().get(&key).filter(|pending| pending.harness == OMP).and_then(|pending| pending.model.as_ref()?.1.clone())
+    }
+
+    /// Starts the shown session's next start or resume on `model`, picked
+    /// through `role`.
+    pub(crate) fn pick_role(&mut self, model: String, role: String, ctx: &mut Ctx) {
+        let key = ctx.sessions.active().map(|session| session.id().to_string());
+        {
+            let mut pending = self.pending();
+            let chosen = pending.entry(key).or_insert_with(|| Pending { harness: OMP.to_owned(), ..Pending::default() });
+            if chosen.harness != OMP {
+                *chosen = Pending { harness: OMP.to_owned(), ..Pending::default() };
+            }
+            chosen.model = Some((model, Some(role)));
+        }
+        self.sync(ctx);
+    }
+
     /// Switches the active session to `model` (a harness model id), picked
     /// through `role` when that is set.
     fn choose(&mut self, model: String, role: Option<String>, ctx: &mut Ctx) -> Task<Message> {

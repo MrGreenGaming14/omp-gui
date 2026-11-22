@@ -101,7 +101,9 @@ pub enum Message {
     /// The advisor reviewed `turn`.
     Advised { session: SessionId, turn: NodeId, result: Result<Option<String>, String> },
     /// A role switch finished: the role and the model picked.
-    RoleSet(Result<(String, String), String>),
+    /// The role switch asked of `session` finished: the role and the model it
+    /// runs on, or why it didn't switch.
+    RoleSet { session: String, result: Result<(String, String), String> },
     Transfer(transfer::Message),
     /// Current time, unix ms, for the Agents tab.
     Tick(i64),
@@ -166,8 +168,8 @@ pub struct State {
     /// The fork or rewind being started, to show the Session tab once it
     /// is active.
     branching: Option<String>,
-    /// omp's model roles, cached by the mtime of the config file they came from.
-    roles: RefCell<Option<(SystemTime, Roles)>>,
+    /// omp's model roles, cached by the config file they came from and its mtime.
+    roles: RefCell<Option<(PathBuf, SystemTime, Roles)>>,
 }
 
 /// omp's model roles with their candidate models in order.
@@ -243,16 +245,17 @@ impl State {
     }
 
     /// omp's model roles, read again only when its config file changed.
-    fn roles(&self) -> Result<Roles, String> {
-        let mtime = std::fs::metadata(model_roles_path(&self.home)).and_then(|meta| meta.modified()).ok();
-        if let (Some(mtime), Some((cached, roles))) = (mtime, self.roles.borrow().as_ref())
+    fn roles(&self, config: &Path) -> Result<Roles, String> {
+        let mtime = std::fs::metadata(config).and_then(|meta| meta.modified()).ok();
+        if let (Some(mtime), Some((path, cached, roles))) = (mtime, self.roles.borrow().as_ref())
+            && path == config
             && *cached == mtime
         {
             return Ok(roles.clone());
         }
-        let roles = model_roles(&self.home)?;
+        let roles = model_roles(config)?;
         if let Some(mtime) = mtime {
-            *self.roles.borrow_mut() = Some((mtime, roles.clone()));
+            *self.roles.borrow_mut() = Some((config.to_owned(), mtime, roles.clone()));
         }
         Ok(roles)
     }
@@ -506,26 +509,35 @@ impl State {
             ctx.notify("Open a session to switch its model role");
             return Task::none();
         };
+        let id = session.id().to_string();
         let Some(harness) = session.harness().cloned() else {
-            ctx.notify("Model roles switch a running session: send a message to resume it first");
+            let error = "Model roles switch a running session: send a message to resume it first";
+            ctx.notify(error);
+            report_role_failure(ctx, id, error.to_owned());
             return Task::none();
         };
-        let Some(root) = session.dom().root().map(|root| root.id) else { return Task::none() };
-        let candidates = match self.roles() {
+        let Some(root) = session.dom().root().map(|root| root.id) else {
+            report_role_failure(ctx, id, "The session has no root".to_owned());
+            return Task::none();
+        };
+        let candidates = match self.roles(&ctx.services.omp_agent_dir.config()) {
             Ok(roles) => match roles.iter().find(|(name, _)| *name == role) {
                 Some((_, models)) => models.clone(),
                 None => {
                     let names: Vec<&str> = roles.iter().map(|(name, _)| name.as_str()).collect();
-                    ctx.notify(if role.is_empty() {
+                    let error = if role.is_empty() {
                         format!("Name a model role: /role <{}>", names.join("|"))
                     } else {
                         format!("omp has no model role {role}; its roles: {}", names.join(", "))
-                    });
+                    };
+                    ctx.notify(error.clone());
+                    report_role_failure(ctx, id, error);
                     return Task::none();
                 }
             },
             Err(error) => {
-                ctx.notify(error);
+                ctx.notify(error.clone());
+                report_role_failure(ctx, id, error);
                 return Task::none();
             }
         };
@@ -538,7 +550,7 @@ impl State {
                     .map(|model| (role, model))
                     .map_err(|error| error.to_string())
             },
-            Message::RoleSet,
+            move |result| Message::RoleSet { session: id.clone(), result },
         )
     }
 
@@ -837,16 +849,22 @@ fn name(library: &loa_features::library::Library, id: &str, title: &str) -> Resu
     Ok(())
 }
 
-/// Where omp keeps its config, `modelRoles` included.
-fn model_roles_path(home: &Path) -> PathBuf {
-    home.join(".omp/agent/config.yml")
+/// Tells the workflows area how a role switch of `session` ended, so it can
+/// note the switch for the model and release what waited for it.
+fn tell_workflows(ctx: &mut Ctx, session: String, result: Result<String, String>) {
+    let message = crate::areas::workflows::Message::RoleSwitched { session, result };
+    ctx.request(Request::Forward(Box::new(crate::app::Message::Workflows(message))));
 }
 
-/// omp's model roles (`modelRoles` in `~/.omp/agent/config.yml`) with their
-/// candidate models in order.
-fn model_roles(home: &Path) -> Result<Roles, String> {
-    let path = model_roles_path(home);
-    let config = loa_models::config::OmpConfig::load(&path).map_err(|error| format!("Can't read {}: {error}", path.display()))?;
+/// A role switch that failed before it started.
+fn report_role_failure(ctx: &mut Ctx, session: String, error: String) {
+    tell_workflows(ctx, session, Err(error));
+}
+
+/// omp's model roles (`modelRoles` in its `config.yml`, at `path`) with
+/// their candidate models in order.
+fn model_roles(path: &Path) -> Result<Roles, String> {
+    let config = loa_models::config::OmpConfig::load(path).map_err(|error| format!("Can't read {}: {error}", path.display()))?;
     let roles = config.model_roles().map_err(|error| format!("Can't read the model roles in {}: {error}", path.display()))?;
     Ok(roles.into_iter().map(|role| (role.role, role.candidates.iter().map(ToString::to_string).collect())).collect())
 }
@@ -957,11 +975,18 @@ impl Area for State {
                 }
                 Task::none()
             }
-            Message::RoleSet(result) => {
-                match result {
-                    Ok((role, model)) => ctx.notify(format!("Model role {role}: {model}")),
-                    Err(error) => ctx.notify(format!("Can't switch the model role: {error}")),
-                }
+            Message::RoleSet { session, result } => {
+                let switched = match result {
+                    Ok((role, model)) => {
+                        ctx.notify(format!("Model role {role}: {model}"));
+                        Ok(role)
+                    }
+                    Err(error) => {
+                        ctx.notify(format!("Can't switch the model role: {error}"));
+                        Err(error)
+                    }
+                };
+                tell_workflows(ctx, session, switched);
                 Task::none()
             }
             Message::Transfer(message) => {
@@ -996,7 +1021,7 @@ impl Area for State {
                 palette::Command::new(AreaId::Sessions.command("export"), "Export session as native file", "Session"),
                 palette::Command::new(AreaId::Sessions.command("export-xml"), "Export session as XML (debug)", "Session"),
             ]);
-            if let Ok(roles) = self.roles() {
+            if let Ok(roles) = self.roles(&ctx.services.omp_agent_dir.config()) {
                 commands.extend(roles.into_iter().map(|(role, models)| {
                     let id = AreaId::Sessions.command(&format!("{ROLE_COMMAND}{role}"));
                     let first = models.first().map_or("no model", String::as_str);

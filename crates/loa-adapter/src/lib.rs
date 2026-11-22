@@ -115,6 +115,10 @@ pub struct SessionConfig {
     /// Project context (digests, shared instructions) to deliver in the way
     /// [`Capabilities::context_delivery`] declares.
     pub context: Option<String>,
+    /// Extra system instructions the harness should add to its system prompt
+    /// (omp: `--append-system-prompt`). Harnesses without such a channel
+    /// ignore it.
+    pub instructions: Option<String>,
     pub mcp_servers: Vec<McpServerSpec>,
     pub host_tools: Vec<HostToolSpec>,
     /// Required when `host_tools` isn't empty.

@@ -137,7 +137,13 @@ pub(crate) fn ghost(open: bool) -> impl Fn(&Theme, button::Status) -> button::St
         let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
         button::Style {
             background: (open || hovered).then_some(Background::Color(t.hover)),
-            text_color: if open || hovered { t.text } else { t.text2 },
+            text_color: if matches!(status, button::Status::Disabled) {
+                t.text3
+            } else if open || hovered {
+                t.text
+            } else {
+                t.text2
+            },
             border: Border { radius: RADIUS.into(), ..Border::default() },
             ..button::Style::default()
         }

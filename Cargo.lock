@@ -4773,6 +4773,7 @@ dependencies = [
  "loa-ui-terminal",
  "loa-ui-tools",
  "loa-ui-updates",
+ "loa-ui-workflows",
  "loa-updater",
  "rand 0.10.4",
  "russh",
@@ -5464,6 +5465,15 @@ dependencies = [
  "loa-ui-icons",
  "loa-updater",
  "semver",
+]
+
+[[package]]
+name = "loa-ui-workflows"
+version = "0.1.0"
+dependencies = [
+ "iced",
+ "iced_test",
+ "loa-ui-icons",
 ]
 
 [[package]]

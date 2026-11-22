@@ -572,3 +572,88 @@ fn the_project_chip_picks_a_project_or_none() {
     assert_eq!(act(&mut state, Message::ProjectPicked(None)), Some(Event::ProjectPicked(None)));
     let _ = state.view();
 }
+
+fn workflow_options() -> Vec<WorkflowOption> {
+    vec![
+        WorkflowOption { role: "DEEP".into(), label: "Deep".into() },
+        WorkflowOption { role: "CODE".into(), label: "Code".into() },
+    ]
+}
+
+#[test]
+fn workflow_picker_lists_options_and_reports_changes() {
+    let mut state = State::new();
+    state.set_workflows(workflow_options(), Some("DEEP".into()), true);
+    assert_eq!(state.workflow(), Some("DEEP"));
+    assert_eq!(state.pickers.workflows, workflow_options());
+    act(&mut state, Message::PickerToggled(Picker::Workflow));
+    assert_eq!(state.pickers.open, Some(Picker::Workflow));
+    let _ = state.view();
+
+    assert_eq!(act(&mut state, Message::WorkflowPicked("DEEP".into())), None, "the active role again changes nothing");
+    assert_eq!(state.pickers.open, None, "picking closes the menu");
+    assert_eq!(act(&mut state, Message::WorkflowPicked("CODE".into())), Some(Event::WorkflowChanged("CODE".into())));
+    assert_eq!(state.workflow(), Some("CODE"));
+}
+
+#[test]
+fn workflow_chip_is_labelled_with_the_active_workflow_or_default() {
+    let mut state = State::new();
+    state.set_workflows(workflow_options(), None, true);
+    let mut ui = iced_test::simulator(state.view());
+    assert!(ui.find("Default").is_ok());
+    drop(ui);
+    state.set_workflows(workflow_options(), Some("CODE".into()), true);
+    let mut ui = iced_test::simulator(state.view());
+    assert!(ui.find("Code").is_ok());
+    assert!(ui.find("Rules").is_ok());
+}
+
+#[test]
+fn workflow_picker_and_rules_button_open_the_manager() {
+    let mut state = State::new();
+    state.set_workflows(workflow_options(), None, true);
+    assert_eq!(act(&mut state, Message::ManageWorkflows), Some(Event::ManageWorkflows));
+
+    // The "Edit workflows…" row and the Rules button, pressed in the view.
+    act(&mut state, Message::PickerToggled(Picker::Workflow));
+    let messages: Vec<Message> = {
+        let mut ui = iced_test::simulator(state.view());
+        ui.click("Edit workflows…").expect("the row is in the open menu");
+        ui.into_messages().collect()
+    };
+    assert_eq!(messages, vec![Message::ManageWorkflows]);
+
+    state.pickers.open = None;
+    let messages: Vec<Message> = {
+        let mut ui = iced_test::simulator(state.view());
+        ui.click("Rules").expect("the Rules button is in the view");
+        ui.into_messages().collect()
+    };
+    assert_eq!(messages, vec![Message::ManageWorkflows]);
+}
+
+#[test]
+fn workflow_controls_are_inert_when_disabled() {
+    let mut state = State::new();
+    state.set_workflows(workflow_options(), Some("DEEP".into()), false);
+    assert_eq!(act(&mut state, Message::PickerToggled(Picker::Workflow)), None);
+    assert_eq!(state.pickers.open, None);
+    assert_eq!(act(&mut state, Message::ManageWorkflows), None);
+    assert_eq!(act(&mut state, Message::WorkflowPicked("CODE".into())), None);
+    assert_eq!(state.workflow(), Some("DEEP"));
+
+    let messages: Vec<Message> = {
+        let mut ui = iced_test::simulator(state.view());
+        let _ = ui.click("Rules");
+        let _ = ui.click("Deep");
+        ui.into_messages().collect()
+    };
+    assert!(messages.is_empty(), "{messages:?}");
+
+    // Disabling closes an open menu.
+    state.set_workflows(workflow_options(), Some("DEEP".into()), true);
+    act(&mut state, Message::PickerToggled(Picker::Workflow));
+    state.set_workflows(workflow_options(), Some("DEEP".into()), false);
+    assert_eq!(state.pickers.open, None);
+}

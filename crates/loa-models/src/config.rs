@@ -152,7 +152,7 @@ impl std::fmt::Display for Selector {
     }
 }
 
-fn validate_role_name(role: &str) -> Result<()> {
+pub(crate) fn validate_role_name(role: &str) -> Result<()> {
     if role.is_empty()
         || !role
             .chars()
