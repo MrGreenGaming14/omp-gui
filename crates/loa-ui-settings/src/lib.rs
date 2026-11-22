@@ -11,6 +11,7 @@ pub mod models;
 pub mod peers;
 pub mod projects;
 pub mod updates;
+pub mod workflows;
 
 use iced::widget::{Space, button, checkbox, column, container, pick_list, row, scrollable, text, text_input};
 use iced::{Alignment, Element, Fill};

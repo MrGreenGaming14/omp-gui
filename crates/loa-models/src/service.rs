@@ -186,6 +186,24 @@ impl Backend {
         }
     }
 
+    /// Loads omp's workflows and the snapshot used to guard later edits.
+    pub async fn load_workflows(&self) -> loa_settings::models::error::Result<(Vec<loa_settings::models::workflows::Workflow>, loa_settings::models::workflows::WorkflowSnapshot)> {
+        let files = self.files().await.map_err(|error| loa_settings::models::error::Error::invalid("files", error))?;
+        loa_settings::models::workflows::WorkflowFiles::new(&files).load()
+    }
+
+    /// Saves against the exact files last loaded.
+    pub async fn save_workflow(&self, workflow: &loa_settings::models::workflows::Workflow, previous_role: Option<&str>, snapshot: &loa_settings::models::workflows::WorkflowSnapshot) -> loa_settings::models::error::Result<()> {
+        let files = self.files().await.map_err(|error| loa_settings::models::error::Error::invalid("files", error))?;
+        loa_settings::models::workflows::WorkflowFiles::new(&files).save(workflow, previous_role, snapshot, self.inner.validator.as_ref()).await
+    }
+
+    /// Deletes against the exact files last loaded.
+    pub async fn delete_workflow(&self, role: &str, snapshot: &loa_settings::models::workflows::WorkflowSnapshot) -> loa_settings::models::error::Result<()> {
+        let files = self.files().await.map_err(|error| loa_settings::models::error::Error::invalid("files", error))?;
+        loa_settings::models::workflows::WorkflowFiles::new(&files).delete(role, snapshot, self.inner.validator.as_ref()).await
+    }
+
     fn provider_names(&self) -> HashMap<String, String> {
         self.inner.login_providers.locked().iter().map(|p| (p.id.clone(), p.name.clone())).collect()
     }

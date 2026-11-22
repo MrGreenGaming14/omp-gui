@@ -33,4 +33,5 @@ pub mod models_yml;
 pub mod rpc;
 pub mod selector;
 pub mod settings;
+pub mod workflows;
 pub mod yaml;

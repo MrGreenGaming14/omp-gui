@@ -67,6 +67,10 @@ pub enum Message {
     Login(view::ProviderKey, LoginUpdate),
     Picker(picker::Message),
     RoleAssigned(Result<(), String>),
+    /// Pick omp model role `0` for the active session, or for the next one when none runs.
+    PickRole(String),
+    /// The model and thinking level of the role picked with no running session.
+    PendingRole { session: Option<String>, harness: String, role: String, result: Result<(String, Option<String>), String> },
     SettingsLoaded(Result<SettingsLoad, String>),
     Settings(settings::Message),
     Saved(Result<ModelSettings, Vec<ValidationError>>),
@@ -152,6 +156,11 @@ impl State {
 
     /// Shows `page` and reads what it shows.
     fn show(&mut self, page: Page, ctx: &mut Ctx) -> Task<Message> {
+        if matches!(page, Page::Workflows) {
+            // The workflows area draws that page with its own screen.
+            ctx.request(crate::area::Request::Forward(Box::new(crate::app::Message::area(crate::areas::workflows::Message::Open))));
+            return Task::none();
+        }
         self.page = page;
         ctx.show_screen(Self::ID);
         match page {
@@ -162,6 +171,7 @@ impl State {
                 self.read_providers()
             }
             Page::Model => self.load_picker(ctx),
+            Page::Workflows => Task::none(),
             Page::Settings => {
                 // Unsaved edits stay when the page is shown again.
                 if let Load::Ready(state) = &self.settings
@@ -404,9 +414,35 @@ impl State {
         }
     }
 
+    /// Picks omp model role `role` as `/role` does for a running session; with none, the next
+    /// session starts on the role's first model and thinking level, read from `config.yml`.
+    fn pick_role(&mut self, role: String, ctx: &mut Ctx) -> Task<Message> {
+        if ctx.runtime.sessions().active().and_then(Session::harness).is_some() {
+            ctx.request(crate::area::Request::Forward(Box::new(crate::app::Message::RunCommand(format!("sessions.role.{role}")))));
+            return Task::none();
+        }
+        let session = ctx.runtime.sessions().active_id().map(ToString::to_string);
+        let harness = Self::harness_id(ctx).to_owned();
+        let backend = self.backend.clone();
+        let picked = role.clone();
+        Task::perform(async move {
+            let files = backend.files().await?;
+            let roles = crate::areas::sessions::model_roles(&files.config())?;
+            let (_, candidates) = roles.into_iter().find(|(name, _)| *name == picked).ok_or_else(|| format!("omp has no model role {picked}"))?;
+            let candidate = candidates.first().ok_or_else(|| format!("No model for model role {picked}"))?;
+            let selector = loa_settings::models::selector::Selector::parse(candidate).map_err(|error| error.to_string())?;
+            let model = selector.model_name().ok_or_else(|| format!("The role alias {candidate} can't be used as a model"))?;
+            Ok((model.to_owned(), selector.thinking().map(str::to_owned)))
+        }, move |result| Message::PendingRole { session: session.clone(), harness: harness.clone(), role: role.clone(), result })
+    }
+
     fn picker_event(&mut self, event: view::picker::Intent, ctx: &mut Ctx) -> Task<Message> {
         match event {
             view::picker::Intent::SetSessionModel(change) => {
+                if let Some(role) = change.role.clone() {
+                    ctx.close_screen();
+                    return self.pick_role(role, ctx);
+                }
                 let Load::Ready(picker) = &self.picker.1 else { return Task::none() };
                 let model = picker.ids.get(&model_ref_from_view(change.model.clone())).cloned().unwrap_or_else(|| change.model.selector());
                 ctx.close_screen();
@@ -481,6 +517,7 @@ impl State {
                 Load::Loading => screen::status("Reading omp's model settings…"),
                 Load::Failed(error) => screen::status(error.as_str()),
             },
+            Page::Workflows => screen::status("Reading workflows…"),
         }
     }
 }
@@ -506,6 +543,17 @@ impl Area for State {
     fn update(&mut self, message: Message, ctx: &mut Ctx) -> Task<Message> {
         match message {
             Message::Model(model) => self.choose(model.id, model.role, ctx),
+            Message::PickRole(role) => self.pick_role(role, ctx),
+            Message::PendingRole { session, harness, role, result } => {
+                match result {
+                    Ok((model, effort)) => {
+                        self.pending.locked().insert(session, Pending { harness, model: Some((model, Some(role))), effort });
+                        self.sync(ctx);
+                    }
+                    Err(error) => ctx.notify(error),
+                }
+                Task::none()
+            }
             Message::Effort(effort) => self.set_effort(effort, ctx),
             Message::Action(id) => match ACTIONS.iter().find(|(action, _, _)| *action == id) {
                 Some((_, _, page)) => self.show(*page, ctx),

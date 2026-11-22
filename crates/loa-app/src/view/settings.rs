@@ -6,3 +6,4 @@ pub mod agents;
 pub mod models;
 pub mod projects;
 pub mod updates;
+pub mod workflows;

@@ -74,6 +74,19 @@ pub struct Workspace {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Label(pub String);
 
+/// The source of a workflow's rules.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WorkflowKind { Managed, HandWritten, #[default] None }
+
+/// A workflow offered by the composer.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WorkflowOption {
+    pub role: String,
+    pub label: String,
+    pub kind: WorkflowKind,
+    pub current: bool,
+}
+
 /// What the composer asks the app to do.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Intent {
@@ -102,4 +115,6 @@ pub enum Intent {
     /// A project was picked in the project chip: the shown session moves there, or new
     /// sessions join it. `None` is "No project".
     ProjectPicked(Option<String>),
+    WorkflowPicked(String),
+    OpenRules,
 }

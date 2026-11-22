@@ -90,16 +90,22 @@ pub fn spawn_options(adapter: &OmpAdapterConfig, session: &SessionConfig, target
             let overlay = write_state_file(&adapter.state_dir, "memory-off.yml", super::MEMORY_OFF)?;
             opts.args.push("--config".into());
             opts.args.push(overlay.into());
-            if let Some(context) = session.context.as_deref().filter(|c| !c.trim().is_empty()) {
-                let name = format!("context-{}.md", file_safe(&session.session_id));
-                let file = write_state_file(&adapter.state_dir, &name, context)?;
-                // A file path, never the text: omp reads an argument that
-                // names an existing file as that file.
-                opts.args.push("--append-system-prompt".into());
-                opts.args.push(file.into());
-            }
         }
         MemoryMode::OmpMemory => {}
+    }
+    let context = (adapter.memory == MemoryMode::AppDigests).then_some(session.context.as_deref()).flatten().filter(|s| !s.trim().is_empty());
+    let instructions = session.instructions.as_deref().filter(|s| !s.trim().is_empty());
+    let prompt = match (context, instructions) {
+        (Some(context), Some(instructions)) => Some(format!("{context}\n\n{instructions}")),
+        (Some(text), None) | (None, Some(text)) => Some(text.to_owned()),
+        (None, None) => None,
+    };
+    if let Some(prompt) = prompt {
+        let name = format!("context-{}.md", file_safe(&session.session_id));
+        let file = write_state_file(&adapter.state_dir, &name, &prompt)?;
+        // omp reads an argument naming an existing file as that file.
+        opts.args.push("--append-system-prompt".into());
+        opts.args.push(file.into());
     }
     if let Some(dir) = &adapter.session_dir {
         opts.args.push("--session-dir".into());
@@ -171,4 +177,57 @@ pub fn split_selector(selector: &str) -> Result<(&str, &str)> {
         .split_once('/')
         .filter(|(p, m)| !p.is_empty() && !m.is_empty())
         .ok_or_else(|| AdapterError::Protocol(format!("model `{selector}` isn't a provider/model selector")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn launch_delivers_instructions_in_both_memory_modes() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = SessionConfig {
+            session_id: "role-test".into(),
+            context: Some("Project context".into()),
+            instructions: Some("Role instructions".into()),
+            ..Default::default()
+        };
+        for (mode, expected) in [
+            (MemoryMode::AppDigests, "Project context\n\nRole instructions"),
+            (MemoryMode::OmpMemory, "Role instructions"),
+        ] {
+            let mut adapter = OmpAdapterConfig::new("owner", dir.path());
+            adapter.memory = mode;
+            let opts = spawn_options(&adapter, &session, &Target::New).unwrap();
+            let positions: Vec<_> = opts.args.iter().enumerate().filter(|(_, arg)| *arg == "--append-system-prompt").map(|(i, _)| i).collect();
+            assert_eq!(positions.len(), 1);
+            assert_eq!(std::fs::read_to_string(Path::new(&opts.args[positions[0] + 1])).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn context_is_only_delivered_in_app_digest_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = SessionConfig { context: Some("Digest".into()), ..Default::default() };
+        let mut adapter = OmpAdapterConfig::new("owner", dir.path());
+        let opts = spawn_options(&adapter, &session, &Target::New).unwrap();
+        let overlay = opts.args.iter().position(|arg| arg == "--config").unwrap();
+        assert_eq!(std::fs::read_to_string(Path::new(&opts.args[overlay + 1])).unwrap(), super::super::MEMORY_OFF);
+        let prompt = opts.args.iter().position(|arg| arg == "--append-system-prompt").unwrap();
+        assert_eq!(std::fs::read_to_string(Path::new(&opts.args[prompt + 1])).unwrap(), "Digest");
+
+        adapter.memory = MemoryMode::OmpMemory;
+        let opts = spawn_options(&adapter, &session, &Target::New).unwrap();
+        assert!(!opts.args.iter().any(|arg| arg == "--config" || arg == "--append-system-prompt"));
+    }
+
+    #[test]
+    fn instructions_without_context_are_delivered() {
+        let dir = tempfile::tempdir().unwrap();
+        let adapter = OmpAdapterConfig::new("owner", dir.path());
+        let session = SessionConfig { instructions: Some("Role: DEEP".into()), ..Default::default() };
+        let opts = spawn_options(&adapter, &session, &Target::New).unwrap();
+        let prompt = opts.args.iter().position(|arg| arg == "--append-system-prompt").unwrap();
+        assert_eq!(std::fs::read_to_string(Path::new(&opts.args[prompt + 1])).unwrap(), "Role: DEEP");
+    }
 }

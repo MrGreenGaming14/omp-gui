@@ -135,6 +135,8 @@ pub enum Request {
     DetachSession(String),
     /// Send a prompt to the active session (resuming it when needed).
     Prompt(Prompt),
+    /// Release a queued prompt held for this session's role switch.
+    ReleaseRoleQueue(String),
     /// Add the panel tab with this id when it isn't listed, and show it.
     OpenTab(String),
     /// Add the panel tab with this id when it isn't listed, without taking

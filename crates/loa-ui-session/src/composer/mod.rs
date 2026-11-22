@@ -22,7 +22,7 @@ use loa_ui_kit::icons::{colored, icon, muted};
 use loa_ui_kit::style::{self as kit, ButtonKind, Surface, Tone};
 use loa_ui_kit::theme::{ColorRole, LayoutRole, SpaceRole as Sp, TextRole as T, for_theme, sp, text_size as ts, width};
 use loa_ui_kit::widgets::{Picker, popover};
-use loa_view::session::composer::{AccessOption, Command, HarnessOption, Intent, Label, ModelOption, PastedImage, PickerAction, Workspace};
+use loa_view::session::composer::{AccessOption, Command, HarnessOption, Intent, Label, ModelOption, PastedImage, PickerAction, WorkflowOption, Workspace};
 use loa_view::session::{Attachment, Prompt, SessionMode};
 use loa_view::theme::Icon;
 use std::borrow::Cow;
@@ -72,10 +72,11 @@ opt!(ModelOption, |s| &s.id, &s.name, Some(s.role.as_ref().map_or(Cow::Borrowed(
 opt!(AccessOption, |s| &s.id, &s.label, Some(Cow::Borrowed(s.detail.as_str())), true);
 opt!(Workspace, |s| &s.full, &s.path, s.branch.as_deref().map(Cow::Borrowed), true);
 opt!(Label, |s| &s.0, &s.0, None, true);
+opt!(WorkflowOption, |s| &s.role, &s.label, None, true);
 
 /// One of the composer's pickers.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum PickerId { Harness, Model, Effort, Access, Mode, Folder, Project }
+pub enum PickerId { Harness, Model, Workflow, Effort, Access, Mode, Folder, Project }
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Message {
@@ -113,6 +114,7 @@ pub enum Message {
     EffortSlid(u8),
     /// The effort slider was let go: its level applies.
     EffortReleased,
+    OpenRules,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -130,6 +132,8 @@ pub(crate) struct Pickers {
     folders: Vec<Workspace>,
     /// [`NO_PROJECT`], then the project names; the chip shows even with none.
     project: Picker<Label>,
+    workflow: Picker<WorkflowOption>,
+    workflows_enabled: bool,
     pub(crate) open: Option<PickerId>,
 }
 
@@ -297,6 +301,16 @@ impl State {
     pub fn set_harnesses(&mut self, harnesses: Vec<HarnessOption>, current: Option<&str>) { self.pickers.harness = select_by(harnesses, current) }
     pub fn harness(&self) -> Option<&HarnessOption> { chosen(&self.pickers.harness) }
 
+    /// Sets the available workflows and whether this harness supports them.
+    pub fn set_workflows(&mut self, options: Vec<WorkflowOption>, enabled: bool) {
+        let selected = options.iter().position(|option| option.current);
+        self.pickers.workflow = Picker { options, selected, open: false };
+        self.pickers.workflows_enabled = enabled;
+        if !enabled && self.pickers.open == Some(PickerId::Workflow) { self.pickers.open = None; }
+    }
+
+    pub fn workflow(&self) -> Option<&WorkflowOption> { chosen(&self.pickers.workflow) }
+
     /// The projects the project chip offers, and the current one (`None`: no project).
     pub fn set_projects(&mut self, projects: Vec<String>, current: Option<String>) {
         let options: Vec<Label> = std::iter::once(NO_PROJECT.to_owned()).chain(projects).map(Label).collect();
@@ -413,10 +427,14 @@ impl State {
             }
             Message::Queue(id, text) => self.queue.edit(id, text).then(|| self.queue_changed()),
             Message::Toggle(picker) => {
-                self.pickers.open = (self.pickers.open != Some(picker)).then_some(picker);
+                self.pickers.open = (self.pickers.open != Some(picker) && (picker != PickerId::Workflow || self.pickers.workflows_enabled)).then_some(picker);
                 None
             }
             Message::Pick(picker, index) => self.pick(picker, index),
+            Message::OpenRules => {
+                self.pickers.open = None;
+                self.pickers.workflows_enabled.then_some(Intent::OpenRules)
+            }
             Message::PickerClosed => None,
             Message::Composing(composing) => {
                 self.composing = composing;
@@ -453,6 +471,9 @@ impl State {
             PickerId::Harness => select(&mut p.harness, i).map(|h| Intent::HarnessChanged(h.id)),
             PickerId::Model if i >= p.model.options.len() => Some(Intent::ModelAction(p.model_actions.get(i - p.model.options.len())?.id.clone())),
             PickerId::Model => select(&mut p.model, i).map(Intent::ModelChanged),
+            PickerId::Workflow if !p.workflows_enabled => None,
+            PickerId::Workflow if i == p.workflow.options.len() => Some(Intent::OpenRules),
+            PickerId::Workflow => select(&mut p.workflow, i).map(|w| Intent::WorkflowPicked(w.role)),
             PickerId::Effort => select(&mut p.effort, i).map(|e| Intent::EffortChanged(e.0)),
             PickerId::Access => select(&mut p.access, i).map(|a| Intent::AccessChanged(a.id)),
             PickerId::Mode => select(&mut p.mode, i).map(|_| Intent::ModeChanged(SessionMode::ALL[i])),
@@ -471,6 +492,7 @@ impl State {
         match picker {
             PickerId::Harness => &p.harness,
             PickerId::Model => &p.model,
+            PickerId::Workflow => &p.workflow,
             PickerId::Effort => &p.effort,
             PickerId::Access => &p.access,
             PickerId::Mode => &p.mode,
@@ -501,11 +523,14 @@ impl State {
         let chips = [
             (PickerId::Harness, Icon::Bot, p.harness.len() > 1, self.harness().map_or("Harness".into(), |h| h.label.clone())),
             (PickerId::Model, Icon::Sparkles, p.model.len() + p.model_actions.len() > 0, chosen(&p.model).map_or("Model".into(), |m| short_model_name(&m.name))),
+            (PickerId::Workflow, Icon::GitFork, true, chosen(&p.workflow).map_or("Default".into(), |w| w.label.clone())),
             (PickerId::Effort, Icon::Brain, p.effort.len() > 0, capitalized(chosen(&p.effort).map_or("Effort", |e| e.0.as_str()))),
             (PickerId::Access, Icon::Shield, p.access.len() > 0, chosen(&p.access).map_or("Permissions".into(), |a| a.label.clone())),
         ];
         let controls = row![tip(mention.on_press(Message::MentionPressed), MENTION_LABEL)].spacing(sp(Sp::Xs)).align_y(Center);
         let controls = controls.extend(chips.into_iter().filter(|c| c.2).map(|(id, glyph, _, label)| self.chip(id, glyph, label, false)));
+        let rules = button(text("Rules").size(ts(T::Label))).padding([sp(Sp::Xs), sp(Sp::S)]).style(kit::button(ButtonKind::Ghost)).on_press_maybe(p.workflows_enabled.then_some(Message::OpenRules));
+        let controls = controls.push(if p.workflows_enabled { rules.into() } else { tip(rules, "Available with OMP sessions") });
         let controls = controls.push(space::horizontal()).push(tip(action.style(kit::button(ButtonKind::Accent)).on_press_maybe(on_press), label));
         let controls = container(controls).padding(Padding { top: sp(Sp::Xs), ..Padding::new(sp(Sp::M)) });
         let editor = container(editor).padding(Padding { bottom: 0.0, ..Padding::new(sp(Sp::M)) });
@@ -538,7 +563,9 @@ impl State {
         let chevron = icon(if open { Icon::ChevronUp } else { Icon::ChevronDown }, ts(T::Caption)).style(kit::tint(Tone::Faint));
         let content = row![content, chevron].spacing(if compact { sp(Sp::Xs) } else { sp(Sp::S) }).align_y(Center);
         let padding = if compact { [sp(Sp::Xs) / 2.0, sp(Sp::Xs)] } else { [sp(Sp::Xs), sp(Sp::S)] };
-        let button = button(content).padding(padding).style(kit::button(ButtonKind::Tab { active: open })).on_press(Message::Toggle(picker));
+        let enabled = picker != PickerId::Workflow || self.pickers.workflows_enabled;
+        let button = button(content).padding(padding).style(kit::button(ButtonKind::Tab { active: open })).on_press_maybe(enabled.then_some(Message::Toggle(picker)));
+        if !enabled { return tip(button, "Available with OMP sessions"); }
         popover(button, open.then(|| self.menu_view(picker))).own_width().on_dismiss(Message::PickerClosed).into()
     }
 
@@ -552,6 +579,7 @@ impl State {
         let actions: Vec<&str> = match picker {
             PickerId::Model => self.pickers.model_actions.iter().map(|a| a.label.as_str()).collect(),
             PickerId::Folder => FOLDER_ACTIONS.to_vec(),
+            PickerId::Workflow => vec!["Edit workflows…"],
             _ => Vec::new(),
         };
         let options = (0..menu.len()).map(|i| {
@@ -977,5 +1005,42 @@ fn effort_dot(filled: bool) -> impl Fn(&Theme) -> container::Style {
     move |theme| {
         let color = if filled { Color::WHITE.scale_alpha(0.6) } else { for_theme(theme).color(ColorRole::Text3) };
         container::Style { background: Some(Background::Color(color)), border: Border { radius: 99.0.into(), ..Border::default() }, ..container::Style::default() }
+    }
+}
+
+#[cfg(test)]
+mod workflow_tests {
+    use super::*;
+    use loa_view::session::composer::WorkflowKind;
+
+    fn options() -> Vec<WorkflowOption> {
+        vec![
+            WorkflowOption { role: "DEEP".into(), label: "Deep".into(), kind: WorkflowKind::HandWritten, current: true },
+            WorkflowOption { role: "REVIEW".into(), label: "Review".into(), kind: WorkflowKind::Managed, current: false },
+        ]
+    }
+
+    #[test]
+    fn picking_and_managing_workflows() {
+        let mut state = State::new();
+        state.set_workflows(options(), true);
+        assert_eq!(state.workflow().unwrap().role, "DEEP");
+        assert_eq!(state.update(Message::Pick(PickerId::Workflow, 0)).1, None);
+        assert_eq!(state.update(Message::Pick(PickerId::Workflow, 1)).1, Some(Intent::WorkflowPicked("REVIEW".into())));
+        assert_eq!(state.update(Message::Pick(PickerId::Workflow, 2)).1, Some(Intent::OpenRules));
+        assert_eq!(state.update(Message::OpenRules).1, Some(Intent::OpenRules));
+    }
+
+    #[test]
+    fn unsupported_harness_cannot_pick_or_open_rules() {
+        let mut state = State::new();
+        state.set_workflows(options(), false);
+        let _ = state.update(Message::Toggle(PickerId::Workflow));
+        assert_eq!(state.pickers.open, None);
+        assert_eq!(state.update(Message::Pick(PickerId::Workflow, 1)).1, None);
+        assert_eq!(state.update(Message::OpenRules).1, None);
+        let mut ui = iced_test::simulator(state.view());
+        assert!(ui.find("Rules").is_ok());
+        assert!(ui.find("Deep").is_ok());
     }
 }

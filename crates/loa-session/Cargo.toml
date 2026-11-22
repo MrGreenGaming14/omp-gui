@@ -9,6 +9,7 @@ publish.workspace = true
 loa-util.workspace = true
 loa-core.workspace = true
 loa-contracts.workspace = true
+loa-settings = { path = "../loa-settings" }
 loa-bus = { path = "../loa-bus" }
 async-trait.workspace = true
 thiserror.workspace = true

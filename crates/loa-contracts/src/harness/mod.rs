@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// Semver of this interface: major on breaking changes, minor on additions.
-pub const INTERFACE_VERSION: &str = "0.4.0";
+pub const INTERFACE_VERSION: &str = "0.5.0";
 
 #[derive(Debug, thiserror::Error)]
 pub enum AdapterError {
@@ -102,6 +102,10 @@ pub struct SessionConfig {
     pub approval_mode: Option<String>,
     /// Project context, delivered as `Capabilities::context_delivery` declares.
     pub context: Option<String>,
+    /// Additional system instructions, independent of project context. Only the omp adapter
+    /// delivers them (`--append-system-prompt`); omp2 refuses them like `context`, the other
+    /// adapters ignore them.
+    pub instructions: Option<String>,
     pub mcp_servers: Vec<McpServerSpec>,
     pub host_tools: Vec<HostToolSpec>,
     /// Required when `host_tools` isn't empty.
