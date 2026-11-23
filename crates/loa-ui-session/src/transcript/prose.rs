@@ -1,14 +1,16 @@
-//! Assistant markdown: parsed incrementally while it streams, and drawn in the transcript's
-//! look (roomy body text, inline code chips, muted bullets, an optional muted end marker).
+//! Assistant Markdown: parsed incrementally while it streams, and drawn in the transcript's look.
 
+use super::copy_button::copy_button_with;
+use super::selection::Group;
 use super::Message;
 use iced::alignment::Vertical;
-use iced::widget::markdown::{self, Bullet, Item, Settings, Text};
+use iced::widget::markdown::{self, Bullet, HeadingLevel, Item, Settings, Text};
 use iced::widget::text::LineHeight;
-use iced::widget::{checkbox, column, container, rich_text, row, scrollable, span, text};
+use iced::widget::{checkbox, column, container, row, scrollable, span, text};
 use iced::{Background, Color, Element, Fill, Font, Padding, border};
 use loa_ui_kit::style::{self as kit, Surface, Tone};
 use loa_ui_kit::theme::{ColorRole as C, RadiusRole, SpaceRole as Sp, TextRole as T, TokenSet, generation, pad_x, sp};
+use std::cell::Cell;
 
 /// Line height of body text, relative to its size.
 pub(crate) const LINE_HEIGHT: f32 = 1.6;
@@ -46,7 +48,36 @@ impl Streamed {
 }
 
 /// Every newline as a markdown hard break, so replies keep the model's line breaks.
-pub(crate) fn hard_breaks(text: &str) -> String { text.replace('\n', "  \n") }
+pub(crate) fn hard_breaks(text: &str) -> String {
+    let mut result = String::with_capacity(text.len() + 2 * text.bytes().filter(|&b| b == b'\n').count());
+    for line in text.split_inclusive('\n') {
+        if let Some(content) = line.strip_suffix('\n') {
+            result.push_str(content.strip_suffix('\r').unwrap_or(content));
+            result.push_str("  \n");
+        } else {
+            result.push_str(line);
+        }
+    }
+    result
+}
+
+/// Undo the transcript's hard-break decoration on fenced code only. Keep original whitespace,
+/// including blank lines and any spaces the author put before a line break.
+fn code_text(code: &str) -> String {
+    let mut result = String::with_capacity(code.len());
+    for line in code.split_inclusive('\n') {
+        if let Some(content) = line.strip_suffix("  \n") {
+            result.push_str(content);
+            result.push('\n');
+        } else if line == " \n" {
+            // Indented fences can consume one of the two synthetic spaces on a blank line.
+            result.push('\n');
+        } else {
+            result.push_str(line);
+        }
+    }
+    result
+}
 
 /// Colour-taking widget settings of one token generation; rebuilt when it changes.
 #[derive(Clone, Copy, Debug)]
@@ -74,28 +105,40 @@ impl Look {
     }
 }
 
-/// Renders `items`, ending the last paragraph with `marker`. Also returns whether the marker
-/// found a paragraph; when not, the caller shows it alone.
-pub(crate) fn view<'a>(items: &'a [Item], look: Look, marker: Option<&'static str>) -> (Element<'a, Message>, bool) {
-    let tail = marker.and_then(|_| last_text(items));
-    (markdown::view_with(items, look.markdown, &Prose { look, tail, marker }), tail.is_some())
-}
-
-fn last_text(items: &[Item]) -> Option<&Text> {
-    match items.last()? {
-        Item::Paragraph(text) => Some(text),
-        Item::List { bullets, .. } => match bullets.last()? {
-            Bullet::Point { items } | Bullet::Task { items, .. } => last_text(items),
-        },
-        Item::Quote(items) => last_text(items),
-        _ => None,
-    }
+pub(crate) fn view<'a>(items: &'a [Item], source: &'a str, look: Look) -> Element<'a, Message> {
+    let selection = Group::default();
+    let body = markdown::view_with(items, look.markdown, &Prose { selection: selection.clone(), source, code_index: Cell::new(0) });
+    selection.wrap(body)
 }
 
 struct Prose<'a> {
-    look: Look,
-    tail: Option<&'a Text>,
-    marker: Option<&'static str>,
+    selection: Group,
+    source: &'a str,
+    code_index: Cell<usize>,
+}
+
+fn take_code(items: impl IntoIterator<Item = Item>, index: &mut usize) -> Option<String> {
+    for item in items {
+        match item {
+            Item::CodeBlock { code, .. } => {
+                if *index == 0 { return Some(code); }
+                *index -= 1;
+            }
+            Item::List { bullets, .. } => {
+                for bullet in bullets {
+                    let items = match bullet {
+                        Bullet::Point { items } | Bullet::Task { items, .. } => items,
+                    };
+                    if let Some(code) = take_code(items, index) { return Some(code); }
+                }
+            }
+            Item::Quote(items) => {
+                if let Some(code) = take_code(items, index) { return Some(code); }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 impl<'a> markdown::Viewer<'a, Message> for Prose<'a> {
@@ -103,18 +146,21 @@ impl<'a> markdown::Viewer<'a, Message> for Prose<'a> {
 
     fn paragraph(&self, settings: Settings, text: &Text) -> Element<'a, Message> {
         let spans = text.spans(settings.style);
-        let marker = self.marker.filter(|_| self.tail.is_some_and(|tail| std::ptr::eq(tail, text)));
-        // Only inline code and the marker need spans of their own; plain paragraphs reuse the cache.
-        let body = if marker.is_none() && spans.iter().all(|s| s.highlight.is_none()) {
-            rich_text(spans)
-        } else {
-            let mut all: Vec<_> = spans.iter().map(|s| if s.highlight.is_some() { s.clone().size(self.look.markdown.code_size) } else { s.clone() }).collect();
-            if let Some(marker) = marker {
-                all.extend([span(" "), span(marker).color(self.look.muted)]);
-            }
-            rich_text(all)
+        let spans = spans.iter().cloned().map(|s| if s.highlight.is_some() { s.size(settings.code_size) } else { s }).collect();
+        self.selection.text(spans, settings.text_size, LINE_HEIGHT.into(), settings.style.font)
+    }
+
+    fn heading(&self, settings: Settings, level: &'a HeadingLevel, text: &'a Text, index: usize) -> Element<'a, Message> {
+        let size = match level {
+            HeadingLevel::H1 => settings.h1_size,
+            HeadingLevel::H2 => settings.h2_size,
+            HeadingLevel::H3 => settings.h3_size,
+            HeadingLevel::H4 => settings.h4_size,
+            HeadingLevel::H5 => settings.h5_size,
+            HeadingLevel::H6 => settings.h6_size,
         };
-        body.size(settings.text_size).line_height(LINE_HEIGHT).on_link_click(Self::on_link_click).into()
+        let heading = self.selection.text(text.spans(settings.style).to_vec(), size, LineHeight::default(), settings.style.font);
+        container(heading).padding(Padding::ZERO.top(if index == 0 { 0.0 } else { settings.text_size.0 / 2.0 })).into()
     }
 
     fn unordered_list(&self, settings: Settings, bullets: &'a [Bullet]) -> Element<'a, Message> {
@@ -135,12 +181,18 @@ impl<'a> markdown::Viewer<'a, Message> for Prose<'a> {
         .into()
     }
 
-    fn code_block(&self, settings: Settings, _language: Option<&'a str>, _code: &'a str, lines: &'a [Text]) -> Element<'a, Message> {
-        let lines = column(lines.iter().map(|line| {
-            rich_text(line.spans(settings.style)).on_link_click(Self::on_link_click).font(settings.style.code_block_font).size(settings.code_size).into()
-        }));
+    fn code_block(&self, settings: Settings, _language: Option<&'a str>, code: &'a str, _lines: &'a [Text]) -> Element<'a, Message> {
+        let lines = self.selection.text(vec![span(code_text(code))], settings.code_size, LineHeight::default(), settings.style.code_block_font);
         let bar = scrollable::Scrollbar::default().width(4).scroller_width(4);
         let body = scrollable(container(lines).padding(sp(Sp::M))).direction(scrollable::Direction::Horizontal(bar));
-        container(body).width(Fill).style(kit::container(Surface::Well)).into()
+        let index = self.code_index.get();
+        self.code_index.set(index + 1);
+        let source = self.source;
+        // Display-only hard breaks and Iced's streaming tail handling must not alter clipboard code.
+        let copy = copy_button_with("Copy code block", move || {
+            let mut index = index;
+            take_code(markdown::parse(source), &mut index).unwrap_or_else(|| code_text(code))
+        });
+        container(column![copy, body]).width(Fill).style(kit::container(Surface::Well)).into()
     }
 }

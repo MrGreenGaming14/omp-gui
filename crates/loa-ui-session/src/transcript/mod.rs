@@ -5,9 +5,11 @@
 //! and each row keeps its widget state while the window slides. It follows new content only
 //! while scrolled to the bottom; opening another session follows its newest rows.
 
+mod copy_button;
 mod items;
 mod prose;
 mod rows;
+mod selection;
 mod virtual_list;
 
 pub use items::{COMMANDS_EXT, Item, ItemKind};
@@ -68,9 +70,10 @@ pub enum Message {
     Measured { key: NodeId, height: f32 },
     /// Expand or collapse the row starting at this node.
     Toggle(NodeId),
-    /// A user message was clicked.
+    /// The rewind action on a user message was clicked.
     Rewind(NodeId),
     Link(markdown::Uri),
+    Copy(String),
     JumpToLatest,
 }
 
@@ -218,6 +221,7 @@ impl State {
             }
             Message::Rewind(node) => (Task::none(), Some(Intent::Rewind(node))),
             Message::Link(uri) => (Task::none(), Some(Intent::OpenLink(uri))),
+            Message::Copy(text) => (iced::clipboard::write(text), None),
             Message::JumpToLatest => {
                 self.scroll.follow = true;
                 (widget::operation::snap_to_end(self.scroll_id.clone()), None)

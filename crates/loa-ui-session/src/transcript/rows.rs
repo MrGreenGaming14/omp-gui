@@ -1,11 +1,13 @@
 //! Row rendering through a [`RowRenderer`] registry keyed by [`ItemKind`], and the summaries
 //! shown on collapsed rows ("Read 3 files 12s ›").
 
+use super::copy_button::copy_button;
 use super::items::{Item, ItemKind};
 use super::prose::{self, LINE_HEIGHT, Look, Streamed};
+use super::selection::selectable;
 use super::{LINE, Message, PADDING, ROW};
 use iced::alignment::Vertical;
-use iced::widget::{Space, button, column, container, row, rule, text};
+use iced::widget::{Space, button, column, container, row, rule, span, text};
 use iced::{Element, Fill, Font, Padding};
 use loa_core::{CallStatus, Dom, ElementKind, JobKind, JobStatus, MessageStatus, Node, NodeId, TodoState, attr};
 use loa_ui_kit::icons;
@@ -161,9 +163,13 @@ fn inline<'a>(parts: impl IntoIterator<Item = Element<'a, Message>>) -> Element<
 struct User;
 impl RowRenderer for User {
     fn view<'a>(&self, _: &'a Item, cx: &RowCtx<'a>) -> Element<'a, Message> {
-        let body = text(cx.node.text.as_str()).size(ts(T::Body)).line_height(LINE_HEIGHT);
-        let bubble = button(body).style(kit::button(ButtonKind::Row { selected: true })).padding([sp(Sp::S), sp(Sp::M)]).on_press(Message::Rewind(cx.node.id));
-        container(container(bubble).max_width(ts(T::Body) * 40.0)).align_right(Fill).into()
+        let value = cx.node.text.as_str();
+        let body = selectable(vec![span(value)], ts(T::Body).into(), LINE_HEIGHT.into(), Font::DEFAULT);
+        let bubble = container(body).padding([sp(Sp::S), sp(Sp::M)]).style(kit::container(Surface::Raised));
+        let rewind = button(text("Rewind").size(ts(T::Caption))).style(kit::button(ButtonKind::Row { selected: false })).on_press(Message::Rewind(cx.node.id));
+        let actions = row![rewind, copy_button("Copy message", value)].spacing(sp(Sp::Xs));
+        let message = column![bubble, actions].align_x(iced::Alignment::End).spacing(sp(Sp::Xs));
+        container(container(message).max_width(ts(T::Body) * 40.0)).align_right(Fill).into()
     }
     fn estimate(&self, _: &Item, cx: &RowCtx<'_>) -> f32 { LINE * text_lines(cx.node) + PADDING }
 }
@@ -179,11 +185,12 @@ impl RowRenderer for Assistant {
     fn view<'a>(&self, _: &'a Item, cx: &RowCtx<'a>) -> Element<'a, Message> {
         let status = cx.node.str_attr(attr::STATUS).and_then(MessageStatus::parse);
         let marker = (status == Some(MessageStatus::Cancelled)).then_some("[interrupted]");
-        let (body, placed) = match cx.streamed {
-            Some(streamed) => prose::view(streamed.items(), cx.look, marker),
-            None => (text(cx.node.text.as_str()).size(ts(T::Body)).line_height(LINE_HEIGHT).into(), false),
+        let body = match cx.streamed {
+            Some(streamed) => prose::view(streamed.items(), &cx.node.text, cx.look),
+            None => selectable(vec![span(cx.node.text.as_str())], ts(T::Body).into(), LINE_HEIGHT.into(), Font::DEFAULT),
         };
-        let col = column![body].spacing(sp(Sp::Xs)).push(marker.filter(|_| !placed).map(muted));
+        let col = column![body].spacing(sp(Sp::Xs)).push(marker.map(muted));
+        let col = if cx.node.text.is_empty() { col } else { col.push(copy_button("Copy message", &cx.node.text)) };
         col.push((status == Some(MessageStatus::Error)).then(|| text("Failed").size(ts(T::Label)).style(text::danger))).into()
     }
     fn estimate(&self, _: &Item, cx: &RowCtx<'_>) -> f32 {
