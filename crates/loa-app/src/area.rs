@@ -2,6 +2,7 @@
 //! each one.
 
 use std::any::Any;
+use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -196,6 +197,10 @@ pub struct Ctx {
     pub(crate) requests: Vec<Request>,
     /// What closing sessions asks of the app, applied before the requests.
     pub(crate) transitions: Vec<Transition>,
+    /// Sessions closing because another takes their place, with the one that takes over their
+    /// unsent composer text: `None` for the next session that starts. The session controller
+    /// takes each entry when the session's `Closed` event arrives.
+    pub(crate) successors: HashMap<SessionId, Option<SessionId>>,
 }
 
 impl Ctx {
@@ -286,17 +291,20 @@ impl Ctx {
         self.composer.set_harnesses(harness::options(self.runtime.harnesses()), self.runtime.sessions().harness.as_deref());
     }
 
-    /// Closes session `id`: its writer stops, its journal is released and
-    /// its harness shuts down; it stays in Recents and reopens from the
-    /// journal.
-    pub fn close_session(&mut self, id: &str) {
-        self.end_session(id, false);
-    }
-
     /// Closes session `id`, deletes its journal and removes it from the
     /// sidebar.
     pub fn discard_session(&mut self, id: &str) {
         self.end_session(id, true);
+    }
+
+    /// Closes session `id` because `successor` takes its place (`None`: the next session that
+    /// starts), deleting its journal when `delete` is set: its unsent composer text moves on to
+    /// the successor instead of being dropped.
+    pub fn replace_session(&mut self, id: &str, successor: Option<SessionId>, delete: bool) {
+        if self.runtime.sessions().get(id).is_some() {
+            self.successors.insert(SessionId::from(id), successor);
+        }
+        self.end_session(id, delete);
     }
 
     /// Closes session `id` in the runtime; the session events and harness

@@ -13,6 +13,7 @@ use loa_contracts::session::SessionSummary;
 use loa_core::{Dom, Op, Patch, TurnStatus, attr};
 use loa_runtime::lifecycle::{ACCESS, ACCESS_DEFAULT, Command, Completion, Effect, RuntimeEvent, Transition, session_cwd};
 use loa_runtime::session::{Feed, SessionEvent, dom_turns};
+use loa_ui_session::composer;
 use loa_ui_session::transcript as chat;
 use loa_view::session::composer::AccessOption;
 
@@ -47,6 +48,12 @@ pub(crate) struct SessionController {
     /// Transcripts of sessions shown in their own window.
     pub(crate) detached: HashMap<String, chat::State>,
     pub(super) after: Vec<After>,
+    /// The session the composer shows, `None` for the center without one.
+    shown: Option<SessionId>,
+    /// The unsent composer content of the sessions not shown (and of the center without one).
+    pub(super) drafts: HashMap<Option<SessionId>, composer::Draft>,
+    /// The unsent composer content of a session replaced by the next one that starts, until it does.
+    carried: Option<composer::Draft>,
 }
 
 /// Runs a harness call of the runtime; its completion goes back to the runtime.
@@ -58,7 +65,7 @@ impl SessionController {
     pub fn new(theme: &Theme) -> Self {
         let mut chat = chat::State::new(theme);
         chat.set_bottom_inset(loa_ui_kit::theme::width(loa_ui_kit::theme::LayoutRole::ComposerInset));
-        Self { chat, detached: HashMap::new(), after: Vec::new() }
+        Self { chat, detached: HashMap::new(), after: Vec::new(), shown: None, drafts: HashMap::new(), carried: None }
     }
 
     /// Hands `command` to the runtime, then does what its transition asks of the app.
@@ -126,6 +133,9 @@ impl SessionController {
             RuntimeEvent::StartFailed(_) => {
                 ctx.show_harness();
                 let _ = ctx.composer.turn_ended();
+                if let Some(draft) = self.carried.take() {
+                    self.hand_over(&mut ctx.composer, None, draft);
+                }
                 Task::none()
             }
             RuntimeEvent::ResumeFailed(_) => {
@@ -136,8 +146,11 @@ impl SessionController {
                 self.after.push(After::Continue(folder, prompt));
                 Task::none()
             }
-            RuntimeEvent::SessionStarted(_) => {
+            RuntimeEvent::SessionStarted(id) => {
                 ctx.close_screen();
+                if let Some(draft) = self.carried.take() {
+                    self.hand_over(&mut ctx.composer, Some(id), draft);
+                }
                 self.after.extend([After::RefreshFiles, After::Diff]);
                 Task::none()
             }
@@ -167,15 +180,16 @@ impl SessionController {
     }
 
     /// Loads the active session's DOM into the chat and the frame; the composer follows
-    /// whether it runs a turn.
+    /// whether it runs a turn and shows the session's own draft.
     fn present(&mut self, ctx: &mut Ctx) {
-        let Some(session) = ctx.runtime.sessions().active() else {
-            ctx.composer.follow_session(false);
+        let active = ctx.runtime.sessions().active();
+        let starting = ctx.runtime.sessions().starting().is_some();
+        self.follow(&mut ctx.composer, active.map(|session| session.id().clone()), active.is_some_and(|session| session.is_busy()), starting);
+        let Some(session) = active else {
             self.chat.load(&Dom::new());
             self.after.push(After::Present(ctx.runtime.cwd().to_path_buf()));
             return;
         };
-        ctx.composer.follow_session(session.is_busy());
         self.chat.load(session.dom());
         let sidebar = ctx.shell.sidebar_mut();
         if let Some(summary) = session.summary() {
@@ -184,6 +198,47 @@ impl SessionController {
         sidebar.set_active(Some(session.id().to_string()));
         ctx.shell.set_session_status(turn_status(session.dom()).map(str::to_owned));
         self.after.push(After::Present(session_cwd(session.dom()).unwrap_or_else(|| ctx.runtime.cwd().to_path_buf())));
+    }
+
+    /// Has the composer follow `shown`, the session now shown (`None`: none), busy when it runs
+    /// a turn. When that is another session than before, the composer first leaves the old one
+    /// as an idle session, which puts the messages queued for a running turn back into its
+    /// editor (a send still starting keeps its queue), and the editor is kept as the old one's
+    /// draft; `shown`'s own draft, or an empty editor, takes its place. A send from the center
+    /// starting its session is the exception: the editor, with what was typed or queued while it
+    /// started, goes on to that session as it is. `starting` tells that a start is still pending,
+    /// so `shown` is another session opened meanwhile, not the one that started.
+    fn follow(&mut self, composer: &mut composer::State, shown: Option<SessionId>, busy: bool, starting: bool) {
+        if shown != self.shown {
+            let left = std::mem::replace(&mut self.shown, shown);
+            if left.is_some() || !composer.is_busy() || starting {
+                composer.follow_session(false);
+                let draft = composer.take_draft();
+                if !draft.is_empty() {
+                    self.drafts.insert(left, draft);
+                }
+                if let Some(draft) = self.drafts.remove(&self.shown) {
+                    composer.restore_draft(draft);
+                }
+            }
+        }
+        composer.follow_session(busy);
+    }
+
+    /// Gives `to` (`None`: the center without a session) the draft of the session it replaces,
+    /// ahead of what `to` already holds: in the editor when it shows `to`, else in `to`'s draft.
+    fn hand_over(&mut self, composer: &mut composer::State, to: Option<SessionId>, draft: composer::Draft) {
+        if self.shown == to {
+            return composer.prepend_draft(draft);
+        }
+        let merged = match self.drafts.remove(&to) {
+            Some(mut own) => {
+                own.prepend(draft);
+                own
+            }
+            None => draft,
+        };
+        self.drafts.insert(to, merged);
     }
 
     /// The app's own reaction to a session event, then every area's. A streamed append only
@@ -202,6 +257,19 @@ impl SessionController {
                 if matches!(patch.op, Op::Append { .. }) {
                     areas.get_mut::<crate::areas::sessions::State>().on_append(id, patch, ctx);
                     return Task::none();
+                }
+            }
+            SessionEvent::Closed(id) => {
+                let draft = self.drafts.remove(&Some(id.clone()));
+                match (ctx.successors.remove(id), draft) {
+                    (Some(Some(successor)), Some(draft)) => self.hand_over(&mut ctx.composer, Some(successor), draft),
+                    (Some(None), Some(mut draft)) => {
+                        if let Some(earlier) = self.carried.take() {
+                            draft.prepend(earlier);
+                        }
+                        self.carried = Some(draft);
+                    }
+                    _ => {}
                 }
             }
             _ => {}

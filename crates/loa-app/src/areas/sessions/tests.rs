@@ -32,3 +32,27 @@ fn slash_commands_branch_switch_mode_export_and_delete_sessions() {
     assert!(test.app.ctx.shell.sidebar().session(&fork).is_none(), "deleted from Recents");
     assert!(test.app.ctx.runtime.library().store().list().unwrap().iter().all(|listing| !format!("{listing:?}").contains(&fork)));
 }
+
+#[test]
+fn a_compacted_session_takes_over_what_was_typed_in_its_source() {
+    let mut test = TestApp::new();
+    let paste = |test: &mut TestApp, path: &str| drop(test.app.ctx.composer.attach_image(loa_ui_session::composer::pasted(path.into(), None)));
+    let source = test.session("hello");
+    test.prompt("/fork");
+    test.until("the fork is active", |app| app.ctx.runtime.sessions().active_id().is_some_and(|id| id.as_str() != source));
+    let compacted = test.active().unwrap().to_owned();
+    test.type_text("typed in the fork");
+    paste(&mut test, "fork.png");
+    test.send(Message::OpenRecent(source.clone()));
+    test.type_text("keep me");
+    paste(&mut test, "source.png");
+
+    // Tests have no small model to summarize with: the fork stands in for the compacted session.
+    test.area_mut::<super::State>().compacted.insert(compacted.clone(), source.clone());
+    test.send(Message::OpenRecent(compacted));
+    assert!(test.app.ctx.runtime.sessions().get(&source).is_none(), "the source closed");
+    assert_eq!(test.app.ctx.composer.text(), "keep me [Image #2] \n\ntyped in the fork [Image #1] ", "both texts stay, their images numbered apart");
+    test.send(Message::Composer(loa_ui_session::composer::Message::Submit));
+    test.until("the merged prompt ran", |app| !app.ctx.composer.is_busy());
+    assert_eq!(test.harness.seen().prompts.last().map(String::as_str), Some("keep me [Image #2] \n\ntyped in the fork [Image #1]"));
+}

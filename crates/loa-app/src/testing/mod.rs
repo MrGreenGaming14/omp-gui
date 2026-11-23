@@ -136,11 +136,15 @@ impl TestApp {
 
     /// Updates the app with `message` and runs the task it returns.
     pub fn send(&mut self, message: Message) {
-        let task = {
-            let _entered = self.runtime.enter();
-            self.app.update(message)
-        };
+        let task = self.update(message);
         self.run(task);
+    }
+
+    /// Updates the app with `message` and returns its task unrun, so the test acts before what
+    /// it does (a harness start, say) completes.
+    pub fn update(&mut self, message: Message) -> Task<Message> {
+        let _entered = self.runtime.enter();
+        self.app.update(message)
     }
 
     /// Runs `task` as the iced runtime would, feeding every message it
@@ -176,11 +180,16 @@ impl TestApp {
         }
     }
 
-    /// Types `text` into the composer and submits it.
-    pub fn prompt(&mut self, text: &str) {
+    /// Types `text` into the composer without sending it.
+    pub fn type_text(&mut self, text: &str) {
         for c in text.chars() {
             self.send(Message::Composer(composer::Message::Edit(Action::Edit(Edit::Insert(c)))));
         }
+    }
+
+    /// Types `text` into the composer and submits it.
+    pub fn prompt(&mut self, text: &str) {
+        self.type_text(text);
         self.send(Message::Composer(composer::Message::Submit));
     }
 

@@ -38,6 +38,7 @@ pub struct ScriptedAdapter {
     id: &'static str,
     capabilities: Capabilities,
     availability: Option<Availability>,
+    starts: bool,
     resumes: bool,
     effort: bool,
     models: Vec<HarnessModel>,
@@ -47,7 +48,7 @@ pub struct ScriptedAdapter {
 impl ScriptedAdapter {
     pub fn new(id: &'static str) -> Self {
         let capabilities = Capabilities::builder().build();
-        Self { id, capabilities, availability: None, resumes: true, effort: false, models: Vec::new(), seen: Arc::default() }
+        Self { id, capabilities, availability: None, starts: true, resumes: true, effort: false, models: Vec::new(), seen: Arc::default() }
     }
 
     pub fn capabilities(self, capabilities: Capabilities) -> Self {
@@ -57,6 +58,11 @@ impl ScriptedAdapter {
     /// What `availability` reports; unknown by default.
     pub fn availability(self, availability: Availability) -> Self {
         Self { availability: Some(availability), ..self }
+    }
+
+    /// `start` fails as if the harness executable were missing.
+    pub fn no_start(self) -> Self {
+        Self { starts: false, ..self }
     }
 
     /// `resume` fails as unsupported.
@@ -109,6 +115,9 @@ impl Adapter for ScriptedAdapter {
     }
 
     async fn start(&self, config: SessionConfig, sink: Arc<dyn PatchSink>) -> Result<Box<dyn HarnessSession>> {
+        if !self.starts {
+            return Err(AdapterError::NotInstalled(self.id.to_owned()));
+        }
         let mut attrs: Vec<(&str, Value)> = vec![
             (attr::ID, config.session_id.as_str().into()),
             (attr::NODE, config.node.as_str().into()),

@@ -574,7 +574,7 @@ impl Area for State {
                 if let Some(old) = id.as_ref().and_then(|id| self.compacted.remove(id.as_str())) {
                     // The compacted session's harness already stopped: closing must not stop it again.
                     drop(ctx.runtime.sessions_mut().get_mut(&old).and_then(Session::detach));
-                    ctx.close_session(&old);
+                    ctx.replace_session(&old, id.clone(), false);
                 }
                 if id.is_some() && id.as_ref().map(SessionId::as_str) == self.branching.as_deref() {
                     self.branching = None;

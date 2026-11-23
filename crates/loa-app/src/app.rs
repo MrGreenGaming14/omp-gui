@@ -296,6 +296,7 @@ impl App {
             notice: (!problems.is_empty()).then(|| problems.join("; ")),
             requests: Vec::new(),
             transitions: Vec::new(),
+            successors: std::collections::HashMap::new(),
             slash: Vec::new(),
         };
         ctx.shell.set_project_tabs(saved.project_tabs);
