@@ -10,8 +10,8 @@ use crate::panel::Options;
 use crate::theme;
 use crate::viewer::Viewer;
 use futures::Stream;
-use iced::widget::{canvas, image::Handle};
-use iced::{Element, Fill, Point, Size, Task};
+use iced::widget::{canvas, image::{self, Handle}, space, stack};
+use iced::{ContentFit, Element, Fill, Point, Size, Task};
 use loa_ui_kit::Tone;
 use loa_view::surface::{Encoding, Frame, Input, InputEvent, Intent, Modifiers, Rect, StreamInfo, Surface, SurfaceError};
 use std::sync::Arc;
@@ -123,10 +123,6 @@ impl PixelMode {
 
     pub(crate) fn panel(&self) -> Size {
         self.panel
-    }
-
-    pub(crate) fn picture(&self) -> Option<&Handle> {
-        self.picture.as_ref()
     }
 
     /// The encoding of the last frame shown, as a stream.
@@ -302,7 +298,12 @@ impl SurfaceMode for PixelMode {
     }
 
     fn view(&self) -> Element<'_, Message> {
-        canvas(Viewer(self)).width(Fill).height(Fill).into()
+        let picture: Element<'_, Message> = match &self.picture {
+            Some(handle) => image::Image::new(handle.clone()).width(Fill).height(Fill).content_fit(ContentFit::Contain).expand(true).into(),
+            None => space().width(Fill).height(Fill).into(),
+        };
+        // Iced draws images after canvas paths in the same layer, obscuring the cursor.
+        stack![picture, canvas(Viewer(self)).width(Fill).height(Fill)].clip(true).into()
     }
 
     fn pixel(&self) -> Option<&PixelMode> {
