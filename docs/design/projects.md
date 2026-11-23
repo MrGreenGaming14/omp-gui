@@ -11,6 +11,12 @@ flowchart LR
   GR["Grants"] -.->|"filter"| IX
 ```
 
+## OMP terminal history
+
+Open a project with a saved folder to see **OMP terminal history**. Loa matches saved OMP conversations by their recorded working directory, not their title or the name of OMP's storage folder. Subfolders are not included. Conversations already in Loa are not listed a second time.
+
+Opening a history row imports a snapshot into the project and opens it as a Loa chat. The original OMP file is left alone, including if it is still open in a terminal. Later changes to the terminal conversation are not synced to the imported copy.
+
 ## What a digest holds
 
 | Part | Example |

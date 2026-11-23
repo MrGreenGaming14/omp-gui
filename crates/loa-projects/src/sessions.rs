@@ -7,7 +7,7 @@ use crate::source::{SessionInfo, SessionSource};
 use crate::{Error, Result};
 use async_trait::async_trait;
 use loa_bus::{Bus, Journal, JournalError, Listing, Store};
-use loa_core::{Dom, Draft, Patch, PatchSink, now_ms};
+use loa_core::{Dom, Draft, Patch, PatchSink, attr, now_ms};
 use loa_util::LockExt;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -44,6 +44,34 @@ impl LiveSessions {
         blocking(move || inner.all()).await
     }
 
+    /// Native IDs already in Loa, including chats that have not been assigned to a project.
+    pub async fn native_sessions(&self, harness: &'static str) -> Result<HashMap<String, String>> {
+        let inner = self.inner.clone();
+        blocking(move || {
+            let mut imported = HashMap::new();
+            let native_id = |dom: &Dom| {
+                let root = dom.root().filter(|root| root.str_attr(attr::HARNESS) == Some(harness))?;
+                root.str_attr(attr::NATIVE_ID).map(str::to_owned)
+            };
+            for listing in inner.store.list().map_err(port)? {
+                let Listing::Session(info) = listing else { continue };
+                let id = info.id;
+                let native = if let Some(writer) = inner.bus.get(&id) {
+                    writer.with_dom(native_id)
+                } else {
+                    let cached = inner.cache.locked().get(&id).filter(|(seq, _)| *seq == info.last_seq).map(|(_, dom)| Arc::clone(dom));
+                    if let Some(dom) = cached {
+                        native_id(&dom)
+                    } else {
+                        inner.store.read(&id).ok().and_then(|dom| native_id(&dom))
+                    }
+                };
+                if let Some(native) = native { imported.entry(native).or_insert(id); }
+            }
+            Ok(imported)
+        }).await
+    }
+
     pub async fn commit(&self, session: &str, draft: Draft) -> Result<Patch> {
         let (inner, session) = (self.inner.clone(), session.to_owned());
         blocking(move || inner.commit(&session, draft)).await
@@ -68,21 +96,22 @@ impl Inner {
         if let Some(dom) = self.live(session) {
             return Ok(Some(dom));
         }
-        let journal = match self.open(session) {
-            Ok(Some(journal)) => journal,
-            Ok(None) => return Ok(None),
-            // The app may have opened it since the bus check.
-            Err(error) => return self.live(session).or_else(|| self.cache.locked().get(session).map(|(_, dom)| dom.clone())).map(Some).ok_or(error),
+        let info = match self.store.inspect(session) {
+            Ok(info) => info,
+            Err(JournalError::NotFound(_) | JournalError::InvalidSessionId(_)) => return Ok(None),
+            Err(error) => return self.live(session).map(Some).ok_or_else(|| port(error)),
         };
-        let seq = journal.last_seq();
+        let seq = info.last_seq;
         if let Some((cached, dom)) = self.cache.locked().get(session)
             && *cached == seq
         {
             return Ok(Some(dom.clone()));
         }
-        let dom = Arc::new(journal.load().map_err(port)?);
-        drop(journal);
-        self.cache.locked().insert(session.to_owned(), (seq, dom.clone()));
+        let dom = match self.store.read(session) {
+            Ok(dom) => Arc::new(dom),
+            Err(error) => return self.live(session).map(Some).ok_or_else(|| port(error)),
+        };
+        self.cache.locked().insert(session.to_owned(), (dom.seq(), dom.clone()));
         Ok(Some(dom))
     }
 

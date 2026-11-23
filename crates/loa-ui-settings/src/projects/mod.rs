@@ -10,7 +10,7 @@ use crate::{action, check, field, scroll, section};
 use iced::widget::{Column, Space, button, column, container, row, text_editor};
 use iced::{Alignment, Element, Fill};
 use loa_ui_kit::icons::tinted;
-use loa_view::settings::projects::{DigestState, Intent, PinnedFile, ProjectOverview, ProjectSettings, SessionRow};
+use loa_view::settings::projects::{DigestState, Intent, OmpHistory, PinnedFile, ProjectOverview, ProjectSettings, SessionRow};
 use loa_view::theme::Icon;
 use loa_ui_kit::style::{self, ButtonKind, Surface, Tone};
 use loa_ui_kit::theme::{LayoutRole, SpaceRole, TextRole, sp, text_size, width};
@@ -44,6 +44,8 @@ pub type Message = Msg<Local, Intent>;
 pub struct State {
     project: String,
     overview: Option<ProjectOverview>,
+    omp_history: Option<OmpHistory>,
+    omp_history_opening: bool,
     /// Unix milliseconds the overview was loaded at, for "3h ago".
     now: i64,
     instructions: text_editor::Content,
@@ -61,11 +63,16 @@ impl State {
     /// A screen for `project` showing a loading line until [`State::set_overview`].
     pub fn new(project: impl Into<String>) -> Self {
         let (instructions, pinned, digest_model, new_pin_path, new_pin_note) = Default::default();
-        Self { project: project.into(), overview: None, now: 0, instructions, pinned, digest_model, new_pin_path, new_pin_note, saving: false, error: None, confirm_delete: false }
+        Self { project: project.into(), overview: None, omp_history: None, omp_history_opening: false, now: 0, instructions, pinned, digest_model, new_pin_path, new_pin_note, saving: false, error: None, confirm_delete: false }
     }
 
     pub fn project(&self) -> &str { &self.project }
     pub fn overview(&self) -> Option<&ProjectOverview> { self.overview.as_ref() }
+    /// Updates the saved terminal conversations, or hides the section when no project folder is available.
+    pub fn set_omp_history(&mut self, history: Option<OmpHistory>) { self.omp_history = history }
+    pub fn omp_history(&self) -> Option<&OmpHistory> { self.omp_history.as_ref() }
+    /// Disables opening another terminal conversation while an import is in flight.
+    pub fn set_omp_history_opening(&mut self, opening: bool) { self.omp_history_opening = opening }
     /// Shows the delete confirmation, as for the Delete project button.
     pub fn ask_delete(&mut self) { self.confirm_delete = true }
 
@@ -123,7 +130,32 @@ impl State {
                 column![self.settings_view(), sessions_view(&o.sessions, self.now), delete].spacing(sp(SpaceRole::Xl)).into()
             }
         };
-        scroll(container(column![self.header(), confirm, body].spacing(sp(SpaceRole::Xl)).max_width(width(LayoutRole::ContentWidth))).center_x(Fill))
+        let history = self.omp_history.as_ref().map(|history| self.omp_history_view(history));
+        scroll(container(column![self.header(), confirm, history, body].spacing(sp(SpaceRole::Xl)).max_width(width(LayoutRole::ContentWidth))).center_x(Fill))
+    }
+
+    fn omp_history_view<'a>(&self, history: &'a OmpHistory) -> Element<'a, Message> {
+        let hint = label("Open a terminal conversation to import it into this project.", TextRole::Label, Tone::Muted);
+        let content: Element<'a, Message> = match history {
+            OmpHistory::Loading => label("Loading terminal history…", TextRole::Label, Tone::Muted).into(),
+            OmpHistory::Failed(error) => label(error.as_str(), TextRole::Label, Tone::Danger).into(),
+            OmpHistory::Ready(rows) if rows.is_empty() => label("No saved terminal conversations.", TextRole::Label, Tone::Muted).into(),
+            OmpHistory::Ready(rows) => {
+                let opening = self.omp_history_opening;
+                let now = self.now;
+                let rows = rows.iter().map(|r| {
+                    let body = column![
+                        label(r.title.as_str(), TextRole::Body, Tone::Normal),
+                        label(ago(now, r.modified), TextRole::Caption, Tone::Muted),
+                    ].spacing(sp(SpaceRole::Xs)).width(Fill);
+                    button(body).padding([sp(SpaceRole::S), sp(SpaceRole::M)]).width(Fill)
+                        .style(style::button(ButtonKind::Row { selected: false }))
+                        .on_press_maybe((!opening).then(|| Msg::Emit(Intent::OpenOmpHistory(r.id.clone())))).into()
+                });
+                container(Column::with_children(rows)).style(style::container(Surface::Card)).into()
+            }
+        };
+        section("OMP terminal history", column![hint, content].spacing(sp(SpaceRole::S)))
     }
 
     /// The Delete project section; after a press it asks to confirm.
@@ -267,6 +299,7 @@ impl Screen for State {
     fn guard(&self, e: &Intent) -> bool {
         let o = self.overview.as_ref();
         match e {
+            Intent::OpenOmpHistory(id) => !self.omp_history_opening && matches!(&self.omp_history, Some(OmpHistory::Ready(rows)) if rows.iter().any(|row| &row.id == id)),
             Intent::OpenSession(id) => o.is_some_and(|o| o.sessions.iter().any(|s| &s.id == id)),
             Intent::NewChat { project, cwd } | Intent::ChangeFolder { project, current: cwd } => *project == self.project && *cwd == o.and_then(|o| o.cwd.clone()),
             Intent::SaveSettings { .. } | Intent::SetExcluded { .. } | Intent::Delete { .. } => false,
@@ -293,6 +326,38 @@ mod tests {
         let mut s = State::new("loa");
         s.set_overview(overview(), 3 * 3_600_000);
         s
+    }
+
+    #[test]
+    fn terminal_history_rows_open_only_while_visible_and_not_importing() {
+        use loa_view::settings::projects::OmpHistoryRow;
+
+        let mut s = loaded();
+        assert_eq!(s.omp_history(), None);
+        let history = OmpHistory::Ready(vec![
+            OmpHistoryRow { id: "native-new".into(), title: "Recent terminal conversation".into(), modified: 2_000 },
+            OmpHistoryRow { id: "native-old".into(), title: "Older terminal conversation".into(), modified: 1_000 },
+        ]);
+        s.set_omp_history(Some(history.clone()));
+        assert_eq!(s.omp_history(), Some(&history));
+        let messages = click_label(s.view(), "Recent terminal conversation");
+        let events: Vec<_> = messages.into_iter().filter_map(|m| s.update(m)).collect();
+        assert_eq!(events, [Intent::OpenOmpHistory("native-new".into())]);
+        let messages = click_label(s.view(), "Older terminal conversation");
+        let events: Vec<_> = messages.into_iter().filter_map(|m| s.update(m)).collect();
+        assert_eq!(events, [Intent::OpenOmpHistory("native-old".into())]);
+        assert_eq!(s.update(Msg::Emit(Intent::OpenOmpHistory("missing".into()))), None);
+        s.set_omp_history_opening(true);
+        assert_eq!(s.update(Msg::Emit(Intent::OpenOmpHistory("native-new".into()))), None);
+        s.set_omp_history_opening(false);
+        s.set_omp_history(Some(OmpHistory::Loading));
+        assert_eq!(s.update(Msg::Emit(Intent::OpenOmpHistory("native-new".into()))), None);
+        s.set_omp_history(Some(OmpHistory::Failed("Could not read history".into())));
+        assert_eq!(s.update(Msg::Emit(Intent::OpenOmpHistory("native-new".into()))), None);
+        s.set_omp_history(Some(OmpHistory::Ready(Vec::new())));
+        assert_eq!(s.update(Msg::Emit(Intent::OpenOmpHistory("native-new".into()))), None);
+        s.set_omp_history(None);
+        assert_eq!(s.update(Msg::Emit(Intent::OpenOmpHistory("native-new".into()))), None);
     }
 
     #[test]

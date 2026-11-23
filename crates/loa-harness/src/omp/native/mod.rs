@@ -8,8 +8,10 @@
 //! appended as new entries.
 
 mod export;
+mod history;
 mod import;
 
+pub use history::{ProjectSession, project_history, project_session};
 pub(crate) use import::content_text;
 
 use crate::kit::{NativeCodec, NativeSession, native};

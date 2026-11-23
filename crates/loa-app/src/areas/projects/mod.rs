@@ -9,6 +9,7 @@
 //! the project context new chats receive, and the `project_search` / `project_read` host tools.
 
 use loa_util::LockExt;
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -27,6 +28,8 @@ use loa_runtime::session::SessionEvent;
 use crate::watch::{PtrKey, watch};
 use crate::view::settings::projects::{overview_to_view, settings_from_view, settings_to_view};
 
+mod history;
+
 #[cfg(test)]
 mod tests;
 
@@ -42,7 +45,7 @@ pub enum Message {
     /// Every project, most recently active first.
     Listed(Result<Vec<ProjectSummary>, String>),
     /// The project screen's data for this project.
-    Overview(String, Result<ProjectOverview, String>),
+    Overview(u64, String, Result<ProjectOverview, String>),
     Screen(screen::Message),
     /// The project's settings were stored.
     Saved(String, Result<ProjectSettings, String>),
@@ -74,6 +77,8 @@ pub enum Message {
     /// Move a session to a project, or out of every project with `None`.
     Move { session: String, project: Option<String> },
     Moved(Result<(), String>),
+    HistoryLoaded(u64, Result<Vec<loa_harness::omp::native::ProjectSession>, String>),
+    HistoryOpened(u64, Result<String, String>),
 }
 
 /// What a folder dialog picks for.
@@ -95,6 +100,8 @@ struct NewChat {
 
 pub struct State {
     service: ProjectService,
+    sessions: LiveSessions,
+    history: history::History,
     /// `project_search` and `project_read`, served to every session.
     tools: (Vec<HostToolSpec>, Arc<dyn HostTools>),
     /// The rebuild driver's outcomes, until the subscription takes them.
@@ -102,6 +109,7 @@ pub struct State {
     projects: Vec<ProjectSummary>,
     /// The project screen, drawn while the app shows this area's screen.
     screen: Option<screen::State>,
+    overview_request: Cell<u64>,
     /// The New project form, drawn instead of the project screen while open.
     creating: Option<create::State>,
     /// Context for new chats, by project.
@@ -128,17 +136,20 @@ impl State {
         let settings = Arc::new(FileSettingsStore::new(ctx.services.storage.dirs.data.join("projects")));
         let (runtime, handle) = OwnRuntime::current_or_new();
         let _entered = handle.enter();
-        let (service, outcomes) = ProjectService::start(sessions, settings, Arc::new(LocalOnly), summarizer, config);
+        let (service, outcomes) = ProjectService::start(sessions.clone(), settings, Arc::new(LocalOnly), summarizer, config);
         let tools = service.host_tools();
         for spec in &tools.0 {
             ctx.set_app_tool(loa_view::panel::ToolInfo::from(spec));
         }
         let state = Self {
             service,
+            sessions,
+            history: history::History::default(),
             tools,
             outcomes: Arc::new(Mutex::new(Some(outcomes))),
             projects: Vec::new(),
             screen: None,
+            overview_request: Cell::new(0),
             creating: None,
             contexts: HashMap::new(),
             new_chat: Mutex::new(None),
@@ -175,13 +186,15 @@ impl State {
     }
 
     fn load_overview(&self, project: String) -> Task<Message> {
+        let request = self.overview_request.get() + 1;
+        self.overview_request.set(request);
         let service = self.service.clone();
         Task::perform(
             async move {
                 let result = service.overview(&project).await.map_err(|error| error.to_string());
                 (project, result)
             },
-            |(project, result)| Message::Overview(project, result),
+            move |(project, result)| Message::Overview(request, project, result),
         )
     }
 
@@ -244,6 +257,7 @@ impl State {
             self.screen = Some(screen::State::new(project.clone()));
         }
         ctx.show_screen(Self::ID);
+        self.clear_history();
         Task::batch([self.load_overview(project.clone()), self.refresh_context(project)])
     }
 
@@ -283,6 +297,7 @@ impl State {
                 ctx.request(Request::OpenSession(id));
                 Task::none()
             }
+            Intent::OpenOmpHistory(id) => self.open_history(&id, ctx),
             Intent::NewChat { project, cwd } => {
                 *self.new_chat.locked() = Some(NewChat { project, cwd: cwd.map(PathBuf::from) });
                 ctx.request(Request::NewSession);
@@ -293,6 +308,10 @@ impl State {
                 Self::choose_folder(ctx, start, Pick::Project(project))
             }
             Intent::Delete { project } => {
+                if !self.history.begin_change(&project) {
+                    ctx.notify("Wait for the current project operation to finish");
+                    return Task::none();
+                }
                 let service = self.service.clone();
                 Task::perform(
                     async move {
@@ -399,12 +418,19 @@ impl Area for State {
                 ctx.notify(format!("Can't list projects: {error}"));
                 Task::none()
             }
-            Message::Overview(project, result) => {
+            Message::Overview(request, project, result) => {
+                if request != self.overview_request.get() { return Task::none(); }
                 let Some(screen) = self.screen.as_mut().filter(|screen| screen.project() == project) else {
                     return Task::none();
                 };
                 match result {
-                    Ok(overview) => screen.set_overview(overview_to_view(&overview), loa_core::now_ms()),
+                    Ok(overview) => {
+                        let folder = overview.settings.folder.clone().filter(|folder| folder.is_dir());
+                        screen.set_overview(overview_to_view(&overview), loa_core::now_ms());
+                        if !self.history.matches_folder(folder.as_deref()) {
+                            return self.scan_history(folder, ctx);
+                        }
+                    }
                     Err(error) => screen.set_error(format!("Can't load project {project}: {error}")),
                 }
                 Task::none()
@@ -463,6 +489,7 @@ impl Area for State {
                 task
             }
             Message::Deleted(project, Ok(_)) => {
+                self.history.end_change(&project);
                 self.contexts.remove(&project);
                 if self.screen.as_ref().is_some_and(|screen| screen.project() == project) {
                     self.screen = None;
@@ -472,6 +499,7 @@ impl Area for State {
                 self.list()
             }
             Message::Deleted(project, Err(error)) => {
+                self.history.end_change(&project);
                 ctx.notify(format!("Can't delete project {project}: {error}"));
                 Task::none()
             }
@@ -505,6 +533,10 @@ impl Area for State {
                 Task::none()
             }
             Message::FolderChosen(Pick::Project(project), Ok(Some(folder))) => {
+                if !self.history.begin_change(&project) {
+                    ctx.notify("Wait for the current project operation to finish, then choose the folder again");
+                    return Task::none();
+                }
                 let service = self.service.clone();
                 Task::perform(
                     async move {
@@ -519,13 +551,16 @@ impl Area for State {
                 Task::none()
             }
             Message::FolderSet(project, Ok(folder)) => {
+                self.history.end_change(&project);
                 // New chats in the active project start in its new folder.
                 if ctx.runtime.project() == Some(project.as_str()) {
-                    ctx.request(Request::ActivateProject { project, cwd: Some(folder) });
+                    ctx.request(Request::ActivateProject { project: project.clone(), cwd: Some(folder) });
                 }
+                if self.shown() == Some(project.as_str()) { self.clear_history(); }
                 Task::batch([self.list(), self.reload_screen()])
             }
             Message::FolderSet(project, Err(error)) => {
+                self.history.end_change(&project);
                 ctx.notify(format!("Can't change the folder of {project}: {error}"));
                 Task::none()
             }
@@ -538,6 +573,11 @@ impl Area for State {
                 ctx.notify(format!("Can't move the session: {error}"));
                 Task::none()
             }
+            Message::HistoryLoaded(scan, result) => {
+                self.history_loaded(scan, result);
+                Task::none()
+            }
+            Message::HistoryOpened(scan, result) => self.history_opened(scan, result, ctx),
         }
     }
 

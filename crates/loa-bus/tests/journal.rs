@@ -95,6 +95,20 @@ fn torn_tails_are_cut_and_other_damage_is_refused() {
 }
 
 #[test]
+fn read_only_replay_leaves_a_torn_journal_untouched() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (patches, _) = history("s", 21);
+    let options = every(5);
+    let (dir, offsets) = written(tmp.path(), "s", &patches, options.clone());
+    let path = journal_file(&dir);
+    set_len(&path, offsets[20] + 3);
+    let bytes = fs::read(&path).unwrap();
+    let store = Store::new(tmp.path(), options).unwrap();
+    assert_eq!(store.read("s").unwrap(), dom_at(&patches, 20));
+    assert_eq!(fs::read(&path).unwrap(), bytes);
+}
+
+#[test]
 fn appends_must_follow_in_order_and_reads_start_anywhere() {
     let tmp = tempfile::tempdir().unwrap();
     let (patches, dom) = history("s", 1100);

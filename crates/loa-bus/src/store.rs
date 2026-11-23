@@ -36,6 +36,11 @@ impl Store {
         Ok(Self { root, options })
     }
 
+    /// A store in another directory with the same journal options.
+    pub fn with_root(&self, root: &Path) -> Result<Self> {
+        Self::new(root, self.options.clone())
+    }
+
     pub fn root(&self) -> &Path {
         &self.root
     }
@@ -65,6 +70,13 @@ impl Store {
         Ok(out)
     }
 
+    /// Inspects a single journal without opening it for writing.
+    pub fn inspect(&self, id: &str) -> Result<SessionInfo> {
+        let dir = self.dir(id)?;
+        if !dir.join(JOURNAL_FILE).is_file() { return Err(Error::NotFound(id.to_owned())); }
+        Journal::inspect(&dir)
+    }
+
     /// Creates a new empty session.
     pub fn create(&self, id: &str) -> Result<Journal> {
         Journal::create(&self.dir(id)?, id, self.options.clone())
@@ -77,6 +89,11 @@ impl Store {
             return Err(Error::NotFound(id.to_owned()));
         }
         Journal::open(&dir, self.options.clone())
+    }
+
+    /// Reads the latest complete state without opening the journal for writing.
+    pub fn read(&self, id: &str) -> Result<Dom> {
+        Journal::read(&self.dir(id)?)
     }
 
     /// Deletes a session and its snapshots. Fails with [`Error::Locked`]
