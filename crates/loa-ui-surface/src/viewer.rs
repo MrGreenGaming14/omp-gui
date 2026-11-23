@@ -1,9 +1,7 @@
-//! The pixel mode canvas: draws the framebuffer and the local cursor in token colours, and turns
-//! iced events into [`Message`]s in panel coordinates.
+//! The cursor overlay for pixel surfaces; also forwards iced input in panel coordinates.
 
 use crate::keys::{KeyInput, convert_button, convert_modifiers, scroll_pixels};
 use crate::tab::{Message, PixelMode, PointerInput};
-use iced::advanced::image::FilterMethod;
 use iced::widget::canvas::{self, Action, Event, Path, Stroke};
 use iced::{Point, Rectangle, Renderer, Theme, keyboard, mouse};
 use loa_ui_kit::theme::{AlphaRole, ColorRole as C, SpaceRole, for_theme};
@@ -70,9 +68,6 @@ impl canvas::Program<Message> for Viewer<'_> {
 
     fn draw(&self, _: &Tracking, renderer: &Renderer, theme: &Theme, bounds: Rectangle, _: mouse::Cursor) -> Vec<canvas::Geometry> {
         let mut frame = canvas::Frame::new(renderer, bounds.size());
-        if let (Some(handle), Some(placement)) = (self.0.picture(), self.0.placement_in(bounds.size())) {
-            frame.draw_image(placement.rect, canvas::Image::new(handle.clone()).filter_method(FilterMethod::Linear));
-        }
         if let Some(local) = self.0.cursor().filter(|c| c.on_surface.is_some()) {
             // A ring the size of the medium space around the tip, filled while a button is held.
             let t = for_theme(theme);

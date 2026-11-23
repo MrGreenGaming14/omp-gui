@@ -297,9 +297,9 @@ async fn documents_render_here_and_zoom_without_touching_the_surface() {
     }
 }
 
-/// The canvas run headlessly: what it draws and what it publishes for raw iced events.
+/// The pixel viewer run headlessly: what it draws and what it publishes for raw iced events.
 #[tokio::test]
-async fn the_canvas_draws_frames_and_the_cursor_and_takes_clicks_and_typing() {
+async fn the_cursor_stays_visible_over_the_picture_and_the_viewer_takes_clicks_and_typing() {
     use iced_test::{Simulator, simulator};
     let dir = tempfile::tempdir().unwrap();
     let mut h = Harness::pixel(4, 3);
@@ -312,10 +312,10 @@ async fn the_canvas_draws_frames_and_the_cursor_and_takes_clicks_and_typing() {
         assert!(ui(state).snapshot(&iced::Theme::Dark).unwrap().matches_image(dir.path().join(name).join("shot.png")).unwrap());
         image::open(std::fs::read_dir(dir.path().join(name)).unwrap().next().unwrap().unwrap().path()).unwrap().into_rgba8()
     };
+    h.update(Message::Frame(frame(1, (4, 3), full(4, 3), Encoding::Rgba, solid(4, 3, [250, 10, 10, 255]))));
     let before = render(&h.state, "before");
 
-    let at = Point::new(200.0, 200.0);
-    let run = |h: &mut Harness, events: Vec<iced::Event>| {
+    let run = |h: &mut Harness, at: Point, events: Vec<iced::Event>| {
         let messages: Vec<Message> = {
             let mut ui = ui(&h.state);
             ui.point_at(at);
@@ -326,21 +326,36 @@ async fn the_canvas_draws_frames_and_the_cursor_and_takes_clicks_and_typing() {
             h.update(message);
         }
     };
-    run(&mut h, vec![iced::Event::Mouse(iced::mouse::Event::CursorMoved { position: at })]);
-    assert!(h.state.pixel().unwrap().cursor().is_some_and(|c| c.on_surface.is_some()));
-    let after = render(&h.state, "after");
-    // The arrow's body just below and right of the tip, in physical pixels.
-    let changed = (0..20u32).flat_map(|dy| (0..12u32).map(move |dx| (400 + dx, 400 + dy))).filter(|&(x, y)| before.get_pixel(x, y) != after.get_pixel(x, y)).count();
-    assert!(changed > 20, "only {changed} pixels changed under the cursor");
-    // A 4x3 picture fills the middle of the canvas.
-    h.update(Message::Frame(frame(1, (4, 3), full(4, 3), Encoding::Rgba, solid(4, 3, [250, 10, 10, 255]))));
-    let shown = render(&h.state, "frame");
-    let [r, g, b, _] = shown.get_pixel(400, 340).0;
-    assert!(r > 230 && g < 30 && b < 30, "{:?}", [r, g, b]);
+    let cursor_pixels = |shot: &image::RgbaImage, at: Point, page: [u8; 4]| {
+        // Samples around the arrow's tip in the simulator's 2x snapshots.
+        let (x, y) = ((2.0 * at.x) as u32, (2.0 * at.y) as u32);
+        (0..20).flat_map(|dy| (0..12).map(move |dx| (x + dx, y + dy))).filter(|&(x, y)| shot.get_pixel(x, y).0 != page).count()
+    };
+    let check_hover = |h: &mut Harness, at: Point, name: &str| {
+        run(h, at, vec![iced::Event::Mouse(iced::mouse::Event::CursorMoved { position: at })]);
+        let hovered = render(&h.state, name);
+        let changed = cursor_pixels(&hovered, at, [250, 10, 10, 255]);
+        assert!(changed > 20, "only {changed} pixels changed under the unpressed pointer");
+        assert_eq!(hovered.get_pixel(400, 340).0, [250, 10, 10, 255], "the page remains visible");
+        hovered
+    };
+    let at = Point::new(200.0, 200.0);
+    let first = Point::new(160.0, 180.0);
+    check_hover(&mut h, first, "first hover");
+    let hovered = check_hover(&mut h, at, "moved");
+    let page = before.get_pixel(400, 340).0;
+    assert_eq!(page, [250, 10, 10, 255]);
+    assert_eq!(cursor_pixels(&hovered, first, page), 0, "no cursor left behind");
+    // A new stream frame while the pointer is idle must not cover the cursor.
+    let page = [10, 250, 10, 255];
+    h.update(Message::Frame(frame(2, (4, 3), full(4, 3), Encoding::Rgba, solid(4, 3, page))));
+    let idle = render(&h.state, "idle");
+    assert_eq!(idle.get_pixel(400, 340).0, page);
+    assert!(cursor_pixels(&idle, at, page) > 20);
 
-    run(&mut h, simulator::click().collect());
+    run(&mut h, at, simulator::click().collect());
     assert!(h.state.pixel().unwrap().focused());
-    run(&mut h, simulator::typewrite("hi").collect());
+    run(&mut h, at, simulator::typewrite("hi").collect());
     let inputs = h.inputs_until(&Input::Text { text: "i".into() }).await;
     let presses = inputs.iter().filter(|i| matches!(i, Input::MouseButton { button: MouseButton::Left, .. })).count();
     let typed: Vec<_> = inputs.iter().filter(|i| matches!(i, Input::Text { .. })).collect();

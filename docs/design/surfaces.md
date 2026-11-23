@@ -39,7 +39,7 @@ The hard limit is 50 ms from a click or key press to the updated pixels on scree
 | Shown on the next screen refresh | Up to 16 ms at 60 Hz, 8 ms at 120 Hz |
 | Total | About 25 to 45 ms |
 
-- The cursor and hover states are drawn locally and never wait on the stream
+- The cursor and hover states are drawn locally and never wait on the stream. In pixel mode the pointer is a separate layer above the retained surface image.
 - Frames go as QUIC datagrams. A late frame is dropped, never resent
 - Live content uses low latency hardware video encoding (H.264 or HEVC). Mostly static content sends only the regions that changed
 - Over the internet the floor is the network round trip plus about 35 ms. A round trip over 15 ms cannot stay under 50 ms, so the panel shows a live latency meter
