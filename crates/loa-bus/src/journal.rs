@@ -209,6 +209,12 @@ impl Journal {
         Ok(SessionInfo { id: found.session_id, parent: found.parent, last_seq: found.last_seq })
     }
 
+    /// Replays the latest complete state without acquiring the writer lock or repairing the journal.
+    pub(crate) fn read(dir: &Path) -> Result<Dom> {
+        let found = recover(dir)?;
+        Self::replay_at(&dir.join(JOURNAL_FILE), &found.snapshots, found.data_start, found.end, found.last_seq)
+    }
+
     pub fn session_id(&self) -> &str {
         &self.session_id
     }
@@ -350,17 +356,21 @@ impl Journal {
         if seq > self.last_seq {
             return Err(Error::OutOfRange { seq, last: self.last_seq });
         }
-        for meta in self.snapshots.iter().rev().filter(|m| m.seq <= seq) {
-            if let Ok(dom) = snapshot::read_dom(meta).and_then(|dom| self.replay(dom, meta.offset, seq)) {
+        Self::replay_at(&self.path, &self.snapshots, self.data_start, self.end, seq)
+    }
+
+    fn replay_at(path: &Path, snapshots: &[snapshot::Meta], data_start: u64, end: u64, seq: u64) -> Result<Dom> {
+        for meta in snapshots.iter().rev().filter(|m| m.seq <= seq) {
+            if let Ok(dom) = snapshot::read_dom(meta).and_then(|dom| Self::replay(path, end, dom, meta.offset, seq)) {
                 return Ok(dom);
             }
         }
-        self.replay(Dom::new(), self.data_start, seq)
+        Self::replay(path, end, Dom::new(), data_start, seq)
     }
 
     /// Applies records from `offset` (which holds `dom.seq() + 1`) up to `target`.
-    fn replay(&self, mut dom: Dom, offset: u64, target: u64) -> Result<Dom> {
-        let mut reader = Reader::new(&self.path, offset, self.end, dom.seq() + 1)?;
+    fn replay(path: &Path, end: u64, mut dom: Dom, offset: u64, target: u64) -> Result<Dom> {
+        let mut reader = Reader::new(path, offset, end, dom.seq() + 1)?;
         while dom.seq() < target {
             let patch = reader.expect_patch(target)?;
             dom.apply(&patch).map_err(|source| Error::Apply { seq: patch.seq, source })?;

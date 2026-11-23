@@ -192,8 +192,28 @@ impl Library {
     /// `adapter`, keeping its timestamps. The imported root gets `id`, the
     /// local `node` and, when the harness named it differently, `native_id`.
     pub fn import(&self, adapter: &dyn Adapter, native: &Path, id: &str, node: &str) -> Result<Live> {
+        self.import_with(id, node, None, |live| {
+            Ok(adapter.import(native, live.writer.as_ref())?)
+        })
+    }
+
+    /// Builds a native import and its assets out of sight, then exposes the complete journal in one rename.
+    /// `load` gets the staging and final directories; any persisted asset paths must use the latter.
+    pub fn import_staged(&self, id: &str, node: &str, project: &str, load: impl FnOnce(&Path, &Path, &dyn PatchSink) -> Result<()>) -> Result<()> {
+        let io = |error: std::io::Error| Error::Port(format!("Can't stage the imported session: {error}"));
+        let staging = tempfile::Builder::new().prefix(".import-").tempdir_in(self.store.root()).map_err(io)?;
+        let store = self.store.with_root(staging.path())?;
+        let scratch = Self::new(store, Arc::new(Bus::new()), self.local, self.authorize.clone()).with_sync(self.sync);
+        let target = self.store.root().join(id);
+        let staged = staging.path().join(id);
+        scratch.import_with(id, node, Some(project), |live| load(&staged, &target, live.writer.as_ref()))?;
+        scratch.close(id)?;
+        std::fs::rename(&staged, &target).map_err(io)
+    }
+
+    fn import_with(&self, id: &str, node: &str, project: Option<&str>, load: impl FnOnce(&Live) -> Result<()>) -> Result<Live> {
         let live = self.create(id)?;
-        let imported = adapter.import(native, live.writer.as_ref()).map_err(Error::from).and_then(|()| {
+        let imported = load(&live).and_then(|()| {
             let (root, native_id, owner) = live.writer.with_dom(|dom| {
                 let root = dom.root();
                 (
@@ -212,6 +232,10 @@ impl Library {
             if owner.as_deref() != Some(node) {
                 live.writer.commit(Draft::set(root, attr::NODE, node))?;
             }
+            if let Some(project) = project {
+                live.writer.commit(Draft::set(root, attr::PROJECT, project))?;
+            }
+            live.journal.sync()?;
             Ok(())
         });
         if let Err(error) = imported {
@@ -219,7 +243,6 @@ impl Library {
             let _ = self.delete(id);
             return Err(error);
         }
-        live.journal.sync()?;
         Ok(live)
     }
 

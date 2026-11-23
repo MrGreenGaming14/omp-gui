@@ -56,6 +56,21 @@ pub struct ProjectOverview {
     pub sessions: Vec<SessionRow>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OmpHistoryRow {
+    pub id: String,
+    pub title: String,
+    /// Unix milliseconds of the last write.
+    pub modified: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OmpHistory {
+    Loading,
+    Ready(Vec<OmpHistoryRow>),
+    Failed(String),
+}
+
 /// What the app does for the screen.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Intent {
@@ -64,6 +79,8 @@ pub enum Intent {
     /// Record a session's context toggle; answer with a fresh overview.
     SetExcluded { session: String, excluded: bool },
     OpenSession(String),
+    /// Import and open a listed OMP terminal conversation by its native id.
+    OpenOmpHistory(String),
     /// Start a chat in this project, in its working directory when known.
     NewChat { project: String, cwd: Option<String> },
     /// Show a folder dialog for the project's folder, starting at the current one; the app stores the choice and

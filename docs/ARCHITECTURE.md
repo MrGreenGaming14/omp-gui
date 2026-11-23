@@ -167,6 +167,7 @@ impl State {
 - Shell and composer events go through route tables (`route`, `compose`) to one `Intent` handler
 - `app/windows.rs`: Configs, Settings (kit `side_nav`) and detached OS windows. `app/usage.rs`: the Usage window
 - `areas/sessions`: `branch` (one `spawn_branch` strategy for fork, rewind and compaction), `plan`, `hooks` (rules and advisor), `transfer` (import and export) and `tree`; model role switches (`/role`), which hold the session's queued prompts until the switch ends and announce the new role in its next prompt
+- `areas/projects/history.rs`: the project page discovers saved OMP conversations by the session header's exact working folder; only opening a row imports it into Loa.
 - `areas/workflows`: the Workflows page of the Models screen, the composer's workflow chip and the role disclosure every omp session starts with (`SessionConfig::instructions`)
 - `testing` (tests only): `TestApp` runs the app headless with its real subscriptions on a scripted harness, with no model, browser, git, dialog or `omp` calls: it hands `App::build` offline `AppParts` (runtime parts, models `Parts`, summarizer, home and URL opener)
 - Sandbox integration tests build the real `loa-sandbox-stub` and obtain its executable path from Cargo's JSON artifact output, independent of the compiler's test-artifact directory layout.
@@ -177,7 +178,7 @@ impl State {
 | --- | --- | --- |
 | Element schema | `loa_core::SCHEMA_VERSION` (1) | `loa-core` |
 | Adapter interface | `loa_adapter::INTERFACE_VERSION` | `loa-adapter` |
-| Presentation API | `loa_view::VERSION` (3.0.0), listed in `crates/loa-view/api.txt` | `loa-view` |
+| Presentation API | `loa_view::VERSION` (3.1.0), listed in `crates/loa-view/api.txt` | `loa-view` |
 | Control ALPN | `omp/control/1` | `loa-net` |
 | Session ALPN | `omp/session/1` | `loa-net`, `loa-share` |
 | Surface ALPN | `omp/surface/1` | `loa-surface` |

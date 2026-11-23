@@ -1,4 +1,4 @@
-version = 3.0.0
+version = 3.1.0
 #[derive(Clone)] struct loa_view::surface::port::Decoders
   extra: Option<NewDecoder>
   still: NewDecoder
@@ -342,6 +342,8 @@ version = 3.0.0
     excluded: bool
   OpenSession
     0: String
+  OpenOmpHistory
+    0: String
   NewChat
     project: String
     cwd: Option<String>
@@ -516,6 +518,12 @@ version = 3.0.0
   OpenUrl
     0: String
   CopyUrl
+    0: String
+#[derive(Clone, Debug, PartialEq, Eq)] enum loa_view::settings::projects::OmpHistory
+  Loading
+  Ready
+    0: Vec<OmpHistoryRow>
+  Failed
     0: String
 #[derive(Clone, Debug, PartialEq, Eq)] enum loa_view::settings::updates::Installed
   Unknown
@@ -742,6 +750,10 @@ version = 3.0.0
 #[derive(Clone, Debug, PartialEq, Eq)] struct loa_view::settings::models::ValidationError
   location: String
   message: String
+#[derive(Clone, Debug, PartialEq, Eq)] struct loa_view::settings::projects::OmpHistoryRow
+  id: String
+  title: String
+  modified: i64
 #[derive(Clone, Debug, PartialEq, Eq)] struct loa_view::settings::projects::ProjectOverview
   cwd: Option<String>
   settings: ProjectSettings

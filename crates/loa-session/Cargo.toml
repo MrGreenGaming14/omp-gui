@@ -13,7 +13,7 @@ loa-settings = { path = "../loa-settings" }
 loa-bus = { path = "../loa-bus" }
 async-trait.workspace = true
 thiserror.workspace = true
+tempfile.workspace = true
 
 [dev-dependencies]
-tempfile.workspace = true
 tokio.workspace = true

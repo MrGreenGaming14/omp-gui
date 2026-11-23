@@ -38,6 +38,119 @@ fn linked(folder: &Path) -> Vec<PathBuf> {
     targets
 }
 
+fn saved_omp_session(dir: &Path, id: &str, cwd: &Path, title: &str) -> PathBuf {
+    std::fs::create_dir_all(dir).unwrap();
+    let path = dir.join(format!("{id}.jsonl"));
+    let header = serde_json::json!({"type": "session", "version": 3, "id": id, "cwd": cwd, "title": title});
+    let message = serde_json::json!({"type": "message", "id": "first", "parentId": null, "message": {"role": "user", "content": "Read the project guide."}});
+    std::fs::write(&path, format!("{header}\n{message}\n")).unwrap();
+    path
+}
+
+fn create_project(test: &mut TestApp, name: &str, folder: &Path) {
+    test.send(area(Message::New));
+    for local in [create::Local::Name(name.into()), create::Local::Folder(folder.display().to_string()), create::Local::Create] {
+        test.send(area(Message::Form(Msg::Local(local))));
+    }
+}
+
+#[test]
+fn project_lists_terminal_history_then_opens_one_independent_copy() {
+    use loa_view::settings::projects::OmpHistory;
+
+    let mut test = TestApp::new();
+    let folder = test.dir.path().join("Existing project");
+    let subfolder = folder.join("child");
+    std::fs::create_dir_all(&subfolder).unwrap();
+    let storage = test.dir.path().join("omp/sessions/encoded-workspace");
+    let source = saved_omp_session(&storage, "terminal-one", &folder, "Saved terminal chat");
+    saved_omp_session(&storage, "terminal-two", &subfolder, "Child folder chat");
+    let original = std::fs::read(&source).unwrap();
+    create_project(&mut test, "Existing", &folder);
+    let screen = test.area::<State>().screen().unwrap();
+    let Some(OmpHistory::Ready(rows)) = screen.omp_history() else { panic!("expected a loaded terminal history") };
+    assert_eq!(rows.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["terminal-one"]);
+    assert!(test.app.ctx.runtime.library().store().list().unwrap().is_empty(), "listing must not import");
+    let messages = loa_ui_kit::testkit::click_label(screen.view(), "Saved terminal chat");
+    assert!(!messages.is_empty());
+    for message in messages { test.send(area(Message::Screen(message))); }
+    let id = test.active().expect("the imported conversation is open").to_owned();
+    assert_eq!(session_project(&test.app, &id).as_deref(), Some("Existing"));
+    let dom = test.app.ctx.runtime.library().load(&id).unwrap();
+    assert!(dom.iter().any(|node| node.text == "Read the project guide."));
+    let root = dom.root().unwrap();
+    use loa_harness::omp::native::X_SESSION_FILE;
+    let copy = PathBuf::from(root.str_attr(X_SESSION_FILE).unwrap());
+    assert_ne!(copy, source);
+    assert_eq!(std::fs::read(copy).unwrap(), original);
+    assert_eq!(std::fs::read(&source).unwrap(), original);
+
+    let mut test = test.reopen();
+    test.send(area(Message::Open("Existing".into())));
+    let screen = test.area::<State>().screen().unwrap();
+    assert!(matches!(screen.omp_history(), Some(OmpHistory::Ready(rows)) if rows.is_empty()));
+    assert_eq!(screen.overview().unwrap().sessions[0].id, id);
+    assert_eq!(test.app.ctx.runtime.library().store().list().unwrap().len(), 1);
+}
+
+#[test]
+fn changed_terminal_file_cannot_be_imported_into_the_wrong_project() {
+    use loa_view::settings::projects::Intent;
+
+    let mut test = TestApp::new();
+    let (folder, other) = (test.dir.path().join("project"), test.dir.path().join("other"));
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::create_dir_all(&other).unwrap();
+    let storage = test.dir.path().join("omp/sessions/saved");
+    saved_omp_session(&storage, "chat", &folder, "Moving chat");
+    create_project(&mut test, "Project", &folder);
+    saved_omp_session(&storage, "chat", &other, "Moving chat");
+    test.send(area(Message::Screen(Msg::Emit(Intent::OpenOmpHistory("chat".into())))));
+    assert!(test.notice().contains("terminal session changed"));
+    assert!(test.app.ctx.runtime.library().store().list().unwrap().is_empty());
+    assert_eq!(test.app.ctx.screen(), Some("projects"));
+}
+
+#[test]
+fn obsolete_overview_cannot_restore_the_previous_folders_history() {
+    use loa_view::settings::projects::OmpHistory;
+
+    let mut test = TestApp::new();
+    let (old, new) = (test.dir.path().join("old"), test.dir.path().join("new"));
+    std::fs::create_dir_all(&old).unwrap();
+    std::fs::create_dir_all(&new).unwrap();
+    let storage = test.dir.path().join("omp/sessions/saved");
+    saved_omp_session(&storage, "old-chat", &old, "Old chat");
+    saved_omp_session(&storage, "new-chat", &new, "New chat");
+    create_project(&mut test, "Project", &old);
+    let obsolete = test.area::<State>().overview_request.get();
+    test.send(area(Message::FolderChosen(Pick::Project("Project".into()), Ok(Some(new)))));
+    let stale = loa_settings::projects::ProjectOverview {
+        name: "Project".into(), cwd: Some(old.to_string_lossy().into_owned()),
+        settings: loa_settings::projects::ProjectSettings { folder: Some(old), ..Default::default() }, sessions: Vec::new(),
+    };
+    test.send(area(Message::Overview(obsolete, "Project".into(), Ok(stale))));
+    let screen = test.area::<State>().screen().unwrap();
+    assert!(matches!(screen.omp_history(), Some(OmpHistory::Ready(rows)) if rows.len() == 1 && rows[0].id == "new-chat"));
+}
+
+#[test]
+fn an_unfinished_import_is_not_visible_in_the_session_store() {
+    use loa_session::Error;
+
+    let test = TestApp::new();
+    let library = test.app.ctx.runtime.library();
+    let cwd = test.dir.path();
+    let native = saved_omp_session(&cwd.join("external"), "source", cwd, "Saved chat");
+    let result = library.import_staged("attempt", "owner", "Project", |_, _, sink| {
+        loa_harness::omp::native::import(&native, sink, "owner")?;
+        assert!(library.store().list().unwrap().is_empty());
+        Err(Error::Port("import interrupted".into()))
+    });
+    assert!(matches!(result, Err(Error::Port(message)) if message == "import interrupted"));
+    assert!(library.store().list().unwrap().is_empty());
+}
+
 #[test]
 fn projects_open_and_pin_from_the_palette() {
     let mut test = TestApp::new();
