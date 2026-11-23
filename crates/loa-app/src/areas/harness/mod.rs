@@ -132,7 +132,7 @@ impl State {
         }
         if !session.is_busy() && !session.has_turns() {
             let session = session.id().clone();
-            ctx.discard_session(session.as_str());
+            ctx.replace_session(session.as_str(), None, true);
         }
         ctx.request(Request::NewSession);
         Task::none()

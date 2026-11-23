@@ -125,6 +125,56 @@ fn sessions_run_on_the_harness_stream_their_feed_and_survive_a_restart() {
     assert!(recents.contains(&id), "Recents reload the session: {recents:?} {}", test.notice());
 }
 
+#[test]
+fn every_session_keeps_its_own_unsent_text() {
+    let mut test = TestApp::new();
+    let first = test.session("hello");
+    test.prompt("ask");
+    test.until("the approval waits", |app| turn_status(app.ctx.runtime.sessions().active().unwrap().dom()) == Some("Waiting"));
+    test.prompt("queued");
+    test.type_text("typed");
+    assert_eq!(test.app.ctx.composer.queue().count(), 1);
+
+    test.command("session.new");
+    test.until("the new session is active", |app| app.ctx.runtime.sessions().active_id().is_some_and(|id| id.as_str() != first));
+    let second = test.active().unwrap().to_owned();
+    let composer = &test.app.ctx.composer;
+    assert_eq!((composer.text(), composer.queue().count(), composer.is_busy()), (String::new(), 0, false), "a new session starts empty");
+    test.type_text("second");
+
+    test.send(Message::OpenRecent(first.clone()));
+    assert_eq!(test.app.ctx.composer.text(), "queued\n\ntyped", "the queue went back into the first session's own draft");
+    assert!(test.app.ctx.composer.is_busy(), "its turn still runs");
+    test.send(Message::OpenRecent(second.clone()));
+    assert_eq!(test.app.ctx.composer.text(), "second");
+    test.send(Message::Composer(composer::Message::Undo));
+    assert_eq!(test.app.ctx.composer.text(), "second", "undo can't reach another session's text");
+
+    test.send(Message::area(sessions::Message::Delete(second.clone())));
+    assert_eq!((test.active(), test.app.ctx.composer.text()), (None, String::new()), "the center without a session has a draft of its own");
+    assert!(!test.app.sessions.drafts.contains_key(&Some(SessionId::from(second.as_str()))), "a deleted session's draft is dropped");
+    test.type_text("center");
+    test.send(Message::OpenRecent(first.clone()));
+    assert_eq!(test.app.ctx.composer.text(), "queued\n\ntyped");
+    test.send(Message::area(sessions::Message::Delete(first)));
+    assert_eq!(test.app.ctx.composer.text(), "center");
+}
+
+#[test]
+fn what_is_typed_while_a_session_starts_from_the_center_stays_with_it() {
+    let mut test = TestApp::new();
+    test.type_text("hello");
+    let start = test.update(Message::Composer(composer::Message::Submit));
+    assert!(test.app.ctx.composer.is_busy() && test.active().is_none(), "the session is starting");
+    test.prompt("queued");
+    test.type_text("more");
+
+    test.run(start);
+    assert!(test.active().is_some(), "the session runs");
+    let composer = &test.app.ctx.composer;
+    assert_eq!((composer.text(), composer.queue().count()), ("more".to_owned(), 1), "the started session's composer keeps both");
+}
+
 /// A sidebar event, as its row emits it.
 fn nav(event: Nav) -> Message {
     Message::Shell(shell::Message::Sidebar(shell::sidebar::Message::Emit(event)))

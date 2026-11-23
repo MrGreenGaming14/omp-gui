@@ -273,3 +273,93 @@ fn the_effort_slider_applies_its_level_when_let_go() {
     assert_eq!(act(&mut state, Message::EffortReleased), None, "the same level again changes nothing");
     let _ = state.view();
 }
+
+#[test]
+fn a_taken_draft_empties_the_composer_and_comes_back_whole() {
+    let mut state = State::new();
+    type_text(&mut state, "see");
+    let _ = state.mention_path("src/a.rs");
+    let _ = state.attach_image(pasted("one.png".into(), None));
+    act(&mut state, Message::Edit(Action::Move(Motion::Left)));
+    let cursor = state.cursor();
+
+    let draft = state.take_draft();
+    assert!(!draft.is_empty());
+    assert_eq!((state.text(), state.images.len()), (String::new(), 0));
+    act(&mut state, Message::Undo);
+    assert_eq!(state.text(), "", "undo can't bring the taken text back");
+    assert!(state.take_draft().is_empty());
+
+    type_text(&mut state, "other");
+    state.restore_draft(draft);
+    assert_eq!((state.text(), state.cursor()), ("see @src/a.rs [Image #1] ".to_owned(), cursor));
+    assert_eq!(state.images.iter().filter(|image| image.shown).count(), 1, "the card is back");
+    act(&mut state, Message::Undo);
+    assert_eq!(state.text(), "see @src/a.rs [Image #1] ", "undo can't reach the text typed before the restore");
+
+    act(&mut state, Message::Edit(Action::Move(Motion::DocumentEnd)));
+    let _ = state.attach_image(pasted("two.png".into(), None));
+    let prompt = submitted(act(&mut state, Message::Submit));
+    assert_eq!(prompt.text, "see @src/a.rs [Image #1] [Image #2]", "the image counter is back too");
+    let paths: Vec<_> = prompt.attachments.iter().map(|attachment| attachment.path.clone()).collect();
+    assert_eq!(paths, ["src/a.rs", "one.png", "two.png"].map(std::path::PathBuf::from), "the mention and both images are sent");
+}
+
+#[test]
+fn a_draft_taken_while_messages_wait_leaves_them_their_images_and_mentions() {
+    let mut state = State::new();
+    type_text(&mut state, "first");
+    let _ = submitted(act(&mut state, Message::Submit));
+    let _ = state.mention_path("src/a.rs");
+    let _ = state.attach_image(pasted("one.png".into(), None));
+    assert!(matches!(act(&mut state, Message::Submit), Some(Intent::QueueChanged(_))), "queued while the send starts");
+    type_text(&mut state, "draft");
+
+    let draft = state.take_draft();
+    let mut other = State::new();
+    let _ = other.attach_image(pasted("two.png".into(), None));
+    state.restore_draft(other.take_draft());
+    assert_eq!(state.text(), "[Image #2] ", "a restored image is numbered on from the queued one");
+    state.turn_started();
+    let queued = submitted(state.turn_ended());
+    assert_eq!(queued.text, "@src/a.rs [Image #1]");
+    let paths: Vec<_> = queued.attachments.iter().map(|attachment| attachment.path.clone()).collect();
+    assert_eq!(paths, ["src/a.rs", "one.png"].map(std::path::PathBuf::from), "the queued message is sent with its mention and image");
+    assert_eq!(state.turn_ended(), None);
+    assert_eq!(submitted(act(&mut state, Message::Submit)).attachments, [Attachment { path: "two.png".into(), mime: Some("image/png".into()) }]);
+    state.restore_draft(draft);
+    assert_eq!(state.text(), "draft");
+}
+
+/// A composer holding `text` with an image `path` pasted after it, and a mention of `mention`.
+fn drafted(text: &str, path: &str, mention: &str) -> State {
+    let mut state = State::new();
+    type_text(&mut state, text);
+    let _ = state.attach_image(pasted(path.into(), None));
+    let _ = state.mention_path(mention);
+    state
+}
+
+fn attached(prompt: &Prompt) -> Vec<std::path::PathBuf> { prompt.attachments.iter().map(|attachment| attachment.path.clone()).collect() }
+
+#[test]
+fn a_draft_put_ahead_of_another_keeps_both_texts_and_images_apart() {
+    let mut editor = drafted("now", "b.png", "b.rs");
+    let cursor = editor.cursor();
+    editor.prepend_draft(drafted("before", "a.png", "a.rs").take_draft());
+    assert_eq!(editor.text(), "before [Image #2] @a.rs \n\nnow [Image #1] @b.rs ");
+    assert_eq!(editor.cursor().position.line, cursor.position.line + 2, "the cursor stays in the editor's own text");
+    act(&mut editor, Message::Undo);
+    assert_eq!(editor.text(), "before [Image #2] @a.rs \n\nnow [Image #1] @b.rs ", "undo starts from the merged text");
+    let prompt = submitted(act(&mut editor, Message::Submit));
+    assert_eq!(attached(&prompt), ["a.rs", "b.rs", "b.png", "a.png"].map(std::path::PathBuf::from), "every mention and image is sent once");
+
+    let mut stored = drafted("stored", "d.png", "d.rs").take_draft();
+    stored.prepend(drafted("carried", "c.png", "c.rs").take_draft());
+    let mut shown = State::new();
+    shown.restore_draft(stored);
+    assert_eq!(shown.text(), "carried [Image #2] @c.rs \n\nstored [Image #1] @d.rs ");
+    let _ = shown.attach_image(pasted("e.png".into(), None));
+    assert!(shown.text().contains("[Image #3]"), "the counter counts both drafts' images");
+    assert_eq!(attached(&submitted(act(&mut shown, Message::Submit))), ["c.rs", "d.rs", "d.png", "c.png", "e.png"].map(std::path::PathBuf::from));
+}

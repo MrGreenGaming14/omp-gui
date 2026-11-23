@@ -177,6 +177,59 @@ pub(crate) struct Image {
     pub(crate) shown: bool,
 }
 
+/// What the composer holds unsent: the text with its cursor, the pasted images, the mentioned
+/// paths and the image counter. [`State::take_draft`] sets it aside, [`State::restore_draft`]
+/// brings it back.
+#[derive(Debug)]
+pub struct Draft {
+    text: String,
+    cursor: Cursor,
+    images: Vec<Image>,
+    mentions: Vec<String>,
+    next_image: u32,
+}
+
+impl Draft {
+    /// Whether there is no text to bring back; images and mentions only count through their
+    /// tokens in it.
+    pub fn is_empty(&self) -> bool { self.text.is_empty() }
+
+    /// Puts `earlier`, written before this draft, ahead of it with a blank line between; the
+    /// cursor stays in this draft's text. `earlier`'s images are numbered on from this draft's,
+    /// their tokens with them, so no `[Image #n]` stands for two images.
+    pub fn prepend(&mut self, earlier: Draft) {
+        if earlier.is_empty() {
+            return;
+        }
+        let offset = self.next_image;
+        let (mut text, mut images) = (earlier.text, earlier.images);
+        // Highest first, so a renumbered token is never renumbered again.
+        images.sort_by_key(|image| std::cmp::Reverse(image.n));
+        for image in &mut images {
+            text = text.replace(&highlight::image_token(image.n), &highlight::image_token(image.n + offset));
+            image.n += offset;
+        }
+        self.images.extend(images);
+        self.images.sort_by_key(|image| image.n);
+        for mention in earlier.mentions {
+            if !self.mentions.contains(&mention) {
+                self.mentions.push(mention);
+            }
+        }
+        self.next_image += earlier.next_image;
+        let lines = text.matches('\n').count();
+        if self.text.is_empty() {
+            let end = Position { line: lines, column: text.rsplit('\n').next().map_or(0, str::len) };
+            self.cursor = if offset == 0 { earlier.cursor } else { Cursor { position: end, selection: None } };
+            self.text = text;
+            return;
+        }
+        let shift = |position: Position| Position { line: position.line + lines + 2, ..position };
+        self.cursor = Cursor { position: shift(self.cursor.position), selection: self.cursor.selection.map(shift) };
+        self.text = format!("{text}\n\n{}", self.text);
+    }
+}
+
 /// The composer.
 pub struct State {
     content: Content,
@@ -349,6 +402,67 @@ impl State {
             }
             (false, _) => {}
         }
+    }
+
+    /// Empties the editor and returns what it held, with the images and mentions, as a
+    /// [`Draft`]. The undo history is dropped, so undo can't bring the text back into another
+    /// session's editor, and any popup closes. The queue and the phase stay; while messages are
+    /// queued, the images, mentions and image counter also stay for them and the draft gets copies.
+    pub fn take_draft(&mut self) -> Draft {
+        let (text, cursor) = (self.content.text(), self.content.cursor());
+        let draft = if self.queue.items.is_empty() {
+            Draft { text, cursor, images: std::mem::take(&mut self.images), mentions: std::mem::take(&mut self.mentions), next_image: std::mem::take(&mut self.next_image) }
+        } else {
+            Draft { text, cursor, images: self.images.clone(), mentions: self.mentions.clone(), next_image: self.next_image }
+        };
+        self.content = Content::new();
+        self.reset_editing();
+        draft
+    }
+
+    /// Puts `draft` in the editor, cursor where it was, replacing what is there. Images and
+    /// mentions queued messages still need stay, and `draft`'s images are numbered on from them.
+    /// Undo starts afresh from it.
+    pub fn restore_draft(&mut self, draft: Draft) {
+        let mut kept = self.queued_attachments();
+        kept.prepend(draft);
+        self.show_draft(kept);
+    }
+
+    /// Puts `draft`, written elsewhere before what the editor holds, ahead of it as
+    /// [`Draft::prepend`] does. Undo starts afresh.
+    pub fn prepend_draft(&mut self, draft: Draft) {
+        let images = std::mem::take(&mut self.images);
+        let mut current = Draft { text: self.content.text(), cursor: self.content.cursor(), images, mentions: std::mem::take(&mut self.mentions), next_image: self.next_image };
+        current.prepend(draft);
+        self.show_draft(current);
+    }
+
+    /// An empty draft holding the images, mentions and image counter the queued messages need,
+    /// taken from the composer; nothing when no message is queued.
+    fn queued_attachments(&mut self) -> Draft {
+        let (images, mentions) = (std::mem::take(&mut self.images), std::mem::take(&mut self.mentions));
+        let cursor = Cursor { position: Position { line: 0, column: 0 }, selection: None };
+        if self.queue.items.is_empty() {
+            return Draft { text: String::new(), cursor, images: Vec::new(), mentions: Vec::new(), next_image: 0 };
+        }
+        Draft { text: String::new(), cursor, images, mentions, next_image: self.next_image }
+    }
+
+    /// Shows `draft` as the editor's whole content.
+    fn show_draft(&mut self, draft: Draft) {
+        self.content = Content::with_text(&draft.text);
+        self.content.move_to(draft.cursor);
+        (self.images, self.mentions, self.next_image) = (draft.images, draft.mentions, draft.next_image);
+        self.reset_editing();
+    }
+
+    /// After the editor's content was swapped: brings what depends on the text in step and
+    /// drops the undo history and any popup.
+    fn reset_editing(&mut self) {
+        self.text_changed();
+        self.history.clear();
+        (self.popup, self.dismissed, self.composing) = (None, None, false);
     }
 
     /// The app could not start a turn for `text`, the last [`Intent::Submit`]: it goes back
