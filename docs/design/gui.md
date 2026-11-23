@@ -17,7 +17,8 @@ flowchart LR
 - Center chat with streaming text and collapsed tool rows ("Read 3 files 12s ›") that expand on click
 - Composer with stop button, model, effort and mode pickers, `/` commands and `@` file mentions
 - Right panel for diffs, files, terminal, subagents, the session tree and surfaces
-- Escape to interrupt, queue messages mid turn, inline approvals, click a message to rewind, command palette
+- Escape to interrupt, queue messages mid turn, inline approvals, **Rewind** on user messages, command palette
+- Drag within a transcript message to select text, then press Ctrl+C (Cmd+C on macOS). **Copy message** copies the original message, including Markdown; **Copy code block** copies just the code with its indentation.
 - Agents panel showing subagents and background jobs live, including anything omp's `wait` is blocked on
 
 ## Decision prompts

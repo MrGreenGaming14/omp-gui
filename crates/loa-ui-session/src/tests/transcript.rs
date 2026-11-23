@@ -79,6 +79,21 @@ fn streaming_feeds_each_chunk_to_the_parser_once() {
 }
 
 #[test]
+fn copying_fenced_code_keeps_indent_blank_lines_and_author_spaces() {
+    for (source, expected) in [
+        ("Example:\n\n```text\n    first  \n\n\tsecond\n```\n", "    first  \n\n\tsecond\n"),
+        (" ```text\n a\n\n b\n ```", "a\n\nb\n"),
+        ("```sh\nprintf x |", "printf x |"),
+    ] {
+        let mut s = S::new();
+        let t = s.turn();
+        s.msg(t, "assistant", source);
+        let copies = loa_ui_kit::testkit::click_label(s.view(), "Copy code block");
+        assert_eq!(copies, [Message::Copy(expected.into())]);
+    }
+}
+
+#[test]
 fn rows_collapse_expand_and_report_clicks() {
     let mut s = S::new();
     let t = s.turn();
@@ -104,7 +119,9 @@ fn rows_collapse_expand_and_report_clicks() {
     }
     let click = |s: &S, label| loa_ui_kit::testkit::click_label(s.view(), label);
     assert_eq!(click(&s, "Read 3 files"), [Message::Toggle(a)]);
-    assert_eq!(click(&s, "fix the build"), [Message::Rewind(prompt)]);
+    assert!(click(&s, "fix the build").is_empty(), "text no longer rewinds on click");
+    assert_eq!(click(&s, "Rewind"), [Message::Rewind(prompt)]);
+    assert_eq!(click(&s, "Copy message"), [Message::Copy("fix the build".into())]);
     assert_eq!(s.send(Message::Rewind(prompt)), Some(Intent::Rewind(prompt)));
     for key in [a, thought, bash] {
         s.send(Message::Toggle(key));

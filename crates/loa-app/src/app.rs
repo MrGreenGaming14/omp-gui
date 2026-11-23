@@ -576,6 +576,9 @@ impl App {
                 Task::batch([task.map(Message::Shell), action])
             }
             Message::Chat(message) => {
+                if matches!(message, chat::Message::Copy(_)) && (self.palette.is_open() || self.windows.overlay.is_some()) {
+                    return Task::none();
+                }
                 let (task, event) = self.sessions.chat.update(message);
                 let action = event.map_or_else(Task::none, |event| self.update(Message::area(areas::sessions::Message::Chat(event))));
                 Task::batch([task.map(Message::Chat), action])
