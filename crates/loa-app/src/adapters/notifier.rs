@@ -14,11 +14,13 @@ impl Notifier for DesktopNotifier {
         let mut notification = notify_rust::Notification::new();
         notification.appname(&self.0).summary(&n.heading).body(&n.summary);
         Box::pin(async move {
-            #[cfg(not(windows))]
+            #[cfg(all(unix, not(target_os = "macos")))]
             let shown = notification.show_async().await;
             // `show_async` does not exist on Windows: run the blocking
             // `show` on its own thread so the UI never waits on it.
-            #[cfg(windows)]
+            //
+            // Run blocking `show` off the UI thread on Windows and macOS.
+            #[cfg(any(windows, target_os = "macos"))]
             let shown = {
                 let (sender, receiver) = futures::channel::oneshot::channel();
                 std::thread::spawn(move || {
