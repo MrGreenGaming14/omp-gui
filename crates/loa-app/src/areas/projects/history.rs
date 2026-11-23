@@ -103,9 +103,9 @@ impl State {
         if let Some(screen) = &mut self.screen { screen.set_omp_history_busy(false); }
     }
 
-    /// Lists the shown project's history again, unless the user left its screen.
+    /// Lists the project screen's history again, also under the New project form, unless the user left this area's screen.
     fn refresh_history(&mut self, ctx: &Ctx) -> Task<Message> {
-        if self.shown().is_some() && ctx.screen() == Some(Self::ID) { self.scan_history(self.history.folder.clone(), ctx) } else { Task::none() }
+        if self.screen.is_some() && ctx.screen() == Some(Self::ID) { self.scan_history(self.history.folder.clone(), ctx) } else { Task::none() }
     }
 
     pub(super) fn open_history(&mut self, native_id: &str, ctx: &mut Ctx) -> Task<Message> {

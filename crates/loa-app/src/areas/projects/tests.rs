@@ -399,6 +399,29 @@ fn deleting_a_terminal_conversation_removes_it_from_omp_storage_only() {
 }
 
 #[test]
+fn a_deletion_finishing_under_the_new_project_form_still_drops_its_row() {
+    use loa_view::settings::projects::CreateIntent;
+
+    let mut test = TestApp::new();
+    let folder = test.dir.path().join("project");
+    std::fs::create_dir_all(&folder).unwrap();
+    let storage = test.dir.path().join("omp/sessions/saved");
+    let doomed = saved_omp_session(&storage, "doomed", &folder, "Old terminal chat");
+    saved_omp_session(&storage, "kept", &folder, "Kept terminal chat");
+    create_project(&mut test, "Project", &folder);
+    assert_eq!(listed_history(&test), ["doomed", "kept"]);
+
+    test.send(area(Message::Screen(Msg::Local(screen::Local::DeleteOmpHistory("doomed".into())))));
+    let delete = test.app.update(area(Message::Screen(Msg::Local(screen::Local::ConfirmDeleteOmpHistory))));
+    test.send(area(Message::New));
+    test.run(delete);
+    test.send(area(Message::Form(Msg::Emit(CreateIntent::Cancel))));
+    assert!(test.area::<State>().form().is_none());
+    assert!(!doomed.exists());
+    assert_eq!(listed_history(&test), ["kept"], "the project screen under the form was listed again");
+}
+
+#[test]
 fn a_failed_deletion_is_reported_and_the_history_listed_again() {
     let mut test = TestApp::new();
     let folder = test.dir.path().join("project");

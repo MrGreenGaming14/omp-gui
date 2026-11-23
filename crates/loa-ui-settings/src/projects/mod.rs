@@ -87,7 +87,14 @@ impl State {
     pub fn project(&self) -> &str { &self.project }
     pub fn overview(&self) -> Option<&ProjectOverview> { self.overview.as_ref() }
     /// Updates the saved terminal conversations, or hides the section when no project folder is available.
-    pub fn set_omp_history(&mut self, history: Option<OmpHistory>) { self.omp_history = history }
+    /// A pending row-delete confirmation lasts through loading, and goes once the history no longer lists its row.
+    pub fn set_omp_history(&mut self, history: Option<OmpHistory>) {
+        self.omp_history = history;
+        let loading = matches!(self.omp_history, Some(OmpHistory::Loading));
+        if !loading && self.confirm_delete_history.as_deref().is_some_and(|id| !self.lists_omp_history(id)) {
+            self.confirm_delete_history = None;
+        }
+    }
     pub fn omp_history(&self) -> Option<&OmpHistory> { self.omp_history.as_ref() }
     /// Disables opening or deleting another terminal conversation while an import or deletion is in flight.
     pub fn set_omp_history_busy(&mut self, busy: bool) { self.omp_history_busy = busy }
@@ -625,5 +632,17 @@ mod tests {
         s.update(Msg::Local(Local::DeleteOmpHistory("native-old".into())));
         s.set_omp_history(Some(OmpHistory::Loading));
         assert_eq!(s.update(Msg::Local(Local::ConfirmDeleteOmpHistory)), None, "not once the row is no longer listed");
+
+        let old = OmpHistoryRow { id: "native-old".into(), title: "Older terminal conversation".into(), modified: 1_000 };
+        s.set_omp_history(Some(OmpHistory::Ready(vec![old.clone()])));
+        s.update(Msg::Local(Local::DeleteOmpHistory("native-old".into())));
+        s.set_omp_history(Some(OmpHistory::Loading));
+        s.set_omp_history(Some(OmpHistory::Ready(vec![old])));
+        assert_eq!(s.confirm_delete_history.as_deref(), Some("native-old"), "a rescan that still lists the row keeps the question");
+        s.set_omp_history(Some(OmpHistory::Ready(Vec::new())));
+        assert_eq!(s.confirm_delete_history, None, "a rescan without the row drops it");
+        s.update(Msg::Local(Local::DeleteOmpHistory("native-old".into())));
+        s.set_omp_history(None);
+        assert_eq!(s.confirm_delete_history, None, "so does leaving the project");
     }
 }
