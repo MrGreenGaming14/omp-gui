@@ -81,6 +81,8 @@ pub enum Message {
     Moved(Result<(), String>),
     HistoryLoaded(u64, Result<Vec<loa_harness::omp::native::ProjectSession>, String>),
     HistoryOpened(u64, Result<String, String>),
+    /// A history row's conversation was deleted from omp's storage.
+    HistoryDeleted(Result<(), String>),
 }
 
 /// What a folder dialog picks for.
@@ -328,6 +330,7 @@ impl State {
                 Task::none()
             }
             Intent::OpenOmpHistory(id) => self.open_history(&id, ctx),
+            Intent::DeleteOmpHistory(id) => self.delete_history(&id, ctx),
             Intent::NewChat { project, cwd } => {
                 *self.new_chat.locked() = Some(NewChat { project, cwd: cwd.map(PathBuf::from) });
                 ctx.request(Request::NewSession);
@@ -625,6 +628,7 @@ impl Area for State {
                 Task::none()
             }
             Message::HistoryOpened(scan, result) => self.history_opened(scan, result, ctx),
+            Message::HistoryDeleted(result) => self.history_deleted(result, ctx),
         }
     }
 

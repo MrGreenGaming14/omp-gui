@@ -1,4 +1,4 @@
-version = 3.3.0
+version = 3.4.0
 #[derive(Clone)] struct loa_view::surface::port::Decoders
   extra: Option<NewDecoder>
   still: NewDecoder
@@ -346,6 +346,8 @@ version = 3.3.0
   OpenSession
     0: String
   OpenOmpHistory
+    0: String
+  DeleteOmpHistory
     0: String
   NewChat
     project: String

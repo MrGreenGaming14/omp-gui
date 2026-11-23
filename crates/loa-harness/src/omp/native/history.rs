@@ -25,6 +25,57 @@ pub struct ProjectSession {
 /// whose header `cwd` canonicalizes to `folder`, sorted newest first with
 /// deterministic tie-breaking and deduplicated by native session `id`.
 pub fn project_history(agent_dir: &Path, folder: &Path) -> io::Result<Vec<ProjectSession>> {
+    let mut sessions = matching_sessions(agent_dir, folder)?;
+    sessions.sort_by(|a, b| {
+        b.modified
+            .cmp(&a.modified)
+            .then_with(|| a.path.cmp(&b.path))
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    let mut seen = HashSet::with_capacity(sessions.len());
+    sessions.retain(|session| seen.insert(session.id.clone()));
+    Ok(sessions)
+}
+
+/// Inspects a single omp session file at `path` (including copied paths) and
+/// returns its metadata if its header is valid and its `cwd` canonicalizes to
+/// `folder`.
+pub fn project_session(path: &Path, folder: &Path) -> io::Result<Option<ProjectSession>> {
+    let canonical_folder = canonicalize_path(folder)?;
+    inspect_session(path, &canonical_folder)
+}
+
+/// Deletes the native omp session `id` that [`project_history`] lists for `folder`: for every session file with that
+/// id, first its same-stem sidecar directory (artifacts and subagent sessions; a symlink there is left alone), then
+/// the file. A sidecar that can't be removed (held open on Windows) stops the delete before its file goes, so the
+/// session stays listed and can be deleted again. Errors name the path that failed; an `id` not listed for `folder`
+/// is [`ErrorKind::NotFound`].
+pub fn delete_project_session(agent_dir: &Path, folder: &Path, id: &str) -> io::Result<()> {
+    let mut sessions = matching_sessions(agent_dir, folder)?;
+    sessions.retain(|session| session.id == id);
+    if sessions.is_empty() {
+        return Err(io::Error::new(ErrorKind::NotFound, format!("no saved OMP session {id} for {}", folder.display())));
+    }
+    remove_sessions(&sessions, |dir| std::fs::remove_dir_all(dir))
+}
+
+/// Removes each session's sidecar directory with `remove_dir`, then its file; tests pass a `remove_dir` that fails.
+fn remove_sessions(sessions: &[ProjectSession], remove_dir: impl Fn(&Path) -> io::Result<()>) -> io::Result<()> {
+    fn context(path: &Path) -> impl FnOnce(io::Error) -> io::Error + '_ {
+        move |error| io::Error::new(error.kind(), format!("can't remove {}: {error}", path.display()))
+    }
+    for session in sessions {
+        let sidecar = session.path.with_extension("");
+        if std::fs::symlink_metadata(&sidecar).is_ok_and(|meta| meta.is_dir()) {
+            remove_dir(&sidecar).map_err(context(&sidecar))?;
+        }
+        std::fs::remove_file(&session.path).map_err(context(&session.path))?;
+    }
+    Ok(())
+}
+
+/// Every session under `<agent_dir>/sessions/<project>/*.jsonl` whose header `cwd` canonicalizes to `folder`.
+fn matching_sessions(agent_dir: &Path, folder: &Path) -> io::Result<Vec<ProjectSession>> {
     let sessions_dir = agent_dir.join("sessions");
     let subdirs = match std::fs::read_dir(&sessions_dir) {
         Ok(entries) => entries,
@@ -54,23 +105,7 @@ pub fn project_history(agent_dir: &Path, folder: &Path) -> io::Result<Vec<Projec
             }
         }
     }
-    sessions.sort_by(|a, b| {
-        b.modified
-            .cmp(&a.modified)
-            .then_with(|| a.path.cmp(&b.path))
-            .then_with(|| a.id.cmp(&b.id))
-    });
-    let mut seen = HashSet::with_capacity(sessions.len());
-    sessions.retain(|session| seen.insert(session.id.clone()));
     Ok(sessions)
-}
-
-/// Inspects a single omp session file at `path` (including copied paths) and
-/// returns its metadata if its header is valid and its `cwd` canonicalizes to
-/// `folder`.
-pub fn project_session(path: &Path, folder: &Path) -> io::Result<Option<ProjectSession>> {
-    let canonical_folder = canonicalize_path(folder)?;
-    inspect_session(path, &canonical_folder)
 }
 
 fn inspect_session(path: &Path, canonical_folder: &Path) -> io::Result<Option<ProjectSession>> {
@@ -487,5 +522,90 @@ mod tests {
         std::fs::create_dir_all(&broken_agent).unwrap();
         std::fs::write(broken_agent.join("sessions"), "not a dir").unwrap();
         assert!(project_history(&broken_agent, &project).is_err());
+    }
+
+    #[test]
+    fn deleting_removes_every_copy_and_its_sidecar_but_nothing_else() {
+        let dir = tempfile::tempdir().unwrap();
+        let agent_dir = dir.path().join("agent");
+        let (project, other) = (dir.path().join("project"), dir.path().join("other"));
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        let write = |rel: &str, id: &str, cwd: &Path| {
+            let path = agent_dir.join("sessions").join(rel);
+            let line = json!({"type": "session", "version": 3, "id": id, "cwd": cwd.to_string_lossy()});
+            write_session_file(&path, &[&line.to_string()], None);
+            path
+        };
+        let sidecar = |session: &Path| {
+            let dir = session.with_extension("");
+            std::fs::create_dir_all(dir.join("subagents")).unwrap();
+            std::fs::write(dir.join("subagents").join("task.jsonl"), "{}\n").unwrap();
+            dir
+        };
+        let doomed = write("p/2026-10-20T17-54-21-116Z_doomed.jsonl", "doomed", &project);
+        let doomed_sidecar = sidecar(&doomed);
+        let copy = write("q/2026-10-21T08-00-00-000Z_doomed.jsonl", "doomed", &project);
+        let kept = write("p/2026-10-19T09-00-00-000Z_kept.jsonl", "kept", &project);
+        let kept_sidecar = sidecar(&kept);
+        let foreign = write("o/2026-10-18T09-00-00-000Z_foreign.jsonl", "foreign", &other);
+        let not_a_sidecar = copy.with_extension("");
+        std::fs::write(&not_a_sidecar, "same stem, but a file").unwrap();
+
+        delete_project_session(&agent_dir, &project, "doomed").unwrap();
+        assert!(!doomed.exists() && !copy.exists() && !doomed_sidecar.exists());
+        assert!(not_a_sidecar.is_file(), "only a same-stem directory is a sidecar");
+        assert!(kept.is_file() && kept_sidecar.join("subagents").join("task.jsonl").is_file());
+        let listed: Vec<_> = project_history(&agent_dir, &project).unwrap().into_iter().map(|s| s.id).collect();
+        assert_eq!(listed, ["kept"]);
+
+        for (folder, id) in [(&project, "foreign"), (&project, "doomed"), (&other, "kept")] {
+            assert_eq!(delete_project_session(&agent_dir, folder, id).unwrap_err().kind(), ErrorKind::NotFound, "{id}");
+        }
+        assert!(foreign.is_file() && kept.is_file(), "ids resolve only within the folder's own history");
+    }
+
+    /// `(agent_dir, project, session file, sidecar)`: one listed session whose sidecar holds a subagent file.
+    fn session_with_sidecar(dir: &Path) -> (PathBuf, PathBuf, PathBuf, PathBuf) {
+        let (agent_dir, project) = (dir.join("agent"), dir.join("project"));
+        std::fs::create_dir_all(&project).unwrap();
+        let session = agent_dir.join("sessions").join("p").join("2026-10-20T17-54-21-116Z_stuck.jsonl");
+        let line = json!({"type": "session", "version": 3, "id": "stuck", "cwd": project.to_string_lossy()});
+        write_session_file(&session, &[&line.to_string()], None);
+        let sidecar = session.with_extension("");
+        std::fs::create_dir_all(sidecar.join("subagents")).unwrap();
+        std::fs::write(sidecar.join("subagents").join("task.jsonl"), "{}\n").unwrap();
+        (agent_dir, project, session, sidecar)
+    }
+
+    #[test]
+    fn a_sidecar_that_cant_be_removed_keeps_its_session_listed_for_another_try() {
+        let dir = tempfile::tempdir().unwrap();
+        let (agent_dir, project, session, sidecar) = session_with_sidecar(dir.path());
+        let sessions = matching_sessions(&agent_dir, &project).unwrap();
+        let error = remove_sessions(&sessions, |_| Err(io::Error::new(ErrorKind::PermissionDenied, "held open"))).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::PermissionDenied);
+        assert!(error.to_string().contains(&sidecar.display().to_string()), "{error}");
+        assert!(session.is_file() && sidecar.is_dir(), "the file stays while its sidecar does");
+        let listed: Vec<_> = project_history(&agent_dir, &project).unwrap().into_iter().map(|s| s.id).collect();
+        assert_eq!(listed, ["stuck"]);
+
+        delete_project_session(&agent_dir, &project, "stuck").unwrap();
+        assert!(!session.exists() && !sidecar.exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_sidecar_file_held_open_on_windows_fails_the_delete_and_keeps_the_session() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let (agent_dir, project, session, sidecar) = session_with_sidecar(dir.path());
+        let held = std::fs::OpenOptions::new().read(true).share_mode(0).open(sidecar.join("subagents").join("task.jsonl")).unwrap();
+        let error = delete_project_session(&agent_dir, &project, "stuck").unwrap_err();
+        assert!(error.to_string().contains(&sidecar.display().to_string()), "{error}");
+        assert!(session.is_file(), "the session stays listed");
+        drop(held);
+        delete_project_session(&agent_dir, &project, "stuck").unwrap();
+        assert!(!session.exists() && !sidecar.exists());
     }
 }
