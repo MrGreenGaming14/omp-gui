@@ -38,17 +38,13 @@ Follow the installer's `PATH` instructions or open a new terminal, then check `o
 ```bash
 git clone https://github.com/MrGreenGaming14/omp-gui.git
 cd omp-gui
-cargo build --workspace --all-targets
-cargo run -p loa-app
-```
-
-Run the Cargo commands from the repository root. The workspace build also creates `loa-sandbox-stub`, which the app needs for local sandbox tasks; `cargo run -p loa-app` alone does not build that companion executable. With Cargo's default target directory, the app and stub are in `target/debug`. Keep them together if you move the binaries.
-
-To launch an already-built app without Cargo:
-
-```bash
+cargo build -p loa-app -p loa-sandbox-stub
 ./target/debug/loa-app
 ```
+
+Run the build command from the repository root. It builds the app and `loa-sandbox-stub`, which the app needs for local sandbox tasks, without compiling the workspace's test targets. With Cargo's default target directory, both executables are in `target/debug`. Keep them together if you move the binaries.
+
+For subsequent development, use `cargo run -p loa-app` to rebuild the app as needed and launch it. This does not build the sandbox companion; rerun the build command above when the stub changes. To launch without checking for source changes, run `./target/debug/loa-app` directly.
 
 ### 3. Check the desktop
 
@@ -69,18 +65,20 @@ xvfb-run -a cargo test --workspace
 - **`omp` is not found:** follow the OMP installer's instructions to add its installation directory to `PATH`, then reopen the terminal.
 - **Build errors mention a compiler, CMake, `pkg-config`, Wayland, or xkbcommon:** install the prerequisite packages above (or your distribution's equivalents).
 - **No window or no graphics adapter:** launch from your local X11/Wayland desktop and check that your GPU driver or Mesa Vulkan driver is installed. Xvfb is for automated tests, not an interactive desktop.
-- **Local sandbox reports that `loa-sandbox-stub` was not found:** rerun `cargo build --workspace --all-targets` and keep the stub alongside the app.
+- **Local sandbox reports that `loa-sandbox-stub` was not found:** rerun `cargo build -p loa-app -p loa-sandbox-stub` and keep the stub alongside the app.
 
 ## Run from source on Windows
 
 Install stable Rust with the MSVC toolchain, Visual Studio Build Tools with the C++ workload and Windows SDK, and Git for Windows. Install [OMP](https://github.com/can1357/oh-my-pi/releases) and make sure `omp --version` works in PowerShell.
 
 ```powershell
-cargo build --workspace --all-targets
-cargo run -p loa-app
+cargo build -p loa-app -p loa-sandbox-stub
+.\target\debug\loa-app.exe
 ```
 
-The workspace build also places `loa-sandbox-stub.exe` alongside the app. To test on Windows, install Python 3 (`python.exe` on `PATH`) and put Git for Windows' Bash ahead of the WSL launcher:
+This builds the app and its sandbox companion without compiling the workspace's test targets, placing `loa-sandbox-stub.exe` alongside the app. Keep both executables together. For subsequent development, use `cargo run -p loa-app`; rerun the build command above when the stub changes.
+
+To test on Windows, install Python 3 (`python.exe` on `PATH`) and put Git for Windows' Bash ahead of the WSL launcher:
 
 ```powershell
 $git = (Get-Command git.exe).Source
