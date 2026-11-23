@@ -4,9 +4,10 @@
 //! directories its sessions run in. This area creates projects (the New project screen), moves
 //! sessions between them, changes a project's folder, deletes projects (keeping their sessions),
 //! selects a project (it becomes the active project, with its folder when it has one, and its
-//! screen lists its chats), and runs the project screen (shared instructions, pinned files,
-//! sessions with their digests and exclude toggle), digest rebuilds at turn end and compaction,
-//! the project context new chats receive, and the `project_search` / `project_read` host tools.
+//! screen lists its chats), and runs the project screen (shared instructions, the ideas notes,
+//! pinned files, sessions with their digests and exclude toggle), digest rebuilds at turn end and
+//! compaction, the project context new chats receive, and the `project_search` / `project_read`
+//! host tools.
 
 use loa_util::LockExt;
 use std::cell::Cell;
@@ -16,8 +17,9 @@ use std::sync::{Arc, Mutex};
 
 use iced::{Element, Subscription, Task};
 use loa_contracts::harness::{HostToolSpec, HostTools, SessionConfig};
-use loa_projects::{FileSettingsStore, LiveSessions, LocalOnly, ProjectService, ProjectSummary, RebuildOutcome, ServiceConfig, Summarizers};
-use loa_settings::projects::{ProjectOverview, ProjectSettings};
+use loa_projects::{Error, FileSettingsStore, LiveSessions, LocalOnly, ProjectService, ProjectSummary, RebuildOutcome, ServiceConfig, Summarizers};
+use loa_settings::projects::{Ideas, ProjectOverview, ProjectSettings};
+use loa_util::fs::Snapshot;
 use loa_ui_kit::widgets::Screen;
 use loa_ui_settings::projects::{self as screen, create};
 use loa_view::settings::projects::{CreateIntent, Intent};
@@ -47,8 +49,8 @@ pub enum Message {
     /// The project screen's data for this project.
     Overview(u64, String, Result<ProjectOverview, String>),
     Screen(screen::Message),
-    /// The project's settings were stored.
-    Saved(String, Result<ProjectSettings, String>),
+    /// A save of the project screen with these settings.
+    Saved(String, ProjectSettings, Saving),
     /// A session's exclude toggle was recorded, in this project.
     Excluded(String, Result<bool, String>),
     /// The context new chats in this project receive; `None` when it has
@@ -90,6 +92,16 @@ pub enum Pick {
     Project(String),
 }
 
+/// How saving the project screen went.
+#[derive(Clone, Debug)]
+pub enum Saving {
+    /// Everything sent was stored; the ideas notes, when sent, with their file as written.
+    Stored(Option<Ideas>),
+    /// The settings were stored, but the ideas notes changed outside since they were loaded and were left alone.
+    IdeasChanged,
+    Failed(String),
+}
+
 /// The project and directory the next new session starts in, set by the
 /// project screen's "New chat" and a project row's `+`.
 #[derive(Clone, Debug)]
@@ -114,6 +126,10 @@ pub struct State {
     creating: Option<create::State>,
     /// Context for new chats, by project.
     contexts: HashMap<String, Option<String>>,
+    /// The shown project's ideas notes file as seen by the screen's notes, which saving them checks it against.
+    /// Kept while the notes have an unsaved edit; `None` until loaded, and to take the next overview's notes over
+    /// an edit.
+    ideas_file: Option<Snapshot>,
     /// Taken by the next new session's `contribute`.
     new_chat: Mutex<Option<NewChat>>,
     /// Owns the runtime the rebuild driver runs on when the app had none.
@@ -152,6 +168,7 @@ impl State {
             overview_request: Cell::new(0),
             creating: None,
             contexts: HashMap::new(),
+            ideas_file: None,
             new_chat: Mutex::new(None),
             _runtime: runtime,
         };
@@ -255,6 +272,7 @@ impl State {
         self.creating = None;
         if self.screen.as_ref().is_none_or(|screen| screen.project() != project) {
             self.screen = Some(screen::State::new(project.clone()));
+            self.ideas_file = None;
         }
         ctx.show_screen(Self::ID);
         self.clear_history();
@@ -269,16 +287,28 @@ impl State {
 
     fn screen_event(&mut self, event: Intent, ctx: &mut Ctx) -> Task<Message> {
         match event {
-            Intent::SaveSettings { project, settings } => {
+            Intent::SaveSettings { project, settings, ideas } => {
                 let service = self.service.clone();
                 let settings = settings_from_view(settings);
+                let notes = ideas.map(|text| (self.ideas_file.clone(), text));
                 Task::perform(
                     async move {
-                        let result = service.save_settings(&project, &settings).await.map(|()| settings);
-                        (project, result.map_err(|error| error.to_string()))
+                        let seen = notes.as_ref().and_then(|(seen, text)| Some((seen.clone()?, text.as_str())));
+                        let saving = match (service.save_settings(&project, &settings, seen).await, notes) {
+                            (Ok(Some(file)), Some((_, text))) => Saving::Stored(Some(Ideas { text, file })),
+                            // Notes edited while no file was seen for them, after a reload asked for one.
+                            (Ok(None), Some(_)) | (Err(Error::ChangedOnDisk { .. }), _) => Saving::IdeasChanged,
+                            (Ok(_), None) => Saving::Stored(None),
+                            (Err(error), _) => Saving::Failed(error.to_string()),
+                        };
+                        (project, settings, saving)
                     },
-                    |(project, result)| Message::Saved(project, result),
+                    |(project, settings, saving)| Message::Saved(project, settings, saving),
                 )
+            }
+            Intent::ReloadIdeas => {
+                self.ideas_file = None;
+                self.reload_screen()
             }
             Intent::SetExcluded { session, excluded } => {
                 let service = self.service.clone();
@@ -426,7 +456,14 @@ impl Area for State {
                 match result {
                     Ok(overview) => {
                         let folder = overview.settings.folder.clone().filter(|folder| folder.is_dir());
+                        let (reload_ideas, edited) = (self.ideas_file.is_none(), screen.ideas_edited());
                         screen.set_overview(overview_to_view(&overview), loa_core::now_ms());
+                        if reload_ideas {
+                            screen.revert_ideas();
+                        }
+                        if reload_ideas || !edited {
+                            self.ideas_file = overview.ideas.ok().map(|ideas| ideas.file);
+                        }
                         if !self.history.matches_folder(folder.as_deref()) {
                             return self.scan_history(folder, ctx);
                         }
@@ -441,12 +478,22 @@ impl Area for State {
                 };
                 self.screen_event(event, ctx)
             }
-            Message::Saved(project, result) => {
-                let saved = result.is_ok();
+            Message::Saved(project, settings, saving) => {
                 if let Some(screen) = self.screen.as_mut().filter(|screen| screen.project() == project) {
-                    screen.saved(result.map(|settings| settings_to_view(&settings)));
+                    let settings = settings_to_view(&settings);
+                    match saving {
+                        Saving::Stored(ideas) => {
+                            screen.saved(Ok((settings, ideas.as_ref().map(|ideas| ideas.text.clone()))));
+                            if let Some(ideas) = ideas {
+                                self.ideas_file = Some(ideas.file);
+                            }
+                        }
+                        Saving::IdeasChanged => screen.ideas_changed_outside(settings),
+                        Saving::Failed(error) => screen.saved(Err(error)),
+                    }
                 }
-                if saved { self.refresh_context(project) } else { Task::none() }
+                // Also after a failure: the settings may be stored while the notes weren't.
+                self.refresh_context(project)
             }
             Message::Excluded(project, result) => {
                 if let Err(error) = result

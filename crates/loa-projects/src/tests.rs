@@ -286,6 +286,109 @@ async fn file_store_names_lists_projects_and_skips_strays() {
     assert_eq!(store.load("my/proj").await.unwrap(), ProjectSettings::default());
 }
 
+/// Replaces `project`'s ideas notes with `text` over the file as it is now.
+async fn write_ideas(store: &FileSettingsStore, project: &str, text: &str) {
+    use crate::settings::SettingsStore;
+    let seen = store.load_ideas(project).await.unwrap().file;
+    store.save_ideas(project, seen, text).await.unwrap();
+}
+
+#[tokio::test]
+async fn file_store_keeps_each_projects_ideas_next_to_its_settings() {
+    use crate::settings::SettingsStore;
+    let dir = tempfile::tempdir().unwrap();
+    let projects = dir.path().join("projects");
+    let store = FileSettingsStore::new(&projects);
+    assert_eq!(store.load_ideas("loa").await.unwrap().text, "", "no notes yet");
+    let windows = "# Ideas\r\n\r\n- try iroh relays\r\n";
+    store.save("loa", &ProjectSettings::default()).await.unwrap();
+    write_ideas(&store, "loa", windows).await;
+    write_ideas(&store, "my/proj", "- web only").await;
+    assert_eq!(std::fs::read(projects.join("loa.ideas.md")).unwrap(), windows.as_bytes(), "a Markdown file, byte for byte");
+    assert_eq!(store.load_ideas("loa").await.unwrap().text, windows);
+    assert_eq!(store.load_ideas("my/proj").await.unwrap().text, "- web only");
+    assert_eq!(store.names().await.unwrap(), ["loa"], "notes alone don't make a project");
+    std::fs::write(projects.join("bad.ideas.md"), [0xff, 0xfe]).unwrap();
+    let error = store.load_ideas("bad").await.unwrap_err().to_string();
+    assert!(error.contains("bad.ideas.md"), "notes that aren't UTF-8 are reported, not mangled: {error}");
+
+    // The share toggle is off for settings written before it existed, and stays out of the file while off.
+    std::fs::write(projects.join("old.json"), r#"{"instructions": "Use rustls."}"#).unwrap();
+    assert!(!store.load("old").await.unwrap().ideas_in_context);
+    assert!(!std::fs::read_to_string(projects.join("loa.json")).unwrap().contains("ideas_in_context"));
+
+    store.remove("loa").await.unwrap();
+    assert!(!projects.join("loa.ideas.md").exists() && !projects.join("loa.json").exists());
+    assert_eq!(store.load_ideas("my/proj").await.unwrap().text, "- web only", "other projects keep theirs");
+    std::fs::create_dir(projects.join("locked.ideas.md")).unwrap();
+    let error = store.remove("locked").await.unwrap_err().to_string();
+    assert!(error.contains("locked.ideas.md"), "a failed delete names the file: {error}");
+}
+
+#[tokio::test]
+async fn saving_ideas_never_replaces_an_edit_made_outside_since_they_were_loaded() {
+    use crate::settings::SettingsStore;
+    let dir = tempfile::tempdir().unwrap();
+    let store = FileSettingsStore::new(dir.path());
+    let path = dir.path().join("loa.ideas.md");
+    let missing = store.load_ideas("loa").await.unwrap().file;
+    std::fs::write(&path, "written outside").unwrap();
+    assert!(matches!(store.save_ideas("loa", missing, "typed in Loa").await, Err(Error::ChangedOnDisk { path: changed }) if changed == path));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "written outside", "a file created since stays too");
+
+    let seen = store.load_ideas("loa").await.unwrap().file;
+    let saved = store.save_ideas("loa", seen.clone(), "first save").await.unwrap();
+    let saved = store.save_ideas("loa", saved, "second save").await.unwrap();
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "second save", "the file as written is the base of the next save");
+    assert!(matches!(store.save_ideas("loa", seen, "stale").await, Err(Error::ChangedOnDisk { .. })));
+    std::fs::write(&path, "edited outside again").unwrap();
+    assert!(matches!(store.save_ideas("loa", saved.clone(), "stale").await, Err(Error::ChangedOnDisk { .. })));
+    assert!(store.save_ideas("other", saved, "elsewhere").await.is_err(), "a project's file is only saved as its own");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "edited outside again");
+    assert!(!dir.path().join("other.ideas.md").exists());
+}
+
+#[tokio::test]
+async fn ideas_join_the_context_only_while_shared_and_count_against_the_budget() {
+    use crate::context::{ContextRequest, build_context, render_markdown};
+    use crate::settings::SettingsStore;
+    let (source, ..) = fixture();
+    let dir = tempfile::tempdir().unwrap();
+    let store = FileSettingsStore::new(dir.path());
+    let request = ContextRequest { project: "loa", session: None, query: "", budget_tokens: 4_000, now: 1_000 };
+    let notes = format!("- try iroh relays\n{}", "x".repeat(4 * 4_000));
+    write_ideas(&store, "loa", &notes).await;
+
+    let off = build_context(&source, &LocalOnly, &store, &request).await.unwrap();
+    assert_eq!((off.ideas.as_deref(), off.digests.len()), (None, 1), "not shared by default");
+    assert!(!render_markdown(&off).contains("try iroh relays"));
+
+    store.save("loa", &ProjectSettings { instructions: "Use rustls.".into(), ideas_in_context: true, ..ProjectSettings::default() }).await.unwrap();
+    let on = build_context(&source, &LocalOnly, &store, &request).await.unwrap();
+    assert!(render_markdown(&on).contains("## Ideas and notes\n\nThe user's own development ideas and notes for this project.\n\n- try iroh relays\n"));
+    assert!(on.digests.is_empty(), "the notes take the budget the digest needed");
+
+    write_ideas(&store, "loa", " \r\n").await;
+    let blank = build_context(&source, &LocalOnly, &store, &request).await.unwrap();
+    assert_eq!((blank.ideas, blank.digests.len()), (None, 1), "blank notes add nothing");
+
+    std::fs::write(dir.path().join("loa.ideas.md"), [b'-', b' ', 0x93, b'q', 0x94]).unwrap();
+    let unreadable = build_context(&source, &LocalOnly, &store, &request).await.unwrap();
+    assert_eq!((unreadable.ideas.as_deref(), unreadable.digests.len()), (None, 1), "notes that aren't UTF-8 are left out, the rest goes in");
+    assert!(render_markdown(&unreadable).contains("Use rustls."));
+}
+
+#[tokio::test]
+async fn unreadable_ideas_still_show_the_rest_of_the_project() {
+    let env = env();
+    let _a = open(&env, "a", "loa", "/home/u/loa", 10);
+    std::fs::create_dir_all(env._dir.path().join("projects")).unwrap();
+    std::fs::write(env._dir.path().join("projects").join("loa.ideas.md"), [0xff, 0xfe, b'h', 0, b'i', 0]).unwrap();
+    let overview = env.service.overview("loa").await.unwrap();
+    assert!(overview.ideas.is_err_and(|error| error.contains("loa.ideas.md")));
+    assert_eq!(overview.sessions.len(), 1);
+}
+
 /// A project service over live sessions and file settings in a temp dir.
 struct Env {
     _dir: tempfile::TempDir,

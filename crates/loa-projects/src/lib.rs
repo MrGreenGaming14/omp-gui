@@ -49,6 +49,9 @@ pub enum Error {
     EmptyName,
     #[error("a project named {0} already exists")]
     ProjectExists(String),
+    /// A file the user also edits outside Loa changed after it was loaded; nothing was written.
+    #[error("{} was changed outside Loa since it was loaded", path.display())]
+    ChangedOnDisk { path: std::path::PathBuf },
     #[error(transparent)]
     Commit(#[from] loa_core::CommitError),
     #[error(transparent)]

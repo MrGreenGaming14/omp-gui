@@ -1,4 +1,4 @@
-version = 3.1.0
+version = 3.2.0
 #[derive(Clone)] struct loa_view::surface::port::Decoders
   extra: Option<NewDecoder>
   still: NewDecoder
@@ -204,6 +204,7 @@ version = 3.1.0
   pinned: Vec<PinnedFile>
   digest_model: Option<String>
   folder: Option<String>
+  ideas_in_context: bool
 #[derive(Clone, Debug, Default, PartialEq, Eq)] struct loa_view::settings::updates::Data
   products: Vec<Product>
   github_requests_left: Option<u64>
@@ -337,6 +338,8 @@ version = 3.1.0
   SaveSettings
     project: String
     settings: ProjectSettings
+    ideas: Option<String>
+  ReloadIdeas
   SetExcluded
     session: String
     excluded: bool
@@ -757,6 +760,7 @@ version = 3.1.0
 #[derive(Clone, Debug, PartialEq, Eq)] struct loa_view::settings::projects::ProjectOverview
   cwd: Option<String>
   settings: ProjectSettings
+  ideas: Result<String, String>
   sessions: Vec<SessionRow>
 #[derive(Clone, Debug, PartialEq, Eq)] struct loa_view::settings::projects::SessionRow
   id: String

@@ -1,8 +1,8 @@
-//! The project screen: shared instructions, pinned files, the digest model and every session of
-//! the project with its digest and context toggle, over a [`ProjectOverview`] the app loads.
-//! Edits change a draft that Save hands to the app; toggling a session updates its row at once
-//! and asks the app to record it. The header changes the project's folder; Delete project asks
-//! for a confirmation first. [`create`] is the New project screen.
+//! The project screen: shared instructions, the ideas notes, pinned files, the digest model and
+//! every session of the project with its digest and context toggle, over a [`ProjectOverview`]
+//! the app loads. Edits change a draft that Save hands to the app; toggling a session updates its
+//! row at once and asks the app to record it. The header changes the project's folder; Delete
+//! project asks for a confirmation first. [`create`] is the New project screen.
 
 pub mod create;
 
@@ -23,6 +23,11 @@ const SHOWN_DECISIONS: usize = 3;
 #[derive(Clone, Debug)]
 pub enum Local {
     Instructions(text_editor::Action),
+    Ideas(text_editor::Action),
+    /// The "Use ideas as agent context" box.
+    ShareIdeas(bool),
+    /// Reload after saving found the notes changed outside.
+    ReloadIdeas,
     DigestModel(String),
     PinPath(String),
     PinNote(String),
@@ -49,6 +54,12 @@ pub struct State {
     /// Unix milliseconds the overview was loaded at, for "3h ago".
     now: i64,
     instructions: text_editor::Content,
+    ideas: text_editor::Content,
+    ideas_in_context: bool,
+    /// Saving found the notes changed outside since they were loaded; their edit stays until reloaded.
+    ideas_changed: bool,
+    /// Reload was pressed; the notes take no edit and nothing saves until the fresh overview or an error arrives.
+    ideas_reloading: bool,
     pinned: Vec<PinnedFile>,
     digest_model: String,
     new_pin_path: String,
@@ -62,8 +73,8 @@ pub struct State {
 impl State {
     /// A screen for `project` showing a loading line until [`State::set_overview`].
     pub fn new(project: impl Into<String>) -> Self {
-        let (instructions, pinned, digest_model, new_pin_path, new_pin_note) = Default::default();
-        Self { project: project.into(), overview: None, omp_history: None, omp_history_opening: false, now: 0, instructions, pinned, digest_model, new_pin_path, new_pin_note, saving: false, error: None, confirm_delete: false }
+        let (instructions, ideas, ideas_in_context, pinned, digest_model, new_pin_path, new_pin_note) = Default::default();
+        Self { project: project.into(), overview: None, omp_history: None, omp_history_opening: false, now: 0, instructions, ideas, ideas_in_context, ideas_changed: false, ideas_reloading: false, pinned, digest_model, new_pin_path, new_pin_note, saving: false, error: None, confirm_delete: false }
     }
 
     pub fn project(&self) -> &str { &self.project }
@@ -76,46 +87,82 @@ impl State {
     /// Shows the delete confirmation, as for the Delete project button.
     pub fn ask_delete(&mut self) { self.confirm_delete = true }
 
-    /// Shows a fresh overview loaded at `now` (Unix ms); unsaved edits stay, otherwise the draft follows the stored settings.
+    /// Shows a fresh overview loaded at `now` (Unix ms); unsaved edits stay, otherwise the draft follows the stored
+    /// settings. Notes not edited here follow the stored ones also while other settings have unsaved edits.
     pub fn set_overview(&mut self, overview: ProjectOverview, now: i64) {
-        let keep = self.is_dirty();
-        (self.now, self.overview) = (now, Some(overview));
+        let (keep, keep_ideas) = (self.is_dirty(), self.ideas_edited());
+        (self.now, self.overview, self.ideas_reloading) = (now, Some(overview), false);
         if !keep {
             self.reset();
+        } else if !keep_ideas {
+            self.revert_ideas();
         }
     }
 
-    /// Shows an error from loading or saving.
-    pub fn set_error(&mut self, error: impl Into<String>) { (self.saving, self.error) = (false, Some(error.into())) }
+    /// Drops the notes' unsaved edit for the stored notes.
+    pub fn revert_ideas(&mut self) {
+        self.ideas = text_editor::Content::with_text(self.stored_ideas().unwrap_or_default());
+        self.ideas_changed = false;
+    }
 
-    /// The answer to [`Intent::SaveSettings`]: on success the settings become the stored ones.
-    pub fn saved(&mut self, result: Result<ProjectSettings, String>) {
+    /// Shows an error from loading or saving.
+    pub fn set_error(&mut self, error: impl Into<String>) { (self.saving, self.ideas_reloading, self.error) = (false, false, Some(error.into())) }
+
+    /// Whether the notes take edits: they were read, and no reload of them is pending.
+    fn ideas_editable(&self) -> bool { self.stored_ideas().is_some() && !self.ideas_reloading }
+
+    /// The answer to [`Intent::SaveSettings`]: on success the settings, and the ideas notes when they were sent,
+    /// become the stored ones.
+    pub fn saved(&mut self, result: Result<(ProjectSettings, Option<String>), String>) {
         self.saving = false;
         match result {
-            Ok(settings) => {
+            Ok((settings, ideas)) => {
                 self.error = None;
                 if let Some(o) = &mut self.overview {
                     o.settings = settings;
+                    if let Some(ideas) = ideas {
+                        o.ideas = Ok(ideas);
+                    }
                 }
             }
             Err(error) => self.error = Some(error),
         }
     }
 
+    /// The answer to [`Intent::SaveSettings`] when the settings were stored but the ideas notes changed outside
+    /// since they were loaded: their edit stays, with a way to reload them.
+    pub fn ideas_changed_outside(&mut self, settings: ProjectSettings) {
+        self.saved(Ok((settings, None)));
+        self.ideas_changed = true;
+    }
+
     /// The settings as edited. The folder isn't edited here and is kept as stored.
     pub fn draft(&self) -> ProjectSettings {
         let model = self.digest_model.trim();
         let folder = self.overview.as_ref().and_then(|o| o.settings.folder.clone());
-        ProjectSettings { instructions: self.instructions.text().trim_end().to_owned(), pinned: self.pinned.clone(), digest_model: (!model.is_empty()).then(|| model.to_owned()), folder }
+        ProjectSettings { instructions: self.instructions.text().trim_end().to_owned(), pinned: self.pinned.clone(), digest_model: (!model.is_empty()).then(|| model.to_owned()), folder, ideas_in_context: self.ideas_in_context }
     }
 
-    /// Whether the draft differs from the stored settings.
-    pub fn is_dirty(&self) -> bool { self.overview.as_ref().is_some_and(|o| o.settings != self.draft()) }
+    /// The stored ideas notes; `None` while they can't be read.
+    fn stored_ideas(&self) -> Option<&str> { self.overview.as_ref().and_then(|o| o.ideas.as_deref().ok()) }
+
+    /// The ideas notes exactly as typed, when they differ from the stored ones.
+    fn ideas_edit(&self) -> Option<String> {
+        let ideas = self.ideas.text();
+        (self.stored_ideas()? != ideas).then_some(ideas)
+    }
+
+    /// Whether the ideas notes have an unsaved edit.
+    pub fn ideas_edited(&self) -> bool { self.ideas_edit().is_some() }
+
+    /// Whether the draft differs from the stored settings or ideas notes.
+    pub fn is_dirty(&self) -> bool { self.overview.as_ref().is_some_and(|o| o.settings != self.draft()) || self.ideas_edited() }
 
     fn reset(&mut self) {
         let settings = self.overview.as_ref().map(|o| o.settings.clone()).unwrap_or_default();
         self.instructions = text_editor::Content::with_text(&settings.instructions);
-        (self.pinned, self.digest_model) = (settings.pinned, settings.digest_model.unwrap_or_default());
+        (self.pinned, self.digest_model, self.ideas_in_context) = (settings.pinned, settings.digest_model.unwrap_or_default(), settings.ideas_in_context);
+        self.revert_ideas();
     }
 
     pub fn view(&self) -> Element<'_, Message> {
@@ -161,9 +208,9 @@ impl State {
     /// The Delete project section; after a press it asks to confirm.
     fn delete_view(&self, sessions: Option<usize>) -> Element<'_, Message> {
         let kept = match sessions {
-            None | Some(0) => "Its instructions and pins are removed.".to_owned(),
-            Some(1) => "Its instructions and pins are removed. Its session is kept, in no project.".to_owned(),
-            Some(n) => format!("Its instructions and pins are removed. Its {n} sessions are kept, in no project."),
+            None | Some(0) => "Its instructions, ideas and pins are removed.".to_owned(),
+            Some(1) => "Its instructions, ideas and pins are removed. Its session is kept, in no project.".to_owned(),
+            Some(n) => format!("Its instructions, ideas and pins are removed. Its {n} sessions are kept, in no project."),
         };
         let actions = if self.confirm_delete {
             row![
@@ -197,9 +244,16 @@ impl State {
 
     fn settings_view(&self) -> Element<'_, Message> {
         let hint = |s| label(s, TextRole::Label, Tone::Muted);
-        let editor = text_editor(&self.instructions).placeholder("Conventions, constraints, where things live…").on_action(|a| Msg::Local(Local::Instructions(a)));
-        let editor = editor.size(text_size(TextRole::Body)).padding(sp(SpaceRole::S)).height(sp(SpaceRole::Xl) * 6.0).style(style::editor);
-        let instructions = column![hint("Given to every chat in this project, like a CLAUDE.md for the whole project."), editor];
+        let instructions = column![hint("Given to every chat in this project, like a CLAUDE.md for the whole project."), editor(&self.instructions, "Conventions, constraints, where things live…", Some(Local::Instructions))];
+        let share = check(self.ideas_in_context, "Use ideas as agent context", |on| Msg::Local(Local::ShareIdeas(on)));
+        let unreadable = self.overview.as_ref().and_then(|o| o.ideas.as_ref().err()).map(|error| label(error.as_str(), TextRole::Caption, Tone::Danger));
+        let changed = self.ideas_changed.then(|| {
+            let reload = action("Reload", ButtonKind::Secondary, Some(Msg::Local(Local::ReloadIdeas)));
+            row![label("Changed outside Loa — reload before saving", TextRole::Caption, Tone::Danger), Space::new().width(Fill), reload].spacing(sp(SpaceRole::S)).align_y(Alignment::Center)
+        });
+        let reloading = self.ideas_reloading.then(|| label("Reloading the notes…", TextRole::Caption, Tone::Muted));
+        let notes = editor(&self.ideas, "Features to try, open questions, plans…", self.ideas_editable().then_some(Local::Ideas as fn(_) -> _));
+        let ideas = column![hint("Your own notes and ideas for this project. Chats see them only while shared."), unreadable, changed, reloading, notes, share];
         let pin_label = |p: &PinnedFile| p.note.as_ref().map_or_else(|| p.path.clone(), |n| format!("{}  ·  {n}", p.path));
         let pins = list_editor(&self.pinned, pin_label, |i| Msg::Local(Local::RemovePin(i)), None, &self.new_pin_path, |p| Msg::Local(Local::PinPath(p)), Msg::Local(Local::AddPin));
         let note = field("Why it matters (optional)", &self.new_pin_note, |n| Msg::Local(Local::PinNote(n))).on_submit(Msg::Local(Local::AddPin));
@@ -211,11 +265,21 @@ impl State {
             None => (!dirty && !self.saving).then(|| label("All changes saved", TextRole::Caption, Tone::Muted)),
         };
         let revert = dirty.then(|| action("Revert", ButtonKind::Ghost, (!self.saving).then_some(Msg::Local(Local::Revert))));
-        let save = action(if self.saving { "Saving…" } else { "Save" }, ButtonKind::Primary, (dirty && !self.saving).then_some(Msg::Local(Local::Save)));
+        let save = action(if self.saving { "Saving…" } else { "Save" }, ButtonKind::Primary, (dirty && !self.saving && !self.ideas_reloading).then_some(Msg::Local(Local::Save)));
         let actions = row![status, Space::new().width(Fill), revert, save].spacing(sp(SpaceRole::S)).align_y(Alignment::Center);
         let gap = sp(SpaceRole::S);
-        column![section("Shared instructions", instructions.spacing(gap)), section("Pinned files", column![empty, pins, note].spacing(gap)), section("Digest model", digest.spacing(gap)), actions].spacing(sp(SpaceRole::L)).into()
+        column![section("Shared instructions", instructions.spacing(gap)), section("Ideas", ideas.spacing(gap)), section("Pinned files", column![empty, pins, note].spacing(gap)), section("Digest model", digest.spacing(gap)), actions].spacing(sp(SpaceRole::L)).into()
     }
+}
+
+/// A multi-line editor of `content`, a few paragraphs high; disabled without `on_action`.
+fn editor<'a>(content: &'a text_editor::Content, placeholder: &'a str, on_action: Option<fn(text_editor::Action) -> Local>) -> Element<'a, Message> {
+    let editor = text_editor(content).placeholder(placeholder);
+    let editor = match on_action {
+        Some(on_action) => editor.on_action(move |a| Msg::Local(on_action(a))),
+        None => editor,
+    };
+    editor.size(text_size(TextRole::Body)).padding(sp(SpaceRole::S)).height(sp(SpaceRole::Xl) * 6.0).style(style::editor).into()
 }
 
 fn sessions_view(sessions: &[SessionRow], now: i64) -> Element<'_, Message> {
@@ -271,9 +335,17 @@ impl Screen for State {
                     self.pinned.remove(i);
                 }
             }
-            Local::Save if self.is_dirty() && !self.saving => {
+            Local::Ideas(action) if self.ideas_editable() => self.ideas.perform(action),
+            Local::Ideas(_) => {}
+            Local::ShareIdeas(on) => self.ideas_in_context = on,
+            Local::ReloadIdeas if !self.ideas_reloading => {
+                (self.ideas_changed, self.ideas_reloading) = (false, true);
+                return Some(Intent::ReloadIdeas);
+            }
+            Local::ReloadIdeas => {}
+            Local::Save if self.is_dirty() && !self.saving && !self.ideas_reloading => {
                 (self.saving, self.error) = (true, None);
-                return Some(Intent::SaveSettings { project: self.project.clone(), settings: self.draft() });
+                return Some(Intent::SaveSettings { project: self.project.clone(), settings: self.draft(), ideas: self.ideas_edit() });
             }
             Local::Save => {}
             Local::Revert => {
@@ -302,7 +374,7 @@ impl Screen for State {
             Intent::OpenOmpHistory(id) => !self.omp_history_opening && matches!(&self.omp_history, Some(OmpHistory::Ready(rows)) if rows.iter().any(|row| &row.id == id)),
             Intent::OpenSession(id) => o.is_some_and(|o| o.sessions.iter().any(|s| &s.id == id)),
             Intent::NewChat { project, cwd } | Intent::ChangeFolder { project, current: cwd } => *project == self.project && *cwd == o.and_then(|o| o.cwd.clone()),
-            Intent::SaveSettings { .. } | Intent::SetExcluded { .. } | Intent::Delete { .. } => false,
+            Intent::SaveSettings { .. } | Intent::ReloadIdeas | Intent::SetExcluded { .. } | Intent::Delete { .. } => false,
         }
     }
 }
@@ -319,7 +391,12 @@ mod tests {
             digest: digest.map(|d| Digest { summary: d.into(), ..Default::default() }), digest_model: model.map(Into::into),
         };
         let sessions = vec![row("a", Some("Set up iroh"), 3, false, DigestState::Fresh, Some("Picked port 31415."), Some("smol")), row("b", None, 1, true, DigestState::Missing, None, None)];
-        ProjectOverview { cwd: Some("/home/u/loa".into()), settings: ProjectSettings { instructions: "Use rustls.".into(), ..Default::default() }, sessions }
+        ProjectOverview { cwd: Some("/home/u/loa".into()), settings: ProjectSettings { instructions: "Use rustls.".into(), ..Default::default() }, ideas: Ok(String::new()), sessions }
+    }
+
+    /// A simulator window tall enough for the whole page.
+    fn page(view: Element<'_, Message>) -> iced_test::Simulator<'_, Message> {
+        iced_test::Simulator::with_size(iced::Settings::default(), iced::Size::new(1280.0, 3000.0), view)
     }
 
     fn loaded() -> State {
@@ -364,7 +441,7 @@ mod tests {
     fn edits_and_toggles_reduce_to_events() {
         use Local::*;
         let pin = PinnedFile { path: "docs/ARCH.md".into(), note: Some("the contract".into()) };
-        let save = Intent::SaveSettings { project: "loa".into(), settings: ProjectSettings { instructions: "Use rustls.".into(), pinned: vec![pin], digest_model: Some("anthropic/claude-haiku".into()), folder: None } };
+        let save = Intent::SaveSettings { project: "loa".into(), settings: ProjectSettings { instructions: "Use rustls.".into(), pinned: vec![pin], digest_model: Some("anthropic/claude-haiku".into()), ..Default::default() }, ideas: None };
         let excluded = |session: &str, excluded| Intent::SetExcluded { session: session.into(), excluded };
         let toggle = |session: &str, included| Msg::Local(SetIncluded { session: session.into(), included });
         // (messages, events, state afterwards)
@@ -372,7 +449,7 @@ mod tests {
         let cases: Vec<Case> = vec![
             (vec![Msg::Local(Save)], vec![], |s| !s.is_dirty()),
             ([PinPath(" docs/ARCH.md ".into()), PinNote("the contract".into()), AddPin, PinPath("docs/ARCH.md".into()), AddPin, DigestModel("anthropic/claude-haiku".into()), Save, Save].map(Msg::Local).into(), vec![save], |s| s.saving && s.is_dirty()),
-            ([PinPath("src/main.rs".into()), AddPin, RemovePin(5), Revert].map(Msg::Local).into(), vec![], |s| s.draft().pinned.is_empty() && !s.is_dirty()),
+            ([PinPath("src/main.rs".into()), AddPin, RemovePin(5), ShareIdeas(true), Revert].map(Msg::Local).into(), vec![], |s| s.draft().pinned.is_empty() && !s.ideas_in_context && !s.is_dirty()),
             (vec![toggle("a", false), toggle("a", false), toggle("b", true), toggle("zz", true)], vec![excluded("a", true), excluded("b", false)], |s| s.overview.as_ref().unwrap().sessions.iter().all(|r| r.excluded == (r.id == "a"))),
             (vec![Msg::Emit(Intent::OpenSession("a".into())), Msg::Emit(Intent::OpenSession("zz".into())), Msg::Emit(Intent::NewChat { project: "other".into(), cwd: None })], vec![Intent::OpenSession("a".into())], |_| true),
         ];
@@ -385,21 +462,95 @@ mod tests {
     }
 
     #[test]
+    fn ideas_keep_their_line_endings_and_are_sent_only_when_edited() {
+        use text_editor::{Action, Edit, Motion};
+        let notes = "# Ideas\r\n\r\n- try iroh relays\r\n";
+        let mut s = State::new("loa");
+        s.set_overview(ProjectOverview { ideas: Ok(notes.into()), ..overview() }, 0);
+        assert!(!s.is_dirty(), "notes written on Windows load unchanged");
+
+        let events: Vec<Intent> = click_label(s.view(), "Use ideas as agent context").into_iter().filter_map(|m| s.update(m)).collect();
+        assert!(events.is_empty() && s.is_dirty());
+        let Some(Intent::SaveSettings { settings, ideas: None, .. }) = s.update(Msg::Local(Local::Save)) else { panic!("sharing alone leaves the notes file alone") };
+        assert!(settings.ideas_in_context);
+        s.saved(Ok((settings, None)));
+        assert!(!s.is_dirty());
+
+        for action in [Action::Move(Motion::DocumentEnd), Action::Edit(Edit::Paste(std::sync::Arc::new("- add a sidebar".into())))] {
+            s.update(Msg::Local(Local::Ideas(action)));
+        }
+        let edited = format!("{notes}- add a sidebar");
+        let Some(Intent::SaveSettings { settings, ideas: Some(ideas), .. }) = s.update(Msg::Local(Local::Save)) else { panic!("an edit is sent") };
+        assert_eq!(ideas, edited, "as typed, line endings kept");
+        s.saved(Ok((settings, Some(ideas))));
+        assert!(!s.is_dirty());
+        assert_eq!(s.overview().map(|o| o.ideas.as_deref()), Some(Ok(edited.as_str())));
+    }
+
+    #[test]
+    fn notes_changed_outside_keep_their_edit_until_reloaded() {
+        let mut s = loaded();
+        s.update(Msg::Local(Local::Ideas(text_editor::Action::Edit(text_editor::Edit::Paste(std::sync::Arc::new("typed in Loa".into()))))));
+        s.set_overview(ProjectOverview { ideas: Ok("edited outside".into()), ..overview() }, 0);
+        assert_eq!(s.ideas.text(), "typed in Loa", "a refresh keeps the edit");
+        let Some(Intent::SaveSettings { settings, ideas: Some(_), .. }) = s.update(Msg::Local(Local::Save)) else { panic!("the edit is sent") };
+        s.ideas_changed_outside(settings);
+        assert!(!s.saving && s.ideas_edited() && s.ideas.text() == "typed in Loa", "the edit stays");
+        assert_eq!(s.draft(), s.overview().unwrap().settings, "the other settings were stored");
+
+        let events: Vec<Intent> = click_label(s.view(), "Reload").into_iter().filter_map(|m| s.update(m)).collect();
+        assert_eq!(events, [Intent::ReloadIdeas]);
+        assert!(!s.ideas_changed && s.ideas_reloading);
+        let typed = Local::Ideas(text_editor::Action::Edit(text_editor::Edit::Paste(std::sync::Arc::new("typed while reloading ".into()))));
+        s.update(Msg::Local(typed.clone()));
+        assert_eq!(s.ideas.text(), "typed in Loa", "no edit is taken while the reload is pending, so none is lost to it");
+        let mut ui = page(s.view());
+        ui.click("Save").expect("Save is on the page");
+        assert_eq!(ui.into_messages().count(), 0, "Save waits for the reload");
+        assert_eq!(s.update(Msg::Local(Local::Save)), None);
+        assert_eq!(s.update(Msg::Local(Local::ReloadIdeas)), None, "one reload at a time");
+
+        s.set_overview(ProjectOverview { ideas: Ok("edited outside".into()), ..overview() }, 0);
+        s.revert_ideas();
+        assert_eq!(s.ideas.text(), "edited outside");
+        assert!(!s.is_dirty() && !s.ideas_reloading);
+        s.update(Msg::Local(typed));
+        assert_eq!(s.ideas.text(), "typed while reloading edited outside", "edits are taken again once reloaded");
+    }
+
+    #[test]
+    fn unreadable_notes_disable_only_the_notes() {
+        let mut s = State::new("loa");
+        s.set_overview(ProjectOverview { ideas: Err("loa.ideas.md: invalid utf-8 sequence".into()), ..overview() }, 0);
+        assert!(page(s.view()).find("loa.ideas.md: invalid utf-8 sequence").is_ok(), "the Ideas section says why");
+        s.update(Msg::Local(Local::Ideas(text_editor::Action::Edit(text_editor::Edit::Paste(std::sync::Arc::new("typed anyway".into()))))));
+        assert!(!s.is_dirty(), "the notes aren't edited over a file that can't be read");
+        s.update(Msg::Local(Local::ShareIdeas(true)));
+        let Some(Intent::SaveSettings { settings, ideas: None, .. }) = s.update(Msg::Local(Local::Save)) else { panic!("the rest saves") };
+        assert!(settings.ideas_in_context);
+    }
+
+    #[test]
     fn refreshes_keep_unsaved_edits_and_saves_settle_them() {
         let mut s = loaded();
         s.update(Msg::Local(Local::PinPath("src/net.rs".into())));
         s.update(Msg::Local(Local::AddPin));
-        s.set_overview(overview(), 0);
+        s.set_overview(ProjectOverview { ideas: Ok("edited outside".into()), ..overview() }, 0);
         assert_eq!(s.draft().pinned.len(), 1);
-        let Some(Intent::SaveSettings { settings, .. }) = s.update(Msg::Local(Local::Save)) else { panic!("save") };
-        s.saved(Ok(settings));
+        let Some(Intent::SaveSettings { settings, ideas: None, .. }) = s.update(Msg::Local(Local::Save)) else { panic!("save, leaving the notes edited outside alone") };
+        s.saved(Ok((settings, None)));
         assert!(!s.is_dirty() && !s.saving);
     }
 
     #[test]
     fn rows_open_sessions_and_new_chat_starts_in_the_project() {
         let mut s = loaded();
-        let mut events: Vec<Intent> = click_label(s.view(), "omp  ·  3 turns  ·  3h ago").into_iter().filter_map(|m| s.update(m)).collect();
+        let rows: Vec<Message> = {
+            let mut ui = page(s.view());
+            ui.click("omp  ·  3 turns  ·  3h ago").expect("the row is on the page, below the settings");
+            ui.into_messages().collect()
+        };
+        let mut events: Vec<Intent> = rows.into_iter().filter_map(|m| s.update(m)).collect();
         events.extend(click_label(s.view(), "New chat").into_iter().filter_map(|m| s.update(m)));
         assert_eq!(events, [Intent::OpenSession("a".into()), Intent::NewChat { project: "loa".into(), cwd: Some("/home/u/loa".into()) }]);
     }
@@ -416,7 +567,7 @@ mod tests {
         events.extend(click_label(s.view(), "Delete").into_iter().filter_map(|m| s.update(m)));
         assert_eq!(events, [Intent::ChangeFolder { project: "loa".into(), current: Some("/home/u/loa".into()) }, Intent::Delete { project: "loa".into() }]);
         let mut empty = State::new("ghost");
-        empty.set_overview(ProjectOverview { cwd: None, settings: ProjectSettings::default(), sessions: Vec::new() }, 0);
+        empty.set_overview(ProjectOverview { cwd: None, settings: ProjectSettings::default(), ideas: Ok(String::new()), sessions: Vec::new() }, 0);
         assert!(!click_label(empty.view(), "Set folder…").is_empty(), "a project without a folder can get one");
     }
 }
