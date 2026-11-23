@@ -23,7 +23,7 @@ use serde::de::DeserializeOwned;
 use tokio::sync::mpsc::UnboundedSender;
 
 use loa_settings::models::files::{OmpFiles, OmpFilesResolver};
-use loa_settings::models::rpc::{LoginProvider, LoginUiRequest, ModelInfo, OmpRpc, RpcError, UiResponse};
+use loa_settings::models::rpc::{LoginProvider, LoginUiRequest, LogoutAccount, ModelInfo, OmpRpc, RpcError, UiResponse};
 use loa_settings::models::error::{Error, Result};
 
 /// How to start omp: the executable, its working directory and extra
@@ -245,6 +245,25 @@ impl OmpRpc for OmpClient {
     async fn set_model(&self, provider: &str, model_id: &str) -> std::result::Result<ModelInfo, RpcError> {
         self.request(wire::Command::SetModel { provider: provider.to_owned(), model_id: model_id.to_owned() }).await
     }
+
+    async fn get_logout_accounts(&self, provider_id: &str) -> std::result::Result<Vec<LogoutAccount>, RpcError> {
+        #[derive(Deserialize)]
+        struct Accounts {
+            accounts: Vec<LogoutAccount>,
+        }
+        Ok(self.request::<Accounts>(wire::Command::GetLogoutAccounts { provider_id: provider_id.to_owned() }).await?.accounts)
+    }
+
+    async fn logout(&self, provider_id: &str, credential_id: i64) -> std::result::Result<Option<String>, RpcError> {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Logout {
+            #[serde(default)]
+            remaining_source: Option<String>,
+        }
+        let command = wire::Command::Logout { provider_id: provider_id.to_owned(), credential_id };
+        Ok(self.request::<Logout>(command).await?.remaining_source)
+    }
 }
 
 /// An [`OmpRpc`] that starts its omp process on first use and replaces it
@@ -304,6 +323,8 @@ delegate_lazy_client! {
     fn respond_ui(response: UiResponse) -> ();
     fn get_available_models() -> Vec<ModelInfo>;
     fn set_model(provider: &str, model_id: &str) -> ModelInfo;
+    fn get_logout_accounts(provider_id: &str) -> Vec<LogoutAccount>;
+    fn logout(provider_id: &str, credential_id: i64) -> Option<String>;
 }
 
 /// Account access over the same RPC client used for provider discovery.
@@ -479,6 +500,43 @@ mod tests {
         assert_eq!(received[2]["type"], "extension_ui_response");
         assert_eq!(received[2]["id"], "d1");
         assert_eq!(received[2]["cancelled"], true);
+    }
+
+    #[tokio::test]
+    async fn logout_lists_stored_credentials_and_removes_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = format!(
+            "{}< get_logout_accounts ga\n\
+             > {{\"type\":\"response\",\"id\":\"{{{{ga}}}}\",\"command\":\"get_logout_accounts\",\"success\":true,\"data\":{{\"accounts\":[{{\"credentialId\":7,\"provider\":\"anthropic\",\"label\":\"me@example.com\",\"detail\":\"Claude Max\",\"type\":\"oauth\",\"active\":true}},{{\"credentialId\":9,\"provider\":\"anthropic\",\"label\":\"API key\",\"detail\":\"ends in 1234\",\"type\":\"api_key\",\"active\":false}}]}}}}\n\
+             < logout lo\n\
+             > {{\"type\":\"response\",\"id\":\"{{{{lo}}}}\",\"command\":\"logout\",\"success\":true,\"data\":{{\"remainingSource\":\"ANTHROPIC_API_KEY\"}}}}\n\
+             < logout lx\n\
+             > {{\"type\":\"response\",\"id\":\"{{{{lx}}}}\",\"command\":\"logout\",\"success\":true,\"data\":{{}}}}\n\
+             < logout gone\n\
+             > {{\"type\":\"response\",\"id\":\"{{{{gone}}}}\",\"command\":\"logout\",\"success\":false,\"error\":\"Credential 7 is not stored for anthropic\"}}\n",
+            handshake_v2()
+        );
+        let fake = FakeOmp::install(dir.path(), &script).unwrap();
+        let service = OmpService::new(launch(&fake));
+        let accounts = service.get_logout_accounts("anthropic").await.unwrap();
+        let account = |credential_id, label: &str, detail: &str, kind: &str, active| LogoutAccount {
+            credential_id, provider: "anthropic".into(), label: label.into(), detail: detail.into(), kind: kind.into(), active,
+        };
+        assert_eq!(accounts, [account(7, "me@example.com", "Claude Max", "oauth", true), account(9, "API key", "ends in 1234", "api_key", false)]);
+        assert_eq!(service.logout("anthropic", 7).await.unwrap().as_deref(), Some("ANTHROPIC_API_KEY"));
+        assert_eq!(service.logout("anthropic", 9).await.unwrap(), None);
+        let gone = RpcError::Command { command: "logout".into(), message: "Credential 7 is not stored for anthropic".into(), code: None };
+        assert_eq!(service.logout("anthropic", 7).await.unwrap_err(), gone);
+        let sent: Vec<_> = fake.received().into_iter().filter(|f| f["type"] != "negotiate_protocol").map(|mut f| {
+            f.as_object_mut().unwrap().remove("id");
+            f
+        }).collect();
+        assert_eq!(sent, [
+            serde_json::json!({"type": "get_logout_accounts", "providerId": "anthropic"}),
+            serde_json::json!({"type": "logout", "providerId": "anthropic", "credentialId": 7}),
+            serde_json::json!({"type": "logout", "providerId": "anthropic", "credentialId": 9}),
+            serde_json::json!({"type": "logout", "providerId": "anthropic", "credentialId": 7}),
+        ]);
     }
 
     #[test]

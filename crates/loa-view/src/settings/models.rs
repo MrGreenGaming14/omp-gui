@@ -105,6 +105,17 @@ pub struct ProviderEntry {
     pub auth: Auth,
 }
 
+/// A stored sign in that signing out of a row removes; only its description.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Credential {
+    /// Names the credential to its harness; `None` for a harness that keeps one sign in.
+    pub id: Option<i64>,
+    pub label: String,
+    pub detail: String,
+    /// Whether the harness signs in with it now.
+    pub active: bool,
+}
+
 /// What a row shows about its login.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LoginState {
@@ -301,6 +312,10 @@ pub mod signin {
         OpenUrl(String),
         /// Put a login's URL on the clipboard.
         CopyUrl(String),
+        /// List the stored sign ins of a signed in provider, to pick the one to remove.
+        SignOut(ProviderKey),
+        /// Remove the stored sign in `credential` (a [`Credential::id`](super::Credential::id)) of the provider.
+        RemoveCredential { key: ProviderKey, credential: Option<i64> },
     }
 }
 

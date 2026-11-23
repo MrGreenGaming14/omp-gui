@@ -23,7 +23,7 @@ use loa_settings::models::error::{Result as CheckResult, SettingsValidator};
 use loa_settings::models::files::OmpFiles;
 use loa_settings::models::keys::EnvironmentPresence;
 use loa_settings::models::login::UrlOpener;
-use loa_models::service::{FilesSource, Parts};
+use loa_models::service::{Backend, FilesSource, Parts};
 use loa_models::testing::{FakeOmp, OfflineOmpAccount};
 use loa_projects::{Summarizer, Summarizers};
 use tempfile::TempDir;
@@ -102,15 +102,7 @@ impl TestApp {
         let services = Services::new(node, dirs, host, dir.path().to_owned());
         let library = open_library(&services.storage.dirs, &services.node).expect("the session library");
         // Nothing reaches omp, a model, a browser or the developer's home.
-        let models = Parts {
-            rpc: Arc::new(FakeOmp::default()),
-            omp_account: Arc::new(OfflineOmpAccount),
-            files: FilesSource::Fixed(OmpFiles::new(dir.path().join("omp"))),
-            validator: Arc::new(Offline),
-            opener: Arc::new(Offline),
-            harnesses: Vec::new(),
-            environment: Arc::new(Offline),
-        };
+        let models = offline_models(FakeOmp::default(), dir.path());
         let parts = AppParts {
             runtime: runtime_parts(&services, library, harnesses),
             models,
@@ -253,6 +245,25 @@ impl TestApp {
         let titles = self.app.palette.commands().iter().map(|command| command.title.clone()).collect();
         self.send(Message::Palette(palette::Message::Close));
         titles
+    }
+
+    /// Points the model screens at `omp` instead of an omp that knows nothing.
+    pub fn omp(&mut self, omp: FakeOmp) {
+        let backend = Backend::new(offline_models(omp, self.dir.path()));
+        self.area_mut::<crate::areas::models::State>().backend = backend;
+    }
+}
+
+/// The models service on `omp`, with omp's files under `home` and nothing else reached.
+fn offline_models(omp: FakeOmp, home: &Path) -> Parts {
+    Parts {
+        rpc: Arc::new(omp),
+        omp_account: Arc::new(OfflineOmpAccount),
+        files: FilesSource::Fixed(OmpFiles::new(home.join("omp"))),
+        validator: Arc::new(Offline),
+        opener: Arc::new(Offline),
+        harnesses: Vec::new(),
+        environment: Arc::new(Offline),
     }
 }
 

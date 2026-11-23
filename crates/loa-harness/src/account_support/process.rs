@@ -1,6 +1,5 @@
 //! Process runner for harness CLIs.
 
-use loa_util::exec::NoWindow;
 use std::process::Stdio;
 
 use async_trait::async_trait;
@@ -66,14 +65,7 @@ pub struct TokioProcessRunner;
 
 impl TokioProcessRunner {
     fn command(spec: &CommandSpec) -> tokio::process::Command {
-        let mut cmd = tokio::process::Command::new(loa_util::exec::resolve(&spec.program));
-        cmd.no_window();
-        cmd.args(&spec.args);
-        cmd.envs(spec.env.iter().map(|(k, v)| (k, v)));
-        if let Some(dir) = &spec.current_dir {
-            cmd.current_dir(dir);
-        }
-        cmd
+        loa_util::exec::command(&spec.program, &spec.args, &spec.env, spec.current_dir.as_deref())
     }
 }
 

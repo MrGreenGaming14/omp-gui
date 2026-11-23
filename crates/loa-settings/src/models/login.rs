@@ -45,6 +45,19 @@ pub struct ProviderEntry {
     pub auth: Auth,
 }
 
+/// A stored sign in that signing out of a row removes. Only its description;
+/// the credential itself stays in the harness's store.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Credential {
+    /// omp's credential id; `None` for a harness that keeps one sign in and
+    /// removes it with its logout command.
+    pub id: Option<i64>,
+    pub label: String,
+    pub detail: String,
+    /// Whether the harness signs in with it now.
+    pub active: bool,
+}
+
 /// omp's sign-in account: a [`HarnessAccount`] that also logs in to one of
 /// the OAuth providers omp lists.
 pub trait OmpProviderAccount: HarnessAccount {

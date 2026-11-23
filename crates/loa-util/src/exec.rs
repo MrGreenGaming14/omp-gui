@@ -91,6 +91,17 @@ pub fn resolve_in(program: &Path, path_var: Option<&OsStr>) -> PathBuf {
     which_in(program, path_var.or(process_path.as_deref()), std::env::var_os("PATHEXT").as_deref()).unwrap_or_else(|| program.to_path_buf())
 }
 
+/// A command running `program` (spawned as [`resolve`] finds it, so `.cmd` shims run on Windows)
+/// with `args`, `env` on top of the app's environment and `current_dir`, without a console window.
+pub fn command(program: &Path, args: &[String], env: &[(String, String)], current_dir: Option<&Path>) -> Command {
+    let mut command = Command::new(resolve(program));
+    command.no_window().args(args).envs(env.iter().map(|(k, v)| (k, v)));
+    if let Some(dir) = current_dir {
+        command.current_dir(dir);
+    }
+    command
+}
+
 /// Whether the environment variable `name` is `PATH`: case-insensitive on Windows, exact elsewhere.
 pub fn is_path_var(name: &str) -> bool { if cfg!(windows) { name.eq_ignore_ascii_case("PATH") } else { name == "PATH" } }
 

@@ -9,6 +9,8 @@
 //! | [`OmpRpc::respond_ui`] | `{"type":"extension_ui_response",...}` | none |
 //! | [`OmpRpc::get_available_models`] | `{"type":"get_available_models"}` | `{ models: ModelInfo[] }` |
 //! | [`OmpRpc::set_model`] | `{"type":"set_model","provider","modelId"}` | `ModelInfo` |
+//! | [`OmpRpc::get_logout_accounts`] | `{"type":"get_logout_accounts","providerId"}` | `{ accounts: LogoutAccount[] }` |
+//! | [`OmpRpc::logout`] | `{"type":"logout","providerId","credentialId"}` | `{ remainingSource? }` |
 //!
 //! omp settings cannot be changed over RPC: the protocol has no command that
 //! writes `config.yml` or `models.yml` (session-scoped toggles such as
@@ -156,6 +158,23 @@ impl UiResponse {
     }
 }
 
+/// A credential omp stores for a provider, as `get_logout_accounts` lists it.
+/// Loa sees only these descriptions, never the credential itself.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LogoutAccount {
+    pub credential_id: i64,
+    pub provider: String,
+    /// What the credential is, e.g. the account it signs in as.
+    pub label: String,
+    pub detail: String,
+    /// `oauth` or `api_key`.
+    #[serde(rename = "type")]
+    pub kind: String,
+    /// Whether omp signs in with it now.
+    pub active: bool,
+}
+
 /// The omp RPC commands this crate uses. The app backs it with its omp RPC
 /// client; tests back it with an in-memory fake.
 #[async_trait::async_trait]
@@ -180,6 +199,13 @@ pub trait OmpRpc: Send + Sync {
 
     /// `set_model`: switches the session's model; returns the selected model.
     async fn set_model(&self, provider: &str, model_id: &str) -> Result<ModelInfo, RpcError>;
+
+    /// `get_logout_accounts`: the credentials omp stores for `provider_id`, the active one first.
+    async fn get_logout_accounts(&self, provider_id: &str) -> Result<Vec<LogoutAccount>, RpcError>;
+
+    /// `logout`: removes credential `credential_id` of `provider_id`. Resolves with the source
+    /// omp still authenticates the provider through (e.g. an environment variable), if any.
+    async fn logout(&self, provider_id: &str, credential_id: i64) -> Result<Option<String>, RpcError>;
 }
 
 #[cfg(test)]
