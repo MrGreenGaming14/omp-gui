@@ -59,3 +59,30 @@ fn picking_a_role_row_without_a_session_configures_the_next_one() {
     assert_eq!(config.effort.as_deref(), Some("high"));
     assert_eq!(config.instructions.as_deref(), Some("The active model role is `DEEP`. Follow the RULES.md section for that role."));
 }
+
+#[test]
+fn signing_out_removes_the_picked_sign_in_and_reads_the_rows_again() {
+    use super::*;
+    use loa_settings::models::rpc::{LoginProvider, LogoutAccount};
+    let mut test = TestApp::new();
+    let mut omp = loa_models::testing::FakeOmp::default();
+    omp.providers = vec![LoginProvider { id: "anthropic".into(), name: "Anthropic".into(), available: true, authenticated: true }];
+    let account = LogoutAccount { credential_id: 7, provider: "anthropic".into(), label: "me@example.com".into(), detail: "Claude Max".into(), kind: "oauth".into(), active: true };
+    omp.credentials = vec![account].into();
+    omp.remaining_source = Some("ANTHROPIC_API_KEY".into());
+    test.omp(omp);
+    test.command("models.sign-in");
+    let auth = |test: &TestApp| match &test.area::<State>().signin {
+        Load::Ready(signin) => signin.providers()[0].auth.clone(),
+        _ => panic!("the sign in rows were not read"),
+    };
+    assert_eq!(auth(&test), view::Auth::Login { signed_in: true, account: None });
+    test.click("Sign out");
+    // One stored sign in, one Remove: clicking it removes credential 7 in omp.
+    test.click("Remove");
+    assert_eq!(auth(&test), view::Auth::Login { signed_in: false, account: None }, "the rows are read again");
+    assert!(loa_ui_kit::testkit::click_label(test.app.view(), "Sign out").is_empty(), "nothing is left to sign out of");
+    // The outcome stays on the row through the refresh until dismissed.
+    test.click("Dismiss");
+    assert!(!loa_ui_kit::testkit::click_label(test.app.view(), "Sign in").is_empty(), "the row signs in again");
+}

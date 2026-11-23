@@ -6,7 +6,7 @@
 
 /// Semver version of this presentation API. Bump it whenever `api.txt` changes:
 /// major for removals/renames, minor for additions.
-pub const VERSION: &str = "3.2.0";
+pub const VERSION: &str = "3.3.0";
 
 pub mod panel;
 pub mod session;

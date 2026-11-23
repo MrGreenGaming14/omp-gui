@@ -1,4 +1,4 @@
-version = 3.2.0
+version = 3.3.0
 #[derive(Clone)] struct loa_view::surface::port::Decoders
   extra: Option<NewDecoder>
   still: NewDecoder
@@ -522,6 +522,11 @@ version = 3.2.0
     0: String
   CopyUrl
     0: String
+  SignOut
+    0: ProviderKey
+  RemoveCredential
+    key: ProviderKey
+    credential: Option<i64>
 #[derive(Clone, Debug, PartialEq, Eq)] enum loa_view::settings::projects::OmpHistory
   Loading
   Ready
@@ -714,6 +719,11 @@ version = 3.2.0
 #[derive(Clone, Debug, PartialEq, Eq)] struct loa_view::settings::agents::FieldError
   field: &'static str
   message: String
+#[derive(Clone, Debug, PartialEq, Eq)] struct loa_view::settings::models::Credential
+  id: Option<i64>
+  label: String
+  detail: String
+  active: bool
 #[derive(Clone, Debug, PartialEq, Eq)] struct loa_view::settings::models::HarnessModel
   harness: String
   name: String

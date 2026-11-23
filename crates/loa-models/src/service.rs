@@ -18,9 +18,9 @@ use std::sync::{Arc, Mutex};
 
 use loa_settings::models::config::OmpConfig;
 use loa_settings::models::keys::{self, EnvironmentPresence, KeySource};
-use loa_contracts::harness::{HarnessAccount, LoginKind, SignInState};
+use loa_contracts::harness::{CommandSpec, HarnessAccount, LoginKind, SignInMethod, SignInState};
 use loa_settings::models::files::{OmpFiles, OmpFilesResolver};
-use loa_settings::models::login::{Auth, LoginControl, LoginStrategy, OmpProviderAccount, ProviderEntry, ProviderKey, UrlOpener};
+use loa_settings::models::login::{Auth, Credential, LoginControl, LoginStrategy, OmpProviderAccount, ProviderEntry, ProviderKey, UrlOpener};
 use loa_settings::models::models_yml::ModelsYml;
 use loa_settings::models::rpc::{self, LoginProvider, OmpRpc};
 use loa_settings::models::selector::{Catalog, ModelInfo, ModelRef, RoleAssignment, Selector};
@@ -404,6 +404,44 @@ impl Backend {
         self.inner.opener.open_url(url)
     }
 
+    /// The stored sign ins signing out of `key` can remove: the credentials
+    /// omp stores for the provider, the active one first, or the one sign in
+    /// another harness keeps.
+    pub async fn credentials(&self, key: &ProviderKey) -> Result<Vec<Credential>, String> {
+        if key.harness == OMP {
+            let accounts = self.inner.rpc.get_logout_accounts(&key.provider).await.map_err(|e| e.to_string())?;
+            return Ok(accounts.into_iter().map(|a| Credential { id: Some(a.credential_id), label: a.label, detail: a.detail, active: a.active }).collect());
+        }
+        let (harness, command) = self.logout_command(key)?;
+        Ok(vec![Credential { id: None, label: harness.name().to_owned(), detail: format!("Runs `{}`", command_line(&command)), active: true }])
+    }
+
+    /// Removes the stored sign in `credential` (a [`Credential::id`]) of
+    /// `key`: omp deletes its credential, another harness runs its logout
+    /// command. Returns what still signs the provider in, if anything.
+    pub async fn sign_out(&self, key: &ProviderKey, credential: Option<i64>) -> Result<Option<String>, String> {
+        match (key.harness == OMP, credential) {
+            (true, Some(id)) => self.inner.rpc.logout(&key.provider, id).await.map_err(|e| e.to_string()),
+            (false, None) => {
+                let (harness, command) = self.logout_command(key)?;
+                let process = loa_util::exec::command(&command.program, &command.args, &command.env, command.current_dir.as_deref());
+                loa_util::exec::run_checked(process).await.map_err(|error| format!("`{}` failed: {error}", command_line(&command)))?;
+                Ok(match harness.0.sign_in_state().await {
+                    SignInState::SignedIn { method } => Some(method_name(method)),
+                    SignInState::SignedOut | SignInState::Unknown { .. } => None,
+                })
+            }
+            _ => Err(format!("{} has no such stored sign in", key.provider)),
+        }
+    }
+
+    /// The account and logout command of a harness other than omp.
+    fn logout_command(&self, key: &ProviderKey) -> Result<(&Harness, CommandSpec), String> {
+        let harness = self.inner.harnesses.iter().find(|h| h.key() == key.harness).ok_or_else(|| format!("unknown harness {}", key.harness))?;
+        let command = harness.0.logout_command().ok_or_else(|| format!("{} has no sign out", harness.name()))?;
+        Ok((harness, command))
+    }
+
     /// The models the picker offers and the roles they serve.
     pub async fn catalog(&self) -> Result<Catalog, String> {
         let files = self.files().await?;
@@ -510,6 +548,24 @@ impl Backend {
     /// read is left out.
     fn harness_models(&self) -> Vec<HarnessModel> {
         self.inner.harnesses.iter().filter_map(|h| h.model_settings().ok()).collect()
+    }
+}
+
+/// A command as the user would type it: the program's name and its arguments.
+fn command_line(command: &CommandSpec) -> String {
+    let program = command.program.file_stem().map_or_else(|| command.program_name(), |name| name.to_string_lossy().into_owned());
+    std::iter::once(program).chain(command.args.iter().cloned()).collect::<Vec<_>>().join(" ")
+}
+
+/// What a harness still signs in with, as a sign out reports it.
+fn method_name(method: SignInMethod) -> String {
+    match method {
+        SignInMethod::Subscription => "a subscription".into(),
+        SignInMethod::ApiKey => "an API key".into(),
+        SignInMethod::ApiKeyHelper => "an API key helper".into(),
+        SignInMethod::OAuthToken => "an OAuth token".into(),
+        SignInMethod::ThirdParty => "a third-party provider".into(),
+        SignInMethod::Other(method) => method,
     }
 }
 

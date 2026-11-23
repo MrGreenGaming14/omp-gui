@@ -1,6 +1,7 @@
-//! Sign in: every provider of every harness with its authentication state, and the sign in flow
-//! of subscription logins as a pure reducer over [`LoginUpdate`]s. API keys are never entered
-//! here; API key rows only say where the harness reads the key from.
+//! Sign in: every provider of every harness with its authentication state, the sign in flow
+//! of subscription logins as a pure reducer over [`LoginUpdate`]s, and signing out by removing
+//! one stored sign in after the user picked it. API keys are never entered here; API key rows
+//! only say where the harness reads the key from.
 
 use crate::{action, dot, field, section};
 use iced::widget::{column, row, text_input};
@@ -11,7 +12,7 @@ use loa_ui_kit::widgets::{Msg, Screen, label, mono_block};
 use std::collections::HashMap;
 
 use loa_view::settings::models::signin::Intent;
-use loa_view::settings::models::{Auth, LoginPrompt, LoginState, LoginUpdate, ProviderEntry, ProviderKey};
+use loa_view::settings::models::{Auth, Credential, LoginPrompt, LoginState, LoginUpdate, ProviderEntry, ProviderKey};
 
 #[derive(Clone, Debug)]
 pub enum Local {
@@ -20,33 +21,83 @@ pub enum Local {
     /// Text typed into a running login's prompt.
     Input(ProviderKey, String),
     Submit(ProviderKey),
-    /// Returns a finished row (succeeded, failed, cancelled) to idle.
+    /// Returns a finished row (succeeded, failed, cancelled, signed out) to idle.
     Dismiss(ProviderKey),
+    /// Lists a signed in row's stored sign ins to pick one to remove.
+    SignOut(ProviderKey),
+    /// Removes the picked stored sign in.
+    Remove(ProviderKey, Option<i64>),
+    /// Closes a row's sign out before anything was removed.
+    CancelSignOut(ProviderKey),
 }
 
 pub type Message = Msg<Local, Intent>;
 
 static IDLE: LoginState = LoginState::Idle;
 
-/// The provider rows and the login state of each; a missing key is idle.
+/// Where a row's sign out is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum SignOut {
+    /// Reading the stored sign ins.
+    Reading,
+    /// The stored sign ins, each with its own Remove.
+    Confirm(Vec<Credential>),
+    Removing,
+    /// The outcome, shown until dismissed.
+    Done { message: String, tone: Tone },
+}
+
+impl SignOut {
+    /// Whether it still waits for the user or the harness.
+    fn is_open(&self) -> bool { !matches!(self, Self::Done { .. }) }
+}
+
+/// The provider rows and the login and sign out state of each; a missing key is idle.
 #[derive(Debug, Default)]
 pub struct State {
     providers: Vec<ProviderEntry>,
     logins: HashMap<ProviderKey, LoginState>,
+    sign_outs: HashMap<ProviderKey, SignOut>,
 }
 
 impl State {
-    pub fn new(providers: Vec<ProviderEntry>) -> Self { Self { providers, logins: HashMap::new() } }
+    pub fn new(providers: Vec<ProviderEntry>) -> Self { Self { providers, logins: HashMap::new(), sign_outs: HashMap::new() } }
 
-    /// Replaces the rows; logins of rows still present go on.
+    /// Replaces the rows; logins and sign outs of rows still present go on, except listed
+    /// stored sign ins, which the new rows may have changed.
     pub fn set_providers(&mut self, providers: Vec<ProviderEntry>) {
-        self.logins.retain(|key, _| providers.iter().any(|e| &e.key == key));
+        let present = |key: &ProviderKey| providers.iter().any(|e| &e.key == key);
+        self.logins.retain(|key, _| present(key));
+        self.sign_outs.retain(|key, sign_out| present(key) && !matches!(sign_out, SignOut::Confirm(_)));
         self.providers = providers;
     }
 
     pub fn providers(&self) -> &[ProviderEntry] { &self.providers }
 
     pub fn login_state(&self, key: &ProviderKey) -> &LoginState { self.logins.get(key).unwrap_or(&IDLE) }
+
+    fn sign_out_open(&self, key: &ProviderKey) -> bool { self.sign_outs.get(key).is_some_and(SignOut::is_open) }
+
+    /// The stored sign ins a row's sign out read. Ignored unless the row is reading them, so a
+    /// late answer of a cancelled sign out cannot bring it back.
+    pub fn credentials(&mut self, key: &ProviderKey, result: Result<Vec<Credential>, String>) {
+        let Some(sign_out) = self.sign_outs.get_mut(key).filter(|s| **s == SignOut::Reading) else { return };
+        *sign_out = match result {
+            Ok(credentials) if credentials.is_empty() => SignOut::Done { message: "No stored sign in to remove".into(), tone: Tone::Muted },
+            Ok(credentials) => SignOut::Confirm(credentials),
+            Err(error) => SignOut::Done { message: format!("Can't read the stored sign ins: {error}"), tone: Tone::Danger },
+        };
+    }
+
+    /// The outcome of a row's removal: what still signs the provider in, or why it failed.
+    pub fn signed_out(&mut self, key: &ProviderKey, result: Result<Option<String>, String>) {
+        let Some(sign_out) = self.sign_outs.get_mut(key).filter(|s| **s == SignOut::Removing) else { return };
+        *sign_out = match result {
+            Ok(None) => SignOut::Done { message: "Sign in removed".into(), tone: Tone::Ok },
+            Ok(Some(source)) => SignOut::Done { message: format!("Sign in removed; still signed in through {source}"), tone: Tone::Warn },
+            Err(error) => SignOut::Done { message: format!("Sign out failed: {error}"), tone: Tone::Danger },
+        };
+    }
 
     /// Applies a running login's progress. Rows without a running login ignore it, so a late
     /// update of a cancelled or finished login cannot bring it back.
@@ -103,9 +154,14 @@ impl State {
             _ => None,
         };
         let head = row![dot(if on { Tone::Ok } else { Tone::Faint }), label(&entry.name, TextRole::Body, Tone::Normal), label(status, TextRole::Caption, if on { Tone::Ok } else { Tone::Muted })];
-        let head = head.push(sign_in.map(|s| action(s, ButtonKind::Ghost, Some(Msg::Local(Local::SignIn(key.clone()))))));
+        // Both wait while the row's sign out is open; only a signed in row signs out.
+        let local = |l: Local, enabled: bool| (enabled && !self.sign_out_open(key)).then_some(Msg::Local(l));
+        let signed_in = matches!(entry.auth, Auth::Login { signed_in: true, .. });
+        let head = head.push(sign_in.map(|s| action(s, ButtonKind::Secondary, local(Local::SignIn(key.clone()), true))));
+        let head = head.push(sign_in.map(|_| action("Sign out", ButtonKind::Danger, local(Local::SignOut(key.clone()), signed_in))));
         let detail = detail.map(|d| label(d, TextRole::Caption, Tone::Muted));
-        column![head.spacing(sp(SpaceRole::S)).align_y(Alignment::Center), detail, login_view(key, login)].spacing(sp(SpaceRole::Xs)).width(Fill).into()
+        let sign_out = self.sign_outs.get(key).map(|s| sign_out_view(key, s));
+        column![head.spacing(sp(SpaceRole::S)).align_y(Alignment::Center), detail, login_view(key, login), sign_out].spacing(sp(SpaceRole::Xs)).width(Fill).into()
     }
 }
 
@@ -134,6 +190,26 @@ fn login_view<'a>(key: &ProviderKey, login: &'a LoginState) -> Option<Element<'a
     Some(lines.push(button).spacing(sp(SpaceRole::Xs)).into())
 }
 
+/// The sign out part of a row: the stored sign ins to pick from, its progress or its outcome.
+fn sign_out_view<'a>(key: &ProviderKey, sign_out: &'a SignOut) -> Element<'a, Message> {
+    let note = |s: &'a str, tone| label(s, TextRole::Label, tone);
+    let cancel = || action("Cancel", ButtonKind::Ghost, Some(Msg::Local(Local::CancelSignOut(key.clone()))));
+    let lines = match sign_out {
+        SignOut::Reading => column![note("Reading the stored sign ins…", Tone::Muted), cancel()],
+        SignOut::Confirm(credentials) => {
+            let rows = credentials.iter().map(|c| {
+                let about = column![label(c.label.as_str(), TextRole::Body, Tone::Normal), label(c.detail.as_str(), TextRole::Caption, Tone::Muted)].width(Fill);
+                let remove = action("Remove", ButtonKind::Danger, Some(Msg::Local(Local::Remove(key.clone(), c.id))));
+                row![about].push(c.active.then(|| label("In use", TextRole::Caption, Tone::Ok))).push(remove).spacing(sp(SpaceRole::S)).align_y(Alignment::Center).into()
+            });
+            column![note("Remove which sign in?", Tone::Normal)].extend(rows).push(cancel())
+        }
+        SignOut::Removing => column![note("Signing out…", Tone::Muted)],
+        SignOut::Done { message, tone } => column![note(message, *tone), action("Dismiss", ButtonKind::Ghost, Some(Msg::Local(Local::Dismiss(key.clone()))))],
+    };
+    lines.spacing(sp(SpaceRole::Xs)).into()
+}
+
 impl Screen for State {
     type Local = Local;
     type Event = Intent;
@@ -142,7 +218,8 @@ impl Screen for State {
         match m {
             Local::SignIn(key) => {
                 let login = self.providers.iter().any(|e| e.key == key && matches!(e.auth, Auth::Login { .. }));
-                (login && !self.login_state(&key).is_running()).then(|| {
+                (login && !self.login_state(&key).is_running() && !self.sign_out_open(&key)).then(|| {
+                    self.sign_outs.remove(&key);
                     self.logins.insert(key.clone(), LoginState::Starting { progress: None });
                     Intent::SignIn(key)
                 })
@@ -165,6 +242,30 @@ impl Screen for State {
             Local::Dismiss(key) => {
                 if !self.login_state(&key).is_running() {
                     self.logins.remove(&key);
+                }
+                if !self.sign_out_open(&key) {
+                    self.sign_outs.remove(&key);
+                }
+                None
+            }
+            Local::SignOut(key) => {
+                let signed_in = self.providers.iter().any(|e| e.key == key && matches!(e.auth, Auth::Login { signed_in: true, .. }));
+                (signed_in && !self.login_state(&key).is_running() && !self.sign_out_open(&key)).then(|| {
+                    self.logins.remove(&key);
+                    self.sign_outs.insert(key.clone(), SignOut::Reading);
+                    Intent::SignOut(key)
+                })
+            }
+            Local::Remove(key, credential) => {
+                let listed = matches!(self.sign_outs.get(&key), Some(SignOut::Confirm(credentials)) if credentials.iter().any(|c| c.id == credential));
+                listed.then(|| {
+                    self.sign_outs.insert(key.clone(), SignOut::Removing);
+                    Intent::RemoveCredential { key, credential }
+                })
+            }
+            Local::CancelSignOut(key) => {
+                if matches!(self.sign_outs.get(&key), Some(SignOut::Reading | SignOut::Confirm(_))) {
+                    self.sign_outs.remove(&key);
                 }
                 None
             }
@@ -247,5 +348,81 @@ mod tests {
         s.login_update(&omp(), url(None));
         let events: Vec<Intent> = click_label(s.view(), "Open browser").into_iter().filter_map(|m| s.update(m)).collect();
         assert_eq!(events, [Intent::OpenUrl("https://auth.example".into())]);
+    }
+
+    /// A step of a sign out: a message, or what the app reports back.
+    enum Step {
+        M(Local),
+        Update(LoginUpdate),
+        Listed(Result<Vec<Credential>, String>),
+        Removed(Result<Option<String>, String>),
+        Refresh,
+    }
+
+    fn credential(id: i64, active: bool) -> Credential { Credential { id: Some(id), label: format!("account {id}"), detail: "OAuth".into(), active } }
+    fn signed_in() -> Auth { Auth::Login { signed_in: true, account: None } }
+    fn done(s: &State, text: &str, want: Tone) -> bool { matches!(s.sign_outs.get(&omp()), Some(SignOut::Done { message, tone }) if message == text && *tone == want) }
+
+    #[test]
+    fn sign_outs_reduce_messages_and_results() {
+        use Step::*;
+        let (out, listed) = (|| M(Local::SignOut(omp())), || Listed(Ok(vec![credential(7, true), credential(9, false)])));
+        let remove = |id| M(Local::Remove(omp(), Some(id)));
+        let removed = |id| Intent::RemoveCredential { key: omp(), credential: Some(id) };
+        // (steps, emitted events, state afterwards)
+        type Case = (Vec<Step>, Vec<Intent>, Check);
+        let cases: Vec<Case> = vec![
+            (vec![M(Local::SignOut(key("claude-code"))), M(Local::SignOut(key("codex")))], vec![], |s| s.sign_outs.is_empty()),
+            (vec![out(), out(), listed(), remove(5), remove(9), remove(9), Removed(Ok(Some("ANTHROPIC_API_KEY".into())))], vec![Intent::SignOut(omp()), removed(9)], |s| done(s, "Sign in removed; still signed in through ANTHROPIC_API_KEY", Tone::Warn)),
+            (vec![out(), listed(), M(Local::CancelSignOut(omp())), remove(7), listed()], vec![Intent::SignOut(omp())], |s| s.sign_outs.is_empty()),
+            (vec![out(), M(Local::CancelSignOut(omp())), listed()], vec![Intent::SignOut(omp())], |s| s.sign_outs.is_empty()),
+            (vec![out(), listed(), remove(7), M(Local::CancelSignOut(omp())), M(Local::SignIn(omp())), Removed(Ok(None))], vec![Intent::SignOut(omp()), removed(7)], |s| done(s, "Sign in removed", Tone::Ok)),
+            (vec![out(), Listed(Ok(Vec::new()))], vec![Intent::SignOut(omp())], |s| done(s, "No stored sign in to remove", Tone::Muted)),
+            (vec![out(), Listed(Err("omp RPC connection failed".into()))], vec![Intent::SignOut(omp())], |s| done(s, "Can't read the stored sign ins: omp RPC connection failed", Tone::Danger)),
+            (vec![out(), listed(), remove(7), Removed(Err("Credential 7 is not stored for anthropic".into())), M(Local::Dismiss(omp())), out()], vec![Intent::SignOut(omp()), removed(7), Intent::SignOut(omp())], |s| s.sign_outs.get(&omp()) == Some(&SignOut::Reading)),
+            (vec![out(), listed(), remove(7), Removed(Err("Credential 7 is not stored for anthropic".into()))], vec![Intent::SignOut(omp()), removed(7)], |s| done(s, "Sign out failed: Credential 7 is not stored for anthropic", Tone::Danger)),
+            // A running login and a sign out of one row exclude each other; a new one clears the other's outcome.
+            (vec![M(Local::SignIn(omp())), out()], vec![Intent::SignIn(omp())], |s| s.sign_outs.is_empty()),
+            (vec![out(), M(Local::SignIn(omp()))], vec![Intent::SignOut(omp())], |s| *s.login_state(&omp()) == LoginState::Idle),
+            (vec![M(Local::SignIn(omp())), Update(LoginUpdate::Failed("denied".into())), out()], vec![Intent::SignIn(omp()), Intent::SignOut(omp())], |s| *s.login_state(&omp()) == LoginState::Idle),
+            (vec![out(), Listed(Ok(Vec::new())), M(Local::SignIn(omp()))], vec![Intent::SignOut(omp()), Intent::SignIn(omp())], |s| s.sign_outs.is_empty()),
+            // A refresh drops listed sign ins only: reads, removals and outcomes go on.
+            (vec![out(), listed(), Refresh, remove(7)], vec![Intent::SignOut(omp())], |s| s.sign_outs.is_empty()),
+            (vec![out(), Refresh, listed()], vec![Intent::SignOut(omp())], |s| matches!(s.sign_outs.get(&omp()), Some(SignOut::Confirm(c)) if c.len() == 2)),
+            (vec![out(), listed(), remove(7), Refresh, Removed(Ok(None)), Refresh], vec![Intent::SignOut(omp()), removed(7)], |s| done(s, "Sign in removed", Tone::Ok)),
+        ];
+        for (i, (steps, want, check)) in cases.into_iter().enumerate() {
+            let rows = || vec![row("omp", signed_in()), row("claude-code", signed_out()), row("codex", Auth::Unavailable { reason: "not installed".into() })];
+            let mut s = State::new(rows());
+            let mut events = Vec::new();
+            for step in steps {
+                match step {
+                    M(m) => events.extend(s.update(local(m))),
+                    Update(u) => s.login_update(&omp(), u),
+                    Listed(result) => s.credentials(&omp(), result),
+                    Removed(result) => s.signed_out(&omp(), result),
+                    Refresh => s.set_providers(rows()),
+                }
+            }
+            assert_eq!(events, want, "case {i}");
+            assert!(check(&s), "case {i}: {:?} {:?}", s.sign_outs, s.logins);
+        }
+    }
+
+    #[test]
+    fn the_view_signs_out_through_the_picked_sign_in() {
+        let click = |s: &mut State, label: &str| -> Vec<Intent> { click_label(s.view(), label).into_iter().filter_map(|m| s.update(m)).collect() };
+        let mut s = State::new(vec![row("omp", signed_out())]);
+        assert_eq!(click(&mut s, "Sign out"), [], "nothing to sign out of");
+        s.set_providers(vec![row("omp", signed_in())]);
+        assert_eq!(click(&mut s, "Sign out"), [Intent::SignOut(omp())]);
+        assert_eq!(click(&mut s, "Sign in again"), [], "the sign out is open");
+        s.credentials(&omp(), Ok(vec![credential(7, true)]));
+        assert_eq!(click(&mut s, "Remove"), [Intent::RemoveCredential { key: omp(), credential: Some(7) }]);
+        s.signed_out(&omp(), Ok(None));
+        assert_eq!(click(&mut s, "Dismiss"), []);
+        assert!(s.sign_outs.is_empty());
+        assert_eq!(click(&mut s, "Sign in again"), [Intent::SignIn(omp())]);
+        assert!(iced_test::simulator(s.view()).find("Sign out").is_err(), "a running login hides both buttons");
     }
 }

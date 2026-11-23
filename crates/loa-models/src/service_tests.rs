@@ -1,13 +1,13 @@
 //! The service against a fake omp RPC, an offline omp account and a temp agent dir: the
-//! catalog and settings writes. Logins through the real harness accounts are tested in
-//! `loa-harness/tests/models_service.rs`.
+//! catalog, settings writes and signing out of omp. Logins and sign outs through the real
+//! harness accounts are tested in `loa-harness/tests/models_service.rs`.
 
 use loa_settings::models::files::OmpFiles;
 use loa_settings::models::keys::EnvironmentPresence;
-use loa_settings::models::login::UrlOpener;
-use loa_settings::models::rpc::{self, LoginProvider};
+use loa_settings::models::login::{Auth, ProviderKey, UrlOpener};
+use loa_settings::models::rpc::{self, LoginProvider, LogoutAccount};
 use loa_settings::models::selector::ModelRef;
-use crate::service::{Backend, FilesSource, Parts};
+use crate::service::{Backend, FilesSource, OMP, Parts};
 use loa_settings::models::settings::{RoleChain, SettingsValidator};
 use crate::testing::{FakeOmp, OfflineOmpAccount};
 use async_trait::async_trait;
@@ -70,6 +70,10 @@ fn omp_rpc() -> FakeOmp {
     let mut rpc = FakeOmp::default();
     rpc.providers = vec![provider("anthropic", "Anthropic (Claude Pro/Max)", true, true), provider("openai-codex", "ChatGPT Plus/Pro (Codex Subscription)", true, false)];
     rpc.models = vec![model("anthropic", "claude-x"), model("openai-codex", "gpt-y")];
+    let credential = |id, provider: &str, label: &str, active| LogoutAccount {
+        credential_id: id, provider: provider.into(), label: label.into(), detail: "OAuth".into(), kind: "oauth".into(), active,
+    };
+    rpc.credentials = vec![credential(7, "anthropic", "me@example.com", true), credential(8, "openai-codex", "me@example.com", true), credential(9, "anthropic", "work@example.com", false)].into();
     rpc
 }
 
@@ -112,4 +116,26 @@ async fn settings_save_through_validation_and_refuse_stale_files() {
     stale.roles[0].chain.pop();
     let errors = f.backend.save_settings(stale).await.unwrap_err();
     assert!(errors[0].message.contains("changed on disk"), "{errors:?}");
+}
+
+#[tokio::test]
+async fn signing_out_of_omp_removes_one_stored_credential_at_a_time() {
+    let f = fixture("");
+    let anthropic = ProviderKey::new(OMP, "anthropic");
+    let signed_in = || async { f.backend.providers().await.into_iter().find(|row| row.key == anthropic).unwrap().auth };
+    assert_eq!(signed_in().await, Auth::Login { signed_in: true, account: None });
+    let credentials = f.backend.credentials(&anthropic).await.unwrap();
+    let ids: Vec<(Option<i64>, &str, bool)> = credentials.iter().map(|c| (c.id, c.label.as_str(), c.active)).collect();
+    assert_eq!(ids, [(Some(7), "me@example.com", true), (Some(9), "work@example.com", false)], "only the provider's own, as omp lists them");
+
+    assert_eq!(f.backend.sign_out(&anthropic, Some(7)).await, Ok(None));
+    assert_eq!(signed_in().await, Auth::Login { signed_in: true, account: None }, "another credential still signs in");
+    let gone = f.backend.sign_out(&anthropic, Some(7)).await.unwrap_err();
+    assert!(gone.contains("Credential 7 is not stored for anthropic"), "{gone}");
+    assert_eq!(f.backend.sign_out(&anthropic, None).await, Err("anthropic has no such stored sign in".into()), "omp removes credentials by id only");
+
+    assert_eq!(f.backend.sign_out(&anthropic, Some(9)).await, Ok(None));
+    assert_eq!(signed_in().await, Auth::Login { signed_in: false, account: None });
+    assert_eq!(f.backend.credentials(&anthropic).await, Ok(Vec::new()));
+    assert_eq!(f.backend.credentials(&ProviderKey::new("codex", "codex")).await, Err("unknown harness codex".into()));
 }

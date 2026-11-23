@@ -1,6 +1,6 @@
 //! The models service over the real harness accounts: omp's account on a fake omp RPC, a
-//! scripted `claude`, a missing `codex` and a temp agent dir: provider rows, logins and the
-//! other harnesses' model settings.
+//! scripted `claude`, a missing `codex` and a temp agent dir: provider rows, logins, sign outs
+//! and the other harnesses' model settings.
 
 use async_trait::async_trait;
 use loa_harness::account_support::process::TokioProcessRunner;
@@ -9,7 +9,7 @@ use loa_harness::codex::account::Codex;
 use loa_harness::omp::account::{OmpAccount, OmpLaunch};
 use loa_settings::models::files::OmpFiles;
 use loa_settings::models::keys::EnvironmentPresence;
-use loa_settings::models::login::{Auth, LoginUpdate, ProviderKey, UrlOpener};
+use loa_settings::models::login::{Auth, Credential, LoginUpdate, ProviderKey, UrlOpener};
 use loa_settings::models::rpc::{self, LoginProvider, LoginUiRequest, UiResponse};
 use loa_models::service::{Backend, FilesSource, OMP, Parts};
 use loa_settings::models::settings::SettingsValidator;
@@ -43,14 +43,21 @@ impl EnvironmentPresence for Env {
     fn contains(&self, name: &str) -> bool { self.0.contains(name) }
 }
 
-/// A `claude` that is signed out until its login (URL, pasted code) ran. `@DIR@` is its own
+/// A `claude` that is signed out until its login (URL, pasted code) ran, and again after its
+/// logout; with an `api-key` file it still reports a sign in through the key. `@DIR@` is its own
 /// folder, spelled with forward slashes so Git Bash on Windows reads it; `$0` isn't reliable
 /// behind the `.cmd` launcher.
 const CLAUDE: &str = r#"#!/bin/sh
 dir='@DIR@'
 if [ "$1 $2" = "auth status" ]; then
   if [ -f "$dir/signed-in" ]; then echo '{"loggedIn":true,"authMethod":"claude.ai"}'; exit 0; fi
+  if [ -f "$dir/api-key" ]; then echo '{"loggedIn":true,"authMethod":"api_key"}'; exit 0; fi
   echo '{"loggedIn":false}'; exit 1
+fi
+if [ "$1 $2" = "auth logout" ]; then
+  rm -f "$dir/signed-in"
+  echo "Successfully logged out"
+  exit 0
 fi
 if [ "$1 $2" = "auth login" ]; then
   echo "Opening https://claude.example/oauth?state=1 in your browser"
@@ -177,6 +184,27 @@ async fn logins_relay_urls_prompts_and_cancellation() {
     hanging.backend.providers().await;
     let seen = login(&hanging, &omp, "", true).await;
     assert!(seen.iter().all(|u| !matches!(u, LoginUpdate::Succeeded { .. } | LoginUpdate::Failed(_))), "{seen:?}");
+}
+
+#[tokio::test]
+async fn signing_out_of_another_harness_runs_its_logout_command() {
+    let f = fixture(omp_rpc(LoginScript::Hang), "", "");
+    let claude = ProviderKey::new("claude-code", "claude-code");
+    let signed_in = |name: &str| std::fs::write(f.dir.path().join(name), "").unwrap();
+    signed_in("signed-in");
+    let credentials = f.backend.credentials(&claude).await.unwrap();
+    assert_eq!(credentials, [Credential { id: None, label: "Claude Code".into(), detail: "Runs `claude auth logout`".into(), active: true }]);
+    assert_eq!(f.backend.sign_out(&claude, None).await, Ok(None));
+    let rows = f.backend.providers().await;
+    assert_eq!(rows.iter().find(|r| r.key == claude).unwrap().auth, Auth::Login { signed_in: false, account: None }, "the CLI's sign in is read again");
+
+    signed_in("signed-in");
+    signed_in("api-key");
+    assert_eq!(f.backend.sign_out(&claude, None).await, Ok(Some("an API key".into())), "what still signs in is reported");
+    assert_eq!(f.backend.sign_out(&claude, Some(1)).await, Err("claude-code has no such stored sign in".into()));
+
+    let codex = f.backend.sign_out(&ProviderKey::new("codex", "codex"), None).await.unwrap_err();
+    assert!(codex.starts_with("`no-codex-here logout` failed"), "{codex}");
 }
 
 #[tokio::test]

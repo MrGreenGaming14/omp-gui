@@ -2,7 +2,7 @@
 //! edited views back as domain values.
 
 use loa_contracts::harness::LoginUpdate;
-use loa_settings::models::login::{Auth, ProviderEntry, ProviderKey};
+use loa_settings::models::login::{Auth, Credential, ProviderEntry, ProviderKey};
 use loa_settings::models::selector::{Catalog, ModelInfo, ModelRef, RoleAssignment};
 use loa_settings::models::settings::{
     AuthMode, CustomProvider, FieldValue, HarnessModel, ModelOverride, ModelSettings, ModelToggle, OverrideField, ProviderToggle, RoleChain, ValidationError,
@@ -31,6 +31,10 @@ pub fn provider_to_view(entry: &ProviderEntry) -> view::ProviderEntry {
         Auth::Unavailable { reason } => view::Auth::Unavailable { reason: reason.clone() },
     };
     view::ProviderEntry { key: provider_key_to_view(&entry.key), name: entry.name.clone(), harness_name: entry.harness_name.clone(), auth }
+}
+
+pub fn credential_to_view(credential: &Credential) -> view::Credential {
+    view::Credential { id: credential.id, label: credential.label.clone(), detail: credential.detail.clone(), active: credential.active }
 }
 
 pub fn login_update_to_view(update: LoginUpdate) -> view::LoginUpdate {

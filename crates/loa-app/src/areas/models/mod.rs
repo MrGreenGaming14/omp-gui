@@ -15,14 +15,14 @@ use loa_view::session::composer;
 use loa_models::service::{Backend, SettingsLoad};
 use loa_settings::models::selector::{Catalog, ModelInfo, ModelRef, RoleAssignment};
 use loa_settings::models::settings::{ModelSettings, ValidationError};
-use loa_settings::models::login::ProviderEntry;
+use loa_settings::models::login::{Credential, ProviderEntry};
 use loa_contracts::harness::LoginUpdate;
 use loa_ui_kit::widgets::{Msg, Screen};
 use loa_ui_settings::models::{self as screen, Page, picker, settings, signin};
 use loa_view::settings::models as view;
 
 use crate::view::settings::models::{
-    catalog_to_view, login_update_to_view, model_ref_from_view, model_ref_to_view, provider_key_from_view, provider_to_view, settings_from_view, settings_to_view,
+    catalog_to_view, credential_to_view, login_update_to_view, model_ref_from_view, model_ref_to_view, provider_key_from_view, provider_to_view, settings_from_view, settings_to_view,
     validation_error_to_view,
 };
 
@@ -65,6 +65,10 @@ pub enum Message {
     Providers(Vec<ProviderEntry>),
     SignIn(signin::Message),
     Login(view::ProviderKey, LoginUpdate),
+    /// The stored sign ins a row's sign out may remove.
+    Credentials(view::ProviderKey, Result<Vec<Credential>, String>),
+    /// A stored sign in was removed: what still signs the provider in, if anything.
+    SignedOut(view::ProviderKey, Result<Option<String>, String>),
     Picker(picker::Message),
     RoleAssigned(Result<(), String>),
     /// Pick omp model role `0` for the active session, or for the next one when none runs.
@@ -411,6 +415,16 @@ impl State {
                 self.backend.submit_input(&provider_key_from_view(key), text);
                 Task::none()
             }
+            view::signin::Intent::SignOut(key) => {
+                let backend = self.backend.clone();
+                let provider = provider_key_from_view(key.clone());
+                Task::perform(async move { backend.credentials(&provider).await }, move |result| Message::Credentials(key.clone(), result))
+            }
+            view::signin::Intent::RemoveCredential { key, credential } => {
+                let backend = self.backend.clone();
+                let provider = provider_key_from_view(key.clone());
+                Task::perform(async move { backend.sign_out(&provider, credential).await }, move |result| Message::SignedOut(key.clone(), result))
+            }
         }
     }
 
@@ -666,6 +680,21 @@ impl Area for State {
                 // The new sign in may bring models and change the rows.
                 let providers = self.read_providers();
                 Task::batch([providers, self.refresh_models(ctx)])
+            }
+            Message::Credentials(key, result) => {
+                if let Load::Ready(state) = &mut self.signin {
+                    state.credentials(&key, result.map(|credentials| credentials.iter().map(credential_to_view).collect()));
+                }
+                Task::none()
+            }
+            Message::SignedOut(key, result) => {
+                let removed = result.is_ok();
+                if let Load::Ready(state) = &mut self.signin {
+                    state.signed_out(&key, result);
+                }
+                // The rows show what the harness still signs in with; a removed sign in may take models.
+                let providers = self.read_providers();
+                if removed { Task::batch([providers, self.refresh_models(ctx)]) } else { providers }
             }
             Message::Picker(message) => {
                 let Load::Ready(picker) = &mut self.picker.1 else { return Task::none() };

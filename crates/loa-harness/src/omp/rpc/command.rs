@@ -115,6 +115,8 @@ pub enum Command {
     },
     GetLoginProviders,
     Login { provider_id: String },
+    GetLogoutAccounts { provider_id: String },
+    Logout { provider_id: String, credential_id: i64 },
 }
 
 /// The `ready` frame omp writes before anything else.
