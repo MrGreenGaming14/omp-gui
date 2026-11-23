@@ -89,6 +89,8 @@ pub enum Intent {
     OpenSession(String),
     /// Import and open a listed OMP terminal conversation by its native id.
     OpenOmpHistory(String),
+    /// Delete a listed OMP terminal conversation from omp's storage by its native id; Loa's imported copies stay.
+    DeleteOmpHistory(String),
     /// Start a chat in this project, in its working directory when known.
     NewChat { project: String, cwd: Option<String> },
     /// Show a folder dialog for the project's folder, starting at the current one; the app stores the choice and

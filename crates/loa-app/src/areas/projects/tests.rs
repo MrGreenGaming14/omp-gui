@@ -354,3 +354,66 @@ fn unreadable_notes_leave_the_page_and_the_rest_of_the_context_working() {
     let context = test.harness.seen().configs.last().and_then(|config| config.context.clone()).unwrap_or_default();
     assert!(context.contains("Use rustls.") && !context.contains("## Ideas and notes"), "{context}");
 }
+
+/// The ids of the shown project's terminal history, sorted.
+fn listed_history(test: &TestApp) -> Vec<String> {
+    use loa_view::settings::projects::OmpHistory;
+
+    let Some(OmpHistory::Ready(rows)) = test.area::<State>().screen().unwrap().omp_history() else { panic!("expected a loaded terminal history") };
+    let mut ids: Vec<_> = rows.iter().map(|row| row.id.clone()).collect();
+    ids.sort();
+    ids
+}
+
+#[test]
+fn deleting_a_terminal_conversation_removes_it_from_omp_storage_only() {
+    use loa_view::settings::projects::Intent;
+
+    let mut test = TestApp::new();
+    let (folder, other) = (test.dir.path().join("project"), test.dir.path().join("other"));
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::create_dir_all(&other).unwrap();
+    let storage = test.dir.path().join("omp/sessions/saved");
+    let doomed = saved_omp_session(&storage, "doomed", &folder, "Old terminal chat");
+    let sidecar = doomed.with_extension("");
+    std::fs::create_dir_all(&sidecar).unwrap();
+    std::fs::write(sidecar.join("artifact.md"), "notes").unwrap();
+    let kept = saved_omp_session(&storage, "kept", &folder, "Kept terminal chat");
+    create_project(&mut test, "Project", &folder);
+    assert_eq!(listed_history(&test), ["doomed", "kept"]);
+
+    test.send(area(Message::Screen(Msg::Local(screen::Local::DeleteOmpHistory("doomed".into())))));
+    assert!(doomed.is_file(), "nothing is deleted before the confirmation");
+    let delete = test.app.update(area(Message::Screen(Msg::Local(screen::Local::ConfirmDeleteOmpHistory))));
+    test.send(area(Message::Screen(Msg::Emit(Intent::OpenOmpHistory("kept".into())))));
+    assert!(test.app.ctx.runtime.library().store().list().unwrap().is_empty(), "no row opens during a deletion");
+    test.send(area(Message::FolderChosen(Pick::Project("Project".into()), Ok(Some(other)))));
+    assert!(test.notice().contains("Wait for the current project operation"), "the folder stays during a deletion");
+    test.run(delete);
+    assert!(!doomed.exists() && !sidecar.exists() && kept.is_file());
+    assert_eq!(listed_history(&test), ["kept"]);
+
+    let mut test = test.reopen();
+    test.send(area(Message::Open("Project".into())));
+    assert_eq!(listed_history(&test), ["kept"], "a fresh scan doesn't bring it back");
+}
+
+#[test]
+fn a_failed_deletion_is_reported_and_the_history_listed_again() {
+    let mut test = TestApp::new();
+    let folder = test.dir.path().join("project");
+    std::fs::create_dir_all(&folder).unwrap();
+    let storage = test.dir.path().join("omp/sessions/saved");
+    let gone = saved_omp_session(&storage, "gone", &folder, "Removed in a terminal");
+    saved_omp_session(&storage, "kept", &folder, "Kept terminal chat");
+    create_project(&mut test, "Project", &folder);
+    std::fs::remove_file(gone).unwrap();
+
+    test.send(area(Message::Screen(Msg::Local(screen::Local::DeleteOmpHistory("gone".into())))));
+    test.send(area(Message::Screen(Msg::Local(screen::Local::ConfirmDeleteOmpHistory))));
+    assert!(test.notice().contains("Can't delete OMP terminal session"), "{}", test.notice());
+    assert_eq!(listed_history(&test), ["kept"]);
+    test.send(area(Message::Screen(Msg::Local(screen::Local::DeleteOmpHistory("kept".into())))));
+    test.send(area(Message::Screen(Msg::Local(screen::Local::ConfirmDeleteOmpHistory))));
+    assert!(listed_history(&test).is_empty(), "the history is free again after a failure");
+}

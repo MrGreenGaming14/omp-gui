@@ -2,7 +2,8 @@
 //! every session of the project with its digest and context toggle, over a [`ProjectOverview`]
 //! the app loads. Edits change a draft that Save hands to the app; toggling a session updates its
 //! row at once and asks the app to record it. The header changes the project's folder; Delete
-//! project asks for a confirmation first. [`create`] is the New project screen.
+//! project, like deleting a saved terminal conversation, asks for a confirmation first. [`create`]
+//! is the New project screen.
 
 pub mod create;
 
@@ -41,6 +42,10 @@ pub enum Local {
     Delete,
     ConfirmDelete,
     CancelDelete,
+    /// A terminal conversation's Delete: asks for a confirmation first.
+    DeleteOmpHistory(String),
+    ConfirmDeleteOmpHistory,
+    CancelDeleteOmpHistory,
 }
 
 pub type Message = Msg<Local, Intent>;
@@ -50,7 +55,7 @@ pub struct State {
     project: String,
     overview: Option<ProjectOverview>,
     omp_history: Option<OmpHistory>,
-    omp_history_opening: bool,
+    omp_history_busy: bool,
     /// Unix milliseconds the overview was loaded at, for "3h ago".
     now: i64,
     instructions: text_editor::Content,
@@ -68,13 +73,15 @@ pub struct State {
     error: Option<String>,
     /// The Delete project button was pressed; waiting for the confirmation.
     confirm_delete: bool,
+    /// The terminal conversation whose Delete was pressed; waiting for the confirmation.
+    confirm_delete_history: Option<String>,
 }
 
 impl State {
     /// A screen for `project` showing a loading line until [`State::set_overview`].
     pub fn new(project: impl Into<String>) -> Self {
         let (instructions, ideas, ideas_in_context, pinned, digest_model, new_pin_path, new_pin_note) = Default::default();
-        Self { project: project.into(), overview: None, omp_history: None, omp_history_opening: false, now: 0, instructions, ideas, ideas_in_context, ideas_changed: false, ideas_reloading: false, pinned, digest_model, new_pin_path, new_pin_note, saving: false, error: None, confirm_delete: false }
+        Self { project: project.into(), overview: None, omp_history: None, omp_history_busy: false, now: 0, instructions, ideas, ideas_in_context, ideas_changed: false, ideas_reloading: false, pinned, digest_model, new_pin_path, new_pin_note, saving: false, error: None, confirm_delete: false, confirm_delete_history: None }
     }
 
     pub fn project(&self) -> &str { &self.project }
@@ -82,11 +89,14 @@ impl State {
     /// Updates the saved terminal conversations, or hides the section when no project folder is available.
     pub fn set_omp_history(&mut self, history: Option<OmpHistory>) { self.omp_history = history }
     pub fn omp_history(&self) -> Option<&OmpHistory> { self.omp_history.as_ref() }
-    /// Disables opening another terminal conversation while an import is in flight.
-    pub fn set_omp_history_opening(&mut self, opening: bool) { self.omp_history_opening = opening }
+    /// Disables opening or deleting another terminal conversation while an import or deletion is in flight.
+    pub fn set_omp_history_busy(&mut self, busy: bool) { self.omp_history_busy = busy }
     /// Shows the delete confirmation, as for the Delete project button.
     pub fn ask_delete(&mut self) { self.confirm_delete = true }
 
+    fn lists_omp_history(&self, id: &str) -> bool { matches!(&self.omp_history, Some(OmpHistory::Ready(rows)) if rows.iter().any(|row| row.id == id)) }
+
+    /// Shows a fresh overview loaded at `now` (Unix ms); unsaved edits stay, otherwise the draft follows the stored settings.
     /// Shows a fresh overview loaded at `now` (Unix ms); unsaved edits stay, otherwise the draft follows the stored
     /// settings. Notes not edited here follow the stored ones also while other settings have unsaved edits.
     pub fn set_overview(&mut self, overview: ProjectOverview, now: i64) {
@@ -188,16 +198,28 @@ impl State {
             OmpHistory::Failed(error) => label(error.as_str(), TextRole::Label, Tone::Danger).into(),
             OmpHistory::Ready(rows) if rows.is_empty() => label("No saved terminal conversations.", TextRole::Label, Tone::Muted).into(),
             OmpHistory::Ready(rows) => {
-                let opening = self.omp_history_opening;
+                let busy = self.omp_history_busy;
                 let now = self.now;
+                let confirming = self.confirm_delete_history.as_deref();
                 let rows = rows.iter().map(|r| {
                     let body = column![
                         label(r.title.as_str(), TextRole::Body, Tone::Normal),
                         label(ago(now, r.modified), TextRole::Caption, Tone::Muted),
                     ].spacing(sp(SpaceRole::Xs)).width(Fill);
-                    button(body).padding([sp(SpaceRole::S), sp(SpaceRole::M)]).width(Fill)
+                    if confirming == Some(r.id.as_str()) {
+                        let actions = row![
+                            label("Delete this terminal conversation?", TextRole::Caption, Tone::Danger),
+                            Space::new().width(Fill),
+                            action("Cancel", ButtonKind::Ghost, Some(Msg::Local(Local::CancelDeleteOmpHistory))),
+                            action("Delete", ButtonKind::Danger, (!busy).then_some(Msg::Local(Local::ConfirmDeleteOmpHistory))),
+                        ].spacing(sp(SpaceRole::S)).align_y(Alignment::Center);
+                        return container(column![body, actions].spacing(sp(SpaceRole::S))).padding([sp(SpaceRole::S), sp(SpaceRole::M)]).width(Fill).into();
+                    }
+                    // The Delete button takes its own clicks, as a session row's context toggle does.
+                    let delete = action("Delete", ButtonKind::Ghost, (!busy).then(|| Msg::Local(Local::DeleteOmpHistory(r.id.clone()))));
+                    button(row![body, delete].spacing(sp(SpaceRole::M)).align_y(Alignment::Center)).padding([sp(SpaceRole::S), sp(SpaceRole::M)]).width(Fill)
                         .style(style::button(ButtonKind::Row { selected: false }))
-                        .on_press_maybe((!opening).then(|| Msg::Emit(Intent::OpenOmpHistory(r.id.clone())))).into()
+                        .on_press_maybe((!busy).then(|| Msg::Emit(Intent::OpenOmpHistory(r.id.clone())))).into()
                 });
                 container(Column::with_children(rows)).style(style::container(Surface::Card)).into()
             }
@@ -363,6 +385,12 @@ impl Screen for State {
                 self.confirm_delete = false;
                 return Some(Intent::Delete { project: self.project.clone() });
             }
+            Local::DeleteOmpHistory(id) => self.confirm_delete_history = Some(id),
+            Local::CancelDeleteOmpHistory => self.confirm_delete_history = None,
+            Local::ConfirmDeleteOmpHistory => {
+                let id = self.confirm_delete_history.take()?;
+                return (!self.omp_history_busy && self.lists_omp_history(&id)).then_some(Intent::DeleteOmpHistory(id));
+            }
         }
         None
     }
@@ -371,10 +399,10 @@ impl Screen for State {
     fn guard(&self, e: &Intent) -> bool {
         let o = self.overview.as_ref();
         match e {
-            Intent::OpenOmpHistory(id) => !self.omp_history_opening && matches!(&self.omp_history, Some(OmpHistory::Ready(rows)) if rows.iter().any(|row| &row.id == id)),
+            Intent::OpenOmpHistory(id) => !self.omp_history_busy && self.lists_omp_history(id),
             Intent::OpenSession(id) => o.is_some_and(|o| o.sessions.iter().any(|s| &s.id == id)),
             Intent::NewChat { project, cwd } | Intent::ChangeFolder { project, current: cwd } => *project == self.project && *cwd == o.and_then(|o| o.cwd.clone()),
-            Intent::SaveSettings { .. } | Intent::ReloadIdeas | Intent::SetExcluded { .. } | Intent::Delete { .. } => false,
+            Intent::SaveSettings { .. } | Intent::ReloadIdeas | Intent::SetExcluded { .. } | Intent::Delete { .. } | Intent::DeleteOmpHistory(_) => false,
         }
     }
 }
@@ -424,9 +452,9 @@ mod tests {
         let events: Vec<_> = messages.into_iter().filter_map(|m| s.update(m)).collect();
         assert_eq!(events, [Intent::OpenOmpHistory("native-old".into())]);
         assert_eq!(s.update(Msg::Emit(Intent::OpenOmpHistory("missing".into()))), None);
-        s.set_omp_history_opening(true);
+        s.set_omp_history_busy(true);
         assert_eq!(s.update(Msg::Emit(Intent::OpenOmpHistory("native-new".into()))), None);
-        s.set_omp_history_opening(false);
+        s.set_omp_history_busy(false);
         s.set_omp_history(Some(OmpHistory::Loading));
         assert_eq!(s.update(Msg::Emit(Intent::OpenOmpHistory("native-new".into()))), None);
         s.set_omp_history(Some(OmpHistory::Failed("Could not read history".into())));
@@ -569,5 +597,33 @@ mod tests {
         let mut empty = State::new("ghost");
         empty.set_overview(ProjectOverview { cwd: None, settings: ProjectSettings::default(), ideas: Ok(String::new()), sessions: Vec::new() }, 0);
         assert!(!click_label(empty.view(), "Set folder…").is_empty(), "a project without a folder can get one");
+    }
+
+    #[test]
+    fn deleting_a_terminal_conversation_asks_first_and_never_opens_it() {
+        use loa_view::settings::projects::OmpHistoryRow;
+
+        let mut s = loaded();
+        s.set_omp_history(Some(OmpHistory::Ready(vec![
+            OmpHistoryRow { id: "native-new".into(), title: "Recent terminal conversation".into(), modified: 2_000 },
+            OmpHistoryRow { id: "native-old".into(), title: "Older terminal conversation".into(), modified: 1_000 },
+        ])));
+        let click = |s: &mut State, label: &str| -> Vec<Intent> { click_label(s.view(), label).into_iter().filter_map(|m| s.update(m)).collect() };
+        assert_eq!(click(&mut s, "Delete"), [], "the first press asks, and the row it sits in doesn't open");
+        assert_eq!(s.confirm_delete_history.as_deref(), Some("native-new"));
+        assert_eq!(click(&mut s, "Cancel"), []);
+        assert_eq!(s.confirm_delete_history, None);
+        click(&mut s, "Delete");
+        assert_eq!(click(&mut s, "Delete"), [Intent::DeleteOmpHistory("native-new".into())]);
+        assert_eq!(s.confirm_delete_history, None);
+        assert_eq!(s.update(Msg::Emit(Intent::DeleteOmpHistory("native-old".into()))), None, "only a confirmation deletes");
+
+        s.update(Msg::Local(Local::DeleteOmpHistory("native-old".into())));
+        s.set_omp_history_busy(true);
+        assert_eq!(s.update(Msg::Local(Local::ConfirmDeleteOmpHistory)), None, "not while another row is opened or deleted");
+        s.set_omp_history_busy(false);
+        s.update(Msg::Local(Local::DeleteOmpHistory("native-old".into())));
+        s.set_omp_history(Some(OmpHistory::Loading));
+        assert_eq!(s.update(Msg::Local(Local::ConfirmDeleteOmpHistory)), None, "not once the row is no longer listed");
     }
 }

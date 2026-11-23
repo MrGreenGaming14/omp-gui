@@ -1,4 +1,4 @@
-//! Read-only discovery of OMP terminal conversations, and on-demand Loa imports.
+//! Discovery of OMP terminal conversations, on-demand Loa imports, and deleting them from omp's storage.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use iced::Task;
 use loa_core::{Draft, NodeId, attr};
-use loa_harness::omp::{HARNESS, native::{self, ProjectSession, X_SESSION_FILE, project_history, project_session}};
+use loa_harness::omp::{HARNESS, native::{self, ProjectSession, X_SESSION_FILE, delete_project_session, project_history, project_session}};
 use loa_session::Error;
 use loa_view::settings::projects::{OmpHistory, OmpHistoryRow};
 
@@ -18,7 +18,8 @@ pub(super) struct History {
     scan: u64,
     folder: Option<PathBuf>,
     rows: Vec<ProjectSession>,
-    opening: Option<String>,
+    /// The project whose history row is being opened or deleted; one row at a time.
+    busy: Option<String>,
     changing: HashSet<String>,
 }
 
@@ -26,7 +27,7 @@ impl History {
     pub(super) fn matches_folder(&self, folder: Option<&std::path::Path>) -> bool { self.folder.as_deref() == folder }
 
     pub(super) fn begin_change(&mut self, project: &str) -> bool {
-        self.opening.as_deref() != Some(project) && self.changing.insert(project.to_owned())
+        self.busy.as_deref() != Some(project) && self.changing.insert(project.to_owned())
     }
 
     pub(super) fn end_change(&mut self, project: &str) { self.changing.remove(project); }
@@ -48,7 +49,7 @@ impl State {
         history.rows.clear();
         if let Some(screen) = &mut self.screen {
             screen.set_omp_history(folder.as_ref().map(|_| OmpHistory::Loading));
-            screen.set_omp_history_opening(history.opening.is_some());
+            screen.set_omp_history_busy(history.busy.is_some());
         }
         let Some(folder) = folder else { return Task::none() };
         let backend = ctx.backends.models.clone();
@@ -81,22 +82,38 @@ impl State {
         screen.set_omp_history(Some(view));
     }
 
-    pub(super) fn open_history(&mut self, native_id: &str, ctx: &mut Ctx) -> Task<Message> {
-        if self.history.opening.is_some() || self.creating.is_some() || ctx.screen() != Some(Self::ID) { return Task::none(); }
-        let Some((screen, folder, row)) = self.screen.as_mut().zip(self.history.folder.clone())
-            .and_then(|(screen, folder)| self.history.rows.iter().find(|row| row.id == native_id).cloned().map(|row| (screen, folder, row)))
-        else { return Task::none() };
+    /// Claims the history for one operation on the shown project's listed row `native_id`: its project, folder and row.
+    fn claim_row(&mut self, native_id: &str, ctx: &mut Ctx) -> Option<(String, PathBuf, ProjectSession)> {
+        if self.history.busy.is_some() || self.creating.is_some() || ctx.screen() != Some(Self::ID) { return None; }
+        let screen = self.screen.as_mut()?;
+        let folder = self.history.folder.clone()?;
+        let row = self.history.rows.iter().find(|row| row.id == native_id)?.clone();
         let project = screen.project().to_owned();
         if self.history.changing.contains(&project) {
             ctx.notify("Wait for the current project operation to finish");
-            return Task::none();
+            return None;
         }
+        self.history.busy = Some(project.clone());
+        screen.set_omp_history_busy(true);
+        Some((project, folder, row))
+    }
+
+    fn release_row(&mut self) {
+        self.history.busy = None;
+        if let Some(screen) = &mut self.screen { screen.set_omp_history_busy(false); }
+    }
+
+    /// Lists the shown project's history again, unless the user left its screen.
+    fn refresh_history(&mut self, ctx: &Ctx) -> Task<Message> {
+        if self.shown().is_some() && ctx.screen() == Some(Self::ID) { self.scan_history(self.history.folder.clone(), ctx) } else { Task::none() }
+    }
+
+    pub(super) fn open_history(&mut self, native_id: &str, ctx: &mut Ctx) -> Task<Message> {
+        let Some((project, folder, row)) = self.claim_row(native_id, ctx) else { return Task::none() };
         let scan = self.history.scan;
         let sessions = self.sessions.clone();
         let library = Arc::clone(ctx.runtime.library());
         let owner = ctx.services.node.key.clone();
-        self.history.opening = Some(project.clone());
-        screen.set_omp_history_opening(true);
         Task::perform(async move {
             if let Some(id) = sessions.native_sessions(HARNESS).await.map_err(|error| error.to_string())?.remove(&row.id) {
                 return Ok(id);
@@ -125,19 +142,14 @@ impl State {
     }
 
     pub(super) fn history_opened(&mut self, scan: u64, result: Result<String, String>, ctx: &mut Ctx) -> Task<Message> {
-        self.history.opening = None;
-        if let Some(screen) = &mut self.screen { screen.set_omp_history_opening(false); }
+        self.release_row();
         match result {
             Ok(id) => {
                 if scan == self.history.scan && self.shown().is_some() && ctx.screen() == Some(Self::ID) {
                     ctx.close_screen();
                     ctx.request(Request::OpenSession(id));
                 }
-                let refresh = if self.shown().is_some() && ctx.screen() == Some(Self::ID) {
-                    self.scan_history(self.history.folder.clone(), ctx)
-                } else {
-                    Task::none()
-                };
+                let refresh = self.refresh_history(ctx);
                 Task::batch([self.list(), refresh])
             }
             Err(error) => {
@@ -145,6 +157,24 @@ impl State {
                 Task::none()
             }
         }
+    }
+
+    /// Deletes a listed row's conversation from omp's storage; Loa's imported copies stay.
+    pub(super) fn delete_history(&mut self, native_id: &str, ctx: &mut Ctx) -> Task<Message> {
+        let Some((_, folder, row)) = self.claim_row(native_id, ctx) else { return Task::none() };
+        let backend = ctx.backends.models.clone();
+        Task::perform(async move {
+            let files = backend.files().await?;
+            tokio::task::spawn_blocking(move || delete_project_session(&files.agent_dir, &folder, &row.id))
+                .await.map_err(|error| error.to_string())?.map_err(|error| error.to_string())
+        }, Message::HistoryDeleted)
+    }
+
+    /// Lists the history again also after a failure: other copies may be gone, the one that failed stays listed.
+    pub(super) fn history_deleted(&mut self, result: Result<(), String>, ctx: &mut Ctx) -> Task<Message> {
+        self.release_row();
+        if let Err(error) = result { ctx.notify(format!("Can't delete OMP terminal session: {error}")); }
+        self.refresh_history(ctx)
     }
 }
 

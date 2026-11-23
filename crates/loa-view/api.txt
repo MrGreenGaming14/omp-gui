@@ -347,6 +347,8 @@ version = 3.3.0
     0: String
   OpenOmpHistory
     0: String
+  DeleteOmpHistory
+    0: String
   NewChat
     project: String
     cwd: Option<String>

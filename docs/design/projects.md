@@ -17,6 +17,8 @@ Open a project with a saved folder to see **OMP terminal history**. Loa matches 
 
 Opening a history row imports a snapshot into the project and opens it as a Loa chat. The original OMP file is left alone, including if it is still open in a terminal. Later changes to the terminal conversation are not synced to the imported copy.
 
+Delete on a history row asks for a confirmation on that row, then removes the conversation from OMP's own storage: the folder of artifacts and subagent sessions next to its session file first, then the file. Copies already imported into Loa stay. When a folder or file can't be removed, for example while a terminal on Windows still holds something in it open, the project page names it and the conversation stays listed, so Delete can be tried again once it is closed.
+
 ## Ideas notes
 
 Every project has an **Ideas** box on its page for the user's own development ideas and notes. Save stores them with the rest of the page in a Markdown file of their own, `<name>.ideas.md` in the app's `projects` data folder next to the project's settings, so projects without a folder have notes too and nothing is written into the user's repository. The file can also be edited outside the app: the page shows it again on its next load, and Save rewrites it only when the notes were edited on the page. Line endings are kept as written. Deleting the project deletes its notes.
