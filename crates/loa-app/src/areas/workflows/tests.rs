@@ -52,15 +52,129 @@ fn loads_and_edits_handwritten_rules() {
 }
 
 #[test]
-fn creates_managed_workflow_and_reloads() {
+fn creates_structured_workflow_and_reopens_the_same_fields() {
+    use iced::widget::text_editor::{Action, Edit};
+    use loa_view::settings::workflows::{ManagedFields, RoutingNote, RuleBlock, Rules};
+
+    let mut test = app("omp");
+    let path = test.dir.path().join("omp/RULES.md");
+    let original = std::fs::read_to_string(&path).unwrap();
+    local(&mut test, Local::New);
+    local(&mut test, Local::Name("Review".into()));
+    local(&mut test, Local::Description("Use for documentation review.".into()));
+    local(&mut test, Local::Access("reader".into(), screen::Access::Allow));
+    local(&mut test, Local::Routing("reader".into(), "Check examples.".into()));
+    local(&mut test, Local::AddStep);
+    local(&mut test, Local::Step(0, "Read the change.".into()));
+    local(&mut test, Local::AddStep);
+    local(&mut test, Local::Step(1, "Summarize findings.".into()));
+    local(&mut test, Local::AddBlock);
+    local(&mut test, Local::BlockHeading(0, "Reporting".into()));
+    local(&mut test, Local::BlockText(0, Action::Edit(Edit::Paste(std::sync::Arc::new("Cite the relevant files.".into())))));
+    local(&mut test, Local::Save);
+    let written = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(written, format!("{original}{}", concat!(
+        "\n<!-- omp-gui:workflow REVIEW -->\n## Review Mode\n\n",
+        "When the active model role is `REVIEW`, operate in Review Mode.\n\n",
+        "- Allowed agents: `reader`. Route work only to these agents.\n",
+        "\n<!-- loa:workflow-field -->\n### When to use\n\nUse for documentation review.\n",
+        "\n<!-- loa:workflow-field -->\n### Routing\n\n- `reader`: Check examples.\n",
+        "\n<!-- loa:workflow-field -->\n### Steps\n\n1. Read the change.\n2. Summarize findings.\n",
+        "\n<!-- loa:workflow-field -->\n### Reporting\n\nCite the relevant files.\n",
+        "<!-- /omp-gui:workflow -->\n",
+    )));
+    local(&mut test, Local::Open("DEEP".into()));
+    local(&mut test, Local::Open("REVIEW".into()));
+    let draft = test.area::<State>().screen.draft().workflow;
+    assert_eq!(draft.models, ["provider/model"]);
+    let expected = Rules::Managed {
+        name: "Review".into(), allowed: vec!["reader".into()], disallowed: vec![], notes: String::new(),
+        fields: ManagedFields {
+            description: "Use for documentation review.".into(),
+            routing: vec![RoutingNote { agent: "reader".into(), note: "Check examples.".into() }],
+            steps: vec!["Read the change.".into(), "Summarize findings.".into()],
+            blocks: vec![RuleBlock { heading: "Reporting".into(), text: "Cite the relevant files.".into() }],
+        },
+    };
+    assert_eq!(draft.rules, expected);
+    local(&mut test, Local::CopyFrom("REVIEW".into()));
+    local(&mut test, Local::Name("Second review".into()));
+    local(&mut test, Local::Save);
+    let saved = std::fs::read_to_string(&path).unwrap();
+    assert!(saved.starts_with(&written));
+    assert!(saved.contains("<!-- omp-gui:workflow SECOND_REVIEW -->"));
+    let Rules::Managed { fields, .. } = expected else { unreachable!() };
+    let Rules::Managed { fields: copied, .. } = test.area::<State>().screen.draft().workflow.rules else { panic!("copy is not managed") };
+    assert_eq!(copied, fields);
+}
+
+#[test]
+fn copies_handwritten_rules_without_changing_the_source() {
+    let mut test = app("omp");
+    let path = test.dir.path().join("omp/RULES.md");
+    let original = std::fs::read_to_string(&path).unwrap();
+    local(&mut test, Local::CopyFrom("DEEP".into()));
+    local(&mut test, Local::Name("Study".into()));
+    local(&mut test, Local::Save);
+    let written = std::fs::read_to_string(&path).unwrap();
+    let (source, copy) = written.split_once("\n<!-- omp-gui:workflow STUDY -->\n").unwrap();
+    assert_eq!(source, original);
+    assert!(copy.contains(&original));
+    local(&mut test, Local::Open("STUDY".into()));
+    let view::Rules::Managed { notes, .. } = test.area::<State>().screen.draft().workflow.rules else { panic!("copy is not managed") };
+    assert_eq!(notes, original.trim_end_matches('\n'));
+}
+
+#[test]
+fn outside_edits_open_as_raw_markdown_and_save_in_place() {
+    use iced::widget::text_editor::{Action, Edit, Motion};
+
+    let mut test = app("omp");
+    let path = test.dir.path().join("omp/RULES.md");
+    let body = "## Deep Mode\n\nKeep this custom preamble.\n\nWhen the active model role is `DEEP`, read the examples.\n\n<!-- loa:workflow-field -->\n### Symbols\n\nOutside notation.\n";
+    let suffix = "\n## Unrelated\nKeep this too.\n";
+    let marked = |body: &str| format!("<!-- omp-gui:workflow DEEP -->\n{body}<!-- /omp-gui:workflow -->\n{suffix}");
+    std::fs::write(&path, marked(body)).unwrap();
+    test.send(AppMessage::area(Message::Edit("DEEP".into())));
+    assert!(matches!(test.area::<State>().screen.draft().workflow.rules, view::Rules::External { .. }));
+    local(&mut test, Local::Save);
+    let external_edit = body.replace("read the examples", "review the examples");
+    test.send(AppMessage::area(Message::Screen(Msg::Emit(Intent::Close))));
+    std::fs::write(&path, marked(&external_edit)).unwrap();
+    test.send(AppMessage::area(Message::Open));
+    local(&mut test, Local::Save);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), marked(&external_edit));
+    local(&mut test, Local::Text(Action::Move(Motion::DocumentEnd)));
+    local(&mut test, Local::Text(Action::Edit(Edit::Paste(std::sync::Arc::new("Add a source link.\n".into())))));
+    local(&mut test, Local::Save);
+    let saved = std::fs::read_to_string(&path).unwrap();
+    let edited = format!("{external_edit}Add a source link.\n");
+    assert_eq!(saved, marked(&edited));
+    local(&mut test, Local::CopyFrom("DEEP".into()));
+    local(&mut test, Local::Save);
+    let copied = std::fs::read_to_string(&path).unwrap();
+    assert!(copied.starts_with(&saved));
+    assert!(copied.contains("<!-- omp-gui:workflow DEEP_COPY -->"));
+    let view::Rules::Managed { notes, .. } = test.area::<State>().screen.draft().workflow.rules else { panic!("copy is not managed") };
+    assert_eq!(notes, edited.trim_end_matches('\n'));
+}
+
+#[test]
+fn saving_disables_editor_actions_until_the_file_is_reloaded() {
     let mut test = app("omp");
     local(&mut test, Local::New);
     local(&mut test, Local::Name("Review".into()));
+    local(&mut test, Local::Description("Original draft.".into()));
+    let save = test.app.update(AppMessage::area(Message::Screen(Msg::Local(Local::Save))));
+    let view = test.area::<State>().view_screen(&test.app.ctx).unwrap();
+    assert!(loa_ui_kit::testkit::click_label(view, "Saving workflow…").is_empty());
+    local(&mut test, Local::Description("Late edit.".into()));
+    let view::Rules::Managed { fields, .. } = test.area::<State>().screen.draft().workflow.rules else { panic!("not managed") };
+    assert_eq!(fields.description, "Original draft.");
+    test.run(save);
+    local(&mut test, Local::Description("Next edit.".into()));
     local(&mut test, Local::Save);
-    let dir = test.dir.path().join("omp");
-    assert!(std::fs::read_to_string(dir.join("config.yml")).unwrap().contains("REVIEW"));
-    assert!(std::fs::read_to_string(dir.join("RULES.md")).unwrap().contains("omp-gui:workflow REVIEW"));
-    assert!(test.area::<State>().workflows.iter().any(|w| matches!(w.rules, workflows::Rules::Managed { .. })));
+    assert!(std::fs::read_to_string(test.dir.path().join("omp/RULES.md")).unwrap().contains("Next edit."));
 }
 
 #[test]

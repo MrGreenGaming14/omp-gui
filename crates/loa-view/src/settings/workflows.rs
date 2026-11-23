@@ -9,10 +9,32 @@ pub struct Workflow {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum Rules {
-    Managed { name: String, allowed: Vec<String>, disallowed: Vec<String>, notes: String },
+    Managed { name: String, allowed: Vec<String>, disallowed: Vec<String>, notes: String, fields: ManagedFields },
+    /// A marker-delimited body that cannot be represented by the structured editor.
+    External { text: String },
     HandWritten { text: String },
     #[default]
     None,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ManagedFields {
+    pub description: String,
+    pub routing: Vec<RoutingNote>,
+    pub steps: Vec<String>,
+    pub blocks: Vec<RuleBlock>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RoutingNote {
+    pub agent: String,
+    pub note: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RuleBlock {
+    pub heading: String,
+    pub text: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

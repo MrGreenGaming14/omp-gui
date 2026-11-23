@@ -1,6 +1,6 @@
 //! Projections between stored workflows and their editable views.
 
-use loa_settings::models::{error::Result, selector::Selector, workflows::{Rules, Workflow}};
+use loa_settings::models::{error::Result, selector::Selector, workflows::{ManagedFields, RoutingNote, RuleBlock, Rules, Workflow}};
 use loa_view::settings::workflows as view;
 
 pub fn to_view(workflow: &Workflow) -> view::Workflow {
@@ -8,7 +8,16 @@ pub fn to_view(workflow: &Workflow) -> view::Workflow {
         role: workflow.role.clone(),
         models: workflow.models.iter().map(ToString::to_string).collect(),
         rules: match &workflow.rules {
-            Rules::Managed { name, allowed, disallowed, notes } => view::Rules::Managed { name: name.clone(), allowed: allowed.clone(), disallowed: disallowed.clone(), notes: notes.clone() },
+            Rules::Managed { name, allowed, disallowed, notes, fields } => view::Rules::Managed {
+                name: name.clone(), allowed: allowed.clone(), disallowed: disallowed.clone(), notes: notes.clone(),
+                fields: view::ManagedFields {
+                    description: fields.description.clone(),
+                    routing: fields.routing.iter().map(|entry| view::RoutingNote { agent: entry.agent.clone(), note: entry.note.clone() }).collect(),
+                    steps: fields.steps.clone(),
+                    blocks: fields.blocks.iter().map(|block| view::RuleBlock { heading: block.heading.clone(), text: block.text.clone() }).collect(),
+                },
+            },
+            Rules::External { text } => view::Rules::External { text: text.clone() },
             Rules::HandWritten { text } => view::Rules::HandWritten { text: text.clone() },
             Rules::None => view::Rules::None,
         },
@@ -20,7 +29,16 @@ pub fn from_view(workflow: view::Workflow) -> Result<Workflow> {
         role: workflow.role,
         models: workflow.models.iter().map(|model| Selector::parse(model)).collect::<Result<_>>()?,
         rules: match workflow.rules {
-            view::Rules::Managed { name, allowed, disallowed, notes } => Rules::Managed { name, allowed, disallowed, notes },
+            view::Rules::Managed { name, allowed, disallowed, notes, fields } => Rules::Managed {
+                name, allowed, disallowed, notes,
+                fields: ManagedFields {
+                    description: fields.description,
+                    routing: fields.routing.into_iter().map(|entry| RoutingNote { agent: entry.agent, note: entry.note }).collect(),
+                    steps: fields.steps,
+                    blocks: fields.blocks.into_iter().map(|block| RuleBlock { heading: block.heading, text: block.text }).collect(),
+                },
+            },
+            view::Rules::External { text } => Rules::External { text },
             view::Rules::HandWritten { text } => Rules::HandWritten { text },
             view::Rules::None => Rules::None,
         },
@@ -33,7 +51,20 @@ mod tests {
 
     #[test]
     fn workflow_round_trips_each_rules_kind() {
-        for rules in [Rules::None, Rules::HandWritten { text: "## Mode\nText\n".into() }, Rules::Managed { name: "Review".into(), allowed: vec!["reviewer".into()], disallowed: vec!["writer".into()], notes: "Notes".into() }] {
+        for rules in [
+            Rules::None,
+            Rules::HandWritten { text: "## Mode\nText\n".into() },
+            Rules::External { text: "Outside formatting.\n".into() },
+            Rules::Managed {
+                name: "Review".into(), allowed: vec!["reviewer".into()], disallowed: vec!["writer".into()], notes: "Notes".into(),
+                fields: ManagedFields {
+                    description: "Review changes.".into(),
+                    routing: vec![RoutingNote { agent: "reviewer".into(), note: "Check assumptions.".into() }],
+                    steps: vec!["Read the changes.".into()],
+                    blocks: vec![RuleBlock { heading: "Reporting".into(), text: "List findings.".into() }],
+                },
+            },
+        ] {
             let workflow = Workflow { role: "REVIEW".into(), models: vec![Selector::parse("provider/model:high").unwrap(), Selector::parse("@default").unwrap()], rules };
             assert_eq!(from_view(to_view(&workflow)).unwrap(), workflow);
         }
