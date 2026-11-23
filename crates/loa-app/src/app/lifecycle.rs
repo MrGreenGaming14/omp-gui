@@ -133,6 +133,9 @@ impl SessionController {
             RuntimeEvent::StartFailed(_) => {
                 ctx.show_harness();
                 let _ = ctx.composer.turn_ended();
+                if let Some(draft) = self.carried.take() {
+                    self.hand_over(&mut ctx.composer, None, draft);
+                }
                 Task::none()
             }
             RuntimeEvent::ResumeFailed(_) => {
@@ -146,7 +149,7 @@ impl SessionController {
             RuntimeEvent::SessionStarted(id) => {
                 ctx.close_screen();
                 if let Some(draft) = self.carried.take() {
-                    self.hand_over(&mut ctx.composer, &id, draft);
+                    self.hand_over(&mut ctx.composer, Some(id), draft);
                 }
                 self.after.extend([After::RefreshFiles, After::Diff]);
                 Task::none()
@@ -180,7 +183,8 @@ impl SessionController {
     /// whether it runs a turn and shows the session's own draft.
     fn present(&mut self, ctx: &mut Ctx) {
         let active = ctx.runtime.sessions().active();
-        self.follow(&mut ctx.composer, active.map(|session| session.id().clone()), active.is_some_and(|session| session.is_busy()));
+        let starting = ctx.runtime.sessions().starting().is_some();
+        self.follow(&mut ctx.composer, active.map(|session| session.id().clone()), active.is_some_and(|session| session.is_busy()), starting);
         let Some(session) = active else {
             self.chat.load(&Dom::new());
             self.after.push(After::Present(ctx.runtime.cwd().to_path_buf()));
@@ -202,11 +206,12 @@ impl SessionController {
     /// editor (a send still starting keeps its queue), and the editor is kept as the old one's
     /// draft; `shown`'s own draft, or an empty editor, takes its place. A send from the center
     /// starting its session is the exception: the editor, with what was typed or queued while it
-    /// started, goes on to that session as it is.
-    fn follow(&mut self, composer: &mut composer::State, shown: Option<SessionId>, busy: bool) {
+    /// started, goes on to that session as it is. `starting` tells that a start is still pending,
+    /// so `shown` is another session opened meanwhile, not the one that started.
+    fn follow(&mut self, composer: &mut composer::State, shown: Option<SessionId>, busy: bool, starting: bool) {
         if shown != self.shown {
             let left = std::mem::replace(&mut self.shown, shown);
-            if left.is_some() || !composer.is_busy() {
+            if left.is_some() || !composer.is_busy() || starting {
                 composer.follow_session(false);
                 let draft = composer.take_draft();
                 if !draft.is_empty() {
@@ -220,21 +225,20 @@ impl SessionController {
         composer.follow_session(busy);
     }
 
-    /// Gives session `to` the draft of the session it replaces, ahead of what `to` already
-    /// holds: in the editor when it shows `to`, else in `to`'s draft.
-    fn hand_over(&mut self, composer: &mut composer::State, to: &SessionId, draft: composer::Draft) {
-        if self.shown.as_ref() == Some(to) {
+    /// Gives `to` (`None`: the center without a session) the draft of the session it replaces,
+    /// ahead of what `to` already holds: in the editor when it shows `to`, else in `to`'s draft.
+    fn hand_over(&mut self, composer: &mut composer::State, to: Option<SessionId>, draft: composer::Draft) {
+        if self.shown == to {
             return composer.prepend_draft(draft);
         }
-        let key = Some(to.clone());
-        let merged = match self.drafts.remove(&key) {
+        let merged = match self.drafts.remove(&to) {
             Some(mut own) => {
                 own.prepend(draft);
                 own
             }
             None => draft,
         };
-        self.drafts.insert(key, merged);
+        self.drafts.insert(to, merged);
     }
 
     /// The app's own reaction to a session event, then every area's. A streamed append only
@@ -258,8 +262,13 @@ impl SessionController {
             SessionEvent::Closed(id) => {
                 let draft = self.drafts.remove(&Some(id.clone()));
                 match (ctx.successors.remove(id), draft) {
-                    (Some(Some(successor)), Some(draft)) => self.hand_over(&mut ctx.composer, &successor, draft),
-                    (Some(None), Some(draft)) => self.carried = Some(draft),
+                    (Some(Some(successor)), Some(draft)) => self.hand_over(&mut ctx.composer, Some(successor), draft),
+                    (Some(None), Some(mut draft)) => {
+                        if let Some(earlier) = self.carried.take() {
+                            draft.prepend(earlier);
+                        }
+                        self.carried = Some(draft);
+                    }
                     _ => {}
                 }
             }

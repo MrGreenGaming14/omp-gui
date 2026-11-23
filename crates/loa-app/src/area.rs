@@ -291,13 +291,6 @@ impl Ctx {
         self.composer.set_harnesses(harness::options(self.runtime.harnesses()), self.runtime.sessions().harness.as_deref());
     }
 
-    /// Closes session `id`: its writer stops, its journal is released and
-    /// its harness shuts down; it stays in Recents and reopens from the
-    /// journal.
-    pub fn close_session(&mut self, id: &str) {
-        self.end_session(id, false);
-    }
-
     /// Closes session `id`, deletes its journal and removes it from the
     /// sidebar.
     pub fn discard_session(&mut self, id: &str) {

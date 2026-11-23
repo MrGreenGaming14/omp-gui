@@ -175,6 +175,30 @@ fn what_is_typed_while_a_session_starts_from_the_center_stays_with_it() {
     assert_eq!((composer.text(), composer.queue().count()), ("more".to_owned(), 1), "the started session's composer keeps both");
 }
 
+#[test]
+fn a_session_opened_while_the_center_starts_one_shows_its_own_draft() {
+    let mut test = TestApp::new();
+    let first = test.session("hello");
+    test.type_text("first notes");
+    test.command("session.new");
+    test.until("the new session is active", |app| app.ctx.runtime.sessions().active_id().is_some_and(|id| id.as_str() != first));
+    let second = test.active().unwrap().to_owned();
+    test.send(Message::area(sessions::Message::Delete(second)));
+    assert_eq!(test.active(), None, "the center shows");
+
+    test.type_text("center prompt");
+    let start = test.update(Message::Composer(composer::Message::Submit));
+    assert!(test.app.ctx.runtime.sessions().starting().is_some(), "the session is starting");
+    test.send(Message::OpenRecent(first.clone()));
+    assert_eq!(test.app.ctx.composer.text(), "first notes", "the opened session shows its own draft");
+    test.type_text(" and more");
+
+    test.run(start);
+    test.until("the started session is active", |app| app.ctx.runtime.sessions().active_id().is_some_and(|id| id.as_str() != first));
+    test.send(Message::OpenRecent(first));
+    assert_eq!(test.app.ctx.composer.text(), "first notes and more", "the draft survived the start");
+}
+
 /// A sidebar event, as its row emits it.
 fn nav(event: Nav) -> Message {
     Message::Shell(shell::Message::Sidebar(shell::sidebar::Message::Emit(event)))
