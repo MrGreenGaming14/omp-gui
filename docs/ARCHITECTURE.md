@@ -35,7 +35,7 @@ Everything else builds on these three. Their existing public items change only w
 | `loa-surface-browser`, `-docs`, `-rfb` | surfaces | Built in surface servers |
 | `loa-surface-hub` | surfaces | The app's surface service: built-in servers, MCP declared surfaces, `surface_*` agent tools as host tools and a loopback MCP endpoint, `<surface>` drafts |
 | `loa-models` | models | The model settings service (`service::Backend`: catalog, sign-in, settings load and save over the `loa-settings` ports) and its offline `testing` fakes. `Backend` is built only from injected `Parts`; `loa-app` composes the real ones from `loa-harness` |
-| `loa-projects` | projects | Digests, context ranking, `project_search`, `project_read`, the project settings store, `ProjectService` over the bus and journal; the data types live in `loa_settings::projects`; summaries through the `Summarizers` port, which `loa-app` backs with omp one-shot calls |
+| `loa-projects` | projects | Digests, context ranking, `project_search`, `project_read`, the project settings store (one JSON file per project, and its ideas notes as a Markdown file of the same name beside it, saved over the `loa_util::fs::Snapshot` the page's edit started from so an outside edit is never overwritten), `ProjectService` over the bus and journal; the data types live in `loa_settings::projects`; summaries through the `Summarizers` port, which `loa-app` backs with omp one-shot calls |
 | `loa-trust` | p2p | One ed25519 node key (`PublicKey` converts to iroh, Biscuit and bus keys) behind the `KeyStore` port (OS keychain, with a private key file fallback: `0600` on Unix, a protected current-user DACL on Windows); Biscuit grants whose scope kinds (sessions, prompts, projects, future sessions, SSH hosts, surfaces, sandbox, folders) come from one `KINDS` table; renewal, narrowing |
 | `loa-net` | p2p | iroh endpoint on 31415, ALPNs, TCP fallback, relay, discovery |
 | `loa-share` | p2p | Session replication, view and drive, fork to own node |
@@ -178,7 +178,7 @@ impl State {
 | --- | --- | --- |
 | Element schema | `loa_core::SCHEMA_VERSION` (1) | `loa-core` |
 | Adapter interface | `loa_adapter::INTERFACE_VERSION` | `loa-adapter` |
-| Presentation API | `loa_view::VERSION` (3.1.0), listed in `crates/loa-view/api.txt` | `loa-view` |
+| Presentation API | `loa_view::VERSION` (3.2.0), listed in `crates/loa-view/api.txt` | `loa-view` |
 | Control ALPN | `omp/control/1` | `loa-net` |
 | Session ALPN | `omp/session/1` | `loa-net`, `loa-share` |
 | Surface ALPN | `omp/surface/1` | `loa-surface` |

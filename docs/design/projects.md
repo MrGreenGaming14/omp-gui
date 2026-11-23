@@ -17,6 +17,14 @@ Open a project with a saved folder to see **OMP terminal history**. Loa matches 
 
 Opening a history row imports a snapshot into the project and opens it as a Loa chat. The original OMP file is left alone, including if it is still open in a terminal. Later changes to the terminal conversation are not synced to the imported copy.
 
+## Ideas notes
+
+Every project has an **Ideas** box on its page for the user's own development ideas and notes. Save stores them with the rest of the page in a Markdown file of their own, `<name>.ideas.md` in the app's `projects` data folder next to the project's settings, so projects without a folder have notes too and nothing is written into the user's repository. The file can also be edited outside the app: the page shows it again on its next load, and Save rewrites it only when the notes were edited on the page. Line endings are kept as written. Deleting the project deletes its notes.
+
+Save never replaces notes changed outside the app since the page loaded the notes its edit started from. The rest of the page is still saved; the Ideas box says the notes were changed outside Loa and keeps the page's edit until **Reload** shows the file's notes instead. A notes file that can't be read, such as one that isn't UTF-8, shows why in the Ideas box, which can't be edited then; the rest of the page works as usual.
+
+**Use ideas as agent context** is off by default. While it is off, the notes reach no session. When it is on and the notes aren't blank, new chats in the project get them under "Ideas and notes" in the project context, after the shared instructions; they count against the context budget like the instructions and pins. Notes that can't be read are left out, and the rest of the context still goes in. New chats get the notes as of the last time the project context was built: when the project page is opened or saved, or a session digest is rebuilt; an edit made outside reaches them after that.
+
 ## What a digest holds
 
 | Part | Example |
@@ -33,7 +41,7 @@ Opening a history row imports a snapshot into the project and opens it as a Loa 
 - Digests are written by the `smol` model role, omp's role for cheap, fast side tasks, through omp itself (a one shot `omp -p --smol` or an RPC `btw` side turn). It can be set per project, and harnesses without roles use the cheapest model their adapter exposes
 - When a chat starts or compacts, the project's digests are ranked by relevance and recency and packed into a fixed token budget
 - Agents can go past the digests to the real DOMs. `project_search` searches every session in the project by text or element type (every `<decision>` answer, every `<call>` that touched a file), and `project_read` pulls the full subtree behind any hit or pointer
-- The project also holds shared instructions and pinned files, like a CLAUDE.md for the whole project
+- The project also holds shared instructions and pinned files, like a CLAUDE.md for the whole project, and the user's ideas notes
 - Each session can be excluded from project context with a toggle
 - Adapters deliver project context in each harness's own way (system prompt, context file or MCP resource), so it works on every harness
 - omp's `recall` and `retain` can also read project digests

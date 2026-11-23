@@ -13,6 +13,7 @@ use crate::{Error, Result};
 use loa_contracts::harness::{HostToolSpec, HostTools};
 use loa_core::{Dom, Draft, ElementKind, attr};
 use loa_settings::projects::{ProjectOverview, ProjectSettings, SessionRow};
+use loa_util::fs::Snapshot;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -202,8 +203,8 @@ impl ProjectService {
         Ok(folder)
     }
 
-    /// Deletes `project`: its settings and its folder's `.omgui` links go, and its sessions are kept, in no
-    /// project. Returns how many sessions it had.
+    /// Deletes `project`: its settings, its ideas notes and its folder's `.omgui` links go, and its sessions are
+    /// kept, in no project. Returns how many sessions it had.
     pub async fn delete(&self, project: &str) -> Result<usize> {
         let settings = self.settings.load(project).await?;
         let mut moved = 0;
@@ -240,9 +241,11 @@ impl ProjectService {
         Ok(())
     }
 
-    /// The project screen's data; `cwd` is the project's folder when set, else its latest session's.
+    /// The project screen's data; `cwd` is the project's folder when set, else its latest session's. Ideas notes
+    /// that can't be read are reported with the rest.
     pub async fn overview(&self, project: &str) -> Result<ProjectOverview> {
         let settings = self.settings.load(project).await?;
+        let ideas = self.settings.load_ideas(project).await.map_err(|error| error.to_string());
         let (mut sessions, mut cwd) = (Vec::new(), None::<(i64, String)>);
         for info in visible_sessions(&self.sessions, &*self.access, project).await? {
             let Some(dom) = SessionSource::load(&self.sessions, &info.id).await? else { continue };
@@ -256,11 +259,17 @@ impl ProjectService {
         }
         sessions.sort_by(|a, b| b.last_active.cmp(&a.last_active).then_with(|| a.id.cmp(&b.id)));
         let cwd = folder_of(&settings).or_else(|| cwd.map(|(_, dir)| dir));
-        Ok(ProjectOverview { name: project.to_owned(), cwd, settings, sessions })
+        Ok(ProjectOverview { name: project.to_owned(), cwd, settings, ideas, sessions })
     }
 
-    pub async fn save_settings(&self, project: &str, settings: &ProjectSettings) -> Result<()> {
-        self.settings.save(project, settings).await
+    /// Stores the project's settings, then its ideas notes when given, with the file as seen when they were loaded;
+    /// `None` leaves the stored notes as they are. Returns the notes file as written.
+    pub async fn save_settings(&self, project: &str, settings: &ProjectSettings, ideas: Option<(Snapshot, &str)>) -> Result<Option<Snapshot>> {
+        self.settings.save(project, settings).await?;
+        match ideas {
+            Some((seen, text)) => self.settings.save_ideas(project, seen, text).await.map(Some),
+            None => Ok(None),
+        }
     }
 
     /// Sets the exclude toggle (including again queues a rebuild); whether anything changed.
@@ -278,7 +287,7 @@ impl ProjectService {
     pub async fn context(&self, project: &str, session: Option<&str>, query: &str) -> Result<Option<String>> {
         let request = ContextRequest { project, session, query, budget_tokens: self.context_budget, now: loa_core::now_ms() };
         let packed = build_context(&self.sessions, &*self.access, &*self.settings, &request).await?;
-        let empty = packed.digests.is_empty() && packed.settings.instructions.trim().is_empty() && packed.settings.pinned.is_empty();
+        let empty = packed.digests.is_empty() && packed.settings.instructions.trim().is_empty() && packed.settings.pinned.is_empty() && packed.ideas.is_none();
         Ok((!empty).then(|| render_markdown(&packed)))
     }
 

@@ -127,7 +127,7 @@ fn obsolete_overview_cannot_restore_the_previous_folders_history() {
     test.send(area(Message::FolderChosen(Pick::Project("Project".into()), Ok(Some(new)))));
     let stale = loa_settings::projects::ProjectOverview {
         name: "Project".into(), cwd: Some(old.to_string_lossy().into_owned()),
-        settings: loa_settings::projects::ProjectSettings { folder: Some(old), ..Default::default() }, sessions: Vec::new(),
+        settings: loa_settings::projects::ProjectSettings { folder: Some(old), ..Default::default() }, ideas: Err("not read".into()), sessions: Vec::new(),
     };
     test.send(area(Message::Overview(obsolete, "Project".into(), Ok(stale))));
     let screen = test.area::<State>().screen().unwrap();
@@ -251,4 +251,106 @@ fn a_project_row_starts_a_session_in_it_and_deleting_keeps_its_sessions() {
     assert!(!test.app.ctx.shell.open_projects().iter().any(|open| open == "alpha"), "its tab goes");
     assert_eq!(test.app.ctx.runtime.project(), None, "it is no longer the active project");
     assert_ne!(test.app.ctx.screen(), Some("projects"), "its screen closes");
+}
+
+#[test]
+fn ideas_notes_are_their_own_file_and_reach_chats_only_when_shared() {
+    use iced::widget::text_editor::{Action, Edit};
+    use screen::Local::{ConfirmDelete, Ideas, Instructions, Save, ShareIdeas};
+
+    let mut test = TestApp::new();
+    let folder = test.dir.path().join("planner");
+    std::fs::create_dir_all(&folder).unwrap();
+    create_project(&mut test, "Planner", &folder);
+    let notes = test.app.ctx.services.storage.dirs.data.join("projects").join("Planner.ideas.md");
+    let local = |local| area(Message::Screen(Msg::Local(local)));
+    let paste = |text: &str| Action::Edit(Edit::Paste(std::sync::Arc::new(text.into())));
+    let new_chat_context = |test: &mut TestApp| {
+        test.send(area(Message::NewChatIn("Planner".into())));
+        test.harness.seen().configs.last().and_then(|config| config.context.clone()).unwrap_or_default()
+    };
+
+    test.send(local(Ideas(paste("- try iroh relays\r\n- add a sidebar"))));
+    test.send(local(Save));
+    assert_eq!(std::fs::read_to_string(&notes).unwrap(), "- try iroh relays\r\n- add a sidebar", "stored as typed, next to the settings");
+    assert!(!test.area::<State>().screen().unwrap().is_dirty());
+    assert!(!new_chat_context(&mut test).contains("try iroh relays"), "not shared by default");
+
+    test.send(local(ShareIdeas(true)));
+    test.send(local(Save));
+    let context = new_chat_context(&mut test);
+    assert!(context.contains("## Ideas and notes") && context.contains("- try iroh relays\r\n- add a sidebar"), "{context}");
+
+    // Saving other settings leaves notes edited outside since alone.
+    std::fs::write(&notes, "edited outside").unwrap();
+    test.send(local(Instructions(paste("Use rustls."))));
+    test.send(local(Save));
+    assert_eq!(std::fs::read_to_string(&notes).unwrap(), "edited outside");
+
+    let mut test = test.reopen();
+    test.send(area(Message::Open("Planner".into())));
+    let overview = test.area::<State>().screen().unwrap().overview().unwrap();
+    assert_eq!((overview.ideas.as_deref(), overview.settings.ideas_in_context), (Ok("edited outside"), true));
+    test.send(local(ConfirmDelete));
+    assert!(!notes.exists(), "deleting the project deletes its notes");
+}
+
+#[test]
+fn notes_edited_outside_are_never_overwritten_by_an_older_page_edit() {
+    use crate::area::Area;
+    use iced::widget::text_editor::{Action, Edit};
+    use screen::Local::{Ideas, Save};
+
+    let mut test = TestApp::new();
+    let folder = test.dir.path().join("planner");
+    std::fs::create_dir_all(&folder).unwrap();
+    create_project(&mut test, "Planner", &folder);
+    let notes = test.app.ctx.services.storage.dirs.data.join("projects").join("Planner.ideas.md");
+    let local = |local| area(Message::Screen(Msg::Local(local)));
+    let paste = |text: &str| Action::Edit(Edit::Paste(std::sync::Arc::new(text.into())));
+    let shown = |test: &TestApp| test.area::<State>().screen().unwrap().overview().unwrap().ideas.clone();
+
+    test.send(local(Ideas(paste("typed in Loa"))));
+    std::fs::write(&notes, "edited outside").unwrap();
+    test.send(area(Message::Open("Planner".into())));
+    assert_eq!(shown(&test).as_deref(), Ok("edited outside"), "a reload in between sees the outside edit");
+    test.send(local(Save));
+    assert_eq!(std::fs::read_to_string(&notes).unwrap(), "edited outside", "and the page doesn't overwrite it");
+    let view = test.area::<State>().view_screen(&test.app.ctx).unwrap();
+    let reload = loa_ui_kit::testkit::click_label(view, "Reload");
+    assert!(test.area::<State>().screen().unwrap().is_dirty(), "the page edit stays until reloaded");
+
+    for message in reload { test.send(area(message)); }
+    assert!(!test.area::<State>().screen().unwrap().is_dirty(), "reloading takes the notes from the file");
+    test.send(local(Ideas(paste("- then typed in Loa\n"))));
+    test.send(local(Save));
+    assert_eq!(std::fs::read_to_string(&notes).unwrap(), "- then typed in Loa\nedited outside");
+    test.send(local(Ideas(paste("- and again\n"))));
+    test.send(local(Save));
+    assert_eq!(std::fs::read_to_string(&notes).unwrap(), "- then typed in Loa\n- and again\nedited outside", "a save is the base of the next");
+}
+
+#[test]
+fn unreadable_notes_leave_the_page_and_the_rest_of_the_context_working() {
+    use screen::Local::{Instructions, Save, ShareIdeas};
+
+    let mut test = TestApp::new();
+    let folder = test.dir.path().join("planner");
+    std::fs::create_dir_all(&folder).unwrap();
+    create_project(&mut test, "Planner", &folder);
+    let notes = test.app.ctx.services.storage.dirs.data.join("projects").join("Planner.ideas.md");
+    std::fs::write(&notes, [0xff, 0xfe, b'h', 0, b'i', 0]).unwrap();
+    let local = |local| area(Message::Screen(Msg::Local(local)));
+    test.send(area(Message::Open("Planner".into())));
+    let overview = test.area::<State>().screen().unwrap().overview().expect("the page still loads");
+    assert!(overview.ideas.as_ref().is_err_and(|error| error.contains("Planner.ideas.md")), "{:?}", overview.ideas);
+
+    let paste = std::sync::Arc::new("Use rustls.".to_owned());
+    test.send(local(Instructions(iced::widget::text_editor::Action::Edit(iced::widget::text_editor::Edit::Paste(paste)))));
+    test.send(local(ShareIdeas(true)));
+    test.send(local(Save));
+    assert_eq!(std::fs::read(&notes).unwrap(), [0xff, 0xfe, b'h', 0, b'i', 0], "the notes file is left as it is");
+    test.send(area(Message::NewChatIn("Planner".into())));
+    let context = test.harness.seen().configs.last().and_then(|config| config.context.clone()).unwrap_or_default();
+    assert!(context.contains("Use rustls.") && !context.contains("## Ideas and notes"), "{context}");
 }

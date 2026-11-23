@@ -1,4 +1,4 @@
-//! The project screen: shared instructions, pinned files, the digest model and the project's
+//! The project screen: shared instructions, pinned files, the digest model, the ideas notes and the project's
 //! sessions with their digests and context toggle.
 
 /// A file every chat of the project should know about, with why it is pinned.
@@ -16,6 +16,8 @@ pub struct ProjectSettings {
     pub pinned: Vec<PinnedFile>,
     pub digest_model: Option<String>,
     pub folder: Option<String>,
+    /// Whether the ideas notes go into the context of the project's new chats; off by default.
+    pub ideas_in_context: bool,
 }
 
 /// Whether a session's digest is written and current.
@@ -53,6 +55,8 @@ pub struct SessionRow {
 pub struct ProjectOverview {
     pub cwd: Option<String>,
     pub settings: ProjectSettings,
+    /// The user's own ideas notes for the project, empty when there are none, or why they can't be read.
+    pub ideas: Result<String, String>,
     pub sessions: Vec<SessionRow>,
 }
 
@@ -74,8 +78,12 @@ pub enum OmpHistory {
 /// What the app does for the screen.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Intent {
-    /// Store these settings and report the result back to the screen.
-    SaveSettings { project: String, settings: ProjectSettings },
+    /// Store these settings, and the ideas notes when they were edited, and report the result back to the screen.
+    /// `None` leaves the stored notes alone; edited notes are refused when the file changed outside since it was
+    /// loaded.
+    SaveSettings { project: String, settings: ProjectSettings, ideas: Option<String> },
+    /// Load the ideas notes again after they changed outside, dropping their unsaved edit.
+    ReloadIdeas,
     /// Record a session's context toggle; answer with a fresh overview.
     SetExcluded { session: String, excluded: bool },
     OpenSession(String),

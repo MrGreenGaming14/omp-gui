@@ -1,6 +1,7 @@
 //! Per-project settings and what the project screen shows about a project's sessions.
 
 use loa_core::NodeId;
+use loa_util::fs::Snapshot;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -24,6 +25,9 @@ pub struct ProjectSettings {
     /// Working directory of the project, set when it is created or its folder changed; `None` when it has none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub folder: Option<PathBuf>,
+    /// Whether the project's ideas notes go into the context of its new chats; off by default.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ideas_in_context: bool,
 }
 
 /// One touched file and a one line note.
@@ -80,11 +84,21 @@ pub struct SessionRow {
     pub digest_model: Option<String>,
 }
 
+/// A project's ideas notes as read: their text, empty when there are none, and the file as seen then, so saving
+/// them refuses to replace an edit made outside since.
+#[derive(Clone, Debug)]
+pub struct Ideas {
+    pub text: String,
+    pub file: Snapshot,
+}
+
 /// Everything the project screen shows; sessions newest activity first.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct ProjectOverview {
     pub name: String,
     pub cwd: Option<String>,
     pub settings: ProjectSettings,
+    /// The project's ideas notes, or why they can't be read.
+    pub ideas: Result<Ideas, String>,
     pub sessions: Vec<SessionRow>,
 }

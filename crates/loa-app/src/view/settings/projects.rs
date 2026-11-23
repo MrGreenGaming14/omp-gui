@@ -11,12 +11,13 @@ pub fn settings_to_view(s: &ProjectSettings) -> view::ProjectSettings {
         pinned: s.pinned.iter().map(|p| view::PinnedFile { path: p.path.clone(), note: p.note.clone() }).collect(),
         digest_model: s.digest_model.clone(),
         folder: s.folder.as_ref().map(|folder| folder.display().to_string()),
+        ideas_in_context: s.ideas_in_context,
     }
 }
 
 pub fn settings_from_view(s: view::ProjectSettings) -> ProjectSettings {
     let pinned = s.pinned.into_iter().map(|p| PinnedFile { path: p.path, note: p.note }).collect();
-    ProjectSettings { instructions: s.instructions, pinned, digest_model: s.digest_model, folder: s.folder.map(PathBuf::from) }
+    ProjectSettings { instructions: s.instructions, pinned, digest_model: s.digest_model, folder: s.folder.map(PathBuf::from), ideas_in_context: s.ideas_in_context }
 }
 
 fn session_to_view(s: &SessionRow) -> view::SessionRow {
@@ -38,7 +39,8 @@ fn session_to_view(s: &SessionRow) -> view::SessionRow {
 }
 
 pub fn overview_to_view(o: &ProjectOverview) -> view::ProjectOverview {
-    view::ProjectOverview { cwd: o.cwd.clone(), settings: settings_to_view(&o.settings), sessions: o.sessions.iter().map(session_to_view).collect() }
+    let ideas = o.ideas.as_ref().map(|ideas| ideas.text.clone()).map_err(Clone::clone);
+    view::ProjectOverview { cwd: o.cwd.clone(), settings: settings_to_view(&o.settings), ideas, sessions: o.sessions.iter().map(session_to_view).collect() }
 }
 
 #[cfg(test)]
@@ -52,6 +54,7 @@ mod tests {
             pinned: vec![PinnedFile { path: "docs/ARCH.md".into(), note: Some("the contract".into()) }, PinnedFile { path: "src/main.rs".into(), note: None }],
             digest_model: Some("anthropic/claude-haiku".into()),
             folder: Some("/work/my-proj".into()),
+            ideas_in_context: true,
         };
         assert_eq!(settings_from_view(settings_to_view(&settings)), settings);
         assert_eq!(settings_from_view(settings_to_view(&ProjectSettings::default())), ProjectSettings::default());
