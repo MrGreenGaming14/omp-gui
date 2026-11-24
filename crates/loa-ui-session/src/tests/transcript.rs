@@ -319,3 +319,82 @@ fn a_new_sessions_first_reply_renders_frame_after_frame_without_a_state_mix_up()
     loa_ui_kit::testkit::run_frames(&mut s, S::view, |s, m| drop(s.send(m)), steps);
     assert_eq!(s.chat.items.iter().filter(|i| i.kind == ItemKind::User).count(), 2);
 }
+
+#[test]
+fn historical_omp_subagent_progress_ext_is_suppressed_while_other_exts_and_views_remain() {
+    let mut s = S { dom: Dom::new(), chat: State::new(&Theme::Dark), session: NodeId::DOCUMENT };
+    let mut patches = Vec::new();
+    let mut commit = |s: &mut S, draft: Draft| -> NodeId {
+        let patch = s.dom.commit(draft, 0).unwrap();
+        s.chat.apply(&patch, &s.dom);
+        let node = patch.node;
+        patches.push(patch);
+        node
+    };
+    s.session = commit(&mut s, Draft::insert(NodeId::DOCUMENT, K::Session, attrs! { ID: "s1", HARNESS: "omp", NODE: "n1", CREATED: 0i64 }, ""));
+    let session = s.session;
+
+    let t = commit(&mut s, Draft::insert(session, K::Turn, attrs! { STATUS: "done" }, ""));
+    commit(&mut s, Draft::insert(t, K::Message, attrs! { ROLE: "user", STATUS: "done" }, "run agents"));
+    let suppressed_in_turn = commit(
+        &mut s,
+        Draft::insert(t, K::Ext, attrs! { HARNESS: "omp", TYPE: "subagent_progress" }, r#"{"agent":"explore","progress":{"step":"old"}}"#),
+    );
+    let omp_notice = commit(&mut s, Draft::insert(t, K::Ext, attrs! { HARNESS: "omp", TYPE: "notice" }, r#"{"message":"notice text"}"#));
+    let other_harness_progress = commit(
+        &mut s,
+        Draft::insert(t, K::Ext, attrs! { HARNESS: "claude-code", TYPE: "subagent_progress" }, r#"{"step":"other-harness"}"#),
+    );
+    let untyped_omp_ext = commit(&mut s, Draft::insert(t, K::Ext, attrs! { HARNESS: "omp" }, r#"{"raw":"kept"}"#));
+    let job = commit(
+        &mut s,
+        Draft::insert(t, K::Job, attrs! { KIND: "subagent", STATUS: "done", ID: "sub-1", AGENT: "explore", TITLE: "Survey" }, ""),
+    );
+    commit(&mut s, Draft::append(job, "{\"id\":\"sub-1\",\"currentTool\":\"read\"}\n"));
+    commit(&mut s, Draft::insert(t, K::Message, attrs! { ROLE: "assistant", STATUS: "done" }, "All done."));
+    commit(&mut s, Draft::insert(session, K::Ext, attrs! { HARNESS: "omp", TYPE: COMMANDS_EXT }, "{}"));
+    let suppressed_at_root = commit(
+        &mut s,
+        Draft::insert(session, K::Ext, attrs! { HARNESS: "omp", TYPE: "subagent_progress" }, r#"{"progress":{"step":"orphan"}}"#),
+    );
+
+    use ItemKind::*;
+    let kinds: Vec<ItemKind> = s.chat.items.iter().map(|i| i.kind).collect();
+    assert_eq!(kinds, [User, Ext, Ext, Ext, Job, Assistant]);
+    let keys: Vec<NodeId> = s.chat.items.iter().map(|i| i.key).collect();
+    assert!(!keys.contains(&suppressed_in_turn));
+    assert!(!keys.contains(&suppressed_at_root));
+    assert!(keys.contains(&omp_notice));
+    assert!(keys.contains(&other_harness_progress));
+    assert!(keys.contains(&untyped_omp_ext));
+    assert!(keys.contains(&job));
+
+    // Replaying the exact old journal patches onto fresh DOM, transcript, and Agents panel views
+    // keeps the DOM intact (no journal rewrite) and matches State::from_dom.
+    let mut replayed_dom = Dom::new();
+    let mut replayed_chat = State::new(&Theme::Dark);
+    let mut replayed_agents = loa_ui_panel::agents::State::default();
+    for patch in &patches {
+        replayed_dom.apply(patch).unwrap();
+        replayed_chat.apply(patch, &replayed_dom);
+        replayed_agents.apply(&replayed_dom, patch);
+    }
+    assert_eq!(replayed_dom, s.dom);
+    assert!(replayed_dom.contains(suppressed_in_turn) && replayed_dom.contains(suppressed_at_root));
+    assert_eq!(replayed_chat.items, s.chat.items);
+
+    let from_snapshot = State::from_dom(&replayed_dom, &Theme::Dark);
+    assert_eq!(from_snapshot.items, s.chat.items);
+    assert!(s.chat.items.iter().enumerate().all(|(i, row)| s.chat.pos[&row.key] == i));
+    assert!((from_snapshot.heights.total() - s.chat.heights.total()).abs() < 1e-3);
+
+    let agents_from_dom = loa_ui_panel::agents::State::from_dom(&replayed_dom);
+    assert_eq!(replayed_agents.jobs().collect::<Vec<_>>(), agents_from_dom.jobs().collect::<Vec<_>>());
+    let agent_job = replayed_agents.job(job).expect("subagent job preserved in Agents panel");
+    assert_eq!(agent_job.label(), "Survey");
+    assert_eq!(agent_job.output(), "{\"id\":\"sub-1\",\"currentTool\":\"read\"}\n");
+
+    assert!(s.shows("Survey"));
+    assert!(s.shows("notice"));
+    assert!(s.shows("claude-code"));
+}

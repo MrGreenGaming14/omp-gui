@@ -80,8 +80,7 @@ pub struct SubagentLifecycle {
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SubagentProgress {
-    #[serde(default)]
-    pub index: i64,
+    pub index: Option<i64>,
     pub agent: String,
     #[serde(default)]
     pub task: String,
@@ -301,5 +300,24 @@ mod tests {
         assert_eq!(Event::from_json(manual), Event::CompactionEnd { result: None, aborted: false, skipped: true, error_message: None });
         let bad = json!({"type":"prompt_result","status":"exploded"});
         assert_eq!(Event::from_json(bad.clone()), Event::Unknown(bad));
+    }
+
+    #[test]
+    fn subagent_progress_decodes_nested_id_and_optional_fields() {
+        let frame = json!({
+            "type": "subagent_progress",
+            "payload": {
+                "index": 0,
+                "agent": "explore",
+                "task": "scan",
+                "progress": {"id": "sub-19", "status": "running", "currentTool": "read"},
+                "sessionFile": "/tmp/sub-19.jsonl"
+            }
+        });
+        let Event::SubagentProgress(p) = Event::from_json(frame) else { panic!() };
+        assert_eq!(p.progress["id"], "sub-19");
+        assert_eq!(p.session_file.as_deref(), Some("/tmp/sub-19.jsonl"));
+        assert_eq!(p.parent_tool_call_id, None);
+        assert_eq!(p.agent, "explore");
     }
 }

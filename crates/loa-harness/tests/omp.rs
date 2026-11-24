@@ -70,6 +70,75 @@ fn a_turn_records_when_it_started_and_when_it_ended() {
     assert!(started.is_some() && ended.is_some(), "a finished turn records when it ended");
 }
 
+#[test]
+fn subagent_progress_matches_nested_id_and_legacy_id_without_fake_rows() {
+    use loa_harness::kit::EventMapper as _;
+    use loa_harness::omp::mapper::Input;
+    use loa_harness::testing::{check_dom, check_history};
+
+    let sink = MemorySink::new();
+    let attrs = vec![(attr::ID, "s".into()), (attr::HARNESS, "omp".into()), (attr::NODE, "owner".into()), (attr::CREATED, 1_i64.into()), (attr::SCHEMA, 1_i64.into())];
+    let root = sink.commit(Draft::insert(NodeId::DOCUMENT, ElementKind::Session, attrs, "")).unwrap().node;
+    let mut mapper = Mapper::new(root);
+    let w = loa_core::DomWriter::new(&sink);
+    let mut feed = |line: serde_json::Value| mapper.apply(serde_json::from_value::<Input>(line).unwrap(), &w).unwrap();
+
+    feed(json!({"$": "send", "id": "p1", "text": "run subagents"}));
+    feed(json!({"type": "agent_start"}));
+    feed(json!({"type": "turn_start"}));
+
+    // A shell job whose id must never be targeted by subagent_progress.
+    feed(json!({"type": "tool_execution_start", "toolCallId": "bash-1", "toolName": "bash", "args": {"command": "echo ok"}}));
+    feed(json!({"type": "tool_execution_end", "toolCallId": "bash-1", "toolName": "bash", "result": "ok"}));
+
+    // Concurrent subagent jobs sharing agent name and overlapping indices.
+    feed(json!({"type": "subagent_lifecycle", "payload": {"id": "sub-alpha", "agent": "explore", "description": "Survey alpha", "status": "started", "sessionFile": "/tmp/alpha.jsonl"}}));
+    feed(json!({"type": "subagent_lifecycle", "payload": {"id": "sub-beta", "agent": "explore", "description": "Survey beta", "status": "started", "sessionFile": "/tmp/beta.jsonl"}}));
+
+    // Authentic omp 19.1.1 frames: nested progress.id with missing or mismatching parentToolCallId.
+    feed(json!({"type": "subagent_progress", "payload": {"index": 0, "agent": "explore", "task": "Survey beta", "progress": {"id": "sub-beta", "status": "running", "currentTool": "grep"}}}));
+    feed(json!({"type": "subagent_progress", "payload": {"index": 99, "agent": "explore", "task": "Survey alpha", "parentToolCallId": "wrong-parent", "progress": {"id": "sub-alpha", "status": "running", "currentTool": "read"}}}));
+
+    // Exact agent:{parentToolCallId}:{index} compatibility fallback when nested progress.id is absent.
+    feed(json!({"type": "subagent_lifecycle", "payload": {"id": "agent:call-legacy:0", "agent": "reviewer", "description": "Legacy child", "status": "started"}}));
+    feed(json!({"type": "subagent_progress", "payload": {"index": 0, "agent": "reviewer", "parentToolCallId": "call-legacy", "progress": {"status": "running", "step": "legacy"}}}));
+
+    // An unknown canonical id must not fall back even when the legacy id matches.
+    feed(json!({"type": "subagent_progress", "payload": {"index": 0, "agent": "explore", "parentToolCallId": "call-legacy", "progress": {"id": "missing-id", "step": "unmatched"}}}));
+    // A missing index must not silently resolve to zero.
+    feed(json!({"type": "subagent_progress", "payload": {"agent": "reviewer", "parentToolCallId": "call-legacy", "progress": {"step": "missing-index"}}}));
+    feed(json!({"type": "subagent_progress", "payload": {"index": 0, "agent": "explore", "progress": {"id": "bash-1", "step": "shell-collision"}}}));
+
+    for id in ["sub-alpha", "sub-beta", "agent:call-legacy:0"] {
+        feed(json!({"type": "subagent_lifecycle", "payload": {"id": id, "agent": "explore", "status": "completed"}}));
+    }
+    feed(json!({"type": "prompt_result", "id": "p1", "agentInvoked": true, "status": "completed", "sessionSettled": true}));
+    feed(json!({"type": "session_settled"}));
+
+    // Late unmatched progress after turn end must not open a phantom turn or insert anything.
+    feed(json!({"type": "subagent_progress", "payload": {"index": 0, "agent": "explore", "progress": {"id": "sub-alpha", "step": "late"}}}));
+
+    let dom = sink.dom();
+    assert_eq!(check_dom(&dom), []);
+    assert_eq!(check_history(&sink.patches()), []);
+    assert_eq!(dom.iter().filter(|n| n.kind == ElementKind::Turn).count(), 1);
+    assert_eq!(dom.iter().filter(|n| n.kind == ElementKind::Job).count(), 4);
+    assert!(!dom.iter().any(|n| n.kind == ElementKind::Ext && n.str_attr(attr::TYPE) == Some("subagent_progress")));
+
+    let job_text = |id: &str| {
+        dom.iter()
+            .find(|n| n.kind == ElementKind::Job && n.str_attr(attr::ID) == Some(id))
+            .map(|n| n.text.clone())
+            .unwrap()
+    };
+    assert!(job_text("sub-alpha").contains("\"currentTool\":\"read\""));
+    assert!(job_text("sub-beta").contains("\"currentTool\":\"grep\""));
+    let legacy = job_text("agent:call-legacy:0");
+    assert!(legacy.contains("\"step\":\"legacy\""));
+    assert!(!legacy.contains("unmatched") && !legacy.contains("missing-index"));
+    assert_eq!(job_text("bash-1"), "");
+}
+
 fn reply(command: &str, data: &str) -> String {
     format!("< {command} {command}\n> {{\"type\":\"response\",\"id\":\"{{{{{command}}}}}\",\"command\":\"{command}\",\"success\":true,\"data\":{data}}}\n")
 }

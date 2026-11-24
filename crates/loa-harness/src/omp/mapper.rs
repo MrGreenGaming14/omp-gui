@@ -70,6 +70,8 @@ struct Open {
     calls: HashMap<String, NodeId>,
     messages: HashMap<String, NodeId>,
     jobs: HashMap<String, NodeId>,
+    /// Subagent jobs of the open turn by lifecycle `id`.
+    subagents: HashMap<String, NodeId>,
     /// Decisions by omp's request id, and the dialogs they answer.
     decisions: HashMap<String, NodeId>,
     requests: HashMap<NodeId, UiRequest>,
@@ -403,23 +405,36 @@ impl Mapper {
 
     fn subagent(&mut self, w: &DomWriter, l: &SubagentLifecycle) -> Out {
         let status = job_status(l.status);
-        if let Some(node) = self.open.jobs.get(&l.id).copied() {
+        let session_file = l.session_file.as_deref().filter(|s| !s.trim().is_empty());
+        if let Some(node) = self.open.subagents.get(&l.id).copied() {
             return if status == JobStatus::Running { w.set(node, attr::STATUS, status) } else { self.close(w, node, status) };
         }
         let mut attrs = vec![(attr::KIND, Value::from("subagent")), (attr::STATUS, status.into()), (attr::ID, l.id.as_str().into()), (attr::AGENT, l.agent.as_str().into())];
         attrs.extend(l.description.as_deref().map(|t| (attr::TITLE, t.into())));
-        attrs.extend(l.session_file.as_deref().map(|s| (attr::SESSION, s.into())));
+        attrs.extend(session_file.map(|s| (attr::SESSION, s.into())));
         let parent = self.turn().unwrap_or(self.session());
-        self.open.jobs.insert(l.id.clone(), w.insert(parent, K::Job, attrs, "")?);
+        let node = w.insert(parent, K::Job, attrs, "")?;
+        if status != JobStatus::Running {
+            self.open.closed.insert(node);
+        }
+        self.open.subagents.insert(l.id.clone(), node);
         Ok(())
     }
 
     fn subagent_progress(&mut self, w: &DomWriter, p: &SubagentProgress) -> Out {
-        let job = p.parent_tool_call_id.as_ref().and_then(|s| self.open.jobs.get(&format!("agent:{s}:{}", p.index)));
-        match job {
-            Some(node) => w.append(*node, format!("{}\n", json_text(&p.progress))),
-            None => self.ext(w, "subagent_progress", &json!({"agent":p.agent,"task":p.task,"progress":p.progress,"sessionFile":p.session_file})),
+        if let Some(node) = self.match_subagent(p) {
+            w.append(node, format!("{}\n", json_text(&p.progress)))?;
         }
+        Ok(())
+    }
+
+    fn match_subagent(&self, p: &SubagentProgress) -> Option<NodeId> {
+        if let Some(id) = p.progress.get("id").and_then(Json::as_str).filter(|s| !s.trim().is_empty()) {
+            return self.open.subagents.get(id).copied();
+        }
+        let parent = p.parent_tool_call_id.as_deref().filter(|s| !s.trim().is_empty())?;
+        let index = p.index?;
+        self.open.subagents.get(&format!("agent:{parent}:{index}")).copied()
     }
 
     fn update_todos(&mut self, w: &DomWriter, todos: &[TodoItem]) -> Out {
@@ -576,7 +591,9 @@ impl Mapper {
         still(&open.messages).into_iter().try_for_each(|id| w.set(id, attr::STATUS, message))?;
         if status == TurnStatus::Cancelled {
             still(&open.calls).into_iter().try_for_each(|id| w.set(id, attr::STATUS, CallStatus::Cancelled))?;
-            still(&open.jobs).into_iter().try_for_each(|id| w.set(id, attr::STATUS, JobStatus::Cancelled))?;
+            for id in open.jobs.values().chain(open.subagents.values()).copied().filter(|id| !open.closed.contains(id)) {
+                w.set(id, attr::STATUS, JobStatus::Cancelled)?;
+            }
         }
         open.requests.keys().try_for_each(|id| w.set(*id, attr::STATUS, DecisionStatus::Cancelled))?;
         w.close(turn, status)?;
@@ -593,7 +610,7 @@ impl Mapper {
 }
 
 fn needs_turn(event: &Event) -> bool {
-    matches!(event, Event::MessageStart { .. } | Event::MessageUpdate { .. } | Event::MessageEnd { .. } | Event::ToolExecutionStart { .. } | Event::ToolExecutionUpdate { .. } | Event::ToolExecutionEnd { .. } | Event::SubagentLifecycle(_) | Event::SubagentProgress(_))
+    matches!(event, Event::MessageStart { .. } | Event::MessageUpdate { .. } | Event::MessageEnd { .. } | Event::ToolExecutionStart { .. } | Event::ToolExecutionUpdate { .. } | Event::ToolExecutionEnd { .. } | Event::SubagentLifecycle(_))
 }
 
 fn labels(question: &AskQuestion) -> Vec<String> {

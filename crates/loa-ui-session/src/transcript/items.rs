@@ -5,6 +5,14 @@ use loa_core::{Dom, ElementKind, MessageKind, Node, NodeId, Role, attr};
 /// `type` of the `<ext>` where adapters record the harness's slash commands: composer data,
 /// not a transcript row.
 pub const COMMANDS_EXT: &str = "available_commands_update";
+const OMP_HARNESS: &str = "omp";
+const SUBAGENT_PROGRESS_EXT: &str = "subagent_progress";
+
+fn is_suppressed_ext(node: &Node) -> bool {
+    let kind = node.str_attr(attr::TYPE);
+    kind == Some(COMMANDS_EXT)
+        || (node.str_attr(attr::HARNESS) == Some(OMP_HARNESS) && kind == Some(SUBAGENT_PROGRESS_EXT))
+}
 
 /// What one transcript row shows; keys the [`super::rows`] renderer registry.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -39,7 +47,7 @@ impl<F: FnMut(NodeId, NodeId)> Emitter<'_, F> {
             ElementKind::Todo => ItemKind::Todo,
             ElementKind::Surface => ItemKind::Surface,
             ElementKind::Compaction => ItemKind::Compaction,
-            ElementKind::Ext if node.str_attr(attr::TYPE) != Some(COMMANDS_EXT) => ItemKind::Ext,
+            ElementKind::Ext if !is_suppressed_ext(node) => ItemKind::Ext,
             _ => return,
         };
         out.push(Item { key: node.id, top: self.top, kind, calls: Vec::new() });
