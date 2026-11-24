@@ -130,6 +130,8 @@ Every adapter writes the same shapes, so the UI, projects and peers never look a
 | Interrupt | Streaming messages, running calls and waiting decisions become `cancelled`, then the turn does |
 | Anything else | `<ext harness type>` with the raw data as text |
 
+OMP progress updates use the subagent's lifecycle ID to append to its job, not a standalone transcript row. Unmatched updates are ignored; legacy OMP `subagent_progress` extension nodes stay in the journal but are not rendered.
+
 Decision answers use the constants in `loa_core::answer` (`allow_once`, `allow_session`, `deny`, `approve`, `edit`, `reject`). Question answers are the picked option labels or the typed text. Form answers are one JSON object.
 
 Imports produce the same shapes with `commit_at` and the original timestamps. Native ids go into `id`, `call_id`, `request_id` and `native_id`. Whatever the mapping doesn't cover is kept in `<ext>` so the export reproduces the native file.
