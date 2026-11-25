@@ -15,7 +15,7 @@ flowchart LR
 - Left sidebar with New, Search, Projects, Peers, Pinned and Recents. Recents show sessions from every node, tagged by node
 - Top bar with project / session breadcrumb and a node indicator showing where the session runs and if it is online
 - Center chat with streaming text and collapsed tool rows ("Read 3 files 12s ›") that expand on click
-- Composer with stop button, model, effort and mode pickers, `/` commands and `@` file mentions; each session keeps its own unsent text
+- Composer with stop button, model, effort and mode pickers, `/` commands and `@` file mentions; each session keeps its own unsent text. While the shown session's turn runs, a working line above the editor shows what the agent does ("Thinking…", the running tool's title, "Working…", "Starting session…") with a spinner, omp's accent shimmer, the elapsed time and the Esc hint; it hides while a decision card waits
 - Right panel for diffs, files, terminal, subagents, the session tree and surfaces
 - Escape to interrupt, queue messages mid turn, inline approvals, **Rewind** on user messages, command palette
 - Drag within a transcript message to select text, then press Ctrl+C (Cmd+C on macOS). **Copy message** copies the original message, including Markdown; **Copy code block** copies just the code with its indentation.

@@ -69,6 +69,7 @@ From the design ([gui.md](design/gui.md), "Notes from the iced mockup") and [ARC
 | Diff view | `loa-ui-panel` | Standard widgets (`column` of `container`s with `text`) | Needs per-line role and an added/removed label, not color alone |
 | Tab bar (right panel) | `loa-ui-shell` | Standard `button`s labelled by tab title | Role `tablist`; the selected state is drawn only (underline); every tab has Ctrl/Cmd+Alt+n and an "Open X tab" palette command |
 | `/` and `@` popups | `loa-ui-composer` | Hand built | Role: listbox attached to the composer field |
+| Working indicator | `loa-ui-session` (composer) | Standard widgets: a rotated `svg`, `rich_text`, `text` | Role `status`, label "<label>, <elapsed>" (e.g. "Reading the config…, 12s"); the spinner is decorative. The shimmering label is `rich_text`, which exposes nothing yet. State is in the words, not the color |
 | Virtualized transcript list | `loa-ui-chat` | Hand built | Role `list`; off-screen items must still be reachable by keyboard |
 | Terminal pane | `loa-ui-terminal` | `iced_term` (third party, canvas) | Exposes nothing; depends on `iced_term` upstream |
 | Surface view | `loa-ui-surface` | Pixel frames (image/shader) | Pixel surfaces expose nothing; document mode surfaces should render text with iced text widgets |

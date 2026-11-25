@@ -12,7 +12,7 @@ use loa_contracts::harness::{HostToolRouter, Prompt, SessionConfig};
 use loa_contracts::session::SessionSummary;
 use loa_core::{Dom, Op, Patch, TurnStatus, attr};
 use loa_runtime::lifecycle::{ACCESS, ACCESS_DEFAULT, Command, Completion, Effect, RuntimeEvent, Transition, session_cwd};
-use loa_runtime::session::{Feed, SessionEvent, dom_turns};
+use loa_runtime::session::{Feed, Session, SessionEvent, dom_turns};
 use loa_ui_session::composer;
 use loa_ui_session::transcript as chat;
 use loa_view::session::composer::AccessOption;
@@ -180,11 +180,15 @@ impl SessionController {
     }
 
     /// Loads the active session's DOM into the chat and the frame; the composer follows
-    /// whether it runs a turn and shows the session's own draft.
+    /// whether it runs a turn, what its agent is doing and shows the session's own draft. A
+    /// session no harness runs is idle, even with a turn its DOM still calls running (one a
+    /// crash left open).
     fn present(&mut self, ctx: &mut Ctx) {
         let active = ctx.runtime.sessions().active();
         let starting = ctx.runtime.sessions().starting().is_some();
-        self.follow(&mut ctx.composer, active.map(|session| session.id().clone()), active.is_some_and(|session| session.is_busy()), starting);
+        let busy = active.is_some_and(|session| session.is_busy() && session.harness().is_some());
+        self.follow(&mut ctx.composer, active.map(|session| session.id().clone()), busy, starting);
+        ctx.composer.set_activity(active.map_or_else(composer::Activity::default, activity));
         let Some(session) = active else {
             self.chat.load(&Dom::new());
             self.after.push(After::Present(ctx.runtime.cwd().to_path_buf()));
@@ -257,6 +261,9 @@ impl SessionController {
                 if matches!(patch.op, Op::Append { .. }) {
                     areas.get_mut::<crate::areas::sessions::State>().on_append(id, patch, ctx);
                     return Task::none();
+                }
+                if let Some(session) = ctx.runtime.sessions().active().filter(|session| session.id() == id) {
+                    ctx.composer.set_activity(activity(session));
                 }
             }
             SessionEvent::Closed(id) => {
@@ -351,6 +358,14 @@ fn prepare(ctx: &mut Ctx, areas: &Registry, config: &mut SessionConfig, harness:
     if !duplicates.is_empty() {
         ctx.notify(format!("Host tools offered twice, first one kept: {}", duplicates.join(", ")));
     }
+}
+
+/// What `session`'s agent is doing; nothing while no harness runs it.
+fn activity(session: &Session) -> composer::Activity {
+    if session.harness().is_none() {
+        return composer::Activity::Idle;
+    }
+    composer::Activity::of(session.dom())
 }
 
 /// The top bar status of the session: its latest turn's state unless it finished normally.

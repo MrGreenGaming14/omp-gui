@@ -47,6 +47,7 @@ pub enum Icon {
     GitFork,
     Globe,
     Image,
+    LoaderCircle,
     Maximize,
     Minimize,
     Monitor,

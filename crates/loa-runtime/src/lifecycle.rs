@@ -426,10 +426,12 @@ impl Runtime {
             Completion::Started { operation, .. } | Completion::Resumed { operation, .. } | Completion::Spawned { operation, .. } => *operation,
             Completion::Done(result) => {
                 if let Err(error) = result {
-                    if let Some(session) = self.sessions.active_mut() {
-                        session.set_busy(false);
-                    }
                     out.events.push(RuntimeEvent::Notice(error.clone()));
+                    // The failed call may have been the send of the active session's turn: it ends.
+                    if let Some(session) = self.sessions.active_mut().filter(|session| session.is_busy()) {
+                        session.set_busy(false);
+                        out.events.push(RuntimeEvent::TurnEnded(session.id().clone()));
+                    }
                 }
                 return;
             }

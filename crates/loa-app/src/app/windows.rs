@@ -215,6 +215,7 @@ impl App {
     pub fn open_main(&mut self) -> Task<Message> {
         let (id, open) = window::open(settings(Size::new(width(LayoutRole::MainWidth), width(LayoutRole::MainHeight))));
         self.windows.main = Some(id);
+        self.ctx.composer.set_window(id);
         open.discard()
     }
 
