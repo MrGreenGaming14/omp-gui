@@ -30,8 +30,8 @@ const INTERRUPT_HINT: &str = "esc to interrupt";
 const MAX_TITLE: usize = 60;
 /// Graphemes from the middle of the shimmer band to its ends; its middle third is brightest.
 const BAND: f32 = 3.0;
-/// Spinner turns per shimmer cycle: one a second.
-const SPINS: f32 = 1.8;
+/// Spinner turns per shimmer cycle, whole so the angle never jumps when the cycle wraps.
+const SPINS: f32 = 2.0;
 /// How often the indicator ticks while the window has focus: often enough for the spinner,
 /// rarely enough that redrawing the app for a whole turn stays cheap.
 pub(super) const FRAME: Duration = Duration::from_millis(90);
