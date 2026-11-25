@@ -227,6 +227,21 @@ fn the_working_indicator_follows_the_shown_sessions_turn() {
     assert!(test.app.ctx.composer.is_busy() && indicator(&test).is_none(), "the card asks the user instead");
 }
 
+#[test]
+fn a_turn_left_running_by_a_crash_shows_no_working_indicator() {
+    let mut test = TestApp::new();
+    test.prompt("work read Reading the config");
+    test.until("the call runs", |app| app.ctx.composer.indicator() == Some("Reading the config…"));
+    let id = test.active().expect("an active session").to_owned();
+
+    let mut test = test.reopen();
+    test.send(Message::OpenRecent(id));
+    let session = test.app.ctx.runtime.sessions().active().expect("the session reopened");
+    assert_eq!((turn_status(session.dom()), session.harness().is_none()), (Some("Running"), true), "its DOM still calls the turn running");
+    let composer = &test.app.ctx.composer;
+    assert!(!composer.is_busy() && composer.indicator().is_none(), "no harness runs it");
+}
+
 /// A sidebar event, as its row emits it.
 fn nav(event: Nav) -> Message {
     Message::Shell(shell::Message::Sidebar(shell::sidebar::Message::Emit(event)))

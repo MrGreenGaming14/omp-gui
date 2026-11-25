@@ -13,6 +13,8 @@ loa-ui-panel = { path = "../loa-ui-panel" }
 loa-util.workspace = true
 loa-view.workspace = true
 serde_json = { workspace = true, features = ["preserve_order"] }
+# Already in the tree through iced's text stack.
+unicode-segmentation = "1"
 
 [dev-dependencies]
 iced_test = "0.14"

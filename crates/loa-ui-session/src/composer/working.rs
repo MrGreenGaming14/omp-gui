@@ -1,9 +1,10 @@
 //! The working indicator above the editor while the shown session runs a turn, after omp's
 //! status line: a spinning accent loader, a label saying what the agent does, drawn in a
-//! shimmer (an accent band sweeping over muted text), and the turn's elapsed time with the
-//! interrupt hint, muted.
+//! shimmer (an accent band sweeping over muted text), and, once the turn runs, its elapsed
+//! time with the interrupt hint, muted.
 
 use std::ops::Range;
+use std::time::Duration;
 
 use iced::Alignment::Center;
 use iced::widget::text::{Span, Wrapping};
@@ -14,6 +15,7 @@ use loa_ui_kit::icons::icon;
 use loa_ui_kit::style::{self as kit, Tone};
 use loa_ui_kit::theme::{AlphaRole, ColorRole, SpaceRole as Sp, TextRole as T, sp, text_size as ts, tokens};
 use loa_view::theme::Icon;
+use unicode_segmentation::UnicodeSegmentation;
 
 use super::{Message, shimmer};
 
@@ -26,10 +28,15 @@ pub(super) const STARTING: &str = "Starting session…";
 const INTERRUPT_HINT: &str = "esc to interrupt";
 /// Most characters of a call title the label shows.
 const MAX_TITLE: usize = 60;
-/// Characters from the middle of the shimmer band to its ends; its middle third is brightest.
+/// Graphemes from the middle of the shimmer band to its ends; its middle third is brightest.
 const BAND: f32 = 3.0;
-/// Spinner turns per shimmer cycle.
-const SPINS: f32 = 2.0;
+/// Spinner turns per shimmer cycle: one a second.
+const SPINS: f32 = 1.8;
+/// How often the indicator ticks while the window has focus: often enough for the spinner,
+/// rarely enough that redrawing the app for a whole turn stays cheap.
+pub(super) const FRAME: Duration = Duration::from_millis(90);
+/// How often it ticks without focus: the elapsed time keeps counting, the animation rests.
+pub(super) const UNFOCUSED: Duration = Duration::from_secs(1);
 
 /// What the shown session's agent is doing, read from its latest turn.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -87,35 +94,42 @@ fn elapsed(ms: i64) -> String {
     }
 }
 
-/// The indicator row: the spinner and `label` at shimmer `phase`, then the time since
-/// `started` at `now` (both Unix milliseconds) and the interrupt hint. One line high whatever
-/// it shows.
-pub(super) fn view(label: &str, started: Option<i64>, now: i64, phase: u8) -> Element<'_, Message> {
+/// The trailer of a running turn: the time since `started` at `now` (both Unix milliseconds),
+/// when known, and the interrupt hint.
+pub(super) fn trailer(started: Option<i64>, now: i64) -> String {
+    started.map_or_else(|| INTERRUPT_HINT.to_owned(), |started| format!("{} · {INTERRUPT_HINT}", elapsed(now - started)))
+}
+
+/// The indicator row: the spinner and `label` at shimmer `phase`, then the `trailer`, muted.
+/// One line high whatever it shows.
+///
+/// Accessibility: role `status`, label "<label>, <elapsed>"; the spinner is decorative.
+pub(super) fn view(label: &str, trailer: Option<String>, phase: u8) -> Element<'_, Message> {
     let progress = shimmer::progress(phase);
     let spinner = icon(Icon::LoaderCircle, ts(T::Label)).style(kit::tint(Tone::Accent)).rotation(Radians(std::f32::consts::TAU * (progress * SPINS).fract()));
     let t = tokens();
     let accent = t.color(ColorRole::Accent);
     let colors = [t.color(ColorRole::Text2), accent.scale_alpha(t.alpha(AlphaRole::Muted)), accent];
-    let center = progress * (label.chars().count() as f32 + 2.0 * BAND) - BAND;
+    let center = progress * (label.graphemes(true).count() as f32 + 2.0 * BAND) - BAND;
     let spans: Vec<Span<'_, (), Font>> = runs(label, center).into_iter().map(|(range, level)| span(&label[range]).color(colors[level])).collect();
     let bold = Font { weight: font::Weight::Semibold, ..Font::DEFAULT };
     let label = rich_text(spans).size(ts(T::Label)).font(bold).wrapping(Wrapping::None);
-    let trailer = started.map_or_else(|| INTERRUPT_HINT.to_owned(), |started| format!("{} · {INTERRUPT_HINT}", elapsed(now - started)));
-    let trailer = text(trailer).size(ts(T::Caption)).style(kit::text(Tone::Muted)).wrapping(Wrapping::None);
-    let line = row![spinner, label, trailer].spacing(sp(Sp::S)).align_y(Center);
+    let trailer = trailer.map(|trailer| text(trailer).size(ts(T::Caption)).style(kit::text(Tone::Muted)).wrapping(Wrapping::None));
+    let line = row![spinner, label].push(trailer).spacing(sp(Sp::S)).align_y(Center);
     container(line).width(Length::Fill).clip(true).padding(Padding { bottom: 0.0, ..Padding::new(sp(Sp::M)) }).into()
 }
 
-/// `label` in runs of one shimmer level for a band centered on character `center`: 0 off the
-/// band, 1 on its edges, 2 in its middle.
+/// `label` in runs of one shimmer level for a band centered on grapheme `center`: 0 off the
+/// band, 1 on its edges, 2 in its middle. Runs break only between graphemes, so a colour
+/// change never splits a letter from its combining marks.
 fn runs(label: &str, center: f32) -> Vec<(Range<usize>, usize)> {
     let mut runs: Vec<(Range<usize>, usize)> = Vec::new();
-    for (index, (at, c)) in label.char_indices().enumerate() {
+    for (index, (at, grapheme)) in label.grapheme_indices(true).enumerate() {
         let distance = (index as f32 - center).abs();
         let level = usize::from(distance < BAND) + usize::from(distance < BAND / 3.0);
         match runs.last_mut() {
-            Some((range, last)) if *last == level => range.end = at + c.len_utf8(),
-            _ => runs.push((at..at + c.len_utf8(), level)),
+            Some((range, last)) if *last == level => range.end = at + grapheme.len(),
+            _ => runs.push((at..at + grapheme.len(), level)),
         }
     }
     runs
@@ -189,10 +203,11 @@ mod tests {
     }
 
     #[test]
-    fn the_shimmer_band_brightens_the_characters_around_its_center() {
+    fn the_shimmer_band_brightens_the_graphemes_around_its_center() {
         let label = "Working…";
-        let levels = |center| runs(label, center).into_iter().map(|(range, level)| (&label[range], level)).collect::<Vec<_>>();
-        assert_eq!(levels(-BAND), [(label, 0)], "the band starts off the label");
-        assert_eq!(levels(3.0), [("W", 0), ("or", 1), ("k", 2), ("in", 1), ("g…", 0)]);
+        let levels = |label: &'static str, center| runs(label, center).into_iter().map(|(range, level)| (&label[range], level)).collect::<Vec<_>>();
+        assert_eq!(levels(label, -BAND), [(label, 0)], "the band starts off the label");
+        assert_eq!(levels(label, 3.0), [("W", 0), ("or", 1), ("k", 2), ("in", 1), ("g…", 0)]);
+        assert_eq!(levels("ae\u{301}x", 1.0), [("a", 1), ("e\u{301}", 2), ("x", 1)], "an accent changes colour with its letter");
     }
 }

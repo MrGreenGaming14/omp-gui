@@ -1,5 +1,6 @@
 //! The shimmer clock of the editor's magic keywords and the working indicator: [`PHASES`] steps
-//! per cycle, read from wall-clock time so everything that shimmers moves in step.
+//! per cycle, read from wall-clock time so everything that shimmers moves in step whatever
+//! rate it ticks at.
 
 use std::time::Duration;
 
@@ -9,6 +10,8 @@ use iced::Subscription;
 pub(crate) const PHASES: u8 = 56;
 /// One shimmer cycle, as in omp.
 const CYCLE_MS: u64 = 1800;
+/// Ticks that reach every step, for the keyword gradient.
+pub(crate) const EVERY_STEP: Duration = Duration::from_millis(CYCLE_MS / PHASES as u64);
 
 /// The step at `now_ms`, Unix milliseconds.
 pub(crate) fn phase_at(now_ms: i64) -> u8 {
@@ -19,10 +22,8 @@ pub(crate) fn phase_at(now_ms: i64) -> u8 {
 /// How far `phase` is through its cycle, `0.0..1.0`.
 pub(crate) fn progress(phase: u8) -> f32 { f32::from(phase) / f32::from(PHASES) }
 
-/// The wall-clock time, Unix milliseconds, at every step.
-pub(crate) fn ticks() -> Subscription<i64> {
-    iced::time::every(Duration::from_millis(CYCLE_MS / u64::from(PHASES))).map(|_| loa_util::time::now_ms())
-}
+/// The wall-clock time, Unix milliseconds, `every` so often.
+pub(crate) fn ticks(every: Duration) -> Subscription<i64> { iced::time::every(every).map(|_| loa_util::time::now_ms()) }
 
 #[cfg(test)]
 mod tests {

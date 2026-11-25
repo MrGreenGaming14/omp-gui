@@ -114,8 +114,9 @@ pub enum Message {
     /// A shimmer step at this wall-clock time (Unix milliseconds): moves the magic keyword
     /// gradient and the working indicator.
     Shimmer(i64),
-    /// The window gained or lost focus; the shimmer runs only while focused.
-    WindowFocused(bool),
+    /// A window gained or lost focus; only the main window's ([`State::set_window`]) counts.
+    /// The animations run only while it has focus.
+    WindowFocused(iced::window::Id, bool),
     /// The effort slider moved to this level index.
     EffortSlid(u8),
     /// The effort slider was let go: its level applies.
@@ -264,6 +265,8 @@ pub struct State {
     now: i64,
     /// What the shown session's agent is doing.
     activity: Activity,
+    /// The window the composer is in, once the app names it; until then any window's focus counts.
+    window: Option<iced::window::Id>,
     /// The window has focus.
     pub(crate) focused: bool,
     pub(crate) images: Vec<Image>,
@@ -301,6 +304,7 @@ impl State {
             shimmer: 0,
             now: 0,
             activity: Activity::Idle,
+            window: None,
             focused: true,
             images: Vec::new(),
             next_image: 0,
@@ -334,6 +338,8 @@ impl State {
     pub fn workspace(&self) -> Option<&Workspace> { chosen(&self.pickers.folder) }
     /// Node key or user written to [`Prompt::by`].
     pub fn set_author(&mut self, author: impl Into<String>) { self.author = author.into() }
+    /// The window the composer is in: only its focus starts and stops the animations.
+    pub fn set_window(&mut self, window: iced::window::Id) { self.window = Some(window) }
 
     pub fn set_commands(&mut self, commands: Vec<Command>) {
         self.commands = commands;
@@ -585,11 +591,17 @@ impl State {
             Message::PasteImage => Some(Intent::PasteImage),
             Message::RemoveImage(n) => self.remove_image(n),
             Message::Shimmer(now) => {
-                (self.now, self.shimmer) = (now, shimmer::phase_at(now));
+                // Unfocused, only the elapsed time moves on.
+                self.now = now;
+                if self.focused {
+                    self.shimmer = shimmer::phase_at(now);
+                }
                 None
             }
-            Message::WindowFocused(focused) => {
-                self.focused = focused;
+            Message::WindowFocused(window, focused) => {
+                if self.window.is_none_or(|own| own == window) {
+                    self.focused = focused;
+                }
                 None
             }
             Message::EffortSlid(level) => {
@@ -681,7 +693,8 @@ impl State {
         // menus float over the page instead of taking room.
         let images = self.images.iter().any(|image| image.shown).then(|| self.image_cards());
         let started = match &self.activity { Activity::Working { started, .. } => *started, _ => None };
-        let working = self.indicator().map(|label| working::view(label, started, self.now, self.shimmer));
+        let trailer = (self.phase == Phase::Running).then(|| working::trailer(started, self.now));
+        let working = self.indicator().map(|label| working::view(label, trailer, self.shimmer));
         let frame = container(column![slot(working), slot(images), editor, controls]).width(Length::Fill).style(kit::container(Surface::Raised));
         let queue = (!self.queue.items.is_empty()).then(|| self.queue_view());
         // Picker menus open from their own button; the `/` and `@` popups span the composer.
@@ -802,15 +815,14 @@ impl State {
     }
 
     /// Tracks input method composition so Enter and Esc reach the IME, closes an open menu on
-    /// Esc, and runs the shimmer of a magic keyword and the working indicator while the window
-    /// has focus.
+    /// Esc, and runs the shimmer clock as often as `tick` says.
     pub fn subscription(&self) -> Subscription<Message> {
-        let events = iced::event::listen_with(|event, _, _| match event {
+        let events = iced::event::listen_with(|event, _, window| match event {
             iced::Event::InputMethod(input_method::Event::Preedit(content, _)) => Some(Message::Composing(!content.is_empty())),
             // winit sends an empty preedit right before a commit, so commits need no arm.
             iced::Event::InputMethod(input_method::Event::Closed) => Some(Message::Composing(false)),
-            iced::Event::Window(iced::window::Event::Focused) => Some(Message::WindowFocused(true)),
-            iced::Event::Window(iced::window::Event::Unfocused) => Some(Message::WindowFocused(false)),
+            iced::Event::Window(iced::window::Event::Focused) => Some(Message::WindowFocused(window, true)),
+            iced::Event::Window(iced::window::Event::Unfocused) => Some(Message::WindowFocused(window, false)),
             _ => None,
         });
         let mut subscriptions = vec![events];
@@ -820,10 +832,20 @@ impl State {
                 _ => None,
             }));
         }
-        if (self.keyword || self.indicator().is_some()) && self.focused {
-            subscriptions.push(shimmer::ticks().map(Message::Shimmer));
-        }
+        subscriptions.extend(self.tick().map(|every| shimmer::ticks(every).map(Message::Shimmer)));
         Subscription::batch(subscriptions)
+    }
+
+    /// How often the shimmer clock ticks: every step for a magic keyword's gradient, at
+    /// [`working::FRAME`] for the working indicator alone, and while the window has no focus,
+    /// once a second for the indicator's elapsed time only.
+    pub(crate) fn tick(&self) -> Option<std::time::Duration> {
+        let working = self.indicator().is_some();
+        match (self.focused, self.keyword) {
+            (true, true) => Some(shimmer::EVERY_STEP),
+            (true, false) => working.then_some(working::FRAME),
+            (false, _) => working.then_some(working::UNFOCUSED),
+        }
     }
 
     fn queue_view(&self) -> Element<'_, Message> {

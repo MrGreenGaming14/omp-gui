@@ -5058,6 +5058,7 @@ dependencies = [
  "loa-view",
  "serde_json",
  "tempfile",
+ "unicode-segmentation",
 ]
 
 [[package]]

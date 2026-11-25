@@ -287,6 +287,25 @@ async fn a_failed_shutdown_of_a_closed_session_leaves_the_active_turn_busy() {
 }
 
 #[tokio::test]
+async fn a_failed_send_ends_the_active_turn() {
+    let dir = tempfile::tempdir().unwrap();
+    let adapter = Counted::new(ScriptedAdapter::new(HARNESS));
+    let mut runtime = runtime(library(dir.path()), &adapter, dir.path());
+
+    let (id, _) = start(&mut runtime, None).await;
+    let send = runtime.dispatch(Command::Send(prompt("hello")));
+    assert!(matches!(send.events.as_slice(), [RuntimeEvent::TurnStarted(turn)] if *turn == id));
+    assert!(runtime.sessions().active().unwrap().is_busy());
+
+    let failed = runtime.dispatch(Command::Completed(Completion::Done(Err("the harness went away".to_owned()))));
+    assert!(failed.effects.is_empty());
+    assert!(matches!(failed.events.as_slice(), [RuntimeEvent::Notice(notice), RuntimeEvent::TurnEnded(ended)] if notice.contains("went away") && *ended == id));
+    assert!(!runtime.sessions().active().unwrap().is_busy());
+    let again = runtime.dispatch(Command::Completed(Completion::Done(Err("late".to_owned()))));
+    assert!(matches!(again.events.as_slice(), [RuntimeEvent::Notice(_)]), "an idle session has no turn to end");
+}
+
+#[tokio::test]
 async fn a_second_prepared_launches_nothing() {
     let dir = tempfile::tempdir().unwrap();
     let adapter = Counted::new(ScriptedAdapter::new(HARNESS));
