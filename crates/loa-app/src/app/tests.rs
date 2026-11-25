@@ -199,6 +199,34 @@ fn a_session_opened_while_the_center_starts_one_shows_its_own_draft() {
     assert_eq!(test.app.ctx.composer.text(), "first notes and more", "the draft survived the start");
 }
 
+#[test]
+fn the_working_indicator_follows_the_shown_sessions_turn() {
+    let mut test = TestApp::new();
+    let indicator = |test: &TestApp| test.app.ctx.composer.indicator().map(str::to_owned);
+    test.type_text("hello");
+    let start = test.update(Message::Composer(composer::Message::Submit));
+    assert_eq!(indicator(&test).as_deref(), Some("Starting session…"));
+    test.run(start);
+    test.until("the first turn ends", |app| app.ctx.runtime.sessions().active().is_some_and(|session| !session.is_busy()));
+    let first = test.active().expect("an active session").to_owned();
+    assert_eq!(indicator(&test), None, "an idle session shows none");
+
+    test.prompt("work read Reading the config");
+    test.until("the call runs", |app| app.ctx.composer.indicator() == Some("Reading the config…"));
+    test.command("session.new");
+    test.until("the new session is active", |app| app.ctx.runtime.sessions().active_id().is_some_and(|id| id.as_str() != first));
+    assert_eq!(indicator(&test), None, "the shown session is idle");
+    test.send(Message::OpenRecent(first));
+    assert_eq!(indicator(&test).as_deref(), Some("Reading the config…"), "switching back shows the running call");
+
+    test.key(Key::Named(Named::Escape), Modifiers::empty());
+    test.until("the turn is interrupted", |app| !app.ctx.composer.is_busy());
+    assert_eq!(indicator(&test), None, "an interrupted turn shows none");
+    test.prompt("ask");
+    test.until("the approval waits", |app| turn_status(app.ctx.runtime.sessions().active().unwrap().dom()) == Some("Waiting"));
+    assert!(test.app.ctx.composer.is_busy() && indicator(&test).is_none(), "the card asks the user instead");
+}
+
 /// A sidebar event, as its row emits it.
 fn nav(event: Nav) -> Message {
     Message::Shell(shell::Message::Sidebar(shell::sidebar::Message::Emit(event)))

@@ -1,4 +1,4 @@
-version = 3.4.0
+version = 3.5.0
 #[derive(Clone)] struct loa_view::surface::port::Decoders
   extra: Option<NewDecoder>
   still: NewDecoder
@@ -90,6 +90,7 @@ version = 3.4.0
   GitFork
   Globe
   Image
+  LoaderCircle
   Maximize
   Minimize
   Monitor

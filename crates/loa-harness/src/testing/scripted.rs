@@ -10,7 +10,7 @@ use loa_contracts::harness::{
     Adapter, AdapterError, Answer, Availability, Capabilities, HarnessModel, HarnessSession, ModelSelection, Prompt, Result,
     SessionConfig, SessionState,
 };
-use loa_core::{DecisionKind, DecisionStatus, Dom, Draft, ElementKind, NodeId, PatchSink, Role, SessionMode, TurnStatus, Value, attr, now_ms};
+use loa_core::{CallStatus, DecisionKind, DecisionStatus, Dom, Draft, ElementKind, NodeId, PatchSink, Role, SessionMode, TurnStatus, Value, attr, now_ms};
 use loa_util::LockExt;
 
 /// The fields of the `ask form` decision.
@@ -32,7 +32,8 @@ pub struct Seen {
 /// The scripted harness. A prompt `ask [question|multi|plan|form]` waits on
 /// a decision of that kind (an approval otherwise) until it is answered;
 /// `tool <name> <json>` calls the session's host tool and replies with its
-/// output; any other prompt gets the reply `ok`.
+/// output; `work <tool> [title]` leaves a call to `tool` running until the
+/// turn is interrupted; any other prompt gets the reply `ok`.
 #[derive(Clone)]
 pub struct ScriptedAdapter {
     id: &'static str,
@@ -96,7 +97,7 @@ impl ScriptedAdapter {
     fn session(&self, config: SessionConfig, sink: Arc<dyn PatchSink>, root: NodeId) -> Box<dyn HarnessSession> {
         // Without the handler: what it routes to may hold the session open.
         self.seen.locked().configs.push(SessionConfig { host_tool_handler: None, ..config.clone() });
-        Box::new(ScriptedSession { adapter: self.clone(), config, sink, root, waiting: Mutex::new(None) })
+        Box::new(ScriptedSession { adapter: self.clone(), config, sink, root, waiting: Mutex::new(None), working: Mutex::new(None) })
     }
 }
 
@@ -166,6 +167,8 @@ struct ScriptedSession {
     root: NodeId,
     /// The turn waiting on a decision.
     waiting: Mutex<Option<NodeId>>,
+    /// The turn and its call left running by `work`.
+    working: Mutex<Option<(NodeId, NodeId)>>,
 }
 
 impl ScriptedSession {
@@ -192,6 +195,15 @@ impl ScriptedSession {
         *self.waiting.locked() = Some(turn);
         Ok(())
     }
+
+    fn work(&self, turn: NodeId, call: &str) -> Result<()> {
+        let (tool, title) = call.split_once(' ').unwrap_or((call, ""));
+        let mut attrs: Vec<(&str, Value)> = vec![(attr::TOOL, tool.into()), (attr::CALL_ID, "work".into()), (attr::STATUS, CallStatus::Running.into()), (attr::STARTED, now_ms().into())];
+        attrs.extend((!title.is_empty()).then(|| (attr::TITLE, Value::from(title))));
+        let call = self.sink.commit(Draft::insert(turn, ElementKind::Call, attrs, ""))?.node;
+        *self.working.locked() = Some((turn, call));
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -204,6 +216,9 @@ impl HarnessSession for ScriptedSession {
         self.sink.commit(Draft::insert(turn, ElementKind::Message, by, prompt.text.as_str()))?;
         if let Some(kind) = prompt.text.strip_prefix("ask") {
             return self.ask(turn, kind.trim());
+        }
+        if let Some(call) = prompt.text.strip_prefix("work ") {
+            return self.work(turn, call);
         }
         if let Some(call) = prompt.text.strip_prefix("tool ") {
             let (tool, args) = call.split_once(' ').unwrap_or((call, "{}"));
@@ -218,6 +233,13 @@ impl HarnessSession for ScriptedSession {
 
     async fn interrupt(&self) -> Result<()> {
         self.adapter.seen.locked().interrupts += 1;
+        let working = self.working.locked().take();
+        if let Some((turn, call)) = working {
+            for (node, status) in [(call, Value::from(CallStatus::Cancelled)), (turn, Value::from(TurnStatus::Cancelled))] {
+                self.sink.commit(Draft::set(node, attr::ENDED, now_ms()))?;
+                self.sink.commit(Draft::set(node, attr::STATUS, status))?;
+            }
+        }
         Ok(())
     }
 

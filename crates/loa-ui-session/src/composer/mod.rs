@@ -2,14 +2,19 @@
 //! undo and redo, word deletes, growth up to a maximum height, `/` command and `@` file popups,
 //! token highlighting (commands, mentions, `[Image #n]` and omp's shimmering magic keywords),
 //! pasted or dropped images shown as cards and sent as attachments, kit [`Picker`]s (harness,
-//! model, effort slider, permissions, mode, project, folder) anchored to their buttons, and a
-//! stop button with a queue for messages written mid turn. The app feeds it plain
-//! [`loa_view::session::composer`] rows and acts on its [`Intent`]s.
+//! model, effort slider, permissions, mode, project, folder) anchored to their buttons, a
+//! stop button with a queue for messages written mid turn, and a working indicator above the
+//! editor while the shown session's turn runs. The app feeds it plain
+//! [`loa_view::session::composer`] rows and the session's [`Activity`], and acts on its
+//! [`Intent`]s.
 
 mod highlight;
 mod input;
+mod shimmer;
+mod working;
 
 pub use input::{PopupKind, QueuedMessage};
+pub use working::Activity;
 
 use iced::Alignment::Center;
 use iced::advanced::input_method;
@@ -106,8 +111,9 @@ pub enum Message {
     PasteImage,
     /// The × on a pasted image's card.
     RemoveImage(u32),
-    /// A shimmer step of the magic keyword gradient.
-    Shimmer,
+    /// A shimmer step at this wall-clock time (Unix milliseconds): moves the magic keyword
+    /// gradient and the working indicator.
+    Shimmer(i64),
     /// The window gained or lost focus; the shimmer runs only while focused.
     WindowFocused(bool),
     /// The effort slider moved to this level index.
@@ -251,8 +257,13 @@ pub struct State {
     author: String,
     /// The text holds a magic keyword, so its gradient shimmers.
     pub(crate) keyword: bool,
-    /// Shimmer step, see [`highlight::Settings::phase`].
+    /// Shimmer step, see [`shimmer::phase_at`].
     pub(crate) shimmer: u8,
+    /// Wall-clock time of the last shimmer step, Unix milliseconds; the working indicator's
+    /// elapsed time counts to it.
+    now: i64,
+    /// What the shown session's agent is doing.
+    activity: Activity,
     /// The window has focus.
     pub(crate) focused: bool,
     pub(crate) images: Vec<Image>,
@@ -288,6 +299,8 @@ impl State {
             author: String::new(),
             keyword: false,
             shimmer: 0,
+            now: 0,
+            activity: Activity::Idle,
             focused: true,
             images: Vec::new(),
             next_image: 0,
@@ -389,6 +402,20 @@ impl State {
 
     /// Whether a turn runs or is starting.
     pub fn is_busy(&self) -> bool { self.phase != Phase::Idle }
+
+    /// Follows what the shown session's agent is doing ([`Activity::of`] its DOM).
+    pub fn set_activity(&mut self, activity: Activity) { self.activity = activity }
+
+    /// The working indicator's label, `None` while it is hidden: no turn runs or starts, or
+    /// the turn waits on a decision.
+    pub fn indicator(&self) -> Option<&str> {
+        match (self.phase, &self.activity) {
+            (Phase::Idle, _) | (_, Activity::Waiting) => None,
+            (_, Activity::Working { label, .. }) => Some(label),
+            (Phase::Starting, Activity::Idle) => Some(working::STARTING),
+            (Phase::Running, Activity::Idle) => Some(working::WORKING),
+        }
+    }
 
     /// Follows the session now shown: busy while it runs a turn. Leaving a running session for
     /// an idle one puts the messages queued for it back into the editor, so none goes to the
@@ -557,8 +584,8 @@ impl State {
             Message::MentionPressed => self.start_mention(),
             Message::PasteImage => Some(Intent::PasteImage),
             Message::RemoveImage(n) => self.remove_image(n),
-            Message::Shimmer => {
-                self.shimmer = shimmer_phase();
+            Message::Shimmer(now) => {
+                (self.now, self.shimmer) = (now, shimmer::phase_at(now));
                 None
             }
             Message::WindowFocused(focused) => {
@@ -625,7 +652,9 @@ impl State {
         };
         let editor = iced::widget::text_editor(&self.content).id(EDITOR_ID).placeholder(placeholder).on_action(Message::Edit).height(Length::Shrink);
         let editor = editor.min_height(2.6 * ts(T::Body)).max_height(MAX_EDITOR_HEIGHT).padding(sp(Sp::S)).size(ts(T::Body)).style(editor_style).key_binding(move |press| input::bind(press, ctx));
-        let editor = editor.highlight_with::<highlight::Highlighter>(highlight::Settings { phase: self.shimmer }, highlight::format);
+        // Only a keyword moves with the shimmer; a fixed phase spares the editor re-highlighting.
+        let phase = if self.keyword { self.shimmer } else { 0 };
+        let editor = editor.highlight_with::<highlight::Highlighter>(highlight::Settings { phase }, highlight::format);
         let (glyph, size, on_press, label) = match self.is_busy() {
             true => (Icon::Square, ts(T::Caption), Some(Message::Interrupt), STOP_LABEL),
             false => (Icon::ArrowUp, ts(T::Heading), self.can_send.then_some(Message::Send), SEND_LABEL),
@@ -651,7 +680,9 @@ impl State {
         // Fixed slots (empty spaces when unused) keep the editor's place and state in the tree;
         // menus float over the page instead of taking room.
         let images = self.images.iter().any(|image| image.shown).then(|| self.image_cards());
-        let frame = container(column![slot(images), editor, controls]).width(Length::Fill).style(kit::container(Surface::Raised));
+        let started = match &self.activity { Activity::Working { started, .. } => *started, _ => None };
+        let working = self.indicator().map(|label| working::view(label, started, self.now, self.shimmer));
+        let frame = container(column![slot(working), slot(images), editor, controls]).width(Length::Fill).style(kit::container(Surface::Raised));
         let queue = (!self.queue.items.is_empty()).then(|| self.queue_view());
         // Picker menus open from their own button; the `/` and `@` popups span the composer.
         let popup = self.visible_popup().filter(|_| p.open.is_none()).map(|popup| self.popup_view(popup));
@@ -771,7 +802,8 @@ impl State {
     }
 
     /// Tracks input method composition so Enter and Esc reach the IME, closes an open menu on
-    /// Esc, and runs the keyword shimmer while the window has focus.
+    /// Esc, and runs the shimmer of a magic keyword and the working indicator while the window
+    /// has focus.
     pub fn subscription(&self) -> Subscription<Message> {
         let events = iced::event::listen_with(|event, _, _| match event {
             iced::Event::InputMethod(input_method::Event::Preedit(content, _)) => Some(Message::Composing(!content.is_empty())),
@@ -788,9 +820,8 @@ impl State {
                 _ => None,
             }));
         }
-        if self.keyword && self.focused {
-            let step = std::time::Duration::from_millis(highlight::SHIMMER_MS / u64::from(highlight::PHASES));
-            subscriptions.push(iced::time::every(step).map(|_| Message::Shimmer));
+        if (self.keyword || self.indicator().is_some()) && self.focused {
+            subscriptions.push(shimmer::ticks().map(Message::Shimmer));
         }
         Subscription::batch(subscriptions)
     }
@@ -906,9 +937,6 @@ impl State {
     fn text_changed(&mut self) {
         self.can_send = !self.content.is_empty() && self.content.lines().any(|line| !line.text.trim().is_empty());
         self.keyword = self.content.lines().any(|line| highlight::has_keyword(&line.text));
-        if !self.keyword {
-            self.shimmer = 0;
-        }
         for image in &mut self.images {
             let token = highlight::image_token(image.n);
             image.shown = self.content.lines().any(|line| line.text.contains(&token));
@@ -1058,12 +1086,6 @@ fn edit_kind(edit: &Edit) -> EditKind {
         Edit::Backspace | Edit::Delete => EditKind::Delete,
         _ => EditKind::Other,
     }
-}
-
-/// The shimmer step for the current time, so every keyword moves in step.
-fn shimmer_phase() -> u8 {
-    let ms = u64::try_from(loa_util::time::now_ms()).unwrap_or_default() % highlight::SHIMMER_MS;
-    u8::try_from(ms * u64::from(highlight::PHASES) / highlight::SHIMMER_MS).unwrap_or_default()
 }
 
 /// `content`, or an empty space holding its place in the widget tree.

@@ -9,10 +9,8 @@ use iced::advanced::text::highlighter::{self, Format};
 use iced::{Color, Font, Theme, font};
 use loa_ui_kit::theme::{ColorRole, for_theme};
 
-/// Steps of the shimmer per cycle; [`Settings::phase`] counts them.
-pub(crate) const PHASES: u8 = 56;
-/// One shimmer cycle, as in omp.
-pub(crate) const SHIMMER_MS: u64 = 1800;
+use super::shimmer;
+
 /// Colors in one keyword gradient, as in omp.
 const STOPS: usize = 14;
 
@@ -57,7 +55,7 @@ pub(crate) fn image_token(n: u32) -> String {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub struct Settings {
-    /// Shimmer step, `0..PHASES`.
+    /// Shimmer step, `0..shimmer::PHASES`.
     pub phase: u8,
 }
 
@@ -205,7 +203,7 @@ fn keyword_ranges<'a>(line: &'a str, word: &'a str) -> impl Iterator<Item = Rang
 
 /// The color of character `index` of `chars` in `keyword` at shimmer `phase`.
 fn gradient(keyword: &Keyword, index: usize, chars: usize, phase: u8) -> Color {
-    let shift = f32::from(phase) / f32::from(PHASES);
+    let shift = shimmer::progress(phase);
     let at = (index as f32 / chars as f32 + shift).fract();
     let stop = ((at * STOPS as f32) as usize % STOPS) as f32 / STOPS as f32;
     let hue = (keyword.hue.0 + stop * (keyword.hue.1 - keyword.hue.0)).rem_euclid(360.0);
@@ -273,8 +271,8 @@ mod tests {
         let keyword = &KEYWORDS[3];
         let at = |index, phase| gradient(keyword, index, 9, phase);
         assert_ne!(at(0, 0), at(8, 0), "the word is a gradient");
-        assert_ne!(at(0, 0), at(0, PHASES / 2), "the shimmer moves it");
-        assert_eq!(at(0, 0), at(0, PHASES), "and loops");
+        assert_ne!(at(0, 0), at(0, shimmer::PHASES / 2), "the shimmer moves it");
+        assert_eq!(at(0, 0), at(0, shimmer::PHASES), "and loops");
         let red = hsl(0.0, 1.0, 0.5);
         assert!((red.r - 1.0).abs() < 1e-4 && red.g.abs() < 1e-4 && red.b.abs() < 1e-4);
     }

@@ -180,11 +180,12 @@ impl SessionController {
     }
 
     /// Loads the active session's DOM into the chat and the frame; the composer follows
-    /// whether it runs a turn and shows the session's own draft.
+    /// whether it runs a turn, what its agent is doing and shows the session's own draft.
     fn present(&mut self, ctx: &mut Ctx) {
         let active = ctx.runtime.sessions().active();
         let starting = ctx.runtime.sessions().starting().is_some();
         self.follow(&mut ctx.composer, active.map(|session| session.id().clone()), active.is_some_and(|session| session.is_busy()), starting);
+        ctx.composer.set_activity(active.map_or_else(composer::Activity::default, |session| composer::Activity::of(session.dom())));
         let Some(session) = active else {
             self.chat.load(&Dom::new());
             self.after.push(After::Present(ctx.runtime.cwd().to_path_buf()));
@@ -257,6 +258,9 @@ impl SessionController {
                 if matches!(patch.op, Op::Append { .. }) {
                     areas.get_mut::<crate::areas::sessions::State>().on_append(id, patch, ctx);
                     return Task::none();
+                }
+                if let Some(session) = ctx.runtime.sessions().active().filter(|session| session.id() == id) {
+                    ctx.composer.set_activity(composer::Activity::of(session.dom()));
                 }
             }
             SessionEvent::Closed(id) => {

@@ -232,19 +232,52 @@ fn leaving_a_running_session_brings_its_queue_back_and_a_failed_send_returns_the
     assert_eq!(state.text(), "queued");
 }
 
+/// Whether `state` runs the shimmer clock besides its event listener.
+fn ticking(state: &State) -> bool { iced::advanced::subscription::into_recipes(state.subscription()).len() > 1 }
+
 #[test]
 fn a_magic_keyword_starts_the_shimmer_and_removing_it_stops_it() {
     let mut state = State::new();
+    assert!(!ticking(&state));
     type_text(&mut state, "please workflowz");
-    assert!(state.keyword);
-    act(&mut state, Message::Shimmer);
+    assert!(state.keyword && ticking(&state));
+    act(&mut state, Message::Shimmer(900));
+    assert_eq!(state.shimmer, 28, "half way through the 1.8 s cycle");
     act(&mut state, Message::WindowFocused(false));
-    assert!(!state.focused, "an unfocused window stops the shimmer");
+    assert!(!ticking(&state), "an unfocused window stops the shimmer");
+    act(&mut state, Message::WindowFocused(true));
     for _ in 0.."workflowz".len() {
         act(&mut state, Message::Edit(Action::Edit(Edit::Backspace)));
     }
-    assert!(!state.keyword);
-    assert_eq!(state.shimmer, 0);
+    assert!(!state.keyword && !ticking(&state));
+}
+
+#[test]
+fn the_working_indicator_shows_while_a_turn_runs_and_ticks_only_then() {
+    let mut state = State::new();
+    let reading = Activity::Working { label: "Reading the config…".into(), started: Some(1_000) };
+    state.set_activity(reading.clone());
+    assert_eq!((state.indicator(), ticking(&state)), (None, false), "an idle composer shows none");
+
+    type_text(&mut state, "hi");
+    submitted(act(&mut state, Message::Submit));
+    state.set_activity(Activity::Idle);
+    assert_eq!(state.indicator(), Some("Starting session…"));
+    state.turn_started();
+    assert_eq!(state.indicator(), Some("Working…"), "the turn runs before the session's DOM has it");
+    state.set_activity(reading.clone());
+    assert_eq!((state.indicator(), ticking(&state)), (Some("Reading the config…"), true));
+    act(&mut state, Message::Shimmer(66_000));
+    assert!(iced_test::simulator(state.view()).find("1m 05s · esc to interrupt").is_ok(), "the elapsed time counts from the turn's start");
+
+    act(&mut state, Message::WindowFocused(false));
+    assert!(!ticking(&state), "an unfocused window stops the animation");
+    act(&mut state, Message::WindowFocused(true));
+    state.set_activity(Activity::Waiting);
+    assert_eq!((state.indicator(), ticking(&state)), (None, false), "a decision card asks the user instead");
+    state.set_activity(reading);
+    let _ = state.turn_ended();
+    assert_eq!((state.indicator(), ticking(&state)), (None, false));
 }
 
 #[test]
