@@ -35,7 +35,7 @@ pub mod ids {
     use super::CommandId;
     macro_rules! ids { ($($name:ident = $id:literal),* $(,)?) => { $(pub const $name: CommandId = CommandId::from_static($id);)* } }
     ids! {
-        PALETTE_TOGGLE = "palette.toggle", PANEL_TOGGLE = "panel.toggle", SESSION_INTERRUPT = "session.interrupt", COMPOSER_SUBMIT = "composer.submit",
+        PALETTE_TOGGLE = "palette.toggle", PANEL_TOGGLE = "panel.toggle", PANEL_AGENTS = "panel.agents", SESSION_INTERRUPT = "session.interrupt", COMPOSER_SUBMIT = "composer.submit",
         COMPOSER_NEWLINE = "composer.newline", SESSION_NEW = "session.new", SESSION_NEXT = "session.next", SESSION_PREVIOUS = "session.previous",
         PROJECT_TAB_NEXT = "project.tab.next", PROJECT_TAB_PREVIOUS = "project.tab.previous", COMPOSER_FOCUS = "composer.focus",
         SEARCH_FOCUS = "sidebar.search", KEYMAP_SHOW = "keymap.show", FOCUS_NEXT = "focus.next", FOCUS_PREVIOUS = "focus.previous",

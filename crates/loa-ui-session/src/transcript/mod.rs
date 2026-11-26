@@ -114,6 +114,8 @@ pub struct State {
     scroll_id: widget::Id,
     /// Room under the last row for what floats over the bottom edge (the composer).
     bottom_inset: f32,
+    /// Suppresses interactive actions like Rewind when rendering read-only transcripts.
+    read_only: bool,
 }
 
 impl State {
@@ -133,6 +135,7 @@ impl State {
             look: prose::Look::new(&for_theme(theme)).into(),
             scroll_id: widget::Id::unique(),
             bottom_inset: 0.0,
+            read_only: false,
         }
     }
 
@@ -143,6 +146,7 @@ impl State {
     }
 
     pub fn set_bottom_inset(&mut self, inset: f32) { self.bottom_inset = inset }
+    pub fn set_read_only(&mut self, read_only: bool) { self.read_only = read_only }
     pub fn set_theme(&mut self, theme: &Theme) { self.look.set(prose::Look::new(&for_theme(theme))) }
 
     /// The look of the active token generation, rebuilt after a theme change.
@@ -235,7 +239,7 @@ impl State {
         let node = dom.get(item.key)?;
         let cell = self.streamed.get(&item.key);
         let streamed = if parse { cell.map(|c| c.get_or_init(|| Streamed::new(&node.text))) } else { cell.and_then(OnceCell::get) };
-        Some(RowCtx { dom, node, expanded: self.expanded.contains(&item.key), streamed, look: self.look() })
+        Some(RowCtx { dom, node, expanded: self.expanded.contains(&item.key), streamed, look: self.look(), read_only: self.read_only })
     }
 
     /// The transcript: rows built only around the viewport. `map` lifts messages into the

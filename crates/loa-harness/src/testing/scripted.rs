@@ -2,15 +2,16 @@
 //! once, and the hooks the app drives (host tools, models, effort, modes,
 //! decisions, import/export) are switched on with builder flags.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use loa_contracts::harness::{
-    Adapter, AdapterError, Answer, Availability, Capabilities, HarnessModel, HarnessSession, ModelSelection, Prompt, Result,
-    SessionConfig, SessionState,
+    Adapter, AdapterError, Answer, Availability, Capabilities, Feature, HarnessModel, HarnessSession, ModelSelection, Prompt, Result,
+    SessionConfig, SessionState, SubagentTranscript,
 };
-use loa_core::{CallStatus, DecisionKind, DecisionStatus, Dom, Draft, ElementKind, NodeId, PatchSink, Role, SessionMode, TurnStatus, Value, attr, now_ms};
+use loa_core::{CallStatus, CommitError, DecisionKind, DecisionStatus, Dom, Draft, ElementKind, NodeId, PatchSink, Role, SessionMode, TurnStatus, Value, attr, now_ms};
 use loa_util::LockExt;
 
 /// The fields of the `ask form` decision.
@@ -27,6 +28,16 @@ pub struct Seen {
     pub compacts: Vec<Option<String>>,
     pub interrupts: usize,
     pub resumes: usize,
+    pub subagent_transcripts: Vec<String>,
+    pub subagent_messages: Vec<(String, String)>,
+}
+
+#[derive(Clone, Debug)]
+struct SubagentState {
+    dom: Dom,
+    addressable: bool,
+    transcript_error: Option<String>,
+    message_error: Option<String>,
 }
 
 /// The scripted harness. A prompt `ask [question|multi|plan|form]` waits on
@@ -43,17 +54,63 @@ pub struct ScriptedAdapter {
     resumes: bool,
     effort: bool,
     models: Vec<HarnessModel>,
+    subagents: Arc<Mutex<BTreeMap<String, SubagentState>>>,
     seen: Arc<Mutex<Seen>>,
 }
 
 impl ScriptedAdapter {
     pub fn new(id: &'static str) -> Self {
         let capabilities = Capabilities::builder().build();
-        Self { id, capabilities, availability: None, starts: true, resumes: true, effort: false, models: Vec::new(), seen: Arc::default() }
+        Self { id, capabilities, availability: None, starts: true, resumes: true, effort: false, models: Vec::new(), subagents: Arc::default(), seen: Arc::default() }
     }
 
     pub fn capabilities(self, capabilities: Capabilities) -> Self {
         Self { capabilities, ..self }
+    }
+
+    /// Advertises [`Feature::SubagentMessages`] on this adapter.
+    pub fn subagent_messages(mut self) -> Self {
+        if !self.capabilities.has(Feature::SubagentMessages) {
+            self.capabilities.features.push(Feature::SubagentMessages);
+        }
+        self
+    }
+
+    /// Registers a scripted subagent transcript DOM and addressability.
+    pub fn subagent_transcript(self, id: impl Into<String>, dom: Dom, addressable: bool) -> Self {
+        self.set_subagent_transcript(id, dom, addressable);
+        self
+    }
+
+    /// Updates or inserts a scripted subagent transcript DOM and addressability.
+    pub fn set_subagent_transcript(&self, id: impl Into<String>, dom: Dom, addressable: bool) {
+        let mut subagents = self.subagents.locked();
+        let entry = subagents.entry(id.into()).or_insert_with(|| SubagentState {
+            dom: Dom::new(),
+            addressable,
+            transcript_error: None,
+            message_error: None,
+        });
+        entry.dom = dom;
+        entry.addressable = addressable;
+    }
+
+    /// Configures scripted errors for `subagent_transcript` or `message_subagent`.
+    pub fn set_subagent_error(&self, id: impl Into<String>, transcript_error: Option<String>, message_error: Option<String>) {
+        let mut subagents = self.subagents.locked();
+        let entry = subagents.entry(id.into()).or_insert_with(|| SubagentState {
+            dom: Dom::new(),
+            addressable: true,
+            transcript_error: None,
+            message_error: None,
+        });
+        entry.transcript_error = transcript_error;
+        entry.message_error = message_error;
+    }
+
+    /// Returns the current scripted DOM of subagent `id`, if any.
+    pub fn subagent_dom(&self, id: &str) -> Option<Dom> {
+        self.subagents.locked().get(id).map(|entry| entry.dom.clone())
     }
 
     /// What `availability` reports; unknown by default.
@@ -145,7 +202,7 @@ impl Adapter for ScriptedAdapter {
     /// A native file is one user message per line.
     fn import(&self, native: &Path, sink: &dyn PatchSink) -> Result<()> {
         let text = std::fs::read_to_string(native).map_err(|error| AdapterError::Format(error.to_string()))?;
-        let attrs: [(&str, Value); 3] = [(attr::HARNESS, self.id.into()), (attr::CREATED, now_ms().into()), (attr::TITLE, "Imported".into())];
+        let attrs: [(&str, Value); 5] = [(attr::ID, "scripted-import".into()), (attr::NODE, "testhost".into()), (attr::HARNESS, self.id.into()), (attr::CREATED, now_ms().into()), (attr::TITLE, "Imported".into())];
         let root = sink.commit(Draft::insert(NodeId::DOCUMENT, ElementKind::Session, attrs, ""))?.node;
         for line in text.lines() {
             let turn = sink.commit(Draft::insert(root, ElementKind::Turn, [(attr::STATUS, Value::from(TurnStatus::Done))], ""))?.node;
@@ -289,6 +346,56 @@ impl HarnessSession for ScriptedSession {
 
     async fn compact(&self, instructions: Option<String>) -> Result<()> {
         self.adapter.seen.locked().compacts.push(instructions);
+        Ok(())
+    }
+
+    async fn subagent_transcript(&self, id: &str) -> Result<SubagentTranscript> {
+        if !self.adapter.capabilities.has(Feature::SubagentMessages) {
+            return Err(AdapterError::Unsupported { harness: self.adapter.id, what: "reading subagent conversations" });
+        }
+        self.adapter.seen.locked().subagent_transcripts.push(id.to_owned());
+        let subagents = self.adapter.subagents.locked();
+        let Some(entry) = subagents.get(id) else {
+            return Ok(SubagentTranscript { dom: Dom::new(), addressable: false });
+        };
+        if let Some(error) = &entry.transcript_error {
+            return Err(AdapterError::Protocol(error.clone()));
+        }
+        Ok(SubagentTranscript { dom: entry.dom.clone(), addressable: entry.addressable })
+    }
+
+    async fn message_subagent(&self, id: &str, text: String) -> Result<()> {
+        if !self.adapter.capabilities.has(Feature::SubagentMessages) {
+            return Err(AdapterError::Unsupported { harness: self.adapter.id, what: "messaging subagents" });
+        }
+        let mut subagents = self.adapter.subagents.locked();
+        let Some(entry) = subagents.get_mut(id) else {
+            return Err(AdapterError::NotAddressable(format!("unknown subagent {id}")));
+        };
+        if let Some(error) = &entry.message_error {
+            return Err(AdapterError::Protocol(error.clone()));
+        }
+        if !entry.addressable {
+            return Err(AdapterError::NotAddressable(format!("subagent {id} is no longer addressable")));
+        }
+        let ts = now_ms();
+        let root = match entry.dom.root() {
+            Some(root) => root.id,
+            None => {
+                let attrs: [(&str, Value); 4] = [
+                    (attr::ID, id.into()),
+                    (attr::HARNESS, self.adapter.id.into()),
+                    (attr::NODE, self.config.node.as_str().into()),
+                    (attr::CREATED, ts.into()),
+                ];
+                entry.dom.commit(Draft::insert(NodeId::DOCUMENT, ElementKind::Session, attrs, ""), ts).map_err(CommitError::from)?.node
+            }
+        };
+        let turn = entry.dom.commit(Draft::insert(root, ElementKind::Turn, [(attr::STATUS, Value::from(TurnStatus::Done))], ""), ts).map_err(CommitError::from)?.node;
+        let msg_attrs: [(&str, Value); 2] = [(attr::ROLE, Role::User.into()), (attr::BY, self.config.node.as_str().into())];
+        entry.dom.commit(Draft::insert(turn, ElementKind::Message, msg_attrs, text.as_str()), ts).map_err(CommitError::from)?;
+        drop(subagents);
+        self.adapter.seen.locked().subagent_messages.push((id.to_owned(), text));
         Ok(())
     }
 

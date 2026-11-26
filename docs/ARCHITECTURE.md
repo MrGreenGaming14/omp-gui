@@ -182,7 +182,7 @@ impl State {
 | --- | --- | --- |
 | Element schema | `loa_core::SCHEMA_VERSION` (1) | `loa-core` |
 | Adapter interface | `loa_adapter::INTERFACE_VERSION` | `loa-adapter` |
-| Presentation API | `loa_view::VERSION` (3.5.0), listed in `crates/loa-view/api.txt` | `loa-view` |
+| Presentation API | `loa_view::VERSION` (4.0.0), listed in `crates/loa-view/api.txt` | `loa-view` |
 | Control ALPN | `omp/control/1` | `loa-net` |
 | Session ALPN | `omp/session/1` | `loa-net`, `loa-share` |
 | Surface ALPN | `omp/surface/1` | `loa-surface` |

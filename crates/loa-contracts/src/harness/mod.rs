@@ -38,6 +38,12 @@ pub enum AdapterError {
     UnknownDecision(NodeId),
     #[error("harness protocol error: {0}")]
     Protocol(String),
+    /// The target (a subagent) exists but no longer takes messages; the text says why.
+    #[error("{0}")]
+    NotAddressable(String),
+    /// The target turned this one request down but still takes others; the text says why.
+    #[error("{0}")]
+    Rejected(String),
     #[error("malformed native session: {0}")]
     Format(String),
     #[error(transparent)]
@@ -209,6 +215,15 @@ pub trait Adapter: Send + Sync {
     fn export(&self, _dom: &Dom, _out: &Path) -> Result<()> { Err(unsupported(self.harness(), "export")) }
 }
 
+/// A subagent's conversation, read through its parent session.
+#[derive(Clone, Debug)]
+pub struct SubagentTranscript {
+    /// The subagent's conversation as a `<session>` tree; empty when the harness has no record.
+    pub dom: Dom,
+    /// Whether [`HarnessSession::message_subagent`] can reach it now.
+    pub addressable: bool,
+}
+
 /// One running session; `&self` methods so the UI can interrupt or answer mid turn.
 #[async_trait]
 pub trait HarnessSession: Send + Sync {
@@ -233,6 +248,20 @@ pub trait HarnessSession: Send + Sync {
 
     /// Compacts the context, recording a `<compaction>`.
     async fn compact(&self, _instructions: Option<String>) -> Result<()> { Err(unsupported(self.harness(), "compact")) }
+
+    /// The conversation of subagent `id` (the `<job id>` of a `kind="subagent"` job) as its own
+    /// `<session>` DOM, and whether it still accepts [`Self::message_subagent`].
+    async fn subagent_transcript(&self, _id: &str) -> Result<SubagentTranscript> {
+        Err(unsupported(self.harness(), "reading subagent conversations"))
+    }
+
+    /// Sends `text` to running subagent `id` as its user: it steers a running turn or starts the
+    /// next one, and is recorded in the subagent's own conversation, not this session's.
+    /// `NotAddressable` once the subagent no longer accepts messages; `Rejected` when it turned
+    /// down this message but stays reachable.
+    async fn message_subagent(&self, _id: &str, _text: String) -> Result<()> {
+        Err(unsupported(self.harness(), "messaging subagents"))
+    }
 
     fn harness(&self) -> &'static str;
 

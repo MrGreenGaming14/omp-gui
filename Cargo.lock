@@ -4639,6 +4639,7 @@ dependencies = [
  "iced",
  "iced_futures",
  "iced_runtime",
+ "iced_test",
  "image",
  "loa-bus",
  "loa-contracts",

@@ -46,7 +46,7 @@ pub(crate) mod lifecycle;
 mod media;
 mod panes;
 pub(crate) mod usage;
-mod windows;
+pub(crate) mod windows;
 pub(crate) mod workspace;
 
 #[cfg(test)]
@@ -242,7 +242,7 @@ pub struct App {
     diff: diff::State,
     pub(crate) terminal: terminal::state::State,
     usage: usage::State,
-    windows: Windows,
+    pub(crate) windows: Windows,
 }
 
 impl App {
@@ -443,7 +443,7 @@ impl App {
                 tasks.push(match request {
                     Request::NewSession => self.lifecycle(|s, ctx, areas| s.run(ctx, areas, Command::Start { prompt: None })),
                     Request::OpenSession(id) => self.lifecycle(|s, ctx, areas| s.run(ctx, areas, Command::Open(SessionId::from(id)))),
-                    Request::DetachSession(id) => self.detach_session(&id),
+                    Request::DetachTranscript { key, title, dom } => self.detach_transcript(key, title, dom),
                     Request::Prompt(prompt) => self.lifecycle(|s, ctx, areas| s.send(ctx, areas, prompt)),
                     Request::ReleaseRoleQueue(id) => {
                         // A turn that started meanwhile releases the queue when it ends.
@@ -536,7 +536,9 @@ impl App {
                 let active = self.ctx.shell.theme();
                 self.sessions.chat.set_theme(&active);
                 self.sessions.chat.set_bottom_inset(width(LayoutRole::ComposerInset));
+                self.sessions.set_detached_theme(&active);
                 self.areas.get_mut::<areas::decisions::State>().set_theme(&active);
+                self.areas.get_mut::<areas::sessions::State>().set_theme(&active);
                 if let Some(theme) = picked {
                     self.ctx.edit_config("settings", |config| config.appearance.theme = crate::view::theme::theme_from_view(theme));
                 }
@@ -640,8 +642,8 @@ impl App {
                 Task::none()
             }
             Message::DetachedChat(session, message) => {
-                let Some(chat) = self.sessions.detached.get_mut(&session) else { return Task::none() };
-                let (task, event) = chat.update(message);
+                let Some(entry) = self.sessions.detached_transcripts.get_mut(&session) else { return Task::none() };
+                let (task, event) = entry.chat.update(message);
                 let task = task.map(move |message| Message::DetachedChat(session.clone(), message));
                 // Rewinds act on the active session, so only links pass on.
                 let action = match event {
@@ -721,7 +723,11 @@ impl App {
             // The composer floats over the transcript's bottom edge; the transcript scrolls on underneath it.
             let composer = container(container(ctx.composer.view().map(Message::Composer)).width(Fill).max_width(width(LayoutRole::ComposerWidth)));
             let composer = composer.center_x(Fill).padding(Padding::from([sp(SpaceRole::M), sp(SpaceRole::Xl)]).top(sp(SpaceRole::Xl))).style(style::composer_fade);
-            stack![container(transcript).height(Fill), container(composer).align_bottom(Fill)].into()
+            let parent: Element<'_, Message> = stack![container(transcript).height(Fill), container(composer).align_bottom(Fill)].into();
+            match self.areas.get::<areas::sessions::State>().view_child_center(ctx) {
+                Some((strip, child)) => column![strip.map(Message::area), container(child.map_or(parent, |child| child.map(Message::area))).height(Fill)].into(),
+                None => parent,
+            }
         } else {
             self.start_view()
         };

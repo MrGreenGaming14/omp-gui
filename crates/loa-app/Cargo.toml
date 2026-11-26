@@ -54,6 +54,7 @@ loa-models = { path = "../loa-models", features = ["testing"] }
 loa-harness = { workspace = true, features = ["testing"] }
 loa-ui-kit = { path = "../loa-ui-kit", features = ["testkit"] }
 iced_runtime = "0.14"
+iced_test = "0.14"
 # The iced runtime's subscription tracker, to run the app's subscriptions in tests.
 iced_futures = "0.14"
 toml = "1.2"

@@ -157,8 +157,8 @@ pub enum Overlay {
 pub enum Detached {
     /// A panel tab, by id.
     Tab(String),
-    /// A session (a subagent's), by library id.
-    Session(String),
+    /// A read-only transcript (e.g. a subagent session file), by key.
+    Transcript(String),
 }
 
 impl Detached {
@@ -176,7 +176,7 @@ pub(crate) struct Windows {
     pub overlay: Option<Overlay>,
     pub docs: Docs,
     main: Option<window::Id>,
-    detached: Vec<(window::Id, Detached)>,
+    pub(crate) detached: Vec<(window::Id, Detached)>,
 }
 
 #[derive(Debug, Clone)]
@@ -301,8 +301,8 @@ impl App {
     fn forget_window(&mut self, id: window::Id) -> Option<Detached> {
         let index = self.windows.detached.iter().position(|(window, _)| *window == id)?;
         let (_, what) = self.windows.detached.remove(index);
-        if let Detached::Session(session) = &what {
-            self.sessions.detached.remove(session);
+        if let Detached::Transcript(key) = &what {
+            self.sessions.detached_transcripts.remove(key);
         }
         self.sync_detached();
         Some(what)
@@ -313,17 +313,12 @@ impl App {
         self.ctx.shell.set_detached(tabs);
     }
 
-    /// Loads a session without making it active and shows it in a window.
-    pub(super) fn detach_session(&mut self, session: &str) -> Task<Message> {
-        if let Err(error) = self.ctx.runtime.load_session(session) {
-            self.ctx.notify(error);
-            return Task::none();
-        }
-        if let Some(open) = self.ctx.runtime.sessions().get(session) {
-            let theme = self.theme();
-            self.sessions.detached.entry(session.to_owned()).or_insert_with(|| loa_ui_session::transcript::State::from_dom(open.dom(), &theme));
-        }
-        self.detach(Detached::Session(session.to_owned()))
+    /// Shows a read-only DOM transcript in its own detached window without creating a session.
+    pub(super) fn detach_transcript(&mut self, key: String, title: String, dom: loa_core::Dom) -> Task<Message> {
+        let mut chat = loa_ui_session::transcript::State::from_dom(&dom, &self.theme());
+        chat.set_read_only(true);
+        self.sessions.detached_transcripts.insert(key.clone(), super::lifecycle::DetachedTranscript { dom, chat, title });
+        self.detach(Detached::Transcript(key))
     }
 
     /// The title of window `id`.
@@ -337,7 +332,7 @@ impl App {
     fn detached_title(&self, what: &Detached) -> String {
         match what {
             Detached::Tab(tab) => self.ctx.shell.tabs().iter().find(|shown| shown.id == *tab).map_or(tab.clone(), |shown| shown.title.clone()),
-            Detached::Session(session) => self.ctx.shell.sidebar().session(session).map_or_else(|| "Subagent".to_owned(), |summary| summary.title.clone()),
+            Detached::Transcript(key) => self.sessions.detached_transcripts.get(key).map_or_else(|| "Subagent".to_owned(), |entry| entry.title.clone()),
         }
     }
 
@@ -346,7 +341,7 @@ impl App {
         let Some((_, what)) = self.windows.detached.iter().find(|(window, _)| *window == id) else { return self.view() };
         let body = match what {
             Detached::Tab(tab) => self.view_tab(tab),
-            Detached::Session(session) => self.detached_session(session),
+            Detached::Transcript(key) => self.detached_transcript(key),
         };
         let header = row![tinted(Icon::ExternalLink, TextRole::Body, Tone::Muted), label(self.detached_title(what), TextRole::Body, Tone::Normal).width(Fill)]
             .push(text_button("Reattach", ButtonKind::Ghost, Some(Message::Window(WindowMessage::Reattach(id)))))
@@ -356,12 +351,16 @@ impl App {
         container(column![header, rule::horizontal(1).style(style::rule), container(body).width(Fill).height(Fill)]).style(style::container(Surface::Ground)).width(Fill).height(Fill).into()
     }
 
-    fn detached_session(&self, session: &str) -> Element<'_, Message> {
-        let center = |s| container(label(s, TextRole::Body, Tone::Muted)).center(Fill).into();
-        let Some(open) = self.ctx.runtime.sessions().get(session) else { return center("This session is no longer loaded") };
-        let Some(chat) = self.sessions.detached.get(session) else { return center("Loading…") };
-        let owned = session.to_owned();
-        chat.view(open.dom(), move |message| Message::DetachedChat(owned.clone(), message), |slot| self.decision_card(open.id().as_str(), slot.node))
+    fn detached_transcript(&self, key: &str) -> Element<'_, Message> {
+        let Some(entry) = self.sessions.detached_transcripts.get(key) else {
+            return container(label("This transcript is no longer open", TextRole::Body, Tone::Muted)).center(Fill).into();
+        };
+        let owned = key.to_owned();
+        entry.chat.view(
+            &entry.dom,
+            move |message| Message::DetachedChat(owned.clone(), message),
+            |_| container(label("Decision", TextRole::Caption, Tone::Muted)).into(),
+        )
     }
 
     /// The Configs window, drawn over the app.

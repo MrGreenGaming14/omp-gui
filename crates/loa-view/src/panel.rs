@@ -44,11 +44,14 @@ pub enum SessionTreeIntent {
     Open(String),
 }
 
-/// What the agents pane asks; `Cancel` stops a running job, `id` is the harness's job id when known.
+/// What the agents pane asks. `OpenSubagent` opens a live subagent, by its `<job id>`, as a child
+/// tab of the conversation; `DetachTranscript` shows a read-only copy of a subagent's transcript
+/// (a library session id or a native session file); `Cancel` stops a running job, `id` is the
+/// harness's job id when known.
 #[derive(Clone, Debug, PartialEq)]
 pub enum AgentsIntent {
-    OpenSession(String),
-    DetachSession(String),
+    OpenSubagent(String),
+    DetachTranscript(String),
     Cancel { node: NodeId, id: Option<String> },
 }
 

@@ -42,11 +42,18 @@ pub(super) enum After {
     Continue(Option<PathBuf>, Prompt),
 }
 
+/// A read-only transcript shown in its own detached window.
+pub(crate) struct DetachedTranscript {
+    pub(crate) dom: Dom,
+    pub(crate) chat: chat::State,
+    pub(crate) title: String,
+}
+
 /// Drives the runtime's session lifecycle and shows the active session in the chat.
 pub(crate) struct SessionController {
     pub(crate) chat: chat::State,
-    /// Transcripts of sessions shown in their own window.
-    pub(crate) detached: HashMap<String, chat::State>,
+    /// Transcripts of detached read-only windows (e.g. subagent session files), keyed by source path.
+    pub(crate) detached_transcripts: HashMap<String, DetachedTranscript>,
     pub(super) after: Vec<After>,
     /// The session the composer shows, `None` for the center without one.
     shown: Option<SessionId>,
@@ -65,7 +72,13 @@ impl SessionController {
     pub fn new(theme: &Theme) -> Self {
         let mut chat = chat::State::new(theme);
         chat.set_bottom_inset(loa_ui_kit::theme::width(loa_ui_kit::theme::LayoutRole::ComposerInset));
-        Self { chat, detached: HashMap::new(), after: Vec::new(), shown: None, drafts: HashMap::new(), carried: None }
+        Self { chat, detached_transcripts: HashMap::new(), after: Vec::new(), shown: None, drafts: HashMap::new(), carried: None }
+    }
+
+    pub fn set_detached_theme(&mut self, theme: &Theme) {
+        for entry in self.detached_transcripts.values_mut() {
+            entry.chat.set_theme(theme);
+        }
     }
 
     /// Hands `command` to the runtime, then does what its transition asks of the app.
@@ -285,15 +298,11 @@ impl SessionController {
         Task::batch(tasks)
     }
 
-    /// Applies a patch to the session's transcript when it is active, and to its detached
-    /// window's transcript when it has one.
+    /// Applies a patch to the session's transcript when it is active.
     fn apply_to_chats(&mut self, ctx: &Ctx, id: &SessionId, patch: &Patch) {
         let Some(session) = ctx.runtime.sessions().get(id.as_str()) else { return };
         if ctx.runtime.sessions().is_active(id.as_str()) {
             self.chat.apply(patch, session.dom());
-        }
-        if let Some(chat) = self.detached.get_mut(id.as_str()) {
-            chat.apply(patch, session.dom());
         }
     }
 

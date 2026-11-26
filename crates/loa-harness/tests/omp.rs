@@ -186,3 +186,51 @@ async fn a_session_streams_asks_and_settles_against_a_fake_omp() {
     let overlay = args.iter().position(|arg| arg == "--config").unwrap();
     assert_eq!(std::fs::read_to_string(&args[overlay + 1]).unwrap(), loa_harness::omp::MEMORY_OFF);
 }
+
+#[tokio::test]
+async fn subagent_transcripts_and_messages_use_the_parent_rpc() {
+    let mut script = handshake_v2();
+    for command in ["set_event_filter", "set_subagent_subscription", "set_ask_dialog"] {
+        script.push_str(&reply(command, "{}"));
+    }
+    script.push_str(&reply("get_state", r#"{"sessionId":"parent","isStreaming":false}"#));
+    let header = json!({"type":"session","version":3,"id":"child"});
+    let message = json!({"type":"message","id":"5de0cb6e","parentId":null,"timestamp":"2026-11-26T04:18:15.732Z","message":{"role":"user","content":[{"type":"text","text":"PINEAPPLE-307"}],"steering":true}});
+    for (agents, entries, next, reset) in [
+        (json!([{"id":"alpha","status":"running"}]), json!([header.clone(), message.clone()]), 100, false),
+        (json!([{"id":"alpha","status":"running"}]), json!([{"type":"message","id":"second","parentId":"5de0cb6e","message":{"role":"user","content":[{"type":"text","text":"SECOND"}]}}]), 200, false),
+        (json!([]), json!([header, message]), 80, true),
+    ] {
+        script.push_str(&reply("get_subagents", &json!({"subagents":agents}).to_string()));
+        script.push_str(&reply("get_subagent_messages", &json!({"nextByte":next,"reset":reset,"entries":entries}).to_string()));
+    }
+    script.push_str(&reply("steer_subagent", r#"{"success":true}"#));
+    script.push_str("< steer_subagent steer_subagent\n> {\"type\":\"response\",\"id\":\"{{steer_subagent}}\",\"command\":\"steer_subagent\",\"success\":false,\"error\":\"Subagent not running: alpha\"}\n");
+    script.push_str("< steer_subagent steer_subagent\n> {\"type\":\"response\",\"id\":\"{{steer_subagent}}\",\"command\":\"steer_subagent\",\"success\":false,\"error\":\"Subagent refused the message: busy\"}\n");
+    let dir = tempfile::tempdir().unwrap();
+    let fake = FakeProcess::install(dir.path(), &script).unwrap();
+    let mut config = OmpAdapterConfig::new("owner", dir.path().join("state"));
+    config.executable = fake.executable().to_owned();
+    let session = OmpAdapter::new(config).start(SessionConfig { session_id: "parent".into(), cwd: dir.path().to_owned(), ..Default::default() }, Arc::new(MemorySink::new())).await.unwrap();
+    let first = session.subagent_transcript("alpha").await.unwrap();
+    assert!(first.addressable);
+    assert!(first.dom.iter().any(|node| node.kind == ElementKind::Message && node.text == "PINEAPPLE-307"));
+    let second = session.subagent_transcript("alpha").await.unwrap();
+    assert!(second.dom.iter().any(|node| node.kind == ElementKind::Message && node.text == "SECOND"));
+    let reset = session.subagent_transcript("alpha").await.unwrap();
+    assert!(!reset.addressable);
+    assert!(!reset.dom.iter().any(|node| node.kind == ElementKind::Message && node.text == "SECOND"));
+    session.message_subagent("alpha", "hello".into()).await.unwrap();
+    let error = session.message_subagent("alpha", "again".into()).await.unwrap_err();
+    assert!(matches!(&error, loa_contracts::harness::AdapterError::NotAddressable(reason) if reason == "alpha has finished, so omp no longer accepts messages for it"));
+    let error = session.message_subagent("alpha", "again".into()).await.unwrap_err();
+    assert!(matches!(&error, loa_contracts::harness::AdapterError::Rejected(reason) if reason == "alpha refused the message: busy"));
+    assert!(matches!(session.message_subagent("alpha", "  ".into()).await, Err(loa_contracts::harness::AdapterError::Protocol(reason)) if reason == "empty message"));
+    session.shutdown().await.unwrap();
+    let frames = fake.received();
+    let reads: Vec<_> = frames.iter().filter(|frame| frame["type"] == "get_subagent_messages").collect();
+    assert_eq!(reads.iter().map(|frame| frame["fromByte"].as_u64().unwrap()).collect::<Vec<_>>(), [0, 100, 200]);
+    let steer = frames.iter().find(|frame| frame["type"] == "steer_subagent").unwrap();
+    assert_eq!(steer["subagentId"], "alpha");
+    assert_eq!(steer["message"], "hello");
+}
