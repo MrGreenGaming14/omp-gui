@@ -28,6 +28,7 @@ pub struct RowCtx<'a> {
     pub expanded: bool,
     pub streamed: Option<&'a Streamed>,
     pub look: Look,
+    pub read_only: bool,
 }
 
 /// Draws and sizes one kind of row.
@@ -166,8 +167,10 @@ impl RowRenderer for User {
         let value = cx.node.text.as_str();
         let body = selectable(vec![span(value)], ts(T::Body).into(), LINE_HEIGHT.into(), Font::DEFAULT);
         let bubble = container(body).padding([sp(Sp::S), sp(Sp::M)]).style(kit::container(Surface::Raised));
-        let rewind = button(text("Rewind").size(ts(T::Caption))).style(kit::button(ButtonKind::Row { selected: false })).on_press(Message::Rewind(cx.node.id));
-        let actions = row![rewind, copy_button("Copy message", value)].spacing(sp(Sp::Xs));
+        let actions = row![
+            (!cx.read_only).then(|| button(text("Rewind").size(ts(T::Caption))).style(kit::button(ButtonKind::Row { selected: false })).on_press(Message::Rewind(cx.node.id))),
+            copy_button("Copy message", value),
+        ].spacing(sp(Sp::Xs));
         let message = column![bubble, actions].align_x(iced::Alignment::End).spacing(sp(Sp::Xs));
         container(container(message).max_width(ts(T::Body) * 40.0)).align_right(Fill).into()
     }

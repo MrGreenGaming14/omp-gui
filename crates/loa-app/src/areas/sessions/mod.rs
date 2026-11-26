@@ -4,6 +4,7 @@
 mod branch;
 mod hooks;
 mod plan;
+mod subagents;
 mod transfer;
 mod tree;
 #[cfg(test)]
@@ -17,9 +18,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use iced::{Element, Subscription, Task};
-use loa_bus::{Listing, SessionId};
-use loa_contracts::harness::{Answer, Capabilities, Prompt, SessionConfig};
-use loa_core::{Dom, ElementKind, JobStatus, NodeId, Op, Patch, SessionMode, TurnStatus, attr};
+use loa_bus::SessionId;
+use loa_contracts::harness::{Answer, Capabilities, Prompt, SessionConfig, SubagentTranscript};
+use loa_core::{Dom, ElementKind, JobKind, JobStatus, NodeId, Op, Patch, SessionMode, TurnStatus, attr};
 use loa_session::hooks::TurnHooks;
 use loa_session::plan::{self as plan_mode, PlanGate};
 use loa_settings::models::login::UrlOpener;
@@ -42,6 +43,27 @@ const TICK: Duration = Duration::from_secs(1);
 #[derive(Clone, Debug)]
 pub enum Message {
     Agents(agents::Message),
+    Jobs(agents::Message),
+    SubagentSelect(Option<String>),
+    SubagentClose(String),
+    SubagentChat(String, String, chat::Message),
+    SubagentDraft(String, String, String),
+    SubagentSend(String, String),
+    /// A child tab's transcript read finished; `generation` names the tab that asked.
+    SubagentTranscriptLoaded {
+        parent: String,
+        child: String,
+        generation: u64,
+        result: Result<SubagentTranscript, String>,
+    },
+    /// A message to a subagent was delivered or refused; `generation` names the tab that sent it.
+    SubagentMessageSent {
+        parent: String,
+        child: String,
+        generation: u64,
+        text: String,
+        result: Result<(), subagents::SendError>,
+    },
     Tree(session_tree::Message),
     /// Something the user did in the transcript.
     Chat(transcript::Intent),
@@ -68,7 +90,11 @@ pub enum Message {
 }
 
 pub struct State {
-    agents: agents::State,
+    pub(crate) agents: agents::State,
+    pub(crate) jobs: agents::State,
+    pub(crate) subagents: subagents::SubagentTabs,
+    active_parent: Option<String>,
+    active_subagent_messages: bool,
     tree: tree::Tree,
     transfer: transfer::State,
     /// Read-only tool gate of app plan mode.
@@ -108,18 +134,24 @@ impl State {
         let empty = Dom::new();
         let dom = ctx.runtime.sessions().active().map_or(&empty, |session| session.dom());
         self.agents.reset(dom);
-        let _ = self.agents.update(agents::Message::Tick(loa_core::now_ms()));
+        self.jobs.reset(dom);
+        let now = loa_core::now_ms();
+        let _ = self.agents.update(agents::Message::Tick(now));
+        let _ = self.jobs.update(agents::Message::Tick(now));
+        self.sync_active_parent(ctx);
         ctx.composer.set_mode(mode(dom));
         ctx.composer.set_commands(composer_commands(&ctx.slash, ctx.runtime.sessions().active().map(|session| session.dom())));
         let task = self.tree.refresh(ctx);
         self.restore_plan(ctx);
-        task
+        let child = self.refresh_selected_subagent_on_activate(ctx);
+        Task::batch([task, child])
     }
 
-    /// A streamed append to session `id`; only the Agents tab follows those.
+    /// A streamed append to session `id`; only the Agents and Background Jobs tabs follow those.
     pub(crate) fn on_append(&mut self, id: &SessionId, patch: &Patch, ctx: &Ctx) {
         if let Some(session) = ctx.runtime.sessions().get(id.as_str()).filter(|_| ctx.runtime.sessions().is_active(id.as_str())) {
             self.agents.apply(session.dom(), patch);
+            self.jobs.apply(session.dom(), patch);
         }
     }
 
@@ -171,6 +203,11 @@ impl State {
         self.tree.forget(id);
         self.plans.remove(id);
         self.hooks.locked().remove(id);
+        self.subagents.remove_parent(id);
+        if self.active_parent.as_deref() == Some(id) {
+            self.active_parent = None;
+            self.active_subagent_messages = false;
+        }
         if ctx.runtime.sessions().get(id).is_some() {
             ctx.discard_session(id);
         } else {
@@ -252,28 +289,6 @@ impl State {
             loa_session::select_role(harness.as_ref(), &capabilities, writer.as_ref(), root, &role, candidates)
                 .await.map(|selected| (role, selected)).map_err(|error| error.to_string())
         }, move |result| Message::RoleSet { session: id.clone(), result })
-    }
-
-    /// The library id of a subagent's session: stored already, or imported from its harness's file here.
-    fn child_session(&mut self, ctx: &mut Ctx, child: String) -> Option<String> {
-        let listings = ctx.runtime.library().store().list();
-        if listings.is_ok_and(|listings| listings.iter().any(|listing| matches!(listing, Listing::Session(info) if info.id == child))) {
-            return Some(child);
-        }
-        let path = PathBuf::from(&child);
-        if !path.is_file() {
-            ctx.notify(format!("The subagent's session {child} isn't on this machine"));
-            return None;
-        }
-        let parent = ctx.runtime.sessions().active()?;
-        let parent_id = parent.id().to_string();
-        let Some(adapter) = parent.harness_id().and_then(|harness| ctx.runtime.harnesses().registry.get(harness)) else {
-            ctx.notify("The parent session's harness isn't supported here");
-            return None;
-        };
-        let job = self.agents.jobs().find(|job| job.session() == Some(child.as_str())).map_or(NodeId::DOCUMENT, agents::Job::node);
-        let imported = ctx.runtime.library().import_child(adapter.as_ref(), &parent_id, job, &path, &ctx.services.node.key);
-        ctx.report("Can't open the subagent's session", imported)
     }
 
     fn open_link(&self, ctx: &mut Ctx, link: &str) {
@@ -424,7 +439,11 @@ impl Area for State {
             loa_util::exec::which("omp").map(|omp| Arc::new(crate::adapters::summarizer::OmpSummarizers(loa_harness::omp::OneShot::new(omp, ctx.runtime.cwd().to_path_buf()))) as Arc<dyn loa_projects::Summarizers>)
         };
         let state = Self {
-            agents: agents::State::from_dom(&Dom::new()),
+            agents: agents::State::agents(),
+            jobs: agents::State::background_jobs(),
+            subagents: subagents::SubagentTabs::default(),
+            active_parent: None,
+            active_subagent_messages: false,
             tree: tree::Tree::default(),
             transfer: transfer::State::default(),
             gate: PlanGate::new(),
@@ -450,22 +469,51 @@ impl Area for State {
         match message {
             Message::Agents(message) => {
                 let (task, event) = self.agents.update(message);
-                let child = match event {
-                    Some(AgentsIntent::OpenSession(child)) => self.child_session(ctx, child).map(Request::OpenSession),
-                    Some(AgentsIntent::DetachSession(child)) => self.child_session(ctx, child).map(Request::DetachSession),
+                let follow = match event {
+                    Some(AgentsIntent::OpenSubagent(child)) => self.open_child_subtab(ctx, child),
+                    Some(AgentsIntent::DetachTranscript(path)) => {
+                        self.detach_child_transcript(ctx, path);
+                        Task::none()
+                    }
                     // Harnesses stop jobs only with the turn that runs them.
                     Some(AgentsIntent::Cancel { .. }) => match ctx.runtime.sessions().active().and_then(|session| session.harness().cloned()) {
                         Some(harness) => {
                             ctx.notify("Interrupting the turn that runs this job");
-                            return Task::batch([task.map(Message::Agents), perform(async move { harness.interrupt().await }, Message::Done)]);
+                            perform(async move { harness.interrupt().await }, Message::Done)
                         }
-                        None => None,
+                        None => Task::none(),
                     },
-                    None => None,
+                    None => Task::none(),
                 };
-                child.into_iter().for_each(|request| ctx.request(request));
-                task.map(Message::Agents)
+                Task::batch([task.map(Message::Agents), follow])
             }
+            Message::Jobs(message) => {
+                let (task, event) = self.jobs.update(message);
+                let follow = match event {
+                    Some(AgentsIntent::Cancel { .. }) => match ctx.runtime.sessions().active().and_then(|session| session.harness().cloned()) {
+                        Some(harness) => {
+                            ctx.notify("Interrupting the turn that runs this job");
+                            perform(async move { harness.interrupt().await }, Message::Done)
+                        }
+                        None => Task::none(),
+                    },
+                    _ => Task::none(),
+                };
+                Task::batch([task.map(Message::Jobs), follow])
+            }
+            Message::SubagentSelect(child) => self.select_child_subtab(ctx, child),
+            Message::SubagentClose(child) => {
+                self.close_child_subtab(ctx, child);
+                Task::none()
+            }
+            Message::SubagentChat(parent, child, message) => self.update_child_chat(ctx, parent, child, message),
+            Message::SubagentDraft(parent, child, text) => {
+                self.set_child_draft(ctx, &parent, &child, text);
+                Task::none()
+            }
+            Message::SubagentSend(parent, child) => self.send_child_message(ctx, parent, child),
+            Message::SubagentTranscriptLoaded { parent, child, generation, result } => self.on_transcript_loaded(ctx, parent, child, generation, result),
+            Message::SubagentMessageSent { parent, child, generation, text, result } => self.on_message_sent(ctx, parent, child, generation, text, result),
             Message::Tree(message) => {
                 let (task, event) = self.tree.view.update(message);
                 match event {
@@ -520,7 +568,12 @@ impl Area for State {
                 self.transfer(ctx, message);
                 Task::none()
             }
-            Message::Tick(now) => self.agents.update(agents::Message::Tick(now)).0.map(Message::Agents),
+            Message::Tick(now) => {
+                let agents_task = self.agents.update(agents::Message::Tick(now)).0.map(Message::Agents);
+                let jobs_task = self.jobs.update(agents::Message::Tick(now)).0.map(Message::Jobs);
+                let poll_task = self.poll_selected_subagent(ctx);
+                Task::batch([agents_task, jobs_task, poll_task])
+            }
             Message::Done(result) => {
                 if let Err(error) = result {
                     ctx.notify(error);
@@ -535,12 +588,13 @@ impl Area for State {
     }
 
     fn panel_tabs(&self) -> Vec<PanelTab> {
-        vec![PanelTab::of(&self.agents, false), PanelTab::of(&self.tree.view, false)]
+        vec![PanelTab::of(&self.agents, false), PanelTab::of(&self.jobs, false), PanelTab::of(&self.tree.view, false)]
     }
 
     fn view_tab<'a>(&'a self, id: &str, _: &'a Ctx) -> Option<Element<'a, Message>> {
         match id {
             "agents" => Some(self.agents.view().map(Message::Agents)),
+            "jobs" => Some(self.jobs.view().map(Message::Jobs)),
             "session" => Some(self.tree.view.view().map(Message::Tree)),
             _ => None,
         }
@@ -591,17 +645,28 @@ impl Area for State {
                 {
                     self.tree.record_turn(id.as_str(), patch.node, patch.seq);
                 }
-                let Some(dom) = sessions.get(id.as_str()).filter(|_| sessions.is_active(id.as_str())).map(|session| session.dom()) else { return Task::none() };
+                let job_task = self.on_job_patch(ctx, id.as_str(), patch.node);
+                let Some(dom) = sessions.get(id.as_str()).filter(|_| sessions.is_active(id.as_str())).map(|session| session.dom()) else { return job_task };
                 self.agents.apply(dom, patch);
+                self.jobs.apply(dom, patch);
                 let ext = |node| dom.get(node).and_then(|node| node.str_attr(attr::TYPE)) == Some(chat::COMMANDS_EXT);
                 match &patch.op {
-                    Op::Insert { kind: ElementKind::Job, .. } => ctx.reveal_tab("agents"),
+                    Op::Insert { kind: ElementKind::Job, .. } => match dom.get(patch.node).and_then(|n| n.str_attr(attr::KIND)).and_then(JobKind::parse) {
+                        Some(JobKind::Shell) => ctx.reveal_tab("jobs"),
+                        Some(JobKind::Subagent) => ctx.reveal_tab("agents"),
+                        None => {}
+                    },
                     Op::Insert { kind: ElementKind::Ext, .. } if ext(patch.node) => ctx.composer.set_commands(composer_commands(&ctx.slash, Some(dom))),
                     Op::Set { name, .. } if name == attr::MODE && dom.root().is_some_and(|root| root.id == patch.node) => ctx.composer.set_mode(mode(dom)),
                     _ => {}
                 }
+                return job_task;
             }
-            SessionEvent::TurnStarted { session, .. } if ctx.runtime.sessions().is_active(session.as_str()) => return self.tree.refresh(ctx),
+            SessionEvent::TurnStarted { session, .. } if ctx.runtime.sessions().is_active(session.as_str()) => {
+                self.sync_active_parent(ctx);
+                let refresh = self.refresh_selected_subagent_on_activate(ctx);
+                return Task::batch([self.tree.refresh(ctx), refresh]);
+            }
             SessionEvent::DecisionWaiting { session, decision } => {
                 let Some(open) = ctx.runtime.sessions().get(session.as_str()) else { return Task::none() };
                 let (Some(node), Some(harness)) = (open.dom().get(*decision), open.harness().cloned()) else { return Task::none() };
@@ -629,6 +694,11 @@ impl Area for State {
                 self.switching_roles.remove(id.as_str());
                 self.held.remove(id.as_str());
                 self.role_notes.remove(id.as_str());
+                self.subagents.remove_parent(id.as_str());
+                if self.active_parent.as_deref() == Some(id.as_str()) {
+                    self.active_parent = None;
+                    self.active_subagent_messages = false;
+                }
             }
             _ => {}
         }
@@ -636,7 +706,9 @@ impl Area for State {
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        if self.agents.jobs().any(|job| job.status() == JobStatus::Running) {
+        let running_job = self.agents.jobs().any(|job| job.status() == JobStatus::Running)
+            || self.jobs.jobs().any(|job| job.status() == JobStatus::Running);
+        if running_job || self.should_poll_subagent() {
             iced::time::every(TICK).map(|_| Message::Tick(loa_core::now_ms()))
         } else {
             Subscription::none()

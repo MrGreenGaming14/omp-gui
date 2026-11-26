@@ -80,7 +80,8 @@ use Scope::{Composer, Global, Palette};
 /// The default bindings; Ctrl/Cmd+1…9 and Ctrl/Cmd+Alt+1…9 are added in a loop.
 const DEFAULTS: &[(ChordKey, Modifiers, Scope, CommandId)] = &[
     (N(Named::Escape), NONE, Global, ids::SESSION_INTERRUPT), (C('k'), P, Global, ids::PALETTE_TOGGLE), (C('k'), P, Palette, ids::PALETTE_TOGGLE),
-    (C('/'), P, Global, ids::KEYMAP_SHOW), (C('b'), P, Global, ids::PANEL_TOGGLE), (C('n'), P, Global, ids::SESSION_NEW),
+    (C('/'), P, Global, ids::KEYMAP_SHOW), (C('b'), P, Global, ids::PANEL_TOGGLE), (C('a'), Modifiers::ALT, Global, ids::PANEL_AGENTS),
+    (C('n'), P, Global, ids::SESSION_NEW),
     (N(Named::Tab), CTRL, Global, ids::SESSION_NEXT), (N(Named::Tab), CTRL.union(SHIFT), Global, ids::SESSION_PREVIOUS),
     (N(Named::PageDown), P, Global, ids::PROJECT_TAB_NEXT), (N(Named::PageUp), P, Global, ids::PROJECT_TAB_PREVIOUS),
     (C('l'), P, Global, ids::COMPOSER_FOCUS), (C('f'), P.union(SHIFT), Global, ids::SEARCH_FOCUS),
@@ -132,11 +133,14 @@ mod tests {
         let ch = |c: &str, code, m| press(Key::Character(c.into()), code, m, false);
         let named = |n, code, m| press(Key::Named(n), code, m, false);
         let (mac, linux) = (Keymap::defaults(Platform::MacOs), Keymap::defaults(Platform::Other));
-        let cases: [(&Keymap, keyboard::Event, Scope, Option<CommandId>); 15] = [
+        let cases: [(&Keymap, keyboard::Event, Scope, Option<CommandId>); 18] = [
             (&mac, ch("k", Code::KeyK, Modifiers::LOGO), Global, Some(ids::PALETTE_TOGGLE)),
             (&mac, ch("k", Code::KeyK, CTRL), Global, None),
             (&linux, ch("k", Code::KeyK, CTRL), Global, Some(ids::PALETTE_TOGGLE)),
             (&linux, ch("b", Code::KeyB, CTRL), Composer, Some(ids::PANEL_TOGGLE)),
+            (&linux, ch("a", Code::KeyA, Modifiers::ALT), Global, Some(ids::PANEL_AGENTS)),
+            (&linux, ch("a", Code::KeyA, Modifiers::ALT), Composer, Some(ids::PANEL_AGENTS)),
+            (&mac, ch("a", Code::KeyA, Modifiers::ALT), Global, Some(ids::PANEL_AGENTS)),
             (&linux, ch("b", Code::KeyB, CTRL), Palette, None),
             (&linux, ch("k", Code::KeyK, CTRL), Palette, Some(ids::PALETTE_TOGGLE)),
             (&linux, ch("K", Code::KeyK, CTRL | SHIFT), Global, None),

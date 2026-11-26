@@ -92,6 +92,9 @@ pub enum Command {
     NegotiateProtocol { protocol_version: u32 },
     GetState,
     GetEntries,
+    GetSubagents,
+    GetSubagentMessages { subagent_id: String, from_byte: u64 },
+    SteerSubagent { subagent_id: String, message: String },
     SetAskDialog { enabled: bool },
     SetHostTools { tools: Vec<HostToolDefinition> },
     SetSubagentSubscription { level: SubagentLevel },
@@ -117,6 +120,25 @@ pub enum Command {
     Login { provider_id: String },
     GetLogoutAccounts { provider_id: String },
     Logout { provider_id: String, credential_id: i64 },
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SubagentList {
+    pub subagents: Vec<Subagent>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Subagent {
+    pub id: String,
+    pub status: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubagentMessages {
+    pub next_byte: u64,
+    pub reset: bool,
+    pub entries: Vec<Value>,
 }
 
 /// The `ready` frame omp writes before anything else.

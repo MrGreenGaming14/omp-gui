@@ -34,6 +34,7 @@ pub(crate) const APP_COMMANDS: &[AppCommand] = &[
         app.ctx.shell.set_panel_open(!app.ctx.shell.panel_open());
         Task::none()
     }),
+    command("panel.agents", "Open Agents tab", "Commands", |app, _| app.open_tab("agents")),
     command("session.interrupt", "Interrupt session", "Commands", |app, _| app.update(Message::Composer(composer::Message::Interrupt))),
     command("project.tabs.toggle", "", "Commands", |app, _| {
         let enabled = !app.ctx.shell.project_tabs();
@@ -44,7 +45,7 @@ pub(crate) const APP_COMMANDS: &[AppCommand] = &[
     .listed(Listed::When(|app, _| Some(if app.ctx.shell.project_tabs() { "Hide project tabs" } else { "Show project tabs" }))),
     command("palette.toggle", "Command palette", "Commands", |app, _| app.update(Message::Palette(palette::Message::Toggle))),
     command(TAB_COMMAND, "", "Commands", |app, tab| app.open_tab(tab))
-        .listed(Listed::Each(|app, _| app.tabs().into_iter().map(|tab| (tab.id, format!("Open {} tab", tab.title))).collect())),
+        .listed(Listed::Each(|app, _| app.tabs().into_iter().filter(|tab| tab.id != "agents").map(|tab| (tab.id, format!("Open {} tab", tab.title))).collect())),
     command("theme.", "", "Theme", |app, theme| {
         if !app.ctx.shell.theme_state().themes().iter().any(|(key, _)| key == theme) {
             return app.unknown("theme.", theme);

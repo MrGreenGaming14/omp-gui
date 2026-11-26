@@ -69,7 +69,14 @@ mod tests {
         tree.set_family(vec![loa_view::panel::SessionInfo { id: "s".into(), parent: None, forked_at: None, title: "Main".into(), turns: vec![] }], "s");
         let fs = files::tests::FakeFs::default();
         fs.put("/r", &[("src", true), ("a.rs", false)]);
-        let rendered = [render(&diff), render(&files::State::new(files::tests::abs("/r"), Box::new(fs))), render(&tree), render(&agents::State::default()), render(&tools::State::new())];
-        assert_eq!(rendered, ["diff", "files", "session", "agents", "tools"]);
+        let rendered = [
+            render(&diff),
+            render(&files::State::new(files::tests::abs("/r"), Box::new(fs))),
+            render(&tree),
+            render(&agents::State::agents()),
+            render(&agents::State::background_jobs()),
+            render(&tools::State::new()),
+        ];
+        assert_eq!(rendered, ["diff", "files", "session", "agents", "jobs", "tools"]);
     }
 }

@@ -12,6 +12,9 @@ pub enum Feature {
     Compaction,
     ModelRoles,
     Subagents,
+    /// The user can message a running subagent directly and read its live
+    /// conversation ([`super::HarnessSession::message_subagent`]).
+    SubagentMessages,
     PlanMode,
     /// Hashline edits, LSP, DAP, AST edits.
     OmpTools,

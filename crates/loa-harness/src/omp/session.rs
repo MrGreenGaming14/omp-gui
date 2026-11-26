@@ -8,11 +8,12 @@ use super::HARNESS;
 use crate::kit::{EventMapper, insert_root};
 use async_trait::async_trait;
 use base64::Engine;
-use loa_contracts::harness::{Adapter, AdapterError, Answer, Availability, Capabilities, ContextDelivery, Feature, HarnessModel, HarnessSession, HostTools, ModelSelection, ModelSwitch, OutputBlock, Prompt, Result, SessionConfig, SessionState};
-use loa_core::{DecisionKind, Dom, DomWriter, NodeId, PatchSink, SCHEMA_VERSION, attr};
+use loa_contracts::harness::{Adapter, AdapterError, Answer, Availability, Capabilities, ContextDelivery, Feature, HarnessModel, HarnessSession, HostTools, ModelSelection, ModelSwitch, OutputBlock, Prompt, Result, SessionConfig, SessionState, SubagentTranscript};
+use loa_core::{DecisionKind, Dom, DomWriter, MemorySink, NodeId, PatchSink, SCHEMA_VERSION, attr};
 use loa_util::LockExt;
 use serde::de::DeserializeOwned;
 use serde_json::Value as Json;
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -127,7 +128,7 @@ impl OmpAdapter {
                 }
             }
         });
-        Ok(OmpSession { client, shared, shutdown_grace: self.config.shutdown_grace })
+        Ok(OmpSession { client, shared, shutdown_grace: self.config.shutdown_grace, transcripts: Mutex::default() })
     }
 }
 
@@ -142,7 +143,7 @@ impl Adapter for OmpAdapter {
     }
 
     fn capabilities(&self) -> Capabilities {
-        let features = [Feature::Rewind, Feature::Compaction, Feature::Subagents, Feature::OmpTools, Feature::AdvisorRules];
+        let features = [Feature::Rewind, Feature::Compaction, Feature::Subagents, Feature::SubagentMessages, Feature::OmpTools, Feature::AdvisorRules];
         let decisions = [DecisionKind::Approval, DecisionKind::Question, DecisionKind::Plan, DecisionKind::Form];
         let builder = Capabilities::builder().schema(SCHEMA_VERSION).features(&features).model_switch(ModelSwitch::PerCall).decisions(&decisions);
         builder.context(&[ContextDelivery::SystemPrompt]).host_tools().queue_mid_turn().effort().import().export().build()
@@ -244,6 +245,17 @@ pub struct OmpSession {
     client: RpcClient,
     shared: Arc<Shared>,
     shutdown_grace: Duration,
+    /// What has been read of each subagent's conversation, by subagent id.
+    transcripts: Mutex<HashMap<String, Arc<tokio::sync::Mutex<ChildTranscript>>>>,
+}
+
+/// One subagent's conversation as read so far: the byte cursor for the next
+/// `get_subagent_messages`, its records as JSONL, and their DOM until new records arrive.
+#[derive(Default)]
+struct ChildTranscript {
+    next_byte: u64,
+    records: String,
+    dom: Option<Dom>,
 }
 
 impl OmpSession {
@@ -342,6 +354,57 @@ impl HarnessSession for OmpSession {
     async fn compact(&self, instructions: Option<String>) -> Result<()> {
         self.open()?;
         self.request::<CompactionResult>(Command::Compact { custom_instructions: instructions }).await.map(drop)
+    }
+
+    async fn subagent_transcript(&self, id: &str) -> Result<SubagentTranscript> {
+        self.open()?;
+        let list: rpc::SubagentList = self.request(Command::GetSubagents).await?;
+        let addressable = list.subagents.iter().any(|agent| agent.id == id && !matches!(agent.status.as_str(), "completed" | "failed" | "aborted" | "cancelled"));
+        // One read at a time per subagent keeps its cursor consistent; other subagents read in parallel.
+        let child = Arc::clone(self.transcripts.locked().entry(id.to_owned()).or_default());
+        let mut child = child.lock().await;
+        let response: rpc::SubagentMessages = self.request(Command::GetSubagentMessages { subagent_id: id.into(), from_byte: child.next_byte }).await?;
+        if response.reset || !response.entries.is_empty() {
+            child.dom = None;
+        }
+        if response.reset {
+            child.records.clear();
+        }
+        for record in response.entries {
+            child.records.push_str(&record.to_string());
+            child.records.push('\n');
+        }
+        child.next_byte = response.next_byte;
+        let dom = match &child.dom {
+            Some(dom) => dom.clone(),
+            None => {
+                let sink = MemorySink::new();
+                if !child.records.is_empty() {
+                    native::import_str(&child.records, &sink, "")?;
+                }
+                child.dom.insert(sink.dom()).clone()
+            }
+        };
+        Ok(SubagentTranscript { dom, addressable })
+    }
+
+    async fn message_subagent(&self, id: &str, text: String) -> Result<()> {
+        self.open()?;
+        if text.trim().is_empty() { return Err(AdapterError::Protocol("empty message".into())); }
+        let result = self.request::<Json>(Command::SteerSubagent { subagent_id: id.into(), message: text }).await;
+        let error = match result {
+            Ok(data) if data.get("success") == Some(&Json::Bool(false)) => data.get("error").and_then(Json::as_str).unwrap_or("steer_subagent failed").to_owned(),
+            Ok(_) => return Ok(()),
+            Err(AdapterError::Protocol(error)) => error,
+            Err(error) => return Err(error),
+        };
+        if error.contains(&format!("Subagent not running: {id}")) {
+            return Err(AdapterError::NotAddressable(format!("{id} has finished, so omp no longer accepts messages for it")));
+        }
+        if let Some((_, reason)) = error.split_once("Subagent refused the message: ") {
+            return Err(AdapterError::Rejected(format!("{id} refused the message: {reason}")));
+        }
+        Err(AdapterError::Protocol(error))
     }
 
     fn harness(&self) -> &'static str {

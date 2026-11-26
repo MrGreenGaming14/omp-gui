@@ -42,6 +42,7 @@ fn keymap_chords_run_app_commands() {
     let table = [
         (char("k", Modifiers::CTRL), "palette.toggle"),
         (char("b", Modifiers::CTRL), "panel.toggle"),
+        (char("a", Modifiers::ALT), "panel.agents"),
         (char("n", Modifiers::CTRL), "session.new"),
         (char("l", Modifiers::CTRL), "composer.focus"),
         (char("/", Modifiers::CTRL), "keymap.show"),

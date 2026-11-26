@@ -132,8 +132,8 @@ pub enum Request {
     NewSession,
     /// Show this session (loading it from its journal when needed).
     OpenSession(String),
-    /// Show this session in its own window, without making it active.
-    DetachSession(String),
+    /// Show a read-only DOM transcript in its own window without creating a library/runtime session.
+    DetachTranscript { key: String, title: String, dom: loa_core::Dom },
     /// Send a prompt to the active session (resuming it when needed).
     Prompt(Prompt),
     /// Release a queued prompt held for this session's role switch.
