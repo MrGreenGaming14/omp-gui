@@ -135,11 +135,14 @@ has exactly one row below; `loa_golden_tests` fails otherwise.
   `updater/sig/` contains a Rust Ed25519 signature over an artifact SHA-256 digest and two public keys.
 - `updater/omp_sessions/basic.jsonl`, `branched.jsonl`: copies of `crates/loa-app/src/adapters/update_gates/golden`, the
   hand-written omp sessions (linear, and with a branch) the update gates resume and fork; the app embeds them at build time.
+- `app/usage.json`: the `omp usage --json` sample of `crates/loa-app/src/app/usage.rs` (`SAMPLE`); `loa_app_tests`
+  parses it as `usage::parse` does.
 
 ## Files
 
 | path | length | sha256 | rust source sha |
 |---|---|---|---|
+| app/usage.json | 996 | 64e164070add20fec938b8aea01a4fc43c753d9652c6d45db8e2c76d42f2eed5 | 97715441259dac8e37bc1f18741d20481e0fa2c8 |
 | bus/dom.pb | 525 | 976ec692b392efff09d128efd2d7713b3a4b819a7c1a6b728a78a2fef585e550 | 6853d95bd272adf65b37e64c449b02c08813bc53 |
 | bus/patch-01.pb | 86 | 80b5931e19545fc392a7e1a8973a2ed372d832ae623acf09d10068fcf58fc88d | 6853d95bd272adf65b37e64c449b02c08813bc53 |
 | bus/patch-02.pb | 419 | 6b268b0e7a8e1c0737226e40197e90d254e67af8441ec4332d7fd392c6c6362d | 6853d95bd272adf65b37e64c449b02c08813bc53 |
