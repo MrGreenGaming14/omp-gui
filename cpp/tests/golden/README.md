@@ -13,6 +13,7 @@ cargo test -p loa-surfaces --features remote-video --lib write_golden -- --ignor
 cargo test -p loa-remote --lib write_golden -- --ignored
 cargo test -p loa-contracts --test golden -- --ignored
 cargo test -p loa-util --test golden -- --ignored
+cargo run --manifest-path cpp/libs/harness/tools/golden_gen/Cargo.toml
 ```
 
 Then update the rows of `MANIFEST.md` (length, sha256, source SHA) for every changed file.
@@ -30,3 +31,4 @@ Then update the rows of `MANIFEST.md` (length, sha256, source SHA) for every cha
 | `crates/loa-remote/src/audit_golden.rs` `write_golden_remote_audit` | `remote/*` |
 | `crates/loa-contracts/tests/golden.rs` `write_golden_tool_schemas` | `contracts/*` |
 | `crates/loa-util/tests/golden.rs` | `util/iso.txt`, `util/ssh/aliases.txt` (`util/ssh/config`, `util/ssh/conf.d/*` are hand-written inputs) |
+| `cpp/libs/harness/tools/golden_gen` (standalone crate over `loa-harness`; outside the workspace) | `harness/*` |
