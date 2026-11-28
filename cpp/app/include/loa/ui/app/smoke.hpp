@@ -103,5 +103,11 @@ class Smoke {
 [[nodiscard]] QWidget* tools_screen();
 // Checks the three tabs rendered.
 [[nodiscard]] std::string check_tools_screen(QWidget& screen);
+// The `surfaces` and `updater` screens: the app core's Surfaces tab and Updates screen, drawn by
+// their areas over a temporary data directory.
+[[nodiscard]] QWidget* surfaces_area_screen();
+[[nodiscard]] std::string check_surfaces_area_screen(QWidget& screen);
+[[nodiscard]] QWidget* updater_area_screen();
+[[nodiscard]] std::string check_updater_area_screen(QWidget& screen);
 
 } // namespace loa::ui::app
