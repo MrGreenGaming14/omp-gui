@@ -60,6 +60,15 @@ has exactly one row below; `loa_golden_tests` fails otherwise.
 - `docs/info.json`: `DocSurface::data(DataQuery::Info)` (`DocInfo`) after `DocsServer::open_file("sample.pdf")`;
   page sizes are f32 widened to f64 by serde_json. `docs/queries.jsonl`: `serde_json::to_string` of each `DataQuery`
   variant (`kind` tag, snake_case; `None` fields are written as `null`), one per line.
+- `docs/sample.docx` (docx-rs: styles with `basedOn`, nested decimal/letter/roman and bullet lists, a table, page
+  breaks, 30 body paragraphs), `docs/sample.xlsx` (rust_xlsxwriter: `Data` with strings, floats, a bool, a cached
+  formula, date/datetime/time/duration formats; an empty `Empty`; `Offset` from D3) and `docs/sample.pptx` (the
+  `pptx.rs` test deck plus a table, a master inherited title, `mc:AlternateContent` and a slide number).
+  `docx.outline.json`/`docx.text.json`: `DocxDoc::query` Outline / Text { page: None }; `docx.pages.txt`:
+  `<page count> <page count at body 24 pt> <width> <height>`. `xlsx.sheets.json`: Sheets; `xlsx.cells.jsonl`: one
+  Cells answer per line (`None` `A1:C6`, `offset` `$E$4`, `Offset` `A1:Z1000`, `Empty` `B2:C3`, `Data` `c2`);
+  `xlsx.sizes.txt`: `<sheet> <width> <height>`. `pptx.slides.json`/`pptx.text.json`: Slides / Text { page: None }.
+  `office.errors.tsv`: `<file>\t<query json>\t<error Display>` for every failing `DocSurface::data` query.
 - `remote/remote_audit.sql`: the `SCHEMA` constant of `crates/loa-remote/src/audit.rs` byte for byte
   (`CREATE TABLE remote_audit` and the indexes `remote_audit_session`, `remote_audit_host`).
   sqlite stores each statement without `IF NOT EXISTS` and the `;`.
@@ -92,11 +101,23 @@ has exactly one row below; `loa_golden_tests` fails otherwise.
 | contracts/data_args.schema.json | 962 | 8aacf0688857367c3452dbf11ba7634c28ecd13c08a5025713ca6d1cb7726c69 | b128c428ea2976fd62bc1ef28ccc783137388e80 |
 | contracts/no_args.schema.json | 120 | 068f287b973e1cb2cb111022b6c9b77db19e4c84704b640dcd3034e8abe682c4 | b128c428ea2976fd62bc1ef28ccc783137388e80 |
 | contracts/search_args.schema.json | 1483 | ffdc2eef6fa051ac05480e99970465c1d6e0a4bdb5ef62a8adf3a4b7fce7dd52 | b128c428ea2976fd62bc1ef28ccc783137388e80 |
+| docs/docx.outline.json | 13669 | 7ffd25b4a4ee46fad151b9f688edb2ff7924ac212b5b4c093cbe03cb82f1cd3b | ffbbfe4d1587f76f31fc143c23cbfc1dbe8cc1df |
+| docs/docx.pages.txt | 13 | 78c7ac09c5be39ec6cf5970076e8ae80b78ea4db52b618911213a1881b89de8b | ffbbfe4d1587f76f31fc143c23cbfc1dbe8cc1df |
+| docs/docx.text.json | 2434 | dc466e98713763cbf8f156be4d9a347ba6cc670e500603e5b08c36caf6c4689c | ffbbfe4d1587f76f31fc143c23cbfc1dbe8cc1df |
 | docs/info.json | 264 | e25537a0e0e80441156f51571778cf2647ab59dccabe1d58b15ade93ab1b66f3 | 4466718181c0a6fe99b8d80f86684646549a7cff |
+| docs/office.errors.tsv | 1911 | 33e8de7c84005b4b653846563887163804f6f9d98e1f4eb433b7a25da9e4b81b | ffbbfe4d1587f76f31fc143c23cbfc1dbe8cc1df |
+| docs/pptx.slides.json | 1269 | 07f81bb3f8a3e20ae75dc30e8849b02f168237d1b43452d698bf9fb16a17c1a9 | ffbbfe4d1587f76f31fc143c23cbfc1dbe8cc1df |
+| docs/pptx.text.json | 138 | 58b72aa3498dca1f6d18145df69cfd3b9ee399f1fc50a5ae794544b656c8bc07 | ffbbfe4d1587f76f31fc143c23cbfc1dbe8cc1df |
 | docs/queries.jsonl | 215 | 6a0eb2f29fa3978b4676c83c23ac427455b51cfe92d527674fcfedc06be06538 | 4466718181c0a6fe99b8d80f86684646549a7cff |
+| docs/sample.docx | 28983 | 723057c9b763c7aa8c027b593988edbc06cbe546ed70efd1901b6ce5fdbd8887 | ffbbfe4d1587f76f31fc143c23cbfc1dbe8cc1df |
 | docs/sample.pdf | 1606 | 5ccbb5bbc9353843504c561912e482444d925b6210d05ec86734fa38d83c1003 | 4466718181c0a6fe99b8d80f86684646549a7cff |
+| docs/sample.pptx | 4914 | 879fbea0449adf908632bbc41c81a17ae20e40a04c226d00b8f171391edc68d4 | ffbbfe4d1587f76f31fc143c23cbfc1dbe8cc1df |
 | docs/sample.sizes.txt | 99 | 1b6c490d85b75e45eaa8f6121e2fd2dd4162cee03881dfa4c84e2ef0e70701fb | 4466718181c0a6fe99b8d80f86684646549a7cff |
+| docs/sample.xlsx | 6674 | 6e21da9bc92054a687323e1e660389433f2a906fb7f0efc8860e46c63490cfc0 | ffbbfe4d1587f76f31fc143c23cbfc1dbe8cc1df |
 | docs/text.json | 78 | 6cad7c300b483fabef0a41330d24d7018bc5c81d235acc88deb4dd23e59bd4e2 | 4466718181c0a6fe99b8d80f86684646549a7cff |
+| docs/xlsx.cells.jsonl | 3076 | 40b403b811165115c23c305a8a7314b21779f8efabf39c3b22dd2077de04a110 | ffbbfe4d1587f76f31fc143c23cbfc1dbe8cc1df |
+| docs/xlsx.sheets.json | 154 | def18b61727ef05212dde6613f8525a3fc7e56a59e10f9b43eb83f087428c5f4 | ffbbfe4d1587f76f31fc143c23cbfc1dbe8cc1df |
+| docs/xlsx.sizes.txt | 29 | 026afd3ade4d88685a3abfaebbbe3e593387464a8a9fbc9bb2ac73f5a9e33f2c | ffbbfe4d1587f76f31fc143c23cbfc1dbe8cc1df |
 | harness/discover.tsv | 376 | 2b69e4f815233b4e35ad736b7fa411f0bea73f53d49d320535668699680ebb7f | f1c2345fbe7ddd1c65b499065fdbe3a1808b78da |
 | harness/jsonrpc.jsonl | 3266 | 04d033cb837b99efaf038804e07083e2f1cc2b44769805f312e11af574837fc6 | f1c2345fbe7ddd1c65b499065fdbe3a1808b78da |
 | harness/residual.json | 82 | dd58be7676e8f6323a47c561fc78a2cdf610a6609d276b1d8c00955577daaa49 | f1c2345fbe7ddd1c65b499065fdbe3a1808b78da |

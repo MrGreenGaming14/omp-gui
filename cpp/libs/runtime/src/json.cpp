@@ -2,12 +2,60 @@
 
 #include <yyjson.h>
 
+#include <charconv>
+#include <cmath>
 #include <cstdlib>
 #include <limits>
 #include <memory>
+#include <string>
 
 namespace loa::runtime::json {
 namespace {
+
+// A finite double as serde_json (zmij) writes it: shortest round-trip digits, fixed notation for decimal
+// exponents -5..=15 (`1.0`, `0.0001`), else `d.ddde±x` (`1e+16`, `1.5e-7`).
+std::string format_double(double v) {
+    if (v == 0) return std::signbit(v) ? "-0.0" : "0.0";
+    char buf[32];
+    const auto res = std::to_chars(buf, buf + sizeof buf, v, std::chars_format::scientific);
+    const std::string_view sci(buf, static_cast<std::size_t>(res.ptr - buf));
+    const auto e = sci.find('e');
+    std::string_view mant = sci.substr(0, e);
+    const int exp = std::atoi(std::string(sci.substr(e + 1)).c_str());
+    std::string out;
+    if (mant.starts_with('-')) {
+        out.push_back('-');
+        mant.remove_prefix(1);
+    }
+    std::string digits;
+    for (char c : mant)
+        if (c != '.') digits.push_back(c);
+    const int len = static_cast<int>(digits.size());
+    if (exp >= -5 && exp <= 15) {
+        if (len - 1 <= exp) {
+            out += digits;
+            out.append(static_cast<std::size_t>(exp + 1 - len), '0');
+            out += ".0";
+        } else if (exp >= 0) {
+            out += digits.substr(0, static_cast<std::size_t>(exp + 1));
+            out.push_back('.');
+            out += digits.substr(static_cast<std::size_t>(exp + 1));
+        } else {
+            out += "0.";
+            out.append(static_cast<std::size_t>(-exp - 1), '0');
+            out += digits;
+        }
+        return out;
+    }
+    out.push_back(digits[0]);
+    if (len > 1) {
+        out.push_back('.');
+        out += digits.substr(1);
+    }
+    out += exp >= 0 ? "e+" : "e-";
+    out += std::to_string(exp >= 0 ? exp : -exp);
+    return out;
+}
 
 Value from_yy(yyjson_val* v) {
     switch (yyjson_get_type(v)) {
@@ -61,7 +109,11 @@ yyjson_mut_val* to_yy(yyjson_mut_doc* doc, const Value& value) {
             else if constexpr (std::is_same_v<T, bool>) return yyjson_mut_bool(doc, v);
             else if constexpr (std::is_same_v<T, std::int64_t>) return yyjson_mut_sint(doc, v);
             else if constexpr (std::is_same_v<T, std::uint64_t>) return yyjson_mut_uint(doc, v);
-            else if constexpr (std::is_same_v<T, double>) return yyjson_mut_real(doc, v);
+            else if constexpr (std::is_same_v<T, double>) {
+                if (!std::isfinite(v)) return yyjson_mut_null(doc);
+                const std::string text = format_double(v);
+                return yyjson_mut_rawncpy(doc, text.data(), text.size());
+            }
             else if constexpr (std::is_same_v<T, std::string>) return yyjson_mut_strn(doc, v.data(), v.size());
             else if constexpr (std::is_same_v<T, Array>) {
                 yyjson_mut_val* arr = yyjson_mut_arr(doc);

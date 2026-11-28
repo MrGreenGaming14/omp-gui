@@ -5,8 +5,11 @@
 #include <cstring>
 #include <format>
 
+#include "loa/surfaces/docs/docx.hpp"
 #include "loa/surfaces/docs/images.hpp"
 #include "loa/surfaces/docs/pdf.hpp"
+#include "loa/surfaces/docs/pptx.hpp"
+#include "loa/surfaces/docs/xlsx.hpp"
 
 namespace loa::surfaces::docs {
 
@@ -25,8 +28,10 @@ bool starts_with(std::span<const std::uint8_t> bytes, std::string_view prefix, s
     return bytes.size() >= at + prefix.size() && std::memcmp(bytes.data() + at, prefix.data(), prefix.size()) == 0;
 }
 
-Result<std::unique_ptr<Paged>> open_pdf(Format, std::span<const std::uint8_t> bytes) {
-    auto doc = PdfDoc::parse(bytes);
+// The opener of a document type with `parse(bytes)`.
+template <typename Doc>
+Result<std::unique_ptr<Paged>> parse(Format, std::span<const std::uint8_t> bytes) {
+    auto doc = Doc::parse(bytes);
     if (!doc) return std::unexpected(std::move(doc.error()));
     return std::unique_ptr<Paged>(std::move(*doc));
 }
@@ -46,13 +51,13 @@ constexpr Sniff zip_part(std::string_view p) { return {Sniff::Kind::ZipPart, p};
 constexpr Sniff image(ImageFormat f) { return {Sniff::Kind::Image, {}, f}; }
 
 const DocFormat FORMATS[] = {
-    {Format::Pdf, "PDF", "application/pdf", PDF_EXTS, magic("%PDF-"), open_pdf},
+    {Format::Pdf, "PDF", "application/pdf", PDF_EXTS, magic("%PDF-"), parse<PdfDoc>},
     {Format::Xlsx, "XLSX", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", XLSX_EXTS,
-     zip_part("xl/workbook.xml"), nullptr},
+     zip_part("xl/workbook.xml"), parse<XlsxDoc>},
     {Format::Docx, "DOCX", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", DOCX_EXTS,
-     zip_part("word/document.xml"), nullptr},
+     zip_part("word/document.xml"), parse<DocxDoc>},
     {Format::Pptx, "PPTX", "application/vnd.openxmlformats-officedocument.presentationml.presentation", PPTX_EXTS,
-     zip_part("ppt/presentation.xml"), nullptr},
+     zip_part("ppt/presentation.xml"), parse<PptxDoc>},
     {Format::Png, "PNG", "image/png", PNG_EXTS, image(ImageFormat::Png), images::open},
     {Format::Jpeg, "JPEG", "image/jpeg", JPEG_EXTS, image(ImageFormat::Jpeg), images::open},
     {Format::Gif, "GIF", "image/gif", GIF_EXTS, image(ImageFormat::Gif), images::open},
@@ -286,9 +291,7 @@ std::expected<DataQuery, loa::Error> DataQuery::from_json(const json::Value& val
 }
 
 Result<std::unique_ptr<Paged>> open_pages(Format format, std::span<const std::uint8_t> bytes) {
-    const auto open = spec(format).open;
-    if (open == nullptr) return std::unexpected(DocsError::unsupported(std::format("{} documents are not supported yet", to_string(format))));
-    return open(format, bytes);
+    return spec(format).open(format, bytes);
 }
 
 } // namespace loa::surfaces::docs
