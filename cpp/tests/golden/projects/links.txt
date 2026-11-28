@@ -1,0 +1,5 @@
+.gitignore = "*\n"
+api -> a/api
+api-2 -> b/api
+web -> web
+x y -> root/x y

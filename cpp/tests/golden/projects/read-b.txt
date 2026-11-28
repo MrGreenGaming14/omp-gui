@@ -1,0 +1,9 @@
+session b node 1 (bytes 0..339 of 339)
+session #1 created=200 harness=omp id=b node=node-a project=loa
+  turn #2 ended=210 status=done
+    message #3 role=user
+      Theme the sidebar
+    message #4 role=assistant
+      Dark tokens done.
+  digest #5 created=0 decisions=[] files=[] open_items=[] pointers=[] source_seq=4 x-own_patches=1
+    Themed the sidebar with dark tokens.

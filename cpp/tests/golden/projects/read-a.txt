@@ -1,0 +1,14 @@
+session a node 1 (bytes 0..352 of 352)
+session #1 created=100 harness=omp id=a node=node-a project=loa
+  turn #2 ended=110 status=done
+    message #3 role=user
+      Set up the Iroh endpoint
+    message #4 role=assistant
+      Bound it to port 31415.
+    call #5 tool=bash
+      input #6
+        cargo test -p net
+      result #7
+        ok: 12 passed
+  todo #8 state=pending
+    write docs

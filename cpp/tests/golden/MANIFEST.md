@@ -87,6 +87,14 @@ has exactly one row below; `loa_golden_tests` fails otherwise.
   (varint integers, zigzag `i32`, varint enum variant index, `0`/`1` option tag, varint-length strings and byte
   vectors). `request_*` are `Request`s, `response_*` are `Response`s; `hello.bin` is what `write_hello` writes:
   `MAGIC` (`\0LOA-STUB/2\n`) then the `Ready { version: 2 }` frame.
+- `projects/filenames.tsv`: `<project name>\t<file FileSettingsStore writes>` (every byte but ASCII alphanumerics, `-`
+  and `_` as uppercase `%XX`, then `.json`). `projects/settings.*.json`: `serde_json::to_vec_pretty` of a full and a
+  default `ProjectSettings`; `projects/ideas.md`: `save_ideas` bytes (CRLF, non-ASCII, no final newline).
+  `projects/read-*.txt` and `projects/search-*.json`: `project_read`/`project_search` `HostTools::call` output from
+  session `b` over the `tests.rs` fixture plus a session `d` whose digest was written twice (`x-own_patches=2`);
+  `projects/*.schema.json`: the two tools' input schemas; `projects/prompt-a.txt`: `build_prompt` of session `a`;
+  `projects/context.md`: `render_markdown(build_context(..))`; `projects/links.txt`: `.omgui` entries after
+  `links::sync` (`name -> target relative to the scratch root`, or `name = {contents:?}`).
 
 ## Files
 
@@ -225,3 +233,27 @@ has exactly one row below; `loa_golden_tests` fails otherwise.
 | util/ssh/conf.d/a.conf | 43 | 15921304dd8b16f74da99fd598f9fa52b1289cd0b43541d74765765c26f66ee7 | b128c428ea2976fd62bc1ef28ccc783137388e80 |
 | util/ssh/conf.d/b.conf | 14 | 39c842d687267318cdc2aa419e73c9eb0735350f2a4d0a2306a6c742f463eeb6 | b128c428ea2976fd62bc1ef28ccc783137388e80 |
 | util/ssh/conf.d/nested.inc | 18 | 4fdd2b1e906ab64b96697697d38222c5c2e6d0abcf7cd4aedf56f8c50e3995e8 | b128c428ea2976fd62bc1ef28ccc783137388e80 |
+| projects/context.md | 718 | e3a3ba097584e3d95d97159967b2671df9ceb81435033b4c6848bafe2a1efe63 | fba1a170e53a3ce5898201d9cadd91feb6cc97a4 |
+| projects/filenames.tsv | 281 | aba82aaae95d11df7bdf9281f938a28e691dc795f24cbc6fd77012be82dd183e | fba1a170e53a3ce5898201d9cadd91feb6cc97a4 |
+| projects/ideas.md | 55 | f85a05e64fcb254f0e1fdbb220ea7e0228e76a00eb601777ee81188e724abc22 | fba1a170e53a3ce5898201d9cadd91feb6cc97a4 |
+| projects/links.txt | 74 | 45b91df12f5b72ac69e9465bee45f3f0e25f7719e342d3ec0f069e9e3e653023 | fba1a170e53a3ce5898201d9cadd91feb6cc97a4 |
+| projects/project_read.schema.json | 632 | 327daa5ef014dc1252fa3ca7f4ee7572f259edc33bad27801014fd5c13651679 | fba1a170e53a3ce5898201d9cadd91feb6cc97a4 |
+| projects/project_search.schema.json | 1557 | 4e1d1f8dd78f5385eeda894814dc0a20a178587ad0a510ef911c94ade30d8913 | fba1a170e53a3ce5898201d9cadd91feb6cc97a4 |
+| projects/prompt-a.txt | 184 | 2f3d3d29cdbc5bdefb952b224e4785694be9767d4375ab0d4ddac41c84bf8d3f | fba1a170e53a3ce5898201d9cadd91feb6cc97a4 |
+| projects/read-a-turn-64-next.txt | 130 | 4ff7922070e55a7d2b108aec2e4e5d0028253288b64adf1f0220ea017fd44750 | fba1a170e53a3ce5898201d9cadd91feb6cc97a4 |
+| projects/read-a-turn-64.txt | 133 | 82322bb75b6da2222404d57ee9fe56c32a0d3a7d7a7eae46cd14a12cacbec75a | fba1a170e53a3ce5898201d9cadd91feb6cc97a4 |
+| projects/read-a.txt | 391 | cb10bcfdf635cb0f965091b31e4f581184ac9f79d2875ce00ba811fa4a7b68e6 | fba1a170e53a3ce5898201d9cadd91feb6cc97a4 |
+| projects/read-b.txt | 378 | ed3e9722ab6087c407345c5e3bb83a7e7c4525adaf72baadaee2cc25c4462056 | fba1a170e53a3ce5898201d9cadd91feb6cc97a4 |
+| projects/read-d.txt | 663 | ed67886bd3ff8df7a7e99e0d8a55d20e1d2556aa786254482533221d292215c2 | fba1a170e53a3ce5898201d9cadd91feb6cc97a4 |
+| projects/search-all-words.json | 195 | a1c047c3ea16f5d9d5e8ea5c962eb67f844c099c64b610a8acb95376add4b29d | fba1a170e53a3ce5898201d9cadd91feb6cc97a4 |
+| projects/search-attr.json | 40 | 485ba50421dbe03242822b7e608c7f2491690695fc5df1de755bae2460c663d8 | fba1a170e53a3ce5898201d9cadd91feb6cc97a4 |
+| projects/search-call.json | 182 | 0d7e55298f71e4619f8b75fb488f352b18b2f4b60073d2fca53dd2655ce8f134 | fba1a170e53a3ce5898201d9cadd91feb6cc97a4 |
+| projects/search-digest.json | 189 | 3c8ddb2579f8bb0df189d72a42967170786f8eaea65f6b5f286e2b5c666ad256 | fba1a170e53a3ce5898201d9cadd91feb6cc97a4 |
+| projects/search-iroh.json | 196 | abc6ce742e20ca36cff6b77d8cbc35b5076d081621fa1f5752b5e2dd12e15be3 | fba1a170e53a3ce5898201d9cadd91feb6cc97a4 |
+| projects/search-messages-page.json | 500 | f9cdf52a35bc8232b4177b90eda82b74ab66d452b9ca839bf2efb1fcb5052ec8 | fba1a170e53a3ce5898201d9cadd91feb6cc97a4 |
+| projects/search-messages-page2.json | 502 | 91b30973f3a9b8f7e9aade03e3f59f1237f7f10550985f4f55e605fbc0e94fe7 | fba1a170e53a3ce5898201d9cadd91feb6cc97a4 |
+| projects/search-own.json | 333 | 3f4e5e790d4d6d7d901a4b933389974a45236100a8d0e1df0704998fb2750f63 | fba1a170e53a3ce5898201d9cadd91feb6cc97a4 |
+| projects/search-tool-attr.json | 178 | 50d9e5cdb5ee89bacb5eccdcd54517969667ce887a6dc04139655a88d35aaef9 | fba1a170e53a3ce5898201d9cadd91feb6cc97a4 |
+| projects/search-unicode.json | 185 | 15abff138bc5b77f30e4127a250500eac09acbbc7baa7df7165611b88de7bca2 | fba1a170e53a3ce5898201d9cadd91feb6cc97a4 |
+| projects/settings.default.json | 40 | 5b90f305ddd7b9864af3ebc7012f67ce035fdd9900f0f2ecce2a9c575d964a7d | fba1a170e53a3ce5898201d9cadd91feb6cc97a4 |
+| projects/settings.full.json | 261 | 55a5fe8d1e2aecc0e537e27e40fca6e2fa6c325a8b2b59a03c2b9c2000a6de58 | fba1a170e53a3ce5898201d9cadd91feb6cc97a4 |

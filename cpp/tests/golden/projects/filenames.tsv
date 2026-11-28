@@ -1,0 +1,11 @@
+loa	loa.json
+my/proj	my%2Fproj.json
+with space	with%20space.json
+a.b	a%2Eb.json
+.	%2E.json
+..	%2E%2E.json
+héllo	h%C3%A9llo.json
+dash-under_score	dash-under_score.json
+50%	50%25.json
+Ünïcødé ✓	%C3%9Cn%C3%AFc%C3%B8d%C3%A9%20%E2%9C%93.json
+tab	and~tilde	tab%09and%7Etilde.json

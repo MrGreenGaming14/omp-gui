@@ -1,0 +1,5 @@
+session a node 2 (bytes 0..53 of 229)
+turn #2 ended=110 status=done
+  message #3 role=user
+
+[more: call project_read with offset=53]

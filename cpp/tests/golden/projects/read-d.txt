@@ -1,0 +1,17 @@
+session d node 1 (bytes 0..624 of 624)
+session #1 created=50 harness=omp id=d node=node-a project=loa
+  turn #2 ended=60 status=done
+    message #3 role=user
+      Write the relay docs
+    message #4 role=assistant
+      Wrote docs/relay.md with a "quoted" note.
+  turn #5 ended=70 status=done
+    message #6 role=user
+      héllo wörld ✓
+    message #7 role=assistant
+      multi
+      line
+        reply
+  digest #9 created=0 decisions=["Use a self hosted relay", "Keep port 31415"] files=["docs/relay.md: written", README.md] model=smol open_items=["link from the README"] pointers=[2] source_seq=8 x-own_patches=2
+    Documented the relay.
+    Two lines.
