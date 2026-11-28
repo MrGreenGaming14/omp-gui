@@ -104,6 +104,8 @@ class Mdns final : public Discoverer {
 
     std::optional<NearbyPeer> next() override;
     [[nodiscard]] Availability availability() const override;
+    // Stops browsing: a blocked `next` returns `nullopt` soon after. The goodbye goes out on destruction.
+    void stop();
 
     struct Impl;
 
