@@ -42,6 +42,14 @@ has exactly one row below; `loa_golden_tests` fails otherwise.
   SessionList, Seed, DriveResult with patch and conflict, Prompt, Ack and refused Ack, Answer);
   `folder-request-*.bin`, `folder-reply-*.bin` and `wire-entry.bin` are the bare folder messages.
   `p2p/labels.txt`: the protocol labels in hello order, one per line (`omp/control/1`, `omp/session/1`, `omp/folder/1`).
+- `p2p/yamux/*.bin`: yamux 0.14 client byte streams of the TCP fallback (12-byte big-endian headers: version 0, type,
+  flags u16, stream id u32, length u32; a data body follows its header). Each application stream starts with the one-byte
+  stream prefix `STREAM_FRAME` = 0. `rust-client.bin`: what a Rust `yamux::Connection` client writes (captured by
+  `cpp/libs/p2p/tests/interop` `yamux-capture`) opening stream 1, writing the prefix then `ping`, half-closing, answering
+  the server's ping and closing: ping SYN, data SYN `00`, data `ping`, data FIN, ping ACK, go-away 0.
+  `cpp-client.bin`: what the C++ `yamux::Session` client writes for the same stream (window update SYN credit 0,
+  data `00`, data `ping`, data FIN, go-away 0); Rust yamux 0.14 decodes it as stream 1 `0070696e67`
+  (interop `yamux-decode`).
 - `trust/node.key`: the 32 raw seed bytes `FileKeyStore` writes to `node.key` (mode 0600) for the seed `[7; 32]`;
   `trust/node.pub`: its public key as 64 lowercase hex. The OS keychain entry is service `loa`, user `node-key`.
 - `trust/v1_reshared_token.bin`: a copy of `crates/loa-trust/tests/fixtures/v1_reshared_token.bin`;
@@ -197,6 +205,8 @@ has exactly one row below; `loa_golden_tests` fails otherwise.
 | p2p/frame-update.bin | 30 | c19d12a209db61f43c8ca49577e97351a1eaf6e0afbb07fbe8417aa3265c655b | a849b040ba4004d6581283112704296c4e77f026 |
 | p2p/labels.txt | 41 | 6634a422f9e65d48499fede47fd5d2151554a41b5cc2002003720069813808a1 | a849b040ba4004d6581283112704296c4e77f026 |
 | p2p/wire-entry.bin | 13 | 16019d8665892d3c9b26f849f501efc0dfef2208866502911f3bf3dc6775a1c0 | a849b040ba4004d6581283112704296c4e77f026 |
+| p2p/yamux/cpp-client.bin | 65 | e31a7a9b4087318833ba414e9cff55c13912bfdbf91dccb679c5bc7b09ef7dd2 | fba1a170e53a3ce5898201d9cadd91feb6cc97a4 |
+| p2p/yamux/rust-client.bin | 77 | 7148dea95ed3db74248b996905a71e0e48734389965b3111a0ffc89baf429057 | fba1a170e53a3ce5898201d9cadd91feb6cc97a4 |
 | settings/agent-crlf.edited.md | 198 | 83aa894260f2c32d8e937ef1786e6eb542c00dd604f57235e418ef18df9d9303 | 6853d95bd272adf65b37e64c449b02c08813bc53 |
 | settings/agent-crlf.md | 155 | 53004bbbc40a05ed363f461f99eff9b5ec1636a218e2ab897e6dec2288231234 | 6853d95bd272adf65b37e64c449b02c08813bc53 |
 | settings/agent.edited.md | 244 | 5d157da3dde5ccbb3fa40510c2202eb512de291c52583a4a911ea08ab0e3e78f | 6853d95bd272adf65b37e64c449b02c08813bc53 |

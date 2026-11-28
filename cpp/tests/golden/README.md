@@ -19,6 +19,7 @@ cargo test -p loa-util --test golden -- --ignored
 cargo run --manifest-path cpp/libs/harness/tools/golden_gen/Cargo.toml
 cargo run --manifest-path cpp/libs/sandbox/tools/golden_gen/Cargo.toml -- golden cpp/tests/golden/sandbox
 cargo run --manifest-path cpp/libs/projects/tools/golden_gen/Cargo.toml -- cpp/tests/golden/projects
+(cd cpp/libs/p2p/tests/interop && cp ../../../../../Cargo.lock . && cargo run -- yamux-capture "$LOA_GOLDEN_OUT/p2p/yamux/rust-client.bin"; rm Cargo.lock)
 ```
 
 Then update the rows of `MANIFEST.md` (length, sha256, source SHA) for every changed file.
@@ -38,6 +39,7 @@ Then update the rows of `MANIFEST.md` (length, sha256, source SHA) for every cha
 | `crates/loa-contracts/tests/golden.rs` `write_golden_tool_schemas` | `contracts/*` |
 | `crates/loa-util/tests/golden.rs` | `util/iso.txt`, `util/ssh/aliases.txt` (`util/ssh/config`, `util/ssh/conf.d/*` are hand-written inputs) |
 | `cpp/libs/surfaces/tests/docs-golden` (scratch binary on `loa-surfaces` feature `docs`; `crates/` stays untouched) | `docs/*` |
+| `cpp/libs/p2p/tests/interop` `yamux-capture` (scratch binary on `loa-p2p` and `yamux` 0.14); `p2p/yamux/cpp-client.bin` is what `loa_p2p_tests` asserts the C++ `yamux::Session` writes | `p2p/yamux/rust-client.bin` |
 | `cpp/libs/harness/tools/golden_gen` (standalone crate over `loa-harness`; outside the workspace) | `harness/*` |
 | `cpp/libs/mcp/tests/import-golden` (scratch binary on `loa-mcp`; reads the hand-written `mcp/home/*`, `mcp/project/*` configs) | `mcp/import.expected.json` |
 | `cpp/libs/sandbox/tools/golden_gen` `golden` (standalone crate over `loa-sandbox`; its `client <abs path to stub>` mode runs the Rust `StubClient` against a stub binary) | `sandbox/*` |
