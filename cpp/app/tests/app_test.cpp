@@ -126,7 +126,9 @@ TEST_CASE("smoke screens: every registered screen passes, unknown screens are re
     qt_app();
     auto& smoke = Smoke::registry();
     const auto names = smoke.names();
-    for (const char* required : {"agents", "composer", "kit", "panel", "peers", "projects", "shell", "terminal", "updates", "workflows"})
+    // Foundation screens only. Do not append new screens here: the loop below already runs every
+    // registered one, and a growing list makes parallel UI issues conflict on this line.
+    for (const char* required : {"kit", "shell"})
         CHECK(std::ranges::find(names, required) != names.end());
     for (const auto& name : names) {
         CAPTURE(name);
