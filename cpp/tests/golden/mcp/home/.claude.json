@@ -1,0 +1,13 @@
+{
+  "numStartups": 12,
+  "mcpServers": {
+    "linear": {"type": "http", "url": "https://mcp.linear.app/mcp", "headers": {"Authorization": "Bearer lin"}},
+    "github": {"type": "stdio", "command": "npx", "args": ["-y", "@modelcontextprotocol/server-github"], "env": {"GITHUB_TOKEN": "abc", "DEBUG": true, "RETRIES": 3}},
+    "old": {"type": "sse", "url": "https://x.test/sse"},
+    "nullish": {"command": "nul-mcp", "args": null, "env": null}
+  },
+  "projects": {
+    "/work/app": {"mcpServers": {"db": {"command": "pg-mcp", "args": ["--ro"], "cwd": "/work/app"}, "list": {"command": "x", "args": "notalist"}}},
+    "/work/other": {"mcpServers": {"ignored": {"command": "never"}}}
+  }
+}

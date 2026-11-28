@@ -1,0 +1,7 @@
+{"mcpServers": {
+  "browser": {"command": "browser-mcp", "env": {"PORT": 9222, "HEADLESS": false}},
+  "envfile": {"command": "x", "envFile": ".env"},
+  "nothing": {},
+  "notobject": "npx server",
+  "nested": {"command": "x", "env": {"DEEP": {"a": 1}}}
+}}

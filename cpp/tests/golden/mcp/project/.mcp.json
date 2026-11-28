@@ -1,0 +1,8 @@
+{"mcpServers": {
+  "fs": {"command": "mcp-fs", "args": ["/work/app"]},
+  "bad name": {"command": "x"},
+  "remote": {"type": "streamable-http", "url": "https://mcp.example.com/mcp", "disabled": true},
+  "reserved": {"type": "http", "url": "https://r.example.com/mcp", "headers": {"Mcp-Session-Id": "x"}},
+  "ftp": {"type": "http", "url": "ftp://files.example.com"},
+  "both": {"type": "http", "command": "ignored", "url": "https://both.example.com/mcp"}
+}}

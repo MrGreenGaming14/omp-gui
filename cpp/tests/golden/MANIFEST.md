@@ -29,6 +29,10 @@ has exactly one row below; `loa_golden_tests` fails otherwise.
   inputs (an omp agent file with YAML frontmatter, LF and CRLF; a RULES.md with hand-written, managed and external workflow
   sections). `settings/agent*.edited.md`, `settings/agent.new.md`, `settings/workflows/*.created.*`, `*.edited.*`: what
   `AgentDefinition::to_text` and `WorkflowFiles::save`/`delete` write after the edits in `cpp/libs/settings/tests/agents-golden`.
+- `mcp/home/.claude.json`, `mcp/project/.mcp.json`, `mcp/home/.cursor/mcp.json`, `mcp/project/.cursor/mcp.json`,
+  `mcp/home/.codex/config.toml`: hand-written MCP configs of Claude Code, Cursor and Codex covering every dialect key and
+  every refusal. `mcp/import.expected.json`: what the Rust `JsonServers`/`CodexToml` readers return for them (each entry's
+  serde `ServerSpec` or its reason) and the `plan_found` outcomes, as `serde_json::to_string_pretty` plus a newline.
 - `p2p/*.bin`: the bytes `crates/loa-p2p/src/wire.rs` `send` writes: a 4-byte BIG-endian length (wire frames are
   big-endian; journal records are little-endian), then the prost message. The length excludes the prefix, is at most
   `MAX_FRAME_SIZE` (1 MiB = 1048576) and never 0: an empty or oversized message is refused before writing, and a read
@@ -127,6 +131,12 @@ has exactly one row below; `loa_golden_tests` fails otherwise.
 | journal/s/journal.loaj | 2180 | eec47b483bacb5599cae3ad4e8392f1b845bbb6277288eb8756a70468e6801ef | 6853d95bd272adf65b37e64c449b02c08813bc53 |
 | journal/s/snap-00000000000000000016.loas | 678 | 1357b93c16f73b19a21f8de1843b5a5fea6f06152287d5aac99b09522c2bab34 | 6853d95bd272adf65b37e64c449b02c08813bc53 |
 | journal/s/snap-00000000000000000032.loas | 936 | 66b29261fccb06c881c5f7aaa025086e366e007e855fb80cb77d6b8dbbf21923 | 6853d95bd272adf65b37e64c449b02c08813bc53 |
+| mcp/home/.claude.json | 687 | e6dce7220943d5338a959a184195de05da24bbc7f5a6192898ede6af211bda43 | 23c276225f993297e9908138bfe328425a5904e4 |
+| mcp/home/.codex/config.toml | 589 | f5848e6ebae077a65a85b3757fe772615808df8f4f6549628414706ae6941a2e | 23c276225f993297e9908138bfe328425a5904e4 |
+| mcp/home/.cursor/mcp.json | 255 | 9cf8a2a21244213934f0fa82a220ef8da8153a7c1a7bb7d17242d3796085a838 | 23c276225f993297e9908138bfe328425a5904e4 |
+| mcp/import.expected.json | 7397 | 079490ea30b048dbdd4d57ea7064ecb5ffb51e1e7103c6a5ab622c9dde760d46 | 23c276225f993297e9908138bfe328425a5904e4 |
+| mcp/project/.cursor/mcp.json | 207 | a77428989234b61963f9e0b84b092a5026c21b2944bd993efa2a47ce87b04d01 | 23c276225f993297e9908138bfe328425a5904e4 |
+| mcp/project/.mcp.json | 456 | 212d487e8483bb02b6ae2f30f50b16a93b883639377d6e70375c0e7e495a8a63 | 23c276225f993297e9908138bfe328425a5904e4 |
 | p2p/control-ack.bin | 6 | 89982dbb136749d03c2ccd2b69afc33eb1c90314bd00c351bd9f2da24d6f666f | a849b040ba4004d6581283112704296c4e77f026 |
 | p2p/control-ack-refused.bin | 10 | d324b6dd9184cb98fd1f7c6700701ee719f6740d9a5def33be3e14f038363512 | a849b040ba4004d6581283112704296c4e77f026 |
 | p2p/control-grant-delivery.bin | 46 | f1785788247a998b1ffe53f9e2a7d56c66a88fabf3458049349503e7c3c9b4e4 | a849b040ba4004d6581283112704296c4e77f026 |
