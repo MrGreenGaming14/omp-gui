@@ -1,13 +1,16 @@
-// Re-hashes every file listed in MANIFEST.md and compares length and sha256.
+// Re-hashes every file listed in MANIFEST.md and compares length and sha256,
+// checks MANIFEST lists exactly the fixture files, and runs the pinned SQL.
 
 #include <doctest/doctest.h>
 #include <openssl/evp.h>
+#include <sqlite3.h>
 
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <memory>
+#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -62,6 +65,12 @@ std::string sha256_hex(const std::string& bytes) {
     return out;
 }
 
+std::string slurp(const std::filesystem::path& file) {
+    std::ifstream in(file, std::ios::binary);
+    REQUIRE(in);
+    return {std::istreambuf_iterator<char>(in), {}};
+}
+
 }  // namespace
 
 TEST_CASE("every MANIFEST entry matches its length and sha256") {
@@ -76,4 +85,49 @@ TEST_CASE("every MANIFEST entry matches its length and sha256") {
         CHECK(bytes.size() == e.length);
         CHECK(sha256_hex(bytes) == e.sha256);
     }
+}
+
+TEST_CASE("MANIFEST lists every fixture file exactly once") {
+    const std::filesystem::path root = LOA_GOLDEN_DIR;
+    // Harness files next to the fixtures, not fixtures themselves.
+    const std::set<std::string> harness{"CMakeLists.txt", "MANIFEST.md", "README.md", "golden_test.cpp"};
+    std::set<std::string> listed;
+    for (const auto& e : read_manifest(root / "MANIFEST.md")) {
+        CAPTURE(e.path);
+        CHECK(listed.insert(e.path).second);
+    }
+    std::set<std::string> on_disk;
+    for (const auto& f : std::filesystem::recursive_directory_iterator(root)) {
+        if (!f.is_regular_file()) continue;
+        const auto rel = f.path().lexically_relative(root).generic_string();
+        if (!harness.contains(rel)) on_disk.insert(rel);
+    }
+    CHECK(listed == on_disk);
+}
+
+TEST_CASE("remote_audit SQL executes and sqlite stores the Rust statements") {
+    const std::string schema = slurp(std::filesystem::path(LOA_GOLDEN_DIR) / "remote/remote_audit.sql");
+    sqlite3* raw = nullptr;
+    REQUIRE(sqlite3_open(":memory:", &raw) == SQLITE_OK);
+    std::unique_ptr<sqlite3, decltype(&sqlite3_close)> db(raw, &sqlite3_close);
+    REQUIRE(sqlite3_exec(db.get(), schema.c_str(), nullptr, nullptr, nullptr) == SQLITE_OK);
+
+    // sqlite_master keeps each statement's text minus `IF NOT EXISTS` and the `;`.
+    std::vector<std::string> expected;
+    std::stringstream statements(schema);
+    for (std::string s; std::getline(statements, s, ';');) {
+        s = s.substr(s.find_first_not_of('\n'));
+        if (const auto at = s.find(" IF NOT EXISTS"); at != std::string::npos) s.erase(at, 14);
+        expected.push_back(s);
+    }
+    REQUIRE(expected.size() == 3);
+
+    sqlite3_stmt* raw_stmt = nullptr;
+    REQUIRE(sqlite3_prepare_v2(db.get(), "SELECT sql FROM sqlite_master WHERE tbl_name = 'remote_audit' ORDER BY rowid", -1,
+                               &raw_stmt, nullptr) == SQLITE_OK);
+    std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> stmt(raw_stmt, &sqlite3_finalize);
+    std::vector<std::string> stored;
+    while (sqlite3_step(stmt.get()) == SQLITE_ROW)
+        stored.emplace_back(reinterpret_cast<const char*>(sqlite3_column_text(stmt.get(), 0)));
+    CHECK(stored == expected);
 }
