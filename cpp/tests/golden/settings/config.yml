@@ -1,0 +1,25 @@
+# my omp settings
+modelRoles:
+  default: anthropic/claude-x:high
+  smol: "@default"
+  plan: openai/gpt-y:low
+retry:
+  fallbackChains:
+    default:
+      - openai/gpt-y
+      - anthropic/claude-z
+modelProviderOrder:
+  - openai
+enabledModels:
+  - anthropic/*
+  - path: ~/work
+    models:
+      - openai/gpt-y
+disabledProviders:
+  - ollama
+  - paths:
+      - ~/secret
+    providers:
+      - openai
+theme:
+  dark: titanium
