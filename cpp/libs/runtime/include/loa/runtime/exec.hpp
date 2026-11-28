@@ -64,6 +64,8 @@ struct Command {
     std::vector<std::string> args;
     std::vector<std::pair<std::string, std::string>> env;
     std::optional<Path> current_dir;
+    // Variables of the app's environment the child must not inherit; `env` still applies.
+    std::vector<std::string> env_remove;
 };
 
 // A command running `program` as `resolve` finds it.

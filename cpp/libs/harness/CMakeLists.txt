@@ -7,6 +7,9 @@ add_library(loa_harness STATIC
   src/kit/residual.cpp
   src/kit/rpc.cpp
   src/native.cpp
+  src/omp2/mapper.cpp
+  src/omp2/omp2.cpp
+  src/omp2/wire.cpp
   src/account_support/account_support.cpp
   src/account_support/cli.cpp
   src/account_support/configdoc.cpp
@@ -18,6 +21,16 @@ add_library(loa_harness STATIC
   src/codex/rollout.cpp
   src/codex/session.cpp
   src/registry/registry.cpp)
+target_sources(loa_harness PRIVATE
+  src/omp/rpc/client.cpp
+  src/omp/rpc/command.cpp
+  src/omp/rpc/event.cpp
+  src/omp/rpc/frames.cpp
+  src/omp/rpc/inbound.cpp
+  src/omp/native/native.cpp
+  src/omp/native/import.cpp
+  src/omp/native/export.cpp
+  src/omp/native/history.cpp)
 add_library(loa::harness ALIAS loa_harness)
 target_include_directories(loa_harness PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(loa_harness PUBLIC loa::contracts loa::core loa::runtime loa::settings)
@@ -39,6 +52,7 @@ loa_add_test(harness
     tests/kit/residual_test.cpp
     tests/kit/rpc_test.cpp
     tests/native/native_test.cpp
+    tests/omp2/omp2_test.cpp
     tests/account_support/configdoc_test.cpp
     tests/account_support/opener_test.cpp
     tests/account_support/process_test.cpp
@@ -51,5 +65,14 @@ loa_add_test(harness
     tests/codex/session.cpp
     tests/testing/scripted_test.cpp
   LINK loa::harness loa::harness_testing)
+target_sources(loa_harness_tests PRIVATE
+  tests/omp/rpc_command_test.cpp
+  tests/omp/rpc_client_test.cpp
+  tests/omp/rpc_event_test.cpp
+  tests/omp/rpc_frames_test.cpp
+  tests/omp/native_import_test.cpp
+  tests/omp/native_export_test.cpp
+  tests/omp/native_history_test.cpp)
 target_compile_definitions(loa_harness_tests PRIVATE LOA_GOLDEN_DIR="${CMAKE_SOURCE_DIR}/tests/golden"
   LOA_HARNESS_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(loa_harness_tests PRIVATE LOA_HARNESS_FIXTURES="${CMAKE_SOURCE_DIR}/../crates/loa-harness/fixtures")

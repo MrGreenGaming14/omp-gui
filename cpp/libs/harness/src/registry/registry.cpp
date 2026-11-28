@@ -5,6 +5,7 @@
 #include <mutex>
 
 #include "loa/harness/native.hpp"
+#include "loa/harness/omp2/omp2.hpp"
 #include "loa/runtime/exec.hpp"
 #include "loa/runtime/fs.hpp"
 
@@ -71,7 +72,15 @@ std::vector<std::shared_ptr<loa::contracts::HarnessFactory>> factories(const Har
     std::scoped_lock lock(builds_mutex);
     for (const auto& entry : ENTRIES) {
         auto it = builds().find(entry.id);
-        out.push_back(std::make_shared<Entry>(entry, it == builds().end() ? HarnessBuild{} : it->second, env));
+        if (it == builds().end() && entry.id == OMP2) {
+            HarnessBuild omp2_build{
+                [](const HarnessEnv&, std::optional<std::filesystem::path> exe) -> std::shared_ptr<loa::contracts::Adapter> {
+                    return std::make_shared<omp2::Omp2Adapter>(exe.value_or(std::filesystem::path(omp2::EXECUTABLE)));
+                }, {}};
+            out.push_back(std::make_shared<Entry>(entry, std::move(omp2_build), env));
+        } else {
+            out.push_back(std::make_shared<Entry>(entry, it == builds().end() ? HarnessBuild{} : it->second, env));
+        }
     }
     return out;
 }

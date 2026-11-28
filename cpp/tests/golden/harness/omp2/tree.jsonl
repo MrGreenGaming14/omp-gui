@@ -1,0 +1,9 @@
+# Todos, jobs, removal and moves; a snapshot then reconciles the tree and resumes an open stream.
+{"kind":"patch@1","data":{"ops":[["ins",2,null,{"tag":"todo"}],["ins",5,null,{"tag":"item","props":[["label","Write tests"],["status","in_progress"],["phase","impl"]]}],["ins",5,6,{"tag":"item","props":[["label","Ship"],["status","pending"]]}],["set",5,"title","Plan"]]}}
+{"kind":"patch@1","data":{"ops":[["set",6,"status","completed"],["rm",7]]}}
+{"kind":"patch@1","data":{"ops":[["ins",3,null,{"tag":"jobs"}],["ins",8,null,{"tag":"job","props":[["id","j1"],["label","build"],["status","running"]]}],["ins",8,9,{"tag":"subagent","props":[["id","s1"],["agent","explore"],["status","running"]]}]]}}
+{"kind":"patch@1","data":{"ops":[["set",9,"status","failed"],["set",9,"exit",2],["set",10,"status","done"]]}}
+{"kind":"patch@1","data":{"ops":[["ins",3,8,{"tag":"turn","props":[["id","first"]]}],["ins",3,11,{"tag":"turn","props":[["id","second"]]}],["ins",11,null,{"tag":"user","props":[["text","hello"]]}],["mv",13,12,null],["ins",3,12,{"tag":"compaction","props":[["summary","Earlier work"],["tokens-before",900]]}]]}}
+{"kind":"snapshot@1","data":{"high_water":16,"nodes":[{"handle":1,"parent":null,"node":{"tag":"session","kids":[2,3,4]}},{"handle":2,"parent":1,"node":{"tag":"meta"}},{"handle":3,"parent":1,"node":{"tag":"body","kids":[12]}},{"handle":4,"parent":1,"node":{"tag":"queues"}},{"handle":12,"parent":3,"node":{"tag":"turn","props":[["id","second"]],"kids":[13,15]}},{"handle":13,"parent":12,"node":{"tag":"user","props":[["text","hello again"]]}},{"handle":15,"parent":12,"node":{"tag":"assistant","kids":[16]}},{"handle":16,"parent":15,"node":{"tag":"tool:assistant-content","props":[["kind","text"],["text","partial"]]}}],"streams":[{"sid":4,"node":16,"prop":"text","text":"partial"}]}}
+{"kind":"stream@1","sid":4,"op":"append","text":" result"}
+{"kind":"stream@1","sid":4,"op":"close"}
