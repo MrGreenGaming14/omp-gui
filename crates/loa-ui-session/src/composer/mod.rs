@@ -25,8 +25,9 @@ use iced::{Background, Border, Color, ContentFit, Element, Length, Padding, Subs
 use input::{EditKind, History, KeyContext, Popup, Queue, Snapshot, Trigger};
 use loa_ui_kit::icons::{colored, icon, muted};
 use loa_ui_kit::style::{self as kit, ButtonKind, Surface, Tone};
-use loa_ui_kit::theme::{ColorRole, LayoutRole, SpaceRole as Sp, TextRole as T, for_theme, sp, text_size as ts, width};
-use loa_ui_kit::widgets::{Picker, popover};
+use loa_ui_kit::text::{EllipsisMode, ellipsize_text, measure_text_width};
+use loa_ui_kit::theme::{ColorRole, LayoutRole, SpaceRole as Sp, TextRole as T, for_theme, sp, text_size as ts, tokens, width};
+use loa_ui_kit::widgets::{Picker, popover, width_responsive};
 use loa_view::session::composer::{AccessOption, Command, HarnessOption, Intent, Label, ModelOption, PastedImage, PickerAction, WorkflowOption, Workspace};
 use loa_view::session::{Attachment, Prompt, SessionMode};
 use loa_view::theme::Icon;
@@ -699,10 +700,16 @@ impl State {
         let queue = (!self.queue.items.is_empty()).then(|| self.queue_view());
         // Picker menus open from their own button; the `/` and `@` popups span the composer.
         let popup = self.visible_popup().filter(|_| p.open.is_none()).map(|popup| self.popup_view(popup));
-        // The project and session mode sit left of the folder, small: they are set rarely.
-        let project = self.chip(PickerId::Project, Icon::Files, chosen(&p.project).map_or(NO_PROJECT.to_owned(), |l| l.0.clone()), true);
-        let mode = self.chip(PickerId::Mode, Icon::FileText, capitalized(chosen(&p.mode).map_or("", |m| m.0.as_str())), true);
-        let bar = row![project, mode].push(self.workspace().map(|w| self.folder_bar(w))).spacing(sp(Sp::Xs)).align_y(Center);
+        // The project and session mode sit left of the folder, small: they are set rarely. The
+        // project gets at most a third of the row so the folder keeps room.
+        let project_name = chosen(&p.project).map_or(NO_PROJECT.to_owned(), |l| l.0.clone());
+        let bar = width_responsive(move |row_width| {
+            let chrome = 2.0 * ts(T::Caption) + sp(Sp::S) + 3.0 * sp(Sp::Xs);
+            let shown = ellipsize_text(&project_name, (row_width / 3.0 - chrome).max(0.0), ts(T::Caption), tokens().font(T::Caption), EllipsisMode::End);
+            let project = self.chip(PickerId::Project, Icon::Files, shown, true);
+            let mode = self.chip(PickerId::Mode, Icon::FileText, capitalized(chosen(&self.pickers.mode).map_or("", |m| m.0.as_str())), true);
+            row![project, mode].push(self.workspace().map(|w| self.folder_bar(w))).spacing(sp(Sp::Xs)).align_y(Center).into()
+        });
         popover(column![slot(queue), bar, frame].spacing(sp(Sp::S)), popup).into()
     }
 
@@ -710,7 +717,7 @@ impl State {
     /// `compact`; its menu opens from it.
     fn chip<'a>(&'a self, picker: PickerId, glyph: Icon, label: String, compact: bool) -> Element<'a, Message> {
         let size = if compact { ts(T::Caption) } else { ts(T::Body) };
-        let content = row![icon(glyph, size).style(kit::tint(Tone::Muted)), text(label).size(if compact { ts(T::Caption) } else { ts(T::Label) })].spacing(sp(Sp::S)).align_y(Center);
+        let content = row![icon(glyph, size).style(kit::tint(Tone::Muted)), text(label).size(if compact { ts(T::Caption) } else { ts(T::Label) }).wrapping(text::Wrapping::None)].spacing(sp(Sp::S)).align_y(Center);
         self.toggle(picker, content.into(), compact)
     }
 
@@ -789,14 +796,26 @@ impl State {
 
     /// The folder chip above the editor: the folder and git branch; opens the folder menu.
     fn folder_bar<'a>(&'a self, workspace: &'a Workspace) -> Element<'a, Message> {
-        let mut chip = row![icon(Icon::Folder, ts(T::Body)).style(kit::tint(Tone::Muted)), text(workspace.path.as_str()).size(ts(T::Label))].spacing(sp(Sp::S)).align_y(Center);
-        if let Some(branch) = &workspace.branch {
-            chip = chip.push(icon(Icon::GitFork, ts(T::Label)).style(kit::tint(Tone::Faint))).push(text(branch.as_str()).size(ts(T::Label)).style(kit::text(Tone::Faint)));
-        }
-        let chip = self.toggle(PickerId::Folder, chip.into(), false);
-        // The full path on hover, except while the menu is open: the tip would cover its last row.
-        let chip = if self.pickers.open == Some(PickerId::Folder) { chip } else { tip(chip, workspace.full.as_str()) };
-        container(chip).id(WORKSPACE_CHIP_ID).into()
+        width_responsive(move |available_width| {
+            let font = tokens().font(T::Label);
+            let label_size = ts(T::Label);
+            let (shown_path, shown_branch) = fit_folder_parts(workspace, available_width, label_size, font);
+            let mut chip = row![
+                icon(Icon::Folder, ts(T::Body)).style(kit::tint(Tone::Muted)),
+                text(shown_path).size(label_size).font(font).wrapping(text::Wrapping::None),
+            ]
+            .spacing(sp(Sp::S))
+            .align_y(Center);
+            if let Some(branch) = shown_branch {
+                chip = chip
+                    .push(icon(Icon::GitFork, label_size).style(kit::tint(Tone::Faint)))
+                    .push(text(branch).size(label_size).font(font).style(kit::text(Tone::Faint)).wrapping(text::Wrapping::None));
+            }
+            let chip = self.toggle(PickerId::Folder, chip.into(), false);
+            // The full path on hover, except while the menu is open: the tip would cover its last row.
+            let chip = if self.pickers.open == Some(PickerId::Folder) { chip } else { tip(chip, workspace.full.as_str()) };
+            container(chip).id(WORKSPACE_CHIP_ID).max_width(available_width).clip(true).into()
+        })
     }
 
     /// The cards of the images whose token is in the text.
@@ -1107,6 +1126,39 @@ fn edit_kind(edit: &Edit) -> EditKind {
         }
         Edit::Backspace | Edit::Delete => EditKind::Delete,
         _ => EditKind::Other,
+    }
+}
+
+/// Fits folder `path` (preserving its last component) and optional `branch` into `available_width`.
+fn fit_folder_parts<'a>(
+    workspace: &'a Workspace,
+    available_width: f32,
+    label_size: f32,
+    font: iced::Font,
+) -> (Cow<'a, str>, Option<Cow<'a, str>>) {
+    let button_padding_x = 2.0 * sp(Sp::S);
+    let chevron_w = sp(Sp::S) + ts(T::Caption);
+    let folder_icon_w = ts(T::Body) + sp(Sp::S);
+    let branch_overhead = if workspace.branch.is_some() { 2.0 * sp(Sp::S) + label_size } else { 0.0 };
+    let text_budget = (available_width - button_padding_x - chevron_w - folder_icon_w - branch_overhead).max(0.0);
+
+    let path_full_w = measure_text_width(&workspace.path, label_size, font);
+    let branch_full_w = workspace.branch.as_deref().map_or(0.0, |b| measure_text_width(b, label_size, font));
+    if path_full_w + branch_full_w <= text_budget {
+        return (Cow::Borrowed(workspace.path.as_str()), workspace.branch.as_deref().map(Cow::Borrowed));
+    }
+
+    match workspace.branch.as_deref() {
+        None => (Cow::Owned(ellipsize_text(&workspace.path, text_budget, label_size, font, EllipsisMode::Path)), None),
+        Some(branch) => {
+            let branch_reserve = branch_full_w.min(text_budget * 0.35);
+            let path_budget = (text_budget - branch_reserve).min(path_full_w).max(0.0);
+            let shown_path = ellipsize_text(&workspace.path, path_budget, label_size, font, EllipsisMode::Path);
+            let actual_path_w = measure_text_width(&shown_path, label_size, font);
+            let branch_budget = (text_budget - actual_path_w).max(0.0);
+            let shown_branch = ellipsize_text(branch, branch_budget, label_size, font, EllipsisMode::End);
+            (Cow::Owned(shown_path), Some(Cow::Owned(shown_branch)))
+        }
     }
 }
 

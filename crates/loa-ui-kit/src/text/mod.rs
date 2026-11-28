@@ -1,7 +1,9 @@
 //! Text helpers for views: fuzzy filtering and highlighting, durations, sizes and truncation.
 
+pub mod ellipsis;
 pub mod fuzzy;
 
+pub use ellipsis::{ELLIPSIS, EllipsisMode, ellipsize_text, ellipsize_with, measure_text_width};
 pub use fuzzy::{Class, Match, Matcher, highlight_runs};
 
 /// Indices of `candidates` matching `query`, best first (class, score, shorter, earlier), at

@@ -12,8 +12,11 @@ pub use virtual_list::{Heights, scroll_target};
 use crate::icons::tinted;
 use crate::style::{self, ButtonKind, Surface, Tone};
 use crate::theme::{ColorRole, LayoutRole, RadiusRole, SpaceRole, TextRole, sp, text_size as size, tokens};
+use iced::advanced::layout::{self, Layout};
+use iced::advanced::widget::{Operation, Tree, Widget};
+use iced::advanced::{Clipboard, Shell, overlay, renderer};
 use iced::widget::{Space, button, column, container, mouse_area, row, rule, text, tooltip};
-use iced::{Alignment, Element, Fill, FillPortion, Padding, Subscription, Task, mouse};
+use iced::{Alignment, Element, Event, Fill, FillPortion, Length, Padding, Rectangle, Size, Subscription, Task, Vector, mouse};
 use loa_view::theme::Icon;
 
 /// A screen or pane: local state with messages in and events out.
@@ -189,4 +192,83 @@ pub fn splitter_width() -> f32 { sp(SpaceRole::Xs) + 2.0 }
 pub fn splitter_edge<'a, M: Clone + 'a>(on_press: M) -> Element<'a, M> {
     let line = container(rule::vertical(1).style(style::rule)).center_x(splitter_width()).height(Fill);
     mouse_area(line).on_press(on_press).interaction(mouse::Interaction::ResizingHorizontally).into()
+}
+
+/// Calls `view` with the available layout width (`limits.max().width`), claiming `Length::Fill`
+/// horizontally so a parent [`row`] hands it the remaining width while sizing vertically to the
+/// built child (`Length::Shrink`).
+pub fn width_responsive<'a, M, T, R>(
+    view: impl Fn(f32) -> Element<'a, M, T, R> + 'a,
+) -> Element<'a, M, T, R>
+where
+    M: 'a,
+    T: 'a,
+    R: renderer::Renderer + 'a,
+{
+    Element::new(WidthResponsive { view: Box::new(view), content: None })
+}
+
+struct WidthResponsive<'a, M, T, R> {
+    view: Box<dyn Fn(f32) -> Element<'a, M, T, R> + 'a>,
+    content: Option<(f32, Element<'a, M, T, R>)>,
+}
+
+impl<M, T, R: renderer::Renderer> Widget<M, T, R> for WidthResponsive<'_, M, T, R> {
+    fn children(&self) -> Vec<Tree> {
+        self.content.as_ref().map(|(_, el)| Tree::new(el)).into_iter().collect()
+    }
+
+    fn diff(&self, tree: &mut Tree) {
+        if let Some((_, el)) = &self.content {
+            tree.diff_children(&[el.as_widget()]);
+        }
+    }
+
+    fn size(&self) -> Size<Length> { Size::new(Length::Fill, Length::Shrink) }
+
+    fn size_hint(&self) -> Size<Length> { Size::new(Length::Fill, Length::Shrink) }
+
+    fn layout(&mut self, tree: &mut Tree, renderer: &R, limits: &layout::Limits) -> layout::Node {
+        let width = limits.max().width;
+        if self.content.as_ref().is_none_or(|(w, _)| *w != width) {
+            let el = (self.view)(width);
+            tree.diff_children(&[el.as_widget()]);
+            self.content = Some((width, el));
+        }
+        let (_, el) = self.content.as_mut().expect("just built");
+        let child_limits = layout::Limits::new(Size::ZERO, limits.max());
+        el.as_widget_mut().layout(&mut tree.children[0], renderer, &child_limits)
+    }
+
+    fn update(&mut self, tree: &mut Tree, event: &Event, layout: Layout<'_>, cursor: mouse::Cursor, renderer: &R, clipboard: &mut dyn Clipboard, shell: &mut Shell<'_, M>, viewport: &Rectangle) {
+        if let (Some((_, el)), Some(child_tree)) = (&mut self.content, tree.children.first_mut()) {
+            el.as_widget_mut().update(child_tree, event, layout, cursor, renderer, clipboard, shell, viewport);
+        }
+    }
+
+    fn mouse_interaction(&self, tree: &Tree, layout: Layout<'_>, cursor: mouse::Cursor, viewport: &Rectangle, renderer: &R) -> mouse::Interaction {
+        match (&self.content, tree.children.first()) {
+            (Some((_, el)), Some(child_tree)) => el.as_widget().mouse_interaction(child_tree, layout, cursor, viewport, renderer),
+            _ => mouse::Interaction::default(),
+        }
+    }
+
+    fn draw(&self, tree: &Tree, renderer: &mut R, theme: &T, style: &renderer::Style, layout: Layout<'_>, cursor: mouse::Cursor, viewport: &Rectangle) {
+        if let (Some((_, el)), Some(child_tree)) = (&self.content, tree.children.first()) {
+            el.as_widget().draw(child_tree, renderer, theme, style, layout, cursor, viewport);
+        }
+    }
+
+    fn operate(&mut self, tree: &mut Tree, layout: Layout<'_>, renderer: &R, operation: &mut dyn Operation) {
+        if let (Some((_, el)), Some(child_tree)) = (&mut self.content, tree.children.first_mut()) {
+            el.as_widget_mut().operate(child_tree, layout, renderer, operation);
+        }
+    }
+
+    fn overlay<'b>(&'b mut self, tree: &'b mut Tree, layout: Layout<'b>, renderer: &R, viewport: &Rectangle, translation: Vector) -> Option<overlay::Element<'b, M, T, R>> {
+        match (&mut self.content, tree.children.first_mut()) {
+            (Some((_, el)), Some(child_tree)) => el.as_widget_mut().overlay(child_tree, layout, renderer, viewport, translation),
+            _ => None,
+        }
+    }
 }
