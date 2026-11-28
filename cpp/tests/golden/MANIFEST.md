@@ -83,6 +83,10 @@ has exactly one row below; `loa_golden_tests` fails otherwise.
 - `harness/residual.json`: `residual::attr_name("claude-code")` and `join_parts(["first", "", "trois é", "4"], "\n\n")`.
 - `harness/discover.tsv`: `native::discover` over a fixed home tree with set mtimes:
   `harness`, path relative to home, project, title, modified ms, size, tab-separated, in discovery order.
+- `sandbox/*.bin`: `loa_sandbox::proto::frame` output: a u32 LITTLE-endian body length, then the postcard body
+  (varint integers, zigzag `i32`, varint enum variant index, `0`/`1` option tag, varint-length strings and byte
+  vectors). `request_*` are `Request`s, `response_*` are `Response`s; `hello.bin` is what `write_hello` writes:
+  `MAGIC` (`\0LOA-STUB/2\n`) then the `Ready { version: 2 }` frame.
 
 ## Files
 
@@ -186,6 +190,17 @@ has exactly one row below; `loa_golden_tests` fails otherwise.
 | trust/v1_reshared_token.keys | 142 | 96e9baaf4a558b6c971427ab2b0e57909aab10a501688219712f6a6de3931a44 | a849b040ba4004d6581283112704296c4e77f026 |
 | remote/remote_audit.rows.json | 895 | 1d57706b8d18f85bbbff2a005ddd4b8b70caead55ec0f80823306bc5438cfde6 | b128c428ea2976fd62bc1ef28ccc783137388e80 |
 | remote/remote_audit.sql | 402 | b7334365648a9196c6a55413655a3d21c81ea5b3a9e26eec6796eff77069bfdd | b128c428ea2976fd62bc1ef28ccc783137388e80 |
+| sandbox/hello.bin | 18 | 009a43e580d8592a9631260defbfcf412a678b11d341bd0133a4b339068678d2 | 196e70f4605a2098833377482c9457a5440e27a2 |
+| sandbox/request_exec_default.bin | 11 | 98e11f2427bc7a173415d4b058e4d1402329936757867005302f6f6d96e7329d | 196e70f4605a2098833377482c9457a5440e27a2 |
+| sandbox/request_exec_full.bin | 504 | d08b434c63190ca08fd73965b9bc7af3a4a31b3106a5c86e255d68f4c9e4ac70 | 196e70f4605a2098833377482c9457a5440e27a2 |
+| sandbox/request_exec_shell.bin | 41 | 73e6b0a3cbb647cc3e249b4f8a00e092569ab1db835cb941c38ab6f0725c4108 | 196e70f4605a2098833377482c9457a5440e27a2 |
+| sandbox/request_shutdown.bin | 5 | a1cb20470d89874f33383802c72d3c27a0668ebffd81934705ab0cfcbf1a1e3a | 196e70f4605a2098833377482c9457a5440e27a2 |
+| sandbox/response_error.bin | 56 | 8c45a9a1a00e3044f695305b1931ba3db8fbc7a82cd3edb7e33934b6246f701b | 196e70f4605a2098833377482c9457a5440e27a2 |
+| sandbox/response_exit_code.bin | 10 | fd47b41d236b097301df2a0b2544297914008911359f1753450dfe7d30c8cb6d | 196e70f4605a2098833377482c9457a5440e27a2 |
+| sandbox/response_exit_signal.bin | 12 | 40a85a24052f23bb40ccde031bb4d65a969896d4e57fc03960667d9ff4d32ca4 | 196e70f4605a2098833377482c9457a5440e27a2 |
+| sandbox/response_ready.bin | 6 | a9744c200268f48c0369779fdbf61c300d83c7040a33bf12e173403fc5522821 | 196e70f4605a2098833377482c9457a5440e27a2 |
+| sandbox/response_stderr.bin | 309 | 6979ed0eb878d020a32c56e6a57b59048404e13f6512d63bd19a608f57aa50b1 | 196e70f4605a2098833377482c9457a5440e27a2 |
+| sandbox/response_stdout.bin | 11 | 1ca3f62a8a31d9403662ef7e8138c251e65fa64bf89700dd99208a3fd3a9375d | 196e70f4605a2098833377482c9457a5440e27a2 |
 | surface/datagram-fragment.bin | 47 | ae284eeebe478e5024f9d60da284428924c034a62241211f37dc26b9ebc98b84 | b128c428ea2976fd62bc1ef28ccc783137388e80 |
 | surface/stream-accept-document.bin | 60 | 663ab4a7c7ec24c64632fc1c8f4668fd307d8ce27332e39ba12dc806e5690a1c | b128c428ea2976fd62bc1ef28ccc783137388e80 |
 | surface/stream-accept.bin | 59 | bdb2a0bba175a7d7e032de44b0c0d9f320df64321319219481c328047bc471eb | b128c428ea2976fd62bc1ef28ccc783137388e80 |

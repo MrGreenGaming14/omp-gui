@@ -1,0 +1,9 @@
+[package]
+name = "loa-sandbox-golden"
+version = "0.0.0"
+edition = "2024"
+[dependencies]
+loa-sandbox = { path = "../../../../../crates/loa-sandbox" }
+tokio = { version = "1", features = ["full"] }
+tempfile = "3"
+[workspace]

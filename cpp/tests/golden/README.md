@@ -16,6 +16,7 @@ cargo test -p loa-util --test golden -- --ignored
 (cd cpp/libs/surfaces/tests/docs-golden && cargo run)
 (cd cpp/libs/settings/tests/agents-golden && cargo run)
 cargo run --manifest-path cpp/libs/harness/tools/golden_gen/Cargo.toml
+cargo run --manifest-path cpp/libs/sandbox/tools/golden_gen/Cargo.toml -- golden cpp/tests/golden/sandbox
 ```
 
 Then update the rows of `MANIFEST.md` (length, sha256, source SHA) for every changed file.
@@ -36,3 +37,4 @@ Then update the rows of `MANIFEST.md` (length, sha256, source SHA) for every cha
 | `crates/loa-util/tests/golden.rs` | `util/iso.txt`, `util/ssh/aliases.txt` (`util/ssh/config`, `util/ssh/conf.d/*` are hand-written inputs) |
 | `cpp/libs/surfaces/tests/docs-golden` (scratch binary on `loa-surfaces` feature `docs`; `crates/` stays untouched) | `docs/*` |
 | `cpp/libs/harness/tools/golden_gen` (standalone crate over `loa-harness`; outside the workspace) | `harness/*` |
+| `cpp/libs/sandbox/tools/golden_gen` `golden` (standalone crate over `loa-sandbox`; its `client <abs path to stub>` mode runs the Rust `StubClient` against a stub binary) | `sandbox/*` |
