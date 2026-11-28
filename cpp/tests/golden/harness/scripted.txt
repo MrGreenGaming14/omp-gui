@@ -1,0 +1,42 @@
+<session nid="1" created.int="T" cwd="/work" harness="scripted" id="s1" native_id="native-s1" node="n1" project="p">
+  <turn nid="2" ended.int="T" started.int="T" status="done">
+    <message nid="3" by="n1" role="user">hello</message>
+    <message nid="4" role="assistant">ok</message>
+  </turn>
+  <turn nid="5" ended.int="T" started.int="T" status="done">
+    <message nid="6" by="n1" role="user">ask question</message>
+    <decision nid="7" answer.list="['red']" by="n1" kind="question" options.list="['red', 'green']" reason="why" status="answered" title="Color">Which color?</decision>
+    <message nid="8" role="assistant">ok</message>
+  </turn>
+  <turn nid="9" ended.int="T" started.int="T" status="done">
+    <message nid="10" by="n1" role="user">ask multi</message>
+    <decision nid="11" answer.list="['rust', 'zig']" by="n2" kind="question" multi.bool="true" options.list="['rust', 'go', 'zig']" status="answered" title="Languages">Which languages?</decision>
+    <message nid="12" role="assistant">ok</message>
+  </turn>
+  <turn nid="13" ended.int="T" started.int="T" status="done">
+    <message nid="14" by="n1" role="user">ask plan</message>
+    <decision nid="15" answer.list="['approve']" by="n1" kind="plan" status="answered" title="Plan"># Plan
+
+1. Read the code
+2. Fix the bug</decision>
+    <message nid="16" role="assistant">ok</message>
+  </turn>
+  <turn nid="17" ended.int="T" started.int="T" status="done">
+    <message nid="18" by="n1" role="user">ask form</message>
+    <decision nid="19" answer.list="['{&quot;name&quot;:&quot;r1&quot;,&quot;channel&quot;:&quot;beta&quot;}']" by="n1" fields="{&quot;type&quot;:&quot;object&quot;,&quot;properties&quot;:{&quot;name&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;description&quot;:&quot;Release name&quot;},&quot;channel&quot;:{&quot;enum&quot;:[&quot;beta&quot;,&quot;stable&quot;]}},&quot;required&quot;:[&quot;name&quot;,&quot;channel&quot;]}" kind="form" status="answered" title="Release">Release settings</decision>
+    <message nid="20" role="assistant">ok</message>
+  </turn>
+  <turn nid="21" ended.int="T" started.int="T" status="done">
+    <message nid="22" by="n1" role="user">ask</message>
+    <decision nid="23" answer.list="['allow_once']" by="n1" kind="approval" options.list="['allow_once', 'allow_session', 'deny']" status="answered" title="Run ls">ls</decision>
+    <message nid="24" role="assistant">ok</message>
+  </turn>
+  <turn nid="25" ended.int="T" started.int="T" status="cancelled">
+    <message nid="26" by="n1" role="user">work bash Build it</message>
+    <call nid="27" call_id="work" ended.int="T" started.int="T" status="cancelled" title="Build it" tool="bash"/>
+  </turn>
+  <turn nid="28" ended.int="T" started.int="T" status="done">
+    <message nid="29" by="n1" role="user">tool x {}</message>
+    <message nid="30" role="assistant">failed: no host tools</message>
+  </turn>
+</session>

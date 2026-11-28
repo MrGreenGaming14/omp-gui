@@ -3,7 +3,10 @@ name = "loa-harness-golden"
 version = "0.0.0"
 edition = "2024"
 [dependencies]
-loa-harness = { path = "../../../../../crates/loa-harness", default-features = false, features = ["omp", "claude", "codex"] }
+loa-harness = { path = "../../../../../crates/loa-harness", default-features = false, features = ["omp", "claude", "codex", "testing"] }
 loa-core = { path = "../../../../../crates/loa-core" }
+loa-contracts = { path = "../../../../../crates/loa-contracts" }
 serde_json = { version = "1", features = ["preserve_order"] }
+toml_edit = "0.25"
+tokio = { version = "1", features = ["rt", "macros"] }
 [workspace]

@@ -1,0 +1,23 @@
+# header
+model = "gpt-5" # note
+dotted.key = "d2"
+top = "t"
+
+[profiles.fast]
+# effort comment
+model_reasoning_effort = "high"   # trailing
+quote = 'a"b'
+
+# before other
+[other]
+arr = [
+  "a", # c
+  "b",
+]
+name = "new"
+esc = "tab\there\u007F"
+
+[features]
+
+[features.web]
+mode = "on"

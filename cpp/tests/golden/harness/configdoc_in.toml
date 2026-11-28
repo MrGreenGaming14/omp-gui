@@ -1,0 +1,16 @@
+# header
+model = 'old' # note
+approval = "on-request"
+dotted.key = "d"
+
+[profiles.fast]
+# effort comment
+model_reasoning_effort = "low"   # trailing
+
+# before other
+[other]
+x = 1
+arr = [
+  "a", # c
+  "b",
+]
