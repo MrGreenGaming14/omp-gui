@@ -81,6 +81,8 @@ has exactly one row below; `loa_golden_tests` fails otherwise.
   (`CREATE TABLE remote_audit` and the indexes `remote_audit_session`, `remote_audit_host`).
   sqlite stores each statement without `IF NOT EXISTS` and the `;`.
 - `remote/remote_audit.rows.json`: `SELECT * FROM remote_audit ORDER BY id` after four `SqliteAudit::record` calls.
+- `remote/remote_bash.schema.json`, `remote/remote_file.schema.json`: `schemars::schema_for!` (1.2.3) of `BashArgs` and
+  `FileArgs` in `crates/loa-remote/src/tools.rs`, as `serde_json::to_string`; `loa_remote_tests` rebuilds each.
 - `contracts/*.schema.json`: `HostToolSpec::input_schema` (schemars 1.x via `DynTool::spec`) for the argument
   structs in `crates/loa-contracts/tests/golden.rs`; `loa_contracts_tests` rebuilds each with `loa::contracts::schema`.
 - `util/iso.txt`: `<ms> <format_iso_ms(ms)>` lines from `loa_util::time`.
@@ -249,6 +251,8 @@ has exactly one row below; `loa_golden_tests` fails otherwise.
 | trust/v1_reshared_token.keys | 142 | 96e9baaf4a558b6c971427ab2b0e57909aab10a501688219712f6a6de3931a44 | a849b040ba4004d6581283112704296c4e77f026 |
 | remote/remote_audit.rows.json | 895 | 1d57706b8d18f85bbbff2a005ddd4b8b70caead55ec0f80823306bc5438cfde6 | b128c428ea2976fd62bc1ef28ccc783137388e80 |
 | remote/remote_audit.sql | 402 | b7334365648a9196c6a55413655a3d21c81ea5b3a9e26eec6796eff77069bfdd | b128c428ea2976fd62bc1ef28ccc783137388e80 |
+| remote/remote_bash.schema.json | 607 | f86a1b9c6260041d17352c284536d0d6a514f531ec3617b4d1756545110d04c0 | 4ac9ef8596c347a6b4240da5807c1f24880440e2 |
+| remote/remote_file.schema.json | 1029 | 73ae251244fc1d5cc379fe5f63b1bcc20f3a7d92709efa087e6d14931da4c7ad | 4ac9ef8596c347a6b4240da5807c1f24880440e2 |
 | sandbox/hello.bin | 18 | 009a43e580d8592a9631260defbfcf412a678b11d341bd0133a4b339068678d2 | 196e70f4605a2098833377482c9457a5440e27a2 |
 | sandbox/request_exec_default.bin | 11 | 98e11f2427bc7a173415d4b058e4d1402329936757867005302f6f6d96e7329d | 196e70f4605a2098833377482c9457a5440e27a2 |
 | sandbox/request_exec_full.bin | 504 | d08b434c63190ca08fd73965b9bc7af3a4a31b3106a5c86e255d68f4c9e4ac70 | 196e70f4605a2098833377482c9457a5440e27a2 |
