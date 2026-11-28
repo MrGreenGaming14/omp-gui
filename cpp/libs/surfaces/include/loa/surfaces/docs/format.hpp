@@ -91,7 +91,6 @@ struct DocFormat {
     std::string_view mime;
     std::span<const std::string_view> exts;
     Sniff sniff;
-    // Null for formats not built yet (the OOXML parsers live in S5b).
     Opener open;
 };
 
