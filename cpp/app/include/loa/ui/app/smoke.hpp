@@ -66,5 +66,13 @@ class Smoke {
 [[nodiscard]] QWidget* settings_workflows_screen();
 // Checks the list, the agent access rows, steps and rule blocks.
 [[nodiscard]] std::string check_settings_workflows_screen(QWidget& screen);
+// The `peers` screen: this node, a peer and a nearby node, and the peer's grant form asking for SSH consent.
+[[nodiscard]] QWidget* settings_peers_screen();
+// Checks the node card, peer rows, grants and the SSH confirmation.
+[[nodiscard]] std::string check_settings_peers_screen(QWidget& screen);
+// The `updates` screen: a held omp update with its gate report open, and an app swap pending.
+[[nodiscard]] QWidget* settings_updates_screen();
+// Checks the status lines, hold choices, gate report and peer standing.
+[[nodiscard]] std::string check_settings_updates_screen(QWidget& screen);
 
 } // namespace loa::ui::app
