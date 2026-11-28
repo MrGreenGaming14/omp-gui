@@ -1,3 +1,5 @@
+find_package(CURL REQUIRED)
+
 add_library(loa_harness STATIC
   src/kit/jsonrpc.cpp
   src/kit/ledger.cpp
@@ -27,6 +29,17 @@ add_library(loa_harness STATIC
   src/claude/native.cpp
   src/registry/registry.cpp)
 target_sources(loa_harness PRIVATE
+  src/acp/acp.cpp
+  src/acp/host.cpp
+  src/acp/mapper.cpp
+  src/acp/wire.cpp
+  src/opencode/client.cpp
+  src/opencode/event.cpp
+  src/opencode/mapper.cpp
+  src/opencode/native.cpp
+  src/opencode/opencode.cpp)
+target_link_libraries(loa_harness PUBLIC CURL::libcurl)
+target_sources(loa_harness PRIVATE
   src/omp/rpc/client.cpp
   src/omp/rpc/command.cpp
   src/omp/rpc/event.cpp
@@ -36,6 +49,14 @@ target_sources(loa_harness PRIVATE
   src/omp/native/import.cpp
   src/omp/native/export.cpp
   src/omp/native/history.cpp)
+target_sources(loa_harness PRIVATE
+  src/omp/session.cpp
+  src/omp/mapper.cpp
+  src/omp/launch.cpp
+  src/omp/account.cpp
+  src/omp/oauth.cpp
+  src/omp/validate.cpp
+  src/omp/oneshot.cpp)
 add_library(loa::harness ALIAS loa_harness)
 target_include_directories(loa_harness PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(loa_harness PUBLIC loa::contracts loa::core loa::runtime loa::settings)
@@ -83,6 +104,21 @@ target_sources(loa_harness_tests PRIVATE
   tests/omp/native_import_test.cpp
   tests/omp/native_export_test.cpp
   tests/omp/native_history_test.cpp)
+target_sources(loa_harness_tests PRIVATE
+  tests/omp/adapter_session_test.cpp
+  tests/omp/adapter_mapper_test.cpp
+  tests/omp/adapter_launch_test.cpp
+  tests/omp/adapter_account_test.cpp
+  tests/omp/adapter_oneshot_test.cpp
+  tests/opencode/driver_test.cpp
+  tests/opencode/event_test.cpp
+  tests/opencode/mapper_test.cpp
+  tests/opencode/native_test.cpp
+  tests/opencode/session_test.cpp
+  tests/acp/acp_test.cpp)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(LOA_HARNESS_HTTPLIB REQUIRED IMPORTED_TARGET cpp-httplib)
+target_link_libraries(loa_harness_tests PRIVATE PkgConfig::LOA_HARNESS_HTTPLIB)
 target_compile_definitions(loa_harness_tests PRIVATE LOA_GOLDEN_DIR="${CMAKE_SOURCE_DIR}/tests/golden"
   LOA_HARNESS_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(loa_harness_tests PRIVATE LOA_HARNESS_FIXTURES="${CMAKE_SOURCE_DIR}/../crates/loa-harness/fixtures")

@@ -37,7 +37,8 @@ TEST_CASE("registry: registered builds receive the env") {
     (void)list[2]->build(std::nullopt);
     CHECK(seen == "me");
     CHECK(list[2]->account(std::nullopt) == nullptr);
-    CHECK(list[0]->build(std::nullopt) == nullptr);
+    // omp is built into the registry.
+    CHECK(list[0]->build(std::nullopt) != nullptr);
     register_build("codex", {});
 }
 

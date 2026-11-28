@@ -20,6 +20,7 @@ cargo run --manifest-path cpp/libs/harness/tools/golden_gen/Cargo.toml
 cargo run --manifest-path cpp/libs/sandbox/tools/golden_gen/Cargo.toml -- golden cpp/tests/golden/sandbox
 cargo run --manifest-path cpp/libs/projects/tools/golden_gen/Cargo.toml -- cpp/tests/golden/projects
 (cd cpp/libs/p2p/tests/interop && cp ../../../../../Cargo.lock . && cargo run -- yamux-capture "$LOA_GOLDEN_OUT/p2p/yamux/rust-client.bin"; rm Cargo.lock)
+cargo run --manifest-path cpp/libs/updater/tools/golden_gen/Cargo.toml -- cpp/tests/golden/updater
 ```
 
 Then update the rows of `MANIFEST.md` (length, sha256, source SHA) for every changed file.
@@ -44,3 +45,4 @@ Then update the rows of `MANIFEST.md` (length, sha256, source SHA) for every cha
 | `cpp/libs/mcp/tests/import-golden` (scratch binary on `loa-mcp`; reads the hand-written `mcp/home/*`, `mcp/project/*` configs) | `mcp/import.expected.json` |
 | `cpp/libs/sandbox/tools/golden_gen` `golden` (standalone crate over `loa-sandbox`; its `client <abs path to stub>` mode runs the Rust `StubClient` against a stub binary) | `sandbox/*` |
 | `cpp/libs/projects/tools/golden_gen` (standalone crate over `loa-projects`; outside the workspace) | `projects/*` |
+| `cpp/libs/updater/tools/golden_gen` (standalone crate over `loa-updater`, `loa-settings` and `loa-util`; signs artifacts with Rust Ed25519 and writes a swapped state directory) | `updater/*` |
