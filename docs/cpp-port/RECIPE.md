@@ -123,3 +123,5 @@ The Rust workspace on `origin/main` has 27 crates. Each maps to one C++ target; 
 |`loa-app`|`cpp/app` (executable `loa-qt`)|`loa::app`|
 
 UI modules depend only on `loa::view` and `cpp/ui/kit`, never on contracts, settings, surfaces or any domain library, mirroring the `loa-view` rule in `docs/ARCHITECTURE.md`. Where the Qt UI rules say session data arrives as `loa::core::Dom`, read: as the `loa::view` session view models.
+
+The session bus (`loa::bus`, #351) validates and persists patches before updating the DOM and publishing. Use `subscribe_seq` to start from a journal replay without copying the live DOM, `Policy::every_patch` for replication, and `Policy::coalescing` only for UI mirrors. A `Lagged` event identifies the first missing sequence; replay or resubscribe before consuming more patches. `loa::bus::frame` owns the shared little-endian record framing and CRC32.
