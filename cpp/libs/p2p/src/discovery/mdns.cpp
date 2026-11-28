@@ -488,4 +488,6 @@ Availability Mdns::availability() const {
     return {Availability::State::active, "announcing and browsing on the LAN"};
 }
 
+void Mdns::stop() { impl_->thread.request_stop(); }
+
 } // namespace loa::p2p

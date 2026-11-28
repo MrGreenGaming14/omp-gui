@@ -46,6 +46,7 @@ Smoke& Smoke::registry() {
         });
         s.add("agents", [] { return agents_screen(); }, check_agents_screen);
         s.add("panel", [] { return panel_screen(); }, check_panel_screen);
+        s.add("terminal", [] { return terminal_screen(); }, check_terminal_screen);
         s.add("transcript", [] { return transcript_screen(); }, check_transcript_screen);
         s.add("shell", [] {
             auto* frame = new shell::ShellView;

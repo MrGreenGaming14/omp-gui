@@ -33,6 +33,10 @@ class NodeError {
         apply,
         request,
         replicate,
+        // `unknown peer <key>`, pre-formatted in `message`.
+        unknown_peer,
+        // The endpoint is not running; `message` is the display text.
+        not_started,
     };
 
     NodeError(Kind kind, std::string message) : kind_(kind), message_(std::move(message)) {}
