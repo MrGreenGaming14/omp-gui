@@ -29,6 +29,10 @@ add_library(loa_harness STATIC
   src/claude/native.cpp
   src/registry/registry.cpp)
 target_sources(loa_harness PRIVATE
+  src/acp/acp.cpp
+  src/acp/host.cpp
+  src/acp/mapper.cpp
+  src/acp/wire.cpp
   src/opencode/client.cpp
   src/opencode/event.cpp
   src/opencode/mapper.cpp
@@ -97,7 +101,8 @@ target_sources(loa_harness_tests PRIVATE
   tests/opencode/event_test.cpp
   tests/opencode/mapper_test.cpp
   tests/opencode/native_test.cpp
-  tests/opencode/session_test.cpp)
+  tests/opencode/session_test.cpp
+  tests/acp/acp_test.cpp)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(LOA_HARNESS_HTTPLIB REQUIRED IMPORTED_TARGET cpp-httplib)
 target_link_libraries(loa_harness_tests PRIVATE PkgConfig::LOA_HARNESS_HTTPLIB)
