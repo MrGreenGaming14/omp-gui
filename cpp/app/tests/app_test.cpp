@@ -126,7 +126,7 @@ TEST_CASE("smoke screens: every registered screen passes, unknown screens are re
     qt_app();
     auto& smoke = Smoke::registry();
     const auto names = smoke.names();
-    for (const char* required : {"agents", "composer", "kit", "panel", "shell", "terminal"})
+    for (const char* required : {"agents", "composer", "kit", "panel", "projects", "shell", "terminal", "workflows"})
         CHECK(std::ranges::find(names, required) != names.end());
     for (const auto& name : names) {
         CAPTURE(name);

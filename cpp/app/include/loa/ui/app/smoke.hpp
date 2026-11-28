@@ -54,5 +54,17 @@ class Smoke {
 [[nodiscard]] QWidget* agents_screen();
 // Checks the panes rendered: the subagent rows, the job row and the tools tabs.
 [[nodiscard]] std::string check_agents_screen(QWidget& screen);
+// The `projects` screen: a project's settings, sessions and terminal history, over the New project form.
+[[nodiscard]] QWidget* settings_projects_screen();
+// Checks the project sections and the New project form with its `loa-new-project-name` input.
+[[nodiscard]] std::string check_settings_projects_screen(QWidget& screen);
+// The agent definitions screen (shown by `--smoke agents` beside the panes): the list and a copied agent's form.
+[[nodiscard]] QWidget* settings_agents_screen();
+// Checks the list, the template, model and thinking pickers and the form fields.
+[[nodiscard]] std::string check_settings_agents_screen(QWidget& screen);
+// The `workflows` screen: the workflow list and a managed workflow's structured editor.
+[[nodiscard]] QWidget* settings_workflows_screen();
+// Checks the list, the agent access rows, steps and rule blocks.
+[[nodiscard]] std::string check_settings_workflows_screen(QWidget& screen);
 
 } // namespace loa::ui::app
