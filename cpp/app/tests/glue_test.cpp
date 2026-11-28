@@ -8,15 +8,24 @@
 
 #include "loa/app/panes.hpp"
 #include "loa/app/usage_window.hpp"
-#include "testing.hpp"
+#include <fstream>
+#include <sstream>
+
+#include "support/test_app.hpp"
 
 using namespace loa::app;
-using loa::app::testing::read_file;
 using loa::app::testing::TestApp;
 namespace palette = loa::ui::shell::palette;
 namespace fs = std::filesystem;
 
 namespace {
+
+std::string read_file(const std::filesystem::path& path) {
+    std::ifstream in(path, std::ios::binary);
+    std::stringstream text;
+    text << in.rdbuf();
+    return text.str();
+}
 
 std::vector<std::string> titles(const App& app) {
     std::vector<std::string> out;
@@ -115,7 +124,7 @@ TEST_CASE("usage: the window's state") {
 }
 
 TEST_CASE("usage: a read sets the sidebar meter and Close leaves the window") {
-    TestApp test({});
+    TestApp test;
     auto& app = *test.app;
     app.windows.overlay = overlay::Usage{};
     test.send(msg::Usage{usage::msg::Loaded{read_file(fs::path(LOA_GOLDEN_DIR) / "app/usage.json")}});
@@ -127,7 +136,7 @@ TEST_CASE("usage: a read sets the sidebar meter and Close leaves the window") {
 // ---- panes -------------------------------------------------------------------------------------
 
 TEST_CASE("panes: the registry holds diff, files and terminal in tab order") {
-    TestApp test({});
+    TestApp test;
     const auto& app = *test.app;
     std::vector<std::string> ids;
     for (const auto& pane : panes::REGISTRY) {
@@ -168,7 +177,7 @@ TEST_CASE("keys: command ids route to their command with the argument") {
 }
 
 TEST_CASE("keys: panel and view commands") {
-    TestApp test({});
+    TestApp test;
     auto& app = *test.app;
     const bool open = app.ctx.shell.panel_open();
     test.command("panel.toggle");
@@ -192,8 +201,8 @@ TEST_CASE("keys: panel and view commands") {
     CHECK(test.notice() == "Start or open a session to type a prompt");
     test.command("sidebar.pin");
     CHECK(test.notice() == "Open a session to pin it");
-    test.command("composer.model.0");
-    CHECK(test.notice() == "Unknown command composer.model.0");
+    test.command("composer.model.99");
+    CHECK(test.notice() == "Unknown command composer.model.99");
     test.command("project.tabs.toggle");
     CHECK(app.ctx.shell.project_tabs());
     auto focus = app.command(palette::CommandId("focus.previous"));
@@ -204,7 +213,7 @@ TEST_CASE("keys: panel and view commands") {
 }
 
 TEST_CASE("keys: the palette lists app commands, reference keys and shortcut hints") {
-    TestApp test({});
+    TestApp test;
     auto& app = *test.app;
     test.send(msg::Palette{palette::msg::Open{}});
     const auto listed = titles(app);

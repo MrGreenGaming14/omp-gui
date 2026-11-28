@@ -3,15 +3,16 @@
 // config it contributes. The role switch tests that need the models, sessions and decisions
 // areas belong to those areas.
 
+#include <fstream>
+#include <sstream>
+
 #include <doctest/doctest.h>
 
 #include "areas/workflows/workflows.hpp"
-#include "testing.hpp"
+#include "support/test_app.hpp"
 
 using namespace loa::app;
-using loa::app::testing::read_file;
 using loa::app::testing::TestApp;
-using loa::app::testing::write_file;
 namespace wf = loa::app::areas::workflows;
 namespace screen = loa::ui::settings::workflows;
 namespace shown = loa::view::settings::workflows;
@@ -20,18 +21,29 @@ namespace fs = std::filesystem;
 
 namespace {
 
+std::string read_file(const fs::path& path) {
+    std::ifstream in(path, std::ios::binary);
+    std::stringstream text;
+    text << in.rdbuf();
+    return text.str();
+}
+
+void write_file(const fs::path& path, std::string_view text) {
+    fs::create_directories(path.parent_path());
+    std::ofstream(path, std::ios::binary) << text;
+}
+
+// The app with omp's `config.yml` and `RULES.md` in `<dir>/omp`, on the workflows screen.
 struct WorkflowsApp : TestApp {
-    WorkflowsApp() : TestApp({boot<wf::State>()}) {
+    fs::path agent = dir.path() / "omp";
+
+    WorkflowsApp() {
         write_file(agent / "config.yml", "modelRoles:\n  default: provider/model\n  DEEP: provider/deep\n");
         write_file(agent / "RULES.md", "## Deep Mode\nWhen the active model role is `DEEP`.\nOriginal.\n");
         send(wf::State::message(wf::msg::Open{}));
     }
 
-    [[nodiscard]] wf::State& area() const {
-        auto* state = app->areas.get<wf::State>();
-        REQUIRE(state != nullptr);
-        return *state;
-    }
+    [[nodiscard]] wf::State& area() const { return TestApp::area<wf::State>(); }
     void local(screen::Local message) { send(wf::State::message(wf::msg::Screen{screen::Message{std::move(message)}})); }
     // Hands the screen's `intent` to the area as the screen itself emits it.
     void intent(shown::Intent intent) { send(wf::State::message(wf::msg::Screen{screen::Message{std::move(intent)}})); }
@@ -40,7 +52,6 @@ struct WorkflowsApp : TestApp {
     // Appends `text` to the raw Markdown editor.
     void append(std::string_view text) { local(local::Text{area().screen().text() + std::string(text)}); }
 };
-
 
 } // namespace
 

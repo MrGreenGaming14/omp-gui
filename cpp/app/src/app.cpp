@@ -2,6 +2,8 @@
 
 #include <algorithm>
 
+#include "loa/app/adapters/models.hpp"
+#include "loa/app/adapters/summarizer.hpp"
 #include "loa/app/panes.hpp"
 #include "loa/app/perform.hpp"
 #include "loa/app/routes.hpp"
@@ -41,50 +43,6 @@ struct overloaded : F... {
 
 std::optional<std::string_view> opt_view(const std::optional<std::string>& s) {
     return s ? std::optional<std::string_view>(*s) : std::nullopt;
-}
-
-// `omp -p` on the given model, `@smol` by default (`adapters/summarizer.rs`).
-class OmpSummarizers final : public projects::Summarizers {
-  public:
-    explicit OmpSummarizers(omp::OneShot oneshot) : oneshot_(std::move(oneshot)) {}
-    [[nodiscard]] std::pair<std::shared_ptr<const projects::Summarizer>, std::optional<std::string>> on(
-        std::optional<std::string_view> model) const override {
-        std::string picked(oneshot_.pick(model));
-        std::string name = picked;
-        while (name.starts_with('@')) name.erase(0, 1);
-        auto summarizer = omp::OneShot(oneshot_).with_model(std::move(picked));
-        return {std::make_shared<omp::OneShot>(std::move(summarizer)), std::move(name)};
-    }
-
-  private:
-    omp::OneShot oneshot_;
-};
-
-// The model screens' backend parts (`adapters/models.rs`): omp started from `launch`, omp's
-// active agent directory, validation by omp, the platform browser and the accounts of the
-// other harnesses `factories` know, each on the executable `harnesses` runs it with.
-models::Parts models_parts(const omp::OmpLaunch& launch, const rt::Harnesses& harnesses,
-                           const std::vector<std::shared_ptr<contracts::HarnessFactory>>& factories) {
-    auto rpc = std::make_shared<omp::OmpService>(launch);
-    auto opener = std::make_shared<account_support::SystemUrlOpener>();
-    auto omp_account = std::make_shared<omp::OmpAccount>(rpc, opener, launch);
-    std::vector<std::shared_ptr<contracts::HarnessAccount>> accounts;
-    for (const auto& factory : factories) {
-        if (factory->id() == models::OMP) continue;
-        std::optional<std::filesystem::path> executable;
-        if (const auto* harness = harnesses.get(factory->id())) executable = harness->executable;
-        if (auto account = factory->account(executable)) accounts.push_back(std::move(account));
-    }
-    return models::Parts{
-        .rpc = rpc,
-        .omp_account = omp_account,
-        .files = std::make_shared<omp::OmpLaunch>(launch),
-        .validator = std::make_shared<omp::OmpSettingsValidator>(
-            launch.executable, std::make_shared<account_support::AsioProcessRunner>()),
-        .opener = opener,
-        .harnesses = std::move(accounts),
-        .environment = std::make_shared<settings::models::keys::ProcessEnvironment>(),
-    };
 }
 
 // What a shell or composer event asks of the app.
@@ -284,9 +242,9 @@ AppParts machine_parts(const Services& services, std::shared_ptr<session::Librar
     omp::OmpLaunch launch;
     launch.executable = executable(runtime.harnesses.roles_id()).value_or(omp::OmpLaunch{}.executable);
     launch.cwd = runtime.cwd;
-    auto models = models_parts(launch, runtime.harnesses, loa::harness::factories({node, omp_dir}));
+    auto models = adapters::models_parts(launch, runtime.harnesses, loa::harness::factories({node, omp_dir}));
     // Digests come from omp's `smol` role.
-    auto summarizer = std::make_shared<OmpSummarizers>(
+    auto summarizer = std::make_shared<adapters::OmpSummarizers>(
         omp::OneShot(executable("omp").value_or("omp"), services.storage.dirs.data));
     auto home = loa::runtime::fs::home().value_or(".");
     return AppParts{std::move(runtime), std::move(models), std::move(summarizer), std::move(home),

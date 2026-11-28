@@ -6,6 +6,15 @@ endif()
 
 # The app minus `main`, so tests drive the same code as `loa-qt`.
 add_library(loa_app STATIC
+  # The ports other libraries declare, implemented over this app's libraries (`loa-app/src/adapters`).
+  src/adapters/models.cpp
+  src/adapters/notifier.cpp
+  src/adapters/peer_sessions.cpp
+  src/adapters/sandbox.cpp
+  src/adapters/ssh_terminal.cpp
+  src/adapters/summarizer.cpp
+  src/adapters/surface.cpp
+  src/adapters/update_gates.cpp
   src/agents_smoke.cpp
   src/app.cpp
   src/app/keys.cpp
@@ -25,7 +34,6 @@ add_library(loa_app STATIC
   src/lifecycle.cpp
   src/local_fs.cpp
   src/models_smoke.cpp
-  src/notifier.cpp
   src/panel_smoke.cpp
   src/peers_updates_smoke.cpp
   src/registry.cpp
@@ -51,8 +59,8 @@ add_library(loa_app STATIC
 add_library(loa::app ALIAS loa_app)
 target_include_directories(loa_app PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(loa_app PUBLIC loa::ui_kit loa::ui_session loa::ui_shell loa::ui_panel loa::ui_settings loa::ui_terminal loa::ui_surface loa::view loa::runtime
-  loa::app_runtime loa::bus loa::contracts loa::harness loa::mcp loa::models loa::p2p loa::projects loa::session loa::settings
-  loa::surfaces loa::trust Qt6::Core Qt6::Gui Qt6::Widgets)
+  loa::app_runtime loa::bus loa::contracts loa::harness loa::mcp loa::models loa::p2p loa::projects loa::remote loa::sandbox
+  loa::session loa::settings loa::surfaces loa::trust loa::updater Qt6::Core Qt6::Gui Qt6::Widgets)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   # libnotify (and its glib headers) stay private to `notifier.cpp`.
   target_link_libraries(loa_app PRIVATE PkgConfig::LIBNOTIFY)
@@ -62,8 +70,10 @@ add_executable(loa-qt src/main.cpp)
 set_target_properties(loa-qt PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
 target_link_libraries(loa-qt PRIVATE loa::app)
 
-loa_add_test(app SOURCES tests/app_test.cpp tests/app_core_test.cpp tests/view_test.cpp tests/glue_test.cpp tests/workflows_test.cpp
+loa_add_test(app SOURCES tests/app_test.cpp tests/app_core_test.cpp tests/view_test.cpp tests/adapters_test.cpp
+  tests/update_gates_test.cpp tests/routing_test.cpp tests/support/test_app.cpp tests/glue_test.cpp tests/workflows_test.cpp
   LINK loa::app loa::models_testing loa::harness_testing)
+target_include_directories(loa_app_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tests")
 target_compile_definitions(loa_app_tests PRIVATE LOA_GOLDEN_DIR="${CMAKE_SOURCE_DIR}/tests/golden")
 # The area tests reach the areas' private headers under `src/`.
 target_include_directories(loa_app_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
