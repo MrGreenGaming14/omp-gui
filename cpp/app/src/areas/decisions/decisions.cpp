@@ -9,6 +9,7 @@
 #include <QWidget>
 #include <QWindow>
 
+#include "areas/tools/tools.hpp"
 #include "loa/app/perform.hpp"
 #include "loa/app/view/session.hpp"
 #include "loa/core/schema.hpp"
@@ -18,17 +19,6 @@
 #include "loa/ui/kit/widgets.hpp"
 #include "loa/ui/session/decisions/card.hpp"
 #include "loa/ui/session/decisions/view.hpp"
-
-namespace loa::app::tools {
-
-bool is_remote_decision(const core::Dom& dom, core::NodeId decision) {
-    const auto* node = dom.get(decision);
-    if (!node || node->kind != core::ElementKind::Decision) return false;
-    const auto id = node->str_attr(core::attr::REQUEST_ID);
-    return id && id->starts_with(REMOTE_REQUEST_PREFIX);
-}
-
-} // namespace loa::app::tools
 
 namespace loa::app::areas::decisions {
 

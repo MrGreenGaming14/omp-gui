@@ -6,6 +6,7 @@
 #include <doctest/doctest.h>
 
 #include "areas/decisions/decisions.hpp"
+#include "areas/tools/tools.hpp"
 #include "loa/core/schema.hpp"
 #include "loa/runtime/time.hpp"
 #include "loa/ui/session/decisions/card.hpp"
@@ -120,7 +121,7 @@ TEST_CASE("decisions: remote decisions are told apart by their request id") {
                        0));
     REQUIRE(dom.commit(Draft::insert(loa::core::NodeId{1}, ElementKind::Decision, {{"kind", "approval"}, {"request_id", "remote:7"}}), 0));
     REQUIRE(dom.commit(Draft::insert(loa::core::NodeId{1}, ElementKind::Decision, {{"kind", "approval"}, {"request_id", "7"}}), 0));
-    CHECK(tools::is_remote_decision(dom, loa::core::NodeId{2}));
-    CHECK_FALSE(tools::is_remote_decision(dom, loa::core::NodeId{3}));
-    CHECK_FALSE(tools::is_remote_decision(dom, loa::core::NodeId{1}));
+    CHECK(areas::tools::is_remote_decision(dom, loa::core::NodeId{2}));
+    CHECK_FALSE(areas::tools::is_remote_decision(dom, loa::core::NodeId{3}));
+    CHECK_FALSE(areas::tools::is_remote_decision(dom, loa::core::NodeId{1}));
 }

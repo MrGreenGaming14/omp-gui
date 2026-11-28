@@ -69,8 +69,7 @@ struct Answered {
 } // namespace decisions
 namespace tools {
 struct Open {};
-// Answer to a remote host approval or host key question, from its decision card (the decisions
-// area's): the `remote` server owns these decisions, not the harness.
+// A remote host question's card (`areas::tools::is_remote_decision`) was answered in a session.
 struct AnswerDecision {
     SessionId session;
     core::NodeId decision;
@@ -150,13 +149,6 @@ inline constexpr std::string_view RECENT_PREFIX = "peer:";
 // Whether the sidebar session `id` is a peer's.
 [[nodiscard]] inline bool is_remote(std::string_view id) { return id.starts_with(RECENT_PREFIX); }
 } // namespace peers
-
-namespace tools {
-// The `request_id` prefix of the decisions the tools area's `remote` server raises.
-inline constexpr std::string_view REMOTE_REQUEST_PREFIX = "remote:";
-// Whether `decision` is a remote host approval or host key question of the `remote` server.
-[[nodiscard]] bool is_remote_decision(const core::Dom& dom, core::NodeId decision);
-} // namespace tools
 
 // What the app asks of the sessions area.
 class SessionsPort {

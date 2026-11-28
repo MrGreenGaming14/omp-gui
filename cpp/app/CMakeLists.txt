@@ -37,6 +37,11 @@ add_library(loa_app STATIC
   src/areas/harness/harness.cpp
   src/areas/models/models.cpp
   src/areas/models/session.cpp
+  src/areas/sandbox/sandbox.cpp
+  src/areas/tools/listing.cpp
+  src/areas/tools/remote.cpp
+  src/areas/tools/tools.cpp
+  src/tools_smoke.cpp
   src/areas/projects/projects.cpp
   src/areas/surfaces/surfaces.cpp
   src/areas/surfaces/video.cpp
@@ -81,6 +86,7 @@ add_library(loa_app STATIC
   src/view/settings/workflows.cpp)
 add_library(loa::app ALIAS loa_app)
 target_include_directories(loa_app PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
+target_include_directories(loa_app PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(loa_app PUBLIC loa::ui_kit loa::ui_session loa::ui_shell loa::ui_panel loa::ui_settings loa::ui_terminal loa::ui_surface loa::view loa::runtime
   loa::app_runtime loa::bus loa::contracts loa::harness loa::mcp loa::models loa::p2p loa::projects loa::remote loa::sandbox
   loa::session loa::settings loa::surfaces loa::trust loa::updater Qt6::Core Qt6::Gui Qt6::Widgets)
@@ -97,7 +103,8 @@ target_link_libraries(loa-qt PRIVATE loa::app)
 
 loa_add_test(app SOURCES tests/app_test.cpp tests/app_core_test.cpp tests/view_test.cpp tests/adapters_test.cpp
   tests/update_gates_test.cpp tests/routing_test.cpp tests/support/test_app.cpp tests/glue_test.cpp tests/workflows_test.cpp
-  tests/agents_area_test.cpp tests/projects_area_test.cpp tests/sessions_test.cpp tests/peers_test.cpp tests/surfaces_area_test.cpp tests/updater_area_test.cpp
+  tests/agents_area_test.cpp tests/projects_area_test.cpp tests/sessions_test.cpp tests/peers_test.cpp tests/tools_area_test.cpp
+  tests/sandbox_area_test.cpp tests/surfaces_area_test.cpp tests/updater_area_test.cpp
   tests/harness_area_test.cpp tests/decisions_area_test.cpp tests/models_area_test.cpp
   LINK loa::app loa::models_testing loa::harness_testing)
 target_include_directories(loa_app_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tests")
@@ -143,3 +150,5 @@ add_test(NAME loa_qt_smoke_updater COMMAND loa-qt --smoke updater)
 set_tests_properties(loa_qt_smoke_updater PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 5)
 add_test(NAME loa_qt_smoke_decisions COMMAND loa-qt --smoke decisions)
 set_tests_properties(loa_qt_smoke_decisions PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 5)
+add_test(NAME loa_qt_smoke_tools COMMAND loa-qt --smoke tools)
+set_tests_properties(loa_qt_smoke_tools PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 5)

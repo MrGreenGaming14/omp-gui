@@ -98,6 +98,11 @@ class Smoke {
 [[nodiscard]] QWidget* decisions_screen();
 // Checks one card per kind rendered, with the approval's diff preview, and the settings.
 [[nodiscard]] std::string check_decisions_screen(QWidget& screen);
+// The `tools` screen: the tools area's Tools and Remote shell tabs and the sandbox area's tab,
+// drawn by the app core's areas over a temporary data directory.
+[[nodiscard]] QWidget* tools_screen();
+// Checks the three tabs rendered.
+[[nodiscard]] std::string check_tools_screen(QWidget& screen);
 // The `surfaces` and `updater` screens: the app core's Surfaces tab and Updates screen, drawn by
 // their areas over a temporary data directory.
 [[nodiscard]] QWidget* surfaces_area_screen();
