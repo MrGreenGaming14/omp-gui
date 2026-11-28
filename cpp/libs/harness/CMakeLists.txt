@@ -1,3 +1,5 @@
+find_package(CURL REQUIRED)
+
 add_library(loa_harness STATIC
   src/kit/jsonrpc.cpp
   src/kit/ledger.cpp
@@ -15,12 +17,28 @@ add_library(loa_harness STATIC
   src/account_support/configdoc.cpp
   src/account_support/opener.cpp
   src/account_support/process.cpp
+  src/codex/account.cpp
+  src/codex/adapter.cpp
+  src/codex/mapper.cpp
+  src/codex/rollout.cpp
+  src/codex/session.cpp
+  src/claude/account.cpp
+  src/claude/driver.cpp
+  src/claude/mapper.cpp
+  src/claude/mcp.cpp
+  src/claude/native.cpp
   src/registry/registry.cpp)
 target_sources(loa_harness PRIVATE
   src/acp/acp.cpp
   src/acp/host.cpp
   src/acp/mapper.cpp
-  src/acp/wire.cpp)
+  src/acp/wire.cpp
+  src/opencode/client.cpp
+  src/opencode/event.cpp
+  src/opencode/mapper.cpp
+  src/opencode/native.cpp
+  src/opencode/opencode.cpp)
+target_link_libraries(loa_harness PUBLIC CURL::libcurl)
 target_sources(loa_harness PRIVATE
   src/omp/rpc/client.cpp
   src/omp/rpc/command.cpp
@@ -51,6 +69,11 @@ loa_add_test(harness
     tests/kit/proc_test.cpp
     tests/kit/residual_test.cpp
     tests/kit/rpc_test.cpp
+    tests/claude/account_test.cpp
+    tests/claude/driver_test.cpp
+    tests/claude/mapper_test.cpp
+    tests/claude/mcp_test.cpp
+    tests/claude/native_test.cpp
     tests/native/native_test.cpp
     tests/omp2/omp2_test.cpp
     tests/account_support/configdoc_test.cpp
@@ -58,6 +81,11 @@ loa_add_test(harness
     tests/account_support/process_test.cpp
     tests/registry/registry_test.cpp
     tests/testing/dom_test.cpp
+    tests/codex/account.cpp
+    tests/codex/adapter.cpp
+    tests/codex/mapper.cpp
+    tests/codex/rollout.cpp
+    tests/codex/session.cpp
     tests/testing/scripted_test.cpp
   LINK loa::harness loa::harness_testing)
 target_sources(loa_harness_tests PRIVATE
@@ -67,7 +95,17 @@ target_sources(loa_harness_tests PRIVATE
   tests/omp/rpc_frames_test.cpp
   tests/omp/native_import_test.cpp
   tests/omp/native_export_test.cpp
-  tests/omp/native_history_test.cpp
+  tests/omp/native_history_test.cpp)
+target_sources(loa_harness_tests PRIVATE
+  tests/opencode/driver_test.cpp
+  tests/opencode/event_test.cpp
+  tests/opencode/mapper_test.cpp
+  tests/opencode/native_test.cpp
+  tests/opencode/session_test.cpp
   tests/acp/acp_test.cpp)
-target_compile_definitions(loa_harness_tests PRIVATE LOA_GOLDEN_DIR="${CMAKE_SOURCE_DIR}/tests/golden")
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(LOA_HARNESS_HTTPLIB REQUIRED IMPORTED_TARGET cpp-httplib)
+target_link_libraries(loa_harness_tests PRIVATE PkgConfig::LOA_HARNESS_HTTPLIB)
+target_compile_definitions(loa_harness_tests PRIVATE LOA_GOLDEN_DIR="${CMAKE_SOURCE_DIR}/tests/golden"
+  LOA_HARNESS_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(loa_harness_tests PRIVATE LOA_HARNESS_FIXTURES="${CMAKE_SOURCE_DIR}/../crates/loa-harness/fixtures")
