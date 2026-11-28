@@ -1,0 +1,59 @@
+#include "loa/ui/app/smoke.hpp"
+
+#include <cstdio>
+#include <memory>
+
+#include <QApplication>
+#include <QWidget>
+
+namespace loa::ui::app {
+
+Smoke& Smoke::registry() {
+    static Smoke smoke = [] {
+        Smoke s;
+        s.add("kit", [] { return kit_gallery(); }, check_kit_gallery);
+        return s;
+    }();
+    return smoke;
+}
+
+void Smoke::add(std::string name, Build build, Check check) {
+    screens_.insert_or_assign(std::move(name), Entry{std::move(build), std::move(check)});
+}
+
+std::vector<std::string> Smoke::names() const {
+    std::vector<std::string> out;
+    for (const auto& [name, _] : screens_) out.push_back(name);
+    return out;
+}
+
+int Smoke::run(std::string_view screen) const {
+    const auto it = screens_.find(screen);
+    if (it == screens_.end()) {
+        std::string known;
+        for (const auto& n : names()) known += (known.empty() ? "" : ", ") + n;
+        std::fprintf(stderr, "loa-qt: unknown smoke screen `%.*s` (known: %s)\n", static_cast<int>(screen.size()), screen.data(),
+                     known.c_str());
+        return 2;
+    }
+    std::unique_ptr<QWidget> w(it->second.build ? it->second.build() : nullptr);
+    if (!w) {
+        std::fprintf(stderr, "loa-qt: smoke screen `%.*s` did not build\n", static_cast<int>(screen.size()), screen.data());
+        return 1;
+    }
+    w->show();
+    QApplication::processEvents();
+    w->repaint();
+    QApplication::processEvents();
+    if (it->second.check) {
+        if (const auto error = it->second.check(*w); !error.empty()) {
+            std::fprintf(stderr, "loa-qt: smoke screen `%.*s` failed: %s\n", static_cast<int>(screen.size()), screen.data(), error.c_str());
+            return 1;
+        }
+    }
+    w->close();
+    std::fprintf(stdout, "loa-qt: smoke `%.*s` ok\n", static_cast<int>(screen.size()), screen.data());
+    return 0;
+}
+
+} // namespace loa::ui::app

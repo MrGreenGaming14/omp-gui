@@ -17,6 +17,7 @@ cargo test -p loa-util --test golden -- --ignored
 (cd cpp/libs/settings/tests/agents-golden && cargo run)
 (cd cpp/libs/mcp/tests/import-golden && cargo run -- "$LOA_GOLDEN_OUT/mcp" > "$LOA_GOLDEN_OUT/mcp/import.expected.json")
 cargo run --manifest-path cpp/libs/harness/tools/golden_gen/Cargo.toml
+cargo run --manifest-path cpp/libs/sandbox/tools/golden_gen/Cargo.toml -- golden cpp/tests/golden/sandbox
 ```
 
 Then update the rows of `MANIFEST.md` (length, sha256, source SHA) for every changed file.
@@ -38,3 +39,4 @@ Then update the rows of `MANIFEST.md` (length, sha256, source SHA) for every cha
 | `cpp/libs/surfaces/tests/docs-golden` (scratch binary on `loa-surfaces` feature `docs`; `crates/` stays untouched) | `docs/*` |
 | `cpp/libs/harness/tools/golden_gen` (standalone crate over `loa-harness`; outside the workspace) | `harness/*` |
 | `cpp/libs/mcp/tests/import-golden` (scratch binary on `loa-mcp`; reads the hand-written `mcp/home/*`, `mcp/project/*` configs) | `mcp/import.expected.json` |
+| `cpp/libs/sandbox/tools/golden_gen` `golden` (standalone crate over `loa-sandbox`; its `client <abs path to stub>` mode runs the Rust `StubClient` against a stub binary) | `sandbox/*` |
