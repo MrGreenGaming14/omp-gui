@@ -326,3 +326,7 @@ impl Revocations for GrantStore {
         self.db.locked().query_row(sql, params![grant.0], |r| r.get(0)).unwrap_or(true)
     }
 }
+
+#[cfg(test)]
+#[path = "golden.rs"]
+mod golden;
