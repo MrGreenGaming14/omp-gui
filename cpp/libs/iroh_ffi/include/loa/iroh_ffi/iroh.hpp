@@ -111,6 +111,9 @@ public:
     Result<Connection> accept();
     /// Gracefully closes; the endpoint is unusable afterwards.
     void close();
+    /// Closes like `close()` but keeps the handle alive, so a thread blocked in
+    /// `accept()` returns an error instead of racing the free. Thread-safe.
+    void shutdown();
 
 private:
     Endpoint(void* ep, EndpointId id) noexcept : ep_(ep), id_(id) {}

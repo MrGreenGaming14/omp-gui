@@ -248,6 +248,10 @@ Result<Connection> Endpoint::accept() {
     return conn;
 }
 
+void Endpoint::shutdown() {
+    if (ep_) endpoint_shutdown(h<Endpoint_t>(ep_));
+}
+
 void Endpoint::close() {
     if (ep_) endpoint_close(static_cast<Endpoint_t*>(std::exchange(ep_, nullptr)));
 }
