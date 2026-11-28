@@ -70,5 +70,7 @@ class Value {
 [[nodiscard]] std::expected<Value, loa::Error> parse(std::string_view text);
 // Compact form (no whitespace), keys in stored order.
 [[nodiscard]] std::string dump(const Value& value);
+// Two-space indented form, as serde_json's `to_vec_pretty`.
+[[nodiscard]] std::string dump_pretty(const Value& value);
 
 } // namespace loa::runtime::json
