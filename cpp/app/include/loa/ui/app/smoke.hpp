@@ -50,5 +50,9 @@ class Smoke {
 [[nodiscard]] QWidget* terminal_screen();
 // Checks the canvas is shown, sized, and resized the active terminal's grid.
 [[nodiscard]] std::string check_terminal_screen(QWidget& screen);
+// The `agents` screen: the agents and background jobs panes over a sample session, beside the tools page.
+[[nodiscard]] QWidget* agents_screen();
+// Checks the panes rendered: the subagent rows, the job row and the tools tabs.
+[[nodiscard]] std::string check_agents_screen(QWidget& screen);
 
 } // namespace loa::ui::app

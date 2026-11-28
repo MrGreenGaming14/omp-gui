@@ -2,6 +2,7 @@ find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets)
 
 # The app minus `main`, so tests drive the same code as `loa-qt`.
 add_library(loa_app STATIC
+  src/agents_smoke.cpp
   src/application.cpp
   src/asio_bridge.cpp
   src/kit_gallery.cpp
@@ -32,3 +33,5 @@ add_test(NAME loa_qt_smoke_panel COMMAND loa-qt --smoke panel)
 set_tests_properties(loa_qt_smoke_panel PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 5)
 add_test(NAME loa_qt_smoke_terminal COMMAND loa-qt --smoke terminal)
 set_tests_properties(loa_qt_smoke_terminal PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 5)
+add_test(NAME loa_qt_smoke_agents COMMAND loa-qt --smoke agents)
+set_tests_properties(loa_qt_smoke_agents PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 5)
