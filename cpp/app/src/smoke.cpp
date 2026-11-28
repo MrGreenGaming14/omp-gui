@@ -5,6 +5,7 @@
 
 #include <QApplication>
 #include <QWidget>
+#include <QVBoxLayout>
 
 #include "loa/ui/shell/view.hpp"
 #include "loa/ui/session/composer/view.hpp"
@@ -44,9 +45,26 @@ Smoke& Smoke::registry() {
             if (!view.findChild<QWidget*>(QStringLiteral("composer stop"))) return std::string("missing stop button");
             return std::string();
         });
-        s.add("agents", [] { return agents_screen(); }, check_agents_screen);
+        // The session's agents panes beside the agent definitions screen of the settings.
+        s.add("agents", [] {
+            auto* panes = agents_screen();
+            if (!panes) return static_cast<QWidget*>(nullptr);
+            auto* screen = new QWidget;
+            screen->setAccessibleName(QStringLiteral("agents"));
+            auto* col = new QVBoxLayout(screen);
+            col->addWidget(panes);
+            col->addWidget(settings_agents_screen(), 1);
+            screen->resize(1200, 1200);
+            return screen;
+        }, [](QWidget& screen) {
+            if (auto e = check_agents_screen(screen); !e.empty()) return e;
+            return check_settings_agents_screen(screen);
+        });
+        s.add("projects", [] { return settings_projects_screen(); }, check_settings_projects_screen);
+        s.add("workflows", [] { return settings_workflows_screen(); }, check_settings_workflows_screen);
         s.add("panel", [] { return panel_screen(); }, check_panel_screen);
         s.add("surface", [] { return surface_screen(); }, check_surface_screen);
+        s.add("terminal", [] { return terminal_screen(); }, check_terminal_screen);
         s.add("shell", [] {
             auto* frame = new shell::ShellView;
             auto state = shell::layout::State::make({}).first;

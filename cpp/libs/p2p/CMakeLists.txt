@@ -11,12 +11,15 @@ if(NOT loa_mdns_POPULATED)
 endif()
 
 find_package(OpenSSL 3 REQUIRED COMPONENTS Crypto SSL)
+find_package(SQLite3 REQUIRED)
 
 add_library(loa_p2p STATIC
   src/auth.cpp
   src/discovery/discovery.cpp
   src/discovery/mdns.cpp
   src/discovery/tailnet.cpp
+  src/node.cpp
+  src/peers_db.cpp
   src/protocols/control.cpp
   src/protocols/extra.cpp
   src/protocols/folder.cpp
@@ -32,9 +35,9 @@ add_library(loa_p2p STATIC
 add_library(loa::p2p ALIAS loa_p2p)
 target_include_directories(loa_p2p PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 set_source_files_properties(src/discovery/mdns.cpp PROPERTIES INCLUDE_DIRECTORIES "${loa_mdns_SOURCE_DIR}")
-target_link_libraries(loa_p2p PUBLIC loa::runtime loa::trust loa::core loa::bus PRIVATE loa::iroh_ffi OpenSSL::SSL OpenSSL::Crypto)
+target_link_libraries(loa_p2p PUBLIC loa::runtime loa::trust loa::core loa::bus PRIVATE loa::iroh_ffi OpenSSL::SSL OpenSSL::Crypto SQLite::SQLite3)
 
-loa_add_test(p2p SOURCES tests/discovery.cpp tests/protocols.cpp tests/projection.cpp tests/tcp.cpp tests/transport.cpp
+loa_add_test(p2p SOURCES tests/discovery.cpp tests/node.cpp tests/protocols.cpp tests/projection.cpp tests/tcp.cpp tests/transport.cpp
   tests/wire.cpp tests/yamux.cpp
-  LINK loa::p2p loa::bus loa::core loa::iroh_ffi OpenSSL::SSL OpenSSL::Crypto)
+  LINK loa::p2p loa::bus loa::core loa::iroh_ffi OpenSSL::SSL OpenSSL::Crypto SQLite::SQLite3)
 target_compile_definitions(loa_p2p_tests PRIVATE LOA_GOLDEN_DIR="${CMAKE_SOURCE_DIR}/tests/golden")
