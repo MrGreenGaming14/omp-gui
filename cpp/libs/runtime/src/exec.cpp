@@ -113,7 +113,8 @@ std::expected<Spawned, std::error_code> spawn_raw(const Command& cmd, bool pipe_
         std::string_view entry(*e);
         const auto key = entry.substr(0, entry.find('='));
         const bool overridden = std::ranges::any_of(cmd.env, [&](const auto& kv) { return kv.first == key; });
-        if (!overridden) env.emplace_back(entry);
+        const bool removed = std::ranges::find(cmd.env_remove, key) != cmd.env_remove.end();
+        if (!overridden && !removed) env.emplace_back(entry);
     }
     for (const auto& [k, v] : cmd.env) env.push_back(k + "=" + v);
     std::vector<char*> envp;

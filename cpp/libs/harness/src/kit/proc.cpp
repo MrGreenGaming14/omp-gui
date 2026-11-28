@@ -1,5 +1,6 @@
 #include "loa/harness/kit/proc.hpp"
 
+#include <algorithm>
 #include <cerrno>
 #include <cstring>
 #include <fcntl.h>
@@ -85,7 +86,8 @@ std::expected<std::pair<Fd, Fd>, std::error_code> make_pipe() {
 }
 
 // The app's environment with `overrides` on top.
-std::vector<std::string> environment(const std::vector<std::pair<std::string, std::string>>& overrides) {
+std::vector<std::string> environment(const std::vector<std::pair<std::string, std::string>>& overrides,
+                                     const std::vector<std::string>& remove) {
     std::map<std::string, std::string> vars;
     std::vector<std::string> order;
     for (char** e = environ; e && *e; ++e) {
@@ -93,6 +95,7 @@ std::vector<std::string> environment(const std::vector<std::pair<std::string, st
         const auto eq = kv.find('=');
         if (eq == std::string_view::npos) continue;
         std::string key(kv.substr(0, eq));
+        if (std::ranges::find(remove, key) != remove.end()) continue;
         if (vars.emplace(key, std::string(kv.substr(eq + 1))).second) order.push_back(std::move(key));
     }
     for (const auto& [k, v] : overrides) {
@@ -120,7 +123,7 @@ RpcResult<Piped> spawn_piped(const exec::Command& cmd) {
     std::vector<char*> argv;
     for (auto& a : args) argv.push_back(a.data());
     argv.push_back(nullptr);
-    std::vector<std::string> env = environment(cmd.env);
+    std::vector<std::string> env = environment(cmd.env, cmd.env_remove);
     std::vector<char*> envp;
     for (auto& e : env) envp.push_back(e.data());
     envp.push_back(nullptr);
