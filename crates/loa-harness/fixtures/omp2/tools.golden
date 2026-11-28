@@ -3,7 +3,7 @@
     <message nid="3" by="owner" role="user" status="done" x-omp2-handle.int="6">List files</message>
     <call nid="5" call_id="call-1" ended.int="T" started.int="T" status="done" title="List the directory" tool="bash" x-omp2-handle.int="7">
       <input nid="6" format="json" x-omp2-handle.int="8">{"command":"ls"}</input>
-      <decision nid="7" answer.list="['allow_once']" by="owner" call.int="5" created.int="T" ended.int="T" kind="approval" request_id="p1" status="answered" timeout_ms.int="60000" title="Run bash?">ls</decision>
+      <decision nid="7" answer.list="['allow_once']" by="owner" call.int="5" created.int="T" ended.int="T" kind="approval" options.list="['allow_once', 'allow_session', 'deny']" request_id="p1" status="answered" timeout_ms.int="60000" title="Run bash?">ls</decision>
       <result nid="8" truncated.bool="false" x-omp2-handle.int="9">a.txt
 </result>
     </call>
@@ -12,7 +12,7 @@
     </call>
     <decision nid="11" answer.list="['a.txt', 'something else']" by="owner" created.int="T" ended.int="T" kind="question" multi.bool="true" options.list="['a.txt', 'b.txt']" request_id="ui-1" status="answered">Pick a file</decision>
     <call nid="12" call_id="call-3" ended.int="T" started.int="T" status="error" tool="grep" x-omp2-handle.int="12">
-      <decision nid="14" call.int="12" created.int="T" ended.int="T" kind="approval" request_id="p2" status="cancelled" title="Run grep?"/>
+      <decision nid="14" call.int="12" created.int="T" ended.int="T" kind="approval" options.list="['allow_once', 'allow_session', 'deny']" request_id="p2" status="cancelled" title="Run grep?"/>
     </call>
     <ext nid="13" harness="omp2" type="notice" x-data="{&quot;a&quot;:1}" x-level="warn" x-omp2-handle.int="13">slow</ext>
     <ext nid="15" harness="omp2" type="error">rate limited</ext>

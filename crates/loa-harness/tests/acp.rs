@@ -136,3 +136,56 @@ async fn session_streams_and_settles_against_a_fake_agent() {
     assert_eq!(sent[2]["params"]["sessionId"], "native-1");
     assert_eq!(sent[2]["params"]["prompt"][0]["text"], "Say hello");
 }
+
+#[test]
+fn permission_options_advertise_canonical_session_and_preserve_name_or_id_answers() {
+    use loa_contracts::harness::Answer;
+    use loa_core::{DomWriter, answer};
+    use loa_harness::acp::mapper::Input;
+    use loa_harness::kit::EventMapper as _;
+
+    let sink = MemorySink::new();
+    let attrs = [(attr::ID, "s".into()), (attr::HARNESS, "acp".into()), (attr::NODE, "owner".into()), (attr::CREATED, 1_i64.into()), (attr::SCHEMA, 1_i64.into())];
+    let root = sink.commit(Draft::insert(NodeId::DOCUMENT, ElementKind::Session, attrs, "")).unwrap().node;
+    let mut mapper = AcpMapper::new(root, None);
+    let w = DomWriter::new(&sink).at(0);
+    mapper.apply(Input::Prompt { id: "1".into(), prompt: Prompt { text: "go".into(), by: "owner".into(), ..Default::default() } }, &w).unwrap();
+
+    let ask = |id: i64, options: serde_json::Value| Input::Permission {
+        id: json!(id),
+        params: json!({ "toolCall": { "toolCallId": format!("c{id}"), "title": "run" }, "options": options }),
+    };
+    let full = json!([
+        { "optionId": "opt-once", "name": "Allow", "kind": "allow_once" },
+        { "optionId": "opt-always", "name": "Always allow", "kind": "allow_always" },
+        { "optionId": "opt-no", "name": "Reject", "kind": "reject_once" }
+    ]);
+    let once_only = json!([
+        { "optionId": "opt-once", "name": "Allow", "kind": "allow_once" },
+        { "optionId": "opt-no", "name": "Reject", "kind": "reject_once" }
+    ]);
+
+    mapper.apply(ask(1, full.clone()), &w).unwrap();
+    mapper.apply(ask(2, full), &w).unwrap();
+    mapper.apply(ask(3, once_only), &w).unwrap();
+
+    let decisions: Vec<(NodeId, Vec<String>)> = sink.with_dom(|dom| {
+        dom.iter()
+            .filter(|n| n.kind == ElementKind::Decision)
+            .map(|n| (n.id, n.attr(attr::OPTIONS).unwrap().str_items().map(str::to_owned).collect()))
+            .collect()
+    });
+    assert_eq!(decisions[0].1, [answer::ALLOW_ONCE, answer::ALLOW_SESSION, answer::DENY]);
+    assert_eq!(decisions[1].1, [answer::ALLOW_ONCE, answer::ALLOW_SESSION, answer::DENY]);
+    assert_eq!(decisions[2].1, [answer::ALLOW_ONCE, answer::DENY]);
+
+    // Answering by option_id and by option name stays supported alongside canonical answers.
+    let by_id = mapper.answer(decisions[0].0, &Answer { values: vec!["opt-always".into()], reason: None, by: "owner".into() }, &w).unwrap();
+    assert_eq!(by_id, Some(Reply::Respond { id: json!(1), result: json!({ "outcome": { "optionId": "opt-always", "outcome": "selected" } }) }));
+
+    let by_name = mapper.answer(decisions[1].0, &Answer { values: vec!["Always allow".into()], reason: None, by: "owner".into() }, &w).unwrap();
+    assert_eq!(by_name, Some(Reply::Respond { id: json!(2), result: json!({ "outcome": { "optionId": "opt-always", "outcome": "selected" } }) }));
+
+    let by_canonical = mapper.answer(decisions[2].0, &Answer { values: vec![answer::ALLOW_ONCE.into()], reason: None, by: "owner".into() }, &w).unwrap();
+    assert_eq!(by_canonical, Some(Reply::Respond { id: json!(3), result: json!({ "outcome": { "optionId": "opt-once", "outcome": "selected" } }) }));
+}

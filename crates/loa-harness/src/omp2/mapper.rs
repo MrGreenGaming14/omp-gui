@@ -158,7 +158,7 @@ impl Node {
 /// Where a stream's appends go: node text, a prop set on close, or nowhere.
 enum Stream { Text(NodeId), Prop(Handle, String, String), Ignored }
 
-enum Pending { Approval(String), Select { id: Json, options: Vec<String> } }
+enum Pending { Approval { prompt_id: String, allow_session: bool }, Select { id: Json, options: Vec<String> } }
 
 /// The DOM side of one omp2 session.
 pub struct Omp2Mapper {
@@ -255,11 +255,21 @@ impl Omp2Mapper {
                 }
                 self.finish(w, if error.is_some() { TurnStatus::Error } else if cancelled { TurnStatus::Cancelled } else { TurnStatus::Done })
             }
-            Frame::ToolApprovalRequest { prompt_id, tool_call_id, title, body, timeout_ms } => {
+            Frame::ToolApprovalRequest { prompt_id, tool_call_id, title, body, scopes, timeout_ms } => {
                 let call = tool_call_id.and_then(|c| self.calls.get(&c).copied());
-                let mut attrs = vec![(attr::KIND, Value::from(DecisionKind::Approval)), (attr::REQUEST_ID, prompt_id.as_str().into())];
+                let allow_session = scopes.as_deref().is_none_or(|scopes| scopes.iter().any(|s| s == "session"));
+                let options: Vec<Value> = [Some(answer::ALLOW_ONCE), allow_session.then_some(answer::ALLOW_SESSION), Some(answer::DENY)]
+                    .into_iter()
+                    .flatten()
+                    .map(Value::from)
+                    .collect();
+                let mut attrs = vec![
+                    (attr::KIND, Value::from(DecisionKind::Approval)),
+                    (attr::OPTIONS, Value::List(options)),
+                    (attr::REQUEST_ID, prompt_id.as_str().into()),
+                ];
                 attrs.extend(call.map(|c| (attr::CALL, c.into())).into_iter().chain(title.map(|t| (attr::TITLE, t.into()))).chain(timeout_ms.map(|t| (attr::TIMEOUT_MS, t.into()))));
-                self.decide(w, call, attrs, body.unwrap_or_default(), Pending::Approval(prompt_id))
+                self.decide(w, call, attrs, body.unwrap_or_default(), Pending::Approval { prompt_id, allow_session })
             }
             Frame::ExtensionUiRequest { id, method, title, options, multi } if method == "select" => {
                 let attrs = vec![(attr::KIND, Value::from(DecisionKind::Question)), (attr::REQUEST_ID, id_key(&id).into()), (attr::OPTIONS, options.clone().into()), (attr::MULTI, multi.into())];
@@ -733,10 +743,11 @@ impl EventMapper for Omp2Mapper {
 
     fn answer(&mut self, decision: NodeId, answer: &Answer, w: &DomWriter) -> Result<Option<Reply>> {
         let reply = match self.decisions.remove(&decision).ok_or(AdapterError::UnknownDecision(decision))? {
-            Pending::Approval(prompt_id) => {
+            Pending::Approval { prompt_id, allow_session } => {
                 let (approved, scope) = match answer.values.first().map(String::as_str) {
                     Some(answer::ALLOW_ONCE) => (true, "once"),
-                    Some(answer::ALLOW_SESSION) => (true, "session"),
+                    Some(answer::ALLOW_SESSION) if allow_session => (true, "session"),
+                    Some(answer::ALLOW_SESSION) => (true, "once"),
                     _ => (false, "once"),
                 };
                 Reply::Approve { prompt_id, approved, scope, reason: answer.reason.clone() }
