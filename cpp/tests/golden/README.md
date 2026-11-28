@@ -22,6 +22,7 @@ Then update the rows of `MANIFEST.md` (length, sha256, source SHA) for every cha
 |---|---|
 | `crates/loa-bus/tests/golden.rs` `write_golden_journal_and_bus` | `bus/*`, `journal/*` |
 | `crates/loa-settings/tests/config.rs` `write_golden_toml` | `settings/config.toml`, `settings/unknown.toml` |
+| a scratch binary on `loa-settings` (no Rust test writes them): for `config.toml` and `unknown.toml`, `ConfigStore::load` then `save`; `ConfigStore::save(&Config::default())`; load+save of `version = 1` with a `[theme]` table holding `name = "nord"`, `accent = "#88c0d0"`, `x = { a = [1, 2.5, "q\"\n"], b = 1979-05-27T07:32:00.5-07:00 }` and `[network] relay = "off"`; for `unknown.toml`, the `unknown_keys_survive_load_edit_save` edit | `settings/config.saved.toml`, `settings/unknown.saved.toml`, `settings/default.saved.toml`, `settings/theme.saved.toml`, `settings/unknown.edited.toml` |
 | `crates/loa-settings/src/models/settings.rs` `write_golden_yml` | `settings/config.yml`, `settings/models.yml` |
 | `crates/loa-p2p/src/golden.rs` `write_golden_wire_and_peers` | `p2p/*`, `sqlite/net_peers.*` |
 | `crates/loa-trust/src/golden.rs` `write_golden_trust_and_grants` | `trust/*`, `sqlite/grants.*` |
