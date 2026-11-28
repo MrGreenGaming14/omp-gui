@@ -1,0 +1,25 @@
+version = 1
+future_flag = true
+
+[future_section]
+level = 3
+when = 2026-01-02T03:04:05Z
+
+[network]
+x-mtu = 1200
+
+[unattended.plan]
+timeout_secs = 60
+answer = "reject"
+escalate_to = "owner"
+
+[mcp_servers.keep]
+command = "keep"
+x-color = "red"
+
+[mcp_servers.drop]
+command = "drop"
+x-color = "blue"
+
+[projects.p]
+future_digest_mode = "dense"
