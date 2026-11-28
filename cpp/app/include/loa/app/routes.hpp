@@ -5,6 +5,7 @@
 // `to::<area>` messages addressed to it as alternatives of its own message variant, and
 // implements the port the app asks of it; the app finds ports through `Registry::port`.
 
+#include <expected>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -52,8 +53,22 @@ struct Chat {
     loa::view::session::transcript::Intent intent;
 };
 } // namespace sessions
+namespace decisions {
+// The tools area answered (or couldn't answer) a remote host question's card.
+struct Answered {
+    std::string session;
+    core::NodeId decision;
+    std::expected<void, std::string> result;
+};
+} // namespace decisions
 namespace tools {
 struct Open {};
+// A remote host question's card (`areas::tools::is_remote_decision`) was answered in a session.
+struct AnswerDecision {
+    SessionId session;
+    core::NodeId decision;
+    contracts::Answer answer;
+};
 } // namespace tools
 namespace models {
 // The models screens (`loa_ui_settings::models::Page`).
