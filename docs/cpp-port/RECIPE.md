@@ -93,3 +93,33 @@ F3 and F4 also need a Rust toolchain (`rustup`, stable) to prebuild the FFI stat
 - **P3 additionally:**
   - [ ] A C++ node and a Rust node built from `origin/main` connect over iroh on loopback and exchange one `omp/control/1` message.
   - [ ] The same works over the TCP fallback.
+
+## Crate → library map
+
+The Rust workspace on `origin/main` has 27 crates. Each maps to one C++ target; the general rule (`cpp/libs/<crate without loa->`) holds except where noted.
+
+|Rust crate|C++ target|Namespace|
+|---|---|---|
+|`loa-util`|`cpp/libs/runtime` (folded into the foundation library)|`loa::runtime`|
+|`loa-core`|`cpp/libs/core`|`loa::core`|
+|`loa-contracts`|`cpp/libs/contracts`|`loa::contracts`|
+|`loa-view`|`cpp/libs/view`|`loa::view`|
+|`loa-bus`|`cpp/libs/bus`|`loa::bus`|
+|`loa-session`|`cpp/libs/session`|`loa::session`|
+|`loa-settings`|`cpp/libs/settings`|`loa::settings`|
+|`loa-runtime`|`cpp/libs/app_runtime` (renamed: `runtime` is the foundation library)|`loa::app_runtime`|
+|`loa-harness`|`cpp/libs/harness` (one subdirectory per adapter)|`loa::harness`|
+|`loa-mcp`|`cpp/libs/mcp`|`loa::mcp`|
+|`loa-remote`|`cpp/libs/remote`|`loa::remote`|
+|`loa-projects`|`cpp/libs/projects`|`loa::projects`|
+|`loa-models`|`cpp/libs/models`|`loa::models`|
+|`loa-surfaces`|`cpp/libs/surfaces` (one subdirectory per module: proto, vnc, browser, docs, hub)|`loa::surfaces`|
+|`loa-trust`|`cpp/libs/trust`|`loa::trust`|
+|`loa-p2p`|`cpp/libs/p2p` (in-house yamux lives here)|`loa::p2p`|
+|`loa-sandbox`, `loa-sandbox-stub`|`cpp/libs/sandbox`, executable `loa-sandbox-stub`|`loa::sandbox`|
+|`loa-updater`|`cpp/libs/updater`|`loa::updater`|
+|`loa-ui-kit`|`cpp/ui/kit` (theme tokens are `loa::ui::theme`)|`loa::ui::kit`|
+|`loa-ui-shell`, `loa-ui-session`, `loa-ui-panel`, `loa-ui-terminal`, `loa-ui-surface`, `loa-ui-settings`|`cpp/ui/<name>`; a crate with several screens gets one `state`/`view` pair per screen|`loa::ui::<name>`|
+|`loa-app`|`cpp/app` (executable `loa-qt`)|`loa::app`|
+
+UI modules depend only on `loa::view` and `cpp/ui/kit`, never on contracts, settings, surfaces or any domain library, mirroring the `loa-view` rule in `docs/ARCHITECTURE.md`. Where the Qt UI rules say session data arrives as `loa::core::Dom`, read: as the `loa::view` session view models.
