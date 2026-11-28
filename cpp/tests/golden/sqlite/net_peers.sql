@@ -1,0 +1,2 @@
+CREATE TABLE IF NOT EXISTS net_peers (key TEXT PRIMARY KEY NOT NULL, name TEXT, addresses TEXT NOT NULL DEFAULT '[]',
+             discovery_source TEXT NOT NULL, online INTEGER NOT NULL DEFAULT 0, last_seen_ms INTEGER, app_version TEXT);

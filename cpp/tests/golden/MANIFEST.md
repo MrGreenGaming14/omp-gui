@@ -1,6 +1,6 @@
 # Golden fixtures
 
-Byte-exact files produced by the Rust code at source SHA `6853d95bd272adf65b37e64c449b02c08813bc53`.
+Byte-exact files produced by the Rust code; each row names the source SHA that wrote it.
 The C++ readers must decode these and, where they write, reproduce the same bytes.
 `loa_golden_tests` re-hashes every row below with OpenSSL EVP.
 
@@ -11,9 +11,11 @@ export LOA_GOLDEN_OUT=$PWD/cpp/tests/golden
 cargo test -p loa-bus --test golden -- --ignored
 cargo test -p loa-settings --test config write_golden -- --ignored
 cargo test -p loa-settings --lib write_golden -- --ignored
+cargo test -p loa-p2p --lib write_golden -- --ignored
+cargo test -p loa-trust --lib write_golden -- --ignored
 ```
 
-Then update this table and the source SHA.
+Then update this table and the source SHAs.
 
 ## Formats
 
@@ -29,6 +31,24 @@ Then update this table and the source SHA.
 - `journal/f`, `journal/s`: copies of `crates/loa-bus/tests/fixtures/journal`.
 - `settings/config.toml`, `settings/unknown.toml`: copies of `crates/loa-settings/tests/fixtures/full.toml` and `unknown.toml` (unknown keys kept byte-identical).
 - `settings/config.yml`, `settings/models.yml`: written by `OmpConfig::save` / `ModelsYml::save` after a role edit.
+- `p2p/*.bin`: the bytes `crates/loa-p2p/src/wire.rs` `send` writes: a 4-byte BIG-endian length (wire frames are
+  big-endian; journal records are little-endian), then the prost message. The length excludes the prefix, is at most
+  `MAX_FRAME_SIZE` (1 MiB = 1048576) and never 0: an empty or oversized message is refused before writing, and a read
+  of either size is a protocol error. `control-<body>.bin` is a `ControlFrame` per body (Hello, Presence,
+  GrantDelivery, GrantRenewal, GrantRenewalResult with token and refused, GrantRevocation, Ack and refused Ack);
+  `frame-<body>.bin` is a session `Frame` per body (Subscribe, Update, Drive, Challenge, Present, ListSessions,
+  SessionList, Seed, DriveResult with patch and conflict, Prompt, Ack and refused Ack, Answer);
+  `folder-request-*.bin`, `folder-reply-*.bin` and `wire-entry.bin` are the bare folder messages.
+  `p2p/labels.txt`: the protocol labels in hello order, one per line (`omp/control/1`, `omp/session/1`, `omp/folder/1`).
+- `trust/node.key`: the 32 raw seed bytes `FileKeyStore` writes to `node.key` (mode 0600) for the seed `[7; 32]`;
+  `trust/node.pub`: its public key as 64 lowercase hex. The OS keychain entry is service `loa`, user `node-key`.
+- `trust/v1_reshared_token.bin`: a copy of `crates/loa-trust/tests/fixtures/v1_reshared_token.bin`;
+  `trust/v1_reshared_token.keys`: the root (seed `[1; 32]`) and holder (seed `[3; 32]`) public keys it verifies with.
+- `sqlite/net_peers.sql`, `sqlite/grants.sql`: the exact schema text executed by `PeerDirectory::open`
+  (`crates/loa-p2p/src/peers_db.rs`) and `GrantStore::with_connection` (`crates/loa-trust/src/store.rs`).
+- `sqlite/net_peers.rows.json`, `sqlite/grants.rows.json`: every row, columns in table order (blobs as `{"hex": ...}`),
+  after one save of each row kind (a saved and observed peer; an issued then revoked grant, an extra revocation,
+  the fixture token received then refused) and a load through the Rust store.
 
 ## Files
 
@@ -48,7 +68,44 @@ Then update this table and the source SHA.
 | journal/s/journal.loaj | 2180 | eec47b483bacb5599cae3ad4e8392f1b845bbb6277288eb8756a70468e6801ef | 6853d95bd272adf65b37e64c449b02c08813bc53 |
 | journal/s/snap-00000000000000000016.loas | 678 | 1357b93c16f73b19a21f8de1843b5a5fea6f06152287d5aac99b09522c2bab34 | 6853d95bd272adf65b37e64c449b02c08813bc53 |
 | journal/s/snap-00000000000000000032.loas | 936 | 66b29261fccb06c881c5f7aaa025086e366e007e855fb80cb77d6b8dbbf21923 | 6853d95bd272adf65b37e64c449b02c08813bc53 |
+| p2p/control-ack.bin | 6 | 89982dbb136749d03c2ccd2b69afc33eb1c90314bd00c351bd9f2da24d6f666f | a849b040ba4004d6581283112704296c4e77f026 |
+| p2p/control-ack-refused.bin | 10 | d324b6dd9184cb98fd1f7c6700701ee719f6740d9a5def33be3e14f038363512 | a849b040ba4004d6581283112704296c4e77f026 |
+| p2p/control-grant-delivery.bin | 46 | f1785788247a998b1ffe53f9e2a7d56c66a88fabf3458049349503e7c3c9b4e4 | a849b040ba4004d6581283112704296c4e77f026 |
+| p2p/control-grant-renewal.bin | 24 | f17df3bc723829c02714c984db88e07b3c4fb9ed2c89ce4735c452bca7162816 | a849b040ba4004d6581283112704296c4e77f026 |
+| p2p/control-grant-renewal-refused.bin | 15 | e0b8a492cdce877b6f8bc20bb58ce1d0b29dd8aa91651b1f6396ab162a33be33 | a849b040ba4004d6581283112704296c4e77f026 |
+| p2p/control-grant-renewal-result.bin | 12 | 7265b8dfc55cfc4b841ea1a3df916343010db6008ffcc09cfec55cfe0a7108eb | a849b040ba4004d6581283112704296c4e77f026 |
+| p2p/control-grant-revocation.bin | 24 | e15243a828c0f9ae6f0b916ff3bb740d4a67dafe52c13007de21c4c1b0d48684 | a849b040ba4004d6581283112704296c4e77f026 |
+| p2p/control-hello.bin | 71 | 75f9c9d5742cf2ca44632ae968cfde0bc08c7a00a8441d450facb964ad8091ef | a849b040ba4004d6581283112704296c4e77f026 |
+| p2p/control-presence.bin | 15 | ac37af88319c885a140df44bd22a79ec255eedbfd351ee46e7a38a80f630b0d5 | a849b040ba4004d6581283112704296c4e77f026 |
+| p2p/folder-reply-entries.bin | 28 | 7247c2e04d03c9ad0b1bc2dbd7ad39c41866a5c4ff33dbdc165a635816bc452c | a849b040ba4004d6581283112704296c4e77f026 |
+| p2p/folder-reply-refused.bin | 14 | 60b547b83fc0873b017629ca0067195fad4f11d722a65993dd92f61823b52202 | a849b040ba4004d6581283112704296c4e77f026 |
+| p2p/folder-request-list.bin | 21 | 662d074eb4a4dfa4aeb55c83856b05216fdfef475fa19880eb3a821069498cb8 | a849b040ba4004d6581283112704296c4e77f026 |
+| p2p/folder-request-write.bin | 31 | 57f4be5019c3b04e236cde24a6d76a10645330165307aaed05212293c256a170 | a849b040ba4004d6581283112704296c4e77f026 |
+| p2p/frame-ack.bin | 6 | 80660ac9e223b8e9a52a634daa7aaf694f255b4ebcc6269f1fa7b531937d7452 | a849b040ba4004d6581283112704296c4e77f026 |
+| p2p/frame-ack-refused.bin | 10 | 13168b81fae34582ed7cd9abcc8ad648ce73008c76b27e1fbe4df4438800d2c1 | a849b040ba4004d6581283112704296c4e77f026 |
+| p2p/frame-answer.bin | 33 | a5bc19b6df8b85908faad604a4000405f278d8f5c619d675976ac05019ad0186 | a849b040ba4004d6581283112704296c4e77f026 |
+| p2p/frame-challenge.bin | 40 | 917e6f5a564da8f811d386b960247099d620bab735087eee787a37d2d8f558c0 | a849b040ba4004d6581283112704296c4e77f026 |
+| p2p/frame-drive.bin | 44 | 066e2993bfe1b61ba4c6aa37fbf2209141872050d6bebc6e59ae0fa1d2f9c55b | a849b040ba4004d6581283112704296c4e77f026 |
+| p2p/frame-drive-result.bin | 28 | be44e9954f557052bf180410ae483429c19b3d751239a1797bd6d837e6166297 | a849b040ba4004d6581283112704296c4e77f026 |
+| p2p/frame-drive-result-conflict.bin | 18 | d57a69fddcf6187836a67f8841ffe09dab8f20c277e2f25bedce2a3b3367f18e | a849b040ba4004d6581283112704296c4e77f026 |
+| p2p/frame-list-sessions.bin | 6 | be7bdd193abecc9b451ee86b158c8badee0596be09c1057d595b2557cd065efb | a849b040ba4004d6581283112704296c4e77f026 |
+| p2p/frame-present.bin | 80 | 5bdebee800f3af2da5bad26be14b5d0bd2c5b8186f3e564b278b5a0335c5e609 | a849b040ba4004d6581283112704296c4e77f026 |
+| p2p/frame-prompt.bin | 27 | 1a97b85b4997ac016093000241b90c0e3238629ff25152fcf451972d98554cbb | a849b040ba4004d6581283112704296c4e77f026 |
+| p2p/frame-seed.bin | 131 | 8747206981386a59e3b47f51ff4ebfa0137f2f8b79f0f0d4ff58dec9ba374e73 | a849b040ba4004d6581283112704296c4e77f026 |
+| p2p/frame-session-list.bin | 76 | 655a5a303c25039ac2012aebfb5805301c9be2fc2806aef60c91a39aa7a7736c | a849b040ba4004d6581283112704296c4e77f026 |
+| p2p/frame-subscribe.bin | 16 | d0d658e10b14ef6b640d5115e41771e79e5697518ccb663a6e456a553886b450 | a849b040ba4004d6581283112704296c4e77f026 |
+| p2p/frame-update.bin | 30 | c19d12a209db61f43c8ca49577e97351a1eaf6e0afbb07fbe8417aa3265c655b | a849b040ba4004d6581283112704296c4e77f026 |
+| p2p/labels.txt | 41 | 6634a422f9e65d48499fede47fd5d2151554a41b5cc2002003720069813808a1 | a849b040ba4004d6581283112704296c4e77f026 |
+| p2p/wire-entry.bin | 13 | 16019d8665892d3c9b26f849f501efc0dfef2208866502911f3bf3dc6775a1c0 | a849b040ba4004d6581283112704296c4e77f026 |
 | settings/config.toml | 1325 | 0e1608a486264a50fd0e32f0e5d54434f8acdc6fda84c40d37225a51f7dd5ee2 | 6853d95bd272adf65b37e64c449b02c08813bc53 |
 | settings/config.yml | 419 | 532f8114e105bbede85b0384b6219906f228e3f6f5f1eede38a82526b95b4c33 | 6853d95bd272adf65b37e64c449b02c08813bc53 |
 | settings/models.yml | 393 | 42a0270620cb325567227ae0a675f28957fb53186def72ae5837493602f4b88b | 6853d95bd272adf65b37e64c449b02c08813bc53 |
 | settings/unknown.toml | 338 | 1f982a717c8ec3ac55a0b9ac3ebd12e420145b558c578785b79cbecef2c40ef3 | 6853d95bd272adf65b37e64c449b02c08813bc53 |
+| sqlite/grants.rows.json | 3978 | 4d179c6eb1b61530592f31ae23a7b3bc7742264431d85d18b4152ef47ae1a380 | a849b040ba4004d6581283112704296c4e77f026 |
+| sqlite/grants.sql | 501 | 2790821f15bc862a88a0b465fb8c295ba38083167aeb114c8fe16f82c3d80a91 | a849b040ba4004d6581283112704296c4e77f026 |
+| sqlite/net_peers.rows.json | 323 | b9e44fe657b48b996d6fab2d1a6f31dcda7896c606e429c96beeb0034e27f71c | a849b040ba4004d6581283112704296c4e77f026 |
+| sqlite/net_peers.sql | 238 | 4410ef022c2d43f080e45b8aaaaf41917211299d243066007f0267e03b199f5a | a849b040ba4004d6581283112704296c4e77f026 |
+| trust/node.key | 32 | 4bb06f8e4e3a7715d201d573d0aa423762e55dabd61a2c02278fa56cc6d294e0 | a849b040ba4004d6581283112704296c4e77f026 |
+| trust/node.pub | 65 | 52ae2a9b4c641fe431a9ca578223ad018baf6fa3eecd4c8c441b9f68fb7a63cc | a849b040ba4004d6581283112704296c4e77f026 |
+| trust/v1_reshared_token.bin | 1376 | 5b66e5a5e3039a14daae755125f9412590678f06d668b4246fc259ca5d58e74c | a849b040ba4004d6581283112704296c4e77f026 |
+| trust/v1_reshared_token.keys | 142 | 96e9baaf4a558b6c971427ab2b0e57909aab10a501688219712f6a6de3931a44 | a849b040ba4004d6581283112704296c4e77f026 |
