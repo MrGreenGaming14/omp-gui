@@ -58,6 +58,14 @@ class Smoke {
 [[nodiscard]] QWidget* models_screen();
 // Checks the pages rendered: the frame tabs, the sign in rows, the settings sections and the picker rows.
 [[nodiscard]] std::string check_models_screen(QWidget& screen);
+// The `transcript` screen: a sample session with every row kind and a streamed markdown reply.
+[[nodiscard]] QWidget* transcript_screen();
+// Checks the rows were built: the code block, its copy button and the decision slot.
+[[nodiscard]] std::string check_transcript_screen(QWidget& screen);
+// The `surface` screen: the Surfaces tab on a pixel tab with a sample frame, beside one on its launcher.
+[[nodiscard]] QWidget* surface_screen();
+// Checks the pixel viewer, the launcher and its file picker are shown.
+[[nodiscard]] std::string check_surface_screen(QWidget& screen);
 // The `projects` screen: a project's settings, sessions and terminal history, over the New project form.
 [[nodiscard]] QWidget* settings_projects_screen();
 // Checks the project sections and the New project form with its `loa-new-project-name` input.
@@ -70,5 +78,13 @@ class Smoke {
 [[nodiscard]] QWidget* settings_workflows_screen();
 // Checks the list, the agent access rows, steps and rule blocks.
 [[nodiscard]] std::string check_settings_workflows_screen(QWidget& screen);
+// The `peers` screen: this node, a peer and a nearby node, and the peer's grant form asking for SSH consent.
+[[nodiscard]] QWidget* settings_peers_screen();
+// Checks the node card, peer rows, grants and the SSH confirmation.
+[[nodiscard]] std::string check_settings_peers_screen(QWidget& screen);
+// The `updates` screen: a held omp update with its gate report open, and an app swap pending.
+[[nodiscard]] QWidget* settings_updates_screen();
+// Checks the status lines, hold choices, gate report and peer standing.
+[[nodiscard]] std::string check_settings_updates_screen(QWidget& screen);
 
 } // namespace loa::ui::app
