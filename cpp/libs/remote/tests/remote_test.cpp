@@ -402,7 +402,9 @@ TEST_CASE("shells open a pty, take input, resize and report their exit") {
     auto& writer = shell->writer;
     std::string seen;
     const auto until = [&](const std::string& needle) -> std::optional<std::optional<std::uint32_t>> {
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        // Generous: the integration gate runs this beside parallel builds, where sshd and the
+        // shell can take well over 10 s to answer. A passing run returns in well under a second.
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
         while (seen.find(needle) == std::string::npos && std::chrono::steady_clock::now() < deadline) {
             const auto r = reader.read_for(std::chrono::milliseconds(200));
             if (!r) continue;
