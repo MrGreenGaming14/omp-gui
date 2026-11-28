@@ -1,0 +1,14 @@
+
+# Session
+
+## Open
+- todo: write docs
+
+## Turns
+
+### T1
+User: Set up the Iroh endpoint
+Assistant: Bound it to port 31415.
+Tool bash
+  input: cargo test -p net
+  result: ok: 12 passed

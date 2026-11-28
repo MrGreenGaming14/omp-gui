@@ -1,0 +1,15 @@
+{
+  "instructions": "Use rustls.\nNo \"unsafe\".",
+  "pinned": [
+    {
+      "path": "src/lib.rs",
+      "note": "entry point"
+    },
+    {
+      "path": "Cargo.toml"
+    }
+  ],
+  "digest_model": "smol",
+  "folder": "/work/loa ✓",
+  "ideas_in_context": true
+}

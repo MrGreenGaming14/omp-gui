@@ -1,0 +1,5 @@
+session a node 2 (bytes 63..110 of 229)
+ the Iroh endpoint
+  message #4 role=assistant
+
+[more: call project_read with offset=110]
