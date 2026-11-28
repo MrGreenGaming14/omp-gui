@@ -13,7 +13,7 @@
 #include <variant>
 #include <vector>
 
-#include "loa/core/schema.hpp"
+#include "loa/core/value.hpp"
 
 namespace loa::view::settings::models {
 
@@ -463,8 +463,23 @@ using Intent = std::variant<intent::Save, intent::Reverted>;
 
 } // namespace loa::view::settings::models::settings
 
+// `loa::core::as_str` and `parse` texts (Rust `str_enum!`).
 namespace loa::core {
-LOA_CORE_STR_ENUM(loa::view::settings::models::AuthMode, "apiKey", "none", "oauth");
-LOA_CORE_STR_ENUM(loa::view::settings::models::OverrideKey, "name", "contextWindow", "maxContextWindow", "maxTokens",
-                  "reasoning", "input", "contextPromotionTarget", "compactionModel", "preferWebsockets", "cost");
+template <>
+struct StrEnum<loa::view::settings::models::AuthMode> {
+    static constexpr std::array<std::string_view, 3> values{"apiKey", "none", "oauth"};
+};
+template <>
+struct StrEnum<loa::view::settings::models::OverrideKey> {
+    static constexpr std::array<std::string_view, 10> values{"name",
+                                                            "contextWindow",
+                                                            "maxContextWindow",
+                                                            "maxTokens",
+                                                            "reasoning",
+                                                            "input",
+                                                            "contextPromotionTarget",
+                                                            "compactionModel",
+                                                            "preferWebsockets",
+                                                            "cost"};
+};
 } // namespace loa::core

@@ -4,6 +4,7 @@
 // and received, and the sessions and folders peers share with this node. Tokens,
 // keys and the network stay with the app.
 
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -12,7 +13,7 @@
 #include <variant>
 #include <vector>
 
-#include "loa/core/schema.hpp"
+#include "loa/core/value.hpp"
 
 namespace loa::view::settings::peers {
 
@@ -254,12 +255,31 @@ using Intent = std::variant<intent::ValidateKey, intent::AddPeer, intent::AddDis
 
 } // namespace loa::view::settings::peers
 
+// `loa::core::as_str` and `parse` texts (Rust `str_enum!`).
 namespace loa::core {
-LOA_CORE_STR_ENUM(loa::view::settings::peers::Discovery, "LAN (mDNS)", "Tailscale", "Added by key",
-                  "Connected to this node");
-LOA_CORE_STR_ENUM(loa::view::settings::peers::Presence, "online", "offline");
-LOA_CORE_STR_ENUM(loa::view::settings::peers::Transport, "direct", "relay", "TCP fallback", "disconnected");
-LOA_CORE_STR_ENUM(loa::view::settings::peers::VersionRelation, "behind", "ahead", "current", "version unknown");
-LOA_CORE_STR_ENUM(loa::view::settings::peers::Permission, "view", "suggest", "drive", "fork");
-LOA_CORE_STR_ENUM(loa::view::settings::peers::GrantDirection, "Given", "Received");
+template <>
+struct StrEnum<loa::view::settings::peers::Discovery> {
+    static constexpr std::array<std::string_view, 4> values{"LAN (mDNS)", "Tailscale", "Added by key",
+                                                           "Connected to this node"};
+};
+template <>
+struct StrEnum<loa::view::settings::peers::Presence> {
+    static constexpr std::array<std::string_view, 2> values{"online", "offline"};
+};
+template <>
+struct StrEnum<loa::view::settings::peers::Transport> {
+    static constexpr std::array<std::string_view, 4> values{"direct", "relay", "TCP fallback", "disconnected"};
+};
+template <>
+struct StrEnum<loa::view::settings::peers::VersionRelation> {
+    static constexpr std::array<std::string_view, 4> values{"behind", "ahead", "current", "version unknown"};
+};
+template <>
+struct StrEnum<loa::view::settings::peers::Permission> {
+    static constexpr std::array<std::string_view, 4> values{"view", "suggest", "drive", "fork"};
+};
+template <>
+struct StrEnum<loa::view::settings::peers::GrantDirection> {
+    static constexpr std::array<std::string_view, 2> values{"Given", "Received"};
+};
 } // namespace loa::core

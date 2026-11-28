@@ -1,0 +1,1476 @@
+version = 4.0.0
+class loa::view::panel::port::FileSystem
+  virtual ~FileSystem() = default
+  [[nodiscard]] virtual std::expected<std::vector<Entry>, std::string> list(const std::filesystem::path& dir) const = 0
+class loa::view::session::port::Notifier
+  virtual ~Notifier() = default
+  [[nodiscard]] virtual NotifyFuture notify(const Notice& notice) const = 0
+class loa::view::surface::port::DocumentRenderer
+  virtual ~DocumentRenderer() = default
+  [[nodiscard]] virtual std::vector<std::string> extensions() const = 0
+  [[nodiscard]] virtual std::expected<OpenedDocument, std::string> open(const Document& document) const = 0
+class loa::view::surface::port::FrameDecoder
+  virtual ~FrameDecoder() = default
+  [[nodiscard]] virtual std::span<const Encoding> accepts() const = 0
+  [[nodiscard]] virtual std::expected<bool, DecodeError> apply(const Frame& frame, std::span<std::uint8_t> picture, std::uint32_t width, std::uint32_t height) = 0
+  virtual void reset()
+class loa::view::surface::port::PagedDocument
+  virtual ~PagedDocument() = default
+  [[nodiscard]] virtual std::size_t page_count() const = 0
+  [[nodiscard]] virtual std::expected<PageSize, std::string> page_size(std::size_t index) const = 0
+  [[nodiscard]] virtual std::expected<RgbaPage, std::string> render(std::size_t index, float zoom, const DocumentPalette& palette) const = 0
+class loa::view::terminal::port::ChannelReader
+  virtual ~ChannelReader() = default
+  [[nodiscard]] virtual loa::contracts::Awaitable<Result<ChannelRead>> read() = 0
+class loa::view::terminal::port::ChannelWriter
+  virtual ~ChannelWriter() = default
+  [[nodiscard]] virtual loa::contracts::Awaitable<Result<>> write(std::vector<std::uint8_t> bytes) = 0
+  [[nodiscard]] virtual loa::contracts::Awaitable<Result<>> resize(GridSize size) = 0
+  [[nodiscard]] virtual loa::contracts::Awaitable<Result<>> close() = 0
+class loa::view::terminal::port::Error
+  enum class Kind : std::uint8_t
+    Io
+    Spawn
+    NotADirectory
+    Remote
+    NoRemote
+    Closed
+  [[nodiscard]] static Error io(std::string message)
+  [[nodiscard]] static Error spawn(std::string message)
+  [[nodiscard]] static Error not_a_directory(const std::filesystem::path& dir)
+  [[nodiscard]] static Error remote(std::string host, std::string message)
+  [[nodiscard]] static Error no_remote()
+  [[nodiscard]] static Error closed()
+  [[nodiscard]] Kind kind() const noexcept
+  [[nodiscard]] const std::string& host() const noexcept
+  [[nodiscard]] std::string message() const
+  friend bool operator==(const Error&, const Error&) = default
+class loa::view::terminal::port::RemotePty
+  virtual ~RemotePty() = default
+  [[nodiscard]] virtual loa::contracts::Awaitable<Result<PtyChannel>> open_pty(std::string host, GridSize size) const = 0
+class loa::view::theme::Overrides
+  Overrides()
+  explicit Overrides(toml::table table)
+  Overrides(const Overrides& other)
+  Overrides(Overrides&&) noexcept
+  Overrides& operator=(const Overrides& other)
+  Overrides& operator=(Overrides&&) noexcept
+  ~Overrides()
+  [[nodiscard]] const toml::table& table() const noexcept
+  [[nodiscard]] toml::table& table() noexcept
+  friend bool operator==(const Overrides& a, const Overrides& b)
+enum class loa::view::panel::AuditAction : std::uint8_t
+  Read
+  List
+  Write
+  Edit
+  Command
+  Terminal
+enum class loa::view::panel::BuiltinGroup : std::uint8_t
+  Harness
+  App
+enum class loa::view::panel::DetailState : std::uint8_t
+  Ready
+  NotConfigured
+  Unavailable
+enum class loa::view::panel::ImportSource : std::uint8_t
+  Claude
+  Cursor
+  Codex
+enum class loa::view::panel::PromptAnswer : std::uint8_t
+  Trust
+  Reject
+  AllowOnce
+  AllowSession
+  Deny
+enum class loa::view::panel::PromptKind : std::uint8_t
+  HostKey
+  Approval
+enum class loa::view::panel::ServerAction : std::uint8_t
+  Start
+  Stop
+  Restart
+  Remove
+enum class loa::view::panel::ServerKind : std::uint8_t
+  External
+  Surface
+  AppHosted
+enum class loa::view::session::composer::WorkflowKind : std::uint8_t
+  Managed
+  HandWritten
+  None
+enum class loa::view::settings::agents::AgentSource : std::uint8_t
+  User
+  Project
+enum class loa::view::settings::models::AuthMode : std::uint8_t
+  ApiKey
+  None
+  OAuth
+enum class loa::view::settings::models::OverrideKey : std::uint8_t
+  Name
+  ContextWindow
+  MaxContextWindow
+  MaxTokens
+  Reasoning
+  Input
+  ContextPromotionTarget
+  CompactionModel
+  PreferWebsockets
+  Cost
+enum class loa::view::settings::peers::Discovery : std::uint8_t
+  Lan
+  Tailscale
+  AddedByKey
+  Incoming
+enum class loa::view::settings::peers::GrantDirection : std::uint8_t
+  Given
+  Received
+enum class loa::view::settings::peers::GrantScope : std::uint8_t
+  Session
+  Prompt
+  Project
+  FutureSessions
+  SshHost
+  Surface
+  Sandbox
+  Folder
+enum class loa::view::settings::peers::Permission : std::uint8_t
+  View
+  Suggest
+  Drive
+  Fork
+enum class loa::view::settings::peers::Presence : std::uint8_t
+  Online
+  Offline
+enum class loa::view::settings::peers::Transport : std::uint8_t
+  Direct
+  Relay
+  TcpFallback
+  None
+enum class loa::view::settings::peers::VersionRelation : std::uint8_t
+  Behind
+  Ahead
+  Current
+  Unknown
+enum class loa::view::settings::projects::DigestState : std::uint8_t
+  Missing
+  Fresh
+  Stale
+enum class loa::view::settings::updates::GateCheck : std::uint8_t
+  ToolSchemas
+  SessionFormat
+  ConfigSchema
+  RpcProtocol
+  ContractTests
+  Changelog
+enum class loa::view::settings::updates::HoldChoice : std::uint8_t
+  UpdateAnyway
+  PinCurrent
+  Wait
+enum class loa::view::settings::updates::Verdict : std::uint8_t
+  Pass
+  Harmful
+enum class loa::view::surface::Capture : std::uint8_t
+  Screencast
+  VirtualDisplay
+enum class loa::view::theme::Icon : std::uint8_t
+  ArrowUp
+  Bot
+  Brain
+  Check
+  ChevronDown
+  ChevronLeft
+  ChevronRight
+  ChevronUp
+  CircleDot
+  Cpu
+  ExternalLink
+  FileText
+  Files
+  Folder
+  Gauge
+  GitCompare
+  GitFork
+  Globe
+  Image
+  LoaderCircle
+  Maximize
+  Minimize
+  Monitor
+  PanelRight
+  PanelRightClose
+  Pin
+  Plus
+  Search
+  Settings
+  Shield
+  SlidersHorizontal
+  Sparkles
+  Square
+  Terminal
+  TriangleAlert
+  Wrench
+  X
+loa::view: inline constexpr std::string_view VERSION = "4.0.0"
+loa::view::panel: [[nodiscard]] std::string_view label(AuditAction action) noexcept
+loa::view::panel: [[nodiscard]] std::string_view label(ImportSource source) noexcept
+loa::view::panel: using AgentsIntent = std::variant<agents_intent::OpenSubagent, agents_intent::DetachTranscript, agents_intent::Cancel>
+loa::view::panel: using DiffIntent = std::variant<diff_intent::OpenFile>
+loa::view::panel: using FilesIntent = std::variant<files_intent::Open>
+loa::view::panel: using ImportOutcome = std::variant<import_outcome::Imported, import_outcome::Skipped, import_outcome::Failed>
+loa::view::panel: using ServerStatus = std::variant<server_status::Running, server_status::Starting, server_status::Stopped, server_status::Error>
+loa::view::panel: using SessionTreeIntent = std::variant<session_tree_intent::Rewind, session_tree_intent::Fork, session_tree_intent::Open>
+loa::view::panel: using ToolsIntent = std::variant<tools_intent::ProjectSelected, tools_intent::SetToolsEnabled, tools_intent::Server, tools_intent::AddServer, tools_intent::AddHost, tools_intent::SaveHostLimits, tools_intent::ImportServers, tools_intent::AnswerPrompt, tools_intent::ScanImports, tools_intent::ImportSshHosts, tools_intent::RemoveHost, tools_intent::OpenTerminal, tools_intent::LoadAudit>
+loa::view::panel: using loa::contracts::McpServerSpec
+loa::view::panel: using loa::contracts::McpTransport
+loa::view::session: using loa::contracts::Answer
+loa::view::session: using loa::contracts::Attachment
+loa::view::session: using loa::contracts::Prompt
+loa::view::session: using loa::core::SessionMode
+loa::view::session::composer: using Intent = std::variant<intent::Submit, intent::Stop, intent::QueueChanged, intent::FilesRequested, intent::ModelChanged, intent::EffortChanged, intent::ModeChanged, intent::AccessChanged, intent::HarnessChanged, intent::ModelAction, intent::OpenWorkspace, intent::FolderPicked, intent::BrowseFolders, intent::PasteImage, intent::ProjectPicked, intent::WorkflowPicked, intent::OpenRules>
+loa::view::session::decisions: using DeskIntent = std::variant<desk_intent::Answer, desk_intent::OpenLink, desk_intent::PolicyChanged, desk_intent::NotifyFailed>
+loa::view::session::decisions: using Intent = std::variant<intent::Answer, intent::OpenLink>
+loa::view::session::port: using NotifyFuture = loa::contracts::Awaitable<std::expected<void, NotifyError>>
+loa::view::session::transcript: using Intent = std::variant<intent::Rewind, intent::OpenLink>
+loa::view::settings::agents: using Intent = std::variant<intent::Check, intent::Save, intent::Replace, intent::Toggle, intent::Delete, intent::Close>
+loa::view::settings::models: [[nodiscard]] bool is_env_var_name(std::string_view name) noexcept
+loa::view::settings::models: [[nodiscard]] bool is_provider_id(std::string_view id) noexcept
+loa::view::settings::models: inline constexpr std::array<std::pair<std::string_view, OverrideKey>, 8> OVERRIDE_FIELDS{{ {"name", OverrideKey::Name}, {"contextWindow", OverrideKey::ContextWindow}, {"maxContextWindow", OverrideKey::MaxContextWindow}, {"maxTokens", OverrideKey::MaxTokens}, {"reasoning", OverrideKey::Reasoning}, {"contextPromotionTarget", OverrideKey::ContextPromotionTarget}, {"compactionModel", OverrideKey::CompactionModel}, {"preferWebsockets", OverrideKey::PreferWebsockets}, }};
+loa::view::settings::models: using Auth = std::variant<auth::Login, auth::ApiKey, auth::Unavailable>
+loa::view::settings::models: using FieldValue = std::variant<std::string, std::int64_t, double, bool>
+loa::view::settings::models: using LoginUpdate = std::variant<login_update::Url, login_update::Progress, login_update::Prompt, login_update::Succeeded, login_update::Failed, login_update::Cancelled>
+loa::view::settings::models::picker: using Intent = std::variant<intent::SetSessionModel, intent::SetRoleModel, intent::Close>
+loa::view::settings::models::picker: using Target = std::variant<target::Session, target::Role>
+loa::view::settings::models::settings: using Intent = std::variant<intent::Save, intent::Reverted>
+loa::view::settings::models::signin: using Intent = std::variant<intent::SignIn, intent::Cancel, intent::SubmitInput, intent::OpenUrl, intent::CopyUrl, intent::SignOut, intent::RemoveCredential>
+loa::view::settings::peers: [[nodiscard]] bool allowed_for(Permission permission, GrantScope scope) noexcept
+loa::view::settings::peers: using Intent = std::variant<intent::ValidateKey, intent::AddPeer, intent::AddDiscovered, intent::CopyKey, intent::RemovePeer, intent::RenamePeer, intent::CreateGrant, intent::RevokeGrant, intent::RenewGrant, intent::Refresh, intent::ScanTailscale, intent::OpenRemote, intent::ForkRemote, intent::BrowseFolder>
+loa::view::settings::peers: using VersionParts = std::tuple<std::uint64_t, std::uint64_t, std::uint64_t>
+loa::view::settings::projects: using CreateIntent = std::variant<create_intent::ChooseFolder, create_intent::Create, create_intent::Cancel>
+loa::view::settings::projects: using Intent = std::variant<intent::SaveSettings, intent::ReloadIdeas, intent::SetExcluded, intent::OpenSession, intent::OpenOmpHistory, intent::DeleteOmpHistory, intent::NewChat, intent::ChangeFolder, intent::Delete>
+loa::view::settings::projects: using OmpHistory = std::variant<omp_history::Loading, omp_history::Ready, omp_history::Failed>
+loa::view::settings::updates: [[nodiscard]] std::string_view label(GateCheck check) noexcept
+loa::view::settings::updates: using Installed = std::variant<installed::Unknown, installed::Running, installed::Managed, installed::System, installed::Missing>
+loa::view::settings::updates: using Intent = std::variant<intent::CheckAll, intent::Check, intent::Stage, intent::Gate, intent::Verify, intent::Choose, intent::Swap, intent::Rollback, intent::Unpin>
+loa::view::settings::updates: using ProductKind = std::variant<product_kind::App, product_kind::Omp, product_kind::Harness>
+loa::view::settings::updates: using SignatureStatus = std::variant<signature_status::Verified, signature_status::Unsigned, signature_status::NoTrustedKeys, signature_status::Rejected>
+loa::view::settings::updates: using Standing = std::variant<standing::Current, standing::Behind, standing::Ahead, standing::Unknown>
+loa::view::settings::workflows: using Error = std::variant<error::ChangedOnDisk, error::Message>
+loa::view::settings::workflows: using Intent = std::variant<intent::Open, intent::New, intent::Save, intent::Delete, intent::Reload, intent::Close>
+loa::view::settings::workflows: using Rules = std::variant<rules::None, rules::Managed, rules::External, rules::HandWritten>
+loa::view::shell: using Intent = std::variant<intent::Sidebar, intent::CloseProjectTab, intent::DetachTab, intent::ShowDetached, intent::ReattachTab, intent::SetTheme, intent::ThemeChanged>
+loa::view::shell: using SidebarIntent = std::variant<sidebar_intent::NewSession, sidebar_intent::OpenSession, sidebar_intent::OpenProject, sidebar_intent::OpenPeers, sidebar_intent::OpenTools, sidebar_intent::OpenUpdates, sidebar_intent::OpenUsage, sidebar_intent::OpenConfigs, sidebar_intent::OpenSettings, sidebar_intent::SetPinned, sidebar_intent::SetProjectPinned, sidebar_intent::DeleteSession, sidebar_intent::NewProject, sidebar_intent::NewSessionIn, sidebar_intent::DeleteProject, sidebar_intent::MoveSession>
+loa::view::shell: using loa::contracts::SessionSummary
+loa::view::surface: inline constexpr std::string_view DOCUMENT_SERVER = "docs"
+loa::view::surface: using BrowserStatus = std::variant<browser_status::Ready, browser_status::Missing>
+loa::view::surface: using Intent = std::variant<intent::OpenBrowser, intent::OpenDocument, intent::OpenVm, intent::Open, intent::Close, intent::EncodingUnsupported, intent::SetVideo, intent::SetCapture>
+loa::view::surface: using loa::contracts::surface::Document
+loa::view::surface: using loa::contracts::surface::Encoding
+loa::view::surface: using loa::contracts::surface::Frame
+loa::view::surface: using loa::contracts::surface::Input
+loa::view::surface: using loa::contracts::surface::InputEvent
+loa::view::surface: using loa::contracts::surface::Modifiers
+loa::view::surface: using loa::contracts::surface::MouseButton
+loa::view::surface: using loa::contracts::surface::Rect
+loa::view::surface: using loa::contracts::surface::StreamInfo
+loa::view::surface: using loa::contracts::surface::Surface
+loa::view::surface: using loa::contracts::surface::SurfaceError
+loa::view::surface: using loa::contracts::surface::SurfaceInfo
+loa::view::surface: using loa::contracts::surface::SurfaceMode
+loa::view::surface: using loa::contracts::surface::SurfaceUri
+loa::view::surface::port: using NewDecoder = std::function<std::unique_ptr<FrameDecoder>()>
+loa::view::surface::port: using OpenedDocument = std::variant<opened_document::Image, opened_document::Paged>
+loa::view::terminal::port: template <typename T = void> using Result = std::expected<T, Error>
+loa::view::terminal::port: using ChannelRead = std::variant<channel_read::Data, channel_read::Closed>
+struct loa::view::panel::AuditRow
+  std::string when
+  std::string session
+  AuditAction action = AuditAction::Read
+  std::string detail
+  std::string outcome
+  friend bool operator==(const AuditRow&, const AuditRow&) = default
+struct loa::view::panel::BuiltinTools
+  std::string harness
+  std::vector<ToolInfo> harness_tools
+  std::vector<ToolInfo> app_tools
+  std::optional<std::string> harness_note
+  friend bool operator==(const BuiltinTools&, const BuiltinTools&) = default
+struct loa::view::panel::HostLimits
+  std::vector<std::string> allowed_paths
+  bool read_only = false
+  bool commands_allowed = false
+  bool auto_approve = false
+  friend bool operator==(const HostLimits&, const HostLimits&) = default
+struct loa::view::panel::ImportCandidate
+  ImportSource source = ImportSource::Claude
+  std::string path
+  McpServerSpec server
+  friend bool operator==(const ImportCandidate&, const ImportCandidate&) = default
+struct loa::view::panel::McpServer
+  std::string name
+  McpTransport transport
+  ServerStatus status
+  ServerKind kind = ServerKind::External
+  std::vector<ToolInfo> tools
+  friend bool operator==(const McpServer&, const McpServer&) = default
+struct loa::view::panel::PeerTools
+  std::string key
+  std::string name
+  std::vector<ToolRule> rules
+  [[nodiscard]] bool allows(const ToolId& tool) const noexcept
+  friend bool operator==(const PeerTools&, const PeerTools&) = default
+struct loa::view::panel::ProjectRef
+  std::string id
+  std::string name
+  friend bool operator==(const ProjectRef&, const ProjectRef&) = default
+struct loa::view::panel::RemoteHost
+  std::string alias
+  std::string hostname
+  std::optional<std::string> user
+  std::optional<std::uint16_t> port
+  std::optional<std::string> proxy_jump
+  HostLimits limits
+  friend bool operator==(const RemoteHost&, const RemoteHost&) = default
+struct loa::view::panel::RemotePrompt
+  std::uint64_t id = 0
+  PromptKind kind = PromptKind::HostKey
+  std::string title
+  std::string body
+  friend bool operator==(const RemotePrompt&, const RemotePrompt&) = default
+struct loa::view::panel::SessionInfo
+  std::string id
+  std::optional<std::string> parent
+  std::optional<std::uint64_t> forked_at
+  std::string title
+  std::vector<TurnInfo> turns
+  friend bool operator==(const SessionInfo&, const SessionInfo&) = default
+struct loa::view::panel::ToolDetail
+  std::string label
+  DetailState state = DetailState::Ready
+  std::string text
+  friend bool operator==(const ToolDetail&, const ToolDetail&) = default
+struct loa::view::panel::ToolId
+  std::variant<tool_id::Builtin, tool_id::Mcp> value
+  [[nodiscard]] static ToolId builtin(std::string name)
+  [[nodiscard]] static ToolId mcp(std::string server, std::string tool)
+  [[nodiscard]] const std::string& name() const noexcept
+  friend bool operator==(const ToolId&, const ToolId&) = default
+  friend auto operator<=>(const ToolId&, const ToolId&) = default
+struct loa::view::panel::ToolInfo
+  std::string name
+  std::string description
+  std::vector<ToolDetail> details
+  [[nodiscard]] static ToolInfo from(const loa::contracts::HostToolSpec& spec)
+  friend bool operator==(const ToolInfo&, const ToolInfo&) = default
+struct loa::view::panel::ToolRule
+  std::variant<tool_rule::All, tool_rule::AllBuiltin, tool_rule::Server, tool_rule::Tool> value
+  [[nodiscard]] bool allows(const ToolId& tool) const noexcept
+  friend bool operator==(const ToolRule&, const ToolRule&) = default
+struct loa::view::panel::TurnInfo
+  loa::core::NodeId node
+  std::uint64_t seq = 0
+  std::string first_line
+  friend bool operator==(const TurnInfo&, const TurnInfo&) = default
+struct loa::view::panel::agents_intent::Cancel
+  loa::core::NodeId node
+  std::optional<std::string> id
+  friend bool operator==(const Cancel&, const Cancel&) = default
+struct loa::view::panel::agents_intent::DetachTranscript
+  std::string transcript
+  friend bool operator==(const DetachTranscript&, const DetachTranscript&) = default
+struct loa::view::panel::agents_intent::OpenSubagent
+  std::string job
+  friend bool operator==(const OpenSubagent&, const OpenSubagent&) = default
+struct loa::view::panel::diff_intent::OpenFile
+  std::string path
+  friend bool operator==(const OpenFile&, const OpenFile&) = default
+struct loa::view::panel::files_intent::Open
+  std::filesystem::path path
+  friend bool operator==(const Open&, const Open&) = default
+struct loa::view::panel::import_outcome::Failed
+  std::string message
+  friend bool operator==(const Failed&, const Failed&) = default
+struct loa::view::panel::import_outcome::Imported
+  friend bool operator==(const Imported&, const Imported&) = default
+struct loa::view::panel::import_outcome::Skipped
+  std::string reason
+  friend bool operator==(const Skipped&, const Skipped&) = default
+struct loa::view::panel::port::Entry
+  std::string name
+  bool is_dir = false
+  friend bool operator==(const Entry&, const Entry&) = default
+struct loa::view::panel::server_status::Error
+  std::string message
+  friend bool operator==(const Error&, const Error&) = default
+struct loa::view::panel::server_status::Running
+  friend bool operator==(const Running&, const Running&) = default
+struct loa::view::panel::server_status::Starting
+  friend bool operator==(const Starting&, const Starting&) = default
+struct loa::view::panel::server_status::Stopped
+  friend bool operator==(const Stopped&, const Stopped&) = default
+struct loa::view::panel::session_tree_intent::Fork
+  std::string session
+  loa::core::NodeId turn
+  friend bool operator==(const Fork&, const Fork&) = default
+struct loa::view::panel::session_tree_intent::Open
+  std::string session
+  friend bool operator==(const Open&, const Open&) = default
+struct loa::view::panel::session_tree_intent::Rewind
+  std::string session
+  loa::core::NodeId turn
+  friend bool operator==(const Rewind&, const Rewind&) = default
+struct loa::view::panel::tool_id::Builtin
+  std::string name
+  friend auto operator<=>(const Builtin&, const Builtin&) = default
+struct loa::view::panel::tool_id::Mcp
+  std::string server
+  std::string tool
+  friend auto operator<=>(const Mcp&, const Mcp&) = default
+struct loa::view::panel::tool_rule::All
+  friend bool operator==(const All&, const All&) = default
+struct loa::view::panel::tool_rule::AllBuiltin
+  friend bool operator==(const AllBuiltin&, const AllBuiltin&) = default
+struct loa::view::panel::tool_rule::Server
+  std::string name
+  friend bool operator==(const Server&, const Server&) = default
+struct loa::view::panel::tool_rule::Tool
+  ToolId id
+  friend bool operator==(const Tool&, const Tool&) = default
+struct loa::view::panel::tools_intent::AddHost
+  RemoteHost host
+  friend bool operator==(const AddHost&, const AddHost&) = default
+struct loa::view::panel::tools_intent::AddServer
+  McpServerSpec server
+  friend bool operator==(const AddServer&, const AddServer&) = default
+struct loa::view::panel::tools_intent::AnswerPrompt
+  std::uint64_t id = 0
+  PromptAnswer answer = PromptAnswer::Reject
+  friend bool operator==(const AnswerPrompt&, const AnswerPrompt&) = default
+struct loa::view::panel::tools_intent::ImportServers
+  std::vector<ImportCandidate> candidates
+  friend bool operator==(const ImportServers&, const ImportServers&) = default
+struct loa::view::panel::tools_intent::ImportSshHosts
+  friend bool operator==(const ImportSshHosts&, const ImportSshHosts&) = default
+struct loa::view::panel::tools_intent::LoadAudit
+  std::string host
+  friend bool operator==(const LoadAudit&, const LoadAudit&) = default
+struct loa::view::panel::tools_intent::OpenTerminal
+  std::string host
+  friend bool operator==(const OpenTerminal&, const OpenTerminal&) = default
+struct loa::view::panel::tools_intent::ProjectSelected
+  std::string project
+  friend bool operator==(const ProjectSelected&, const ProjectSelected&) = default
+struct loa::view::panel::tools_intent::RemoveHost
+  std::string host
+  friend bool operator==(const RemoveHost&, const RemoveHost&) = default
+struct loa::view::panel::tools_intent::SaveHostLimits
+  std::string host
+  HostLimits limits
+  friend bool operator==(const SaveHostLimits&, const SaveHostLimits&) = default
+struct loa::view::panel::tools_intent::ScanImports
+  friend bool operator==(const ScanImports&, const ScanImports&) = default
+struct loa::view::panel::tools_intent::Server
+  std::string name
+  ServerAction action = ServerAction::Start
+  friend bool operator==(const Server&, const Server&) = default
+struct loa::view::panel::tools_intent::SetToolsEnabled
+  std::string project
+  std::vector<ToolId> tools
+  bool enabled = false
+  friend bool operator==(const SetToolsEnabled&, const SetToolsEnabled&) = default
+struct loa::view::session::composer::AccessOption
+  std::string id
+  std::string label
+  std::string detail
+  friend bool operator==(const AccessOption&, const AccessOption&) = default
+struct loa::view::session::composer::Command
+  std::string name
+  std::string description
+  friend bool operator==(const Command&, const Command&) = default
+struct loa::view::session::composer::HarnessOption
+  std::string id
+  std::string label
+  bool available = false
+  std::optional<std::string> detail
+  friend bool operator==(const HarnessOption&, const HarnessOption&) = default
+struct loa::view::session::composer::Label
+  std::string text
+  friend bool operator==(const Label&, const Label&) = default
+struct loa::view::session::composer::ModelOption
+  std::string id
+  std::string name
+  std::string provider
+  std::optional<std::string> role
+  [[nodiscard]] std::string to_string() const
+  friend bool operator==(const ModelOption&, const ModelOption&) = default
+struct loa::view::session::composer::PastedImage
+  std::filesystem::path path
+  std::optional<std::pair<std::uint32_t, std::uint32_t>> size
+  friend bool operator==(const PastedImage&, const PastedImage&) = default
+struct loa::view::session::composer::PickerAction
+  std::string id
+  std::string label
+  friend bool operator==(const PickerAction&, const PickerAction&) = default
+struct loa::view::session::composer::WorkflowOption
+  std::string role
+  std::string label
+  WorkflowKind kind = WorkflowKind::None
+  bool current = false
+  friend bool operator==(const WorkflowOption&, const WorkflowOption&) = default
+struct loa::view::session::composer::Workspace
+  std::string path
+  std::string full
+  std::optional<std::string> branch
+  friend bool operator==(const Workspace&, const Workspace&) = default
+struct loa::view::session::composer::intent::AccessChanged
+  std::string access
+  friend bool operator==(const AccessChanged&, const AccessChanged&) = default
+struct loa::view::session::composer::intent::BrowseFolders
+  friend bool operator==(const BrowseFolders&, const BrowseFolders&) = default
+struct loa::view::session::composer::intent::EffortChanged
+  std::string effort
+  friend bool operator==(const EffortChanged&, const EffortChanged&) = default
+struct loa::view::session::composer::intent::FilesRequested
+  std::string query
+  friend bool operator==(const FilesRequested&, const FilesRequested&) = default
+struct loa::view::session::composer::intent::FolderPicked
+  std::string folder
+  friend bool operator==(const FolderPicked&, const FolderPicked&) = default
+struct loa::view::session::composer::intent::HarnessChanged
+  std::string harness
+  friend bool operator==(const HarnessChanged&, const HarnessChanged&) = default
+struct loa::view::session::composer::intent::ModeChanged
+  SessionMode mode = SessionMode::Normal
+  friend bool operator==(const ModeChanged&, const ModeChanged&) = default
+struct loa::view::session::composer::intent::ModelAction
+  std::string id
+  friend bool operator==(const ModelAction&, const ModelAction&) = default
+struct loa::view::session::composer::intent::ModelChanged
+  ModelOption model
+  friend bool operator==(const ModelChanged&, const ModelChanged&) = default
+struct loa::view::session::composer::intent::OpenRules
+  friend bool operator==(const OpenRules&, const OpenRules&) = default
+struct loa::view::session::composer::intent::OpenWorkspace
+  friend bool operator==(const OpenWorkspace&, const OpenWorkspace&) = default
+struct loa::view::session::composer::intent::PasteImage
+  friend bool operator==(const PasteImage&, const PasteImage&) = default
+struct loa::view::session::composer::intent::ProjectPicked
+  std::optional<std::string> project
+  friend bool operator==(const ProjectPicked&, const ProjectPicked&) = default
+struct loa::view::session::composer::intent::QueueChanged
+  std::vector<std::string> queue
+  friend bool operator==(const QueueChanged&, const QueueChanged&) = default
+struct loa::view::session::composer::intent::Stop
+  friend bool operator==(const Stop&, const Stop&) = default
+struct loa::view::session::composer::intent::Submit
+  Prompt prompt
+  friend bool operator==(const Submit&, const Submit&) = default
+struct loa::view::session::composer::intent::WorkflowPicked
+  std::string role
+  friend bool operator==(const WorkflowPicked&, const WorkflowPicked&) = default
+struct loa::view::session::decisions::DecisionDefaultView
+  std::uint64_t timeout_secs = 0
+  std::string answer
+  std::optional<std::string> reason
+  friend bool operator==(const DecisionDefaultView&, const DecisionDefaultView&) = default
+struct loa::view::session::decisions::UnattendedView
+  std::optional<DecisionDefaultView> approval
+  std::optional<DecisionDefaultView> question
+  std::optional<DecisionDefaultView> plan
+  std::optional<DecisionDefaultView> form
+  [[nodiscard]] const std::optional<DecisionDefaultView>& for_kind(loa::core::DecisionKind kind) const noexcept
+  [[nodiscard]] std::optional<DecisionDefaultView>& for_kind(loa::core::DecisionKind kind) noexcept
+  friend bool operator==(const UnattendedView&, const UnattendedView&) = default
+struct loa::view::session::decisions::desk_intent::Answer
+  std::string session
+  loa::core::NodeId decision
+  loa::contracts::Answer answer
+  friend bool operator==(const Answer&, const Answer&) = default
+struct loa::view::session::decisions::desk_intent::NotifyFailed
+  std::string message
+  friend bool operator==(const NotifyFailed&, const NotifyFailed&) = default
+struct loa::view::session::decisions::desk_intent::OpenLink
+  std::string url
+  friend bool operator==(const OpenLink&, const OpenLink&) = default
+struct loa::view::session::decisions::desk_intent::PolicyChanged
+  UnattendedView policy
+  friend bool operator==(const PolicyChanged&, const PolicyChanged&) = default
+struct loa::view::session::decisions::intent::Answer
+  loa::core::NodeId decision
+  loa::contracts::Answer answer
+  friend bool operator==(const Answer&, const Answer&) = default
+struct loa::view::session::decisions::intent::OpenLink
+  std::string url
+  friend bool operator==(const OpenLink&, const OpenLink&) = default
+struct loa::view::session::port::Notice
+  std::string session
+  std::optional<std::string> session_title
+  loa::core::NodeId decision
+  loa::core::DecisionKind kind = loa::core::DecisionKind::Approval
+  std::string heading
+  std::string summary
+  friend bool operator==(const Notice&, const Notice&) = default
+struct loa::view::session::port::NotifyError
+  std::string reason
+  [[nodiscard]] std::string message() const
+  friend bool operator==(const NotifyError&, const NotifyError&) = default
+struct loa::view::session::transcript::intent::OpenLink
+  std::string url
+  friend bool operator==(const OpenLink&, const OpenLink&) = default
+struct loa::view::session::transcript::intent::Rewind
+  loa::core::NodeId message
+  friend bool operator==(const Rewind&, const Rewind&) = default
+struct loa::view::settings::agents::AgentEntry
+  std::filesystem::path path
+  AgentSource source = AgentSource::User
+  bool enabled = false
+  AgentFields fields
+  friend bool operator==(const AgentEntry&, const AgentEntry&) = default
+struct loa::view::settings::agents::AgentFields
+  std::string name
+  std::string description
+  std::optional<ModelSpec> model
+  std::optional<std::string> thinking_level
+  std::optional<std::vector<std::string>> tools
+  std::optional<std::vector<std::string>> spawns
+  std::string body
+  friend bool operator==(const AgentFields&, const AgentFields&) = default
+struct loa::view::settings::agents::Choices
+  std::vector<std::string> models
+  std::vector<std::string> thinking_levels
+  std::vector<std::string> tools
+  std::optional<std::string> tools_note
+  friend bool operator==(const Choices&, const Choices&) = default
+struct loa::view::settings::agents::Draft
+  AgentFields fields
+  std::optional<std::filesystem::path> base
+  std::optional<std::filesystem::path> editing
+  friend bool operator==(const Draft&, const Draft&) = default
+struct loa::view::settings::agents::FieldError
+  std::string_view field
+  std::string message
+  friend bool operator==(const FieldError&, const FieldError&) = default
+struct loa::view::settings::agents::ModelSpec
+  std::variant<std::string, std::vector<std::string>> value
+  [[nodiscard]] std::span<const std::string> entries() const noexcept
+  friend bool operator==(const ModelSpec&, const ModelSpec&) = default
+struct loa::view::settings::agents::intent::Check
+  Draft draft
+  friend bool operator==(const Check&, const Check&) = default
+struct loa::view::settings::agents::intent::Close
+  friend bool operator==(const Close&, const Close&) = default
+struct loa::view::settings::agents::intent::Delete
+  std::filesystem::path path
+  friend bool operator==(const Delete&, const Delete&) = default
+struct loa::view::settings::agents::intent::Replace
+  Draft draft
+  std::filesystem::path path
+  friend bool operator==(const Replace&, const Replace&) = default
+struct loa::view::settings::agents::intent::Save
+  Draft draft
+  friend bool operator==(const Save&, const Save&) = default
+struct loa::view::settings::agents::intent::Toggle
+  std::filesystem::path path
+  friend bool operator==(const Toggle&, const Toggle&) = default
+struct loa::view::settings::models::Catalog
+  std::vector<ModelInfo> models
+  std::vector<RoleAssignment> roles
+  friend bool operator==(const Catalog&, const Catalog&) = default
+struct loa::view::settings::models::Credential
+  std::optional<std::int64_t> id
+  std::string label
+  std::string detail
+  bool active = false
+  friend bool operator==(const Credential&, const Credential&) = default
+struct loa::view::settings::models::CustomProvider
+  std::string id
+  std::string base_url
+  std::string api
+  AuthMode auth = AuthMode::ApiKey
+  std::string api_key_env
+  std::vector<std::string> models
+  friend bool operator==(const CustomProvider&, const CustomProvider&) = default
+struct loa::view::settings::models::HarnessModel
+  std::string harness
+  std::string name
+  std::string config_path
+  std::string model
+  std::string effort
+  std::vector<std::string> efforts
+  friend bool operator==(const HarnessModel&, const HarnessModel&) = default
+struct loa::view::settings::models::LoginPrompt
+  std::string message
+  std::optional<std::string> placeholder
+  std::string input
+  friend bool operator==(const LoginPrompt&, const LoginPrompt&) = default
+struct loa::view::settings::models::LoginState
+  std::variant<login_state::Idle, login_state::Starting, login_state::Browser, login_state::Succeeded, login_state::Failed, login_state::Cancelled> value
+  [[nodiscard]] bool is_running() const noexcept
+  friend bool operator==(const LoginState&, const LoginState&) = default
+struct loa::view::settings::models::ModelInfo
+  ModelRef model
+  std::string name
+  std::string provider_name
+  [[nodiscard]] const std::string& display_name() const noexcept
+  [[nodiscard]] const std::string& provider_display_name() const noexcept
+  friend bool operator==(const ModelInfo&, const ModelInfo&) = default
+struct loa::view::settings::models::ModelOverride
+  std::string selector
+  std::vector<OverrideField> fields
+  friend bool operator==(const ModelOverride&, const ModelOverride&) = default
+struct loa::view::settings::models::ModelRef
+  std::string provider
+  std::string id
+  [[nodiscard]] std::string selector() const
+  friend bool operator==(const ModelRef&, const ModelRef&) = default
+  friend auto operator<=>(const ModelRef&, const ModelRef&) = default
+struct loa::view::settings::models::ModelSettings
+  std::vector<RoleChain> roles
+  std::vector<ModelToggle> models
+  std::vector<ProviderToggle> providers
+  std::vector<ModelOverride> overrides
+  std::vector<CustomProvider> custom_providers
+  std::vector<HarnessModel> harnesses
+  friend bool operator==(const ModelSettings&, const ModelSettings&) = default
+struct loa::view::settings::models::ModelToggle
+  std::string selector
+  bool enabled = false
+  friend bool operator==(const ModelToggle&, const ModelToggle&) = default
+struct loa::view::settings::models::OverrideField
+  std::string key
+  FieldValue value
+  friend bool operator==(const OverrideField&, const OverrideField&) = default
+struct loa::view::settings::models::ProviderEntry
+  ProviderKey key
+  std::string name
+  std::string harness_name
+  Auth auth
+  friend bool operator==(const ProviderEntry&, const ProviderEntry&) = default
+struct loa::view::settings::models::ProviderKey
+  std::string harness
+  std::string provider
+  friend bool operator==(const ProviderKey&, const ProviderKey&) = default
+struct loa::view::settings::models::ProviderToggle
+  std::string id
+  std::string name
+  bool enabled = false
+  friend bool operator==(const ProviderToggle&, const ProviderToggle&) = default
+struct loa::view::settings::models::RoleAssignment
+  std::string role
+  ModelRef model
+  friend bool operator==(const RoleAssignment&, const RoleAssignment&) = default
+struct loa::view::settings::models::RoleChain
+  std::string role
+  std::vector<std::string> chain
+  friend bool operator==(const RoleChain&, const RoleChain&) = default
+struct loa::view::settings::models::SessionModel
+  std::optional<std::string> model
+  std::optional<std::string> role
+  friend bool operator==(const SessionModel&, const SessionModel&) = default
+struct loa::view::settings::models::SessionModelChange
+  ModelRef model
+  std::optional<std::string> role
+  friend bool operator==(const SessionModelChange&, const SessionModelChange&) = default
+struct loa::view::settings::models::ValidationError
+  std::string location
+  std::string message
+  friend bool operator==(const ValidationError&, const ValidationError&) = default
+struct loa::view::settings::models::auth::ApiKey
+  std::optional<std::string> configured_via
+  std::string instructions
+  friend bool operator==(const ApiKey&, const ApiKey&) = default
+struct loa::view::settings::models::auth::Login
+  bool signed_in = false
+  std::optional<std::string> account
+  friend bool operator==(const Login&, const Login&) = default
+struct loa::view::settings::models::auth::Unavailable
+  std::string reason
+  friend bool operator==(const Unavailable&, const Unavailable&) = default
+struct loa::view::settings::models::login_state::Browser
+  std::string url
+  std::string copy_url
+  std::optional<std::string> instructions
+  std::optional<std::string> progress
+  std::optional<LoginPrompt> prompt
+  friend bool operator==(const Browser&, const Browser&) = default
+struct loa::view::settings::models::login_state::Cancelled
+  friend bool operator==(const Cancelled&, const Cancelled&) = default
+struct loa::view::settings::models::login_state::Failed
+  std::string message
+  friend bool operator==(const Failed&, const Failed&) = default
+struct loa::view::settings::models::login_state::Idle
+  friend bool operator==(const Idle&, const Idle&) = default
+struct loa::view::settings::models::login_state::Starting
+  std::optional<std::string> progress
+  friend bool operator==(const Starting&, const Starting&) = default
+struct loa::view::settings::models::login_state::Succeeded
+  std::optional<std::string> account
+  friend bool operator==(const Succeeded&, const Succeeded&) = default
+struct loa::view::settings::models::login_update::Cancelled
+  friend bool operator==(const Cancelled&, const Cancelled&) = default
+struct loa::view::settings::models::login_update::Failed
+  std::string message
+  friend bool operator==(const Failed&, const Failed&) = default
+struct loa::view::settings::models::login_update::Progress
+  std::string message
+  friend bool operator==(const Progress&, const Progress&) = default
+struct loa::view::settings::models::login_update::Prompt
+  std::string message
+  std::optional<std::string> placeholder
+  friend bool operator==(const Prompt&, const Prompt&) = default
+struct loa::view::settings::models::login_update::Succeeded
+  std::optional<std::string> account
+  friend bool operator==(const Succeeded&, const Succeeded&) = default
+struct loa::view::settings::models::login_update::Url
+  std::string url
+  std::optional<std::string> launch_url
+  std::optional<std::string> instructions
+  friend bool operator==(const Url&, const Url&) = default
+struct loa::view::settings::models::picker::intent::Close
+  friend bool operator==(const Close&, const Close&) = default
+struct loa::view::settings::models::picker::intent::SetRoleModel
+  std::string role
+  ModelRef model
+  friend bool operator==(const SetRoleModel&, const SetRoleModel&) = default
+struct loa::view::settings::models::picker::intent::SetSessionModel
+  SessionModelChange change
+  friend bool operator==(const SetSessionModel&, const SetSessionModel&) = default
+struct loa::view::settings::models::picker::target::Role
+  std::string role
+  friend bool operator==(const Role&, const Role&) = default
+struct loa::view::settings::models::picker::target::Session
+  friend bool operator==(const Session&, const Session&) = default
+struct loa::view::settings::models::settings::intent::Reverted
+  friend bool operator==(const Reverted&, const Reverted&) = default
+struct loa::view::settings::models::settings::intent::Save
+  ModelSettings settings
+  friend bool operator==(const Save&, const Save&) = default
+struct loa::view::settings::models::signin::intent::Cancel
+  ProviderKey key
+  friend bool operator==(const Cancel&, const Cancel&) = default
+struct loa::view::settings::models::signin::intent::CopyUrl
+  std::string url
+  friend bool operator==(const CopyUrl&, const CopyUrl&) = default
+struct loa::view::settings::models::signin::intent::OpenUrl
+  std::string url
+  friend bool operator==(const OpenUrl&, const OpenUrl&) = default
+struct loa::view::settings::models::signin::intent::RemoveCredential
+  ProviderKey key
+  std::optional<std::int64_t> credential
+  friend bool operator==(const RemoveCredential&, const RemoveCredential&) = default
+struct loa::view::settings::models::signin::intent::SignIn
+  ProviderKey key
+  friend bool operator==(const SignIn&, const SignIn&) = default
+struct loa::view::settings::models::signin::intent::SignOut
+  ProviderKey key
+  friend bool operator==(const SignOut&, const SignOut&) = default
+struct loa::view::settings::models::signin::intent::SubmitInput
+  ProviderKey key
+  std::string text
+  friend bool operator==(const SubmitInput&, const SubmitInput&) = default
+struct loa::view::settings::peers::Data
+  NodeCard node
+  std::vector<Peer> peers
+  std::vector<Peer> nearby
+  std::vector<Grant> grants
+  std::vector<ResourceChoice> resources
+  std::vector<RemoteItem> remote_sessions
+  std::vector<SharedFolderItem> shared_folders
+  std::string local_version
+  std::uint64_t now = 0
+  friend bool operator==(const Data&, const Data&) = default
+struct loa::view::settings::peers::Grant
+  std::string id
+  std::string peer_key
+  GrantDirection direction = GrantDirection::Given
+  GrantResource resource
+  Permission permission = Permission::Fork
+  std::optional<std::uint64_t> expires_at
+  std::optional<std::uint64_t> renews_at
+  bool reshare = false
+  bool ended = false
+  [[nodiscard]] std::string expiry_text(std::uint64_t now) const
+  friend bool operator==(const Grant&, const Grant&) = default
+struct loa::view::settings::peers::GrantInput
+  std::string peer_key
+  GrantResource resource
+  Permission permission = Permission::Fork
+  std::uint64_t ttl_seconds = 0
+  bool reshare = false
+  friend bool operator==(const GrantInput&, const GrantInput&) = default
+struct loa::view::settings::peers::GrantResource
+  std::string id
+  std::string label
+  GrantScope scope = GrantScope::Session
+  bool future_sessions = false
+  friend bool operator==(const GrantResource&, const GrantResource&) = default
+struct loa::view::settings::peers::NodeCard
+  std::string key
+  std::string name
+  std::string key_source
+  std::string endpoint
+  bool endpoint_ok = false
+  std::string lan
+  bool lan_ok = false
+  std::string tailscale
+  bool tailscale_ok = false
+  bool tailscale_available = false
+  friend bool operator==(const NodeCard&, const NodeCard&) = default
+struct loa::view::settings::peers::Peer
+  std::string key
+  std::string name
+  Discovery discovery = Discovery::Lan
+  Presence presence = Presence::Offline
+  std::optional<std::uint64_t> last_seen
+  Transport transport = Transport::None
+  std::string app_version
+  std::optional<bool> shared_protocol
+  [[nodiscard]] std::string_view short_key() const noexcept
+  [[nodiscard]] std::optional<VersionParts> version() const
+  [[nodiscard]] VersionRelation version_relation(std::string_view local) const
+  [[nodiscard]] std::string last_seen_text(std::uint64_t now) const
+  friend bool operator==(const Peer&, const Peer&) = default
+struct loa::view::settings::peers::RemoteItem
+  std::string peer_key
+  std::string peer_name
+  std::string session
+  std::string title
+  std::string harness
+  std::string access
+  bool can_drive = false
+  bool can_fork = false
+  bool online = false
+  friend bool operator==(const RemoteItem&, const RemoteItem&) = default
+struct loa::view::settings::peers::ResourceChoice
+  std::string id
+  std::string label
+  GrantScope scope = GrantScope::Session
+  friend bool operator==(const ResourceChoice&, const ResourceChoice&) = default
+struct loa::view::settings::peers::SharedFolderItem
+  std::string peer_key
+  std::string peer_name
+  std::string path
+  bool can_write = false
+  bool online = false
+  friend bool operator==(const SharedFolderItem&, const SharedFolderItem&) = default
+struct loa::view::settings::peers::intent::AddDiscovered
+  std::string key
+  friend bool operator==(const AddDiscovered&, const AddDiscovered&) = default
+struct loa::view::settings::peers::intent::AddPeer
+  std::string key
+  std::optional<std::string> address
+  friend bool operator==(const AddPeer&, const AddPeer&) = default
+struct loa::view::settings::peers::intent::BrowseFolder
+  std::string peer
+  std::string folder
+  friend bool operator==(const BrowseFolder&, const BrowseFolder&) = default
+struct loa::view::settings::peers::intent::CopyKey
+  std::string key
+  friend bool operator==(const CopyKey&, const CopyKey&) = default
+struct loa::view::settings::peers::intent::CreateGrant
+  GrantInput input
+  friend bool operator==(const CreateGrant&, const CreateGrant&) = default
+struct loa::view::settings::peers::intent::ForkRemote
+  std::string peer
+  std::string session
+  friend bool operator==(const ForkRemote&, const ForkRemote&) = default
+struct loa::view::settings::peers::intent::OpenRemote
+  std::string peer
+  std::string session
+  friend bool operator==(const OpenRemote&, const OpenRemote&) = default
+struct loa::view::settings::peers::intent::Refresh
+  friend bool operator==(const Refresh&, const Refresh&) = default
+struct loa::view::settings::peers::intent::RemovePeer
+  std::string key
+  friend bool operator==(const RemovePeer&, const RemovePeer&) = default
+struct loa::view::settings::peers::intent::RenamePeer
+  std::string key
+  std::string name
+  friend bool operator==(const RenamePeer&, const RenamePeer&) = default
+struct loa::view::settings::peers::intent::RenewGrant
+  std::string id
+  friend bool operator==(const RenewGrant&, const RenewGrant&) = default
+struct loa::view::settings::peers::intent::RevokeGrant
+  std::string id
+  friend bool operator==(const RevokeGrant&, const RevokeGrant&) = default
+struct loa::view::settings::peers::intent::ScanTailscale
+  friend bool operator==(const ScanTailscale&, const ScanTailscale&) = default
+struct loa::view::settings::peers::intent::ValidateKey
+  std::string key
+  friend bool operator==(const ValidateKey&, const ValidateKey&) = default
+struct loa::view::settings::projects::Digest
+  std::string summary
+  std::vector<std::string> decisions
+  friend bool operator==(const Digest&, const Digest&) = default
+struct loa::view::settings::projects::OmpHistoryRow
+  std::string id
+  std::string title
+  std::int64_t modified = 0
+  friend bool operator==(const OmpHistoryRow&, const OmpHistoryRow&) = default
+struct loa::view::settings::projects::PinnedFile
+  std::string path
+  std::optional<std::string> note
+  friend bool operator==(const PinnedFile&, const PinnedFile&) = default
+struct loa::view::settings::projects::ProjectOverview
+  std::optional<std::string> cwd
+  ProjectSettings settings
+  std::expected<std::string, std::string> ideas
+  std::vector<SessionRow> sessions
+  friend bool operator==(const ProjectOverview&, const ProjectOverview&) = default
+struct loa::view::settings::projects::ProjectSettings
+  std::string instructions
+  std::vector<PinnedFile> pinned
+  std::optional<std::string> digest_model
+  std::optional<std::string> folder
+  bool ideas_in_context = false
+  friend bool operator==(const ProjectSettings&, const ProjectSettings&) = default
+struct loa::view::settings::projects::SessionRow
+  std::string id
+  std::optional<std::string> title
+  std::optional<std::string> harness
+  std::int64_t last_active = 0
+  std::size_t turns = 0
+  bool excluded = false
+  DigestState digest_state = DigestState::Missing
+  std::optional<Digest> digest
+  std::optional<std::string> digest_model
+  friend bool operator==(const SessionRow&, const SessionRow&) = default
+struct loa::view::settings::projects::create_intent::Cancel
+  friend bool operator==(const Cancel&, const Cancel&) = default
+struct loa::view::settings::projects::create_intent::ChooseFolder
+  std::string folder
+  friend bool operator==(const ChooseFolder&, const ChooseFolder&) = default
+struct loa::view::settings::projects::create_intent::Create
+  std::string name
+  ProjectSettings settings
+  friend bool operator==(const Create&, const Create&) = default
+struct loa::view::settings::projects::intent::ChangeFolder
+  std::string project
+  std::optional<std::string> current
+  friend bool operator==(const ChangeFolder&, const ChangeFolder&) = default
+struct loa::view::settings::projects::intent::Delete
+  std::string project
+  friend bool operator==(const Delete&, const Delete&) = default
+struct loa::view::settings::projects::intent::DeleteOmpHistory
+  std::string id
+  friend bool operator==(const DeleteOmpHistory&, const DeleteOmpHistory&) = default
+struct loa::view::settings::projects::intent::NewChat
+  std::string project
+  std::optional<std::string> cwd
+  friend bool operator==(const NewChat&, const NewChat&) = default
+struct loa::view::settings::projects::intent::OpenOmpHistory
+  std::string id
+  friend bool operator==(const OpenOmpHistory&, const OpenOmpHistory&) = default
+struct loa::view::settings::projects::intent::OpenSession
+  std::string session
+  friend bool operator==(const OpenSession&, const OpenSession&) = default
+struct loa::view::settings::projects::intent::ReloadIdeas
+  friend bool operator==(const ReloadIdeas&, const ReloadIdeas&) = default
+struct loa::view::settings::projects::intent::SaveSettings
+  std::string project
+  ProjectSettings settings
+  std::optional<std::string> ideas
+  friend bool operator==(const SaveSettings&, const SaveSettings&) = default
+struct loa::view::settings::projects::intent::SetExcluded
+  std::string session
+  bool excluded = false
+  friend bool operator==(const SetExcluded&, const SetExcluded&) = default
+struct loa::view::settings::projects::omp_history::Failed
+  std::string message
+  friend bool operator==(const Failed&, const Failed&) = default
+struct loa::view::settings::projects::omp_history::Loading
+  friend bool operator==(const Loading&, const Loading&) = default
+struct loa::view::settings::projects::omp_history::Ready
+  std::vector<OmpHistoryRow> rows
+  friend bool operator==(const Ready&, const Ready&) = default
+struct loa::view::settings::updates::Active
+  std::string current
+  std::optional<std::string> previous
+  friend bool operator==(const Active&, const Active&) = default
+struct loa::view::settings::updates::CheckResult
+  GateCheck check = GateCheck::ToolSchemas
+  Verdict verdict = Verdict::Pass
+  std::vector<std::string> details
+  friend bool operator==(const CheckResult&, const CheckResult&) = default
+struct loa::view::settings::updates::Data
+  std::vector<Product> products
+  std::optional<std::uint64_t> github_requests_left
+  std::vector<PeerStanding> peers
+  bool turn_running = false
+  std::uint64_t now_unix = 0
+  friend bool operator==(const Data&, const Data&) = default
+struct loa::view::settings::updates::GateReport
+  std::string from
+  std::string to
+  std::vector<CheckResult> checks
+  [[nodiscard]] std::vector<const CheckResult*> harmful() const
+  friend bool operator==(const GateReport&, const GateReport&) = default
+struct loa::view::settings::updates::HeldUpdate
+  std::string version
+  GateReport report
+  friend bool operator==(const HeldUpdate&, const HeldUpdate&) = default
+struct loa::view::settings::updates::PeerStanding
+  std::string node
+  std::optional<std::string> name
+  std::optional<std::string> app_version
+  Standing standing
+  std::vector<ProtocolStatus> protocols
+  bool can_talk = false
+  friend bool operator==(const PeerStanding&, const PeerStanding&) = default
+struct loa::view::settings::updates::Product
+  std::string id
+  std::string label
+  ProductKind kind
+  std::string source
+  std::optional<std::string> current
+  Installed installed
+  std::optional<std::string> offer
+  std::optional<std::string> newest
+  std::string changelog
+  std::optional<std::uint64_t> last_check_unix
+  std::vector<std::string> staged
+  std::optional<Active> active
+  std::optional<GateReport> report
+  std::optional<HeldUpdate> held
+  std::optional<std::string> pending_swap
+  std::optional<std::string> pin
+  std::optional<std::string> waiting_past
+  std::optional<SignatureStatus> signature
+  bool restart_required = false
+  std::optional<std::string> error
+  friend bool operator==(const Product&, const Product&) = default
+struct loa::view::settings::updates::ProtocolStatus
+  std::string family
+  std::optional<std::uint32_t> shared
+  friend bool operator==(const ProtocolStatus&, const ProtocolStatus&) = default
+struct loa::view::settings::updates::installed::Managed
+  std::string path
+  friend bool operator==(const Managed&, const Managed&) = default
+struct loa::view::settings::updates::installed::Missing
+  std::string path
+  friend bool operator==(const Missing&, const Missing&) = default
+struct loa::view::settings::updates::installed::Running
+  friend bool operator==(const Running&, const Running&) = default
+struct loa::view::settings::updates::installed::System
+  std::string path
+  friend bool operator==(const System&, const System&) = default
+struct loa::view::settings::updates::installed::Unknown
+  friend bool operator==(const Unknown&, const Unknown&) = default
+struct loa::view::settings::updates::intent::Check
+  std::string product
+  friend bool operator==(const Check&, const Check&) = default
+struct loa::view::settings::updates::intent::CheckAll
+  friend bool operator==(const CheckAll&, const CheckAll&) = default
+struct loa::view::settings::updates::intent::Choose
+  std::string product
+  HoldChoice choice = HoldChoice::Wait
+  friend bool operator==(const Choose&, const Choose&) = default
+struct loa::view::settings::updates::intent::Gate
+  std::string product
+  friend bool operator==(const Gate&, const Gate&) = default
+struct loa::view::settings::updates::intent::Rollback
+  std::string product
+  friend bool operator==(const Rollback&, const Rollback&) = default
+struct loa::view::settings::updates::intent::Stage
+  std::string product
+  friend bool operator==(const Stage&, const Stage&) = default
+struct loa::view::settings::updates::intent::Swap
+  std::string product
+  friend bool operator==(const Swap&, const Swap&) = default
+struct loa::view::settings::updates::intent::Unpin
+  std::string product
+  friend bool operator==(const Unpin&, const Unpin&) = default
+struct loa::view::settings::updates::intent::Verify
+  std::string product
+  friend bool operator==(const Verify&, const Verify&) = default
+struct loa::view::settings::updates::product_kind::App
+  friend bool operator==(const App&, const App&) = default
+struct loa::view::settings::updates::product_kind::Harness
+  std::string harness
+  friend bool operator==(const Harness&, const Harness&) = default
+struct loa::view::settings::updates::product_kind::Omp
+  friend bool operator==(const Omp&, const Omp&) = default
+struct loa::view::settings::updates::signature_status::NoTrustedKeys
+  friend bool operator==(const NoTrustedKeys&, const NoTrustedKeys&) = default
+struct loa::view::settings::updates::signature_status::Rejected
+  std::string reason
+  friend bool operator==(const Rejected&, const Rejected&) = default
+struct loa::view::settings::updates::signature_status::Unsigned
+  friend bool operator==(const Unsigned&, const Unsigned&) = default
+struct loa::view::settings::updates::signature_status::Verified
+  friend bool operator==(const Verified&, const Verified&) = default
+struct loa::view::settings::updates::standing::Ahead
+  friend bool operator==(const Ahead&, const Ahead&) = default
+struct loa::view::settings::updates::standing::Behind
+  std::uint64_t majors = 0
+  std::uint64_t minors = 0
+  std::uint64_t patches = 0
+  friend bool operator==(const Behind&, const Behind&) = default
+struct loa::view::settings::updates::standing::Current
+  friend bool operator==(const Current&, const Current&) = default
+struct loa::view::settings::updates::standing::Unknown
+  friend bool operator==(const Unknown&, const Unknown&) = default
+struct loa::view::settings::workflows::AgentInfo
+  std::string name
+  bool enabled = false
+  friend bool operator==(const AgentInfo&, const AgentInfo&) = default
+struct loa::view::settings::workflows::Draft
+  Workflow workflow
+  friend bool operator==(const Draft&, const Draft&) = default
+struct loa::view::settings::workflows::FieldError
+  std::string_view field
+  std::string message
+  friend bool operator==(const FieldError&, const FieldError&) = default
+struct loa::view::settings::workflows::ManagedFields
+  std::string description
+  std::vector<RoutingNote> routing
+  std::vector<std::string> steps
+  std::vector<RuleBlock> blocks
+  friend bool operator==(const ManagedFields&, const ManagedFields&) = default
+struct loa::view::settings::workflows::RoutingNote
+  std::string agent
+  std::string note
+  friend bool operator==(const RoutingNote&, const RoutingNote&) = default
+struct loa::view::settings::workflows::RuleBlock
+  std::string heading
+  std::string text
+  friend bool operator==(const RuleBlock&, const RuleBlock&) = default
+struct loa::view::settings::workflows::Workflow
+  std::string role
+  std::vector<std::string> models
+  Rules rules
+  friend bool operator==(const Workflow&, const Workflow&) = default
+struct loa::view::settings::workflows::error::ChangedOnDisk
+  friend bool operator==(const ChangedOnDisk&, const ChangedOnDisk&) = default
+struct loa::view::settings::workflows::error::Message
+  std::string message
+  friend bool operator==(const Message&, const Message&) = default
+struct loa::view::settings::workflows::intent::Close
+  friend bool operator==(const Close&, const Close&) = default
+struct loa::view::settings::workflows::intent::Delete
+  std::string role
+  friend bool operator==(const Delete&, const Delete&) = default
+struct loa::view::settings::workflows::intent::New
+  friend bool operator==(const New&, const New&) = default
+struct loa::view::settings::workflows::intent::Open
+  std::string role
+  friend bool operator==(const Open&, const Open&) = default
+struct loa::view::settings::workflows::intent::Reload
+  friend bool operator==(const Reload&, const Reload&) = default
+struct loa::view::settings::workflows::intent::Save
+  Draft draft
+  std::optional<std::string> previous_role
+  friend bool operator==(const Save&, const Save&) = default
+struct loa::view::settings::workflows::rules::External
+  std::string text
+  friend bool operator==(const External&, const External&) = default
+struct loa::view::settings::workflows::rules::HandWritten
+  std::string text
+  friend bool operator==(const HandWritten&, const HandWritten&) = default
+struct loa::view::settings::workflows::rules::Managed
+  std::string name
+  std::vector<std::string> allowed
+  std::vector<std::string> disallowed
+  std::string notes
+  ManagedFields fields
+  friend bool operator==(const Managed&, const Managed&) = default
+struct loa::view::settings::workflows::rules::None
+  friend bool operator==(const None&, const None&) = default
+struct loa::view::shell::NodeFilter
+  std::optional<std::string> node
+  [[nodiscard]] bool matches(std::string_view key) const noexcept
+  friend bool operator==(const NodeFilter&, const NodeFilter&) = default
+struct loa::view::shell::NodeStatus
+  std::string key
+  std::string name
+  bool online = false
+  bool local = false
+  friend bool operator==(const NodeStatus&, const NodeStatus&) = default
+struct loa::view::shell::PanelTab
+  std::string id
+  std::string title
+  std::optional<theme::Icon> icon
+  friend bool operator==(const PanelTab&, const PanelTab&) = default
+struct loa::view::shell::UsageMeter
+  float fraction = 0
+  std::string label
+  friend bool operator==(const UsageMeter&, const UsageMeter&) = default
+struct loa::view::shell::intent::CloseProjectTab
+  std::string project
+  friend bool operator==(const CloseProjectTab&, const CloseProjectTab&) = default
+struct loa::view::shell::intent::DetachTab
+  std::string tab
+  friend bool operator==(const DetachTab&, const DetachTab&) = default
+struct loa::view::shell::intent::ReattachTab
+  std::string tab
+  friend bool operator==(const ReattachTab&, const ReattachTab&) = default
+struct loa::view::shell::intent::SetTheme
+  theme::ThemeRef theme
+  friend bool operator==(const SetTheme&, const SetTheme&) = default
+struct loa::view::shell::intent::ShowDetached
+  std::string tab
+  friend bool operator==(const ShowDetached&, const ShowDetached&) = default
+struct loa::view::shell::intent::Sidebar
+  SidebarIntent intent
+  friend bool operator==(const Sidebar&, const Sidebar&) = default
+struct loa::view::shell::intent::ThemeChanged
+  std::uint64_t generation = 0
+  friend bool operator==(const ThemeChanged&, const ThemeChanged&) = default
+struct loa::view::shell::sidebar_intent::DeleteProject
+  std::string project
+  friend bool operator==(const DeleteProject&, const DeleteProject&) = default
+struct loa::view::shell::sidebar_intent::DeleteSession
+  std::string id
+  friend bool operator==(const DeleteSession&, const DeleteSession&) = default
+struct loa::view::shell::sidebar_intent::MoveSession
+  std::string id
+  std::optional<std::string> project
+  friend bool operator==(const MoveSession&, const MoveSession&) = default
+struct loa::view::shell::sidebar_intent::NewProject
+  friend bool operator==(const NewProject&, const NewProject&) = default
+struct loa::view::shell::sidebar_intent::NewSession
+  friend bool operator==(const NewSession&, const NewSession&) = default
+struct loa::view::shell::sidebar_intent::NewSessionIn
+  std::string project
+  friend bool operator==(const NewSessionIn&, const NewSessionIn&) = default
+struct loa::view::shell::sidebar_intent::OpenConfigs
+  friend bool operator==(const OpenConfigs&, const OpenConfigs&) = default
+struct loa::view::shell::sidebar_intent::OpenPeers
+  friend bool operator==(const OpenPeers&, const OpenPeers&) = default
+struct loa::view::shell::sidebar_intent::OpenProject
+  std::string project
+  friend bool operator==(const OpenProject&, const OpenProject&) = default
+struct loa::view::shell::sidebar_intent::OpenSession
+  std::string id
+  friend bool operator==(const OpenSession&, const OpenSession&) = default
+struct loa::view::shell::sidebar_intent::OpenSettings
+  friend bool operator==(const OpenSettings&, const OpenSettings&) = default
+struct loa::view::shell::sidebar_intent::OpenTools
+  friend bool operator==(const OpenTools&, const OpenTools&) = default
+struct loa::view::shell::sidebar_intent::OpenUpdates
+  friend bool operator==(const OpenUpdates&, const OpenUpdates&) = default
+struct loa::view::shell::sidebar_intent::OpenUsage
+  friend bool operator==(const OpenUsage&, const OpenUsage&) = default
+struct loa::view::shell::sidebar_intent::SetPinned
+  std::string id
+  bool pinned = false
+  friend bool operator==(const SetPinned&, const SetPinned&) = default
+struct loa::view::shell::sidebar_intent::SetProjectPinned
+  std::string project
+  bool pinned = false
+  friend bool operator==(const SetProjectPinned&, const SetProjectPinned&) = default
+struct loa::view::surface::AvailableSurface
+  SurfaceInfo info
+  std::string server
+  friend bool operator==(const AvailableSurface&, const AvailableSurface&) = default
+struct loa::view::surface::CaptureStatus
+  Capture selected = Capture::Screencast
+  std::optional<std::string> virtual_display_missing = "not checked"
+  bool pending = false
+  friend bool operator==(const CaptureStatus&, const CaptureStatus&) = default
+struct loa::view::surface::VideoStatus
+  bool enabled = false
+  std::optional<StreamInfo> encoder
+  std::vector<std::string> hardware
+  friend bool operator==(const VideoStatus&, const VideoStatus&) = default
+struct loa::view::surface::browser_status::Missing
+  friend bool operator==(const Missing&, const Missing&) = default
+struct loa::view::surface::browser_status::Ready
+  std::filesystem::path executable
+  bool sandboxed = false
+  friend bool operator==(const Ready&, const Ready&) = default
+struct loa::view::surface::intent::Close
+  SurfaceUri uri
+  friend bool operator==(const Close&, const Close&) = default
+struct loa::view::surface::intent::EncodingUnsupported
+  SurfaceUri uri
+  Encoding encoding = Encoding::Rgba
+  std::vector<Encoding> supported
+  friend bool operator==(const EncodingUnsupported&, const EncodingUnsupported&) = default
+struct loa::view::surface::intent::Open
+  SurfaceUri uri
+  friend bool operator==(const Open&, const Open&) = default
+struct loa::view::surface::intent::OpenBrowser
+  std::string url
+  friend bool operator==(const OpenBrowser&, const OpenBrowser&) = default
+struct loa::view::surface::intent::OpenDocument
+  std::filesystem::path path
+  friend bool operator==(const OpenDocument&, const OpenDocument&) = default
+struct loa::view::surface::intent::OpenVm
+  std::string address
+  std::optional<std::string> password
+  friend bool operator==(const OpenVm&, const OpenVm&) = default
+struct loa::view::surface::intent::SetCapture
+  Capture capture = Capture::Screencast
+  friend bool operator==(const SetCapture&, const SetCapture&) = default
+struct loa::view::surface::intent::SetVideo
+  bool enabled = false
+  friend bool operator==(const SetVideo&, const SetVideo&) = default
+struct loa::view::surface::port::DecodeError
+  std::string message
+  friend bool operator==(const DecodeError&, const DecodeError&) = default
+struct loa::view::surface::port::Decoders
+  std::optional<NewDecoder> extra
+  NewDecoder still
+struct loa::view::surface::port::DocumentPalette
+  std::array<std::uint8_t, 4> page{}
+  std::array<std::uint8_t, 4> text{}
+  std::array<std::uint8_t, 4> rule{}
+  std::array<std::uint8_t, 4> grid{}
+  std::array<std::uint8_t, 4> header{}
+  std::array<std::uint8_t, 4> header_text{}
+  friend bool operator==(const DocumentPalette&, const DocumentPalette&) = default
+struct loa::view::surface::port::PageSize
+  float width = 0
+  float height = 0
+  friend bool operator==(const PageSize&, const PageSize&) = default
+struct loa::view::surface::port::RgbaPage
+  std::uint32_t width = 0
+  std::uint32_t height = 0
+  std::vector<std::uint8_t> data
+  friend bool operator==(const RgbaPage&, const RgbaPage&) = default
+struct loa::view::surface::port::opened_document::Image
+  std::uint32_t width = 0
+  std::uint32_t height = 0
+struct loa::view::surface::port::opened_document::Paged
+  std::unique_ptr<PagedDocument> document
+struct loa::view::terminal::port::GridSize
+  std::uint16_t cols = 80
+  std::uint16_t rows = 24
+  std::uint16_t cell_width = 0
+  std::uint16_t cell_height = 0
+  friend bool operator==(const GridSize&, const GridSize&) = default
+struct loa::view::terminal::port::PtyChannel
+  std::unique_ptr<ChannelReader> reader
+  std::unique_ptr<ChannelWriter> writer
+struct loa::view::terminal::port::channel_read::Closed
+  std::optional<std::uint32_t> exit_code
+  friend bool operator==(const Closed&, const Closed&) = default
+struct loa::view::terminal::port::channel_read::Data
+  std::vector<std::uint8_t> bytes
+  friend bool operator==(const Data&, const Data&) = default
+struct loa::view::theme::Appearance
+  ThemeRef theme
+  Overrides overrides
+  friend bool operator==(const Appearance&, const Appearance&) = default
+struct loa::view::theme::ThemeRef
+  static constexpr std::string_view SYSTEM = "system"
+  std::string value{SYSTEM}
+  [[nodiscard]] const std::string& as_str() const noexcept
+  friend bool operator==(const ThemeRef&, const ThemeRef&) = default
+template <> struct loa::core::StrEnum<loa::view::settings::models::AuthMode>
+  static constexpr std::array<std::string_view, 3> values{"apiKey", "none", "oauth"}
+template <> struct loa::core::StrEnum<loa::view::settings::models::OverrideKey>
+  static constexpr std::array<std::string_view, 10> values{"name", "contextWindow", "maxContextWindow", "maxTokens", "reasoning", "input", "contextPromotionTarget", "compactionModel", "preferWebsockets", "cost"}
+template <> struct loa::core::StrEnum<loa::view::settings::peers::Discovery>
+  static constexpr std::array<std::string_view, 4> values{"LAN (mDNS)", "Tailscale", "Added by key", "Connected to this node"}
+template <> struct loa::core::StrEnum<loa::view::settings::peers::GrantDirection>
+  static constexpr std::array<std::string_view, 2> values{"Given", "Received"}
+template <> struct loa::core::StrEnum<loa::view::settings::peers::Permission>
+  static constexpr std::array<std::string_view, 4> values{"view", "suggest", "drive", "fork"}
+template <> struct loa::core::StrEnum<loa::view::settings::peers::Presence>
+  static constexpr std::array<std::string_view, 2> values{"online", "offline"}
+template <> struct loa::core::StrEnum<loa::view::settings::peers::Transport>
+  static constexpr std::array<std::string_view, 4> values{"direct", "relay", "TCP fallback", "disconnected"}
+template <> struct loa::core::StrEnum<loa::view::settings::peers::VersionRelation>
+  static constexpr std::array<std::string_view, 4> values{"behind", "ahead", "current", "version unknown"}
