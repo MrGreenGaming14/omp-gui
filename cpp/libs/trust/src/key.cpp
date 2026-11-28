@@ -264,26 +264,4 @@ bool proof_valid(const PublicKey& holder, const Challenge& challenge, std::span<
     return holder.verify(proof_message(challenge, token), proof.bytes);
 }
 
-std::string TrustError::to_string() const {
-    switch (kind_) {
-        case Kind::store: return "key store: " + message_;
-        case Kind::unavailable: return "os keychain unavailable: " + message_;
-        case Kind::wrong_length:
-            return std::format("stored node key has {} bytes, expected {}", found_, SECRET_KEY_LENGTH);
-        case Kind::random: return "os random source: " + message_;
-        case Kind::key: return "invalid key: " + message_;
-    }
-    return message_;
-}
-
-loa::Error TrustError::to_error() const {
-    switch (kind_) {
-        case Kind::store: return loa::Error(ErrorCode::io, to_string());
-        case Kind::unavailable: return loa::Error(ErrorCode::unsupported, to_string());
-        case Kind::wrong_length: case Kind::key: return loa::Error(ErrorCode::invalid_argument, to_string());
-        case Kind::random: return loa::Error(ErrorCode::internal, to_string());
-    }
-    return loa::Error(ErrorCode::unknown, to_string());
-}
-
 } // namespace loa::trust
