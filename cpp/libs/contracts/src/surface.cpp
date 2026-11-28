@@ -86,6 +86,14 @@ Awaitable<Result<std::shared_ptr<const Frame>>> FrameReceiver::recv() {
     }
 }
 
+std::shared_ptr<const Frame> FrameReceiver::try_recv() {
+    std::lock_guard lock(mutex_);
+    if (queue_.empty()) return nullptr;
+    auto frame = std::move(queue_.front());
+    queue_.pop_front();
+    return frame;
+}
+
 std::uint64_t FrameReceiver::take_lagged() {
     std::lock_guard lock(mutex_);
     return std::exchange(lagged_, 0);
