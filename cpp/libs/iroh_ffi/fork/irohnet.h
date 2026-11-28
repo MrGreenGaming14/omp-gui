@@ -686,6 +686,14 @@ endpoint_close (
     Endpoint_t * ep);
 
 /** \brief
+ *  Closes the endpoint without consuming it: pending and later accepts fail,
+ *  and the handle must still be freed with `endpoint_free`.
+ */
+void
+endpoint_shutdown (
+    Endpoint_t * const * ep);
+
+/** \brief
  *  Add the given ALPN to the list of accepted ALPNs.
  */
 void

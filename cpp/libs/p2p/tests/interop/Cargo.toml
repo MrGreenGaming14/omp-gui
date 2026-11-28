@@ -1,0 +1,9 @@
+[package]
+name = "loa-interop"
+version = "0.1.0"
+edition = "2024"
+[dependencies]
+loa-p2p = { path = "../../../../../crates/loa-p2p" }
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+[workspace]

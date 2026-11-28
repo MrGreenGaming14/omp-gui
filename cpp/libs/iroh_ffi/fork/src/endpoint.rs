@@ -608,12 +608,14 @@ pub fn endpoint_accept(
 async fn accept_conn(
     ep: &repr_c::Box<Endpoint>,
 ) -> Result<(Vec<u8>, iroh::endpoint::Connection), AcceptError> {
-    let mut conn = ep
+    // Clone out of the lock so a concurrent shutdown is not blocked by a pending accept.
+    let endpoint = ep
         .ep
         .read()
         .await
-        .as_ref()
-        .expect("endpoint not initalized")
+        .clone()
+        .ok_or(AcceptError::ConnectionClosed(anyhow::anyhow!("endpoint closed")))?;
+    let mut conn = endpoint
         .accept()
         .await
         .ok_or(AcceptError::ConnectionClosed(anyhow::anyhow!(
@@ -995,6 +997,18 @@ pub fn endpoint_close(ep: repr_c::Box<Endpoint>) {
             .expect("endpoint not initialized")
             .close()
             .await
+    });
+}
+
+/// Closes the endpoint without consuming it: pending and later accepts fail,
+/// and the handle must still be freed with `endpoint_free`.
+#[ffi_export]
+pub fn endpoint_shutdown(ep: &repr_c::Box<Endpoint>) {
+    TOKIO_EXECUTOR.block_on(async move {
+        let taken = ep.ep.write().await.take();
+        if let Some(endpoint) = taken {
+            endpoint.close().await;
+        }
     });
 }
 
