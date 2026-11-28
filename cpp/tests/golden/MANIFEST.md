@@ -25,6 +25,10 @@ has exactly one row below; `loa_golden_tests` fails otherwise.
   config table: keys sorted, dotted table headers, empty tables kept) after loading `config.toml`, `unknown.toml`, the
   default config and a `[theme]` table with nested overrides; `unknown.edited.toml` after the `unknown_keys_survive_load_edit_save` edit.
 - `settings/config.yml`, `settings/models.yml`: written by `OmpConfig::save` / `ModelsYml::save` after a role edit.
+- `settings/agent.md`, `settings/agent-crlf.md`, `settings/workflows/RULES.md`, `settings/workflows/config.yml`: hand-written
+  inputs (an omp agent file with YAML frontmatter, LF and CRLF; a RULES.md with hand-written, managed and external workflow
+  sections). `settings/agent*.edited.md`, `settings/agent.new.md`, `settings/workflows/*.created.*`, `*.edited.*`: what
+  `AgentDefinition::to_text` and `WorkflowFiles::save`/`delete` write after the edits in `cpp/libs/settings/tests/agents-golden`.
 - `p2p/*.bin`: the bytes `crates/loa-p2p/src/wire.rs` `send` writes: a 4-byte BIG-endian length (wire frames are
   big-endian; journal records are little-endian), then the prost message. The length excludes the prefix, is at most
   `MAX_FRAME_SIZE` (1 MiB = 1048576) and never 0: an empty or oversized message is refused before writing, and a read
@@ -131,6 +135,11 @@ has exactly one row below; `loa_golden_tests` fails otherwise.
 | p2p/frame-update.bin | 30 | c19d12a209db61f43c8ca49577e97351a1eaf6e0afbb07fbe8417aa3265c655b | a849b040ba4004d6581283112704296c4e77f026 |
 | p2p/labels.txt | 41 | 6634a422f9e65d48499fede47fd5d2151554a41b5cc2002003720069813808a1 | a849b040ba4004d6581283112704296c4e77f026 |
 | p2p/wire-entry.bin | 13 | 16019d8665892d3c9b26f849f501efc0dfef2208866502911f3bf3dc6775a1c0 | a849b040ba4004d6581283112704296c4e77f026 |
+| settings/agent-crlf.edited.md | 198 | 83aa894260f2c32d8e937ef1786e6eb542c00dd604f57235e418ef18df9d9303 | 6853d95bd272adf65b37e64c449b02c08813bc53 |
+| settings/agent-crlf.md | 155 | 53004bbbc40a05ed363f461f99eff9b5ec1636a218e2ab897e6dec2288231234 | 6853d95bd272adf65b37e64c449b02c08813bc53 |
+| settings/agent.edited.md | 244 | 5d157da3dde5ccbb3fa40510c2202eb512de291c52583a4a911ea08ab0e3e78f | 6853d95bd272adf65b37e64c449b02c08813bc53 |
+| settings/agent.md | 335 | e23005c1e4fd59fdff1a751db40a39d194ebf12ab8238d631c30a789e0f4bb4e | 6853d95bd272adf65b37e64c449b02c08813bc53 |
+| settings/agent.new.md | 112 | 2c083099f70dd40eff7288c42756b2424fc566e17305aaa236517545806c14cc | 6853d95bd272adf65b37e64c449b02c08813bc53 |
 | settings/config.saved.toml | 1374 | 7380ccfacf073e09ee4e55955700fc8ec0e34044eea3d09f15067746b35a55b7 | 9d00385fd7812e85efc56e5e7e34ef70c7682e84 |
 | settings/config.toml | 1325 | 0e1608a486264a50fd0e32f0e5d54434f8acdc6fda84c40d37225a51f7dd5ee2 | 6853d95bd272adf65b37e64c449b02c08813bc53 |
 | settings/config.yml | 419 | 532f8114e105bbede85b0384b6219906f228e3f6f5f1eede38a82526b95b4c33 | 6853d95bd272adf65b37e64c449b02c08813bc53 |
@@ -140,6 +149,12 @@ has exactly one row below; `loa_golden_tests` fails otherwise.
 | settings/unknown.edited.toml | 703 | 5a2eac01e0a333efb327b41a15846d5ae5acdc9fb63514db51eee306c6cecc74 | 9d00385fd7812e85efc56e5e7e34ef70c7682e84 |
 | settings/unknown.saved.toml | 773 | 905ecfb2159cd8b49cdf0f7435840c8b8b2f54314cd75deb6ecafd9b490330a8 | 9d00385fd7812e85efc56e5e7e34ef70c7682e84 |
 | settings/unknown.toml | 338 | 1f982a717c8ec3ac55a0b9ac3ebd12e420145b558c578785b79cbecef2c40ef3 | 6853d95bd272adf65b37e64c449b02c08813bc53 |
+| settings/workflows/RULES.created.md | 1103 | 3651a5e807697e02e1a1625653d6ee464bbebe7fdce5ceee99ad62619ec53297 | 6853d95bd272adf65b37e64c449b02c08813bc53 |
+| settings/workflows/RULES.edited.md | 824 | 9f7b4a6b2bb559ba39b46a94efc533ed816f72b51e579983ee17c1392226ece6 | 6853d95bd272adf65b37e64c449b02c08813bc53 |
+| settings/workflows/RULES.md | 507 | 18c31492e9022de5e69840ac85d36a98af2b7fa6e66b60e29e0dd86c0354b43f | 6853d95bd272adf65b37e64c449b02c08813bc53 |
+| settings/workflows/config.created.yml | 160 | 592e46a70736b211d05db70e586c68a92dffcb9ae9366f27e8d514b3d9511a70 | 6853d95bd272adf65b37e64c449b02c08813bc53 |
+| settings/workflows/config.edited.yml | 143 | 48a7da2adc35dcaef867e188f2ff4f6c9ba6c88b2cb1110ae316bf2ae5a404d7 | 6853d95bd272adf65b37e64c449b02c08813bc53 |
+| settings/workflows/config.yml | 133 | eb635e797495a37d6d9da7436935fe9ac29ab0ecf25d1d8fb49cd73262201115 | 6853d95bd272adf65b37e64c449b02c08813bc53 |
 | sqlite/grants.rows.json | 3978 | 4d179c6eb1b61530592f31ae23a7b3bc7742264431d85d18b4152ef47ae1a380 | a849b040ba4004d6581283112704296c4e77f026 |
 | sqlite/grants.sql | 501 | 2790821f15bc862a88a0b465fb8c295ba38083167aeb114c8fe16f82c3d80a91 | a849b040ba4004d6581283112704296c4e77f026 |
 | sqlite/net_peers.rows.json | 323 | b9e44fe657b48b996d6fab2d1a6f31dcda7896c606e429c96beeb0034e27f71c | a849b040ba4004d6581283112704296c4e77f026 |

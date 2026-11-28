@@ -3,3 +3,5 @@
 /crates/loa-view/api.txt text eol=lf
 # Native transcript imports preserve source bytes, including raw JSONL and sidecars.
 /crates/loa-harness/fixtures/** -text
+# Golden fixtures are byte-exact, including CRLF inputs.
+/cpp/tests/golden/** -text

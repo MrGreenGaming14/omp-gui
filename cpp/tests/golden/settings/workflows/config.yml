@@ -1,0 +1,7 @@
+# omp config
+modelRoles:
+  default: vendor/default # keep
+  DEEP: vendor/deep:high
+  PLAN: vendor/plan
+  EXT: vendor/ext
+theme: dark
