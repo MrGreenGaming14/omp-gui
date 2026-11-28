@@ -12,7 +12,7 @@ use loa_contracts::harness::{HostToolRouter, Prompt, SessionConfig};
 use loa_contracts::session::SessionSummary;
 use loa_core::{Dom, Op, Patch, TurnStatus, attr};
 use loa_runtime::lifecycle::{ACCESS, ACCESS_DEFAULT, Command, Completion, Effect, RuntimeEvent, Transition, session_cwd};
-use loa_runtime::session::{Feed, Session, SessionEvent, dom_turns};
+use loa_runtime::session::{Feed, Session, SessionEvent, Sessions, dom_turns};
 use loa_ui_session::composer;
 use loa_ui_session::transcript as chat;
 use loa_view::session::composer::AccessOption;
@@ -83,8 +83,14 @@ impl SessionController {
 
     /// Hands `command` to the runtime, then does what its transition asks of the app.
     pub fn run(&mut self, ctx: &mut Ctx, areas: &mut Registry, command: Command) -> Task<AppMessage> {
+        let before_starting = ctx.runtime.sessions().starting().cloned();
         let transition = ctx.runtime.dispatch(command);
-        self.apply(ctx, areas, transition)
+        let task = self.apply(ctx, areas, transition);
+        // Some failed starts and resumes clear `starting` without an event naming the session.
+        if let Some(id) = before_starting.filter(|id| ctx.runtime.sessions().starting() != Some(id)) {
+            sync_running(ctx, &id);
+        }
+        task
     }
 
     /// Runs the harness calls of `transition` and reacts to its events, in order.
@@ -127,6 +133,7 @@ impl SessionController {
     fn react(&mut self, ctx: &mut Ctx, areas: &mut Registry, event: RuntimeEvent) -> Task<AppMessage> {
         match event {
             RuntimeEvent::PrepareSession { operation, mut config, harness, resume } => {
+                sync_running(ctx, &SessionId::from(config.session_id.as_str()));
                 if !resume {
                     ctx.clear_notice();
                 }
@@ -143,7 +150,8 @@ impl SessionController {
                 ctx.notify(notice);
                 Task::none()
             }
-            RuntimeEvent::StartFailed(_) => {
+            RuntimeEvent::StartFailed(id) => {
+                sync_running(ctx, &id);
                 ctx.show_harness();
                 let _ = ctx.composer.turn_ended();
                 if let Some(draft) = self.carried.take() {
@@ -151,7 +159,8 @@ impl SessionController {
                 }
                 Task::none()
             }
-            RuntimeEvent::ResumeFailed(_) => {
+            RuntimeEvent::ResumeFailed(id) => {
+                sync_running(ctx, &id);
                 let _ = ctx.composer.turn_ended();
                 Task::none()
             }
@@ -161,17 +170,20 @@ impl SessionController {
             }
             RuntimeEvent::SessionStarted(id) => {
                 ctx.close_screen();
+                sync_running(ctx, &id);
                 if let Some(draft) = self.carried.take() {
                     self.hand_over(&mut ctx.composer, Some(id), draft);
                 }
                 self.after.extend([After::RefreshFiles, After::Diff]);
                 Task::none()
             }
-            RuntimeEvent::TurnStarted(_) => {
+            RuntimeEvent::TurnStarted(id) => {
                 ctx.composer.turn_started();
+                sync_running(ctx, &id);
                 Task::none()
             }
-            RuntimeEvent::TurnEnded(_) => {
+            RuntimeEvent::TurnEnded(id) => {
+                sync_running(ctx, &id);
                 self.after.extend([After::Diff, After::TurnEnded]);
                 Task::none()
             }
@@ -182,13 +194,18 @@ impl SessionController {
                 Task::none()
             }
             RuntimeEvent::StatusChanged(id) => {
-                if let Some(session) = ctx.runtime.sessions().get(id.as_str()) {
-                    ctx.shell.set_session_status(turn_status(session.dom()).map(str::to_owned));
+                sync_running(ctx, &id);
+                if ctx.runtime.sessions().is_active(id.as_str()) {
+                    let status = ctx.runtime.sessions().get(id.as_str()).and_then(|session| turn_status(session.dom())).map(str::to_owned);
+                    ctx.shell.set_session_status(status);
                 }
                 Task::none()
             }
             RuntimeEvent::PromptReturned(prompt) => ctx.composer.give_back(&prompt.text).map(AppMessage::Composer),
-            RuntimeEvent::SendRequested { prompt, .. } => self.send(ctx, areas, prompt),
+            RuntimeEvent::SendRequested { id, prompt } => {
+                sync_running(ctx, &id);
+                self.send(ctx, areas, prompt)
+            }
         }
     }
 
@@ -208,13 +225,18 @@ impl SessionController {
             return;
         };
         self.chat.load(session.dom());
+        let id = session.id().clone();
+        let summary = session.summary().cloned();
+        let status = turn_status(session.dom()).map(str::to_owned);
+        let cwd = session_cwd(session.dom()).unwrap_or_else(|| ctx.runtime.cwd().to_path_buf());
         let sidebar = ctx.shell.sidebar_mut();
-        if let Some(summary) = session.summary() {
-            sidebar.upsert_session(summary.clone());
+        if let Some(summary) = summary {
+            sidebar.upsert_session(summary);
         }
-        sidebar.set_active(Some(session.id().to_string()));
-        ctx.shell.set_session_status(turn_status(session.dom()).map(str::to_owned));
-        self.after.push(After::Present(session_cwd(session.dom()).unwrap_or_else(|| ctx.runtime.cwd().to_path_buf())));
+        sidebar.set_active(Some(id.to_string()));
+        sync_running(ctx, &id);
+        ctx.shell.set_session_status(status);
+        self.after.push(After::Present(cwd));
     }
 
     /// Has the composer follow `shown`, the session now shown (`None`: none), busy when it runs
@@ -268,6 +290,7 @@ impl SessionController {
                 if let Some(summary) = ctx.runtime.sessions().get(id.as_str()).and_then(|session| session.summary()) {
                     ctx.shell.sidebar_mut().upsert_session(summary.clone());
                 }
+                sync_running(ctx, id);
             }
             SessionEvent::Patch(id, patch) => {
                 self.apply_to_chats(ctx, id, patch);
@@ -280,6 +303,7 @@ impl SessionController {
                 }
             }
             SessionEvent::Closed(id) => {
+                sync_running(ctx, id);
                 let draft = self.drafts.remove(&Some(id.clone()));
                 match (ctx.successors.remove(id), draft) {
                     (Some(Some(successor)), Some(draft)) => self.hand_over(&mut ctx.composer, Some(successor), draft),
@@ -311,6 +335,7 @@ impl SessionController {
     /// sessions) stay.
     pub fn recents_loaded(&mut self, ctx: &mut Ctx, mut summaries: Vec<SessionSummary>, mut problems: Vec<String>, empty: Vec<String>) {
         problems.extend(ctx.runtime.delete_empty(empty));
+        let live: Vec<SessionId> = ctx.runtime.sessions().iter().map(|session| session.id().clone()).collect();
         for summary in ctx.runtime.sessions().iter().filter_map(|session| session.summary()) {
             match summaries.iter_mut().find(|each| each.id == summary.id) {
                 Some(each) => each.clone_from(summary),
@@ -320,6 +345,9 @@ impl SessionController {
         let sidebar = ctx.shell.sidebar_mut();
         for summary in summaries {
             sidebar.upsert_session(summary);
+        }
+        for id in &live {
+            sync_running(ctx, id);
         }
         if !problems.is_empty() {
             ctx.notify(problems.join("; "));
@@ -375,6 +403,20 @@ fn activity(session: &Session) -> composer::Activity {
         return composer::Activity::Idle;
     }
     composer::Activity::of(session.dom())
+}
+
+/// Whether session `id` is actively running a turn: busy, and driven by a live or starting
+/// harness. Disk recents, peer sessions and reopened crash DOMs without a harness are not.
+pub(crate) fn session_running(sessions: &Sessions, id: &SessionId) -> bool {
+    sessions.get(id.as_str()).is_some_and(|session| {
+        session.is_busy() && (session.harness().is_some() || sessions.starting() == Some(id))
+    })
+}
+
+/// Brings the sidebar's running flag for session `id` in line with the runtime.
+fn sync_running(ctx: &mut Ctx, id: &SessionId) {
+    let running = session_running(ctx.runtime.sessions(), id);
+    ctx.shell.set_session_running(id.as_str(), running);
 }
 
 /// The top bar status of the session: its latest turn's state unless it finished normally.

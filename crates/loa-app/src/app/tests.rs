@@ -5,9 +5,10 @@ use iced::keyboard::key::Named;
 use iced::keyboard::{Key, Modifiers};
 use loa_ui_shell::palette::{Platform, Scope};
 
+use loa_core::{DecisionKind, DecisionStatus, Draft, ElementKind, PatchSink, TurnStatus, Value, attr};
 use super::keys::APP_COMMANDS;
 use super::*;
-use super::lifecycle::turn_status;
+use super::lifecycle::{session_running, turn_status};
 use crate::area::{Area, AreaMsg, find_command, find_slash};
 use crate::areas::{decisions, harness, models, peers, projects, sandbox, sessions, surfaces, tools, updater, workflows};
 use crate::testing::TestApp;
@@ -241,6 +242,97 @@ fn a_turn_left_running_by_a_crash_shows_no_working_indicator() {
     assert_eq!((turn_status(session.dom()), session.harness().is_none()), (Some("Running"), true), "its DOM still calls the turn running");
     let composer = &test.app.ctx.composer;
     assert!(!composer.is_busy() && composer.indicator().is_none(), "no harness runs it");
+}
+
+#[test]
+fn the_sidebar_tracks_a_background_session_while_it_runs_and_clears_when_it_ends() {
+    let mut test = TestApp::new();
+    test.prompt("work read Reading the config");
+    test.until("the call runs", |app| app.ctx.composer.indicator() == Some("Reading the config…"));
+    let first = test.active().expect("first session").to_owned();
+    assert!(test.app.ctx.shell.sidebar().is_running(&first));
+    assert!(test.app.ctx.shell.sidebar().shows_running(&first));
+    assert_eq!(test.app.ctx.shell.session_status(), Some("Running"));
+
+    // Switch to a new idle session: the background session stays running in the sidebar while
+    // the top bar tracks the active idle session.
+    test.command("session.new");
+    test.until("the second session is active", |app| app.ctx.runtime.sessions().active_id().is_some_and(|id| id.as_str() != first));
+    let second = test.active().expect("second session").to_owned();
+    assert!(test.app.ctx.shell.sidebar().is_running(&first), "background session stays marked running");
+    assert!(test.app.ctx.shell.sidebar().shows_running(&first));
+    assert!(!test.app.ctx.shell.sidebar().is_running(&second), "idle active session is not running");
+    assert_eq!(test.app.ctx.shell.session_status(), None, "top bar follows the idle active session");
+
+    // End the background turn with Error: the sidebar clears without disturbing the active top bar.
+    let (writer, root, turn) = {
+        let session = test.app.ctx.runtime.sessions().get(&first).expect("first still open");
+        let root = session.dom().root().expect("root").id;
+        let turn = loa_runtime::session::dom_turns(session.dom()).last().expect("running turn").id;
+        (Arc::clone(session.writer()), root, turn)
+    };
+    writer.commit(Draft::set(turn, attr::STATUS, TurnStatus::Error)).unwrap();
+    test.until("the background turn ends", |app| !app.ctx.shell.sidebar().is_running(&first));
+    assert!(!test.app.ctx.shell.sidebar().shows_running(&first));
+    assert_eq!(test.app.ctx.shell.session_status(), None, "background status never overwrites the active top bar");
+    assert_eq!(test.active(), Some(second.as_str()));
+
+    // A background turn starting again marks the sidebar running without changing the active top bar.
+    let next_turn = writer.commit(Draft::insert(root, ElementKind::Turn, [(attr::STATUS, Value::from(TurnStatus::Running))], "")).unwrap().node;
+    test.until("the background turn starts", |app| app.ctx.shell.sidebar().shows_running(&first));
+    assert_eq!(test.app.ctx.shell.session_status(), None, "background running turn leaves active top bar alone");
+
+    // A waiting decision in the background takes precedence over the running indicator.
+    writer
+        .commit(Draft::insert(
+            next_turn,
+            ElementKind::Decision,
+            [(attr::KIND, Value::from(DecisionKind::Approval)), (attr::STATUS, Value::from(DecisionStatus::Waiting))],
+            "",
+        ))
+        .unwrap();
+    writer.commit(Draft::set(next_turn, attr::STATUS, TurnStatus::Waiting)).unwrap();
+    test.until("the background decision waits", |app| app.ctx.shell.sidebar().session(&first).is_some_and(|s| s.waiting));
+    assert!(test.app.ctx.shell.sidebar().is_running(&first));
+    assert!(!test.app.ctx.shell.sidebar().shows_running(&first), "waiting wins over running");
+    assert_eq!(test.app.ctx.shell.session_status(), None);
+
+    // Deleting the background session clears its sidebar running state.
+    test.send(Message::area(sessions::Message::Delete(first.clone())));
+    assert!(!test.app.ctx.shell.sidebar().is_running(&first));
+    assert!(!test.app.ctx.shell.sidebar().shows_running(&first));
+}
+
+#[test]
+fn a_stale_crash_dom_with_no_harness_is_never_running_in_the_sidebar() {
+    let mut test = TestApp::new();
+    test.prompt("work read Reading the config");
+    test.until("the call runs", |app| app.ctx.composer.indicator() == Some("Reading the config…"));
+    let id = test.active().expect("an active session").to_owned();
+    assert!(test.app.ctx.shell.sidebar().is_running(&id));
+    assert!(test.app.ctx.shell.sidebar().shows_running(&id));
+
+    let mut test = test.reopen();
+    assert!(test.app.ctx.shell.sidebar().session(&id).is_some(), "reopened recents list the crashed session");
+    assert!(!test.app.ctx.shell.sidebar().is_running(&id), "disk recents are never marked running");
+    assert!(!test.app.ctx.shell.sidebar().shows_running(&id));
+
+    test.send(Message::OpenRecent(id.clone()));
+    let session = test.app.ctx.runtime.sessions().active().expect("the session reopened");
+    assert_eq!((session.is_busy(), session.harness().is_none()), (true, true), "stale DOM is busy with no harness");
+    assert!(!session_running(test.app.ctx.runtime.sessions(), session.id()), "no harness or start means not running");
+    assert!(!test.app.ctx.shell.sidebar().is_running(&id), "reopening a stale crash DOM does not mark it running");
+    assert!(!test.app.ctx.shell.sidebar().shows_running(&id));
+
+    // Peer sessions are never in runtime.sessions() and never running.
+    assert!(!session_running(test.app.ctx.runtime.sessions(), &SessionId::from("peer:node:remote")));
+
+    // When this busy session is starting/resuming, the helper treats it as running until starting clears.
+    let session_id = SessionId::from(id.as_str());
+    test.app.ctx.runtime.sessions_mut().set_starting(Some(session_id.clone()));
+    assert!(session_running(test.app.ctx.runtime.sessions(), &session_id));
+    test.app.ctx.runtime.sessions_mut().set_starting(None);
+    assert!(!session_running(test.app.ctx.runtime.sessions(), &session_id));
 }
 
 /// A sidebar event, as its row emits it.

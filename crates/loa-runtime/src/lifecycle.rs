@@ -153,7 +153,7 @@ pub enum RuntimeEvent {
     TurnEnded(SessionId),
     /// A session's sidebar entry changed ([`crate::session::Session::summary`]).
     SummaryChanged(SessionId),
-    /// A turn of the active session changed status: the top bar follows.
+    /// A session's turn changed status: the sidebar follows, and the top bar when it is active.
     StatusChanged(SessionId),
     /// A prompt that couldn't be sent goes back to the composer, which stops waiting for its
     /// turn.
@@ -412,7 +412,7 @@ impl Runtime {
                 if summary_changed {
                     out.events.push(RuntimeEvent::SummaryChanged(id.clone()));
                 }
-                if turn_changed && self.sessions.is_active(id.as_str()) {
+                if turn_changed {
                     out.events.push(RuntimeEvent::StatusChanged(id.clone()));
                 }
                 out.events.push(RuntimeEvent::Session(SessionEvent::Patch(id.clone(), patch)));
