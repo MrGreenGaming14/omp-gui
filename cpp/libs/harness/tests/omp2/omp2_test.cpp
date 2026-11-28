@@ -11,6 +11,7 @@
 #include "../kit/support.hpp"
 #include "loa/core/writer.hpp"
 #include "loa/harness/omp2/omp2.hpp"
+#include "loa/harness/registry/registry.hpp"
 #include "loa/harness/testing/testing.hpp"
 #include "loa/runtime/json.hpp"
 #include "loa/runtime/tempfile.hpp"
@@ -166,20 +167,45 @@ TEST_CASE("omp2: a refused DOM subscription marks availability incompatible") {
     CHECK(*received[0].find("enabled")->as_bool());
 }
 
-TEST_CASE("omp2: unsupported configuration is refused before writing to the sink") {
+TEST_CASE("omp2: registry factory constructs the adapter") {
+    auto builds = loa::harness::registry::factories({"owner", "/tmp/omp"});
+    REQUIRE(builds.size() == 6);
+    auto adapter = builds.back()->build("/bin/true");
+    REQUIRE(adapter);
+    CHECK(adapter->harness() == "omp2");
+}
+
+TEST_CASE("omp2: every unsupported configuration is refused before writing to the sink") {
     loa::runtime::Executor exec(2);
     auto dir = loa::runtime::TempDir::create().value();
     Omp2Adapter adapter = Omp2Adapter::with_executable(dir.path() / "unused");
-    auto sink = std::make_shared<MemorySink>();
-    auto cfg = config(dir.path());
-    cfg.context = "project context";
-    auto refused = block_on(exec, adapter.start(cfg, sink));
-    REQUIRE_FALSE(refused);
-    const auto* error = refused.error().get<loa::contracts::AdapterError::Unsupported>();
-    REQUIRE(error);
-    CHECK(error->harness == "omp2");
-    CHECK(error->what == "injecting project context over omp2 RPC");
-    CHECK(sink->dom().root() == nullptr);
+    constexpr std::string_view refusals[] = {
+        "configuring tools over omp2 RPC", "configuring tools over omp2 RPC",
+        "configuring tools over omp2 RPC", "injecting project context over omp2 RPC",
+        "system instructions over omp2 RPC", "model roles or mode over omp2 RPC",
+        "model roles or mode over omp2 RPC",
+    };
+    for (int which = 0; which < 7; ++which) {
+        auto sink = std::make_shared<MemorySink>();
+        auto cfg = config(dir.path());
+        switch (which) {
+        case 0: cfg.mcp_servers.push_back({"mcp", loa::contracts::McpStdio{"mcp", {}, {}}}); break;
+        case 1: cfg.host_tools.push_back({"tool", "tool description", "{}"}); break;
+        case 2: cfg.disabled_tools.push_back("tool"); break;
+        case 3: cfg.context = "project context"; break;
+        case 4: cfg.instructions = "instructions"; break;
+        case 5: cfg.model_role = "default"; break;
+        case 6: cfg.mode = SessionMode::Plan; break;
+        }
+        auto refused = block_on(exec, adapter.start(cfg, sink));
+        REQUIRE_FALSE(refused);
+        const auto* error = refused.error().get<loa::contracts::AdapterError::Unsupported>();
+        REQUIRE(error);
+        CHECK(error->harness == "omp2");
+        CHECK(error->what == refusals[which]);
+        CHECK(refused.error().message() == "omp2 doesn't support " + std::string(refusals[which]));
+        CHECK(sink->dom().root() == nullptr);
+    }
 }
 
 TEST_CASE("omp2: session RPC calls use exact command names and parameters") {
