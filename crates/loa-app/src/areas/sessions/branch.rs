@@ -90,7 +90,7 @@ impl State {
         let start: SpawnStart = Arc::new(move |config: SessionConfig| {
             let (adapter, library, branch, title, id) = (Arc::clone(&adapter), Arc::clone(&library), Arc::clone(&branch), title.clone(), new_id.clone());
             Box::pin(async move {
-                let running = branch.run(adapter.as_ref(), &library, config).await?;
+                let running = branch.run(adapter.as_ref(), &library, SessionConfig { named: true, ..config }).await?;
                 name(&library, &id, &title)?;
                 Ok(Arc::from(running))
             })

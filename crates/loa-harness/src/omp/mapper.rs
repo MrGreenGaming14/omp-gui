@@ -22,6 +22,23 @@ use std::mem::take;
 pub const COMMANDS: &str = "available_commands_update";
 /// omp's output of a slash command it ran itself.
 const COMMAND_OUTPUT: &str = "command_output";
+/// The slash command that has omp generate a title for the session.
+pub const RENAME: &str = "/rename";
+/// How omp's output of [`RENAME`] begins.
+const RENAMED: &str = "Session renamed to ";
+
+/// omp's RPC modes never title a session, so after the first completed turn of
+/// an untitled session the session sends [`RENAME`] once, outside any turn.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Rename {
+    #[default]
+    Idle,
+    /// A turn completed; send once nothing runs.
+    Due,
+    /// Sent; its output stays out of the transcript.
+    Sent,
+    Done,
+}
 
 type Out<T = ()> = std::result::Result<T, CommitError>;
 
@@ -97,6 +114,9 @@ pub struct Mapper {
     current_message: Option<String>,
     /// The command list last recorded, so repeats add nothing.
     commands: Option<Json>,
+    /// The session has a title.
+    titled: bool,
+    rename: Rename,
 }
 
 impl EventMapper for Mapper {
@@ -140,7 +160,29 @@ impl EventMapper for Mapper {
 impl Mapper {
     pub fn new(session: NodeId) -> Self {
         let ledger = TurnLedger::new(session);
-        Self { ledger, open: Open::default(), queued: VecDeque::new(), turns: Vec::new(), todos: HashMap::new(), current_message: None, commands: None }
+        Self { ledger, open: Open::default(), queued: VecDeque::new(), turns: Vec::new(), todos: HashMap::new(), current_message: None, commands: None, titled: false, rename: Rename::Idle }
+    }
+
+    /// A mapper for a session that already has a title, so it never asks for one.
+    pub fn titled(mut self, titled: bool) -> Self {
+        self.titled = titled;
+        self
+    }
+
+    /// Whether to send [`RENAME`] now; true at most once per session.
+    pub fn take_rename(&mut self) -> bool {
+        let due = self.rename == Rename::Due && !self.titled && self.state() == SessionState::Idle;
+        if due {
+            self.rename = Rename::Sent;
+        }
+        due
+    }
+
+    /// omp refused [`RENAME`] or never answered, so no output of it will come.
+    pub fn rename_failed(&mut self) {
+        if self.rename == Rename::Sent {
+            self.rename = Rename::Done;
+        }
     }
 
     pub fn session(&self) -> NodeId {
@@ -191,6 +233,10 @@ impl Mapper {
     }
 
     fn event(&mut self, w: &DomWriter, event: &Event) -> Out {
+        if self.rename == Rename::Sent && matches!(event, Event::Unknown(raw) if raw["type"] == COMMAND_OUTPUT && raw["text"].as_str().is_some_and(|t| t.starts_with(RENAMED))) {
+            self.rename = Rename::Done;
+            return Ok(());
+        }
         let command_output = matches!(event, Event::Unknown(raw) if raw["type"] == COMMAND_OUTPUT) && !self.queued.is_empty();
         if needs_turn(event) || command_output {
             self.ensure_turn(w)?;
@@ -199,7 +245,7 @@ impl Mapper {
         match event {
             Event::AgentStart | Event::TurnStart => self.ensure_turn(w).map(drop),
             Event::SessionSettled => self.finish(w, TurnStatus::Done),
-            Event::PromptResult { id, status, error, .. } => self.prompt_result(w, id.as_deref(), *status, error.as_ref()),
+            Event::PromptResult { id, agent_invoked, status, error, .. } => self.prompt_result(w, id.as_deref(), *agent_invoked, *status, error.as_ref()),
             Event::MessageStart { message, message_id } => self.message_start(w, message, message_id),
             Event::MessageUpdate { role, event, message_id } if role == "assistant" => self.assistant(w, event, message_id.as_deref()),
             Event::MessageEnd { message, message_id } => self.message_end(w, message, message_id.as_deref()),
@@ -223,7 +269,11 @@ impl Mapper {
             Event::ThinkingLevelChanged { thinking_level: Some(level) } => w.set(session, attr::EFFORT, level.as_str()),
             Event::SessionInfoUpdate { title, session_id } => {
                 w.set(session, attr::NATIVE_ID, session_id.as_str())?;
-                title.iter().try_for_each(|t| w.set(session, attr::TITLE, t.as_str()))
+                if let Some(title) = title.as_deref().filter(|t| !t.trim().is_empty()) {
+                    self.titled = true;
+                    w.set(session, attr::TITLE, title)?;
+                }
+                Ok(())
             }
             Event::Notice { level, message, source } => self.ext(w, "notice", &json!({"level":level,"message":message,"source":source})),
             Event::Unknown(raw) => self.unknown(w, raw),
@@ -468,7 +518,10 @@ impl Mapper {
                     None => Ok(()),
                 },
                 UiRequest::Notify { message, notify_type, .. } => self.ext(w, "notice", &json!({"level":notify_type,"message":message,"source":"extension"})),
-                UiRequest::SetTitle { title, .. } => w.set(self.session(), attr::TITLE, title.as_str()),
+                UiRequest::SetTitle { title, .. } => {
+                    self.titled = true;
+                    w.set(self.session(), attr::TITLE, title.as_str())
+                }
                 UiRequest::OpenUrl { url, launch_url, instructions, .. } => self.ext(w, "open_url", &json!({"url":url,"launchUrl":launch_url,"instructions":instructions})),
                 // Status lines, widgets and editor text belong to omp's TUI.
                 _ => Ok(()),
@@ -554,7 +607,7 @@ impl Mapper {
         }
     }
 
-    fn prompt_result(&mut self, w: &DomWriter, id: Option<&str>, status: PromptStatus, error: Option<&PromptError>) -> Out {
+    fn prompt_result(&mut self, w: &DomWriter, id: Option<&str>, agent_invoked: bool, status: PromptStatus, error: Option<&PromptError>) -> Out {
         let status = match status {
             PromptStatus::Completed => TurnStatus::Done,
             PromptStatus::Aborted => TurnStatus::Cancelled,
@@ -569,7 +622,11 @@ impl Mapper {
             self.turns.push(turn);
             w.insert(turn, K::Message, [(attr::ROLE, "user"), (attr::STATUS, MessageStatus::Done.as_str()), (attr::BY, prompt.by.as_str())], prompt.text.as_str())?;
         } else if id.is_none() || self.open.prompt.is_none() || self.open.prompt.as_deref() == id {
+            let ran_prompt = self.open.prompt.is_some();
             self.finish(w, status)?;
+            if ran_prompt && agent_invoked && status == TurnStatus::Done && self.rename == Rename::Idle {
+                self.rename = Rename::Due;
+            }
         }
         // Otherwise an earlier turn's prompt, settled at the same yield as the current one.
         match error {

@@ -1,9 +1,9 @@
 //! The omp [`Adapter`]: an RPC process per session, its frames fed to the [`Mapper`].
 
 use super::launch::{OmpAdapterConfig, Target, drop_unavailable_tools, spawn_options, split_selector};
-use super::mapper::{Input, Mapper, Reply};
+use super::mapper::{Input, Mapper, RENAME, Reply};
 use super::native::{self, X_SESSION_FILE};
-use super::rpc::{self, CancellationResult, Command, CompactionResult, Event, Frame, HostHandler, HostToolCall, HostToolDefinition, HostToolOutput, ImageContent, Incoming, MessageUpdates, ModelInfo, ModelList, PromptAck, PromptStatus, RpcClient, RpcError, StreamingBehavior, SubagentLevel, ToolContent, UiResponder};
+use super::rpc::{self, CancellationResult, Command, CompactionResult, Event, Frame, HostHandler, HostToolCall, HostToolDefinition, HostToolOutput, ImageContent, Incoming, MessageUpdates, ModelInfo, ModelList, PromptAck, PromptStatus, RpcClient, RpcError, StreamingBehavior, SubagentLevel, ToolContent, UiResponder, WeakRpcClient};
 use super::HARNESS;
 use crate::kit::{EventMapper, insert_root};
 use async_trait::async_trait;
@@ -65,7 +65,9 @@ impl OmpAdapter {
         Self { config }
     }
 
-    async fn launch(&self, config: SessionConfig, target: Target, sink: Arc<dyn PatchSink>, root: NodeId) -> Result<OmpSession> {
+    /// `titled`: the session already has a title, so omp isn't asked for one.
+    async fn launch(&self, config: SessionConfig, target: Target, sink: Arc<dyn PatchSink>, root: NodeId, titled: bool) -> Result<OmpSession> {
+        let titled = titled || config.named;
         let mut options = spawn_options(&self.config, &config, &target)?;
         if !config.host_tools.is_empty() {
             let handler = config.host_tool_handler.clone().ok_or_else(|| AdapterError::Protocol("host tools require a handler".into()))?;
@@ -114,7 +116,7 @@ impl OmpAdapter {
             w.set(root, attr::MODEL, model.selector())?;
         }
         let initial = if state.is_streaming { SessionState::Running } else { SessionState::Idle };
-        let shared = Arc::new(Shared { sink, mapper: Mutex::new(Mapper::new(root)), state: watch::Sender::new(initial), failure: Mutex::new(None) });
+        let shared = Arc::new(Shared { sink, mapper: Mutex::new(Mapper::new(root).titled(titled)), state: watch::Sender::new(initial), failure: Mutex::new(None), client: client.downgrade() });
         let (reader, responder) = (shared.clone(), client.ui_responder());
         tokio::spawn(async move {
             while let Some(incoming) = events.recv().await {
@@ -151,17 +153,17 @@ impl Adapter for OmpAdapter {
 
     async fn start(&self, config: SessionConfig, sink: Arc<dyn PatchSink>) -> Result<Box<dyn HarnessSession>> {
         let root = insert_root(&DomWriter::new(&*sink), HARNESS, &config)?;
-        Ok(Box::new(self.launch(config, Target::New, sink, root).await?))
+        Ok(Box::new(self.launch(config, Target::New, sink, root, false).await?))
     }
 
     async fn resume(&self, config: SessionConfig, dom: &Dom, sink: Arc<dyn PatchSink>) -> Result<Box<dyn HarnessSession>> {
         let (root, file) = session_file(dom)?;
-        Ok(Box::new(self.launch(config, Target::Resume(file), sink, root).await?))
+        Ok(Box::new(self.launch(config, Target::Resume(file), sink, root, has_title(dom)).await?))
     }
 
     async fn fork(&self, config: SessionConfig, dom: &Dom, sink: Arc<dyn PatchSink>) -> Result<Box<dyn HarnessSession>> {
         let (root, file) = session_file(dom)?;
-        let session = self.launch(config, Target::Resume(file), sink, root).await?;
+        let session = self.launch(config, Target::Resume(file), sink, root, has_title(dom)).await?;
         if session.request::<CancellationResult>(Command::Fork { entry_id: None }).await?.cancelled {
             return Err(AdapterError::Protocol("omp cancelled fork".into()));
         }
@@ -190,6 +192,10 @@ fn session_file(dom: &Dom) -> Result<(NodeId, String)> {
     Ok((root.id, file.to_owned()))
 }
 
+fn has_title(dom: &Dom) -> bool {
+    dom.root().and_then(|root| root.str_attr(attr::TITLE)).is_some_and(|title| !title.trim().is_empty())
+}
+
 /// A model as the picker lists it; efforts from omp's `thinking.efforts`
 /// (e.g. low/medium/high/xhigh/max), none when the model doesn't reason.
 fn harness_model(model: &ModelInfo) -> HarnessModel {
@@ -199,16 +205,21 @@ fn harness_model(model: &ModelInfo) -> HarnessModel {
     HarnessModel { id: model.selector(), name, provider: model.provider.clone(), efforts }
 }
 
+/// How long omp may take to accept [`RENAME`].
+const RENAME_ACK: Duration = Duration::from_secs(30);
+
 struct Shared {
     sink: Arc<dyn PatchSink>,
     mapper: Mutex<Mapper>,
     state: watch::Sender<SessionState>,
     failure: Mutex<Option<String>>,
+    /// Weak, so a pending title request never keeps omp running.
+    client: WeakRpcClient,
 }
 
 impl Shared {
     /// Applies `input` and answers the dialogs the mapper answers itself.
-    async fn feed(&self, input: Input, responder: Option<&UiResponder>) -> Result<()> {
+    async fn feed(self: &Arc<Self>, input: Input, responder: Option<&UiResponder>) -> Result<()> {
         let replies = {
             let mut mapper = self.mapper.locked();
             let replies = mapper.apply(input, &DomWriter::new(&*self.sink));
@@ -222,7 +233,28 @@ impl Shared {
                 responder.respond(&response).await.map_err(rpc_error)?;
             }
         }
+        self.rename_if_due();
         Ok(())
+    }
+
+    /// Has omp title the session once a turn completed (see [`Mapper::take_rename`]);
+    /// the mapper keeps the command's output out of the transcript.
+    fn rename_if_due(self: &Arc<Self>) {
+        if !self.mapper.locked().take_rename() {
+            return;
+        }
+        let Some(client) = self.client.upgrade() else { return };
+        let shared = Arc::clone(self);
+        tokio::spawn(async move {
+            let command = Command::Prompt { message: RENAME.into(), images: Vec::new(), streaming_behavior: None };
+            let error = match tokio::time::timeout(RENAME_ACK, client.request::<PromptAck>(command)).await {
+                Ok(Ok(_)) => return,
+                Ok(Err(error)) => error.to_string(),
+                Err(_) => format!("no answer in {RENAME_ACK:?}"),
+            };
+            tracing::debug!(%error, "omp did not title the session");
+            shared.mapper.locked().rename_failed();
+        });
     }
 
     fn fail(&self, message: String) {
@@ -289,11 +321,15 @@ impl HarnessSession for OmpSession {
         let ack = match self.client.request_as::<PromptAck>(id.clone(), command).await {
             Ok(ack) => ack,
             Err(error) => {
-                let mut mapper = self.shared.mapper.locked();
-                mapper.withdraw(&id);
-                if *self.shared.state.borrow() != SessionState::Closed {
-                    self.shared.state.send_replace(mapper.state());
+                {
+                    let mut mapper = self.shared.mapper.locked();
+                    mapper.withdraw(&id);
+                    if *self.shared.state.borrow() != SessionState::Closed {
+                        self.shared.state.send_replace(mapper.state());
+                    }
                 }
+                // The withdrawn prompt may have been all that kept a due title waiting.
+                self.shared.rename_if_due();
                 return Err(rpc_error(error));
             }
         };

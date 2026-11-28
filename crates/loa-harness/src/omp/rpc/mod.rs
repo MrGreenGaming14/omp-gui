@@ -19,7 +19,7 @@ mod frames;
 mod inbound;
 
 pub use crate::kit::rpc::{Result, RpcError};
-pub use client::{Events, HostHandler, Incoming, MAX_PROTOCOL, MIN_PROTOCOL, Mode, RpcClient, SpawnOptions, UiResponder, omp_version};
+pub use client::{Events, HostHandler, Incoming, MAX_PROTOCOL, MIN_PROTOCOL, Mode, RpcClient, SpawnOptions, UiResponder, WeakRpcClient, omp_version};
 pub use command::*;
 pub use event::{
     AskOption, AskQuestion, AssistantEvent, Event, Frame, HostToolCall, PromptError, PromptStatus, SubagentLifecycle,
