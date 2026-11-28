@@ -1,8 +1,0 @@
-[package]
-name = "loa-mcp-import-golden"
-version = "0.0.0"
-edition = "2024"
-[dependencies]
-loa-mcp = { path = "../../../../../crates/loa-mcp" }
-serde_json = "1"
-[workspace]

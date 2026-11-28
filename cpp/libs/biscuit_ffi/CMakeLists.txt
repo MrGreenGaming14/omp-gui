@@ -41,4 +41,4 @@ target_compile_features(loa_biscuit_ffi PUBLIC cxx_std_23)
 
 loa_add_test(biscuit_ffi SOURCES tests/biscuit_ffi_tests.cpp LINK loa::biscuit_ffi)
 target_compile_definitions(loa_biscuit_ffi_tests PRIVATE
-  LOA_BISCUIT_FIXTURE_DIR="${PROJECT_SOURCE_DIR}/../crates/loa-trust/tests/fixtures")
+  LOA_BISCUIT_FIXTURE_DIR="${PROJECT_SOURCE_DIR}/tests/golden/trust")

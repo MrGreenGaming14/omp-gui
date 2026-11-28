@@ -39,6 +39,6 @@ A Remote hosts section in the same panel lets the agent reach boxes that don't r
 | Terminal | Open a terminal pane straight to any host |
 | Audit | Every remote read, write and command is logged with the session it came from |
 
-- Built on `russh` and `russh-sftp`, both pure Rust
+- Built on libssh, authenticating through ssh-agent only
 - Keys never leave the node. A peer with a grant can ask this node to run an SSH tool, but the connection always starts here
 - SSH access is its own grant scope, off by default for every peer

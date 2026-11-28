@@ -1,78 +1,91 @@
 name: ci
 on:
   push:
-    branches: [main, tai-dev]
+    branches: [main, cpp-rewrite]
   pull_request:
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+env:
+  # The vendored iroh and biscuit FFI forks (cpp/libs/iroh_ffi, cpp/libs/biscuit_ffi) are
+  # prebuilt with cargo into this directory; it is cached between runs.
+  LOA_RUST_FFI_TARGET: ${{ github.workspace }}/.ffi-target
+  CCACHE_DIR: ${{ github.workspace }}/.ccache
 jobs:
-  test:
+  linux:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      - name: Install the F1 packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake ninja-build ccache qt6-base-dev qt6-pdf-dev qt6-svg-dev qt6-tools-dev qt6-image-formats-plugins libsqlite3-dev libssl-dev libcurl4-openssl-dev libssh-dev libvterm-dev libarchive-dev libsecret-1-dev libjpeg-turbo8-dev libpng-dev libwebp-dev libgif-dev zlib1g-dev libopenh264-dev libtomlplusplus-dev doctest-dev libasio-dev libpugixml-dev libxlsxwriter-dev libcpp-httplib-dev libstb-dev libnotify-dev libxcb1-dev libxcb-shm0-dev libxcb-xtest0-dev libmd4c-dev libyaml-cpp-dev libminizip-dev
       - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
         with:
-          components: clippy
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: ci
-          cache-on-failure: true
-      - run: sudo apt-get update && sudo apt-get install -y xvfb libxkbcommon-dev libwayland-dev libvulkan1 mesa-vulkan-drivers
-      - name: Install OMP for bridge integration tests
-        shell: bash
-        run: |
-          dir="$RUNNER_TEMP/loa-ci-omp"
-          mkdir -p "$dir"
-          cd "$dir"
-          curl --fail --silent --show-error --location --retry 3 \
-            https://github.com/can1357/oh-my-pi/releases/download/v19.0.0/omp-linux-x64 -o omp
-          echo 'c7cc5c8d505053c8ffaf180417e5d5c781235b9d936f286810560151120109bf  omp' | sha256sum --check
-          chmod +x omp
-          echo "$dir" >> "$GITHUB_PATH"
-      - run: cargo build --workspace --all-targets --profile ci
-      - run: xvfb-run -a cargo test --workspace --profile ci
-      - name: Remote video (default-off feature)
-        run: |
-          cargo test -p loa-surfaces --features remote-video --profile ci
-          cargo test -p loa-ui-surface --features remote-video --profile ci
-          xvfb-run -a cargo test -p loa-app --features remote-video --profile ci surfaces
-  cpp:
-    runs-on: ubuntu-24.04
+          path: |
+            .ccache
+            .ffi-target
+          key: linux-${{ hashFiles('cpp/libs/*_ffi/fork/Cargo.lock') }}-${{ github.sha }}
+          restore-keys: linux-${{ hashFiles('cpp/libs/*_ffi/fork/Cargo.lock') }}-
+      - run: cmake -S cpp -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+      - run: cmake --build build
+      # ctest runs every loa_*_tests target, the API and theme lints and the loa-qt smoke screens.
+      - run: ctest --test-dir build --output-on-failure
+        env:
+          QT_QPA_PLATFORM: offscreen
+      - run: QT_QPA_PLATFORM=offscreen timeout 5 ./build/app/loa-qt --smoke shell
+
+  # macOS and Windows build from cpp/vcpkg.json with Qt from aqtinstall. Only Linux is verified
+  # (docs/ARCHITECTURE.md, "Platforms"), so these jobs report without gating merges.
+  macos:
+    runs-on: macos-14
+    continue-on-error: true
+    env:
+      VCPKG_ROOT: ${{ github.workspace }}/.vcpkg
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build ccache qt6-base-dev qt6-pdf-dev qt6-svg-dev qt6-tools-dev qt6-image-formats-plugins libsqlite3-dev libssl-dev libcurl4-openssl-dev libssh-dev libvterm-dev libarchive-dev libsecret-1-dev libjpeg-turbo8-dev libpng-dev libwebp-dev libgif-dev zlib1g-dev libopenh264-dev libtomlplusplus-dev doctest-dev libasio-dev libpugixml-dev libxlsxwriter-dev libcpp-httplib-dev libstb-dev libnotify-dev libxcb1-dev libxcb-shm0-dev libxcb-xtest0-dev libmd4c-dev libyaml-cpp-dev libminizip-dev
-      - run: cmake -S cpp -B build -G Ninja
+      - run: brew install ninja ccache
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.4.*'
+          modules: qtpdf qtimageformats
+      - name: Bootstrap vcpkg
+        run: git clone --depth 1 https://github.com/microsoft/vcpkg "$VCPKG_ROOT" && "$VCPKG_ROOT/bootstrap-vcpkg.sh" -disableMetrics
+      - run: >
+          cmake -S cpp -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
       - run: cmake --build build
       - run: ctest --test-dir build --output-on-failure
+        env:
+          QT_QPA_PLATFORM: offscreen
+
   windows:
     runs-on: windows-latest
+    continue-on-error: true
     env:
-      # Hosted runners have no reliable GPU; keep the headless pixel assertions.
-      ICED_TEST_BACKEND: tiny-skia
+      VCPKG_ROOT: ${{ github.workspace }}\.vcpkg
     steps:
       - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+      - run: choco install -y ninja ccache
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: jurplel/install-qt-action@v4
         with:
-          shared-key: ci
-          cache-on-failure: true
-      - name: Add Git for Windows Bash for test fixtures
+          version: '6.4.*'
+          arch: win64_msvc2019_64
+          modules: qtpdf qtimageformats
+      - name: Bootstrap vcpkg
         shell: pwsh
         run: |
-          $git = (Get-Command git.exe).Source
-          $bin = Join-Path (Split-Path (Split-Path $git)) 'bin'
-          if (-not (Test-Path (Join-Path $bin 'bash.exe'))) { throw "Git for Windows Bash not found at $bin" }
-          Add-Content $env:GITHUB_PATH $bin
-      - name: Install OMP for bridge integration tests
-        shell: pwsh
-        run: |
-          $dir = Join-Path $env:RUNNER_TEMP 'loa-ci-omp'
-          New-Item -ItemType Directory -Force $dir | Out-Null
-          $omp = Join-Path $dir 'omp.exe'
-          Invoke-WebRequest https://github.com/can1357/oh-my-pi/releases/download/v19.0.0/omp-windows-x64.exe -OutFile $omp
-          $hash = (Get-FileHash $omp -Algorithm SHA256).Hash.ToLower()
-          if ($hash -ne '36ac685c7b932f4bb81ccc5a7116abee90575d32110e74dd2a066e082690d941') { throw "omp.exe checksum mismatch: $hash" }
-          Add-Content $env:GITHUB_PATH $dir
-      - run: cargo build --workspace --all-targets --profile ci
-      - run: cargo test --workspace --no-fail-fast --profile ci
+          git clone --depth 1 https://github.com/microsoft/vcpkg $env:VCPKG_ROOT
+          & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
+      - shell: pwsh
+        run: >
+          cmake -S cpp -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake"
+      - run: cmake --build build
+      - run: ctest --test-dir build --output-on-failure
+        env:
+          QT_QPA_PLATFORM: offscreen

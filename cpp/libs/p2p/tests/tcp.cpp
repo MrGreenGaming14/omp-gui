@@ -215,7 +215,7 @@ TEST_CASE("falls back to tcp when udp does not answer") {
     (*tcp)->close();
 }
 
-// The Rust side is tests/interop (see the QUIC interop test in transport.cpp):
+// The Rust side is tests/interop at ecc0cf0 (see the QUIC interop test in transport.cpp):
 // `tcp-serve` serves an echoing omp/control/1 over TCP on seed [1; 32], and
 // `tcp-dial <key> <addr>` dials one over TCP on seed [2; 32].
 TEST_CASE("interop: a C++ node and a Rust node exchange omp/control/1 over the TCP fallback") {

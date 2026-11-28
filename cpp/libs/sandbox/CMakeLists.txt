@@ -26,6 +26,8 @@ endif()
 # the process helper, which is all the linker takes from the library.
 add_executable(loa-sandbox-stub stub/main.cpp)
 target_link_libraries(loa-sandbox-stub PRIVATE loa::sandbox)
+# Beside loa-qt, where the local provider's find_stub looks for it.
+set_target_properties(loa-sandbox-stub PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/app")
 
 loa_add_test(sandbox
   SOURCES

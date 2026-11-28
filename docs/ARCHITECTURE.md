@@ -1,102 +1,108 @@
 # Architecture
 
-How the design in [`docs/design`](design/README.md) maps onto this repository. The design docs say what the app does. This file says where the code lives and which rules every crate follows.
+How the design in [`docs/design`](design/README.md) maps onto this repository. The design docs say what the app does. This file says where the code lives and which rules every library follows.
 
-## Workspace
+## Layout
 
-One Cargo workspace, one crate per directory under `crates/`. Every crate is named `loa-*` (local omp app).
+One CMake project under `cpp/`, built with Ninja, C++23 and doctest. `cpp/CMakeLists.txt` discovers every `cpp/libs/*`, `cpp/ui/*` and `cpp/tests/*` directory that has a `CMakeLists.txt` (in sorted order) and adds `cpp/app` last.
 
-### Contracts
-
-Everything else builds on these three. Their existing public items change only with a schema or interface version bump.
-
-| Crate | Holds |
+| Directory | Holds |
 | --- | --- |
-| `loa-core` | Element schema v1, `Dom`/`Node`/`NodeId`, `Patch`/`Op`/`Draft`, `PatchSink` (single writer), `MemorySink` |
-| `loa-adapter` | `Adapter` (incl. `availability`), `HarnessSession` (incl. `models`, `set_effort`), `Capabilities`, `SessionConfig`, `Registry`, `Availability`, `HarnessModel` |
-| `loa-surface` | `SurfaceUri`, `SurfaceInfo`, `Frame`, `InputEvent`, `Surface`, `SurfaceServer` |
+| `cpp/libs/<name>` | One library: `STATIC` target `loa_<name>` (alias `loa::<name>`), namespace `loa::<name>`, public headers in `include/loa/<name>/`, sources in `src/`, doctest tests in `tests/` built as `loa_<name>_tests` |
+| `cpp/ui/<name>` | One UI module: target `loa_ui_<name>`, namespace `loa::ui::<name>`, tests `loa_ui_<name>_tests` |
+| `cpp/app` | The `loa-qt` executable and its `loa_app` library: services wiring, areas, windows, smoke screens; tests `loa_app_tests` |
+| `cpp/tests/golden` | Golden fixtures for every wire and disk format, with `MANIFEST.md` (what each file is) and `README.md` (provenance); checked by `loa_golden_tests` |
+| `cpp/cmake` | `LoaTest.cmake` (`loa_add_test(<name> SOURCES … LINK …)`) |
+| `cpp/scripts` | `lint-ui-literals.sh`, the theme lint run by ctest as `loa_ui_lint_literals` |
+| `cpp/vcpkg.json` | Dependencies for macOS and Windows; Linux uses the apt packages in the README |
+
+Every library returns `std::expected<T, loa::runtime::Error>` (or its own error type) from fallible calls; exceptions never cross a public API. Async code runs as Asio C++20 coroutines on the `loa::runtime` executor. Abstract classes are the ports; shared implementations are passed as `std::shared_ptr<Port>`.
+
+Heavy third-party headers (Asio, toml++, cpp-httplib, Qt) stay in `.cpp` files or precompiled headers; public headers forward-declare. Each header-only third-party implementation is compiled in exactly one translation unit.
+
+### Foundation and contracts
+
+Everything else builds on these. Their existing public items change only with a schema or interface version bump.
+
+| Library | Holds |
+| --- | --- |
+| `runtime` | Domain-free foundation: executor and `io_context` threads, `Error`, `log` (level from `LOA_LOG`), `json` (yyjson), the protobuf wire codec `proto`, process spawning and `which`, atomic files, temp files, Myers diff, gitignore matcher, semver, time and text helpers, `Registry`, SSH config parsing |
+| `core` | Element schema v1, `Dom`/`Node`/`NodeId`, `Patch`/`Op`/`Draft`, `PatchSink` (single writer), `MemorySink`, XML debug export, DOM diff and rewind plans |
+| `contracts` | Harness interface (`Harness`, `HarnessSession`, `Capabilities`, `SessionConfig`, `Availability`, accounts, login channels), host tools and the surface contract (`SurfaceUri`, `SurfaceInfo`, `Frame`, `InputEvent`, `Surface`, `SurfaceServer`) |
 
 ### Libraries
 
-| Crate | Area | Holds |
+| Library | Area | Holds |
 | --- | --- | --- |
-| `loa-xml`, `loa-rewind` | core | XML debug export, DOM diff and rewind plans |
-| `loa-journal` | core | Append only prost journal, replay, snapshots, fork |
-| `loa-bus` | core | Session writer (`PatchSink` impl), publish subscribe with backpressure |
-| `loa-settings` | settings | The settings hub: every app and harness setting in one place. `app` is the central config (schema with version, `ConfigStore`, theme reference); `models` holds the model settings and the omp `config.yml`/`models.yml` editors on a comment-preserving YAML editor, the omp agent definition files (`models::agents`: read, validate, write, enable/disable and delete), the workflows (`models::workflows`: `modelRoles` plus their `RULES.md` sections, marker-delimited or hand-written, saved only against the snapshot they were loaded from), the model selector grammar, the omp RPC types, the sign in rows and the descriptions of stored sign ins (`login::Credential`, never the credential), the shared settings error type and the ports the omp side implements: the omp RPC (`rpc::OmpRpc`, including `get_logout_accounts` and `logout`), provider logins (`login::OmpProviderAccount`), the agent directory (`files::OmpFilesResolver`) and validation (`error::SettingsValidator`); `projects` holds the project settings, digest and overview types; `updates` holds the updater's release, gate, hold and peer status types. Depends only on `loa-util`, `loa-core` and `loa-contracts`. Claude JSON edits normalize whitespace while preserving key order; omp YAML edits retain untouched comments |
-| `loa-util` | core | Domain-free helpers: poison-tolerant locks, atomic files, executables (`write_executable`, `retry_busy`, `which` with `PATHEXT` matching on Windows, `resolve`, `command` for a resolved program without a console window, `probe_cli`, captured `output`), the real home directory and `canonicalize` without Windows verbatim prefixes, time, text, `Registry`, `str_enum!` |
-| `loa-harness` | adapters | Harness adapters and account implementations, factory registry, CLI and omp OAuth login strategies, shared configuration editors for Claude and Codex, and the omp implementations of the `loa-settings` ports (`OmpService` RPC, `OmpAccount` provider logins, `OmpLaunch` files resolver, `OmpSettingsValidator`) |
-| `loa-session` | sessions | The session domain on any harness: the journal-backed `Library`, `SessionStore`, fork, rewind and compaction, plan mode (`PlanGate`), rules and advisor hooks, transcript helpers. Native session discovery stays in `loa-harness::native` |
-| `loa-runtime` | sessions | The headless app runtime: `Runtime` owns the session `Library`, the live `Sessions` (single-writer feeds, `SessionEvent`s), the harness registry (`Harnesses`), the active project and folder and the approval mode; `feed::Source` reads channel and writer feeds. `lifecycle` is the headless lifecycle facade: `Runtime::dispatch(Command)` (start, open, send, spawn, interrupt, close, approval mode, completions) returns a `Transition` of async `Effect`s (harness calls resolving to a `Completion`) and `RuntimeEvent`s; new sessions get their base config and wait for a `Prepared` config before the harness starts. Feed frames use `begin_feed` / `advance_feed`: consumers react to each transition against its post-patch DOM before advancing, with turn reactions once at the end of the frame. No `iced`, UI crates or concrete adapters |
-| `loa-mcp` | tools | rmcp client, server registry, config import |
-| `loa-remote` | tools | `remote` MCP server: `remote_bash`, `remote_file` over russh |
-| `loa-omp-bridge` | tools | omp tools served to other harnesses as an MCP server |
-| `loa-surface-proto` | surfaces | `omp/surface/1` framing and datagrams, live H.264/HEVC video (app feature `remote-video`, off by default) |
-| `loa-surface-browser`, `-docs`, `-rfb` | surfaces | Built in surface servers |
-| `loa-surface-hub` | surfaces | The app's surface service: built-in servers, MCP declared surfaces, `surface_*` agent tools as host tools and a loopback MCP endpoint, `<surface>` drafts |
-| `loa-models` | models | The model settings service (`service::Backend`: catalog, sign-in, sign out, settings load and save over the `loa-settings` ports) and its offline `testing` fakes. Signing out removes one stored sign in: an omp credential over RPC, or another harness's sign in through its `HarnessAccount::logout_command`. `Backend` is built only from injected `Parts`; `loa-app` composes the real ones from `loa-harness` |
-| `loa-projects` | projects | Digests, context ranking, `project_search`, `project_read`, the project settings store (one JSON file per project, and its ideas notes as a Markdown file of the same name beside it, saved over the `loa_util::fs::Snapshot` the page's edit started from so an outside edit is never overwritten), `ProjectService` over the bus and journal; the data types live in `loa_settings::projects`; summaries through the `Summarizers` port, which `loa-app` backs with omp one-shot calls |
-| `loa-trust` | p2p | One ed25519 node key (`PublicKey` converts to iroh, Biscuit and bus keys) behind the `KeyStore` port (OS keychain, with a private key file fallback: `0600` on Unix, a protected current-user DACL on Windows); Biscuit grants whose scope kinds (sessions, prompts, projects, future sessions, SSH hosts, surfaces, sandbox, folders) come from one `KINDS` table; renewal, narrowing |
-| `loa-net` | p2p | iroh endpoint on 31415, ALPNs, TCP fallback, relay, discovery |
-| `loa-share` | p2p | Session replication, view and drive, fork to own node |
-| `loa-node` | p2p | The app's peer service: identity, endpoint, mDNS and tailnet discovery, presence, grant issue/renew/revoke over `omp/control/1`, session sharing over `omp/session/1`, shared folders over `omp/folder/1` (list, read, and with a write grant write, confined to the granted folder), protocols other areas add (e.g. `loa-sandbox/1`, served only to peers proving a covering grant, registered through the app's `NodeSlot`), the Peers panel snapshot and its events |
-| `loa-sandbox`, `loa-sandbox-stub` | sandbox | `sandbox_task`, providers, exec stub |
-| `loa-updater` | updater | Release feeds, staging, gate checks against the installed omp, swap and rollback; `Updater` service for the Updates screen. Its status types live in `loa_settings::updates` |
+| `bus` | core | Append-only protobuf journal with shared little-endian framing and CRC32, replay, snapshots, fork; the session writer (`PatchSink` impl) and publish/subscribe with backpressure (`subscribe_seq`, `Policy::every_patch`, `Policy::coalescing`, `Lagged`) |
+| `settings` | settings | The settings hub: `app` (central config: schema with version, TOML codec reporting unknown keys by dotted path, `ConfigStore`), `models` (model settings, the omp `config.yml`/`models.yml` editors on a comment-preserving YAML editor, agent definitions, workflows with their `RULES.md` sections, the model selector grammar, omp RPC types, sign-in descriptions and the ports the omp side implements), `projects`, `updates` |
+| `harness` | adapters | Harness adapters (`omp`, `omp2`, `claude`, `codex`, `opencode`, `acp`), the shared adapter `kit`, account support and login strategies, native session discovery and import (`native`), the factory `registry` and the offline `testing` fakes (`loa::harness_testing`) |
+| `session` | sessions | The session domain on any harness: the journal-backed `Library`, fork, rewind and compaction, plan mode, rules and advisor hooks |
+| `app_runtime` | sessions | The headless app runtime: `Runtime` owns the session `Library`, live sessions (single-writer feeds), the harness registry, the active project and folder and the approval mode. `Runtime::dispatch(Command)` returns a `Transition` of async effects and runtime events |
+| `mcp` | tools | In-house MCP (JSON-RPC 2.0 over stdio and streamable HTTP): client, server registry, config import, the omp tools `bridge` served to other harnesses, host-tool serving |
+| `remote` | tools | The `remote` MCP server: `remote_bash`, `remote_file`, PTYs over libssh with `ssh-agent` auth, known hosts, SQLite audit log |
+| `projects` | projects | Digests, context ranking, `project_search`, `project_read`, the project settings store, the project service over the bus and journal; summaries through the `Summarizers` port the app backs with omp one-shot calls |
+| `models` | models | The model settings service (catalog, sign-in, sign out, settings load and save over the `settings` ports) and its offline `testing` fakes |
+| `surfaces` | surfaces | `proto` (`omp/surface/1` framing and datagrams), `video` (H.264 via openh264, still frames), built-in servers `vnc`, `browser` (CDP over WebSocket, xcb virtual display) and `docs` (QtPdf, xlsx/docx), and the `hub`: built-in servers, MCP-declared surfaces, `surface_*` agent tools and `<surface>` drafts |
+| `trust` | p2p | One ed25519 node key behind the `KeyStore` port (libsecret/Keychain/Credential Manager, private key file fallback: `0600` on Unix, current-user DACL on Windows); Biscuit grants whose scope kinds come from one table; renewal and narrowing |
+| `p2p` | p2p | iroh endpoint on 31415 (`quic`), TCP+TLS fallback with in-house yamux (`tcp`, `yamux`), ALPN `Router`, mDNS and tailnet discovery, presence, peers database, grant issue/renew/revoke over `omp/control/1`, session sharing over `omp/session/1`, shared folders over `omp/folder/1` |
+| `sandbox` | sandbox | `sandbox_task`, providers (local, container, VM), runs, sync; the exec stub executable `loa-sandbox-stub` (`stub/main.cpp`), built into `build/app/` beside `loa-qt` |
+| `updater` | updater | Release feeds, signature checks, staging, gate checks against the installed omp, swap and rollback; the `Updater` service for the Updates screen |
+| `iroh_ffi`, `biscuit_ffi` | p2p | RAII wrappers over the vendored `iroh-c-ffi` and `biscuit-capi` forks in `fork/`. These are the only non-C++ sources: cargo prebuilds them into `${LOA_RUST_FFI_TARGET:-$HOME/.cache/loa/rust-ffi-target}`, shared across checkouts |
 
 ### Presentation API
 
-| Crate | Holds |
+| Library | Holds |
 | --- | --- |
-| `loa-view` | The stable, versioned presentation API (`loa_view::VERSION`, snapshot in `crates/loa-view/api.txt`). One module per screen family: `theme` (`Appearance`, `ThemeRef`, `Icon`), `settings::{models, projects, peers, updates, agents, workflows}`, `session`, `shell`, `panel`, `terminal`, `surface`. Each holds plain view models (`Clone + Debug + PartialEq`, public fields), the screen's `Intent` (what the UI emits to the app) and, under `port`, the traits the UI needs and the app implements (decoders, document renderer, PTY, file system, notifier, surface transport). Foundation values the UI needs as they are (`Prompt`, `Answer`, `SessionSummary`, surface protocol values, …) are re-exported from the matching module. Depends only on `loa-util`, `loa-core` and `loa-contracts` |
+| `view` | The stable, versioned presentation API (`loa::view::VERSION`, snapshot in `cpp/libs/view/api.txt`). One header per screen family: `theme`, `settings_{models,projects,peers,updates,agents,workflows}`, `session`, `shell`, `panel`, `terminal`, `surface`. Each holds plain view models (value types with public fields and `operator==`), the screen's `Intent` (what the UI emits to the app) and, under `port`, the abstract classes the UI needs and the app implements (decoders, document renderer, PTY, file system, notifier, surface transport) |
 
-Transcript `*.golden` files and `loa-view/api.txt` use LF on every platform. Recorded inputs and sidecars under `loa-harness/fixtures` retain their exact committed bytes: native import/export preserves raw JSONL and file contents. `.gitattributes` prevents Windows checkout conversion from changing these fixtures.
+Transcript `*.golden` files use LF on every platform. Recorded inputs under `cpp/libs/harness/tests/fixtures` and everything under `cpp/tests/golden` keep their exact committed bytes; `.gitattributes` prevents checkout conversion.
 
 ### UI
 
-| Crate | Holds |
+| Module | Holds |
 | --- | --- |
-| `loa-ui-kit` | Theme token layer (`ThemeRegistry`, `TokenSet`, roles), style recipes, Lucide line icons as theme-tinted SVG widgets for `loa_view::theme::Icon`, shared widgets and the `Component`/`Screen`/`PanelPane` conventions, text helpers |
-| `loa-ui-shell` | Sidebar, top bar, right panel frame, themes, command palette (`palette`) |
-| `loa-ui-session` | `transcript` (streaming markdown, tool rows, virtual list), `composer` (editor, pickers, `/` and `@` popups, stop and queue, the working indicator), `decisions` (approval, question, plan and form cards) |
-| `loa-ui-panel` | Diff view, file tree, session tree, agents panel, tools pane (`tools`) |
-| `loa-ui-terminal` | Terminal tab, local and SSH |
-| `loa-ui-surface` | Surfaces tab: tab shell over `PixelMode`/`DocumentMode` strategies, a `FrameDecoder` chain and a `DocumentRenderer` it receives through `loa_view::surface::port` (the app supplies the still/H.264 decoders and document rendering from `loa-surfaces`), launcher for browser, documents, VNC and MCP surfaces |
-| `loa-ui-settings` | Settings-style screens on kit `Screen` (`Msg<Local, Intent>` + guard): `models` (sign in reducer over `LoginUpdate` and sign out of one picked stored sign in per row, picker, model settings via kit `form_view`/`list_editor` over `OVERRIDE_FIELDS`), `projects` (project screen), `peers` (peers, grants with a typed folder, shared sessions and folders), `updates` (renders `loa_view::settings::updates` status with a `STATUS_RULES` table, `HoldChoice` choices), `agents` (omp agents: the form with templates, model and thinking pickers, tool and spawn checkboxes, prompt body and field errors), `workflows` (the workflow list and editor: role, models, agent access and notes for app-made sections, the raw markdown of hand-written ones, delete confirmation and the reload offered after an outside change). Depends only on `loa-view`, `loa-ui-kit` and `loa-util`; the session model chip is derived from the DOM in `loa-app` (`areas/models/session.rs`) |
-| `loa-app` | The binary: wires every crate together |
+| `kit` | Theme token layer (`loa::ui::theme`, mapping the extended palette roles 1:1), style recipes, Lucide line icons as theme-tinted SVG, shared widgets, text helpers, the Qt bridge (`qt.hpp`) and a testkit |
+| `shell` | Sidebar, layout (top bar, right panel frame), themes, command palette, keymap |
+| `session` | `transcript` (md4c streaming markdown, tool rows, virtual list), `composer` (editor, pickers, `/` and `@` popups, stop and queue, working indicator), `decisions` (approval, question, plan and form cards, libnotify notifications through a port) |
+| `panel` | Diff view, file tree, session tree, agents panel, tools pane |
+| `terminal` | Terminal tab on libvterm: local `forkpty` (ConPTY on Windows) and SSH channels through the `view` PTY port |
+| `surface` | Surfaces tab: pixel and document modes, frame decoders and document renderer received through `loa::view::surface::port`, launcher for browser, documents, VNC and MCP surfaces |
+| `settings` | Settings-style screens, one subdirectory each: `models`, `projects`, `peers`, `updates`, `agents`, `workflows` |
 
 ## Dependency rules
 
-- Contracts depend on nothing in the workspace except `loa-core`
-- A library depends on contracts. When it needs something another library owns, it declares a trait for it (a port) and `loa-app` passes the implementation in. Example: `loa-projects` declares the access check it needs and `loa-app` backs it with `loa-trust`
-- A UI crate takes `loa_view` view models in and gives `loa_view` intents out. It never spawns a harness, opens a socket or reads the journal. Its direct `loa-*` dependencies are limited to:
+- Contracts depend on nothing except `runtime` and `core`
+- A library depends on contracts. When it needs something another library owns, it declares an abstract class for it (a port) and `cpp/app` passes the implementation in. Example: `projects` declares the access check it needs and the app backs it with `trust`
+- A UI module takes `loa::view` view models in and gives `loa::view` intents out. It never spawns a harness, opens a socket or reads the journal. Its direct dependencies are limited to:
 
-  | Crate | Allowed direct `loa-*` dependencies |
+  | Target | Allowed direct `loa::*` dependencies |
   | --- | --- |
-  | `loa-view` | `loa-util`, `loa-core`, `loa-contracts` |
-  | `loa-ui-kit` | `loa-view` (theme types), `loa-util` |
-  | `loa-ui-settings`, `loa-ui-shell`, `loa-ui-terminal`, `loa-ui-surface` | `loa-view`, `loa-ui-kit`, `loa-util` |
-  | `loa-ui-panel` | the above and `loa-core` (the agents pane and session tree read the DOM) |
-  | `loa-ui-session` | the above and `loa-core` (DOM transcript and decision rendering) and `loa-ui-panel` |
+  | `loa::view` | `loa::runtime`, `loa::core`, `loa::contracts` |
+  | `loa::ui_kit` | `loa::view`, `loa::runtime` |
+  | `loa::ui_shell`, `loa::ui_settings`, `loa::ui_terminal`, `loa::ui_surface` | `loa::view`, `loa::ui_kit`, `loa::runtime` (and `loa::ui_shell` for its `Task`) |
+  | `loa::ui_panel` | the above and `loa::core` (the agents pane and session tree read the DOM) |
+  | `loa::ui_session` | the above and `loa::core` and `loa::ui_panel` |
 
-  No UI crate depends directly on `loa-settings`, `loa-contracts`, `loa-surfaces` or any domain, adapter or runtime crate; it imports foundation values only through `loa_view::…`. Check with `cargo tree -e normal --depth 1 -p <crate>`
-- Only `loa-app`, `loa-session`, `loa-share` and `loa-node` depend on several libraries
-- `loa-settings` depends only on `loa-util`, `loa-core` and `loa-contracts`; it never depends on `loa-models`, `loa-projects`, `loa-updater`, `loa-harness` or a UI crate
+  No UI module links `loa::settings`, `loa::surfaces` or any domain, adapter or runtime library; it imports foundation values only through `loa::view`. Check the `target_link_libraries` lines in `cpp/ui/<name>/CMakeLists.txt`
+- Only `cpp/app`, `session` and `p2p` depend on several libraries
+- `settings` depends only on `runtime`, `core` and `contracts`; it never depends on `models`, `projects`, `updater`, `harness` or a UI module
 
 ### Presentation API and its version
 
-`loa-app` projects domain state into `loa_view` types in `src/view/<screen>.rs` (`to_view(&Domain) -> View`, and `from_view(View) -> Domain` for anything the UI edits) and maps each screen's `Intent` back to domain calls. Every editable type round-trips losslessly, with one app-side test per type asserting `from_view(to_view(x)) == x`.
+`cpp/app/src/view/` projects domain state into `loa::view` types (`to_view(const Domain&) -> View`, and `from_view(View) -> Domain` for anything the UI edits) and maps each screen's `Intent` back to domain calls. Every editable type round-trips losslessly, with one app-side test per type asserting `from_view(to_view(x)) == x`.
 
-`crates/loa-view/api.txt` lists every public item of `loa-view` (fields, variants, signatures and re-exported paths); its first line is `version = <loa_view::VERSION>`. `cargo test -p loa-view --test api` renders the listing from `src/` with `syn` and compares:
+`cpp/libs/view/api.txt` lists every public item of `cpp/libs/view/include/loa/view`; its first line is `version = <loa::view::VERSION>`. The `loa_view_api` ctest renders the listing from the headers and compares:
 
-- The listing changed but `VERSION` was not bumped: the test fails with "bump loa_view::VERSION" and the diff
+- The listing changed but `VERSION` was not bumped: the test fails asking to bump `loa::view::VERSION`, with the diff
 - Removing or renaming an item or field, or changing a type or signature, is a major bump; additions alone are a minor bump. The test rejects a minor bump when a line was removed or changed
-- After bumping, `UPDATE_VIEW_API=1 cargo test -p loa-view --test api` rewrites `api.txt`; it refuses to while `VERSION` still equals the header
+- After bumping, `UPDATE_VIEW_API=1 ./build/libs/view/loa_view_api cpp/libs/view/include/loa/view cpp/libs/view/api.txt` rewrites `api.txt`; it refuses to while `VERSION` still equals the header
 
 ### Settings hub
 
-`loa-settings` is the central place for app and harness settings: the central config, the model and provider settings with the omp file editors, the project settings and the updater status. The services that change them (`loa-models`, `loa-projects`, `loa-updater`) import their types from the hub; the settings UI (`loa-ui-settings`) sees only their `loa_view::settings` projections. Harness-specific work goes through the hub's ports (`OmpRpc`, `OmpProviderAccount`, `OmpFilesResolver`, `SettingsValidator`), which the adapters in `loa-harness` implement and `loa-app` wires in
+`settings` is the central place for app and harness settings: the central config, the model and provider settings with the omp file editors, the project settings and the updater status. The services that change them (`models`, `projects`, `updater`) import their types from the hub; the settings UI (`cpp/ui/settings`) sees only their `loa::view` settings projections. Harness-specific work goes through the hub's ports (omp RPC, provider accounts, files resolver, settings validator), which `harness` implements and the app wires in.
 
-`models::workflows` writes app-managed rules between workflow markers. Description, agent routing notes, ordered steps and named Markdown blocks have explicit field boundaries so they can be read back without mistaking headings in user text for fields. A marked section that cannot be read back losslessly opens as raw Markdown with an outside-edit notice. Copying creates a new draft: managed fields stay structured, raw or hand-written Markdown goes into Notes, and the source stays untouched.
+`settings::models` workflows write app-managed rules between workflow markers. Description, agent routing notes, ordered steps and named Markdown blocks have explicit field boundaries so they can be read back without mistaking headings in user text for fields. A marked section that cannot be read back losslessly opens as raw Markdown with an outside-edit notice. Copying creates a new draft: managed fields stay structured, raw or hand-written Markdown goes into Notes, and the source stays untouched.
 
 ## Sessions
 
@@ -132,70 +138,68 @@ Every adapter writes the same shapes, so the UI, projects and peers never look a
 
 OMP progress updates use the subagent's lifecycle ID to append to its job, not a standalone transcript row. Unmatched updates are ignored; legacy OMP `subagent_progress` extension nodes stay in the journal but are not rendered.
 
-Decision answers use the constants in `loa_core::answer` (`allow_once`, `allow_session`, `deny`, `approve`, `edit`, `reject`). Approval decisions that accept session grants advertise canonical `loa_core::answer::ALLOW_SESSION` (`allow_session`) in `options` (e.g. `['allow_once', 'allow_session', 'deny']`); approval cards show "Allow for this session" only when `options` includes `allow_session`, and unattended policies or decision defaults of `allow_session` fall back to `allow_once` when it is absent. Question answers are the picked option labels or the typed text. Form answers are one JSON object.
+Decision answers use the constants in `loa::core::answer` (`allow_once`, `allow_session`, `deny`, `approve`, `edit`, `reject`). Approval decisions that accept session grants advertise `allow_session` in `options` (e.g. `['allow_once', 'allow_session', 'deny']`); approval cards show "Allow for this session" only when `options` includes it, and unattended policies or decision defaults of `allow_session` fall back to `allow_once` when it is absent. Question answers are the picked option labels or the typed text. Form answers are one JSON object.
 
-Imports produce the same shapes with `commit_at` and the original timestamps. Native ids go into `id`, `call_id`, `request_id` and `native_id`. Whatever the mapping doesn't cover is kept in `<ext>` so the export reproduces the native file.
+Imports produce the same shapes with the original timestamps. Native ids go into `id`, `call_id`, `request_id` and `native_id`. Whatever the mapping doesn't cover is kept in `<ext>` so the export reproduces the native file.
 
 ## UI components
 
-Each UI crate exposes components in the same form, so `loa-app` composes them the same way.
+Each UI module exposes components in the same form, so the app composes them the same way. Per screen, `state.hpp/.cpp` is plain C++ with no Qt:
 
-```rust
-pub struct State { /* … */ }
-pub enum Message { /* internal */ }
-pub enum Event { /* what the app must act on */ }
-
-impl State {
-    pub fn update(&mut self, message: Message) -> (iced::Task<Message>, Option<Event>);
-    pub fn view(&self) -> iced::Element<'_, Message>;
-    pub fn subscription(&self) -> iced::Subscription<Message>; // only when needed
-}
+```cpp
+struct State {
+    using Message = std::variant</* internal */>;
+    using Event = std::variant</* what the app must act on */>;
+    std::pair<Task, std::optional<Event>> update(Message message);
+};
 ```
 
-- Session data arrives as `&loa_core::Dom` or as patches. Other data arrives as `loa_view` view models, and the screen's output is its `loa_view::<screen>::Intent`; internal `Message`/`Local` types stay private to the UI crate
-- Colors, text sizes, spacing and layout widths come from the `loa-ui-kit` theme tokens (`ColorRole`, `TextRole`, `SpaceRole`, `LayoutRole`), never from literals, so runtime themes apply everywhere. `scripts/lint-ui-literals.sh` checks the UI crates and `loa-app`
-- Standard iced widgets first. A hand built widget carries a label (accessibility readiness, see `docs/accessibility.md`)
-- Logic is tested through `update` and through `iced_test` headless runs. Tests never open a window
+and `view.hpp/.cpp` is a `QWidget` subclass that renders `const State&`, emits Messages through one `message(Message)` signal and never mutates `State`.
+
+- Session data arrives as `const loa::core::Dom&`, as patches or as `loa::view` session view models. Other data arrives as `loa::view` view models, and the screen's output is its `loa::view` `Intent`; internal `Message` types stay private to the module
+- Colors, text sizes, spacing and layout widths come from the `loa::ui::theme` tokens, never from literals, so runtime themes apply everywhere. `cpp/scripts/lint-ui-literals.sh` checks `cpp/ui` and `cpp/app` (ctest `loa_ui_lint_literals`)
+- Standard Qt widgets first. A custom widget calls `setAccessibleName` (see `docs/accessibility.md`)
+- Logic is tested through `State::update` with doctest. Widget tests run under `QT_QPA_PLATFORM=offscreen`; tests never open a visible window
 
 ## The app
 
-`loa-app` holds the `App`, a `Ctx` every area reads and changes, and the area `Registry` built from one `AREAS` table.
+`cpp/app` holds the `App`, a context every area reads and changes, and the area registry built from one table (`src/areas.cpp`, `src/registry.cpp`).
 
-- `Ctx.runtime` is the `loa_runtime::Runtime`, built at startup from `RuntimeParts` (library, harnesses, node, folder, project, approval mode). `services/harness.rs` fills its `Harnesses` from the `loa-harness` factories and builds the composer's picker options
-- `Services` splits into `NodeServices` (identity, grants, MCP servers), `Storage` (directories, config) and `Host`. `Host` holds the ports to outside programs: `GitProbe`, `FolderPicker` and `UsageSource`, with command line adapters (git, zenity or kdialog, `omp usage`). Tests pass fakes
-- `app/lifecycle.rs`: the `SessionController` hands lifecycle `Command`s to `Runtime::dispatch`, runs the transition's effects as `Task::perform` (completions go back as `Command::Completed`) and maps its events: `PrepareSession` runs every area's `contribute` and `host_tools` (first one kept on duplicates) and dispatches `Prepared`; `Session` events update the chat, detached transcripts, sidebar and status, then every area; `SendRequested` and the app's own sends run the areas' `before_send` first. What the app must do with its own parts (present a folder, reread the diff, run a queued prompt, continue in a new session) is queued as `After` items. `Ctx::discard_session` and `replace_session` dispatch `Command::Close` and queue the transition; `App::settle` applies queued transitions before area requests, until both are empty
-- The app has one composer (`Ctx.composer`); the `SessionController` gives every session a draft of its own. When the shown session changes (`Activated`, not a `Loaded` of the same one), the composer leaves the old one as if it went idle, so messages queued for a running turn go back into the editor (a send still starting keeps its queue, and `composer::State::take_draft` and `restore_draft` leave that queue its images and mentions, numbering restored images on from them), and `take_draft` sets the editor's text, images and mentions aside under the old session's id (`None`: the center without a session); the new one's draft, or an empty editor, takes its place with a fresh undo history. A send from the center that is starting its session keeps the editor as it is when that session activates: what was typed meanwhile belongs to that session; another session opened while the start is still pending swaps drafts as usual. A closed session's draft is dropped, unless an area closed it with `Ctx::replace_session`: then it goes to the successor (compaction: the compacted session), or with no successor named to the next session that starts (a harness switch of an empty session), merged with any draft already waiting; when that start fails, the draft goes back to the center. A handed-over draft goes ahead of what the successor already holds, a blank line between (`Draft::prepend`, `State::prepend_draft`), its images renumbered after the successor's so no two share a token
-- The composer's working indicator shows above the editor while the shown session's turn runs or a send starts it, after omp's status line: a spinning accent loader (the kit's Lucide `LoaderCircle`, so no font needs a spinner glyph), a label in omp's shimmer (an accent band sweeping over muted text, its runs broken only between graphemes) and, once the turn runs, the turn's elapsed time and the Esc hint, muted. Its label comes from `composer::Activity::of(&Dom)`, the latest turn's newest running call (its title, else its tool), streaming thinking ("Thinking…") or "Working…"; a waiting turn hides it, since its decision card asks the user. The `SessionController` sets the activity on `present` and on every patch of the shown session but appends; the composer's phase gives "Starting session…". A session no harness runs counts as idle with no activity, so a turn a crash left `running` in the journal shows nothing; a send that fails ends the turn (`RuntimeEvent::TurnEnded`). Everything animated reads the shared shimmer clock (`composer::shimmer`), which carries the wall-clock time and ticks only as needed: every 32 ms step while a magic keyword shows, every 90 ms for the indicator alone, and once a second while the window is unfocused, so the elapsed time keeps counting while the animation rests. Only the main window's focus counts (`composer::State::set_window`)
-- `app/workspace.rs`: the folder and project the app works in, recent folders and project tabs
-- `view/`: the projections between domain types and `loa_view` view models, one file per screen family, with the round-trip tests
-- Shell and composer events go through route tables (`route`, `compose`) to one `Intent` handler
-- `app/windows.rs`: Configs, Settings (kit `side_nav`) and detached OS windows. `app/usage.rs`: the Usage window
-- `areas/sessions`: `branch` (one `spawn_branch` strategy for fork, rewind and compaction), `plan`, `hooks` (rules and advisor), `transfer` (import and export) and `tree`; model role switches (`/role`), which hold the session's queued prompts until the switch ends and announce the new role in its next prompt
-- `areas/projects/history.rs`: the project page discovers saved OMP conversations by the session header's exact working folder; only opening a row imports it into Loa. Deleting a row, after its inline confirmation, removes from omp's storage, for each of that conversation's session files, first its same-stem sidecar folder and then the file, so a failure leaves the row listed for another try (`native::delete_project_session`, resolved through the same folder-matched discovery); one row is opened or deleted at a time, and folder changes wait for it.
-- `areas/workflows`: the Workflows page of the Models screen, the composer's workflow chip and the role disclosure every omp session starts with (`SessionConfig::instructions`)
-- `testing` (tests only): `TestApp` runs the app headless with its real subscriptions on a scripted harness, with no model, browser, git, dialog or `omp` calls: it hands `App::build` offline `AppParts` (runtime parts, models `Parts`, summarizer, home and URL opener)
-- Sandbox integration tests build the real `loa-sandbox-stub` and obtain its executable path from Cargo's JSON artifact output, independent of the compiler's test-artifact directory layout.
+- `src/application.cpp` and `src/asio_bridge.cpp`: the `QApplication`, and the bridge that runs the `loa::runtime` executor alongside the Qt event loop and posts results back to the UI thread
+- `src/services.cpp`: node services (identity, grants, MCP servers), storage (directories, config) and host ports to outside programs (git probe, folder picker, usage source) with command-line adapters; tests pass fakes. `src/adapters/` backs the libraries' ports (models, notifier, peer sessions, sandbox, SSH terminal, summarizer, surfaces, update gates)
+- `src/lifecycle.cpp`: the session controller hands lifecycle commands to `Runtime::dispatch`, runs each transition's effects and maps its events to the chat, detached transcripts, sidebar, status and every area; areas contribute session config and host tools before a session starts and run `before_send` hooks before a prompt goes out
+- `src/workspace.cpp`, `src/app_workspace.cpp`: the folder and project the app works in, recent folders and project tabs
+- `src/view/`: the projections between domain types and `loa::view` view models, one file per screen family
+- `src/windows.cpp`, `src/app_windows.cpp`: Configs, Settings and detached OS windows. `src/app/usage.cpp`: the Usage window. `src/app/keys.cpp`: the keymap. `src/app/panes.cpp`: the right panel panes
+- `src/areas/<area>/`: `sessions` (branching for fork, rewind and compaction, plan, hooks, transfer, tree, subagents), `projects`, `agents`, `workflows`, `models`, `harness`, `decisions`, `tools`, `sandbox`, `surfaces`, `peers`, `updater`
+- `src/smoke.cpp` and `*_smoke.cpp`: `loa-qt --smoke <screen>` builds one screen offscreen and exits; ctest runs every registered screen as `loa_qt_smoke_<screen>`
+- `tests/support/test_app.cpp`: runs the app headless on a scripted harness with no model, browser, git, dialog or `omp` calls
 
 ## Protocols and versions
 
 | Name | Value | Owner |
 | --- | --- | --- |
-| Element schema | `loa_core::SCHEMA_VERSION` (1) | `loa-core` |
-| Adapter interface | `loa_adapter::INTERFACE_VERSION` | `loa-adapter` |
-| Presentation API | `loa_view::VERSION` (4.0.0), listed in `crates/loa-view/api.txt` | `loa-view` |
-| Control ALPN | `omp/control/1` | `loa-net` |
-| Session ALPN | `omp/session/1` | `loa-net`, `loa-share` |
-| Surface ALPN | `omp/surface/1` | `loa-surface` |
-| Port | 31415, UDP (iroh) and TCP fallback | `loa-net` |
+| Element schema | `loa::core::SCHEMA_VERSION` (1) | `core` |
+| Harness interface | `loa::contracts::INTERFACE_VERSION` | `contracts` |
+| Presentation API | `loa::view::VERSION` (4.0.0), listed in `cpp/libs/view/api.txt` | `view` |
+| Control ALPN | `omp/control/1` | `p2p` |
+| Session ALPN | `omp/session/1` | `p2p` |
+| Folder ALPN | `omp/folder/1` | `p2p` |
+| Surface ALPN | `omp/surface/1` | `surfaces` |
+| Port | 31415, UDP (iroh) and TCP fallback | `p2p` |
 
-Wire and disk formats are protobuf through `prost` derive macros, with no `protoc` step.
+Wire and disk formats are protobuf, encoded and decoded by hand with `loa::runtime::proto`; there is no `protoc` step. They stay byte-identical with earlier releases of the app, including peers still running them: every format has a golden fixture in `cpp/tests/golden`.
 
 ## Local data
 
-SQLite through `rusqlite` with the bundled library. Each crate owns its tables and creates them itself. No crate reads another crate's tables.
+SQLite through the system `sqlite3`. Each library owns its tables and creates them itself. No library reads another library's tables.
 
 ## Secrets
 
 - The node's private key lives in the OS keychain when usable; the private file fallback is under the app data directory
 - SSH private keys are never read. Authentication goes through `ssh-agent` (the OpenSSH agent pipe by default on Windows)
 - Provider credentials stay in each harness's own store. The app never sees them
+
+## Platforms
+
+Platform-specific code sits behind `#if` blocks for Linux, macOS and Windows. Only Linux (Ubuntu 24.04) is built and verified in required CI; the macOS and Windows CI jobs build from `cpp/vcpkg.json` and do not gate merges.

@@ -1,4 +1,4 @@
-// Byte-exact checks against `cpp/tests/golden/projects/*`, written by `cpp/libs/projects/tools/golden_gen` from
+// Byte-exact checks against `cpp/tests/golden/projects/*`, written by `cpp/libs/projects/tools/golden_gen` (at ecc0cf0) from
 // the Rust crate: project file names, settings JSON, ideas Markdown, `project_read`/`project_search` pages (with
 // `x-own_patches` digests), tool schemas, the digest prompt, the context markdown and `.omgui` links.
 

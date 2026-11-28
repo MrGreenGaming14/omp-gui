@@ -2,27 +2,25 @@
 
 Loa is a desktop workspace for OMP and other coding-agent harnesses. It brings project chats, files, terminals, and agent tools into one app.
 
-The app is in development and does not have a packaged release. The [design artifact](https://claude.ai/artifact/4nPNTWD7iG2bp6yuHuKYkL#f6baca39-b36f) and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) describe the design and crate layout.
+The app is in development and does not have a packaged release. The [design artifact](https://claude.ai/artifact/4nPNTWD7iG2bp6yuHuKYkL#f6baca39-b36f) and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) describe the design and the code layout under `cpp/` (`cpp/libs`, `cpp/ui`, `cpp/app`).
 
 ## Run from source on Linux
 
-The commands below use Bash on Ubuntu 24.04, matching the Linux CI environment. On other distributions, install the equivalent compiler, build tools, and graphics libraries with your package manager. Run the desktop app from a graphical X11 or Wayland session, not a headless SSH session.
+The commands below use Bash on Ubuntu 24.04, matching the Linux CI environment. Run the desktop app from a graphical X11 or Wayland session, not a headless SSH session.
 
 ### 1. Install prerequisites
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y build-essential cmake pkg-config curl git python3 \
-  libxkbcommon-dev libwayland-dev libvulkan1 mesa-vulkan-drivers
+sudo apt-get install -y build-essential cmake ninja-build ccache qt6-base-dev qt6-pdf-dev qt6-svg-dev qt6-tools-dev qt6-image-formats-plugins libsqlite3-dev libssl-dev libcurl4-openssl-dev libssh-dev libvterm-dev libarchive-dev libsecret-1-dev libjpeg-turbo8-dev libpng-dev libwebp-dev libgif-dev zlib1g-dev libopenh264-dev libtomlplusplus-dev doctest-dev libasio-dev libpugixml-dev libxlsxwriter-dev libcpp-httplib-dev libstb-dev libnotify-dev libxcb1-dev libxcb-shm0-dev libxcb-xtest0-dev libmd4c-dev libyaml-cpp-dev libminizip-dev
+sudo apt-get install -y curl git
 ```
 
-Install [stable Rust with rustup](https://rustup.rs/), then load Cargo into your current shell:
+The peer network and grants link two vendored C libraries, `iroh-c-ffi` and `biscuit-capi` (`cpp/libs/iroh_ffi/fork`, `cpp/libs/biscuit_ffi/fork`), which are written in Rust. CMake prebuilds them with `cargo` once, into `${LOA_RUST_FFI_TARGET:-$HOME/.cache/loa/rust-ffi-target}`, so install a stable toolchain with [rustup](https://rustup.rs/):
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
 . "$HOME/.cargo/env"
-rustc --version
-cargo --version
 ```
 
 Install [OMP](https://github.com/can1357/oh-my-pi#install) using its official Linux installer:
@@ -38,13 +36,14 @@ Follow the installer's `PATH` instructions or open a new terminal, then check `o
 ```bash
 git clone https://github.com/MrGreenGaming14/omp-gui.git
 cd omp-gui
-cargo build -p loa-app -p loa-sandbox-stub
-./target/debug/loa-app
+cmake -S cpp -B build -G Ninja
+cmake --build build
+./build/app/loa-qt
 ```
 
-Run the build command from the repository root. It builds the app and `loa-sandbox-stub`, which the app needs for local sandbox tasks, without compiling the workspace's test targets. With Cargo's default target directory, both executables are in `target/debug`. Keep them together if you move the binaries.
+`cmake --build build` builds every library, the `loa-qt` app and all test executables. To build only the app, run `cmake --build build --target loa-qt`; it also builds `loa-sandbox-stub`, which the app needs for local sandbox tasks, into `build/app/` beside `loa-qt`. Keep the two executables together if you move them, or point `LOA_SANDBOX_STUB` at the stub.
 
-For subsequent development, use `cargo run -p loa-app` to rebuild the app as needed and launch it. This does not build the sandbox companion; rerun the build command above when the stub changes. To launch without checking for source changes, run `./target/debug/loa-app` directly.
+Set `LOA_LOG` (for example `LOA_LOG=debug`) to change the log level written to stderr.
 
 ### 3. Check the desktop
 
@@ -52,42 +51,29 @@ Open a project, start an OMP chat, run `pwd` in the Terminal tab, and use the Fi
 
 ### Optional: run the tests
 
-From the repository root, use Xvfb to provide the display required by GUI tests, as Linux CI does:
-
 ```bash
-sudo apt-get install -y xvfb
-xvfb-run -a cargo test --workspace
+ctest --test-dir build --output-on-failure
+QT_QPA_PLATFORM=offscreen timeout 5 ./build/app/loa-qt --smoke shell
 ```
+
+`ctest` runs every `loa_*_tests` executable, the presentation API check (`loa_view_api`), the theme lint (`loa_ui_lint_literals`) and one offscreen smoke run per screen (`loa_qt_smoke_<screen>`). While working on one library, build and run only its tests, for example `cmake --build build --target loa_bus_tests && ./build/libs/bus/loa_bus_tests`.
 
 ### Troubleshooting
 
-- **`cargo` is not found:** run `. "$HOME/.cargo/env"` or open a new terminal after installing Rust.
+- **CMake cannot find a package (Qt6, OpenSSL, libssh, …):** install the prerequisite packages above.
+- **`cargo` is not found during the build:** run `. "$HOME/.cargo/env"` or open a new terminal after installing rustup, then rerun `cmake --build build`.
 - **`omp` is not found:** follow the OMP installer's instructions to add its installation directory to `PATH`, then reopen the terminal.
-- **Build errors mention a compiler, CMake, `pkg-config`, Wayland, or xkbcommon:** install the prerequisite packages above (or your distribution's equivalents).
-- **No window or no graphics adapter:** launch from your local X11/Wayland desktop and check that your GPU driver or Mesa Vulkan driver is installed. Xvfb is for automated tests, not an interactive desktop.
-- **Local sandbox reports that `loa-sandbox-stub` was not found:** rerun `cargo build -p loa-app -p loa-sandbox-stub` and keep the stub alongside the app.
+- **No window appears:** launch from your local X11/Wayland desktop. `QT_QPA_PLATFORM=offscreen` is for automated tests, not an interactive desktop.
+- **Local sandbox reports that `loa-sandbox-stub` was not found:** run `cmake --build build --target loa-sandbox-stub` and keep it beside `loa-qt`, or set `LOA_SANDBOX_STUB`.
 
-## Run from source on Windows
+## macOS and Windows
 
-Install stable Rust with the MSVC toolchain, Visual Studio Build Tools with the C++ workload and Windows SDK, and Git for Windows. Install [OMP](https://github.com/can1357/oh-my-pi/releases) and make sure `omp --version` works in PowerShell.
+Platform code is ported behind `#if` blocks, but only Linux is verified. CI builds macOS and Windows from `cpp/vcpkg.json` with Qt 6.4 from the Qt installer; those jobs do not gate merges:
 
-```powershell
-cargo build -p loa-app -p loa-sandbox-stub
-.\target\debug\loa-app.exe
+```bash
+cmake -S cpp -B build -G Ninja -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
+cmake --build build
 ```
-
-This builds the app and its sandbox companion without compiling the workspace's test targets, placing `loa-sandbox-stub.exe` alongside the app. Keep both executables together. For subsequent development, use `cargo run -p loa-app`; rerun the build command above when the stub changes.
-
-To test on Windows, install Python 3 (`python.exe` on `PATH`) and put Git for Windows' Bash ahead of the WSL launcher:
-
-```powershell
-$git = (Get-Command git.exe).Source
-$env:Path = "$(Split-Path (Split-Path $git))\bin;$env:Path"
-$env:ICED_TEST_BACKEND = 'tiny-skia'
-cargo test --workspace --no-fail-fast
-```
-
-For a desktop smoke check, open a project, start an OMP chat, run `cd` in the Terminal tab, and use the Files tab to open a project file. Browser virtual-display mode requires Linux; Windows can use headed Chrome or Chromium.
 
 ## Experience and roadmap
 
@@ -97,9 +83,9 @@ For a desktop smoke check, open a project, start an OMP chat, run `cd` in the Te
 - **Cross-device work.** Connect app instances directly to access or share projects, sessions, files, or live views. Permissions are scoped to the peer and resource rather than granting access to the whole workspace.
 - **Custom agents and workflows.** Build an agent from template fields and permission checkboxes, then save it as a Markdown definition. Define named workflows that allow or disallow specific agents and switch workflows next to the prompt. The proposal stores workflow names in `config.yml` and routing rules in `RULES.md`.
 
-## Proposed architecture
+## Architecture
 
-- **Desktop:** Rust with Iced 0.14 for the GUI and `alacritty_terminal` for terminal panes.
+- **Desktop:** C++23 with Qt 6 Widgets for the GUI and libvterm for terminal panes.
 - **Core:** One app-owned session format and one app-owned configuration format. Adapters translate harness events into an append-only session journal, with snapshots for faster replay. Model and provider setup reuses OMP’s existing configuration and sign-in flows.
 - **Networking:** An iroh peer endpoint on port `31415`, with separate channels for control, sessions, and live views. Peer identities use public keys; resource grants govern what each peer can access.
 - **Updates:** Stage app and harness updates, check compatibility before activating them, and retain the prior version for rollback.

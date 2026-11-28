@@ -32,7 +32,7 @@ Save never replaces notes changed outside the app since the page loaded the note
 | Part | Example |
 | --- | --- |
 | Summary | Two or three sentences on what the session did |
-| Decisions | "Picked iced over GPUI", "31415 for control traffic" |
+| Decisions | "Use SQLite for the audit log", "31415 for control traffic" |
 | Files touched | Paths with a one line note each |
 | Open items | Unfinished todos and unanswered questions |
 | Pointers | Node ids of the turns the digest came from |

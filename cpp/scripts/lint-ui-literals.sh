@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Theme lint (port of scripts/lint-ui-literals.sh): UI code takes colours, sizes and spacing
+# Theme lint: UI code takes colours, sizes and spacing
 # from loa::ui::kit::theme tokens. Scans cpp/ui/* (except the kit's token layer) and cpp/app,
 # or the dirs given as arguments (relative to cpp/). Tests are skipped: their literals are
 # input data (escape sequences, fixtures), not styling. Reports only; exits non-zero with

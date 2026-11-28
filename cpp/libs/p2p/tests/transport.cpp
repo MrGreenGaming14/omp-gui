@@ -235,8 +235,8 @@ TEST_CASE("quic bind refuses a malformed relay URL") {
           NodeError::Kind::invalid_address);
 }
 
-// Interop with a Rust node built from origin/main (tests/interop: copy the root
-// Cargo.lock in, `cargo build`), then set LOA_P2P_RUST_NODE to the binary. It
+// Interop with a Rust node (`cpp/libs/p2p/tests/interop` at ecc0cf0, the last commit with the
+// Rust workspace: copy the root Cargo.lock in, `cargo build`), then set LOA_P2P_RUST_NODE to the binary. It
 // serves an echoing omp/control/1 on seed [1; 32] and prints
 // `ADDR <addr>`, and with `dial <key> <addr>` dials one and prints `RUST DIAL OK`.
 TEST_CASE("interop: a C++ node and a Rust node exchange omp/control/1 both ways") {

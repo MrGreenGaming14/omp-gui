@@ -15,8 +15,7 @@ namespace core = loa::core;
 namespace json = loa::runtime::json;
 
 TEST_CASE("Codex rollout: fixture imports every native shape and exports byte-identically") {
-    const auto fixture = std::filesystem::path(LOA_GOLDEN_DIR) /
-                         "../../../crates/loa-harness/fixtures/codex/rollout-basic.jsonl";
+    const auto fixture = std::filesystem::path(LOA_HARNESS_FIXTURES) / "codex/rollout-basic.jsonl";
     std::ifstream file(fixture, std::ios::binary);
     REQUIRE(file.good());
     const std::string original(std::istreambuf_iterator<char>{file}, {});
