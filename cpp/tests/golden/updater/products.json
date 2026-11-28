@@ -1,0 +1,152 @@
+[
+  {
+    "product": {
+      "id": "app",
+      "kind": {
+        "type": "app"
+      },
+      "feed": {
+        "type": "github",
+        "owner": "MrGreenGaming14",
+        "repo": "omp-gui"
+      },
+      "prereleases": "stable",
+      "asset": "loa-app-linux-x64.tar.gz"
+    },
+    "label": "loa",
+    "installed": {
+      "running": "0.1.0"
+    },
+    "executable": "loa-app",
+    "gates": {
+      "type": "none"
+    }
+  },
+  {
+    "product": {
+      "id": "omp",
+      "kind": {
+        "type": "omp"
+      },
+      "feed": {
+        "type": "github",
+        "owner": "can1357",
+        "repo": "oh-my-pi"
+      },
+      "prereleases": "stable",
+      "asset": "omp-linux-x64"
+    },
+    "label": "omp",
+    "installed": {
+      "executable": "omp"
+    },
+    "executable": null,
+    "gates": {
+      "type": "omp",
+      "used_tools": {
+        "ast_edit": [],
+        "ast_grep": [],
+        "bash": [
+          "command"
+        ],
+        "debug": [],
+        "edit": [],
+        "lsp": [],
+        "read": [],
+        "todo": []
+      },
+      "written_keys": [
+        "disabledProviders",
+        "enabledModels",
+        "enabledProviders",
+        "memory.backend",
+        "modelProviderOrder",
+        "modelRoles",
+        "retry.fallbackChains"
+      ],
+      "migrations": [
+        [
+          1,
+          2
+        ],
+        [
+          2,
+          3
+        ]
+      ],
+      "rpc_supported": {
+        "start": 1,
+        "end": 2
+      }
+    }
+  },
+  {
+    "product": {
+      "id": "claude",
+      "kind": {
+        "type": "harness",
+        "harness": "claude"
+      },
+      "feed": {
+        "type": "npm",
+        "package": "@anthropic-ai/claude-code"
+      },
+      "prereleases": "stable",
+      "asset": null
+    },
+    "label": "Claude Code",
+    "installed": {
+      "executable": "claude"
+    },
+    "executable": null,
+    "gates": {
+      "type": "changelog"
+    }
+  },
+  {
+    "product": {
+      "id": "codex",
+      "kind": {
+        "type": "harness",
+        "harness": "codex"
+      },
+      "feed": {
+        "type": "npm",
+        "package": "@openai/codex"
+      },
+      "prereleases": "stable",
+      "asset": null
+    },
+    "label": "Codex",
+    "installed": {
+      "executable": "codex"
+    },
+    "executable": null,
+    "gates": {
+      "type": "changelog"
+    }
+  },
+  {
+    "product": {
+      "id": "opencode",
+      "kind": {
+        "type": "harness",
+        "harness": "opencode"
+      },
+      "feed": {
+        "type": "npm",
+        "package": "opencode-ai"
+      },
+      "prereleases": "stable",
+      "asset": null
+    },
+    "label": "OpenCode",
+    "installed": {
+      "executable": "opencode"
+    },
+    "executable": null,
+    "gates": {
+      "type": "changelog"
+    }
+  }
+]

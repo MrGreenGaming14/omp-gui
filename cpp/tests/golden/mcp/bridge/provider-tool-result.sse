@@ -1,0 +1,6 @@
+data: {"id":"loa-omp-bridge","object":"chat.completion.chunk","created":0,"model":"scripted","choices":[{"index":0,"delta":{"role":"assistant","content":"Done."},"finish_reason":null}]}
+
+data: {"id":"loa-omp-bridge","object":"chat.completion.chunk","created":0,"model":"scripted","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: [DONE]
+

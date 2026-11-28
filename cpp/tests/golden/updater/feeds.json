@@ -1,0 +1,57 @@
+{
+  "claude|npm:@anthropic-ai/claude-code|stable|": {
+    "etag": null,
+    "releases": [
+      {
+        "product": "claude",
+        "version": "2.0.1",
+        "notes": "",
+        "published_at": "2026-02-03T04:05:06.789Z",
+        "artifact": {
+          "name": "claude-code-2.0.1.tgz",
+          "url": "https://registry.npmjs.org/@anthropic-ai/claude-code/-/claude-code-2.0.1.tgz",
+          "size": null,
+          "checksum": {
+            "algorithm": "sha512",
+            "hex": "abababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab"
+          },
+          "format": "npm_tarball",
+          "signature_url": null
+        }
+      }
+    ]
+  },
+  "omp|github:can1357/oh-my-pi|stable|omp-linux-x64": {
+    "etag": "W/\"abc\"",
+    "releases": [
+      {
+        "product": "omp",
+        "version": "9.0.0",
+        "notes": "",
+        "published_at": null,
+        "artifact": null
+      },
+      {
+        "product": "omp",
+        "version": "9.1.0",
+        "notes": "- faster\n- `grep` removed",
+        "published_at": "2026-01-02T03:04:05Z",
+        "artifact": {
+          "name": "omp-linux-x64",
+          "url": "https://github.com/can1357/oh-my-pi/releases/download/v9.1.0/omp-linux-x64",
+          "size": 123456789,
+          "checksum": {
+            "algorithm": "sha256",
+            "hex": "e1b771ff6831269c53a658057c68d3177b45f47cc5aec706fdd961fbdb2505df"
+          },
+          "format": "raw",
+          "signature_url": "https://github.com/can1357/oh-my-pi/releases/download/v9.1.0/omp-linux-x64.sig"
+        }
+      }
+    ]
+  },
+  "zip|github:acme/zip|include|zip-{version}.zip": {
+    "etag": null,
+    "releases": []
+  }
+}
