@@ -69,6 +69,12 @@ struct Answered {
 } // namespace decisions
 namespace tools {
 struct Open {};
+// A remote host question's card (`areas::tools::is_remote_decision`) was answered in a session.
+struct AnswerDecision {
+    SessionId session;
+    core::NodeId decision;
+    contracts::Answer answer;
+};
 } // namespace tools
 namespace models {
 // The models screens (`loa_ui_settings::models::Page`).
