@@ -6,12 +6,32 @@
 #include <QApplication>
 #include <QWidget>
 
+#include "loa/ui/shell/view.hpp"
+
 namespace loa::ui::app {
 
 Smoke& Smoke::registry() {
     static Smoke smoke = [] {
         Smoke s;
         s.add("kit", [] { return kit_gallery(); }, check_kit_gallery);
+        s.add("shell", [] {
+            auto* frame = new shell::ShellView;
+            auto state = shell::layout::State::make({}).first;
+            state.sidebar_mut().set_nodes({{"local", "This computer", true, true}});
+            state.sidebar_mut().set_projects({"Example"});
+            state.set_project_tabs(true);
+            state.set_open_projects({"Example"});
+            state.set_tabs({{"files", "Files", std::nullopt}});
+            frame->resize(960, 640);
+            frame->render(state);
+            return frame;
+        }, [](QWidget& frame) {
+            const auto* top = frame.findChild<QWidget*>(QStringLiteral("top bar"));
+            if (!top || top->height() != shell::topbar::HEIGHT) return std::string("top bar height");
+            if (!frame.findChild<QWidget*>(QStringLiteral("sidebar"))) return std::string("missing sidebar");
+            if (!frame.findChild<QWidget*>(QStringLiteral("panel"))) return std::string("missing panel");
+            return std::string();
+        });
         return s;
     }();
     return smoke;

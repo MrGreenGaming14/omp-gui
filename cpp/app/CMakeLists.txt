@@ -8,7 +8,7 @@ add_library(loa_app STATIC
   src/smoke.cpp)
 add_library(loa::app ALIAS loa_app)
 target_include_directories(loa_app PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
-target_link_libraries(loa_app PUBLIC loa::ui_kit loa::runtime Qt6::Core Qt6::Gui Qt6::Widgets)
+target_link_libraries(loa_app PUBLIC loa::ui_kit loa::ui_shell loa::runtime Qt6::Core Qt6::Gui Qt6::Widgets)
 
 add_executable(loa-qt src/main.cpp)
 set_target_properties(loa-qt PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
@@ -19,3 +19,6 @@ set_tests_properties(loa_app_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offsc
 
 add_test(NAME loa_qt_smoke_kit COMMAND loa-qt --smoke kit)
 set_tests_properties(loa_qt_smoke_kit PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 5)
+
+add_test(NAME loa_qt_smoke_shell COMMAND loa-qt --smoke shell)
+set_tests_properties(loa_qt_smoke_shell PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 5)
