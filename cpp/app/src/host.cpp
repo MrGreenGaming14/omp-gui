@@ -19,6 +19,7 @@
 #include <QTimer>
 #include <QVBoxLayout>
 
+#include "loa/app/panes.hpp"
 #include "loa/app/routes.hpp"
 #include "loa/app_runtime/session.hpp"
 #include "loa/runtime/log.hpp"
@@ -303,15 +304,21 @@ void AppView::render_start(const App& app) {
 void AppView::render_panel(const App& app) {
     const auto tab = app.ctx.shell.active_tab();
     if (!tab) return;
-    if (*tab == ui::panel::DIFF_PANE.id) {
-        diff_->render(app.diff);
-        panel_->setCurrentWidget(diff_);
-    } else if (*tab == ui::panel::FILES_PANE.id) {
-        files_->render(app.files);
-        panel_->setCurrentWidget(files_);
-    } else if (*tab == ui::terminal::TERMINAL_PANE.id) {
-        terminal_->render(app.terminal);
-        panel_->setCurrentWidget(terminal_);
+    if (const auto* pane = panes::find(app, *tab)) {
+        switch (pane->kind) {
+        case panes::Kind::Diff:
+            diff_->render(app.diff);
+            panel_->setCurrentWidget(diff_);
+            break;
+        case panes::Kind::Files:
+            files_->render(app.files);
+            panel_->setCurrentWidget(files_);
+            break;
+        case panes::Kind::Terminal:
+            terminal_->render(app.terminal);
+            panel_->setCurrentWidget(terminal_);
+            break;
+        }
     } else {
         auto* layout = static_cast<QVBoxLayout*>(area_tab_->layout());
         clear(layout);
@@ -343,11 +350,7 @@ void AppView::render_overlay(const App& app) {
     };
     const auto& ctx = app.ctx;
     std::visit(overloaded{
-                   [&](const overlay::Usage&) {
-                       header("Usage");
-                       body->addWidget(app.usage ? widgets::mono_block(*app.usage)
-                                                 : widgets::label("Reading usage…", theme::TextRole::Body, kit::Tone::Muted));
-                   },
+                   [&](const overlay::Usage&) { body->addWidget(usage::view(app.usage, loa::runtime::time::now_ms(), emit_), 1); },
                    [&](const overlay::Settings& s) {
                        auto* nav = new QWidget;
                        auto* tabs = column(nav, theme::SpaceRole::Xs);
@@ -533,6 +536,19 @@ void AppHost::run(Task task) {
                            }
                        },
                        [&](const ui_op::Exit&) { QApplication::quit(); },
+                       [&](const ui_op::FocusNext& f) {
+                           auto* from = QApplication::focusWidget();
+                           if (!from) return;
+                           // The next widget in the chain that takes Tab focus, as Tab itself moves.
+                           for (auto* next = f.forward ? from->nextInFocusChain() : from->previousInFocusChain();
+                                next && next != from; next = f.forward ? next->nextInFocusChain() : next->previousInFocusChain()) {
+                               if ((next->focusPolicy() & Qt::TabFocus) && next->isVisible() && next->isEnabled() &&
+                                   next->window() == from->window()) {
+                                   next->setFocus(f.forward ? Qt::TabFocusReason : Qt::BacktabFocusReason);
+                                   return;
+                               }
+                           }
+                       },
                        [&](const ui_op::Terminal& t) {
                            runner_->run(t.task, app_->terminal.backend());
                            if (view_) view_->apply(op);

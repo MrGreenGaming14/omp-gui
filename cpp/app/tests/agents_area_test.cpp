@@ -12,6 +12,7 @@
 #include <utility>
 #include <vector>
 
+#include <QApplication>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QProcess>
@@ -92,9 +93,18 @@ std::string read_file(const fs::path& path) {
 
 std::optional<std::string_view> screen(const TestApp& test) { return test.app->ctx.screen(); }
 
+// The widgets the area draws need a QApplication; leaked, as one destroyed at exit crashes.
+void ensure_qapp() {
+    static int argc = 1;
+    static char name[] = "loa_app_tests";
+    static char* argv[] = {name, nullptr};
+    if (!qApp) (void)new QApplication(argc, argv);
+}
+
 } // namespace
 
 TEST_CASE("the form opens with omp") {
+    ensure_qapp();
     auto [test, _] = omp_app("omp");
     open(*test);
     CHECK(screen(*test) == State::ID);

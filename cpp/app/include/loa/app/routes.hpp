@@ -72,6 +72,10 @@ struct Show {
 };
 // The models screen's own close button.
 struct Close {};
+// Use the model role `role`: the composer's model follows it (the workflows area's pick).
+struct PickRole {
+    std::string role;
+};
 } // namespace models
 namespace projects {
 struct Open {
@@ -97,6 +101,8 @@ struct OpenRecent {
     std::string id;
 };
 struct Refresh {};
+// The sidebar's Peers rows.
+struct Open {};
 } // namespace peers
 namespace updater {
 struct Open {};

@@ -24,6 +24,7 @@
 #include "loa/app/registry.hpp"
 #include "loa/app/services.hpp"
 #include "loa/app/task.hpp"
+#include "loa/app/usage_window.hpp"
 #include "loa/app/windows.hpp"
 #include "loa/app/workspace.hpp"
 #include "loa/app_runtime/runtime.hpp"
@@ -110,8 +111,8 @@ class App {
     ui::panel::diff::State diff;
     ui::terminal::State terminal;
     Windows windows;
-    // The last `omp usage --json` read, for the Usage window.
-    std::optional<std::string> usage;
+    // The Usage window and the sidebar meter's source.
+    usage::State usage;
     // Reads the clipboard's image into a file under the directory given; set by the Qt host.
     std::function<std::expected<std::optional<Pasted>, std::string>(const std::filesystem::path&)> read_clipboard_image;
     // The pixel size of an image file; set by the Qt host.
@@ -153,6 +154,25 @@ class App {
     Task detach_transcript(std::string key, std::string title, core::Dom dom);
     [[nodiscard]] std::string detached_title(const Detached& what) const;
 
+    // ---- keys (`app/keys.rs`) -------------------------------------------------------------
+    // Keys that aren't palette commands, listed for reference.
+    [[nodiscard]] std::vector<ui::shell::palette::Command> reference_keys() const;
+    // Fills in the shortcut hint of every command the keymap binds, including `Open X tab` by
+    // the tab's place in the panel.
+    void hint_commands(std::vector<ui::shell::palette::Command>& commands) const;
+    // Session ids in the sidebar's order: Pinned, then Recents, as filtered by its search.
+    [[nodiscard]] std::vector<std::string> session_order() const;
+    // Shows the next (or previous) session after the highlighted one, wrapping around.
+    Task step_session(bool forward);
+    // Opens `session` the way a click on its sidebar row does.
+    Task show_session(std::string session);
+    // Puts the focus in the composer, closing a screen over the chat.
+    Task focus_composer();
+    // The `Unknown command` notice for `prefix` + `arg`.
+    Task unknown(std::string_view prefix, std::string_view arg);
+    // Picks `key` in the composer's `picker`.
+    Task pick(ui::session::composer::PickerId picker, std::string_view prefix, std::string_view key);
+
     // ---- media (`app/media.rs`) -----------------------------------------------------------
     Task paste_image();
     Task image_pasted(std::expected<std::optional<Pasted>, std::string> pasted);
@@ -183,6 +203,7 @@ class App {
     Task sync_after_area(std::string_view id);
 
     friend struct AppAccess;
+    friend struct AppKeys;
 };
 
 } // namespace loa::app

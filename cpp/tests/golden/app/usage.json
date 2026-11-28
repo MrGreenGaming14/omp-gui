@@ -1,0 +1,17 @@
+{
+      "generatedAt": 1000,
+      "reports": [
+        {"provider": "anthropic", "metadata": {"orgName": "Personal", "credentialId": "c1"},
+         "limits": [
+           {"label": "Claude 5 Hour", "window": {"id": "5h", "resetsAt": 5000}, "amount": {"usedFraction": 0.03}},
+           {"label": "Claude 7 Day", "window": {"id": "7d", "resetsAt": 9000}, "amount": {"usedFraction": 0.51}}
+         ],
+         "resetCredits": {"availableCount": 3, "redeemableCount": 1}},
+        {"provider": "anthropic", "metadata": {"email": "work@example.com"},
+         "limits": [{"label": "Claude 7 Day (Fable)", "window": {"id": "7d"}, "amount": {}}],
+         "resetCredits": {"availableCount": 0, "redeemableCount": 0}},
+        {"provider": "openai-codex", "metadata": {"email": "me@example.com"},
+         "limits": [{"label": "7 days", "window": {"id": "7d"}, "amount": {"usedFraction": 0.05}}]}
+      ],
+      "capacity": {"anthropic": [{"window": "7d", "accounts": 2, "usedAccounts": 0.7}]}
+    }
