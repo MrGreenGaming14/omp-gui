@@ -143,9 +143,27 @@ TEST_CASE("testing: ScriptedAdapter hooks: tools, models, effort, modes, resume,
 
 namespace {
 
+// Pins `created` and patch times: `ScriptedAdapter::import` stamps the session with the current time,
+// so two imports a millisecond apart would render different XML and `round_trip` would flake.
+class FixedClockSink final : public PatchSink {
+  public:
+    explicit FixedClockSink(PatchSink& inner) : inner_(inner) {}
+    std::expected<Patch, CommitError> commit_at(Draft draft, std::int64_t) override {
+        if (auto* insert = std::get_if<Draft::Insert>(&draft.v); insert && insert->attrs.contains(attr::CREATED))
+            insert->attrs.insert_or_assign(std::string(attr::CREATED), Value(std::int64_t{0}));
+        return inner_.commit_at(std::move(draft), 0);
+    }
+
+  private:
+    PatchSink& inner_;
+};
+
 class ScriptedCodec final : public loa::harness::kit::NativeCodec {
   public:
-    loa::contracts::Result<> import(const std::filesystem::path& p, PatchSink& sink) const override { return adapter.import(p, sink); }
+    loa::contracts::Result<> import(const std::filesystem::path& p, PatchSink& sink) const override {
+        FixedClockSink fixed(sink);
+        return adapter.import(p, fixed);
+    }
     loa::contracts::Result<> export_(const Dom& d, const std::filesystem::path& out) const override { return adapter.export_(d, out); }
     std::vector<loa::harness::kit::NativeSession> discover(const std::filesystem::path&) const override { return {}; }
     ScriptedAdapter adapter{"scripted"};
