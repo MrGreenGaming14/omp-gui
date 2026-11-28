@@ -106,6 +106,11 @@ has exactly one row below; `loa_golden_tests` fails otherwise.
   `projects/*.schema.json`: the two tools' input schemas; `projects/prompt-a.txt`: `build_prompt` of session `a`;
   `projects/context.md`: `render_markdown(build_context(..))`; `projects/links.txt`: `.omgui` entries after
   `links::sync` (`name -> target relative to the scratch root`, or `name = {contents:?}`).
+- `updater/staged*.json`, `active*.json`, `feeds.json`, `state.json` and `products.json`: Rust
+  `loa-updater` serde JSON (pretty, two-space indent), including the manifest, feed cache, decisions
+  and default catalog. `updater/root/` is a Rust-written updater state directory after two signed app
+  swaps; its `versions/app/<version>/` trees contain the artifact, signature, payload and manifest.
+  `updater/sig/` contains a Rust Ed25519 signature over an artifact SHA-256 digest and two public keys.
 
 ## Files
 
@@ -256,6 +261,27 @@ has exactly one row below; `loa_golden_tests` fails otherwise.
 | surface/stream-reject.bin | 22 | 24fa6532b33efd94a367fdf7bfcf6e6daf0d0a3c204adb5d2c0a7420b040e44f | b128c428ea2976fd62bc1ef28ccc783137388e80 |
 | surface/stream-resize.bin | 9 | 93c16b99ec9cf90756ca9aafd9f6676fe9c609b14ace298b4ac290f4a5ad1523 | b128c428ea2976fd62bc1ef28ccc783137388e80 |
 | surface/stream-unknown-body.bin | 14 | ac72d470973eb97154fc66ee221cb9cf8d921843857e7847b8b1eecd1f6c4dd3 | b128c428ea2976fd62bc1ef28ccc783137388e80 |
+| updater/active-first.json | 44 | 6bc96598883ee756aa8fc7711f256fad23d5b247a03af40e5197a5dafd5a0751 | e95ff8064a4e67a6938ed952967f8532da31c997 |
+| updater/active.json | 47 | a267c82671d7b6fae98ee1c3453ffdba1e602e264c3fd94fc17189a3c06fc02c | e95ff8064a4e67a6938ed952967f8532da31c997 |
+| updater/feeds.json | 1733 | 45b7c7d66a8f6f6a41808c164b30af23dd51ad5d8a8918e6e51672b35e2cd652 | e95ff8064a4e67a6938ed952967f8532da31c997 |
+| updater/products.json | 2750 | 5f92ba4ef38f9cced015047f1d81c01dbb8c1ab2dc8e186d7478d1b803055ccb | e95ff8064a4e67a6938ed952967f8532da31c997 |
+| updater/root/state.json | 134 | 923793efa634320055d432ec736c7184929731e664ffccf88b4e69dd90030ca9 | e95ff8064a4e67a6938ed952967f8532da31c997 |
+| updater/root/versions/app/0.1.0/artifact/app-0.1.0 | 25 | e66f641ebe425650fad4ca0ee020567e0267cf09717018fa23d148badab4a479 | e95ff8064a4e67a6938ed952967f8532da31c997 |
+| updater/root/versions/app/0.1.0/artifact/app-0.1.0.sig | 129 | 07ac46953ff9418dd6cb72b2a1a703df2cf6e6d58c6a2daf8740c2ce1574bd09 | e95ff8064a4e67a6938ed952967f8532da31c997 |
+| updater/root/versions/app/0.1.0/payload/app-0.1.0 | 25 | e66f641ebe425650fad4ca0ee020567e0267cf09717018fa23d148badab4a479 | e95ff8064a4e67a6938ed952967f8532da31c997 |
+| updater/root/versions/app/0.1.0/staged.json | 207 | 0e5cf8db29c1572d2b51626d1271226cbb0e3e2a58a98e5e4345606f00f64698 | e95ff8064a4e67a6938ed952967f8532da31c997 |
+| updater/root/versions/app/0.2.0/artifact/app-0.2.0 | 25 | 790b243c054e8e28a79332b7ba1ead9a139e67613ed544ffc62763ff28e8a0ec | e95ff8064a4e67a6938ed952967f8532da31c997 |
+| updater/root/versions/app/0.2.0/artifact/app-0.2.0.sig | 129 | b8fed40618f80a566eac035c2982b65f1de79cdc7fd4e0ea10a241cf0dde0411 | e95ff8064a4e67a6938ed952967f8532da31c997 |
+| updater/root/versions/app/0.2.0/payload/app-0.2.0 | 25 | 790b243c054e8e28a79332b7ba1ead9a139e67613ed544ffc62763ff28e8a0ec | e95ff8064a4e67a6938ed952967f8532da31c997 |
+| updater/root/versions/app/0.2.0/staged.json | 207 | 4cb79724793c3409f1fde613683e80ae031c18e86cec9309dc8317c849942589 | e95ff8064a4e67a6938ed952967f8532da31c997 |
+| updater/root/versions/app/active.json | 47 | c454c45f888ec086a86e4cc56b638874268bd28d5ac3adb709382c7368886402 | e95ff8064a4e67a6938ed952967f8532da31c997 |
+| updater/sig/app-0.2.0 | 25 | 790b243c054e8e28a79332b7ba1ead9a139e67613ed544ffc62763ff28e8a0ec | e95ff8064a4e67a6938ed952967f8532da31c997 |
+| updater/sig/app-0.2.0.sig | 129 | b8fed40618f80a566eac035c2982b65f1de79cdc7fd4e0ea10a241cf0dde0411 | e95ff8064a4e67a6938ed952967f8532da31c997 |
+| updater/sig/stranger.hex | 65 | f8718da38842cd9761c86e5fabd38e9dd5c2bd898b8222cf8b6694d6f831aea9 | e95ff8064a4e67a6938ed952967f8532da31c997 |
+| updater/sig/trusted.hex | 65 | 52ae2a9b4c641fe431a9ca578223ad018baf6fa3eecd4c8c441b9f68fb7a63cc | e95ff8064a4e67a6938ed952967f8532da31c997 |
+| updater/staged-unsigned.json | 225 | 30325354f54838fc14a949e8ddd1012a1e6a0bbec596b49c3cc45c39ada43fcc | e95ff8064a4e67a6938ed952967f8532da31c997 |
+| updater/staged.json | 251 | 4a69fdb7f9be8b9f55b6624a59279b08b4c6c3df364a2afbbbca3f8cea999f8c | e95ff8064a4e67a6938ed952967f8532da31c997 |
+| updater/state.json | 1261 | d342fb0f61b04649fc05e65863f6a389decc606246703366a687de9200abd486 | e95ff8064a4e67a6938ed952967f8532da31c997 |
 | util/iso.txt | 280 | 9006e6f63b49bffaee1442bb095e62c95cc5444da3a4f6a59316a13b11fc854b | b128c428ea2976fd62bc1ef28ccc783137388e80 |
 | util/ssh/aliases.txt | 43 | 11a0dc406390d101147047702a22186a1ec2c0ee5dc70822a5131f8173a86314 | b128c428ea2976fd62bc1ef28ccc783137388e80 |
 | util/ssh/config | 100 | db9bb111236f3bf56757b7d396432255fc303eee34c0c481e9f92d506b8ce2a3 | b128c428ea2976fd62bc1ef28ccc783137388e80 |
