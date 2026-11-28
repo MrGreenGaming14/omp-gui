@@ -14,7 +14,7 @@ QApplication& app() {
     static int argc = 1;
     static char name[] = "loa_ui_panel_tests";
     static char* argv[] = {name, nullptr};
-    static auto* a = new QApplication(argc, argv);
+    static auto* a = qApp ? static_cast<QApplication*>(qApp) : new QApplication(argc, argv);
     return *a;
 }
 

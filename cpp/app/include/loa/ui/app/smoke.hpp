@@ -46,5 +46,9 @@ class Smoke {
 [[nodiscard]] QWidget* panel_screen();
 // Checks the panes rendered: diff rows painted, files listed, session rows shown.
 [[nodiscard]] std::string check_panel_screen(QWidget& screen);
+// The `agents` screen: the agents and background jobs panes over a sample session, beside the tools page.
+[[nodiscard]] QWidget* agents_screen();
+// Checks the panes rendered: the subagent rows, the job row and the tools tabs.
+[[nodiscard]] std::string check_agents_screen(QWidget& screen);
 
 } // namespace loa::ui::app

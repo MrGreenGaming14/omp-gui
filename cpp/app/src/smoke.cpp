@@ -44,6 +44,7 @@ Smoke& Smoke::registry() {
             if (!view.findChild<QWidget*>(QStringLiteral("composer stop"))) return std::string("missing stop button");
             return std::string();
         });
+        s.add("agents", [] { return agents_screen(); }, check_agents_screen);
         s.add("panel", [] { return panel_screen(); }, check_panel_screen);
         s.add("shell", [] {
             auto* frame = new shell::ShellView;
