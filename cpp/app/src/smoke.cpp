@@ -68,6 +68,8 @@ Smoke& Smoke::registry() {
         s.add("panel", [] { return panel_screen(); }, check_panel_screen);
         s.add("models", [] { return models_screen(); }, check_models_screen);
         s.add("surface", [] { return surface_screen(); }, check_surface_screen);
+        s.add("surfaces", [] { return surfaces_area_screen(); }, check_surfaces_area_screen);
+        s.add("updater", [] { return updater_area_screen(); }, check_updater_area_screen);
         s.add("terminal", [] { return terminal_screen(); }, check_terminal_screen);
         s.add("transcript", [] { return transcript_screen(); }, check_transcript_screen);
         // The app core's shell: services, runtime and areas over a temporary data directory.
