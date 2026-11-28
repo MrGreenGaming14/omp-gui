@@ -133,6 +133,8 @@ has exactly one row below; `loa_golden_tests` fails otherwise.
   and default catalog. `updater/root/` is a Rust-written updater state directory after two signed app
   swaps; its `versions/app/<version>/` trees contain the artifact, signature, payload and manifest.
   `updater/sig/` contains a Rust Ed25519 signature over an artifact SHA-256 digest and two public keys.
+- `updater/omp_sessions/basic.jsonl`, `branched.jsonl`: copies of `crates/loa-app/src/adapters/update_gates/golden`, the
+  hand-written omp sessions (linear, and with a branch) the update gates resume and fork; the app embeds them at build time.
 
 ## Files
 
@@ -306,6 +308,8 @@ has exactly one row below; `loa_golden_tests` fails otherwise.
 | updater/active-first.json | 44 | 6bc96598883ee756aa8fc7711f256fad23d5b247a03af40e5197a5dafd5a0751 | e95ff8064a4e67a6938ed952967f8532da31c997 |
 | updater/active.json | 47 | a267c82671d7b6fae98ee1c3453ffdba1e602e264c3fd94fc17189a3c06fc02c | e95ff8064a4e67a6938ed952967f8532da31c997 |
 | updater/feeds.json | 1733 | 45b7c7d66a8f6f6a41808c164b30af23dd51ad5d8a8918e6e51672b35e2cd652 | e95ff8064a4e67a6938ed952967f8532da31c997 |
+| updater/omp_sessions/basic.jsonl | 1897 | a6d7d1a4050c754e19a57b1aef8aa3e06501209b3afb9a06a437176432dbf230 | 4fe1770120b508c0fd6e324038a281332c72d027 |
+| updater/omp_sessions/branched.jsonl | 3097 | 82346087a5842fa25b1bc9c283adbb20f2ac813385601591727b6d7018ddaae3 | 4fe1770120b508c0fd6e324038a281332c72d027 |
 | updater/products.json | 2750 | 5f92ba4ef38f9cced015047f1d81c01dbb8c1ab2dc8e186d7478d1b803055ccb | e95ff8064a4e67a6938ed952967f8532da31c997 |
 | updater/root/state.json | 134 | 923793efa634320055d432ec736c7184929731e664ffccf88b4e69dd90030ca9 | e95ff8064a4e67a6938ed952967f8532da31c997 |
 | updater/root/versions/app/0.1.0/artifact/app-0.1.0 | 25 | e66f641ebe425650fad4ca0ee020567e0267cf09717018fa23d148badab4a479 | e95ff8064a4e67a6938ed952967f8532da31c997 |
