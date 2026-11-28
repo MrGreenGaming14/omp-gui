@@ -72,6 +72,8 @@ Smoke& Smoke::registry() {
         s.add("transcript", [] { return transcript_screen(); }, check_transcript_screen);
         // The app core's shell: services, runtime and areas over a temporary data directory.
         s.add("shell", [] { return app_shell_screen(); }, check_app_shell_screen);
+        // The sessions area's import and export screen over the app core.
+        s.add("sessions", [] { return sessions_screen(); }, check_sessions_screen);
         return s;
     }();
     return smoke;

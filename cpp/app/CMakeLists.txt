@@ -23,6 +23,14 @@ add_library(loa_app STATIC
   src/application.cpp
   src/area.cpp
   src/areas.cpp
+  src/areas/sessions/branch.cpp
+  src/areas/sessions/hooks.cpp
+  src/areas/sessions/plan.cpp
+  src/areas/sessions/sessions.cpp
+  src/areas/sessions/sessions_smoke.cpp
+  src/areas/sessions/subagents.cpp
+  src/areas/sessions/transfer.cpp
+  src/areas/sessions/tree.cpp
   src/asio_bridge.cpp
   src/decisions_smoke.cpp
   src/host.cpp
@@ -67,9 +75,11 @@ set_target_properties(loa-qt PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURREN
 target_link_libraries(loa-qt PRIVATE loa::app)
 
 loa_add_test(app SOURCES tests/app_test.cpp tests/app_core_test.cpp tests/view_test.cpp tests/adapters_test.cpp
-  tests/update_gates_test.cpp tests/routing_test.cpp tests/support/test_app.cpp
+  tests/update_gates_test.cpp tests/routing_test.cpp tests/sessions_test.cpp tests/support/test_app.cpp
   LINK loa::app loa::models_testing loa::harness_testing)
 target_include_directories(loa_app_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tests")
+# The area tests reach the areas' private headers under `src/`.
+target_include_directories(loa_app_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_compile_definitions(loa_app_tests PRIVATE LOA_GOLDEN_DIR="${CMAKE_SOURCE_DIR}/tests/golden")
 set_tests_properties(loa_app_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
@@ -78,6 +88,9 @@ set_tests_properties(loa_qt_smoke_kit PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=of
 
 add_test(NAME loa_qt_smoke_shell COMMAND loa-qt --smoke shell)
 set_tests_properties(loa_qt_smoke_shell PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 5)
+add_test(NAME loa_qt_smoke_sessions COMMAND loa-qt --smoke sessions)
+set_tests_properties(loa_qt_smoke_sessions PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 5)
+
 
 add_test(NAME loa_qt_smoke_composer COMMAND loa-qt --smoke composer)
 set_tests_properties(loa_qt_smoke_composer PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 5)

@@ -5,6 +5,7 @@
 // `to::<area>` messages addressed to it as alternatives of its own message variant, and
 // implements the port the app asks of it; the app finds ports through `Registry::port`.
 
+#include <expected>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -51,7 +52,21 @@ struct Mode {
 struct Chat {
     loa::view::session::transcript::Intent intent;
 };
+// Answer to a plan review the app raised, from the decision card (the decisions area's).
+struct AnswerPlan {
+    SessionId session;
+    core::NodeId decision;
+    contracts::Answer answer;
+};
 } // namespace sessions
+namespace decisions {
+// An answer to `decision` finished; an error reopens its card with the error shown.
+struct Answered {
+    std::string session;
+    core::NodeId decision;
+    std::expected<void, std::string> result;
+};
+} // namespace decisions
 namespace tools {
 struct Open {};
 } // namespace tools
