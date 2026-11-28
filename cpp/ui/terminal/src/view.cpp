@@ -11,6 +11,7 @@
 #include <QFontInfo>
 #include <QFontMetricsF>
 #include <QGuiApplication>
+#include <QFrame>
 #include <QHBoxLayout>
 #include <QKeyEvent>
 #include <QLabel>
@@ -305,12 +306,13 @@ TerminalView::TerminalView(QWidget* parent) : QWidget(parent) {
     layout_->setSpacing(0);
     bar_ = new QWidget;
     layout_->addWidget(bar_);
-    auto* rule = new QWidget;
+    // A plain QFrame line is one device pixel by default, so no size literal is needed.
+    auto* rule = new QFrame;
     rule->setObjectName(QStringLiteral("terminal-rule"));
-    rule->setFixedHeight(1);
-    rule->setAutoFillBackground(true);
+    rule->setFrameShape(QFrame::HLine);
+    rule->setFrameShadow(QFrame::Plain);
     QPalette pal = rule->palette();
-    pal.setColor(QPalette::Window, loa::ui::kit::qt::qcolor(theme::tokens()->color(theme::ColorRole::Line)));
+    pal.setColor(QPalette::WindowText, loa::ui::kit::qt::qcolor(theme::tokens()->color(theme::ColorRole::Line)));
     rule->setPalette(pal);
     layout_->addWidget(rule);
     body_ = new QWidget;
