@@ -2,6 +2,9 @@
 // order: `Registry::make` boots them in `AREA_ORDER`). The app's own commands are in
 // `app/keys.cpp`.
 
+// First: `loa/p2p/node.hpp` declares a member named `emit`, which Qt headers define away.
+#include "areas/peers/peers.hpp"
+
 #include "areas/agents/agents.hpp"
 #include "areas/projects/projects.hpp"
 #include "areas/sessions/sessions.hpp"
@@ -12,7 +15,8 @@
 namespace loa::app {
 
 std::vector<AreaBoot> builtin_areas() {
-    return {boot<areas::agents::State>(), boot<areas::projects::State>(), boot<areas::sessions::State>(),
+    return {boot<areas::agents::State>(), boot<areas::peers::State>(), boot<areas::projects::State>(),
+            boot<areas::sessions::State>(),
             boot<areas::workflows::State>()};
 }
 
