@@ -65,6 +65,7 @@ Smoke& Smoke::registry() {
         s.add("peers", [] { return settings_peers_screen(); }, check_settings_peers_screen);
         s.add("updates", [] { return settings_updates_screen(); }, check_settings_updates_screen);
         s.add("panel", [] { return panel_screen(); }, check_panel_screen);
+        s.add("models", [] { return models_screen(); }, check_models_screen);
         s.add("surface", [] { return surface_screen(); }, check_surface_screen);
         s.add("terminal", [] { return terminal_screen(); }, check_terminal_screen);
         s.add("transcript", [] { return transcript_screen(); }, check_transcript_screen);

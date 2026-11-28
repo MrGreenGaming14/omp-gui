@@ -7,6 +7,7 @@ add_library(loa_app STATIC
   src/asio_bridge.cpp
   src/kit_gallery.cpp
   src/local_fs.cpp
+  src/models_smoke.cpp
   src/panel_smoke.cpp
   src/peers_updates_smoke.cpp
   src/settings_smoke.cpp
@@ -39,6 +40,8 @@ add_test(NAME loa_qt_smoke_terminal COMMAND loa-qt --smoke terminal)
 set_tests_properties(loa_qt_smoke_terminal PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 5)
 add_test(NAME loa_qt_smoke_agents COMMAND loa-qt --smoke agents)
 set_tests_properties(loa_qt_smoke_agents PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 5)
+add_test(NAME loa_qt_smoke_models COMMAND loa-qt --smoke models)
+set_tests_properties(loa_qt_smoke_models PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 5)
 add_test(NAME loa_qt_smoke_transcript COMMAND loa-qt --smoke transcript)
 set_tests_properties(loa_qt_smoke_transcript PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 5)
 add_test(NAME loa_qt_smoke_surface COMMAND loa-qt --smoke surface)
