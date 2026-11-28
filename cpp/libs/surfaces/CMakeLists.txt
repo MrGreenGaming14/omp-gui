@@ -10,6 +10,9 @@ find_package(OpenSSL 3 REQUIRED COMPONENTS Crypto)
 find_package(pugixml REQUIRED)
 pkg_check_modules(MINIZIP REQUIRED IMPORTED_TARGET minizip)
 pkg_check_modules(XLSXWRITER REQUIRED IMPORTED_TARGET xlsxwriter)
+pkg_check_modules(LOA_SURFACES_HTTPLIB REQUIRED IMPORTED_TARGET cpp-httplib)
+# The Rust `remote-video` feature: the hub codes live surfaces as video for network viewers.
+option(LOA_SURFACES_REMOTE_VIDEO "Build the surface hub's remote video (Rust feature remote-video)" OFF)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   pkg_check_modules(XCB REQUIRED IMPORTED_TARGET xcb)
 endif()
@@ -27,6 +30,14 @@ add_library(loa_surfaces STATIC
   src/browser/xvfb.cpp
   src/feed.cpp
   src/pixels.cpp
+  src/hub/dom.cpp
+  src/hub/endpoint.cpp
+  src/hub/error.cpp
+  src/hub/mcp.cpp
+  src/hub/mcp_surface.cpp
+  src/hub/providers.cpp
+  src/hub/service.cpp
+  src/hub/tools.cpp
   src/docs/docx.cpp
   src/docs/format.cpp
   src/docs/images.cpp
@@ -54,8 +65,13 @@ add_library(loa_surfaces STATIC
 add_library(loa::surfaces ALIAS loa_surfaces)
 target_include_directories(loa_surfaces PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include"
   PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
-target_link_libraries(loa_surfaces PUBLIC loa::contracts loa::runtime pugixml::pugixml
-  PRIVATE PNG::PNG JPEG::JPEG GIF::GIF PkgConfig::WEBP Qt6::Pdf Qt6::Gui ZLIB::ZLIB OpenSSL::Crypto PkgConfig::OPENH264 PkgConfig::MINIZIP)
+target_link_libraries(loa_surfaces PUBLIC loa::contracts loa::core loa::mcp loa::runtime pugixml::pugixml
+  PRIVATE PNG::PNG JPEG::JPEG GIF::GIF PkgConfig::WEBP Qt6::Pdf Qt6::Gui ZLIB::ZLIB OpenSSL::Crypto PkgConfig::OPENH264 PkgConfig::MINIZIP
+    PkgConfig::LOA_SURFACES_HTTPLIB)
+if(LOA_SURFACES_REMOTE_VIDEO)
+  target_sources(loa_surfaces PRIVATE src/hub/video.cpp)
+  target_compile_definitions(loa_surfaces PUBLIC LOA_SURFACES_REMOTE_VIDEO)
+endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_link_libraries(loa_surfaces PRIVATE PkgConfig::XCB)
 endif()
@@ -89,7 +105,8 @@ loa_add_test(surfaces
     tests/browser_chrome_test.cpp
     tests/browser_test.cpp
     tests/browser_x11_test.cpp
-  LINK loa::surfaces_testkit GIF::GIF JPEG::JPEG PkgConfig::WEBP PkgConfig::MINIZIP PkgConfig::XLSXWRITER)
+    tests/hub_test.cpp
+  LINK loa::surfaces_testkit loa::bus GIF::GIF JPEG::JPEG PkgConfig::WEBP PkgConfig::MINIZIP PkgConfig::XLSXWRITER)
 target_include_directories(loa_surfaces_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_compile_definitions(loa_surfaces_tests PRIVATE
   LOA_FIXTURE_DIR="${CMAKE_SOURCE_DIR}/tests/fixtures"

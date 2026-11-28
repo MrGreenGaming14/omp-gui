@@ -526,8 +526,10 @@ pub unsafe extern "C" fn public_key_equals(a: Option<&PublicKey>, b: Option<&Pub
     a.unwrap().0 == b.unwrap().0
 }
 
+// Renamed from upstream `public_key_free`, which `irohnet` also exports: both
+// static libraries link into one binary.
 #[no_mangle]
-pub unsafe extern "C" fn public_key_free(_kp: Option<Box<PublicKey>>) {}
+pub unsafe extern "C" fn biscuit_public_key_free(_kp: Option<Box<PublicKey>>) {}
 
 impl BiscuitBuilder {
     fn set_context(&mut self, context: &str) {

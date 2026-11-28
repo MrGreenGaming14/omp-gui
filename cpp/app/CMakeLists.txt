@@ -35,6 +35,8 @@ set_tests_properties(loa_qt_smoke_kit PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=of
 add_test(NAME loa_qt_smoke_shell COMMAND loa-qt --smoke shell)
 set_tests_properties(loa_qt_smoke_shell PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 5)
 
+add_test(NAME loa_qt_smoke_composer COMMAND loa-qt --smoke composer)
+set_tests_properties(loa_qt_smoke_composer PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 5)
 add_test(NAME loa_qt_smoke_panel COMMAND loa-qt --smoke panel)
 set_tests_properties(loa_qt_smoke_panel PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 5)
 

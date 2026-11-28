@@ -23,6 +23,7 @@
 #include <deque>
 #include <format>
 #include <mutex>
+#include <csignal>
 #include <thread>
 
 #include "loa/p2p/yamux.hpp"
@@ -523,6 +524,10 @@ Tcp::Tcp(std::shared_ptr<Impl> impl) : impl_(std::move(impl)) {}
 Tcp::~Tcp() { impl_->shutdown(); }
 
 Result<std::shared_ptr<Tcp>> Tcp::bind(const std::array<std::uint8_t, 32>& seed, const SocketAddr& bind, Router router) {
+    // TLS writes to a peer that hung up must fail, not kill the process: ignore
+    // SIGPIPE as the Rust runtime does at startup.
+    static std::once_flag sigpipe;
+    std::call_once(sigpipe, [] { std::signal(SIGPIPE, SIG_IGN); });
     auto id = make_identity(seed);
     if (!id) return std::unexpected(id.error());
     auto server = make_ctx(*id);
