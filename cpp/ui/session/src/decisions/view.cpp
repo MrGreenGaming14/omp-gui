@@ -28,6 +28,12 @@ using kit::theme::TextRole;
 
 namespace {
 
+// Fixed sizes from `crates/loa-ui-session/src/decisions`: `settings.rs` CONTROL_WIDTH and TIMEOUT_WIDTH, and the
+// plan editor's `.height(320)` in `card.rs`.
+constexpr int CONTROL_WIDTH = 240;
+constexpr int TIMEOUT_WIDTH = 96;
+constexpr int PLAN_EDITOR_HEIGHT = 320;
+
 QString qs(std::string_view s) { return QString::fromUtf8(s.data(), static_cast<qsizetype>(s.size())); }
 int px(SpaceRole r) { return static_cast<int>(kit::theme::sp(r)); }
 
@@ -214,7 +220,7 @@ class Builder {
             editor->setObjectName(qs("decision-" + loa::core::to_string(id_) + "-editor"));
             editor->setAccessibleName(QStringLiteral("plan editor"));
             editor->setFont(kit::qt::font(TextRole::Mono));
-            editor->setFixedHeight(320);
+            editor->setFixedHeight(PLAN_EDITOR_HEIGHT);
             editor->setReadOnly(!active_);
             QObject::connect(editor, &QPlainTextEdit::textChanged, editor,
                              [v = view_, id = id_, editor] { emit v->message(msg::EditPlan{id, editor->toPlainText().toStdString()}); });
@@ -479,7 +485,7 @@ void UnattendedSettingsView::render(const Unattended& policy) {
             auto* input = new QLineEdit(qs(r.typed));
             input->setAccessibleName(qs(r.label));
             input->setPlaceholderText(qs(SETTINGS_TYPED_PLACEHOLDER));
-            input->setFixedWidth(240);
+            input->setFixedWidth(CONTROL_WIDTH);
             connect(input, &QLineEdit::textEdited, this, [this, kind](const QString& t) {
                 const auto typed = t.toStdString();
                 const bool blank = t.trimmed().isEmpty();
@@ -489,7 +495,7 @@ void UnattendedSettingsView::render(const Unattended& policy) {
         } else {
             auto* pick = new QComboBox;
             pick->setAccessibleName(qs(r.label));
-            pick->setFixedWidth(240);
+            pick->setFixedWidth(CONTROL_WIDTH);
             auto choices = r.choices;
             if (r.current && std::ranges::find(choices, *r.current) == choices.end()) choices.push_back(*r.current);
             int current = -1;
@@ -507,7 +513,7 @@ void UnattendedSettingsView::render(const Unattended& policy) {
         if (r.timeout) {
             auto* pick = new QComboBox;
             pick->setAccessibleName(qs(std::string(r.label) + " timeout"));
-            pick->setFixedWidth(96);
+            pick->setFixedWidth(TIMEOUT_WIDTH);
             for (const auto& t : r.timeouts) pick->addItem(qs(t.to_string()));
             pick->setCurrentIndex(static_cast<int>(std::ranges::find(r.timeouts, *r.timeout) - r.timeouts.begin()));
             const auto timeouts = r.timeouts;
