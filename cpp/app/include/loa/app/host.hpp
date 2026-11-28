@@ -81,6 +81,8 @@ class AppView : public QWidget {
     QWidget* session_page_ = nullptr;
     QVBoxLayout* session_layout_ = nullptr;
     QWidget* child_strip_ = nullptr;
+    // The picked subagent's tab, shown in place of the conversation.
+    QWidget* child_body_ = nullptr;
     QWidget* start_page_ = nullptr;
     QVBoxLayout* start_layout_ = nullptr;
     QWidget* start_body_ = nullptr;

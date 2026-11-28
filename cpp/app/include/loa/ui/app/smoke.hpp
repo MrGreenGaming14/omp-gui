@@ -50,6 +50,10 @@ class Smoke {
 [[nodiscard]] QWidget* app_shell_screen();
 // Checks the frame (top bar, sidebar, panel) and the start screen with its composer.
 [[nodiscard]] std::string check_app_shell_screen(QWidget& screen);
+// The `sessions` screen: the app core with the sessions area's import and export screen open.
+[[nodiscard]] QWidget* sessions_screen();
+// Checks the import and export screen is shown with its path field and native sessions list.
+[[nodiscard]] std::string check_sessions_screen(QWidget& screen);
 // The `terminal` screen: two terminal tabs, the active one showing coloured output while it connects.
 [[nodiscard]] QWidget* terminal_screen();
 // Checks the canvas is shown, sized, and resized the active terminal's grid.

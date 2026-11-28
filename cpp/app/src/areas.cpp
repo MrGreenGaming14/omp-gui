@@ -10,6 +10,7 @@
 
 #include "areas/agents/agents.hpp"
 #include "areas/projects/projects.hpp"
+#include "areas/sessions/sessions.hpp"
 #include "areas/updater/updater.hpp"
 #include "areas/workflows/workflows.hpp"
 #include "loa/app/app.hpp"
@@ -19,7 +20,8 @@ namespace loa::app {
 
 std::vector<AreaBoot> builtin_areas() {
     return {boot<areas::agents::State>(), boot<areas::peers::State>(), boot<areas::projects::State>(),
-            boot<areas::surfaces::State>(), boot<areas::updater::State>(), boot<areas::workflows::State>()};
+            boot<areas::sessions::State>(), boot<areas::surfaces::State>(), boot<areas::updater::State>(),
+            boot<areas::workflows::State>()};
 }
 
 } // namespace loa::app
