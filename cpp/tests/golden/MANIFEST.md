@@ -29,6 +29,10 @@ has exactly one row below; `loa_golden_tests` fails otherwise.
   inputs (an omp agent file with YAML frontmatter, LF and CRLF; a RULES.md with hand-written, managed and external workflow
   sections). `settings/agent*.edited.md`, `settings/agent.new.md`, `settings/workflows/*.created.*`, `*.edited.*`: what
   `AgentDefinition::to_text` and `WorkflowFiles::save`/`delete` write after the edits in `cpp/libs/settings/tests/agents-golden`.
+- `mcp/home/.claude.json`, `mcp/project/.mcp.json`, `mcp/home/.cursor/mcp.json`, `mcp/project/.cursor/mcp.json`,
+  `mcp/home/.codex/config.toml`: hand-written MCP configs of Claude Code, Cursor and Codex covering every dialect key and
+  every refusal. `mcp/import.expected.json`: what the Rust `JsonServers`/`CodexToml` readers return for them (each entry's
+  serde `ServerSpec` or its reason) and the `plan_found` outcomes, as `serde_json::to_string_pretty` plus a newline.
 - `p2p/*.bin`: the bytes `crates/loa-p2p/src/wire.rs` `send` writes: a 4-byte BIG-endian length (wire frames are
   big-endian; journal records are little-endian), then the prost message. The length excludes the prefix, is at most
   `MAX_FRAME_SIZE` (1 MiB = 1048576) and never 0: an empty or oversized message is refused before writing, and a read
@@ -60,6 +64,15 @@ has exactly one row below; `loa_golden_tests` fails otherwise.
 - `docs/info.json`: `DocSurface::data(DataQuery::Info)` (`DocInfo`) after `DocsServer::open_file("sample.pdf")`;
   page sizes are f32 widened to f64 by serde_json. `docs/queries.jsonl`: `serde_json::to_string` of each `DataQuery`
   variant (`kind` tag, snake_case; `None` fields are written as `null`), one per line.
+- `docs/sample.docx` (docx-rs: styles with `basedOn`, nested decimal/letter/roman and bullet lists, a table, page
+  breaks, 30 body paragraphs), `docs/sample.xlsx` (rust_xlsxwriter: `Data` with strings, floats, a bool, a cached
+  formula, date/datetime/time/duration formats; an empty `Empty`; `Offset` from D3) and `docs/sample.pptx` (the
+  `pptx.rs` test deck plus a table, a master inherited title, `mc:AlternateContent` and a slide number).
+  `docx.outline.json`/`docx.text.json`: `DocxDoc::query` Outline / Text { page: None }; `docx.pages.txt`:
+  `<page count> <page count at body 24 pt> <width> <height>`. `xlsx.sheets.json`: Sheets; `xlsx.cells.jsonl`: one
+  Cells answer per line (`None` `A1:C6`, `offset` `$E$4`, `Offset` `A1:Z1000`, `Empty` `B2:C3`, `Data` `c2`);
+  `xlsx.sizes.txt`: `<sheet> <width> <height>`. `pptx.slides.json`/`pptx.text.json`: Slides / Text { page: None }.
+  `office.errors.tsv`: `<file>\t<query json>\t<error Display>` for every failing `DocSurface::data` query.
 - `remote/remote_audit.sql`: the `SCHEMA` constant of `crates/loa-remote/src/audit.rs` byte for byte
   (`CREATE TABLE remote_audit` and the indexes `remote_audit_session`, `remote_audit_host`).
   sqlite stores each statement without `IF NOT EXISTS` and the `;`.
@@ -79,6 +92,10 @@ has exactly one row below; `loa_golden_tests` fails otherwise.
   (serde_json pretty with a trailing newline; toml_edit keeping decor).
 - `harness/scripted.txt`: `testing::render` of a `ScriptedAdapter` session through every prompt kind;
   `harness/scripted_violations.txt`: its `check_dom` then `check_history` rules and node ids, one per line.
+- `sandbox/*.bin`: `loa_sandbox::proto::frame` output: a u32 LITTLE-endian body length, then the postcard body
+  (varint integers, zigzag `i32`, varint enum variant index, `0`/`1` option tag, varint-length strings and byte
+  vectors). `request_*` are `Request`s, `response_*` are `Response`s; `hello.bin` is what `write_hello` writes:
+  `MAGIC` (`\0LOA-STUB/2\n`) then the `Ready { version: 2 }` frame.
 
 ## Files
 
@@ -97,11 +114,23 @@ has exactly one row below; `loa_golden_tests` fails otherwise.
 | contracts/data_args.schema.json | 962 | 8aacf0688857367c3452dbf11ba7634c28ecd13c08a5025713ca6d1cb7726c69 | b128c428ea2976fd62bc1ef28ccc783137388e80 |
 | contracts/no_args.schema.json | 120 | 068f287b973e1cb2cb111022b6c9b77db19e4c84704b640dcd3034e8abe682c4 | b128c428ea2976fd62bc1ef28ccc783137388e80 |
 | contracts/search_args.schema.json | 1483 | ffdc2eef6fa051ac05480e99970465c1d6e0a4bdb5ef62a8adf3a4b7fce7dd52 | b128c428ea2976fd62bc1ef28ccc783137388e80 |
+| docs/docx.outline.json | 13669 | 7ffd25b4a4ee46fad151b9f688edb2ff7924ac212b5b4c093cbe03cb82f1cd3b | ffbbfe4d1587f76f31fc143c23cbfc1dbe8cc1df |
+| docs/docx.pages.txt | 13 | 78c7ac09c5be39ec6cf5970076e8ae80b78ea4db52b618911213a1881b89de8b | ffbbfe4d1587f76f31fc143c23cbfc1dbe8cc1df |
+| docs/docx.text.json | 2434 | dc466e98713763cbf8f156be4d9a347ba6cc670e500603e5b08c36caf6c4689c | ffbbfe4d1587f76f31fc143c23cbfc1dbe8cc1df |
 | docs/info.json | 264 | e25537a0e0e80441156f51571778cf2647ab59dccabe1d58b15ade93ab1b66f3 | 4466718181c0a6fe99b8d80f86684646549a7cff |
+| docs/office.errors.tsv | 1911 | 33e8de7c84005b4b653846563887163804f6f9d98e1f4eb433b7a25da9e4b81b | ffbbfe4d1587f76f31fc143c23cbfc1dbe8cc1df |
+| docs/pptx.slides.json | 1269 | 07f81bb3f8a3e20ae75dc30e8849b02f168237d1b43452d698bf9fb16a17c1a9 | ffbbfe4d1587f76f31fc143c23cbfc1dbe8cc1df |
+| docs/pptx.text.json | 138 | 58b72aa3498dca1f6d18145df69cfd3b9ee399f1fc50a5ae794544b656c8bc07 | ffbbfe4d1587f76f31fc143c23cbfc1dbe8cc1df |
 | docs/queries.jsonl | 215 | 6a0eb2f29fa3978b4676c83c23ac427455b51cfe92d527674fcfedc06be06538 | 4466718181c0a6fe99b8d80f86684646549a7cff |
+| docs/sample.docx | 28983 | 723057c9b763c7aa8c027b593988edbc06cbe546ed70efd1901b6ce5fdbd8887 | ffbbfe4d1587f76f31fc143c23cbfc1dbe8cc1df |
 | docs/sample.pdf | 1606 | 5ccbb5bbc9353843504c561912e482444d925b6210d05ec86734fa38d83c1003 | 4466718181c0a6fe99b8d80f86684646549a7cff |
+| docs/sample.pptx | 4914 | 879fbea0449adf908632bbc41c81a17ae20e40a04c226d00b8f171391edc68d4 | ffbbfe4d1587f76f31fc143c23cbfc1dbe8cc1df |
 | docs/sample.sizes.txt | 99 | 1b6c490d85b75e45eaa8f6121e2fd2dd4162cee03881dfa4c84e2ef0e70701fb | 4466718181c0a6fe99b8d80f86684646549a7cff |
+| docs/sample.xlsx | 6674 | 6e21da9bc92054a687323e1e660389433f2a906fb7f0efc8860e46c63490cfc0 | ffbbfe4d1587f76f31fc143c23cbfc1dbe8cc1df |
 | docs/text.json | 78 | 6cad7c300b483fabef0a41330d24d7018bc5c81d235acc88deb4dd23e59bd4e2 | 4466718181c0a6fe99b8d80f86684646549a7cff |
+| docs/xlsx.cells.jsonl | 3076 | 40b403b811165115c23c305a8a7314b21779f8efabf39c3b22dd2077de04a110 | ffbbfe4d1587f76f31fc143c23cbfc1dbe8cc1df |
+| docs/xlsx.sheets.json | 154 | def18b61727ef05212dde6613f8525a3fc7e56a59e10f9b43eb83f087428c5f4 | ffbbfe4d1587f76f31fc143c23cbfc1dbe8cc1df |
+| docs/xlsx.sizes.txt | 29 | 026afd3ade4d88685a3abfaebbbe3e593387464a8a9fbc9bb2ac73f5a9e33f2c | ffbbfe4d1587f76f31fc143c23cbfc1dbe8cc1df |
 | harness/discover.tsv | 376 | 2b69e4f815233b4e35ad736b7fa411f0bea73f53d49d320535668699680ebb7f | f1c2345fbe7ddd1c65b499065fdbe3a1808b78da |
 | harness/jsonrpc.jsonl | 3266 | 04d033cb837b99efaf038804e07083e2f1cc2b44769805f312e11af574837fc6 | f1c2345fbe7ddd1c65b499065fdbe3a1808b78da |
 | harness/residual.json | 82 | dd58be7676e8f6323a47c561fc78a2cdf610a6609d276b1d8c00955577daaa49 | f1c2345fbe7ddd1c65b499065fdbe3a1808b78da |
@@ -117,6 +146,12 @@ has exactly one row below; `loa_golden_tests` fails otherwise.
 | journal/s/journal.loaj | 2180 | eec47b483bacb5599cae3ad4e8392f1b845bbb6277288eb8756a70468e6801ef | 6853d95bd272adf65b37e64c449b02c08813bc53 |
 | journal/s/snap-00000000000000000016.loas | 678 | 1357b93c16f73b19a21f8de1843b5a5fea6f06152287d5aac99b09522c2bab34 | 6853d95bd272adf65b37e64c449b02c08813bc53 |
 | journal/s/snap-00000000000000000032.loas | 936 | 66b29261fccb06c881c5f7aaa025086e366e007e855fb80cb77d6b8dbbf21923 | 6853d95bd272adf65b37e64c449b02c08813bc53 |
+| mcp/home/.claude.json | 687 | e6dce7220943d5338a959a184195de05da24bbc7f5a6192898ede6af211bda43 | 23c276225f993297e9908138bfe328425a5904e4 |
+| mcp/home/.codex/config.toml | 589 | f5848e6ebae077a65a85b3757fe772615808df8f4f6549628414706ae6941a2e | 23c276225f993297e9908138bfe328425a5904e4 |
+| mcp/home/.cursor/mcp.json | 255 | 9cf8a2a21244213934f0fa82a220ef8da8153a7c1a7bb7d17242d3796085a838 | 23c276225f993297e9908138bfe328425a5904e4 |
+| mcp/import.expected.json | 7397 | 079490ea30b048dbdd4d57ea7064ecb5ffb51e1e7103c6a5ab622c9dde760d46 | 23c276225f993297e9908138bfe328425a5904e4 |
+| mcp/project/.cursor/mcp.json | 207 | a77428989234b61963f9e0b84b092a5026c21b2944bd993efa2a47ce87b04d01 | 23c276225f993297e9908138bfe328425a5904e4 |
+| mcp/project/.mcp.json | 456 | 212d487e8483bb02b6ae2f30f50b16a93b883639377d6e70375c0e7e495a8a63 | 23c276225f993297e9908138bfe328425a5904e4 |
 | p2p/control-ack.bin | 6 | 89982dbb136749d03c2ccd2b69afc33eb1c90314bd00c351bd9f2da24d6f666f | a849b040ba4004d6581283112704296c4e77f026 |
 | p2p/control-ack-refused.bin | 10 | d324b6dd9184cb98fd1f7c6700701ee719f6740d9a5def33be3e14f038363512 | a849b040ba4004d6581283112704296c4e77f026 |
 | p2p/control-grant-delivery.bin | 46 | f1785788247a998b1ffe53f9e2a7d56c66a88fabf3458049349503e7c3c9b4e4 | a849b040ba4004d6581283112704296c4e77f026 |
@@ -176,6 +211,17 @@ has exactly one row below; `loa_golden_tests` fails otherwise.
 | trust/v1_reshared_token.keys | 142 | 96e9baaf4a558b6c971427ab2b0e57909aab10a501688219712f6a6de3931a44 | a849b040ba4004d6581283112704296c4e77f026 |
 | remote/remote_audit.rows.json | 895 | 1d57706b8d18f85bbbff2a005ddd4b8b70caead55ec0f80823306bc5438cfde6 | b128c428ea2976fd62bc1ef28ccc783137388e80 |
 | remote/remote_audit.sql | 402 | b7334365648a9196c6a55413655a3d21c81ea5b3a9e26eec6796eff77069bfdd | b128c428ea2976fd62bc1ef28ccc783137388e80 |
+| sandbox/hello.bin | 18 | 009a43e580d8592a9631260defbfcf412a678b11d341bd0133a4b339068678d2 | 196e70f4605a2098833377482c9457a5440e27a2 |
+| sandbox/request_exec_default.bin | 11 | 98e11f2427bc7a173415d4b058e4d1402329936757867005302f6f6d96e7329d | 196e70f4605a2098833377482c9457a5440e27a2 |
+| sandbox/request_exec_full.bin | 504 | d08b434c63190ca08fd73965b9bc7af3a4a31b3106a5c86e255d68f4c9e4ac70 | 196e70f4605a2098833377482c9457a5440e27a2 |
+| sandbox/request_exec_shell.bin | 41 | 73e6b0a3cbb647cc3e249b4f8a00e092569ab1db835cb941c38ab6f0725c4108 | 196e70f4605a2098833377482c9457a5440e27a2 |
+| sandbox/request_shutdown.bin | 5 | a1cb20470d89874f33383802c72d3c27a0668ebffd81934705ab0cfcbf1a1e3a | 196e70f4605a2098833377482c9457a5440e27a2 |
+| sandbox/response_error.bin | 56 | 8c45a9a1a00e3044f695305b1931ba3db8fbc7a82cd3edb7e33934b6246f701b | 196e70f4605a2098833377482c9457a5440e27a2 |
+| sandbox/response_exit_code.bin | 10 | fd47b41d236b097301df2a0b2544297914008911359f1753450dfe7d30c8cb6d | 196e70f4605a2098833377482c9457a5440e27a2 |
+| sandbox/response_exit_signal.bin | 12 | 40a85a24052f23bb40ccde031bb4d65a969896d4e57fc03960667d9ff4d32ca4 | 196e70f4605a2098833377482c9457a5440e27a2 |
+| sandbox/response_ready.bin | 6 | a9744c200268f48c0369779fdbf61c300d83c7040a33bf12e173403fc5522821 | 196e70f4605a2098833377482c9457a5440e27a2 |
+| sandbox/response_stderr.bin | 309 | 6979ed0eb878d020a32c56e6a57b59048404e13f6512d63bd19a608f57aa50b1 | 196e70f4605a2098833377482c9457a5440e27a2 |
+| sandbox/response_stdout.bin | 11 | 1ca3f62a8a31d9403662ef7e8138c251e65fa64bf89700dd99208a3fd3a9375d | 196e70f4605a2098833377482c9457a5440e27a2 |
 | surface/datagram-fragment.bin | 47 | ae284eeebe478e5024f9d60da284428924c034a62241211f37dc26b9ebc98b84 | b128c428ea2976fd62bc1ef28ccc783137388e80 |
 | surface/stream-accept-document.bin | 60 | 663ab4a7c7ec24c64632fc1c8f4668fd307d8ce27332e39ba12dc806e5690a1c | b128c428ea2976fd62bc1ef28ccc783137388e80 |
 | surface/stream-accept.bin | 59 | bdb2a0bba175a7d7e032de44b0c0d9f320df64321319219481c328047bc471eb | b128c428ea2976fd62bc1ef28ccc783137388e80 |

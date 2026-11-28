@@ -47,3 +47,12 @@ TEST_CASE("invalid json is an error") {
     REQUIRE_FALSE(v);
     CHECK(v.error().code() == loa::ErrorCode::parse);
 }
+
+TEST_CASE("doubles are written as serde_json writes them") {
+    const std::pair<double, const char*> cases[] = {
+        {0.0, "0.0"}, {-0.0, "-0.0"}, {3.0, "3.0"}, {1.5, "1.5"}, {0.1, "0.1"}, {1234567.891, "1234567.891"},
+        {0.0001, "0.0001"}, {-1.2e-5, "-0.000012"}, {1.5e-6, "1.5e-6"}, {1e-7, "1e-7"}, {1e15, "1000000000000000.0"},
+        {1e16, "1e+16"}, {1e20, "1e+20"}, {1.5e300, "1.5e+300"}, {960.0F, "960.0"},
+    };
+    for (const auto& [v, want] : cases) CHECK(json::dump(json::Value(v)) == want);
+}

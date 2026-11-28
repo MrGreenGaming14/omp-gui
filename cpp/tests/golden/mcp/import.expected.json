@@ -1,0 +1,343 @@
+{
+  "sources": [
+    {
+      "file": "home/.claude.json",
+      "app": "Claude",
+      "entries": [
+        {
+          "name": "github",
+          "spec": {
+            "name": "github",
+            "enabled": true,
+            "type": "stdio",
+            "command": "npx",
+            "args": [
+              "-y",
+              "@modelcontextprotocol/server-github"
+            ],
+            "env": {
+              "DEBUG": "true",
+              "GITHUB_TOKEN": "abc",
+              "RETRIES": "3"
+            }
+          }
+        },
+        {
+          "name": "linear",
+          "spec": {
+            "name": "linear",
+            "enabled": true,
+            "type": "http",
+            "url": "https://mcp.linear.app/mcp",
+            "headers": {
+              "Authorization": "Bearer lin"
+            }
+          }
+        },
+        {
+          "name": "nullish",
+          "spec": {
+            "name": "nullish",
+            "enabled": true,
+            "type": "stdio",
+            "command": "nul-mcp"
+          }
+        },
+        {
+          "name": "old",
+          "error": "SSE servers aren't supported, only streamable HTTP"
+        },
+        {
+          "name": "db",
+          "spec": {
+            "name": "db",
+            "enabled": true,
+            "type": "stdio",
+            "command": "pg-mcp",
+            "args": [
+              "--ro"
+            ],
+            "cwd": "/work/app"
+          }
+        },
+        {
+          "name": "list",
+          "error": "`args` isn't a list"
+        }
+      ]
+    },
+    {
+      "file": "project/.mcp.json",
+      "app": "Claude",
+      "entries": [
+        {
+          "name": "bad name",
+          "error": "`bad name` isn't a valid server name: use letters, digits, `-`, `_` or `.`"
+        },
+        {
+          "name": "both",
+          "spec": {
+            "name": "both",
+            "enabled": true,
+            "type": "http",
+            "url": "https://both.example.com/mcp"
+          }
+        },
+        {
+          "name": "fs",
+          "spec": {
+            "name": "fs",
+            "enabled": true,
+            "type": "stdio",
+            "command": "mcp-fs",
+            "args": [
+              "/work/app"
+            ]
+          }
+        },
+        {
+          "name": "ftp",
+          "error": "`ftp://files.example.com` isn't a usable MCP url: the scheme must be http or https"
+        },
+        {
+          "name": "remote",
+          "spec": {
+            "name": "remote",
+            "enabled": false,
+            "type": "http",
+            "url": "https://mcp.example.com/mcp"
+          }
+        },
+        {
+          "name": "reserved",
+          "error": "the `Mcp-Session-Id` header is set by the MCP client and can't be overridden"
+        }
+      ]
+    },
+    {
+      "file": "home/.cursor/mcp.json",
+      "app": "Cursor",
+      "entries": [
+        {
+          "name": "browser",
+          "spec": {
+            "name": "browser",
+            "enabled": true,
+            "type": "stdio",
+            "command": "browser-mcp",
+            "env": {
+              "HEADLESS": "false",
+              "PORT": "9222"
+            }
+          }
+        },
+        {
+          "name": "envfile",
+          "error": "`envFile` isn't supported"
+        },
+        {
+          "name": "nested",
+          "error": "`env.DEEP` isn't a string"
+        },
+        {
+          "name": "nothing",
+          "error": "the entry needs a `command` or a `url`"
+        },
+        {
+          "name": "notobject",
+          "error": "the entry isn't an object"
+        }
+      ]
+    },
+    {
+      "file": "project/.cursor/mcp.json",
+      "app": "Cursor",
+      "entries": [
+        {
+          "name": "fs",
+          "spec": {
+            "name": "fs",
+            "enabled": true,
+            "type": "stdio",
+            "command": "mcp-fs",
+            "args": [
+              "/work/app"
+            ]
+          }
+        },
+        {
+          "name": "stdio-url",
+          "spec": {
+            "name": "stdio-url",
+            "enabled": true,
+            "type": "http",
+            "url": "https://s.example.com/mcp"
+          }
+        },
+        {
+          "name": "weird",
+          "error": "transport `websocket` isn't supported"
+        }
+      ]
+    },
+    {
+      "file": "home/.codex/config.toml",
+      "app": "Codex",
+      "entries": [
+        {
+          "name": "disabled_too",
+          "spec": {
+            "name": "disabled_too",
+            "enabled": false,
+            "type": "stdio",
+            "command": "d"
+          }
+        },
+        {
+          "name": "docs",
+          "spec": {
+            "name": "docs",
+            "enabled": true,
+            "type": "stdio",
+            "command": "docs-mcp",
+            "args": [
+              "serve",
+              "--port",
+              "0"
+            ],
+            "env": {
+              "LEVEL": "info",
+              "RATIO": "1.5",
+              "WORKERS": "4"
+            },
+            "cwd": "/srv/docs"
+          }
+        },
+        {
+          "name": "envheaders",
+          "error": "headers taken from environment variables (`env_http_headers`) aren't supported"
+        },
+        {
+          "name": "envtok",
+          "error": "the bearer token comes from the environment variable `TOKEN`, which isn't supported"
+        },
+        {
+          "name": "search",
+          "spec": {
+            "name": "search",
+            "enabled": false,
+            "type": "http",
+            "url": "https://search.example.com/mcp",
+            "headers": {
+              "Authorization": "Bearer tok",
+              "X-Team": "core"
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "plan": [
+    {
+      "name": "github",
+      "outcome": "imported"
+    },
+    {
+      "name": "linear",
+      "outcome": "imported"
+    },
+    {
+      "name": "nullish",
+      "outcome": "imported"
+    },
+    {
+      "name": "old",
+      "outcome": "unsupported"
+    },
+    {
+      "name": "db",
+      "outcome": "imported"
+    },
+    {
+      "name": "list",
+      "outcome": "unsupported"
+    },
+    {
+      "name": "bad name",
+      "outcome": "unsupported"
+    },
+    {
+      "name": "both",
+      "outcome": "imported"
+    },
+    {
+      "name": "fs",
+      "outcome": "imported"
+    },
+    {
+      "name": "ftp",
+      "outcome": "unsupported"
+    },
+    {
+      "name": "remote",
+      "outcome": "imported"
+    },
+    {
+      "name": "reserved",
+      "outcome": "unsupported"
+    },
+    {
+      "name": "browser",
+      "outcome": "imported"
+    },
+    {
+      "name": "envfile",
+      "outcome": "unsupported"
+    },
+    {
+      "name": "nested",
+      "outcome": "unsupported"
+    },
+    {
+      "name": "nothing",
+      "outcome": "unsupported"
+    },
+    {
+      "name": "notobject",
+      "outcome": "unsupported"
+    },
+    {
+      "name": "fs",
+      "outcome": "duplicate",
+      "existing": "fs"
+    },
+    {
+      "name": "stdio-url",
+      "outcome": "imported"
+    },
+    {
+      "name": "weird",
+      "outcome": "unsupported"
+    },
+    {
+      "name": "disabled_too",
+      "outcome": "imported"
+    },
+    {
+      "name": "docs",
+      "outcome": "imported"
+    },
+    {
+      "name": "envheaders",
+      "outcome": "unsupported"
+    },
+    {
+      "name": "envtok",
+      "outcome": "unsupported"
+    },
+    {
+      "name": "search",
+      "outcome": "imported"
+    }
+  ]
+}

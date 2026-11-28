@@ -1,0 +1,26 @@
+model = "o3"
+
+[mcp_servers.docs]
+command = "docs-mcp"
+args = ["serve", "--port", "0"]
+env = { LEVEL = "info", WORKERS = 4, RATIO = 1.5 }
+cwd = "/srv/docs"
+
+[mcp_servers.search]
+url = "https://search.example.com/mcp"
+bearer_token = "tok"
+http_headers = { "X-Team" = "core", "Authorization" = "Basic replaced" }
+enabled = false
+
+[mcp_servers.envtok]
+url = "https://e.example.com/mcp"
+bearer_token_env_var = "TOKEN"
+
+[mcp_servers.envheaders]
+url = "https://h.example.com/mcp"
+env_http_headers = { "X-Key" = "KEY_VAR" }
+
+[mcp_servers.disabled_too]
+command = "d"
+enabled = true
+disabled = true

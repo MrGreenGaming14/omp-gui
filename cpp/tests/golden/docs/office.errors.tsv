@@ -1,0 +1,25 @@
+sample.docx	{"kind":"text","page":0}	DOCX files have no page text
+sample.docx	{"kind":"text","page":5}	DOCX files have no page text
+sample.docx	{"kind":"sheets"}	DOCX files have no sheets
+sample.docx	{"kind":"cells","sheet":null,"range":"A1"}	DOCX files have no cells
+sample.docx	{"kind":"cells","sheet":"Missing","range":"A1"}	DOCX files have no cells
+sample.docx	{"kind":"cells","sheet":null,"range":"B"}	DOCX files have no cells
+sample.docx	{"kind":"cells","sheet":null,"range":"XFE1"}	DOCX files have no cells
+sample.docx	{"kind":"cells","sheet":null,"range":"A1:XFD1048576"}	DOCX files have no cells
+sample.docx	{"kind":"slides"}	DOCX files have no slides
+sample.xlsx	{"kind":"text","page":null}	XLSX files have no page text
+sample.xlsx	{"kind":"text","page":0}	XLSX files have no page text
+sample.xlsx	{"kind":"text","page":5}	XLSX files have no page text
+sample.xlsx	{"kind":"cells","sheet":"Missing","range":"A1"}	no sheet named `Missing`, the sheets are: Data, Empty, Offset
+sample.xlsx	{"kind":"cells","sheet":null,"range":"B"}	`B` is not a cell in A1 notation such as B3
+sample.xlsx	{"kind":"cells","sheet":null,"range":"XFE1"}	`XFE1` is not a cell in A1 notation such as B3
+sample.xlsx	{"kind":"outline"}	XLSX files have no outline
+sample.xlsx	{"kind":"slides"}	XLSX files have no slides
+sample.pptx	{"kind":"text","page":5}	page 5 is out of range, the document has 2
+sample.pptx	{"kind":"sheets"}	PPTX files have no sheets
+sample.pptx	{"kind":"cells","sheet":null,"range":"A1"}	PPTX files have no cells
+sample.pptx	{"kind":"cells","sheet":"Missing","range":"A1"}	PPTX files have no cells
+sample.pptx	{"kind":"cells","sheet":null,"range":"B"}	PPTX files have no cells
+sample.pptx	{"kind":"cells","sheet":null,"range":"XFE1"}	PPTX files have no cells
+sample.pptx	{"kind":"cells","sheet":null,"range":"A1:XFD1048576"}	PPTX files have no cells
+sample.pptx	{"kind":"outline"}	PPTX files have no outline
