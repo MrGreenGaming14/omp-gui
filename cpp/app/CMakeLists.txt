@@ -27,6 +27,8 @@ add_library(loa_app STATIC
   src/application.cpp
   src/area.cpp
   src/areas.cpp
+  src/areas/agents/agents.cpp
+  src/areas/projects/projects.cpp
   src/asio_bridge.cpp
   src/decisions_smoke.cpp
   src/host.cpp
@@ -72,6 +74,7 @@ target_link_libraries(loa-qt PRIVATE loa::app)
 
 loa_add_test(app SOURCES tests/app_test.cpp tests/app_core_test.cpp tests/view_test.cpp tests/adapters_test.cpp
   tests/update_gates_test.cpp tests/routing_test.cpp tests/support/test_app.cpp tests/glue_test.cpp tests/workflows_test.cpp
+  tests/agents_area_test.cpp tests/projects_area_test.cpp
   LINK loa::app loa::models_testing loa::harness_testing)
 target_include_directories(loa_app_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tests")
 target_compile_definitions(loa_app_tests PRIVATE LOA_GOLDEN_DIR="${CMAKE_SOURCE_DIR}/tests/golden")

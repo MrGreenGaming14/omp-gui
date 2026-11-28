@@ -2,12 +2,16 @@
 // order: `Registry::make` boots them in `AREA_ORDER`). The app's own commands are in
 // `app/keys.cpp`.
 
+#include "areas/agents/agents.hpp"
+#include "areas/projects/projects.hpp"
 #include "areas/workflows/workflows.hpp"
 #include "loa/app/app.hpp"
 #include "loa/app/registry.hpp"
 
 namespace loa::app {
 
-std::vector<AreaBoot> builtin_areas() { return {boot<areas::workflows::State>()}; }
+std::vector<AreaBoot> builtin_areas() {
+    return {boot<areas::agents::State>(), boot<areas::projects::State>(), boot<areas::workflows::State>()};
+}
 
 } // namespace loa::app
