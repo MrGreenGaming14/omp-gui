@@ -50,6 +50,12 @@ has exactly one row below; `loa_golden_tests` fails otherwise.
 - `surface/datagram-fragment.bin`: one encoded `Datagram` (not length delimited) holding a `Fragment` with a header.
 - `surface/stream-unknown-body.bin`: a valid length delimited `Close`, then a length delimited message holding only
   field 99 (`9a 06 02 aa bb`). The second message MUST decode as `body: None` and be skipped.
+- `docs/sample.pdf`: a four page PDF (Helvetica text, a /Rotate 90 page, an A4 page with fractional size) built like
+  the `loa-surfaces` `docs/pdf.rs` test; `docs/sample.sizes.txt`: `<page> <width> <height> <scale> <render width> <render height>`
+  per page from `PdfDoc`; `docs/text.json`: `DataQuery::Text { page: None }` on it.
+- `docs/info.json`: `DocSurface::data(DataQuery::Info)` (`DocInfo`) after `DocsServer::open_file("sample.pdf")`;
+  page sizes are f32 widened to f64 by serde_json. `docs/queries.jsonl`: `serde_json::to_string` of each `DataQuery`
+  variant (`kind` tag, snake_case; `None` fields are written as `null`), one per line.
 - `remote/remote_audit.sql`: the `SCHEMA` constant of `crates/loa-remote/src/audit.rs` byte for byte
   (`CREATE TABLE remote_audit` and the indexes `remote_audit_session`, `remote_audit_host`).
   sqlite stores each statement without `IF NOT EXISTS` and the `;`.
@@ -58,6 +64,12 @@ has exactly one row below; `loa_golden_tests` fails otherwise.
   structs in `crates/loa-contracts/tests/golden.rs`; `loa_contracts_tests` rebuilds each with `loa::contracts::schema`.
 - `util/iso.txt`: `<ms> <format_iso_ms(ms)>` lines from `loa_util::time`.
 - `util/ssh/config` and `util/ssh/conf.d/*` (hand-written, with Include, wildcards, `!` and `=`); `util/ssh/aliases.txt`: `loa_util::ssh::aliases(config)`, one per line.
+- `harness/jsonrpc.jsonl`: `JsonRpc2` frames (`header` true, then false): requests, notifications with and without
+  params, and responses for a result, an error with a numeric code, one with a non-numeric code and every `RpcError`.
+- `harness/rpc_errors.txt`: the `Display` text of each `RpcError` variant, one per line.
+- `harness/residual.json`: `residual::attr_name("claude-code")` and `join_parts(["first", "", "trois é", "4"], "\n\n")`.
+- `harness/discover.tsv`: `native::discover` over a fixed home tree with set mtimes:
+  `harness`, path relative to home, project, title, modified ms, size, tab-separated, in discovery order.
 
 ## Files
 
@@ -76,6 +88,15 @@ has exactly one row below; `loa_golden_tests` fails otherwise.
 | contracts/data_args.schema.json | 962 | 8aacf0688857367c3452dbf11ba7634c28ecd13c08a5025713ca6d1cb7726c69 | b128c428ea2976fd62bc1ef28ccc783137388e80 |
 | contracts/no_args.schema.json | 120 | 068f287b973e1cb2cb111022b6c9b77db19e4c84704b640dcd3034e8abe682c4 | b128c428ea2976fd62bc1ef28ccc783137388e80 |
 | contracts/search_args.schema.json | 1483 | ffdc2eef6fa051ac05480e99970465c1d6e0a4bdb5ef62a8adf3a4b7fce7dd52 | b128c428ea2976fd62bc1ef28ccc783137388e80 |
+| docs/info.json | 264 | e25537a0e0e80441156f51571778cf2647ab59dccabe1d58b15ade93ab1b66f3 | 4466718181c0a6fe99b8d80f86684646549a7cff |
+| docs/queries.jsonl | 215 | 6a0eb2f29fa3978b4676c83c23ac427455b51cfe92d527674fcfedc06be06538 | 4466718181c0a6fe99b8d80f86684646549a7cff |
+| docs/sample.pdf | 1606 | 5ccbb5bbc9353843504c561912e482444d925b6210d05ec86734fa38d83c1003 | 4466718181c0a6fe99b8d80f86684646549a7cff |
+| docs/sample.sizes.txt | 99 | 1b6c490d85b75e45eaa8f6121e2fd2dd4162cee03881dfa4c84e2ef0e70701fb | 4466718181c0a6fe99b8d80f86684646549a7cff |
+| docs/text.json | 78 | 6cad7c300b483fabef0a41330d24d7018bc5c81d235acc88deb4dd23e59bd4e2 | 4466718181c0a6fe99b8d80f86684646549a7cff |
+| harness/discover.tsv | 376 | 2b69e4f815233b4e35ad736b7fa411f0bea73f53d49d320535668699680ebb7f | f1c2345fbe7ddd1c65b499065fdbe3a1808b78da |
+| harness/jsonrpc.jsonl | 3266 | 04d033cb837b99efaf038804e07083e2f1cc2b44769805f312e11af574837fc6 | f1c2345fbe7ddd1c65b499065fdbe3a1808b78da |
+| harness/residual.json | 82 | dd58be7676e8f6323a47c561fc78a2cdf610a6609d276b1d8c00955577daaa49 | f1c2345fbe7ddd1c65b499065fdbe3a1808b78da |
+| harness/rpc_errors.txt | 554 | 3ec8b40f64608008c9fd831736c935deb7f043c7b9826a1d5f1d01e1098ba7d8 | f1c2345fbe7ddd1c65b499065fdbe3a1808b78da |
 | journal/f/journal.loaj | 28 | fc7fc20ca23862d10f7abb288d92756a6db93e297dbacaea6907ee8a2d103940 | 6853d95bd272adf65b37e64c449b02c08813bc53 |
 | journal/g/journal.loaj | 760 | c1bebc8200e456c3330d395a64e3ddb84bc8a648ea710324d24f22d13aab4777 | 6853d95bd272adf65b37e64c449b02c08813bc53 |
 | journal/s/journal.loaj | 2180 | eec47b483bacb5599cae3ad4e8392f1b845bbb6277288eb8756a70468e6801ef | 6853d95bd272adf65b37e64c449b02c08813bc53 |

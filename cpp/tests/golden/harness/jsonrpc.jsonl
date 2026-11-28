@@ -1,0 +1,40 @@
+{"id":1,"method":"initialize","params":{"protocolVersion":1,"b":[true,null,2.5,"é\n"]},"jsonrpc":"2.0"}
+{"id":"s-1","method":"session/prompt","params":null,"jsonrpc":"2.0"}
+{"method":"initialized","jsonrpc":"2.0"}
+{"method":"session/cancel","params":{"sessionId":"x"},"jsonrpc":"2.0"}
+{"id":7,"result":{"content":"hi"},"jsonrpc":"2.0"}
+{"id":"r","error":{"code":-32601,"message":"nope"},"jsonrpc":"2.0"}
+{"id":8,"error":{"code":-32603,"message":"str code"},"jsonrpc":"2.0"}
+{"id":9,"error":{"code":-32603,"message":"the executable `omp` wasn't found"},"jsonrpc":"2.0"}
+{"id":9,"error":{"code":-32603,"message":"harness i/o failed: broken pipe"},"jsonrpc":"2.0"}
+{"id":9,"error":{"code":-32603,"message":"the harness exited (exit status: 3): boom"},"jsonrpc":"2.0"}
+{"id":9,"error":{"code":-32603,"message":"the harness exited (signal: 9 (SIGKILL))"},"jsonrpc":"2.0"}
+{"id":9,"error":{"code":-32603,"message":"the harness exited (unknown status)"},"jsonrpc":"2.0"}
+{"id":9,"error":{"code":-32603,"message":"the harness offers RPC protocol versions [3, 4], this client supports 1..=2"},"jsonrpc":"2.0"}
+{"id":9,"error":{"code":-32603,"message":"the harness offers RPC protocol versions [], this client supports 1..=1"},"jsonrpc":"2.0"}
+{"id":9,"error":{"code":-32603,"message":"RPC protocol error: bad frame"},"jsonrpc":"2.0"}
+{"id":9,"error":{"code":-32603,"message":"busy"},"jsonrpc":"2.0"}
+{"id":9,"error":{"code":-32603,"message":"the harness didn't become ready within 20s"},"jsonrpc":"2.0"}
+{"id":9,"error":{"code":-32603,"message":"the harness didn't become ready within 1.5s"},"jsonrpc":"2.0"}
+{"id":9,"error":{"code":-32603,"message":"the harness didn't become ready within 250ms"},"jsonrpc":"2.0"}
+{"id":9,"error":{"code":-32603,"message":"the RPC client is closed"},"jsonrpc":"2.0"}
+{"id":1,"method":"initialize","params":{"protocolVersion":1,"b":[true,null,2.5,"é\n"]}}
+{"id":"s-1","method":"session/prompt","params":null}
+{"method":"initialized"}
+{"method":"session/cancel","params":{"sessionId":"x"}}
+{"id":7,"result":{"content":"hi"}}
+{"id":"r","error":{"code":-32601,"message":"nope"}}
+{"id":8,"error":{"code":-32603,"message":"str code"}}
+{"id":9,"error":{"code":-32603,"message":"the executable `omp` wasn't found"}}
+{"id":9,"error":{"code":-32603,"message":"harness i/o failed: broken pipe"}}
+{"id":9,"error":{"code":-32603,"message":"the harness exited (exit status: 3): boom"}}
+{"id":9,"error":{"code":-32603,"message":"the harness exited (signal: 9 (SIGKILL))"}}
+{"id":9,"error":{"code":-32603,"message":"the harness exited (unknown status)"}}
+{"id":9,"error":{"code":-32603,"message":"the harness offers RPC protocol versions [3, 4], this client supports 1..=2"}}
+{"id":9,"error":{"code":-32603,"message":"the harness offers RPC protocol versions [], this client supports 1..=1"}}
+{"id":9,"error":{"code":-32603,"message":"RPC protocol error: bad frame"}}
+{"id":9,"error":{"code":-32603,"message":"busy"}}
+{"id":9,"error":{"code":-32603,"message":"the harness didn't become ready within 20s"}}
+{"id":9,"error":{"code":-32603,"message":"the harness didn't become ready within 1.5s"}}
+{"id":9,"error":{"code":-32603,"message":"the harness didn't become ready within 250ms"}}
+{"id":9,"error":{"code":-32603,"message":"the RPC client is closed"}}

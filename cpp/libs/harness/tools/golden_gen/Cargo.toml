@@ -1,0 +1,9 @@
+[package]
+name = "loa-harness-golden"
+version = "0.0.0"
+edition = "2024"
+[dependencies]
+loa-harness = { path = "../../../../../crates/loa-harness", default-features = false, features = ["omp", "claude", "codex"] }
+loa-core = { path = "../../../../../crates/loa-core" }
+serde_json = { version = "1", features = ["preserve_order"] }
+[workspace]
