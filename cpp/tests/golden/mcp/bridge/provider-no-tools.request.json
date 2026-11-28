@@ -1,0 +1,1 @@
+{"model":"scripted","messages":[{"role":"system","content":"p"},{"role":"user","content":"loa-omp-bridge-call {\"id\":\"c1\",\"tool\":\"edit\",\"arguments\":{}}"}]}
