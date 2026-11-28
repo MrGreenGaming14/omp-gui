@@ -123,7 +123,7 @@ TEST_CASE("command line options") {
 TEST_CASE("smoke screens: agents, composer, kit, panel and shell pass, unknown screens are rejected") {
     qt_app();
     auto& smoke = Smoke::registry();
-    CHECK(smoke.names() == std::vector<std::string>{"agents", "composer", "kit", "panel", "shell"});
+    CHECK(smoke.names() == std::vector<std::string>{"agents", "composer", "kit", "panel", "shell", "surface"});
     CHECK(smoke.run("agents") == 0);
     CHECK(smoke.run("composer") == 0);
     CHECK(smoke.run("kit") == 0);

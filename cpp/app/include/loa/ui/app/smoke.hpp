@@ -50,5 +50,9 @@ class Smoke {
 [[nodiscard]] QWidget* agents_screen();
 // Checks the panes rendered: the subagent rows, the job row and the tools tabs.
 [[nodiscard]] std::string check_agents_screen(QWidget& screen);
+// The `surface` screen: the Surfaces tab on a pixel tab with a sample frame, beside one on its launcher.
+[[nodiscard]] QWidget* surface_screen();
+// Checks the pixel viewer, the launcher and its file picker are shown.
+[[nodiscard]] std::string check_surface_screen(QWidget& screen);
 
 } // namespace loa::ui::app
