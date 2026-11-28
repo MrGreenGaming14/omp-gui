@@ -15,6 +15,11 @@
 #include <variant>
 #include <vector>
 
+// `Tool<Args>::call` is defined here and returns an awaitable by value; the
+// awaitable class alone is light (the rest of Asio stays out).
+#include <asio/awaitable.hpp>
+#include <asio/any_io_executor.hpp>
+
 #include "loa/contracts/async.hpp"
 #include "loa/contracts/harness.hpp"
 #include "loa/runtime/json.hpp"
