@@ -5,7 +5,8 @@
 
 #include <QApplication>
 #include <QFont>
-#include <QMainWindow>
+#include <optional>
+#include <string>
 #include <QStyleFactory>
 #include <QStyleHints>
 
@@ -13,6 +14,7 @@
 #include "loa/ui/app/asio_bridge.hpp"
 #include "loa/ui/app/smoke.hpp"
 #include "loa/ui/kit/qt.hpp"
+#include "loa/app/host.hpp"
 
 namespace loa::ui::app {
 namespace {
@@ -100,12 +102,23 @@ int Application::run() {
     }
     if (o.smoke) return Smoke::registry().run(*o.smoke);
 
-    QMainWindow window;
-    window.setWindowTitle(QStringLiteral("Loa"));
-    window.setAccessibleName(QStringLiteral("Loa"));
-    window.resize(px(theme::width(theme::LayoutRole::MainWidth)), px(theme::width(theme::LayoutRole::MainHeight)));
-    window.setMinimumSize(px(theme::width(theme::LayoutRole::MinWidth)), px(theme::width(theme::LayoutRole::MinHeight)));
-    window.show();
+    // The folder argument: the first positional one Qt left.
+    std::optional<std::string> folder;
+    for (std::size_t i = 1; i < args_.size(); ++i)
+        if (!args_[i].starts_with('-')) {
+            folder = std::string(args_[i]);
+            break;
+        }
+    auto made = loa::app::App::make(std::move(folder));
+    if (!made) {
+        std::fprintf(stderr, "loa-qt: %s\n", made.error().c_str());
+        return 1;
+    }
+    auto [app, task] = std::move(*made);
+    auto open = app->open_main();
+    loa::app::AppHost host(std::move(app), *bridge_);
+    task.append(std::move(open));
+    host.start(std::move(task));
     return QApplication::exec();
 }
 

@@ -7,23 +7,48 @@ endif()
 # The app minus `main`, so tests drive the same code as `loa-qt`.
 add_library(loa_app STATIC
   src/agents_smoke.cpp
+  src/app.cpp
+  src/app_smoke.cpp
+  src/app_windows.cpp
+  src/app_workspace.cpp
   src/application.cpp
+  src/area.cpp
+  src/areas.cpp
   src/asio_bridge.cpp
   src/decisions_smoke.cpp
+  src/host.cpp
   src/kit_gallery.cpp
+  src/lifecycle.cpp
   src/local_fs.cpp
   src/models_smoke.cpp
   src/notifier.cpp
   src/panel_smoke.cpp
   src/peers_updates_smoke.cpp
+  src/registry.cpp
+  src/services.cpp
   src/settings_smoke.cpp
   src/smoke.cpp
   src/surface_smoke.cpp
   src/terminal_smoke.cpp
-  src/transcript_smoke.cpp)
+  src/transcript_smoke.cpp
+  src/watch.cpp
+  src/windows.cpp
+  src/workspace.cpp
+  # Projections between domain state and `loa::view` view models (`loa-app/src/view`).
+  src/view/panel.cpp
+  src/view/session.cpp
+  src/view/surface.cpp
+  src/view/theme.cpp
+  src/view/settings/agents.cpp
+  src/view/settings/models.cpp
+  src/view/settings/projects.cpp
+  src/view/settings/updates.cpp
+  src/view/settings/workflows.cpp)
 add_library(loa::app ALIAS loa_app)
 target_include_directories(loa_app PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
-target_link_libraries(loa_app PUBLIC loa::ui_kit loa::ui_session loa::ui_shell loa::ui_panel loa::ui_settings loa::ui_terminal loa::ui_surface loa::view loa::runtime Qt6::Core Qt6::Gui Qt6::Widgets)
+target_link_libraries(loa_app PUBLIC loa::ui_kit loa::ui_session loa::ui_shell loa::ui_panel loa::ui_settings loa::ui_terminal loa::ui_surface loa::view loa::runtime
+  loa::app_runtime loa::bus loa::contracts loa::harness loa::mcp loa::models loa::p2p loa::projects loa::session loa::settings
+  loa::surfaces loa::trust Qt6::Core Qt6::Gui Qt6::Widgets)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   # libnotify (and its glib headers) stay private to `notifier.cpp`.
   target_link_libraries(loa_app PRIVATE PkgConfig::LIBNOTIFY)
@@ -33,7 +58,9 @@ add_executable(loa-qt src/main.cpp)
 set_target_properties(loa-qt PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
 target_link_libraries(loa-qt PRIVATE loa::app)
 
-loa_add_test(app SOURCES tests/app_test.cpp LINK loa::app)
+loa_add_test(app SOURCES tests/app_test.cpp tests/app_core_test.cpp tests/view_test.cpp
+  LINK loa::app loa::models_testing loa::harness_testing)
+target_compile_definitions(loa_app_tests PRIVATE LOA_GOLDEN_DIR="${CMAKE_SOURCE_DIR}/tests/golden")
 set_tests_properties(loa_app_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 add_test(NAME loa_qt_smoke_kit COMMAND loa-qt --smoke kit)
