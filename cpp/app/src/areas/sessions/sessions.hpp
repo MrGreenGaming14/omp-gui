@@ -40,6 +40,8 @@ namespace loa::app::areas::sessions {
 namespace agents = loa::ui::panel::agents;
 namespace session_tree = loa::ui::panel::session_tree;
 namespace chat = loa::ui::session::transcript;
+// The projects library, not the projects area beside this one.
+namespace projects = loa::projects;
 using core::NodeId;
 
 // Model or omp role of the app's small-model calls: compaction summaries and advisor notes.

@@ -4,6 +4,7 @@
 
 #include "loa/app/adapters/models.hpp"
 #include "loa/app/adapters/summarizer.hpp"
+#include "loa/app/panes.hpp"
 #include "loa/app/perform.hpp"
 #include "loa/app/routes.hpp"
 #include "loa/app/view/theme.hpp"
@@ -273,7 +274,8 @@ App::App(Services services, rt::RuntimeParts runtime, Backends backends, shell::
           ui::session::composer::State{}, shell::Keymap::defaults(palette::current_platform())),
       palette(palette::current_platform()),
       files(ctx.runtime.cwd(), std::make_shared<ui::app::LocalFs>()),
-      terminal(ui::terminal::Metrics{}, ui::terminal::LocalShell::login_shell(ctx.runtime.cwd())) {}
+      terminal(ui::terminal::Metrics{}, ui::terminal::LocalShell::login_shell(ctx.runtime.cwd())),
+      usage(ctx.services.host.usage) {}
 
 std::pair<std::unique_ptr<App>, Task> App::build(Services services, AppParts parts) {
     auto saved = services.storage.config.load().value_or(settings::app::Config{});
@@ -348,10 +350,7 @@ Task App::open_main() {
 
 std::vector<PanelTab> App::tabs() const {
     std::vector<PanelTab> out;
-    for (const auto* pane : {&ui::panel::DIFF_PANE, &ui::panel::FILES_PANE})
-        out.push_back({std::string(pane->id), std::string(pane->title), pane->icon, true});
-    out.push_back({std::string(ui::terminal::TERMINAL_PANE.id), std::string(ui::terminal::TERMINAL_PANE.title),
-                   ui::terminal::TERMINAL_PANE.icon, true});
+    for (const auto& pane : panes::REGISTRY) out.push_back(pane.tab(*this));
     for (const auto& area : areas.iter())
         for (auto& tab : area->panel_tabs()) out.push_back(std::move(tab));
     return out;
@@ -388,12 +387,13 @@ void App::refresh_commands() {
         auto rows = spec.palette(*this, ctx);
         commands.insert(commands.end(), std::make_move_iterator(rows.begin()), std::make_move_iterator(rows.end()));
     }
+    auto reference = reference_keys();
+    commands.insert(commands.end(), std::make_move_iterator(reference.begin()), std::make_move_iterator(reference.end()));
     for (const auto& area : areas.iter()) {
         auto rows = area->commands(ctx);
         commands.insert(commands.end(), std::make_move_iterator(rows.begin()), std::make_move_iterator(rows.end()));
     }
-    for (auto& command : commands)
-        if (!command.shortcut) command.shortcut = ctx.keymap.chord_for(command.id);
+    hint_commands(commands);
     if (palette.commands() != commands) palette.set_commands(std::move(commands));
 }
 
@@ -717,42 +717,14 @@ Task App::handle(Message message) {
             },
             [&](msg::Tick&) { return Task::none(); },
             [&](msg::Usage& m) {
-                return std::visit(
-                    overloaded{
-                        [&](usage::msg::Refresh&) {
-                            auto source = ctx.services.host.usage;
-                            return perform([source] { return source->fetch(); },
-                                           [](std::expected<std::string, std::string> json) -> Message {
-                                               return msg::Usage{usage::msg::Loaded{std::move(json)}};
-                                           });
-                        },
-                        [&](usage::msg::Loaded& l) {
-                            if (l.json) usage = std::move(*l.json);
-                            else if (windows.overlay && std::holds_alternative<overlay::Usage>(*windows.overlay))
-                                ctx.notify(l.json.error());
-                            return Task::none();
-                        },
-                        [&](usage::msg::Spend& s) {
-                            auto source = ctx.services.host.usage;
-                            return perform([source, target = std::move(s.target)] { return source->spend(target); },
-                                           [](std::expected<void, std::string> result) -> Message {
-                                               return msg::Usage{usage::msg::Spent{std::move(result)}};
-                                           });
-                        },
-                        [&](usage::msg::Spent& s) {
-                            if (!s.result) {
-                                ctx.notify(s.result.error());
-                                return Task::none();
-                            }
-                            return Task::done(msg::Usage{usage::msg::Refresh{}});
-                        },
-                        [&](usage::msg::Toggle&) { return Task::none(); },
-                        [&](usage::msg::Close&) {
-                            windows.overlay.reset();
-                            return Task::none();
-                        },
-                    },
-                    m.message);
+                auto [task, event] = usage.update(std::move(m.message));
+                if (event)
+                    std::visit(overloaded{
+                                   [&](usage::event::Close&) { windows.overlay.reset(); },
+                                   [&](usage::event::Meter& e) { ctx.shell.sidebar_mut().set_usage(std::move(e.meter)); },
+                               },
+                               *event);
+                return std::move(task);
             },
             [&](msg::Window& m) { return window_update(std::move(m.message)); },
             [&](msg::FolderChosen& m) {

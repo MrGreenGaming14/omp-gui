@@ -369,9 +369,10 @@ TEST_CASE("typed areas take their own messages, commands and slash commands") {
     (void)app.command(loa::ui::shell::palette::CommandId("tools.nothing"));
     CHECK(app.ctx.notice() == std::optional<std::string>("Unknown command tools.nothing"));
 
-    // The `/` command list reaches the composer.
-    REQUIRE(app.ctx.slash.size() == 1);
-    CHECK(app.ctx.slash[0].name == "tools");
+    // The `/` command list reaches the composer: the app's own (`/new`), then each area's.
+    REQUIRE(app.ctx.slash.size() == 2);
+    CHECK(app.ctx.slash[0].name == "new");
+    CHECK(app.ctx.slash[1].name == "tools");
     CHECK(tools->slash("  /tools now ", app.ctx).has_value());
     CHECK_FALSE(tools->slash("/other", app.ctx).has_value());
 }
