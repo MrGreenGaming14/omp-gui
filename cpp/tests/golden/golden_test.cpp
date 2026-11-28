@@ -131,3 +131,33 @@ TEST_CASE("remote_audit SQL executes and sqlite stores the Rust statements") {
         stored.emplace_back(reinterpret_cast<const char*>(sqlite3_column_text(stmt.get(), 0)));
     CHECK(stored == expected);
 }
+
+TEST_CASE("every p2p frame is a big-endian length prefix and one non-empty message of at most 1 MiB") {
+    const std::filesystem::path dir = std::filesystem::path(LOA_GOLDEN_DIR) / "p2p";
+    std::size_t frames = 0;
+    for (const auto& file : std::filesystem::directory_iterator(dir)) {
+        if (file.path().extension() != ".bin") continue;
+        CAPTURE(file.path().filename().string());
+        const auto bytes = slurp(file.path());
+        REQUIRE(bytes.size() > 4);
+        const auto* p = reinterpret_cast<const unsigned char*>(bytes.data());
+        const std::uint32_t len = (std::uint32_t{p[0]} << 24) | (std::uint32_t{p[1]} << 16) | (std::uint32_t{p[2]} << 8) | p[3];
+        CHECK(len == bytes.size() - 4);
+        CHECK(len <= 1024u * 1024u);
+        ++frames;
+    }
+    for (const char* body : {"hello", "presence", "grant-delivery", "grant-renewal", "grant-renewal-result", "grant-revocation", "ack"})
+        CHECK(std::filesystem::exists(dir / (std::string("control-") + body + ".bin")));
+    for (const char* body : {"subscribe", "update", "drive", "challenge", "present", "list-sessions", "session-list", "seed",
+                             "drive-result", "prompt", "ack", "answer"})
+        CHECK(std::filesystem::exists(dir / (std::string("frame-") + body + ".bin")));
+    CHECK(frames >= 19 + 5);
+    CHECK(slurp(dir / "labels.txt") == "omp/control/1\nomp/session/1\nomp/folder/1\n");
+}
+
+TEST_CASE("node.key is the 32-byte seed and the token is the loa-trust fixture") {
+    const std::filesystem::path root = LOA_GOLDEN_DIR;
+    CHECK(slurp(root / "trust/node.key").size() == 32);
+    CHECK(slurp(root / "trust/v1_reshared_token.bin") ==
+          slurp(root / "../../../crates/loa-trust/tests/fixtures/v1_reshared_token.bin"));
+}

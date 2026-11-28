@@ -1,0 +1,13 @@
+{
+  "net_peers": [
+    {
+      "key": "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c",
+      "name": "desk",
+      "addresses": "[\"192.168.1.2:4433\",\"[fe80::1]:4433\"]",
+      "discovery_source": "mdns",
+      "online": 1,
+      "last_seen_ms": 1800000000000,
+      "app_version": "0.1.0"
+    }
+  ]
+}
