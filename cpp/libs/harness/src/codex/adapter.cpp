@@ -94,7 +94,13 @@ Result<> CodexAdapter::import(const std::filesystem::path& native, loa::core::Pa
     return rollout::import(in, sink, node_);
 }
 Result<> CodexAdapter::export_(const loa::core::Dom& dom, const std::filesystem::path& out) const {
-    return rollout::CodexNative::export_(dom, out);
+    std::ofstream file(out, std::ios::binary | std::ios::trunc);
+    if (!file) return std::unexpected(AdapterError::Io{loa::Error{loa::ErrorCode::io, "couldn't create Codex rollout: " + out.string()}});
+    auto written = rollout::CodexNative::export_(dom, file);
+    if (!written) return written;
+    file.flush();
+    if (!file) return std::unexpected(AdapterError::Io{loa::Error{loa::ErrorCode::io, "couldn't write Codex rollout: " + out.string()}});
+    return {};
 }
 void register_factory() {
     registry::register_build(HARNESS, registry::HarnessBuild{

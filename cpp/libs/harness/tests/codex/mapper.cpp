@@ -125,5 +125,5 @@ TEST_CASE("codex: mapper transcript matches Rust golden") {
     }
     log += loa::harness::testing::render(sink->dom());
     auto golden = loa::harness::testing::golden(fixtures / "turns.golden", log);
-    CHECK_MESSAGE(golden.has_value(), golden ? "" : golden.error());
+    CHECK_MESSAGE(golden.has_value(), (golden.has_value() ? std::string() : golden.error()));
 }

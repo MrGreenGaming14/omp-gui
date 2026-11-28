@@ -49,7 +49,7 @@ TEST_CASE("codex: fake app-server drives thread turn and paged models") {
     loa::runtime::Executor exec(2);
     auto dir = loa::runtime::TempDir::create();
     REQUIRE(dir);
-    std::ifstream script(std::filesystem::path(LOA_HARNESS_SOURCE_DIR) / "fixtures/codex/driver.script", std::ios::binary);
+    std::ifstream script(std::filesystem::path(LOA_HARNESS_FIXTURES) / "codex/driver.script", std::ios::binary);
     REQUIRE(script);
     auto text = std::string(std::istreambuf_iterator<char>(script), std::istreambuf_iterator<char>());
     auto fake = loa::harness::testing::FakeProcess::install(dir->path(), text);

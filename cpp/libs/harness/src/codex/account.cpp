@@ -1,5 +1,7 @@
 #include "loa/harness/codex/account.hpp"
 
+#include <asio.hpp>
+
 #include <algorithm>
 #include <array>
 #include <utility>

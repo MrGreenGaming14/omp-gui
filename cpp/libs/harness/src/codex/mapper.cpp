@@ -632,7 +632,8 @@ Result<std::optional<Reply>> Mapper::handle(std::optional<Json> id, std::string_
         if (method == "item/permissions/requestApproval") {
             pending.kind = PendingKind::Permissions;
             pending.permissions = at(params, "permissions") ? *at(params, "permissions") : Json{};
-            return approval(std::move(*id), params, "Grant permissions", canonical(pending.permissions), std::move(pending), w);
+            auto body = canonical(pending.permissions);
+            return approval(std::move(*id), params, "Grant permissions", std::move(body), std::move(pending), w);
         }
         if (method == "item/tool/requestUserInput") {
             const auto& questions = array(at(params, "questions"));

@@ -10,6 +10,7 @@
 
 #include "loa/harness/codex/adapter.hpp"
 #include "loa/harness/codex/mapper.hpp"
+#include "loa/harness/kit/mapper.hpp"
 #include "loa/runtime/exec.hpp"
 #include "loa/runtime/log.hpp"
 #include "loa/runtime/text.hpp"
@@ -156,7 +157,7 @@ struct CodexSession::Shared final : kit::Inbound {
     mutable std::mutex writer_mutex;
     std::optional<kit::Writer> writer;
     mutable std::vector<Value> pending_replies;
-    kit::StateWatch state{SessionState::Idle};
+    mutable kit::StateWatch state{SessionState::Idle};
     std::string session_id;
     std::shared_ptr<const loa::contracts::HostTools> host_tools;
 
@@ -344,13 +345,16 @@ loa::contracts::Awaitable<Result<>> CodexSession::send(loa::contracts::Prompt pr
     co_return Result<>{};
 }
 loa::contracts::Awaitable<Result<>> CodexSession::interrupt() const {
-    auto turn = shared_->mapped<std::optional<std::string>>([](Mapper& mapper, const loa::core::DomWriter&) -> Result<std::optional<std::string>> {
+    auto current = [](Mapper& mapper, const loa::core::DomWriter&) -> Result<std::optional<std::string>> {
         const auto id = mapper.turn_id();
-        return id ? std::optional<std::string>(*id) : std::nullopt;
-    });
+        if (!id) return std::optional<std::string>{};
+        return std::optional<std::string>(std::string(*id));
+    };
+    auto turn = shared_->mapped<std::optional<std::string>>(current);
     if (!turn) co_return std::unexpected(std::move(turn).error());
     if (!*turn) co_return Result<>{};
-    auto result = co_await request("turn/interrupt", Object{{"threadId", thread_id_}, {"turnId", **turn}});
+    Value params = Object{{"threadId", thread_id_}, {"turnId", **turn}};
+    auto result = co_await request("turn/interrupt", std::move(params));
     if (!result) co_return std::unexpected(std::move(result).error());
     co_return Result<>{};
 }
@@ -383,15 +387,18 @@ loa::contracts::Awaitable<Result<std::vector<loa::contracts::HarnessModel>>> Cod
     std::vector<loa::contracts::HarnessModel> models;
     std::optional<std::string> cursor;
     for (;;) {
-        auto page = co_await request("model/list", cursor ? Value(Object{{"cursor", *cursor}}) : Value(Object{}));
+        Value params = Object{};
+        if (cursor) params = Object{{"cursor", *cursor}};
+        auto page = co_await request("model/list", std::move(params));
         if (!page) co_return std::unexpected(std::move(page).error());
         const auto* data = member(*page, "data");
         if (!data || !data->as_array()) co_return std::unexpected(AdapterError::Protocol{"model/list returned no data"});
         for (const auto& entry : *data->as_array()) if (auto model = listed_model(entry)) models.push_back(std::move(*model));
         auto next = string_at(*page, "nextCursor");
-        if (!next || (cursor && *cursor == *next)) co_return models;
+        if (!next || (cursor && *cursor == *next)) break;
         cursor = std::string(*next);
     }
+    co_return Result<std::vector<loa::contracts::HarnessModel>>(std::move(models));
 }
 loa::contracts::Awaitable<Result<>> CodexSession::set_effort(std::string effort) const {
     {
@@ -402,7 +409,8 @@ loa::contracts::Awaitable<Result<>> CodexSession::set_effort(std::string effort)
 }
 loa::contracts::Awaitable<Result<>> CodexSession::compact(std::optional<std::string> instructions) const {
     if (instructions) co_return std::unexpected(AdapterError::Unsupported{HARNESS, "compaction instructions"});
-    auto result = co_await request("thread/compact/start", Object{{"threadId", thread_id_}});
+    Value params = Object{{"threadId", thread_id_}};
+    auto result = co_await request("thread/compact/start", std::move(params));
     if (!result) co_return std::unexpected(std::move(result).error());
     co_return Result<>{};
 }
