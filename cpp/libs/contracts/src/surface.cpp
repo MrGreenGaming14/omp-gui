@@ -134,4 +134,9 @@ std::size_t FrameSender::send(std::shared_ptr<const Frame> frame) {
     return receivers_.size();
 }
 
+std::size_t FrameSender::receiver_count() {
+    std::lock_guard lock(mutex_);
+    return static_cast<std::size_t>(std::ranges::count_if(receivers_, [](const auto& weak) { return !weak.expired(); }));
+}
+
 } // namespace loa::contracts::surface
