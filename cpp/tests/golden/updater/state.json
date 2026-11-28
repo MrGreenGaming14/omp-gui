@@ -1,0 +1,67 @@
+{
+  "pins": {
+    "codex": "0.5.0"
+  },
+  "held": {
+    "omp": {
+      "version": "9.1.0",
+      "report": {
+        "product": "omp",
+        "from": "1.0.0",
+        "to": "9.1.0",
+        "checks": [
+          {
+            "check": "tool_schemas",
+            "verdict": "harmful",
+            "details": [
+              "- edit: tool removed",
+              "+ search: tool added"
+            ]
+          }
+        ]
+      },
+      "held_at_unix": 1760000000
+    }
+  },
+  "waits": {
+    "claude": "2.0.0"
+  },
+  "last_check_unix": {
+    "app": 1760000124,
+    "omp": 1760000123
+  },
+  "pending_swap": {
+    "opencode": "1.0.0-rc.1"
+  },
+  "reports": {
+    "omp": {
+      "product": "omp",
+      "from": "1.0.0",
+      "to": "9.1.0",
+      "checks": [
+        {
+          "check": "tool_schemas",
+          "verdict": "harmful",
+          "details": [
+            "- edit: tool removed",
+            "+ search: tool added"
+          ]
+        }
+      ]
+    },
+    "opencode": {
+      "product": "omp",
+      "from": "1.0.0",
+      "to": "1.0.0-rc.1",
+      "checks": [
+        {
+          "check": "changelog",
+          "verdict": "pass",
+          "details": [
+            "no release notes published after 1.0.0"
+          ]
+        }
+      ]
+    }
+  }
+}

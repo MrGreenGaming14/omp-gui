@@ -1,0 +1,8 @@
+{
+  "product": "app",
+  "version": "0.2.0",
+  "artifact_name": "app-0.2.0",
+  "sha256": "790b243c054e8e28a79332b7ba1ead9a139e67613ed544ffc62763ff28e8a0ec",
+  "size": 25,
+  "signature_name": "app-0.2.0.sig"
+}

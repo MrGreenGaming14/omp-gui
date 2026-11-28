@@ -1,0 +1,15 @@
+[package]
+name = "loa-updater-golden"
+version = "0.0.0"
+edition = "2024"
+[dependencies]
+loa-updater = { path = "../../../../../crates/loa-updater" }
+loa-settings = { path = "../../../../../crates/loa-settings" }
+loa-util = { path = "../../../../../crates/loa-util" }
+ed25519-dalek = { version = "3", default-features = false, features = ["fast", "zeroize"] }
+sha2 = "0.11"
+hex = "0.4"
+semver = "1"
+serde = "1"
+serde_json = { version = "1", features = ["preserve_order"] }
+[workspace]
