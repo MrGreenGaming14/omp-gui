@@ -92,11 +92,17 @@ struct Activate {
     std::string project;
 };
 } // namespace projects
+namespace decisions {
+// A peer answered a decision of session `session` on this node (the decisions area's `Answer`).
+using Answer = loa::view::session::decisions::desk_intent::Answer;
+} // namespace decisions
 namespace peers {
 struct OpenRecent {
     std::string id;
 };
 struct Refresh {};
+// The sidebar's Peers rows.
+struct Open {};
 } // namespace peers
 namespace updater {
 struct Open {};

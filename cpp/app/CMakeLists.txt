@@ -22,6 +22,11 @@ add_library(loa_app STATIC
   src/app_workspace.cpp
   src/application.cpp
   src/area.cpp
+  src/areas/peers/adapter.cpp
+  src/areas/peers/folder.cpp
+  src/areas/peers/peers.cpp
+  src/areas/peers/remote.cpp
+  src/areas/peers/view.cpp
   src/areas.cpp
   src/asio_bridge.cpp
   src/decisions_smoke.cpp
@@ -61,14 +66,17 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   # libnotify (and its glib headers) stay private to `notifier.cpp`.
   target_link_libraries(loa_app PRIVATE PkgConfig::LIBNOTIFY)
 endif()
+# The areas' headers under `src/areas/<area>/` stay private to the app and its tests.
+target_include_directories(loa_app PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 
 add_executable(loa-qt src/main.cpp)
 set_target_properties(loa-qt PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
 target_link_libraries(loa-qt PRIVATE loa::app)
 
 loa_add_test(app SOURCES tests/app_test.cpp tests/app_core_test.cpp tests/view_test.cpp tests/adapters_test.cpp
-  tests/update_gates_test.cpp tests/routing_test.cpp tests/support/test_app.cpp
+  tests/update_gates_test.cpp tests/routing_test.cpp tests/peers_test.cpp tests/support/test_app.cpp
   LINK loa::app loa::models_testing loa::harness_testing)
+target_include_directories(loa_app_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_include_directories(loa_app_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tests")
 target_compile_definitions(loa_app_tests PRIVATE LOA_GOLDEN_DIR="${CMAKE_SOURCE_DIR}/tests/golden")
 set_tests_properties(loa_app_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
