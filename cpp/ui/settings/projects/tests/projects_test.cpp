@@ -24,7 +24,8 @@ void app() {
     static int argc = 1;
     static char name[] = "loa_ui_settings_tests";
     static char* argv[] = {name, nullptr};
-    static QApplication a(argc, argv);
+    // Leaked on purpose: a static QApplication is destroyed after Qt's input devices at exit and crashes.
+    new QApplication(argc, argv);
 }
 
 ProjectOverview overview() {
