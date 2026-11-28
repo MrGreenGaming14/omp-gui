@@ -7,8 +7,12 @@
 #include <asio/awaitable.hpp>
 #include <asio/ip/tcp.hpp>
 
+#include <array>
 #include <cstdint>
+#include <functional>
 #include <memory>
+#include <mutex>
+#include <string>
 #include <optional>
 #include <span>
 #include <string_view>
@@ -78,5 +82,25 @@ class Deflater {
                                              std::int32_t encoding, std::span<const std::uint8_t> payload);
 // A FramebufferUpdate of `rects`.
 [[nodiscard]] std::vector<std::uint8_t> update(const std::vector<std::vector<std::uint8_t>>& rects);
+
+// What the client sent after the setup.
+struct Received {
+    std::mutex mutex;
+    std::vector<std::uint8_t> bytes;
+};
+
+// A scripted RFB server on loopback (`testkit::fake_rfb` in Rust).
+struct FakeRfbServer {
+    // `127.0.0.1:<port>`.
+    std::string address;
+    std::shared_ptr<Received> received;
+    // Lets the one framebuffer update go; safe from any thread.
+    std::function<void()> send_update;
+};
+
+// An RFB server on loopback whose framebuffer is `width` x `height` of `color`. The
+// client handshakes at once; the update is sent when `send_update` is called, so a test
+// subscribes first and then lets the update go. Collects what the client sends after the setup.
+[[nodiscard]] asio::awaitable<FakeRfbServer> fake_rfb(std::uint16_t width, std::uint16_t height, std::array<std::uint8_t, 3> color);
 
 } // namespace loa::surfaces::testkit::rfb

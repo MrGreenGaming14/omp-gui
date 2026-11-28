@@ -68,6 +68,14 @@ has exactly one row below; `loa_golden_tests` fails otherwise.
   Resize, Close, KeyframeRequest, Frame, DocumentHeader, DocumentChunk). `stream-input-*.bin` are `Body::Input`
   with each `InputKind` (tags 3 to 8: MouseMoveMsg, MouseButtonMsg, ScrollMsg, KeyMsg, TextMsg, Resize).
 - `surface/datagram-fragment.bin`: one encoded `Datagram` (not length delimited) holding a `Fragment` with a header.
+- `surface/hub/tools.json`: `tool_set(hub, scope).specs()` (`crates/loa-surfaces/src/hub/tools.rs`) for scopes
+  `all` (`None`), `browser`, `docs` and `vm`, each spec `{name, description, input_schema}` in `ToolSet` (name) order;
+  `input_schema` is the exact schemars text. Pretty printed by serde_json with a trailing newline.
+- `surface/hub/dom-patches.bin`: the length delimited prost `Patch`es of a `MemorySink` session (`id s1`, `harness omp`,
+  `node key-laptop`, `created 100`) given `hub::dom::opened` of `surface://browser/tab1` (`Example`, 1280x720, pixel,
+  `Origin::Browser`) and of `surface://files/report` (`report.pdf`, 0x0, document, `application/pdf`,
+  `Origin::Mcp("files-server")`), then `hub::dom::closed` of the first, at timestamps 1 to 4; `surface/hub/dom.xml`:
+  `loa_core::xml::to_string` of the resulting DOM.
 - `surface/stream-unknown-body.bin`: a valid length delimited `Close`, then a length delimited message holding only
   field 99 (`9a 06 02 aa bb`). The second message MUST decode as `body: None` and be skipped.
 - `docs/sample.pdf`: a four page PDF (Helvetica text, a /Rotate 90 page, an A4 page with fractional size) built like
@@ -271,6 +279,9 @@ has exactly one row below; `loa_golden_tests` fails otherwise.
 | sandbox/response_stderr.bin | 309 | 6979ed0eb878d020a32c56e6a57b59048404e13f6512d63bd19a608f57aa50b1 | 196e70f4605a2098833377482c9457a5440e27a2 |
 | sandbox/response_stdout.bin | 11 | 1ca3f62a8a31d9403662ef7e8138c251e65fa64bf89700dd99208a3fd3a9375d | 196e70f4605a2098833377482c9457a5440e27a2 |
 | surface/datagram-fragment.bin | 47 | ae284eeebe478e5024f9d60da284428924c034a62241211f37dc26b9ebc98b84 | b128c428ea2976fd62bc1ef28ccc783137388e80 |
+| surface/hub/dom-patches.bin | 423 | fffc4717ba29cdb723ac3c458aa798532db6d45a0095e379a7df14abd48eb765 | c4184fb6f2e8ddb20acb06c51a0311c64e078a6d |
+| surface/hub/dom.xml | 445 | 77f3e6523962617af961ceb323345ab3c8694154d0ee3c3a1d11799d2a11628c | c4184fb6f2e8ddb20acb06c51a0311c64e078a6d |
+| surface/hub/tools.json | 18289 | 92529e88ce07d6d7dd9465e4ceef28f52ff0a5b64ddf0786c64e47084c568b59 | c4184fb6f2e8ddb20acb06c51a0311c64e078a6d |
 | surface/stream-accept-document.bin | 60 | 663ab4a7c7ec24c64632fc1c8f4668fd307d8ce27332e39ba12dc806e5690a1c | b128c428ea2976fd62bc1ef28ccc783137388e80 |
 | surface/stream-accept.bin | 59 | bdb2a0bba175a7d7e032de44b0c0d9f320df64321319219481c328047bc471eb | b128c428ea2976fd62bc1ef28ccc783137388e80 |
 | surface/stream-close.bin | 8 | d7c5f535400ea81c82827a72dd4a94b410f1285d4ae4cb32e844cd9ef31cdc66 | b128c428ea2976fd62bc1ef28ccc783137388e80 |

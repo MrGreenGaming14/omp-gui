@@ -312,4 +312,32 @@ std::vector<std::uint8_t> update(const std::vector<std::vector<std::uint8_t>>& r
     return out;
 }
 
+asio::awaitable<FakeRfbServer> fake_rfb(std::uint16_t width, std::uint16_t height, std::array<std::uint8_t, 3> color) {
+    using Signal = asio::experimental::channel<void(asio::error_code)>;
+    const auto executor = co_await asio::this_coro::executor;
+    auto listener = std::make_shared<asio::ip::tcp::acceptor>(executor, asio::ip::tcp::endpoint(asio::ip::make_address("127.0.0.1"), 0));
+    const auto address = "127.0.0.1:" + std::to_string(listener->local_endpoint().port());
+    auto received = std::make_shared<Received>();
+    auto update_sent = std::make_shared<Signal>(executor, 1);
+    auto serve = [](std::shared_ptr<asio::ip::tcp::acceptor> listener, std::shared_ptr<Received> sink, std::shared_ptr<Signal> update_sent,
+                    std::uint16_t width, std::uint16_t height, std::array<std::uint8_t, 3> color) -> asio::awaitable<void> {
+        auto fake = co_await FakeRfb::accept(*listener);
+        co_await fake.handshake(std::nullopt, width, height);
+        co_await update_sent->async_receive(asio::as_tuple(asio::use_awaitable));
+        const auto picture = RgbaImage::filled(width, height, Pixel{color[0], color[1], color[2], 255});
+        const auto frame = update({rect(0, 0, width, height, 0, raw(picture))});
+        co_await fake.send(frame);
+        std::array<std::uint8_t, 256> chunk{};
+        for (;;) {
+            auto [ec, n] = co_await fake.socket().async_read_some(asio::buffer(chunk), asio::as_tuple(asio::use_awaitable));
+            if (ec || n == 0) co_return;
+            std::lock_guard lock(sink->mutex);
+            sink->bytes.insert(sink->bytes.end(), chunk.begin(), chunk.begin() + static_cast<std::ptrdiff_t>(n));
+        }
+    };
+    asio::co_spawn(executor, serve(listener, received, update_sent, width, height, color), asio::detached);
+    auto send_update = [update_sent] { asio::post(update_sent->get_executor(), [update_sent] { update_sent->try_send(asio::error_code{}); }); };
+    co_return FakeRfbServer{address, std::move(received), std::move(send_update)};
+}
+
 } // namespace loa::surfaces::testkit::rfb
