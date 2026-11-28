@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Theme lint (port of scripts/lint-ui-literals.sh): UI code takes colours, sizes and spacing
-# from loa::ui::kit::theme tokens. Scans cpp/ui/* (except the kit's token layer and its tests)
-# and cpp/app, or the dirs given as arguments (relative to cpp/). Reports only; exits non-zero
-# with LINT_ENFORCE=1.
+# from loa::ui::kit::theme tokens. Scans cpp/ui/* (except the kit's token layer) and cpp/app,
+# or the dirs given as arguments (relative to cpp/). Tests are skipped: their literals are
+# input data (escape sequences, fixtures), not styling. Reports only; exits non-zero with
+# LINT_ENFORCE=1.
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
@@ -29,7 +30,7 @@ rules=(
 pattern=$(IFS='|'; echo "${rules[*]}")
 
 hits=$(grep -rnE --include='*.cpp' --include='*.hpp' "$pattern" "${dirs[@]}" \
-  | grep -vE '^ui/kit/(src/theme/|src/qt\.cpp|tests/)' || true)
+  | grep -vE '^ui/kit/(src/theme/|src/qt\.cpp)|^(ui/[^/]+|app)/tests/' || true)
 count=$(printf '%s' "$hits" | grep -c . || true)
 
 if [[ $count -gt 0 ]]; then

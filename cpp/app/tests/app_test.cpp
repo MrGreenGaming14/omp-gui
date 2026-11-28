@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <set>
@@ -120,15 +121,19 @@ TEST_CASE("command line options") {
     CHECK_FALSE(parse({"loa-qt"}).smoke);
 }
 
-TEST_CASE("smoke screens: composer, decisions, kit, panel and shell pass, unknown screens are rejected") {
+// Every registered screen must pass; later UI issues add screens, so the list is not pinned.
+TEST_CASE("smoke screens: every registered screen passes, unknown screens are rejected") {
     qt_app();
     auto& smoke = Smoke::registry();
-    CHECK(smoke.names() == std::vector<std::string>{"composer", "decisions", "kit", "panel", "shell"});
-    CHECK(smoke.run("composer") == 0);
-    CHECK(smoke.run("decisions") == 0);
-    CHECK(smoke.run("kit") == 0);
-    CHECK(smoke.run("panel") == 0);
-    CHECK(smoke.run("shell") == 0);
+    const auto names = smoke.names();
+    // Foundation screens only. Do not append new screens here: the loop below already runs every
+    // registered one, and a growing list makes parallel UI issues conflict on this line.
+    for (const char* required : {"kit", "shell"})
+        CHECK(std::ranges::find(names, required) != names.end());
+    for (const auto& name : names) {
+        CAPTURE(name);
+        CHECK(smoke.run(name) == 0);
+    }
     CHECK(smoke.run("nope") == 2);
 }
 
