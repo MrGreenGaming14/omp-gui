@@ -11,6 +11,7 @@ export LOA_GOLDEN_OUT=$PWD/cpp/tests/golden
 cargo test -p loa-bus --test golden -- --ignored
 cargo test -p loa-settings --test config write_golden -- --ignored
 cargo test -p loa-settings --lib write_golden -- --ignored
+cargo test -p loa-util --test golden -- --ignored
 ```
 
 Then update this table and the source SHA.
@@ -29,6 +30,8 @@ Then update this table and the source SHA.
 - `journal/f`, `journal/s`: copies of `crates/loa-bus/tests/fixtures/journal`.
 - `settings/config.toml`, `settings/unknown.toml`: copies of `crates/loa-settings/tests/fixtures/full.toml` and `unknown.toml` (unknown keys kept byte-identical).
 - `settings/config.yml`, `settings/models.yml`: written by `OmpConfig::save` / `ModelsYml::save` after a role edit.
+- `util/iso.txt`: `<ms> <format_iso_ms(ms)>` lines from `loa_util::time`.
+- `util/ssh/config` and `util/ssh/conf.d/*` (hand-written, with Include, wildcards, `!` and `=`); `util/ssh/aliases.txt`: `loa_util::ssh::aliases(config)`, one per line.
 
 ## Files
 
@@ -52,3 +55,9 @@ Then update this table and the source SHA.
 | settings/config.yml | 419 | 532f8114e105bbede85b0384b6219906f228e3f6f5f1eede38a82526b95b4c33 | 6853d95bd272adf65b37e64c449b02c08813bc53 |
 | settings/models.yml | 393 | 42a0270620cb325567227ae0a675f28957fb53186def72ae5837493602f4b88b | 6853d95bd272adf65b37e64c449b02c08813bc53 |
 | settings/unknown.toml | 338 | 1f982a717c8ec3ac55a0b9ac3ebd12e420145b558c578785b79cbecef2c40ef3 | 6853d95bd272adf65b37e64c449b02c08813bc53 |
+| util/iso.txt | 280 | 9006e6f63b49bffaee1442bb095e62c95cc5444da3a4f6a59316a13b11fc854b | b128c428ea2976fd62bc1ef28ccc783137388e80 |
+| util/ssh/aliases.txt | 43 | 11a0dc406390d101147047702a22186a1ec2c0ee5dc70822a5131f8173a86314 | b128c428ea2976fd62bc1ef28ccc783137388e80 |
+| util/ssh/config | 100 | db9bb111236f3bf56757b7d396432255fc303eee34c0c481e9f92d506b8ce2a3 | b128c428ea2976fd62bc1ef28ccc783137388e80 |
+| util/ssh/conf.d/a.conf | 43 | 15921304dd8b16f74da99fd598f9fa52b1289cd0b43541d74765765c26f66ee7 | b128c428ea2976fd62bc1ef28ccc783137388e80 |
+| util/ssh/conf.d/b.conf | 14 | 39c842d687267318cdc2aa419e73c9eb0735350f2a4d0a2306a6c742f463eeb6 | b128c428ea2976fd62bc1ef28ccc783137388e80 |
+| util/ssh/conf.d/nested.inc | 18 | 4fdd2b1e906ab64b96697697d38222c5c2e6d0abcf7cd4aedf56f8c50e3995e8 | b128c428ea2976fd62bc1ef28ccc783137388e80 |

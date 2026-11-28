@@ -1,0 +1,6 @@
+Host Db web*  !bad
+  HostName x
+Include conf.d/*.conf
+Match host y
+Host=db last
+Host "Quoted" ?skip

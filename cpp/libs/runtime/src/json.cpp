@@ -135,4 +135,15 @@ std::string dump(const Value& value) {
     return result;
 }
 
+std::string dump_pretty(const Value& value) {
+    std::unique_ptr<yyjson_mut_doc, decltype(&yyjson_mut_doc_free)> doc(yyjson_mut_doc_new(nullptr), &yyjson_mut_doc_free);
+    yyjson_mut_doc_set_root(doc.get(), to_yy(doc.get(), value));
+    std::size_t len = 0;
+    char* out = yyjson_mut_write(doc.get(), YYJSON_WRITE_INF_AND_NAN_AS_NULL | YYJSON_WRITE_PRETTY_TWO_SPACES, &len);
+    if (out == nullptr) return "null";
+    std::string result(out, len);
+    std::free(out);
+    return result;
+}
+
 } // namespace loa::runtime::json
