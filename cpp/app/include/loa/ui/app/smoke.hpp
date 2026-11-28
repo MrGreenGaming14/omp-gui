@@ -42,5 +42,9 @@ class Smoke {
 [[nodiscard]] QWidget* kit_gallery();
 // Checks the gallery: every icon resource renders, and every widget has an accessible name.
 [[nodiscard]] std::string check_kit_gallery(QWidget& gallery);
+// The `panel` screen: the diff, files (over `LocalFs` at the working directory) and session tree panes.
+[[nodiscard]] QWidget* panel_screen();
+// Checks the panes rendered: diff rows painted, files listed, session rows shown.
+[[nodiscard]] std::string check_panel_screen(QWidget& screen);
 
 } // namespace loa::ui::app
