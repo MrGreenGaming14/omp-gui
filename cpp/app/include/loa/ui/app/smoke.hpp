@@ -50,5 +50,9 @@ class Smoke {
 [[nodiscard]] QWidget* agents_screen();
 // Checks the panes rendered: the subagent rows, the job row and the tools tabs.
 [[nodiscard]] std::string check_agents_screen(QWidget& screen);
+// The `transcript` screen: a sample session with every row kind and a streamed markdown reply.
+[[nodiscard]] QWidget* transcript_screen();
+// Checks the rows were built: the code block, its copy button and the decision slot.
+[[nodiscard]] std::string check_transcript_screen(QWidget& screen);
 
 } // namespace loa::ui::app
