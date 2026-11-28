@@ -37,6 +37,14 @@ jobs:
           cargo test -p loa-surfaces --features remote-video --profile ci
           cargo test -p loa-ui-surface --features remote-video --profile ci
           xvfb-run -a cargo test -p loa-app --features remote-video --profile ci surfaces
+  cpp:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build ccache qt6-base-dev qt6-pdf-dev qt6-svg-dev qt6-tools-dev qt6-image-formats-plugins libsqlite3-dev libssl-dev libcurl4-openssl-dev libssh-dev libvterm-dev libarchive-dev libsecret-1-dev libjpeg-turbo8-dev libpng-dev libwebp-dev libgif-dev zlib1g-dev libopenh264-dev libtomlplusplus-dev doctest-dev libasio-dev libpugixml-dev libxlsxwriter-dev libcpp-httplib-dev libstb-dev libnotify-dev libxcb1-dev libxcb-shm0-dev libxcb-xtest0-dev libmd4c-dev libyaml-cpp-dev libminizip-dev
+      - run: cmake -S cpp -B build -G Ninja
+      - run: cmake --build build
+      - run: ctest --test-dir build --output-on-failure
   windows:
     runs-on: windows-latest
     env:
