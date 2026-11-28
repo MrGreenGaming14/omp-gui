@@ -49,12 +49,12 @@ The hard limit is 50 ms from a click or key press to the updated pixels on scree
 
 | Surface | Built with | Mode | Extra data for the agent |
 | --- | --- | --- | --- |
-| Browser | Headless Chrome driven by `chromiumoxide` | Pixel | DOM, page text, URL |
-| PDF | `hayro` (pure Rust) | Document | Page text |
-| XLSX | `calamine` to read, `rust_xlsxwriter` to write | Document | Cells |
-| DOCX | `docx-rs` | Document | Text and structure |
-| PPTX | `zip` + `quick-xml`, our own parser | Document | Slide text |
-| Images | `image` | Document | The image |
+| Browser | Headless Chrome driven by an in-house CDP client | Pixel | DOM, page text, URL |
+| PDF | QtPdf (`QPdfDocument`) | Document | Page text |
+| XLSX | minizip + pugixml to read, libxlsxwriter to write | Document | Cells |
+| DOCX | minizip + pugixml | Document | Text and structure |
+| PPTX | minizip + pugixml, our own parser | Document | Slide text |
+| Images | libpng, libjpeg-turbo, libwebp, giflib | Document | The image |
 | VM or desktop | RFB adapter | Pixel | None |
 
 The built ins are ordinary MCP servers, so any third party MCP that implements surfaces renders the same way. MCP Apps (HTML UIs) can be added later through a webview for compatibility.

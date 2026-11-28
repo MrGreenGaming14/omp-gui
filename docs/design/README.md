@@ -1,6 +1,6 @@
 # Design docs
 
-An all Rust desktop app on top of omp that looks and works like Claude Code, with a p2p network between instances on port 31415.
+An all C++ desktop app on top of omp that looks and works like Claude Code, with a p2p network between instances on port 31415.
 
 These files are the source of truth for every issue in this repo. Issue bodies name a tab like "Tai > GUI". The table below maps each tab to its file.
 
@@ -20,8 +20,8 @@ These files are the source of truth for every issue in this repo. Issue bodies n
 
 ## Decisions already made
 
-- Rust only. No TypeScript anywhere in this repo
-- UI is iced 0.14 (chosen over GPUI after building a mockup in each)
+- C++23 only. No TypeScript anywhere in this repo
+- UI is Qt 6 Widgets
 - omp is driven over RPC (`omp --mode rpc`). The app never patches omp or modifies its tools
 - Harness agnostic from day one. Every omp feature works on every harness, provided by the app where a harness lacks it
 - The app has no model or provider code of its own. It calls omp's mechanisms
@@ -31,7 +31,7 @@ These files are the source of truth for every issue in this repo. Issue bodies n
 ## Open questions
 
 - [ ] Does Chrome's screencast fit the 50 ms budget, or do we need native capture
-- [ ] Is hayro good enough on our real PDFs, or do we keep PDFium as a fallback
+- [ ] Is QtPdf good enough on our real PDFs, or do we keep PDFium as a fallback
 - [ ] Support MCP Apps (HTML in a webview) for compatibility, or pixel surfaces only
 - [ ] Does omp's RPC `btw` follow the session model or can it use the `smol` role
 - [ ] Can omp settings be changed over RPC, or does the settings screen edit config files

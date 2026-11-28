@@ -1,6 +1,9 @@
 # Regenerating the golden fixtures
 
-From the repo root, any `CARGO_TARGET_DIR`:
+The fixtures were written by the Rust app and its generator crates. Both were removed at the C++
+cutover (#410); the C++ tree only reads them. To regenerate, check out the last commit with the Rust
+workspace, `ecc0cf0` (`git worktree add ../omp-gui-rust ecc0cf0`), and run the commands below from
+its repo root, with any `CARGO_TARGET_DIR`:
 
 ```sh
 export LOA_GOLDEN_OUT=$PWD/cpp/tests/golden

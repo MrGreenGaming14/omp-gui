@@ -121,4 +121,4 @@ pkg_check_modules(LOA_HARNESS_HTTPLIB REQUIRED IMPORTED_TARGET cpp-httplib)
 target_link_libraries(loa_harness_tests PRIVATE PkgConfig::LOA_HARNESS_HTTPLIB)
 target_compile_definitions(loa_harness_tests PRIVATE LOA_GOLDEN_DIR="${CMAKE_SOURCE_DIR}/tests/golden"
   LOA_HARNESS_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
-target_compile_definitions(loa_harness_tests PRIVATE LOA_HARNESS_FIXTURES="${CMAKE_SOURCE_DIR}/../crates/loa-harness/fixtures")
+target_compile_definitions(loa_harness_tests PRIVATE LOA_HARNESS_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")

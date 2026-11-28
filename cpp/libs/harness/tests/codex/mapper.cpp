@@ -47,7 +47,7 @@ std::pair<std::string_view, std::string_view> split(std::string_view s, std::str
 } // namespace
 
 TEST_CASE("codex: mapper transcript matches Rust golden") {
-    const auto fixtures = std::filesystem::path(LOA_HARNESS_SOURCE_DIR) / "../../../crates/loa-harness/fixtures/codex";
+    const auto fixtures = std::filesystem::path(LOA_HARNESS_FIXTURES) / "codex";
     std::ifstream stream(fixtures / "turns.jsonl");
     REQUIRE(stream.good());
     loa::contracts::SessionConfig config;

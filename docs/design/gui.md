@@ -1,6 +1,6 @@
 # GUI
 
-Same layout and behavior as Claude Code, with our own name, logo and colors. Built with iced 0.14.
+Same layout and behavior as Claude Code, with our own name, logo and colors. Built with Qt 6 Widgets.
 
 ```mermaid
 flowchart LR
@@ -38,11 +38,3 @@ Whenever the agent needs input, the chat shows an inline card and the turn waits
 - Every answer is recorded in the session DOM with who gave it, so replay and rewind show it
 - Unattended runs can set a timeout with a default answer for each kind
 - Adapters map each harness's own prompts (permission requests, ask tools, extension dialogs) onto these four kinds
-
-## Notes from the iced mockup
-
-- Built in one pass in about 1,200 lines. Hand built: command palette, diff view, tab bar, `/` popup, virtualized list
-- `text_editor` has no undo/redo and no auto grow. Enter to submit is a few lines through `key_binding`
-- Markdown parses incrementally with `markdown::Content::push_str`
-- Terminal works today with `iced_term` 0.8
-- No accessibility upstream. System76's `pop-os/iced` fork has AccessKit. Prefer standard widgets and label hand built ones so switching later is cheap

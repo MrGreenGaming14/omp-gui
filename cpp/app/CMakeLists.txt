@@ -100,6 +100,8 @@ target_include_directories(loa_app PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 add_executable(loa-qt src/main.cpp)
 set_target_properties(loa-qt PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
 target_link_libraries(loa-qt PRIVATE loa::app)
+# Local sandbox tasks need the exec stub next to the app.
+add_dependencies(loa-qt loa-sandbox-stub)
 
 loa_add_test(app SOURCES tests/app_test.cpp tests/app_core_test.cpp tests/view_test.cpp tests/adapters_test.cpp
   tests/update_gates_test.cpp tests/routing_test.cpp tests/support/test_app.cpp tests/glue_test.cpp tests/workflows_test.cpp

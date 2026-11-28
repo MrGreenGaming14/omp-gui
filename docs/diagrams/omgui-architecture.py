@@ -68,7 +68,7 @@ A('<text x="635" y="30" text-anchor="middle" font-size="19" font-weight="bold" f
 box(535, 46, 200, 40, ["User"], "ext", bold=True, fs=14)
 A('<rect x="30" y="104" width="1210" height="1030" rx="6" fill="#fff" stroke="#3b6fb6" stroke-width="1.4"/>')
 A('<rect x="30" y="104" width="1210" height="30" rx="6" fill="#dfeafb" stroke="#3b6fb6" stroke-width="1.4"/>')
-A('<text x="45" y="124" font-size="14" font-weight="bold">omgui desktop app — loa-app crate (composition root)</text>')
+A('<text x="45" y="124" font-size="14" font-weight="bold">omgui desktop app — cpp/app, loa-qt (composition root)</text>')
 
 # Presentation + view API
 container(55, 148, 1160, 140, "Presentation — display only  ·  loa-ui-*", "pres")
@@ -92,7 +92,7 @@ def ry(n):
 
 container(590, 376, 300, 612, "Feature controllers · loa-app/areas", "ctl")
 box(605, 414, 270, 54, ["Ctx — shared context", "runtime · services · requests · Area trait"], "ctl", fs=12)
-# Secondary dependencies confirmed by the call graph (rust-analyzer LSIF), beyond the row's own adapter/service.
+# Secondary dependencies confirmed by the call graph, beyond the row's own adapter/service.
 ALSO = {"surfaces": "+ mcp", "tools": "+ trust", "peers": "+ mcp", "updater": "+ peer network",
         "agents": "+ omp agent files, mcp", "sessions": "+ projects, plan", "decisions": "+ plan check"}
 for n in ROWS:
@@ -156,7 +156,7 @@ arrow([(1200, hc), (1260, hc)], "ext")
 lab(1232, hc - 5, "stdio / RPC", "ext", size=9)
 
 # Headless runtime
-container(55, 818, 505, 200, "Headless runtime  ·  no Iced", "run")
+container(55, 818, 505, 200, "Headless runtime  ·  no Qt", "run")
 box(75, 856, 200, 46, ["Session library", "+ live writer (loa-session · loa-bus)"], "run", fs=12)
 box(75, 916, 200, 32, ["Live feeds"], "run", fs=11.5)
 ellipse(420, 900, 125, 40, ["Session lifecycle", "loa-runtime state machine"])
@@ -210,8 +210,8 @@ for i, (k, t) in enumerate([("ui", "UI flow"), ("ctl", "control / calls"), ("dat
     yy = 178 + i * 14
     A(f'<line x1="1272" y1="{yy}" x2="1302" y2="{yy}" stroke="{FLOW[k]}" stroke-width="2"/>'
       f'<text x="1310" y="{yy + 4}" font-size="10.5" fill="#333">{t}</text>')
-A('<text x="1262" y="270" font-size="10" fill="#777">Foundation used by every crate (omitted):</text>'
-  '<text x="1262" y="284" font-size="10" fill="#777">loa-contracts · loa-core · loa-util</text>')
+A('<text x="1262" y="270" font-size="10" fill="#777">Foundation used by every library (omitted):</text>'
+  '<text x="1262" y="284" font-size="10" fill="#777">loa::contracts · loa::core</text>')
 A("</svg>")
 
 out = pathlib.Path(__file__).with_suffix(".svg")

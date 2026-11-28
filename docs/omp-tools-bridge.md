@@ -1,6 +1,6 @@
 # omp tools bridge
 
-How the app offers omp's own tools (hashline `read`/`edit`, `lsp`, `debug`, `ast_grep`, `ast_edit`) to harnesses that are not omp, as an MCP server. Code: `crates/loa-mcp/src/bridge/`. Checked against omp 19.0.0.
+How the app offers omp's own tools (hashline `read`/`edit`, `lsp`, `debug`, `ast_grep`, `ast_edit`) to harnesses that are not omp, as an MCP server. Code: `cpp/libs/mcp/src/bridge.cpp` (`cpp/libs/mcp/include/loa/mcp/bridge.hpp`). Checked against omp 19.0.0.
 
 ## Can omp's tools run outside an omp agent loop? (#104)
 
@@ -10,7 +10,7 @@ How the app offers omp's own tools (hashline `read`/`edit`, `lsp`, `debug`, `ast
 | RPC command that runs a tool | `omp://rpc.md` "Command Schema" lists every `RpcCommand`. The only one that executes anything without a turn is `bash` (shell command, no tool dispatch). `set_host_tools` goes the other way (omp calls the host) | Does not exist |
 | `xd://` tool devices through RPC `bash` | `write xd://<tool>` dispatches a tool, and the embedded shell routes redirects to `xd://` handlers (`omp://tools/bash.md`). Tried: RPC `{"type":"bash","command":"cat xd://edit"}` answers `no filesystem provider for xd://`. The RPC `bash` command runs outside the agent's tool context | Does not work |
 | CLI subcommands | `omp read PATH` prints what the read tool returns and `omp grep` tests the grep tool. There is no `omp edit`, `omp lsp`, `omp debug` or `omp ast-*`. One process per call would also lose LSP and DAP state | Read only, not enough |
-| SDK (`createAgentSession`, `createTools`, tool classes) | `omp://sdk.md` "Entry points": the package exports `createTools`, `BUILTIN_TOOLS` and tool classes, so a Bun script could call `tool.execute()` directly | Works, but needs Bun and TypeScript. The repo is Rust only and the SDK is not installed here |
+| SDK (`createAgentSession`, `createTools`, tool classes) | `omp://sdk.md` "Entry points": the package exports `createTools`, `BUILTIN_TOOLS` and tool classes, so a Bun script could call `tool.execute()` directly | Works, but needs Bun and TypeScript. The repo is C++23 only and the SDK is not installed here |
 | Native addon (`@oh-my-pi/pi-natives`) | `omp://natives-architecture.md`: a Node-API addon with AST matching/editing, grep, edit sessions | N-API is callable only from a JS runtime. It has no hashline tag checks, LSP or DAP (those live in TypeScript) |
 | RPC agent turn driven by a scripted loopback model | omp accepts any OpenAI compatible provider from `models.yml` (`omp://models.md`). A loopback endpoint that answers the prompt with exactly one tool call makes omp execute its real tool and emit the result as `tool_execution_end`. Tried by hand, then automated in the tests below: `read` returned `[a.txt#B6C1]` with hashline rows, `edit` with that tag changed the file on disk, `ast_grep` ran. The only HTTP requests omp made went to the loopback endpoint | **Works today. Chosen** |
 
@@ -45,7 +45,7 @@ Entry points: `OmpExecutor::start(&OmpBridgeConfig)`, `OmpExecutor::tool_set()`,
 
 Default tools: `read`, `edit`, `ast_grep`, `ast_edit`, `lsp`, `debug`. `read` is included because `edit` needs the tags it returns.
 
-Tests (`cargo test -p loa-mcp --test mcp`) drive the bridge's MCP server with a fake omp RPC process, checking tool schemas, successful and failed calls, and unknown-tool rejection. The bridge still needs a live installed-omp end-to-end smoke run for tool execution and cancellation.
+Tests (`cmake --build build --target loa_mcp_tests && ./build/libs/mcp/loa_mcp_tests`, `cpp/libs/mcp/tests/bridge_test.cpp`) drive the bridge's MCP server with a fake omp RPC process, checking tool schemas, successful and failed calls, and unknown-tool rejection. The bridge still needs a live installed-omp end-to-end smoke run for tool execution and cancellation.
 
 ## If omp grows a direct path
 

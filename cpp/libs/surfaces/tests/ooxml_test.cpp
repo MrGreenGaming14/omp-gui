@@ -1,5 +1,5 @@
 // The OOXML package reader, and the Office fixtures in `cpp/tests/golden/docs` against what the Rust parsers
-// answered about them (`cpp/libs/surfaces/tests/docs-golden`).
+// answered about them (`cpp/libs/surfaces/tests/docs-golden` at ecc0cf0).
 
 #include <doctest/doctest.h>
 

@@ -45,15 +45,15 @@ flowchart LR
 
 | Layer | Pick | Why |
 | --- | --- | --- |
-| Language | Rust only | No TypeScript anywhere |
-| UI | iced 0.14 (decided) | Working terminal (iced_term), half GPUI's build cost, slower API churn, better docs. Palette, diff, tabs and virtual list are hand built |
-| Terminal panes | `alacritty_terminal` (via `iced_term`) | Alacritty's terminal emulator as a library |
+| Language | C++23 only | No TypeScript anywhere |
+| UI | Qt 6 Widgets (decided) | Mature widget set with built-in accessibility. Palette, diff, tabs and virtual list are hand built |
+| Terminal panes | libvterm + forkpty | Terminal emulator as a library, PTY from the OS |
 | Agent engine | Harness agnostic from day one (omp, omp2, Claude Code, Codex, OpenCode, generic ACP). Every omp feature works on every harness, provided by the app where a harness lacks it | The app owns the session format, harnesses are swappable |
 | P2P transport | iroh on UDP 31415, plain TCP on 31415 as fallback | Dial peers by public key, NAT traversal built in |
 | Discovery | mDNS on LAN, Tailscale MagicDNS names, or add a peer by key | No central server |
-| Identity | One ed25519 keypair per node in the OS keychain (`keyring`) | Same key is the network address and the signing key |
-| Grants | Biscuit tokens (`biscuit-auth`), bound to the holder's key | Offline checks, narrowing on re-share, a stolen token is useless |
-| Local data | SQLite (`rusqlite`) | Peers, grants, revocations, audit log |
-| Wire format | Protobuf (`prost`) | Matches omp2's collab protocol |
-| MCP | `rmcp` (official Rust MCP SDK) | Client for stdio and HTTP servers |
-| SSH | `russh` and `russh-sftp`, keys through ssh-agent | Pure Rust, reach boxes with no app instance, private keys never touched |
+| Identity | One ed25519 keypair per node in the OS keychain (libsecret on Linux, Keychain, Credential Manager) | Same key is the network address and the signing key |
+| Grants | Biscuit tokens (`biscuit-capi`), bound to the holder's key | Offline checks, narrowing on re-share, a stolen token is useless |
+| Local data | SQLite (sqlite3) | Peers, grants, revocations, audit log |
+| Wire format | Protobuf (hand-written codec `loa::proto`) | Matches omp2's collab protocol |
+| MCP | In-house MCP (`cpp/libs/mcp`) | Client for stdio and HTTP servers |
+| SSH | libssh, keys through ssh-agent only | Reach boxes with no app instance, private keys never touched |

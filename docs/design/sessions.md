@@ -70,7 +70,7 @@ Every patch carries a sequence number, a node id and a timestamp.
 - One writer per session. The owner node orders the patches
 - A fork is a new journal that starts at a patch position. A rewind diffs two DOM states, so removed elements are cancelled and new ones are resumed
 - A snapshot every N patches (around 1,000) so loading never replays from zero
-- A typed Rust tree in memory, compact protobuf patches on disk, and XML export only for debugging
+- A typed C++ tree in memory, compact protobuf patches on disk, and XML export only for debugging
 - The element schema is versioned like the protocols, and each adapter declares the version it emits
 - Grants select subtrees, like one `<turn>` (prompt A) or every `<session>` created after a given time
 - Several people editing one session at once would need a CRDT (`loro`). Not planned

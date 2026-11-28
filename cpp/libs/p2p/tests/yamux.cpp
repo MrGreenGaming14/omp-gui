@@ -188,7 +188,7 @@ TEST_CASE("golden: the C++ client's bytes are byte-identical to cpp-client.bin")
     CHECK(frames[0].first == Header::window_update(1, 0, SYN));
     CHECK(frames[4].first == Header::go_away(GO_AWAY_NORMAL));
 
-    // Rust yamux 0.14 decodes it (tests/interop `yamux-decode`).
+    // Rust yamux 0.14 decodes it (tests/interop `yamux-decode` at ecc0cf0).
     if (const char* rust = std::getenv("LOA_P2P_RUST_NODE")) {
         const auto path = std::string(LOA_GOLDEN_DIR) + "/p2p/yamux/cpp-client.bin";
         FILE* p = popen((std::string(rust) + " yamux-decode " + path).c_str(), "r");

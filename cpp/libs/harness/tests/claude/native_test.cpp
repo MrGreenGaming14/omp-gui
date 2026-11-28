@@ -19,7 +19,7 @@ using namespace loa::core;
 
 namespace {
 fs::path fixture() {
-    return fs::path(LOA_GOLDEN_DIR).parent_path().parent_path().parent_path() / "crates/loa-harness/fixtures/claude/native/11111111-2222-4333-8444-555555555555.jsonl";
+    return fs::path(LOA_HARNESS_FIXTURES) / "claude/native/11111111-2222-4333-8444-555555555555.jsonl";
 }
 void sort_json(j::Value& value) {
     if (auto* object = value.as_object()) {
