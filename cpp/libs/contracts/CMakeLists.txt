@@ -1,4 +1,5 @@
 add_library(loa_contracts STATIC
+  src/availability.cpp
   src/harness.cpp
   src/host_tools.cpp
   src/schema.cpp

@@ -13,6 +13,8 @@
 #include "loa/contracts/session.hpp"
 #include "loa/contracts/tools.hpp"
 #include "loa/core/dom.hpp"
+#include "loa/runtime/exec.hpp"
+#include "loa/runtime/tempfile.hpp"
 
 using namespace loa::contracts;
 namespace core = loa::core;
@@ -142,6 +144,23 @@ TEST_CASE("interface version and adapter error messages match the Rust crate") {
     CHECK(AdapterError(AdapterError::Commit{core::commit_error::NotWriter{}}).message() == "only the owner node writes this session");
     CHECK(AdapterError(AdapterError::Io{loa::Error(loa::ErrorCode::io, "denied")}).message() == "denied");
     DOCTEST_CHECK(DuplicateHostTool{"a"}.message() == "host tool `a` is already registered");
+}
+
+TEST_CASE("availability probe reports missing, ready and failing executables") {
+    namespace exec = loa::runtime::exec;
+    auto dir = loa::runtime::TempDir::create();
+    REQUIRE(dir);
+    const auto ok = dir->path() / "ok", bad = dir->path() / "bad";
+    REQUIRE(exec::write_executable(ok, "#!/bin/sh\necho \"fake 4.5.6\"\n"));
+    REQUIRE(exec::write_executable(bad, "#!/bin/sh\necho 'bad flag' >&2\nexit 3\n"));
+    CHECK(Availability::probe("loa-no-such-harness", {}).status == AvailabilityStatus::NotInstalled);
+    auto ready = Availability::probe(ok, {"--version"});
+    CHECK(ready.version == "4.5.6");
+    CHECK(ready.executable == exec::resolve(ok));
+    auto failed = Availability::probe(bad, {"--version"});
+    CHECK(failed.status == AvailabilityStatus::Failed);
+    REQUIRE(failed.detail);
+    CHECK(failed.detail->find("bad flag") != std::string::npos);
 }
 
 TEST_CASE("tool argument schemas match the schemars goldens byte for byte") {

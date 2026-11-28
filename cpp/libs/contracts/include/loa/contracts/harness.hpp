@@ -20,6 +20,7 @@
 #include "loa/core/schema.hpp"
 #include "loa/core/sink.hpp"
 #include "loa/runtime/error.hpp"
+#include "loa/runtime/registry.hpp"
 
 namespace loa::contracts {
 
@@ -261,6 +262,9 @@ class Adapter {
     // Writes `dom` as a native session that imports back to an equal DOM.
     [[nodiscard]] virtual Result<> export_(const loa::core::Dom& dom, const std::filesystem::path& out) const;
 };
+
+// The adapters built into the app, by harness id.
+using Registry = loa::runtime::Registry<Adapter>;
 
 // Turns `input` into a short text following `instructions` (digests, changelogs, titles).
 class Summarizer {

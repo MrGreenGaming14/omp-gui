@@ -4,8 +4,9 @@
 
 #include <chrono>
 #include <filesystem>
-#include <optional>
 #include <string>
+#include <vector>
+#include <optional>
 
 namespace loa::contracts {
 
@@ -41,6 +42,11 @@ struct Availability {
     }
 
     [[nodiscard]] bool is_ready() const noexcept { return status == AvailabilityStatus::Ready; }
+
+    // Classifies a `loa::runtime::exec` probe of `program version_args`: `NotInstalled` when
+    // it isn't on `PATH`, `Failed` (with the executable) when it didn't answer within
+    // `PROBE_TIMEOUT`, else ready with the parsed version.
+    [[nodiscard]] static Availability probe(const std::filesystem::path& program, const std::vector<std::string>& version_args);
 
     friend bool operator==(const Availability&, const Availability&) = default;
 };
