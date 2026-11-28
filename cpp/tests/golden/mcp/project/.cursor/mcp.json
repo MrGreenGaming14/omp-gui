@@ -1,0 +1,5 @@
+{"mcpServers": {
+  "fs": {"command": "mcp-fs", "args": ["/work/app"]},
+  "weird": {"type": "websocket", "url": "wss://x.example.com"},
+  "stdio-url": {"type": "stdio", "url": "https://s.example.com/mcp"}
+}}
