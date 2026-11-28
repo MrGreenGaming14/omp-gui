@@ -20,6 +20,11 @@ add_library(loa_harness STATIC
   src/codex/mapper.cpp
   src/codex/rollout.cpp
   src/codex/session.cpp
+  src/claude/account.cpp
+  src/claude/driver.cpp
+  src/claude/mapper.cpp
+  src/claude/mcp.cpp
+  src/claude/native.cpp
   src/registry/registry.cpp)
 target_sources(loa_harness PRIVATE
   src/omp/rpc/client.cpp
@@ -51,6 +56,11 @@ loa_add_test(harness
     tests/kit/proc_test.cpp
     tests/kit/residual_test.cpp
     tests/kit/rpc_test.cpp
+    tests/claude/account_test.cpp
+    tests/claude/driver_test.cpp
+    tests/claude/mapper_test.cpp
+    tests/claude/mcp_test.cpp
+    tests/claude/native_test.cpp
     tests/native/native_test.cpp
     tests/omp2/omp2_test.cpp
     tests/account_support/configdoc_test.cpp
