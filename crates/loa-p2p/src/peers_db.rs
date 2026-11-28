@@ -37,6 +37,8 @@ pub struct PeerInfo {
 }
 
 const COLUMNS: &str = "SELECT key, name, addresses, discovery_source, online, last_seen_ms, app_version FROM net_peers";
+const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS net_peers (key TEXT PRIMARY KEY NOT NULL, name TEXT, addresses TEXT NOT NULL DEFAULT '[]',
+             discovery_source TEXT NOT NULL, online INTEGER NOT NULL DEFAULT 0, last_seen_ms INTEGER, app_version TEXT);";
 
 #[derive(Default)]
 struct Seen {
@@ -53,10 +55,7 @@ pub struct PeerDirectory {
 impl PeerDirectory {
     pub fn open(path: &Path) -> Result<Self> {
         let db = Connection::open(path)?;
-        db.execute_batch(
-            "CREATE TABLE IF NOT EXISTS net_peers (key TEXT PRIMARY KEY NOT NULL, name TEXT, addresses TEXT NOT NULL DEFAULT '[]',
-             discovery_source TEXT NOT NULL, online INTEGER NOT NULL DEFAULT 0, last_seen_ms INTEGER, app_version TEXT);",
-        )?;
+        db.execute_batch(SCHEMA)?;
         Ok(Self { db: Mutex::new(db), seen: Mutex::default() })
     }
 
@@ -200,3 +199,7 @@ fn row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PeerInfo> {
         protocols: Vec::new(),
     })
 }
+
+#[cfg(test)]
+#[path = "golden.rs"]
+mod golden;
