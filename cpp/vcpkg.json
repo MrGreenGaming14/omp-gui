@@ -1,0 +1,28 @@
+{
+  "$comment": "macOS and Windows only. Linux uses the F1 apt line in docs/cpp-port/RECIPE.md. Qt 6 comes from the Qt installer/aqtinstall, not vcpkg. libsecret and libvterm have no vcpkg port.",
+  "name": "omp-gui",
+  "version-string": "0.0.0",
+  "dependencies": [
+    "asio",
+    "cpp-httplib",
+    "curl",
+    "doctest",
+    "giflib",
+    "libarchive",
+    "libjpeg-turbo",
+    "libpng",
+    "libssh",
+    "libwebp",
+    "libxlsxwriter",
+    "md4c",
+    "minizip",
+    "openh264",
+    "openssl",
+    "pugixml",
+    "sqlite3",
+    "stb",
+    "tomlplusplus",
+    "yaml-cpp",
+    "zlib"
+  ]
+}
