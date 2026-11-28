@@ -50,5 +50,9 @@ class Smoke {
 [[nodiscard]] QWidget* agents_screen();
 // Checks the panes rendered: the subagent rows, the job row and the tools tabs.
 [[nodiscard]] std::string check_agents_screen(QWidget& screen);
+// The `models` screen: the models frame on its sign in page, beside the model settings page and the picker.
+[[nodiscard]] QWidget* models_screen();
+// Checks the pages rendered: the frame tabs, the sign in rows, the settings sections and the picker rows.
+[[nodiscard]] std::string check_models_screen(QWidget& screen);
 
 } // namespace loa::ui::app
