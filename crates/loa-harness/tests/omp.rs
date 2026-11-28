@@ -71,6 +71,34 @@ fn a_turn_records_when_it_started_and_when_it_ended() {
 }
 
 #[test]
+fn only_an_untitled_session_whose_turn_completed_asks_for_a_title_once() {
+    use loa_harness::kit::EventMapper as _;
+    use loa_harness::omp::mapper::Input;
+    let run = |mapper: Mapper, lines: &[serde_json::Value]| {
+        let sink = MemorySink::new();
+        let attrs = vec![(attr::ID, "s".into()), (attr::HARNESS, "omp".into()), (attr::NODE, "owner".into()), (attr::CREATED, 1_i64.into()), (attr::SCHEMA, 1_i64.into())];
+        sink.commit(Draft::insert(NodeId::DOCUMENT, ElementKind::Session, attrs, "")).unwrap();
+        let mut mapper = mapper;
+        let w = loa_core::DomWriter::new(&sink);
+        for line in lines {
+            mapper.apply(serde_json::from_value::<Input>(line.clone()).unwrap(), &w).unwrap();
+        }
+        (mapper.take_rename(), mapper.take_rename())
+    };
+    let turn = |status: &str| [json!({"$": "send", "id": "p", "text": "read a.rs"}), json!({"type": "agent_start"}), json!({"type": "prompt_result", "id": "p", "agentInvoked": true, "status": status, "sessionSettled": true})];
+    let root = NodeId(1);
+    assert_eq!(run(Mapper::new(root), &turn("completed")), (true, false));
+    assert_eq!(run(Mapper::new(root), &turn("aborted")), (false, false));
+    assert_eq!(run(Mapper::new(root).titled(true), &turn("completed")), (false, false));
+    let mut titled = vec![json!({"type": "session_info_update", "title": "Named", "sessionId": "n"})];
+    titled.extend(turn("completed"));
+    assert_eq!(run(Mapper::new(root), &titled), (false, false));
+    let mut queued = turn("completed").to_vec();
+    queued.push(json!({"$": "send", "id": "q", "text": "next"}));
+    assert_eq!(run(Mapper::new(root), &queued), (false, false), "waits until nothing runs");
+}
+
+#[test]
 fn subagent_progress_matches_nested_id_and_legacy_id_without_fake_rows() {
     use loa_harness::kit::EventMapper as _;
     use loa_harness::omp::mapper::Input;
@@ -160,6 +188,11 @@ async fn a_session_streams_asks_and_settles_against_a_fake_omp() {
     script.push_str("> {\"type\":\"extension_ui_request\",\"id\":\"approval\",\"method\":\"confirm\",\"title\":\"Run?\",\"message\":\"write files\"}\n< extension_ui_response\n");
     script.push_str(&update(r#"{"type":"text_end","contentIndex":0,"content":"Working"}"#));
     script.push_str("> {\"type\":\"prompt_result\",\"status\":\"completed\",\"agentInvoked\":true,\"sessionSettled\":true}\n");
+    // The completed turn of an untitled session has omp title it.
+    script.push_str("< prompt rename\n> {\"type\":\"response\",\"id\":\"{{rename}}\",\"command\":\"prompt\",\"success\":true,\"data\":{\"agentInvoked\":false}}\n");
+    script.push_str("> {\"type\":\"session_info_update\",\"title\":\"Read a file\",\"sessionId\":\"native-1\"}\n");
+    script.push_str("> {\"type\":\"command_output\",\"text\":\"Session renamed to Read a file.\"}\n");
+    script.push_str("> {\"type\":\"thinking_level_changed\",\"thinkingLevel\":\"low\"}\n");
     let dir = tempfile::tempdir().unwrap();
     let fake = FakeProcess::install(dir.path(), &script).unwrap();
     let mut config = OmpAdapterConfig::new("owner", dir.path().join("state"));
@@ -174,13 +207,19 @@ async fn a_session_streams_asks_and_settles_against_a_fake_omp() {
     let decision = sink.inner.with_dom(waiting).unwrap();
     session.answer(decision, Answer { values: vec!["allow_once".into()], by: "owner".into(), reason: None }).await.unwrap();
     tokio::time::timeout(Duration::from_secs(20), session.wait_idle()).await.unwrap().unwrap();
+    sink.until("the title", |dom| dom.root().and_then(|r| r.str_attr(attr::EFFORT)) == Some("low")).await;
     let dom = sink.inner.dom();
+    assert_eq!(dom.root().unwrap().str_attr(attr::TITLE), Some("Read a file"));
+    assert!(!dom.iter().any(|n| n.text.contains("Session renamed") || n.text == "/rename"), "the rename stays out of the transcript");
     assert_eq!(dom.root().unwrap().str_attr(attr::NATIVE_ID), Some("native-1"));
     assert!(dom.iter().any(|n| n.kind == ElementKind::Message && n.text == "Working"));
     assert!(dom.iter().any(|n| n.kind == ElementKind::Result && n.text == "file text"));
     assert!(dom.iter().any(|n| n.kind == ElementKind::Turn && n.str_attr(attr::STATUS) == Some("done")));
     session.shutdown().await.unwrap();
-    assert_eq!(fake.received().iter().find(|frame| frame["id"] == "approval").unwrap()["confirmed"], json!(true));
+    let frames = fake.received();
+    assert_eq!(frames.iter().find(|frame| frame["id"] == "approval").unwrap()["confirmed"], json!(true));
+    let prompts: Vec<_> = frames.iter().filter(|frame| frame["type"] == "prompt").map(|frame| frame["message"].as_str().unwrap()).collect();
+    assert_eq!(prompts, ["Please read", "/rename"]);
     let args = fake.args();
     assert_eq!(&args[..2], ["--mode", "rpc-ui"]);
     let overlay = args.iter().position(|arg| arg == "--config").unwrap();

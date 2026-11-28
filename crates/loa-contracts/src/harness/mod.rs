@@ -120,6 +120,9 @@ pub struct SessionConfig {
     pub env: BTreeMap<String, String>,
     /// Executable to run instead of the one on `PATH` (the updater tests staged versions).
     pub executable: Option<PathBuf>,
+    /// The app names the session itself (forks, rewinds, compactions), so a harness that
+    /// generates titles leaves it alone.
+    pub named: bool,
 }
 
 impl std::fmt::Debug for SessionConfig {

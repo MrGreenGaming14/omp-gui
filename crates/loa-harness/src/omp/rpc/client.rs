@@ -18,7 +18,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitStatus;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 
@@ -197,6 +197,17 @@ impl UiResponder {
     }
 }
 
+/// An [`RpcClient`] that doesn't keep omp running; see [`RpcClient::downgrade`].
+#[derive(Clone)]
+pub struct WeakRpcClient(Weak<Inner>);
+
+impl WeakRpcClient {
+    /// The client, while any [`RpcClient`] clone is alive.
+    pub fn upgrade(&self) -> Option<RpcClient> {
+        self.0.upgrade().map(|inner| RpcClient { inner })
+    }
+}
+
 /// A running `omp --mode rpc` process. Cheap to clone; every clone talks to
 /// the same process, which is killed when the last clone drops.
 #[derive(Clone)]
@@ -290,6 +301,12 @@ impl RpcClient {
     /// running: once every `RpcClient` clone is dropped, the writes fail.
     pub fn ui_responder(&self) -> UiResponder {
         UiResponder(self.inner.rpc.writer())
+    }
+
+    /// A handle that sends commands while the session holds the client, but
+    /// doesn't keep omp running once every `RpcClient` clone is dropped.
+    pub fn downgrade(&self) -> WeakRpcClient {
+        WeakRpcClient(Arc::downgrade(&self.inner))
     }
 
     /// Kills omp without waiting.
