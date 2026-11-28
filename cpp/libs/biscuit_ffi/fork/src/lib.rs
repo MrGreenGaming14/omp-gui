@@ -13,6 +13,8 @@ use std::{
 
 use biscuit_auth::datalog::SymbolTable;
 
+pub mod loa;
+
 enum Error {
     Biscuit(biscuit_auth::error::Token),
     InvalidArgument,
