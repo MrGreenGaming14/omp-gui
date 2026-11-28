@@ -437,9 +437,10 @@ PanelView::PanelView(QWidget* parent) : QWidget(parent) {
     connect(launcher_button_, &QPushButton::clicked, this, [this] { emit message(panel::msg::Launcher{}); });
     strip->addWidget(launcher_button_);
     col->addLayout(strip);
+    // A plain QFrame line is one device pixel by default, so no size literal is needed.
     auto* rule = new QFrame;
     rule->setFrameShape(QFrame::HLine);
-    rule->setFixedHeight(1);
+    rule->setFrameShadow(QFrame::Plain);
     col->addWidget(rule);
     body_ = new QStackedWidget;
     tab_ = new TabView;

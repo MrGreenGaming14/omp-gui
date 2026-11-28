@@ -8,6 +8,7 @@ add_library(loa_app STATIC
   src/kit_gallery.cpp
   src/local_fs.cpp
   src/panel_smoke.cpp
+  src/peers_updates_smoke.cpp
   src/settings_smoke.cpp
   src/smoke.cpp
   src/surface_smoke.cpp
@@ -43,3 +44,7 @@ add_test(NAME loa_qt_smoke_projects COMMAND loa-qt --smoke projects)
 set_tests_properties(loa_qt_smoke_projects PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 5)
 add_test(NAME loa_qt_smoke_workflows COMMAND loa-qt --smoke workflows)
 set_tests_properties(loa_qt_smoke_workflows PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 5)
+add_test(NAME loa_qt_smoke_peers COMMAND loa-qt --smoke peers)
+set_tests_properties(loa_qt_smoke_peers PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 5)
+add_test(NAME loa_qt_smoke_updates COMMAND loa-qt --smoke updates)
+set_tests_properties(loa_qt_smoke_updates PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 5)
