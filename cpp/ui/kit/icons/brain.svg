@@ -1,0 +1,20 @@
+<!-- Loa, drawn in the lucide style (24x24, 2px round strokes) -->
+<svg
+  class="loa-icon loa-icon-brain"
+  xmlns="http://www.w3.org/2000/svg"
+  width="24"
+  height="24"
+  viewBox="0 0 24 24"
+  fill="none"
+  stroke="currentColor"
+  stroke-width="2"
+  stroke-linecap="round"
+  stroke-linejoin="round"
+>
+  <path d="M12 5.5C12 3.5 9 2.8 7.8 4.6C5.6 4.3 4.2 6.3 4.9 8.2C3.1 9.3 3 12 4.6 13.2C3.8 15.4 5.3 17.6 7.6 17.4C8.3 19.6 11.2 20.2 12 18.3z" />
+  <path d="M12 5.5C12 3.5 15 2.8 16.2 4.6C18.4 4.3 19.8 6.3 19.1 8.2C20.9 9.3 21 12 19.4 13.2C20.2 15.4 18.7 17.6 16.4 17.4C15.7 19.6 12.8 20.2 12 18.3" />
+  <path d="M7.5 12.5a2.5 2.5 0 0 0 2.5-2" />
+  <path d="M16.5 12.5a2.5 2.5 0 0 1-2.5-2" />
+  <path d="M8.5 8h1" />
+  <path d="M15.5 8h-1" />
+</svg>
