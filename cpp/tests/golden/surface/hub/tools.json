@@ -1,0 +1,145 @@
+{
+  "all": [
+    {
+      "name": "surface_click",
+      "description": "Click at a point of the surface, in surface pixels.",
+      "input_schema": "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"title\":\"ClickArgs\",\"type\":\"object\",\"properties\":{\"uri\":{\"description\":\"The surface, e.g. surface://browser/tab1\",\"type\":\"string\"},\"x\":{\"description\":\"Pixels from the left edge of the surface\",\"type\":\"number\",\"format\":\"float\"},\"y\":{\"description\":\"Pixels from the top edge of the surface\",\"type\":\"number\",\"format\":\"float\"},\"button\":{\"$ref\":\"#/$defs/ClickButton\"},\"count\":{\"description\":\"2 for a double click, 3 for a triple click\",\"type\":\"integer\",\"format\":\"uint32\",\"minimum\":1,\"maximum\":3,\"default\":1},\"modifiers\":{\"description\":\"Keys held during the click\",\"type\":\"array\",\"items\":{\"$ref\":\"#/$defs/ModifierKey\"}}},\"additionalProperties\":false,\"required\":[\"uri\",\"x\",\"y\"],\"$defs\":{\"ClickButton\":{\"type\":\"string\",\"enum\":[\"left\",\"middle\",\"right\"]},\"ModifierKey\":{\"type\":\"string\",\"enum\":[\"shift\",\"ctrl\",\"alt\",\"meta\"]}}}"
+    },
+    {
+      "name": "surface_document_data",
+      "description": "Structured data of a document surface. query.kind is one of: info (any file), text (PDF pages, DOCX, PPTX slides; optional page from 0), sheets (XLSX), cells (XLSX; range in A1 notation, optional sheet), outline (DOCX), slides (PPTX).",
+      "input_schema": "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"title\":\"DataArgs\",\"type\":\"object\",\"properties\":{\"uri\":{\"description\":\"The surface, e.g. surface://docs/1\",\"type\":\"string\"},\"query\":{\"$ref\":\"#/$defs/DataQuery\"}},\"additionalProperties\":false,\"required\":[\"uri\",\"query\"],\"$defs\":{\"DataQuery\":{\"description\":\"Structured data the agent tools ask a document surface for.\",\"oneOf\":[{\"description\":\"Format, MIME type, page count and page sizes. Every format.\",\"type\":\"object\",\"properties\":{\"kind\":{\"type\":\"string\",\"const\":\"info\"}},\"required\":[\"kind\"]},{\"description\":\"Page text (PDF, one entry per page or just `page`), document text (DOCX) or slide text (PPTX).\",\"type\":\"object\",\"properties\":{\"kind\":{\"type\":\"string\",\"const\":\"text\"},\"page\":{\"type\":[\"integer\",\"null\"],\"format\":\"uint\",\"minimum\":0,\"default\":null}},\"required\":[\"kind\"]},{\"description\":\"XLSX: sheet names and used sizes.\",\"type\":\"object\",\"properties\":{\"kind\":{\"type\":\"string\",\"const\":\"sheets\"}},\"required\":[\"kind\"]},{\"description\":\"XLSX: cells of `range` (A1 notation) in `sheet` (default: the first).\",\"type\":\"object\",\"properties\":{\"kind\":{\"type\":\"string\",\"const\":\"cells\"},\"sheet\":{\"type\":[\"string\",\"null\"],\"default\":null},\"range\":{\"type\":\"string\"}},\"required\":[\"kind\",\"range\"]},{\"description\":\"DOCX: paragraphs with style, heading level, list level and runs, and tables.\",\"type\":\"object\",\"properties\":{\"kind\":{\"type\":\"string\",\"const\":\"outline\"}},\"required\":[\"kind\"]},{\"description\":\"PPTX: slides in presentation order with their shapes, text and notes.\",\"type\":\"object\",\"properties\":{\"kind\":{\"type\":\"string\",\"const\":\"slides\"}},\"required\":[\"kind\"]}]}}}"
+    },
+    {
+      "name": "surface_elements",
+      "description": "The interactive elements of the page in a browser surface (role, name and box in surface pixels), to aim clicks.",
+      "input_schema": "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"title\":\"UriArgs\",\"type\":\"object\",\"properties\":{\"uri\":{\"description\":\"The surface, e.g. surface://browser/tab1\",\"type\":\"string\"}},\"additionalProperties\":false,\"required\":[\"uri\"]}"
+    },
+    {
+      "name": "surface_list",
+      "description": "List the surfaces open in the app (browser tabs, documents, VMs) with their uri, size and mode.",
+      "input_schema": "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"title\":\"NoArgs\",\"type\":\"object\",\"additionalProperties\":false}"
+    },
+    {
+      "name": "surface_navigate",
+      "description": "Load a URL in a browser surface and wait for it. Returns the new URL and title.",
+      "input_schema": "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"title\":\"NavigateArgs\",\"type\":\"object\",\"properties\":{\"uri\":{\"description\":\"The surface, e.g. surface://browser/tab1\",\"type\":\"string\"},\"url\":{\"type\":\"string\"}},\"additionalProperties\":false,\"required\":[\"uri\",\"url\"]}"
+    },
+    {
+      "name": "surface_open_browser",
+      "description": "Open a new browser tab at a URL. The user sees it in the Surfaces panel. Returns its surface uri.",
+      "input_schema": "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"title\":\"UrlArgs\",\"type\":\"object\",\"properties\":{\"url\":{\"type\":\"string\"}},\"additionalProperties\":false,\"required\":[\"url\"]}"
+    },
+    {
+      "name": "surface_page_text",
+      "description": "The URL, title and readable text of the page in a browser surface.",
+      "input_schema": "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"title\":\"UriArgs\",\"type\":\"object\",\"properties\":{\"uri\":{\"description\":\"The surface, e.g. surface://browser/tab1\",\"type\":\"string\"}},\"additionalProperties\":false,\"required\":[\"uri\"]}"
+    },
+    {
+      "name": "surface_screenshot",
+      "description": "Capture the surface as a PNG image.",
+      "input_schema": "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"title\":\"UriArgs\",\"type\":\"object\",\"properties\":{\"uri\":{\"description\":\"The surface, e.g. surface://browser/tab1\",\"type\":\"string\"}},\"additionalProperties\":false,\"required\":[\"uri\"]}"
+    },
+    {
+      "name": "surface_scroll",
+      "description": "Scroll at a point of the surface. Positive dy scrolls the content down.",
+      "input_schema": "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"title\":\"ScrollArgs\",\"type\":\"object\",\"properties\":{\"uri\":{\"description\":\"The surface, e.g. surface://browser/tab1\",\"type\":\"string\"},\"x\":{\"type\":\"number\",\"format\":\"float\"},\"y\":{\"type\":\"number\",\"format\":\"float\"},\"dx\":{\"description\":\"Pixels to scroll right\",\"type\":\"number\",\"format\":\"float\",\"default\":0.0},\"dy\":{\"description\":\"Pixels to scroll down\",\"type\":\"number\",\"format\":\"float\",\"default\":0.0}},\"additionalProperties\":false,\"required\":[\"uri\",\"x\",\"y\"]}"
+    },
+    {
+      "name": "surface_type",
+      "description": "Type text into the focused element of the surface.",
+      "input_schema": "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"title\":\"TypeArgs\",\"type\":\"object\",\"properties\":{\"uri\":{\"description\":\"The surface, e.g. surface://browser/tab1\",\"type\":\"string\"},\"text\":{\"type\":\"string\"},\"submit\":{\"description\":\"Press Enter after the text\",\"type\":\"boolean\",\"default\":false}},\"additionalProperties\":false,\"required\":[\"uri\",\"text\"]}"
+    }
+  ],
+  "browser": [
+    {
+      "name": "surface_click",
+      "description": "Click at a point of the surface, in surface pixels.",
+      "input_schema": "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"title\":\"ClickArgs\",\"type\":\"object\",\"properties\":{\"uri\":{\"description\":\"The surface, e.g. surface://browser/tab1\",\"type\":\"string\"},\"x\":{\"description\":\"Pixels from the left edge of the surface\",\"type\":\"number\",\"format\":\"float\"},\"y\":{\"description\":\"Pixels from the top edge of the surface\",\"type\":\"number\",\"format\":\"float\"},\"button\":{\"$ref\":\"#/$defs/ClickButton\"},\"count\":{\"description\":\"2 for a double click, 3 for a triple click\",\"type\":\"integer\",\"format\":\"uint32\",\"minimum\":1,\"maximum\":3,\"default\":1},\"modifiers\":{\"description\":\"Keys held during the click\",\"type\":\"array\",\"items\":{\"$ref\":\"#/$defs/ModifierKey\"}}},\"additionalProperties\":false,\"required\":[\"uri\",\"x\",\"y\"],\"$defs\":{\"ClickButton\":{\"type\":\"string\",\"enum\":[\"left\",\"middle\",\"right\"]},\"ModifierKey\":{\"type\":\"string\",\"enum\":[\"shift\",\"ctrl\",\"alt\",\"meta\"]}}}"
+    },
+    {
+      "name": "surface_elements",
+      "description": "The interactive elements of the page in a browser surface (role, name and box in surface pixels), to aim clicks.",
+      "input_schema": "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"title\":\"UriArgs\",\"type\":\"object\",\"properties\":{\"uri\":{\"description\":\"The surface, e.g. surface://browser/tab1\",\"type\":\"string\"}},\"additionalProperties\":false,\"required\":[\"uri\"]}"
+    },
+    {
+      "name": "surface_list",
+      "description": "List the surfaces open in the app (browser tabs, documents, VMs) with their uri, size and mode.",
+      "input_schema": "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"title\":\"NoArgs\",\"type\":\"object\",\"additionalProperties\":false}"
+    },
+    {
+      "name": "surface_navigate",
+      "description": "Load a URL in a browser surface and wait for it. Returns the new URL and title.",
+      "input_schema": "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"title\":\"NavigateArgs\",\"type\":\"object\",\"properties\":{\"uri\":{\"description\":\"The surface, e.g. surface://browser/tab1\",\"type\":\"string\"},\"url\":{\"type\":\"string\"}},\"additionalProperties\":false,\"required\":[\"uri\",\"url\"]}"
+    },
+    {
+      "name": "surface_open_browser",
+      "description": "Open a new browser tab at a URL. The user sees it in the Surfaces panel. Returns its surface uri.",
+      "input_schema": "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"title\":\"UrlArgs\",\"type\":\"object\",\"properties\":{\"url\":{\"type\":\"string\"}},\"additionalProperties\":false,\"required\":[\"url\"]}"
+    },
+    {
+      "name": "surface_page_text",
+      "description": "The URL, title and readable text of the page in a browser surface.",
+      "input_schema": "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"title\":\"UriArgs\",\"type\":\"object\",\"properties\":{\"uri\":{\"description\":\"The surface, e.g. surface://browser/tab1\",\"type\":\"string\"}},\"additionalProperties\":false,\"required\":[\"uri\"]}"
+    },
+    {
+      "name": "surface_screenshot",
+      "description": "Capture the surface as a PNG image.",
+      "input_schema": "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"title\":\"UriArgs\",\"type\":\"object\",\"properties\":{\"uri\":{\"description\":\"The surface, e.g. surface://browser/tab1\",\"type\":\"string\"}},\"additionalProperties\":false,\"required\":[\"uri\"]}"
+    },
+    {
+      "name": "surface_scroll",
+      "description": "Scroll at a point of the surface. Positive dy scrolls the content down.",
+      "input_schema": "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"title\":\"ScrollArgs\",\"type\":\"object\",\"properties\":{\"uri\":{\"description\":\"The surface, e.g. surface://browser/tab1\",\"type\":\"string\"},\"x\":{\"type\":\"number\",\"format\":\"float\"},\"y\":{\"type\":\"number\",\"format\":\"float\"},\"dx\":{\"description\":\"Pixels to scroll right\",\"type\":\"number\",\"format\":\"float\",\"default\":0.0},\"dy\":{\"description\":\"Pixels to scroll down\",\"type\":\"number\",\"format\":\"float\",\"default\":0.0}},\"additionalProperties\":false,\"required\":[\"uri\",\"x\",\"y\"]}"
+    },
+    {
+      "name": "surface_type",
+      "description": "Type text into the focused element of the surface.",
+      "input_schema": "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"title\":\"TypeArgs\",\"type\":\"object\",\"properties\":{\"uri\":{\"description\":\"The surface, e.g. surface://browser/tab1\",\"type\":\"string\"},\"text\":{\"type\":\"string\"},\"submit\":{\"description\":\"Press Enter after the text\",\"type\":\"boolean\",\"default\":false}},\"additionalProperties\":false,\"required\":[\"uri\",\"text\"]}"
+    }
+  ],
+  "docs": [
+    {
+      "name": "surface_document_data",
+      "description": "Structured data of a document surface. query.kind is one of: info (any file), text (PDF pages, DOCX, PPTX slides; optional page from 0), sheets (XLSX), cells (XLSX; range in A1 notation, optional sheet), outline (DOCX), slides (PPTX).",
+      "input_schema": "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"title\":\"DataArgs\",\"type\":\"object\",\"properties\":{\"uri\":{\"description\":\"The surface, e.g. surface://docs/1\",\"type\":\"string\"},\"query\":{\"$ref\":\"#/$defs/DataQuery\"}},\"additionalProperties\":false,\"required\":[\"uri\",\"query\"],\"$defs\":{\"DataQuery\":{\"description\":\"Structured data the agent tools ask a document surface for.\",\"oneOf\":[{\"description\":\"Format, MIME type, page count and page sizes. Every format.\",\"type\":\"object\",\"properties\":{\"kind\":{\"type\":\"string\",\"const\":\"info\"}},\"required\":[\"kind\"]},{\"description\":\"Page text (PDF, one entry per page or just `page`), document text (DOCX) or slide text (PPTX).\",\"type\":\"object\",\"properties\":{\"kind\":{\"type\":\"string\",\"const\":\"text\"},\"page\":{\"type\":[\"integer\",\"null\"],\"format\":\"uint\",\"minimum\":0,\"default\":null}},\"required\":[\"kind\"]},{\"description\":\"XLSX: sheet names and used sizes.\",\"type\":\"object\",\"properties\":{\"kind\":{\"type\":\"string\",\"const\":\"sheets\"}},\"required\":[\"kind\"]},{\"description\":\"XLSX: cells of `range` (A1 notation) in `sheet` (default: the first).\",\"type\":\"object\",\"properties\":{\"kind\":{\"type\":\"string\",\"const\":\"cells\"},\"sheet\":{\"type\":[\"string\",\"null\"],\"default\":null},\"range\":{\"type\":\"string\"}},\"required\":[\"kind\",\"range\"]},{\"description\":\"DOCX: paragraphs with style, heading level, list level and runs, and tables.\",\"type\":\"object\",\"properties\":{\"kind\":{\"type\":\"string\",\"const\":\"outline\"}},\"required\":[\"kind\"]},{\"description\":\"PPTX: slides in presentation order with their shapes, text and notes.\",\"type\":\"object\",\"properties\":{\"kind\":{\"type\":\"string\",\"const\":\"slides\"}},\"required\":[\"kind\"]}]}}}"
+    },
+    {
+      "name": "surface_list",
+      "description": "List the surfaces open in the app (browser tabs, documents, VMs) with their uri, size and mode.",
+      "input_schema": "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"title\":\"NoArgs\",\"type\":\"object\",\"additionalProperties\":false}"
+    },
+    {
+      "name": "surface_screenshot",
+      "description": "Capture the surface as a PNG image.",
+      "input_schema": "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"title\":\"UriArgs\",\"type\":\"object\",\"properties\":{\"uri\":{\"description\":\"The surface, e.g. surface://browser/tab1\",\"type\":\"string\"}},\"additionalProperties\":false,\"required\":[\"uri\"]}"
+    }
+  ],
+  "vm": [
+    {
+      "name": "surface_click",
+      "description": "Click at a point of the surface, in surface pixels.",
+      "input_schema": "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"title\":\"ClickArgs\",\"type\":\"object\",\"properties\":{\"uri\":{\"description\":\"The surface, e.g. surface://browser/tab1\",\"type\":\"string\"},\"x\":{\"description\":\"Pixels from the left edge of the surface\",\"type\":\"number\",\"format\":\"float\"},\"y\":{\"description\":\"Pixels from the top edge of the surface\",\"type\":\"number\",\"format\":\"float\"},\"button\":{\"$ref\":\"#/$defs/ClickButton\"},\"count\":{\"description\":\"2 for a double click, 3 for a triple click\",\"type\":\"integer\",\"format\":\"uint32\",\"minimum\":1,\"maximum\":3,\"default\":1},\"modifiers\":{\"description\":\"Keys held during the click\",\"type\":\"array\",\"items\":{\"$ref\":\"#/$defs/ModifierKey\"}}},\"additionalProperties\":false,\"required\":[\"uri\",\"x\",\"y\"],\"$defs\":{\"ClickButton\":{\"type\":\"string\",\"enum\":[\"left\",\"middle\",\"right\"]},\"ModifierKey\":{\"type\":\"string\",\"enum\":[\"shift\",\"ctrl\",\"alt\",\"meta\"]}}}"
+    },
+    {
+      "name": "surface_list",
+      "description": "List the surfaces open in the app (browser tabs, documents, VMs) with their uri, size and mode.",
+      "input_schema": "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"title\":\"NoArgs\",\"type\":\"object\",\"additionalProperties\":false}"
+    },
+    {
+      "name": "surface_screenshot",
+      "description": "Capture the surface as a PNG image.",
+      "input_schema": "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"title\":\"UriArgs\",\"type\":\"object\",\"properties\":{\"uri\":{\"description\":\"The surface, e.g. surface://browser/tab1\",\"type\":\"string\"}},\"additionalProperties\":false,\"required\":[\"uri\"]}"
+    },
+    {
+      "name": "surface_scroll",
+      "description": "Scroll at a point of the surface. Positive dy scrolls the content down.",
+      "input_schema": "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"title\":\"ScrollArgs\",\"type\":\"object\",\"properties\":{\"uri\":{\"description\":\"The surface, e.g. surface://browser/tab1\",\"type\":\"string\"},\"x\":{\"type\":\"number\",\"format\":\"float\"},\"y\":{\"type\":\"number\",\"format\":\"float\"},\"dx\":{\"description\":\"Pixels to scroll right\",\"type\":\"number\",\"format\":\"float\",\"default\":0.0},\"dy\":{\"description\":\"Pixels to scroll down\",\"type\":\"number\",\"format\":\"float\",\"default\":0.0}},\"additionalProperties\":false,\"required\":[\"uri\",\"x\",\"y\"]}"
+    },
+    {
+      "name": "surface_type",
+      "description": "Type text into the focused element of the surface.",
+      "input_schema": "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"title\":\"TypeArgs\",\"type\":\"object\",\"properties\":{\"uri\":{\"description\":\"The surface, e.g. surface://browser/tab1\",\"type\":\"string\"},\"text\":{\"type\":\"string\"},\"submit\":{\"description\":\"Press Enter after the text\",\"type\":\"boolean\",\"default\":false}},\"additionalProperties\":false,\"required\":[\"uri\",\"text\"]}"
+    }
+  ]
+}

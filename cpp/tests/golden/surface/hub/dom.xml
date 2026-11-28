@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- loa session dom: schema 1, seq 4, next nid 4 -->
+<session nid="1" created.int="100" harness="omp" id="s1" node="key-laptop">
+  <surface nid="2" height.int="720" mode="pixel" name="Example" server="browser" status="closed" uri="surface://browser/tab1" width.int="1280"/>
+  <surface nid="3" mode="document" name="report.pdf" server="files-server" status="open" uri="surface://files/report"/>
+</session>

@@ -20,6 +20,7 @@ cargo run --manifest-path cpp/libs/harness/tools/golden_gen/Cargo.toml
 cargo run --manifest-path cpp/libs/sandbox/tools/golden_gen/Cargo.toml -- golden cpp/tests/golden/sandbox
 cargo run --manifest-path cpp/libs/projects/tools/golden_gen/Cargo.toml -- cpp/tests/golden/projects
 cargo run --manifest-path cpp/libs/updater/tools/golden_gen/Cargo.toml -- cpp/tests/golden/updater
+cargo run --manifest-path cpp/libs/surfaces/tools/hub_golden/Cargo.toml -- cpp/tests/golden/surface/hub
 ```
 
 Then update the rows of `MANIFEST.md` (length, sha256, source SHA) for every changed file.
@@ -34,7 +35,8 @@ Then update the rows of `MANIFEST.md` (length, sha256, source SHA) for every cha
 | `cpp/libs/settings/tests/agents-golden` (scratch binary on `loa-settings`; reads the hand-written inputs `settings/agent.md`, `settings/agent-crlf.md`, `settings/workflows/RULES.md`, `settings/workflows/config.yml`) | `settings/agent*.edited.md`, `settings/agent.new.md`, `settings/workflows/*.created.*`, `settings/workflows/*.edited.*` |
 | `crates/loa-p2p/src/golden.rs` `write_golden_wire_and_peers` | `p2p/*`, `sqlite/net_peers.*` |
 | `crates/loa-trust/src/golden.rs` `write_golden_trust_and_grants` | `trust/*`, `sqlite/grants.*` |
-| `crates/loa-surfaces/src/proto/golden.rs` `write_golden_surface_wire` | `surface/*` |
+| `crates/loa-surfaces/src/proto/golden.rs` `write_golden_surface_wire` | `surface/*.bin` |
+| `cpp/libs/surfaces/tools/hub_golden` (standalone crate over `loa-surfaces` feature `hub`; outside the workspace) | `surface/hub/*` |
 | `crates/loa-remote/src/audit_golden.rs` `write_golden_remote_audit` | `remote/*` |
 | `crates/loa-contracts/tests/golden.rs` `write_golden_tool_schemas` | `contracts/*` |
 | `crates/loa-util/tests/golden.rs` | `util/iso.txt`, `util/ssh/aliases.txt` (`util/ssh/config`, `util/ssh/conf.d/*` are hand-written inputs) |
