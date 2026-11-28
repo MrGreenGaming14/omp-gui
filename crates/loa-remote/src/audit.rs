@@ -222,3 +222,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "audit_golden.rs"]
+mod golden;

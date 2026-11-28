@@ -1,0 +1,44 @@
+{
+  "remote_audit": [
+    {
+      "id": 1,
+      "at_ms": 1700000000123,
+      "host": "db",
+      "session_id": "s1",
+      "action": "write",
+      "target": "/etc/app.conf",
+      "outcome": "ok",
+      "detail": "12 bytes"
+    },
+    {
+      "id": 2,
+      "at_ms": 1700000001124,
+      "host": "db",
+      "session_id": "s2",
+      "action": "command",
+      "target": "rm -rf /",
+      "outcome": "refused",
+      "detail": "blocked by policy"
+    },
+    {
+      "id": 3,
+      "at_ms": 1700000002125,
+      "host": "web",
+      "session_id": "s1",
+      "action": "terminal",
+      "target": "",
+      "outcome": "denied",
+      "detail": "user declined"
+    },
+    {
+      "id": 4,
+      "at_ms": 1700000003126,
+      "host": "web",
+      "session_id": "s1",
+      "action": "read",
+      "target": "/var/log/naïve ✓.log",
+      "outcome": "timed_out",
+      "detail": ""
+    }
+  ]
+}

@@ -338,3 +338,7 @@ mod tests {
         assert!(StreamMessage::decode(&[15 << 3 | 2, 2, 0xAA, 0xBB][..]).unwrap().body.is_none());
     }
 }
+
+#[cfg(test)]
+#[path = "golden.rs"]
+mod golden;
