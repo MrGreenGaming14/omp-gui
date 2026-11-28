@@ -120,10 +120,11 @@ TEST_CASE("command line options") {
     CHECK_FALSE(parse({"loa-qt"}).smoke);
 }
 
-TEST_CASE("smoke screens: kit, panel and shell pass, unknown screens are rejected") {
+TEST_CASE("smoke screens: decisions, kit, panel and shell pass, unknown screens are rejected") {
     qt_app();
     auto& smoke = Smoke::registry();
-    CHECK(smoke.names() == std::vector<std::string>{"kit", "panel", "shell"});
+    CHECK(smoke.names() == std::vector<std::string>{"decisions", "kit", "panel", "shell"});
+    CHECK(smoke.run("decisions") == 0);
     CHECK(smoke.run("kit") == 0);
     CHECK(smoke.run("panel") == 0);
     CHECK(smoke.run("shell") == 0);

@@ -13,6 +13,7 @@ namespace loa::ui::app {
 Smoke& Smoke::registry() {
     static Smoke smoke = [] {
         Smoke s;
+        s.add("decisions", [] { return decisions_screen(); }, check_decisions_screen);
         s.add("kit", [] { return kit_gallery(); }, check_kit_gallery);
         s.add("panel", [] { return panel_screen(); }, check_panel_screen);
         s.add("shell", [] {

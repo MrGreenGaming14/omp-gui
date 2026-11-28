@@ -1,16 +1,26 @@
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets)
+find_package(PkgConfig REQUIRED)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  pkg_check_modules(LIBNOTIFY REQUIRED IMPORTED_TARGET libnotify)
+endif()
 
 # The app minus `main`, so tests drive the same code as `loa-qt`.
 add_library(loa_app STATIC
   src/application.cpp
   src/asio_bridge.cpp
+  src/decisions_smoke.cpp
   src/kit_gallery.cpp
   src/local_fs.cpp
+  src/notifier.cpp
   src/panel_smoke.cpp
   src/smoke.cpp)
 add_library(loa::app ALIAS loa_app)
 target_include_directories(loa_app PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
-target_link_libraries(loa_app PUBLIC loa::ui_kit loa::ui_shell loa::ui_panel loa::view loa::runtime Qt6::Core Qt6::Gui Qt6::Widgets)
+target_link_libraries(loa_app PUBLIC loa::ui_kit loa::ui_shell loa::ui_panel loa::ui_session loa::view loa::runtime Qt6::Core Qt6::Gui Qt6::Widgets)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # libnotify (and its glib headers) stay private to `notifier.cpp`.
+  target_link_libraries(loa_app PRIVATE PkgConfig::LIBNOTIFY)
+endif()
 
 add_executable(loa-qt src/main.cpp)
 set_target_properties(loa-qt PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
@@ -27,3 +37,6 @@ set_tests_properties(loa_qt_smoke_shell PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=
 
 add_test(NAME loa_qt_smoke_panel COMMAND loa-qt --smoke panel)
 set_tests_properties(loa_qt_smoke_panel PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 5)
+
+add_test(NAME loa_qt_smoke_decisions COMMAND loa-qt --smoke decisions)
+set_tests_properties(loa_qt_smoke_decisions PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 5)

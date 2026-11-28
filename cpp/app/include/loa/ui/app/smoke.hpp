@@ -46,5 +46,9 @@ class Smoke {
 [[nodiscard]] QWidget* panel_screen();
 // Checks the panes rendered: diff rows painted, files listed, session rows shown.
 [[nodiscard]] std::string check_panel_screen(QWidget& screen);
+// The `decisions` screen: a card of every decision kind on a desk, and the unattended settings.
+[[nodiscard]] QWidget* decisions_screen();
+// Checks one card per kind rendered, with the approval's diff preview, and the settings.
+[[nodiscard]] std::string check_decisions_screen(QWidget& screen);
 
 } // namespace loa::ui::app
