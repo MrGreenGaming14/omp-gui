@@ -4,7 +4,7 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(MD4C REQUIRED IMPORTED_TARGET md4c)
 
 # The session screen. Port of `crates/loa-ui-session`; one state/view pair per screen
-# (`composer/`, `transcript/`). State code is plain C++; the views are Qt widgets.
+# (`composer/`, `decisions/`, `transcript/`). State code is plain C++; the views are Qt widgets.
 add_library(loa_ui_session STATIC
   src/composer/editor.cpp
   src/composer/highlight.cpp
@@ -19,11 +19,19 @@ add_library(loa_ui_session STATIC
   src/transcript/state.cpp
   src/transcript/view.cpp
   include/loa/ui/session/composer/view.hpp
+  src/decisions/card.cpp
+  src/decisions/desk.cpp
+  src/decisions/form.cpp
+  src/decisions/model.cpp
+  src/decisions/state.cpp
+  src/decisions/unattended.cpp
+  src/decisions/view.cpp
+  include/loa/ui/session/decisions/view.hpp
   include/loa/ui/session/transcript/view.hpp)
 add_library(loa::ui_session ALIAS loa_ui_session)
 set_target_properties(loa_ui_session PROPERTIES AUTOMOC ON)
 target_include_directories(loa_ui_session PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
-target_link_libraries(loa_ui_session PUBLIC loa::ui_kit loa::view loa::runtime Qt6::Core Qt6::Gui Qt6::Widgets
+target_link_libraries(loa_ui_session PUBLIC loa::ui_kit loa::ui_shell loa::ui_panel loa::view loa::runtime Qt6::Core Qt6::Gui Qt6::Widgets
   PRIVATE PkgConfig::MD4C)
 
 loa_add_test(ui_session
@@ -33,6 +41,8 @@ loa_add_test(ui_session
     tests/composer/input_test.cpp
     tests/composer/view_test.cpp
     tests/composer/working_test.cpp
+    tests/decisions/decisions_test.cpp
+    tests/decisions/view_test.cpp
     tests/transcript/prose_test.cpp
     tests/transcript/selection_test.cpp
     tests/transcript/transcript_test.cpp

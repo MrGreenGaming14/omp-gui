@@ -86,5 +86,9 @@ class Smoke {
 [[nodiscard]] QWidget* settings_updates_screen();
 // Checks the status lines, hold choices, gate report and peer standing.
 [[nodiscard]] std::string check_settings_updates_screen(QWidget& screen);
+// The `decisions` screen: a card of every decision kind on a desk, and the unattended settings.
+[[nodiscard]] QWidget* decisions_screen();
+// Checks one card per kind rendered, with the approval's diff preview, and the settings.
+[[nodiscard]] std::string check_decisions_screen(QWidget& screen);
 
 } // namespace loa::ui::app
