@@ -1,6 +1,8 @@
 find_package(PNG REQUIRED)
 find_package(JPEG REQUIRED)
 find_package(ZLIB REQUIRED)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(OPENH264 REQUIRED IMPORTED_TARGET openh264)
 
 add_library(loa_surfaces STATIC
   src/feed.cpp
@@ -10,11 +12,15 @@ add_library(loa_surfaces STATIC
   src/proto/server.cpp
   src/proto/transport.cpp
   src/proto/viewer.cpp
-  src/proto/wire.cpp)
+  src/proto/wire.cpp
+  src/video/decode.cpp
+  src/video/encode.cpp
+  src/video/ffmpeg.cpp
+  src/video/live.cpp)
 add_library(loa::surfaces ALIAS loa_surfaces)
 target_include_directories(loa_surfaces PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(loa_surfaces PUBLIC loa::contracts loa::runtime
-  PRIVATE PNG::PNG JPEG::JPEG ZLIB::ZLIB)
+  PRIVATE PNG::PNG JPEG::JPEG ZLIB::ZLIB PkgConfig::OPENH264)
 
 # Test doubles shared by the surface modules' tests (Rust feature `testkit`).
 add_library(loa_surfaces_testkit STATIC src/testkit.cpp)
@@ -29,6 +35,7 @@ loa_add_test(surfaces
     tests/proto_wire.cpp
     tests/proto_fragment.cpp
     tests/proto_session.cpp
+    tests/video_test.cpp
   LINK loa::surfaces_testkit)
 target_include_directories(loa_surfaces_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_compile_definitions(loa_surfaces_tests PRIVATE
