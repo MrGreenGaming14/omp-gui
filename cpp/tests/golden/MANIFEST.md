@@ -92,6 +92,8 @@ has exactly one row below; `loa_golden_tests` fails otherwise.
   (serde_json pretty with a trailing newline; toml_edit keeping decor).
 - `harness/scripted.txt`: `testing::render` of a `ScriptedAdapter` session through every prompt kind;
   `harness/scripted_violations.txt`: its `check_dom` then `check_history` rules and node ids, one per line.
+- `harness/omp2/*.jsonl`: omp2 stdout `patch@1`, `stream@1`, `snapshot@1` and decision frames, with
+  simulated sends and answers. Corresponding `*.golden` files are the Rust mapper's DOM and reply output.
 - `sandbox/*.bin`: `loa_sandbox::proto::frame` output: a u32 LITTLE-endian body length, then the postcard body
   (varint integers, zigzag `i32`, varint enum variant index, `0`/`1` option tag, varint-length strings and byte
   vectors). `request_*` are `Request`s, `response_*` are `Response`s; `hello.bin` is what `write_hello` writes:
@@ -149,6 +151,12 @@ has exactly one row below; `loa_golden_tests` fails otherwise.
 | harness/configdoc_out.toml | 282 | d74215e9a22bdadd99a1fb1340a42a52b94db53b7af6506562e26b48198913d2 | f1c2345fbe7ddd1c65b499065fdbe3a1808b78da |
 | harness/scripted.txt | 2896 | fe62fb630a674358a0ebc25d4ac8035dddfb3fd27d95799ef9d2d46bf6225cb5 | f1c2345fbe7ddd1c65b499065fdbe3a1808b78da |
 | harness/scripted_violations.txt | 366 | 888668e274bf611f82afc3643e6ad5d8bcff2a654efb690172b2153af900562f | f1c2345fbe7ddd1c65b499065fdbe3a1808b78da |
+| harness/omp2/stream.golden | 893 | 3125c5b4cd905cf55fa9f55775582b502c95e7855f732199007a282bbb326d30 | 0990f25fa0d216dbbec2ed80086145bf62b5e0cf |
+| harness/omp2/stream.jsonl | 1662 | 1392c96a1457311ead71fa7e14a026fa5fb1181b3a21de37f777005fd01c2e9f | 0990f25fa0d216dbbec2ed80086145bf62b5e0cf |
+| harness/omp2/tools.golden | 2058 | 0f655794a2db7e83365bc67d5d3f76353584281b4edcc90c365b7c29158c6a32 | 0990f25fa0d216dbbec2ed80086145bf62b5e0cf |
+| harness/omp2/tools.jsonl | 1696 | 98827f188f170a9d23dd2c799348f871cf4132656fd4cf842c16fafb3ba39d01 | 0990f25fa0d216dbbec2ed80086145bf62b5e0cf |
+| harness/omp2/tree.golden | 482 | 9e4d0adb8794930fd44ce2267efebcdf002dbc2a31250aafd481f042b07e394a | 0990f25fa0d216dbbec2ed80086145bf62b5e0cf |
+| harness/omp2/tree.jsonl | 1901 | 83a47cc0ff480dda8ee5b8c773d93fba52e7db6c16d40d75ad1e4772e6cbc5ee | 0990f25fa0d216dbbec2ed80086145bf62b5e0cf |
 | journal/f/journal.loaj | 28 | fc7fc20ca23862d10f7abb288d92756a6db93e297dbacaea6907ee8a2d103940 | 6853d95bd272adf65b37e64c449b02c08813bc53 |
 | journal/g/journal.loaj | 760 | c1bebc8200e456c3330d395a64e3ddb84bc8a648ea710324d24f22d13aab4777 | 6853d95bd272adf65b37e64c449b02c08813bc53 |
 | journal/s/journal.loaj | 2180 | eec47b483bacb5599cae3ad4e8392f1b845bbb6277288eb8756a70468e6801ef | 6853d95bd272adf65b37e64c449b02c08813bc53 |

@@ -7,6 +7,9 @@ add_library(loa_harness STATIC
   src/kit/residual.cpp
   src/kit/rpc.cpp
   src/native.cpp
+  src/omp2/mapper.cpp
+  src/omp2/omp2.cpp
+  src/omp2/wire.cpp
   src/account_support/account_support.cpp
   src/account_support/cli.cpp
   src/account_support/configdoc.cpp
@@ -44,6 +47,7 @@ loa_add_test(harness
     tests/kit/residual_test.cpp
     tests/kit/rpc_test.cpp
     tests/native/native_test.cpp
+    tests/omp2/omp2_test.cpp
     tests/account_support/configdoc_test.cpp
     tests/account_support/opener_test.cpp
     tests/account_support/process_test.cpp
