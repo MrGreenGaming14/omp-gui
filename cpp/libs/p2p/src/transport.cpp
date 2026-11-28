@@ -17,6 +17,11 @@ std::string NodeError::to_string() const {
     case Kind::decode: return "decode: " + message_;
     case Kind::refused: return "the peer refused: " + message_;
     case Kind::timeout: return message_ + " timed out";
+    case Kind::not_owner: return "this node does not own the session";
+    case Kind::journal: return "journal: " + message_;
+    case Kind::apply: return "DOM: " + message_;
+    case Kind::request: return "request: " + message_;
+    case Kind::replicate: return "replication: " + message_;
     default: return message_;
     }
 }
