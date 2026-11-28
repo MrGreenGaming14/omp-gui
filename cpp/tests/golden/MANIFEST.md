@@ -87,6 +87,11 @@ has exactly one row below; `loa_golden_tests` fails otherwise.
 - `harness/residual.json`: `residual::attr_name("claude-code")` and `join_parts(["first", "", "trois é", "4"], "\n\n")`.
 - `harness/discover.tsv`: `native::discover` over a fixed home tree with set mtimes:
   `harness`, path relative to home, project, title, modified ms, size, tab-separated, in discovery order.
+- `harness/configdoc_in.json` and `harness/configdoc_in.toml` (hand-written inputs); `harness/configdoc_out.json` and
+  `harness/configdoc_out.toml`: the inputs after the `JsonDoc::set` / `TomlDoc::set` sequences in `golden_gen`
+  (serde_json pretty with a trailing newline; toml_edit keeping decor).
+- `harness/scripted.txt`: `testing::render` of a `ScriptedAdapter` session through every prompt kind;
+  `harness/scripted_violations.txt`: its `check_dom` then `check_history` rules and node ids, one per line.
 - `sandbox/*.bin`: `loa_sandbox::proto::frame` output: a u32 LITTLE-endian body length, then the postcard body
   (varint integers, zigzag `i32`, varint enum variant index, `0`/`1` option tag, varint-length strings and byte
   vectors). `request_*` are `Request`s, `response_*` are `Response`s; `hello.bin` is what `write_hello` writes:
@@ -130,6 +135,12 @@ has exactly one row below; `loa_golden_tests` fails otherwise.
 | harness/jsonrpc.jsonl | 3266 | 04d033cb837b99efaf038804e07083e2f1cc2b44769805f312e11af574837fc6 | f1c2345fbe7ddd1c65b499065fdbe3a1808b78da |
 | harness/residual.json | 82 | dd58be7676e8f6323a47c561fc78a2cdf610a6609d276b1d8c00955577daaa49 | f1c2345fbe7ddd1c65b499065fdbe3a1808b78da |
 | harness/rpc_errors.txt | 554 | 3ec8b40f64608008c9fd831736c935deb7f043c7b9826a1d5f1d01e1098ba7d8 | f1c2345fbe7ddd1c65b499065fdbe3a1808b78da |
+| harness/configdoc_in.json | 52 | 7713d2bee8a1374b16eaf74a8e6b22f8039137fb12441e6f761b60c3a66d0a1c | f1c2345fbe7ddd1c65b499065fdbe3a1808b78da |
+| harness/configdoc_in.toml | 207 | b2b2bb4dfb92fc1a87af87144ac2302f6974dd39ffa9d73a4d81eab0a571e12f | f1c2345fbe7ddd1c65b499065fdbe3a1808b78da |
+| harness/configdoc_out.json | 151 | 88a0ed2e274b0057e8d7765a9dd357ebf3ccb2a763e439b9eb5742b345f42fcc | f1c2345fbe7ddd1c65b499065fdbe3a1808b78da |
+| harness/configdoc_out.toml | 282 | d74215e9a22bdadd99a1fb1340a42a52b94db53b7af6506562e26b48198913d2 | f1c2345fbe7ddd1c65b499065fdbe3a1808b78da |
+| harness/scripted.txt | 2896 | fe62fb630a674358a0ebc25d4ac8035dddfb3fd27d95799ef9d2d46bf6225cb5 | f1c2345fbe7ddd1c65b499065fdbe3a1808b78da |
+| harness/scripted_violations.txt | 366 | 888668e274bf611f82afc3643e6ad5d8bcff2a654efb690172b2153af900562f | f1c2345fbe7ddd1c65b499065fdbe3a1808b78da |
 | journal/f/journal.loaj | 28 | fc7fc20ca23862d10f7abb288d92756a6db93e297dbacaea6907ee8a2d103940 | 6853d95bd272adf65b37e64c449b02c08813bc53 |
 | journal/g/journal.loaj | 760 | c1bebc8200e456c3330d395a64e3ddb84bc8a648ea710324d24f22d13aab4777 | 6853d95bd272adf65b37e64c449b02c08813bc53 |
 | journal/s/journal.loaj | 2180 | eec47b483bacb5599cae3ad4e8392f1b845bbb6277288eb8756a70468e6801ef | 6853d95bd272adf65b37e64c449b02c08813bc53 |

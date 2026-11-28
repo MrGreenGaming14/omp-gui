@@ -24,6 +24,80 @@ fn errors() -> Vec<RpcError> {
     ]
 }
 
+fn json_set(root: &mut serde_json::Map<String, Json>, path: &[&str], value: Option<&str>) {
+    let (key, parents) = path.split_last().unwrap();
+    let mut map = root;
+    for parent in parents {
+        if value.is_none() && !map.contains_key(*parent) { return; }
+        let item = map.entry((*parent).to_owned()).or_insert_with(|| Json::Object(serde_json::Map::new()));
+        if value.is_none() && !item.is_object() { return; }
+        map = item.as_object_mut().unwrap();
+    }
+    match value {
+        Some(v) => { map.insert((*key).to_owned(), Json::String(v.to_owned())); }
+        None => { map.shift_remove(*key); }
+    }
+}
+
+fn toml_set(doc: &mut toml_edit::DocumentMut, path: &[&str], setting: Option<&str>) {
+    use toml_edit::{Item, Table, value};
+    let (key, parents) = path.split_last().unwrap();
+    let mut table: &mut dyn toml_edit::TableLike = doc.as_table_mut();
+    for parent in parents {
+        if setting.is_none() && !table.contains_key(parent) { return; }
+        if !table.contains_key(parent) { table.insert(parent, Item::Table(Table::new())); }
+        let item = table.get_mut(parent).unwrap();
+        if setting.is_none() && !item.is_table_like() { return; }
+        table = item.as_table_like_mut().unwrap();
+    }
+    match setting {
+        Some(text) => {
+            if let Some(existing) = table.get_mut(key).and_then(Item::as_value_mut) {
+                let decor = existing.decor().clone();
+                *existing = toml_edit::Value::from(text);
+                *existing.decor_mut() = decor;
+            } else { table.insert(key, value(text)); }
+        }
+        None => { table.remove(key); }
+    }
+}
+
+async fn scripted() -> (String, String) {
+    use loa_contracts::harness::{Adapter, Answer, Prompt, SessionConfig};
+    use loa_core::{ElementKind, PatchSink};
+    use loa_harness::testing::{ScriptedAdapter, WatchSink, render};
+    use std::sync::Arc;
+    let adapter = ScriptedAdapter::new("scripted");
+    let sink = Arc::new(WatchSink::default());
+    let config = SessionConfig { session_id: "s1".into(), node: "n1".into(), cwd: "/work".into(), project: Some("p".into()), ..Default::default() };
+    let session = adapter.start(config, sink.clone() as Arc<dyn PatchSink>).await.unwrap();
+    let prompt = |text: &str| Prompt { text: text.into(), by: "n1".into(), ..Default::default() };
+    let waiting = || sink.inner.with_dom(|d| d.iter().filter(|n| n.kind == ElementKind::Decision).last().unwrap().id);
+    session.send(prompt("hello")).await.unwrap();
+    session.send(prompt("ask question")).await.unwrap();
+    session.answer(waiting(), Answer { values: vec!["red".into()], reason: Some("why".into()), by: "n1".into() }).await.unwrap();
+    session.send(prompt("ask multi")).await.unwrap();
+    session.answer(waiting(), Answer { values: vec!["rust".into(), "zig".into()], reason: None, by: "n2".into() }).await.unwrap();
+    session.send(prompt("ask plan")).await.unwrap();
+    session.answer(waiting(), Answer { values: vec!["approve".into()], reason: None, by: "n1".into() }).await.unwrap();
+    session.send(prompt("ask form")).await.unwrap();
+    session.answer(waiting(), Answer { values: vec![r#"{"name":"r1","channel":"beta"}"#.into()], reason: None, by: "n1".into() }).await.unwrap();
+    session.send(prompt("ask")).await.unwrap();
+    session.answer(waiting(), Answer { values: vec!["allow_once".into()], reason: None, by: "n1".into() }).await.unwrap();
+    session.send(prompt("work bash Build it")).await.unwrap();
+    session.interrupt().await.unwrap();
+    session.send(prompt("tool x {}")).await.unwrap();
+    let text = sink.inner.with_dom(render);
+    let mut rules = String::new();
+    for v in sink.inner.with_dom(loa_harness::testing::check_dom) {
+        writeln!(rules, "{:?} {}", v.rule, v.node.map_or(0, |n| n.0)).unwrap();
+    }
+    for v in loa_harness::testing::check_history(&sink.inner.patches()) {
+        writeln!(rules, "history {:?} {}", v.rule, v.node.map_or(0, |n| n.0)).unwrap();
+    }
+    (text, rules)
+}
+
 fn main() {
     let out = std::path::PathBuf::from(std::env::var("LOA_GOLDEN_OUT").unwrap()).join("harness");
     std::fs::create_dir_all(&out).unwrap();
@@ -81,4 +155,39 @@ fn main() {
     }
     std::fs::write(out.join("discover.tsv"), list).unwrap();
     std::fs::remove_dir_all(&home).unwrap();
+    // Config documents.
+    let src = std::path::PathBuf::from(std::env::var("LOA_GOLDEN_OUT").unwrap()).join("harness");
+    let text = std::fs::read_to_string(src.join("configdoc_in.json")).unwrap();
+    let Json::Object(mut root) = serde_json::from_str(&text).unwrap() else { panic!() };
+    for (path, v) in [(&["nested", "a"][..], Some("new")), (&["nested", "b"][..], None), (&["nested", "c"][..], Some("last")), (&["new", "deep", "k"][..], Some("v")), (&["missing", "x"][..], None), (&["z", "x"][..], None), (&["s"][..], Some("é/<>\"\n\u{1}"))] {
+        json_set(&mut root, path, v);
+    }
+    let mut text = serde_json::to_string_pretty(&root).unwrap();
+    text.push('\n');
+    std::fs::write(out.join("configdoc_out.json"), text).unwrap();
+    let text = std::fs::read_to_string(src.join("configdoc_in.toml")).unwrap();
+    let mut doc: toml_edit::DocumentMut = text.parse().unwrap();
+    let steps: &[(&[&str], Option<&str>)] = &[
+        (&["model"], Some("gpt-5")),
+        (&["profiles", "fast", "model_reasoning_effort"], Some("high")),
+        (&["other", "name"], Some("new")),
+        (&["approval"], None),
+        (&["dotted", "key"], Some("d2")),
+        (&["features", "web", "mode"], Some("on")),
+        (&["profiles", "fast", "quote"], Some("a\"b")),
+        (&["top"], Some("t")),
+        (&["other", "x"], None),
+        (&["missing", "k"], None),
+        (&["other", "esc"], Some("tab\there\u{7f}")),
+    ];
+    for (path, v) in steps {
+        toml_set(&mut doc, path, *v);
+        eprintln!("--- {path:?} {v:?}\n{doc}");
+    }
+    std::fs::write(out.join("configdoc_out.toml"), doc.to_string()).unwrap();
+    // A scripted session through every prompt kind, rendered.
+    let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+    let (text, rules) = rt.block_on(scripted());
+    std::fs::write(out.join("scripted.txt"), text).unwrap();
+    std::fs::write(out.join("scripted_violations.txt"), rules).unwrap();
 }
