@@ -70,24 +70,8 @@ Smoke& Smoke::registry() {
         s.add("surface", [] { return surface_screen(); }, check_surface_screen);
         s.add("terminal", [] { return terminal_screen(); }, check_terminal_screen);
         s.add("transcript", [] { return transcript_screen(); }, check_transcript_screen);
-        s.add("shell", [] {
-            auto* frame = new shell::ShellView;
-            auto state = shell::layout::State::make({}).first;
-            state.sidebar_mut().set_nodes({{"local", "This computer", true, true}});
-            state.sidebar_mut().set_projects({"Example"});
-            state.set_project_tabs(true);
-            state.set_open_projects({"Example"});
-            state.set_tabs({{"files", "Files", std::nullopt}});
-            frame->resize(960, 640);
-            frame->render(state);
-            return frame;
-        }, [](QWidget& frame) {
-            const auto* top = frame.findChild<QWidget*>(QStringLiteral("top bar"));
-            if (!top || top->height() != shell::topbar::HEIGHT) return std::string("top bar height");
-            if (!frame.findChild<QWidget*>(QStringLiteral("sidebar"))) return std::string("missing sidebar");
-            if (!frame.findChild<QWidget*>(QStringLiteral("panel"))) return std::string("missing panel");
-            return std::string();
-        });
+        // The app core's shell: services, runtime and areas over a temporary data directory.
+        s.add("shell", [] { return app_shell_screen(); }, check_app_shell_screen);
         return s;
     }();
     return smoke;

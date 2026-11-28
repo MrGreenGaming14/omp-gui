@@ -46,6 +46,10 @@ class Smoke {
 [[nodiscard]] QWidget* panel_screen();
 // Checks the panes rendered: diff rows painted, files listed, session rows shown.
 [[nodiscard]] std::string check_panel_screen(QWidget& screen);
+// The `shell` screen: the app core (`loa::app::App`) over a temporary data directory, drawn by `AppView`.
+[[nodiscard]] QWidget* app_shell_screen();
+// Checks the frame (top bar, sidebar, panel) and the start screen with its composer.
+[[nodiscard]] std::string check_app_shell_screen(QWidget& screen);
 // The `terminal` screen: two terminal tabs, the active one showing coloured output while it connects.
 [[nodiscard]] QWidget* terminal_screen();
 // Checks the canvas is shown, sized, and resized the active terminal's grid.
