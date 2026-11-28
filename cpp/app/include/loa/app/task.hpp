@@ -53,9 +53,14 @@ struct CloseWindow {
 };
 // Quit the app.
 struct Exit {};
+// Move the keyboard focus to the next (or previous) field of the focused window (iced
+// `operation::focus_next` / `focus_previous`).
+struct FocusNext {
+    bool forward = true;
+};
 } // namespace ui_op
 using UiOp = std::variant<ui_op::Pane, ui_op::Composer, ui_op::Chat, ui_op::Terminal, ui_op::OpenWindow,
-                          ui_op::FocusWindow, ui_op::CloseWindow, ui_op::Exit>;
+                          ui_op::FocusWindow, ui_op::CloseWindow, ui_op::Exit, ui_op::FocusNext>;
 
 class Task {
   public:

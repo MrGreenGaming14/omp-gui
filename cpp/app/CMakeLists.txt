@@ -8,6 +8,10 @@ endif()
 add_library(loa_app STATIC
   src/agents_smoke.cpp
   src/app.cpp
+  src/app/keys.cpp
+  src/app/panes.cpp
+  src/app/usage.cpp
+  src/areas/workflows/workflows.cpp
   src/app_smoke.cpp
   src/app_windows.cpp
   src/app_workspace.cpp
@@ -58,9 +62,11 @@ add_executable(loa-qt src/main.cpp)
 set_target_properties(loa-qt PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
 target_link_libraries(loa-qt PRIVATE loa::app)
 
-loa_add_test(app SOURCES tests/app_test.cpp tests/app_core_test.cpp tests/view_test.cpp
+loa_add_test(app SOURCES tests/app_test.cpp tests/app_core_test.cpp tests/view_test.cpp tests/glue_test.cpp tests/workflows_test.cpp
   LINK loa::app loa::models_testing loa::harness_testing)
 target_compile_definitions(loa_app_tests PRIVATE LOA_GOLDEN_DIR="${CMAKE_SOURCE_DIR}/tests/golden")
+# The area tests reach the areas' private headers under `src/`.
+target_include_directories(loa_app_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 set_tests_properties(loa_app_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 add_test(NAME loa_qt_smoke_kit COMMAND loa-qt --smoke kit)
