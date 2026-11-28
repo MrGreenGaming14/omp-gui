@@ -220,3 +220,13 @@ fn apply_to_session_adds_enabled_servers_toggles_and_executable() {
     c.apply_to_session("omp", &mut session);
     assert_eq!(session.executable, Some(staged), "the updater's staged executable wins");
 }
+
+/// Writes the golden TOML fixtures for the C++ port into `$LOA_GOLDEN_OUT/settings`.
+#[test]
+#[ignore = "writes golden files; run with LOA_GOLDEN_OUT set"]
+fn write_golden_toml() {
+    let out = PathBuf::from(std::env::var("LOA_GOLDEN_OUT").unwrap()).join("settings");
+    fs::create_dir_all(&out).unwrap();
+    fs::write(out.join("config.toml"), FULL).unwrap();
+    fs::write(out.join("unknown.toml"), include_str!("fixtures/unknown.toml")).unwrap();
+}
