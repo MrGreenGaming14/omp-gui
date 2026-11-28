@@ -22,6 +22,17 @@ class NodeError {
         refused,
         timeout,
         unavailable,
+        // `patch <got> is not next after <last>`, pre-formatted in `message`.
+        sequence,
+        // This node does not own the session; `message` is unused.
+        not_owner,
+        // A grant store or token error, displayed transparently.
+        grant,
+        journal,
+        // A DOM apply error (`DOM: …`).
+        apply,
+        request,
+        replicate,
     };
 
     NodeError(Kind kind, std::string message) : kind_(kind), message_(std::move(message)) {}
