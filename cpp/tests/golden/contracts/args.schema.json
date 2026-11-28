@@ -1,0 +1,1 @@
+{"$schema":"https://json-schema.org/draft/2020-12/schema","title":"Args","description":"The `Args` of the `shout` tool in `loa_contracts::tools` tests.","type":"object","properties":{"word":{"type":"string"}},"required":["word"]}
