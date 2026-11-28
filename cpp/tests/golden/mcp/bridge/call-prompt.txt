@@ -1,0 +1,1 @@
+loa-omp-bridge-call {"id":"loa-omp-bridge-call-1","tool":"edit","arguments":{"input":"[a.txt#B6C1]\n+BETA \"é\" ☃\n","limit":3,"all":true}}

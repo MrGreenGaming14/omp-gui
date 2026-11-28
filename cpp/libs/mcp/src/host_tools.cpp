@@ -6,6 +6,7 @@
 #include <cctype>
 #include <thread>
 
+#include "loa/mcp/toolkit.hpp"
 #include "loa/runtime/log.hpp"
 
 namespace loa::mcp::host_tools {
@@ -17,41 +18,6 @@ using contracts::TextBlock;
 using contracts::ToolOutput;
 
 namespace {
-
-// Standard base64 with padding; none on any other byte.
-std::optional<std::vector<std::byte>> base64_decode(std::string_view text) {
-    static constexpr auto table = [] {
-        std::array<int, 256> t{};
-        t.fill(-1);
-        constexpr std::string_view alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-        for (std::size_t i = 0; i < alphabet.size(); ++i) t[static_cast<unsigned char>(alphabet[i])] = static_cast<int>(i);
-        return t;
-    }();
-    if (text.size() % 4 != 0) return std::nullopt;
-    std::vector<std::byte> out;
-    out.reserve(text.size() / 4 * 3);
-    for (std::size_t i = 0; i < text.size(); i += 4) {
-        int v[4];
-        int pad = 0;
-        for (int k = 0; k < 4; ++k) {
-            const char c = text[i + k];
-            if (c == '=' && i + 4 == text.size() && k >= 2) {
-                v[k] = 0;
-                ++pad;
-                continue;
-            }
-            if (pad > 0) return std::nullopt;
-            v[k] = table[static_cast<unsigned char>(c)];
-            if (v[k] < 0) return std::nullopt;
-        }
-        const std::uint32_t n = (static_cast<std::uint32_t>(v[0]) << 18) | (static_cast<std::uint32_t>(v[1]) << 12) |
-                                (static_cast<std::uint32_t>(v[2]) << 6) | static_cast<std::uint32_t>(v[3]);
-        out.push_back(static_cast<std::byte>(n >> 16));
-        if (pad < 2) out.push_back(static_cast<std::byte>((n >> 8) & 0xff));
-        if (pad < 1) out.push_back(static_cast<std::byte>(n & 0xff));
-    }
-    return out;
-}
 
 std::string field(const json::Value& object, std::string_view key) {
     const auto* value = object.find(key);
@@ -93,7 +59,7 @@ ToolOutput to_output(const model::CallToolResult& result) {
             output.blocks.emplace_back(TextBlock{field(block, "text")});
         } else if (kind == "image") {
             const auto mime = field(block, "mimeType");
-            if (auto data = base64_decode(field(block, "data"))) output.blocks.emplace_back(ImageBlock{mime, std::move(*data)});
+            if (auto decoded = image(field(block, "data"), mime)) output.blocks.push_back(std::move(*decoded));
             else output.blocks.emplace_back(TextBlock{"[undecodable " + mime + " image]"});
         } else if (kind == "resource") {
             const auto* resource = block.find("resource");

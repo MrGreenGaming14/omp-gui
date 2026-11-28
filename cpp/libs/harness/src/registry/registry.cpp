@@ -4,10 +4,13 @@
 #include <map>
 #include <mutex>
 
+#include "loa/harness/account_support/opener.hpp"
 #include "loa/harness/account_support/process.hpp"
 #include "loa/harness/claude/account.hpp"
 #include "loa/harness/claude/driver.hpp"
 #include "loa/harness/native.hpp"
+#include "loa/harness/omp/account.hpp"
+#include "loa/harness/omp/session.hpp"
 #include "loa/harness/omp2/omp2.hpp"
 #include "loa/harness/opencode/opencode.hpp"
 #include "loa/runtime/exec.hpp"
@@ -77,7 +80,22 @@ std::vector<std::shared_ptr<loa::contracts::HarnessFactory>> factories(const Har
     std::scoped_lock lock(builds_mutex);
     for (const auto& entry : ENTRIES) {
         auto it = builds().find(entry.id);
-        if (it == builds().end() && entry.id == OMP2) {
+        if (it == builds().end() && entry.id == native::OMP) {
+            HarnessBuild omp_build{
+                [](const HarnessEnv& env, std::optional<std::filesystem::path> exe) -> std::shared_ptr<loa::contracts::Adapter> {
+                    omp::OmpAdapterConfig config(env.node, env.omp_dir);
+                    config.approval_mode = std::string(OMP_APPROVAL_MODES[0]);
+                    if (exe) config.executable = std::move(*exe);
+                    return std::make_shared<omp::OmpAdapter>(std::move(config));
+                },
+                [](const HarnessEnv&, std::optional<std::filesystem::path> exe) -> std::shared_ptr<loa::contracts::HarnessAccount> {
+                    omp::OmpLaunch launch;
+                    launch.executable = exe.value_or(std::filesystem::path("omp"));
+                    return std::make_shared<omp::OmpAccount>(std::make_shared<omp::OmpService>(launch),
+                                                             std::make_shared<account_support::SystemUrlOpener>(), launch);
+                }};
+            out.push_back(std::make_shared<Entry>(entry, std::move(omp_build), env));
+        } else if (it == builds().end() && entry.id == OMP2) {
             HarnessBuild omp2_build{
                 [](const HarnessEnv&, std::optional<std::filesystem::path> exe) -> std::shared_ptr<loa::contracts::Adapter> {
                     return std::make_shared<omp2::Omp2Adapter>(exe.value_or(std::filesystem::path(omp2::EXECUTABLE)));

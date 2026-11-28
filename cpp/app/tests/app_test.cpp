@@ -1,3 +1,7 @@
+#include <filesystem>
+#include <fstream>
+#include <set>
+
 #include <doctest/doctest.h>
 
 #include <atomic>
@@ -14,6 +18,8 @@
 #include "loa/runtime/executor.hpp"
 #include "loa/ui/app/application.hpp"
 #include "loa/ui/app/asio_bridge.hpp"
+#include "loa/runtime/tempfile.hpp"
+#include "loa/ui/app/local_fs.hpp"
 #include "loa/ui/app/smoke.hpp"
 
 using namespace loa::ui::app;
@@ -114,12 +120,35 @@ TEST_CASE("command line options") {
     CHECK_FALSE(parse({"loa-qt"}).smoke);
 }
 
-TEST_CASE("smoke screens: composer, kit and shell pass, unknown screens are rejected") {
+TEST_CASE("smoke screens: composer, kit, panel and shell pass, unknown screens are rejected") {
     qt_app();
     auto& smoke = Smoke::registry();
-    CHECK(smoke.names() == std::vector<std::string>{"composer", "kit", "shell"});
+    CHECK(smoke.names() == std::vector<std::string>{"composer", "kit", "panel", "shell"});
     CHECK(smoke.run("composer") == 0);
     CHECK(smoke.run("kit") == 0);
+    CHECK(smoke.run("panel") == 0);
     CHECK(smoke.run("shell") == 0);
     CHECK(smoke.run("nope") == 2);
+}
+
+TEST_CASE("LocalFs lists through gitignore: negation and ** apply, .git is hidden") {
+    namespace fs = std::filesystem;
+    auto dir = loa::runtime::TempDir::create();
+    REQUIRE(dir);
+    const auto root = dir->path();
+    fs::create_directories(root / ".git");
+    fs::create_directories(root / "src");
+    for (const auto* f : {"keep.log", "drop.log", "a.txt", ".env", "src/x.tmp", "src/y.rs"}) std::ofstream(root / f) << "x";
+    std::ofstream(root / ".gitignore") << "*.log\n!keep.log\n**/*.tmp\n";
+    LocalFs local;
+    auto names = [&](const fs::path& d) {
+        auto listed = local.list(d);
+        REQUIRE(listed);
+        std::set<std::string> out;
+        for (const auto& e : *listed) out.insert(e.name + (e.is_dir ? "/" : ""));
+        return out;
+    };
+    CHECK(names(root) == std::set<std::string>{".env", ".gitignore", "a.txt", "keep.log", "src/"});
+    CHECK(names(root / "src") == std::set<std::string>{"y.rs"});
+    CHECK_FALSE(local.list(root / "missing"));
 }
