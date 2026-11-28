@@ -4,6 +4,9 @@
 #include <map>
 #include <mutex>
 
+#include "loa/harness/account_support/process.hpp"
+#include "loa/harness/claude/account.hpp"
+#include "loa/harness/claude/driver.hpp"
 #include "loa/harness/native.hpp"
 #include "loa/harness/omp2/omp2.hpp"
 #include "loa/runtime/exec.hpp"
@@ -78,6 +81,17 @@ std::vector<std::shared_ptr<loa::contracts::HarnessFactory>> factories(const Har
                     return std::make_shared<omp2::Omp2Adapter>(exe.value_or(std::filesystem::path(omp2::EXECUTABLE)));
                 }, {}};
             out.push_back(std::make_shared<Entry>(entry, std::move(omp2_build), env));
+        } else if (it == builds().end() && entry.id == claude::HARNESS) {
+            HarnessBuild build;
+            build.adapter = [](const HarnessEnv&, std::optional<std::filesystem::path> exe) -> std::shared_ptr<loa::contracts::Adapter> {
+                return std::make_shared<claude::ClaudeAdapter>(exe.value_or("claude"));
+            };
+            build.account = [](const HarnessEnv&, std::optional<std::filesystem::path> exe) {
+                return std::make_shared<claude::ClaudeCode>(
+                    exe.value_or("claude"), config_dir("CLAUDE_CONFIG_DIR", ".claude") / "settings.json",
+                    std::make_shared<account_support::AsioProcessRunner>());
+            };
+            out.push_back(std::make_shared<Entry>(entry, std::move(build), env));
         } else {
             out.push_back(std::make_shared<Entry>(entry, it == builds().end() ? HarnessBuild{} : it->second, env));
         }
