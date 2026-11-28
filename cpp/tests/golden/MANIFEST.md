@@ -51,6 +51,8 @@ has exactly one row below; `loa_golden_tests` fails otherwise.
   (`CREATE TABLE remote_audit` and the indexes `remote_audit_session`, `remote_audit_host`).
   sqlite stores each statement without `IF NOT EXISTS` and the `;`.
 - `remote/remote_audit.rows.json`: `SELECT * FROM remote_audit ORDER BY id` after four `SqliteAudit::record` calls.
+- `util/iso.txt`: `<ms> <format_iso_ms(ms)>` lines from `loa_util::time`.
+- `util/ssh/config` and `util/ssh/conf.d/*` (hand-written, with Include, wildcards, `!` and `=`); `util/ssh/aliases.txt`: `loa_util::ssh::aliases(config)`, one per line.
 
 ## Files
 
@@ -131,3 +133,9 @@ has exactly one row below; `loa_golden_tests` fails otherwise.
 | surface/stream-reject.bin | 22 | 24fa6532b33efd94a367fdf7bfcf6e6daf0d0a3c204adb5d2c0a7420b040e44f | b128c428ea2976fd62bc1ef28ccc783137388e80 |
 | surface/stream-resize.bin | 9 | 93c16b99ec9cf90756ca9aafd9f6676fe9c609b14ace298b4ac290f4a5ad1523 | b128c428ea2976fd62bc1ef28ccc783137388e80 |
 | surface/stream-unknown-body.bin | 14 | ac72d470973eb97154fc66ee221cb9cf8d921843857e7847b8b1eecd1f6c4dd3 | b128c428ea2976fd62bc1ef28ccc783137388e80 |
+| util/iso.txt | 280 | 9006e6f63b49bffaee1442bb095e62c95cc5444da3a4f6a59316a13b11fc854b | b128c428ea2976fd62bc1ef28ccc783137388e80 |
+| util/ssh/aliases.txt | 43 | 11a0dc406390d101147047702a22186a1ec2c0ee5dc70822a5131f8173a86314 | b128c428ea2976fd62bc1ef28ccc783137388e80 |
+| util/ssh/config | 100 | db9bb111236f3bf56757b7d396432255fc303eee34c0c481e9f92d506b8ce2a3 | b128c428ea2976fd62bc1ef28ccc783137388e80 |
+| util/ssh/conf.d/a.conf | 43 | 15921304dd8b16f74da99fd598f9fa52b1289cd0b43541d74765765c26f66ee7 | b128c428ea2976fd62bc1ef28ccc783137388e80 |
+| util/ssh/conf.d/b.conf | 14 | 39c842d687267318cdc2aa419e73c9eb0735350f2a4d0a2306a6c742f463eeb6 | b128c428ea2976fd62bc1ef28ccc783137388e80 |
+| util/ssh/conf.d/nested.inc | 18 | 4fdd2b1e906ab64b96697697d38222c5c2e6d0abcf7cd4aedf56f8c50e3995e8 | b128c428ea2976fd62bc1ef28ccc783137388e80 |

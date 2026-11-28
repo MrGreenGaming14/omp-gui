@@ -11,20 +11,30 @@ set(YYJSON_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(YYJSON_INSTALL OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(yyjson)
 
+find_package(OpenSSL REQUIRED)
+
 add_library(loa_runtime STATIC
+  src/diff.cpp
   src/error.cpp
+  src/exec.cpp
   src/executor.cpp
+  src/fs.cpp
+  src/gitignore.cpp
   src/json.cpp
   src/log.cpp
   src/proto.cpp
-  src/semver.cpp)
+  src/semver.cpp
+  src/ssh.cpp
+  src/tempfile.cpp
+  src/text.cpp
+  src/time.cpp)
 add_library(loa::runtime ALIAS loa_runtime)
 target_include_directories(loa_runtime PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 # Asio is public because coroutine callers include <asio.hpp> to build `Task`s;
 # loa headers themselves only forward-declare it.
 target_include_directories(loa_runtime SYSTEM PUBLIC "${LOA_ASIO_INCLUDE_DIR}")
 target_compile_definitions(loa_runtime PUBLIC ASIO_STANDALONE ASIO_NO_DEPRECATED)
-target_link_libraries(loa_runtime PUBLIC Threads::Threads PRIVATE yyjson)
+target_link_libraries(loa_runtime PUBLIC Threads::Threads PRIVATE yyjson OpenSSL::Crypto)
 
 loa_add_test(runtime
   SOURCES
@@ -34,6 +44,9 @@ loa_add_test(runtime
     tests/proto_test.cpp
     tests/semver_test.cpp
     tests/headers_test.cpp
+    tests/util_test.cpp
+    tests/diff_test.cpp
   LINK loa::runtime)
 target_compile_definitions(loa_runtime_tests PRIVATE
-  LOA_RUNTIME_INCLUDE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/include/loa/runtime")
+  LOA_RUNTIME_INCLUDE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/include/loa/runtime"
+  LOA_GOLDEN_DIR="${PROJECT_SOURCE_DIR}/tests/golden")
