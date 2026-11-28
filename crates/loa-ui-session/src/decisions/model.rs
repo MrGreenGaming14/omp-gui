@@ -68,9 +68,19 @@ impl Decision {
     pub fn all(dom: &Dom) -> impl Iterator<Item = Decision> + '_ { dom.iter().filter_map(move |node| Self::from_node(dom, node)) }
     pub fn is_waiting(&self) -> bool { self.status == DecisionStatus::Waiting }
 
+    /// Whether an approval decision advertises the canonical `allow_session` grant.
+    pub fn allows_session(&self) -> bool { self.options.iter().any(|o| o == answer::ALLOW_SESSION) }
+
+    /// Approval choices displayed for this decision, in shortcut and click order.
+    pub fn approval_choices(&self) -> &'static [ApprovalChoice] {
+        const WITH_SESSION: &[ApprovalChoice] = &[ApprovalChoice::AllowOnce, ApprovalChoice::AllowSession, ApprovalChoice::Deny];
+        const WITHOUT_SESSION: &[ApprovalChoice] = &[ApprovalChoice::AllowOnce, ApprovalChoice::Deny];
+        if self.allows_session() { WITH_SESSION } else { WITHOUT_SESSION }
+    }
+
     /// The decision's own default as an answer by `by`, when it is valid for the kind.
     pub fn default_answer(&self, by: &str) -> Option<Answer> {
-        kind_for(self.kind).valid_default(self).then(|| Answer { values: self.default.clone(), reason: None, by: by.to_owned() })
+        kind_for(self.kind).default_values(self).map(|values| Answer { values, reason: None, by: by.to_owned() })
     }
 }
 

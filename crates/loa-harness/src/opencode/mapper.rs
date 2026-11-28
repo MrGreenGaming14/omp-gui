@@ -926,6 +926,7 @@ impl Mapper {
             (attr::STATUS, DecisionStatus::Waiting.into()),
             (attr::REQUEST_ID, request.id.as_str().into()),
             (attr::TITLE, title.into()),
+            (attr::OPTIONS, Value::List(vec![answer::ALLOW_ONCE.into(), answer::ALLOW_SESSION.into(), answer::DENY.into()])),
             (attr::CREATED, w.now().into()),
             (xattr::OC, oc.to_string().into()),
         ];

@@ -11,7 +11,7 @@ use loa_contracts::harness::{
     Adapter, AdapterError, Answer, Availability, Capabilities, Feature, HarnessModel, HarnessSession, ModelSelection, Prompt, Result,
     SessionConfig, SessionState, SubagentTranscript,
 };
-use loa_core::{CallStatus, CommitError, DecisionKind, DecisionStatus, Dom, Draft, ElementKind, NodeId, PatchSink, Role, SessionMode, TurnStatus, Value, attr, now_ms};
+use loa_core::{CallStatus, CommitError, DecisionKind, DecisionStatus, Dom, Draft, ElementKind, NodeId, PatchSink, Role, SessionMode, TurnStatus, Value, answer, attr, now_ms};
 use loa_util::LockExt;
 
 /// The fields of the `ask form` decision.
@@ -244,7 +244,7 @@ impl ScriptedSession {
             "multi" => (DecisionKind::Question, "Languages", "Which languages?", vec![options(&["rust", "go", "zig"]), (attr::MULTI, true.into())]),
             "plan" => (DecisionKind::Plan, "Plan", "# Plan\n\n1. Read the code\n2. Fix the bug", Vec::new()),
             "form" => (DecisionKind::Form, "Release", "Release settings", vec![(attr::FIELDS, FORM.into())]),
-            _ => (DecisionKind::Approval, "Run ls", "ls", Vec::new()),
+            _ => (DecisionKind::Approval, "Run ls", "ls", vec![options(&[answer::ALLOW_ONCE, answer::ALLOW_SESSION, answer::DENY])]),
         };
         attrs.extend([(attr::KIND, kind.into()), (attr::STATUS, DecisionStatus::Waiting.into()), (attr::TITLE, title.into())]);
         self.sink.commit(Draft::insert(turn, ElementKind::Decision, attrs, body))?;

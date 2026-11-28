@@ -208,25 +208,31 @@ fn target_session<'a>(prompt: &'a Prompt, ctx: &'a Ctx) -> Option<&'a Session> {
     }
 }
 
+/// Decision kind and options for a remote host prompt.
+fn decision_options(prompt: &Prompt) -> (DecisionKind, Value) {
+    match prompt {
+        Prompt::HostKey(_) => (DecisionKind::Question, Value::List(vec![TRUST.into(), REJECT.into()])),
+        Prompt::Approval(_) => (
+            DecisionKind::Approval,
+            Value::List(vec![answer::ALLOW_ONCE.into(), answer::ALLOW_SESSION.into(), answer::DENY.into()]),
+        ),
+    }
+}
+
 /// Writes a waiting card for `prompt` into its session, under its latest
 /// turn.
 fn raise(prompt: &PromptView, ctx: &Ctx) -> Option<Card> {
     let session = target_session(&prompt.prompt, ctx)?;
     let parent = session.writer().with_dom(|dom| dom_turns(dom).last().map(|turn| turn.id).or_else(|| dom.root().map(|root| root.id)))?;
-    let (kind, options) = match prompt.prompt {
-        Prompt::HostKey(_) => (DecisionKind::Question, Some(Value::List(vec![TRUST.into(), REJECT.into()]))),
-        Prompt::Approval(_) => (DecisionKind::Approval, None),
-    };
-    let mut attrs: Vec<(&str, Value)> = vec![
+    let (kind, options) = decision_options(&prompt.prompt);
+    let attrs: Vec<(&str, Value)> = vec![
         (attr::KIND, kind.into()),
         (attr::STATUS, DecisionStatus::Waiting.into()),
         (attr::TITLE, title(&prompt.prompt).into()),
+        (attr::OPTIONS, options),
         (attr::REQUEST_ID, format!("{REQUEST_PREFIX}{}", prompt.id).into()),
         (attr::CREATED, Value::Int(now_ms())),
     ];
-    if let Some(options) = options {
-        attrs.push((attr::OPTIONS, options));
-    }
     let committed = session.writer().commit(Draft::insert(parent, ElementKind::Decision, attrs, body(&prompt.prompt))).ok()?;
     Some(Card { session: session.id().clone(), decision: committed.node })
 }
@@ -357,5 +363,20 @@ mod tests {
     fn audit_times_read_as_utc_dates() {
         assert_eq!(utc(UNIX_EPOCH), "1970-01-01 00:00:00 UTC");
         assert_eq!(utc(UNIX_EPOCH + std::time::Duration::from_secs(1_763_548_245)), "2025-11-19 10:30:45 UTC");
+    }
+
+    #[test]
+    fn remote_approval_advertises_canonical_session_option() {
+        let prompt = Prompt::Approval(loa_remote::ports::ApprovalRequest {
+            session_id: "s1".into(),
+            host: "box".into(),
+            action: Action::Command,
+            target: "uptime".into(),
+            detail: String::new(),
+        });
+        let (kind, options) = decision_options(&prompt);
+        assert_eq!(kind, DecisionKind::Approval);
+        let items: Vec<&str> = options.str_items().collect();
+        assert_eq!(items, [answer::ALLOW_ONCE, answer::ALLOW_SESSION, answer::DENY]);
     }
 }

@@ -65,9 +65,14 @@ fn every_kind_maps_clicks_keys_and_text_to_answers() {
     let form = r#"{"properties":{"tag":{"type":"string"},"env":{"enum":["dev","prod"]}},"required":["tag"]}"#;
     type Step = fn(NodeId) -> Message;
     type Expected<'a> = Option<(Vec<&'a str>, Option<&'a str>)>;
+    let session_approval = || attrs! { KIND: "approval", OPTIONS: list(&[answer::ALLOW_ONCE, answer::ALLOW_SESSION, answer::DENY]) };
     let cases: Vec<(Attrs, &str, Vec<Step>, Expected)> = vec![
-        (attrs! { KIND: "approval" }, "ls", vec![|d| M::Choose(d, 1)], Some((vec![answer::ALLOW_SESSION], None))),
-        (attrs! { KIND: "approval" }, "ls", vec![|d| M::Text(d, " prod ".into()), |d| M::Choose(d, 2)], Some((vec![answer::DENY], Some("prod")))),
+        (session_approval(), "ls", vec![|d| M::Choose(d, 1)], Some((vec![answer::ALLOW_SESSION], None))),
+        (session_approval(), "ls", vec![|d| M::Text(d, " prod ".into()), |d| M::Choose(d, 2)], Some((vec![answer::DENY], Some("prod")))),
+        (attrs! { KIND: "approval" }, "ls", vec![|d| M::Text(d, " prod ".into()), |d| M::Choose(d, 1)], Some((vec![answer::DENY], Some("prod")))),
+        (attrs! { KIND: "approval" }, "ls", vec![|d| M::Choose(d, 2)], None),
+        (attrs! { KIND: "approval", OPTIONS: list(&[answer::ALLOW_ONCE, answer::DENY]) }, "ls", vec![|_| M::Shortcut(Shortcut::Pick(1)), |_| M::Shortcut(Shortcut::Confirm)], Some((vec![answer::DENY], None))),
+        (attrs! { KIND: "approval", OPTIONS: list(&[answer::ALLOW_ONCE, answer::DENY]) }, "ls", vec![|_| M::Shortcut(Shortcut::Pick(2)), |_| M::Shortcut(Shortcut::Confirm)], None),
         (attrs! { KIND: "approval" }, "ls", vec![|_| M::Shortcut(Shortcut::Pick(0)), |_| M::Shortcut(Shortcut::Confirm)], Some((vec![answer::ALLOW_ONCE], None))),
         (attrs! { KIND: "approval" }, "ls", vec![|d| M::Text(d, "  ".into()), |_| M::Shortcut(Shortcut::Dismiss)], Some((vec![answer::DENY], None))),
         (attrs! { KIND: "question", OPTIONS: list(&["red", "blue"]) }, "Color?", vec![|d| M::Choose(d, 1)], Some((vec!["blue"], None))),
@@ -162,7 +167,7 @@ fn unattended_policy_answers_per_kind_and_the_desk_applies_it() {
     f.turn();
     let turn = f.last;
     let fields = r#"{"properties":{"env":{"enum":["dev","prod"],"default":"prod"},"n":{"type":"integer"}},"required":["env"]}"#;
-    let ids: Vec<NodeId> = [attrs! { KIND: "approval" }, attrs! { KIND: "question", OPTIONS: list(&["red"]) }, attrs! { KIND: "plan" }, attrs! { KIND: "form", FIELDS: fields }].into_iter().map(|a| f.add(turn, ElementKind::Decision, a, "")).collect();
+    let ids: Vec<NodeId> = [attrs! { KIND: "approval", OPTIONS: list(&[answer::ALLOW_ONCE, answer::ALLOW_SESSION, answer::DENY]) }, attrs! { KIND: "question", OPTIONS: list(&["red"]) }, attrs! { KIND: "plan" }, attrs! { KIND: "form", FIELDS: fields }].into_iter().map(|a| f.add(turn, ElementKind::Decision, a, "")).collect();
     let decision = |i: usize| Decision::from_dom(&f.dom, ids[i]).unwrap();
     let mut policy = Unattended::default();
     policy.update(unattended::Message::Enabled(true));
@@ -219,4 +224,73 @@ fn form_schemas_parse_validate_and_answer_typed_json() {
     assert!(matches!(Form::parse("not json"), Err(FormError::Json(_))));
     assert_eq!(Form::parse(r#"{"type":"string"}"#), Err(FormError::NotObject));
     assert_eq!(Form::parse(r#"{"properties":{"t":{"type":"array"}}}"#), Err(FormError::Unsupported { field: "t".into(), ty: "array".into() }));
+}
+
+#[test]
+fn approval_session_option_and_navigation_follow_canonical_options() {
+    // Absent OPTIONS, allow_once/deny-only OPTIONS, and non-canonical labels must hide allow_session.
+    for attrs in [
+        attrs! { KIND: "approval" },
+        attrs! { KIND: "approval", OPTIONS: list(&[answer::ALLOW_ONCE, answer::DENY]) },
+        attrs! { KIND: "approval", OPTIONS: list(&["Allow", "Always allow", "Reject"]) },
+    ] {
+        let (f, id) = fixture(attrs, "ls");
+        let mut s = state(&f, false);
+        assert!(shows(&s, id, "Allow once"));
+        assert!(shows(&s, id, "Deny"));
+        assert!(!shows(&s, id, "Allow for this session"));
+        assert!(shows(&s, id, "1") && shows(&s, id, "2") && !shows(&s, id, "3"));
+        assert!(s.update(Message::Shortcut(Shortcut::Pick(2))).1.is_none());
+        assert!(s.update(Message::Shortcut(Shortcut::Confirm)).1.is_none());
+        assert!(s.update(Message::Choose(id, 2)).1.is_none());
+        let intent = s.update(Message::Shortcut(Shortcut::Pick(1))).1;
+        assert!(intent.is_none());
+        let intent = s.update(Message::Shortcut(Shortcut::Confirm)).1;
+        assert_eq!(intent, Some(Intent::Answer { decision: id, answer: Answer { values: vec![answer::DENY.into()], reason: None, by: "me".into() } }));
+    }
+
+    // Canonical ALLOW_SESSION in OPTIONS shows all 3 choices with matching indices 1/2/3.
+    let (f, id) = fixture(attrs! { KIND: "approval", OPTIONS: list(&[answer::ALLOW_ONCE, answer::ALLOW_SESSION, answer::DENY]) }, "ls");
+    let mut s = state(&f, false);
+    for label in ["Allow once", "Allow for this session", "Deny", "1", "2", "3"] {
+        assert!(shows(&s, id, label), "{label}");
+    }
+    assert!(s.update(Message::Shortcut(Shortcut::Pick(1))).1.is_none());
+    assert_eq!(
+        s.update(Message::Shortcut(Shortcut::Confirm)).1,
+        Some(Intent::Answer { decision: id, answer: Answer { values: vec![answer::ALLOW_SESSION.into()], reason: None, by: "me".into() } }),
+    );
+}
+
+#[test]
+fn unsupported_allow_session_policy_and_default_fall_back_to_allow_once() {
+    let mut f = DomFixture::session();
+    f.turn();
+    let turn = f.last;
+    let supported = f.add(turn, ElementKind::Decision, attrs! { KIND: "approval", OPTIONS: list(&[answer::ALLOW_ONCE, answer::ALLOW_SESSION, answer::DENY]), DEFAULT: list(&[answer::ALLOW_SESSION]), TIMEOUT_MS: 1_000i64, CREATED: 100i64 }, "ls");
+    let no_options = f.add(turn, ElementKind::Decision, attrs! { KIND: "approval", DEFAULT: list(&[answer::ALLOW_SESSION]), TIMEOUT_MS: 1_000i64, CREATED: 100i64 }, "ls");
+    let once_only = f.add(turn, ElementKind::Decision, attrs! { KIND: "approval", OPTIONS: list(&[answer::ALLOW_ONCE, answer::DENY]), CREATED: 100i64 }, "ls");
+    let non_canonical = f.add(turn, ElementKind::Decision, attrs! { KIND: "approval", OPTIONS: list(&["Allow", "Always allow", "Reject"]), DEFAULT: list(&[answer::ALLOW_SESSION]), TIMEOUT_MS: 1_000i64, CREATED: 100i64 }, "ls");
+
+    let d = |id| Decision::from_dom(&f.dom, id).unwrap();
+    assert_eq!(d(supported).default_answer("t").unwrap().values, [answer::ALLOW_SESSION]);
+    assert_eq!(d(no_options).default_answer("t").unwrap().values, [answer::ALLOW_ONCE]);
+    assert_eq!(d(non_canonical).default_answer("t").unwrap().values, [answer::ALLOW_ONCE]);
+
+    let policy = Unattended(UnattendedView { approval: Some(DecisionDefaultView { timeout_secs: 30, answer: answer::ALLOW_SESSION.into(), reason: None }), ..Default::default() });
+    assert_eq!(policy.answer(&d(supported), "t").unwrap().values, [answer::ALLOW_SESSION]);
+    assert_eq!(policy.answer(&d(no_options), "t").unwrap().values, [answer::ALLOW_ONCE]);
+    assert_eq!(policy.answer(&d(once_only), "t").unwrap().values, [answer::ALLOW_ONCE]);
+    assert_eq!(policy.answer(&d(non_canonical), "t").unwrap().values, [answer::ALLOW_ONCE]);
+
+    let mut tracker = Tracker::default();
+    tracker.policy = policy;
+    tracker.observe(&f.dom, 100);
+    let own_fired = tracker.tick(1_100);
+    let by_id = |fired: &[Expired], id: NodeId| fired.iter().find(|e| e.decision == id).unwrap().answer.values.clone();
+    assert_eq!(by_id(&own_fired, supported), [answer::ALLOW_SESSION]);
+    assert_eq!(by_id(&own_fired, no_options), [answer::ALLOW_ONCE]);
+    assert_eq!(by_id(&own_fired, non_canonical), [answer::ALLOW_ONCE]);
+    let policy_fired = tracker.tick(30_100);
+    assert_eq!(by_id(&policy_fired, once_only), [answer::ALLOW_ONCE]);
 }

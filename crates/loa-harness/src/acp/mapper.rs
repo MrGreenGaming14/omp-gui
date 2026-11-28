@@ -16,7 +16,7 @@ use std::collections::HashMap;
 pub const X_MODE: &str = "x-acp-mode";
 /// Session attribute naming the agent program (`agentInfo`).
 pub const X_AGENT: &str = "x-acp-agent";
-/// Decision attributes keeping the offered option ids and kinds, parallel to `options`.
+/// Decision attributes keeping the offered ACP option ids and kinds.
 pub const X_OPTION_IDS: &str = "x-acp-option-ids";
 pub const X_OPTION_KINDS: &str = "x-acp-option-kinds";
 /// Decision attribute holding the option id that was sent back.
@@ -496,7 +496,8 @@ impl AcpMapper {
         let list = |f: fn(&PermissionOption) -> String| Value::from(request.options.iter().map(f).collect::<Vec<_>>());
         let request_id = rpc_id.as_str().map_or_else(|| rpc_id.to_string(), str::to_owned);
         let mut attrs = vec![(attr::KIND, Value::from(DecisionKind::Approval)), (attr::STATUS, DecisionStatus::Waiting.into())];
-        attrs.extend([(attr::OPTIONS, list(|o| o.name.clone())), (X_OPTION_IDS, list(|o| o.option_id.clone())), (X_OPTION_KINDS, list(|o| kind_str(o.kind).to_owned()))]);
+        let canonical = Value::List(canonical_options(&request.options).into_iter().map(Value::from).collect());
+        attrs.extend([(attr::OPTIONS, canonical), (X_OPTION_IDS, list(|o| o.option_id.clone())), (X_OPTION_KINDS, list(|o| kind_str(o.kind).to_owned()))]);
         attrs.extend([(attr::REQUEST_ID, request_id.into()), (attr::CREATED, w.now().into())]);
         attrs.extend(call.map(|call| (attr::CALL, Value::Int(i64::try_from(call.0).unwrap_or(i64::MAX)))));
         attrs.extend(title.map(|title| (attr::TITLE, title.into())));
@@ -538,6 +539,19 @@ fn finish_call(w: &DomWriter, node: NodeId, status: CallStatus, content: Vec<Jso
         w.ext(node, HARNESS, "tool_call_content", item)?;
     }
     w.close(node, status)
+}
+
+/// Canonical approval answers advertised for the offered ACP permission options.
+fn canonical_options(options: &[PermissionOption]) -> Vec<&'static str> {
+    let has = |pred: fn(PermissionOptionKind) -> bool| options.iter().any(|o| pred(o.kind));
+    [
+        has(|k| k == PermissionOptionKind::AllowOnce).then_some(answer::ALLOW_ONCE),
+        has(|k| k == PermissionOptionKind::AllowAlways).then_some(answer::ALLOW_SESSION),
+        has(|k| matches!(k, PermissionOptionKind::RejectOnce | PermissionOptionKind::RejectAlways)).then_some(answer::DENY),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
 }
 
 /// The offered option `value` names: its id, its label, or a

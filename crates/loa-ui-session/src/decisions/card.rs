@@ -201,6 +201,8 @@ pub trait CardKind: Sync {
     fn body<'a>(&self, c: &'a Card, active: bool, cx: &CardCtx) -> Element<'a, Message>;
     /// Whether `d.default` is a valid answer.
     fn valid_default(&self, d: &Decision) -> bool;
+    /// The decision's own default values, normalized if valid; `None` when invalid.
+    fn default_values(&self, d: &Decision) -> Option<Vec<String>> { self.valid_default(d).then(|| d.default.clone()) }
     /// Tone of an answered card's status line, by its first value.
     fn outcome(&self, _first: &str) -> Tone { Tone::Normal }
     /// The answer the unattended policy's `configured` value gives `d`, and whether it refuses.
@@ -239,8 +241,8 @@ fn option<'a>(c: &Card, i: usize, label: &'a str, active: bool, primary: bool) -
     button(content).padding([sp(Sp::Xs), sp(Sp::M)]).style(kit::button(kind)).on_press_maybe(active.then_some(Message::Choose(c.decision.id, i))).into()
 }
 
-fn choices<'a, K: Choice>(c: &Card, active: bool, primary: impl Fn(K) -> bool) -> Element<'a, Message> {
-    row(K::ALL.iter().enumerate().map(|(i, k)| option(c, i, k.label(), active, primary(*k)))).spacing(sp(Sp::S)).into()
+fn choices<'a, K: Choice>(c: &Card, list: &[K], active: bool, primary: impl Fn(K) -> bool) -> Element<'a, Message> {
+    row(list.iter().enumerate().map(|(i, k)| option(c, i, k.label(), active, primary(*k)))).spacing(sp(Sp::S)).into()
 }
 
 fn on(c: &Card, active: bool, message: fn(NodeId) -> Message) -> Option<Message> { active.then(|| message(c.decision.id)) }
@@ -248,14 +250,21 @@ fn on(c: &Card, active: bool, message: fn(NodeId) -> Message) -> Option<Message>
 struct Approval;
 impl Approval {
     fn reply(c: &Card, choice: ApprovalChoice) -> Option<Reply> { Reply::one(choice.answer(), if choice == ApprovalChoice::Deny { c.reason() } else { None }) }
+
+    fn resolve(d: &Decision, value: &str) -> Option<ApprovalChoice> {
+        Some(match ApprovalChoice::from_answer(value)? {
+            ApprovalChoice::AllowSession if !d.allows_session() => ApprovalChoice::AllowOnce,
+            choice => choice,
+        })
+    }
 }
 impl CardKind for Approval {
     fn header(&self, d: &Decision) -> (Icon, &'static str) { (Icon::TriangleAlert, if d.tool.is_some() { "wants to run" } else { "needs approval" }) }
     fn notice(&self) -> &'static str { "needs approval" }
     fn settings_label(&self) -> &'static str { "Approvals" }
-    fn options(&self, _: &Card) -> usize { ApprovalChoice::ALL.len() }
-    fn choose(&self, c: &mut Card, i: usize) -> Option<Reply> { Self::reply(c, ApprovalChoice::ALL[i]) }
-    fn confirm(&self, c: &mut Card) -> Option<Reply> { Self::reply(c, ApprovalChoice::ALL[c.selected?]) }
+    fn options(&self, c: &Card) -> usize { c.decision.approval_choices().len() }
+    fn choose(&self, c: &mut Card, i: usize) -> Option<Reply> { Self::reply(c, *c.decision.approval_choices().get(i)?) }
+    fn confirm(&self, c: &mut Card) -> Option<Reply> { Self::reply(c, *c.decision.approval_choices().get(c.selected?)?) }
     fn dismiss(&self, c: &mut Card) -> Option<Reply> { Self::reply(c, ApprovalChoice::Deny) }
     fn submit_text(&self, c: &mut Card) -> Option<Reply> { Self::reply(c, ApprovalChoice::Deny) }
     fn body<'a>(&self, c: &'a Card, active: bool, _: &CardCtx) -> Element<'a, Message> {
@@ -270,10 +279,14 @@ impl CardKind for Approval {
             }
             None => container(text(body).size(ts(T::Label)).font(Font::MONOSPACE)).padding([sp(Sp::Xs), sp(Sp::S)]).width(Fill).style(kit::container(Surface::Raised)).into(),
         };
-        let waiting = c.decision.is_waiting().then(|| column![choices(c, active, |k: ApprovalChoice| k != ApprovalChoice::Deny), text_field(c, "Reason for denying (optional)", active)].spacing(sp(Sp::M)));
+        let waiting = c.decision.is_waiting().then(|| column![choices(c, c.decision.approval_choices(), active, |k: ApprovalChoice| k != ApprovalChoice::Deny), text_field(c, "Reason for denying (optional)", active)].spacing(sp(Sp::M)));
         column![preview].push(waiting).spacing(sp(Sp::M)).into()
     }
     fn valid_default(&self, d: &Decision) -> bool { matches!(d.default.as_slice(), [a] if ApprovalChoice::from_answer(a).is_some()) }
+    fn default_values(&self, d: &Decision) -> Option<Vec<String>> {
+        let [a] = d.default.as_slice() else { return None };
+        Some(vec![Self::resolve(d, a)?.answer().to_owned()])
+    }
     fn outcome(&self, first: &str) -> Tone {
         match ApprovalChoice::from_answer(first) {
             Some(ApprovalChoice::Deny) => Tone::Danger,
@@ -281,7 +294,7 @@ impl CardKind for Approval {
             None => Tone::Normal,
         }
     }
-    fn policy(&self, _: &Decision, configured: &str) -> Option<(String, bool)> { ApprovalChoice::from_answer(configured).map(|c| (configured.to_owned(), c == ApprovalChoice::Deny)) }
+    fn policy(&self, d: &Decision, configured: &str) -> Option<(String, bool)> { Self::resolve(d, configured).map(|c| (c.answer().to_owned(), c == ApprovalChoice::Deny)) }
     fn presets(&self) -> Vec<(&'static str, &'static str)> { ApprovalChoice::ALL.iter().rev().map(|c| (c.answer(), c.label())).collect() }
 }
 
@@ -376,7 +389,7 @@ impl CardKind for Plan {
             let buttons = row![action("Submit edited plan", on(c, active, Message::Submit), true, false), action("Cancel", on(c, active, Message::CancelEdit), false, false)];
             return column![editor, buttons.spacing(sp(Sp::S))].spacing(sp(Sp::M)).into();
         }
-        let waiting = c.decision.is_waiting().then(|| column![choices(c, active, |k: PlanChoice| k == PlanChoice::Approve), text_field(c, "Feedback for rejecting", active)].spacing(sp(Sp::M)));
+        let waiting = c.decision.is_waiting().then(|| column![choices(c, PlanChoice::ALL, active, |k: PlanChoice| k == PlanChoice::Approve), text_field(c, "Feedback for rejecting", active)].spacing(sp(Sp::M)));
         column![markdown::view(&c.plan, cx.markdown).map(Message::Link)].push(waiting).spacing(sp(Sp::M)).into()
     }
     fn valid_default(&self, d: &Decision) -> bool { matches!(d.default.as_slice(), [a] if PlanChoice::from_answer(a).is_some_and(|c| c != PlanChoice::Edit)) }

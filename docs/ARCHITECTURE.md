@@ -132,7 +132,7 @@ Every adapter writes the same shapes, so the UI, projects and peers never look a
 
 OMP progress updates use the subagent's lifecycle ID to append to its job, not a standalone transcript row. Unmatched updates are ignored; legacy OMP `subagent_progress` extension nodes stay in the journal but are not rendered.
 
-Decision answers use the constants in `loa_core::answer` (`allow_once`, `allow_session`, `deny`, `approve`, `edit`, `reject`). Question answers are the picked option labels or the typed text. Form answers are one JSON object.
+Decision answers use the constants in `loa_core::answer` (`allow_once`, `allow_session`, `deny`, `approve`, `edit`, `reject`). Approval decisions that accept session grants advertise canonical `loa_core::answer::ALLOW_SESSION` (`allow_session`) in `options` (e.g. `['allow_once', 'allow_session', 'deny']`); approval cards show "Allow for this session" only when `options` includes `allow_session`, and unattended policies or decision defaults of `allow_session` fall back to `allow_once` when it is absent. Question answers are the picked option labels or the typed text. Form answers are one JSON object.
 
 Imports produce the same shapes with `commit_at` and the original timestamps. Native ids go into `id`, `call_id`, `request_id` and `native_id`. Whatever the mapping doesn't cover is kept in `<ext>` so the export reproduces the native file.
 

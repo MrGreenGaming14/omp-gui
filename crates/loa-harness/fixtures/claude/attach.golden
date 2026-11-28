@@ -5,7 +5,7 @@
     <message nid="4" model="m" role="assistant" status="cancelled">half</message>
     <call nid="5" call_id="toolu_1" ended.int="T" started.int="T" status="cancelled" title="make" tool="Bash" x-claude-uuid="a-0">
       <input nid="6" format="json">{"command":"make"}</input>
-      <decision nid="7" call.int="5" created.int="T" ended.int="T" kind="approval" request_id="req-1" status="cancelled" title="Allow Bash?">{
+      <decision nid="7" call.int="5" created.int="T" ended.int="T" kind="approval" options.list="['allow_once', 'allow_session', 'deny']" request_id="req-1" status="cancelled" title="Allow Bash?">{
   "command": "make"
 }</decision>
     </call>

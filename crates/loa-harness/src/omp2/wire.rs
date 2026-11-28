@@ -139,7 +139,15 @@ pub enum Frame {
         cancelled: bool,
         error: Option<String>,
     },
-    ToolApprovalRequest { prompt_id: String, tool_call_id: Option<String>, title: Option<String>, body: Option<String>, timeout_ms: Option<i64> },
+    ToolApprovalRequest {
+        prompt_id: String,
+        tool_call_id: Option<String>,
+        title: Option<String>,
+        body: Option<String>,
+        #[serde(default)]
+        scopes: Option<Vec<String>>,
+        timeout_ms: Option<i64>,
+    },
     ExtensionUiRequest {
         id: Json,
         method: String,

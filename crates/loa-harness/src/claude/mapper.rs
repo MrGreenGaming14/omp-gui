@@ -685,6 +685,7 @@ impl Mapper {
             _ => {
                 let title = request["title"].as_str().map_or_else(|| format!("Allow {tool}?"), str::to_owned);
                 let mut attrs = base(Some(title));
+                attrs.push((attr::OPTIONS, V::List(vec![answer::ALLOW_ONCE.into(), answer::ALLOW_SESSION.into(), answer::DENY.into()])));
                 attrs.extend(request["decision_reason"].as_str().map(|r| ("x-claude-decision-reason", r.into())));
                 attrs.extend(request["blocked_path"].as_str().map(|p| ("x-claude-blocked-path", p.into())));
                 let text = request["description"].as_str().map_or_else(|| serde_json::to_string_pretty(input).unwrap_or_default(), str::to_owned);

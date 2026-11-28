@@ -42,3 +42,41 @@ fn transcripts_replay_to_their_goldens() {
         golden(&fixture.with_extension("golden"), &format!("{}\n--- replies\n{replies}", render(&sink.dom())));
     }
 }
+
+#[test]
+fn tool_approval_options_reflect_advertised_scopes() {
+    use loa_core::answer;
+    use loa_harness::omp2::wire::{Input, Reply};
+    use serde_json::json;
+
+    let sink = MemorySink::new();
+    let attrs = [(attr::ID, "s".into()), (attr::HARNESS, "omp2".into()), (attr::NODE, "owner".into()), (attr::CREATED, 1_i64.into())];
+    let root = sink.commit(Draft::insert(NodeId::DOCUMENT, ElementKind::Session, attrs, "")).unwrap().node;
+    let mut mapper = Omp2Mapper::new(root);
+    let w = DomWriter::new(&sink).at(0);
+    mapper.begin(&w, &Prompt { text: "run".into(), by: "owner".into(), ..Default::default() }).unwrap();
+
+    for frame in [
+        json!({"type": "tool_approval_request", "promptId": "p1", "title": "Run bash?", "scopes": ["once", "session"]}),
+        json!({"type": "tool_approval_request", "promptId": "p2", "title": "Run rm?", "scopes": ["once"]}),
+        json!({"type": "tool_approval_request", "promptId": "p3", "title": "Run grep?"}),
+    ] {
+        mapper.apply(serde_json::from_value::<Input>(frame).unwrap(), &w).unwrap();
+    }
+
+    let decisions: Vec<(NodeId, Vec<String>)> = sink.with_dom(|dom| {
+        dom.iter()
+            .filter(|n| n.kind == ElementKind::Decision)
+            .map(|n| (n.id, n.attr(attr::OPTIONS).unwrap().str_items().map(str::to_owned).collect()))
+            .collect()
+    });
+    assert_eq!(decisions[0].1, [answer::ALLOW_ONCE, answer::ALLOW_SESSION, answer::DENY]);
+    assert_eq!(decisions[1].1, [answer::ALLOW_ONCE, answer::DENY]);
+    assert_eq!(decisions[2].1, [answer::ALLOW_ONCE, answer::ALLOW_SESSION, answer::DENY]);
+
+    let session_reply = mapper.answer(decisions[0].0, &Answer { values: vec![answer::ALLOW_SESSION.into()], reason: None, by: "owner".into() }, &w).unwrap();
+    assert_eq!(session_reply, Some(Reply::Approve { prompt_id: "p1".into(), approved: true, scope: "session", reason: None }));
+
+    let fallback_reply = mapper.answer(decisions[1].0, &Answer { values: vec![answer::ALLOW_SESSION.into()], reason: None, by: "owner".into() }, &w).unwrap();
+    assert_eq!(fallback_reply, Some(Reply::Approve { prompt_id: "p2".into(), approved: true, scope: "once", reason: None }));
+}
