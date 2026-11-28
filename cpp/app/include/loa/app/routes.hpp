@@ -69,6 +69,13 @@ struct Answered {
 } // namespace decisions
 namespace tools {
 struct Open {};
+// Answer to a remote host approval or host key question, from its decision card (the decisions
+// area's): the `remote` server owns these decisions, not the harness.
+struct AnswerDecision {
+    SessionId session;
+    core::NodeId decision;
+    contracts::Answer answer;
+};
 } // namespace tools
 namespace models {
 // The models screens (`loa_ui_settings::models::Page`).
@@ -144,6 +151,13 @@ inline constexpr std::string_view RECENT_PREFIX = "peer:";
 [[nodiscard]] inline bool is_remote(std::string_view id) { return id.starts_with(RECENT_PREFIX); }
 } // namespace peers
 
+namespace tools {
+// The `request_id` prefix of the decisions the tools area's `remote` server raises.
+inline constexpr std::string_view REMOTE_REQUEST_PREFIX = "remote:";
+// Whether `decision` is a remote host approval or host key question of the `remote` server.
+[[nodiscard]] bool is_remote_decision(const core::Dom& dom, core::NodeId decision);
+} // namespace tools
+
 // What the app asks of the sessions area.
 class SessionsPort {
   public:
@@ -167,6 +181,9 @@ class DecisionsPort {
     [[nodiscard]] virtual Message dismiss() const = 0;
     // The decision card at `node` of session `session`; null when it is gone.
     [[nodiscard]] virtual QWidget* card(std::string_view session, core::NodeId node, const Emit& send) const = 0;
+    // The message a key press no widget captured sends to the focused card (number keys and
+    // Enter); `nullopt` when no card takes it. Esc is the app's (`dismiss`).
+    [[nodiscard]] virtual std::optional<Message> shortcut(const ui::shell::palette::KeyPress& key) const = 0;
 };
 
 // What the app asks of the models area.
