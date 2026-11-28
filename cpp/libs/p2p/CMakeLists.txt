@@ -10,18 +10,22 @@ if(NOT loa_mdns_POPULATED)
   FetchContent_Populate(loa_mdns)
 endif()
 
+find_package(OpenSSL 3 REQUIRED COMPONENTS Crypto SSL)
+
 add_library(loa_p2p STATIC
   src/discovery/discovery.cpp
   src/discovery/mdns.cpp
   src/discovery/tailnet.cpp
   src/quic.cpp
+  src/tcp.cpp
   src/transport.cpp
-  src/wire.cpp)
+  src/wire.cpp
+  src/yamux.cpp)
 add_library(loa::p2p ALIAS loa_p2p)
 target_include_directories(loa_p2p PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 set_source_files_properties(src/discovery/mdns.cpp PROPERTIES INCLUDE_DIRECTORIES "${loa_mdns_SOURCE_DIR}")
-target_link_libraries(loa_p2p PUBLIC loa::runtime loa::trust PRIVATE loa::core loa::bus loa::iroh_ffi)
+target_link_libraries(loa_p2p PUBLIC loa::runtime loa::trust PRIVATE loa::core loa::bus loa::iroh_ffi OpenSSL::SSL OpenSSL::Crypto)
 
-loa_add_test(p2p SOURCES tests/discovery.cpp tests/transport.cpp tests/wire.cpp
-  LINK loa::p2p loa::bus loa::core loa::iroh_ffi)
+loa_add_test(p2p SOURCES tests/discovery.cpp tests/tcp.cpp tests/transport.cpp tests/wire.cpp tests/yamux.cpp
+  LINK loa::p2p loa::bus loa::core loa::iroh_ffi OpenSSL::SSL OpenSSL::Crypto)
 target_compile_definitions(loa_p2p_tests PRIVATE LOA_GOLDEN_DIR="${CMAKE_SOURCE_DIR}/tests/golden")
