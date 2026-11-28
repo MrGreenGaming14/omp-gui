@@ -1,0 +1,7 @@
+# omp config
+modelRoles:
+  default: vendor/default # keep
+  EXT: vendor/other
+  RESEARCH: vendor/default
+  STUDY: vendor/deep:high
+theme: dark
