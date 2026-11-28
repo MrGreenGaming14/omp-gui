@@ -6,6 +6,7 @@
 
 #include "loa/harness/native.hpp"
 #include "loa/harness/omp2/omp2.hpp"
+#include "loa/harness/opencode/opencode.hpp"
 #include "loa/runtime/exec.hpp"
 #include "loa/runtime/fs.hpp"
 
@@ -68,6 +69,7 @@ void register_build(std::string_view id, HarnessBuild build) {
 }
 
 std::vector<std::shared_ptr<loa::contracts::HarnessFactory>> factories(const HarnessEnv& env) {
+    opencode::register_factory();
     std::vector<std::shared_ptr<loa::contracts::HarnessFactory>> out;
     std::scoped_lock lock(builds_mutex);
     for (const auto& entry : ENTRIES) {

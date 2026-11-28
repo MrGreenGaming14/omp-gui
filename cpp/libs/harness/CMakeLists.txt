@@ -1,3 +1,5 @@
+find_package(CURL REQUIRED)
+
 add_library(loa_harness STATIC
   src/kit/jsonrpc.cpp
   src/kit/ledger.cpp
@@ -16,6 +18,13 @@ add_library(loa_harness STATIC
   src/account_support/opener.cpp
   src/account_support/process.cpp
   src/registry/registry.cpp)
+target_sources(loa_harness PRIVATE
+  src/opencode/client.cpp
+  src/opencode/event.cpp
+  src/opencode/mapper.cpp
+  src/opencode/native.cpp
+  src/opencode/opencode.cpp)
+target_link_libraries(loa_harness PUBLIC CURL::libcurl)
 target_sources(loa_harness PRIVATE
   src/omp/rpc/client.cpp
   src/omp/rpc/command.cpp
@@ -63,5 +72,14 @@ target_sources(loa_harness_tests PRIVATE
   tests/omp/native_import_test.cpp
   tests/omp/native_export_test.cpp
   tests/omp/native_history_test.cpp)
+target_sources(loa_harness_tests PRIVATE
+  tests/opencode/driver_test.cpp
+  tests/opencode/event_test.cpp
+  tests/opencode/mapper_test.cpp
+  tests/opencode/native_test.cpp
+  tests/opencode/session_test.cpp)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(LOA_HARNESS_HTTPLIB REQUIRED IMPORTED_TARGET cpp-httplib)
+target_link_libraries(loa_harness_tests PRIVATE PkgConfig::LOA_HARNESS_HTTPLIB)
 target_compile_definitions(loa_harness_tests PRIVATE LOA_GOLDEN_DIR="${CMAKE_SOURCE_DIR}/tests/golden")
 target_compile_definitions(loa_harness_tests PRIVATE LOA_HARNESS_FIXTURES="${CMAKE_SOURCE_DIR}/../crates/loa-harness/fixtures")
