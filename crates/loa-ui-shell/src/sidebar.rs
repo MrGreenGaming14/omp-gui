@@ -4,7 +4,7 @@
 use crate::data::Nodes;
 use loa_view::shell::{NodeFilter, NodeStatus, SessionSummary, SidebarIntent, UsageMeter};
 use loa_view::theme::Icon;
-use iced::widget::{Column, button, column, container, hover, row, rule, scrollable, space, text, text_input};
+use iced::widget::{Column, button, column, container, hover, row, rule, scrollable, space, text, text_input, tooltip};
 use iced::{Alignment, Element, Fill, Padding, Task};
 use loa_ui_kit::icons::tinted;
 use loa_ui_kit::style::{self, ButtonKind, Surface, Tone};
@@ -28,6 +28,8 @@ pub struct State {
     nodes: Nodes,
     pins: BTreeSet<String>,
     pinned_projects: BTreeSet<String>,
+    /// Live local sessions currently running a turn; kept separate from DOM-derived summaries.
+    running: BTreeSet<String>,
     query: String,
     /// `query` in lowercase, matched against the haystacks.
     lower_query: String,
@@ -74,6 +76,7 @@ pub enum Message {
 impl State {
     pub fn set_sessions(&mut self, sessions: impl IntoIterator<Item = SessionSummary>) {
         self.sessions = sessions.into_iter().map(|s| self.entry(s)).collect();
+        self.running.retain(|id| self.sessions.iter().any(|(s, _)| s.id == *id));
         self.reorder();
     }
     pub fn upsert_session(&mut self, summary: SessionSummary) {
@@ -115,8 +118,21 @@ impl State {
     pub fn pins(&self) -> &BTreeSet<String> { &self.pins }
     pub fn remove_session(&mut self, id: &str) {
         self.sessions.retain(|(s, _)| s.id != id);
+        self.running.remove(id);
         self.reorder();
     }
+    /// Marks whether session `id` is actively running a turn, separate from its DOM summary.
+    pub fn set_running(&mut self, id: &str, running: bool) {
+        if running {
+            self.running.insert(id.to_owned());
+        } else {
+            self.running.remove(id);
+        }
+    }
+    pub fn is_running(&self, id: &str) -> bool { self.running.contains(id) }
+    /// Whether session `id` displays the running indicator; a waiting decision takes precedence.
+    pub fn shows_running(&self, id: &str) -> bool { self.session(id).is_some_and(|s| self.row_running(s)) }
+    fn row_running(&self, s: &SessionSummary) -> bool { !s.waiting && self.is_running(&s.id) }
     pub fn session(&self, id: &str) -> Option<&SessionSummary> { self.sessions.iter().map(|(s, _)| s).find(|s| s.id == id) }
     pub fn set_pinned_projects(&mut self, pinned: impl IntoIterator<Item = String>) {
         self.pinned_projects = pinned.into_iter().collect();
@@ -141,7 +157,8 @@ impl State {
     pub fn set_nodes(&mut self, nodes: Vec<NodeStatus>) {
         self.nodes = Nodes::new(nodes);
         let sessions = std::mem::take(&mut self.sessions);
-        self.set_sessions(sessions.into_iter().map(|(s, _)| s));
+        self.sessions = sessions.into_iter().map(|(s, _)| self.entry(s)).collect();
+        self.reorder();
     }
     /// Projects whose name matches the search: pinned ones by name, then the rest in the order given.
     pub fn projects(&self) -> Vec<&str> { self.visible_projects.iter().map(|&i| self.projects[i].as_str()).collect() }
@@ -361,7 +378,14 @@ impl State {
             row_action(Icon::Pin, Message::TogglePin(s.id.clone())),
             row_action(Icon::X, Message::Emit(SidebarIntent::DeleteSession(s.id.clone()))),
         ];
-        let session = hover(row_button(line(row![title, s.waiting.then(|| label("Needs you", T::Caption, Tone::Warn)), node]), selected, Message::OpenSession(s.id.clone())), row_actions(actions, selected));
+        let status: Option<Element<'a, Message>> = if s.waiting {
+            Some(label("Needs you", T::Caption, Tone::Warn).into())
+        } else if self.row_running(s) {
+            Some(running_indicator())
+        } else {
+            None
+        };
+        let session = hover(row_button(line(row![title, status, node]), selected, Message::OpenSession(s.id.clone())), row_actions(actions, selected));
         if self.move_menu.as_deref() != Some(s.id.as_str()) {
             return session;
         }
@@ -400,6 +424,13 @@ fn footer_item<'a>(glyph: Icon, text: &'a str, trailing: Option<Element<'a, Mess
 
 fn header(text: &str) -> Element<'_, Message> { container(label(text, T::Caption, Tone::Faint)).padding(Padding::from([sp(Sp::Xs), row_pad().left]).top(sp(Sp::M))).into() }
 fn hint(text: &str) -> Element<'_, Message> { container(label(text, T::Label, Tone::Faint)).padding(Padding::from([sp(Sp::Xs), row_pad().left])).into() }
+fn running_indicator<'a>() -> Element<'a, Message> {
+    let icon = tinted(Icon::LoaderCircle, T::Caption, Tone::Accent);
+    let tip = container(label("Running", T::Caption, Tone::Normal))
+        .padding([sp(Sp::Xs), sp(Sp::S)])
+        .style(style::container(Surface::Tooltip));
+    tooltip(icon, tip, tooltip::Position::Bottom).into()
+}
 
 #[cfg(test)]
 mod tests {
@@ -496,5 +527,48 @@ mod tests {
 
         state.active_project = None;
         assert!(sim(&state).find("No sessions yet").is_err(), "no highlighted project, no list");
+    }
+
+    #[test]
+    fn running_state_survives_summaries_yields_to_waiting_and_clears_on_removal() {
+        fn sim(state: &State) -> iced_test::Simulator<'_, Message> { iced_test::Simulator::with_size(iced::Settings::default(), iced::Size::new(400.0, 2000.0), state.view_with(|m| m)) }
+        let mut state = State::default();
+        state.set_nodes(vec![node("k-desk", "desk", true)]);
+        state.set_sessions([summary("a", "k-desk", 10, false), summary("b", "k-desk", 20, false)]);
+        assert!(!state.is_running("a") && !state.shows_running("a"));
+
+        state.set_running("a", true);
+        assert!(state.is_running("a") && state.shows_running("a"));
+        assert!(!state.is_running("b") && !state.shows_running("b"));
+
+        // Fresh DOM summaries and node refreshes keep the separate running state intact.
+        state.upsert_session(SessionSummary { title: "Updated a".into(), ..summary("a", "k-desk", 30, false) });
+        state.set_nodes(vec![node("k-desk", "desk", true)]);
+        assert!(state.is_running("a") && state.shows_running("a"), "running survives summary and node updates");
+        assert!(sim(&state).find("Updated a").is_ok() && sim(&state).find("Needs you").is_err());
+
+        // Waiting takes precedence over running, then running resumes once waiting clears.
+        state.upsert_session(SessionSummary { title: "Updated a".into(), waiting: true, ..summary("a", "k-desk", 35, false) });
+        assert!(state.is_running("a") && !state.shows_running("a"), "waiting wins over running");
+        assert!(sim(&state).find("Needs you").is_ok());
+
+        state.upsert_session(SessionSummary { title: "Updated a".into(), waiting: false, ..summary("a", "k-desk", 40, false) });
+        assert!(state.is_running("a") && state.shows_running("a"), "running shows again once waiting clears");
+        assert!(sim(&state).find("Needs you").is_err());
+
+        // Clearing via set_running(false), remove_session, and set_sessions drops stale flags.
+        state.set_running("b", true);
+        state.set_running("a", false);
+        assert!(!state.is_running("a") && !state.shows_running("a"));
+
+        state.remove_session("b");
+        assert!(!state.is_running("b") && !state.shows_running("b"), "remove_session clears running state");
+        state.upsert_session(summary("b", "k-desk", 50, false));
+        assert!(!state.is_running("b") && !state.shows_running("b"), "re-added session stays idle");
+
+        state.set_running("a", true);
+        state.set_running("b", true);
+        state.set_sessions([summary("b", "k-desk", 50, false)]);
+        assert!(!state.is_running("a") && state.is_running("b"), "set_sessions drops running state for removed sessions");
     }
 }

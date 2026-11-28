@@ -551,3 +551,33 @@ async fn a_prompt_that_cannot_start_a_session_comes_back() {
     let none = runtime.dispatch(Command::Start { prompt: Some(prompt("hello")) });
     assert!(matches!(none.events.as_slice(), [RuntimeEvent::Notice(_), RuntimeEvent::PromptReturned(p)] if p.text == "hello"));
 }
+
+#[tokio::test]
+async fn background_turn_changes_emit_status_changed_without_active_turn_events() {
+    let dir = tempfile::tempdir().unwrap();
+    let adapter = Counted::new(ScriptedAdapter::new(HARNESS));
+    let mut runtime = runtime(library(dir.path()), &adapter, dir.path());
+
+    let (first, _) = start(&mut runtime, None).await;
+    let (second, _) = start(&mut runtime, None).await;
+    assert!(runtime.sessions().is_active(second.as_str()));
+
+    let writer = writer(&runtime, &first);
+    let root = writer.with_dom(|dom| dom.root().unwrap().id);
+    let mut feed = WriterFeed::new(Arc::clone(&writer), Policy::coalescing(4096));
+    let synced = feed.next().await.unwrap();
+    deliver_feed(&mut runtime, &first, synced);
+
+    let turn = writer.commit(Draft::insert(root, ElementKind::Turn, [(attr::STATUS, Value::from(TurnStatus::Running))], "")).unwrap().node;
+    let started = deliver_feed(&mut runtime, &first, feed.next().await.unwrap());
+    assert!(started.iter().any(|event| matches!(event, RuntimeEvent::StatusChanged(id) if *id == first)));
+    assert!(started.iter().all(|event| !matches!(event, RuntimeEvent::TurnStarted(_) | RuntimeEvent::TurnEnded(_))));
+    assert!(runtime.sessions().get(first.as_str()).unwrap().is_busy());
+    assert!(runtime.sessions().is_active(second.as_str()));
+
+    writer.commit(Draft::set(turn, attr::STATUS, Value::from(TurnStatus::Done))).unwrap();
+    let ended = deliver_feed(&mut runtime, &first, feed.next().await.unwrap());
+    assert!(ended.iter().any(|event| matches!(event, RuntimeEvent::StatusChanged(id) if *id == first)));
+    assert!(ended.iter().all(|event| !matches!(event, RuntimeEvent::TurnStarted(_) | RuntimeEvent::TurnEnded(_))));
+    assert!(!runtime.sessions().get(first.as_str()).unwrap().is_busy());
+}

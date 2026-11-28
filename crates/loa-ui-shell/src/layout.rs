@@ -97,6 +97,9 @@ impl State {
     pub fn is_detached(&self, tab: &str) -> bool { self.detached.iter().any(|d| d == tab) }
     /// The short status of the shown session in the top bar, e.g. "Running".
     pub fn set_session_status(&mut self, status: Option<String>) { self.status = status }
+    pub fn session_status(&self) -> Option<&str> { self.status.as_deref() }
+    /// Marks whether session `id` runs a turn in the sidebar.
+    pub fn set_session_running(&mut self, id: &str, running: bool) { self.sidebar.set_running(id, running) }
     /// Replaces the panel tabs; the active tab stays when it is still there.
     pub fn set_tabs(&mut self, tabs: Vec<PanelTab>) { self.tabs = tabs }
     pub fn tabs(&self) -> &[PanelTab] { &self.tabs }
@@ -285,12 +288,14 @@ mod tests {
         let (mut state, _) = State::new(Appearance::default());
         state.sidebar.set_nodes(vec![NodeStatus { key: "k-box".into(), name: "buildbox".into(), online: true, local: false }]);
         state.sidebar.set_sessions([SessionSummary { id: "s1".into(), title: "Ship it".into(), project: Some("loa".into()), node: "k-box".into(), pinned: false, waiting: true, updated: 1 }]);
+        state.set_session_running("s1", true);
+        assert!(state.sidebar().is_running("s1") && !state.sidebar().shows_running("s1"));
         assert_eq!(send(&mut state, [Message::Sidebar(sidebar::Message::OpenSession("s1".into()))]), [Intent::Sidebar(SidebarIntent::OpenSession("s1".into()))]);
         let (crumb, node) = state.breadcrumb().unwrap();
         assert_eq!((crumb.title.as_str(), node.name.as_str(), crumb.waiting), ("Ship it", "buildbox", true));
         let view = state.view(iced::widget::space(), |_| iced::widget::space().into(), |m| m);
         assert!(iced_test::Simulator::with_size(iced::Settings::default(), Size::new(700.0, 500.0), view).find("Ship it").is_ok());
         state.sidebar.remove_session("s1");
-        assert!(state.breadcrumb().is_none());
+        assert!(state.breadcrumb().is_none() && !state.sidebar().is_running("s1"));
     }
 }
