@@ -9,10 +9,11 @@ add_library(loa_app STATIC
   src/local_fs.cpp
   src/panel_smoke.cpp
   src/settings_smoke.cpp
-  src/smoke.cpp)
+  src/smoke.cpp
+  src/terminal_smoke.cpp)
 add_library(loa::app ALIAS loa_app)
 target_include_directories(loa_app PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
-target_link_libraries(loa_app PUBLIC loa::ui_kit loa::ui_session loa::ui_shell loa::ui_panel loa::ui_settings loa::view loa::runtime Qt6::Core Qt6::Gui Qt6::Widgets)
+target_link_libraries(loa_app PUBLIC loa::ui_kit loa::ui_session loa::ui_shell loa::ui_panel loa::ui_settings loa::ui_terminal loa::view loa::runtime Qt6::Core Qt6::Gui Qt6::Widgets)
 
 add_executable(loa-qt src/main.cpp)
 set_target_properties(loa-qt PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
@@ -31,6 +32,8 @@ add_test(NAME loa_qt_smoke_composer COMMAND loa-qt --smoke composer)
 set_tests_properties(loa_qt_smoke_composer PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 5)
 add_test(NAME loa_qt_smoke_panel COMMAND loa-qt --smoke panel)
 set_tests_properties(loa_qt_smoke_panel PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 5)
+add_test(NAME loa_qt_smoke_terminal COMMAND loa-qt --smoke terminal)
+set_tests_properties(loa_qt_smoke_terminal PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 5)
 add_test(NAME loa_qt_smoke_agents COMMAND loa-qt --smoke agents)
 set_tests_properties(loa_qt_smoke_agents PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 5)
 add_test(NAME loa_qt_smoke_projects COMMAND loa-qt --smoke projects)
