@@ -710,6 +710,10 @@ Task App::handle(Message message) {
                 if (named && *named == palette::Named::Escape && !mods.contains(palette::Modifiers::ctrl()) &&
                     !mods.contains(palette::Modifiers::alt()) && !mods.contains(palette::Modifiers::logo()))
                     return escape();
+                // Number keys and Enter answer the active session's focused card.
+                if (!palette.is_open() && !ctx.screen())
+                    if (const auto* decisions = areas.port<DecisionsPort>())
+                        if (auto shortcut = decisions->shortcut(m.key)) return update(std::move(*shortcut));
                 // The palette is modal: only its own bindings apply while it shows.
                 const auto scope = palette.is_open() ? palette::Scope::Palette : palette::Scope::Global;
                 if (const auto* id = ctx.keymap.resolve(m.key, scope)) return command(palette::CommandId(*id));

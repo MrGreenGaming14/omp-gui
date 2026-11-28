@@ -9,6 +9,9 @@
 #include "areas/peers/peers.hpp"
 
 #include "areas/agents/agents.hpp"
+#include "areas/decisions/decisions.hpp"
+#include "areas/harness/harness.hpp"
+#include "areas/models/models.hpp"
 #include "areas/projects/projects.hpp"
 #include "areas/sandbox/sandbox.hpp"
 #include "areas/sessions/sessions.hpp"
@@ -21,9 +24,10 @@
 namespace loa::app {
 
 std::vector<AreaBoot> builtin_areas() {
-    return {boot<areas::agents::State>(),  boot<areas::peers::State>(),    boot<areas::projects::State>(),
-            boot<areas::sandbox::State>(), boot<areas::sessions::State>(), boot<areas::surfaces::State>(),
-            boot<areas::tools::State>(),   boot<areas::updater::State>(),
+    return {boot<areas::agents::State>(),    boot<areas::decisions::State>(), boot<areas::harness::State>(),
+            boot<areas::models::State>(),    boot<areas::peers::State>(),     boot<areas::projects::State>(),
+            boot<areas::sandbox::State>(),   boot<areas::sessions::State>(),  boot<areas::surfaces::State>(),
+            boot<areas::tools::State>(),     boot<areas::updater::State>(),
             boot<areas::workflows::State>()};
 }
 

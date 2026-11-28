@@ -173,6 +173,9 @@ class DecisionsPort {
     [[nodiscard]] virtual Message dismiss() const = 0;
     // The decision card at `node` of session `session`; null when it is gone.
     [[nodiscard]] virtual QWidget* card(std::string_view session, core::NodeId node, const Emit& send) const = 0;
+    // The message a key press no widget captured sends to the focused card (number keys and
+    // Enter); `nullopt` when no card takes it. Esc is the app's (`dismiss`).
+    [[nodiscard]] virtual std::optional<Message> shortcut(const ui::shell::palette::KeyPress& key) const = 0;
 };
 
 // What the app asks of the models area.

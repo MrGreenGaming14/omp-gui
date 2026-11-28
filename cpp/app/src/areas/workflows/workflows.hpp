@@ -86,7 +86,7 @@ class State final : public TypedArea<State>, public WorkflowsPort {
     // The status line shown in place of the editor while a read or write runs.
     [[nodiscard]] std::optional<std::string_view> busy() const noexcept { return busy_; }
 
-    explicit State(models::Backend backend) : backend_(std::move(backend)) {}
+    explicit State(loa::models::Backend backend) : backend_(std::move(backend)) {}
 
   private:
     [[nodiscard]] Task read(const Ctx& ctx, Load load) const;
@@ -96,7 +96,7 @@ class State final : public TypedArea<State>, public WorkflowsPort {
     Task intent(shown::Intent intent, Ctx& ctx);
     Task loaded(msg::Loaded loaded, Ctx& ctx);
 
-    models::Backend backend_;
+    loa::models::Backend backend_;
     screen::State screen_;
     std::vector<domain::Workflow> workflows_;
     std::optional<domain::WorkflowSnapshot> snapshot_;
