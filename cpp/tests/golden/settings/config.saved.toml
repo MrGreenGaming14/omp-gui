@@ -1,0 +1,84 @@
+pinned = ["s1"]
+pinned_projects = ["loa"]
+project_tabs = true
+theme = "dark"
+version = 1
+
+[active_project]
+cwd = "/src/loa"
+name = "loa"
+
+[harness]
+approval_mode = "write"
+default = "claude"
+
+[harness.executables]
+omp = "/opt/omp/bin/omp"
+
+[mcp_servers.files]
+args = ["--root", "/srv"]
+command = "mcp-files"
+enabled = true
+
+[mcp_servers.files.env]
+LOG = "debug"
+
+[mcp_servers.old]
+command = "old-server"
+enabled = false
+
+[mcp_servers.search]
+enabled = true
+url = "https://mcp.example.test/sse"
+
+[mcp_servers.search.headers]
+X-Team = "a"
+
+[network]
+port = 4242
+relay = "https://relay.example.test"
+
+[network.discovery]
+mdns = false
+tailscale = true
+
+[projects.loa]
+digest_role = "fast"
+disabled_tools = ["bash"]
+instructions = "Use iced."
+pinned_files = ["docs/design/README.md"]
+token_budget = 12000
+
+[projects.loa.disabled_mcp_tools]
+files = ["delete"]
+
+[remote_hosts.build]
+allowed_paths = ["/srv/app", "/tmp/"]
+auto_approve = false
+commands = true
+host = "build.example.test"
+port = 2222
+proxy_jump = "bastion"
+read_only = false
+user = "ci"
+
+[surfaces]
+browser_capture = "virtual-display"
+video = false
+
+[unattended.approval]
+answer = "deny"
+reason = "nobody was around"
+timeout_secs = 120
+
+[unattended.form]
+answer = '{"name": "x"}'
+timeout_secs = 30
+
+[updater]
+check_interval_secs = 3600
+github_token = "ghp_test"
+trusted_keys = ["abcd"]
+
+[updater.pins]
+omp = "19.0.0"

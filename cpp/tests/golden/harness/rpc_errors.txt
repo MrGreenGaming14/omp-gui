@@ -1,0 +1,13 @@
+the executable `omp` wasn't found
+harness i/o failed: broken pipe
+the harness exited (exit status: 3): boom
+the harness exited (signal: 9 (SIGKILL))
+the harness exited (unknown status)
+the harness offers RPC protocol versions [3, 4], this client supports 1..=2
+the harness offers RPC protocol versions [], this client supports 1..=1
+RPC protocol error: bad frame
+the harness rejected `fork`: busy
+the harness didn't become ready within 20s
+the harness didn't become ready within 1.5s
+the harness didn't become ready within 250ms
+the RPC client is closed
