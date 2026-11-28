@@ -239,17 +239,22 @@ void AppView::render_center(const App& app) {
             return card ? card : widgets::label("Decision no longer available", theme::TextRole::Body, kit::Tone::Muted);
         });
         transcript_->render(app.sessions.chat, active->dom());
-        if (child_strip_) {
-            child_strip_->deleteLater();
-            child_strip_ = nullptr;
-        }
+        for (auto** old : {&child_strip_, &child_body_})
+            if (*old) {
+                (*old)->deleteLater();
+                *old = nullptr;
+            }
         if (const auto* sessions = app.areas.port<SessionsPort>())
             if (auto child = sessions->view_child_center(ctx, emit_)) {
                 child_strip_ = child->first;
                 session_layout_->insertWidget(0, child_strip_);
-                if (child->second) child->second->deleteLater();
+                // A picked subagent's tab takes the place of the conversation and its composer.
+                child_body_ = child->second;
+                if (child_body_) session_layout_->insertWidget(1, child_body_, 1);
             }
         if (composer_->parent() != session_page_) session_layout_->addWidget(composer_);
+        transcript_->setVisible(!child_body_);
+        composer_->setVisible(!child_body_);
         composer_->render(ctx.composer);
         pages_->setCurrentWidget(session_page_);
         return;

@@ -26,6 +26,11 @@ add_library(loa_app STATIC
   src/app_workspace.cpp
   src/application.cpp
   src/area.cpp
+  src/areas/peers/adapter.cpp
+  src/areas/peers/folder.cpp
+  src/areas/peers/peers.cpp
+  src/areas/peers/remote.cpp
+  src/areas/peers/view.cpp
   src/areas.cpp
   src/areas/agents/agents.cpp
   src/areas/sandbox/sandbox.cpp
@@ -34,6 +39,14 @@ add_library(loa_app STATIC
   src/areas/tools/tools.cpp
   src/tools_smoke.cpp
   src/areas/projects/projects.cpp
+  src/areas/sessions/branch.cpp
+  src/areas/sessions/hooks.cpp
+  src/areas/sessions/plan.cpp
+  src/areas/sessions/sessions.cpp
+  src/areas/sessions/sessions_smoke.cpp
+  src/areas/sessions/subagents.cpp
+  src/areas/sessions/transfer.cpp
+  src/areas/sessions/tree.cpp
   src/asio_bridge.cpp
   src/decisions_smoke.cpp
   src/host.cpp
@@ -73,6 +86,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   # libnotify (and its glib headers) stay private to `notifier.cpp`.
   target_link_libraries(loa_app PRIVATE PkgConfig::LIBNOTIFY)
 endif()
+# The areas' headers under `src/areas/<area>/` stay private to the app and its tests.
+target_include_directories(loa_app PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 
 add_executable(loa-qt src/main.cpp)
 set_target_properties(loa-qt PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
@@ -80,7 +95,8 @@ target_link_libraries(loa-qt PRIVATE loa::app)
 
 loa_add_test(app SOURCES tests/app_test.cpp tests/app_core_test.cpp tests/view_test.cpp tests/adapters_test.cpp
   tests/update_gates_test.cpp tests/routing_test.cpp tests/support/test_app.cpp tests/glue_test.cpp tests/workflows_test.cpp
-  tests/agents_area_test.cpp tests/projects_area_test.cpp tests/tools_area_test.cpp tests/sandbox_area_test.cpp
+  tests/agents_area_test.cpp tests/projects_area_test.cpp tests/sessions_test.cpp tests/peers_test.cpp tests/tools_area_test.cpp
+  tests/sandbox_area_test.cpp
   LINK loa::app loa::models_testing loa::harness_testing)
 target_include_directories(loa_app_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tests")
 target_compile_definitions(loa_app_tests PRIVATE LOA_GOLDEN_DIR="${CMAKE_SOURCE_DIR}/tests/golden")
@@ -93,6 +109,9 @@ set_tests_properties(loa_qt_smoke_kit PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=of
 
 add_test(NAME loa_qt_smoke_shell COMMAND loa-qt --smoke shell)
 set_tests_properties(loa_qt_smoke_shell PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 5)
+add_test(NAME loa_qt_smoke_sessions COMMAND loa-qt --smoke sessions)
+set_tests_properties(loa_qt_smoke_sessions PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 5)
+
 
 add_test(NAME loa_qt_smoke_composer COMMAND loa-qt --smoke composer)
 set_tests_properties(loa_qt_smoke_composer PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 5)

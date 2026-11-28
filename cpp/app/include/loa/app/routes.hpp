@@ -52,9 +52,15 @@ struct Mode {
 struct Chat {
     loa::view::session::transcript::Intent intent;
 };
+// Answer to a plan review the app raised, from the decision card (the decisions area's).
+struct AnswerPlan {
+    SessionId session;
+    core::NodeId decision;
+    contracts::Answer answer;
+};
 } // namespace sessions
 namespace decisions {
-// The tools area answered (or couldn't answer) a remote host question's card.
+// An answer to `decision` finished; an error reopens its card with the error shown.
 struct Answered {
     std::string session;
     core::NodeId decision;
@@ -111,6 +117,10 @@ struct Activate {
     std::string project;
 };
 } // namespace projects
+namespace decisions {
+// A peer answered a decision of session `session` on this node (the decisions area's `Answer`).
+using Answer = loa::view::session::decisions::desk_intent::Answer;
+} // namespace decisions
 namespace peers {
 struct OpenRecent {
     std::string id;
