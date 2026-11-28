@@ -26,6 +26,8 @@ class FrameReceiver {
     [[nodiscard]] Awaitable<Result<std::shared_ptr<const Frame>>> recv();
     // Frames dropped since the last call (tokio's `Lagged(n)`).
     [[nodiscard]] std::uint64_t take_lagged();
+    // A frame already queued, else null (empty or closed; tokio's `try_recv`).
+    [[nodiscard]] std::shared_ptr<const Frame> try_recv();
 
   private:
     friend class FrameSender;

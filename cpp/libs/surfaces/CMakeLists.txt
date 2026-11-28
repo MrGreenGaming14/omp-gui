@@ -5,6 +5,7 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(WEBP REQUIRED IMPORTED_TARGET libwebp)
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Pdf)
 find_package(ZLIB REQUIRED)
+pkg_check_modules(OPENH264 REQUIRED IMPORTED_TARGET openh264)
 find_package(OpenSSL 3 REQUIRED COMPONENTS Crypto)
 find_package(pugixml REQUIRED)
 pkg_check_modules(MINIZIP REQUIRED IMPORTED_TARGET minizip)
@@ -28,6 +29,10 @@ add_library(loa_surfaces STATIC
   src/proto/transport.cpp
   src/proto/viewer.cpp
   src/proto/wire.cpp
+  src/video/decode.cpp
+  src/video/encode.cpp
+  src/video/ffmpeg.cpp
+  src/video/live.cpp
   src/vnc/decode.cpp
   src/vnc/input.cpp
   src/vnc/keysym.cpp
@@ -36,7 +41,7 @@ add_library(loa_surfaces STATIC
 add_library(loa::surfaces ALIAS loa_surfaces)
 target_include_directories(loa_surfaces PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(loa_surfaces PUBLIC loa::contracts loa::runtime pugixml::pugixml
-  PRIVATE PNG::PNG JPEG::JPEG GIF::GIF PkgConfig::WEBP Qt6::Pdf Qt6::Gui ZLIB::ZLIB OpenSSL::Crypto PkgConfig::MINIZIP)
+  PRIVATE PNG::PNG JPEG::JPEG GIF::GIF PkgConfig::WEBP Qt6::Pdf Qt6::Gui ZLIB::ZLIB OpenSSL::Crypto PkgConfig::OPENH264 PkgConfig::MINIZIP)
 # Only src/docs/pdf.cpp includes Qt; keep moc and friends off the rest.
 set_target_properties(loa_surfaces PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF)
 
@@ -60,6 +65,7 @@ loa_add_test(surfaces
     tests/proto_wire.cpp
     tests/proto_fragment.cpp
     tests/proto_session.cpp
+    tests/video_test.cpp
     tests/vnc_codec_test.cpp
     tests/vnc_surface_test.cpp
   LINK loa::surfaces_testkit GIF::GIF JPEG::JPEG PkgConfig::WEBP PkgConfig::MINIZIP PkgConfig::XLSXWRITER)
