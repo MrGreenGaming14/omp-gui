@@ -51,6 +51,8 @@ class FrameSender {
     [[nodiscard]] std::shared_ptr<FrameReceiver> subscribe();
     // Number of receivers still alive that got it.
     std::size_t send(std::shared_ptr<const Frame> frame);
+    // Receivers still alive (tokio's `receiver_count`).
+    [[nodiscard]] std::size_t receiver_count();
 
   private:
     asio::any_io_executor executor_;
