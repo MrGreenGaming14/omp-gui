@@ -17,6 +17,11 @@ add_library(loa_harness STATIC
   src/account_support/process.cpp
   src/registry/registry.cpp)
 target_sources(loa_harness PRIVATE
+  src/acp/acp.cpp
+  src/acp/host.cpp
+  src/acp/mapper.cpp
+  src/acp/wire.cpp)
+target_sources(loa_harness PRIVATE
   src/omp/rpc/client.cpp
   src/omp/rpc/command.cpp
   src/omp/rpc/event.cpp
@@ -62,6 +67,7 @@ target_sources(loa_harness_tests PRIVATE
   tests/omp/rpc_frames_test.cpp
   tests/omp/native_import_test.cpp
   tests/omp/native_export_test.cpp
-  tests/omp/native_history_test.cpp)
+  tests/omp/native_history_test.cpp
+  tests/acp/acp_test.cpp)
 target_compile_definitions(loa_harness_tests PRIVATE LOA_GOLDEN_DIR="${CMAKE_SOURCE_DIR}/tests/golden")
 target_compile_definitions(loa_harness_tests PRIVATE LOA_HARNESS_FIXTURES="${CMAKE_SOURCE_DIR}/../crates/loa-harness/fixtures")
