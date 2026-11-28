@@ -925,4 +925,23 @@ providers:
         assert!(!pattern_matches("openai/*", "anthropic", "claude-x"));
         assert!(!pattern_matches("anthropic/claude", "anthropic", "claude-x"));
     }
+
+    /// Writes golden `config.yml` and `models.yml` for the C++ port into
+    /// `$LOA_GOLDEN_OUT/settings`: the role edit above, saved by the stores.
+    #[test]
+    #[ignore = "writes golden files; run with LOA_GOLDEN_OUT set"]
+    fn write_golden_yml() {
+        let out = std::path::PathBuf::from(std::env::var("LOA_GOLDEN_OUT").unwrap()).join("settings");
+        std::fs::create_dir_all(&out).unwrap();
+        let mut f = files(CONFIG, MODELS);
+        let before = read(&f);
+        let mut after = before.clone();
+        after.roles[0].chain.push("anthropic/claude-z".into());
+        after.roles.push(RoleChain { role: "plan".into(), chain: vec!["openai/gpt-y:low".into()] });
+        save(&mut f, &before, &after).unwrap();
+        f.config.save().unwrap();
+        f.models.save().unwrap();
+        std::fs::copy(f.config.path(), out.join("config.yml")).unwrap();
+        std::fs::write(out.join("models.yml"), f.models.text()).unwrap();
+    }
 }

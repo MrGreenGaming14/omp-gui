@@ -1,0 +1,19 @@
+providers:
+  gw:
+    baseUrl: https://gw.example.com/v1
+    api: openai-completions
+    apiKey: "!op read op://dev/gw"
+    headers:
+      X-Team: core
+    models:
+      - id: m1
+        name: Model One
+        contextWindow: 64000
+  anthropic:
+    modelOverrides:
+      claude-x:
+        name: Claude X (team)
+        contextWindow: 200000
+        cost:
+          input: 1
+          output: 2
