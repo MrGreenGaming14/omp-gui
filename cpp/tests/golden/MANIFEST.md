@@ -11,6 +11,7 @@ export LOA_GOLDEN_OUT=$PWD/cpp/tests/golden
 cargo test -p loa-bus --test golden -- --ignored
 cargo test -p loa-settings --test config write_golden -- --ignored
 cargo test -p loa-settings --lib write_golden -- --ignored
+cargo test -p loa-contracts --test golden -- --ignored
 ```
 
 Then update this table and the source SHA.
@@ -29,6 +30,8 @@ Then update this table and the source SHA.
 - `journal/f`, `journal/s`: copies of `crates/loa-bus/tests/fixtures/journal`.
 - `settings/config.toml`, `settings/unknown.toml`: copies of `crates/loa-settings/tests/fixtures/full.toml` and `unknown.toml` (unknown keys kept byte-identical).
 - `settings/config.yml`, `settings/models.yml`: written by `OmpConfig::save` / `ModelsYml::save` after a role edit.
+- `contracts/*.schema.json`: `HostToolSpec::input_schema` (schemars 1.x via `DynTool::spec`) for the argument
+  structs in `crates/loa-contracts/tests/golden.rs`; `loa_contracts_tests` rebuilds each with `loa::contracts::schema`.
 
 ## Files
 
@@ -43,6 +46,10 @@ Then update this table and the source SHA.
 | bus/patch-06.pb | 21 | bbaf5cf0147c062f01a03ca708e30cb9cdf1a8a38823aaf28b5739dad20a4a74 | 6853d95bd272adf65b37e64c449b02c08813bc53 |
 | bus/patch-07.pb | 38 | 1649caa1a2860f3bf1d32b932ff18ab86bad1803742e192f1cdcade066569586 | 6853d95bd272adf65b37e64c449b02c08813bc53 |
 | bus/patch-08.pb | 15 | d6d7959935e1788c6a2dae0f7f4c7d664662e1acf79c0475f7099ebaf5a21859 | 6853d95bd272adf65b37e64c449b02c08813bc53 |
+| contracts/args.schema.json | 229 | 70881f67193954277551de9841222519ffd6d1febc640e98cd29f934b43479b0 | b128c428ea2976fd62bc1ef28ccc783137388e80 |
+| contracts/data_args.schema.json | 962 | 8aacf0688857367c3452dbf11ba7634c28ecd13c08a5025713ca6d1cb7726c69 | b128c428ea2976fd62bc1ef28ccc783137388e80 |
+| contracts/no_args.schema.json | 120 | 068f287b973e1cb2cb111022b6c9b77db19e4c84704b640dcd3034e8abe682c4 | b128c428ea2976fd62bc1ef28ccc783137388e80 |
+| contracts/search_args.schema.json | 1483 | ffdc2eef6fa051ac05480e99970465c1d6e0a4bdb5ef62a8adf3a4b7fce7dd52 | b128c428ea2976fd62bc1ef28ccc783137388e80 |
 | journal/f/journal.loaj | 28 | fc7fc20ca23862d10f7abb288d92756a6db93e297dbacaea6907ee8a2d103940 | 6853d95bd272adf65b37e64c449b02c08813bc53 |
 | journal/g/journal.loaj | 760 | c1bebc8200e456c3330d395a64e3ddb84bc8a648ea710324d24f22d13aab4777 | 6853d95bd272adf65b37e64c449b02c08813bc53 |
 | journal/s/journal.loaj | 2180 | eec47b483bacb5599cae3ad4e8392f1b845bbb6277288eb8756a70468e6801ef | 6853d95bd272adf65b37e64c449b02c08813bc53 |
