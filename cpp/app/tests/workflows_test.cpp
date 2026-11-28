@@ -257,10 +257,9 @@ TEST_CASE("workflows: commands edit and use every workflow") {
 
 TEST_CASE("workflows: another models page is forwarded to the models area") {
     WorkflowsApp test;
-    auto task = test.app->update(wf::State::message(wf::msg::ShowPage{wf::Page::Settings}));
-    // Without a models area the forward ends in its refusal; the workflows page itself stays.
-    CHECK(test.app->ctx.screen() == area_id::WORKFLOWS);
-    test.run(std::move(task));
-    test.send(wf::State::message(wf::msg::ShowPage{wf::Page::Workflows}));
+    test.send(wf::State::message(wf::msg::ShowPage{wf::Page::Settings}));
+    CHECK(test.app->ctx.screen() == area_id::MODELS);
+    // The models screen's Workflows page is drawn by this area.
+    test.send(area_message(area_id::MODELS, to::models::Show{wf::Page::Workflows}));
     CHECK(test.app->ctx.screen() == area_id::WORKFLOWS);
 }
