@@ -1,0 +1,32 @@
+theme = "system"
+version = 1
+
+[harness]
+default = "omp"
+
+[harness.executables]
+
+[mcp_servers]
+
+[network]
+port = 31415
+relay = "default"
+
+[network.discovery]
+mdns = true
+tailscale = true
+
+[projects]
+
+[remote_hosts]
+
+[surfaces]
+browser_capture = "screencast"
+video = true
+
+[unattended]
+
+[updater]
+check_interval_secs = 21600
+
+[updater.pins]

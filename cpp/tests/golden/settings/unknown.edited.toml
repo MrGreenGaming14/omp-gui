@@ -1,0 +1,52 @@
+future_flag = true
+theme = "light"
+version = 1
+
+[future_section]
+level = 3
+when = 2026-01-02T03:04:05Z
+
+[harness]
+default = "omp"
+
+[harness.executables]
+
+[mcp_servers.keep]
+command = "keep"
+enabled = true
+x-color = "red"
+
+[network]
+port = 31415
+relay = "default"
+x-mtu = 1200
+
+[network.discovery]
+mdns = true
+tailscale = true
+
+[projects.p]
+digest_role = "smol"
+disabled_tools = []
+future_digest_mode = "dense"
+instructions = ""
+pinned_files = []
+token_budget = 8000
+
+[projects.p.disabled_mcp_tools]
+
+[remote_hosts]
+
+[surfaces]
+browser_capture = "screencast"
+video = true
+
+[unattended.plan]
+answer = "reject"
+escalate_to = "owner"
+timeout_secs = 60
+
+[updater]
+check_interval_secs = 21600
+
+[updater.pins]

@@ -1,0 +1,41 @@
+version = 1
+
+[harness]
+default = "omp"
+
+[harness.executables]
+
+[mcp_servers]
+
+[network]
+port = 31415
+relay = "off"
+
+[network.discovery]
+mdns = true
+tailscale = true
+
+[projects]
+
+[remote_hosts]
+
+[surfaces]
+browser_capture = "screencast"
+video = true
+
+[theme]
+accent = "#88c0d0"
+name = "nord"
+
+[theme.x]
+a = [1, 2.5, """
+q"
+"""]
+b = "1979-05-27T07:32:00.5-07:00"
+
+[unattended]
+
+[updater]
+check_interval_secs = 21600
+
+[updater.pins]
