@@ -1,0 +1,9 @@
+[package]
+name = "loa-docs-golden"
+version = "0.0.0"
+edition = "2024"
+[dependencies]
+loa-surfaces = { path = "../../../../../crates/loa-surfaces", features = ["docs"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+[workspace]
