@@ -49,6 +49,14 @@ target_sources(loa_harness PRIVATE
   src/omp/native/import.cpp
   src/omp/native/export.cpp
   src/omp/native/history.cpp)
+target_sources(loa_harness PRIVATE
+  src/omp/session.cpp
+  src/omp/mapper.cpp
+  src/omp/launch.cpp
+  src/omp/account.cpp
+  src/omp/oauth.cpp
+  src/omp/validate.cpp
+  src/omp/oneshot.cpp)
 add_library(loa::harness ALIAS loa_harness)
 target_include_directories(loa_harness PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(loa_harness PUBLIC loa::contracts loa::core loa::runtime loa::settings)
@@ -97,6 +105,11 @@ target_sources(loa_harness_tests PRIVATE
   tests/omp/native_export_test.cpp
   tests/omp/native_history_test.cpp)
 target_sources(loa_harness_tests PRIVATE
+  tests/omp/adapter_session_test.cpp
+  tests/omp/adapter_mapper_test.cpp
+  tests/omp/adapter_launch_test.cpp
+  tests/omp/adapter_account_test.cpp
+  tests/omp/adapter_oneshot_test.cpp
   tests/opencode/driver_test.cpp
   tests/opencode/event_test.cpp
   tests/opencode/mapper_test.cpp
